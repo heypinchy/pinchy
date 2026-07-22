@@ -226,6 +226,39 @@ describe("POST /api/agents", () => {
     expect(waitInvocations[0]).toBeGreaterThan(regenInvocations[0]);
   });
 
+  it("still returns 201 with the created agent and a warning when config regeneration fails", async () => {
+    // Regression for #880: the agent row already committed, so a failed
+    // runtime apply must not surface as a hard 500 that implies nothing saved.
+    vi.mocked(regenerateOpenClawConfig).mockRejectedValueOnce(
+      new Error("EACCES: permission denied, open '/config/openclaw.json'")
+    );
+
+    const request = new NextRequest("http://localhost:7777/api/agents", {
+      method: "POST",
+      body: JSON.stringify({ name: "Best Effort", templateId: "custom" }),
+    });
+
+    const response = await POST(request, routeContext());
+    expect(response.status).toBe(201);
+    const body = await response.json();
+    // The persisted agent must still be returned so the UI can navigate to it.
+    expect(body.id).toBe("new-agent-id");
+    expect(typeof body.warning).toBe("string");
+    expect(body.warning.length).toBeGreaterThan(0);
+  });
+
+  it("does not include a warning when config regeneration succeeds", async () => {
+    const request = new NextRequest("http://localhost:7777/api/agents", {
+      method: "POST",
+      body: JSON.stringify({ name: "Happy Path", templateId: "custom" }),
+    });
+
+    const response = await POST(request, routeContext());
+    expect(response.status).toBe(201);
+    const body = await response.json();
+    expect(body.warning).toBeUndefined();
+  });
+
   it("should return 403 for non-admin users", async () => {
     vi.mocked(auth.api.getSession).mockResolvedValueOnce(
       mockSession({ user: { id: "2", email: "user@test.com", role: "member" } })

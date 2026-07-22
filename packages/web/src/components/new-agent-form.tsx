@@ -36,6 +36,7 @@ import { autoSelectConnection, type OdooConnection } from "@/lib/odoo-connection
 import { EMAIL_CONNECTION_TYPES } from "@/lib/integrations/oauth-providers";
 import { getPermissionPreviewItems } from "@/lib/template-grouping";
 import Link from "next/link";
+import { toast } from "sonner";
 
 const EMAIL_CONNECTION_TYPE_SET = new Set<string>(EMAIL_CONNECTION_TYPES);
 
@@ -391,6 +392,13 @@ export function NewAgentForm() {
       }
 
       const agent = await res.json();
+      // #880 — the route creates the agent even when applying it to the OC
+      // runtime fails, returning a non-blocking `warning` instead of a 500.
+      // Surface it as a warning toast (sonner persists across the navigation
+      // below) so the creation still reads as successful.
+      if (typeof agent?.warning === "string" && agent.warning.length > 0) {
+        toast.warning(agent.warning);
+      }
       triggerRestart();
       router.push(`/chat/${agent.id}`);
       router.refresh();

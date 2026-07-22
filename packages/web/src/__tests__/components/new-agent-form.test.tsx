@@ -4,6 +4,7 @@ import { render, screen, waitFor, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
 import { NewAgentForm } from "@/components/new-agent-form";
+import { toast } from "sonner";
 
 const { mockPush, mockReplace, mockSearchParams } = vi.hoisted(() => {
   const searchParamsRef = { current: new URLSearchParams() };
@@ -29,6 +30,10 @@ vi.mock("next/navigation", () => ({
     replace: mockReplace,
   }),
   useSearchParams: () => mockSearchParams.current,
+}));
+
+vi.mock("sonner", () => ({
+  toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn() },
 }));
 
 const mockTemplates = [
@@ -391,6 +396,50 @@ describe("NewAgentForm — tagline field", () => {
       const body = JSON.parse(postCall![1]!.body as string);
       expect(body.tagline).toBe("My custom tagline");
     });
+  });
+
+  it("navigates and shows a warning toast when creation reports a runtime warning (#880)", async () => {
+    fetchSpy.mockImplementation(async (url, init) => {
+      if (String(url) === "/api/templates") {
+        return {
+          ok: true,
+          json: async () => ({ templates: mockTemplates }),
+        } as Response;
+      }
+      if (String(url) === "/api/agents" && init?.method === "POST") {
+        return {
+          ok: true,
+          json: async () => ({
+            id: "new-agent-id",
+            warning: "Agent created. Applying it to the runtime failed.",
+          }),
+        } as Response;
+      }
+      return { ok: false, json: async () => ({}) } as Response;
+    });
+
+    render(<NewAgentForm />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/start from scratch/i)).toBeInTheDocument();
+    });
+    await userEvent.click(screen.getByText(/start from scratch/i));
+
+    await waitFor(() => {
+      expect(screen.getByLabelText(/name/i)).toBeInTheDocument();
+    });
+    await userEvent.type(screen.getByLabelText(/name/i), "My Bot");
+    await userEvent.click(screen.getByRole("button", { name: /create/i }));
+
+    // Still a success flow: the user is navigated to the new agent's chat, and
+    // the warning surfaces non-blockingly (no inline error).
+    await waitFor(() => {
+      expect(mockPush).toHaveBeenCalledWith("/chat/new-agent-id");
+      expect(toast.warning).toHaveBeenCalledWith(
+        "Agent created. Applying it to the runtime failed."
+      );
+    });
+    expect(toast.error).not.toHaveBeenCalled();
   });
 });
 

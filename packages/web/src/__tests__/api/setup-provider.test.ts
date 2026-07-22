@@ -239,6 +239,43 @@ describe("POST /api/setup/provider", () => {
     expect(regenerateOpenClawConfig).toHaveBeenCalled();
   });
 
+  it("should still return 200 with a warning when config regeneration fails", async () => {
+    // Regression for #880: the DB write already committed, so a failed
+    // runtime apply must not surface as a hard 500 that implies nothing saved.
+    vi.mocked(regenerateOpenClawConfig).mockRejectedValueOnce(
+      new Error("EACCES: permission denied, open '/config/openclaw.json'")
+    );
+
+    const response = await POST(
+      makeRequest({
+        provider: "anthropic",
+        apiKey: "sk-ant-key",
+      }) as any
+    );
+
+    expect(response.status).toBe(200);
+    const data = await response.json();
+    expect(data.success).toBe(true);
+    expect(typeof data.warning).toBe("string");
+    expect(data.warning.length).toBeGreaterThan(0);
+    // The persisted change must still have committed.
+    expect(setSetting).toHaveBeenCalledWith("anthropic_api_key", "sk-ant-key", true);
+  });
+
+  it("should not include a warning when config regeneration succeeds", async () => {
+    const response = await POST(
+      makeRequest({
+        provider: "anthropic",
+        apiKey: "sk-ant-key",
+      }) as any
+    );
+
+    expect(response.status).toBe(200);
+    const data = await response.json();
+    expect(data.success).toBe(true);
+    expect(data.warning).toBeUndefined();
+  });
+
   it("should reset model cache after saving provider", async () => {
     await POST(
       makeRequest({
