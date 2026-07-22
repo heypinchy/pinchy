@@ -51,6 +51,9 @@ import plugin, {
   findInvalidSelectionValues,
   formatInvalidSelectionError,
   PRODUCT_REF_DISAMBIGUATION_HINT,
+  enforceReadResultBudget,
+  ODOO_READ_RESULT_BUDGET_CHARS,
+  ODOO_READ_TRUNCATION_HINT,
 } from "../index";
 
 const MOVE_FIELDS: OdooField[] = [
@@ -1250,6 +1253,76 @@ describe("PRODUCT_REF_DISAMBIGUATION_HINT (issue #377)", () => {
   });
 });
 
+// OpenClaw's runtime caps every tool result at maxChars=64000 and the whole
+// prompt history at aggregateBudgetChars=256000, replacing the overflow with a
+// literal "[... N more characters truncated …]" marker MID-JSON. A `crm.lead`
+// read of real production data reached ~509,000 chars — ~8× the per-result cap
+// — so the model received corrupt JSON plus the marker and narrated "the
+// results are truncated" in an unbreakable retry loop (pinchy production, Piper
+// agent, 2026-07-22). `enforceReadResultBudget` pre-empts that blind cut with a
+// Pinchy-side budget so odoo_read always returns valid, self-describing JSON.
+describe("enforceReadResultBudget", () => {
+  const bigRecords = (n: number, descLen = 1000) =>
+    Array.from({ length: n }, (_, i) => ({
+      id: i + 1,
+      name: `Lead ${i + 1}`,
+      description: "x".repeat(descLen),
+    }));
+
+  it("returns the input unchanged when it already fits the budget", () => {
+    const result = { records: [{ id: 1, name: "SO001" }], total: 1, limit: 100, offset: 0 };
+    const out = enforceReadResultBudget(result);
+    expect(out).toBe(result);
+    expect(out).not.toHaveProperty("truncated");
+  });
+
+  it("trims the record set to fit and reports the truncation honestly", () => {
+    const result = { records: bigRecords(200), total: 200, limit: 200, offset: 0 };
+    const out = enforceReadResultBudget(result) as {
+      records: unknown[];
+      total: number;
+      returned: number;
+      truncated: boolean;
+      hint: string;
+    };
+    expect(out.truncated).toBe(true);
+    expect(out.records.length).toBeLessThan(200);
+    expect(out.records.length).toBeGreaterThan(0);
+    expect(out.returned).toBe(out.records.length);
+    // `total` still reports the full Odoo match count so the model knows there is more.
+    expect(out.total).toBe(200);
+    expect(out.hint).toBe(ODOO_READ_TRUNCATION_HINT);
+    // The whole point: the serialized result stays under the budget (and thus
+    // comfortably under OpenClaw's 64000 per-result cap), so it is never cut.
+    expect(JSON.stringify(out).length).toBeLessThanOrEqual(ODOO_READ_RESULT_BUDGET_CHARS);
+  });
+
+  it("always keeps at least one record, even if that record alone exceeds the budget", () => {
+    const result = {
+      records: bigRecords(3, ODOO_READ_RESULT_BUDGET_CHARS * 2),
+      total: 3,
+      limit: 3,
+      offset: 0,
+    };
+    const out = enforceReadResultBudget(result) as { records: unknown[]; truncated: boolean };
+    expect(out.records).toHaveLength(1);
+    expect(out.truncated).toBe(true);
+  });
+
+  it("wraps a bare oversized array into a self-describing object", () => {
+    const out = enforceReadResultBudget(bigRecords(200)) as {
+      records: unknown[];
+      total: number;
+      returned: number;
+      truncated: boolean;
+    };
+    expect(out.truncated).toBe(true);
+    expect(out.total).toBe(200);
+    expect(out.returned).toBe(out.records.length);
+    expect(JSON.stringify(out).length).toBeLessThanOrEqual(ODOO_READ_RESULT_BUDGET_CHARS);
+  });
+});
+
 describe("odoo_read", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -1334,6 +1407,41 @@ describe("odoo_read", () => {
       offset: 0,
       order: "date_order desc",
     });
+  });
+
+  // Regression (pinchy production, 2026-07-22): a real crm.lead read produced a
+  // ~509,000-char result that OpenClaw cut mid-JSON, so Piper looped on "the
+  // results are truncated". odoo_read must bound its own output so the returned
+  // JSON never approaches OpenClaw's 64000 per-result cap.
+  it("bounds an oversized result below OpenClaw's per-result cap", async () => {
+    const OPENCLAW_TOOL_RESULT_CAP = 64000;
+    mockSearchRead.mockResolvedValue({
+      records: Array.from({ length: 200 }, (_, i) => ({
+        id: i + 1,
+        name: `Lead ${i + 1}`,
+        description: "x".repeat(1000),
+      })),
+      total: 200,
+      limit: 200,
+      offset: 0,
+    });
+
+    const tools = createApi({ [agentId]: agentConfig });
+    const tool = findTool(tools, "odoo_read", agentId)!;
+
+    const result = await tool.execute("call-big", {
+      model: "sale.order",
+      fields: ["name", "description"],
+      limit: 200,
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(result.content[0].text.length).toBeLessThan(OPENCLAW_TOOL_RESULT_CAP);
+    const data = JSON.parse(result.content[0].text);
+    expect(data.truncated).toBe(true);
+    expect(data.total).toBe(200);
+    expect(data.records.length).toBeLessThan(200);
+    expect(data.returned).toBe(data.records.length);
   });
 
   // The read side of the same trap: the tool prompt teaches `_pinchy_ref`,
