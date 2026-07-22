@@ -13,7 +13,7 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, it, expect } from "vitest";
-import { buildExport, buildPublishedScenarios } from "../export-scorecard";
+import { buildExport, buildPublishedScenarios, isPublished } from "../export-scorecard";
 import { computePassHatK, PASS_HAT_K_LEVELS } from "../../src/lib/eval/scorecard";
 import type { PromptVariantId } from "../../src/lib/eval/types";
 
@@ -51,12 +51,12 @@ describe("published export: scenario roster and not-yet-run tolerance", () => {
   });
 
   it("marks exactly the four crm-lead scenarios not-yet-run, with their axes", () => {
-    const pending = scenarios.filter((s) => s.status === "not-yet-run");
+    const pending = scenarios.filter((s) => !isPublished(s));
     expect(pending.map(({ label, slug, axis }) => ({ label, slug, axis }))).toEqual(NOT_YET_RUN);
   });
 
   it("publishes no numbers for a not-yet-run scenario", () => {
-    for (const s of scenarios.filter((s) => s.status === "not-yet-run")) {
+    for (const s of scenarios.filter((s) => !isPublished(s))) {
       expect(s.models, s.label).toEqual([]);
       expect(s.totalRuns, s.label).toBe(0);
       expect(s.tiedWithLeader, s.label).toEqual([]);
@@ -64,7 +64,7 @@ describe("published export: scenario roster and not-yet-run tolerance", () => {
   });
 
   it("keeps the seven invoice scenarios published and untouched by the marker", () => {
-    const published = scenarios.filter((s) => s.status === undefined);
+    const published = scenarios.filter(isPublished);
     expect(published.map((s) => s.label)).toEqual([
       "hetzner-invoice-models",
       "hetzner-invoice-distractor-models",

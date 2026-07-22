@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { DATASET_FINGERPRINT, DATASET_VERSION } from "../dataset-version";
-import { buildExport } from "../export-scorecard";
+import { buildExport, isPublished } from "../export-scorecard";
 import { fingerprintPublished } from "../../src/lib/eval/fingerprint";
 
 /**
@@ -46,7 +46,7 @@ const exported = await buildExport();
 const { datasetVersion: _version, generatedFrom: _source, ...allPublished } = exported;
 const published = {
   ...allPublished,
-  scenarios: exported.scenarios.filter((s) => s.status !== "not-yet-run"),
+  scenarios: exported.scenarios.filter(isPublished),
 };
 
 /** The versions of every `## [x.y.z] - ...` heading, in the order written. */
@@ -117,7 +117,7 @@ describe("dataset fingerprint", () => {
     // The digest exclusion above is only sound while these entries publish no
     // numbers at all. A not-yet-run scenario that somehow carried cells would
     // be an unhashed published number — exactly what the fingerprint forbids.
-    const pending = exported.scenarios.filter((s) => s.status === "not-yet-run");
+    const pending = exported.scenarios.filter((s) => !isPublished(s));
     expect(pending).toHaveLength(4);
     for (const s of pending) {
       expect(s.models, s.label).toEqual([]);

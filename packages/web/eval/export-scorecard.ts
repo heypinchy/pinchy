@@ -238,6 +238,20 @@ export interface PublishedScenario {
   tiedWithLeader: string[];
 }
 
+/**
+ * THE "published" predicate, shared so it cannot fork (#803 Task-12 review):
+ * a scenario publishes numbers exactly when it carries no `status` key (see
+ * `PublishedScenario.status` — published entries omit the key entirely, so
+ * `status === undefined` and `status !== "not-yet-run"` are the same test
+ * today, but only while `"not-yet-run"` stays the sole status value). The
+ * fingerprint guard (`__tests__/dataset-version.test.ts`) and the export
+ * contract (`__tests__/export-scorecard-contract.test.ts`) both filter through
+ * this one definition, so a future status value cannot make the two tests
+ * disagree about which scenarios count as published.
+ */
+export const isPublished = (s: Pick<PublishedScenario, "status">): boolean =>
+  s.status === undefined;
+
 /** A pooled, scenario-clustered comparison of two models across all scenarios. */
 export interface ModelComparison {
   a: string;

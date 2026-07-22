@@ -17,6 +17,41 @@ Versioning rule:
 Every superseded version stays published and citable (HELM/Terminal-Bench legacy
 pattern): cite the version and the harness commit, not "latest".
 
+An `[Unreleased]` section may sit above the newest release for landed harness
+capabilities that move no published number yet. The version pin reads only
+`[x.y.z]` headings, so it is invisible to the guard; its contents fold into the
+next versioned entry when the change that produces numbers lands.
+
+## [Unreleased]
+
+**Harness v2 — second domain, paraphrase variants, robustness reporting**
+(#803). Harness capabilities only: **no dataset change** — no run row here was
+added, moved, or re-graded, so `DATASET_VERSION` stays 1.1.0 and the
+fingerprint test proves it. The version bumps (MINOR) with the **first v2
+sweep**, which is when new numbers first exist to record.
+
+- **Second domain**: four crm-lead scenarios (task capability, duplicate
+  guard, hard rejection, silent failure — on `crm.lead` instead of
+  `account.move`) re-test the established axes on a second record type, so a
+  pass stops being explainable as invoice-specific fit.
+- **Paraphrase-variant infrastructure**: every scenario carries a primary
+  prompt (word-identical to the pre-variant prompt — the published series is
+  unchanged) plus two register-shifted paraphrases; run rows carry
+  `promptVariant`, with absence grandfathered as primary (every existing row
+  was dispatched with the primary wording).
+- **Robustness reporting**: headline numbers compute from primary runs only;
+  once variant rows exist, the export adds a separate `robustness` block
+  (per-variant pass rates, spread = max − min, per-model mean spread). Absent
+  until then — today's export stays byte-identical.
+- **Variant-aware sweep**: `EVAL_PROMPT_VARIANTS` / `EVAL_VARIANT_RUNS`
+  (default 6, vs. the primary's n=12) dispatch paraphrase runs, resuming per
+  (model, variant) cell.
+- **Export**: the consolidated export now registers the four crm-lead
+  scenarios as `status: "not-yet-run"` entries at the unchanged
+  `datasetVersion` — announced, with no models and no numbers, never a silent
+  0-run scorecard. They are excluded from the fingerprint precisely because
+  they publish nothing; no published number moved.
+
 ## [1.1.0] - 2026-07-17
 
 **Output field — pass^k reliability curve** (#796): every cell now carries
