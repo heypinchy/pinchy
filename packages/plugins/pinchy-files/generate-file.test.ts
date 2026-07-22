@@ -61,3 +61,18 @@ describe("generateFile xlsx", () => {
     expect(typeof ws.getCell("B2").value).toBe("number");
   });
 });
+
+describe("generateFile pdf", () => {
+  it("renders a pdf with the title and header text", async () => {
+    const { buffer, mimeType, ext } = await generateFile({
+      format: "pdf",
+      title: "Ledger",
+      columns: ["Date", "Amount"],
+      rows: [["2026-01-03", 1200.5]],
+    });
+    expect(ext).toBe("pdf");
+    expect(mimeType).toBe("application/pdf");
+    expect(buffer.subarray(0, 5).toString("latin1")).toBe("%PDF-");
+    expect(buffer.byteLength).toBeGreaterThan(500);
+  });
+});
