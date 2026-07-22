@@ -443,6 +443,78 @@ describe("ClientRouter", () => {
         })
       );
     });
+
+    // The security half of the same sink: a THROWN error is `err.message`, which
+    // is NOT guaranteed to be provider-facing. An infra error can carry an
+    // internal host/IP/DB-user AND happen to classify as a known provider class
+    // (a connection `ETIMEDOUT` matches `transient` via "timed out"; a Postgres
+    // "authentication failed" matches `provider_config` via "authenticat"), so a
+    // class check alone can't gate it. Only a class with a CANNED rewrite (which
+    // never echoes the raw text) may be surfaced/persisted; everything else falls
+    // back to the generic bubble. These two lock that the raw text never reaches
+    // the browser through the live frame, the liveness `reason`, OR the durable
+    // row (which the reload banner re-renders verbatim).
+    it.each([
+      [
+        "a connection ETIMEDOUT (classifies transient, but is internal infra)",
+        "connect ETIMEDOUT 10.0.0.42:8443",
+        ["10.0.0.42", "8443", "ETIMEDOUT"],
+      ],
+      [
+        "a Postgres auth failure (classifies provider_config, but is internal infra)",
+        'password authentication failed for user "pinchy" at 10.0.0.5',
+        ["10.0.0.5", "pinchy", "password"],
+      ],
+    ])(
+      "does NOT leak raw thrown infra text to the browser and does NOT persist it: %s",
+      async (_label, thrown, secrets) => {
+        mockFindFirst.mockResolvedValue({ ...defaultAgent, model: "gpt-5-turbo" });
+        async function* stream() {
+          yield {
+            type: "userMessagePersisted" as const,
+            clientMessageId: "cm-leak",
+            sessionKey: undefined,
+            persistedAt: 0,
+            runId: "r1",
+          };
+          throw new Error(thrown);
+        }
+        mockChat.mockReturnValue(stream());
+
+        const ws = createMockClientWs();
+        await router.handleMessage(ws as any, {
+          type: "message",
+          content: "do it",
+          agentId: "agent-1",
+          clientMessageId: "cm-leak",
+        });
+
+        // No raw text in ANY frame sent to the browser — covers the live error
+        // frame's providerError, the liveness `reason`, and any other field.
+        const wire = ws.sent.join("\n");
+        for (const secret of secrets) {
+          expect(wire).not.toContain(secret);
+        }
+
+        // The user still gets a terminal error — the generic, non-leaking bubble.
+        const frames = ws.sent.map((s) => JSON.parse(s));
+        const errorFrame = frames.find((f) => f.type === "error");
+        expect(errorFrame).toBeDefined();
+        expect(errorFrame.message).toBe("Something went wrong. Please try again.");
+        // No cause-specific fields that would carry the raw text.
+        expect(errorFrame.providerError).toBeUndefined();
+
+        // Nothing persisted: the durable banner re-renders the stored raw text on
+        // reload, so an unsafe thrown error must never create a row.
+        expect(mockRecordChatSessionError).not.toHaveBeenCalled();
+
+        // But it IS audited server-side (PII-scrubbed) — the diagnosability trail
+        // #882 asks for is kept even for the failures we won't show the user.
+        expect(mockAppendAuditLog).toHaveBeenCalledWith(
+          expect.objectContaining({ eventType: "chat.agent_error" })
+        );
+      }
+    );
   });
 
   it("should return error when agent not found", async () => {

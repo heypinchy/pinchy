@@ -98,14 +98,20 @@ export function getErrorHint(errorText: string, userRole: string): string | null
 }
 
 /**
- * Map a raw provider-error string to the user-facing banner text. `modelName`
- * is the model Pinchy dispatched to (`agent.model`/the durable row's stored
- * model) — data Pinchy already has independent of the error text, since it's
- * the one that made the request. Apply this where the error is shown to the
- * user (the live error frame and the durable-banner route); the audit trail
- * and the stored row always keep the raw, unmodified text.
+ * The canned, cause-specific rewrite for a provider error — or `null` when there
+ * is no rewrite and the raw text would be shown verbatim (rate-limit,
+ * provider-config, the bare `"LLM request failed."`, …).
+ *
+ * The `null` return is a security signal for callers handling UNTRUSTED text: a
+ * THROWN generator rejection's `message` is not guaranteed to be provider-facing
+ * (it can be an internal Node/infra error carrying a host/IP, a DB auth failure,
+ * or a stack trace). Such a caller must NOT echo the raw text, so it treats a
+ * `null` here as "surface the generic bubble instead" — see `surfaceRunFailure`
+ * in client-router (#882). Callers with provider-facing text by construction (an
+ * in-stream `error` chunk) use `presentProviderError` below, which falls back to
+ * the raw text when there's no canned rewrite.
  */
-export function presentProviderError(errorText: string, modelName?: string): string {
+export function cannedProviderMessage(errorText: string, modelName?: string): string | null {
   if (matchesRetirement(errorText)) {
     return MODEL_RETIRED_MESSAGE(modelName);
   }
@@ -115,19 +121,38 @@ export function presentProviderError(errorText: string, modelName?: string): str
   // OpenClaw's generic provider-rejection envelope (#584): the "schema or tool
   // payload" wording is actively misleading (it reads like a malformed-request
   // bug when the real cause is an account-side rejection), so — unlike the
-  // neutral bare "LLM request failed." fallback below — it's fully replaced with
-  // an honest account-issue message rather than passed through with a model
-  // name. Guarded by `!isThoughtSignatureRejection`: the same envelope text
-  // plus a thought_signature marker identifies the distinct Gemini-3 replay
-  // defect (#338, fixed in OpenClaw 2026.7.1 — the dedicated user-facing
-  // "Retry usually works" bubble was removed once the fix was verified, but
-  // the marker itself stays here so a thought_signature rejection is never
-  // mislabeled as the #584 account-issue message).
+  // neutral bare "LLM request failed." fallback in presentProviderError — it's
+  // fully replaced with an honest account-issue message rather than passed
+  // through with a model name. Guarded by `!isThoughtSignatureRejection`: the
+  // same envelope text plus a thought_signature marker identifies the distinct
+  // Gemini-3 replay defect (#338, fixed in OpenClaw 2026.7.1 — the dedicated
+  // user-facing "Retry usually works" bubble was removed once the fix was
+  // verified, but the marker itself stays here so a thought_signature rejection
+  // is never mislabeled as the #584 account-issue message).
   if (
     PROVIDER_REJECTED_GENERIC_PATTERN.test(errorText) &&
     !isThoughtSignatureRejection(errorText)
   ) {
     return PROVIDER_REJECTED_GENERIC_MESSAGE;
+  }
+  return null;
+}
+
+/**
+ * Map a raw provider-error string to the user-facing banner text. `modelName`
+ * is the model Pinchy dispatched to (`agent.model`/the durable row's stored
+ * model) — data Pinchy already has independent of the error text, since it's
+ * the one that made the request. Apply this where the error is shown to the
+ * user AND the text is provider-facing by construction (the live error frame
+ * for an in-stream `error` chunk, and the durable-banner route reading a stored
+ * row); the audit trail and the stored row always keep the raw, unmodified
+ * text. For UNTRUSTED thrown text use `cannedProviderMessage` and fall back to a
+ * generic message on `null` instead of echoing the raw input.
+ */
+export function presentProviderError(errorText: string, modelName?: string): string {
+  const canned = cannedProviderMessage(errorText, modelName);
+  if (canned !== null) {
+    return canned;
   }
   // Final fallback: everything else (rate-limit, provider-config, and any truly
   // unclassified text like the bare `"LLM request failed."`) is shown as-is
