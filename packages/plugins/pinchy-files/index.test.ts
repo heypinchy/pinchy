@@ -1456,4 +1456,64 @@ describe("pinchy_generate_file tool", () => {
     expect(JSON.stringify(result.details)).not.toContain("only-one-cell");
     expect(existsSync(join(workbench, "mismatch.csv"))).toBe(false);
   });
+
+  it("returns tool when the workbench write-path has a trailing slash", async () => {
+    const api = createMockApi({
+      "agent-1": { allowed_paths: [tmpDir], write_paths: [tmpDir, `${workbench}/`] },
+    });
+    const { default: plugin } = await import("./index");
+    plugin.register!(api as any);
+
+    const factory = getGenerateFileFactory();
+    const tool = factory({ agentId: "agent-1" });
+    expect(tool).not.toBeNull();
+  });
+
+  // CRITICAL (security review): an error thrown before filename/format are
+  // known-good (e.g. an invalid format, checked first) must still yield a
+  // `details` object with at least one non-"error" key. The audit route
+  // (packages/web/src/app/api/internal/audit/tool-use/route.ts,
+  // curatesNonErrorFields) only suppresses raw params when `details` has a
+  // key other than "error" — an error-only `{ error }` leaves the FULL raw
+  // tool call params, including rows/columns (potential customer PII),
+  // unredacted in the audit DB.
+  it("keeps details param-suppression-safe even when format/filename are both invalid (PII protection)", async () => {
+    const tool = await makeGenerateFileTool();
+
+    const result = await tool.execute("call-1", {
+      format: "not-a-format",
+      filename: 12345,
+      columns: ["ssn"],
+      rows: [["123-45-6789"]],
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.details).toBeDefined();
+    // At least one non-"error" key must be present, or the audit route's
+    // curatesNonErrorFields check won't suppress raw params.
+    expect(Object.keys(result.details).some((k) => k !== "error")).toBe(true);
+    expect(JSON.stringify(result.details)).not.toContain("123-45-6789");
+  });
+
+  // IMPORTANT (security review): generate-file.ts's MAX_ROWS bounds row
+  // count only — a single huge cell can still produce a buffer far beyond
+  // any sane file size. Reuse pinchy_write's MAX_FILE_SIZE cap and reject
+  // before ever calling writeFile.
+  it("rejects a generated file that exceeds the size cap without writing it", async () => {
+    const tool = await makeGenerateFileTool();
+
+    const bigCell = "x".repeat(11 * 1024 * 1024); // > MAX_FILE_SIZE (10MB)
+    const result = await tool.execute("call-1", {
+      format: "csv",
+      filename: "toolarge",
+      columns: ["data"],
+      rows: [[bigCell]],
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/too large/i);
+    expect(existsSync(join(workbench, "toolarge.csv"))).toBe(false);
+    // Same param-suppression-safe details shape as the PII test above.
+    expect(Object.keys(result.details).some((k) => k !== "error")).toBe(true);
+  });
 });

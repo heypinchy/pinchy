@@ -759,7 +759,6 @@ const plugin = {
             required: ["format", "filename", "columns", "rows"],
           },
           async execute(_toolCallId: string, params: Record<string, unknown>) {
-            const filename = typeof params.filename === "string" ? params.filename : undefined;
             try {
               if (
                 typeof params.format !== "string" ||
@@ -809,6 +808,16 @@ const plugin = {
                 title,
               });
 
+              // generate-file.ts's MAX_ROWS bounds row COUNT only — a single
+              // huge cell can still produce an arbitrarily large buffer.
+              // Reject before ever touching the filesystem, same as
+              // pinchy_write's MAX_FILE_SIZE check above.
+              if (buffer.byteLength > MAX_FILE_SIZE) {
+                throw new Error(
+                  `Generated file too large (${buffer.byteLength} bytes). Maximum: ${MAX_FILE_SIZE} bytes.`
+                );
+              }
+
               const name = `${rawFilename}.${ext}`;
               const onDisk = join(workbench, name);
 
@@ -854,12 +863,20 @@ const plugin = {
             } catch (error) {
               const message = error instanceof Error ? error.message : "Unknown error";
               // Set details on every error path so the audit endpoint suppresses
-              // raw params (params.rows/params.columns may hold PII).
+              // raw params (params.rows/params.columns may hold PII). `format`
+              // and `filename` are ALWAYS present (null when absent/invalid) —
+              // never conditionally omitted — so `details` always has a
+              // non-"error" key. The audit route's curatesNonErrorFields check
+              // only suppresses raw params when such a key exists; an
+              // error-only `{ error }` (e.g. thrown by an invalid `format`,
+              // which is checked before filename) would otherwise leave the
+              // full raw params, including rows/columns, unredacted.
               return {
                 isError: true,
                 content: [{ type: "text", text: message }],
                 details: {
-                  ...(filename !== undefined ? { filename } : {}),
+                  format: typeof params.format === "string" ? params.format : null,
+                  filename: typeof params.filename === "string" ? params.filename : null,
                   error: message,
                 },
               };
