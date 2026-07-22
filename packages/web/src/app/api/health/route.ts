@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getSecretsProvenance } from "@/lib/secret-source";
 import { openClawConnectionState } from "@/server/openclaw-connection-state";
+import { getConfigRegenState } from "@/lib/openclaw-config-health";
 
 export async function GET() {
   return NextResponse.json({
@@ -24,5 +25,13 @@ export async function GET() {
     openclaw: {
       connected: openClawConnectionState.connected,
     },
+    // Issue #879: the boot-time config regeneration can throw (e.g. the #878
+    // missing-secrets-volume EACCES) while readiness is still marked so
+    // OpenClaw can start — top-level `status` stays "ok" for the same reason it
+    // does for gateway disconnects. Surface the regeneration outcome here so
+    // monitoring and the admin UI can catch a frozen config even though the
+    // instance otherwise reports healthy. `error` is operator-facing guidance
+    // only — never secret material.
+    configRegeneration: getConfigRegenState(),
   });
 }

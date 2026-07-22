@@ -1,6 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { secretRef, writeSecretsFile, readSecretsFile } from "@/lib/openclaw-secrets";
-import { readFileSync, existsSync, statSync } from "fs";
+import {
+  secretRef,
+  writeSecretsFile,
+  readSecretsFile,
+  checkSecretsVolumeWritable,
+} from "@/lib/openclaw-secrets";
+import { readFileSync, existsSync, statSync, writeFileSync } from "fs";
 import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -75,6 +80,52 @@ describe("writeSecretsFile", () => {
     writeSecretsFile({ providers: { openai: { apiKey: "sk-different" } } });
     const content = JSON.parse(readFileSync(process.env.OPENCLAW_SECRETS_PATH!, "utf-8"));
     expect(content.providers.openai.apiKey).toBe("sk-different");
+  });
+
+  it("throws an actionable error when the secrets directory cannot be created (missing volume mount)", () => {
+    // Reproduce the #878 failure shape: the `openclaw-secrets` volume is not
+    // mounted, so the directory Pinchy expects to write into cannot be created.
+    // We simulate an un-creatable directory by pointing the path *under a
+    // regular file* — mkdir of a directory whose parent component is a file
+    // fails the same way an EACCES at the container root does. The bare fs
+    // error (EACCES/ENOTDIR) must be replaced by a message that tells the
+    // operator their docker-compose.yml is missing the volume.
+    const blocker = join(dir, "not-a-directory");
+    writeFileSync(blocker, "x");
+    process.env.OPENCLAW_SECRETS_PATH = join(blocker, "secrets.json");
+
+    expect(() => writeSecretsFile(bundle)).toThrow(/docker-compose\.yml/);
+    expect(() => writeSecretsFile(bundle)).toThrow(/openclaw-secrets/);
+  });
+});
+
+describe("checkSecretsVolumeWritable", () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "pinchy-secrets-"));
+    process.env.OPENCLAW_SECRETS_PATH = join(dir, "secrets.json");
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+    delete process.env.OPENCLAW_SECRETS_PATH;
+  });
+
+  it("returns ok when the secrets directory is writable", () => {
+    expect(checkSecretsVolumeWritable()).toEqual({ ok: true });
+  });
+
+  it("returns not-ok with an actionable message when the directory cannot be created", () => {
+    const blocker = join(dir, "not-a-directory");
+    writeFileSync(blocker, "x");
+    process.env.OPENCLAW_SECRETS_PATH = join(blocker, "secrets.json");
+
+    const result = checkSecretsVolumeWritable();
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected not-ok");
+    expect(result.message).toMatch(/docker-compose\.yml/);
+    expect(result.message).toMatch(/openclaw-secrets/);
   });
 });
 
