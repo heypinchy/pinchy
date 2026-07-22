@@ -22,15 +22,44 @@
  */
 import type { HetznerInvoiceScenario } from "./hetzner-invoice";
 import { hetznerInvoiceScenario } from "./hetzner-invoice";
+import type { ScenarioPrompts } from "@/lib/eval/types";
 
 export const HETZNER_LINEITEMS_USER_PROMPT =
   "Read the latest invoice email from Hetzner and enter it into Odoo as a " +
   "vendor bill. Record the invoice line item(s) so the bill's total matches " +
   "the invoice amount.";
 
+/**
+ * Register-shifted paraphrases of the line-items prompt (#803, PR 3). This
+ * scenario overrides the base `userPrompt`, so it must carry its own variant
+ * set — both variants keep the task-critical extra requirement (line items
+ * entered, bill total matching the invoice amount) without naming any Odoo
+ * model or field the primary doesn't.
+ */
+export const HETZNER_LINEITEMS_PROMPTS: ScenarioPrompts = {
+  primary: HETZNER_LINEITEMS_USER_PROMPT,
+  variants: [
+    {
+      id: "v1",
+      text:
+        "Grab the latest Hetzner invoice email and file it in Odoo as a vendor " +
+        "bill, with the invoice line item(s) entered so the bill total matches " +
+        "the invoice amount.",
+    },
+    {
+      id: "v2",
+      text:
+        "Could you please take the most recent invoice email we received from " +
+        "Hetzner and enter it into Odoo as a vendor bill? Please also record the " +
+        "invoice line item(s) so that the bill's total matches the amount on the invoice.",
+    },
+  ],
+};
+
 export const hetznerInvoiceLineItemsScenario: HetznerInvoiceScenario = {
   ...hetznerInvoiceScenario,
   userPrompt: HETZNER_LINEITEMS_USER_PROMPT,
+  prompts: HETZNER_LINEITEMS_PROMPTS,
   // The same Cloud invoice and expected fields (amountTotal 47.60); only the
   // prompt and the grading mode (amount hard) differ.
   expectedOutcome: "vendor-bill-with-amount",

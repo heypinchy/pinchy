@@ -62,8 +62,9 @@ export const CRM_LEAD_DUPLICATE_ODOO_BASELINE: Array<{
 
 export const crmLeadDuplicateScenario: CrmLeadScenario = {
   ...crmLeadScenario,
-  // userPrompt intentionally inherited from the base scenario (identical task);
-  // the only difference is the pre-seeded lead in odooBaseline.
+  // userPrompt (and its prompts/paraphrase variants) intentionally inherited
+  // from the base scenario (identical task); the only difference is the
+  // pre-seeded lead in odooBaseline.
   odooBaseline: CRM_LEAD_DUPLICATE_ODOO_BASELINE,
   expectedOutcome: "duplicate-detected",
 };

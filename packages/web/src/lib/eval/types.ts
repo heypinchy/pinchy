@@ -201,6 +201,31 @@ export interface ExpectedLead {
   phone?: string;
 }
 
+/**
+ * One register-shifted paraphrase of a scenario's primary prompt (Eval-v2,
+ * #803): semantically equivalent — same task, same task-critical facts, same
+ * required outcome — differing only in wording/register. The ids are fixed
+ * ("v1" terse-imperative, "v2" conversational-formal) so per-variant results
+ * stay comparable across scenarios and sweeps.
+ */
+export interface PromptVariant {
+  id: "v1" | "v2";
+  text: string;
+}
+
+/**
+ * A scenario's prompt set: the primary (word-identical to the scenario's
+ * `userPrompt`, which stays the single source of truth — the headline metric
+ * is primary-only) plus its paraphrase variants. The variants measure
+ * prompt-WORDING sensitivity: a model whose result depends on register or
+ * phrasing is itself a finding. Enforced per scenario by
+ * `eval/__tests__/prompt-variants.test.ts`.
+ */
+export interface ScenarioPrompts {
+  primary: string;
+  variants: readonly PromptVariant[];
+}
+
 export interface GraderResult {
   passed: boolean;
   tags: FailureTag[];
