@@ -1,5 +1,5 @@
 import { readdirSync, statSync, realpathSync, existsSync } from "fs";
-import { readFile, open, writeFile, mkdir } from "fs/promises";
+import { readFile, open, writeFile, mkdir, chown } from "fs/promises";
 import { createHash } from "crypto";
 import { join, extname, basename, dirname } from "path";
 import {
@@ -18,6 +18,16 @@ import { createVisionConfig, type VisionApiConfig } from "./pdf-vision-api";
 import { runVisionTasks, type AggregatedVisionUsage } from "./pdf-vision-runner";
 import { reportUsage } from "./usage-reporter";
 import { resolveAgentInfo } from "./resolve-agent-info";
+import { generateFile, type GenerateFileFormat } from "./generate-file";
+
+// The Pinchy web process runs as uid/gid 999 in the container and must own a
+// generated file to serve it back to the user as a download (#703). Chowning
+// is best-effort — on a non-Linux host, or without CAP_CHOWN, it fails and
+// must not fail the tool itself (mirrors pinchy-email's DELIVERY_UID/GID).
+const DELIVERY_UID = 999;
+const DELIVERY_GID = 999;
+
+const GENERATE_FILE_FORMATS: GenerateFileFormat[] = ["csv", "xlsx", "pdf"];
 
 interface PluginToolContext {
   agentId?: string;
@@ -71,7 +81,12 @@ function relativizeWritePath(absolutePath: string, writePaths: readonly string[]
 // re-read image is fed back to the model as native multimodal input — the same
 // way a freshly uploaded attachment reaches the model on the first turn.
 type ContentBlock =
-  { type: "text"; text: string } | { type: "image"; data: string; mimeType: string };
+  | { type: "text"; text: string }
+  | { type: "image"; data: string; mimeType: string }
+  // Metadata-only file block (no base64/data) — OpenClaw's isArtifactBlock
+  // picks this up via artifacts.list and the #703 serve route resolves the
+  // bytes from disk, so this block never carries the file content itself.
+  | { type: "file"; filename: string; mimeType: string };
 
 // Image extensions pinchy_read returns as image content blocks rather than
 // utf-8 text. Reading the bytes as utf-8 would hand the model binary garbage
@@ -682,6 +697,177 @@ const plugin = {
         };
       },
       { name: "pinchy_write" }
+    );
+
+    api.registerTool(
+      (ctx: PluginToolContext) => {
+        const agentId = ctx.agentId;
+        if (!agentId) return null;
+
+        const config = agentConfigs[agentId];
+        if (!config) return null;
+
+        const writePaths = config.write_paths;
+        if (!writePaths || writePaths.length === 0) return null;
+
+        // Generated files always land in the workbench zone — the #703 serve
+        // route only resolves delivered files from "workbench" or "uploads",
+        // and workbench (not uploads, which is the user's own upload zone) is
+        // the agent-owned scratch space for agent-produced output.
+        const workbench = writePaths.find((p) => p.replace(/\/+$/, "").endsWith("/workbench"));
+        if (!workbench) return null;
+
+        return {
+          name: "pinchy_generate_file",
+          label: "Generate File",
+          description:
+            "Generate a CSV, XLSX, or PDF file from tabular data (columns + rows) and save it " +
+            "into your workbench. The file is delivered to the user in chat as a downloadable " +
+            "attachment. Supported formats: csv (spreadsheet-safe, UTF-8 with BOM), xlsx (a " +
+            "single-sheet Excel workbook), pdf (a simple table report).",
+          parameters: {
+            type: "object",
+            properties: {
+              format: {
+                type: "string",
+                enum: GENERATE_FILE_FORMATS,
+                description: "Output file format.",
+              },
+              filename: {
+                type: "string",
+                description:
+                  "Base name for the generated file, WITHOUT extension (the extension is " +
+                  "added automatically based on format). Must not contain path separators.",
+              },
+              title: {
+                type: "string",
+                description: "Optional title, used as the sheet name (xlsx) or heading (pdf).",
+              },
+              columns: {
+                type: "array",
+                items: { type: "string" },
+                description: "Column headers, in order.",
+              },
+              rows: {
+                type: "array",
+                items: { type: "array" },
+                description:
+                  "Table rows. Each row is an array of cell values (string, number, boolean, " +
+                  "or null) with one entry per column, in the same order as `columns`.",
+              },
+            },
+            required: ["format", "filename", "columns", "rows"],
+          },
+          async execute(_toolCallId: string, params: Record<string, unknown>) {
+            const filename = typeof params.filename === "string" ? params.filename : undefined;
+            try {
+              if (
+                typeof params.format !== "string" ||
+                !GENERATE_FILE_FORMATS.includes(params.format as GenerateFileFormat)
+              ) {
+                throw new Error(`format must be one of: ${GENERATE_FILE_FORMATS.join(", ")}`);
+              }
+              const format = params.format as GenerateFileFormat;
+
+              if (typeof params.filename !== "string" || params.filename.length === 0) {
+                throw new Error("filename must be a non-empty string");
+              }
+              const rawFilename = params.filename;
+              // Basename only: the agent supplies a name, not a path. Rejecting
+              // separators/traversal here — before it ever reaches join() below —
+              // is what keeps the generated file confined to the workbench dir,
+              // mirroring pinchy_write's onDisk validation posture.
+              if (
+                rawFilename.includes("/") ||
+                rawFilename.includes("\\") ||
+                rawFilename.includes("..")
+              ) {
+                throw new Error(
+                  "filename must be a base name without path separators (no '/', '\\', or '..')"
+                );
+              }
+
+              if (
+                !Array.isArray(params.columns) ||
+                !params.columns.every((c) => typeof c === "string")
+              ) {
+                throw new Error("columns must be an array of strings");
+              }
+              const columns = params.columns as string[];
+
+              if (!Array.isArray(params.rows)) {
+                throw new Error("rows must be an array");
+              }
+              const rows = params.rows as (string | number | boolean | null)[][];
+
+              const title = typeof params.title === "string" ? params.title : undefined;
+
+              const { buffer, mimeType, ext } = await generateFile({
+                format,
+                columns,
+                rows,
+                title,
+              });
+
+              const name = `${rawFilename}.${ext}`;
+              const onDisk = join(workbench, name);
+
+              const resolved = validateAccess(
+                { allowed_paths: config.allowed_paths, write_paths: writePaths },
+                onDisk,
+                "write"
+              );
+              assertNoSymlinkEscape(resolved, writePaths);
+
+              // mkdir must run AFTER validation, never before, so a rejected
+              // write never leaves directories on disk as a side effect of the
+              // failure path (same ordering rule as pinchy_write above).
+              await mkdir(dirname(resolved), { recursive: true });
+              await writeFile(resolved, buffer);
+
+              try {
+                await chown(resolved, DELIVERY_UID, DELIVERY_GID);
+              } catch {
+                // Best-effort — see DELIVERY_UID/DELIVERY_GID comment above.
+              }
+
+              return {
+                content: [
+                  // File delivery (#703): a native file content block lands in
+                  // the session transcript, which Pinchy's client-router reads
+                  // via OpenClaw's `artifacts.list` RPC after the run to record
+                  // the per-user download grant and render the chip. Metadata
+                  // only — no base64/data — the served bytes come from disk.
+                  { type: "file", filename: name, mimeType },
+                  {
+                    type: "text",
+                    text: `Generated ${name} (${rows.length} rows, ${buffer.byteLength} bytes).`,
+                  },
+                ],
+                details: {
+                  path: relativizeWritePath(resolved, writePaths),
+                  format,
+                  rows: rows.length,
+                  sizeBytes: buffer.byteLength,
+                },
+              };
+            } catch (error) {
+              const message = error instanceof Error ? error.message : "Unknown error";
+              // Set details on every error path so the audit endpoint suppresses
+              // raw params (params.rows/params.columns may hold PII).
+              return {
+                isError: true,
+                content: [{ type: "text", text: message }],
+                details: {
+                  ...(filename !== undefined ? { filename } : {}),
+                  error: message,
+                },
+              };
+            }
+          },
+        };
+      },
+      { name: "pinchy_generate_file" }
     );
   },
 };
