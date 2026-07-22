@@ -87,17 +87,11 @@ const PENDING_ORACLE_SCENARIOS: string[] = [];
 /**
  * Oracle labels whose scenario is not yet registered in export-scorecard's
  * SCENARIOS — each entry must name the task that deletes it, and the list must
- * stay empty in a finished release. The crm-lead sweep labels land with the
- * sweep/export integration in Task 12 (#803): registering them earlier would
- * publish empty cells and break the dataset fingerprint, so until then the
- * label-consistency guard below unions this list with the published ones.
+ * stay empty in a finished release. Currently empty (Task 12/#803 registered
+ * the four crm-lead labels as `not-yet-run` export entries); the mechanism
+ * stays for any FUTURE scenario whose oracle lands before its export entry.
  */
-const PENDING_EXPORT_LABELS = [
-  "crm-lead-models",
-  "crm-lead-duplicate-models",
-  "crm-lead-rejected-models",
-  "crm-lead-silent-failure-models",
-];
+const PENDING_EXPORT_LABELS: string[] = [];
 
 describe("oracle coverage", () => {
   const coveredScenarioFiles = () =>
