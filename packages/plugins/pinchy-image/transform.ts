@@ -34,13 +34,23 @@ export interface ConvertParams {
 }
 
 function assertNonNegativeInt(name: string, value: unknown): asserts value is number {
-  if (typeof value !== "number" || !Number.isFinite(value) || !Number.isInteger(value) || value < 0) {
+  if (
+    typeof value !== "number" ||
+    !Number.isFinite(value) ||
+    !Number.isInteger(value) ||
+    value < 0
+  ) {
     throw new Error(`${name} must be a non-negative integer`);
   }
 }
 
 function assertPositiveInt(name: string, value: unknown): asserts value is number {
-  if (typeof value !== "number" || !Number.isFinite(value) || !Number.isInteger(value) || value <= 0) {
+  if (
+    typeof value !== "number" ||
+    !Number.isFinite(value) ||
+    !Number.isInteger(value) ||
+    value <= 0
+  ) {
     throw new Error(`${name} must be a positive integer`);
   }
 }

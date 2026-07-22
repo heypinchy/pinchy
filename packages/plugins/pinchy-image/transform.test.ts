@@ -4,7 +4,11 @@ import { cropImage, resizeImage, rotateImage, convertImage } from "./transform";
 
 // Real-sharp fixtures: synthesize coloured PNG buffers in-memory so tests
 // never depend on a checked-in binary.
-async function makePng(width: number, height: number, color: { r: number; g: number; b: number }): Promise<Buffer> {
+async function makePng(
+  width: number,
+  height: number,
+  color: { r: number; g: number; b: number }
+): Promise<Buffer> {
   return sharp({
     create: {
       width,
@@ -12,7 +16,9 @@ async function makePng(width: number, height: number, color: { r: number; g: num
       channels: 3,
       background: color,
     },
-  }).png().toBuffer();
+  })
+    .png()
+    .toBuffer();
 }
 
 let basePng: Buffer;
@@ -22,7 +28,9 @@ beforeAll(async () => {
   basePng = await makePng(200, 100, { r: 200, g: 50, b: 50 });
   wideJpeg = await sharp({
     create: { width: 400, height: 200, channels: 3, background: { r: 10, g: 200, b: 80 } },
-  }).jpeg().toBuffer();
+  })
+    .jpeg()
+    .toBuffer();
 });
 
 describe("cropImage", () => {
@@ -35,9 +43,7 @@ describe("cropImage", () => {
   });
 
   it("throws when the crop rectangle exceeds the image bounds", async () => {
-    await expect(
-      cropImage(basePng, { x: 0, y: 0, width: 9999, height: 9999 })
-    ).rejects.toThrow();
+    await expect(cropImage(basePng, { x: 0, y: 0, width: 9999, height: 9999 })).rejects.toThrow();
   });
 
   it("throws when dimensions are zero or negative", async () => {

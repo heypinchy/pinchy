@@ -14,9 +14,7 @@ import sharp from "sharp";
 
 const mockRegisterTool = vi.fn();
 
-function createMockApi(config: {
-  agents: Record<string, { tools: string[] }>;
-}) {
+function createMockApi(config: { agents: Record<string, { tools: string[] }> }) {
   return {
     id: "pinchy-image",
     name: "Pinchy Image",
@@ -54,7 +52,9 @@ async function seedImage(agentId: string, filename: string): Promise<void> {
   mkdirSync(uploadsDir, { recursive: true });
   const png = await sharp({
     create: { width: 200, height: 100, channels: 3, background: { r: 10, g: 200, b: 80 } },
-  }).png().toBuffer();
+  })
+    .png()
+    .toBuffer();
   writeFileSync(join(uploadsDir, filename), png);
 }
 
@@ -197,7 +197,9 @@ describe("pinchy-image plugin", () => {
       width: 50,
     });
     const payload = JSON.parse(result.content[0].text);
-    const meta = await sharp(readFileSync(join(workspaceRoot, "agent-all", "uploads", payload.id))).metadata();
+    const meta = await sharp(
+      readFileSync(join(workspaceRoot, "agent-all", "uploads", payload.id))
+    ).metadata();
     expect(meta.width).toBe(50);
     expect(payload.id).toMatch(/\.png$/);
   });
@@ -214,7 +216,9 @@ describe("pinchy-image plugin", () => {
     const tool = factory({ agentId: "agent-all" });
     const result = await tool.execute("call-1", { source: "rotated.png", angle: 90 });
     const payload = JSON.parse(result.content[0].text);
-    const meta = await sharp(readFileSync(join(workspaceRoot, "agent-all", "uploads", payload.id))).metadata();
+    const meta = await sharp(
+      readFileSync(join(workspaceRoot, "agent-all", "uploads", payload.id))
+    ).metadata();
     expect(meta.width).toBe(100);
     expect(meta.height).toBe(200);
   });
@@ -232,7 +236,9 @@ describe("pinchy-image plugin", () => {
     const result = await tool.execute("call-1", { source: "source.png", format: "webp" });
     const payload = JSON.parse(result.content[0].text);
     expect(payload.id).toMatch(/\.webp$/);
-    const meta = await sharp(readFileSync(join(workspaceRoot, "agent-all", "uploads", payload.id))).metadata();
+    const meta = await sharp(
+      readFileSync(join(workspaceRoot, "agent-all", "uploads", payload.id))
+    ).metadata();
     expect(meta.format).toBe("webp");
   });
 
@@ -259,7 +265,8 @@ describe("pinchy-image plugin", () => {
 
   it("configSchema.validate rejects when agents is not a plain object", async () => {
     const { default: plugin } = await import("./index");
-    const validate = (plugin.configSchema as { validate: (v: unknown) => { ok: boolean } }).validate;
+    const validate = (plugin.configSchema as { validate: (v: unknown) => { ok: boolean } })
+      .validate;
     expect(validate({ agents: null }).ok).toBe(false);
     expect(validate({ agents: [] }).ok).toBe(false);
     expect(validate({ agents: "nope" }).ok).toBe(false);
@@ -322,7 +329,9 @@ describe("pinchy-image plugin", () => {
     const realTarget = join(workspaceRoot, "outside-target.png");
     const png = await sharp({
       create: { width: 10, height: 10, channels: 3, background: { r: 1, g: 2, b: 3 } },
-    }).png().toBuffer();
+    })
+      .png()
+      .toBuffer();
     writeFileSync(realTarget, png);
     symlinkSync(realTarget, join(uploadsDir, "link.png"));
 

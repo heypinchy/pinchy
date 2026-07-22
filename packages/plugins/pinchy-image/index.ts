@@ -104,7 +104,9 @@ function errorContent(message: string): { isError: true; content: ContentBlock[]
 async function readSourceImage(
   agentId: string,
   filename: unknown
-): Promise<{ buffer: Buffer; sourceName: string } | { error: { isError: true; content: ContentBlock[] } }> {
+): Promise<
+  { buffer: Buffer; sourceName: string } | { error: { isError: true; content: ContentBlock[] } }
+> {
   if (typeof filename !== "string" || !isSafeFilename(filename)) {
     return {
       error: errorContent(
