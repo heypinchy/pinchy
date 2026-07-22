@@ -8,7 +8,8 @@ import type { ResolverInput, ResolverResult } from "../types";
 const resolveModelForTemplate = vi.fn<(input: ResolverInput) => Promise<ResolverResult>>();
 const fetchProviderModels = vi.fn<() => Promise<{ id: string; models: { id: string }[] }[]>>();
 const getDefaultModel = vi.fn<(provider: string) => Promise<string>>();
-const modelHasCapability = vi.fn<(model: string, cap: string) => boolean>();
+const modelCapabilityStatus =
+  vi.fn<(model: string, cap: string) => "supported" | "unsupported" | "unknown">();
 
 vi.mock("@/lib/model-resolver/index", () => ({
   resolveModelForTemplate: (i: ResolverInput) => resolveModelForTemplate(i),
@@ -19,7 +20,7 @@ vi.mock("@/lib/provider-models", () => ({
 }));
 vi.mock("@/lib/model-capabilities/cache", () => ({
   ensureModelCapabilityCacheLoaded: () => Promise.resolve(),
-  modelHasCapability: (m: string, c: string) => modelHasCapability(m, c),
+  modelCapabilityStatus: (m: string, c: string) => modelCapabilityStatus(m, c),
 }));
 
 import { resolveAvailableModelForTemplate } from "@/lib/model-resolver/resolve-available";
@@ -60,7 +61,7 @@ describe("resolveAvailableModelForTemplate", () => {
       { id: "anthropic", models: [{ id: "anthropic/claude-haiku-4-5-20251001" }] },
     ]);
     getDefaultModel.mockResolvedValue("anthropic/claude-haiku-4-5-20251001");
-    modelHasCapability.mockReturnValue(true);
+    modelCapabilityStatus.mockReturnValue("supported");
 
     const result = await resolveAvailableModelForTemplate(balancedVisionHint);
 
@@ -78,8 +79,10 @@ describe("resolveAvailableModelForTemplate", () => {
       { id: "anthropic", models: [{ id: "anthropic/text-only-default" }] },
     ]);
     getDefaultModel.mockResolvedValue("anthropic/text-only-default");
-    // The substitute has tools but not vision.
-    modelHasCapability.mockImplementation((_m, cap) => cap !== "vision");
+    // The substitute is KNOWN to have tools but not vision.
+    modelCapabilityStatus.mockImplementation((_m, cap) =>
+      cap === "vision" ? "unsupported" : "supported"
+    );
 
     await expect(resolveAvailableModelForTemplate(balancedVisionHint)).rejects.toBeInstanceOf(
       TemplateCapabilityUnavailableError
@@ -87,6 +90,29 @@ describe("resolveAvailableModelForTemplate", () => {
     await expect(resolveAvailableModelForTemplate(balancedVisionHint)).rejects.toMatchObject({
       missingCapabilities: ["vision"],
     });
+  });
+
+  it("substitutes rather than throwing when the live default's capabilities are unknown (unknown ≠ incapable)", async () => {
+    // The live default is a brand-new model the provider added AFTER this
+    // release, so it is absent from the curated capability cache and every
+    // capability reads "unknown". A missing cache row is not proof of a missing
+    // capability — blocking creation here would be a false 422 in exactly the
+    // retire-and-replace scenario this wrapper exists to handle. So substitute
+    // best-effort rather than throw.
+    resolveModelForTemplate.mockResolvedValue(pick("anthropic/claude-sonnet-4-6"));
+    fetchProviderModels.mockResolvedValue([
+      { id: "anthropic", models: [{ id: "anthropic/claude-brandnew-6" }] },
+    ]);
+    getDefaultModel.mockResolvedValue("anthropic/claude-brandnew-6");
+    modelCapabilityStatus.mockReturnValue("unknown");
+
+    const result = await resolveAvailableModelForTemplate(balancedVisionHint);
+
+    expect(result.model).toBe("anthropic/claude-brandnew-6");
+    expect(result.fallbackUsed).toBe(true);
+    // The reason must flag that capabilities could not be verified, so the
+    // creating route's audit detail is honest about the best-effort pin.
+    expect(result.reason).toMatch(/unverified/i);
   });
 
   it("skips the live check for ollama-local (it already resolves against installed models)", async () => {
@@ -117,7 +143,7 @@ describe("resolveAvailableModelForTemplate", () => {
     expect(result.model).toBe("ollama-cloud/kimi-k2.6");
     expect(result.fallbackUsed).toBe(true);
     // No required capabilities → no capability gate.
-    expect(modelHasCapability).not.toHaveBeenCalled();
+    expect(modelCapabilityStatus).not.toHaveBeenCalled();
   });
 
   it("keeps the pick (best-effort) when a fetch failure leaves it present in the static fallback catalog", async () => {

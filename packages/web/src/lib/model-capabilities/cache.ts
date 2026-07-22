@@ -52,15 +52,33 @@ export function getModelCapabilities(qualifiedModelId: string): ModelCapabilitie
   return cache.get(qualifiedModelId) ?? null;
 }
 
-export function modelHasCapability(qualifiedModelId: string, cap: ModelCapability): boolean {
+/**
+ * Three-valued capability lookup. Distinguishes "we know this model lacks the
+ * capability" (`unsupported`) from "we have no cache row for this model"
+ * (`unknown`) — a distinction `modelHasCapability` deliberately collapses to
+ * `false`. Callers that must not treat a missing row as a proven absence (e.g.
+ * the live-availability substitute check, which routinely sees models newer
+ * than the curated capability catalog) use this instead.
+ */
+export function modelCapabilityStatus(
+  qualifiedModelId: string,
+  cap: ModelCapability
+): "supported" | "unsupported" | "unknown" {
   const caps = getModelCapabilities(qualifiedModelId);
-  if (!caps) return false;
-  switch (cap) {
-    case "vision":
-      return caps.vision;
-    case "long-context":
-      return caps.longContext;
-    case "tools":
-      return caps.tools;
-  }
+  if (!caps) return "unknown";
+  const supported = (() => {
+    switch (cap) {
+      case "vision":
+        return caps.vision;
+      case "long-context":
+        return caps.longContext;
+      case "tools":
+        return caps.tools;
+    }
+  })();
+  return supported ? "supported" : "unsupported";
+}
+
+export function modelHasCapability(qualifiedModelId: string, cap: ModelCapability): boolean {
+  return modelCapabilityStatus(qualifiedModelId, cap) === "supported";
 }
