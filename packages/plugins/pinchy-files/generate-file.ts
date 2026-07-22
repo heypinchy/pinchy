@@ -1,4 +1,6 @@
-export type GenerateFileFormat = "csv";
+import ExcelJS from "exceljs";
+
+export type GenerateFileFormat = "csv" | "xlsx";
 
 export type CellValue = string | number | boolean | null;
 
@@ -36,13 +38,39 @@ function renderCsv(columns: string[], rows: CellValue[][]): Buffer {
   return Buffer.from(CSV_BOM + lines.join("\r\n") + "\r\n", "utf-8");
 }
 
-export function generateFile(input: GenerateFileInput): GenerateFileResult {
+function serializeXlsxCell(value: CellValue): string | number | boolean {
+  return value === null ? "" : value;
+}
+
+async function renderXlsx(
+  columns: string[],
+  rows: CellValue[][],
+  title: string | undefined
+): Promise<Buffer> {
+  const workbook = new ExcelJS.Workbook();
+  const worksheet = workbook.addWorksheet(title || "Sheet1");
+  worksheet.addRow(columns);
+  worksheet.getRow(1).font = { bold: true };
+  for (const row of rows) {
+    worksheet.addRow(row.map(serializeXlsxCell));
+  }
+  const arrayBuffer = await workbook.xlsx.writeBuffer();
+  return Buffer.from(arrayBuffer);
+}
+
+export async function generateFile(input: GenerateFileInput): Promise<GenerateFileResult> {
   switch (input.format) {
     case "csv":
       return {
         buffer: renderCsv(input.columns, input.rows),
         mimeType: "text/csv",
         ext: "csv",
+      };
+    case "xlsx":
+      return {
+        buffer: await renderXlsx(input.columns, input.rows, input.title),
+        mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        ext: "xlsx",
       };
     default:
       throw new Error(`Unsupported format: ${input.format as string}`);
