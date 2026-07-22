@@ -31,6 +31,21 @@ vi.mock("./validate", async (importOriginal) => {
   };
 });
 
+// Partially mock fs/promises so pinchy_generate_file tests can observe/control
+// the best-effort chown(999,999) call without touching the real mkdir/writeFile/
+// readFile/open calls every other test in this file relies on against the real
+// filesystem.
+const { mockChown } = vi.hoisted(() => ({
+  mockChown: vi.fn().mockResolvedValue(undefined),
+}));
+vi.mock("fs/promises", async (importOriginal) => {
+  const original = await importOriginal<typeof import("fs/promises")>();
+  return {
+    ...original,
+    chown: mockChown,
+  };
+});
+
 const mockRegisterTool = vi.fn();
 
 function createMockApi(
@@ -93,12 +108,12 @@ describe("pinchy-files plugin", () => {
     vi.clearAllMocks();
   });
 
-  it("registers pinchy_ls and pinchy_read as tool factories", async () => {
+  it("registers pinchy_ls, pinchy_read, pinchy_write, and pinchy_generate_file as tool factories", async () => {
     const api = createMockApi({ "test-agent": { allowed_paths: ["/data/test-docs/"] } });
     const { default: plugin } = await import("./index");
     plugin.register!(api as any);
 
-    expect(mockRegisterTool).toHaveBeenCalledTimes(3);
+    expect(mockRegisterTool).toHaveBeenCalledTimes(4);
   });
 
   it("registers tool factories (functions), not static tools", async () => {
@@ -1270,3 +1285,175 @@ describe.skipIf(fsFoldsUnicode())(
     });
   }
 );
+
+// ── pinchy_generate_file ─────────────────────────────────────────────────────
+describe("pinchy_generate_file tool", () => {
+  let tmpDir: string;
+  let workbench: string;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    mockChown.mockResolvedValue(undefined);
+    tmpDir = mkdtempSync(join(tmpdir(), "pinchy-generate-file-test-"));
+    workbench = join(tmpDir, "workbench");
+    mkdirSync(workbench);
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  function getGenerateFileFactory() {
+    return mockRegisterTool.mock.calls.find(
+      (call: any[]) => call[1]?.name === "pinchy_generate_file"
+    )?.[0];
+  }
+
+  it("does not register pinchy_generate_file when agent has no write_paths", async () => {
+    const api = createMockApi({
+      "agent-1": { allowed_paths: ["/data/docs/"] },
+      // no write_paths
+    });
+    const { default: plugin } = await import("./index");
+    plugin.register!(api as any);
+
+    const factory = getGenerateFileFactory();
+    expect(factory).toBeDefined(); // factory is registered
+    const tool = factory({ agentId: "agent-1" });
+    expect(tool).toBeNull();
+  });
+
+  it("does not register pinchy_generate_file when write_paths has no workbench entry", async () => {
+    const uploads = join(tmpDir, "uploads");
+    mkdirSync(uploads);
+    const api = createMockApi({
+      "agent-1": { allowed_paths: [uploads], write_paths: [uploads] },
+    });
+    const { default: plugin } = await import("./index");
+    plugin.register!(api as any);
+
+    const factory = getGenerateFileFactory();
+    const tool = factory({ agentId: "agent-1" });
+    expect(tool).toBeNull();
+  });
+
+  it("returns tool when write_paths includes a workbench dir", async () => {
+    const api = createMockApi({
+      "agent-1": { allowed_paths: [tmpDir], write_paths: [tmpDir, workbench] },
+    });
+    const { default: plugin } = await import("./index");
+    plugin.register!(api as any);
+
+    const factory = getGenerateFileFactory();
+    const tool = factory({ agentId: "agent-1" });
+    expect(tool).not.toBeNull();
+    expect(tool.name).toBe("pinchy_generate_file");
+  });
+
+  async function makeGenerateFileTool() {
+    const api = createMockApi({
+      "agent-1": { allowed_paths: [tmpDir], write_paths: [tmpDir, workbench] },
+    });
+    const { default: plugin } = await import("./index");
+    plugin.register!(api as any);
+    return getGenerateFileFactory()({ agentId: "agent-1" });
+  }
+
+  it("writes a csv file into the workbench, chowns it, and returns a file block + summary", async () => {
+    const tool = await makeGenerateFileTool();
+
+    const result = await tool.execute("call-1", {
+      format: "csv",
+      filename: "export",
+      columns: ["a"],
+      rows: [["1"]],
+    });
+
+    expect(result.isError).toBeFalsy();
+    const written = realReadFileSync(join(workbench, "export.csv"), "utf-8");
+    expect(written).toContain("a\r\n1\r\n");
+
+    expect(result.content[0]).toEqual({
+      type: "file",
+      filename: "export.csv",
+      mimeType: "text/csv",
+    });
+    expect(result.content[1].type).toBe("text");
+    expect(result.content[1].text).toMatch(/export\.csv/);
+    expect(result.content[1].text).toMatch(/1 rows/);
+
+    expect(result.details).toMatchObject({
+      format: "csv",
+      rows: 1,
+      sizeBytes: expect.any(Number),
+    });
+    expect(result.details.path).not.toMatch(/^\//);
+    expect(result.details.path).toMatch(/workbench\/export\.csv$/);
+    // No row content in details (PII protection).
+    expect(JSON.stringify(result.details)).not.toContain('"1"');
+
+    expect(mockChown).toHaveBeenCalledWith(join(workbench, "export.csv"), 999, 999);
+  });
+
+  it("does not fail the tool when chown fails (best-effort)", async () => {
+    mockChown.mockRejectedValueOnce(new Error("EPERM: operation not permitted"));
+    const tool = await makeGenerateFileTool();
+
+    const result = await tool.execute("call-1", {
+      format: "csv",
+      filename: "chown-fail",
+      columns: ["a"],
+      rows: [["1"]],
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(existsSync(join(workbench, "chown-fail.csv"))).toBe(true);
+    expect(result.content[0]).toMatchObject({ type: "file", filename: "chown-fail.csv" });
+  });
+
+  it("rejects a filename containing a path separator", async () => {
+    const tool = await makeGenerateFileTool();
+
+    const result = await tool.execute("call-1", {
+      format: "csv",
+      filename: "sub/export",
+      columns: ["a"],
+      rows: [["1"]],
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.details.error).toBeDefined();
+    expect(existsSync(join(workbench, "sub"))).toBe(false);
+  });
+
+  it("rejects a filename containing ..", async () => {
+    const tool = await makeGenerateFileTool();
+
+    const result = await tool.execute("call-1", {
+      format: "csv",
+      filename: "../escape",
+      columns: ["a"],
+      rows: [["1"]],
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.details.error).toBeDefined();
+  });
+
+  it("surfaces a generateFile validation error as isError with details.error (no content leak)", async () => {
+    const tool = await makeGenerateFileTool();
+
+    const result = await tool.execute("call-1", {
+      format: "csv",
+      filename: "mismatch",
+      columns: ["a", "b"],
+      rows: [["only-one-cell"]], // row length mismatch vs columns
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.details).toBeDefined();
+    expect(result.details.error).toMatch(/row 1 has 1 cells, expected 2/);
+    expect(JSON.stringify(result.details)).not.toContain("only-one-cell");
+    expect(existsSync(join(workbench, "mismatch.csv"))).toBe(false);
+  });
+});
