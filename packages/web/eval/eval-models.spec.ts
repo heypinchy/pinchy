@@ -321,6 +321,10 @@ test.describe("Eval-v1: model sweep (real Ollama Cloud)", () => {
                 notes: [String(err)],
                 latencyMs,
                 scenario: label,
+                // This sweep dispatches primary-only (variant sweeps are a
+                // later concern); stamped so timeout rows state their wording
+                // like every row runOnce returns (#803, PR 3).
+                promptVariant: "primary",
               };
               scenarioRuns.push(timeoutResult);
               await appendRunResult(label, timeoutResult);

@@ -214,6 +214,14 @@ export interface PromptVariant {
 }
 
 /**
+ * Which of a scenario's prompts a run was dispatched with: the primary
+ * `userPrompt` or one of its paraphrase variants. Threads from
+ * `runOnce({ promptVariant })` (eval/run-eval.ts) onto every persisted
+ * RunResult/trajectory row (#803, PR 3).
+ */
+export type PromptVariantId = "primary" | PromptVariant["id"];
+
+/**
  * A scenario's prompt set: the primary (word-identical to the scenario's
  * `userPrompt`, which stays the single source of truth — the headline metric
  * is primary-only) plus its paraphrase variants. The variants measure
@@ -289,6 +297,14 @@ export interface RunResult<Tag extends string = FailureTag> {
    * sets it so a scorecard can group/report per (model, scenario).
    */
   scenario?: string;
+  /**
+   * Which prompt wording this run was dispatched with (#803, PR 3). Optional
+   * because rows persisted by pre-variant sweeps lack the field entirely —
+   * readers must treat ABSENCE as "primary" (grandfathering): every historical
+   * run was dispatched with the scenario's `userPrompt`, which is
+   * `prompts.primary` verbatim. New writes always carry it (see `runOnce`).
+   */
+  promptVariant?: PromptVariantId;
   passed: boolean;
   tags: Tag[];
   notes: string[];

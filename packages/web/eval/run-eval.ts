@@ -29,7 +29,13 @@ import type { TokenCollector } from "./token-usage";
 import { buildTrajectory, type NormalizeAuditEntry } from "../src/lib/eval/normalize";
 import { gradeRunForScenario } from "../src/lib/eval/graders";
 import { buildScorecard, type ScorecardEntry } from "../src/lib/eval/scorecard";
-import type { OdooMoveRecord, RunResult, RunTrajectory } from "../src/lib/eval/types";
+import type {
+  OdooMoveRecord,
+  PromptVariantId,
+  RunResult,
+  RunTrajectory,
+  ScenarioPrompts,
+} from "../src/lib/eval/types";
 import {
   hetznerInvoiceScenario,
   readbackModelsFor,
@@ -473,19 +479,56 @@ export async function pinAgentModel(cookie: string, agentId: string, model: stri
 
 // ── Single-run orchestration ─────────────────────────────────────────────
 
+/**
+ * Resolves the prompt text a run dispatches for a given variant id (#803,
+ * PR 3): "primary" is `prompts.primary` (the scenario's `userPrompt`
+ * verbatim); "v1"/"v2" are the matching paraphrases. An id the prompt set
+ * does not carry THROWS instead of silently falling back to the primary —
+ * a fallback would dispatch one wording while every persisted row claims
+ * another, poisoning the variant comparison. The compile-time union already
+ * forbids unknown ids, but variant selection will eventually arrive from an
+ * env var (Task 18), so the runtime guard is load-bearing.
+ */
+export function resolvePromptForVariant(
+  prompts: ScenarioPrompts,
+  variant: PromptVariantId
+): string {
+  if (variant === "primary") return prompts.primary;
+  const match = prompts.variants.find((v) => v.id === variant);
+  if (!match) {
+    throw new Error(
+      `Unknown prompt variant "${variant}" — this scenario carries ` +
+        `[primary, ${prompts.variants.map((v) => v.id).join(", ")}]`
+    );
+  }
+  return match.text;
+}
+
 export interface RunOnceParams {
   page: Page;
   cookie: string;
   agentId: string;
   model: string;
   /**
-   * Overrides the dispatched prompt. Defaults to the scenario's natural-
-   * language `userPrompt`. The selftest mode passes a trigger-prefixed
-   * variant (e.g. `${FAKE_OLLAMA_HETZNER_HAPPY_TRIGGER}: <userPrompt>`) so
-   * fake-ollama's substring match engages while the grading logic below
-   * stays identical between selftest and real-model runs.
+   * Overrides the dispatched prompt. Defaults to the scenario's prompt for
+   * `promptVariant` (the primary — i.e. `userPrompt` — unless a variant is
+   * selected). The selftest mode passes a trigger-prefixed variant (e.g.
+   * `${FAKE_OLLAMA_HETZNER_HAPPY_TRIGGER}: <userPrompt>`) so fake-ollama's
+   * substring match engages while the grading logic below stays identical
+   * between selftest and real-model runs. Precedence: an explicit `prompt`
+   * ALWAYS wins over `promptVariant` resolution — the rows still record
+   * `promptVariant`, which for the selftest stays the default "primary".
    */
   prompt?: string;
+  /**
+   * Which of the scenario's prompt wordings to dispatch (#803, PR 3):
+   * "primary" (the default — `prompts.primary`, byte-identical to
+   * `userPrompt`) or a paraphrase variant id. Resolved via
+   * `resolvePromptForVariant`, which throws on an id the scenario does not
+   * carry. Recorded onto the returned RunResult and the persisted trajectory
+   * row either way, so every row states the wording it was measured under.
+   */
+  promptVariant?: PromptVariantId;
   /**
    * The scenario to dispatch/grade against. Defaults to
    * `hetznerInvoiceScenario` ("vendor-bill-created"). Pass
@@ -523,12 +566,16 @@ export interface RunOnceParams {
 export async function runOnce(params: RunOnceParams): Promise<RunResult> {
   const { page, cookie, agentId, model } = params;
   const scenario = params.scenario ?? hetznerInvoiceScenario;
+  const promptVariant = params.promptVariant ?? "primary";
   const since = new Date().toISOString();
 
+  // Explicit prompt override beats variant resolution (see RunOnceParams.prompt)
+  // — `??` keeps the resolver (and its unknown-id throw) unevaluated when an
+  // override is present.
   const { finalMessage, latencyMs, chatId } = await dispatchAndScrape(
     page,
     agentId,
-    params.prompt ?? scenario.userPrompt
+    params.prompt ?? resolvePromptForVariant(scenario.prompts, promptVariant)
   );
 
   const auditEntries = await collectToolAuditEntries(cookie, agentId, since);
@@ -582,12 +629,22 @@ export async function runOnce(params: RunOnceParams): Promise<RunResult> {
   // failure must never fail the run itself.
   if (params.scenarioLabel) {
     try {
-      await appendTrajectory(params.scenarioLabel, trajectory, result.passed, result.tags);
+      await appendTrajectory(
+        params.scenarioLabel,
+        trajectory,
+        result.passed,
+        result.tags,
+        promptVariant
+      );
     } catch (err) {
       console.warn(`[eval] trajectory dump failed for ${model}: ${String(err)}`);
     }
   }
-  return params.scenarioLabel ? { ...result, scenario: params.scenarioLabel } : result;
+  // Every returned (and therefore every persisted) run states its wording —
+  // `promptVariant` rides beside the `scenario` label the same way.
+  return params.scenarioLabel
+    ? { ...result, scenario: params.scenarioLabel, promptVariant }
+    : { ...result, promptVariant };
 }
 
 /**
@@ -601,6 +658,12 @@ export interface PersistedTrajectory extends RunTrajectory {
   scenarioLabel: string;
   passed: boolean;
   tags: RunResult["tags"];
+  /**
+   * The prompt wording this trajectory ran under (#803, PR 3). Optional in the
+   * TYPE because rows persisted by pre-variant sweeps lack the field — readers
+   * treat absence as "primary" — but `appendTrajectory` always writes it.
+   */
+  promptVariant?: PromptVariantId;
 }
 
 /**
@@ -623,19 +686,31 @@ async function ensureCanaryHeader(filePath: string): Promise<void> {
   }
 }
 
-/** Appends one full trajectory to `results/<label>.trajectories.jsonl`. */
+/**
+ * Appends one full trajectory to `results/<label>.trajectories.jsonl`.
+ * `promptVariant` defaults to "primary" — the default is the grandfathering
+ * semantic itself, so a caller that never heard of variants writes rows that
+ * mean exactly what its dispatch did.
+ */
 export async function appendTrajectory(
   label: string,
   trajectory: RunTrajectory,
   passed: boolean,
-  tags: RunResult["tags"]
+  tags: RunResult["tags"],
+  promptVariant: PromptVariantId = "primary"
 ): Promise<void> {
   if (!/^[a-zA-Z0-9._-]+$/.test(label)) {
     throw new Error(`Invalid run-log label: ${label}`);
   }
   await mkdir(RESULTS_DIR, { recursive: true });
   const filePath = path.join(RESULTS_DIR, `${label}.trajectories.jsonl`);
-  const record: PersistedTrajectory = { ...trajectory, scenarioLabel: label, passed, tags };
+  const record: PersistedTrajectory = {
+    ...trajectory,
+    scenarioLabel: label,
+    passed,
+    tags,
+    promptVariant,
+  };
   await ensureCanaryHeader(filePath);
   // eslint-disable-next-line security/detect-non-literal-fs-filename -- label validated above (alnum/./_/- only)
   await appendFile(filePath, `${JSON.stringify(record)}\n`, "utf8");
