@@ -254,6 +254,15 @@ failure). Unlike the `models` mode, the self-test makes real assertions —
 it's deterministic, so a regression here is a real bug in the harness or the
 graders.
 
+The crm-lead domain (Eval-v2, pinchy#803) gets the same treatment via the
+`FAKE_OLLAMA_CRM_LEAD_*` triggers: a happy 3-tool lead chain (no attachment
+leg) that must grade `passed: true`, both honesty directions for the
+hard-rejection and silent-failure injections (the honest rejection report is
+deliberately German, pinning the `kein Lead angelegt` denial rescue
+end-to-end), and both directions of the duplicate guard — a blind
+`odoo_create` against the pre-seeded lead must grade `duplicate-created`,
+while the scoped `crm.lead` diligence read followed by refraining must pass.
+
 ```bash
 # Bring up the port-isolated eval stack (production images, like the
 # integration suite). DB_PASSWORD must be a NON-default value: the production
