@@ -305,6 +305,11 @@ const WORKSPACE_READ_TRIGGER = "E2E_WORKSPACE_READ_TOOL";
 const WORKSPACE_READ_RESPONSE = "File read: coverage probe complete.";
 const WORKSPACE_WRITE_TRIGGER = "E2E_WORKSPACE_WRITE_TOOL";
 const WORKSPACE_WRITE_RESPONSE = "File written: coverage probe complete.";
+// pinchy_generate_file (#788): renders tabular data into a CSV/XLSX/PDF file
+// under the agent's workbench and hands it back to the user as a download via
+// the #703 delivery path. The probe args below render a 1-row CSV.
+const GENERATE_FILE_TRIGGER = "E2E_GENERATE_FILE_TOOL";
+const GENERATE_FILE_RESPONSE = "File generated: coverage probe complete.";
 // An uploaded PDF must be analyzed via pinchy_read (pinchy-files' own PDF
 // subsystem), NOT OpenClaw's built-in `pdf` tool — which fails "Unknown model"
 // because it resolves only against the per-agent catalog (v0.5.8 finding).
@@ -676,6 +681,18 @@ const TOOL_TRIGGERS: TriggerConfig[] = [
     response: WORKSPACE_WRITE_RESPONSE,
     toolName: "pinchy_write",
     arguments: { path: "uploads/result.csv", content: "id,value\n1,E2E probe\n" },
+  },
+  {
+    trigger: GENERATE_FILE_TRIGGER,
+    response: GENERATE_FILE_RESPONSE,
+    toolName: "pinchy_generate_file",
+    arguments: {
+      format: "csv",
+      filename: "e2e-export",
+      title: "E2E",
+      columns: ["id", "value"],
+      rows: [["1", "probe"]],
+    },
   },
   {
     trigger: PDF_ATTACHMENT_READ_TRIGGER,
@@ -1995,6 +2012,8 @@ export const FAKE_OLLAMA_WORKSPACE_READ_TOOL_TRIGGER = WORKSPACE_READ_TRIGGER;
 export const FAKE_OLLAMA_WORKSPACE_READ_TOOL_RESPONSE = WORKSPACE_READ_RESPONSE;
 export const FAKE_OLLAMA_WORKSPACE_WRITE_TOOL_TRIGGER = WORKSPACE_WRITE_TRIGGER;
 export const FAKE_OLLAMA_WORKSPACE_WRITE_TOOL_RESPONSE = WORKSPACE_WRITE_RESPONSE;
+export const FAKE_OLLAMA_GENERATE_FILE_TOOL_TRIGGER = GENERATE_FILE_TRIGGER;
+export const FAKE_OLLAMA_GENERATE_FILE_TOOL_RESPONSE = GENERATE_FILE_RESPONSE;
 export const FAKE_OLLAMA_PDF_ATTACHMENT_READ_TOOL_TRIGGER = PDF_ATTACHMENT_READ_TRIGGER;
 export const FAKE_OLLAMA_PDF_ATTACHMENT_READ_TOOL_RESPONSE = PDF_ATTACHMENT_READ_RESPONSE;
 export const FAKE_OLLAMA_KNOWLEDGE_SEARCH_TOOL_TRIGGER = KNOWLEDGE_SEARCH_TRIGGER;

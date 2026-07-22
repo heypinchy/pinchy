@@ -6,10 +6,12 @@ import {
   FAKE_OLLAMA_DOMAIN_LOCK_TOOL_TRIGGER,
   FAKE_OLLAMA_FILES_LS_TOOL_TRIGGER,
   FAKE_OLLAMA_FILES_READ_DOCX_TOOL_TRIGGER,
+  FAKE_OLLAMA_GENERATE_FILE_TOOL_TRIGGER,
   FAKE_OLLAMA_KNOWLEDGE_SEARCH_TOOL_TRIGGER,
   FAKE_OLLAMA_RESPONSE,
 } from "../shared/fake-ollama/fake-ollama-server";
 import {
+  pollAuditForEvent,
   pollAuditForTool,
   waitForOpenClawStable,
   waitForAgentDispatchable,
@@ -539,5 +541,129 @@ test.describe.serial("Plugin behavior — pinchy-knowledge", () => {
       deadlineMs: 160_000,
     });
     expect(found).toBe(true);
+  });
+});
+
+// ── Plugin behavior: pinchy-files generate_file (#788) ──────────────────────
+// DISPATCH + DELIVERY COVERAGE. Proves pinchy_generate_file registered,
+// dispatched, wrote its output under the agent's workbench, AND that the file
+// round-trips end to end through the #703 delivery path as a downloadable
+// artifact — not just that the tool ran.
+//
+// Uses a fresh SHARED custom agent, same reasoning as the pinchy-knowledge
+// block above: Smithers is personal and PATCH allowedTools 400s on personal
+// agents ("Cannot change permissions for personal agents", #427).
+//
+// Only `pinchy_write` needs to be granted. build.ts gates pinchy-files'
+// `write_paths` (which includes the workbench zone) on
+// `allowedTools.includes("pinchy_write")` alone (build.ts:579-606), and
+// pinchy_generate_file's own registerTool context (index.ts) requires a
+// `.../workbench` write path to exist before the tool becomes available at
+// all. OpenClaw's per-agent `tools.allow` is the SAME manifest-derived
+// superset for every agent (tool-registry.ts computeAllowedTools), so
+// pinchy_generate_file never needs to appear in allowedTools itself.
+test.describe.serial("Plugin behavior — pinchy-files generate_file", () => {
+  let agentId: string;
+
+  test.beforeAll(async ({ browser }) => {
+    // The config-regen wait can exceed the 120 s per-test default; give the
+    // setup hook its own generous budget so the dispatch test stays focused.
+    test.setTimeout(300_000);
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    try {
+      await login(page);
+
+      // Name must stay <=30 chars (agent-name schema cap).
+      const createRes = await page.request.post("/api/agents", {
+        data: { name: `GenFileDispatch-${Date.now()}`, templateId: "custom" },
+      });
+      expect(createRes.status(), await createRes.text()).toBe(201);
+      agentId = ((await createRes.json()) as { id: string }).id;
+
+      const patchRes = await page.request.patch(`/api/agents/${agentId}`, {
+        data: { allowedTools: ["pinchy_write"] },
+      });
+      expect(patchRes.status(), await patchRes.text()).toBe(200);
+
+      // Wait for OC to settle after the create+PATCH regens, then confirm the
+      // new agent is actually in OC's runtime agents.list before dispatching.
+      await waitForOpenClawStable(async () => {
+        const r = await page.request.get("/api/health/openclaw");
+        return { ok: r.ok(), json: () => r.json() };
+      });
+      await waitForAgentDispatchable(
+        async (id) => {
+          const r = await page.request.get(`/api/health/openclaw?agentId=${id}`);
+          return { ok: r.ok(), json: () => r.json() };
+        },
+        agentId,
+        { deadlineMs: 120_000 }
+      );
+    } finally {
+      await context.close();
+    }
+  });
+
+  test.afterAll(async ({ browser }) => {
+    if (!agentId) return;
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    try {
+      await login(page);
+      await page.request.delete(`/api/agents/${agentId}`);
+    } finally {
+      await context.close();
+    }
+  });
+
+  test("pinchy_generate_file dispatches, succeeds, and the file downloads via the #703 delivery route", async ({
+    page,
+  }, testInfo) => {
+    testInfo.setTimeout(180_000);
+    await login(page);
+
+    await page.goto(`/chat/${agentId}`);
+    await expect(page).toHaveURL(`/chat/${agentId}`, { timeout: 10_000 });
+
+    const input = page.getByPlaceholder(/send a message/i);
+    await expect(input).toBeVisible({ timeout: 10_000 });
+    await input.fill(`${FAKE_OLLAMA_GENERATE_FILE_TOOL_TRIGGER}: generate a csv export`);
+    await input.press("Enter");
+
+    const found = await pollAuditForTool(page, {
+      toolName: "pinchy_generate_file",
+      agentId,
+      deadlineMs: 160_000,
+    });
+    expect(found).toBe(true);
+
+    // outcome=success, not merely a row existing: a validation error inside
+    // generateFile (or a failed write/chown) still emits an audited row, just
+    // with outcome=failure — see the odoo ref-tool dispatch probes for the
+    // same reasoning.
+    const entry = await pollAuditForEvent(page, {
+      eventType: "tool.pinchy_generate_file",
+      predicate: (e) => e.resource === `agent:${agentId}`,
+      deadlineMs: 30_000,
+    });
+    expect(entry.outcome).toBe("success");
+
+    // Delivery round-trip (#703): deliverRunArtifacts polls artifacts.list
+    // AFTER the run completes and writes the agent_delivered_files grant
+    // asynchronously, so the download may not be authorized the instant the
+    // tool's own audit row lands — poll until the serve route 200s.
+    const deadline = Date.now() + 30_000;
+    let downloadOk = false;
+    while (Date.now() < deadline) {
+      const res = await page.request.get(`/api/agents/${agentId}/artifacts/e2e-export.csv`);
+      if (res.status() === 200) {
+        expect(res.headers()["content-type"]).toContain("text/csv");
+        downloadOk = true;
+        break;
+      }
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    expect(downloadOk).toBe(true);
   });
 });
