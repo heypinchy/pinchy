@@ -18,6 +18,31 @@ export interface GenerateFileResult {
   ext: string;
 }
 
+const SUPPORTED_FORMATS: GenerateFileFormat[] = ["csv", "xlsx", "pdf"];
+const MAX_ROWS = 50_000;
+
+function validateInput(input: GenerateFileInput): void {
+  if (!SUPPORTED_FORMATS.includes(input.format)) {
+    throw new Error(`Unsupported format: ${input.format as string}`);
+  }
+  if (!Array.isArray(input.columns) || input.columns.length === 0) {
+    throw new Error("columns must be a non-empty array");
+  }
+  if (input.rows.length > MAX_ROWS) {
+    throw new Error(`too many rows: ${input.rows.length} exceeds the limit of ${MAX_ROWS}`);
+  }
+  input.rows.forEach((row, i) => {
+    if (row.length !== input.columns.length) {
+      throw new Error(`row ${i + 1} has ${row.length} cells, expected ${input.columns.length}`);
+    }
+    for (const cell of row) {
+      if (cell !== null && !["string", "number", "boolean"].includes(typeof cell)) {
+        throw new Error("cell is not a string, number, boolean, or null");
+      }
+    }
+  });
+}
+
 const CSV_BOM = "﻿";
 
 function serializeCell(value: CellValue): string {
@@ -120,6 +145,7 @@ function renderPdf(
 }
 
 export async function generateFile(input: GenerateFileInput): Promise<GenerateFileResult> {
+  validateInput(input);
   switch (input.format) {
     case "csv":
       return {

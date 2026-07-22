@@ -76,3 +76,46 @@ describe("generateFile pdf", () => {
     expect(buffer.byteLength).toBeGreaterThan(500);
   });
 });
+
+describe("generateFile validation", () => {
+  it("rejects an unknown format", async () => {
+    await expect(
+      generateFile({
+        // @ts-expect-error deliberately invalid format for the validation test
+        format: "docx",
+        columns: ["a"],
+        rows: [["1"]],
+      })
+    ).rejects.toThrow("Unsupported format");
+  });
+
+  it("rejects empty columns", async () => {
+    await expect(generateFile({ format: "csv", columns: [], rows: [] })).rejects.toThrow(
+      "columns must be a non-empty array"
+    );
+  });
+
+  it("rejects a row whose length does not match columns.length", async () => {
+    await expect(
+      generateFile({ format: "csv", columns: ["a", "b"], rows: [["1", "2", "3"]] })
+    ).rejects.toThrow("row 1 has 3 cells, expected 2");
+  });
+
+  it("rejects more than MAX_ROWS rows", async () => {
+    const rows = Array.from({ length: 50_001 }, () => ["1"]);
+    await expect(generateFile({ format: "csv", columns: ["a"], rows })).rejects.toThrow(
+      "too many rows"
+    );
+  });
+
+  it("rejects a non-primitive cell", async () => {
+    await expect(
+      generateFile({
+        format: "csv",
+        columns: ["a"],
+        // @ts-expect-error deliberately invalid cell type for the validation test
+        rows: [[{ nested: true }]],
+      })
+    ).rejects.toThrow("cell is not a string, number, boolean, or null");
+  });
+});
