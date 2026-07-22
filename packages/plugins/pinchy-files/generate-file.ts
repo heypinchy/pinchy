@@ -35,6 +35,9 @@ function validateInput(input: GenerateFileInput): void {
     throw new Error(`too many rows: ${input.rows.length} exceeds the limit of ${MAX_ROWS}`);
   }
   input.rows.forEach((row, i) => {
+    if (!Array.isArray(row)) {
+      throw new Error(`row ${i + 1} is not an array`);
+    }
     if (row.length !== input.columns.length) {
       throw new Error(`row ${i + 1} has ${row.length} cells, expected ${input.columns.length}`);
     }

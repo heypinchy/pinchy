@@ -230,6 +230,20 @@ describe("generateFile validation", () => {
     ).rejects.toThrow("row 1 has 3 cells, expected 2");
   });
 
+  it("rejects a row that is not an array", async () => {
+    // A 2-char string against 2 columns has a matching .length, so the
+    // length check alone wouldn't catch it — it would instead blow up later
+    // with an opaque "row.map is not a function" once rendering starts.
+    await expect(
+      generateFile({
+        format: "csv",
+        columns: ["a", "b"],
+        // @ts-expect-error deliberately invalid row type for the validation test
+        rows: ["ab"],
+      })
+    ).rejects.toThrow("row 1 is not an array");
+  });
+
   it("rejects more than MAX_ROWS rows", async () => {
     const rows = Array.from({ length: 50_001 }, () => ["1"]);
     await expect(generateFile({ format: "csv", columns: ["a"], rows })).rejects.toThrow(
