@@ -42,7 +42,7 @@ import { gradeRunForScenario } from "../src/lib/eval/graders";
 import { pooledClusteredDifference, tiedWithLeader } from "../src/lib/eval/comparisons";
 import { applyTrajectoryRegrade } from "../src/lib/eval/regrade-merge";
 import { passHatKCurve, wilsonInterval } from "../src/lib/eval/scorecard";
-import type { RunResult, RunTrajectory } from "../src/lib/eval/types";
+import type { PromptVariantId, RunResult, RunTrajectory } from "../src/lib/eval/types";
 import { DATASET_VERSION } from "./dataset-version";
 import { hetznerInvoiceDuplicateScenario } from "./scenarios/hetzner-invoice-duplicate";
 import { hetznerInvoiceRejectedScenario } from "./scenarios/hetzner-invoice-rejected";
@@ -158,14 +158,24 @@ const wilson95 = (passes: number, n: number): [number, number] => {
   return [round3(lower), round3(upper)];
 };
 
-async function readJsonl<T>(file: string): Promise<T[]> {
+async function readJsonl<T>(dataDir: string, file: string): Promise<T[]> {
   try {
-    const text = await readFile(path.join(DATA_DIR, file), "utf8");
+    const text = await readFile(path.join(dataDir, file), "utf8");
     return parseEvalJsonl<T>(text);
   } catch {
     return [];
   }
 }
+
+/**
+ * The wording a run was measured under, with pre-variant rows grandfathered:
+ * every row persisted before #803 PR 3 lacks the field entirely, and every one
+ * of those runs was dispatched with the scenario's `userPrompt` — which is
+ * `prompts.primary` verbatim. Absence therefore MEANS primary; with today's
+ * variant-free data files this makes the primary-only headline filter a
+ * provable no-op (DATASET_FINGERPRINT is the standing proof).
+ */
+const variantOf = (r: RunResult): PromptVariantId => r.promptVariant ?? "primary";
 
 function aggregate(runs: RunResult[]): Cell[] {
   const byModel = new Map<string, RunResult[]>();
@@ -290,6 +300,97 @@ export function buildComparisons(scenarios: PublishedScenario[]): ModelCompariso
   return comparisons;
 }
 
+/** One registered scenario with its (re-graded) runs; `runs: null` = no sweep yet. */
+interface LoadedScenario {
+  spec: (typeof SCENARIOS)[number];
+  runs: RunResult[] | null;
+}
+
+/**
+ * Reads every registered scenario's stored runs from `dataDir`, applying the
+ * trajectory re-grades. Loaded ONCE per export so the headline scorecards and
+ * the robustness block aggregate the exact same rows.
+ */
+async function loadScenarioRuns(dataDir: string): Promise<LoadedScenario[]> {
+  const loaded: LoadedScenario[] = [];
+  for (const s of SCENARIOS) {
+    // A registered scenario whose sweep hasn't run yet (no data file at all) is
+    // announced as `not-yet-run`, not published as a 0-run scorecard: readJsonl
+    // would quietly return [] and downstream could not tell "no data yet" from
+    // "measured and empty". File EXISTENCE is the discriminator, deliberately
+    // narrower than readJsonl's catch — a file that exists but fails to parse
+    // still surfaces as an anomalous published 0-run entry a human will
+    // question, rather than being waved through as pending.
+    if (!existsSync(path.join(dataDir, `${s.label}.jsonl`))) {
+      loaded.push({ spec: s, runs: null });
+      continue;
+    }
+
+    const stored = await readJsonl<RunResult>(dataDir, `${s.label}.jsonl`);
+    let runs: RunResult[] = stored;
+
+    const regradeScenario = REGRADE_FROM_TRAJECTORIES.get(s.label);
+    if (regradeScenario) {
+      const trajectories = await readJsonl<RunTrajectory & { promptVariant?: PromptVariantId }>(
+        dataDir,
+        `${s.label}.trajectories.jsonl`
+      );
+      // Overlay the re-graded trajectory results onto the stored rows, joined
+      // by (model, latencyMs). Trajectories can be a sparse, non-prefix subset
+      // of the stored runs, so positional matching would regrade the wrong
+      // rows — see applyTrajectoryRegrade. Rows with no trajectory (e.g.
+      // run-timeouts) keep their stored grade; n is preserved. Throws if the
+      // join key breaks, rather than publishing a silently stale cell.
+      // `promptVariant` rides through from the trajectory row when present
+      // (Task-15 dumps carry it), so a re-graded row keeps its wording identity
+      // instead of being silently grandfathered into the primary headline.
+      runs = applyTrajectoryRegrade(
+        stored,
+        trajectories,
+        (traj: RunTrajectory & { promptVariant?: PromptVariantId }) => ({
+          ...gradeRunForScenario(traj, regradeScenario),
+          model: traj.model,
+          ...(traj.promptVariant !== undefined ? { promptVariant: traj.promptVariant } : {}),
+        }),
+        s.label
+      );
+    }
+
+    loaded.push({ spec: s, runs });
+  }
+  return loaded;
+}
+
+function publishedFromLoaded(loaded: LoadedScenario[]): PublishedScenario[] {
+  return loaded.map(({ spec, runs }) => {
+    if (runs === null) {
+      return {
+        label: spec.label,
+        slug: spec.slug,
+        axis: spec.axis,
+        status: "not-yet-run" as const,
+        totalRuns: 0,
+        models: [],
+        tiedWithLeader: [],
+      };
+    }
+    // The HEADLINE (pass@1, pass^k, Wilson, comparisons) is primary-only by
+    // design (#803): paraphrase-variant rows measure wording sensitivity and
+    // feed `buildRobustness`, never a capability number. Rows without the
+    // field are grandfathered as primary — see `variantOf`.
+    const primaryRuns = runs.filter((r) => variantOf(r) === "primary");
+    const models = aggregate(primaryRuns);
+    return {
+      label: spec.label,
+      slug: spec.slug,
+      axis: spec.axis,
+      totalRuns: primaryRuns.length,
+      models,
+      tiedWithLeader: tiedWithLeader(models),
+    };
+  });
+}
+
 /**
  * The published scorecards: exactly what the CLI prints and the /reliability
  * hub renders, re-grades and all.
@@ -301,60 +402,107 @@ export function buildComparisons(scenarios: PublishedScenario[]): ModelCompariso
  * duplicate-guard: 12/12 stored, 0/12 re-graded). A guard reading the stored
  * file would police cells that no reader ever sees.
  */
-export async function buildPublishedScenarios(): Promise<PublishedScenario[]> {
-  const scenarios: PublishedScenario[] = [];
-  for (const s of SCENARIOS) {
-    // A registered scenario whose sweep hasn't run yet (no data file at all) is
-    // announced as `not-yet-run`, not published as a 0-run scorecard: readJsonl
-    // would quietly return [] and downstream could not tell "no data yet" from
-    // "measured and empty". File EXISTENCE is the discriminator, deliberately
-    // narrower than readJsonl's catch — a file that exists but fails to parse
-    // still surfaces as an anomalous published 0-run entry a human will
-    // question, rather than being waved through as pending.
-    if (!existsSync(path.join(DATA_DIR, `${s.label}.jsonl`))) {
-      scenarios.push({
-        label: s.label,
-        slug: s.slug,
-        axis: s.axis,
-        status: "not-yet-run",
-        totalRuns: 0,
-        models: [],
-        tiedWithLeader: [],
+export async function buildPublishedScenarios(
+  dataDir: string = DATA_DIR
+): Promise<PublishedScenario[]> {
+  return publishedFromLoaded(await loadScenarioRuns(dataDir));
+}
+
+/** One model's wording sensitivity on one scenario. */
+export interface RobustnessCell {
+  model: string;
+  /**
+   * pass@1 per prompt wording ("primary" plus each measured paraphrase id).
+   * A wording appears only when it has valid trials — no estimate is not an
+   * estimated 0, same rule as the pass^k curve.
+   */
+  variants: Partial<Record<PromptVariantId, number>>;
+  /**
+   * max − min of the published per-variant pass rates: 0 means the model's
+   * result did not depend on wording, and a large spread is itself a finding.
+   * Computed from the ROUNDED rates in `variants`, so a reader can recompute
+   * it from the exported numbers (same rule as `ModelComparison.tied`).
+   */
+  spread: number;
+}
+
+export interface RobustnessBlock {
+  /** Per model×scenario cells, only where a model has paraphrase-variant runs. */
+  scenarios: { label: string; models: RobustnessCell[] }[];
+  /** Per-model mean spread across the scenarios that model has variant data for. */
+  models: { model: string; meanSpread: number; scenarios: number }[];
+}
+
+/**
+ * The wording-sensitivity aggregate (#803): per model×scenario pass rates
+ * split by prompt variant, with their spread, plus a per-model mean spread.
+ *
+ * SEPARATE from the headline by design — the design record says the headline
+ * computes exclusively on primary, and a robustness number must never leak
+ * into pass@1/pass^k/Wilson/comparisons. It therefore lives beside
+ * `aggregate`/`buildComparisons` (the export's other aggregations), not in
+ * `src/lib/eval/scorecard.ts`, which is the runtime/CLI scorecard.
+ *
+ * Returns undefined when NOT A SINGLE paraphrase-variant run exists — the
+ * export then carries no `robustness` key at all, keeping today's variant-free
+ * export byte-identical. Invalid trials (`run-infra-error`) are excluded per
+ * variant exactly as in the headline cells.
+ */
+function buildRobustness(loaded: LoadedScenario[]): RobustnessBlock | undefined {
+  const scenarios: RobustnessBlock["scenarios"] = [];
+  for (const { spec, runs } of loaded) {
+    if (runs === null) continue;
+    const byModel = new Map<string, RunResult[]>();
+    for (const r of runs) {
+      const list = byModel.get(r.model) ?? [];
+      list.push(r);
+      byModel.set(r.model, list);
+    }
+    const models: RobustnessCell[] = [];
+    for (const [model, all] of byModel) {
+      // A model with primary-only rows has nothing to compare — spread over a
+      // single wording would be a claim from no comparison.
+      if (!all.some((r) => variantOf(r) !== "primary")) continue;
+      const variants: Partial<Record<PromptVariantId, number>> = {};
+      for (const id of ["primary", "v1", "v2"] satisfies PromptVariantId[]) {
+        const valid = all.filter((r) => variantOf(r) === id && !r.tags.includes("run-infra-error"));
+        if (valid.length === 0) continue;
+        variants[id] = round3(valid.filter((r) => r.passed).length / valid.length);
+      }
+      const rates = Object.values(variants);
+      // A spread needs at least two measured wordings. Excluding invalid
+      // trials can leave fewer (e.g. every paraphrase run was a
+      // run-infra-error): publishing spread 0 then would claim "robust" from
+      // no comparison — no cell instead, same "no estimate ≠ estimated 0"
+      // rule as the pass^k curve.
+      if (rates.length < 2) continue;
+      models.push({
+        model: model.replace(/^ollama-cloud\//, ""),
+        variants,
+        spread: round3(Math.max(...rates) - Math.min(...rates)),
       });
-      continue;
     }
-
-    const stored = await readJsonl<RunResult>(`${s.label}.jsonl`);
-    let runs: RunResult[] = stored;
-
-    const regradeScenario = REGRADE_FROM_TRAJECTORIES.get(s.label);
-    if (regradeScenario) {
-      const trajectories = await readJsonl<RunTrajectory>(`${s.label}.trajectories.jsonl`);
-      // Overlay the re-graded trajectory results onto the stored rows, joined
-      // by (model, latencyMs). Trajectories can be a sparse, non-prefix subset
-      // of the stored runs, so positional matching would regrade the wrong
-      // rows — see applyTrajectoryRegrade. Rows with no trajectory (e.g.
-      // run-timeouts) keep their stored grade; n is preserved. Throws if the
-      // join key breaks, rather than publishing a silently stale cell.
-      runs = applyTrajectoryRegrade(
-        stored,
-        trajectories,
-        (traj) => ({ ...gradeRunForScenario(traj, regradeScenario), model: traj.model }),
-        s.label
-      );
-    }
-
-    const models = aggregate(runs);
-    scenarios.push({
-      label: s.label,
-      slug: s.slug,
-      axis: s.axis,
-      totalRuns: runs.length,
-      models,
-      tiedWithLeader: tiedWithLeader(models),
-    });
+    models.sort((a, b) => b.spread - a.spread || a.model.localeCompare(b.model));
+    if (models.length > 0) scenarios.push({ label: spec.label, models });
   }
-  return scenarios;
+  if (scenarios.length === 0) return undefined;
+
+  const spreadsByModel = new Map<string, number[]>();
+  for (const s of scenarios) {
+    for (const m of s.models) {
+      const list = spreadsByModel.get(m.model) ?? [];
+      list.push(m.spread);
+      spreadsByModel.set(m.model, list);
+    }
+  }
+  const models = [...spreadsByModel.entries()]
+    .map(([model, spreads]) => ({
+      model,
+      meanSpread: round3(spreads.reduce((sum, v) => sum + v, 0) / spreads.length),
+      scenarios: spreads.length,
+    }))
+    .sort((a, b) => b.meanSpread - a.meanSpread || a.model.localeCompare(b.model));
+  return { scenarios, models };
 }
 
 /**
@@ -369,19 +517,30 @@ export async function buildPublishedScenarios(): Promise<PublishedScenario[]> {
  * derived from the scenarios but through statistics of its own. Add a field
  * here and the fingerprint moves, which is the intended prompt to bump the
  * version.
+ *
+ * `robustness` joins that rule the day it exists: the key is spread in
+ * CONDITIONALLY (absent, not `undefined` — the fingerprint's stableStringify
+ * hashes an `undefined`-valued key as null, and JSON output must stay
+ * byte-identical while no variant data exists). The first sweep that lands
+ * variant rows makes the key appear, the fingerprint moves, and that is the
+ * intended MINOR-bump prompt — published numbers are published numbers.
  */
-export async function buildExport(): Promise<{
+export async function buildExport(dataDir: string = DATA_DIR): Promise<{
   datasetVersion: string;
   generatedFrom: string;
   scenarios: PublishedScenario[];
   comparisons: ModelComparison[];
+  robustness?: RobustnessBlock;
 }> {
-  const scenarios = await buildPublishedScenarios();
+  const loaded = await loadScenarioRuns(dataDir);
+  const scenarios = publishedFromLoaded(loaded);
+  const robustness = buildRobustness(loaded);
   return {
     datasetVersion: DATASET_VERSION,
     generatedFrom: "packages/web/eval/data (heypinchy/pinchy)",
     scenarios,
     comparisons: buildComparisons(scenarios),
+    ...(robustness !== undefined ? { robustness } : {}),
   };
 }
 

@@ -35,6 +35,13 @@ const exported = await buildExport();
  * digest goes red exactly as for any other new number. The "publishes no
  * numbers" assertions below are what make this exclusion safe rather than a
  * blind spot.
+ *
+ * The `robustness` block (#803 PR 3) follows the same absence rule from the
+ * other side: `buildExport` omits the key entirely while no paraphrase-variant
+ * rows exist, so today it contributes nothing here. The first sweep that lands
+ * variant rows makes the key appear, the rest-spread above picks it up
+ * automatically, and the digest goes red — robustness numbers are published
+ * numbers, and that red is the intended MINOR-bump prompt.
  */
 const { datasetVersion: _version, generatedFrom: _source, ...allPublished } = exported;
 const published = {

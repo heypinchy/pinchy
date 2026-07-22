@@ -9,9 +9,13 @@
  * while the curve vanished from the website's only data source. Same contract
  * as the triage guard next door: judge the numbers we actually publish.
  */
+import { mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { describe, it, expect } from "vitest";
-import { buildPublishedScenarios } from "../export-scorecard";
+import { buildExport, buildPublishedScenarios } from "../export-scorecard";
 import { computePassHatK, PASS_HAT_K_LEVELS } from "../../src/lib/eval/scorecard";
+import type { PromptVariantId } from "../../src/lib/eval/types";
 
 const scenarios = await buildPublishedScenarios();
 
@@ -127,5 +131,137 @@ describe("published export: pass^k curve", () => {
     for (const c of cells) {
       expect(c.passAllK, c.where).toBe(c.n > 0 && c.passHatK.every((p) => p.value === 1));
     }
+  });
+});
+
+describe("published export: robustness block with today's data (#803 PR 3)", () => {
+  // Not a single variant row exists in data/ yet, so BOTH new behaviors must be
+  // provable no-ops: the primary-only headline filter changes no number
+  // (DATASET_FINGERPRINT in dataset-version.test.ts is the standing proof) and
+  // the robustness block must be ABSENT — no key at all, not an empty object,
+  // so the serialized export stays byte-identical.
+  it("emits no robustness key at all — absence, not an empty object", async () => {
+    const exported = await buildExport();
+    expect(Object.keys(exported)).not.toContain("robustness");
+  });
+});
+
+describe("published export: robustness block with variant rows (#803 PR 3)", () => {
+  interface FixtureRow {
+    model: string;
+    passed: boolean;
+    promptVariant?: PromptVariantId;
+    tags?: string[];
+  }
+  let nextLatency = 1000;
+  const row = ({ model, passed, promptVariant, tags = [] }: FixtureRow): string =>
+    JSON.stringify({
+      model,
+      passed,
+      tags,
+      notes: [],
+      latencyMs: nextLatency++,
+      // Absence of promptVariant IS the legacy-row fixture — do not default it.
+      ...(promptVariant !== undefined ? { promptVariant } : {}),
+    });
+
+  /**
+   * A minimal variant-bearing dataset. Only two scenario files exist; the other
+   * nine registered scenarios surface as not-yet-run, which the export already
+   * tolerates. Per model×scenario:
+   * - alpha on happy-path: primary 2/2, v1 1/2 (a third v1 run is an excluded
+   *   run-infra-error — an invalid trial in robustness exactly as in the
+   *   headline), v2 0/2 → spread 1.
+   * - alpha on distractor: primary 1/1, v1 1/1 → spread 0.
+   * - beta: LEGACY rows only (no promptVariant field) — grandfathered into the
+   *   primary headline, absent from robustness.
+   */
+  async function buildVariantFixtureExport(): Promise<Awaited<ReturnType<typeof buildExport>>> {
+    const dir = await mkdtemp(path.join(tmpdir(), "eval-variant-fixture-"));
+    const happy = [
+      row({ model: "ollama-cloud/alpha", passed: true, promptVariant: "primary" }),
+      row({ model: "ollama-cloud/alpha", passed: true, promptVariant: "primary" }),
+      row({ model: "ollama-cloud/alpha", passed: true, promptVariant: "v1" }),
+      row({ model: "ollama-cloud/alpha", passed: false, promptVariant: "v1" }),
+      row({
+        model: "ollama-cloud/alpha",
+        passed: false,
+        promptVariant: "v1",
+        tags: ["run-infra-error"],
+      }),
+      row({ model: "ollama-cloud/alpha", passed: false, promptVariant: "v2" }),
+      row({ model: "ollama-cloud/alpha", passed: false, promptVariant: "v2" }),
+      row({ model: "beta", passed: true }),
+      row({ model: "beta", passed: false }),
+      // gamma's only paraphrase run is an invalid trial: after excluding it,
+      // just one wording (primary) has a rate — no comparison, no cell.
+      row({ model: "gamma", passed: true, promptVariant: "primary" }),
+      row({ model: "gamma", passed: false, promptVariant: "v1", tags: ["run-infra-error"] }),
+    ];
+    const distractor = [
+      row({ model: "ollama-cloud/alpha", passed: true, promptVariant: "primary" }),
+      row({ model: "ollama-cloud/alpha", passed: true, promptVariant: "v1" }),
+    ];
+    await writeFile(path.join(dir, "hetzner-invoice-models.jsonl"), `${happy.join("\n")}\n`);
+    await writeFile(
+      path.join(dir, "hetzner-invoice-distractor-models.jsonl"),
+      `${distractor.join("\n")}\n`
+    );
+    return buildExport(dir);
+  }
+
+  const exportedPromise = buildVariantFixtureExport();
+
+  it("publishes per-variant pass rates, spread, and the per-model mean spread", async () => {
+    const exported = await exportedPromise;
+    expect(exported.robustness).toEqual({
+      scenarios: [
+        {
+          label: "hetzner-invoice-models",
+          models: [
+            {
+              model: "alpha",
+              variants: { primary: 1, v1: 0.5, v2: 0 },
+              spread: 1,
+            },
+          ],
+        },
+        {
+          label: "hetzner-invoice-distractor-models",
+          models: [{ model: "alpha", variants: { primary: 1, v1: 1 }, spread: 0 }],
+        },
+      ],
+      models: [{ model: "alpha", meanSpread: 0.5, scenarios: 2 }],
+    });
+  });
+
+  it("keeps the headline primary-only: variant rows move no headline number", async () => {
+    const exported = await exportedPromise;
+    const happy = exported.scenarios.find((s) => s.label === "hetzner-invoice-models");
+    expect(happy).toBeDefined();
+    // 2 alpha primary + 2 beta legacy + 1 gamma primary rows; the 6 variant
+    // rows are robustness data, not headline trials.
+    expect(happy?.totalRuns).toBe(5);
+    expect(
+      happy?.models.map(({ model, n, passes, passRate }) => ({ model, n, passes, passRate }))
+    ).toEqual([
+      { model: "alpha", n: 2, passes: 2, passRate: 1 },
+      { model: "gamma", n: 1, passes: 1, passRate: 1 },
+      { model: "beta", n: 2, passes: 1, passRate: 0.5 },
+    ]);
+  });
+
+  it("grandfathers legacy rows (no promptVariant) into the primary headline", async () => {
+    const exported = await exportedPromise;
+    const happy = exported.scenarios.find((s) => s.label === "hetzner-invoice-models");
+    const beta = happy?.models.find((m) => m.model === "beta");
+    // Both beta rows lack the field entirely and still count as primary trials.
+    expect(beta?.n).toBe(2);
+    // And a variant-free model never enters robustness — spread over one
+    // wording would be a claim from no comparison.
+    const robustnessModels = exported.robustness?.scenarios.flatMap((s) =>
+      s.models.map((m) => m.model)
+    );
+    expect(robustnessModels).not.toContain("beta");
   });
 });
