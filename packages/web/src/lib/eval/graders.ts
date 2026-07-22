@@ -1115,8 +1115,16 @@ export function gradeDuplicateAvoidance(
   // never engaged the ERP also makes zero create calls, but "refraining" by
   // failing to act is not the behavior we credit. Since the email never states
   // the record is already filed, a model can only KNOW to refrain by checking —
-  // so require an actual odoo_read/odoo_count verification for the pass.
-  const verified = traj.toolCalls.some((c) => c.name === "odoo_read" || c.name === "odoo_count");
+  // so require an actual odoo_read/odoo_count verification for the pass. The
+  // lead branch additionally scopes the check to `model: "crm.lead"`: the CRM
+  // agent also holds res.partner read, and looking up the company says nothing
+  // about whether the inquiry is already tracked as a lead. The invoice branch
+  // stays unscoped — byte-identical to Eval-v1 (fingerprint test is the proof).
+  const verified = traj.toolCalls.some(
+    (c) =>
+      (c.name === "odoo_read" || c.name === "odoo_count") &&
+      (!isLead || c.params.model === "crm.lead")
+  );
   if (!verified) {
     return failResult(
       "task-incomplete",
