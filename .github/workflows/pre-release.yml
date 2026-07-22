@@ -30,17 +30,11 @@ jobs:
       # release branch. Instead each release/X.Y branch gets its own moving
       # tag `rc-X.Y`, so two concurrent release branches (e.g. release/0.9 and
       # release/0.10) never collide. The immutable :sha-<short> tag is pushed
-      # in both cases below.
+      # in both cases below. Derivation lives in scripts/lib/release-logic.mjs
+      # (movingTagForRef, unit-tested) so it can't drift from a second copy.
       - name: Choose moving tag
         id: tags
-        run: |
-          if [ "${{ github.ref }}" = "refs/heads/main" ]; then
-            echo "moving=next" >> "$GITHUB_OUTPUT"
-          else
-            RC="${GITHUB_REF_NAME#release/}"
-            RC="${RC//\//-}"
-            echo "moving=rc-${RC}" >> "$GITHUB_OUTPUT"
-          fi
+        run: node scripts/moving-tag.mjs "$GITHUB_REF_NAME"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4

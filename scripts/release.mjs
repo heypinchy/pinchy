@@ -23,7 +23,7 @@
  *     smithers-soul.ts; it is deliberately docs-driven.
  */
 
-import { execSync } from "node:child_process";
+import { execSync, execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -36,6 +36,7 @@ import {
   assertUpgradingSectionExists,
   finalizeUpgradeSection,
   bumpReadmeComposePin,
+  isReleasableBranch,
 } from "./lib/release-logic.mjs";
 import {
   bumpMarketplaceVersion,
@@ -47,6 +48,17 @@ const ROOT = resolve(__dirname, "..");
 
 function exec(cmd, opts = {}) {
   return execSync(cmd, { cwd: ROOT, encoding: "utf8", ...opts }).trim();
+}
+
+// Like `exec`, but passes arguments as an argv array so a value (e.g. the
+// current branch name) is never re-parsed by a shell — git refnames can legally
+// contain shell metacharacters.
+function execFile(file, args, opts = {}) {
+  return execFileSync(file, args, {
+    cwd: ROOT,
+    encoding: "utf8",
+    ...opts,
+  }).trim();
 }
 
 function log(msg) {
@@ -113,17 +125,28 @@ log("  ✔ Working tree clean");
 
 log("Checking branch...");
 const branch = exec("git branch --show-current");
-if (branch !== "main" && !/^release\//.test(branch)) {
+if (!isReleasableBranch(branch)) {
   fail(
-    `Must release from main or a release/* branch (currently on: ${branch})`,
+    `Must release from main or a release/X.Y branch (currently on: ${branch || "detached HEAD"})`,
   );
 }
 log(`  ✔ On ${branch} branch`);
 
 log(`Checking CI status on ${branch}...`);
-const ciRun = exec(
-  `gh run list --branch ${branch} --workflow CI --limit 1 --json conclusion,headBranch --jq ".[0]"`,
-);
+const ciRun = execFile("gh", [
+  "run",
+  "list",
+  "--branch",
+  branch,
+  "--workflow",
+  "CI",
+  "--limit",
+  "1",
+  "--json",
+  "conclusion,headBranch",
+  "--jq",
+  ".[0]",
+]);
 const ci = JSON.parse(ciRun);
 if (ci.conclusion !== "success") {
   fail(

@@ -14,6 +14,8 @@ import {
   deriveStagingChecklist,
   checkReleaseVerification,
   bumpReadmeComposePin,
+  isReleasableBranch,
+  movingTagForRef,
 } from "./release-logic.mjs";
 
 // parseAndValidateVersion
@@ -768,4 +770,46 @@ test("checkReleaseVerification rejects a too-short verified SHA", () => {
     headSha: "abc1234def567",
   });
   assert.equal(r.ok, false);
+});
+
+// isReleasableBranch
+
+test("isReleasableBranch accepts main", () => {
+  assert.equal(isReleasableBranch("main"), true);
+});
+
+test("isReleasableBranch accepts release/X.Y with numeric major.minor", () => {
+  assert.equal(isReleasableBranch("release/0.9"), true);
+  assert.equal(isReleasableBranch("release/0.10"), true);
+  assert.equal(isReleasableBranch("release/12.3"), true);
+});
+
+test("isReleasableBranch rejects feature/worktree branches and detached HEAD", () => {
+  assert.equal(isReleasableBranch("feat/release-branch-workflow"), false);
+  assert.equal(isReleasableBranch(""), false); // detached HEAD → empty string
+});
+
+test("isReleasableBranch rejects malformed release branches", () => {
+  assert.equal(isReleasableBranch("release/"), false);
+  assert.equal(isReleasableBranch("release/0"), false); // missing minor
+  assert.equal(isReleasableBranch("release/0.9.1"), false); // patch is not a branch
+  assert.equal(isReleasableBranch("release/foo"), false);
+  assert.equal(isReleasableBranch("release/0.9/hotfix"), false);
+  assert.equal(isReleasableBranch("hotfix/release/0.9"), false); // no anchor bypass
+});
+
+// movingTagForRef — the single source of truth pre-release.yml consumes via
+// scripts/moving-tag.mjs.
+
+test("movingTagForRef maps main to the :next channel staging tracks", () => {
+  assert.equal(movingTagForRef("main"), "next");
+});
+
+test("movingTagForRef gives each release branch its own rc-X.Y moving tag", () => {
+  assert.equal(movingTagForRef("release/0.9"), "rc-0.9");
+  assert.equal(movingTagForRef("release/0.10"), "rc-0.10");
+});
+
+test("movingTagForRef collapses any remaining slash so the tag stays valid", () => {
+  assert.equal(movingTagForRef("release/0.9/hotfix"), "rc-0.9-hotfix");
 });
