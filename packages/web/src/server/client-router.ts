@@ -72,6 +72,11 @@ import { chatIdSchema } from "@/lib/schemas/sessions";
 
 const WS_OPEN = 1;
 const CONNECTION_TIMEOUT_MS = 10_000;
+// The one generic, non-leaking message shown to the user when a failure can't
+// be surfaced with a safe, cause-specific explanation — an internal error whose
+// raw text (stack, host/IP, connection string) must not reach the browser.
+// Single source of truth so `sanitizeError` and the thrown-failure sink agree.
+const GENERIC_RUN_FAILURE_MESSAGE = "Something went wrong. Please try again.";
 // Browsers and intermediate proxies close idle WebSockets after ~30-60s of
 // silence. While the agent is in a slow tool-use loop (e.g. local Ollama
 // thinking for >60s between turns), the server must keep the socket alive
@@ -1646,6 +1651,36 @@ export class ClientRouter {
       // the terminator too; broadcastForRun reaches the originating ws if
       // no listener set exists.
       this.broadcastForRun(sessionKey, clientWs, { type: "complete" });
+    } catch (err) {
+      // A THROWN terminal failure: the chat() generator rejected mid-stream
+      // (an RPC-level FailoverError / provider error OpenClaw raises instead of
+      // yielding an `error` chunk). Route it through the SAME rich sink as an
+      // in-stream error chunk so it's classified, audited, persisted (class-
+      // gated) and shown with the provider message + model name + hint — never
+      // the old generic "Something went wrong" bubble from the send-handler
+      // catch (#882).
+      //
+      // `openclawDisconnected` is the one case that is NOT a run failure: the
+      // socket dropped and `iterateUntilAborted` surfaced it. That is handled by
+      // the disconnect machinery + the client's own reconnect; re-surfacing it as
+      // an agent error would double-signal. The finally below still cleans up.
+      if (!openclawDisconnected) {
+        sawTerminalError = true;
+        await this.surfaceRunFailure({
+          clientWs,
+          agent,
+          sessionKey,
+          messageId,
+          providerError: err instanceof Error ? err.message : String(err),
+          clientMessageId: triggeringClientMessageId,
+          runId: activeRunId,
+          runStartedAt,
+        });
+        // No `complete` frame on a thrown failure: the `error` frame already
+        // stops the client's thinking indicator, and `complete` is reserved for
+        // a stream that reached its natural end (existing contract asserted by
+        // "should not send a 'complete' message when the stream errors").
+      }
     } finally {
       // #310 Tier 2a: clean up the registry entry and, if the run finished
       // normally but with zero listeners, write a chat.run_completed_after_disconnect
@@ -1730,7 +1765,7 @@ export class ClientRouter {
     if (err instanceof Error && err.stack) {
       console.error(err.stack);
     }
-    return "Something went wrong. Please try again.";
+    return GENERIC_RUN_FAILURE_MESSAGE;
   }
 
   private sendToClient(ws: WebSocket, data: Record<string, unknown>): void {
@@ -1845,6 +1880,98 @@ export class ClientRouter {
       // than spuriously demanding a duplicate-write confirm.
       return false;
     }
+  }
+
+  /**
+   * Terminal-failure sink for a run-level error that arrives as a THROWN
+   * exception (the `chat()` generator rejecting, an RPC-level provider error
+   * OpenClaw raises instead of yielding an in-stream `error` chunk) rather than
+   * as a `type: "error"` chunk. Mirrors the in-stream error-chunk branch in
+   * `pipeStream`: classify → umbrella audit → durable persist (class-gated) →
+   * rich `type: "error"` frame + terminal `liveness: "failed"`.
+   *
+   * Without this, a thrown provider failure fell through to the send-handler
+   * catch and `sanitizeError` collapsed it to the opaque "Something went wrong."
+   * bubble — no class, no audit, no durable row, no model name. That is issue
+   * #882's core "no response / not diagnosable" symptom.
+   *
+   * Every decision here goes through the SAME sub-helpers the chunk path uses
+   * (`classifyAgentError`, `classifyModelError`, `writeAgentErrorAudit`,
+   * `persistDurableChatError`, `presentProviderError`, `getErrorHint`), so
+   * classification, audit content, presentation and persistence rules can't
+   * drift between the two paths.
+   */
+  private async surfaceRunFailure(args: {
+    clientWs: WebSocket;
+    agent: { id: string; name: string; model?: string | null };
+    sessionKey: string;
+    messageId: string;
+    providerError: string;
+    clientMessageId?: string;
+    runId?: string;
+    runStartedAt: Date;
+  }): Promise<void> {
+    const errorClass = classifyAgentError(args.providerError);
+    // Server-side, unconditional: log + umbrella audit for EVERY thrown run
+    // failure, even the ones we won't show the user below. This is the
+    // diagnosability trail #882 asks for — an operator can now see the failure
+    // in `chat.agent_error` (PII-scrubbed) instead of it vanishing. Audit BEFORE
+    // any browser-facing forwarding (matching the chunk path) so a forwarding
+    // throw can't lose the trail; also runs the model-retirement self-heal hook.
+    console.error("Agent run failure (thrown):", args.providerError);
+    await this.writeAgentErrorAudit({
+      agent: args.agent,
+      errorClass,
+      providerError: args.providerError,
+    });
+
+    // Security gate: a THROWN exception we don't recognise as a provider failure
+    // could be an internal Node/infra error (ECONNREFUSED, a host/IP, a stack
+    // trace) whose raw text must never reach the browser — the reason
+    // `sanitizeError` exists. Only errors matching a known provider-failure
+    // pattern (retired model, provider auth, transient, schema, …) are surfaced
+    // richly and persisted to the durable banner; an `unknown` throw falls back
+    // to the same sanitised generic bubble the send-handler catch produced. (An
+    // in-stream `error` chunk, by contrast, always carries provider-facing text
+    // by construction, so the chunk path presents it directly — this gate is
+    // specific to the thrown path where the source is not guaranteed safe.)
+    if (errorClass === "unknown") {
+      this.broadcastForRun(args.sessionKey, args.clientWs, {
+        type: "error",
+        message: GENERIC_RUN_FAILURE_MESSAGE,
+        messageId: args.messageId,
+      });
+      return;
+    }
+
+    // Durable banner (class-gated) + the audit-derived sideEffects flag reused by
+    // the live frame's retry gate. Best-effort; never throws.
+    const sideEffects = await this.persistDurableChatError({
+      agent: args.agent,
+      sessionKey: args.sessionKey,
+      clientMessageId: args.clientMessageId,
+      runId: args.runId,
+      providerError: args.providerError,
+      errorClass,
+      runStartedAt: args.runStartedAt,
+    });
+    const modelUnavailable = classifyModelError(args.providerError, args.agent.model ?? "");
+    this.broadcastForRun(args.sessionKey, args.clientWs, {
+      type: "error",
+      agentName: args.agent.name,
+      providerError: presentProviderError(args.providerError, args.agent.model ?? undefined),
+      hint: getErrorHint(args.providerError, this.userRole),
+      messageId: args.messageId,
+      ...(modelUnavailable ? { modelUnavailable } : {}),
+      ...(sideEffects ? { sideEffects: true } : {}),
+    });
+    // Authoritative liveness: a recognised thrown failure is terminal, so the
+    // client never falls back to a stuck-timer guess for it.
+    this.broadcastForRun(args.sessionKey, args.clientWs, {
+      type: "liveness",
+      state: "failed",
+      reason: args.providerError,
+    });
   }
 
   private async writeAgentErrorAudit(args: {
