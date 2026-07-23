@@ -1469,6 +1469,21 @@ describe("pinchy_generate_file tool", () => {
     expect(tool).not.toBeNull();
   });
 
+  // The trailing-slash strip is a linear char scan, not a `/\/+$/` regex
+  // (CodeQL js/polynomial-redos). This pins that it still strips MULTIPLE
+  // trailing slashes so the detection can never quietly regress to the regex.
+  it("detects the workbench zone through multiple trailing slashes", async () => {
+    const api = createMockApi({
+      "agent-1": { allowed_paths: [tmpDir], write_paths: [tmpDir, `${workbench}///`] },
+    });
+    const { default: plugin } = await import("./index");
+    plugin.register!(api as any);
+
+    const factory = getGenerateFileFactory();
+    const tool = factory({ agentId: "agent-1" });
+    expect(tool).not.toBeNull();
+  });
+
   // CRITICAL (security review): an error thrown before filename/format are
   // known-good (e.g. an invalid format, checked first) must still yield a
   // `details` object with at least one non-"error" key. The audit route

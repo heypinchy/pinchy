@@ -714,7 +714,16 @@ const plugin = {
         // route only resolves delivered files from "workbench" or "uploads",
         // and workbench (not uploads, which is the user's own upload zone) is
         // the agent-owned scratch space for agent-produced output.
-        const workbench = writePaths.find((p) => p.replace(/\/+$/, "").endsWith("/workbench"));
+        //
+        // Strip trailing slashes with a linear scan, NOT a `/\/+$/` regex: the
+        // greedy `\/+$` backtracks polynomially on a path of many slashes
+        // (CodeQL js/polynomial-redos), and write_paths, though Pinchy-owned,
+        // is still library input the scanner treats as untrusted.
+        const workbench = writePaths.find((p) => {
+          let end = p.length;
+          while (end > 0 && p[end - 1] === "/") end--;
+          return p.slice(0, end).endsWith("/workbench");
+        });
         if (!workbench) return null;
 
         return {
