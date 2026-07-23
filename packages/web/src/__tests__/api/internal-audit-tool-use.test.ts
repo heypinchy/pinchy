@@ -939,4 +939,69 @@ describe("POST /api/internal/audit/tool-use", () => {
       expect(entry?.error?.message).toContain("<email-redacted>");
     });
   });
+
+  // Backstop for the transport-error path: when OpenClaw's hook reports a
+  // dispatch-level failure it forwards no plugin result, so the pinchy-email
+  // plugin's own detail-curation never runs and the raw params (recipient +
+  // full body) would be logged verbatim. The route must redact them itself.
+  describe("email-tool param PII backstop (no plugin-curated details)", () => {
+    it("redacts recipient and body from email_send params when the dispatch fails before curation", async () => {
+      await POST(
+        makeRequest({
+          phase: "end",
+          toolName: "email_send",
+          agentId: "agent-1",
+          error: "dispatch timed out",
+          params: { to: "recipient@test.com", subject: "Hello", body: "secret body text" },
+        })
+      );
+
+      const entry = vi.mocked(appendAuditLog).mock.calls[0]?.[0];
+      const serialized = JSON.stringify(entry);
+      expect(serialized).not.toContain("recipient@test.com");
+      expect(serialized).not.toContain("secret body text");
+      const detail = entry?.detail as Record<string, unknown>;
+      const params = detail.params as Record<string, unknown>;
+      // Forensic value preserved: which fields were set, non-PII subject.
+      expect(params.subject).toBe("Hello");
+      expect(params.body).toBe(`<redacted ${Buffer.byteLength("secret body text", "utf8")} bytes>`);
+    });
+
+    it("redacts address filters from email_search params on the transport-error path", async () => {
+      await POST(
+        makeRequest({
+          phase: "end",
+          toolName: "email_search",
+          agentId: "agent-1",
+          error: "imap connection reset",
+          params: { from: "sender@test.com", to: "recipient@test.com", folder: "INBOX" },
+        })
+      );
+
+      const entry = vi.mocked(appendAuditLog).mock.calls[0]?.[0];
+      const serialized = JSON.stringify(entry);
+      expect(serialized).not.toContain("sender@test.com");
+      expect(serialized).not.toContain("recipient@test.com");
+      const detail = entry?.detail as Record<string, unknown>;
+      const params = detail.params as Record<string, unknown>;
+      expect(params.folder).toBe("INBOX");
+    });
+
+    it("leaves non-email tool params untouched (scoped to email tools)", async () => {
+      await POST(
+        makeRequest({
+          phase: "end",
+          toolName: "pinchy_read",
+          agentId: "agent-1",
+          error: "boom",
+          params: { path: "/data/kb/report.md" },
+        })
+      );
+
+      const entry = vi.mocked(appendAuditLog).mock.calls[0]?.[0];
+      const detail = entry?.detail as Record<string, unknown>;
+      const params = detail.params as Record<string, unknown>;
+      expect(params.path).toBe("/data/kb/report.md");
+    });
+  });
 });

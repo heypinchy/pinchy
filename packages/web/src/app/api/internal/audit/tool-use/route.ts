@@ -4,6 +4,7 @@ import { sql } from "drizzle-orm";
 import { validateGatewayToken } from "@/lib/gateway-auth";
 import { appendAuditLog, safeProviderError } from "@/lib/audit";
 import { sanitizeDetail } from "@/lib/audit-sanitize";
+import { redactEmailToolParamsForAudit } from "@/lib/audit-tool-params";
 import { parseRequestBody } from "@/lib/api-validation";
 import { db } from "@/db";
 import { users } from "@/db/schema";
@@ -199,7 +200,15 @@ export async function POST(request: NextRequest) {
   };
 
   if (payload.toolCallId !== undefined) detail.toolCallId = payload.toolCallId;
-  if (payload.params !== undefined) detail.params = payload.params;
+  // Backstop for the transport-error path: the pinchy-email plugin curates its
+  // own details (masked recipient, body → bodyBytes) on every path it controls,
+  // but a dispatch-level failure forwards no plugin result, so those raw params
+  // (recipient + full body) would otherwise be logged verbatim. Redact them here
+  // before they land in the append-only, HMAC-signed audit. No-op for non-email
+  // tools; when the plugin DID curate, curatesNonErrorFields drops params below.
+  if (payload.params !== undefined) {
+    detail.params = redactEmailToolParamsForAudit(payload.toolName, payload.params);
+  }
   if (detailError !== undefined) detail.error = detailError;
   if (payload.durationMs !== undefined) detail.durationMs = payload.durationMs;
 
