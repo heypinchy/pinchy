@@ -74,6 +74,7 @@ vi.mock("fs", async (importOriginal) => {
 // for every table, so stub this module to an empty list to keep the test hermetic.
 vi.mock("@/lib/openai-compatible-providers", () => ({
   listOpenAiCompatibleProviders: vi.fn().mockResolvedValue([]),
+  listProvidersWithApiKeys: vi.fn().mockResolvedValue([]),
   getDecryptedApiKey: vi.fn().mockResolvedValue(null),
 }));
 

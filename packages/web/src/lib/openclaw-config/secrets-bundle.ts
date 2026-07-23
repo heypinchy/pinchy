@@ -2,10 +2,7 @@ import { readSecretsFile, type SecretsBundle } from "@/lib/openclaw-secrets";
 import { getOrCreateGatewayToken } from "@/lib/gateway-token-source";
 import { getOrCreatePluginSecret } from "@/lib/plugin-secrets-source";
 import { PROVIDERS } from "@/lib/providers";
-import {
-  listOpenAiCompatibleProviders,
-  getDecryptedApiKey,
-} from "@/lib/openai-compatible-providers";
+import { listProvidersWithApiKeys } from "@/lib/openai-compatible-providers";
 import { getSetting } from "@/lib/settings";
 
 // Central home for the runtime-secret pipeline that feeds openclaw.json
@@ -66,9 +63,10 @@ export async function collectProviderSecrets(): Promise<ProviderSecretsCollectio
   // carries its decrypted key under `providers.<slug>` so the SecretRef
   // `/providers/<slug>/apiKey` emitted into models.providers.<slug> resolves.
   // The raw key lives ONLY here in the secrets bundle, never in openclaw.json.
-  for (const p of await listOpenAiCompatibleProviders()) {
-    const key = await getDecryptedApiKey(p.slug);
-    if (key) providers[p.slug] = { apiKey: key };
+  // `listProvidersWithApiKeys` is one query + one decrypt per row (no keyHint
+  // waste, no per-slug round trip).
+  for (const p of await listProvidersWithApiKeys()) {
+    providers[p.slug] = { apiKey: p.apiKey };
   }
   return { providers };
 }

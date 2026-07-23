@@ -6,6 +6,7 @@ import {
   deleteProviderById,
   getDecryptedApiKey,
   listOpenAiCompatibleProviders,
+  listProvidersWithApiKeys,
 } from "@/lib/openai-compatible-providers";
 import type { OpenClawModelDefinition } from "@/lib/openclaw-builtin-models";
 import { eq } from "drizzle-orm";
@@ -111,6 +112,44 @@ describe("getDecryptedApiKey", () => {
 
     expect(await getDecryptedApiKey("swisscom-ai")).toBe("sk-the-real-key");
     expect(await getDecryptedApiKey("does-not-exist")).toBeNull();
+  });
+});
+
+describe("listProvidersWithApiKeys", () => {
+  it("returns exactly { slug, apiKey } with real decrypted keys for every row", async () => {
+    await createOrUpdateProvider({
+      displayName: "Swisscom AI",
+      baseUrl: "https://api.swisscom.example/v1",
+      apiKey: "sk-swiss-real",
+      models: [MODEL],
+    });
+    await createOrUpdateProvider({
+      displayName: "Acme LLM",
+      baseUrl: "https://acme.example/v1",
+      apiKey: "sk-acme-real",
+      models: [MODEL],
+    });
+
+    const rows = await listProvidersWithApiKeys();
+    // Order-independent: assert the set of decrypted { slug, apiKey } pairs.
+    expect(rows).toEqual(
+      expect.arrayContaining([
+        { slug: "swisscom-ai", apiKey: "sk-swiss-real" },
+        { slug: "acme-llm", apiKey: "sk-acme-real" },
+      ])
+    );
+    expect(rows).toHaveLength(2);
+
+    // Shape is EXACTLY slug + apiKey — no keyHint, no ciphertext, no extra fields.
+    for (const row of rows) {
+      expect(Object.keys(row).sort()).toEqual(["apiKey", "slug"]);
+      expect(row).not.toHaveProperty("keyHint");
+      expect(row).not.toHaveProperty("models");
+    }
+  });
+
+  it("returns an empty array when no providers exist", async () => {
+    expect(await listProvidersWithApiKeys()).toEqual([]);
   });
 });
 

@@ -109,13 +109,16 @@ vi.mock("@/server/restart-state", () => ({
 // and `getDecryptedApiKey` (secrets bundle in secrets-bundle.ts). Default to an
 // empty list / no-key so every existing test in this file (which configures no
 // custom instances) is unaffected. Individual tests below override these.
-const { mockListOpenAiCompatibleProviders, mockGetDecryptedApiKey } = vi.hoisted(() => ({
-  mockListOpenAiCompatibleProviders: vi.fn().mockResolvedValue([]),
-  mockGetDecryptedApiKey: vi.fn().mockResolvedValue(null),
-}));
+const { mockListOpenAiCompatibleProviders, mockListProvidersWithApiKeys, mockGetDecryptedApiKey } =
+  vi.hoisted(() => ({
+    mockListOpenAiCompatibleProviders: vi.fn().mockResolvedValue([]),
+    mockListProvidersWithApiKeys: vi.fn().mockResolvedValue([]),
+    mockGetDecryptedApiKey: vi.fn().mockResolvedValue(null),
+  }));
 
 vi.mock("@/lib/openai-compatible-providers", () => ({
   listOpenAiCompatibleProviders: mockListOpenAiCompatibleProviders,
+  listProvidersWithApiKeys: mockListProvidersWithApiKeys,
   getDecryptedApiKey: mockGetDecryptedApiKey,
 }));
 
@@ -7955,7 +7958,10 @@ describe("OpenAI-compatible custom providers (#894)", () => {
     mockedGetSetting.mockResolvedValue(null);
     // Reset custom-provider mocks to their empty defaults (clearAllMocks clears
     // call history but not implementations set by earlier tests in this block).
+    // build.ts emission reads `listOpenAiCompatibleProviders`; the secrets bundle
+    // reads `listProvidersWithApiKeys` (single-query accessor).
     mockListOpenAiCompatibleProviders.mockResolvedValue([]);
+    mockListProvidersWithApiKeys.mockResolvedValue([]);
     mockGetDecryptedApiKey.mockResolvedValue(null);
   });
 
@@ -8020,24 +8026,28 @@ describe("OpenAI-compatible custom providers (#894)", () => {
 
   it("carries each instance's decrypted key into the secrets bundle (never the config)", async () => {
     mockListOpenAiCompatibleProviders.mockResolvedValue([makeProvider()]);
-    mockGetDecryptedApiKey.mockImplementation(async (slug: string) =>
-      slug === "swisscom-ai" ? "swiss-plaintext-key" : null
-    );
+    // The secrets bundle sources keys from the single-query accessor.
+    mockListProvidersWithApiKeys.mockResolvedValue([
+      { slug: "swisscom-ai", apiKey: "swiss-plaintext-key" },
+    ]);
 
     await regenerateOpenClawConfig();
 
     expect(mockWriteSecretsFile).toHaveBeenCalled();
     const secretsArg = mockWriteSecretsFile.mock.calls[0][0];
     expect(secretsArg.providers?.["swisscom-ai"]).toEqual({ apiKey: "swiss-plaintext-key" });
-    expect(mockGetDecryptedApiKey).toHaveBeenCalledWith("swisscom-ai");
+    expect(mockListProvidersWithApiKeys).toHaveBeenCalled();
   });
 
   it("never writes the raw key into the emitted config tree (assertNoPlaintextSecrets passes)", async () => {
     const { assertNoPlaintextSecrets } = await import("@/lib/openclaw-plaintext-scanner");
     // Use an OpenAI-shaped key so the scanner's `openai-generic` pattern would
-    // catch a leak if the raw key ever reached the config tree.
+    // catch a leak if the raw key ever reached the config tree. The key flows
+    // through the secrets bundle (listProvidersWithApiKeys), never the config.
     mockListOpenAiCompatibleProviders.mockResolvedValue([makeProvider()]);
-    mockGetDecryptedApiKey.mockResolvedValue("sk-proj-abcdef0123456789abcdef");
+    mockListProvidersWithApiKeys.mockResolvedValue([
+      { slug: "swisscom-ai", apiKey: "sk-proj-abcdef0123456789abcdef" },
+    ]);
 
     await regenerateOpenClawConfig();
 
@@ -8053,6 +8063,7 @@ describe("OpenAI-compatible custom providers (#894)", () => {
 
   it("is a no-op with no custom instances — built-in emission is unchanged", async () => {
     mockListOpenAiCompatibleProviders.mockResolvedValue([]);
+    mockListProvidersWithApiKeys.mockResolvedValue([]);
     mockedGetSetting.mockImplementation(async (key: string) => {
       if (key === "anthropic_api_key") return "sk-ant-decrypted";
       if (key === "default_provider") return "anthropic";
@@ -8068,8 +8079,9 @@ describe("OpenAI-compatible custom providers (#894)", () => {
       provider: "pinchy",
       id: "/providers/anthropic/apiKey",
     });
-    // No custom keys leaked in.
+    // No custom keys leaked in — neither the config tree nor the secrets bundle.
     expect(config.models.providers).not.toHaveProperty("swisscom-ai");
-    expect(mockGetDecryptedApiKey).not.toHaveBeenCalled();
+    const secretsArg = mockWriteSecretsFile.mock.calls[0][0];
+    expect(secretsArg.providers).not.toHaveProperty("swisscom-ai");
   });
 });

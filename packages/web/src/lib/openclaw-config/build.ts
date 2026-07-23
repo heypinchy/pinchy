@@ -24,7 +24,10 @@ import {
   OLLAMA_CLOUD_COST,
   type OllamaCloudModel,
 } from "@/lib/ollama-cloud-models";
-import { getModelCatalogForProvider } from "@/lib/openclaw-builtin-models";
+import {
+  getModelCatalogForProvider,
+  type OpenClawModelDefinition,
+} from "@/lib/openclaw-builtin-models";
 import { listOpenAiCompatibleProviders } from "@/lib/openai-compatible-providers";
 import {
   getOpenClawWorkspacePath,
@@ -1267,6 +1270,15 @@ export async function regenerateOpenClawConfig() {
 
   const modelProviders: Record<string, unknown> = {};
 
+  // OpenClaw's emitted models.providers.* entries carry no `vision` field — the
+  // vision signal rides in `input` (["text", "image"]). Our catalog type keeps
+  // `vision` for compile-time safety, so strip it at emission. Shared by the
+  // built-in and OpenAI-compatible blocks (ollama-cloud stays separate: its
+  // source is a different type and derives `input` from `vision`).
+  const stripVision = (models: OpenClawModelDefinition[]) =>
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    models.map(({ vision: _v, ...rest }) => rest);
+
   // OC 5.x changed models.providers.* to require `baseUrl` for ALL built-in
   // providers (breaking change from 4.x where it was optional). Without
   // baseUrl, the gateway fails to start on health-check restarts:
@@ -1306,10 +1318,7 @@ export async function regenerateOpenClawConfig() {
         apiKey: secretRef(`/providers/${providerName}/apiKey`),
         api: BUILTIN_PROVIDER_API[providerName],
         baseUrl,
-        models: getModelCatalogForProvider(providerName).map(
-          // eslint-disable-next-line @typescript-eslint/no-unused-vars
-          ({ vision: _v, ...ocFields }) => ocFields
-        ),
+        models: stripVision(getModelCatalogForProvider(providerName)),
       };
     }
   }
@@ -1430,9 +1439,8 @@ export async function regenerateOpenClawConfig() {
       baseUrl: p.baseUrl,
       api: "openai-completions",
       apiKey: secretRef(`/providers/${p.slug}/apiKey`),
-      // eslint-disable-next-line @typescript-eslint/no-unused-vars
-      models: p.models.map(({ vision: _v, ...ocFields }) => ({
-        ...ocFields,
+      models: stripVision(p.models).map((m) => ({
+        ...m,
         compat: { supportsUsageInStreaming: true },
       })),
     };

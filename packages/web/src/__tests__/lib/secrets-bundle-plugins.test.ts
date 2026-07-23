@@ -13,6 +13,7 @@ vi.mock("@/lib/settings", () => ({
 // unit tests; the dedicated case overrides these to exercise key collection.
 vi.mock("@/lib/openai-compatible-providers", () => ({
   listOpenAiCompatibleProviders: vi.fn().mockResolvedValue([]),
+  listProvidersWithApiKeys: vi.fn().mockResolvedValue([]),
   getDecryptedApiKey: vi.fn().mockResolvedValue(null),
 }));
 
@@ -51,15 +52,11 @@ describe("collectProviderSecrets", () => {
     const { getSetting } = await import("@/lib/settings");
     vi.mocked(getSetting).mockResolvedValue(null);
 
-    const { listOpenAiCompatibleProviders, getDecryptedApiKey } =
-      await import("@/lib/openai-compatible-providers");
-    vi.mocked(listOpenAiCompatibleProviders).mockResolvedValue([
-      { slug: "swisscom-ai" },
-      { slug: "acme-llm" },
-    ] as never);
-    vi.mocked(getDecryptedApiKey).mockImplementation(async (slug: string) =>
-      slug === "swisscom-ai" ? "swiss-key" : slug === "acme-llm" ? "acme-key" : null
-    );
+    const { listProvidersWithApiKeys } = await import("@/lib/openai-compatible-providers");
+    vi.mocked(listProvidersWithApiKeys).mockResolvedValue([
+      { slug: "swisscom-ai", apiKey: "swiss-key" },
+      { slug: "acme-llm", apiKey: "acme-key" },
+    ]);
 
     const { collectProviderSecrets } = await import("@/lib/openclaw-config/secrets-bundle");
     const result = await collectProviderSecrets();
@@ -68,19 +65,22 @@ describe("collectProviderSecrets", () => {
     expect(result.providers["acme-llm"]).toEqual({ apiKey: "acme-key" });
   });
 
-  it("skips an OpenAI-compatible instance whose key cannot be decrypted (#894)", async () => {
+  it("collects OpenAI-compatible keys via the single-query accessor, not per-slug (#894)", async () => {
     const { getSetting } = await import("@/lib/settings");
     vi.mocked(getSetting).mockResolvedValue(null);
 
-    const { listOpenAiCompatibleProviders, getDecryptedApiKey } =
+    const { listProvidersWithApiKeys, getDecryptedApiKey } =
       await import("@/lib/openai-compatible-providers");
-    vi.mocked(listOpenAiCompatibleProviders).mockResolvedValue([{ slug: "ghost" }] as never);
-    vi.mocked(getDecryptedApiKey).mockResolvedValue(null);
+    vi.mocked(listProvidersWithApiKeys).mockResolvedValue([
+      { slug: "swisscom-ai", apiKey: "swiss-key" },
+    ]);
 
     const { collectProviderSecrets } = await import("@/lib/openclaw-config/secrets-bundle");
-    const result = await collectProviderSecrets();
+    await collectProviderSecrets();
 
-    expect(result.providers).not.toHaveProperty("ghost");
+    // The N+1 / double-decrypt path is gone: one accessor call, no per-slug decrypt.
+    expect(listProvidersWithApiKeys).toHaveBeenCalledTimes(1);
+    expect(getDecryptedApiKey).not.toHaveBeenCalled();
   });
 });
 
