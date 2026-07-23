@@ -24,6 +24,7 @@ export const AGENT_SETTINGS_TABS = [
   "permissions",
   "access",
   "telegram",
+  "automations",
   "diagnostics",
 ] as const;
 

@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import type { EmailWorkflowFilter } from "@/lib/email-workflows/types";
+import type { EmailWorkflowStatus } from "@/db/enums";
 
 /**
  * The deterministic trigger of an email workflow (design §5). Every field is
@@ -80,3 +81,24 @@ export const updateAutomationSchema = z.object({
 });
 
 export type UpdateAutomationInput = z.infer<typeof updateAutomationSchema>;
+
+/**
+ * Client-side contract for one row of GET /api/automations?agentId — the shape
+ * the Automations tab (#139) renders. `createdAt` is a string here (JSON has no
+ * Date), whereas the route works with a `Date` before serialization; that is the
+ * one deliberate divergence from the route's in-memory row type. Kept beside the
+ * request schemas so the tab, the tool, and any future consumer share one source
+ * of truth for the workflow's read shape.
+ */
+export interface AutomationListItem {
+  id: string;
+  name: string;
+  filter: EmailWorkflowFilter;
+  action: string;
+  enabled: boolean;
+  status: EmailWorkflowStatus;
+  sweepWindowDays: number;
+  createdBy: string | null;
+  createdAt: string;
+  connectionIds: string[];
+}

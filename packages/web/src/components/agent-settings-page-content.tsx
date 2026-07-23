@@ -25,6 +25,7 @@ import { AgentSettingsPermissions } from "@/components/agent-settings-permission
 import { AgentSettingsAccess } from "@/components/agent-settings-access";
 import { AgentSettingsDiagnostics } from "@/components/agent-settings-diagnostics";
 import { AgentTelegramSettings } from "@/components/agent-telegram-settings";
+import { AgentSettingsAutomations } from "@/components/agent-settings-automations";
 import { useRestart } from "@/components/restart-provider";
 import { normalizeStarterPrompts } from "@/lib/schemas/starter-prompts";
 import type { AgentPluginConfig } from "@/db/schema";
@@ -96,7 +97,12 @@ type DirtyTabs = Set<"general" | "personality" | "instructions" | "permissions" 
 // Single source of truth for which agent-settings tabs require admin (or
 // personal-agent-owner) access. Non-admin visibility is derived from this
 // instead of being a second, hand-maintained tab list that could drift.
-const ADMIN_ONLY_TABS = new Set<AgentSettingsTab>(["permissions", "access", "telegram"]);
+const ADMIN_ONLY_TABS = new Set<AgentSettingsTab>([
+  "permissions",
+  "access",
+  "telegram",
+  "automations",
+]);
 
 function DirtyDot() {
   return (
@@ -119,11 +125,19 @@ export function AgentSettingsPageContent({ initialTab }: { initialTab?: string }
   // being an admin. The page is only viewable by the owner or an admin (see
   // `canEdit`), so `isPersonal` here implies the viewer owns it. (#476 gap 2)
   const canManageTelegram = isAdmin || agent?.isPersonal === true;
+  // Same scope as Telegram: a personal agent's owner (non-admin) manages its own
+  // automations; a shared agent's are admin-only. The management API enforces
+  // the exact same gate (canManageAgentWorkflows), so the tab and the routes
+  // never disagree.
+  const canManageAutomations = isAdmin || agent?.isPersonal === true;
   const visibleTabs: AgentSettingsTab[] =
     isPending || isAdmin
       ? [...AGENT_SETTINGS_TABS]
       : AGENT_SETTINGS_TABS.filter(
-          (tab) => !ADMIN_ONLY_TABS.has(tab) || (tab === "telegram" && canManageTelegram)
+          (tab) =>
+            !ADMIN_ONLY_TABS.has(tab) ||
+            (tab === "telegram" && canManageTelegram) ||
+            (tab === "automations" && canManageAutomations)
         );
   const [activeTab, setActiveTab] = useTabParam("general", visibleTabs, initialTab);
 
@@ -443,6 +457,7 @@ export function AgentSettingsPageContent({ initialTab }: { initialTab?: string }
               </TabsTrigger>
             )}
             {canManageTelegram && <TabsTrigger value="telegram">Telegram</TabsTrigger>}
+            {canManageAutomations && <TabsTrigger value="automations">Automations</TabsTrigger>}
             <TabsTrigger value="diagnostics">Diagnostics</TabsTrigger>
           </TabsList>
 
@@ -507,6 +522,16 @@ export function AgentSettingsPageContent({ initialTab }: { initialTab?: string }
                 isSmithers={agent.isPersonal}
                 isAdmin={isAdmin}
               />
+            </TabsContent>
+          )}
+
+          {/* Self-contained and lazily mounted (no `keepMounted`), like Telegram
+              and Diagnostics: it does its own GET/PATCH/DELETE and persists each
+              toggle immediately, so it stays out of the shared draft/Save flow
+              and its list fetch only fires when the tab is actually opened. */}
+          {canManageAutomations && (
+            <TabsContent value="automations">
+              <AgentSettingsAutomations agentId={agentId} />
             </TabsContent>
           )}
 
