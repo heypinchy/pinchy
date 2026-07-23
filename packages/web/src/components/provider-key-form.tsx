@@ -14,6 +14,7 @@ import { Lock, ChevronDown, ExternalLink, CircleCheck, CircleX, Globe } from "lu
 import { useRestart } from "@/components/restart-provider";
 import { ReportIssueLink } from "@/components/report-issue-link";
 import { docsUrl } from "@/components/docs-link";
+import { OpenAiCompatibleProviderForm } from "@/components/openai-compatible-provider-form";
 import type { ProviderName } from "@/lib/providers";
 import {
   AlertDialog,
@@ -190,6 +191,19 @@ interface ProviderKeyFormProps {
    * the provider's default models include vision capability.
    */
   onSaved?: (provider: ProviderName, hasVision: boolean) => void;
+  /**
+   * Setup wizard only (#894): offer a sixth "OpenAI-compatible" option that
+   * swaps in the multi-field custom provider form. Off by default so the
+   * settings page — which already renders `OpenAiCompatibleProvidersSection`
+   * separately — doesn't show it twice.
+   */
+  showOpenAiCompatibleOption?: boolean;
+  /**
+   * Called after a custom OpenAI-compatible provider is saved from the wizard.
+   * The custom POST sets `default_provider` itself, so the wizard can advance
+   * straight to the app with a usable default.
+   */
+  onOpenAiCompatibleSaved?: () => void;
 }
 
 export function ProviderKeyForm({
@@ -199,8 +213,13 @@ export function ProviderKeyForm({
   defaultProvider,
   onDirtyChange,
   onSaved,
+  showOpenAiCompatibleOption = false,
+  onOpenAiCompatibleSaved,
 }: ProviderKeyFormProps) {
   const [provider, setProvider] = useState<ProviderName | null>(null);
+  // Custom "OpenAI-compatible" is not a built-in `ProviderName`, so it can't
+  // live in `provider`; a separate flag drives whether the custom form shows.
+  const [customSelected, setCustomSelected] = useState(false);
   const [loading, setLoading] = useState(false);
   const [guideOpen, setGuideOpen] = useState(false);
   const [removing, setRemoving] = useState(false);
@@ -333,6 +352,7 @@ export function ProviderKeyForm({
                     className="w-full"
                     onClick={() => {
                       setProvider(key);
+                      setCustomSelected(false);
                       form.reset();
                       setGuideOpen(false);
                       setValidationStatus("idle");
@@ -350,8 +370,42 @@ export function ProviderKeyForm({
                 </div>
               )
             )}
+            {showOpenAiCompatibleOption && (
+              <div className="flex flex-col items-center gap-1">
+                <Button
+                  type="button"
+                  variant={customSelected ? "default" : "outline"}
+                  className="w-full"
+                  onClick={() => {
+                    setCustomSelected(true);
+                    setProvider(null);
+                    form.reset();
+                    setGuideOpen(false);
+                    setValidationStatus("idle");
+                    setError("");
+                    setErrorDocs(null);
+                  }}
+                >
+                  OpenAI-compatible
+                </Button>
+              </div>
+            )}
           </div>
         </div>
+
+        {customSelected && (
+          <div className="space-y-4">
+            <p className="text-sm text-muted-foreground">
+              Connect any OpenAI-compatible endpoint — sovereign EU providers, self-hosted vLLM or
+              LiteLLM, or a gateway in front of your own models.
+            </p>
+            <OpenAiCompatibleProviderForm
+              provider={null}
+              onSaved={() => onOpenAiCompatibleSaved?.()}
+              onCancel={() => setCustomSelected(false)}
+            />
+          </div>
+        )}
 
         {provider && (
           <>

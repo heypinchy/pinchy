@@ -71,7 +71,7 @@ interface FormProps {
   onCancel: () => void;
 }
 
-function OpenAiCompatibleProviderForm({ provider, onSaved, onCancel }: FormProps) {
+export function OpenAiCompatibleProviderForm({ provider, onSaved, onCancel }: FormProps) {
   const isEdit = provider !== null;
 
   const [displayName, setDisplayName] = useState(provider?.displayName ?? "");
