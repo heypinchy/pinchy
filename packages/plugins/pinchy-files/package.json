@@ -23,7 +23,6 @@
     "@types/pdfkit": "^0.17.6",
     "@types/turndown": "^5.0.5",
     "docx": "^9.7.1",
-    "pdfkit": "^0.19.1",
     "typescript": "^6.0.3",
     "vitest": "^4.1.10"
   }

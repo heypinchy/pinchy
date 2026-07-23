@@ -168,9 +168,6 @@ importers:
       docx:
         specifier: ^9.7.1
         version: 9.7.1
-      pdfkit:
-        specifier: ^0.19.1
-        version: 0.19.1
       typescript:
         specifier: ^6.0.3
         version: 6.0.3
