@@ -56,25 +56,12 @@ export async function listOpenAiCompatibleProviders(): Promise<OpenAiCompatibleP
  * Every provider's `{ slug, apiKey }` with the key decrypted, in one query and
  * one decrypt per row. Purpose-built for the secrets bundle (`collectProviderSecrets`)
  * so it never pays the `listOpenAiCompatibleProviders` keyHint-decrypt tax nor a
- * per-slug `getDecryptedApiKey` round trip (the old 1+N / 2N-decrypt path). The
- * decrypted key never leaves the secrets pipeline — do not use this for anything
- * exposed to the client.
+ * per-slug round trip (the old 1+N / 2N-decrypt path). The decrypted key never
+ * leaves the secrets pipeline — do not use this for anything exposed to the client.
  */
 export async function listProvidersWithApiKeys(): Promise<{ slug: string; apiKey: string }[]> {
   const rows = await db.select().from(openaiCompatibleProviders);
   return rows.map((r) => ({ slug: r.slug, apiKey: decrypt(r.apiKey) }));
-}
-
-/**
- * The plaintext API key for one provider, resolved by slug. Returns `null` when
- * no such provider exists. Used by the secrets bundle (Task 7).
- */
-export async function getDecryptedApiKey(slug: string): Promise<string | null> {
-  const row = await db.query.openaiCompatibleProviders.findFirst({
-    where: eq(openaiCompatibleProviders.slug, slug),
-  });
-  if (!row) return null;
-  return decrypt(row.apiKey);
 }
 
 /**

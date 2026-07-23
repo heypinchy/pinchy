@@ -43,13 +43,17 @@ function normalizeId(id: string): string {
 }
 
 export function lookupModelCapabilities(modelId: string): OpenClawModelDefinition | null {
-  const exact = CATALOG[modelId];
+  // `modelId` is untrusted (a third-party /v1/models id). Guard every bracket
+  // read with Object.hasOwn so a prototype key ("constructor", "toString", …)
+  // can't return an inherited function and produce a malformed definition —
+  // consistent with the Object.hasOwn discipline in build.ts/provider-models.ts.
+  const exact = Object.hasOwn(CATALOG, modelId) ? CATALOG[modelId] : undefined;
   if (exact) return toDefinition(exact, modelId);
   const norm = normalizeId(modelId);
   // Defensive: snapshot keys are currently all single-slash and untagged, so
   // this never hits today. It covers a future refresh that emits unprefixed or
   // `:tag`-suffixed keys, where the normalized id is itself a catalog key.
-  const byNorm = CATALOG[norm];
+  const byNorm = Object.hasOwn(CATALOG, norm) ? CATALOG[norm] : undefined;
   if (byNorm) return toDefinition(byNorm, modelId);
   // Rename path (e.g. "swisscom/mistral-large-2512"): specific, always safe.
   const byRenamedId = Object.values(CATALOG).find((e) => normalizeId(e.id) === norm);
