@@ -40,6 +40,12 @@ async function resolveCustomProvider(slug: string): Promise<ResolverResult> {
     // a TypeError). This preserves today's "unknown provider" failure mode.
     throw new Error(`Unknown provider: ${slug}`);
   }
+  if (match.models.length === 0) {
+    // Unreachable today (the create schema guarantees models.min(1)), but keep
+    // this symmetric with getDefaultModel's zero-model guard so neither path can
+    // raw-TypeError on `models[0]`.
+    throw new Error(`Provider ${slug} has no models`);
+  }
   const modelId = match.models[0].id;
   const model = `${slug}/${modelId}`;
   return {

@@ -967,6 +967,32 @@ describe("getDefaultModel", () => {
     const { getDefaultModel } = await import("@/lib/provider-models");
     await expect(getDefaultModel("ghost")).rejects.toThrow("Unknown provider: ghost");
   });
+
+  it("does NOT misclassify an Object.prototype-key slug as a built-in — throws the defined error, not a raw TypeError (#894)", async () => {
+    // `"constructor"` is creatable: RESERVED_PROVIDER_SLUGS only blocks the 5
+    // real names + "ollama", and deriveProviderSlug("Constructor") → "constructor".
+    // A `slug in PROVIDERS` check walks the prototype chain and would falsely
+    // treat it as built-in, then raw-TypeError on BALANCED_PATTERNS["constructor"]
+    // / PROVIDERS["constructor"].defaultModel. Object.hasOwn must route it into
+    // the custom branch instead, where — with no matching instance — it throws.
+    vi.mocked(getSetting).mockResolvedValue(null);
+    vi.mocked(listOpenAiCompatibleProviders).mockResolvedValue([]);
+
+    const { getDefaultModel } = await import("@/lib/provider-models");
+    const result = getDefaultModel("constructor");
+    await expect(result).rejects.toThrow("Unknown provider: constructor");
+    await expect(result).rejects.not.toThrow(TypeError);
+  });
+
+  it("resolves a live instance whose slug is an Object.prototype key (constructor) via the own-property check (#894)", async () => {
+    vi.mocked(getSetting).mockResolvedValue(null);
+    vi.mocked(listOpenAiCompatibleProviders).mockResolvedValue([
+      customProvider("constructor", "Constructor LLM", [{ id: "c-large", name: "C Large" }]),
+    ]);
+
+    const { getDefaultModel } = await import("@/lib/provider-models");
+    expect(await getDefaultModel("constructor")).toBe("constructor/c-large");
+  });
 });
 
 describe("selectOllamaLocalDefault", () => {
