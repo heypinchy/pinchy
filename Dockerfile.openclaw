@@ -52,7 +52,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # `npm install -g openclaw@<version>` line to keep the runtime version in
 # lockstep with packages/web/package.json (which feeds /api/version). Keep the
 # literal form unchanged.
-RUN npm install -g openclaw@2026.7.1
+RUN npm install -g openclaw@2026.7.1-2
 
 # Bundle the external llama.cpp embedding provider (manifest id `llama-cpp`) plus
 # the EmbeddingGemma GGUF it serves. Together they give memory-core a key-less,
