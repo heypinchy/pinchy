@@ -84,6 +84,8 @@ export default function SetupProviderPage() {
                 }
               }}
               onSaved={handleSaved}
+              showOpenAiCompatibleOption
+              onOpenAiCompatibleSaved={() => router.push("/")}
             />
           </CardContent>
         </Card>

@@ -795,4 +795,61 @@ describe("ProviderKeyForm", () => {
       expect(screen.getByText(/pull a model/i)).toBeInTheDocument();
     });
   });
+
+  // #894 — the setup wizard offers a sixth "OpenAI-compatible" option that
+  // swaps in the multi-field custom provider form (reused from settings).
+  // Off by default so the settings page doesn't render it twice.
+  describe("OpenAI-compatible option (#894)", () => {
+    it("does not show the OpenAI-compatible button unless enabled", () => {
+      render(<ProviderKeyForm onSuccess={onSuccess} />);
+
+      expect(screen.queryByRole("button", { name: /openai-compatible/i })).not.toBeInTheDocument();
+    });
+
+    it("reveals the custom multi-field form when selected", () => {
+      render(<ProviderKeyForm onSuccess={onSuccess} showOpenAiCompatibleOption />);
+
+      fireEvent.click(screen.getByRole("button", { name: /openai-compatible/i }));
+
+      // Multi-field custom form: display name + base URL + key + discover.
+      expect(screen.getByLabelText(/^name$/i)).toBeInTheDocument();
+      expect(screen.getByLabelText(/base url/i)).toBeInTheDocument();
+      expect(screen.getByLabelText(/api key/i)).toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: /connect & discover models/i })
+      ).toBeInTheDocument();
+    });
+
+    it("keeps a built-in option on its single-key form (branch intact)", () => {
+      render(<ProviderKeyForm onSuccess={onSuccess} showOpenAiCompatibleOption />);
+
+      fireEvent.click(screen.getByRole("button", { name: /anthropic/i }));
+
+      // Built-in single-key shape: an API Key field, no Base URL, no discover.
+      expect(screen.getByLabelText(/api key/i)).toBeInTheDocument();
+      expect(screen.queryByLabelText(/base url/i)).not.toBeInTheDocument();
+      expect(
+        screen.queryByRole("button", { name: /connect & discover models/i })
+      ).not.toBeInTheDocument();
+    });
+
+    it("advances the wizard via onOpenAiCompatibleSaved (built-in onSuccess untouched)", () => {
+      const onOpenAiCompatibleSaved = vi.fn();
+      render(
+        <ProviderKeyForm
+          onSuccess={onSuccess}
+          showOpenAiCompatibleOption
+          onOpenAiCompatibleSaved={onOpenAiCompatibleSaved}
+        />
+      );
+
+      fireEvent.click(screen.getByRole("button", { name: /openai-compatible/i }));
+      // Selecting the custom option must not post to the built-in setup route.
+      expect(global.fetch).not.toHaveBeenCalled();
+      // Cancel returns to the selector without touching the built-in flow.
+      fireEvent.click(screen.getByRole("button", { name: /cancel/i }));
+      expect(onOpenAiCompatibleSaved).not.toHaveBeenCalled();
+      expect(onSuccess).not.toHaveBeenCalled();
+    });
+  });
 });
