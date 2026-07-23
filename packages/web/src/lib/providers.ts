@@ -88,7 +88,7 @@ export function resolveProviderBaseUrl(provider: ProviderName, fallback: string)
 // accepts the connection but never responds pins the request handler until
 // undici's coarse internal timeout (minutes). Bound every probe explicitly,
 // mirroring the Ollama discovery path (provider-models.ts ollamaFetchSignal).
-const PROVIDER_PROBE_TIMEOUT_MS = 10_000;
+export const PROVIDER_PROBE_TIMEOUT_MS = 10_000;
 
 function makeValidationRequest(provider: ProviderName, apiKey: string): Promise<Response> {
   switch (provider) {
