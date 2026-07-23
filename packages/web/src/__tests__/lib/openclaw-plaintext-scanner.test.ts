@@ -52,6 +52,39 @@ describe("findPlaintextSecrets", () => {
     expect(findPlaintextSecrets(cfg)).toEqual([]);
   });
 
+  it("accepts arbitrary OpenAI-compatible custom keys (#894 adds no new prefix pattern)", () => {
+    // #894 lets admins configure providers with arbitrary keys. The emission
+    // path writes a SecretRef (raw key stays in the secrets bundle — see the
+    // "OpenAI-compatible custom providers (#894)" block in openclaw-config.test),
+    // and the scanner deliberately adds NO pattern for these keys. A JWT-shaped
+    // bearer token is not a known provider prefix, so an arbitrary compatible
+    // key does not trip the scanner even if it were embedded in a tree...
+    expect(
+      findPlaintextSecrets({
+        models: {
+          providers: {
+            "swisscom-ai": {
+              apiKey: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ4In0.sig1234567890",
+            },
+          },
+        },
+      })
+    ).toEqual([]);
+    // ...and the SecretRef the emission path actually produces for such a
+    // provider is likewise clean.
+    expect(
+      findPlaintextSecrets({
+        models: {
+          providers: {
+            "swisscom-ai": {
+              apiKey: { source: "file", provider: "pinchy", id: "/providers/swisscom-ai/apiKey" },
+            },
+          },
+        },
+      })
+    ).toEqual([]);
+  });
+
   it("accepts ${VAR} env templates (no match)", () => {
     // OpenClaw rejects SecretRef objects in env.* — Pinchy writes ${VAR}
     // template strings instead. The scanner must let those through.
