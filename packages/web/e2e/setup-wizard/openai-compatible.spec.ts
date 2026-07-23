@@ -184,7 +184,11 @@ test.describe.serial("Setup wizard + settings → OpenAI-compatible provider (#8
 
     // Settings → AI Provider tab. The section already lists Test 1's provider.
     await page.goto("/settings?tab=provider", { waitUntil: "networkidle" });
-    await expect(page.getByRole("heading", { name: /openai-compatible providers/i })).toBeVisible({
+    // "OpenAI-compatible providers" is a CardTitle (<div data-slot="card-title">),
+    // which has ARIA role generic — NOT heading — so match it by text. Exact
+    // match so it can't also hit the section's empty-state copy ("No
+    // OpenAI-compatible providers yet…"), which shares the substring.
+    await expect(page.getByText("OpenAI-compatible providers", { exact: true })).toBeVisible({
       timeout: 15000,
     });
     await expect(page.getByText(WIZARD_PROVIDER_NAME)).toBeVisible();
