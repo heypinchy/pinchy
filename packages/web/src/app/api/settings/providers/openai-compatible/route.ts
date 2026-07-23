@@ -19,6 +19,12 @@ import {
 } from "@/lib/provider-deletion";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { resetCache } from "@/lib/provider-models";
+import { resolveModelForTemplate } from "@/lib/model-resolver";
+import { TemplateCapabilityUnavailableError } from "@/lib/model-resolver/types";
+import { SMITHERS_MODEL_HINT } from "@/lib/personal-agent";
+import { db } from "@/db";
+import { agents } from "@/db/schema";
+import { eq } from "drizzle-orm";
 import { appendAuditLog } from "@/lib/audit";
 import { recordAuditFailure } from "@/lib/audit-deferred";
 
@@ -81,6 +87,29 @@ export const POST = withAdmin(async (request, _ctx, session) => {
     const currentDefault = await getSetting("default_provider");
     if (currentDefault === null) {
       await setSetting("default_provider", row.slug, false);
+
+      // First-provider seed repoint (mirrors setup/provider/route.ts): the
+      // already-seeded Smithers agent still points at an unconfigured built-in
+      // default (anthropic/…). Repoint it onto this sole custom instance's
+      // resolved model — `resolveModelForTemplate` is slug-aware and yields
+      // `<slug>/<modelId>` — so the UI shows the right model and the first chat
+      // doesn't rely on OpenClaw's implicit fallback to the defaults model.
+      const smithers = await db.query.agents.findFirst();
+      if (smithers) {
+        try {
+          const resolved = await resolveModelForTemplate({
+            hint: SMITHERS_MODEL_HINT,
+            provider: row.slug,
+          });
+          await db.update(agents).set({ model: resolved.model }).where(eq(agents.id, smithers.id));
+        } catch (err) {
+          if (!(err instanceof TemplateCapabilityUnavailableError)) {
+            throw err;
+          }
+          // Custom resolver shouldn't throw this, but stay symmetric with the
+          // built-in route: keep the existing model on a capability mismatch.
+        }
+      }
     }
   }
 

@@ -32,12 +32,21 @@ vi.mock("@/db", () => ({
     query: {
       agents: {
         findMany: vi.fn().mockResolvedValue([]),
+        findFirst: vi.fn().mockResolvedValue(null),
       },
     },
     update: vi.fn().mockReturnValue({
       set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }),
     }),
   },
+}));
+
+vi.mock("@/lib/model-resolver", () => ({
+  resolveModelForTemplate: vi.fn(),
+}));
+
+vi.mock("@/lib/personal-agent", () => ({
+  SMITHERS_MODEL_HINT: { tier: "balanced", capabilities: ["tools", "long-context"] },
 }));
 
 vi.mock("drizzle-orm", async (importOriginal) => {
@@ -92,6 +101,8 @@ import { resetCache } from "@/lib/provider-models";
 import { getSetting, setSetting } from "@/lib/settings";
 import { appendAuditLog } from "@/lib/audit";
 import { recordAuditFailure } from "@/lib/audit-deferred";
+import { resolveModelForTemplate } from "@/lib/model-resolver";
+import { SMITHERS_MODEL_HINT } from "@/lib/personal-agent";
 import { mockSession } from "@/test-helpers/auth";
 import { makeNextRequest } from "@/test-helpers/route";
 import type { OpenClawModelDefinition } from "@/lib/openclaw-builtin-models";
@@ -363,6 +374,76 @@ describe("POST /api/settings/providers/openai-compatible", () => {
       routeCtx
     );
 
+    expect(setSetting).not.toHaveBeenCalled();
+  });
+
+  it("repoints the seeded Smithers agent to the custom model when it's the first provider (#894)", async () => {
+    // Fresh install: no default_provider, and the seeded Smithers agent still
+    // points at the unconfigured built-in default. Creating the sole custom
+    // provider must repoint it onto the custom instance's resolved model —
+    // mirrors the built-in setup route (setup/provider/route.ts).
+    vi.mocked(getSetting).mockResolvedValue(null);
+    vi.mocked(createOrUpdateProvider).mockResolvedValue(listItem({ slug: "acme-llm" }));
+    vi.mocked(db.query.agents.findFirst).mockResolvedValue({
+      id: "agent-smithers",
+      name: "Smithers",
+      model: "anthropic/claude-sonnet-4-6",
+    } as any);
+    vi.mocked(resolveModelForTemplate).mockResolvedValue({
+      model: "acme-llm/acme-large",
+      reason: "custom",
+      fallbackUsed: false,
+    });
+
+    const setSpy = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
+    vi.mocked(db.update).mockReturnValue({ set: setSpy } as any);
+
+    await POST(
+      postRequest({
+        displayName: "Acme LLM",
+        baseUrl: "https://acme.example.com/v1",
+        apiKey: SECRET_KEY,
+        models: [modelDef("acme-large")],
+      }),
+      routeCtx
+    );
+
+    // The resolver is asked for the SEEDED agent's hint against the NEW slug.
+    expect(resolveModelForTemplate).toHaveBeenCalledWith({
+      hint: SMITHERS_MODEL_HINT,
+      provider: "acme-llm",
+    });
+    // ...and the seeded agent is repointed onto the resolved custom model.
+    expect(db.update).toHaveBeenCalledTimes(1);
+    expect(setSpy).toHaveBeenCalledWith({ model: "acme-llm/acme-large" });
+    expect(setSetting).toHaveBeenCalledWith("default_provider", "acme-llm", false);
+  });
+
+  it("does NOT repoint any agent when a default_provider already exists (#894)", async () => {
+    // An existing default means this isn't the first provider — never clobber
+    // the seeded agent's model on a subsequent create.
+    vi.mocked(getSetting).mockImplementation(async (key: string) =>
+      key === "default_provider" ? "anthropic" : null
+    );
+    vi.mocked(createOrUpdateProvider).mockResolvedValue(listItem({ slug: "acme-llm" }));
+    vi.mocked(db.query.agents.findFirst).mockResolvedValue({
+      id: "agent-smithers",
+      name: "Smithers",
+      model: "anthropic/claude-sonnet-4-6",
+    } as any);
+
+    await POST(
+      postRequest({
+        displayName: "Acme LLM",
+        baseUrl: "https://acme.example.com/v1",
+        apiKey: SECRET_KEY,
+        models: [modelDef("acme-large")],
+      }),
+      routeCtx
+    );
+
+    expect(resolveModelForTemplate).not.toHaveBeenCalled();
+    expect(db.update).not.toHaveBeenCalled();
     expect(setSetting).not.toHaveBeenCalled();
   });
 
