@@ -1,16 +1,14 @@
 import { NextResponse, after } from "next/server";
 import { z } from "zod";
 import { withAuth, withAdmin } from "@/lib/api-auth";
-import { getSetting, setSetting, deleteSetting } from "@/lib/settings";
+import { getSetting, deleteSetting } from "@/lib/settings";
 import { PROVIDERS, type ProviderName } from "@/lib/providers";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { resetCache } from "@/lib/provider-models";
 import { countConfiguredProviders, listConfiguredBuiltIns } from "@/lib/provider-count";
 import { listOpenAiCompatibleProviders } from "@/lib/openai-compatible-providers";
 import { appendAuditLog } from "@/lib/audit";
-import { db } from "@/db";
-import { agents } from "@/db/schema";
-import { eq } from "drizzle-orm";
+import { migrateAgentsOffDeletedProvider, capMigratedAgents } from "@/lib/provider-deletion";
 import { parseRequestBody } from "@/lib/api-validation";
 
 const VALID_PROVIDERS = Object.keys(PROVIDERS) as ProviderName[];
@@ -79,58 +77,27 @@ export const DELETE = withAdmin(async (request, _ctx, session) => {
   await deleteSetting(config.settingsKey);
   resetCache();
 
-  const migratedAgents: {
-    id: string;
-    name: string;
-    fromModel: string;
-    toModel: string;
-  }[] = [];
-  let newDefault: string | undefined;
   const previousDefault = await getSetting("default_provider");
   const wasDefault = previousDefault === provider;
 
-  const remaining = remainingCandidates[0];
-  if (remaining) {
-    // Migrate all agents using the removed provider to the remaining provider's default model
-    const allAgents = await db.query.agents.findMany();
-    // Provider name to model prefix mapping
-    // ollama-local uses "ollama/" as model prefix, not "ollama-local/"
-    const providerPrefix = provider === "ollama-local" ? "ollama/" : `${provider}/`;
-    for (const agent of allAgents) {
-      if (agent.model?.startsWith(providerPrefix)) {
-        await db
-          .update(agents)
-          .set({ model: remaining.defaultModel })
-          .where(eq(agents.id, agent.id));
-        migratedAgents.push({
-          id: agent.id,
-          name: agent.name,
-          fromModel: agent.model,
-          toModel: remaining.defaultModel,
-        });
-      }
-    }
+  // Provider name to model prefix mapping.
+  // ollama-local uses "ollama/" as model prefix, not "ollama-local/".
+  const providerPrefix = provider === "ollama-local" ? "ollama/" : `${provider}/`;
 
-    // If this was the default provider, switch to a remaining one
-    if (wasDefault) {
-      await setSetting("default_provider", remaining.name, false);
-      newDefault = remaining.name;
-    }
-  }
+  // Shared with the custom OpenAI-compatible DELETE route: migrate orphaned
+  // agents onto the first remaining candidate and reassign the default when the
+  // removed provider was it (see provider-deletion.ts).
+  const { migratedAgents, newDefault } = await migrateAgentsOffDeletedProvider({
+    deletedPrefix: providerPrefix,
+    remainingCandidates,
+    wasDefault,
+  });
 
   // Regenerate config to reflect removed provider key and migrated agent models.
   // regenerateOpenClawConfig reads all state from DB and skips writing if unchanged.
   await regenerateOpenClawConfig();
 
-  // audit's truncateDetail (lib/audit.ts) replaces the entire detail with an
-  // opaque {_truncated, summary} object once over 2KB. With ~150 bytes per
-  // migratedAgents entry, that triggers around 12 agents — and would silently
-  // shred agentCount / wasDefault / newDefault along with it. Cap the inline
-  // list at MAX_INLINE_MIGRATED so structured fields always survive in the
-  // enterprise scenarios this audit exists for.
-  const MAX_INLINE_MIGRATED = 10;
-  const truncated = migratedAgents.length > MAX_INLINE_MIGRATED;
-  const inlineMigrated = truncated ? migratedAgents.slice(0, MAX_INLINE_MIGRATED) : migratedAgents;
+  const { inlineMigrated, truncated } = capMigratedAgents(migratedAgents);
 
   // Fire audit via after() — same pattern as the sibling settings/domain route.
   // The state mutation is already complete; an audit DB blip should not turn

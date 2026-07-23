@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { POST, GET } from "@/app/api/settings/providers/openai-compatible/route";
+import { POST, GET, DELETE } from "@/app/api/settings/providers/openai-compatible/route";
 import { POST as DISCOVER } from "@/app/api/settings/providers/openai-compatible/discover/route";
 
 vi.mock("next/headers", () => ({
@@ -19,7 +19,34 @@ vi.mock("@/lib/auth", () => {
 vi.mock("@/lib/openai-compatible-providers", () => ({
   createOrUpdateProvider: vi.fn(),
   listOpenAiCompatibleProviders: vi.fn().mockResolvedValue([]),
+  deleteProviderById: vi.fn(),
 }));
+
+vi.mock("@/lib/provider-count", () => ({
+  countConfiguredProviders: vi.fn().mockResolvedValue(2),
+  listConfiguredBuiltIns: vi.fn().mockResolvedValue([]),
+}));
+
+vi.mock("@/db", () => ({
+  db: {
+    query: {
+      agents: {
+        findMany: vi.fn().mockResolvedValue([]),
+      },
+    },
+    update: vi.fn().mockReturnValue({
+      set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }),
+    }),
+  },
+}));
+
+vi.mock("drizzle-orm", async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...(actual as object),
+    eq: vi.fn(),
+  };
+});
 
 vi.mock("@/lib/openai-compatible-discovery", () => ({
   validateOpenAiCompatibleProvider: vi.fn(),
@@ -51,8 +78,11 @@ import { auth } from "@/lib/auth";
 import {
   createOrUpdateProvider,
   listOpenAiCompatibleProviders,
+  deleteProviderById,
 } from "@/lib/openai-compatible-providers";
 import type { OpenAiCompatibleProviderListItem } from "@/lib/openai-compatible-providers";
+import { countConfiguredProviders, listConfiguredBuiltIns } from "@/lib/provider-count";
+import { db } from "@/db";
 import {
   validateOpenAiCompatibleProvider,
   fetchOpenAiCompatibleModels,
@@ -550,5 +580,196 @@ describe("POST /api/settings/providers/openai-compatible/discover", () => {
     );
 
     expect(JSON.stringify(await res.json())).not.toContain(SECRET_KEY);
+  });
+});
+
+describe("DELETE /api/settings/providers/openai-compatible", () => {
+  const PROVIDER_ID = "33333333-3333-4333-8333-333333333333";
+
+  function deleteRequest(body: object) {
+    return makeNextRequest("http://localhost/api/settings/providers/openai-compatible", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(countConfiguredProviders).mockResolvedValue(2);
+    vi.mocked(listConfiguredBuiltIns).mockResolvedValue([]);
+    vi.mocked(listOpenAiCompatibleProviders).mockResolvedValue([]);
+    vi.mocked(getSetting).mockResolvedValue(null);
+    vi.mocked(regenerateOpenClawConfig).mockResolvedValue(undefined);
+    vi.mocked(db.query.agents.findMany).mockResolvedValue([]);
+    vi.mocked(deleteProviderById).mockResolvedValue({
+      id: PROVIDER_ID,
+      slug: "acme-llm",
+      displayName: "Acme LLM",
+    });
+  });
+
+  it("returns 401 when not authenticated", async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce(null);
+
+    const res = await DELETE(deleteRequest({ id: PROVIDER_ID }), routeCtx);
+
+    expect(res.status).toBe(401);
+    expect(deleteProviderById).not.toHaveBeenCalled();
+  });
+
+  it("returns 403 for a non-admin user", async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce(
+      mockSession({ user: { id: "2", role: "member" } })
+    );
+
+    const res = await DELETE(deleteRequest({ id: PROVIDER_ID }), routeCtx);
+
+    expect(res.status).toBe(403);
+    expect(deleteProviderById).not.toHaveBeenCalled();
+  });
+
+  it("rejects a non-uuid id with a structured 400 and no side effects", async () => {
+    const res = await DELETE(deleteRequest({ id: "not-a-uuid" }), routeCtx);
+
+    expect(res.status).toBe(400);
+    const data = await res.json();
+    expect(data.error).toBe("Validation failed");
+    expect(deleteProviderById).not.toHaveBeenCalled();
+  });
+
+  it("refuses to delete the sole remaining provider", async () => {
+    vi.mocked(countConfiguredProviders).mockResolvedValue(1);
+
+    const res = await DELETE(deleteRequest({ id: PROVIDER_ID }), routeCtx);
+
+    expect(res.status).toBe(400);
+    const data = await res.json();
+    expect(data.error).toMatch(/last configured provider/i);
+    // The guard fires before any destructive work.
+    expect(deleteProviderById).not.toHaveBeenCalled();
+    expect(appendAuditLog).not.toHaveBeenCalled();
+  });
+
+  it("returns 404 when the id does not match a provider (no migration, no success audit)", async () => {
+    vi.mocked(deleteProviderById).mockResolvedValue(null);
+
+    const res = await DELETE(deleteRequest({ id: PROVIDER_ID }), routeCtx);
+
+    expect(res.status).toBe(404);
+    expect(db.update).not.toHaveBeenCalled();
+    expect(appendAuditLog).not.toHaveBeenCalled();
+  });
+
+  it("deletes a custom instance, migrates its agents, and writes a success audit", async () => {
+    vi.mocked(listConfiguredBuiltIns).mockResolvedValue([
+      {
+        name: "anthropic",
+        config: { defaultModel: "anthropic/claude-haiku-4-5-20251001" },
+      },
+    ] as any);
+    // default_provider points elsewhere — no reassignment expected.
+    vi.mocked(getSetting).mockImplementation(async (key: string) =>
+      key === "default_provider" ? "anthropic" : null
+    );
+    vi.mocked(db.query.agents.findMany).mockResolvedValue([
+      { id: "agent-1", name: "Booker", model: "acme-llm/acme-large" },
+      { id: "agent-2", name: "Reader", model: "anthropic/claude-haiku-4-5-20251001" },
+    ] as any);
+
+    const setSpy = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
+    vi.mocked(db.update).mockReturnValue({ set: setSpy } as any);
+
+    const res = await DELETE(deleteRequest({ id: PROVIDER_ID }), routeCtx);
+
+    expect(res.status).toBe(200);
+    expect(deleteProviderById).toHaveBeenCalledWith(PROVIDER_ID);
+
+    // Only the agent on the deleted slug migrates — onto the remaining built-in's
+    // default model, not the untouched anthropic agent.
+    expect(db.update).toHaveBeenCalledTimes(1);
+    expect(setSpy).toHaveBeenCalledWith({ model: "anthropic/claude-haiku-4-5-20251001" });
+
+    const data = await res.json();
+    expect(data).toMatchObject({ ok: true, migratedAgents: 1 });
+
+    expect(appendAuditLog).toHaveBeenCalledTimes(1);
+    const entry = vi.mocked(appendAuditLog).mock.calls[0][0];
+    expect(entry.eventType).toBe("settings.deleted");
+    expect(entry.resource).toBe("settings:provider:acme-llm");
+    expect(entry.outcome).toBe("success");
+    expect(entry.detail).toMatchObject({
+      provider: { id: PROVIDER_ID, name: "Acme LLM" },
+      slug: "acme-llm",
+      agentCount: 1,
+      migratedAgents: [
+        {
+          id: "agent-1",
+          name: "Booker",
+          fromModel: "acme-llm/acme-large",
+          toModel: "anthropic/claude-haiku-4-5-20251001",
+        },
+      ],
+      runtimeApplied: true,
+    });
+    // The deleted provider's display name survives for post-deletion analysis,
+    // and nothing key- or PII-shaped leaks into the detail.
+    expect(JSON.stringify(entry.detail)).not.toContain(SECRET_KEY);
+  });
+
+  it("reassigns default_provider when the deleted slug was the default", async () => {
+    vi.mocked(listConfiguredBuiltIns).mockResolvedValue([
+      {
+        name: "anthropic",
+        config: { defaultModel: "anthropic/claude-haiku-4-5-20251001" },
+      },
+    ] as any);
+    vi.mocked(getSetting).mockImplementation(async (key: string) =>
+      key === "default_provider" ? "acme-llm" : null
+    );
+
+    const res = await DELETE(deleteRequest({ id: PROVIDER_ID }), routeCtx);
+
+    expect(res.status).toBe(200);
+    // Reassigned to the first remaining candidate (the built-in).
+    expect(setSetting).toHaveBeenCalledWith("default_provider", "anthropic", false);
+    const data = await res.json();
+    expect(data).toMatchObject({ ok: true, newDefault: "anthropic" });
+    const entry = vi.mocked(appendAuditLog).mock.calls[0][0];
+    expect(entry.detail).toMatchObject({ wasDefault: true, newDefault: "anthropic" });
+  });
+
+  it("migrates onto another custom instance when no built-in remains", async () => {
+    vi.mocked(listConfiguredBuiltIns).mockResolvedValue([]);
+    // The remaining custom instance (the deleted one is already gone from this list).
+    vi.mocked(listOpenAiCompatibleProviders).mockResolvedValue([
+      listItem({ slug: "other-llm", models: [modelDef("other-large")] }),
+    ]);
+    vi.mocked(getSetting).mockImplementation(async (key: string) =>
+      key === "default_provider" ? "acme-llm" : null
+    );
+    vi.mocked(db.query.agents.findMany).mockResolvedValue([
+      { id: "agent-1", name: "Booker", model: "acme-llm/acme-large" },
+    ] as any);
+
+    const setSpy = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
+    vi.mocked(db.update).mockReturnValue({ set: setSpy } as any);
+
+    const res = await DELETE(deleteRequest({ id: PROVIDER_ID }), routeCtx);
+
+    expect(res.status).toBe(200);
+    expect(setSpy).toHaveBeenCalledWith({ model: "other-llm/other-large" });
+    expect(setSetting).toHaveBeenCalledWith("default_provider", "other-llm", false);
+  });
+
+  it("still succeeds with runtimeApplied:false when regenerate throws (best-effort)", async () => {
+    vi.mocked(regenerateOpenClawConfig).mockRejectedValueOnce(new Error("EACCES"));
+
+    const res = await DELETE(deleteRequest({ id: PROVIDER_ID }), routeCtx);
+
+    expect(res.status).toBe(200);
+    expect(resetCache).toHaveBeenCalled();
+    const entry = vi.mocked(appendAuditLog).mock.calls[0][0];
+    expect(entry.detail).toMatchObject({ runtimeApplied: false });
   });
 });

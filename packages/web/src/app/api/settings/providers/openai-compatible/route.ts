@@ -1,12 +1,22 @@
 import { NextResponse, after } from "next/server";
 import { withAdmin } from "@/lib/api-auth";
 import { parseRequestBody } from "@/lib/api-validation";
-import { upsertOpenAiCompatibleProviderSchema } from "@/lib/schemas/openai-compatible-provider";
+import {
+  upsertOpenAiCompatibleProviderSchema,
+  deleteOpenAiCompatibleSchema,
+} from "@/lib/schemas/openai-compatible-provider";
 import {
   createOrUpdateProvider,
   listOpenAiCompatibleProviders,
+  deleteProviderById,
 } from "@/lib/openai-compatible-providers";
 import { getSetting, setSetting } from "@/lib/settings";
+import { countConfiguredProviders, listConfiguredBuiltIns } from "@/lib/provider-count";
+import {
+  migrateAgentsOffDeletedProvider,
+  capMigratedAgents,
+  type RemainingCandidate,
+} from "@/lib/provider-deletion";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { resetCache } from "@/lib/provider-models";
 import { appendAuditLog } from "@/lib/audit";
@@ -113,4 +123,133 @@ export const GET = withAdmin(async () => {
   // audit-exempt: read-only list, no state change.
   const providers = await listOpenAiCompatibleProviders();
   return NextResponse.json(providers);
+});
+
+/**
+ * Delete one custom OpenAI-compatible instance, migrating any agent pinned to
+ * its models onto a remaining provider and reassigning `default_provider` when
+ * the deleted slug was it. Mirrors the built-in provider DELETE verbatim: the
+ * same last-provider guard shape (`countConfiguredProviders() <= 1` → 400), the
+ * built-ins-first remaining-candidate ordering (Task 8), the shared
+ * migration/reassignment/audit-diff helper, and a `settings.deleted` audit that
+ * snapshots `{ id, name }`, caps the migrated-agent diff, and NEVER carries the
+ * API key. Runtime apply is best-effort (`runtimeApplied`) — the row is already
+ * gone, so a failed regenerate must not 500 (mirrors POST + #880).
+ */
+export const DELETE = withAdmin(async (request, _ctx, session) => {
+  const parsed = await parseRequestBody(deleteOpenAiCompatibleSchema, request);
+  if ("error" in parsed) return parsed.error;
+  const { id } = parsed.data;
+
+  // A single custom instance counts as a valid sole provider, so this count
+  // spans built-ins + custom instances (see provider-count.ts). Refuse to remove
+  // the last one, with the exact status + message shape the built-in route uses.
+  const totalConfigured = await countConfiguredProviders();
+  if (totalConfigured <= 1) {
+    return NextResponse.json(
+      {
+        error: "Cannot remove the last configured provider. Add another provider first.",
+      },
+      { status: 400 }
+    );
+  }
+
+  let deleted: Awaited<ReturnType<typeof deleteProviderById>> = null;
+  let wasDefault = false;
+  let migratedAgents: Awaited<
+    ReturnType<typeof migrateAgentsOffDeletedProvider>
+  >["migratedAgents"] = [];
+  let newDefault: string | undefined;
+
+  try {
+    deleted = await deleteProviderById(id);
+    if (!deleted) {
+      return NextResponse.json({ error: "OpenAI-compatible provider not found." }, { status: 404 });
+    }
+
+    // Build the migration-target set EXCLUDING the just-deleted slug (already
+    // gone from listOpenAiCompatibleProviders after the delete above). Built-ins
+    // first — matching Task 8 — then every remaining custom instance, each
+    // reduced to a `name` (default_provider value) + namespaced `defaultModel`.
+    const remainingCandidates: RemainingCandidate[] = [];
+    for (const builtIn of await listConfiguredBuiltIns()) {
+      remainingCandidates.push({ name: builtIn.name, defaultModel: builtIn.config.defaultModel });
+    }
+    for (const custom of await listOpenAiCompatibleProviders()) {
+      remainingCandidates.push({
+        name: custom.slug,
+        defaultModel: `${custom.slug}/${custom.models[0].id}`,
+      });
+    }
+
+    const previousDefault = await getSetting("default_provider");
+    wasDefault = previousDefault === deleted.slug;
+
+    ({ migratedAgents, newDefault } = await migrateAgentsOffDeletedProvider({
+      deletedPrefix: `${deleted.slug}/`,
+      remainingCandidates,
+      wasDefault,
+    }));
+  } catch (err) {
+    // The delete/migration itself failed mid-flight. Record a failure audit that
+    // still snapshots the provider name for post-mortem correlation, then 500.
+    recordAuditFailure(err, {
+      actorType: "user",
+      actorId: session.user.id!,
+      eventType: "settings.deleted",
+      resource: `settings:provider:${deleted?.slug ?? id}`,
+      outcome: "failure",
+      error: { message: err instanceof Error ? err.message : String(err) },
+      detail: {
+        name: deleted?.displayName ?? id,
+        provider: deleted ? { id: deleted.id, name: deleted.displayName } : { id },
+        ...(deleted ? { slug: deleted.slug } : {}),
+      },
+    });
+    return NextResponse.json(
+      { error: "Could not delete the OpenAI-compatible provider." },
+      { status: 500 }
+    );
+  }
+
+  // Best-effort runtime apply: the row is already gone, so a failed regenerate
+  // must NOT 500 (mirrors POST + #880). Record whether it reached the runtime.
+  let runtimeApplied = true;
+  try {
+    await regenerateOpenClawConfig();
+  } catch (err) {
+    console.error("Failed to apply OpenAI-compatible provider deletion to the runtime:", err);
+    runtimeApplied = false;
+  }
+  resetCache();
+
+  const { inlineMigrated, truncated } = capMigratedAgents(migratedAgents);
+
+  after(() =>
+    appendAuditLog({
+      actorType: "user",
+      actorId: session.user.id!,
+      eventType: "settings.deleted",
+      resource: `settings:provider:${deleted!.slug}`,
+      outcome: "success",
+      detail: {
+        // Snapshot {id,name} + slug: the row is gone and can't be queried later.
+        name: deleted!.displayName,
+        provider: { id: deleted!.id, name: deleted!.displayName },
+        slug: deleted!.slug,
+        wasDefault,
+        ...(newDefault !== undefined ? { newDefault } : {}),
+        agentCount: migratedAgents.length,
+        migratedAgents: inlineMigrated,
+        ...(truncated ? { migratedAgentsTruncated: true } : {}),
+        runtimeApplied,
+      },
+    })
+  );
+
+  return NextResponse.json({
+    ok: true,
+    migratedAgents: migratedAgents.length,
+    ...(newDefault !== undefined ? { newDefault } : {}),
+  });
 });
