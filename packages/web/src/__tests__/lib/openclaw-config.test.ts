@@ -214,7 +214,11 @@ import { getPendingConfigPushCount, _resetConfigPushState } from "@/lib/openclaw
 import { db } from "@/db";
 import { getSetting } from "@/lib/settings";
 import { mockJoinedPermissionsDb } from "@/test-helpers/db-mock";
-import { fetchOllamaLocalModelsFromUrl, fetchProviderModels } from "@/lib/provider-models";
+import {
+  fetchOllamaLocalModelsFromUrl,
+  fetchProviderModels,
+  getDefaultModel,
+} from "@/lib/provider-models";
 
 const mockedFetchProviderModels = vi.mocked(fetchProviderModels);
 const mockedWriteFileSync = vi.mocked(writeFileSync);
@@ -1501,6 +1505,50 @@ describe("regenerateOpenClawConfig", () => {
     const config = JSON.parse(written);
 
     expect(config.agents.defaults.model.primary).toBe("openai/gpt-5.4-mini");
+  });
+
+  it("should set defaults.model when default_provider is a custom OpenAI-compatible slug", async () => {
+    // #894: a sole custom provider must emit a usable default model. The old
+    // `PROVIDERS[defaultProvider]` guard skipped every custom slug (not a
+    // built-in ProviderName), so `pinchyDefaults.model` was never emitted and a
+    // custom-only stack booted with no default model. The guard now also accepts
+    // a known custom slug, and getDefaultModel namespaces `<slug>/<firstModel>`.
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "default_provider") return "acme-llm";
+      return null;
+    });
+    mockListOpenAiCompatibleProviders.mockResolvedValueOnce([
+      {
+        id: "row-1",
+        slug: "acme-llm",
+        displayName: "Acme LLM",
+        baseUrl: "https://acme.example.com/v1",
+        models: [
+          {
+            id: "acme-large",
+            name: "Acme Large",
+            contextWindow: 8192,
+            maxTokens: 4096,
+            reasoning: false,
+            vision: false,
+            input: ["text"],
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+          },
+        ],
+        keyHint: "7Z8x",
+        createdAt: new Date("2026-01-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-01-01T00:00:00.000Z"),
+      },
+    ]);
+    vi.mocked(getDefaultModel).mockResolvedValueOnce("acme-llm/acme-large");
+
+    await regenerateOpenClawConfig();
+
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
+    const config = JSON.parse(written);
+
+    expect(getDefaultModel).toHaveBeenCalledWith("acme-llm");
+    expect(config.agents.defaults.model.primary).toBe("acme-llm/acme-large");
   });
 
   it("should disable OpenClaw's native pre-compaction memory flush", async () => {

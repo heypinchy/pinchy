@@ -475,8 +475,20 @@ export async function regenerateOpenClawConfig() {
       local: { modelPath: MEMORY_EMBEDDING_MODEL_PATH },
     },
   };
-  const defaultProvider = (await getSetting("default_provider")) as ProviderName | null;
-  if (defaultProvider && PROVIDERS[defaultProvider]) {
+  // Fetched once here (reused for the models.providers emission below) so the
+  // default-model guard can recognise a custom slug without a second query.
+  const customProviders = await listOpenAiCompatibleProviders();
+  const defaultProvider = await getSetting("default_provider");
+  // Emit the default model when `default_provider` names either a built-in OR a
+  // known custom OpenAI-compatible slug (#894). `getDefaultModel` is slug-aware
+  // (it namespaces `<slug>/<firstModel>` for a custom instance), but the guard
+  // must be too — a bare `PROVIDERS[defaultProvider]` would skip custom slugs
+  // AND is a prototype-injection sink (a slug like `constructor` walks the
+  // prototype chain). `Object.hasOwn` + `.some()` are both prototype-safe.
+  const isBuiltInDefault = defaultProvider !== null && Object.hasOwn(PROVIDERS, defaultProvider);
+  const isCustomDefault =
+    defaultProvider !== null && customProviders.some((p) => p.slug === defaultProvider);
+  if (defaultProvider && (isBuiltInDefault || isCustomDefault)) {
     pinchyDefaults.model = { primary: await getDefaultModel(defaultProvider) };
   }
 
@@ -1434,7 +1446,7 @@ export async function regenerateOpenClawConfig() {
   // strip `vision` (the vision signal rides in `input`) and opt into
   // `compat.supportsUsageInStreaming` so usage tracking works against the
   // configured non-OpenAI endpoint (see the ollama-cloud block above).
-  for (const p of await listOpenAiCompatibleProviders()) {
+  for (const p of customProviders) {
     modelProviders[p.slug] = {
       baseUrl: p.baseUrl,
       api: "openai-completions",
