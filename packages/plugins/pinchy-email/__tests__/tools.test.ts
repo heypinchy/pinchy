@@ -1354,6 +1354,80 @@ describe("audit PII curation for email_send / email_draft", () => {
     expect(details.bodyBytes).toBe(Buffer.byteLength("draft secret body", "utf8"));
     expect(JSON.stringify(details)).not.toContain("draft secret body");
   });
+
+  it("masks a single-character local part fully — `m@google.com` must never appear verbatim", async () => {
+    // With `local[0] + "*".repeat(local.length - 1)`, a one-char local part
+    // repeats zero stars and the full address survives verbatim — exactly the
+    // leak this curation exists to prevent.
+    mockSend.mockResolvedValue({ messageId: "sent-1" });
+    const tools = createApi(configWithSend);
+    const tool = findTool(tools, "email_send", agentId)!;
+
+    const result = await tool.execute("call-1", {
+      to: "m@google.com",
+      subject: "Short local part",
+      body: "body",
+    });
+
+    const details = result.details as Record<string, unknown>;
+    expect(details.to).toBe("*@google.com");
+    expect(JSON.stringify(details)).not.toContain("m@google.com");
+  });
+
+  it("caps the audited subject at 256 UTF-8 bytes so a flooded subject cannot smuggle content past the 2048-byte detail cap", async () => {
+    mockSend.mockResolvedValue({ messageId: "sent-1" });
+    const tools = createApi(configWithSend);
+    const tool = findTool(tools, "email_send", agentId)!;
+
+    const longSubject = "S".repeat(1000);
+    const result = await tool.execute("call-1", {
+      to: "recipient@test.com",
+      subject: longSubject,
+      body: "body",
+    });
+
+    const details = result.details as Record<string, unknown>;
+    expect(details.subject).toBe("S".repeat(256));
+  });
+
+  it("subject truncation never splits a multi-byte character", async () => {
+    mockSend.mockResolvedValue({ messageId: "sent-1" });
+    const tools = createApi(configWithSend);
+    const tool = findTool(tools, "email_send", agentId)!;
+
+    // 200 × "ö" = 400 UTF-8 bytes; a naive byte slice at 256 would cut the
+    // 128th "ö" in half and emit a replacement char.
+    const result = await tool.execute("call-1", {
+      to: "recipient@test.com",
+      subject: "ö".repeat(200),
+      body: "body",
+    });
+
+    const details = result.details as Record<string, unknown>;
+    const subject = details.subject as string;
+    expect(Buffer.byteLength(subject, "utf8")).toBeLessThanOrEqual(256);
+    expect(subject).toBe("ö".repeat(128));
+    expect(subject).not.toContain("�");
+  });
+
+  it("email_send curates details on an unknown replyTo handle (the last uncovered return path)", async () => {
+    const tools = createApi(configWithSend);
+    const tool = findTool(tools, "email_send", agentId)!;
+
+    const result = await tool.execute("call-1", {
+      to: "recipient@test.com",
+      subject: "Re: Hello",
+      body: "secret body text",
+      replyTo: "msg_unknownhandle",
+    });
+
+    expect(result.isError).toBe(true);
+    const details = result.details as Record<string, unknown>;
+    expect(details.to).toBe(maskedRecipient);
+    expect(details.bodyBytes).toBe(Buffer.byteLength("secret body text", "utf8"));
+    expect(JSON.stringify(details)).not.toContain("secret body text");
+    expect(mockSend).not.toHaveBeenCalled();
+  });
 });
 
 describe("error handling", () => {

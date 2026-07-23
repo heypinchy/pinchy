@@ -291,9 +291,10 @@ function errorResult(error: unknown): {
  *
  * We cannot call the web app's redactEmail() here — it keys an HMAC with a
  * server-only secret this OpenClaw process has no access to — so we mask
- * locally: keep the domain and the first local-part character, mask the rest.
- * Stricter than redactEmail's preview (which shows short local parts in full),
- * so no address is ever emitted verbatim.
+ * locally: keep the domain and the first local-part character, mask the rest
+ * (a one-char local part is masked entirely). Stricter than redactEmail's
+ * preview (which shows short local parts in full), so no address is ever
+ * emitted verbatim.
  */
 function maskRecipientForAudit(value: unknown): string {
   if (typeof value !== "string") return "<redacted>";
@@ -302,7 +303,27 @@ function maskRecipientForAudit(value: unknown): string {
   if (at <= 0 || at === email.length - 1) return "<redacted>";
   const local = email.slice(0, at);
   const domain = email.slice(at + 1);
+  // A one-char local part would survive verbatim as `local[0]` + zero stars.
+  if (local.length === 1) return `*@${domain}`;
   return `${local[0]}${"*".repeat(local.length - 1)}@${domain}`;
+}
+
+// Cap free-text audit fields so a flooded value can't blow the 2048-byte
+// detail cap (web audit.ts truncateDetail would then collapse the whole
+// curated detail into a `_truncated` summary blob, losing the governance
+// fields this curation exists to keep). Byte-measured with a back-off to the
+// nearest UTF-8 character boundary, mirroring web audit.ts truncateUtf8 —
+// which this plugin cannot import across the package boundary.
+const AUDIT_SUBJECT_MAX_BYTES = 256;
+function truncateUtf8ForAudit(text: string, maxBytes: number): string {
+  const buf = Buffer.from(text, "utf8");
+  if (buf.length <= maxBytes) return text;
+  let end = maxBytes;
+  // 0b10xxxxxx marks a UTF-8 continuation byte — step back off a split char.
+  while (end > 0 && (buf.readUInt8(end) & 0xc0) === 0x80) {
+    end--;
+  }
+  return buf.subarray(0, end).toString("utf8");
 }
 
 /**
@@ -311,7 +332,8 @@ function maskRecipientForAudit(value: unknown): string {
  * on EVERY return path — success and failure alike (route.ts: an error-only
  * `details: { error }` deliberately does NOT suppress params, so error paths
  * must carry a non-error field too). Body content is reduced to its byte length;
- * the recipient is masked; the subject is kept for governance value.
+ * the recipient is masked; the subject is kept for governance value, capped at
+ * AUDIT_SUBJECT_MAX_BYTES so it cannot smuggle content past the detail cap.
  */
 function emailWriteAuditDetails(params: Record<string, unknown>): {
   to: string;
@@ -320,7 +342,10 @@ function emailWriteAuditDetails(params: Record<string, unknown>): {
 } {
   return {
     to: maskRecipientForAudit(params.to),
-    subject: typeof params.subject === "string" ? params.subject : "",
+    subject: truncateUtf8ForAudit(
+      typeof params.subject === "string" ? params.subject : "",
+      AUDIT_SUBJECT_MAX_BYTES
+    ),
     bodyBytes: Buffer.byteLength(typeof params.body === "string" ? params.body : "", "utf8"),
   };
 }
