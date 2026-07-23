@@ -408,20 +408,36 @@ export function selectDefaultModel(provider: ProviderName, models: ModelInfo[]):
   return BALANCED_ANCHORS[provider] || PROVIDERS[provider].defaultModel;
 }
 
-export async function getDefaultModel(provider: ProviderName): Promise<string> {
+export async function getDefaultModel(provider: ProviderModelsId): Promise<string> {
   const allProviders = await fetchProviderModels();
   const providerModels = allProviders.find((p) => p.id === provider);
 
+  // Custom OpenAI-compatible instance (#894): the slug is not one of the fixed
+  // built-in ProviderNames, so BALANCED_PATTERNS/PROVIDERS have no entry for it.
+  // fetchProviderModels() already namespaced its model ids `<slug>/<modelId>`,
+  // and — with no tier metadata to pattern-match — its default is the first
+  // persisted model, mirroring the delete-migration choice (providers DELETE).
+  if (!(provider in PROVIDERS)) {
+    if (!providerModels || providerModels.models.length === 0) {
+      // Neither a built-in nor a live instance. Fail with a defined error
+      // instead of dereferencing `PROVIDERS[slug].defaultModel` (a TypeError).
+      throw new Error(`Unknown provider: ${provider}`);
+    }
+    return providerModels.models[0].id;
+  }
+
+  const builtIn = provider as ProviderName;
+
   if (!providerModels || providerModels.models.length === 0) {
-    return PROVIDERS[provider].defaultModel;
+    return PROVIDERS[builtIn].defaultModel;
   }
 
   // Local Ollama uses capability-based heuristic (largest model with tool support)
-  if (provider === "ollama-local") {
-    return selectOllamaLocalDefault(lastOllamaLocalModels) || PROVIDERS[provider].defaultModel;
+  if (builtIn === "ollama-local") {
+    return selectOllamaLocalDefault(lastOllamaLocalModels) || PROVIDERS[builtIn].defaultModel;
   }
 
-  return selectDefaultModel(provider, providerModels.models);
+  return selectDefaultModel(builtIn, providerModels.models);
 }
 
 export async function fetchProviderModels(): Promise<ProviderModels[]> {
