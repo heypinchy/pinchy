@@ -90,6 +90,10 @@ export function resolveProviderBaseUrl(provider: ProviderName, fallback: string)
 // mirroring the Ollama discovery path (provider-models.ts ollamaFetchSignal).
 export const PROVIDER_PROBE_TIMEOUT_MS = 10_000;
 
+// Delay before the single 401/403 retry. Shared with the OpenAI-compatible
+// discovery probe so both retry shapes stay in lockstep.
+export const AUTH_RETRY_DELAY_MS = 1000;
+
 function makeValidationRequest(provider: ProviderName, apiKey: string): Promise<Response> {
   switch (provider) {
     case "anthropic":
@@ -187,7 +191,7 @@ export async function validateProviderKey(
     // 401/403 could be a genuinely invalid key, or a transient auth issue
     // (observed with Claude Max OAuth tokens). Retry once before declaring invalid.
     if (response.status === 401 || response.status === 403) {
-      await new Promise((r) => setTimeout(r, 1000));
+      await new Promise((r) => setTimeout(r, AUTH_RETRY_DELAY_MS));
       const retry = await makeValidationRequest(provider, apiKey);
       if (retry.ok) return { valid: true };
       return { valid: false, error: "invalid_key" };
