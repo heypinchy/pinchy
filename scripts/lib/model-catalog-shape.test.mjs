@@ -51,6 +51,13 @@ test("validateModelCatalogSnapshot flags a non-positive contextWindow", () => {
   assert.ok(problems.some((p) => /contextWindow/.test(p)));
 });
 
+test("validateModelCatalogSnapshot flags a non-numeric maxTokens", () => {
+  const problems = validateModelCatalogSnapshot({
+    m: { ...GOOD_ENTRY, maxTokens: "lots" },
+  });
+  assert.ok(problems.some((p) => /maxTokens/.test(p)));
+});
+
 test("validateModelCatalogSnapshot flags an empty input array", () => {
   const problems = validateModelCatalogSnapshot({
     m: { ...GOOD_ENTRY, input: [] },

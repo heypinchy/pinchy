@@ -38,6 +38,10 @@ export function validateModelCatalogSnapshot(snapshot) {
       problems.push(`${key}: contextWindow must be a number > 0`);
     }
 
+    if (typeof entry.maxTokens !== "number") {
+      problems.push(`${key}: maxTokens must be a number`);
+    }
+
     if (!Array.isArray(entry.input) || entry.input.length === 0) {
       problems.push(`${key}: input must be a non-empty array`);
     }

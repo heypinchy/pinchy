@@ -5,6 +5,7 @@
 import { writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { validateModelCatalogSnapshot } from "./lib/model-catalog-shape.mjs";
 
 const OUT = join(
   dirname(fileURLToPath(import.meta.url)),
@@ -45,5 +46,14 @@ for (const [id, m] of Object.entries(raw)) {
     },
   };
 }
+// Fail loudly at generation time if the slimmed snapshot would violate the
+// schema, rather than committing it and only tripping the CI shape guard later.
+const problems = validateModelCatalogSnapshot(out);
+if (problems.length > 0) {
+  throw new Error(
+    `Refreshed snapshot is invalid — refusing to write:\n${problems.join("\n")}`,
+  );
+}
+
 writeFileSync(OUT, JSON.stringify(out, null, 2) + "\n");
 console.log(`Wrote ${Object.keys(out).length} models to ${OUT}`);
