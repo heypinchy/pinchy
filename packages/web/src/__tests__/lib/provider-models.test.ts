@@ -942,6 +942,31 @@ describe("getDefaultModel", () => {
     const model = await getDefaultModel("openai");
     expect(model).toBe("openai/gpt-5.5");
   });
+
+  it("resolves a custom OpenAI-compatible slug to its first model, namespaced <slug>/<modelId> (#894)", async () => {
+    // No built-in keys configured — only a custom instance exists. A custom
+    // slug carries no balanced/reasoning tier metadata, so its first persisted
+    // model IS the default, mirroring the delete-migration choice.
+    vi.mocked(getSetting).mockResolvedValue(null);
+    vi.mocked(listOpenAiCompatibleProviders).mockResolvedValue([
+      customProvider("acme", "Acme LLM", [
+        { id: "acme-large", name: "Acme Large" },
+        { id: "acme-small", name: "Acme Small" },
+      ]),
+    ]);
+
+    const { getDefaultModel } = await import("@/lib/provider-models");
+    const model = await getDefaultModel("acme");
+    expect(model).toBe("acme/acme-large");
+  });
+
+  it("throws a defined 'Unknown provider' error for a slug that matches no built-in and no instance (#894)", async () => {
+    vi.mocked(getSetting).mockResolvedValue(null);
+    vi.mocked(listOpenAiCompatibleProviders).mockResolvedValue([]);
+
+    const { getDefaultModel } = await import("@/lib/provider-models");
+    await expect(getDefaultModel("ghost")).rejects.toThrow("Unknown provider: ghost");
+  });
 });
 
 describe("selectOllamaLocalDefault", () => {
