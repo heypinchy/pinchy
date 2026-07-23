@@ -417,7 +417,12 @@ export async function getDefaultModel(provider: ProviderModelsId): Promise<strin
   // fetchProviderModels() already namespaced its model ids `<slug>/<modelId>`,
   // and — with no tier metadata to pattern-match — its default is the first
   // persisted model, mirroring the delete-migration choice (providers DELETE).
-  if (!(provider in PROVIDERS)) {
+  // `Object.hasOwn`, not `provider in PROVIDERS`: `in` walks the prototype
+  // chain, so a slug equal to an Object.prototype key (`constructor`,
+  // `toString`, `hasOwnProperty`, …) — all creatable, since RESERVED_PROVIDER_SLUGS
+  // blocks only the real names + `ollama` — would be falsely read as a built-in
+  // and then raw-TypeError on the missing BALANCED_PATTERNS/PROVIDERS entry.
+  if (!Object.hasOwn(PROVIDERS, provider)) {
     if (!providerModels || providerModels.models.length === 0) {
       // Neither a built-in nor a live instance. Fail with a defined error
       // instead of dereferencing `PROVIDERS[slug].defaultModel` (a TypeError).

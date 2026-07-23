@@ -102,4 +102,15 @@ describe("resolveModelForTemplate", () => {
       resolveModelForTemplate({ hint: { tier: "fast" }, provider: "ghost" })
     ).rejects.toThrow("Unknown provider: ghost");
   });
+
+  it("throws a defined error (not a raw TypeError) for a matched instance with zero models (#894)", async () => {
+    // Unreachable today (create schema guarantees models.min(1)), but the guard
+    // keeps resolveCustomProvider symmetric with getDefaultModel — neither may
+    // raw-TypeError on `models[0]`.
+    vi.mocked(listOpenAiCompatibleProviders).mockResolvedValue([customProvider("empty", [])]);
+
+    const result = resolveModelForTemplate({ hint: { tier: "fast" }, provider: "empty" });
+    await expect(result).rejects.toThrow(/no models/i);
+    await expect(result).rejects.not.toThrow(TypeError);
+  });
 });
