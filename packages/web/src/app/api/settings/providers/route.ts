@@ -5,10 +5,13 @@ import { getSetting, deleteSetting } from "@/lib/settings";
 import { PROVIDERS, type ProviderName } from "@/lib/providers";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { resetCache } from "@/lib/provider-models";
-import { countConfiguredProviders, listConfiguredBuiltIns } from "@/lib/provider-count";
-import { listOpenAiCompatibleProviders } from "@/lib/openai-compatible-providers";
+import { countConfiguredProviders } from "@/lib/provider-count";
 import { appendAuditLog } from "@/lib/audit";
-import { migrateAgentsOffDeletedProvider, capMigratedAgents } from "@/lib/provider-deletion";
+import {
+  buildRemainingCandidates,
+  migrateAgentsOffDeletedProvider,
+  capMigratedAgents,
+} from "@/lib/provider-deletion";
 import { parseRequestBody } from "@/lib/api-validation";
 
 const VALID_PROVIDERS = Object.keys(PROVIDERS) as ProviderName[];
@@ -55,24 +58,11 @@ export const DELETE = withAdmin(async (request, _ctx, session) => {
   }
 
   // Build the set of providers an orphaned agent can migrate onto, EXCLUDING the
-  // one being deleted. Built-ins come first (so the all-built-ins path stays
-  // byte-identical to before), then every custom instance. Each candidate is
-  // reduced to the two things migration needs: a `name` (built-in ProviderName
-  // or custom slug — also the value written to default_provider) and the
-  // `defaultModel` an agent is repointed to. A custom instance's default model
-  // is its first persisted model, namespaced `<slug>/<modelId>` to match the
-  // openclaw.json emission. `models` is guaranteed non-empty by the create schema.
-  const remainingCandidates: { name: string; defaultModel: string }[] = [];
-  for (const builtIn of await listConfiguredBuiltIns()) {
-    if (builtIn.name === provider) continue;
-    remainingCandidates.push({ name: builtIn.name, defaultModel: builtIn.config.defaultModel });
-  }
-  for (const custom of await listOpenAiCompatibleProviders()) {
-    remainingCandidates.push({
-      name: custom.slug,
-      defaultModel: `${custom.slug}/${custom.models[0].id}`,
-    });
-  }
+  // one being deleted. Built-ins-first ordering + custom `<slug>/<modelId>`
+  // namespacing is single-sourced in buildRemainingCandidates (shared with the
+  // custom DELETE route). Candidates are built BEFORE deleteSetting, so the
+  // deleted built-in is still "configured" and must be excluded by name.
+  const remainingCandidates = await buildRemainingCandidates({ excludeBuiltInName: provider });
 
   await deleteSetting(config.settingsKey);
   resetCache();

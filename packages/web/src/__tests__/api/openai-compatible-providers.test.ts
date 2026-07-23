@@ -762,6 +762,38 @@ describe("DELETE /api/settings/providers/openai-compatible", () => {
     expect(setSetting).toHaveBeenCalledWith("default_provider", "other-llm", false);
   });
 
+  it("writes a failure audit and 500 when migration throws mid-flight", async () => {
+    vi.mocked(listConfiguredBuiltIns).mockResolvedValue([
+      {
+        name: "anthropic",
+        config: { defaultModel: "anthropic/claude-haiku-4-5-20251001" },
+      },
+    ] as any);
+    vi.mocked(getSetting).mockImplementation(async (key: string) =>
+      key === "default_provider" ? "acme-llm" : null
+    );
+    // The row is deleted, then the agent scan explodes partway through migration.
+    vi.mocked(db.query.agents.findMany).mockRejectedValueOnce(new Error("db exploded"));
+
+    const res = await DELETE(deleteRequest({ id: PROVIDER_ID }), routeCtx);
+
+    expect(res.status).toBe(500);
+    // No success audit on the failure path.
+    expect(appendAuditLog).not.toHaveBeenCalled();
+    expect(recordAuditFailure).toHaveBeenCalledTimes(1);
+    const [, entry] = vi.mocked(recordAuditFailure).mock.calls[0];
+    expect(entry.eventType).toBe("settings.deleted");
+    expect(entry.outcome).toBe("failure");
+    expect(entry.resource).toBe("settings:provider:acme-llm");
+    // The deleted row's identity is snapshotted for post-mortem correlation.
+    expect(entry.detail).toMatchObject({
+      name: "Acme LLM",
+      provider: { id: PROVIDER_ID, name: "Acme LLM" },
+      slug: "acme-llm",
+    });
+    expect(JSON.stringify(entry.detail)).not.toContain(SECRET_KEY);
+  });
+
   it("still succeeds with runtimeApplied:false when regenerate throws (best-effort)", async () => {
     vi.mocked(regenerateOpenClawConfig).mockRejectedValueOnce(new Error("EACCES"));
 

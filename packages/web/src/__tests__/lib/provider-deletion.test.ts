@@ -4,6 +4,14 @@ vi.mock("@/lib/settings", () => ({
   setSetting: vi.fn().mockResolvedValue(undefined),
 }));
 
+vi.mock("@/lib/provider-count", () => ({
+  listConfiguredBuiltIns: vi.fn().mockResolvedValue([]),
+}));
+
+vi.mock("@/lib/openai-compatible-providers", () => ({
+  listOpenAiCompatibleProviders: vi.fn().mockResolvedValue([]),
+}));
+
 vi.mock("@/db", () => ({
   db: {
     query: {
@@ -23,11 +31,14 @@ vi.mock("drizzle-orm", async (importOriginal) => {
 });
 
 import {
+  buildRemainingCandidates,
   migrateAgentsOffDeletedProvider,
   capMigratedAgents,
   MAX_INLINE_MIGRATED,
 } from "@/lib/provider-deletion";
 import { setSetting } from "@/lib/settings";
+import { listConfiguredBuiltIns } from "@/lib/provider-count";
+import { listOpenAiCompatibleProviders } from "@/lib/openai-compatible-providers";
 import { db } from "@/db";
 
 describe("migrateAgentsOffDeletedProvider", () => {
@@ -93,6 +104,60 @@ describe("migrateAgentsOffDeletedProvider", () => {
     expect(db.update).not.toHaveBeenCalled();
     expect(setSetting).not.toHaveBeenCalled();
     expect(result).toEqual({ migratedAgents: [], newDefault: undefined });
+  });
+});
+
+describe("buildRemainingCandidates", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(listConfiguredBuiltIns).mockResolvedValue([]);
+    vi.mocked(listOpenAiCompatibleProviders).mockResolvedValue([]);
+  });
+
+  it("lists built-ins first, then custom instances namespaced <slug>/<models[0].id>", async () => {
+    vi.mocked(listConfiguredBuiltIns).mockResolvedValue([
+      { name: "anthropic", config: { defaultModel: "anthropic/claude-haiku" } },
+      { name: "openai", config: { defaultModel: "openai/gpt-5.4-mini" } },
+    ] as any);
+    vi.mocked(listOpenAiCompatibleProviders).mockResolvedValue([
+      { slug: "acme", models: [{ id: "acme-large" }, { id: "acme-small" }] },
+    ] as any);
+
+    const candidates = await buildRemainingCandidates();
+
+    expect(candidates).toEqual([
+      { name: "anthropic", defaultModel: "anthropic/claude-haiku" },
+      { name: "openai", defaultModel: "openai/gpt-5.4-mini" },
+      // Custom instance uses the FIRST persisted model, namespaced by slug.
+      { name: "acme", defaultModel: "acme/acme-large" },
+    ]);
+  });
+
+  it("excludes the named built-in when excludeBuiltInName is set", async () => {
+    vi.mocked(listConfiguredBuiltIns).mockResolvedValue([
+      { name: "anthropic", config: { defaultModel: "anthropic/claude-haiku" } },
+      { name: "openai", config: { defaultModel: "openai/gpt-5.4-mini" } },
+    ] as any);
+
+    const candidates = await buildRemainingCandidates({ excludeBuiltInName: "anthropic" });
+
+    expect(candidates).toEqual([{ name: "openai", defaultModel: "openai/gpt-5.4-mini" }]);
+  });
+
+  it("excludes no built-in when excludeBuiltInName is absent (custom-delete path)", async () => {
+    vi.mocked(listConfiguredBuiltIns).mockResolvedValue([
+      { name: "anthropic", config: { defaultModel: "anthropic/claude-haiku" } },
+    ] as any);
+    vi.mocked(listOpenAiCompatibleProviders).mockResolvedValue([
+      { slug: "acme", models: [{ id: "acme-large" }] },
+    ] as any);
+
+    const candidates = await buildRemainingCandidates();
+
+    expect(candidates).toEqual([
+      { name: "anthropic", defaultModel: "anthropic/claude-haiku" },
+      { name: "acme", defaultModel: "acme/acme-large" },
+    ]);
   });
 });
 
