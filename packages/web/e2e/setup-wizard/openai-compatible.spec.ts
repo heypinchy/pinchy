@@ -1,0 +1,219 @@
+import { test, expect, type Page } from "@playwright/test";
+import { resetStack, waitForOpenClawSettledViaPage } from "./helpers";
+import { pollAuditForEvent } from "../shared/dispatch-probe";
+
+// E2E for the generic "OpenAI-compatible" provider type (#894), Task 13b.
+//
+// Runs against the setup-wizard Docker stack — the only overlay that wires the
+// `llm-providers-mock` (docker-compose.setup-wizard-test.yml). The mock serves
+// a dedicated OpenAI-compatible mount at
+//   http://llm-providers-mock:9100/openai-compatible/v1
+// exposing `GET /models` (discovery, Bearer) + `POST /chat/completions`
+// (runtime, Bearer). No new stack or Playwright project — the base URL is
+// reachable from both the Pinchy container (discovery) and the OpenClaw
+// container (runtime chat) on the shared compose network, exactly like the
+// built-in provider overrides.
+//
+// Two entry points are covered, sharing one `resetStack` (a container restart)
+// via `test.describe.serial` so the second test can reuse the admin account and
+// the provider the first one created:
+//
+//   Test 1 — the WIZARD custom-provider path (the nice-to-have from the prior
+//     review). Selecting "OpenAI-compatible" in the wizard renders the same
+//     `OpenAiCompatibleProviderForm` and POSTs the same
+//     `/api/settings/providers/openai-compatible` route as Settings, so it
+//     exercises the shared component + route + audit. Saving it as the sole
+//     provider makes its slug the `default_provider`, so the auto-provisioned
+//     Smithers agent resolves `<slug>/mock-large` (resolveCustomProvider →
+//     models[0].id) and the first chat round-trips through the mock's
+//     `/chat/completions`. This is the full deliverable: onboarding → a
+//     `<slug>/<modelId>` agent → a successful chat.
+//
+//   Test 2 — the SETTINGS UI path (the task's primary phrasing). Logs back in,
+//     opens Settings → AI Provider, and adds a SECOND OpenAI-compatible
+//     provider through the `OpenAiCompatibleProvidersSection` dialog, asserting
+//     its own `config.changed` audit row. No second chat — Test 1 already
+//     proves the runtime round-trip; this isolates the settings-surface add.
+//
+// Both tests assert the `config.changed` audit carries
+// `authType: "openai-compatible"` + a host-only `baseUrlHost` and NEVER the API
+// key or the full base URL (route contract in
+// app/api/settings/providers/openai-compatible/route.ts).
+
+const ADMIN = {
+  name: "OAI-Compat Admin",
+  email: "oai-compat@test.local",
+  password: "oai-compat-password-123",
+} as const;
+
+// Reachable from the Pinchy + OpenClaw containers on the compose network. The
+// openai-compatible discover route applies NO local-host/SSRF restriction (that
+// guard is ollama-local only), and OpenClaw already fetches this bare internal
+// host for the built-in `openai` override, so no `*.local` alias is needed.
+const MOCK_BASE_URL = "http://llm-providers-mock:9100/openai-compatible/v1";
+const MOCK_HOST = "llm-providers-mock:9100";
+
+// Distinctive so the "no key in audit detail" assertion is meaningful — a
+// substring search for this value across the serialized detail must find
+// nothing.
+const WIZARD_KEY = "sk-oai-compat-wizard-secret-abcdef";
+const SETTINGS_KEY = "sk-oai-compat-settings-secret-uvwxyz";
+
+const WIZARD_PROVIDER_NAME = "Mock Sovereign LLM";
+const SETTINGS_PROVIDER_NAME = "Mock Gateway Two";
+
+/** Read the config.changed detail as the route's known shape. */
+interface ConfigChangedDetail {
+  authType?: string;
+  baseUrlHost?: string;
+  modelCount?: number;
+  runtimeApplied?: boolean;
+  provider?: { id?: string; name?: string };
+}
+
+/**
+ * Assert the freshest `config.changed` audit row for `providerName` records an
+ * openai-compatible save with a host-only base URL and NO leaked secret.
+ */
+async function assertProviderConfigAudit(
+  page: Page,
+  opts: { since: string; providerName: string; apiKey: string }
+): Promise<void> {
+  const entry = await pollAuditForEvent(page, {
+    eventType: "config.changed",
+    since: opts.since,
+    deadlineMs: 30_000,
+    predicate: (e) => {
+      const d = e.detail as ConfigChangedDetail | null;
+      return d?.authType === "openai-compatible" && d?.provider?.name === opts.providerName;
+    },
+  });
+
+  expect(entry.outcome).toBe("success");
+  const detail = entry.detail as ConfigChangedDetail;
+  expect(detail.baseUrlHost).toBe(MOCK_HOST);
+  expect(detail.modelCount).toBeGreaterThanOrEqual(1);
+
+  // The key must never appear anywhere in the detail, and the audit must carry
+  // only the HOST — never the full base URL (which includes the /v1 path).
+  const serialized = JSON.stringify(entry.detail);
+  expect(serialized).not.toContain(opts.apiKey);
+  expect(serialized).not.toContain(MOCK_BASE_URL);
+  expect(serialized).not.toContain("/openai-compatible/v1");
+}
+
+test.describe.serial("Setup wizard + settings → OpenAI-compatible provider (#894)", () => {
+  test.beforeAll(resetStack);
+
+  test("wizard: OpenAI-compatible provider → Smithers chats via <slug>/mock-large", async ({
+    page,
+  }) => {
+    const since = new Date().toISOString();
+
+    // Phase 1: admin account (mirrors runProviderSmokeTest).
+    await page.goto("/setup", { waitUntil: "networkidle" });
+    await page.getByLabel(/name/i).fill(ADMIN.name);
+    await page.getByLabel(/email/i).fill(ADMIN.email);
+    await page.getByLabel("Password", { exact: true }).fill(ADMIN.password);
+    await page.getByLabel(/confirm password/i).fill(ADMIN.password);
+    await page.getByRole("button", { name: /create account/i }).click();
+    await expect(page.getByText(/account created successfully/i)).toBeVisible({ timeout: 15000 });
+    await page.getByRole("button", { name: /continue to sign in/i }).click();
+
+    // Phase 2: sign in.
+    await expect(page).toHaveURL(/\/login/);
+    await page.getByLabel(/email/i).fill(ADMIN.email);
+    await page.getByLabel("Password", { exact: true }).fill(ADMIN.password);
+    await page.getByRole("button", { name: /sign in/i }).click();
+    await expect(page).toHaveURL(/\/setup\/provider/, { timeout: 20000 });
+
+    // Phase 3: pick "OpenAI-compatible" (wizard-only sixth option) and fill the
+    // custom form: name + the mock base URL + a dummy key, then discover.
+    await page.getByRole("button", { name: /openai-compatible/i }).click();
+    await page.getByLabel("Name", { exact: true }).fill(WIZARD_PROVIDER_NAME);
+    await page.getByLabel("Base URL").fill(MOCK_BASE_URL);
+    await page.getByLabel("API key").fill(WIZARD_KEY);
+    await page.getByRole("button", { name: /connect & discover models/i }).click();
+
+    // Discovered models render (all pre-selected). mock-large appears first so
+    // it becomes the agent default.
+    await expect(page.getByText("mock-large").first()).toBeVisible({ timeout: 15000 });
+
+    // Save. The custom POST sets default_provider=slug (nothing configured yet)
+    // and the wizard advances straight into the app.
+    await page.getByRole("button", { name: /^add provider$/i }).click();
+
+    // Landed in the app on the Smithers chat.
+    await expect(page).toHaveURL(/\/chat\//, { timeout: 20000 });
+    await expect(page.getByText(/i'm smithers/i)).toBeVisible({ timeout: 30000 });
+
+    // The save's config.changed audit is written (host only, no key).
+    await assertProviderConfigAudit(page, {
+      since,
+      providerName: WIZARD_PROVIDER_NAME,
+      apiKey: WIZARD_KEY,
+    });
+
+    // Phase 4: first chat round-trip through the mock's /chat/completions.
+    // Settle past the provider-save's secrets-bootstrap gateway restart before
+    // dispatching (see runProviderSmokeTest for the full rationale).
+    await waitForOpenClawSettledViaPage(page, { stableForMs: 12000, deadlineMs: 90000 });
+
+    const composer = page.getByPlaceholder(/send a message/i);
+    await composer.fill("Hello, are you working?");
+    await composer.press("Enter");
+
+    // The mock's canonical reply renders, and no "no API key" / "couldn't
+    // respond" error surfaces — proving the custom provider chatted end-to-end.
+    await expect(page.getByText(/sure, happy to help/i)).toBeVisible({ timeout: 160000 });
+    await expect(page.getByText(/smithers couldn't respond/i)).not.toBeVisible();
+    await expect(page.getByText(/no api key found/i)).not.toBeVisible();
+  });
+
+  test("settings UI: admin adds a second OpenAI-compatible provider", async ({ page }) => {
+    const since = new Date().toISOString();
+
+    // Log back in as the admin from Test 1 (DB persists — resetStack is a
+    // once-per-describe beforeAll). Setup is complete + a provider exists, so a
+    // sign-in lands straight in the app.
+    await page.goto("/login", { waitUntil: "networkidle" });
+    await page.getByLabel(/email/i).fill(ADMIN.email);
+    await page.getByLabel("Password", { exact: true }).fill(ADMIN.password);
+    await page.getByRole("button", { name: /sign in/i }).click();
+    await expect(page).not.toHaveURL(/\/login/, { timeout: 20000 });
+
+    // Settings → AI Provider tab. The section already lists Test 1's provider.
+    await page.goto("/settings?tab=provider", { waitUntil: "networkidle" });
+    await expect(page.getByRole("heading", { name: /openai-compatible providers/i })).toBeVisible({
+      timeout: 15000,
+    });
+    await expect(page.getByText(WIZARD_PROVIDER_NAME)).toBeVisible();
+
+    // Add a second provider through the section's dialog. Before the dialog
+    // opens, "Add provider" uniquely matches the section button.
+    await page.getByRole("button", { name: /^add provider$/i }).click();
+    const dialog = page.getByRole("dialog");
+    await expect(dialog.getByText(/add provider/i).first()).toBeVisible();
+
+    await dialog.getByLabel("Name", { exact: true }).fill(SETTINGS_PROVIDER_NAME);
+    await dialog.getByLabel("Base URL").fill(MOCK_BASE_URL);
+    await dialog.getByLabel("API key").fill(SETTINGS_KEY);
+    await dialog.getByRole("button", { name: /connect & discover models/i }).click();
+    await expect(dialog.getByText("mock-large").first()).toBeVisible({ timeout: 15000 });
+
+    // Submit (the dialog's own "Add provider").
+    await dialog.getByRole("button", { name: /^add provider$/i }).click();
+
+    // Its config.changed audit is written (host only, no key), distinct from
+    // Test 1's row via the provider name predicate.
+    await assertProviderConfigAudit(page, {
+      since,
+      providerName: SETTINGS_PROVIDER_NAME,
+      apiKey: SETTINGS_KEY,
+    });
+
+    // Both providers now list in the section.
+    await expect(page.getByText(SETTINGS_PROVIDER_NAME)).toBeVisible({ timeout: 15000 });
+    await expect(page.getByText(WIZARD_PROVIDER_NAME)).toBeVisible();
+  });
+});

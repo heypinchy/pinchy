@@ -403,4 +403,59 @@ app.post("/ollama-cloud/v1/chat/completions", (req, res) => {
   });
 });
 
+// ---- Generic OpenAI-compatible provider (#894) ----
+// Exercised by the setup-wizard E2E (openai-compatible.spec.ts): the admin
+// types this mount's base URL — http://llm-providers-mock:9100/openai-compatible/v1 —
+// into the custom-provider form. Two surfaces are hit:
+//   1. Discovery + validation (Pinchy server → GET /models, Bearer): the
+//      openai-compatible discover route validates the key AND lists models off
+//      the SAME `/models` endpoint (see openai-compatible-discovery.ts), so no
+//      separate validation-probe branch is needed here.
+//   2. Runtime chat (OpenClaw → POST /chat/completions, Bearer): the provider is
+//      emitted with `api: "openai-completions"` (build.ts), so pi-ai appends
+//      `/chat/completions` to the verbatim base URL. A plain non-streaming JSON
+//      body is accepted — mirrors the ollama-cloud handler, which the green
+//      ollama-cloud setup-wizard spec proves works at runtime.
+// `mock-large` is listed FIRST so the custom-provider model resolver
+// (resolveCustomProvider → models[0].id) picks it as the agent's default,
+// yielding the `<slug>/mock-large` assignment the spec asserts a chat against.
+app.get("/openai-compatible/v1/models", (req, res) => {
+  if (!requireBearer(req, res)) return;
+  res.json({
+    object: "list",
+    data: [
+      {
+        id: "mock-large",
+        object: "model",
+        created: MOCK_CREATED_AT,
+        owned_by: "mock",
+      },
+      {
+        id: "mock-small",
+        object: "model",
+        created: MOCK_CREATED_AT,
+        owned_by: "mock",
+      },
+    ],
+  });
+});
+
+app.post("/openai-compatible/v1/chat/completions", (req, res) => {
+  if (!requireBearer(req, res)) return;
+  res.json({
+    id: "chatcmpl-mock-oai-compat-1",
+    object: "chat.completion",
+    created: MOCK_CREATED_AT,
+    model: req.body?.model ?? "mock-large",
+    choices: [
+      {
+        index: 0,
+        message: { role: "assistant", content: MOCK_ASSISTANT_REPLY },
+        finish_reason: "stop",
+      },
+    ],
+    usage: { prompt_tokens: 10, completion_tokens: 12, total_tokens: 22 },
+  });
+});
+
 app.listen(PORT, () => console.log(`llm-providers-mock listening on ${PORT}`));
