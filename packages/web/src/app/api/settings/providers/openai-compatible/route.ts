@@ -11,11 +11,11 @@ import {
   deleteProviderById,
 } from "@/lib/openai-compatible-providers";
 import { getSetting, setSetting } from "@/lib/settings";
-import { countConfiguredProviders, listConfiguredBuiltIns } from "@/lib/provider-count";
+import { countConfiguredProviders } from "@/lib/provider-count";
 import {
+  buildRemainingCandidates,
   migrateAgentsOffDeletedProvider,
   capMigratedAgents,
-  type RemainingCandidate,
 } from "@/lib/provider-deletion";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { resetCache } from "@/lib/provider-models";
@@ -167,20 +167,12 @@ export const DELETE = withAdmin(async (request, _ctx, session) => {
       return NextResponse.json({ error: "OpenAI-compatible provider not found." }, { status: 404 });
     }
 
-    // Build the migration-target set EXCLUDING the just-deleted slug (already
-    // gone from listOpenAiCompatibleProviders after the delete above). Built-ins
-    // first — matching Task 8 — then every remaining custom instance, each
-    // reduced to a `name` (default_provider value) + namespaced `defaultModel`.
-    const remainingCandidates: RemainingCandidate[] = [];
-    for (const builtIn of await listConfiguredBuiltIns()) {
-      remainingCandidates.push({ name: builtIn.name, defaultModel: builtIn.config.defaultModel });
-    }
-    for (const custom of await listOpenAiCompatibleProviders()) {
-      remainingCandidates.push({
-        name: custom.slug,
-        defaultModel: `${custom.slug}/${custom.models[0].id}`,
-      });
-    }
+    // Build the migration-target set EXCLUDING the just-deleted slug — already
+    // gone from listOpenAiCompatibleProviders after deleteProviderById, so no
+    // built-in exclusion is passed. Built-ins-first ordering + custom namespacing
+    // are single-sourced in buildRemainingCandidates (shared with the built-in
+    // DELETE route).
+    const remainingCandidates = await buildRemainingCandidates();
 
     const previousDefault = await getSetting("default_provider");
     wasDefault = previousDefault === deleted.slug;
@@ -191,8 +183,13 @@ export const DELETE = withAdmin(async (request, _ctx, session) => {
       wasDefault,
     }));
   } catch (err) {
-    // The delete/migration itself failed mid-flight. Record a failure audit that
-    // still snapshots the provider name for post-mortem correlation, then 500.
+    // The delete/migration itself failed mid-flight. This flow is deliberately
+    // NOT transactional: the row is already deleted and agents may be only
+    // partially migrated. A retry is safe — re-running against the now-missing
+    // prefix migrates whatever remains, and the last-provider guard above
+    // prevents ever deleting the sole provider (so orphaned agents always have a
+    // target). Record a failure audit that still snapshots the provider name for
+    // post-mortem correlation, then 500.
     recordAuditFailure(err, {
       actorType: "user",
       actorId: session.user.id!,

@@ -12,6 +12,8 @@
 // than copy-pasting a subtly-drifting second copy.
 
 import { setSetting } from "@/lib/settings";
+import { listConfiguredBuiltIns } from "@/lib/provider-count";
+import { listOpenAiCompatibleProviders } from "@/lib/openai-compatible-providers";
 import { db } from "@/db";
 import { agents } from "@/db/schema";
 import { eq } from "drizzle-orm";
@@ -22,6 +24,41 @@ export interface RemainingCandidate {
   name: string;
   /** The namespaced model an agent is repointed to (e.g. `anthropic/…` or `<slug>/…`). */
   defaultModel: string;
+}
+
+/**
+ * The ordered set of providers an orphaned agent can migrate onto, shared by
+ * both DELETE routes so the built-ins-first ordering AND the custom-instance
+ * `<slug>/<modelId>` namespacing (which must match the openclaw.json emission)
+ * are single-sourced rather than byte-duplicated.
+ *
+ * Built-ins come first (so the all-built-ins migration path stays byte-identical
+ * to before), then every custom instance. The two DELETE routes exclude the
+ * just-deleted provider differently, and that is the only parameter:
+ *
+ * - **Built-in delete** builds candidates BEFORE removing the settings key, so
+ *   the deleted built-in is still "configured" — pass `excludeBuiltInName` to
+ *   skip it by name.
+ * - **Custom delete** builds candidates AFTER `deleteProviderById`, so the row
+ *   is already gone from `listOpenAiCompatibleProviders()` — pass nothing.
+ */
+export async function buildRemainingCandidates(opts?: {
+  excludeBuiltInName?: string;
+}): Promise<RemainingCandidate[]> {
+  const excludeBuiltInName = opts?.excludeBuiltInName;
+  const candidates: RemainingCandidate[] = [];
+  for (const builtIn of await listConfiguredBuiltIns()) {
+    if (excludeBuiltInName !== undefined && builtIn.name === excludeBuiltInName) continue;
+    candidates.push({ name: builtIn.name, defaultModel: builtIn.config.defaultModel });
+  }
+  for (const custom of await listOpenAiCompatibleProviders()) {
+    // models non-empty by create schema (.min(1))
+    candidates.push({
+      name: custom.slug,
+      defaultModel: `${custom.slug}/${custom.models[0].id}`,
+    });
+  }
+  return candidates;
 }
 
 export interface MigratedAgent {
