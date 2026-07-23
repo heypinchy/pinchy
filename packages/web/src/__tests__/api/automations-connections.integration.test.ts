@@ -126,9 +126,34 @@ describe("GET /api/automations/connections", () => {
     expect(await res.json()).toEqual([]);
   });
 
+  it("returns connections sorted by name so the picker order is stable", async () => {
+    asMember(OWNER);
+    const agent = await seedAgent({ isPersonal: true, ownerId: OWNER });
+    // Insert deliberately out of alphabetical order — the route must sort.
+    await seedConnection("conn-z", "Zebra mailbox");
+    await seedConnection("conn-a", "Alpha mailbox");
+    await grantEmailPermission(agent.id, "conn-z", "read");
+    await grantEmailPermission(agent.id, "conn-a", "read");
+
+    const res = await GET(req(agent.id), routeContext());
+    expect(await res.json()).toEqual([
+      { id: "conn-a", name: "Alpha mailbox" },
+      { id: "conn-z", name: "Zebra mailbox" },
+    ]);
+  });
+
   it("forbids a member from listing a shared agent's connections", async () => {
     asMember(OWNER);
     const agent = await seedAgent({ isPersonal: false, ownerId: null });
+    const res = await GET(req(agent.id), routeContext());
+    expect(res.status).toBe(403);
+  });
+
+  it("forbids a member from listing another user's personal agent's connections", async () => {
+    // Coverage for the ownerId leg of canManageAgentWorkflows: personal, but
+    // owned by someone else — a member must not see its mailboxes.
+    asMember(OTHER);
+    const agent = await seedAgent({ isPersonal: true, ownerId: OWNER });
     const res = await GET(req(agent.id), routeContext());
     expect(res.status).toBe(403);
   });

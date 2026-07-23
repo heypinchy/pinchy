@@ -1,9 +1,10 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { apiGet, apiPost, ApiError } from "@/lib/api-client";
+import { AUTOMATION_MAX_SWEEP_WINDOW_DAYS } from "@/lib/schemas/automations";
 import type { AutomationConnectionOption, CreateAutomationInput } from "@/lib/schemas/automations";
 import type { EmailWorkflowFilter } from "@/lib/email-workflows/types";
 import { Button } from "@/components/ui/button";
@@ -64,7 +65,12 @@ export function AgentSettingsAutomationCreateDialog({
 }) {
   const [connections, setConnections] = useState<AutomationConnectionOption[]>([]);
   const [loadingConnections, setLoadingConnections] = useState(true);
+  const [connectionsError, setConnectionsError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  // Monotonic sequence for connection loads: a response only lands if it still
+  // belongs to the latest load, so a slow response from a previous open can
+  // never clobber the picker a reopen just refreshed.
+  const loadSeqRef = useRef(0);
 
   const [name, setName] = useState("");
   const [action, setAction] = useState("");
@@ -95,22 +101,29 @@ export function AgentSettingsAutomationCreateDialog({
       setSweepWindowDays(String(DEFAULT_SWEEP_WINDOW_DAYS));
       setSelectedConnectionIds([]);
       setConnections([]);
+      setConnectionsError(null);
       setLoadingConnections(true);
     }
   }
 
   const load = useCallback(async () => {
+    const seq = ++loadSeqRef.current;
     setLoadingConnections(true);
+    setConnectionsError(null);
     try {
       const data = await apiGet<AutomationConnectionOption[]>(
         `/api/automations/connections?agentId=${encodeURIComponent(agentId)}`
       );
+      if (seq !== loadSeqRef.current) return;
       setConnections(Array.isArray(data) ? data : []);
     } catch (e) {
-      toast.error(errorMessage(e, "Failed to load mailboxes"));
+      if (seq !== loadSeqRef.current) return;
       setConnections([]);
+      // Rendered inline (with a retry) instead of a toast: an empty picker after
+      // a failed load must not look like "this agent has no mailboxes".
+      setConnectionsError(errorMessage(e, "Failed to load mailboxes"));
     } finally {
-      setLoadingConnections(false);
+      if (seq === loadSeqRef.current) setLoadingConnections(false);
     }
   }, [agentId]);
 
@@ -146,24 +159,34 @@ export function AgentSettingsAutomationCreateDialog({
     return filter;
   }
 
+  // Validated against the exact bounds the server schema enforces
+  // (1..AUTOMATION_MAX_SWEEP_WINDOW_DAYS): out-of-range input blocks the submit
+  // with a hint instead of a server 400, and is never silently replaced by the
+  // default. Only a genuinely blank field means "use the default".
+  const sweepTrimmed = sweepWindowDays.trim();
+  const parsedSweepDays = sweepTrimmed === "" ? DEFAULT_SWEEP_WINDOW_DAYS : Number(sweepTrimmed);
+  const sweepWindowValid =
+    Number.isInteger(parsedSweepDays) &&
+    parsedSweepDays >= 1 &&
+    parsedSweepDays <= AUTOMATION_MAX_SWEEP_WINDOW_DAYS;
+
   const canSubmit =
     name.trim().length > 0 &&
     action.trim().length > 0 &&
     selectedConnectionIds.length > 0 &&
+    sweepWindowValid &&
     !submitting;
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!canSubmit) return;
-    const parsedDays = Number.parseInt(sweepWindowDays, 10);
     const payload: CreateAutomationInput = {
       agentId,
       name: name.trim(),
       action: action.trim(),
       filter: buildFilter(),
       connectionIds: selectedConnectionIds,
-      sweepWindowDays:
-        Number.isFinite(parsedDays) && parsedDays > 0 ? parsedDays : DEFAULT_SWEEP_WINDOW_DAYS,
+      sweepWindowDays: parsedSweepDays,
     };
     setSubmitting(true);
     try {
@@ -289,6 +312,13 @@ export function AgentSettingsAutomationCreateDialog({
                 <Skeleton className="h-6 w-full" />
                 <Skeleton className="h-6 w-2/3" />
               </div>
+            ) : connectionsError ? (
+              <div className="space-y-2 rounded-md border border-destructive/50 p-3">
+                <p className="text-sm text-destructive">{connectionsError}</p>
+                <Button type="button" variant="outline" size="sm" onClick={() => void load()}>
+                  Try again
+                </Button>
+              </div>
             ) : connections.length === 0 ? (
               <p className="rounded-md border border-dashed p-3 text-sm text-muted-foreground">
                 This agent has no readable email connection yet. Give it email read access to a
@@ -318,11 +348,16 @@ export function AgentSettingsAutomationCreateDialog({
               id="automation-sweep-window"
               type="number"
               min={1}
-              max={365}
+              max={AUTOMATION_MAX_SWEEP_WINDOW_DAYS}
               value={sweepWindowDays}
               onChange={(e) => setSweepWindowDays(e.target.value)}
               className="w-28"
             />
+            {!sweepWindowValid && (
+              <p className="text-xs text-destructive">
+                Enter a whole number of days between 1 and {AUTOMATION_MAX_SWEEP_WINDOW_DAYS}.
+              </p>
+            )}
             <p className="text-xs text-muted-foreground">
               How far back each pass re-checks for mail it may have missed.
             </p>

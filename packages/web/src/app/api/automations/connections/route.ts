@@ -57,11 +57,13 @@ export const GET = withAuth(async (request, _ctx, session) => {
 
   // Resolve names in one query, keyed off the already-deduped ids (a join on the
   // permission rows would repeat a connection once per read-alias operation).
+  // Ordered by name so the picker renders a stable order across opens.
   const connections = ids.length
     ? await db
         .select({ id: integrationConnections.id, name: integrationConnections.name })
         .from(integrationConnections)
         .where(inArray(integrationConnections.id, ids))
+        .orderBy(integrationConnections.name)
     : [];
 
   return NextResponse.json(connections);

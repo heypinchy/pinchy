@@ -7,15 +7,15 @@ import { Aside, Badge } from "@astrojs/starlight/components";
 
 Every agent in Pinchy is configured through a settings page. To open it, navigate to an agent's chat and click the **gear icon** in the top bar. Which tabs you see depends on your role and the agent type.
 
-| Tab                                                   | What it controls                      | Who can see it                      |
-| ----------------------------------------------------- | ------------------------------------- | ----------------------------------- |
-| **General**                                           | Name, tagline, model, agent type      | Everyone who can edit               |
-| **Personality**                                       | Avatar, personality preset, SOUL.md   | Everyone who can edit               |
-| **Instructions**                                      | AGENTS.md operating instructions      | Everyone who can edit               |
-| **Permissions**                                       | Tool allow-list, directory access     | Admins only, shared agents          |
-| **Access** <Badge text="Enterprise" variant="note" /> | Visibility mode, group assignment     | Admins only, shared agents          |
-| **Telegram**                                          | Connect a Telegram bot to this agent  | Admins only                         |
-| **Automations**                                       | Email workflows the agent runs itself | Owner (personal) or admins (shared) |
+| Tab                                                   | What it controls                      | Who can see it             |
+| ----------------------------------------------------- | ------------------------------------- | -------------------------- |
+| **General**                                           | Name, tagline, model, agent type      | Everyone who can edit      |
+| **Personality**                                       | Avatar, personality preset, SOUL.md   | Everyone who can edit      |
+| **Instructions**                                      | AGENTS.md operating instructions      | Everyone who can edit      |
+| **Permissions**                                       | Tool allow-list, directory access     | Admins only, shared agents |
+| **Access** <Badge text="Enterprise" variant="note" /> | Visibility mode, group assignment     | Admins only, shared agents |
+| **Telegram**                                          | Connect a Telegram bot to this agent  | Admins only                |
+| **Automations**                                       | Email workflows the agent runs itself | Owner (personal) or admins |
 
 The Permissions and Access tabs exist only for shared agents. Personal agents (the auto-created Smithers each user gets) don't show them because there's nothing to share. Admins still see the Telegram tab on Smithers, but the main Smithers bot is managed centrally via **Settings → Telegram** rather than per-agent.
 
@@ -147,7 +147,7 @@ For the full flow including BotFather setup and account linking, see [Set Up Tel
 
 The Automations tab is where an agent's **email workflows** live — standing rules that let the agent act on incoming mail on its own, without anyone opening a chat. A workflow pairs a deterministic **trigger** (which mail it fires on) with an **instruction** (what the agent does with each matching message). Pinchy checks the connected mailboxes on a schedule and runs the instruction once per new matching mail, tracking exactly which messages it has already handled so nothing is processed twice — and it never relies on the read/unread state you see in your own inbox.
 
-You'll see this tab on your personal Smithers and, as an admin, on shared agents that can read email. It's gated the same way the underlying API is: you can manage automations on a personal agent you own, and admins manage them on shared agents.
+You'll see this tab on your personal Smithers and, as an admin, on shared agents that can read email. It's gated the same way the underlying API is: you can manage automations on a personal agent you own; admins can manage them on any agent, shared or personal.
 
 ### Create an automation
 

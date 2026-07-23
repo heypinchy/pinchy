@@ -33,6 +33,13 @@ export type FilterParity = AssertAssignable<
 export const AUTOMATION_NAME_MAX_LENGTH = 200;
 
 /**
+ * Upper bound on the reconciliation sweep window (design §5) — shared with the
+ * create form so the client validates against the exact limit the server
+ * enforces instead of hard-coding its own copy.
+ */
+export const AUTOMATION_MAX_SWEEP_WINDOW_DAYS = 365;
+
+/**
  * Upper bound on mailboxes per workflow. Far above any real setup, but keeps
  * an absurd request from ballooning the 400-error echo and the audit
  * `detail.connectionIds` list (AGENTS.md: keep audit detail under 2048 bytes).
@@ -64,7 +71,7 @@ export const createAutomationSchema = z.object({
   connectionIds: z.array(z.string().min(1)).min(1).max(AUTOMATION_MAX_CONNECTIONS),
   // How far back the reconciliation sweep re-lists (design §5). Bounded so a
   // typo can't make one workflow re-hydrate years of mail every pass.
-  sweepWindowDays: z.number().int().positive().max(365).default(14),
+  sweepWindowDays: z.number().int().positive().max(AUTOMATION_MAX_SWEEP_WINDOW_DAYS).default(14),
 });
 
 export type CreateAutomationInput = z.infer<typeof createAutomationSchema>;
