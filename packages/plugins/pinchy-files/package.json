@@ -18,9 +18,10 @@
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^26.1.1",
+    "@types/pdfkit": "^0.17.6",
     "@types/turndown": "^5.0.5",
     "docx": "^9.7.1",
-    "pdf-lib": "^1.17.1",
+    "pdfkit": "^0.19.1",
     "typescript": "^6.0.3",
     "vitest": "^4.1.10"
   }

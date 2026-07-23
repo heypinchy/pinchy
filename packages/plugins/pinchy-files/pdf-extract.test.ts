@@ -2,10 +2,26 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "fs";
 import { join } from "path";
-import { PDFDocument } from "pdf-lib";
+import PDFDocument from "pdfkit";
 import { extractPdfText } from "./pdf-extract";
 
 const FIXTURES = join(import.meta.dirname, "test-fixtures");
+
+/** Build a minimal single-page PDF in-memory with pdfkit. */
+function buildPdf(
+  build: (doc: PDFKit.PDFDocument) => void,
+  size: [number, number]
+): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const doc = new PDFDocument({ size, margin: 0 });
+    const chunks: Buffer[] = [];
+    doc.on("data", (chunk: Buffer) => chunks.push(chunk));
+    doc.on("end", () => resolve(Buffer.concat(chunks)));
+    doc.on("error", reject);
+    build(doc);
+    doc.end();
+  });
+}
 
 describe("extractPdfText", () => {
   it("extracts text from a text-only PDF", async () => {
@@ -107,11 +123,12 @@ describe("extractPdfText", () => {
     // Create a minimal PDF with just "Hello" on one page — short text, no images.
     // With the old logic (text.length < 200 → scanned), this would be marked as scanned.
     // With the new logic, it should NOT be scanned because there are no large images.
-    const pdfDoc = await PDFDocument.create();
-    const page = pdfDoc.addPage([200, 200]);
-    page.drawText("Hello", { x: 50, y: 100, size: 12 });
-    const pdfBytes = await pdfDoc.save();
-    const buffer = Buffer.from(pdfBytes);
+    const buffer = await buildPdf(
+      (doc) => {
+        doc.fontSize(12).text("Hello", 50, 100);
+      },
+      [200, 200]
+    );
 
     const result = await extractPdfText(buffer);
 
