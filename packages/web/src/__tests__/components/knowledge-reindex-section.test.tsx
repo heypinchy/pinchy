@@ -99,6 +99,20 @@ describe("KnowledgeReindexSection", () => {
     expect(screen.getByRole("button", { name: /reindex/i })).toBeDisabled();
   });
 
+  it("does not poll while no run is active", async () => {
+    // Idle state: the mount read answers "no job", so the poll effect must not
+    // register an interval at all. This pins the property the old
+    // `toHaveBeenCalledTimes(2)` in the stale-read test asserted by accident.
+    render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} pollIntervalMs={20} />);
+
+    await waitFor(() => expect(screen.getByRole("button", { name: /reindex/i })).toBeEnabled());
+    // Give several would-be interval periods a chance to fire. Flake-safe as an
+    // absence assertion: with no interval registered the count can never grow,
+    // so load can only make a regression MORE visible, never a pass less so.
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    expect(mockGet).toHaveBeenCalledTimes(1); // the mount read only
+  });
+
   it("summarizes the last successful run, emphasizing unsearchable and failed docs", async () => {
     mockGet.mockResolvedValue({
       job: job({
