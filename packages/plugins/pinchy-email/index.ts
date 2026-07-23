@@ -177,7 +177,11 @@ interface AgentTool {
   ) => Promise<{
     content: ContentBlock[];
     isError?: boolean;
-    details?: { error: string };
+    // `error` stays a typed string for the isError-stripping contract (#404),
+    // but tools may curate additional non-error fields — email_send/email_draft
+    // return { to, subject, bodyBytes } so the audit route suppresses raw params
+    // (recipient + full body). The route reads details as Record<string, unknown>.
+    details?: { error?: string } & Record<string, unknown>;
   }>;
 }
 
@@ -274,6 +278,65 @@ function errorResult(error: unknown): {
 } {
   const message = error instanceof Error ? error.message : "Unknown error";
   return toolError(`Error: ${message}`);
+}
+
+/**
+ * Mask a recipient address for the tool-use audit. email_send / email_draft
+ * carry the recipient and the full body as tool params; the audit route logs
+ * raw params verbatim unless the tool returns curated `details` (route.ts:
+ * curatesNonErrorFields deletes detail.params). Those params are PII that would
+ * otherwise land in the append-only, HMAC-signed audit in plaintext (AGENTS.md
+ * § Secret Handling: "Never write plaintext email addresses or other PII into
+ * audit detail").
+ *
+ * We cannot call the web app's redactEmail() here — it keys an HMAC with a
+ * server-only secret this OpenClaw process has no access to — so we mask
+ * locally: keep the domain and the first local-part character, mask the rest.
+ * Stricter than redactEmail's preview (which shows short local parts in full),
+ * so no address is ever emitted verbatim.
+ */
+function maskRecipientForAudit(value: unknown): string {
+  if (typeof value !== "string") return "<redacted>";
+  const email = value.trim();
+  const at = email.lastIndexOf("@");
+  if (at <= 0 || at === email.length - 1) return "<redacted>";
+  const local = email.slice(0, at);
+  const domain = email.slice(at + 1);
+  return `${local[0]}${"*".repeat(local.length - 1)}@${domain}`;
+}
+
+/**
+ * Curated audit details for email_send / email_draft. Returning these non-error
+ * fields makes the audit route suppress the raw params (recipient + full body)
+ * on EVERY return path — success and failure alike (route.ts: an error-only
+ * `details: { error }` deliberately does NOT suppress params, so error paths
+ * must carry a non-error field too). Body content is reduced to its byte length;
+ * the recipient is masked; the subject is kept for governance value.
+ */
+function emailWriteAuditDetails(params: Record<string, unknown>): {
+  to: string;
+  subject: string;
+  bodyBytes: number;
+} {
+  return {
+    to: maskRecipientForAudit(params.to),
+    subject: typeof params.subject === "string" ? params.subject : "",
+    bodyBytes: Buffer.byteLength(typeof params.body === "string" ? params.body : "", "utf8"),
+  };
+}
+
+/**
+ * Merge curated email audit details into an error result so the audit route
+ * suppresses the raw params on the failure path too (see emailWriteAuditDetails).
+ */
+function withEmailAuditDetails(
+  base: { content: ContentBlock[]; isError: true; details: { error: string } },
+  params: Record<string, unknown>
+): { content: ContentBlock[]; isError: true; details: Record<string, unknown> } {
+  return {
+    ...base,
+    details: { ...emailWriteAuditDetails(params), error: base.details.error },
+  };
 }
 
 /**
@@ -988,13 +1051,13 @@ const plugin = {
           async execute(_toolCallId: string, params: Record<string, unknown>) {
             try {
               if (!checkPermission(config.permissions, "email", "draft")) {
-                return permissionDenied("draft");
+                return withEmailAuditDetails(permissionDenied("draft"), params);
               }
 
               let replyTo: string | undefined = params.replyTo as string | undefined;
               if (replyTo != null) {
                 const resolved = resolveEmailReference(agentId, replyTo);
-                if (!resolved.ok) return resolved.result;
+                if (!resolved.ok) return withEmailAuditDetails(resolved.result, params);
                 replyTo = resolved.realId;
               }
 
@@ -1024,9 +1087,10 @@ const plugin = {
                     ),
                   },
                 ],
+                details: emailWriteAuditDetails(params),
               };
             } catch (error) {
-              return errorResult(error);
+              return withEmailAuditDetails(errorResult(error), params);
             }
           },
         };
@@ -1066,13 +1130,13 @@ const plugin = {
           async execute(_toolCallId: string, params: Record<string, unknown>) {
             try {
               if (!checkPermission(config.permissions, "email", "send")) {
-                return permissionDenied("send");
+                return withEmailAuditDetails(permissionDenied("send"), params);
               }
 
               let replyTo: string | undefined = params.replyTo as string | undefined;
               if (replyTo != null) {
                 const resolved = resolveEmailReference(agentId, replyTo);
-                if (!resolved.ok) return resolved.result;
+                if (!resolved.ok) return withEmailAuditDetails(resolved.result, params);
                 replyTo = resolved.realId;
               }
 
@@ -1109,9 +1173,9 @@ const plugin = {
                 });
               }
 
-              return { content };
+              return { content, details: emailWriteAuditDetails(params) };
             } catch (error) {
-              return errorResult(error);
+              return withEmailAuditDetails(errorResult(error), params);
             }
           },
         };

@@ -1250,6 +1250,112 @@ describe("email_send", () => {
   });
 });
 
+describe("audit PII curation for email_send / email_draft", () => {
+  // The tool-use audit route (packages/web/.../api/internal/audit/tool-use)
+  // logs raw tool params UNLESS a tool returns curated `details` carrying a
+  // non-error field — then it deletes detail.params (curatesNonErrorFields).
+  // email_send/email_draft params hold the recipient address and the full body:
+  // PII that must never land in the append-only, HMAC-signed audit in plaintext
+  // (AGENTS.md § Secret Handling: "Never write plaintext email addresses or
+  // other PII into audit detail"). These tests pin the curation — masked
+  // recipient, subject kept, body reduced to a byte count — on every return
+  // path so a regression re-exposes the leak loudly.
+  const configWithSend: PluginConfig = {
+    ...testConfig,
+    agents: {
+      "agent-1": {
+        connectionId: "conn-1",
+        permissions: { email: ["read", "draft", "send"] },
+      },
+    },
+  };
+  const maskedRecipient = `r${"*".repeat("recipient".length - 1)}@test.com`;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockCredentialResponse();
+  });
+
+  it("email_send success returns curated details (masked recipient, subject, body byte length) and drops the raw body", async () => {
+    mockSend.mockResolvedValue({ messageId: "sent-1" });
+    const tools = createApi(configWithSend);
+    const tool = findTool(tools, "email_send", agentId)!;
+
+    const body = "Grüße — a body with 2-byte chars";
+    const result = await tool.execute("call-1", {
+      to: "recipient@test.com",
+      subject: "Sent Subject",
+      body,
+    });
+
+    const details = result.details as Record<string, unknown>;
+    expect(details).toBeDefined();
+    expect(details.to).toBe(maskedRecipient);
+    expect(details.to).not.toBe("recipient@test.com");
+    expect(details.subject).toBe("Sent Subject");
+    expect(details.bodyBytes).toBe(Buffer.byteLength(body, "utf8"));
+    // The body content itself must be gone from the audit detail.
+    expect(JSON.stringify(details)).not.toContain("a body with 2-byte chars");
+    // A non-error curated field is present, so the route drops raw params.
+    expect(Object.keys(details).some((k) => k !== "error")).toBe(true);
+  });
+
+  it("email_send curates details on the failure path so the route still suppresses raw params when the send throws", async () => {
+    mockSend.mockRejectedValue(new Error("smtp exploded"));
+    const tools = createApi(configWithSend);
+    const tool = findTool(tools, "email_send", agentId)!;
+
+    const result = await tool.execute("call-1", {
+      to: "recipient@test.com",
+      subject: "Sent Subject",
+      body: "secret body text",
+    });
+
+    expect(result.isError).toBe(true);
+    const details = result.details as Record<string, unknown>;
+    expect(details.error).toBeDefined();
+    // Non-error fields must also be present on failure — an error-only
+    // details:{error} does NOT suppress params (route curatesNonErrorFields).
+    expect(details.to).toBe(maskedRecipient);
+    expect(details.bodyBytes).toBe(Buffer.byteLength("secret body text", "utf8"));
+    expect(JSON.stringify(details)).not.toContain("secret body text");
+  });
+
+  it("email_send curates details on permission denial (raw recipient/body never reach the audit)", async () => {
+    const tools = createApi(); // testConfig agent-1 has no "send" grant
+    const tool = findTool(tools, "email_send", agentId)!;
+
+    const result = await tool.execute("call-1", {
+      to: "recipient@test.com",
+      subject: "Sent Subject",
+      body: "secret body text",
+    });
+
+    expect(result.isError).toBe(true);
+    const details = result.details as Record<string, unknown>;
+    expect(details.to).toBe(maskedRecipient);
+    expect(JSON.stringify(details)).not.toContain("secret body text");
+  });
+
+  it("email_draft success returns curated details and drops the raw body", async () => {
+    mockDraft.mockResolvedValue({ draftId: "draft-1" });
+    const tools = createApi(configWithSend);
+    const tool = findTool(tools, "email_draft", agentId)!;
+
+    const result = await tool.execute("call-1", {
+      to: "recipient@test.com",
+      subject: "Draft Subject",
+      body: "draft secret body",
+    });
+
+    const details = result.details as Record<string, unknown>;
+    expect(details.to).toBe(maskedRecipient);
+    expect(details.subject).toBe("Draft Subject");
+    expect(details.bodyBytes).toBe(Buffer.byteLength("draft secret body", "utf8"));
+    expect(JSON.stringify(details)).not.toContain("draft secret body");
+  });
+});
+
 describe("error handling", () => {
   beforeEach(() => {
     vi.clearAllMocks();
