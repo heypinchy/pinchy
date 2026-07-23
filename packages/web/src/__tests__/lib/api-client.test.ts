@@ -79,6 +79,26 @@ describe("apiPost", () => {
     expect(res).toBeUndefined();
   });
 
+  it("sends a JSON body with DELETE when one is provided", async () => {
+    // A few DELETE routes validate a request body (e.g. the OpenAI-compatible
+    // provider delete keys off `{ id }`). Verify the body is serialized and the
+    // Content-Type header is set, mirroring apiPost.
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(mockResponse({ ok: true, status: 200, body: { ok: true } }));
+    vi.stubGlobal("fetch", fetchMock);
+    const res = await apiDelete("/api/settings/providers/openai-compatible", { id: "abc" });
+    expect(res).toEqual({ ok: true });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/settings/providers/openai-compatible",
+      expect.objectContaining({
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: "abc" }),
+      })
+    );
+  });
+
   it("throws an ApiError instance on non-2xx (instanceof check)", async () => {
     vi.stubGlobal(
       "fetch",

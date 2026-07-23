@@ -49,5 +49,8 @@ export const apiPatch = <R = unknown, B = unknown>(url: string, body: B): Promis
   send<R>(url, "PATCH", body);
 export const apiPut = <R = unknown, B = unknown>(url: string, body: B): Promise<R> =>
   send<R>(url, "PUT", body);
-export const apiDelete = <R = void>(url: string): Promise<R> => send<R>(url, "DELETE");
+// `body` is optional: most DELETE routes key off the URL, but a few take a JSON
+// body (e.g. the OpenAI-compatible provider delete, which validates `{ id }`).
+export const apiDelete = <R = void, B = unknown>(url: string, body?: B): Promise<R> =>
+  send<R>(url, "DELETE", body);
 export const apiGet = <R = unknown>(url: string): Promise<R> => send<R>(url, "GET");
