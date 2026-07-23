@@ -1,6 +1,6 @@
 ---
 title: Manage LLM Providers
-description: Add, switch, or remove the LLM providers that power your Pinchy agents — Anthropic, OpenAI, Google, Ollama Cloud, and local Ollama.
+description: Add, switch, or remove the LLM providers that power your Pinchy agents — Anthropic, OpenAI, Google, Ollama Cloud, local Ollama, and any OpenAI-compatible endpoint.
 ---
 
 import { Aside } from "@astrojs/starlight/components";
@@ -18,6 +18,7 @@ For the very first provider during the setup wizard, see [Installation](/install
 | **Google**         | API key | Gemini family — long context, fast and cheap                                 |
 | **Ollama Cloud**   | API key | Hosted open-source models (Kimi, Qwen, Mistral, Gemini Flash) via ollama.com |
 | **Ollama (Local)** | URL     | Fully air-gapped local inference — see [Ollama setup](/guides/ollama-setup/) |
+| **OpenAI-compatible** | URL + API key | Any endpoint that speaks the OpenAI API — sovereign EU clouds, self-hosted gateways. See [below](#openai-compatible-providers) |
 
 You can have any combination of providers configured at the same time. Each agent picks one model from one provider.
 
@@ -25,7 +26,7 @@ You can have any combination of providers configured at the same time. Each agen
 
 <Aside type="note">Only admins can configure providers.</Aside>
 
-1. Go to **Settings → LLM Provider**
+1. Go to **Settings → AI Provider**
 2. Click the provider you want to add
 3. Paste your API key (or for local Ollama, enter the URL)
 4. Click **Save**
@@ -53,15 +54,61 @@ The dropdown shows every model from every configured provider. Models are groupe
 
 ## Switch the default provider
 
-The "default provider" is the one Pinchy reaches for when creating new agents. You can change it at **Settings → LLM Provider** by clicking **Set as default** on any configured provider. Existing agents keep their current model — only newly created agents pick up the new default.
+The "default provider" is the one Pinchy reaches for when creating new agents. You can change it at **Settings → AI Provider** by clicking **Set as default** on any configured provider. Existing agents keep their current model — only newly created agents pick up the new default.
 
 ## Remove a provider
 
-1. Go to **Settings → LLM Provider**
+1. Go to **Settings → AI Provider**
 2. Find the provider in the list
 3. Click **Remove**
 
 If any agent currently uses a model from the removed provider, the chat will fail to start until you assign that agent a model from a still-configured provider. Pinchy will not silently re-assign agents.
+
+## OpenAI-compatible providers
+
+Beyond the built-in providers, Pinchy can connect to **any endpoint that speaks the OpenAI API**. If a service exposes the familiar `/v1/chat/completions` and `/v1/models` routes with Bearer-token auth, you can wire it in — no code changes, no waiting for us to add it as a first-class provider.
+
+This is the option to reach for when you want to run agents on:
+
+- **Sovereign EU model clouds** — Swisscom AI Platform, IONOS AI Model Hub, OVHcloud AI Endpoints, Scaleway, T-Systems, and similar, so data stays with a provider under your jurisdiction.
+- **Your own inference servers** — a self-hosted vLLM or TGI deployment serving open-weight models on your hardware.
+- **LLM gateways** — a LiteLLM (or similar) proxy that fronts several upstream models behind one OpenAI-style endpoint.
+
+Unlike the built-in providers, you can add **as many OpenAI-compatible endpoints as you like** and manage them side by side.
+
+### Add an OpenAI-compatible provider
+
+<Aside type="note">Only admins can configure providers.</Aside>
+
+You can add one during the initial [setup wizard](/installation/) — it's offered as a sixth provider choice — or any time afterwards from **Settings → AI Provider**. The fields are the same in both places:
+
+1. Open **Settings → AI Provider** and, under **OpenAI-compatible providers**, click **Add provider** (in the wizard, pick **OpenAI-compatible**).
+2. **Name** — a label you choose, shown wherever the provider's models appear (e.g. "Swisscom AI Platform").
+3. **Base URL** — the endpoint's base, entered **exactly as the provider documents it, including the `/v1` path** (e.g. `https://api.example.com/v1`). Pinchy appends the standard routes to this base, so don't trim the version segment.
+4. **API key** — your key for the endpoint.
+5. Click **Connect & discover models** (see below), choose which models to expose, then **Add provider**.
+
+### Discover models
+
+When you click **Connect & discover models**, Pinchy calls `GET <base URL>/models` to both validate your key and list what the endpoint serves. Each discovered model comes in pre-selected — untick any you don't want to offer to agents.
+
+Some endpoints (a bare vLLM server, for instance) don't publish a model list. When that happens, Pinchy switches to **manual entry**: type each model id you want to use and add it. Either way, you can adjust each model's **context window** and toggle **Vision** support before saving, so a model's metadata matches what the endpoint actually serves.
+
+<Aside type="tip">
+  Editing a provider later? For security, Pinchy never shows a saved key. Leave
+  the API key blank to keep the current one, or re-enter it if you want to
+  discover models again.
+</Aside>
+
+### Where capabilities come from
+
+Pinchy resolves each model's capabilities — context window, vision, and more — from a catalog snapshot bundled with the app. A model the catalog recognises arrives with sensible values already filled in; anything unknown falls back to conservative defaults (a modest context window and no vision) that you can adjust by hand.
+
+The catalog refreshes with every Pinchy release, so **upgrading is how you pick up metadata for newer models**. See [Upgrading](/guides/upgrading/) to stay current.
+
+### Your keys stay yours
+
+Every OpenAI-compatible key is encrypted at rest and handled exactly like every other provider secret: it's never written into the OpenClaw configuration in plaintext — only an encrypted reference is — and it never appears in logs, audit events, or error messages. See [Secret handling](/security/secrets/) for the full picture.
 
 ## Model capability catalog
 
@@ -90,7 +137,7 @@ Tokens used through every provider are recorded in the [Usage Dashboard](/guides
 
 ## Troubleshooting
 
-When a provider returns an error, Pinchy shows it directly in the chat as a distinct error card with the agent name and the provider's error message. Admins see a hint pointing to **Settings → LLM Provider**; non-admin users see a prompt to contact their administrator. Transient errors (rate limits, timeouts) suggest trying again.
+When a provider returns an error, Pinchy shows it directly in the chat as a distinct error card with the agent name and the provider's error message. Admins see a hint pointing to **Settings → AI Provider**; non-admin users see a prompt to contact their administrator. Transient errors (rate limits, timeouts) suggest trying again.
 
 ### Model-unavailable errors
 
