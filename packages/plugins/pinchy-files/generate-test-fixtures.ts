@@ -36,13 +36,23 @@ const MARGIN = 50;
 const HEADING_SIZE = 18;
 const BODY_SIZE = 11;
 
+// A fixed creation date keeps regenerated fixtures byte-for-byte reproducible:
+// pdfkit otherwise stamps `CreationDate` with the wall clock, which is the only
+// source of nondeterminism in its output (verified — everything else is stable).
+const FIXTURE_DATE = new Date(Date.UTC(2025, 0, 1));
+
 /** Collect a pdfkit document into a Buffer. */
 function buildPdf(
   build: (doc: PDFKit.PDFDocument) => void,
   options: PDFKit.PDFDocumentOptions = {}
 ): Promise<Buffer> {
   return new Promise((resolve, reject) => {
-    const doc = new PDFDocument({ size: "LETTER", margin: MARGIN, ...options });
+    const doc = new PDFDocument({
+      size: "LETTER",
+      margin: MARGIN,
+      info: { CreationDate: FIXTURE_DATE },
+      ...options,
+    });
     const chunks: Buffer[] = [];
     doc.on("data", (chunk: Buffer) => chunks.push(chunk));
     doc.on("end", () => resolve(Buffer.concat(chunks)));
@@ -433,7 +443,11 @@ async function createPasswordProtected(): Promise<Buffer> {
     doc.fontSize(12).text("The password is testpass123.", MARGIN, MARGIN + 30);
   });
 
-  // Encrypt with qpdf (AES-256).
+  // Encrypt with qpdf (AES-256). Unlike the other fixtures, this one is NOT
+  // byte-reproducible: AES-256 PDF encryption seeds a random file key and salt
+  // per run, and qpdf's `--deterministic-id` is rejected for encrypted output.
+  // The plaintext body above is deterministic; only the encryption envelope
+  // differs between regenerations.
   try {
     const tmpIn = join(FIXTURES_DIR, "_tmp_unencrypted.pdf");
     const tmpOut = join(FIXTURES_DIR, "password-protected.pdf");
@@ -455,9 +469,10 @@ async function createPasswordProtected(): Promise<Buffer> {
 // ---------------------------------------------------------------------------
 
 function createCorrupted(sourcePdf: Buffer): Buffer {
-  // Take the first 50% of bytes
+  // Take the first 50% of bytes. Copy rather than return a view into the source
+  // buffer, so the result stays independent of `sourcePdf`'s lifetime.
   const halfLength = Math.floor(sourcePdf.length / 2);
-  return sourcePdf.subarray(0, halfLength);
+  return Buffer.from(sourcePdf.subarray(0, halfLength));
 }
 
 // ---------------------------------------------------------------------------
