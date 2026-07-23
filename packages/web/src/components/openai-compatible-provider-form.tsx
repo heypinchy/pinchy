@@ -136,8 +136,10 @@ function OpenAiCompatibleProviderForm({ provider, onSaved, onCancel }: FormProps
         }
         return;
       }
-      if (res.models.length === 0) {
-        // No /models endpoint — let the admin type model ids by hand.
+      if (res.manualEntry === true || res.models.length === 0) {
+        // The server flags `manualEntry` (with `models:[]`) when the endpoint
+        // exposes no /models — honor that explicit signal, and defensively fall
+        // back to it whenever the list came back empty. Let the admin type ids.
         setManualEntry(true);
         setModels([]);
         setSelectedIds(new Set());
@@ -262,10 +264,15 @@ function OpenAiCompatibleProviderForm({ provider, onSaved, onCancel }: FormProps
         )}
       </div>
 
-      <div>
+      <div className="space-y-1">
         <Button type="button" variant="outline" onClick={handleDiscover} disabled={discovering}>
           {discovering ? "Connecting..." : "Connect & discover models"}
         </Button>
+        {isEdit && (
+          <p className="text-xs text-muted-foreground">
+            Re-enter your API key to discover models again.
+          </p>
+        )}
       </div>
 
       {formError && <p className="text-sm text-destructive">{formError}</p>}
