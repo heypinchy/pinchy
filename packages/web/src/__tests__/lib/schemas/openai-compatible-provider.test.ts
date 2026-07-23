@@ -1,10 +1,12 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, expectTypeOf } from "vitest";
 import {
   modelDefinitionSchema,
   upsertOpenAiCompatibleProviderSchema,
   discoverSchema,
   deleteOpenAiCompatibleSchema,
+  type ModelDefinitionInput,
 } from "@/lib/schemas/openai-compatible-provider";
+import type { OpenClawModelDefinition } from "@/lib/openclaw-builtin-models";
 
 // These schemas are the single source of truth for the OpenAI-compatible
 // provider write paths, imported by BOTH the route handlers (parseRequestBody)
@@ -87,6 +89,15 @@ describe("modelDefinitionSchema", () => {
   it("rejects a zero contextWindow (must be positive int)", () => {
     const parsed = modelDefinitionSchema.safeParse({ ...validModel, contextWindow: 0 });
     expect(parsed.success).toBe(false);
+  });
+
+  // Compile-time parity guard (real check via tsconfig.typecheck.json, AGENTS.md
+  // "Web Test Files Are Type-Checked"): the inferred model type must stay
+  // structurally equal to the OpenClawModelDefinition interface this schema
+  // validates. A field added to one but not the other breaks typecheck in CI
+  // instead of silently drifting.
+  it("ModelDefinitionInput stays structurally equal to OpenClawModelDefinition", () => {
+    expectTypeOf<ModelDefinitionInput>().toEqualTypeOf<OpenClawModelDefinition>();
   });
 });
 
