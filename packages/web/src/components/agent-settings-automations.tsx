@@ -248,6 +248,10 @@ export function AgentSettingsAutomations({ agentId }: { agentId: string }) {
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
+              // Disabled while the DELETE is in flight: the dialog stays open
+              // during the await (we preventDefault its auto-close), so without
+              // this a second click would fire a second DELETE on the same id.
+              disabled={busyId !== null && busyId === deleteTarget?.id}
               onClick={(e) => {
                 // Keep the dialog controlled: run the delete, close on our terms.
                 e.preventDefault();

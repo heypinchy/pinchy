@@ -212,4 +212,79 @@ describe("AgentSettingsAutomations", () => {
     });
     expect(toast.success).toHaveBeenCalled();
   });
+
+  it("surfaces a toast and falls back to the empty state when the list fails to load", async () => {
+    vi.mocked(global.fetch).mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.startsWith("/api/automations?"))
+        return jsonResponse({ error: "Nope" }, { ok: false, status: 500 });
+      return jsonResponse({ ok: true });
+    });
+    render(<AgentSettingsAutomations agentId={AGENT_ID} />);
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith("Nope"));
+    // The load failed, so we clear the skeleton and show the honest empty state
+    // rather than a stuck spinner.
+    expect(screen.getByText(/no automations yet/i)).toBeInTheDocument();
+  });
+
+  it("keeps the row and toasts when the delete fails (non-optimistic removal)", async () => {
+    vi.mocked(global.fetch).mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.startsWith("/api/automations?")) return jsonResponse(mockAutomations);
+      if ((init as RequestInit)?.method === "DELETE")
+        return jsonResponse({ error: "Nope" }, { ok: false, status: 500 });
+      return jsonResponse({ ok: true });
+    });
+    const user = userEvent.setup();
+    render(<AgentSettingsAutomations agentId={AGENT_ID} />);
+
+    await waitFor(() => expect(screen.getByText("Summarize newsletters")).toBeInTheDocument());
+    const row2 = screen.getByRole("row", { name: /Summarize newsletters/ });
+    await user.click(within(row2).getByRole("button", { name: /delete/i }));
+    const dialog = await screen.findByRole("alertdialog");
+    await user.click(within(dialog).getByRole("button", { name: /delete/i }));
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith("Nope"));
+    // The row is removed only on a successful DELETE, so a failed one leaves it
+    // in place for the user to retry.
+    expect(screen.getByText("Summarize newsletters")).toBeInTheDocument();
+  });
+
+  it("disables the confirm button while a delete is in flight, guarding double-submit", async () => {
+    let releaseDelete: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      releaseDelete = resolve;
+    });
+    let deleteCount = 0;
+    vi.mocked(global.fetch).mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.startsWith("/api/automations?")) return jsonResponse(mockAutomations);
+      if ((init as RequestInit)?.method === "DELETE") {
+        deleteCount += 1;
+        await gate;
+        return jsonResponse({ ok: true });
+      }
+      return jsonResponse({ ok: true });
+    });
+    const user = userEvent.setup();
+    render(<AgentSettingsAutomations agentId={AGENT_ID} />);
+
+    await waitFor(() => expect(screen.getByText("Summarize newsletters")).toBeInTheDocument());
+    const row2 = screen.getByRole("row", { name: /Summarize newsletters/ });
+    await user.click(within(row2).getByRole("button", { name: /delete/i }));
+    const dialog = await screen.findByRole("alertdialog");
+    const confirm = within(dialog).getByRole("button", { name: /delete/i });
+    await user.click(confirm);
+
+    // While the DELETE is in flight the confirm button is disabled, so a second
+    // click cannot fire a second DELETE on the same (now-gone) id.
+    await waitFor(() => expect(confirm).toBeDisabled());
+    expect(deleteCount).toBe(1);
+
+    releaseDelete();
+    await waitFor(() =>
+      expect(screen.queryByText("Summarize newsletters")).not.toBeInTheDocument()
+    );
+  });
 });
