@@ -78,6 +78,10 @@ vi.mock("@/lib/provider-models", () => ({
   resetCache: vi.fn(),
 }));
 
+vi.mock("@/lib/openai-compatible-providers", () => ({
+  listOpenAiCompatibleProviders: vi.fn().mockResolvedValue([]),
+}));
+
 vi.mock("@/db", () => ({
   db: {
     query: {
@@ -110,8 +114,37 @@ import { resetCache } from "@/lib/provider-models";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { db } from "@/db";
 import { appendAuditLog } from "@/lib/audit";
+import { listOpenAiCompatibleProviders } from "@/lib/openai-compatible-providers";
+import type { OpenAiCompatibleProviderListItem } from "@/lib/openai-compatible-providers";
 import { mockSession } from "@/test-helpers/auth";
 import { makeNextRequest, routeContext } from "@/test-helpers/route";
+
+/** Typed custom-provider list item for mocking listOpenAiCompatibleProviders. */
+function customProvider(
+  slug: string,
+  displayName: string,
+  modelDefs: { id: string; name: string }[]
+): OpenAiCompatibleProviderListItem {
+  return {
+    id: `id-${slug}`,
+    slug,
+    displayName,
+    baseUrl: `https://${slug}.test/v1`,
+    models: modelDefs.map((m) => ({
+      id: m.id,
+      name: m.name,
+      contextWindow: 8192,
+      maxTokens: 4096,
+      reasoning: false,
+      vision: false,
+      input: ["text"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    })),
+    keyHint: "abcd",
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  };
+}
 
 describe("GET /api/settings/providers", () => {
   beforeEach(() => {
@@ -223,6 +256,7 @@ describe("DELETE /api/settings/providers", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(getSetting).mockResolvedValue(null);
+    vi.mocked(listOpenAiCompatibleProviders).mockResolvedValue([]);
   });
 
   function makeRequest(body: object) {
@@ -550,5 +584,121 @@ describe("DELETE /api/settings/providers", () => {
     await DELETE(makeRequest({ provider: "anthropic" }), routeContext());
 
     expect(appendAuditLog).not.toHaveBeenCalled();
+  });
+
+  it("should allow deleting the only built-in when a custom instance still exists", async () => {
+    // anthropic is the sole configured built-in, but one custom OpenAI-compatible
+    // instance exists — so anthropic is NOT the last provider and removal is allowed.
+    vi.mocked(getSetting).mockImplementation(async (key: string) => {
+      if (key === "anthropic_api_key") return "sk-ant-secret";
+      if (key === "default_provider") return "anthropic";
+      return null;
+    });
+    vi.mocked(listOpenAiCompatibleProviders).mockResolvedValue([
+      customProvider("acme", "Acme LLM", [{ id: "acme-large", name: "Acme Large" }]),
+    ]);
+
+    const response = await DELETE(makeRequest({ provider: "anthropic" }), routeContext());
+
+    expect(response.status).toBe(200);
+    expect(deleteSetting).toHaveBeenCalledWith("anthropic_api_key");
+  });
+
+  it("should still refuse deleting the sole provider when no custom instance exists", async () => {
+    vi.mocked(getSetting).mockImplementation(async (key: string) => {
+      if (key === "anthropic_api_key") return "sk-ant-secret";
+      if (key === "default_provider") return "anthropic";
+      return null;
+    });
+    vi.mocked(listOpenAiCompatibleProviders).mockResolvedValue([]);
+
+    const response = await DELETE(makeRequest({ provider: "anthropic" }), routeContext());
+
+    expect(response.status).toBe(400);
+    const data = await response.json();
+    expect(data.error).toMatch(/last configured provider/i);
+    expect(deleteSetting).not.toHaveBeenCalled();
+  });
+
+  it("should migrate agents onto a remaining custom provider's default model", async () => {
+    // anthropic is the only built-in; the sole remaining provider is the custom
+    // instance, so agents on anthropic/* must migrate onto <slug>/<first model>.
+    vi.mocked(getSetting).mockImplementation(async (key: string) => {
+      if (key === "anthropic_api_key") return "sk-ant-secret";
+      if (key === "default_provider") return "anthropic";
+      return null;
+    });
+    vi.mocked(listOpenAiCompatibleProviders).mockResolvedValue([
+      customProvider("acme", "Acme LLM", [
+        { id: "acme-large", name: "Acme Large" },
+        { id: "acme-small", name: "Acme Small" },
+      ]),
+    ]);
+    vi.mocked(db.query.agents.findMany).mockResolvedValueOnce([
+      { id: "agent-1", name: "Helper", model: "anthropic/claude-haiku-4-5-20251001" },
+    ] as any[]);
+
+    const response = await DELETE(makeRequest({ provider: "anthropic" }), routeContext());
+
+    expect(response.status).toBe(200);
+    expect(db.update).toHaveBeenCalledTimes(1);
+    expect(appendAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: "settings.deleted",
+        resource: "settings:provider:anthropic",
+        outcome: "success",
+        detail: expect.objectContaining({
+          name: "Anthropic",
+          provider: "anthropic",
+          wasDefault: true,
+          newDefault: "acme",
+          agentCount: 1,
+          migratedAgents: [
+            {
+              id: "agent-1",
+              name: "Helper",
+              fromModel: "anthropic/claude-haiku-4-5-20251001",
+              toModel: "acme/acme-large",
+            },
+          ],
+        }),
+      })
+    );
+    expect(setSetting).toHaveBeenCalledWith("default_provider", "acme", false);
+  });
+
+  it("should prefer a remaining built-in over a custom instance as migration target", async () => {
+    // With both a remaining built-in (openai) AND a custom instance present, the
+    // built-in wins the migration target — preserving pre-custom behavior.
+    vi.mocked(getSetting).mockImplementation(async (key: string) => {
+      if (key === "anthropic_api_key") return "sk-ant-secret";
+      if (key === "openai_api_key") return "sk-openai-key";
+      if (key === "default_provider") return "anthropic";
+      return null;
+    });
+    vi.mocked(listOpenAiCompatibleProviders).mockResolvedValue([
+      customProvider("acme", "Acme LLM", [{ id: "acme-large", name: "Acme Large" }]),
+    ]);
+    vi.mocked(db.query.agents.findMany).mockResolvedValueOnce([
+      { id: "agent-1", name: "Helper", model: "anthropic/claude-haiku-4-5-20251001" },
+    ] as any[]);
+
+    await DELETE(makeRequest({ provider: "anthropic" }), routeContext());
+
+    expect(appendAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        detail: expect.objectContaining({
+          newDefault: "openai",
+          migratedAgents: [
+            {
+              id: "agent-1",
+              name: "Helper",
+              fromModel: "anthropic/claude-haiku-4-5-20251001",
+              toModel: "openai/gpt-5.4-mini",
+            },
+          ],
+        }),
+      })
+    );
   });
 });

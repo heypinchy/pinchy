@@ -5,6 +5,8 @@ import { getSetting, setSetting, deleteSetting } from "@/lib/settings";
 import { PROVIDERS, type ProviderName } from "@/lib/providers";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { resetCache } from "@/lib/provider-models";
+import { countConfiguredProviders } from "@/lib/provider-count";
+import { listOpenAiCompatibleProviders } from "@/lib/openai-compatible-providers";
 import { appendAuditLog } from "@/lib/audit";
 import { db } from "@/db";
 import { agents } from "@/db/schema";
@@ -42,25 +44,39 @@ export const DELETE = withAdmin(async (request, _ctx, session) => {
 
   const config = PROVIDERS[provider];
 
-  // Count configured providers
-  const configuredProviders: { name: ProviderName; config: typeof config }[] = [];
-  for (const [name, providerConfig] of Object.entries(PROVIDERS)) {
-    const value = await getSetting(providerConfig.settingsKey);
-    if (value !== null) {
-      configuredProviders.push({
-        name: name as ProviderName,
-        config: providerConfig,
-      });
-    }
-  }
-
-  if (configuredProviders.length <= 1) {
+  // A single custom OpenAI-compatible instance counts as a valid sole provider,
+  // so this count spans built-ins + custom instances (see provider-count.ts).
+  const totalConfigured = await countConfiguredProviders();
+  if (totalConfigured <= 1) {
     return NextResponse.json(
       {
         error: "Cannot remove the last configured provider. Add another provider first.",
       },
       { status: 400 }
     );
+  }
+
+  // Build the set of providers an orphaned agent can migrate onto, EXCLUDING the
+  // one being deleted. Built-ins come first (so the all-built-ins path stays
+  // byte-identical to before), then every custom instance. Each candidate is
+  // reduced to the two things migration needs: a `name` (built-in ProviderName
+  // or custom slug — also the value written to default_provider) and the
+  // `defaultModel` an agent is repointed to. A custom instance's default model
+  // is its first persisted model, namespaced `<slug>/<modelId>` to match the
+  // openclaw.json emission. `models` is guaranteed non-empty by the create schema.
+  const remainingCandidates: { name: string; defaultModel: string }[] = [];
+  for (const [name, providerConfig] of Object.entries(PROVIDERS)) {
+    if (name === provider) continue;
+    const value = await getSetting(providerConfig.settingsKey);
+    if (value !== null) {
+      remainingCandidates.push({ name, defaultModel: providerConfig.defaultModel });
+    }
+  }
+  for (const custom of await listOpenAiCompatibleProviders()) {
+    remainingCandidates.push({
+      name: custom.slug,
+      defaultModel: `${custom.slug}/${custom.models[0].id}`,
+    });
   }
 
   await deleteSetting(config.settingsKey);
@@ -72,11 +88,11 @@ export const DELETE = withAdmin(async (request, _ctx, session) => {
     fromModel: string;
     toModel: string;
   }[] = [];
-  let newDefault: ProviderName | undefined;
+  let newDefault: string | undefined;
   const previousDefault = await getSetting("default_provider");
   const wasDefault = previousDefault === provider;
 
-  const remaining = configuredProviders.find((p) => p.name !== provider);
+  const remaining = remainingCandidates[0];
   if (remaining) {
     // Migrate all agents using the removed provider to the remaining provider's default model
     const allAgents = await db.query.agents.findMany();
@@ -87,13 +103,13 @@ export const DELETE = withAdmin(async (request, _ctx, session) => {
       if (agent.model?.startsWith(providerPrefix)) {
         await db
           .update(agents)
-          .set({ model: remaining.config.defaultModel })
+          .set({ model: remaining.defaultModel })
           .where(eq(agents.id, agent.id));
         migratedAgents.push({
           id: agent.id,
           name: agent.name,
           fromModel: agent.model,
-          toModel: remaining.config.defaultModel,
+          toModel: remaining.defaultModel,
         });
       }
     }
