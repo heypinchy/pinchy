@@ -6,6 +6,14 @@ vi.mock("@/lib/settings", () => ({
   getSetting: vi.fn().mockResolvedValue(null),
 }));
 
+// fetchProviderModels now also enumerates custom OpenAI-compatible instances
+// (#894), which is a DB read. This suite only exercises built-in base-URL
+// overrides, so stub the custom list empty — otherwise the live DB read fails
+// in the DB-less unit environment.
+vi.mock("@/lib/openai-compatible-providers", () => ({
+  listOpenAiCompatibleProviders: vi.fn().mockResolvedValue([]),
+}));
+
 import { fetchProviderModels, resetCache } from "@/lib/provider-models";
 import { getSetting } from "@/lib/settings";
 
