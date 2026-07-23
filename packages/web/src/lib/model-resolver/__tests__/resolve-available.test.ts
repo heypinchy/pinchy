@@ -92,6 +92,33 @@ describe("resolveAvailableModelForTemplate", () => {
     });
   });
 
+  it("keeps the pick best-effort when getDefaultModel's substitute is itself absent from the live catalog", async () => {
+    // The pick is absent from the live catalog, but getDefaultModel falls back
+    // to a hardcoded anchor/default that is ALSO absent (an incomplete or empty
+    // /v1/models — e.g. a provider whose catalog omits the current picks, or a
+    // transient partial response). getDefaultModel is NOT "live by construction"
+    // in that case, so the catalog is too incomplete to trust as a retirement
+    // signal. Only act on a confirmed signal: keep the pick, like a fetch
+    // failure — never pin an unverified substitute, never throw.
+    resolveModelForTemplate.mockResolvedValue(pick("google/gemini-2.5-pro"));
+    fetchProviderModels.mockResolvedValue([
+      // pick absent; only a sibling model is listed.
+      { id: "google", models: [{ id: "google/gemini-2.5-flash" }] },
+    ]);
+    // Anchor fallback resolves back to a model the catalog does not list.
+    getDefaultModel.mockResolvedValue("google/gemini-2.5-pro");
+
+    const result = await resolveAvailableModelForTemplate({
+      provider: "google",
+      hint: { tier: "balanced", capabilities: ["tools", "long-context"] },
+    });
+
+    expect(result.model).toBe("google/gemini-2.5-pro");
+    expect(result.fallbackUsed).toBe(false);
+    // Best-effort keep must never consult the capability gate.
+    expect(modelCapabilityStatus).not.toHaveBeenCalled();
+  });
+
   it("substitutes rather than throwing when the live default's capabilities are unknown (unknown ≠ incapable)", async () => {
     // The live default is a brand-new model the provider added AFTER this
     // release, so it is absent from the curated capability cache and every
