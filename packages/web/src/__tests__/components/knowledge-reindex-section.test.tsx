@@ -3,7 +3,7 @@ import { render, screen, waitFor, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
 
-import { KnowledgeReindexSection } from "@/components/knowledge-reindex-section";
+import { KnowledgeReindexSection, formatElapsed } from "@/components/knowledge-reindex-section";
 import { apiGet, apiPost, ApiError } from "@/lib/api-client";
 import { toast } from "sonner";
 
@@ -259,5 +259,76 @@ describe("KnowledgeReindexSection", () => {
     expect(toast.error).not.toHaveBeenCalled();
     // No phantom running state — the button stays usable.
     expect(screen.getByRole("button", { name: /reindex/i })).toBeEnabled();
+  });
+
+  // Elapsed-time readout: an honest "it's still moving" signal for a long index,
+  // deliberately NOT an ETA — per-document embedding cost varies too wildly
+  // (one compilation PDF can be 38% of all chunks) for a doc-count projection to
+  // be anything but a lie. Chunk-level progress + a real ETA is tracked in #907.
+  describe("elapsed time while a run is in flight", () => {
+    beforeEach(() => vi.useFakeTimers({ shouldAdvanceTime: true }));
+    afterEach(() => vi.useRealTimers());
+
+    it("shows how long the running index has been going", async () => {
+      // startedAt is 10:00:01; freeze now 12 minutes later.
+      vi.setSystemTime(new Date("2026-07-21T10:12:01.000Z"));
+      mockGet.mockResolvedValue({
+        job: job({ status: "running", processed: 5, total: 20 }),
+      });
+
+      render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} />);
+
+      await waitFor(() => expect(screen.getByText(/running 12 min/i)).toBeInTheDocument());
+      // Still shows the document progress alongside it.
+      expect(screen.getByText(/5 of 20/i)).toBeInTheDocument();
+    });
+
+    it("shows elapsed time during the indeterminate discovery phase too", async () => {
+      vi.setSystemTime(new Date("2026-07-21T10:00:44.000Z")); // 43s after startedAt
+      mockGet.mockResolvedValue({
+        job: job({ status: "running", processed: 0, total: null }),
+      });
+
+      render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} />);
+
+      await waitFor(() => expect(screen.getByText(/discovering documents/i)).toBeInTheDocument());
+      expect(screen.getByText(/running 43 sec/i)).toBeInTheDocument();
+    });
+
+    it("omits the elapsed readout when the worker has not started the job yet", async () => {
+      vi.setSystemTime(new Date("2026-07-21T10:12:01.000Z"));
+      mockGet.mockResolvedValue({
+        job: job({ status: "running", processed: 0, total: null, startedAt: null }),
+      });
+
+      render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} />);
+
+      await waitFor(() => expect(screen.getByText(/discovering documents/i)).toBeInTheDocument());
+      expect(screen.queryByText(/running/i)).not.toBeInTheDocument();
+    });
+  });
+
+  describe("formatElapsed", () => {
+    const base = Date.parse("2026-07-21T10:00:00.000Z");
+
+    it("shows whole seconds under a minute", () => {
+      expect(formatElapsed(base, base + 42_000)).toBe("42 sec");
+    });
+
+    it("shows whole minutes under an hour, flooring the seconds", () => {
+      expect(formatElapsed(base, base + 12 * 60_000 + 30_000)).toBe("12 min");
+    });
+
+    it("shows hours and minutes past an hour", () => {
+      expect(formatElapsed(base, base + (2 * 60 + 5) * 60_000)).toBe("2 h 5 min");
+    });
+
+    it("drops the minutes at an exact hour boundary", () => {
+      expect(formatElapsed(base, base + 3 * 3_600_000)).toBe("3 h");
+    });
+
+    it("clamps clock skew (now before start) to zero", () => {
+      expect(formatElapsed(base, base - 5_000)).toBe("0 sec");
+    });
   });
 });

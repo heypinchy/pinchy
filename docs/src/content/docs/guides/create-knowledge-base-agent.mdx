@@ -44,7 +44,7 @@ Click **Save** to apply the permissions.
 
 ## 6. Index the documents
 
-Granting a directory doesn't index it automatically — an admin has to trigger indexing. The simplest way is right where you granted the directories: in the agent's **Permissions** tab, the **Knowledge Base** section has an **Index** control. Click **Reindex now** and the section shows the run inline — discovery, a live progress bar, and the last run's outcome — so you never have to leave the page or read a log.
+Granting a directory doesn't index it automatically — an admin has to trigger indexing. The simplest way is right where you granted the directories: in the agent's **Permissions** tab, the **Knowledge Base** section has an **Index** control. Click **Reindex now** and the section shows the run inline — discovery, a live progress bar with how long the run has been going, and the last run's outcome — so you never have to leave the page or read a log. (It's an elapsed time, not an estimate to completion: on a real corpus a single large document can dominate the work, so any countdown would mislead more than it helps.)
 
 The same action is available over the API, which is what you'd script for scheduled re-indexing:
 

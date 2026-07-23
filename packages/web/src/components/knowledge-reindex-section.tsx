@@ -105,6 +105,21 @@ export function KnowledgeReindexSection({
     return () => clearInterval(id);
   }, [active, fetchStatus, pollIntervalMs]);
 
+  // A once-per-second clock, live ONLY while a run is active, so the elapsed
+  // readout ticks smoothly instead of jumping on each 3s poll. Reading the
+  // wall clock here (in an effect, not during render) keeps the component pure;
+  // `now` is null while idle so nothing renders an age for a finished/absent run.
+  const [now, setNow] = useState<number | null>(null);
+  useEffect(() => {
+    if (!active) {
+      setNow(null);
+      return;
+    }
+    setNow(Date.now());
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [active]);
+
   const handleReindex = useCallback(async () => {
     setSubmitting(true);
     try {
@@ -161,7 +176,7 @@ export function KnowledgeReindexSection({
           Grant at least one directory to enable indexing.
         </p>
       ) : active && job ? (
-        <RunningState job={job} />
+        <RunningState job={job} now={now} />
       ) : job?.status === "succeeded" ? (
         <SucceededState job={job} />
       ) : job?.status === "failed" ? (
@@ -173,14 +188,24 @@ export function KnowledgeReindexSection({
   );
 }
 
-function RunningState({ job }: { job: ReindexJob }) {
+function RunningState({ job, now }: { job: ReindexJob; now: number | null }) {
+  // How long the worker has been on this run. Deliberately an elapsed readout,
+  // NOT an ETA: per-document embedding cost varies too wildly on a real corpus
+  // (a single compilation PDF can be ~38% of all chunks) for a doc-count
+  // projection to be honest. A true ETA needs chunk-level progress (#907).
+  // Empty until the worker has started the job AND the clock ticked.
+  const elapsedSuffix =
+    job.startedAt && now !== null
+      ? ` · running ${formatElapsed(new Date(job.startedAt).getTime(), now)}`
+      : "";
+
   // `total` is null until discovery has walked every root — an indeterminate
   // phase we name rather than fake a percentage for.
   if (job.total === null) {
     return (
       <div className="space-y-2">
         <Progress value={0} />
-        <p className="text-sm text-muted-foreground">Discovering documents…</p>
+        <p className="text-sm text-muted-foreground">Discovering documents…{elapsedSuffix}</p>
       </div>
     );
   }
@@ -191,10 +216,26 @@ function RunningState({ job }: { job: ReindexJob }) {
     <div className="space-y-2">
       <Progress value={pct} />
       <p className="text-sm text-muted-foreground">
-        Indexing {job.processed} of {job.total} documents…
+        Indexing {job.processed} of {job.total} documents…{elapsedSuffix}
       </p>
     </div>
   );
+}
+
+/**
+ * Humanizes an elapsed duration (`nowMs − startedAtMs`) as a compact
+ * "42 sec" / "12 min" / "2 h 5 min" string. Clock skew (now before start)
+ * clamps to "0 sec" rather than showing a negative age. Seconds are floored
+ * once past a minute, and the minutes component is dropped on an exact hour.
+ */
+export function formatElapsed(startedAtMs: number, nowMs: number): string {
+  const totalSec = Math.max(0, Math.floor((nowMs - startedAtMs) / 1000));
+  if (totalSec < 60) return `${totalSec} sec`;
+  const totalMin = Math.floor(totalSec / 60);
+  if (totalMin < 60) return `${totalMin} min`;
+  const hours = Math.floor(totalMin / 60);
+  const minutes = totalMin % 60;
+  return minutes === 0 ? `${hours} h` : `${hours} h ${minutes} min`;
 }
 
 function SucceededState({ job }: { job: ReindexJob }) {
