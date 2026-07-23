@@ -8,6 +8,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ProviderKeyForm } from "@/components/provider-key-form";
+import { OpenAiCompatibleProvidersSection } from "@/components/openai-compatible-provider-form";
 import { SettingsUsers } from "@/components/settings-users";
 import { SettingsContext } from "@/components/settings-context";
 import { SettingsProfile } from "@/components/settings-profile";
@@ -285,24 +286,28 @@ export function SettingsPageContent({
 
             {isAdmin && (
               <TabsContent value="provider" keepMounted>
-                <Card>
-                  <CardHeader>
-                    <CardTitle>LLM Provider</CardTitle>
-                  </CardHeader>
-                  <CardContent>
-                    {loading ? (
-                      <p>Loading...</p>
-                    ) : (
-                      <ProviderKeyForm
-                        onSuccess={fetchStatus}
-                        submitLabel="Save"
-                        configuredProviders={status?.providers}
-                        defaultProvider={status?.defaultProvider}
-                        onDirtyChange={handleProviderDirtyChange}
-                      />
-                    )}
-                  </CardContent>
-                </Card>
+                <div className="space-y-6">
+                  <Card>
+                    <CardHeader>
+                      <CardTitle>LLM Provider</CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      {loading ? (
+                        <p>Loading...</p>
+                      ) : (
+                        <ProviderKeyForm
+                          onSuccess={fetchStatus}
+                          submitLabel="Save"
+                          configuredProviders={status?.providers}
+                          defaultProvider={status?.defaultProvider}
+                          onDirtyChange={handleProviderDirtyChange}
+                        />
+                      )}
+                    </CardContent>
+                  </Card>
+
+                  <OpenAiCompatibleProvidersSection />
+                </div>
               </TabsContent>
             )}
 
