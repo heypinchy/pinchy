@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useLayoutEffect, useCallback, useRef } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -155,6 +155,21 @@ export function NewAgentForm() {
   });
 
   const nameInputRef = useRef<HTMLInputElement | null>(null);
+  // Set when a suggested name has just been applied; the layout effect below
+  // selects the field once, after the commit that puts the value in the DOM.
+  const selectNameAfterCommitRef = useRef(false);
+
+  // Select-all after the commit that applies a suggested name, so the user can
+  // overtype. A layout effect runs synchronously after the DOM mutation (unlike
+  // a `setTimeout`, which raced the template-switch re-renders and lost the
+  // selection under load). Later renders don't change the name value, so React
+  // won't reassign `node.value` and the selection survives.
+  useLayoutEffect(() => {
+    if (selectNameAfterCommitRef.current) {
+      selectNameAfterCommitRef.current = false;
+      nameInputRef.current?.select();
+    }
+  });
 
   const fetchData = useCallback(async () => {
     const templatesRes = await fetch("/api/templates");
@@ -338,9 +353,9 @@ export function NewAgentForm() {
           const suggested = pickSuggestedName(selectedTemplate, existingNames);
           if (suggested && !cancelled) {
             form.setValue("name", suggested);
-            // Select all text so users can overtype immediately.
-            // Defer past React's commit so the DOM reflects the new value.
-            setTimeout(() => nameInputRef.current?.select(), 0);
+            // Select all text so users can overtype immediately. The layout
+            // effect performs the selection after the value is committed.
+            selectNameAfterCommitRef.current = true;
           }
         } catch {
           // Ignore — user can still type a name manually
