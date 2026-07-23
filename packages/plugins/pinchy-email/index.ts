@@ -308,6 +308,18 @@ function maskRecipientForAudit(value: unknown): string {
   return `${local[0]}${"*".repeat(local.length - 1)}@${domain}`;
 }
 
+// Scrub any email-shaped run out of a free-text audit field (subject line,
+// search term). A subject like "Re: your mail to max@firma.de" carries an
+// address; keeping the subject for governance value must not keep the address
+// in the append-only, un-redactable audit. Mirrors web audit.ts scrubEmails —
+// which this plugin cannot import across the package boundary. The TLD-required
+// / IP-literal branches match that source so a social `@handle` isn't mistaken
+// for an email; `u` flag + \p{L}/\p{N} covers internationalized domains.
+const EMAIL_LIKE_PATTERN = /[\p{L}\p{N}._%+-]+@(?:\[[^\]\s]+\]|[\p{L}\p{N}.-]+\.[\p{L}]{2,})/gu;
+function scrubEmailsForAudit(text: string): string {
+  return text.replace(EMAIL_LIKE_PATTERN, "<email-redacted>");
+}
+
 // Cap free-text audit fields so a flooded value can't blow the 2048-byte
 // detail cap (web audit.ts truncateDetail would then collapse the whole
 // curated detail into a `_truncated` summary blob, losing the governance
@@ -326,6 +338,14 @@ function truncateUtf8ForAudit(text: string, maxBytes: number): string {
   return buf.subarray(0, end).toString("utf8");
 }
 
+// Curate a free-text audit field: scrub email addresses first, then cap —
+// never the other way round, so a truncation can't leave a partial
+// `user@example` fragment behind (same ordering rule as web safeProviderError).
+function curateAuditText(value: unknown, maxBytes: number): string {
+  const text = typeof value === "string" ? value : "";
+  return truncateUtf8ForAudit(scrubEmailsForAudit(text), maxBytes);
+}
+
 /**
  * Curated audit details for email_send / email_draft. Returning these non-error
  * fields makes the audit route suppress the raw params (recipient + full body)
@@ -342,10 +362,7 @@ function emailWriteAuditDetails(params: Record<string, unknown>): {
 } {
   return {
     to: maskRecipientForAudit(params.to),
-    subject: truncateUtf8ForAudit(
-      typeof params.subject === "string" ? params.subject : "",
-      AUDIT_SUBJECT_MAX_BYTES
-    ),
+    subject: curateAuditText(params.subject, AUDIT_SUBJECT_MAX_BYTES),
     bodyBytes: Buffer.byteLength(typeof params.body === "string" ? params.body : "", "utf8"),
   };
 }
@@ -361,6 +378,69 @@ function withEmailAuditDetails(
   return {
     ...base,
     details: { ...emailWriteAuditDetails(params), error: base.details.error },
+  };
+}
+
+/**
+ * Curated audit details for email_search. Its params carry PII too: `from`/`to`
+ * are recipient addresses by schema, and `subject`/`text` are free-text terms a
+ * model may fill with an address. Same contract as emailWriteAuditDetails —
+ * returning a non-error field makes the audit route drop the raw params on every
+ * return path. Addresses are masked, free-text is scrubbed + capped, and the
+ * remaining structured filters (folder/unread/sinceDays/limit) are safe to keep
+ * verbatim for governance value. `filters` lists which fields the search used —
+ * always present, so the route suppresses raw params even for a filter-less call.
+ */
+function emailSearchAuditDetails(params: Record<string, unknown>): Record<string, unknown> {
+  const details: Record<string, unknown> = {};
+  const filters: string[] = [];
+  if (typeof params.from === "string") {
+    details.from = maskRecipientForAudit(params.from);
+    filters.push("from");
+  }
+  if (typeof params.to === "string") {
+    details.to = maskRecipientForAudit(params.to);
+    filters.push("to");
+  }
+  if (typeof params.subject === "string") {
+    details.subject = curateAuditText(params.subject, AUDIT_SUBJECT_MAX_BYTES);
+    filters.push("subject");
+  }
+  if (typeof params.text === "string") {
+    details.text = curateAuditText(params.text, AUDIT_SUBJECT_MAX_BYTES);
+    filters.push("text");
+  }
+  if (typeof params.unread === "boolean") {
+    details.unread = params.unread;
+    filters.push("unread");
+  }
+  if (typeof params.sinceDays === "number") {
+    details.sinceDays = params.sinceDays;
+    filters.push("sinceDays");
+  }
+  if (typeof params.folder === "string") {
+    details.folder = params.folder;
+    filters.push("folder");
+  }
+  if (typeof params.limit === "number") {
+    details.limit = params.limit;
+    filters.push("limit");
+  }
+  details.filters = filters;
+  return details;
+}
+
+/**
+ * Merge curated search audit details into an error result (see
+ * emailSearchAuditDetails) so the route suppresses raw params on failure paths.
+ */
+function withEmailSearchAuditDetails(
+  base: { content: ContentBlock[]; isError: true; details: { error: string } },
+  params: Record<string, unknown>
+): { content: ContentBlock[]; isError: true; details: Record<string, unknown> } {
+  return {
+    ...base,
+    details: { ...emailSearchAuditDetails(params), error: base.details.error },
   };
 }
 
@@ -993,7 +1073,7 @@ const plugin = {
           async execute(_toolCallId: string, params: Record<string, unknown>) {
             try {
               if (!checkPermission(config.permissions, "email", "read")) {
-                return permissionDenied("read");
+                return withEmailSearchAuditDetails(permissionDenied("read"), params);
               }
 
               // email_search used to take a raw Gmail-style `query` string.
@@ -1007,12 +1087,15 @@ const plugin = {
               // valid DSL fields are both present, treat it as ambiguous
               // intent and reject rather than guess.
               if (typeof params.query === "string" && params.query.length > 0) {
-                return errorResult(
-                  new Error(
-                    "The `query` parameter was removed. email_search now uses structured " +
-                      "fields instead of a raw query string: from, to, subject, unread, " +
-                      "sinceDays, folder, limit. Re-issue the call using those fields."
-                  )
+                return withEmailSearchAuditDetails(
+                  errorResult(
+                    new Error(
+                      "The `query` parameter was removed. email_search now uses structured " +
+                        "fields instead of a raw query string: from, to, subject, unread, " +
+                        "sinceDays, folder, limit. Re-issue the call using those fields."
+                    )
+                  ),
+                  params
                 );
               }
 
@@ -1034,9 +1117,10 @@ const plugin = {
 
               return {
                 content: [{ type: "text", text: JSON.stringify(handleized, null, 2) }],
+                details: emailSearchAuditDetails(params),
               };
             } catch (error) {
-              return errorResult(error);
+              return withEmailSearchAuditDetails(errorResult(error), params);
             }
           },
         };

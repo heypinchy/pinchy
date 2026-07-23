@@ -1428,6 +1428,129 @@ describe("audit PII curation for email_send / email_draft", () => {
     expect(JSON.stringify(details)).not.toContain("secret body text");
     expect(mockSend).not.toHaveBeenCalled();
   });
+
+  it("scrubs email addresses embedded in the audited subject", async () => {
+    // A subject like "Re: your mail to max@firma.de" carries an address —
+    // keeping the subject for governance must not keep the address.
+    mockSend.mockResolvedValue({ messageId: "sent-1" });
+    const tools = createApi(configWithSend);
+    const tool = findTool(tools, "email_send", agentId)!;
+
+    const result = await tool.execute("call-1", {
+      to: "recipient@test.com",
+      subject: "Re: your mail to max@firma.de",
+      body: "body",
+    });
+
+    const details = result.details as Record<string, unknown>;
+    expect(details.subject).toBe("Re: your mail to <email-redacted>");
+  });
+});
+
+describe("audit PII curation for email_search", () => {
+  // email_search params can carry email addresses too: `from`/`to` are
+  // address filters by schema, and `text`/`subject` are free-text terms a
+  // model may fill with an address. Same AGENTS.md rule as for send/draft —
+  // curate every return path so raw params never reach the audit.
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockCredentialResponse();
+  });
+
+  it("curates from/to filters (masked) and lists the filter names, dropping raw addresses", async () => {
+    mockSearch.mockResolvedValue([]);
+    const tools = createApi();
+    const tool = findTool(tools, "email_search", agentId)!;
+
+    const result = await tool.execute("call-1", {
+      from: "sender@test.com",
+      to: "recipient@test.com",
+      unread: true,
+      folder: "INBOX",
+      limit: 5,
+    });
+
+    const details = result.details as Record<string, unknown>;
+    expect(details).toBeDefined();
+    expect(details.filters).toEqual(["from", "to", "unread", "folder", "limit"]);
+    expect(details.from).toBe(`s${"*".repeat("sender".length - 1)}@test.com`);
+    expect(details.to).toBe(`r${"*".repeat("recipient".length - 1)}@test.com`);
+    expect(details.folder).toBe("INBOX");
+    expect(details.unread).toBe(true);
+    expect(details.limit).toBe(5);
+    const serialized = JSON.stringify(details);
+    expect(serialized).not.toContain("sender@test.com");
+    expect(serialized).not.toContain("recipient@test.com");
+    // A non-error curated field is present, so the route drops raw params.
+    expect(Object.keys(details).some((k) => k !== "error")).toBe(true);
+  });
+
+  it("scrubs email addresses out of the free-text and subject terms", async () => {
+    mockSearch.mockResolvedValue([]);
+    const tools = createApi();
+    const tool = findTool(tools, "email_search", agentId)!;
+
+    const result = await tool.execute("call-1", {
+      text: "invoice from max@firma.de",
+      subject: "for anna@firma.de",
+    });
+
+    const details = result.details as Record<string, unknown>;
+    expect(details.text).toBe("invoice from <email-redacted>");
+    expect(details.subject).toBe("for <email-redacted>");
+    const serialized = JSON.stringify(details);
+    expect(serialized).not.toContain("max@firma.de");
+    expect(serialized).not.toContain("anna@firma.de");
+  });
+
+  it("curates details on permission denial", async () => {
+    const configNoRead: PluginConfig = {
+      ...testConfig,
+      agents: {
+        "agent-1": {
+          connectionId: "conn-1",
+          permissions: { email: [] },
+        },
+      },
+    };
+    const tools = createApi(configNoRead);
+    const tool = findTool(tools, "email_search", agentId)!;
+
+    const result = await tool.execute("call-1", { from: "sender@test.com" });
+
+    expect(result.isError).toBe(true);
+    const details = result.details as Record<string, unknown>;
+    expect(details.from).toBe(`s${"*".repeat("sender".length - 1)}@test.com`);
+    expect(JSON.stringify(details)).not.toContain("sender@test.com");
+  });
+
+  it("curates details on the removed-`query` guard path without echoing the query value", async () => {
+    const tools = createApi();
+    const tool = findTool(tools, "email_search", agentId)!;
+
+    const result = await tool.execute("call-1", {
+      query: "from:secret-person@firma.de",
+    });
+
+    expect(result.isError).toBe(true);
+    const details = result.details as Record<string, unknown>;
+    expect(JSON.stringify(details)).not.toContain("secret-person@firma.de");
+    expect(Object.keys(details).some((k) => k !== "error")).toBe(true);
+  });
+
+  it("curates details when the adapter throws", async () => {
+    mockSearch.mockRejectedValue(new Error("imap exploded"));
+    const tools = createApi();
+    const tool = findTool(tools, "email_search", agentId)!;
+
+    const result = await tool.execute("call-1", { to: "recipient@test.com" });
+
+    expect(result.isError).toBe(true);
+    const details = result.details as Record<string, unknown>;
+    expect(details.error).toBeDefined();
+    expect(details.to).toBe(`r${"*".repeat("recipient".length - 1)}@test.com`);
+    expect(JSON.stringify(details)).not.toContain("recipient@test.com");
+  });
 });
 
 describe("error handling", () => {
