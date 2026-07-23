@@ -88,6 +88,10 @@ async function createProvider(
     throw new Error("An API key is required to create an OpenAI-compatible provider.");
   }
 
+  // The in-memory Set dedup below is best-effort: two concurrent creates of the
+  // same displayName can both read the same snapshot and derive the same slug.
+  // The `slug` UNIQUE constraint on the table is the real backstop — the losing
+  // insert fails loudly on the constraint rather than silently duplicating.
   const existing = await db
     .select({ slug: openaiCompatibleProviders.slug })
     .from(openaiCompatibleProviders);
