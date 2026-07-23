@@ -45,7 +45,13 @@ export const POST = withAdmin(async (request, _ctx, session) => {
       outcome: "failure",
       error: { message: err instanceof Error ? err.message : String(err) },
       detail: {
-        provider: { name: input.displayName },
+        // On an UPDATE the slug isn't derivable (it lives on the row the failing
+        // call never returned), but `input.id` is in hand and is the only way an
+        // analyst can correlate WHICH provider row failed to save. On a CREATE
+        // there is no id yet, so snapshot the display name alone.
+        ...(input.id
+          ? { provider: { id: input.id, name: input.displayName } }
+          : { provider: { name: input.displayName } }),
         authType: "openai-compatible",
         baseUrlHost,
         modelCount: input.models.length,

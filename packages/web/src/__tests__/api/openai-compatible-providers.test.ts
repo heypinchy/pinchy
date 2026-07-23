@@ -171,6 +171,10 @@ describe("POST /api/settings/providers/openai-compatible", () => {
     expect(data.slug).toBe("acme-llm");
     expect(data.keyHint).toBe("7Z8x");
 
+    // Happy-path apply sequence is pinned: config regenerated + model cache reset.
+    expect(regenerateOpenClawConfig).toHaveBeenCalled();
+    expect(resetCache).toHaveBeenCalled();
+
     // The parsed body reached the data-access layer.
     expect(createOrUpdateProvider).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -332,7 +336,7 @@ describe("POST /api/settings/providers/openai-compatible", () => {
     expect(setSetting).not.toHaveBeenCalled();
   });
 
-  it("writes a failure audit and 500 when the data-access layer throws", async () => {
+  it("writes a failure audit and 500 when a CREATE throws (no id to correlate)", async () => {
     vi.mocked(createOrUpdateProvider).mockRejectedValueOnce(new Error("db exploded"));
 
     const res = await POST(
@@ -351,7 +355,39 @@ describe("POST /api/settings/providers/openai-compatible", () => {
     const [, entry] = vi.mocked(recordAuditFailure).mock.calls[0];
     expect(entry.eventType).toBe("config.changed");
     expect(entry.outcome).toBe("failure");
+    // On a create the slug isn't derivable yet — the detail carries the display
+    // name only, with NO provider id.
+    expect(entry.detail).toMatchObject({ provider: { name: "Acme LLM" } });
+    expect((entry.detail as { provider: { id?: string } }).provider.id).toBeUndefined();
     // Even the failure audit must not carry the key.
+    expect(JSON.stringify(entry.detail)).not.toContain(SECRET_KEY);
+  });
+
+  it("correlates an UPDATE failure by input.id in the failure audit", async () => {
+    const updateId = "22222222-2222-4222-8222-222222222222";
+    vi.mocked(createOrUpdateProvider).mockRejectedValueOnce(new Error("db exploded"));
+
+    const res = await POST(
+      postRequest({
+        id: updateId,
+        displayName: "Acme Renamed",
+        baseUrl: "https://acme.example.com/v1",
+        // No apiKey on an update — nothing to leak.
+        models: [modelDef("acme-large")],
+      }),
+      routeCtx
+    );
+
+    expect(res.status).toBe(500);
+    expect(appendAuditLog).not.toHaveBeenCalled();
+    expect(recordAuditFailure).toHaveBeenCalledTimes(1);
+    const [, entry] = vi.mocked(recordAuditFailure).mock.calls[0];
+    expect(entry.outcome).toBe("failure");
+    // input.id is in hand on an update — it's the only correlation key an
+    // analyst has for which row failed to save.
+    expect(entry.detail).toMatchObject({
+      provider: { id: updateId, name: "Acme Renamed" },
+    });
     expect(JSON.stringify(entry.detail)).not.toContain(SECRET_KEY);
   });
 
