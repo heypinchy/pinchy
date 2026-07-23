@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from "vitest";
+import { describe, it, expect, vi, beforeAll, beforeEach, afterEach, afterAll } from "vitest";
 import {
   readFileSync as realReadFileSync,
   mkdtempSync,
@@ -58,6 +58,20 @@ function createMockApi(
     on: vi.fn(),
   };
 }
+
+// Warm the heavy ./index module graph exactly once, before any test runs.
+// index.ts transitively pulls in pdfjs-dist, mammoth, @napi-rs/canvas (native)
+// and better-sqlite3 (native); the very first `await import("./index")` in this
+// worker pays the full tsx-transform + native-load cost (~900ms in isolation).
+// Left inside the first `it`, that one-time cost is measured against the 5s
+// per-test timeout and, under the CPU contention of a full parallel `pnpm test`
+// run, balloons past it — a flake that only ever hit the first test because
+// every later import is served warm from the module cache (~0ms). Paying it here
+// keeps the per-test timeouts strict (they measure only the assertion) while the
+// unavoidable cold start gets its own generous headroom.
+beforeAll(async () => {
+  await import("./index");
+}, 60_000);
 
 describe("pinchy-files plugin", () => {
   beforeEach(() => {
