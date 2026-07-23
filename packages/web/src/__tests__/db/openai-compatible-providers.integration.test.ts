@@ -32,6 +32,12 @@ describe("openai_compatible_providers table", () => {
     });
     expect(row?.displayName).toBe("Swisscom AI Platform");
     expect(row?.models).toHaveLength(1);
+    // The nested OpenClawModelDefinition must survive the jsonb round-trip
+    // faithfully — the whole point of the $type-annotated column.
+    expect(row?.models[0].id).toBe("mistral-large-2512");
+    expect(row?.models[0].contextWindow).toBe(262144);
+    expect(row?.models[0].input).toEqual(["text", "image"]);
+    expect(row?.models[0].cost.cacheWrite).toBe(0);
   });
 
   it("rejects a duplicate slug", async () => {
