@@ -73,6 +73,21 @@ beforeAll(async () => {
   await import("./index");
 }, 60_000);
 
+// The `pinchy_read PDF integration` suite below deliberately calls
+// `vi.resetModules()` and then re-`import("./index")` in several tests to get a
+// freshly-mocked module graph. That reset blows away the warm cache the
+// `beforeAll` above established, so those tests re-pay a cold-ish tsx
+// re-transform of the module graph (cheaper than the very first import, since
+// the native addons stay loaded, but still real single-threaded work). Under
+// the same full-parallel `pnpm test` contention that used to blow the first
+// test past 5s, that re-transform can creep toward the default per-test timeout
+// too — and the warmup can't help there by construction. That suite therefore
+// gets its own generous headroom (applied at the describe level, which keeps the
+// timeout off the individual `it` signatures so prettier still hugs their arrow
+// bodies). It stays far below anything that would mask a genuine hang: a real
+// deadlock never returns.
+const PDF_INTEGRATION_SUITE_TIMEOUT_MS = 30_000;
+
 describe("pinchy-files plugin", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -299,7 +314,7 @@ describe("pinchy-files plugin", () => {
   });
 });
 
-describe("pinchy_read PDF integration", () => {
+describe("pinchy_read PDF integration", { timeout: PDF_INTEGRATION_SUITE_TIMEOUT_MS }, () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
