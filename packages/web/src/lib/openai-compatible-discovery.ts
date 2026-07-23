@@ -1,6 +1,10 @@
 import { DEFAULT_MODEL_CAPS, lookupModelCapabilities } from "@/lib/model-catalog";
 import type { OpenClawModelDefinition } from "@/lib/openclaw-builtin-models";
-import { PROVIDER_PROBE_TIMEOUT_MS, type ValidationResult } from "@/lib/providers";
+import {
+  AUTH_RETRY_DELAY_MS,
+  PROVIDER_PROBE_TIMEOUT_MS,
+  type ValidationResult,
+} from "@/lib/providers";
 
 // Generic "OpenAI-compatible" provider (#894). Any endpoint exposing the
 // OpenAI REST surface — `GET /models` for discovery, Bearer auth — can be
@@ -14,6 +18,13 @@ import { PROVIDER_PROBE_TIMEOUT_MS, type ValidationResult } from "@/lib/provider
  */
 function modelsUrl(baseUrl: string): string {
   return `${baseUrl.replace(/\/$/, "")}/models`;
+}
+
+/** Safely read a property off an unknown value without throwing on non-objects. */
+function readProp(x: unknown, key: string): unknown {
+  return typeof x === "object" && x !== null && key in x
+    ? (x as Record<string, unknown>)[key]
+    : undefined;
 }
 
 function fetchModels(baseUrl: string, apiKey: string): Promise<Response> {
@@ -41,9 +52,10 @@ export async function validateOpenAiCompatibleProvider(
     if (response.ok) return { valid: true };
 
     // 401/403 could be a genuinely invalid key, or a transient auth issue.
-    // Retry once before declaring invalid (mirrors validateProviderKey).
+    // Deliberately mirrors validateProviderKey's retry shape in providers.ts:
+    // a single retry on 401/403, same shared delay, before declaring invalid.
     if (response.status === 401 || response.status === 403) {
-      await new Promise((r) => setTimeout(r, 1000));
+      await new Promise((r) => setTimeout(r, AUTH_RETRY_DELAY_MS));
       const retry = await fetchModels(baseUrl, apiKey);
       if (retry.ok) return { valid: true };
       return { valid: false, error: "invalid_key" };
@@ -73,18 +85,12 @@ export async function fetchOpenAiCompatibleModels(
     if (!response.ok) return [];
 
     const body: unknown = await response.json();
-    const data =
-      typeof body === "object" && body !== null && "data" in body
-        ? (body as { data: unknown }).data
-        : undefined;
+    const data = readProp(body, "data");
     if (!Array.isArray(data)) return [];
 
     const models: OpenClawModelDefinition[] = [];
     for (const entry of data) {
-      const id =
-        typeof entry === "object" && entry !== null && "id" in entry
-          ? (entry as { id: unknown }).id
-          : undefined;
+      const id = readProp(entry, "id");
       if (typeof id !== "string" || id.length === 0) continue;
       models.push(lookupModelCapabilities(id) ?? { ...DEFAULT_MODEL_CAPS, id, name: id });
     }
