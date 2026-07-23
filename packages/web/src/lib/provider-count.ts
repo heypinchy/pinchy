@@ -11,19 +11,39 @@
 // route doesn't pull the heavy live-model-fetch module — and the route tests
 // stay light — while still importing the real counting logic.
 
-import { PROVIDERS } from "@/lib/providers";
+import { PROVIDERS, type ProviderName } from "@/lib/providers";
 import { getSetting } from "@/lib/settings";
 import { listOpenAiCompatibleProviders } from "@/lib/openai-compatible-providers";
+
+type ProviderConfig = (typeof PROVIDERS)[ProviderName];
+
+/**
+ * The built-in providers that are configured (a settings row exists for their
+ * key/URL), in `Object.entries(PROVIDERS)` iteration order.
+ *
+ * That order is load-bearing: the DELETE route picks the *first* remaining
+ * candidate as an orphaned agent's migration target, so preserving it keeps the
+ * all-built-ins migration behavior byte-identical. Single source of truth for
+ * both the count (last-provider guard) and the migration-target set.
+ */
+export async function listConfiguredBuiltIns(): Promise<
+  { name: ProviderName; config: ProviderConfig }[]
+> {
+  const configured: { name: ProviderName; config: ProviderConfig }[] = [];
+  for (const [name, config] of Object.entries(PROVIDERS)) {
+    if ((await getSetting(config.settingsKey)) !== null) {
+      configured.push({ name: name as ProviderName, config });
+    }
+  }
+  return configured;
+}
 
 /**
  * Total configured providers = configured built-ins (a settings row exists) +
  * the number of custom OpenAI-compatible instances.
  */
 export async function countConfiguredProviders(): Promise<number> {
-  let builtIns = 0;
-  for (const config of Object.values(PROVIDERS)) {
-    if ((await getSetting(config.settingsKey)) !== null) builtIns++;
-  }
+  const builtIns = await listConfiguredBuiltIns();
   const custom = await listOpenAiCompatibleProviders();
-  return builtIns + custom.length;
+  return builtIns.length + custom.length;
 }
