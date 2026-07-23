@@ -135,7 +135,12 @@ describe("ChatSessionMounts", () => {
     expect(useWsRuntimeSpy).toHaveBeenCalledWith("agent-A", "chat-x", expect.any(Function));
   });
 
-  it("wires a slash-command handler that surfaces /help via toast (#611)", () => {
+  it("runs /compact against the compact route and toasts success (#611)", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue({ ok: true, status: 200, text: async () => JSON.stringify({ ok: true }) });
+    vi.stubGlobal("fetch", fetchMock);
+
     function Visitor() {
       const session = useChatSession("agent-A", "chat-x");
       if (!session.bundle) {
@@ -152,7 +157,6 @@ describe("ChatSessionMounts", () => {
           isDelayed: false,
           reconnectExhausted: false,
           payloadRejected: false,
-          isOrphaned: false,
           onRetryContinue: vi.fn(),
           onRetryResend: vi.fn(),
           lastError: null,
@@ -177,11 +181,20 @@ describe("ChatSessionMounts", () => {
     const onSlashCommand = lastCall![2] as (c: { name: string }) => void;
     expect(typeof onSlashCommand).toBe("function");
 
-    act(() => onSlashCommand({ name: "help" }));
-    expect(toastSuccessSpy).toHaveBeenCalledWith(
-      "Slash commands",
-      expect.objectContaining({ description: expect.stringContaining("/compact") })
+    await act(async () => {
+      onSlashCommand({ name: "compact" });
+      // Flush the apiPost microtasks behind the success toast.
+      await new Promise((r) => setTimeout(r, 0));
+    });
+
+    // Hit the compact route (not /new navigation) for THIS chat's session.
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/agents/agent-A/sessions/compact",
+      expect.objectContaining({ method: "POST", body: JSON.stringify({ chatId: "chat-x" }) })
     );
+    expect(toastSuccessSpy).toHaveBeenCalledWith(expect.stringContaining("compacted"));
+
+    vi.unstubAllGlobals();
   });
 
   it("runs /reset against the reset route and remounts the thread (#611)", async () => {

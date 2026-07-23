@@ -6,20 +6,19 @@ describe("parseSlashCommand", () => {
     expect(parseSlashCommand("/compact")).toEqual({ name: "compact" });
     expect(parseSlashCommand("/new")).toEqual({ name: "new" });
     expect(parseSlashCommand("/reset")).toEqual({ name: "reset" });
-    expect(parseSlashCommand("/help")).toEqual({ name: "help" });
   });
 
   it("parses a command with an argument", () => {
     expect(parseSlashCommand("/compact now")).toEqual({ name: "compact", arg: "now" });
-    expect(parseSlashCommand("/help me please")).toEqual({
-      name: "help",
+    expect(parseSlashCommand("/reset me please")).toEqual({
+      name: "reset",
       arg: "me please",
     });
   });
 
   it("is case-insensitive on the command token", () => {
     expect(parseSlashCommand("/COMPACT")).toEqual({ name: "compact" });
-    expect(parseSlashCommand("/Help")).toEqual({ name: "help" });
+    expect(parseSlashCommand("/Reset")).toEqual({ name: "reset" });
   });
 
   it("trims surrounding whitespace before parsing", () => {
@@ -41,6 +40,10 @@ describe("parseSlashCommand", () => {
     expect(parseSlashCommand("/comp")).toBeNull();
     expect(parseSlashCommand("/path/to/file")).toBeNull();
     expect(parseSlashCommand("/unknown thing")).toBeNull();
+    // /help was removed — the "/" autocomplete menu is the discovery surface,
+    // so a typed "/help" is now just normal text, not a command.
+    expect(parseSlashCommand("/help")).toBeNull();
+    expect(parseSlashCommand("/help me please")).toBeNull();
   });
 
   it("returns an empty-arg-less command when the arg is only whitespace", () => {
@@ -48,7 +51,7 @@ describe("parseSlashCommand", () => {
   });
 
   it("covers every command advertised in SLASH_COMMANDS", () => {
-    // Guards drift between the parser's known set and the help listing.
+    // Guards drift between the parser's known set and the autocomplete listing.
     for (const cmd of SLASH_COMMANDS) {
       expect(parseSlashCommand(`/${cmd.name}`)).toEqual({ name: cmd.name });
     }
@@ -58,7 +61,7 @@ describe("parseSlashCommand", () => {
 describe("SLASH_COMMANDS", () => {
   it("lists exactly the supported commands", () => {
     const names = SLASH_COMMANDS.map((c) => c.name).sort();
-    expect(names).toEqual<SlashCommandName[]>(["compact", "help", "new", "reset"]);
+    expect(names).toEqual<SlashCommandName[]>(["compact", "new", "reset"]);
   });
 
   it("every entry has a non-empty description", () => {

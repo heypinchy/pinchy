@@ -12,7 +12,7 @@
  * handlers.
  */
 
-export type SlashCommandName = "compact" | "new" | "reset" | "help";
+export type SlashCommandName = "compact" | "new" | "reset";
 
 export interface SlashCommand {
   name: SlashCommandName;
@@ -21,8 +21,11 @@ export interface SlashCommand {
 }
 
 /**
- * Metadata for the `/help` listing and any future autocomplete UI. Keep the
- * descriptions short — they are shown verbatim in the help toast.
+ * Metadata driving the composer's slash-command autocomplete menu (the "/"
+ * listing). Keep the descriptions short — they are shown verbatim there.
+ * (There is deliberately no `/help` command: the autocomplete menu already
+ * lists every command with its description, so a separate help output would be
+ * redundant.)
  */
 export const SLASH_COMMANDS: ReadonlyArray<{
   name: SlashCommandName;
@@ -31,7 +34,6 @@ export const SLASH_COMMANDS: ReadonlyArray<{
   { name: "compact", description: "Compact the conversation (free up context, keep history)." },
   { name: "new", description: "Start a new conversation with this agent." },
   { name: "reset", description: "Reset this conversation — clear its context and start fresh." },
-  { name: "help", description: "Show the available slash commands." },
 ];
 
 const KNOWN_COMMANDS: ReadonlySet<string> = new Set(SLASH_COMMANDS.map((c) => c.name));
