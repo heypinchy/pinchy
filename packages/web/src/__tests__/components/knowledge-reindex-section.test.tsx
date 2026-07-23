@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
 
@@ -214,14 +214,22 @@ describe("KnowledgeReindexSection", () => {
       });
     mockPost.mockResolvedValue({ jobId: "job-9", status: "pending", pathCount: 2 });
 
-    render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} pollIntervalMs={20} />);
+    // This scenario is about the fetch-sequence guard dropping a stale mount
+    // read, NOT about polling. An effectively-idle poll interval keeps the test
+    // deterministic: the old `toHaveBeenCalledTimes(2)` assertion raced a live
+    // 20ms interval and flaked to a much higher count under load.
+    render(
+      <KnowledgeReindexSection agentId="a1" allowedPathCount={2} pollIntervalMs={1_000_000} />
+    );
     await user.click(screen.getByRole("button", { name: /reindex/i }));
     await waitFor(() => expect(screen.getByRole("button", { name: /reindexing/i })).toBeDisabled());
 
     // The pre-click read finally answers "no job ever ran". It is stale — it
-    // must not clear the run the admin just started and is watching.
-    resolveMountGet({ job: null });
-    await waitFor(() => expect(mockGet).toHaveBeenCalledTimes(2));
+    // must not clear the run the admin just started and is watching. Flush its
+    // resolution so the guard's decision (drop it) is fully applied before we assert.
+    await act(async () => {
+      resolveMountGet({ job: null });
+    });
     expect(screen.getByRole("button", { name: /reindexing/i })).toBeDisabled();
   });
 
