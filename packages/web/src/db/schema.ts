@@ -42,6 +42,7 @@ import {
 } from "./enums";
 import type { EmailWorkflowFilter, ProcessedEmailOutcome } from "@/lib/email-workflows/types";
 import type { IngestResult } from "@/lib/knowledge/ingest";
+import type { OpenClawModelDefinition } from "@/lib/openclaw-builtin-models";
 import { vector } from "./vector";
 
 // Render `IN ('a', 'b')` from an enum const (db/enums.ts) so a CHECK constraint
@@ -753,6 +754,24 @@ export const models = pgTable(
   },
   (t) => [uniqueIndex("uq_models_provider_modelid").on(t.provider, t.modelId)]
 );
+
+// A generic "OpenAI-compatible" provider instance (#894): a self-declared
+// endpoint (base URL + API key) whose model catalogue Pinchy discovers and
+// persists, so any OpenAI-API-shaped backend (Swisscom, vLLM, LiteLLM, a
+// private gateway, …) can be used without a first-class provider integration.
+// `slug` is the stable identity used in the emitted OpenClaw provider key.
+export const openaiCompatibleProviders = pgTable("openai_compatible_providers", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  slug: text("slug").notNull().unique(),
+  displayName: text("display_name").notNull(),
+  baseUrl: text("base_url").notNull(),
+  // AES-256-GCM ciphertext (encrypt() from @/lib/encryption). Never plaintext.
+  apiKey: text("api_key").notNull(),
+  // Persisted OpenClawModelDefinition[] resolved at discovery time.
+  models: jsonb("models").$type<OpenClawModelDefinition[]>().notNull().default([]),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
 
 // ── Views ────────────────────────────────────────────────────────────
 
