@@ -53,7 +53,7 @@ interface ProviderListItem {
 
 type DiscoverResponse =
   | { ok: true; models: OpenClawModelDefinition[]; manualEntry?: boolean }
-  | { ok: false; error: "invalid_key" | "provider_error" | "network_error" };
+  | { ok: false; error: "invalid_key" | "provider_error" | "network_error" | "blocked_url" };
 
 /** Extract the host of a URL for compact display; falls back to the raw string. */
 function hostOf(url: string): string {
@@ -131,6 +131,10 @@ export function OpenAiCompatibleProviderForm({ provider, onSaved, onCancel }: Fo
           setKeyError("That API key was rejected. Check it and try again.");
         } else if (res.error === "provider_error") {
           setFormError("The provider responded with an error. Check the base URL and try again.");
+        } else if (res.error === "blocked_url") {
+          setFormError(
+            "That base URL isn't allowed — it points at a reserved or internal network address."
+          );
         } else {
           setFormError("We couldn't reach that endpoint. Check the base URL and your connection.");
         }

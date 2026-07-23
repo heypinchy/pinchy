@@ -5,6 +5,7 @@ import {
   createOrUpdateProvider,
   deleteProviderById,
   listOpenAiCompatibleProviders,
+  listOpenAiCompatibleProvidersForAdmin,
   listProvidersWithApiKeys,
 } from "@/lib/openai-compatible-providers";
 import type { OpenClawModelDefinition } from "@/lib/openclaw-builtin-models";
@@ -75,8 +76,8 @@ describe("createOrUpdateProvider — create", () => {
   });
 });
 
-describe("listOpenAiCompatibleProviders", () => {
-  it("exposes only the last-4 keyHint and never the decrypted key", async () => {
+describe("listOpenAiCompatibleProviders (hot-path, key-free)", () => {
+  it("returns identity + models with NO keyHint and NO key material", async () => {
     await createOrUpdateProvider({
       displayName: "Swisscom AI",
       baseUrl: "https://api.swisscom.example/v1",
@@ -87,10 +88,33 @@ describe("listOpenAiCompatibleProviders", () => {
     const rows = await listOpenAiCompatibleProviders();
     expect(rows).toHaveLength(1);
     const row = rows[0]!;
-    expect(row.keyHint).toBe("abcd");
     expect(row.slug).toBe("swisscom-ai");
     expect(row.displayName).toBe("Swisscom AI");
     expect(row.baseUrl).toBe("https://api.swisscom.example/v1");
+    expect(row.models).toEqual([MODEL]);
+
+    // This accessor deliberately performs no decrypt: no keyHint, no ciphertext,
+    // and certainly not the plaintext key.
+    expect(row).not.toHaveProperty("keyHint");
+    expect(row).not.toHaveProperty("apiKey");
+    expect(JSON.stringify(row)).not.toContain("sk-secret-abcd");
+  });
+});
+
+describe("listOpenAiCompatibleProvidersForAdmin", () => {
+  it("exposes only the last-4 keyHint and never the decrypted key", async () => {
+    await createOrUpdateProvider({
+      displayName: "Swisscom AI",
+      baseUrl: "https://api.swisscom.example/v1",
+      apiKey: "sk-secret-abcd",
+      models: [MODEL],
+    });
+
+    const rows = await listOpenAiCompatibleProvidersForAdmin();
+    expect(rows).toHaveLength(1);
+    const row = rows[0]!;
+    expect(row.keyHint).toBe("abcd");
+    expect(row.slug).toBe("swisscom-ai");
     expect(row.models).toEqual([MODEL]);
 
     // The full/decrypted key must not appear anywhere in the serialized row.

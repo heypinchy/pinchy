@@ -100,6 +100,21 @@ Some endpoints (a bare vLLM server, for instance) don't publish a model list. Wh
   discover models again.
 </Aside>
 
+### Which base URLs are allowed
+
+Because Pinchy connects to the base URL from the server, it guards against being pointed at somewhere it shouldn't reach:
+
+- **Public endpoints** (sovereign clouds, hosted gateways) and **private-network endpoints** (a self-hosted vLLM/TGI box on your LAN, e.g. `http://10.0.0.5:8000/v1`) both work out of the box.
+- **Reserved and internal addresses are refused** — loopback, cloud-metadata/link-local (`169.254.x.x`), multicast, and non-`http(s)` URLs. These are never a real model endpoint, and blocking them protects the host Pinchy runs on.
+
+If you operate Pinchy as a **managed/multi-tenant host** (where the person configuring a provider isn't the owner of the underlying network), set `PINCHY_PROVIDER_BLOCK_PRIVATE_NETWORKS=1` to also refuse private-network addresses. Self-hosted deployments leave it unset so LAN endpoints keep working.
+
+<Aside type="note">
+  Editing a provider and removing a model that agents were already using? Pinchy
+  moves those agents onto another of the same provider's models automatically,
+  so none are left pointing at a model that no longer exists.
+</Aside>
+
 ### Where capabilities come from
 
 Pinchy resolves each model's capabilities — context window, vision, and more — from a catalog snapshot bundled with the app. A model the catalog recognises arrives with sensible values already filled in; anything unknown falls back to conservative defaults (a modest context window and no vision) that you can adjust by hand.

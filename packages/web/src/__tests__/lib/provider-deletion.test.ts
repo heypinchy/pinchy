@@ -33,6 +33,7 @@ vi.mock("drizzle-orm", async (importOriginal) => {
 import {
   buildRemainingCandidates,
   migrateAgentsOffDeletedProvider,
+  repointAgentsOffRemovedModels,
   capMigratedAgents,
   MAX_INLINE_MIGRATED,
 } from "@/lib/provider-deletion";
@@ -158,6 +159,75 @@ describe("buildRemainingCandidates", () => {
       { name: "anthropic", defaultModel: "anthropic/claude-haiku" },
       { name: "acme", defaultModel: "acme/acme-large" },
     ]);
+  });
+});
+
+describe("repointAgentsOffRemovedModels", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(db.query.agents.findMany).mockResolvedValue([]);
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }),
+    } as any);
+  });
+
+  it("repoints only agents on a REMOVED model of the slug onto the first kept model", async () => {
+    vi.mocked(db.query.agents.findMany).mockResolvedValue([
+      { id: "a1", name: "One", model: "acme/dropped" }, // removed → migrate
+      { id: "a2", name: "Two", model: "acme/acme-large" }, // still present → keep
+      { id: "a3", name: "Three", model: "openai/gpt" }, // other provider → ignore
+      { id: "a4", name: "Four", model: "acme/also-dropped" }, // removed → migrate
+    ] as any);
+    const setSpy = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
+    vi.mocked(db.update).mockReturnValue({ set: setSpy } as any);
+
+    const migrated = await repointAgentsOffRemovedModels({
+      slug: "acme",
+      keptModelIds: ["acme-large", "acme-small"],
+    });
+
+    // Only the two agents on removed models are repointed, onto acme/acme-large.
+    expect(db.update).toHaveBeenCalledTimes(2);
+    expect(setSpy).toHaveBeenCalledWith({ model: "acme/acme-large" });
+    expect(migrated).toEqual([
+      { id: "a1", name: "One", fromModel: "acme/dropped", toModel: "acme/acme-large" },
+      { id: "a4", name: "Four", fromModel: "acme/also-dropped", toModel: "acme/acme-large" },
+    ]);
+  });
+
+  it("does not touch an agent whose pinned model is still present", async () => {
+    vi.mocked(db.query.agents.findMany).mockResolvedValue([
+      { id: "a1", name: "One", model: "acme/acme-large" },
+    ] as any);
+
+    const migrated = await repointAgentsOffRemovedModels({
+      slug: "acme",
+      keptModelIds: ["acme-large"],
+    });
+
+    expect(db.update).not.toHaveBeenCalled();
+    expect(migrated).toEqual([]);
+  });
+
+  it("returns [] without querying when the kept-model set is empty (defensive)", async () => {
+    const migrated = await repointAgentsOffRemovedModels({ slug: "acme", keptModelIds: [] });
+    expect(db.query.agents.findMany).not.toHaveBeenCalled();
+    expect(migrated).toEqual([]);
+  });
+
+  it("does not match a different slug that shares a prefix substring", async () => {
+    // `acme-2/x` must not be treated as belonging to `acme` (prefix is `acme/`).
+    vi.mocked(db.query.agents.findMany).mockResolvedValue([
+      { id: "a1", name: "One", model: "acme-2/x" },
+    ] as any);
+
+    const migrated = await repointAgentsOffRemovedModels({
+      slug: "acme",
+      keptModelIds: ["acme-large"],
+    });
+
+    expect(db.update).not.toHaveBeenCalled();
+    expect(migrated).toEqual([]);
   });
 });
 
