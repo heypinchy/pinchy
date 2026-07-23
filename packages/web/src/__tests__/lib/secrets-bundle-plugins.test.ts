@@ -14,7 +14,6 @@ vi.mock("@/lib/settings", () => ({
 vi.mock("@/lib/openai-compatible-providers", () => ({
   listOpenAiCompatibleProviders: vi.fn().mockResolvedValue([]),
   listProvidersWithApiKeys: vi.fn().mockResolvedValue([]),
-  getDecryptedApiKey: vi.fn().mockResolvedValue(null),
 }));
 
 describe("collectProviderSecrets", () => {
@@ -69,8 +68,7 @@ describe("collectProviderSecrets", () => {
     const { getSetting } = await import("@/lib/settings");
     vi.mocked(getSetting).mockResolvedValue(null);
 
-    const { listProvidersWithApiKeys, getDecryptedApiKey } =
-      await import("@/lib/openai-compatible-providers");
+    const { listProvidersWithApiKeys } = await import("@/lib/openai-compatible-providers");
     vi.mocked(listProvidersWithApiKeys).mockResolvedValue([
       { slug: "swisscom-ai", apiKey: "swiss-key" },
     ]);
@@ -78,9 +76,9 @@ describe("collectProviderSecrets", () => {
     const { collectProviderSecrets } = await import("@/lib/openclaw-config/secrets-bundle");
     await collectProviderSecrets();
 
-    // The N+1 / double-decrypt path is gone: one accessor call, no per-slug decrypt.
+    // The N+1 / double-decrypt path is gone: one bulk accessor call decrypts
+    // every provider's key — no per-slug round trip (the removed getDecryptedApiKey).
     expect(listProvidersWithApiKeys).toHaveBeenCalledTimes(1);
-    expect(getDecryptedApiKey).not.toHaveBeenCalled();
   });
 });
 

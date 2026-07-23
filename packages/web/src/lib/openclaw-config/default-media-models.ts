@@ -69,6 +69,13 @@ export async function resolveDefaultVisionModelChain(): Promise<string[]> {
  * (kimi-k2.6, a chat model that is not reliably vision-capable), so ollama-cloud
  * never qualified as a PDF fallback even when the stack had a real vision model.
  * Native providers use their default model, gated by `isModelVisionCapable`.
+ *
+ * SCOPE BOUNDARY (#894): this iterates ONLY the built-in `ProviderName` tuples.
+ * Custom OpenAI-compatible instances — which carry a per-model `vision` flag —
+ * are deliberately NOT considered for default pdf/image model selection here.
+ * That is an accepted #894 scope limit, not an oversight: scanned-PDF reading
+ * still works on a custom-only stack via the agent-model fallback in build.ts.
+ * A future change could extend this to fold in vision-flagged custom models.
  */
 async function resolveVisionModelChain(preference: readonly ProviderName[]): Promise<string[]> {
   // Guard against a regenerate landing before bootInits loaded the capability

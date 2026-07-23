@@ -4,7 +4,6 @@ import { decrypt } from "@/lib/encryption";
 import {
   createOrUpdateProvider,
   deleteProviderById,
-  getDecryptedApiKey,
   listOpenAiCompatibleProviders,
   listProvidersWithApiKeys,
 } from "@/lib/openai-compatible-providers";
@@ -101,19 +100,10 @@ describe("listOpenAiCompatibleProviders", () => {
   });
 });
 
-describe("getDecryptedApiKey", () => {
-  it("returns the plaintext key for an existing slug and null for a missing one", async () => {
-    await createOrUpdateProvider({
-      displayName: "Swisscom AI",
-      baseUrl: "https://api.swisscom.example/v1",
-      apiKey: "sk-the-real-key",
-      models: [MODEL],
-    });
-
-    expect(await getDecryptedApiKey("swisscom-ai")).toBe("sk-the-real-key");
-    expect(await getDecryptedApiKey("does-not-exist")).toBeNull();
-  });
-});
+/** Read one provider's decrypted key back via the real secrets-bundle path. */
+async function readStoredKey(slug: string): Promise<string | undefined> {
+  return (await listProvidersWithApiKeys()).find((r) => r.slug === slug)?.apiKey;
+}
 
 describe("listProvidersWithApiKeys", () => {
   it("returns exactly { slug, apiKey } with real decrypted keys for every row", async () => {
@@ -173,7 +163,7 @@ describe("createOrUpdateProvider — update", () => {
     expect(updated.displayName).toBe("Swisscom AI Renamed");
     expect(updated.baseUrl).toBe("https://api.swisscom.example/v2");
     // Key untouched when omitted.
-    expect(await getDecryptedApiKey("swisscom-ai")).toBe("sk-original-key");
+    expect(await readStoredKey("swisscom-ai")).toBe("sk-original-key");
 
     // Now update WITH a new key.
     await createOrUpdateProvider({
@@ -183,7 +173,7 @@ describe("createOrUpdateProvider — update", () => {
       apiKey: "sk-rotated-key",
       models: [MODEL],
     });
-    expect(await getDecryptedApiKey("swisscom-ai")).toBe("sk-rotated-key");
+    expect(await readStoredKey("swisscom-ai")).toBe("sk-rotated-key");
   });
 
   it("throws a clear error when the id does not exist", async () => {

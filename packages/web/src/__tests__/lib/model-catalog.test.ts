@@ -44,6 +44,16 @@ describe("lookupModelCapabilities", () => {
     expect(lookupModelCapabilities("totally-made-up-model-xyz")).toBeNull();
   });
 
+  it("does not resolve Object.prototype keys from an untrusted discovered id", () => {
+    // `modelId` comes from a third-party /v1/models response. A plain-object
+    // catalog lookup like `CATALOG[modelId]` would return an inherited function
+    // (truthy) for prototype keys, producing a malformed definition instead of
+    // falling through to null. Must be prototype-safe.
+    expect(lookupModelCapabilities("constructor")).toBeNull();
+    expect(lookupModelCapabilities("toString")).toBeNull();
+    expect(lookupModelCapabilities("hasOwnProperty")).toBeNull();
+  });
+
   it("DEFAULT_MODEL_CAPS is compaction-safe (small context, tools on, vision off)", () => {
     expect(DEFAULT_MODEL_CAPS.contextWindow).toBe(32768);
     expect(DEFAULT_MODEL_CAPS.vision).toBe(false);
