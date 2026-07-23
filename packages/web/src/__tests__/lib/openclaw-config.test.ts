@@ -8132,4 +8132,75 @@ describe("OpenAI-compatible custom providers (#894)", () => {
     const secretsArg = mockWriteSecretsFile.mock.calls[0][0];
     expect(secretsArg.providers).not.toHaveProperty("swisscom-ai");
   });
+
+  // Plaintext-scanner confirmation (#894 Task 12). Custom OpenAI-compatible
+  // keys are arbitrary strings with no recognizable prefix, so no new scanner
+  // pattern is added. These tests prove the property that makes that safe: the
+  // emission path writes a SecretRef, so even a key SHAPED like a recognizable
+  // secret never reaches the config tree. A future regression that emitted the
+  // raw key would flip these red.
+  it("keeps even scanner-recognizable custom keys (sk-proj / JWT-shaped) out of the emitted config tree", async () => {
+    const { assertNoPlaintextSecrets } = await import("@/lib/openclaw-plaintext-scanner");
+    // Two realistic arbitrary keys chosen to look like recognizable secrets:
+    //  - an sk-proj-… value the scanner's `openai-generic` pattern WOULD flag
+    //    if it leaked into the tree, and
+    //  - a JWT-shaped `eyJhbGciOi…` bearer token.
+    // Both flow only through the secrets bundle (listProvidersWithApiKeys); the
+    // config carries a SecretRef, so neither can surface in the config tree.
+    const skKey = "sk-proj-Zx9Qm2Kd7Lp4Rt8Wv1Nb6Yc3Hj5Fg0Aa";
+    const jwtKey = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJzd2lzc2NvbSJ9.7bQe2mVnKpA0";
+    mockListOpenAiCompatibleProviders.mockResolvedValue([
+      makeProvider(),
+      makeProvider({
+        id: "prov-2",
+        slug: "acme-llm",
+        displayName: "Acme LLM",
+        baseUrl: "https://acme.example/v1",
+        models: [makeModel({ id: "acme-1", name: "Acme 1", vision: false, input: ["text"] })],
+      }),
+    ]);
+    mockListProvidersWithApiKeys.mockResolvedValue([
+      { slug: "swisscom-ai", apiKey: skKey },
+      { slug: "acme-llm", apiKey: jwtKey },
+    ]);
+
+    await regenerateOpenClawConfig();
+
+    const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
+    // Scanner is clean even though the sk-proj key would match `openai-generic`
+    // if it were present.
+    expect(() => assertNoPlaintextSecrets(config)).not.toThrow();
+    // Neither raw key appears anywhere in the serialized config tree.
+    const serialized = JSON.stringify(config);
+    expect(serialized).not.toContain(skKey);
+    expect(serialized).not.toContain(jwtKey);
+    // Both slots carry only a SecretRef.
+    expect(config.models.providers["swisscom-ai"].apiKey).toEqual({
+      source: "file",
+      provider: "pinchy",
+      id: "/providers/swisscom-ai/apiKey",
+    });
+    expect(config.models.providers["acme-llm"].apiKey).toEqual({
+      source: "file",
+      provider: "pinchy",
+      id: "/providers/acme-llm/apiKey",
+    });
+  });
+
+  it("emits a scanner-clean SecretRef-only config even when no key is seeded (no false positive)", async () => {
+    const { findPlaintextSecrets } = await import("@/lib/openclaw-plaintext-scanner");
+    mockListOpenAiCompatibleProviders.mockResolvedValue([makeProvider()]);
+    // Deliberately leave listProvidersWithApiKeys unseeded: the config tree is
+    // what the scanner reads, and it must be clean with only the SecretRef.
+    mockListProvidersWithApiKeys.mockResolvedValue([]);
+
+    await regenerateOpenClawConfig();
+
+    const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
+    // A tree carrying only the SecretRef trips nothing — the scanner fires on
+    // embedded known-prefix strings, not on a compatible key that never enters
+    // the tree.
+    expect(findPlaintextSecrets(config)).toEqual([]);
+    expect(config.models.providers["swisscom-ai"].apiKey).toMatchObject({ source: "file" });
+  });
 });
