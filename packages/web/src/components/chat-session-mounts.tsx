@@ -11,7 +11,7 @@ import {
 } from "@/components/chat-session-provider";
 import { apiPost, ApiError } from "@/lib/api-client";
 import { generateChatId } from "@/lib/chats/generate-chat-id";
-import { SLASH_COMMANDS, type SlashCommand } from "@/lib/slash-commands";
+import { type SlashCommand } from "@/lib/slash-commands";
 import type { CompactSessionRequest, ResetSessionRequest } from "@/lib/schemas/sessions";
 
 export function ChatSessionMounts() {
@@ -58,7 +58,8 @@ function ChatSessionInstance({
   //  - /reset   → existing reset route (clears THIS session's context in place),
   //               then remounts the thread so the user sees the clean slate.
   //  - /new     → navigate to a fresh chat (new chatId); the old one is kept.
-  //  - /help    → toast listing the commands.
+  // (There is no /help command — the composer's "/" autocomplete menu already
+  // lists every command with its description, so a help output is redundant.)
   // Confirmations are toasts per the error/notification policy (success →
   // toast; the toast survives the reset remount because sonner renders it
   // outside this subtree). The handler is stable across renders so
@@ -108,11 +109,6 @@ function ChatSessionInstance({
         }
         case "new": {
           router.push(`/chat/${agentId}/${generateChatId()}`);
-          break;
-        }
-        case "help": {
-          const lines = SLASH_COMMANDS.map((c) => `/${c.name} — ${c.description}`);
-          toast.success("Slash commands", { description: lines.join("\n") });
           break;
         }
       }

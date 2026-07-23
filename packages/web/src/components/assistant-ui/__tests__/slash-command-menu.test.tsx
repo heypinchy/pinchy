@@ -71,7 +71,6 @@ describe("SlashCommandMenu (#611)", () => {
       expect.stringContaining("/compact"),
       expect.stringContaining("/new"),
       expect.stringContaining("/reset"),
-      expect.stringContaining("/help"),
     ]);
   });
 
@@ -128,7 +127,7 @@ describe("SlashCommandMenu (#611)", () => {
     fireEvent.keyDown(getByTestId("input"), { key: "Escape" });
     expect(queryByRole("listbox")).toBeNull();
     // Typing more changes the query and reopens the menu.
-    type("/h");
+    type("/r");
     expect(getByRole("listbox")).toBeTruthy();
   });
 
