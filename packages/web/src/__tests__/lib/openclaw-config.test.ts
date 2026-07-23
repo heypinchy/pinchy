@@ -8203,4 +8203,65 @@ describe("OpenAI-compatible custom providers (#894)", () => {
     expect(findPlaintextSecrets(config)).toEqual([]);
     expect(config.models.providers["swisscom-ai"].apiKey).toMatchObject({ source: "file" });
   });
+
+  // Upgrade invariance (AGENTS.md "Test Migrations Against Pre-Existing Data").
+  // Config emission now ALSO walks the new `openai_compatible_providers` table.
+  // On a real upgrade the deployment has ONLY built-in providers and that table
+  // is EMPTY, so regenerating config in that state must be inert: the SAME
+  // built-in emission as before this feature, no `models.providers.<slug>` block,
+  // and no custom secret. This test goes RED if a future change makes the
+  // empty-table path emit a stray key or perturb built-in emission.
+  it("upgrade invariance: empty openai_compatible_providers table ⇒ built-in emission unchanged, no custom block", async () => {
+    // Configure ONLY a built-in provider — the pre-feature deployment shape.
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "anthropic_api_key") return "sk-ant-decrypted";
+      if (key === "default_provider") return "anthropic";
+      return null;
+    });
+
+    // Fresh upgrade: the new table is EMPTY (both accessors return []).
+    mockListOpenAiCompatibleProviders.mockResolvedValue([]);
+    mockListProvidersWithApiKeys.mockResolvedValue([]);
+
+    await regenerateOpenClawConfig();
+
+    const upgradeConfig = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
+    const upgradeSecrets = mockWriteSecretsFile.mock.calls.at(-1)![0];
+
+    // ONLY the built-in provider key — no custom slug leaked into the tree.
+    expect(Object.keys(upgradeConfig.models.providers)).toEqual(["anthropic"]);
+    // The built-in entry is emitted the same way the rest of this file asserts
+    // built-in providers (SecretRef apiKey + OC-required baseUrl + a catalog).
+    expect(upgradeConfig.models.providers.anthropic.apiKey).toMatchObject({
+      source: "file",
+      provider: "pinchy",
+      id: "/providers/anthropic/apiKey",
+    });
+    expect(upgradeConfig.models.providers.anthropic.baseUrl).toBe("https://api.anthropic.com");
+    expect(upgradeConfig.models.providers.anthropic.models.length).toBeGreaterThan(0);
+    // The secrets bundle carries only the built-in provider secret — no custom slug.
+    expect(Object.keys(upgradeSecrets.providers ?? {})).toEqual(["anthropic"]);
+
+    // Byte-identity proof WITHOUT hand-fabricating the (large) catalog shape:
+    // the built-in block must be identical to a run WHERE a custom provider IS
+    // present, once that custom slug is stripped. That captures a real baseline
+    // (never a fabricated one) and proves the custom-provider machinery never
+    // perturbs built-in emission — the empty-table path is inert by comparison.
+    mockedWriteFileSync.mockClear();
+    mockWriteSecretsFile.mockClear();
+    mockListOpenAiCompatibleProviders.mockResolvedValue([makeProvider()]);
+    mockListProvidersWithApiKeys.mockResolvedValue([
+      { slug: "swisscom-ai", apiKey: "swiss-plaintext-key" },
+    ]);
+    mockGetDecryptedApiKey.mockResolvedValue("swiss-plaintext-key");
+
+    await regenerateOpenClawConfig();
+
+    const withCustom = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
+    const builtInsFromCustomRun = { ...withCustom.models.providers };
+    delete builtInsFromCustomRun["swisscom-ai"];
+    // Empty-table built-in emission is byte-identical to the built-in portion of
+    // a populated run — the custom key is purely additive.
+    expect(builtInsFromCustomRun).toEqual(upgradeConfig.models.providers);
+  });
 });
