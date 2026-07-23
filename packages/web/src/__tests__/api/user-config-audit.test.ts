@@ -28,6 +28,17 @@ vi.mock("@/lib/settings", () => ({
   getSettingsByPrefix: vi.fn().mockResolvedValue(new Map()),
 }));
 
+// setup/provider resolves Smithers' model through the live-availability wrapper
+// (#883); mock it directly (like the other setup/provider route tests) so this
+// audit test stays decoupled from the wrapper's internal live-catalog fetch.
+vi.mock("@/lib/model-resolver/resolve-available", () => ({
+  resolveAvailableModelForTemplate: vi.fn().mockResolvedValue({
+    model: "anthropic/claude-sonnet-4-6",
+    reason: "balanced",
+    fallbackUsed: false,
+  }),
+}));
+
 vi.mock("@/lib/provider-models", () => ({
   resetCache: vi.fn(),
   getDefaultModel: vi.fn().mockResolvedValue("anthropic/claude-haiku-4-5-20251001"),
