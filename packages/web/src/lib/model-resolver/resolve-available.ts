@@ -52,19 +52,20 @@ export async function resolveAvailableModelForTemplate(
 
   if (await isInProviderCatalog(resolved.model)) return resolved;
 
-  // The hardcoded pick is no longer served by the provider (retired upstream).
-  // Substitute the provider's live default, which `getDefaultModel` resolves
-  // against the same catalog — so it is live by construction.
+  // The hardcoded pick is not in the live catalog. Try the provider's default.
   const substitute = await getDefaultModel(input.provider);
   const required = input.hint.capabilities ?? [];
 
-  if (substitute === resolved.model) {
-    // The catalog says the pick is gone yet the default resolves back to it —
-    // an inconsistent catalog state. Fail loud instead of pinning a model the
-    // live check just rejected. Checked BEFORE the capability gate so we never
-    // interrogate capabilities of the very model the live check rejected.
-    throw new TemplateCapabilityUnavailableError(required, input.provider, CAPABILITY_DOCS_URL);
-  }
+  // `getDefaultModel` is only "live by construction" when the catalog is
+  // populated: on an empty/partial `/v1/models` it falls back to a hardcoded
+  // anchor (`BALANCED_ANCHORS` / `PROVIDERS[provider].defaultModel`) that may
+  // itself be absent from the catalog. If the substitute is not live either, the
+  // catalog is too incomplete to trust as a retirement signal — so we have no
+  // confirmed signal to act on. Keep the pick best-effort (same guard as a fetch
+  // failure), rather than pin an unverified substitute or throw. This also
+  // subsumes the `substitute === resolved.model` case: the pick just failed the
+  // live check, so an equal substitute fails it too.
+  if (!(await isInProviderCatalog(substitute))) return resolved;
 
   // Capability gate. The cache is seeded from the curated builtin catalog, so a
   // live default newer than this release has no row — `unknown`, NOT
