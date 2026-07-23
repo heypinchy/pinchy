@@ -19,6 +19,7 @@ vi.mock("@/lib/auth", () => {
 vi.mock("@/lib/openai-compatible-providers", () => ({
   createOrUpdateProvider: vi.fn(),
   listOpenAiCompatibleProviders: vi.fn().mockResolvedValue([]),
+  listOpenAiCompatibleProvidersForAdmin: vi.fn().mockResolvedValue([]),
   deleteProviderById: vi.fn(),
 }));
 
@@ -62,6 +63,26 @@ vi.mock("@/lib/openai-compatible-discovery", () => ({
   fetchOpenAiCompatibleModels: vi.fn(),
 }));
 
+// SSRF guard is mocked here so route tests stay hermetic (no real DNS) — the
+// guard's own IP-classification logic is covered in provider-url-guard.test.ts.
+// Default: allow. Blocked cases use mockRejectedValueOnce(new ProviderUrlBlockedError(...)).
+// The error class must be the one the route sees, so the factory exports a real class.
+vi.mock("@/lib/provider-url-guard", () => {
+  class ProviderUrlBlockedError extends Error {
+    constructor(
+      public readonly reason: string,
+      message: string
+    ) {
+      super(message);
+      this.name = "ProviderUrlBlockedError";
+    }
+  }
+  return {
+    ProviderUrlBlockedError,
+    assertAllowedProviderUrl: vi.fn().mockResolvedValue(undefined),
+  };
+});
+
 vi.mock("@/lib/openclaw-config", () => ({
   regenerateOpenClawConfig: vi.fn().mockResolvedValue(undefined),
 }));
@@ -87,6 +108,7 @@ import { auth } from "@/lib/auth";
 import {
   createOrUpdateProvider,
   listOpenAiCompatibleProviders,
+  listOpenAiCompatibleProvidersForAdmin,
   deleteProviderById,
 } from "@/lib/openai-compatible-providers";
 import type { OpenAiCompatibleProviderListItem } from "@/lib/openai-compatible-providers";
@@ -96,6 +118,7 @@ import {
   validateOpenAiCompatibleProvider,
   fetchOpenAiCompatibleModels,
 } from "@/lib/openai-compatible-discovery";
+import { assertAllowedProviderUrl, ProviderUrlBlockedError } from "@/lib/provider-url-guard";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { resetCache } from "@/lib/provider-models";
 import { getSetting, setSetting } from "@/lib/settings";
@@ -192,6 +215,58 @@ describe("POST /api/settings/providers/openai-compatible", () => {
 
     expect(res.status).toBe(403);
     expect(createOrUpdateProvider).not.toHaveBeenCalled();
+  });
+
+  it("returns 422 with a baseUrl field error when the URL is SSRF-blocked, without persisting", async () => {
+    vi.mocked(assertAllowedProviderUrl).mockRejectedValueOnce(
+      new ProviderUrlBlockedError("blocked_address", "reserved/internal address")
+    );
+
+    const res = await POST(
+      postRequest({
+        displayName: "Evil",
+        baseUrl: "http://169.254.169.254/v1",
+        apiKey: SECRET_KEY,
+        models: [modelDef("x")],
+      }),
+      routeCtx
+    );
+
+    expect(res.status).toBe(422);
+    const data = await res.json();
+    expect(data.details.fieldErrors.baseUrl?.length).toBeGreaterThan(0);
+    // Nothing persisted, no runtime apply.
+    expect(createOrUpdateProvider).not.toHaveBeenCalled();
+    expect(regenerateOpenClawConfig).not.toHaveBeenCalled();
+  });
+
+  it("repoints agents off a model dropped during an update, and audits the migration", async () => {
+    vi.mocked(createOrUpdateProvider).mockResolvedValue(
+      listItem({ id: "row-1", slug: "acme-llm", models: [modelDef("acme-large", "Acme Large")] })
+    );
+    const setSpy = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
+    vi.mocked(db.update).mockReturnValue({ set: setSpy } as any);
+    vi.mocked(db.query.agents.findMany).mockResolvedValue([
+      { id: "agent-1", name: "Booker", model: "acme-llm/acme-old" }, // dropped → repoint
+      { id: "agent-2", name: "Keeper", model: "acme-llm/acme-large" }, // kept → untouched
+    ] as any);
+
+    const res = await POST(
+      postRequest({
+        id: "11111111-1111-4111-8111-111111111111",
+        displayName: "Acme LLM",
+        baseUrl: "https://acme.example.com/v1",
+        models: [modelDef("acme-large", "Acme Large")],
+      }),
+      routeCtx
+    );
+
+    expect(res.status).toBe(200);
+    // Exactly one repoint, onto the surviving model.
+    expect(setSpy).toHaveBeenCalledTimes(1);
+    expect(setSpy).toHaveBeenCalledWith({ model: "acme-llm/acme-large" });
+    const entry = vi.mocked(appendAuditLog).mock.calls[0][0];
+    expect(entry.detail).toMatchObject({ agentCount: 1 });
   });
 
   it("creates a provider, returns the row, and writes a success audit", async () => {
@@ -533,7 +608,7 @@ describe("GET /api/settings/providers/openai-compatible", () => {
   });
 
   it("returns the provider list with keyHint and no full key", async () => {
-    vi.mocked(listOpenAiCompatibleProviders).mockResolvedValue([
+    vi.mocked(listOpenAiCompatibleProvidersForAdmin).mockResolvedValue([
       listItem({ slug: "acme-llm", keyHint: "7Z8x" }),
     ]);
 
@@ -564,6 +639,24 @@ describe("POST /api/settings/providers/openai-compatible/discover", () => {
       routeCtx
     );
     expect(res.status).toBe(403);
+  });
+
+  it("returns blocked_url and never probes when the URL is SSRF-blocked", async () => {
+    vi.mocked(assertAllowedProviderUrl).mockRejectedValueOnce(
+      new ProviderUrlBlockedError("blocked_address", "reserved/internal address")
+    );
+
+    const res = await DISCOVER(
+      discoverRequest({ baseUrl: "http://169.254.169.254/v1", apiKey: SECRET_KEY }),
+      routeCtx
+    );
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data).toEqual({ ok: false, error: "blocked_url" });
+    // The probe must NOT have gone out.
+    expect(validateOpenAiCompatibleProvider).not.toHaveBeenCalled();
+    expect(fetchOpenAiCompatibleModels).not.toHaveBeenCalled();
   });
 
   it("returns discovered models on a valid connection", async () => {

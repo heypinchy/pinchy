@@ -7,7 +7,7 @@ import {
 } from "@/lib/schemas/openai-compatible-provider";
 import {
   createOrUpdateProvider,
-  listOpenAiCompatibleProviders,
+  listOpenAiCompatibleProvidersForAdmin,
   deleteProviderById,
 } from "@/lib/openai-compatible-providers";
 import { getSetting, setSetting } from "@/lib/settings";
@@ -15,8 +15,10 @@ import { countConfiguredProviders } from "@/lib/provider-count";
 import {
   buildRemainingCandidates,
   migrateAgentsOffDeletedProvider,
+  repointAgentsOffRemovedModels,
   capMigratedAgents,
 } from "@/lib/provider-deletion";
+import { assertAllowedProviderUrl, ProviderUrlBlockedError } from "@/lib/provider-url-guard";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { resetCache } from "@/lib/provider-models";
 import { resolveModelForTemplate } from "@/lib/model-resolver";
@@ -43,6 +45,26 @@ export const POST = withAdmin(async (request, _ctx, session) => {
   const parsed = await parseRequestBody(upsertOpenAiCompatibleProviderSchema, request);
   if ("error" in parsed) return parsed.error;
   const input = parsed.data;
+
+  // SSRF guard: the base URL is admin-supplied and OpenClaw fetches it at chat
+  // time from the persisted config. Refuse to persist a reserved/internal/
+  // metadata target (see provider-url-guard.ts) before it ever reaches
+  // openclaw.json. Surface it inline on the baseUrl field (same shape as a Zod
+  // field error) so the form can render it next to the input.
+  try {
+    await assertAllowedProviderUrl(input.baseUrl);
+  } catch (err) {
+    if (err instanceof ProviderUrlBlockedError) {
+      return NextResponse.json(
+        {
+          error: "That base URL isn't allowed.",
+          details: { formErrors: [], fieldErrors: { baseUrl: [err.message] } },
+        },
+        { status: 422 }
+      );
+    }
+    throw err;
+  }
 
   // Host-only, key-free audit detail — computed up front so the failure path
   // can reuse it. `new URL(baseUrl)` is safe: the schema already validated it.
@@ -113,6 +135,20 @@ export const POST = withAdmin(async (request, _ctx, session) => {
     }
   }
 
+  // On UPDATE the admin may have DROPPED a model that agents were pinned to.
+  // Repoint those agents onto a still-present model of the SAME provider so they
+  // don't dangle on a `<slug>/<removed-id>` that's no longer emitted into
+  // openclaw.json and would fail at chat time. Mirrors the delete route's
+  // migration; the provider still has ≥1 model (schema `.min(1)`). A CREATE
+  // can't orphan anything, so this only runs for updates.
+  let migratedAgents: Awaited<ReturnType<typeof repointAgentsOffRemovedModels>> = [];
+  if (input.id) {
+    migratedAgents = await repointAgentsOffRemovedModels({
+      slug: row.slug,
+      keptModelIds: row.models.map((m) => m.id),
+    });
+  }
+
   // Best-effort runtime apply: the row is already committed, so a failed
   // regenerate must NOT 500 (mirrors setup/provider/route.ts, #880). Record
   // whether it reached the runtime so the audit distinguishes saved vs applied.
@@ -124,6 +160,10 @@ export const POST = withAdmin(async (request, _ctx, session) => {
     runtimeApplied = false;
   }
   resetCache();
+
+  // Cap the migrated-agent list so audit's 2KB truncateDetail can't shred the
+  // structured fields (same rationale as the delete route).
+  const { inlineMigrated, truncated } = capMigratedAgents(migratedAgents);
 
   after(() =>
     appendAuditLog({
@@ -137,6 +177,14 @@ export const POST = withAdmin(async (request, _ctx, session) => {
         baseUrlHost,
         modelCount: row.models.length,
         runtimeApplied,
+        // Only present when an edit actually repointed agents off removed models.
+        ...(migratedAgents.length > 0
+          ? {
+              agentCount: migratedAgents.length,
+              migratedAgents: inlineMigrated,
+              ...(truncated ? { migratedAgentsTruncated: true } : {}),
+            }
+          : {}),
       },
     })
   );
@@ -149,8 +197,9 @@ export const POST = withAdmin(async (request, _ctx, session) => {
  * `keyHint` (last 4 chars) and NEVER the decrypted key.
  */
 export const GET = withAdmin(async () => {
-  // audit-exempt: read-only list, no state change.
-  const providers = await listOpenAiCompatibleProviders();
+  // audit-exempt: read-only list, no state change. Uses the admin accessor so
+  // each row carries a keyHint (the one decrypt path — see the module).
+  const providers = await listOpenAiCompatibleProvidersForAdmin();
   return NextResponse.json(providers);
 });
 

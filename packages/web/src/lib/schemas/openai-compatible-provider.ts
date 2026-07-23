@@ -11,6 +11,15 @@ import { z } from "zod";
  * same field names, and `cost` carries exactly the four keys OpenClaw's
  * per-agent model-catalog schema requires (input/output/cacheRead/cacheWrite).
  * This schema validates the model defs a user persists for their provider.
+ *
+ * Trust boundary: these fields (contextWindow, cost, capabilities) are accepted
+ * from the admin verbatim — the discover path pre-fills them from the models.dev
+ * catalog, but an admin editing their OWN provider may override them, and that
+ * is intentional (they know their endpoint better than a snapshot does). The
+ * values only feed OpenClaw's own token budgeting for that admin's deployment,
+ * so there is no cross-tenant or privilege impact to bound here; the sensitive
+ * inputs (the key, the base URL) are guarded separately (SecretRef + the SSRF
+ * guard). Bounds below are sanity checks, not a security control.
  */
 export const modelDefinitionSchema = z.object({
   id: z.string().min(1),
@@ -29,6 +38,20 @@ export const modelDefinitionSchema = z.object({
 });
 
 /**
+ * A provider base URL. Restricted to http(s): a bare `z.string().url()` also
+ * accepts `file://`, `gopher://`, etc., which — since Pinchy fetches this URL
+ * server-side — would be an SSRF/LFI foothold. Network-level SSRF (internal /
+ * metadata IPs) is enforced separately at the route edge by
+ * `assertAllowedProviderUrl` (provider-url-guard.ts); this is the scheme half.
+ */
+const providerBaseUrlSchema = z
+  .string()
+  .url()
+  .refine((u) => /^https?:\/\//i.test(u), {
+    message: "The base URL must start with http:// or https://.",
+  });
+
+/**
  * Request body for creating or updating an OpenAI-compatible provider.
  *
  * `id` present ⇒ update (the slug is immutable, derived once at create). On an
@@ -39,14 +62,14 @@ export const modelDefinitionSchema = z.object({
 export const upsertOpenAiCompatibleProviderSchema = z.object({
   id: z.string().uuid().optional(),
   displayName: z.string().min(1).max(120),
-  baseUrl: z.string().url(),
+  baseUrl: providerBaseUrlSchema,
   apiKey: z.string().min(1).optional(),
   models: z.array(modelDefinitionSchema).min(1),
 });
 
 /** Request body for discovering a provider's models from its `/models` endpoint. */
 export const discoverSchema = z.object({
-  baseUrl: z.string().url(),
+  baseUrl: providerBaseUrlSchema,
   apiKey: z.string().min(1),
 });
 

@@ -1,5 +1,5 @@
-// Shared agent-migration + default-reassignment + audit-diff logic for the two
-// provider DELETE routes (#894).
+// Shared agent-migration + default-reassignment + audit-diff logic for the
+// provider mutation routes (#894).
 //
 // Both the built-in provider DELETE (settings/providers/route.ts) and the
 // custom OpenAI-compatible DELETE (settings/providers/openai-compatible/route.ts)
@@ -10,6 +10,11 @@
 // never shred the structured fields. That logic lived inline and byte-identical
 // in the built-in route; it lives here once so the custom route reuses it rather
 // than copy-pasting a subtly-drifting second copy.
+//
+// It also owns the sibling case where a provider SURVIVES but one of its models
+// is removed (a custom-provider EDIT — see repointAgentsOffRemovedModels): the
+// same "an agent's pinned model no longer exists, move it to a valid one"
+// invariant, minus the default-provider reassignment.
 
 import { setSetting } from "@/lib/settings";
 import { listConfiguredBuiltIns } from "@/lib/provider-count";
@@ -120,6 +125,48 @@ export async function migrateAgentsOffDeletedProvider(opts: {
   }
 
   return { migratedAgents, newDefault };
+}
+
+/**
+ * Repoint every agent pinned to a model of `slug` that is NO LONGER in the
+ * provider's model set onto the provider's first remaining model.
+ *
+ * Used when an admin EDITS a custom provider and drops a model an agent was
+ * using: the agent would otherwise dangle on a `<slug>/<removed-id>` that config
+ * emission no longer produces and that fails at chat time. Agents on a
+ * still-present model are left untouched, and agents on other providers are
+ * never considered (the `<slug>/` prefix scopes it).
+ *
+ * `keptModelIds` are the BARE model ids the provider still has (non-empty by the
+ * upsert schema's `.min(1)`); the first is the fallback target. Unlike the
+ * delete-migration, there is no `default_provider` reassignment — the provider
+ * itself still exists.
+ */
+export async function repointAgentsOffRemovedModels(opts: {
+  slug: string;
+  keptModelIds: string[];
+}): Promise<MigratedAgent[]> {
+  const { slug, keptModelIds } = opts;
+  if (keptModelIds.length === 0) return []; // defensive; schema guarantees ≥1
+
+  const prefix = `${slug}/`;
+  const kept = new Set(keptModelIds.map((id) => `${slug}/${id}`));
+  const fallback = `${slug}/${keptModelIds[0]}`;
+
+  const migrated: MigratedAgent[] = [];
+  const allAgents = await db.query.agents.findMany();
+  for (const agent of allAgents) {
+    if (agent.model?.startsWith(prefix) && !kept.has(agent.model)) {
+      await db.update(agents).set({ model: fallback }).where(eq(agents.id, agent.id));
+      migrated.push({
+        id: agent.id,
+        name: agent.name,
+        fromModel: agent.model,
+        toModel: fallback,
+      });
+    }
+  }
+  return migrated;
 }
 
 // audit's truncateDetail (lib/audit.ts) replaces the entire detail with an

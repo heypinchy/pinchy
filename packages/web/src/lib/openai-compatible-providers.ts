@@ -14,17 +14,48 @@ import { deriveProviderSlug } from "@/lib/openai-compatible-slug";
 import type { UpsertOpenAiCompatibleProviderInput } from "@/lib/schemas/openai-compatible-provider";
 import { eq } from "drizzle-orm";
 
-/** A provider row safe to expose to the admin UI — no decrypted key, only the last-4 hint. */
-export interface OpenAiCompatibleProviderListItem {
+/**
+ * A provider row WITHOUT any key material — safe for the many internal callers
+ * that only need identity + models (model list, config emission, provider count,
+ * agent migration, model resolution). Deliberately carries no `keyHint`: those
+ * callers never read it, and computing it forces an AES-GCM decrypt per row on
+ * hot paths (every `regenerateOpenClawConfig` / `fetchProviderModels`).
+ */
+export interface OpenAiCompatibleProvider {
   id: string;
   slug: string;
   displayName: string;
   baseUrl: string;
   models: OpenClawModelDefinition[];
-  /** Last 4 characters of the decrypted API key, for at-a-glance identification. */
-  keyHint: string;
   createdAt: Date;
   updatedAt: Date;
+}
+
+/** A provider row for the admin UI: adds the last-4 `keyHint` (one decrypt/row). */
+export interface OpenAiCompatibleProviderListItem extends OpenAiCompatibleProvider {
+  /** Last 4 characters of the decrypted API key, for at-a-glance identification. */
+  keyHint: string;
+}
+
+/**
+ * Column set for the key-free reads. Selecting explicit columns (not `*`) also
+ * keeps the ciphertext out of the result entirely — nothing to accidentally log.
+ *
+ * Built lazily inside a function (not a module-level const) so importing this
+ * module never dereferences the Drizzle schema at load time — several suites
+ * mock `@/db/schema`, and a top-level `openaiCompatibleProviders.id` would throw
+ * on import in those files.
+ */
+function keyFreeColumns() {
+  return {
+    id: openaiCompatibleProviders.id,
+    slug: openaiCompatibleProviders.slug,
+    displayName: openaiCompatibleProviders.displayName,
+    baseUrl: openaiCompatibleProviders.baseUrl,
+    models: openaiCompatibleProviders.models,
+    createdAt: openaiCompatibleProviders.createdAt,
+    updatedAt: openaiCompatibleProviders.updatedAt,
+  };
 }
 
 function toListItem(
@@ -43,11 +74,23 @@ function toListItem(
 }
 
 /**
- * List every provider WITHOUT the decrypted key. Each row carries a `keyHint`
- * (last 4 chars of the decrypted key) for display; the full key never leaves
- * this module through this path.
+ * List every provider WITHOUT decrypting any key (no `keyHint`). This is the
+ * hot-path accessor used by config emission, the model list, the provider
+ * count, agent migration, and model resolution — none of which read the key.
+ * For the admin UI's keyHint, use {@link listOpenAiCompatibleProvidersForAdmin}.
  */
-export async function listOpenAiCompatibleProviders(): Promise<OpenAiCompatibleProviderListItem[]> {
+export async function listOpenAiCompatibleProviders(): Promise<OpenAiCompatibleProvider[]> {
+  return db.select(keyFreeColumns()).from(openaiCompatibleProviders);
+}
+
+/**
+ * List every provider WITH a `keyHint` (last 4 chars of the decrypted key) for
+ * the admin settings view. This is the ONLY read path that decrypts — kept off
+ * the hot callers above. The full key never leaves this module through here.
+ */
+export async function listOpenAiCompatibleProvidersForAdmin(): Promise<
+  OpenAiCompatibleProviderListItem[]
+> {
   const rows = await db.select().from(openaiCompatibleProviders);
   return rows.map(toListItem);
 }

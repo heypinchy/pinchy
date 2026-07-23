@@ -6,6 +6,7 @@ import {
   validateOpenAiCompatibleProvider,
   fetchOpenAiCompatibleModels,
 } from "@/lib/openai-compatible-discovery";
+import { assertAllowedProviderUrl, ProviderUrlBlockedError } from "@/lib/provider-url-guard";
 
 // Connect-and-discover probe for a generic OpenAI-compatible endpoint (#894).
 // audit-exempt: read-only discovery probe, no state change — it neither
@@ -19,6 +20,18 @@ export const POST = withAdmin(async (request) => {
   const parsed = await parseRequestBody(discoverSchema, request);
   if ("error" in parsed) return parsed.error;
   const { baseUrl, apiKey } = parsed.data;
+
+  // SSRF guard: the base URL is admin-supplied and fetched server-side. Refuse
+  // to probe reserved/internal/metadata addresses before any request goes out
+  // (see provider-url-guard.ts). The UI renders `blocked_url` inline.
+  try {
+    await assertAllowedProviderUrl(baseUrl);
+  } catch (err) {
+    if (err instanceof ProviderUrlBlockedError) {
+      return NextResponse.json({ ok: false, error: "blocked_url" });
+    }
+    throw err;
+  }
 
   const validation = await validateOpenAiCompatibleProvider(baseUrl, apiKey);
   if (!validation.valid) {
