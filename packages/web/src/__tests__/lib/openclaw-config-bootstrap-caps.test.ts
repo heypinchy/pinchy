@@ -32,6 +32,14 @@ vi.mock("fs", async (importOriginal) => {
   };
 });
 
+// OpenAI-compatible custom providers (#894) are DB-backed and now queried
+// during config regeneration. The shared @/db mock here returns agent rows
+// for every table, so stub this module to an empty list to keep the test hermetic.
+vi.mock("@/lib/openai-compatible-providers", () => ({
+  listOpenAiCompatibleProviders: vi.fn().mockResolvedValue([]),
+  getDecryptedApiKey: vi.fn().mockResolvedValue(null),
+}));
+
 vi.mock("@/db", () => ({
   db: {
     select: vi.fn().mockImplementation(() => ({

@@ -25,6 +25,7 @@ import {
   type OllamaCloudModel,
 } from "@/lib/ollama-cloud-models";
 import { getModelCatalogForProvider } from "@/lib/openclaw-builtin-models";
+import { listOpenAiCompatibleProviders } from "@/lib/openai-compatible-providers";
 import {
   getOpenClawWorkspacePath,
   getAgentBootstrapSizes,
@@ -1414,6 +1415,27 @@ export async function regenerateOpenClawConfig() {
       providerConfig.apiKey = secretRef("/providers/ollama-local/apiKey");
     }
     modelProviders["ollama"] = providerConfig;
+  }
+
+  // Generic "OpenAI-compatible" providers (#894). Each admin-configured
+  // instance emits one models.providers entry keyed by its slug. The baseUrl is
+  // verbatim (the user entered the full base incl. /v1), the apiKey is a
+  // SecretRef resolved from secrets.json (raw key stays in the bundle, never the
+  // config tree), and the models mirror the built-in / ollama-cloud mapping:
+  // strip `vision` (the vision signal rides in `input`) and opt into
+  // `compat.supportsUsageInStreaming` so usage tracking works against the
+  // configured non-OpenAI endpoint (see the ollama-cloud block above).
+  for (const p of await listOpenAiCompatibleProviders()) {
+    modelProviders[p.slug] = {
+      baseUrl: p.baseUrl,
+      api: "openai-completions",
+      apiKey: secretRef(`/providers/${p.slug}/apiKey`),
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      models: p.models.map(({ vision: _v, ...ocFields }) => ({
+        ...ocFields,
+        compat: { supportsUsageInStreaming: true },
+      })),
+    };
   }
 
   if (Object.keys(modelProviders).length > 0) {

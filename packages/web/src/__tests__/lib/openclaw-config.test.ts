@@ -104,6 +104,21 @@ vi.mock("@/server/restart-state", () => ({
   restartState: { notifyRestart: vi.fn() },
 }));
 
+// Generic "OpenAI-compatible" providers (#894). Both entry points live in one
+// module: `listOpenAiCompatibleProviders` (model-provider emission in build.ts)
+// and `getDecryptedApiKey` (secrets bundle in secrets-bundle.ts). Default to an
+// empty list / no-key so every existing test in this file (which configures no
+// custom instances) is unaffected. Individual tests below override these.
+const { mockListOpenAiCompatibleProviders, mockGetDecryptedApiKey } = vi.hoisted(() => ({
+  mockListOpenAiCompatibleProviders: vi.fn().mockResolvedValue([]),
+  mockGetDecryptedApiKey: vi.fn().mockResolvedValue(null),
+}));
+
+vi.mock("@/lib/openai-compatible-providers", () => ({
+  listOpenAiCompatibleProviders: mockListOpenAiCompatibleProviders,
+  getDecryptedApiKey: mockGetDecryptedApiKey,
+}));
+
 const { mockValidateBuiltConfig } = vi.hoisted(() => ({
   mockValidateBuiltConfig: vi.fn().mockReturnValue({ ok: true }),
 }));
@@ -7892,5 +7907,169 @@ describe("regenerateOpenClawConfig imageModel.primary (#416)", () => {
     };
     expect(config.agents.defaults.pdfModel).toEqual(expected);
     expect(config.agents.defaults.imageModel).toEqual(expected);
+  });
+});
+
+describe("OpenAI-compatible custom providers (#894)", () => {
+  // A stored model row is an OpenClawModelDefinition — it carries `vision` AND
+  // `input`, exactly like a built-in catalog entry. Emission must MIRROR the
+  // built-in provider mapping (strip `vision`, keep `input`) and add
+  // ollama-cloud's `compat.supportsUsageInStreaming` flag.
+  function makeModel(overrides: Record<string, unknown> = {}) {
+    return {
+      id: "swiss-model",
+      name: "Swiss Model",
+      contextWindow: 32000,
+      maxTokens: 4096,
+      reasoning: true,
+      vision: true,
+      input: ["text", "image"],
+      cost: { input: 1, output: 2, cacheRead: 0.1, cacheWrite: 0.5 },
+      ...overrides,
+    };
+  }
+
+  function makeProvider(overrides: Record<string, unknown> = {}) {
+    return {
+      id: "prov-1",
+      slug: "swisscom-ai",
+      displayName: "Swisscom AI",
+      baseUrl: "https://api.swisscom.example/v1",
+      models: [makeModel()],
+      keyHint: "cret",
+      createdAt: new Date("2026-01-01T00:00:00Z"),
+      updatedAt: new Date("2026-01-01T00:00:00Z"),
+      ...overrides,
+    };
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockedGetOrCreateGatewayToken.mockResolvedValue("test-gateway-token");
+    mockedExistsSync.mockReturnValue(true);
+    mockedReadFileSync.mockImplementation(() => {
+      throw new Error("ENOENT: no such file or directory");
+    });
+    mockReadSecretsFile.mockReturnValue({});
+    mockedDb.select.mockReturnValue({ from: mockFrom() } as never);
+    mockedGetSetting.mockResolvedValue(null);
+    // Reset custom-provider mocks to their empty defaults (clearAllMocks clears
+    // call history but not implementations set by earlier tests in this block).
+    mockListOpenAiCompatibleProviders.mockResolvedValue([]);
+    mockGetDecryptedApiKey.mockResolvedValue(null);
+  });
+
+  it("emits a models.providers entry mirroring the ollama-cloud shape (SecretRef, api, compat)", async () => {
+    mockListOpenAiCompatibleProviders.mockResolvedValue([makeProvider()]);
+    mockGetDecryptedApiKey.mockResolvedValue("swiss-plaintext-key");
+
+    await regenerateOpenClawConfig();
+
+    const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
+    expect(config.models.providers["swisscom-ai"]).toEqual({
+      // baseUrl is verbatim — the user entered the full base incl. /v1.
+      baseUrl: "https://api.swisscom.example/v1",
+      api: "openai-completions",
+      apiKey: {
+        source: "file",
+        provider: "pinchy",
+        id: "/providers/swisscom-ai/apiKey",
+      },
+      models: [
+        {
+          // vision is stripped; input carries the vision signal (mirrors both
+          // the built-in strip and ollama-cloud's input-derived vision).
+          id: "swiss-model",
+          name: "Swiss Model",
+          contextWindow: 32000,
+          maxTokens: 4096,
+          reasoning: true,
+          input: ["text", "image"],
+          cost: { input: 1, output: 2, cacheRead: 0.1, cacheWrite: 0.5 },
+          compat: { supportsUsageInStreaming: true },
+        },
+      ],
+    });
+  });
+
+  it("emits two coexisting provider keys when two instances are seeded", async () => {
+    mockListOpenAiCompatibleProviders.mockResolvedValue([
+      makeProvider(),
+      makeProvider({
+        id: "prov-2",
+        slug: "acme-llm",
+        displayName: "Acme LLM",
+        baseUrl: "https://acme.example/v1",
+        models: [makeModel({ id: "acme-1", name: "Acme 1", vision: false, input: ["text"] })],
+      }),
+    ]);
+    mockGetDecryptedApiKey.mockResolvedValue("some-key");
+
+    await regenerateOpenClawConfig();
+
+    const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
+    expect(Object.keys(config.models.providers)).toEqual(
+      expect.arrayContaining(["swisscom-ai", "acme-llm"])
+    );
+    expect(config.models.providers["swisscom-ai"].baseUrl).toBe("https://api.swisscom.example/v1");
+    expect(config.models.providers["acme-llm"].baseUrl).toBe("https://acme.example/v1");
+    // The vision-less model encodes input as ["text"] only.
+    expect(config.models.providers["acme-llm"].models[0].input).toEqual(["text"]);
+    expect(config.models.providers["acme-llm"].models[0]).not.toHaveProperty("vision");
+  });
+
+  it("carries each instance's decrypted key into the secrets bundle (never the config)", async () => {
+    mockListOpenAiCompatibleProviders.mockResolvedValue([makeProvider()]);
+    mockGetDecryptedApiKey.mockImplementation(async (slug: string) =>
+      slug === "swisscom-ai" ? "swiss-plaintext-key" : null
+    );
+
+    await regenerateOpenClawConfig();
+
+    expect(mockWriteSecretsFile).toHaveBeenCalled();
+    const secretsArg = mockWriteSecretsFile.mock.calls[0][0];
+    expect(secretsArg.providers?.["swisscom-ai"]).toEqual({ apiKey: "swiss-plaintext-key" });
+    expect(mockGetDecryptedApiKey).toHaveBeenCalledWith("swisscom-ai");
+  });
+
+  it("never writes the raw key into the emitted config tree (assertNoPlaintextSecrets passes)", async () => {
+    const { assertNoPlaintextSecrets } = await import("@/lib/openclaw-plaintext-scanner");
+    // Use an OpenAI-shaped key so the scanner's `openai-generic` pattern would
+    // catch a leak if the raw key ever reached the config tree.
+    mockListOpenAiCompatibleProviders.mockResolvedValue([makeProvider()]);
+    mockGetDecryptedApiKey.mockResolvedValue("sk-proj-abcdef0123456789abcdef");
+
+    await regenerateOpenClawConfig();
+
+    const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
+    expect(() => assertNoPlaintextSecrets(config)).not.toThrow();
+    // Only the SecretRef is present — never the plaintext.
+    expect(config.models.providers["swisscom-ai"].apiKey).toEqual({
+      source: "file",
+      provider: "pinchy",
+      id: "/providers/swisscom-ai/apiKey",
+    });
+  });
+
+  it("is a no-op with no custom instances — built-in emission is unchanged", async () => {
+    mockListOpenAiCompatibleProviders.mockResolvedValue([]);
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "anthropic_api_key") return "sk-ant-decrypted";
+      if (key === "default_provider") return "anthropic";
+      return null;
+    });
+
+    await regenerateOpenClawConfig();
+
+    const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
+    // Built-in provider still emitted normally.
+    expect(config.models.providers.anthropic?.apiKey).toMatchObject({
+      source: "file",
+      provider: "pinchy",
+      id: "/providers/anthropic/apiKey",
+    });
+    // No custom keys leaked in.
+    expect(config.models.providers).not.toHaveProperty("swisscom-ai");
+    expect(mockGetDecryptedApiKey).not.toHaveBeenCalled();
   });
 });

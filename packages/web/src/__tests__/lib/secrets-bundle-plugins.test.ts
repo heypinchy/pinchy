@@ -8,6 +8,14 @@ vi.mock("@/lib/settings", () => ({
   getSetting: vi.fn(),
 }));
 
+// Generic "OpenAI-compatible" providers (#894) are DB-backed. Default to an
+// empty list / no-key so the built-in-provider assertions below stay pure
+// unit tests; the dedicated case overrides these to exercise key collection.
+vi.mock("@/lib/openai-compatible-providers", () => ({
+  listOpenAiCompatibleProviders: vi.fn().mockResolvedValue([]),
+  getDecryptedApiKey: vi.fn().mockResolvedValue(null),
+}));
+
 describe("collectProviderSecrets", () => {
   beforeEach(() => {
     vi.resetModules();
@@ -37,6 +45,42 @@ describe("collectProviderSecrets", () => {
     const result = await collectProviderSecrets();
 
     expect(result.providers.anthropic).toEqual({ apiKey: "sk-ant-real" });
+  });
+
+  it("carries each OpenAI-compatible instance's decrypted key under its slug (#894)", async () => {
+    const { getSetting } = await import("@/lib/settings");
+    vi.mocked(getSetting).mockResolvedValue(null);
+
+    const { listOpenAiCompatibleProviders, getDecryptedApiKey } =
+      await import("@/lib/openai-compatible-providers");
+    vi.mocked(listOpenAiCompatibleProviders).mockResolvedValue([
+      { slug: "swisscom-ai" },
+      { slug: "acme-llm" },
+    ] as never);
+    vi.mocked(getDecryptedApiKey).mockImplementation(async (slug: string) =>
+      slug === "swisscom-ai" ? "swiss-key" : slug === "acme-llm" ? "acme-key" : null
+    );
+
+    const { collectProviderSecrets } = await import("@/lib/openclaw-config/secrets-bundle");
+    const result = await collectProviderSecrets();
+
+    expect(result.providers["swisscom-ai"]).toEqual({ apiKey: "swiss-key" });
+    expect(result.providers["acme-llm"]).toEqual({ apiKey: "acme-key" });
+  });
+
+  it("skips an OpenAI-compatible instance whose key cannot be decrypted (#894)", async () => {
+    const { getSetting } = await import("@/lib/settings");
+    vi.mocked(getSetting).mockResolvedValue(null);
+
+    const { listOpenAiCompatibleProviders, getDecryptedApiKey } =
+      await import("@/lib/openai-compatible-providers");
+    vi.mocked(listOpenAiCompatibleProviders).mockResolvedValue([{ slug: "ghost" }] as never);
+    vi.mocked(getDecryptedApiKey).mockResolvedValue(null);
+
+    const { collectProviderSecrets } = await import("@/lib/openclaw-config/secrets-bundle");
+    const result = await collectProviderSecrets();
+
+    expect(result.providers).not.toHaveProperty("ghost");
   });
 });
 
