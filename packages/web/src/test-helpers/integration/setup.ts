@@ -42,6 +42,7 @@ const APPLICATION_TABLES = [
   '"user"', // Quoted because `user` is a reserved word in Postgres.
   "settings",
   "models",
+  "openai_compatible_providers",
   "audit_verify_state",
   "kb_documents",
   "kb_chunks",
