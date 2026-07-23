@@ -82,6 +82,8 @@ This is a generic capability, not a per-integration exporter — it works the sa
 
 Generated files are capped at 50,000 rows and 10 MB, and land in the agent's `workbench/` directory — the same zone `pinchy_write` uses for anything an agent produces. That means generating a file is gated on the same **Write Files** permission described in [Agent Permissions](/concepts/agent-permissions/): an agent that can't write files can't generate them either.
 
+Generating never overwrites an existing file: if `export.csv` already exists in the workbench, the new file becomes `export-2.csv` (then `export-3.csv`, and so on), and the chat reports the name actually used. Files you were handed earlier — including in other conversations with the same agent — keep exactly the content they had when they were delivered.
+
 ## Security
 
 Pinchy validates every uploaded file against its actual content, not just the browser-reported MIME type. A file renamed to `.pdf` that contains executable code will be rejected. Filenames are also sanitized before being written to disk.

@@ -19,6 +19,7 @@ import { runVisionTasks, type AggregatedVisionUsage } from "./pdf-vision-runner"
 import { reportUsage } from "./usage-reporter";
 import { resolveAgentInfo } from "./resolve-agent-info";
 import { generateFile, type GenerateFileFormat } from "./generate-file";
+import { normalizeDeliverableBasename } from "./deliverable-filename";
 
 // The Pinchy web process runs as uid/gid 999 in the container and must own a
 // generated file to serve it back to the user as a download (#703). Chowning
@@ -733,7 +734,9 @@ const plugin = {
             "Generate a CSV, XLSX, or PDF file from tabular data (columns + rows) and save it " +
             "into your workbench. The file is delivered to the user in chat as a downloadable " +
             "attachment. Supported formats: csv (spreadsheet-safe, UTF-8 with BOM), xlsx (a " +
-            "single-sheet Excel workbook), pdf (a simple table report).",
+            "single-sheet Excel workbook), pdf (a simple table report). Existing files are " +
+            "never overwritten — on a name collision a numeric suffix is appended (e.g. " +
+            "export-2.csv); the tool result reports the actual filename used.",
           parameters: {
             type: "object",
             properties: {
@@ -780,20 +783,12 @@ const plugin = {
               if (typeof params.filename !== "string" || params.filename.length === 0) {
                 throw new Error("filename must be a non-empty string");
               }
-              const rawFilename = params.filename;
-              // Basename only: the agent supplies a name, not a path. Rejecting
-              // separators/traversal here — before it ever reaches join() below —
-              // is what keeps the generated file confined to the workbench dir,
-              // mirroring pinchy_write's onDisk validation posture.
-              if (
-                rawFilename.includes("/") ||
-                rawFilename.includes("\\") ||
-                rawFilename.includes("..")
-              ) {
-                throw new Error(
-                  "filename must be a base name without path separators (no '/', '\\', or '..')"
-                );
-              }
+              // Path confinement AND delivery-route alignment: the returned
+              // basename is exactly what the file will be stored and granted
+              // under (NFC, trimmed, no separators/traversal, no characters
+              // the #703 serve route's sanitizeFilename would reject or
+              // alter) — see deliverable-filename.ts for why each rule exists.
+              const baseFilename = normalizeDeliverableBasename(params.filename);
 
               if (
                 !Array.isArray(params.columns) ||
@@ -818,30 +813,56 @@ const plugin = {
               });
 
               // generate-file.ts's MAX_ROWS bounds row COUNT only — a single
-              // huge cell can still produce an arbitrarily large buffer.
-              // Reject before ever touching the filesystem, same as
-              // pinchy_write's MAX_FILE_SIZE check above.
+              // huge cell can still produce an arbitrarily large buffer, and
+              // that buffer is fully materialized in memory BEFORE this check
+              // can trip (all three renderers buffer their whole output).
+              // Acceptable because the input is model-emitted tool params,
+              // whose own size is bounded far below anything that could
+              // pressure the plugin process — this cap bounds what lands on
+              // DISK, same as pinchy_write's MAX_FILE_SIZE check above.
               if (buffer.byteLength > MAX_FILE_SIZE) {
                 throw new Error(
                   `Generated file too large (${buffer.byteLength} bytes). Maximum: ${MAX_FILE_SIZE} bytes.`
                 );
               }
 
-              const name = `${rawFilename}.${ext}`;
-              const onDisk = join(workbench, name);
+              // NEVER overwrite an existing file. The workbench is shared per
+              // AGENT while the #703 download grant is (agent, filename, user):
+              // overwriting would silently swap the bytes under every earlier
+              // grant for that name — on a shared agent, user A's old chip
+              // would start serving user B's data. On collision, append a
+              // numeric suffix instead. `wx` makes create-or-fail atomic (no
+              // exists-then-write TOCTOU window against a concurrent run).
+              const MAX_COLLISION_ATTEMPTS = 100;
+              let name = "";
+              let resolved = "";
+              let written = false;
+              for (let attempt = 1; attempt <= MAX_COLLISION_ATTEMPTS && !written; attempt++) {
+                name =
+                  attempt === 1 ? `${baseFilename}.${ext}` : `${baseFilename}-${attempt}.${ext}`;
+                resolved = validateAccess(
+                  { allowed_paths: config.allowed_paths, write_paths: writePaths },
+                  join(workbench, name),
+                  "write"
+                );
+                assertNoSymlinkEscape(resolved, writePaths);
 
-              const resolved = validateAccess(
-                { allowed_paths: config.allowed_paths, write_paths: writePaths },
-                onDisk,
-                "write"
-              );
-              assertNoSymlinkEscape(resolved, writePaths);
-
-              // mkdir must run AFTER validation, never before, so a rejected
-              // write never leaves directories on disk as a side effect of the
-              // failure path (same ordering rule as pinchy_write above).
-              await mkdir(dirname(resolved), { recursive: true });
-              await writeFile(resolved, buffer);
+                // mkdir must run AFTER validation, never before, so a rejected
+                // write never leaves directories on disk as a side effect of the
+                // failure path (same ordering rule as pinchy_write above).
+                await mkdir(dirname(resolved), { recursive: true });
+                try {
+                  await writeFile(resolved, buffer, { flag: "wx" });
+                  written = true;
+                } catch (writeError) {
+                  if ((writeError as NodeJS.ErrnoException).code !== "EEXIST") throw writeError;
+                }
+              }
+              if (!written) {
+                throw new Error(
+                  `A file named ${baseFilename}.${ext} (and ${MAX_COLLISION_ATTEMPTS - 1} suffixed variants) already exists — choose a different filename.`
+                );
+              }
 
               try {
                 await chown(resolved, DELIVERY_UID, DELIVERY_GID);

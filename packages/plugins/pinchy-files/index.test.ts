@@ -1531,4 +1531,118 @@ describe("pinchy_generate_file tool", () => {
     // Same param-suppression-safe details shape as the PII test above.
     expect(Object.keys(result.details).some((k) => k !== "error")).toBe(true);
   });
+
+  // The workbench is shared per AGENT, not per conversation, while the #703
+  // download grant is (agentId, filename, userId). Overwriting an existing
+  // file would silently swap the bytes under every earlier grant for that
+  // name — on a shared agent, user A's old chip would start serving user B's
+  // data. Never overwrite: suffix instead.
+  it("appends a numeric suffix instead of overwriting an existing file", async () => {
+    const tool = await makeGenerateFileTool();
+
+    const first = await tool.execute("call-1", {
+      format: "csv",
+      filename: "export",
+      columns: ["a"],
+      rows: [["first"]],
+    });
+    const second = await tool.execute("call-2", {
+      format: "csv",
+      filename: "export",
+      columns: ["a"],
+      rows: [["second"]],
+    });
+    const third = await tool.execute("call-3", {
+      format: "csv",
+      filename: "export",
+      columns: ["a"],
+      rows: [["third"]],
+    });
+
+    expect(first.isError).toBeFalsy();
+    expect(second.isError).toBeFalsy();
+    expect(third.isError).toBeFalsy();
+    expect(realReadFileSync(join(workbench, "export.csv"), "utf-8")).toContain("first");
+    expect(realReadFileSync(join(workbench, "export-2.csv"), "utf-8")).toContain("second");
+    expect(realReadFileSync(join(workbench, "export-3.csv"), "utf-8")).toContain("third");
+    // The artifact block and details must carry the ACTUAL name on disk, or
+    // the delivery grant would authorize a filename that doesn't exist.
+    expect(second.content[0]).toMatchObject({ type: "file", filename: "export-2.csv" });
+    expect(second.details.path).toMatch(/workbench\/export-2\.csv$/);
+    expect(second.content[1].text).toContain("export-2.csv");
+  });
+
+  // The serve route (app/api/.../artifacts/[filename]/route.ts) runs the URL
+  // filename through sanitizeFilename and looks the grant up by the result.
+  // A generated name the sanitizer would reject or alter yields a chip whose
+  // download 404s forever. Reject those names up front, at generation time.
+  it("rejects a filename containing characters the delivery route's sanitizer rejects", async () => {
+    const tool = await makeGenerateFileTool();
+
+    // Explicit escapes, never literal invisible characters (same rule as
+    // upload-validation.ts): NUL (control), ZWSP (invisible), quote, backtick.
+    const badNames = ["ex\u0000port", "ex\u200Bport", 'ex"port', "ex`port"];
+    for (const bad of badNames) {
+      const result = await tool.execute("call-1", {
+        format: "csv",
+        filename: bad,
+        columns: ["a"],
+        rows: [["1"]],
+      });
+      expect(result.isError, `expected rejection for ${JSON.stringify(bad)}`).toBe(true);
+      expect(Object.keys(result.details).some((k) => k !== "error")).toBe(true);
+    }
+    expect(readdirSync(workbench)).toEqual([]);
+  });
+
+  // macOS-style NFD input ("u" + combining diaeresis) must be stored NFC:
+  // the grant filename round-trips through JSON/the model in NFC, and the
+  // serve route sanitizes to NFC before the lookup — a name stored NFD would
+  // never match again (same incident class as sanitizeFilename's NFC rule).
+  it("normalizes the filename to NFC so the stored name matches the grant lookup", async () => {
+    const tool = await makeGenerateFileTool();
+
+    const result = await tool.execute("call-1", {
+      format: "csv",
+      filename: "u\u0308bersicht", // NFD form of "übersicht"
+      columns: ["a"],
+      rows: [["1"]],
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(result.content[0]).toMatchObject({ type: "file", filename: "übersicht.csv" });
+  });
+
+  it("trims surrounding whitespace from the filename (sanitizer would trim it on serve)", async () => {
+    const tool = await makeGenerateFileTool();
+
+    const result = await tool.execute("call-1", {
+      format: "csv",
+      filename: "  padded  ",
+      columns: ["a"],
+      rows: [["1"]],
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(result.content[0]).toMatchObject({ type: "file", filename: "padded.csv" });
+    expect(existsSync(join(workbench, "padded.csv"))).toBe(true);
+  });
+
+  it("rejects an overlong filename up front instead of failing at write time", async () => {
+    const tool = await makeGenerateFileTool();
+
+    const result = await tool.execute("call-1", {
+      format: "csv",
+      filename: "x".repeat(300),
+      columns: ["a"],
+      rows: [["1"]],
+    });
+
+    expect(result.isError).toBe(true);
+    // Our validation message, not the filesystem's ENAMETOOLONG ("name too
+    // long, open '…'") — the cap must trip BEFORE any filesystem call, with a
+    // message the model can act on (and that leaks no on-disk path).
+    expect(result.details.error).toMatch(/filename is too long/);
+    expect(readdirSync(workbench)).toEqual([]);
+  });
 });
