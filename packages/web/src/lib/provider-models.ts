@@ -52,13 +52,17 @@ export interface OllamaLocalModelInfo extends ModelInfo {
   contextLength?: number;
 }
 
+/**
+ * A provider identifier in the model list: a fixed built-in `ProviderName` OR
+ * a custom OpenAI-compatible instance's dynamic slug. It collapses to `string`
+ * in TS (the widening we want — every caller compares `id` against a string
+ * literal like `p.id === "ollama-cloud"` or a `ProviderName`, both assignable),
+ * but the named alias keeps the intent visible in the source.
+ */
+export type ProviderModelsId = ProviderName | string;
+
 export interface ProviderModels {
-  // Built-in providers use their fixed `ProviderName`; custom OpenAI-compatible
-  // instances use their dynamic slug. `ProviderName | string` collapses to
-  // `string`, which is exactly the widening we want — every existing caller
-  // compares `id` against a string literal (`p.id === "ollama-cloud"`) or a
-  // `ProviderName`, both of which stay assignable.
-  id: ProviderName | string;
+  id: ProviderModelsId;
   name: string;
   models: ModelInfo[];
 }

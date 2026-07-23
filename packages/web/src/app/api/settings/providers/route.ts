@@ -5,7 +5,7 @@ import { getSetting, setSetting, deleteSetting } from "@/lib/settings";
 import { PROVIDERS, type ProviderName } from "@/lib/providers";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { resetCache } from "@/lib/provider-models";
-import { countConfiguredProviders } from "@/lib/provider-count";
+import { countConfiguredProviders, listConfiguredBuiltIns } from "@/lib/provider-count";
 import { listOpenAiCompatibleProviders } from "@/lib/openai-compatible-providers";
 import { appendAuditLog } from "@/lib/audit";
 import { db } from "@/db";
@@ -65,12 +65,9 @@ export const DELETE = withAdmin(async (request, _ctx, session) => {
   // is its first persisted model, namespaced `<slug>/<modelId>` to match the
   // openclaw.json emission. `models` is guaranteed non-empty by the create schema.
   const remainingCandidates: { name: string; defaultModel: string }[] = [];
-  for (const [name, providerConfig] of Object.entries(PROVIDERS)) {
-    if (name === provider) continue;
-    const value = await getSetting(providerConfig.settingsKey);
-    if (value !== null) {
-      remainingCandidates.push({ name, defaultModel: providerConfig.defaultModel });
-    }
+  for (const builtIn of await listConfiguredBuiltIns()) {
+    if (builtIn.name === provider) continue;
+    remainingCandidates.push({ name: builtIn.name, defaultModel: builtIn.config.defaultModel });
   }
   for (const custom of await listOpenAiCompatibleProviders()) {
     remainingCandidates.push({
