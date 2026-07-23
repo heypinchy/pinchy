@@ -31,6 +31,13 @@ function validateInput(input: GenerateFileInput): void {
   if (!Array.isArray(input.columns) || input.columns.length === 0) {
     throw new Error("columns must be a non-empty array");
   }
+  // generateFile is a standalone pure API (also imported directly by web
+  // tests) — guard the container type itself so an untyped caller gets a
+  // usable message instead of an opaque "input.rows.forEach is not a
+  // function" TypeError.
+  if (!Array.isArray(input.rows)) {
+    throw new Error("rows must be an array");
+  }
   if (input.rows.length > MAX_ROWS) {
     throw new Error(`too many rows: ${input.rows.length} exceeds the limit of ${MAX_ROWS}`);
   }
@@ -49,7 +56,10 @@ function validateInput(input: GenerateFileInput): void {
   });
 }
 
-const CSV_BOM = "﻿";
+// Explicit escape, not a literal U+FEFF: an invisible character in source is
+// ungreppable and one editor whitespace-normalization away from silently
+// vanishing (same rule as upload-validation.ts's CONTROL_CHAR_RE).
+const CSV_BOM = "\uFEFF";
 
 // CSV/spreadsheet formula injection (CWE-1236): Excel, Google Sheets, and
 // LibreOffice treat a cell beginning with any of these characters as a
@@ -157,6 +167,12 @@ function renderPdf(
     doc.font("Helvetica").fontSize(9);
     const ROW_LINE_HEIGHT = doc.currentLineHeight(true);
 
+    // Derived from the measured line height, never hard-coded offsets, so a
+    // font or size change can't push the rule into the header text (or the
+    // first row into the rule).
+    const HEADER_RULE_GAP = 2;
+    const HEADER_BOTTOM_PADDING = 4;
+
     const drawHeader = () => {
       const y = doc.y;
       doc.font("Helvetica-Bold").fontSize(10);
@@ -165,12 +181,13 @@ function renderPdf(
         doc.text(col, x, y, { width: colWidth, height: HEADER_LINE_HEIGHT, ellipsis: true });
         x += colWidth;
       }
+      const ruleY = y + HEADER_LINE_HEIGHT + HEADER_RULE_GAP;
       doc
-        .moveTo(doc.page.margins.left, y + 14)
-        .lineTo(doc.page.margins.left + pageWidth, y + 14)
+        .moveTo(doc.page.margins.left, ruleY)
+        .lineTo(doc.page.margins.left + pageWidth, ruleY)
         .strokeColor("#888")
         .stroke();
-      doc.y = y + 18;
+      doc.y = ruleY + HEADER_BOTTOM_PADDING;
       doc.font("Helvetica").fontSize(9);
     };
 

@@ -33,7 +33,7 @@ describe("generateFile csv", () => {
     expect(ext).toBe("csv");
     const text = buffer.toString("utf-8");
     expect(text.charCodeAt(0)).toBe(0xfeff); // BOM
-    expect(text).toBe("﻿a,b\r\n1,x\r\n2,y\r\n");
+    expect(text).toBe("\uFEFFa,b\r\n1,x\r\n2,y\r\n");
   });
 
   it("quotes and escapes fields containing comma, quote, or newline", async () => {
@@ -42,7 +42,7 @@ describe("generateFile csv", () => {
       columns: ["c"],
       rows: [["a,b"], ['he said "hi"'], ["line1\nline2"]],
     });
-    const text = buffer.toString("utf-8").replace(/^﻿/, "");
+    const text = buffer.toString("utf-8").replace(/^\uFEFF/, "");
     expect(text).toBe('c\r\n"a,b"\r\n"he said ""hi"""\r\n"line1\nline2"\r\n');
   });
 
@@ -52,7 +52,7 @@ describe("generateFile csv", () => {
       columns: ["n", "b"],
       rows: [[1200.5, true]],
     });
-    const text = buffer.toString("utf-8").replace(/^﻿/, "");
+    const text = buffer.toString("utf-8").replace(/^\uFEFF/, "");
     expect(text).toBe("n,b\r\n1200.5,true\r\n");
   });
 
@@ -62,7 +62,7 @@ describe("generateFile csv", () => {
       columns: ["c"],
       rows: [["=SUM(A1)"]],
     });
-    const text = buffer.toString("utf-8").replace(/^﻿/, "");
+    const text = buffer.toString("utf-8").replace(/^\uFEFF/, "");
     expect(text).toBe("c\r\n'=SUM(A1)\r\n");
   });
 
@@ -72,7 +72,7 @@ describe("generateFile csv", () => {
       columns: ["c"],
       rows: [["+1"], ["-1"], ["@cmd"], ["\tx"], ["\ry"]],
     });
-    const text = buffer.toString("utf-8").replace(/^﻿/, "");
+    const text = buffer.toString("utf-8").replace(/^\uFEFF/, "");
     // Only \r (a CSV quote-trigger char) additionally gets RFC-4180 quoted;
     // the apostrophe prefix itself never contains a quote/comma/newline.
     const expectedLines = ["c", "'+1", "'-1", "'@cmd", "'\tx", '"\'\ry"'];
@@ -85,7 +85,7 @@ describe("generateFile csv", () => {
       columns: ["n"],
       rows: [[-5]],
     });
-    const text = buffer.toString("utf-8").replace(/^﻿/, "");
+    const text = buffer.toString("utf-8").replace(/^\uFEFF/, "");
     expect(text).toBe("n\r\n-5\r\n");
   });
 });
@@ -228,6 +228,20 @@ describe("generateFile validation", () => {
     await expect(
       generateFile({ format: "csv", columns: ["a", "b"], rows: [["1", "2", "3"]] })
     ).rejects.toThrow("row 1 has 3 cells, expected 2");
+  });
+
+  it("rejects rows that is not an array at all", async () => {
+    // generateFile is a standalone pure API — without this guard a non-array
+    // `rows` would surface as an opaque "input.rows.forEach is not a
+    // function" TypeError instead of a usable validation message.
+    await expect(
+      generateFile({
+        format: "csv",
+        columns: ["a"],
+        // @ts-expect-error deliberately invalid rows type for the validation test
+        rows: "nope",
+      })
+    ).rejects.toThrow("rows must be an array");
   });
 
   it("rejects a row that is not an array", async () => {
