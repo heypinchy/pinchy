@@ -7,6 +7,7 @@ import { apiGet, apiPatch, apiDelete, ApiError } from "@/lib/api-client";
 import type { AutomationListItem } from "@/lib/schemas/automations";
 import type { EmailWorkflowFilter } from "@/lib/email-workflows/types";
 import type { EmailWorkflowStatus } from "@/db/enums";
+import { AgentSettingsAutomationCreateDialog } from "@/components/agent-settings-automation-create-dialog";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -79,6 +80,7 @@ export function AgentSettingsAutomations({ agentId }: { agentId: string }) {
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<AutomationListItem | null>(null);
+  const [createOpen, setCreateOpen] = useState(false);
 
   // No synchronous setState here: `loading` starts true and the `finally`
   // clears it, so the effect that calls this never sets state before its first
@@ -143,13 +145,25 @@ export function AgentSettingsAutomations({ agentId }: { agentId: string }) {
 
   return (
     <div className="space-y-4">
-      <div>
-        <h2 className="text-lg font-semibold">Automations</h2>
-        <p className="text-sm text-muted-foreground">
-          Email workflows this agent can run on its own. Review each proposal and switch it on when
-          you&apos;re ready — nothing runs until you enable it.
-        </p>
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h2 className="text-lg font-semibold">Automations</h2>
+          <p className="text-sm text-muted-foreground">
+            Email workflows this agent can run on its own. Review each proposal and switch it on
+            when you&apos;re ready — nothing runs until you enable it.
+          </p>
+        </div>
+        <Button size="sm" className="shrink-0" onClick={() => setCreateOpen(true)}>
+          New automation
+        </Button>
       </div>
+
+      <AgentSettingsAutomationCreateDialog
+        agentId={agentId}
+        open={createOpen}
+        onOpenChange={setCreateOpen}
+        onCreated={load}
+      />
 
       {loading ? (
         <div className="space-y-2">

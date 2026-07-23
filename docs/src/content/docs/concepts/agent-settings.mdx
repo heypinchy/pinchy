@@ -7,14 +7,15 @@ import { Aside, Badge } from "@astrojs/starlight/components";
 
 Every agent in Pinchy is configured through a settings page. To open it, navigate to an agent's chat and click the **gear icon** in the top bar. Which tabs you see depends on your role and the agent type.
 
-| Tab                                                   | What it controls                     | Who can see it             |
-| ----------------------------------------------------- | ------------------------------------ | -------------------------- |
-| **General**                                           | Name, tagline, model, agent type     | Everyone who can edit      |
-| **Personality**                                       | Avatar, personality preset, SOUL.md  | Everyone who can edit      |
-| **Instructions**                                      | AGENTS.md operating instructions     | Everyone who can edit      |
-| **Permissions**                                       | Tool allow-list, directory access    | Admins only, shared agents |
-| **Access** <Badge text="Enterprise" variant="note" /> | Visibility mode, group assignment    | Admins only, shared agents |
-| **Telegram**                                          | Connect a Telegram bot to this agent | Admins only                |
+| Tab                                                   | What it controls                      | Who can see it                      |
+| ----------------------------------------------------- | ------------------------------------- | ----------------------------------- |
+| **General**                                           | Name, tagline, model, agent type      | Everyone who can edit               |
+| **Personality**                                       | Avatar, personality preset, SOUL.md   | Everyone who can edit               |
+| **Instructions**                                      | AGENTS.md operating instructions      | Everyone who can edit               |
+| **Permissions**                                       | Tool allow-list, directory access     | Admins only, shared agents          |
+| **Access** <Badge text="Enterprise" variant="note" /> | Visibility mode, group assignment     | Admins only, shared agents          |
+| **Telegram**                                          | Connect a Telegram bot to this agent  | Admins only                         |
+| **Automations**                                       | Email workflows the agent runs itself | Owner (personal) or admins (shared) |
 
 The Permissions and Access tabs exist only for shared agents. Personal agents (the auto-created Smithers each user gets) don't show them because there's nothing to share. Admins still see the Telegram tab on Smithers, but the main Smithers bot is managed centrally via **Settings → Telegram** rather than per-agent.
 
@@ -141,6 +142,36 @@ The Telegram tab lets admins connect a Telegram bot directly to this agent, so u
 The main Pinchy bot must be set up first via **Settings → Telegram** — users link their Telegram accounts once via the main bot and can then message any bot they have permission to use. For Smithers, this tab shows the shared main bot status; to remove it, use "Remove Telegram for everyone" in **Settings → Telegram**. For other agents, the tab shows a token field and a Connect button.
 
 For the full flow including BotFather setup and account linking, see [Set Up Telegram](/guides/telegram-setup/).
+
+## Automations tab
+
+The Automations tab is where an agent's **email workflows** live — standing rules that let the agent act on incoming mail on its own, without anyone opening a chat. A workflow pairs a deterministic **trigger** (which mail it fires on) with an **instruction** (what the agent does with each matching message). Pinchy checks the connected mailboxes on a schedule and runs the instruction once per new matching mail, tracking exactly which messages it has already handled so nothing is processed twice — and it never relies on the read/unread state you see in your own inbox.
+
+You'll see this tab on your personal Smithers and, as an admin, on shared agents that can read email. It's gated the same way the underlying API is: you can manage automations on a personal agent you own, and admins manage them on shared agents.
+
+### Create an automation
+
+Click **New automation** and fill in:
+
+- **Name** — a short label so you can recognize the workflow later.
+- **Instruction** — what the agent should do with each matching mail, in plain words (for example, "Draft a supplier bill in Odoo from the attached invoice"). It runs with this agent's permissions and tools, so it can only do what the agent is already allowed to do.
+- **Trigger** — optional filters that narrow which mail fires the workflow: sender addresses, recipient domain, words in the subject, whether it has an attachment (and of what type), and a folder. Only mail matching **every** filled-in field runs the automation; leave them all blank to watch the entire mailbox.
+- **Mailboxes** — which connected mailboxes to watch. The list only offers mailboxes this agent is permitted to read, so you can't point a workflow at a mailbox the agent can't open.
+- **Look back (days)** — how far back each pass re-checks for mail it may have missed.
+
+:::note[Created paused]
+A new automation is always created **disabled**. Pinchy proposes the workflow; it never activates one on its own. This is deliberate — an agent (or a form) should never grant itself standing autonomous authority. Nothing runs until a person reviews the workflow and switches it on.
+:::
+
+### Review, enable, and remove
+
+The tab lists every workflow on the agent with its trigger (in plain words, not raw filters), its instruction, the mailboxes it watches, and its status:
+
+- **Pending** — proposed but never yet run.
+- **Active** — enabled and running on its schedule.
+- **Error** — the last run hit a problem.
+
+Use **Enable** / **Disable** to turn a workflow on or off, and **Delete** to remove one for good. Enabling is the human-gated step that turns a proposal into a live automation; disabling pauses it without deleting it.
 
 ## Creating agents
 

@@ -212,4 +212,46 @@ describe("AgentSettingsAutomations", () => {
     });
     expect(toast.success).toHaveBeenCalled();
   });
+
+  it("opens the create dialog and reloads the list after a workflow is created", async () => {
+    let listCalls = 0;
+    vi.mocked(global.fetch).mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = (init as RequestInit)?.method ?? "GET";
+      if (url.startsWith("/api/automations/connections")) {
+        return jsonResponse([{ id: "conn-a", name: "Invoices mailbox" }]);
+      }
+      if (url.startsWith("/api/automations?")) {
+        listCalls++;
+        return jsonResponse(mockAutomations);
+      }
+      if (url === "/api/automations" && method === "POST") {
+        return jsonResponse(
+          { id: "wf-new", name: "New one", enabled: false, status: "pending" },
+          { status: 201 }
+        );
+      }
+      return jsonResponse({ ok: true });
+    });
+
+    const user = userEvent.setup();
+    render(<AgentSettingsAutomations agentId={AGENT_ID} />);
+    await waitFor(() => expect(screen.getByText("File supplier invoices")).toBeInTheDocument());
+    const listCallsAfterLoad = listCalls;
+
+    await user.click(screen.getByRole("button", { name: /new automation/i }));
+
+    // Dialog opened → mailbox picker populated from the connections endpoint.
+    await waitFor(() =>
+      expect(screen.getByRole("checkbox", { name: /Invoices mailbox/i })).toBeInTheDocument()
+    );
+
+    await user.type(screen.getByLabelText(/^Name/i), "New one");
+    await user.type(screen.getByLabelText(/Instruction/i), "Do it.");
+    await user.click(screen.getByRole("checkbox", { name: /Invoices mailbox/i }));
+    await user.click(screen.getByRole("button", { name: /create automation/i }));
+
+    // onCreated → load(): the list is re-fetched after a successful create.
+    await waitFor(() => expect(listCalls).toBeGreaterThan(listCallsAfterLoad));
+  });
 });

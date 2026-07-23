@@ -102,3 +102,14 @@ export interface AutomationListItem {
   createdAt: string;
   connectionIds: string[];
 }
+
+/**
+ * Client-side contract for one mailbox choice in the Automations create form's
+ * picker — GET /api/automations/connections?agentId. The endpoint resolves these
+ * through the same email-read permission gate the create route (POST) enforces,
+ * so the picker can never offer a connection the create route would reject.
+ */
+export interface AutomationConnectionOption {
+  id: string;
+  name: string;
+}
