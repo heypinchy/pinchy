@@ -64,6 +64,10 @@ vi.mock("@/lib/settings", () => ({
   getSetting: vi.fn().mockResolvedValue(null),
 }));
 
+vi.mock("@/lib/openai-compatible-providers", () => ({
+  listOpenAiCompatibleProviders: vi.fn().mockResolvedValue([]),
+}));
+
 global.fetch = vi.fn();
 
 import {
@@ -76,12 +80,46 @@ import {
   selectDefaultModel,
 } from "@/lib/provider-models";
 import { getSetting } from "@/lib/settings";
+import { listOpenAiCompatibleProviders } from "@/lib/openai-compatible-providers";
+import type { OpenAiCompatibleProviderListItem } from "@/lib/openai-compatible-providers";
+
+/**
+ * Build a typed custom-provider list item. Only `slug`, `displayName` and
+ * `models[].id/name` matter to fetchProviderModels; the rest satisfies the
+ * OpenClawModelDefinition/list-item shape so the web-typecheck gate is happy.
+ */
+function customProvider(
+  slug: string,
+  displayName: string,
+  modelDefs: { id: string; name: string }[]
+): OpenAiCompatibleProviderListItem {
+  return {
+    id: `id-${slug}`,
+    slug,
+    displayName,
+    baseUrl: `https://${slug}.test/v1`,
+    models: modelDefs.map((m) => ({
+      id: m.id,
+      name: m.name,
+      contextWindow: 8192,
+      maxTokens: 4096,
+      reasoning: false,
+      vision: false,
+      input: ["text"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    })),
+    keyHint: "abcd",
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  };
+}
 
 describe("fetchProviderModels", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     resetCache();
     vi.mocked(getSetting).mockResolvedValue(null);
+    vi.mocked(listOpenAiCompatibleProviders).mockResolvedValue([]);
   });
 
   it("returns models grouped by configured provider", async () => {
@@ -188,6 +226,60 @@ describe("fetchProviderModels", () => {
       { id: "openai/gpt-5.4-mini", name: "gpt-5.4-mini" },
     ]);
     // dall-e-3 should be filtered out (doesn't start with gpt- or o)
+  });
+
+  it("appends one entry per custom OpenAI-compatible provider", async () => {
+    vi.mocked(getSetting).mockImplementation(async (key: string) => {
+      if (key === "anthropic_api_key") return "sk-ant-test-key";
+      return null;
+    });
+    vi.mocked(fetch).mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          data: [{ id: "claude-opus-4-7", display_name: "Claude Opus 4.7" }],
+        }),
+        { status: 200 }
+      )
+    );
+    vi.mocked(listOpenAiCompatibleProviders).mockResolvedValue([
+      customProvider("acme", "Acme LLM", [
+        { id: "acme-large", name: "Acme Large" },
+        { id: "acme-small", name: "Acme Small" },
+      ]),
+    ]);
+
+    const result = await fetchProviderModels();
+
+    // Built-in enumeration is untouched.
+    const anthropic = result.find((p) => p.id === "anthropic");
+    expect(anthropic).toBeDefined();
+    expect(anthropic!.models).toEqual([
+      { id: "anthropic/claude-opus-4-7", name: "Claude Opus 4.7" },
+    ]);
+
+    // Custom instance appended, keyed by slug, models namespaced <slug>/<modelId>.
+    const custom = result.find((p) => p.id === "acme");
+    expect(custom).toBeDefined();
+    expect(custom!.name).toBe("Acme LLM");
+    expect(custom!.models).toEqual([
+      { id: "acme/acme-large", name: "Acme Large" },
+      { id: "acme/acme-small", name: "Acme Small" },
+    ]);
+  });
+
+  it("appends every custom instance and works with no built-ins configured", async () => {
+    vi.mocked(getSetting).mockResolvedValue(null);
+    vi.mocked(listOpenAiCompatibleProviders).mockResolvedValue([
+      customProvider("acme", "Acme LLM", [{ id: "acme-large", name: "Acme Large" }]),
+      customProvider("beta-corp", "Beta Corp", [{ id: "b1", name: "Beta One" }]),
+    ]);
+
+    const result = await fetchProviderModels();
+
+    expect(result.map((p) => p.id)).toEqual(["acme", "beta-corp"]);
+    expect(result.find((p) => p.id === "beta-corp")!.models).toEqual([
+      { id: "beta-corp/b1", name: "Beta One" },
+    ]);
   });
 
   it("filters OpenAI models to gpt- and o- prefixed", async () => {
@@ -816,6 +908,7 @@ describe("getDefaultModel", () => {
     vi.clearAllMocks();
     resetCache();
     vi.mocked(getSetting).mockResolvedValue(null);
+    vi.mocked(listOpenAiCompatibleProviders).mockResolvedValue([]);
   });
 
   it("returns dynamically selected balanced-tier model from live model list", async () => {

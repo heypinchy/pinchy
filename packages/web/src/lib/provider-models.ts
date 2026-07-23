@@ -1,6 +1,7 @@
 import { PROVIDERS, resolveProviderBaseUrl, type ProviderName } from "@/lib/providers";
 import { getSetting } from "@/lib/settings";
 import { TOOL_CAPABLE_OLLAMA_CLOUD_MODEL_IDS } from "@/lib/ollama-cloud-models";
+import { listOpenAiCompatibleProviders } from "@/lib/openai-compatible-providers";
 
 export { isModelVisionCapable } from "@/lib/model-vision";
 import { setOllamaLocalVisionModels } from "@/lib/model-vision";
@@ -52,7 +53,12 @@ export interface OllamaLocalModelInfo extends ModelInfo {
 }
 
 export interface ProviderModels {
-  id: ProviderName;
+  // Built-in providers use their fixed `ProviderName`; custom OpenAI-compatible
+  // instances use their dynamic slug. `ProviderName | string` collapses to
+  // `string`, which is exactly the widening we want — every existing caller
+  // compares `id` against a string literal (`p.id === "ollama-cloud"`) or a
+  // `ProviderName`, both of which stay assignable.
+  id: ProviderName | string;
   name: string;
   models: ModelInfo[];
 }
@@ -477,6 +483,20 @@ export async function fetchProviderModels(): Promise<ProviderModels[]> {
         models: [],
       });
     }
+  }
+
+  // Append one entry per custom OpenAI-compatible instance (#894). Fetched live
+  // from the DB every call (not cloud-cached) so a just-created/edited instance
+  // shows up immediately — mirroring how ollama-local is always fetched fresh.
+  // Model ids are namespaced `<slug>/<modelId>`, matching how an agent's model
+  // is emitted into openclaw.json for these providers.
+  const customProviders = await listOpenAiCompatibleProviders();
+  for (const p of customProviders) {
+    results.push({
+      id: p.slug,
+      name: p.displayName,
+      models: p.models.map((m) => ({ id: `${p.slug}/${m.id}`, name: m.name })),
+    });
   }
 
   return results;
