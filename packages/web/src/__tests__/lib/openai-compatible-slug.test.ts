@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { deriveProviderSlug, RESERVED_PROVIDER_SLUGS } from "@/lib/openai-compatible-slug";
+import { PROVIDERS } from "@/lib/providers";
 
 describe("deriveProviderSlug", () => {
   it("kebab-cases a display name", () => {
@@ -18,5 +19,10 @@ describe("deriveProviderSlug", () => {
   });
   it("falls back for an all-punctuation name", () => {
     expect(deriveProviderSlug("!!!", new Set())).toBe("provider");
+  });
+  it("reserves every built-in provider name", () => {
+    for (const name of Object.keys(PROVIDERS)) {
+      expect(RESERVED_PROVIDER_SLUGS.has(name)).toBe(true);
+    }
   });
 });
