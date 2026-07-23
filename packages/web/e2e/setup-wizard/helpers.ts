@@ -209,7 +209,7 @@ export async function resetStack(): Promise<void> {
  * after the save, so a short streak could otherwise pass on the pre-restart
  * connected state.
  */
-async function waitForOpenClawSettledViaPage(
+export async function waitForOpenClawSettledViaPage(
   page: Page,
   opts: { stableForMs: number; deadlineMs: number }
 ): Promise<void> {

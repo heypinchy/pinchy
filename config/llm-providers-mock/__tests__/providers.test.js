@@ -284,3 +284,60 @@ test("POST /ollama-cloud/v1/chat/completions with proper messages returns OpenAI
   assert.equal(body.choices[0].message.role, "assistant");
   assert.ok(body.choices[0].message.content.length > 0);
 });
+
+test("GET /openai-compatible/v1/models with Bearer returns models list (mock-large first)", async () => {
+  const res = await fetch(
+    `http://localhost:${PORT}/openai-compatible/v1/models`,
+    {
+      headers: { Authorization: "Bearer sk-oai-compat-mock" },
+    },
+  );
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.equal(body.object, "list");
+  // Order matters: the custom-provider resolver picks models[0].id as the
+  // agent default, so the spec's `<slug>/mock-large` assignment depends on
+  // mock-large being first.
+  assert.equal(body.data[0].id, "mock-large");
+  assert.ok(body.data.find((m) => m.id === "mock-small"));
+});
+
+test("GET /openai-compatible/v1/models without Bearer returns 401", async () => {
+  const res = await fetch(
+    `http://localhost:${PORT}/openai-compatible/v1/models`,
+  );
+  assert.equal(res.status, 401);
+});
+
+test("POST /openai-compatible/v1/chat/completions with Bearer returns OpenAI-shaped reply", async () => {
+  const res = await fetch(
+    `http://localhost:${PORT}/openai-compatible/v1/chat/completions`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer sk-oai-compat-mock",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "mock-large",
+        messages: [{ role: "user", content: "hi" }],
+      }),
+    },
+  );
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.equal(body.choices[0].message.role, "assistant");
+  assert.match(body.choices[0].message.content, /Sure, happy to help/);
+});
+
+test("POST /openai-compatible/v1/chat/completions without Bearer returns 401", async () => {
+  const res = await fetch(
+    `http://localhost:${PORT}/openai-compatible/v1/chat/completions`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
+    },
+  );
+  assert.equal(res.status, 401);
+});
