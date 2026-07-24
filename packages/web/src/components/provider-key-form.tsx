@@ -20,6 +20,7 @@ import {
   Globe,
   Plus,
   Server,
+  Check,
 } from "lucide-react";
 import { ProviderLogo } from "@/components/provider-logo";
 import { useRestart } from "@/components/restart-provider";
@@ -196,6 +197,32 @@ const VISION_CAPABLE_PROVIDERS: ReadonlySet<ProviderName> = new Set([
   "google",
   "ollama-cloud",
 ]);
+
+/**
+ * The bottom row of every provider tile. It always reserves one line of height —
+ * even when empty — so every tile is exactly the same height regardless of state
+ * (a badge rendered BELOW the tile used to make configured rows taller and the
+ * indicator-less "Add" tile stretch). Decorative (`aria-hidden`) so the button's
+ * accessible name stays just the provider name for tests and screen readers.
+ *
+ * "Default" (not "Active") is the single term for the provider new agents use by
+ * default — matching the "Set as default" action and the GitHub/Stripe/AWS
+ * convention. Configured-but-not-default tiles get a quiet check; unconfigured
+ * built-ins and the "Add" tile get nothing (but keep the reserved height).
+ */
+function TileIndicator({ state }: { state: "default" | "configured" | "none" }) {
+  return (
+    <span aria-hidden="true" className="flex h-4 items-center justify-center">
+      {state === "default" ? (
+        <span data-testid="tile-default" className="text-xs font-medium text-primary">
+          Default
+        </span>
+      ) : state === "configured" ? (
+        <Check data-testid="tile-configured" className="size-3.5 text-muted-foreground" />
+      ) : null}
+    </span>
+  );
+}
 
 interface ProviderKeyFormProps {
   onSuccess: (provider?: ProviderName) => void;
@@ -448,76 +475,76 @@ export function ProviderKeyForm({
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
             {(Object.entries(PROVIDERS) as [ProviderName, (typeof PROVIDERS)[ProviderName]][]).map(
               ([key, config]) => (
-                <div key={key} className="flex flex-col items-center gap-1">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setProvider(key);
-                      setCustomSelected(false);
-                      setSelectedCustomProvider(null);
-                      form.reset();
-                      setGuideOpen(false);
-                      setValidationStatus("idle");
-                      setError("");
-                      setErrorDocs(null);
-                    }}
-                    className={cn(
-                      "flex w-full flex-col items-center justify-center gap-1.5 rounded-md border p-3 text-sm transition-colors",
-                      provider === key
-                        ? "border-2 border-primary bg-primary/5 font-medium"
-                        : "border-border hover:bg-accent"
-                    )}
-                  >
-                    <span
-                      aria-hidden="true"
-                      className="flex size-6 items-center justify-center rounded-md bg-muted text-xs font-medium text-muted-foreground"
-                    >
-                      <ProviderLogo provider={key} />
-                    </span>
-                    {config.name}
-                  </button>
-                  {configuredProviders?.[key]?.configured && (
-                    <span className="text-xs text-muted-foreground">
-                      {defaultProvider === key ? "Active" : "Configured"}
-                    </span>
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() => {
+                    setProvider(key);
+                    setCustomSelected(false);
+                    setSelectedCustomProvider(null);
+                    form.reset();
+                    setGuideOpen(false);
+                    setValidationStatus("idle");
+                    setError("");
+                    setErrorDocs(null);
+                  }}
+                  className={cn(
+                    "flex w-full flex-col items-center justify-center gap-1.5 rounded-md border p-3 text-sm transition-colors",
+                    provider === key
+                      ? "border-2 border-primary bg-primary/5 font-medium"
+                      : "border-border hover:bg-accent"
                   )}
-                </div>
+                >
+                  <span
+                    aria-hidden="true"
+                    className="flex size-6 items-center justify-center rounded-md bg-muted text-xs font-medium text-muted-foreground"
+                  >
+                    <ProviderLogo provider={key} />
+                  </span>
+                  <span>{config.name}</span>
+                  <TileIndicator
+                    state={
+                      defaultProvider === key
+                        ? "default"
+                        : configuredProviders?.[key]?.configured
+                          ? "configured"
+                          : "none"
+                    }
+                  />
+                </button>
               )
             )}
             {manageCustomProviders &&
               customProviders.map((row) => (
-                <div key={row.id} className="flex flex-col items-center gap-1">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setSelectedCustomProvider(row);
-                      setProvider(null);
-                      setCustomSelected(false);
-                      form.reset();
-                      setGuideOpen(false);
-                      setValidationStatus("idle");
-                      setError("");
-                      setErrorDocs(null);
-                    }}
-                    className={cn(
-                      "flex w-full flex-col items-center justify-center gap-1.5 rounded-md border p-3 text-sm transition-colors",
-                      selectedCustomProvider?.id === row.id
-                        ? "border-2 border-primary bg-primary/5 font-medium"
-                        : "border-border hover:bg-accent"
-                    )}
+                <button
+                  key={row.id}
+                  type="button"
+                  onClick={() => {
+                    setSelectedCustomProvider(row);
+                    setProvider(null);
+                    setCustomSelected(false);
+                    form.reset();
+                    setGuideOpen(false);
+                    setValidationStatus("idle");
+                    setError("");
+                    setErrorDocs(null);
+                  }}
+                  className={cn(
+                    "flex w-full flex-col items-center justify-center gap-1.5 rounded-md border p-3 text-sm transition-colors",
+                    selectedCustomProvider?.id === row.id
+                      ? "border-2 border-primary bg-primary/5 font-medium"
+                      : "border-border hover:bg-accent"
+                  )}
+                >
+                  <span
+                    aria-hidden="true"
+                    className="flex size-6 items-center justify-center rounded-md bg-muted text-xs font-medium text-muted-foreground"
                   >
-                    <span
-                      aria-hidden="true"
-                      className="flex size-6 items-center justify-center rounded-md bg-muted text-xs font-medium text-muted-foreground"
-                    >
-                      <Server className="size-3.5" />
-                    </span>
-                    <span className="truncate max-w-full">{row.displayName}</span>
-                  </button>
-                  <span className="text-xs text-muted-foreground">
-                    {defaultProvider === row.slug ? "Active" : "Configured"}
+                    <Server className="size-3.5" />
                   </span>
-                </div>
+                  <span className="truncate max-w-full">{row.displayName}</span>
+                  <TileIndicator state={defaultProvider === row.slug ? "default" : "configured"} />
+                </button>
               ))}
             {manageCustomProviders && (
               <button
@@ -543,7 +570,8 @@ export function ProviderKeyForm({
                 <span aria-hidden="true" className="flex size-6 items-center justify-center">
                   <Plus className="size-4" />
                 </span>
-                Add custom provider
+                <span>Add custom provider</span>
+                <TileIndicator state="none" />
               </button>
             )}
             {showOpenAiCompatibleOption && (
@@ -569,7 +597,8 @@ export function ProviderKeyForm({
                 <span aria-hidden="true" className="flex size-6 items-center justify-center">
                   <Plus className="size-4" />
                 </span>
-                Custom
+                <span>Custom</span>
+                <TileIndicator state="none" />
               </button>
             )}
           </div>
