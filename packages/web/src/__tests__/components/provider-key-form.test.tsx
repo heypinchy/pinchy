@@ -331,13 +331,15 @@ describe("ProviderKeyForm", () => {
       google: { configured: false },
     };
 
-    it("should show 'Configured' indicator when configuredProviders marks a provider as configured", () => {
+    it("shows a configured checkmark when configuredProviders marks a provider as configured", () => {
       render(<ProviderKeyForm onSuccess={onSuccess} configuredProviders={configuredProviders} />);
 
-      expect(screen.getByText("Configured")).toBeInTheDocument();
+      // Configured (non-default) tiles carry a quiet check, not the word "Configured".
+      expect(screen.getByTestId("tile-configured")).toBeInTheDocument();
+      expect(screen.queryByText("Default")).not.toBeInTheDocument();
     });
 
-    it("should show 'Active' indicator for the defaultProvider", () => {
+    it("shows the 'Default' indicator on the defaultProvider tile (not 'Active')", () => {
       render(
         <ProviderKeyForm
           onSuccess={onSuccess}
@@ -346,7 +348,9 @@ describe("ProviderKeyForm", () => {
         />
       );
 
-      expect(screen.getByText("Active")).toBeInTheDocument();
+      expect(screen.getByText("Default")).toBeInTheDocument();
+      // The default tile shows "Default", not the plain configured check.
+      expect(screen.queryByTestId("tile-configured")).not.toBeInTheDocument();
     });
 
     it("should always show input with masked placeholder for configured provider", () => {
@@ -386,8 +390,8 @@ describe("ProviderKeyForm", () => {
     it("should not show status indicators without configuredProviders prop", () => {
       render(<ProviderKeyForm onSuccess={onSuccess} />);
 
-      expect(screen.queryByText("Configured")).not.toBeInTheDocument();
-      expect(screen.queryByText("Active")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("tile-configured")).not.toBeInTheDocument();
+      expect(screen.queryByText("Default")).not.toBeInTheDocument();
     });
 
     it("should show error indicator instead of configured indicator on failed save", async () => {
@@ -946,7 +950,7 @@ describe("ProviderKeyForm", () => {
       expect((screen.getByLabelText(/^name$/i) as HTMLInputElement).value).toBe("Acme LLM");
     });
 
-    it("shows 'Configured' for a custom tile, and 'Active' when it's the default", async () => {
+    it("shows a configured check on a custom tile, and 'Default' when it's the default", async () => {
       vi.mocked(global.fetch).mockImplementation(async (input) => {
         const url = String(input);
         if (url.endsWith("/api/settings/providers/openai-compatible")) {
@@ -959,16 +963,18 @@ describe("ProviderKeyForm", () => {
         <ProviderKeyForm onSuccess={onSuccess} manageCustomProviders defaultProvider="openai" />
       );
 
+      // acme-llm isn't the default here → its tile shows the quiet configured check.
       await waitFor(() => {
-        expect(screen.getByText("Configured")).toBeInTheDocument();
+        expect(screen.getByTestId("tile-configured")).toBeInTheDocument();
       });
 
       rerender(
         <ProviderKeyForm onSuccess={onSuccess} manageCustomProviders defaultProvider="acme-llm" />
       );
 
+      // Now it IS the default → the tile shows "Default".
       await waitFor(() => {
-        expect(screen.getByText("Active")).toBeInTheDocument();
+        expect(screen.getByText("Default")).toBeInTheDocument();
       });
     });
 

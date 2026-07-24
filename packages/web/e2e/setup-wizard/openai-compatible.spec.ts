@@ -214,34 +214,30 @@ test.describe.serial("Setup wizard + settings → OpenAI-compatible provider (#8
       apiKey: SETTINGS_KEY,
     });
 
-    // Both providers now show as tiles in the unified grid. Each tile's
-    // Configured/Active badge is a sibling <span>, not inside the <button>
-    // itself (the accessible name stays just the provider name) — so scope the
-    // badge assertion to the button's immediate parent wrapper.
-    const settingsTile = page
-      .getByRole("button", { name: SETTINGS_PROVIDER_NAME, exact: true })
-      .locator("xpath=..");
-    const wizardTile = page
-      .getByRole("button", { name: WIZARD_PROVIDER_NAME, exact: true })
-      .locator("xpath=..");
+    // Both providers now show as tiles in the unified grid. The status indicator
+    // lives INSIDE each tile (aria-hidden, so the button's accessible name stays
+    // just the provider name): the default tile shows "Default" text, a
+    // configured non-default tile shows a quiet check (testid tile-configured).
+    const settingsTile = page.getByRole("button", { name: SETTINGS_PROVIDER_NAME, exact: true });
+    const wizardTile = page.getByRole("button", { name: WIZARD_PROVIDER_NAME, exact: true });
     await expect(settingsTile).toBeVisible({ timeout: 15000 });
     await expect(wizardTile).toBeVisible();
-    // The freshly-added provider isn't the default yet (Test 1's wizard
-    // provider still is — it was the sole provider at the time).
-    await expect(settingsTile).toContainText("Configured");
-    await expect(wizardTile).toContainText("Active");
+    // The freshly-added provider isn't the default yet (Test 1's wizard provider
+    // still is — it was the sole provider at the time).
+    await expect(settingsTile.getByTestId("tile-configured")).toBeVisible();
+    await expect(wizardTile).toContainText("Default");
 
     // Select the new tile and use the explicit "Set as default" action (#894 —
     // every provider, built-in or custom, can now be made the default directly
     // instead of only implicitly via a re-save).
     const setDefaultSince = new Date().toISOString();
-    await page.getByRole("button", { name: SETTINGS_PROVIDER_NAME, exact: true }).click();
+    await settingsTile.click();
     await page.getByRole("button", { name: "Set as default" }).click();
 
-    // The grid re-labels the new default "Active" (and the old default drops
-    // back to "Configured"), and a config.changed audit records the switch.
-    await expect(settingsTile).toContainText("Active");
-    await expect(wizardTile).toContainText("Configured");
+    // The grid re-labels the new default "Default" (and the old default drops
+    // back to the quiet configured check), and a config.changed audit records it.
+    await expect(settingsTile).toContainText("Default");
+    await expect(wizardTile.getByTestId("tile-configured")).toBeVisible();
     const setDefaultEntry = await pollAuditForEvent(page, {
       eventType: "config.changed",
       since: setDefaultSince,
