@@ -317,6 +317,15 @@ const HISTORY_TIMEOUT_MS = 20_000;
  */
 const MAX_HISTORY_SELF_HEALS = 2;
 
+/**
+ * How long a tab may stay hidden before the WebSocket is deliberately closed
+ * (#895). Shorter background gaps (a quick tab switch) keep the connection
+ * open so the tab doesn't pay a full reconnect+history-reload round trip for
+ * every brief glance away; longer gaps free the server-side connection since
+ * nobody is looking.
+ */
+const HIDDEN_CLOSE_GRACE_MS = 5 * 60 * 1000;
+
 function capMessages<T>(messages: T[]): T[] {
   if (messages.length <= MAX_BUNDLED_MESSAGES) return messages;
   return messages.slice(messages.length - MAX_BUNDLED_MESSAGES);
@@ -597,6 +606,11 @@ export function useWsRuntime(
   const mountedRef = useRef(true);
   const reconnectAttemptRef = useRef(0);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // #895: armed on every `visibilitychange` → hidden, cleared on visible or on
+  // firing. Fires `suspendForPageLifecycle()` (the same deliberate-close path
+  // pagehide/offline already use) once the tab has been hidden continuously
+  // for HIDDEN_CLOSE_GRACE_MS.
+  const hiddenGraceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconcileApplyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconcileFinishTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const messagesRef = useRef<WsMessage[]>([]);
@@ -965,11 +979,74 @@ export function useWsRuntime(
       if (!pendingHistoryRef.current) requestHistoryCatchup();
     }
 
+    // #895: guard document access — this effect only runs client-side (the
+    // hook is "use client"), but keep the check defensive/SSR-safe rather
+    // than assuming.
+    function isTabHidden() {
+      return typeof document !== "undefined" && document.visibilityState === "hidden";
+    }
+
+    function clearHiddenGraceTimer() {
+      if (hiddenGraceTimerRef.current) {
+        clearTimeout(hiddenGraceTimerRef.current);
+        hiddenGraceTimerRef.current = null;
+      }
+    }
+
+    // #895: tab hidden → pause reconnecting, don't tear down the connection
+    // yet. Only after HIDDEN_CLOSE_GRACE_MS of continuous hidden time do we
+    // deliberately close it (reusing suspendForPageLifecycle, which already
+    // makes onclose skip reconnect scheduling and marks the drop as
+    // lifecycle-driven so recoverFromPageLifecycle knows to reopen it).
+    function scheduleHiddenGraceClose() {
+      clearHiddenGraceTimer();
+      hiddenGraceTimerRef.current = setTimeout(() => {
+        hiddenGraceTimerRef.current = null;
+        suspendForPageLifecycle();
+      }, HIDDEN_CLOSE_GRACE_MS);
+    }
+
+    // #895: tab visible → always reset the reconnect counter and reconnect
+    // (or recover) immediately, so a returning user never waits out stale
+    // backoff and the `reconnectExhausted` dead end becomes recoverable.
+    function handleTabVisible() {
+      clearHiddenGraceTimer();
+
+      if (lifecycleSuspendedRef.current) {
+        // Connection was deliberately closed (grace-period close, pagehide,
+        // or offline) — reopen it via the existing suspend/recover path.
+        recoverFromPageLifecycle();
+        return;
+      }
+
+      if (wsRef.current?.readyState === WebSocket.OPEN) {
+        // Connection survived the entire hidden period — nothing to recover.
+        return;
+      }
+
+      if (wsRef.current?.readyState === WebSocket.CONNECTING) {
+        // A connect() is already in flight; let it resolve naturally.
+        return;
+      }
+
+      // Disconnected: either a backoff attempt was deferred while hidden (see
+      // the reconnect timer below) or reconnect had fully exhausted. Reset
+      // and reconnect right away.
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
+      reconnectAttemptRef.current = 0;
+      setReconnectExhausted(false);
+      shouldRecoverFromHistoryRef.current = true;
+      connect();
+    }
+
     function handleVisibilityChange() {
       if (document.visibilityState === "hidden") {
-        suspendForPageLifecycle();
+        scheduleHiddenGraceClose();
       } else if (document.visibilityState === "visible") {
-        recoverFromPageLifecycle();
+        handleTabVisible();
       }
     }
 
@@ -1111,6 +1188,13 @@ export function useWsRuntime(
           reconnectAttemptRef.current++;
           reconnectTimerRef.current = setTimeout(() => {
             reconnectTimerRef.current = null;
+            // #895: a tab hidden while this backoff was pending must not
+            // dial — burning attempts in the background is exactly what the
+            // grace-period close exists to avoid. Drop this deferred attempt
+            // rather than reschedule it; `handleTabVisible` resets the
+            // counter and reconnects immediately once the tab is visible
+            // again.
+            if (isTabHidden()) return;
             connect();
           }, delay);
         } else if (mountedRef.current) {
@@ -1701,6 +1785,10 @@ export function useWsRuntime(
       if (reconnectTimerRef.current) {
         clearTimeout(reconnectTimerRef.current);
         reconnectTimerRef.current = null;
+      }
+      if (hiddenGraceTimerRef.current) {
+        clearTimeout(hiddenGraceTimerRef.current);
+        hiddenGraceTimerRef.current = null;
       }
       clearReconcileTimers();
       clearHistoryWatchdog();
