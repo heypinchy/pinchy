@@ -21,6 +21,7 @@ import {
   Plus,
   Server,
   Check,
+  Star,
 } from "lucide-react";
 import { ProviderLogo } from "@/components/provider-logo";
 import { useRestart } from "@/components/restart-provider";
@@ -198,30 +199,51 @@ const VISION_CAPABLE_PROVIDERS: ReadonlySet<ProviderName> = new Set([
   "ollama-cloud",
 ]);
 
+type TileState = "default" | "configured" | "none";
+
+/** default first, then configured, then unconfigured — the tile grid's sort order. */
+function tileRank(state: TileState): number {
+  return state === "default" ? 0 : state === "configured" ? 1 : 2;
+}
+
 /**
- * The bottom row of every provider tile. It always reserves one line of height —
- * even when empty — so every tile is exactly the same height regardless of state
- * (a badge rendered BELOW the tile used to make configured rows taller and the
- * indicator-less "Add" tile stretch). Decorative (`aria-hidden`) so the button's
- * accessible name stays just the provider name for tests and screen readers.
+ * The status marker in a tile's TOP-RIGHT corner: a filled star for the default
+ * provider, a quiet check for a configured-but-not-default one, nothing
+ * otherwise. Absolutely positioned so it never affects the tile's layout — the
+ * glyph + name stay vertically centered and every tile is the same height (an
+ * earlier reserved BOTTOM row left indicator-less tiles looking top-heavy).
  *
- * "Default" (not "Active") is the single term for the provider new agents use by
- * default — matching the "Set as default" action and the GitHub/Stripe/AWS
- * convention. Configured-but-not-default tiles get a quiet check; unconfigured
- * built-ins and the "Add" tile get nothing (but keep the reserved height).
+ * "Default" (not "Active") is the single term for "new agents use this by
+ * default", matching the "Set as default" action and the GitHub/Stripe/Msty
+ * convention. Decorative (`aria-hidden`) so the button's accessible name stays
+ * the provider name; a `<title>` gives a hover tooltip, and tests use the testids.
  */
-function TileIndicator({ state }: { state: "default" | "configured" | "none" }) {
-  return (
-    <span aria-hidden="true" className="flex h-4 items-center justify-center">
-      {state === "default" ? (
-        <span data-testid="tile-default" className="text-xs font-medium text-primary">
-          Default
-        </span>
-      ) : state === "configured" ? (
-        <Check data-testid="tile-configured" className="size-3.5 text-muted-foreground" />
-      ) : null}
-    </span>
-  );
+function CornerIndicator({ state }: { state: TileState }) {
+  if (state === "default") {
+    return (
+      <span
+        data-testid="tile-default"
+        aria-hidden="true"
+        title="Default"
+        className="absolute right-2 top-2"
+      >
+        <Star className="size-3.5 fill-primary text-primary" />
+      </span>
+    );
+  }
+  if (state === "configured") {
+    return (
+      <span
+        data-testid="tile-configured"
+        aria-hidden="true"
+        title="Configured"
+        className="absolute right-2 top-2"
+      >
+        <Check className="size-3.5 text-muted-foreground" />
+      </span>
+    );
+  }
+  return null;
 }
 
 interface ProviderKeyFormProps {
@@ -467,19 +489,46 @@ export function ProviderKeyForm({
     }
   }
 
+  // Unified, sorted tile list for the grid: the 5 built-ins, plus (in settings
+  // mode) one tile per custom provider, ordered default → configured →
+  // unconfigured. Sorting is stable, so built-ins stay ahead of customs within a
+  // rank, and the wizard (every state "none") keeps PROVIDERS order untouched.
+  const builtinTiles = (
+    Object.entries(PROVIDERS) as [ProviderName, (typeof PROVIDERS)[ProviderName]][]
+  ).map(([key, config]) => ({
+    kind: "builtin" as const,
+    key,
+    config,
+    state: (defaultProvider === key
+      ? "default"
+      : configuredProviders?.[key]?.configured
+        ? "configured"
+        : "none") as TileState,
+  }));
+  const customTiles = manageCustomProviders
+    ? customProviders.map((row) => ({
+        kind: "custom" as const,
+        row,
+        state: (defaultProvider === row.slug ? "default" : "configured") as TileState,
+      }))
+    : [];
+  const sortedTiles = [...builtinTiles, ...customTiles].sort(
+    (a, b) => tileRank(a.state) - tileRank(b.state)
+  );
+
   return (
     <Form {...form}>
       <form onSubmit={form.handleSubmit(onSubmit)} method="post" className="space-y-6">
         <div className="space-y-2">
           <Label>Provider</Label>
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-            {(Object.entries(PROVIDERS) as [ProviderName, (typeof PROVIDERS)[ProviderName]][]).map(
-              ([key, config]) => (
+            {sortedTiles.map((tile) =>
+              tile.kind === "builtin" ? (
                 <button
-                  key={key}
+                  key={`builtin-${tile.key}`}
                   type="button"
                   onClick={() => {
-                    setProvider(key);
+                    setProvider(tile.key);
                     setCustomSelected(false);
                     setSelectedCustomProvider(null);
                     form.reset();
@@ -489,38 +538,27 @@ export function ProviderKeyForm({
                     setErrorDocs(null);
                   }}
                   className={cn(
-                    "flex w-full flex-col items-center justify-center gap-1.5 rounded-md border p-3 text-sm transition-colors",
-                    provider === key
+                    "relative flex w-full flex-col items-center justify-center gap-1.5 rounded-md border p-3 text-sm transition-colors",
+                    provider === tile.key
                       ? "border-2 border-primary bg-primary/5 font-medium"
                       : "border-border hover:bg-accent"
                   )}
                 >
+                  <CornerIndicator state={tile.state} />
                   <span
                     aria-hidden="true"
                     className="flex size-6 items-center justify-center rounded-md bg-muted text-xs font-medium text-muted-foreground"
                   >
-                    <ProviderLogo provider={key} />
+                    <ProviderLogo provider={tile.key} />
                   </span>
-                  <span>{config.name}</span>
-                  <TileIndicator
-                    state={
-                      defaultProvider === key
-                        ? "default"
-                        : configuredProviders?.[key]?.configured
-                          ? "configured"
-                          : "none"
-                    }
-                  />
+                  <span>{tile.config.name}</span>
                 </button>
-              )
-            )}
-            {manageCustomProviders &&
-              customProviders.map((row) => (
+              ) : (
                 <button
-                  key={row.id}
+                  key={`custom-${tile.row.id}`}
                   type="button"
                   onClick={() => {
-                    setSelectedCustomProvider(row);
+                    setSelectedCustomProvider(tile.row);
                     setProvider(null);
                     setCustomSelected(false);
                     form.reset();
@@ -530,22 +568,23 @@ export function ProviderKeyForm({
                     setErrorDocs(null);
                   }}
                   className={cn(
-                    "flex w-full flex-col items-center justify-center gap-1.5 rounded-md border p-3 text-sm transition-colors",
-                    selectedCustomProvider?.id === row.id
+                    "relative flex w-full flex-col items-center justify-center gap-1.5 rounded-md border p-3 text-sm transition-colors",
+                    selectedCustomProvider?.id === tile.row.id
                       ? "border-2 border-primary bg-primary/5 font-medium"
                       : "border-border hover:bg-accent"
                   )}
                 >
+                  <CornerIndicator state={tile.state} />
                   <span
                     aria-hidden="true"
                     className="flex size-6 items-center justify-center rounded-md bg-muted text-xs font-medium text-muted-foreground"
                   >
                     <Server className="size-3.5" />
                   </span>
-                  <span className="truncate max-w-full">{row.displayName}</span>
-                  <TileIndicator state={defaultProvider === row.slug ? "default" : "configured"} />
+                  <span className="truncate max-w-full">{tile.row.displayName}</span>
                 </button>
-              ))}
+              )
+            )}
             {manageCustomProviders && (
               <button
                 type="button"
@@ -571,7 +610,6 @@ export function ProviderKeyForm({
                   <Plus className="size-4" />
                 </span>
                 <span>Add custom provider</span>
-                <TileIndicator state="none" />
               </button>
             )}
             {showOpenAiCompatibleOption && (
@@ -598,7 +636,6 @@ export function ProviderKeyForm({
                   <Plus className="size-4" />
                 </span>
                 <span>Custom</span>
-                <TileIndicator state="none" />
               </button>
             )}
           </div>

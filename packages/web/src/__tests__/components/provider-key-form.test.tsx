@@ -336,7 +336,7 @@ describe("ProviderKeyForm", () => {
 
       // Configured (non-default) tiles carry a quiet check, not the word "Configured".
       expect(screen.getByTestId("tile-configured")).toBeInTheDocument();
-      expect(screen.queryByText("Default")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("tile-default")).not.toBeInTheDocument();
     });
 
     it("shows the 'Default' indicator on the defaultProvider tile (not 'Active')", () => {
@@ -348,7 +348,7 @@ describe("ProviderKeyForm", () => {
         />
       );
 
-      expect(screen.getByText("Default")).toBeInTheDocument();
+      expect(screen.getByTestId("tile-default")).toBeInTheDocument();
       // The default tile shows "Default", not the plain configured check.
       expect(screen.queryByTestId("tile-configured")).not.toBeInTheDocument();
     });
@@ -391,7 +391,7 @@ describe("ProviderKeyForm", () => {
       render(<ProviderKeyForm onSuccess={onSuccess} />);
 
       expect(screen.queryByTestId("tile-configured")).not.toBeInTheDocument();
-      expect(screen.queryByText("Default")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("tile-default")).not.toBeInTheDocument();
     });
 
     it("should show error indicator instead of configured indicator on failed save", async () => {
@@ -974,7 +974,7 @@ describe("ProviderKeyForm", () => {
 
       // Now it IS the default → the tile shows "Default".
       await waitFor(() => {
-        expect(screen.getByText("Default")).toBeInTheDocument();
+        expect(screen.getByTestId("tile-default")).toBeInTheDocument();
       });
     });
 
