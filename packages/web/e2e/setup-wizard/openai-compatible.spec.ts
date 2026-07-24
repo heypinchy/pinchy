@@ -128,20 +128,17 @@ test.describe.serial("Setup wizard + settings → OpenAI-compatible provider (#8
     await expect(page).toHaveURL(/\/setup\/provider/, { timeout: 20000 });
 
     // Phase 3: pick "Custom provider" (wizard-only action below the built-in
-    // tiles) and fill the custom form: name + the mock base URL + a dummy key,
-    // then discover.
+    // tiles) and fill the custom form: name + the mock base URL + a dummy key.
+    // There's no discover step — the server detects the endpoint's models on
+    // save (it fetches the mock's /models), so we go straight to "Add provider".
     await page.getByRole("button", { name: /custom provider/i }).click();
     await page.getByLabel("Name", { exact: true }).fill(WIZARD_PROVIDER_NAME);
     await page.getByLabel("Base URL").fill(MOCK_BASE_URL);
     await page.getByLabel("API key").fill(WIZARD_KEY);
-    await page.getByRole("button", { name: /connect & discover models/i }).click();
 
-    // Discovered models render (all pre-selected). mock-large appears first so
-    // it becomes the agent default.
-    await expect(page.getByText("mock-large").first()).toBeVisible({ timeout: 15000 });
-
-    // Save. The custom POST sets default_provider=slug (nothing configured yet)
-    // and the wizard advances straight into the app.
+    // Save. The POST discovers the mock's models server-side, sets
+    // default_provider=slug (nothing configured yet), and the wizard advances
+    // straight into the app. Smithers resolves `<slug>/mock-large`.
     await page.getByRole("button", { name: /^add provider$/i }).click();
 
     // Landed in the app on the Smithers chat.
@@ -203,10 +200,9 @@ test.describe.serial("Setup wizard + settings → OpenAI-compatible provider (#8
     await dialog.getByLabel("Name", { exact: true }).fill(SETTINGS_PROVIDER_NAME);
     await dialog.getByLabel("Base URL").fill(MOCK_BASE_URL);
     await dialog.getByLabel("API key").fill(SETTINGS_KEY);
-    await dialog.getByRole("button", { name: /connect & discover models/i }).click();
-    await expect(dialog.getByText("mock-large").first()).toBeVisible({ timeout: 15000 });
 
-    // Submit (the dialog's own "Add provider").
+    // Submit (the dialog's own "Add provider"). Models are discovered server-side
+    // on save — no discover step.
     await dialog.getByRole("button", { name: /^add provider$/i }).click();
 
     // Its config.changed audit is written (host only, no key), distinct from

@@ -6,7 +6,6 @@ import { Lock, Plus, Trash2, Pencil, Server } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Checkbox } from "@/components/ui/checkbox";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Dialog,
@@ -26,11 +25,9 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { apiGet, apiPost, apiDelete, ApiError } from "@/lib/api-client";
-import { DEFAULT_MODEL_CAPS } from "@/lib/model-catalog";
 import type { OpenClawModelDefinition } from "@/lib/openclaw-builtin-models";
 import type {
   UpsertOpenAiCompatibleProviderInput,
-  DiscoverInput,
   DeleteOpenAiCompatibleInput,
 } from "@/lib/schemas/openai-compatible-provider";
 
@@ -50,10 +47,6 @@ interface ProviderListItem {
   models: OpenClawModelDefinition[];
   keyHint: string;
 }
-
-type DiscoverResponse =
-  | { ok: true; models: OpenClawModelDefinition[]; manualEntry?: boolean }
-  | { ok: false; error: "invalid_key" | "provider_error" | "network_error" | "blocked_url" };
 
 /** Extract the host of a URL for compact display; falls back to the raw string. */
 function hostOf(url: string): string {
@@ -78,108 +71,36 @@ export function OpenAiCompatibleProviderForm({ provider, onSaved, onCancel }: Fo
   const [baseUrl, setBaseUrl] = useState(provider?.baseUrl ?? "");
   const [apiKey, setApiKey] = useState("");
 
-  // Available models to choose from. On edit we seed from the saved models (all
-  // selected); a re-discover replaces the list. Each row's full model def
-  // (contextWindow/vision/etc., resolved via lookupModelCapabilities or
-  // DEFAULT_MODEL_CAPS for manual entries) is still sent on save — only the
-  // per-model edit UI for those fields was removed (#894 UX simplification).
-  const [models, setModels] = useState<OpenClawModelDefinition[]>(provider?.models ?? []);
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(
-    () => new Set((provider?.models ?? []).map((m) => m.id))
-  );
-  const [manualEntry, setManualEntry] = useState(false);
-  const [manualId, setManualId] = useState("");
+  // Manual model-id fallback — ONLY for an endpoint that doesn't list its models
+  // via /v1/models (a bare vLLM, say). Hidden by default: the server discovers
+  // models on save, exactly like every other provider (#894 — no activation
+  // step). Revealed when a save comes back "no models found at this endpoint".
+  const [modelIdsText, setModelIdsText] = useState("");
+  const [showManual, setShowManual] = useState(false);
 
-  const [discovering, setDiscovering] = useState(false);
   const [saving, setSaving] = useState(false);
 
   // Field-tied errors stay inline; completed-action failures go to toast.
   const [keyError, setKeyError] = useState("");
+  const [baseUrlError, setBaseUrlError] = useState("");
+  const [manualError, setManualError] = useState("");
   const [formError, setFormError] = useState("");
-
-  function toggleModel(id: string) {
-    setSelectedIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  }
-
-  async function handleDiscover() {
-    setKeyError("");
-    setFormError("");
-    if (!baseUrl.trim()) {
-      setFormError("Add a base URL first.");
-      return;
-    }
-    if (!apiKey.trim()) {
-      setKeyError("Add an API key to connect.");
-      return;
-    }
-    setDiscovering(true);
-    try {
-      const body: DiscoverInput = { baseUrl, apiKey };
-      const res = await apiPost<DiscoverResponse, DiscoverInput>(
-        "/api/settings/providers/openai-compatible/discover",
-        body
-      );
-      if (!res.ok) {
-        if (res.error === "invalid_key") {
-          setKeyError("That API key was rejected. Check it and try again.");
-        } else if (res.error === "provider_error") {
-          setFormError("The provider responded with an error. Check the base URL and try again.");
-        } else if (res.error === "blocked_url") {
-          setFormError(
-            "That base URL isn't allowed — it points at a reserved or internal network address."
-          );
-        } else {
-          setFormError("We couldn't reach that endpoint. Check the base URL and your connection.");
-        }
-        return;
-      }
-      if (res.manualEntry === true || res.models.length === 0) {
-        // The server flags `manualEntry` (with `models:[]`) when the endpoint
-        // exposes no /models — honor that explicit signal, and defensively fall
-        // back to it whenever the list came back empty. Let the admin type ids.
-        setManualEntry(true);
-        setModels([]);
-        setSelectedIds(new Set());
-        return;
-      }
-      setManualEntry(false);
-      setModels(res.models);
-      setSelectedIds(new Set(res.models.map((m) => m.id)));
-    } catch (e) {
-      toast.error(e instanceof ApiError ? e.message : "Could not connect to the provider.");
-    } finally {
-      setDiscovering(false);
-    }
-  }
-
-  function addManualModel() {
-    const id = manualId.trim();
-    if (!id) return;
-    if (models.some((m) => m.id === id)) {
-      setManualId("");
-      return;
-    }
-    // Conservative, compaction-safe defaults for a hand-entered id.
-    const model: OpenClawModelDefinition = { ...DEFAULT_MODEL_CAPS, id, name: id };
-    setModels((prev) => [...prev, model]);
-    setSelectedIds((prev) => new Set(prev).add(id));
-    setManualId("");
-  }
 
   async function handleSubmit() {
     setKeyError("");
+    setBaseUrlError("");
+    setManualError("");
     setFormError("");
 
-    const chosen = models.filter((m) => selectedIds.has(m.id));
-    if (chosen.length === 0) {
-      setFormError("Pick at least one model to save this provider.");
-      return;
-    }
+    // Manual ids are the fallback for an endpoint with no /v1/models; the server
+    // discovers models itself otherwise, so they're only sent when the manual
+    // field is showing and non-empty.
+    const manualModelIds = showManual
+      ? modelIdsText
+          .split(/[\n,]/)
+          .map((s) => s.trim())
+          .filter(Boolean)
+      : undefined;
 
     setSaving(true);
     try {
@@ -189,7 +110,7 @@ export function OpenAiCompatibleProviderForm({ provider, onSaved, onCancel }: Fo
         baseUrl,
         // On edit, an empty key means "keep the current one" — omit it entirely.
         ...(apiKey.trim() ? { apiKey } : {}),
-        models: chosen,
+        ...(manualModelIds && manualModelIds.length > 0 ? { manualModelIds } : {}),
       };
       await apiPost<ProviderListItem, UpsertOpenAiCompatibleProviderInput>(
         "/api/settings/providers/openai-compatible",
@@ -199,10 +120,22 @@ export function OpenAiCompatibleProviderForm({ provider, onSaved, onCancel }: Fo
       onSaved();
     } catch (e) {
       if (e instanceof ApiError && e.details) {
-        // Surface Zod field errors inline where we can map them.
+        // Surface server field errors inline where we can map them.
         const fieldErrors = (e.details as { fieldErrors?: Record<string, string[]> }).fieldErrors;
+        if (fieldErrors?.baseUrl?.length) {
+          setBaseUrlError(fieldErrors.baseUrl[0]);
+          setSaving(false);
+          return;
+        }
         if (fieldErrors?.apiKey?.length) {
           setKeyError(fieldErrors.apiKey[0]);
+          setSaving(false);
+          return;
+        }
+        if (fieldErrors?.manualModelIds?.length) {
+          // The endpoint exposed no models — reveal the manual field and explain.
+          setShowManual(true);
+          setManualError(fieldErrors.manualModelIds[0]);
           setSaving(false);
           return;
         }
@@ -240,7 +173,19 @@ export function OpenAiCompatibleProviderForm({ provider, onSaved, onCancel }: Fo
           value={baseUrl}
           onChange={(e) => setBaseUrl(e.target.value)}
           placeholder="https://api.together.xyz/v1"
+          aria-invalid={baseUrlError ? true : undefined}
+          aria-describedby={baseUrlError ? "oai-base-url-error" : undefined}
         />
+        {baseUrlError ? (
+          <p id="oai-base-url-error" className="text-sm text-destructive">
+            {baseUrlError}
+          </p>
+        ) : (
+          <p className="text-xs text-muted-foreground">
+            Enter it exactly as your provider documents it, including the /v1 path. We detect the
+            available models automatically.
+          </p>
+        )}
       </div>
 
       <div className="space-y-2">
@@ -266,66 +211,30 @@ export function OpenAiCompatibleProviderForm({ provider, onSaved, onCancel }: Fo
         )}
       </div>
 
-      <div className="space-y-1">
-        <Button type="button" variant="outline" onClick={handleDiscover} disabled={discovering}>
-          {discovering ? "Connecting..." : "Connect & discover models"}
-        </Button>
-        {isEdit && (
+      {showManual && (
+        <div className="space-y-2 rounded-md border p-3">
+          <Label htmlFor="oai-model-ids">Model IDs</Label>
           <p className="text-xs text-muted-foreground">
-            Re-enter your API key to discover models again.
+            This endpoint doesn&apos;t list its models. Enter the model ids you want to use,
+            separated by commas.
           </p>
-        )}
-      </div>
+          <Input
+            id="oai-model-ids"
+            value={modelIdsText}
+            onChange={(e) => setModelIdsText(e.target.value)}
+            placeholder="e.g. llama-3.1-70b-instruct, mixtral-8x7b"
+            aria-invalid={manualError ? true : undefined}
+            aria-describedby={manualError ? "oai-model-ids-error" : undefined}
+          />
+          {manualError && (
+            <p id="oai-model-ids-error" className="text-sm text-destructive">
+              {manualError}
+            </p>
+          )}
+        </div>
+      )}
 
       {formError && <p className="text-sm text-destructive">{formError}</p>}
-
-      {manualEntry && (
-        <div className="space-y-2 rounded-md border p-3">
-          <Label htmlFor="oai-manual-id">Add model id</Label>
-          <p className="text-xs text-muted-foreground">
-            This endpoint doesn&apos;t list its models. Add the ids you want to use.
-          </p>
-          <div className="flex items-center gap-2">
-            <Input
-              id="oai-manual-id"
-              value={manualId}
-              onChange={(e) => setManualId(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  e.preventDefault();
-                  addManualModel();
-                }
-              }}
-              placeholder="e.g. llama-3.1-70b-instruct"
-            />
-            <Button type="button" variant="secondary" onClick={addManualModel}>
-              <Plus className="size-4" />
-              Add
-            </Button>
-          </div>
-        </div>
-      )}
-
-      {models.length > 0 && (
-        <div className="space-y-2">
-          <Label>Models</Label>
-          <p className="text-xs text-muted-foreground">
-            Capabilities are detected automatically for known models, with safe defaults otherwise.
-          </p>
-          <div className="space-y-2 rounded-md border p-3">
-            {models.map((m) => {
-              const selected = selectedIds.has(m.id);
-              return (
-                <label key={m.id} className="flex items-center gap-2 text-sm">
-                  <Checkbox checked={selected} onCheckedChange={() => toggleModel(m.id)} />
-                  <span className="font-medium">{m.name}</span>
-                  <span className="text-xs text-muted-foreground">{m.id}</span>
-                </label>
-              );
-            })}
-          </div>
-        </div>
-      )}
 
       <div className="flex justify-end gap-2">
         <Button type="button" variant="ghost" onClick={onCancel} disabled={saving}>
@@ -473,7 +382,7 @@ export function OpenAiCompatibleProvidersSection() {
           <DialogHeader>
             <DialogTitle>{editing ? "Edit provider" : "Add provider"}</DialogTitle>
             <DialogDescription>
-              Connect an OpenAI-compatible endpoint and choose which models to make available.
+              Connect an OpenAI-compatible endpoint. We detect its models automatically.
             </DialogDescription>
           </DialogHeader>
           {/* Remount on target change so the form's initial state resets. */}

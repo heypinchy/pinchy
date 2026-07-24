@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
 import { OpenAiCompatibleProvidersSection } from "@/components/openai-compatible-provider-form";
@@ -62,7 +62,7 @@ describe("OpenAiCompatibleProvidersSection", () => {
     expect(screen.getByText(/····cdef/)).toBeInTheDocument();
   });
 
-  it("opens the add dialog with name, base URL, key fields and a discover button", async () => {
+  it("opens the add dialog with name, base URL, and key fields — no discover step", async () => {
     const user = userEvent.setup();
     vi.mocked(global.fetch).mockImplementation(async () => jsonResponse([]));
     render(<OpenAiCompatibleProvidersSection />);
@@ -76,7 +76,10 @@ describe("OpenAiCompatibleProvidersSection", () => {
     expect(screen.getByLabelText("Base URL")).toBeInTheDocument();
     const keyField = screen.getByLabelText("API key");
     expect(keyField).toHaveAttribute("type", "password");
-    expect(screen.getByRole("button", { name: "Connect & discover models" })).toBeInTheDocument();
+    // The server discovers models on save — there's no discover button, and the
+    // manual model-ids field stays hidden until the server reports no models.
+    expect(screen.queryByRole("button", { name: /discover/i })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Model IDs")).not.toBeInTheDocument();
   });
 
   it("edit dialog shows the leave-blank placeholder and never the stored key", async () => {
@@ -94,27 +97,14 @@ describe("OpenAiCompatibleProvidersSection", () => {
     expect(keyField).toHaveAttribute("placeholder", "Leave blank to keep current key");
   });
 
-  it("discover renders a checklist of models with no context-window or vision controls, and saving still sends full model defs", async () => {
+  it("saves with just name, base URL, and key — no client model selection, no discover call", async () => {
     const user = userEvent.setup();
-    const discoveredModel = {
-      id: "llama-3.1-70b",
-      name: "Llama 3.1 70B",
-      contextWindow: 131072,
-      maxTokens: 8192,
-      reasoning: false,
-      vision: true,
-      input: ["text", "image"],
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    };
-    let savedBody: unknown;
+    let savedBody: Record<string, unknown> | undefined;
     vi.mocked(global.fetch).mockImplementation(async (input, init) => {
       const url = String(input);
       const method = init?.method ?? "GET";
       if (url.endsWith("/api/settings/providers/openai-compatible") && method === "GET") {
         return jsonResponse([]);
-      }
-      if (url.endsWith("/discover") && method === "POST") {
-        return jsonResponse({ ok: true, models: [discoveredModel] });
       }
       if (url.endsWith("/api/settings/providers/openai-compatible") && method === "POST") {
         savedBody = JSON.parse(String(init?.body));
@@ -128,44 +118,55 @@ describe("OpenAiCompatibleProvidersSection", () => {
       expect(screen.getByRole("button", { name: "Add provider" })).toBeInTheDocument();
     });
     await user.click(screen.getByRole("button", { name: "Add provider" }));
+    await user.type(screen.getByLabelText("Name"), "Together AI");
     await user.type(screen.getByLabelText("Base URL"), "https://api.together.xyz/v1");
     await user.type(screen.getByLabelText("API key"), "sk-test-key");
-    await user.click(screen.getByRole("button", { name: "Connect & discover models" }));
-
-    await waitFor(() => {
-      expect(screen.getByText("Llama 3.1 70B")).toBeInTheDocument();
-    });
-    // Checklist entry: a checkbox plus id/name — no per-model editing controls.
-    const modelRow = screen.getByText("Llama 3.1 70B").closest("label");
-    expect(modelRow).not.toBeNull();
-    expect(within(modelRow!).getByRole("checkbox")).toBeChecked();
-    expect(within(modelRow!).getByText("llama-3.1-70b")).toBeInTheDocument();
-    expect(screen.queryByLabelText(/context window/i)).not.toBeInTheDocument();
-    expect(screen.queryByText("Vision")).not.toBeInTheDocument();
-    expect(screen.queryByRole("spinbutton")).not.toBeInTheDocument();
-
     await user.click(screen.getByRole("button", { name: "Add provider" }));
 
     await waitFor(() => {
       expect(savedBody).toBeDefined();
     });
-    expect((savedBody as { models: unknown[] }).models).toEqual([discoveredModel]);
+    expect(savedBody).toMatchObject({
+      displayName: "Together AI",
+      baseUrl: "https://api.together.xyz/v1",
+      apiKey: "sk-test-key",
+    });
+    // The client no longer curates a models list; the server discovers them.
+    expect(savedBody!.models).toBeUndefined();
+    expect(savedBody!.manualModelIds).toBeUndefined();
+    // No separate discover request went out.
+    const urls = vi.mocked(global.fetch).mock.calls.map((c) => String(c[0]));
+    expect(urls.some((u) => u.endsWith("/discover"))).toBe(false);
   });
 
-  it("manual entry adds a model by id with default capabilities and keeps it selectable via checkbox", async () => {
+  it("reveals the manual model-ids field when the server finds no models, then resends with manualModelIds", async () => {
     const user = userEvent.setup();
-    let savedBody: unknown;
+    let lastBody: Record<string, unknown> | undefined;
+    let postCount = 0;
     vi.mocked(global.fetch).mockImplementation(async (input, init) => {
       const url = String(input);
       const method = init?.method ?? "GET";
       if (url.endsWith("/api/settings/providers/openai-compatible") && method === "GET") {
         return jsonResponse([]);
       }
-      if (url.endsWith("/discover") && method === "POST") {
-        return jsonResponse({ ok: true, models: [], manualEntry: true });
-      }
       if (url.endsWith("/api/settings/providers/openai-compatible") && method === "POST") {
-        savedBody = JSON.parse(String(init?.body));
+        postCount++;
+        lastBody = JSON.parse(String(init?.body));
+        if (postCount === 1) {
+          // Endpoint exposes no /v1/models — the server asks for manual ids.
+          return jsonResponse(
+            {
+              error: "No models found at this endpoint. Enter model ids manually.",
+              details: {
+                formErrors: [],
+                fieldErrors: {
+                  manualModelIds: ["No models found at this endpoint. Enter model ids manually."],
+                },
+              },
+            },
+            { ok: false, status: 422 }
+          );
+        }
         return jsonResponse({ id: "new-id" });
       }
       return jsonResponse({});
@@ -176,48 +177,25 @@ describe("OpenAiCompatibleProvidersSection", () => {
       expect(screen.getByRole("button", { name: "Add provider" })).toBeInTheDocument();
     });
     await user.click(screen.getByRole("button", { name: "Add provider" }));
+    await user.type(screen.getByLabelText("Name"), "Bare vLLM");
     await user.type(screen.getByLabelText("Base URL"), "https://api.example.com/v1");
     await user.type(screen.getByLabelText("API key"), "sk-test-key");
-    await user.click(screen.getByRole("button", { name: "Connect & discover models" }));
+    await user.click(screen.getByRole("button", { name: "Add provider" }));
 
+    // First save found no models → the manual field appears with the message.
     await waitFor(() => {
-      expect(screen.getByLabelText("Add model id")).toBeInTheDocument();
+      expect(screen.getByLabelText("Model IDs")).toBeInTheDocument();
     });
-    await user.type(screen.getByLabelText("Add model id"), "custom-model-x");
-    await user.click(screen.getByRole("button", { name: "Add" }));
+    expect(screen.getByText(/No models found at this endpoint/)).toBeInTheDocument();
+    expect(lastBody!.manualModelIds).toBeUndefined();
 
-    const modelRow = screen.getAllByText("custom-model-x")[0].closest("label");
-    expect(modelRow).not.toBeNull();
-    const checkbox = within(modelRow!).getByRole("checkbox");
-    expect(checkbox).toBeChecked();
-
-    // Deselecting via the checklist checkbox excludes it from the save payload.
-    await user.click(checkbox);
+    // Enter ids and resend: the manual ids are now carried, parsed and trimmed.
+    await user.type(screen.getByLabelText("Model IDs"), "custom-a, custom-b");
     await user.click(screen.getByRole("button", { name: "Add provider" }));
 
     await waitFor(() => {
-      expect(screen.getByText(/Pick at least one model/)).toBeInTheDocument();
+      expect(postCount).toBe(2);
     });
-    expect(savedBody).toBeUndefined();
-
-    // Re-select and save: default capabilities still flow through in full.
-    await user.click(checkbox);
-    await user.click(screen.getByRole("button", { name: "Add provider" }));
-
-    await waitFor(() => {
-      expect(savedBody).toBeDefined();
-    });
-    expect((savedBody as { models: { id: string; contextWindow: number }[] }).models).toEqual([
-      {
-        id: "custom-model-x",
-        name: "custom-model-x",
-        contextWindow: 32768,
-        maxTokens: 8192,
-        reasoning: false,
-        vision: false,
-        input: ["text"],
-        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-      },
-    ]);
+    expect(lastBody!.manualModelIds).toEqual(["custom-a", "custom-b"]);
   });
 });
