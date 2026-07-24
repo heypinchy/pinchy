@@ -34,7 +34,12 @@ export interface ResolverResult {
 export class TemplateCapabilityUnavailableError extends Error {
   constructor(
     public missingCapabilities: ModelCapability[],
-    public provider: ProviderName,
+    // Widened to match ResolverInput.provider (#894): callers now throw this for
+    // custom OpenAI-compatible slugs too (e.g. resolve-available.ts passes
+    // `input.provider`), not just the fixed built-in ProviderName union. The
+    // field is only used for the human-readable message, so accepting a slug is
+    // safe; a bare `ProviderName` here breaks the merge with main's resolver.
+    public provider: ProviderName | (string & {}),
     public docsUrl: string
   ) {
     super(
