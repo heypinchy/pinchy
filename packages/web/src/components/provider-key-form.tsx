@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, type ReactNode } from "react";
+import { useState, useEffect } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -11,17 +11,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Form, FormControl, FormField, FormItem, FormLabel } from "@/components/ui/form";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import {
-  Lock,
-  ChevronDown,
-  ExternalLink,
-  CircleCheck,
-  CircleX,
-  Globe,
-  Plus,
-  Cloud,
-  Monitor,
-} from "lucide-react";
+import { Lock, ChevronDown, ExternalLink, CircleCheck, CircleX, Globe, Plus } from "lucide-react";
+import { ProviderLogo } from "@/components/provider-logo";
 import { useRestart } from "@/components/restart-provider";
 import { ReportIssueLink } from "@/components/report-issue-link";
 import { docsUrl } from "@/components/docs-link";
@@ -191,16 +182,6 @@ const VISION_CAPABLE_PROVIDERS: ReadonlySet<ProviderName> = new Set([
   "ollama-cloud",
 ]);
 
-// Compact glyph per provider tile: a monogram for the API vendors, an icon for
-// the two Ollama variants. Purely decorative (aria-hidden) so the button's
-// accessible name stays the provider name for tests and screen readers.
-const PROVIDER_GLYPH: Record<ProviderName, ReactNode> = {
-  anthropic: "A",
-  openai: "O",
-  google: "G",
-  "ollama-cloud": <Cloud className="size-3.5" />,
-  "ollama-local": <Monitor className="size-3.5" />,
-};
 
 interface ProviderKeyFormProps {
   onSuccess: (provider?: ProviderName) => void;
@@ -390,7 +371,7 @@ export function ProviderKeyForm({
                       aria-hidden="true"
                       className="flex size-6 items-center justify-center rounded-md bg-muted text-xs font-medium text-muted-foreground"
                     >
-                      {PROVIDER_GLYPH[key]}
+                      <ProviderLogo provider={key} />
                     </span>
                     {config.name}
                   </button>
