@@ -19,7 +19,7 @@ import { pollAuditForEvent } from "../shared/dispatch-probe";
 // the provider the first one created:
 //
 //   Test 1 — the WIZARD custom-provider path (the nice-to-have from the prior
-//     review). Selecting "OpenAI-compatible" in the wizard renders the same
+//     review). Selecting "Custom provider" in the wizard renders the same
 //     `OpenAiCompatibleProviderForm` and POSTs the same
 //     `/api/settings/providers/openai-compatible` route as Settings, so it
 //     exercises the shared component + route + audit. Saving it as the sole
@@ -127,9 +127,10 @@ test.describe.serial("Setup wizard + settings → OpenAI-compatible provider (#8
     await page.getByRole("button", { name: /sign in/i }).click();
     await expect(page).toHaveURL(/\/setup\/provider/, { timeout: 20000 });
 
-    // Phase 3: pick "OpenAI-compatible" (wizard-only sixth option) and fill the
-    // custom form: name + the mock base URL + a dummy key, then discover.
-    await page.getByRole("button", { name: /openai-compatible/i }).click();
+    // Phase 3: pick "Custom provider" (wizard-only action below the built-in
+    // tiles) and fill the custom form: name + the mock base URL + a dummy key,
+    // then discover.
+    await page.getByRole("button", { name: /custom provider/i }).click();
     await page.getByLabel("Name", { exact: true }).fill(WIZARD_PROVIDER_NAME);
     await page.getByLabel("Base URL").fill(MOCK_BASE_URL);
     await page.getByLabel("API key").fill(WIZARD_KEY);

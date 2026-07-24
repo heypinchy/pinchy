@@ -192,10 +192,10 @@ interface ProviderKeyFormProps {
    */
   onSaved?: (provider: ProviderName, hasVision: boolean) => void;
   /**
-   * Setup wizard only (#894): offer a sixth "OpenAI-compatible" option that
-   * swaps in the multi-field custom provider form. Off by default so the
-   * settings page — which already renders `OpenAiCompatibleProvidersSection`
-   * separately — doesn't show it twice.
+   * Setup wizard only (#894): offer a "Custom provider" action below the
+   * built-in tiles that swaps in the multi-field custom provider form. Off by
+   * default so the settings page — which already renders
+   * `OpenAiCompatibleProvidersSection` separately — doesn't show it twice.
    */
   showOpenAiCompatibleOption?: boolean;
   /**
@@ -370,28 +370,33 @@ export function ProviderKeyForm({
                 </div>
               )
             )}
-            {showOpenAiCompatibleOption && (
-              <div className="flex flex-col items-center gap-1">
-                <Button
-                  type="button"
-                  variant={customSelected ? "default" : "outline"}
-                  className="w-full"
-                  onClick={() => {
-                    setCustomSelected(true);
-                    setProvider(null);
-                    form.reset();
-                    setGuideOpen(false);
-                    setValidationStatus("idle");
-                    setError("");
-                    setErrorDocs(null);
-                  }}
-                >
-                  OpenAI-compatible
-                </Button>
-              </div>
-            )}
           </div>
         </div>
+
+        {showOpenAiCompatibleOption && !customSelected && (
+          <div className="space-y-1.5">
+            <Button
+              type="button"
+              variant="outline"
+              className="w-full"
+              onClick={() => {
+                setCustomSelected(true);
+                setProvider(null);
+                form.reset();
+                setGuideOpen(false);
+                setValidationStatus("idle");
+                setError("");
+                setErrorDocs(null);
+              }}
+            >
+              Custom provider
+            </Button>
+            <p className="text-xs text-muted-foreground">
+              Connect any OpenAI-compatible endpoint — sovereign EU clouds, self-hosted vLLM, or a
+              gateway.
+            </p>
+          </div>
+        )}
 
         {customSelected && (
           <div className="space-y-4">
