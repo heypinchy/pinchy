@@ -1,16 +1,27 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, type ReactNode } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { toast } from "sonner";
+import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Form, FormControl, FormField, FormItem, FormLabel } from "@/components/ui/form";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { Lock, ChevronDown, ExternalLink, CircleCheck, CircleX, Globe } from "lucide-react";
+import {
+  Lock,
+  ChevronDown,
+  ExternalLink,
+  CircleCheck,
+  CircleX,
+  Globe,
+  Plus,
+  Cloud,
+  Monitor,
+} from "lucide-react";
 import { useRestart } from "@/components/restart-provider";
 import { ReportIssueLink } from "@/components/report-issue-link";
 import { docsUrl } from "@/components/docs-link";
@@ -180,6 +191,17 @@ const VISION_CAPABLE_PROVIDERS: ReadonlySet<ProviderName> = new Set([
   "ollama-cloud",
 ]);
 
+// Compact glyph per provider tile: a monogram for the API vendors, an icon for
+// the two Ollama variants. Purely decorative (aria-hidden) so the button's
+// accessible name stays the provider name for tests and screen readers.
+const PROVIDER_GLYPH: Record<ProviderName, ReactNode> = {
+  anthropic: "A",
+  openai: "O",
+  google: "G",
+  "ollama-cloud": <Cloud className="size-3.5" />,
+  "ollama-local": <Monitor className="size-3.5" />,
+};
+
 interface ProviderKeyFormProps {
   onSuccess: (provider?: ProviderName) => void;
   submitLabel?: string;
@@ -346,10 +368,8 @@ export function ProviderKeyForm({
             {(Object.entries(PROVIDERS) as [ProviderName, (typeof PROVIDERS)[ProviderName]][]).map(
               ([key, config]) => (
                 <div key={key} className="flex flex-col items-center gap-1">
-                  <Button
+                  <button
                     type="button"
-                    variant={provider === key ? "default" : "outline"}
-                    className="w-full"
                     onClick={() => {
                       setProvider(key);
                       setCustomSelected(false);
@@ -359,9 +379,21 @@ export function ProviderKeyForm({
                       setError("");
                       setErrorDocs(null);
                     }}
+                    className={cn(
+                      "flex w-full flex-col items-center justify-center gap-1.5 rounded-md border p-3 text-sm transition-colors",
+                      provider === key
+                        ? "border-2 border-primary bg-primary/5 font-medium"
+                        : "border-border hover:bg-accent"
+                    )}
                   >
+                    <span
+                      aria-hidden="true"
+                      className="flex size-6 items-center justify-center rounded-md bg-muted text-xs font-medium text-muted-foreground"
+                    >
+                      {PROVIDER_GLYPH[key]}
+                    </span>
                     {config.name}
-                  </Button>
+                  </button>
                   {configuredProviders?.[key]?.configured && (
                     <span className="text-xs text-muted-foreground">
                       {defaultProvider === key ? "Active" : "Configured"}
@@ -370,33 +402,40 @@ export function ProviderKeyForm({
                 </div>
               )
             )}
+            {showOpenAiCompatibleOption && (
+              <button
+                type="button"
+                aria-label="Custom provider"
+                onClick={() => {
+                  setCustomSelected(true);
+                  setProvider(null);
+                  form.reset();
+                  setGuideOpen(false);
+                  setValidationStatus("idle");
+                  setError("");
+                  setErrorDocs(null);
+                }}
+                className={cn(
+                  "flex flex-col items-center justify-center gap-1.5 rounded-md border border-dashed p-3 text-sm transition-colors",
+                  customSelected
+                    ? "border-2 border-primary bg-primary/5 font-medium text-foreground"
+                    : "border-border text-muted-foreground hover:bg-accent"
+                )}
+              >
+                <span aria-hidden="true" className="flex size-6 items-center justify-center">
+                  <Plus className="size-4" />
+                </span>
+                Custom
+              </button>
+            )}
           </div>
-        </div>
-
-        {showOpenAiCompatibleOption && !customSelected && (
-          <div className="space-y-1.5">
-            <Button
-              type="button"
-              variant="outline"
-              className="w-full"
-              onClick={() => {
-                setCustomSelected(true);
-                setProvider(null);
-                form.reset();
-                setGuideOpen(false);
-                setValidationStatus("idle");
-                setError("");
-                setErrorDocs(null);
-              }}
-            >
-              Custom provider
-            </Button>
+          {showOpenAiCompatibleOption && (
             <p className="text-xs text-muted-foreground">
-              Connect any OpenAI-compatible endpoint — sovereign EU clouds, self-hosted vLLM, or a
-              gateway.
+              Custom connects any OpenAI-compatible endpoint — sovereign EU clouds, self-hosted
+              vLLM, or a gateway.
             </p>
-          </div>
-        )}
+          )}
+        </div>
 
         {customSelected && (
           <div className="space-y-4">
