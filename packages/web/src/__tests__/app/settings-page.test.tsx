@@ -17,6 +17,7 @@ let capturedProviderProps: {
   submitLabel?: string;
   configuredProviders?: Record<string, { configured: boolean }>;
   defaultProvider?: string | null;
+  manageCustomProviders?: boolean;
 } = {};
 
 let capturedOnDirtyChangeProvider: ((isDirty: boolean) => void) | undefined;
@@ -30,6 +31,7 @@ vi.mock("@/components/provider-key-form", () => ({
     configuredProviders?: Record<string, { configured: boolean }>;
     defaultProvider?: string | null;
     onDirtyChange?: (isDirty: boolean) => void;
+    manageCustomProviders?: boolean;
   }) => {
     capturedProviderProps = props;
     capturedOnDirtyChangeProvider = props.onDirtyChange;
@@ -300,6 +302,22 @@ describe("Settings Page", () => {
           true
         );
       });
+    });
+
+    // #894 settings redesign: the AI-Provider tab renders ONE unified grid via
+    // ProviderKeyForm's `manageCustomProviders` mode — the separate
+    // `OpenAiCompatibleProvidersSection` card was removed entirely.
+    it("should render ProviderKeyForm in manageCustomProviders mode and not a separate OpenAI-compatible providers card", async () => {
+      setupAdminFetchMocks();
+
+      render(<SettingsPage isAdmin={isCurrentTestAdmin} />);
+
+      await waitFor(() => {
+        expect(screen.getByTestId("mock-provider-form")).toBeInTheDocument();
+      });
+
+      expect(capturedProviderProps.manageCustomProviders).toBe(true);
+      expect(screen.queryByText("OpenAI-compatible providers")).not.toBeInTheDocument();
     });
 
     it("should re-fetch provider status after onSuccess", async () => {

@@ -8,7 +8,6 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ProviderKeyForm } from "@/components/provider-key-form";
-import { OpenAiCompatibleProvidersSection } from "@/components/openai-compatible-provider-form";
 import { SettingsUsers } from "@/components/settings-users";
 import { SettingsContext } from "@/components/settings-context";
 import { SettingsProfile } from "@/components/settings-profile";
@@ -301,12 +300,11 @@ export function SettingsPageContent({
                           configuredProviders={status?.providers}
                           defaultProvider={status?.defaultProvider}
                           onDirtyChange={handleProviderDirtyChange}
+                          manageCustomProviders
                         />
                       )}
                     </CardContent>
                   </Card>
-
-                  <OpenAiCompatibleProvidersSection />
                 </div>
               </TabsContent>
             )}

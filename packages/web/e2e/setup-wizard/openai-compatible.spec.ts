@@ -31,9 +31,13 @@ import { pollAuditForEvent } from "../shared/dispatch-probe";
 //
 //   Test 2 — the SETTINGS UI path (the task's primary phrasing). Logs back in,
 //     opens Settings → AI Provider, and adds a SECOND OpenAI-compatible
-//     provider through the `OpenAiCompatibleProvidersSection` dialog, asserting
-//     its own `config.changed` audit row. No second chat — Test 1 already
-//     proves the runtime round-trip; this isolates the settings-surface add.
+//     provider as a tile in the unified provider grid (#894 settings
+//     redesign — built-ins + custom providers + "Add custom provider" all in
+//     one grid, no separate `OpenAiCompatibleProvidersSection` card),
+//     asserting its own `config.changed` audit row. It then selects the new
+//     tile and uses the explicit "Set as default" action, asserting the
+//     `default_provider` switch. No second chat — Test 1 already proves the
+//     runtime round-trip; this isolates the settings-surface add + set-default.
 //
 // Both tests assert the `config.changed` audit carries
 // `authType: "openai-compatible"` + a host-only `baseUrlHost` and NEVER the API
@@ -69,6 +73,8 @@ interface ConfigChangedDetail {
   modelCount?: number;
   runtimeApplied?: boolean;
   provider?: { id?: string; name?: string };
+  previousDefault?: string | null;
+  newDefault?: string;
 }
 
 /**
@@ -180,30 +186,23 @@ test.describe.serial("Setup wizard + settings → OpenAI-compatible provider (#8
     await page.getByRole("button", { name: /sign in/i }).click();
     await expect(page).not.toHaveURL(/\/login/, { timeout: 20000 });
 
-    // Settings → AI Provider tab. The section already lists Test 1's provider.
+    // Settings → AI Provider tab. #894 settings redesign: ONE unified grid —
+    // Test 1's provider already shows as a TILE among the built-ins, not in a
+    // separate "OpenAI-compatible providers" card (that section is gone).
     await page.goto("/settings?tab=provider", { waitUntil: "networkidle" });
-    // "OpenAI-compatible providers" is a CardTitle (<div data-slot="card-title">),
-    // which has ARIA role generic — NOT heading — so match it by text. Exact
-    // match so it can't also hit the section's empty-state copy ("No
-    // OpenAI-compatible providers yet…"), which shares the substring.
-    await expect(page.getByText("OpenAI-compatible providers", { exact: true })).toBeVisible({
+    await expect(page.getByRole("button", { name: WIZARD_PROVIDER_NAME })).toBeVisible({
       timeout: 15000,
     });
-    await expect(page.getByText(WIZARD_PROVIDER_NAME)).toBeVisible();
+    await expect(page.getByText("OpenAI-compatible providers", { exact: true })).not.toBeVisible();
 
-    // Add a second provider through the section's dialog. Before the dialog
-    // opens, "Add provider" uniquely matches the section button.
+    // Add a second provider via the grid's dashed "Add custom provider" tile.
+    // The form now renders inline below the grid (no dialog) — same
+    // `OpenAiCompatibleProviderForm`, no discover step.
+    await page.getByRole("button", { name: "Add custom provider" }).click();
+    await page.getByLabel("Name", { exact: true }).fill(SETTINGS_PROVIDER_NAME);
+    await page.getByLabel("Base URL").fill(MOCK_BASE_URL);
+    await page.getByLabel("API key").fill(SETTINGS_KEY);
     await page.getByRole("button", { name: /^add provider$/i }).click();
-    const dialog = page.getByRole("dialog");
-    await expect(dialog.getByText(/add provider/i).first()).toBeVisible();
-
-    await dialog.getByLabel("Name", { exact: true }).fill(SETTINGS_PROVIDER_NAME);
-    await dialog.getByLabel("Base URL").fill(MOCK_BASE_URL);
-    await dialog.getByLabel("API key").fill(SETTINGS_KEY);
-
-    // Submit (the dialog's own "Add provider"). Models are discovered server-side
-    // on save — no discover step.
-    await dialog.getByRole("button", { name: /^add provider$/i }).click();
 
     // Its config.changed audit is written (host only, no key), distinct from
     // Test 1's row via the provider name predicate.
@@ -213,8 +212,40 @@ test.describe.serial("Setup wizard + settings → OpenAI-compatible provider (#8
       apiKey: SETTINGS_KEY,
     });
 
-    // Both providers now list in the section.
-    await expect(page.getByText(SETTINGS_PROVIDER_NAME)).toBeVisible({ timeout: 15000 });
-    await expect(page.getByText(WIZARD_PROVIDER_NAME)).toBeVisible();
+    // Both providers now show as tiles in the unified grid. Each tile's
+    // Configured/Active badge is a sibling <span>, not inside the <button>
+    // itself (the accessible name stays just the provider name) — so scope the
+    // badge assertion to the button's immediate parent wrapper.
+    const settingsTile = page
+      .getByRole("button", { name: SETTINGS_PROVIDER_NAME, exact: true })
+      .locator("xpath=..");
+    const wizardTile = page
+      .getByRole("button", { name: WIZARD_PROVIDER_NAME, exact: true })
+      .locator("xpath=..");
+    await expect(settingsTile).toBeVisible({ timeout: 15000 });
+    await expect(wizardTile).toBeVisible();
+    // The freshly-added provider isn't the default yet (Test 1's wizard
+    // provider still is — it was the sole provider at the time).
+    await expect(settingsTile).toContainText("Configured");
+    await expect(wizardTile).toContainText("Active");
+
+    // Select the new tile and use the explicit "Set as default" action (#894 —
+    // every provider, built-in or custom, can now be made the default directly
+    // instead of only implicitly via a re-save).
+    const setDefaultSince = new Date().toISOString();
+    await page.getByRole("button", { name: SETTINGS_PROVIDER_NAME, exact: true }).click();
+    await page.getByRole("button", { name: "Set as default" }).click();
+
+    // The grid re-labels the new default "Active" (and the old default drops
+    // back to "Configured"), and a config.changed audit records the switch.
+    await expect(settingsTile).toContainText("Active");
+    await expect(wizardTile).toContainText("Configured");
+    const setDefaultEntry = await pollAuditForEvent(page, {
+      eventType: "config.changed",
+      since: setDefaultSince,
+      deadlineMs: 30_000,
+      predicate: (e) => (e.detail as ConfigChangedDetail | null)?.newDefault !== undefined,
+    });
+    expect(setDefaultEntry.outcome).toBe("success");
   });
 });
