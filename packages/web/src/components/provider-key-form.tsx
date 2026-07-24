@@ -689,6 +689,7 @@ export function ProviderKeyForm({
                 disabled={settingDefault}
                 onClick={() => handleSetDefault(selectedCustomProvider.slug)}
               >
+                <Star className="size-4 fill-primary text-primary" />
                 {settingDefault ? "Setting as default..." : "Set as default"}
               </Button>
             )}
@@ -844,6 +845,7 @@ export function ProviderKeyForm({
                 disabled={settingDefault}
                 onClick={() => handleSetDefault(provider!)}
               >
+                <Star className="size-4 fill-primary text-primary" />
                 {settingDefault ? "Setting as default..." : "Set as default"}
               </Button>
             )}
