@@ -252,6 +252,41 @@ export const TOOL_CAPABLE_OLLAMA_CLOUD_MODELS = [
 ] as const satisfies readonly OllamaCloudModel[];
 
 /**
+ * Global operational ceiling on the *effective* runtime context budget Pinchy
+ * ships to OpenClaw as `models.providers.ollama-cloud.models[].contextTokens`.
+ *
+ * OpenClaw's shouldCompact() fires when the measured context exceeds
+ * `(contextTokens ?? contextWindow) − reserveTokens` (reserveTokens=16384). For
+ * a model with a large native window and no cap, that threshold sits so high it
+ * never fires in practice: glm-5.2 (999,424) would only compact past 983,040.
+ * The 2026-07-24 Piper incident ran a glm-5.2 session to ~633K input tokens with
+ * compactionCount:0 — a single uncached turn then reprocessed all 633K tokens
+ * (543s) and the multi-MB session file blocked Node's event loop on every poll.
+ *
+ * The per-model deepseek-v4-pro cap (2026-07-16) did NOT generalize; capping one
+ * model at a time leaks the moment another large-window model is used. This is a
+ * blanket bound — an operational limit on worst-case turn latency and cache-miss
+ * cost, distinct from a per-model quality knee — so every model (current and
+ * future) gets a compaction trigger no higher than this.
+ *
+ * 262144 (256K) is not arbitrary: it is the largest native window that already
+ * compacts healthily in production (kimi-k2.6, observed compactionCount up to
+ * 79), i.e. a proven-tolerable operating point in this very deployment.
+ */
+export const MAX_EFFECTIVE_CONTEXT_TOKENS = 262144;
+
+/**
+ * The `contextTokens` value Pinchy emits for a model: the lower of its
+ * (optional) per-model policy cap — a researched quality knee, e.g.
+ * deepseek-v4-pro's 131072 — and the global {@link MAX_EFFECTIVE_CONTEXT_TOKENS}
+ * operational ceiling. Always ≤ the native `contextWindow`, so the emitted
+ * window stays honest while compaction is budgeted against the smaller value.
+ */
+export function effectiveContextTokens(model: OllamaCloudModel): number {
+  return Math.min(model.contextTokens ?? model.contextWindow, MAX_EFFECTIVE_CONTEXT_TOKENS);
+}
+
+/**
  * Literal-string union of every model ID in the curated list. Use this in
  * resolvers, agent templates, and anywhere else that hard-codes an Ollama
  * Cloud model — TypeScript will then refuse to compile if you reference a

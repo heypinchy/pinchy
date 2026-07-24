@@ -3,6 +3,8 @@ import {
   TOOL_CAPABLE_OLLAMA_CLOUD_MODELS,
   TOOL_CAPABLE_OLLAMA_CLOUD_MODEL_IDS,
   VISION_OLLAMA_CLOUD_MODEL_IDS,
+  MAX_EFFECTIVE_CONTEXT_TOKENS,
+  effectiveContextTokens,
   type OllamaCloudModel,
 } from "@/lib/ollama-cloud-models";
 
@@ -208,6 +210,57 @@ describe("Ollama Cloud model catalog — empirically verified capabilities", () 
       expect("documents" in m).toBe(false);
       expect("audio" in m).toBe(false);
       expect("video" in m).toBe(false);
+    }
+  });
+});
+
+describe("effectiveContextTokens — global operational compaction ceiling", () => {
+  // The 2026-07-24 Piper incident: glm-5.2 (999,424 window, no per-model cap) ran a
+  // session to ~633K input tokens with compactionCount:0, because OpenClaw's
+  // shouldCompact() fires at `(contextTokens ?? contextWindow) − 16384` — i.e.
+  // 983,040 for glm-5.2, never in practice. The per-model deepseek-v4-pro cap
+  // (2026-07-16) did not generalize. This ceiling bounds the *effective* runtime
+  // context of EVERY model — current and future — so native compaction fires in
+  // time regardless of the model's advertised window. It is an operational bound
+  // (worst-case turn latency + cache-miss cost), distinct from the per-model
+  // quality knee that lives in the catalog. See the design doc.
+
+  it("anchors the ceiling to 256K — the largest window that already compacts healthily in prod (kimi-k2.6)", () => {
+    expect(MAX_EFFECTIVE_CONTEXT_TOKENS).toBe(262144);
+  });
+
+  it("caps every large-window model at the ceiling so compaction fires below the incident's 633K", () => {
+    // These are the models with native window > 262,144 and no lower per-model cap.
+    // Before the fix, shouldCompact() never fired for them in the practical range.
+    for (const id of ["glm-5.2", "deepseek-v4-flash", "nemotron-3-nano:30b", "minimax-m3"]) {
+      const m = byId(id)!;
+      expect(m.contextWindow).toBeGreaterThan(MAX_EFFECTIVE_CONTEXT_TOKENS);
+      expect(effectiveContextTokens(m)).toBe(MAX_EFFECTIVE_CONTEXT_TOKENS);
+    }
+  });
+
+  it("preserves a lower per-model quality-knee cap below the ceiling (deepseek-v4-pro)", () => {
+    // min(131072, 262144) = 131072 — the researched knee wins where it is lower.
+    const pro = byId("deepseek-v4-pro")!;
+    expect(pro.contextTokens).toBe(131072);
+    expect(effectiveContextTokens(pro)).toBe(131072);
+  });
+
+  it("is a no-op for models whose native window is at or below the ceiling", () => {
+    // min(window, ceiling) = window when window ≤ ceiling, so their compaction
+    // behavior is unchanged (kimi already compacts fine at 262,144).
+    for (const id of ["kimi-k2.6", "glm-5.1", "minimax-m2.7", "gpt-oss:120b", "gemma4:31b"]) {
+      const m = byId(id)!;
+      expect(m.contextWindow).toBeLessThanOrEqual(MAX_EFFECTIVE_CONTEXT_TOKENS);
+      expect(effectiveContextTokens(m)).toBe(m.contextWindow);
+    }
+  });
+
+  it("never exceeds the native contextWindow for any model", () => {
+    const models: readonly OllamaCloudModel[] = TOOL_CAPABLE_OLLAMA_CLOUD_MODELS;
+    for (const m of models) {
+      expect(effectiveContextTokens(m)).toBeLessThanOrEqual(m.contextWindow);
+      expect(effectiveContextTokens(m)).toBeLessThanOrEqual(MAX_EFFECTIVE_CONTEXT_TOKENS);
     }
   });
 });
