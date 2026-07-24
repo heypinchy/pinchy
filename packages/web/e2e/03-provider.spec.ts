@@ -12,9 +12,11 @@ test.describe("Provider configuration", () => {
     // Lands on provider setup (generous timeout: scrypt hashing + cold compilation of / and /setup/provider)
     await expect(page).toHaveURL(/\/setup\/provider/, { timeout: 20000 });
 
-    // Verify provider buttons are visible
+    // Verify provider buttons are visible. Use an EXACT name for "OpenAI": the
+    // #894 "OpenAI-compatible" option is also a button and a loose /openai/i
+    // would match both, tripping Playwright's strict-mode (2 elements).
     await expect(page.getByRole("button", { name: /anthropic/i })).toBeVisible();
-    await expect(page.getByRole("button", { name: /openai/i })).toBeVisible();
+    await expect(page.getByRole("button", { name: "OpenAI", exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: /google/i })).toBeVisible();
   });
 
