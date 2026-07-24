@@ -1012,6 +1012,25 @@ export function useWsRuntime(
     function handleTabVisible() {
       clearHiddenGraceTimer();
 
+      // Reset unconditionally, BEFORE any of the branches below — including
+      // the lifecycleSuspendedRef one, which delegates to
+      // recoverFromPageLifecycle() and never touches this counter itself
+      // (that helper predates #895 and is shared with pageshow/online).
+      // Without this hoist, exhausting the counter while visible, then going
+      // hidden past the grace period (closing the socket), then returning
+      // while the server is STILL down would reuse the stale attempt count
+      // left over from the earlier exhaustion: onclose would see it already
+      // at MAX_RECONNECT_ATTEMPTS and flip straight back to
+      // reconnectExhausted after exactly one attempt instead of restarting
+      // the full capped-backoff budget. Resetting here is a no-op on the
+      // OPEN path (nothing to recover) and matches what a successful
+      // ws.onopen already does, so it's safe on every branch — including
+      // CONNECTING, where a still-in-flight dial that happens to fail now
+      // gets the fresh budget rather than the count from whichever backoff
+      // attempt started it.
+      reconnectAttemptRef.current = 0;
+      setReconnectExhausted(false);
+
       if (lifecycleSuspendedRef.current) {
         // Connection was deliberately closed (grace-period close, pagehide,
         // or offline) — reopen it via the existing suspend/recover path.
@@ -1030,14 +1049,12 @@ export function useWsRuntime(
       }
 
       // Disconnected: either a backoff attempt was deferred while hidden (see
-      // the reconnect timer below) or reconnect had fully exhausted. Reset
-      // and reconnect right away.
+      // the reconnect timer below) or reconnect had fully exhausted.
+      // Reconnect right away (the counter was already reset above).
       if (reconnectTimerRef.current) {
         clearTimeout(reconnectTimerRef.current);
         reconnectTimerRef.current = null;
       }
-      reconnectAttemptRef.current = 0;
-      setReconnectExhausted(false);
       shouldRecoverFromHistoryRef.current = true;
       connect();
     }

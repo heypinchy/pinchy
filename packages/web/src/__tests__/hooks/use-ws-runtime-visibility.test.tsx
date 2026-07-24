@@ -280,6 +280,106 @@ describe("useWsRuntime — visibility-driven reconnect lifecycle (#895)", () => 
     expect(result.current.reconnectExhausted).toBe(false);
   });
 
+  it("restarts the full backoff budget on return from a grace-period close, even if the counter was already exhausted before going hidden", () => {
+    const { result } = renderHook(() => useWsRuntime("agent-1"));
+    const ws1 = latestWs();
+
+    act(() => {
+      ws1.simulateOpen();
+    });
+
+    // Exhaust while visible, exactly like the canonical reconnectExhausted
+    // test — the counter is now pinned at MAX_RECONNECT_ATTEMPTS and the
+    // socket is gone (no ws instance left connected).
+    for (let i = 0; i < 10; i++) {
+      const ws = latestWs();
+      act(() => {
+        ws.simulateClose();
+      });
+      act(() => {
+        vi.advanceTimersByTime(5000);
+      });
+    }
+    act(() => {
+      latestWs().simulateClose();
+    });
+    expect(result.current.reconnectExhausted).toBe(true);
+    const countBeforeHidden = wsInstances.length;
+
+    // Now the tab goes hidden past the grace period — suspendForPageLifecycle
+    // fires (there's no open socket to close, but it still marks the drop as
+    // lifecycle-suspended so a later `visible` reopens through
+    // recoverFromPageLifecycle instead of doing nothing).
+    act(() => {
+      setVisibility("hidden");
+    });
+    act(() => {
+      vi.advanceTimersByTime(FIVE_MINUTES_MS);
+    });
+
+    // Tab becomes visible again, but the server is STILL down. Without the
+    // counter reset, the very first reconnect attempt here would fail and
+    // immediately re-flip reconnectExhausted (stale count already at MAX).
+    act(() => {
+      setVisibility("visible");
+    });
+    expect(result.current.reconnectExhausted).toBe(false);
+    expect(wsInstances.length).toBeGreaterThan(countBeforeHidden);
+
+    // Drive several more failed attempts at the capped 5s interval — the
+    // budget must have restarted from zero, so reconnectExhausted must stay
+    // false well past what a single stale attempt would have allowed.
+    for (let i = 0; i < 5; i++) {
+      const ws = latestWs();
+      act(() => {
+        ws.simulateClose();
+      });
+      act(() => {
+        vi.advanceTimersByTime(5000);
+      });
+      expect(result.current.reconnectExhausted).toBe(false);
+    }
+
+    // A successful open fully recovers the connection.
+    act(() => {
+      latestWs().simulateOpen();
+    });
+    expect(result.current.isConnected).toBe(true);
+    expect(result.current.reconnectExhausted).toBe(false);
+  });
+
+  it("visible just before the grace period elapses cancels the pending grace close", () => {
+    const { result } = renderHook(() => useWsRuntime("agent-1"));
+    const ws1 = latestWs();
+
+    act(() => {
+      ws1.simulateOpen();
+    });
+
+    act(() => {
+      setVisibility("hidden");
+    });
+
+    act(() => {
+      vi.advanceTimersByTime(FIVE_MINUTES_MS - 1000);
+    });
+    expect(ws1.close).not.toHaveBeenCalled();
+
+    act(() => {
+      setVisibility("visible");
+    });
+
+    // The grace timer must be cancelled — advancing well past where it would
+    // have fired must not close the (still open, never-suspended) socket.
+    act(() => {
+      vi.advanceTimersByTime(FIVE_MINUTES_MS);
+    });
+
+    expect(ws1.close).not.toHaveBeenCalled();
+    expect(result.current.isConnected).toBe(true);
+    expect(wsInstances).toHaveLength(1);
+  });
+
   it("clears the hidden-grace timer on unmount, leaving no leaked timers", () => {
     const { unmount } = renderHook(() => useWsRuntime("agent-1"));
     const ws1 = latestWs();
