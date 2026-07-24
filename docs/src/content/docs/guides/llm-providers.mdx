@@ -26,6 +26,8 @@ You can have any combination of providers configured at the same time. Each agen
 
 <Aside type="note">Only admins can configure providers.</Aside>
 
+**Settings → AI Provider** shows a single grid: a tile for each of the 5 built-in providers, one tile per OpenAI-compatible provider you've already added, and a dashed **Add custom provider** tile. Selecting any tile opens its panel below the grid.
+
 1. Go to **Settings → AI Provider**
 2. Click the provider you want to add
 3. Paste your API key (or for local Ollama, enter the URL)
@@ -54,13 +56,13 @@ The dropdown shows every model from every configured provider. Models are groupe
 
 ## Switch the default provider
 
-The "default provider" is the one Pinchy reaches for when creating new agents. You can change it at **Settings → AI Provider** by clicking **Set as default** on any configured provider. Existing agents keep their current model — only newly created agents pick up the new default.
+The "default provider" is the one Pinchy reaches for when creating new agents. Every configured tile in the grid — built-in or custom — shows **Active** when it's the current default, or **Configured** otherwise. To switch it: click the tile you want, then click **Set as default** in its panel (shown whenever that provider is configured and isn't already the default). Existing agents keep their current model — only newly created agents pick up the new default.
 
 ## Remove a provider
 
 1. Go to **Settings → AI Provider**
-2. Find the provider in the list
-3. Click **Remove**
+2. Click the provider's tile in the grid
+3. Click **Remove key** / **Remove URL** (built-in) or **Remove provider** (custom), and confirm
 
 If any agent currently uses a model from the removed provider, the chat will fail to start until you assign that agent a model from a still-configured provider. Pinchy will not silently re-assign agents.
 
@@ -82,13 +84,13 @@ Unlike the built-in providers, you can add **as many OpenAI-compatible endpoints
 
 You can add one during the initial [setup wizard](/installation/) — it's offered as a **Custom provider** action below the built-in provider tiles — or any time afterwards from **Settings → AI Provider**. The fields are the same in both places:
 
-1. Open **Settings → AI Provider** and, under **OpenAI-compatible providers**, click **Add provider** (in the wizard, click **Custom provider**).
+1. Open **Settings → AI Provider** and click the dashed **Add custom provider** tile in the grid (in the wizard, click **Custom provider**). Every custom provider you've already added shows as its own tile in the same grid — click one to edit it.
 2. **Name** — a label you choose, shown wherever the provider's models appear (e.g. "Swisscom AI Platform").
 3. **Base URL** — the endpoint's base, entered **exactly as the provider documents it, including the `/v1` path** (e.g. `https://api.example.com/v1`). Pinchy appends the standard routes to this base, so don't trim the version segment.
 4. **API key** — your key for the endpoint.
 5. Click **Add provider**.
 
-That's it — there's no separate discover-and-select step. This works just like the built-in providers: you supply the credentials, and Pinchy takes it from there.
+That's it — there's no separate discover-and-select step. This works just like the built-in providers: you supply the credentials, and Pinchy takes it from there. Once added, the provider's tile carries the same **Set as default** and remove affordances as a built-in provider — see [Switch the default provider](#switch-the-default-provider) and [Remove a provider](#remove-a-provider) above.
 
 ### How models are detected
 

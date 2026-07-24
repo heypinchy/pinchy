@@ -855,4 +855,251 @@ describe("ProviderKeyForm", () => {
       expect(onSuccess).not.toHaveBeenCalled();
     });
   });
+
+  // #894 settings redesign: `manageCustomProviders` renders ONE unified grid —
+  // built-in tiles + one tile per custom provider + a dashed "Add custom
+  // provider" tile — replacing the separate `OpenAiCompatibleProvidersSection`
+  // card. Settings-only: absent in the wizard (covered above).
+  describe("settings-mode custom provider management (#894)", () => {
+    function jsonResponse(body: unknown, init: { ok?: boolean; status?: number } = {}): Response {
+      const text = JSON.stringify(body);
+      return {
+        ok: init.ok ?? true,
+        status: init.status ?? 200,
+        json: async () => body,
+        text: async () => text,
+      } as unknown as Response;
+    }
+
+    const acmeRow = {
+      id: "row-id-1",
+      slug: "acme-llm",
+      displayName: "Acme LLM",
+      baseUrl: "https://acme.example.com/v1",
+      models: [],
+      keyHint: "cdef",
+    };
+
+    it("does not fetch or render custom tiles when manageCustomProviders is absent (wizard unaffected)", () => {
+      render(<ProviderKeyForm onSuccess={onSuccess} />);
+
+      expect(
+        screen.queryByRole("button", { name: /add custom provider/i })
+      ).not.toBeInTheDocument();
+      expect(global.fetch).not.toHaveBeenCalled();
+    });
+
+    it("fetches and renders a tile for each configured custom provider", async () => {
+      vi.mocked(global.fetch).mockImplementation(async (input) => {
+        const url = String(input);
+        if (url.endsWith("/api/settings/providers/openai-compatible")) {
+          return jsonResponse([acmeRow]);
+        }
+        return jsonResponse({});
+      });
+
+      render(<ProviderKeyForm onSuccess={onSuccess} manageCustomProviders />);
+
+      await waitFor(() => {
+        expect(screen.getByRole("button", { name: /acme llm/i })).toBeInTheDocument();
+      });
+    });
+
+    it("shows the Add custom provider tile; selecting it opens the create form with no discover step", async () => {
+      vi.mocked(global.fetch).mockImplementation(async () => jsonResponse([]));
+
+      render(<ProviderKeyForm onSuccess={onSuccess} manageCustomProviders />);
+
+      await waitFor(() => {
+        expect(screen.getByRole("button", { name: /add custom provider/i })).toBeInTheDocument();
+      });
+      fireEvent.click(screen.getByRole("button", { name: /add custom provider/i }));
+
+      expect(screen.getByLabelText(/^name$/i)).toBeInTheDocument();
+      expect(screen.getByLabelText(/base url/i)).toBeInTheDocument();
+      expect(screen.getByLabelText(/api key/i)).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /^add provider$/i })).toBeInTheDocument();
+      expect(
+        screen.queryByRole("button", { name: /connect & discover models/i })
+      ).not.toBeInTheDocument();
+    });
+
+    it("selecting an existing custom tile opens the edit form with the leave-blank placeholder, never the stored key", async () => {
+      vi.mocked(global.fetch).mockImplementation(async (input) => {
+        const url = String(input);
+        if (url.endsWith("/api/settings/providers/openai-compatible")) {
+          return jsonResponse([acmeRow]);
+        }
+        return jsonResponse({});
+      });
+
+      render(<ProviderKeyForm onSuccess={onSuccess} manageCustomProviders />);
+
+      await waitFor(() => {
+        expect(screen.getByRole("button", { name: /acme llm/i })).toBeInTheDocument();
+      });
+      fireEvent.click(screen.getByRole("button", { name: /acme llm/i }));
+
+      const keyField = screen.getByLabelText(/api key/i) as HTMLInputElement;
+      expect(keyField.value).toBe("");
+      expect(keyField).toHaveAttribute("placeholder", "Leave blank to keep current key");
+      expect((screen.getByLabelText(/^name$/i) as HTMLInputElement).value).toBe("Acme LLM");
+    });
+
+    it("shows 'Configured' for a custom tile, and 'Active' when it's the default", async () => {
+      vi.mocked(global.fetch).mockImplementation(async (input) => {
+        const url = String(input);
+        if (url.endsWith("/api/settings/providers/openai-compatible")) {
+          return jsonResponse([acmeRow]);
+        }
+        return jsonResponse({});
+      });
+
+      const { rerender } = render(
+        <ProviderKeyForm onSuccess={onSuccess} manageCustomProviders defaultProvider="openai" />
+      );
+
+      await waitFor(() => {
+        expect(screen.getByText("Configured")).toBeInTheDocument();
+      });
+
+      rerender(
+        <ProviderKeyForm onSuccess={onSuccess} manageCustomProviders defaultProvider="acme-llm" />
+      );
+
+      await waitFor(() => {
+        expect(screen.getByText("Active")).toBeInTheDocument();
+      });
+    });
+
+    it("shows Set as default for a configured built-in that isn't the default, and calls the endpoint", async () => {
+      const configuredProviders = {
+        anthropic: { configured: true, hint: "xY9z" },
+        openai: { configured: false },
+      };
+      vi.mocked(global.fetch).mockImplementation(async (input, init) => {
+        const url = String(input);
+        const method = init?.method ?? "GET";
+        if (url.endsWith("/api/settings/providers/openai-compatible")) {
+          return jsonResponse([]);
+        }
+        if (url.endsWith("/api/settings/providers/default") && method === "PATCH") {
+          return jsonResponse({ success: true, defaultProvider: "anthropic" });
+        }
+        return jsonResponse({});
+      });
+
+      render(
+        <ProviderKeyForm
+          onSuccess={onSuccess}
+          manageCustomProviders
+          configuredProviders={configuredProviders}
+          defaultProvider="openai"
+        />
+      );
+
+      fireEvent.click(screen.getByRole("button", { name: /anthropic/i }));
+      const setDefaultButton = await screen.findByRole("button", { name: /set as default/i });
+      fireEvent.click(setDefaultButton);
+
+      await waitFor(() => {
+        expect(global.fetch).toHaveBeenCalledWith(
+          "/api/settings/providers/default",
+          expect.objectContaining({
+            method: "PATCH",
+            body: JSON.stringify({ provider: "anthropic" }),
+          })
+        );
+        expect(onSuccess).toHaveBeenCalled();
+      });
+    });
+
+    it("does not show Set as default for a built-in that is already the default", () => {
+      const configuredProviders = {
+        anthropic: { configured: true, hint: "xY9z" },
+      };
+      render(
+        <ProviderKeyForm
+          onSuccess={onSuccess}
+          manageCustomProviders
+          configuredProviders={configuredProviders}
+          defaultProvider="anthropic"
+        />
+      );
+
+      fireEvent.click(screen.getByRole("button", { name: /anthropic/i }));
+
+      expect(screen.queryByRole("button", { name: /set as default/i })).not.toBeInTheDocument();
+    });
+
+    it("shows Set as default for a custom tile that isn't the default, and calls the endpoint with its slug", async () => {
+      vi.mocked(global.fetch).mockImplementation(async (input, init) => {
+        const url = String(input);
+        const method = init?.method ?? "GET";
+        if (url.endsWith("/api/settings/providers/openai-compatible")) {
+          return jsonResponse([acmeRow]);
+        }
+        if (url.endsWith("/api/settings/providers/default") && method === "PATCH") {
+          return jsonResponse({ success: true, defaultProvider: "acme-llm" });
+        }
+        return jsonResponse({});
+      });
+
+      render(
+        <ProviderKeyForm onSuccess={onSuccess} manageCustomProviders defaultProvider="anthropic" />
+      );
+
+      await waitFor(() => {
+        expect(screen.getByRole("button", { name: /acme llm/i })).toBeInTheDocument();
+      });
+      fireEvent.click(screen.getByRole("button", { name: /acme llm/i }));
+      const setDefaultButton = await screen.findByRole("button", { name: /set as default/i });
+      fireEvent.click(setDefaultButton);
+
+      await waitFor(() => {
+        expect(global.fetch).toHaveBeenCalledWith(
+          "/api/settings/providers/default",
+          expect.objectContaining({
+            method: "PATCH",
+            body: JSON.stringify({ provider: "acme-llm" }),
+          })
+        );
+        expect(onSuccess).toHaveBeenCalled();
+      });
+    });
+
+    it("removes a custom provider via the delete confirmation, calling DELETE with its id", async () => {
+      vi.mocked(global.fetch).mockImplementation(async (input, init) => {
+        const url = String(input);
+        const method = init?.method ?? "GET";
+        if (url.endsWith("/api/settings/providers/openai-compatible") && method === "GET") {
+          return jsonResponse([acmeRow]);
+        }
+        if (url.endsWith("/api/settings/providers/openai-compatible") && method === "DELETE") {
+          return jsonResponse({ ok: true });
+        }
+        return jsonResponse({});
+      });
+
+      render(<ProviderKeyForm onSuccess={onSuccess} manageCustomProviders />);
+
+      await waitFor(() => {
+        expect(screen.getByRole("button", { name: /acme llm/i })).toBeInTheDocument();
+      });
+      fireEvent.click(screen.getByRole("button", { name: /acme llm/i }));
+      fireEvent.click(screen.getByRole("button", { name: /remove provider/i }));
+      fireEvent.click(screen.getByRole("button", { name: /^remove$/i }));
+
+      await waitFor(() => {
+        expect(global.fetch).toHaveBeenCalledWith(
+          "/api/settings/providers/openai-compatible",
+          expect.objectContaining({
+            method: "DELETE",
+            body: JSON.stringify({ id: "row-id-1" }),
+          })
+        );
+        expect(onSuccess).toHaveBeenCalled();
+      });
+    });
+  });
 });

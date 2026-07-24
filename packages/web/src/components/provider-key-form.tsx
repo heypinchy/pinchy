@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -11,13 +11,28 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Form, FormControl, FormField, FormItem, FormLabel } from "@/components/ui/form";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { Lock, ChevronDown, ExternalLink, CircleCheck, CircleX, Globe, Plus } from "lucide-react";
+import {
+  Lock,
+  ChevronDown,
+  ExternalLink,
+  CircleCheck,
+  CircleX,
+  Globe,
+  Plus,
+  Server,
+} from "lucide-react";
 import { ProviderLogo } from "@/components/provider-logo";
 import { useRestart } from "@/components/restart-provider";
 import { ReportIssueLink } from "@/components/report-issue-link";
 import { docsUrl } from "@/components/docs-link";
-import { OpenAiCompatibleProviderForm } from "@/components/openai-compatible-provider-form";
+import {
+  OpenAiCompatibleProviderForm,
+  type ProviderListItem,
+} from "@/components/openai-compatible-provider-form";
 import type { ProviderName } from "@/lib/providers";
+import { apiGet, apiPatch, apiDelete, ApiError } from "@/lib/api-client";
+import type { DeleteOpenAiCompatibleInput } from "@/lib/schemas/openai-compatible-provider";
+import type { SetDefaultProviderInput } from "@/lib/schemas/provider-default";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -182,7 +197,6 @@ const VISION_CAPABLE_PROVIDERS: ReadonlySet<ProviderName> = new Set([
   "ollama-cloud",
 ]);
 
-
 interface ProviderKeyFormProps {
   onSuccess: (provider?: ProviderName) => void;
   submitLabel?: string;
@@ -197,8 +211,8 @@ interface ProviderKeyFormProps {
   /**
    * Setup wizard only (#894): offer a "Custom provider" action below the
    * built-in tiles that swaps in the multi-field custom provider form. Off by
-   * default so the settings page — which already renders
-   * `OpenAiCompatibleProvidersSection` separately — doesn't show it twice.
+   * default so the settings page — which manages custom providers via
+   * `manageCustomProviders` below — doesn't show it twice.
    */
   showOpenAiCompatibleOption?: boolean;
   /**
@@ -207,6 +221,17 @@ interface ProviderKeyFormProps {
    * straight to the app with a usable default.
    */
   onOpenAiCompatibleSaved?: () => void;
+  /**
+   * Settings page only (#894 redesign): renders ONE unified provider grid —
+   * the 5 built-in tiles PLUS one tile per configured custom OpenAI-compatible
+   * provider PLUS a dashed "Add custom provider" tile — instead of the
+   * built-ins-only grid the setup wizard shows. Also renders an explicit
+   * "Set as default" action on every configured tile's panel (built-in or
+   * custom) and the delete affordance for custom providers. Fetches the
+   * custom-provider list itself via `GET .../openai-compatible`. Off by
+   * default so the wizard's grid — which mustn't change — is unaffected.
+   */
+  manageCustomProviders?: boolean;
 }
 
 export function ProviderKeyForm({
@@ -218,11 +243,22 @@ export function ProviderKeyForm({
   onSaved,
   showOpenAiCompatibleOption = false,
   onOpenAiCompatibleSaved,
+  manageCustomProviders = false,
 }: ProviderKeyFormProps) {
   const [provider, setProvider] = useState<ProviderName | null>(null);
   // Custom "OpenAI-compatible" is not a built-in `ProviderName`, so it can't
-  // live in `provider`; a separate flag drives whether the custom form shows.
+  // live in `provider`; a separate flag drives whether the ADD form shows
+  // (used by both the wizard's dashed "Custom" tile and settings' "Add custom
+  // provider" tile).
   const [customSelected, setCustomSelected] = useState(false);
+  // Settings-only (#894): the existing custom provider tile currently
+  // selected, if any — drives the edit-mode panel below the grid.
+  const [customProviders, setCustomProviders] = useState<ProviderListItem[]>([]);
+  const [selectedCustomProvider, setSelectedCustomProvider] = useState<ProviderListItem | null>(
+    null
+  );
+  const [settingDefault, setSettingDefault] = useState(false);
+  const [deletingCustom, setDeletingCustom] = useState(false);
   const [loading, setLoading] = useState(false);
   const [guideOpen, setGuideOpen] = useState(false);
   const [removing, setRemoving] = useState(false);
@@ -245,6 +281,70 @@ export function ProviderKeyForm({
   useEffect(() => {
     onDirtyChange?.(!!provider && apiKeyValue.trim().length > 0);
   }, [provider, apiKeyValue, onDirtyChange]);
+
+  // Settings-only: fetch the custom provider list for the unified grid. Not
+  // fetched in the wizard (manageCustomProviders is false there).
+  const fetchCustomProviders = useCallback(async () => {
+    if (!manageCustomProviders) return;
+    try {
+      const rows = await apiGet<ProviderListItem[]>("/api/settings/providers/openai-compatible");
+      setCustomProviders(rows);
+    } catch {
+      // Non-blocking: the grid just shows the built-ins + Add tile on a read
+      // failure, same as the old OpenAiCompatibleProvidersSection's empty state.
+    }
+  }, [manageCustomProviders]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void Promise.resolve().then(() => {
+      if (!cancelled) void fetchCustomProviders();
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [fetchCustomProviders]);
+
+  // Settings-only: flip `default_provider` to a built-in name or a custom
+  // slug. Shared by both the built-in panel's and the custom panel's
+  // "Set as default" button.
+  async function handleSetDefault(target: string) {
+    setSettingDefault(true);
+    try {
+      const body: SetDefaultProviderInput = { provider: target };
+      await apiPatch<{ success: true; defaultProvider: string; warning?: string }>(
+        "/api/settings/providers/default",
+        body
+      );
+      toast.success("Default provider updated.");
+      onSuccess();
+    } catch (e) {
+      toast.error(e instanceof ApiError ? e.message : "Could not set the default provider.");
+    } finally {
+      setSettingDefault(false);
+    }
+  }
+
+  // Settings-only: remove a custom provider, reusing the AlertDialog delete
+  // flow that used to live in `OpenAiCompatibleProvidersSection`.
+  async function handleDeleteCustomProvider(target: ProviderListItem) {
+    setDeletingCustom(true);
+    try {
+      const body: DeleteOpenAiCompatibleInput = { id: target.id };
+      await apiDelete<{ ok: true }, DeleteOpenAiCompatibleInput>(
+        "/api/settings/providers/openai-compatible",
+        body
+      );
+      toast.success("Provider removed.");
+      setSelectedCustomProvider(null);
+      void fetchCustomProviders();
+      onSuccess();
+    } catch (e) {
+      toast.error(e instanceof ApiError ? e.message : "Could not remove the provider.");
+    } finally {
+      setDeletingCustom(false);
+    }
+  }
 
   const isConfigured = provider ? configuredProviders?.[provider]?.configured === true : false;
   const isUrlProvider = provider ? PROVIDERS[provider].authType === "url" : false;
@@ -354,6 +454,7 @@ export function ProviderKeyForm({
                     onClick={() => {
                       setProvider(key);
                       setCustomSelected(false);
+                      setSelectedCustomProvider(null);
                       form.reset();
                       setGuideOpen(false);
                       setValidationStatus("idle");
@@ -382,6 +483,68 @@ export function ProviderKeyForm({
                   )}
                 </div>
               )
+            )}
+            {manageCustomProviders &&
+              customProviders.map((row) => (
+                <div key={row.id} className="flex flex-col items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedCustomProvider(row);
+                      setProvider(null);
+                      setCustomSelected(false);
+                      form.reset();
+                      setGuideOpen(false);
+                      setValidationStatus("idle");
+                      setError("");
+                      setErrorDocs(null);
+                    }}
+                    className={cn(
+                      "flex w-full flex-col items-center justify-center gap-1.5 rounded-md border p-3 text-sm transition-colors",
+                      selectedCustomProvider?.id === row.id
+                        ? "border-2 border-primary bg-primary/5 font-medium"
+                        : "border-border hover:bg-accent"
+                    )}
+                  >
+                    <span
+                      aria-hidden="true"
+                      className="flex size-6 items-center justify-center rounded-md bg-muted text-xs font-medium text-muted-foreground"
+                    >
+                      <Server className="size-3.5" />
+                    </span>
+                    <span className="truncate max-w-full">{row.displayName}</span>
+                  </button>
+                  <span className="text-xs text-muted-foreground">
+                    {defaultProvider === row.slug ? "Active" : "Configured"}
+                  </span>
+                </div>
+              ))}
+            {manageCustomProviders && (
+              <button
+                type="button"
+                aria-label="Add custom provider"
+                onClick={() => {
+                  setCustomSelected(true);
+                  setProvider(null);
+                  setSelectedCustomProvider(null);
+                  form.reset();
+                  setGuideOpen(false);
+                  setValidationStatus("idle");
+                  setError("");
+                  setErrorDocs(null);
+                }}
+                className={cn(
+                  "flex flex-col items-center justify-center gap-1.5 rounded-md border border-dashed p-3 text-sm transition-colors",
+                  customSelected
+                    ? "border-2 border-primary bg-primary/5 font-medium text-foreground"
+                    : "border-border text-muted-foreground hover:bg-accent"
+                )}
+              >
+                <span aria-hidden="true" className="flex size-6 items-center justify-center">
+                  <Plus className="size-4" />
+                </span>
+                Add custom provider
+              </button>
             )}
             {showOpenAiCompatibleOption && (
               <button
@@ -426,9 +589,74 @@ export function ProviderKeyForm({
             </p>
             <OpenAiCompatibleProviderForm
               provider={null}
-              onSaved={() => onOpenAiCompatibleSaved?.()}
+              onSaved={() => {
+                if (manageCustomProviders) {
+                  setCustomSelected(false);
+                  void fetchCustomProviders();
+                  onSuccess();
+                } else {
+                  onOpenAiCompatibleSaved?.();
+                }
+              }}
               onCancel={() => setCustomSelected(false)}
             />
+          </div>
+        )}
+
+        {manageCustomProviders && selectedCustomProvider && (
+          <div className="space-y-4">
+            <OpenAiCompatibleProviderForm
+              key={selectedCustomProvider.id}
+              provider={selectedCustomProvider}
+              onSaved={() => {
+                setSelectedCustomProvider(null);
+                void fetchCustomProviders();
+                onSuccess();
+              }}
+              onCancel={() => setSelectedCustomProvider(null)}
+            />
+            {defaultProvider !== selectedCustomProvider.slug && (
+              <Button
+                type="button"
+                variant="outline"
+                className="w-full"
+                disabled={settingDefault}
+                onClick={() => handleSetDefault(selectedCustomProvider.slug)}
+              >
+                {settingDefault ? "Setting as default..." : "Set as default"}
+              </Button>
+            )}
+            <AlertDialog>
+              <AlertDialogTrigger asChild>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  className="w-full text-destructive hover:text-destructive"
+                  disabled={deletingCustom}
+                >
+                  {deletingCustom ? "Removing..." : "Remove provider"}
+                </Button>
+              </AlertDialogTrigger>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>Remove provider?</AlertDialogTitle>
+                  <AlertDialogDescription>
+                    This removes {selectedCustomProvider.displayName}. Any agents using its models
+                    will be switched to another configured provider.
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel disabled={deletingCustom}>Cancel</AlertDialogCancel>
+                  <AlertDialogAction
+                    variant="destructive"
+                    disabled={deletingCustom}
+                    onClick={() => handleDeleteCustomProvider(selectedCustomProvider)}
+                  >
+                    {deletingCustom ? "Removing..." : "Remove"}
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
           </div>
         )}
 
@@ -540,6 +768,18 @@ export function ProviderKeyForm({
               <p className="text-xs text-muted-foreground text-center">
                 Saving will briefly restart the agent runtime.
               </p>
+            )}
+
+            {manageCustomProviders && isConfigured && defaultProvider !== provider && (
+              <Button
+                type="button"
+                variant="outline"
+                className="w-full"
+                disabled={settingDefault}
+                onClick={() => handleSetDefault(provider!)}
+              >
+                {settingDefault ? "Setting as default..." : "Set as default"}
+              </Button>
             )}
 
             {configuredProviders && isConfigured && (
