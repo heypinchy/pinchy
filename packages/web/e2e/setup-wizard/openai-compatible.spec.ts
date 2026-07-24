@@ -225,7 +225,7 @@ test.describe.serial("Setup wizard + settings → OpenAI-compatible provider (#8
     // The freshly-added provider isn't the default yet (Test 1's wizard provider
     // still is — it was the sole provider at the time).
     await expect(settingsTile.getByTestId("tile-configured")).toBeVisible();
-    await expect(wizardTile).toContainText("Default");
+    await expect(wizardTile.getByTestId("tile-default")).toBeVisible();
 
     // Select the new tile and use the explicit "Set as default" action (#894 —
     // every provider, built-in or custom, can now be made the default directly
@@ -236,7 +236,7 @@ test.describe.serial("Setup wizard + settings → OpenAI-compatible provider (#8
 
     // The grid re-labels the new default "Default" (and the old default drops
     // back to the quiet configured check), and a config.changed audit records it.
-    await expect(settingsTile).toContainText("Default");
+    await expect(settingsTile.getByTestId("tile-default")).toBeVisible();
     await expect(wizardTile.getByTestId("tile-configured")).toBeVisible();
     const setDefaultEntry = await pollAuditForEvent(page, {
       eventType: "config.changed",
