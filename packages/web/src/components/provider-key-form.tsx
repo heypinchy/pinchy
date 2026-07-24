@@ -227,7 +227,7 @@ function CornerIndicator({ state }: { state: TileState }) {
         title="Default"
         className="absolute right-2 top-2"
       >
-        <Star className="size-3.5 fill-primary text-primary" />
+        <Star className="size-3.5 fill-muted-foreground text-muted-foreground" />
       </span>
     );
   }
@@ -689,7 +689,7 @@ export function ProviderKeyForm({
                 disabled={settingDefault}
                 onClick={() => handleSetDefault(selectedCustomProvider.slug)}
               >
-                <Star className="size-4 fill-primary text-primary" />
+                <Star className="size-4 fill-muted-foreground text-muted-foreground" />
                 {settingDefault ? "Setting as default..." : "Set as default"}
               </Button>
             )}
@@ -845,7 +845,7 @@ export function ProviderKeyForm({
                 disabled={settingDefault}
                 onClick={() => handleSetDefault(provider!)}
               >
-                <Star className="size-4 fill-primary text-primary" />
+                <Star className="size-4 fill-muted-foreground text-muted-foreground" />
                 {settingDefault ? "Setting as default..." : "Set as default"}
               </Button>
             )}
