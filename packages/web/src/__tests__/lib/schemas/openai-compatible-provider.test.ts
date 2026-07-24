@@ -25,12 +25,13 @@ const validModel = {
 };
 
 describe("upsertOpenAiCompatibleProviderSchema", () => {
-  it("accepts a valid create payload (apiKey + one model)", () => {
+  // #894 backend redesign: the server discovers models itself (live
+  // GET /models), so a valid payload no longer needs a `models` array at all.
+  it("accepts a valid create payload with NO client-supplied models (server discovers them)", () => {
     const parsed = upsertOpenAiCompatibleProviderSchema.safeParse({
       displayName: "My Provider",
       baseUrl: "https://api.example.com/v1",
       apiKey: "sk-secret",
-      models: [validModel],
     });
     expect(parsed.success).toBe(true);
   });
@@ -40,17 +41,45 @@ describe("upsertOpenAiCompatibleProviderSchema", () => {
       id: "123e4567-e89b-12d3-a456-426614174000",
       displayName: "My Provider",
       baseUrl: "https://api.example.com/v1",
+    });
+    expect(parsed.success).toBe(true);
+  });
+
+  it("accepts manualModelIds as the discovery-fallback model list", () => {
+    const parsed = upsertOpenAiCompatibleProviderSchema.safeParse({
+      displayName: "My Provider",
+      baseUrl: "https://api.example.com/v1",
+      apiKey: "sk-secret",
+      manualModelIds: ["custom-model-a", "custom-model-b"],
+    });
+    expect(parsed.success).toBe(true);
+  });
+
+  it("rejects an empty-string entry in manualModelIds", () => {
+    const parsed = upsertOpenAiCompatibleProviderSchema.safeParse({
+      displayName: "My Provider",
+      baseUrl: "https://api.example.com/v1",
+      apiKey: "sk-secret",
+      manualModelIds: [""],
+    });
+    expect(parsed.success).toBe(false);
+  });
+
+  it("still accepts a legacy `models` array (deprecated, ignored server-side — kept for the not-yet-updated form component)", () => {
+    const parsed = upsertOpenAiCompatibleProviderSchema.safeParse({
+      displayName: "My Provider",
+      baseUrl: "https://api.example.com/v1",
+      apiKey: "sk-secret",
       models: [validModel],
     });
     expect(parsed.success).toBe(true);
   });
 
-  it("rejects an empty models array", () => {
+  it("rejects an empty displayName", () => {
     const parsed = upsertOpenAiCompatibleProviderSchema.safeParse({
-      displayName: "My Provider",
+      displayName: "",
       baseUrl: "https://api.example.com/v1",
       apiKey: "sk-secret",
-      models: [],
     });
     expect(parsed.success).toBe(false);
   });
@@ -60,7 +89,6 @@ describe("upsertOpenAiCompatibleProviderSchema", () => {
       displayName: "My Provider",
       baseUrl: "not-a-url",
       apiKey: "sk-secret",
-      models: [validModel],
     });
     expect(parsed.success).toBe(false);
   });
@@ -70,7 +98,6 @@ describe("upsertOpenAiCompatibleProviderSchema", () => {
       id: "not-a-uuid",
       displayName: "My Provider",
       baseUrl: "https://api.example.com/v1",
-      models: [validModel],
     });
     expect(parsed.success).toBe(false);
   });

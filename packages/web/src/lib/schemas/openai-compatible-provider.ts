@@ -56,15 +56,33 @@ const providerBaseUrlSchema = z
  *
  * `id` present ⇒ update (the slug is immutable, derived once at create). On an
  * update `apiKey` is optional: omitting it keeps the existing stored key so the
- * client never has to round-trip the secret it can't read back. At least one
- * model is required — a provider with no models is inert.
+ * client never has to round-trip the secret it can't read back.
+ *
+ * #894 backend redesign: the server now DISCOVERS the model list itself
+ * (`GET <baseUrl>/models`, same live-with-snapshot-fallback path used for
+ * reads — see the POST route and `resolveCustomProviderModels`) instead of
+ * trusting a client-curated list. `manualModelIds` is the only client input
+ * left for models, and only matters when discovery finds none (an endpoint
+ * with no `/models`).
+ *
+ * `models` is a DEPRECATED, ignored-by-the-server field: the pre-redesign
+ * form component (openai-compatible-provider-form.tsx) still sends its
+ * discover-and-select checklist here, and that form is updated in a
+ * follow-up task (see issue #894's UI/E2E/docs follow-up), not this one.
+ * Keeping it optional here — rather than removing it outright — is what lets
+ * that not-yet-updated form keep type-compiling against this shared schema in
+ * the meantime; the route never reads it. Remove this field once the form
+ * stops sending it.
  */
 export const upsertOpenAiCompatibleProviderSchema = z.object({
   id: z.string().uuid().optional(),
   displayName: z.string().min(1).max(120),
   baseUrl: providerBaseUrlSchema,
   apiKey: z.string().min(1).optional(),
-  models: z.array(modelDefinitionSchema).min(1),
+  /** @deprecated Ignored by the server — see the doc-comment above. */
+  models: z.array(modelDefinitionSchema).optional(),
+  /** Fallback model ids for an endpoint whose live discovery finds none. */
+  manualModelIds: z.array(z.string().min(1)).optional(),
 });
 
 /** Request body for discovering a provider's models from its `/models` endpoint. */

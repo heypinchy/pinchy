@@ -21,6 +21,8 @@ vi.mock("@/lib/openai-compatible-providers", () => ({
   listOpenAiCompatibleProviders: vi.fn().mockResolvedValue([]),
   listOpenAiCompatibleProvidersForAdmin: vi.fn().mockResolvedValue([]),
   deleteProviderById: vi.fn(),
+  getDecryptedKeyById: vi.fn().mockResolvedValue("sk-stored-key"),
+  getModelsById: vi.fn().mockResolvedValue([]),
 }));
 
 vi.mock("@/lib/provider-count", () => ({
@@ -110,6 +112,8 @@ import {
   listOpenAiCompatibleProviders,
   listOpenAiCompatibleProvidersForAdmin,
   deleteProviderById,
+  getDecryptedKeyById,
+  getModelsById,
 } from "@/lib/openai-compatible-providers";
 import type { OpenAiCompatibleProviderListItem } from "@/lib/openai-compatible-providers";
 import { countConfiguredProviders, listConfiguredBuiltIns } from "@/lib/provider-count";
@@ -185,13 +189,20 @@ describe("POST /api/settings/providers/openai-compatible", () => {
     vi.mocked(getSetting).mockResolvedValue(null);
     vi.mocked(createOrUpdateProvider).mockResolvedValue(listItem());
     vi.mocked(regenerateOpenClawConfig).mockResolvedValue(undefined);
+    vi.mocked(getDecryptedKeyById).mockResolvedValue("sk-stored-key");
+    // Default: server-side discovery finds one model. #894 backend redesign —
+    // the client no longer sends `models`; the route calls
+    // fetchOpenAiCompatibleModels itself, mocked here.
+    vi.mocked(fetchOpenAiCompatibleModels).mockResolvedValue([
+      modelDef("acme-large", "Acme Large"),
+    ]);
   });
 
   it("returns 401 when not authenticated", async () => {
     vi.mocked(auth.api.getSession).mockResolvedValueOnce(null);
 
     const res = await POST(
-      postRequest({ displayName: "Acme", baseUrl: "https://acme.example.com/v1", models: [] }),
+      postRequest({ displayName: "Acme", baseUrl: "https://acme.example.com/v1" }),
       routeCtx
     );
 
@@ -208,7 +219,6 @@ describe("POST /api/settings/providers/openai-compatible", () => {
         displayName: "Acme",
         baseUrl: "https://acme.example.com/v1",
         apiKey: SECRET_KEY,
-        models: [modelDef("acme-large")],
       }),
       routeCtx
     );
@@ -227,7 +237,6 @@ describe("POST /api/settings/providers/openai-compatible", () => {
         displayName: "Evil",
         baseUrl: "http://169.254.169.254/v1",
         apiKey: SECRET_KEY,
-        models: [modelDef("x")],
       }),
       routeCtx
     );
@@ -235,9 +244,84 @@ describe("POST /api/settings/providers/openai-compatible", () => {
     expect(res.status).toBe(422);
     const data = await res.json();
     expect(data.details.fieldErrors.baseUrl?.length).toBeGreaterThan(0);
-    // Nothing persisted, no runtime apply.
+    // Nothing persisted, no runtime apply, and discovery never even ran.
+    expect(fetchOpenAiCompatibleModels).not.toHaveBeenCalled();
     expect(createOrUpdateProvider).not.toHaveBeenCalled();
     expect(regenerateOpenClawConfig).not.toHaveBeenCalled();
+  });
+
+  it("returns 422 with a manualModelIds field error when discovery finds nothing and no fallback is given", async () => {
+    vi.mocked(fetchOpenAiCompatibleModels).mockResolvedValue([]);
+
+    const res = await POST(
+      postRequest({
+        displayName: "Acme LLM",
+        baseUrl: "https://acme.example.com/v1",
+        apiKey: SECRET_KEY,
+      }),
+      routeCtx
+    );
+
+    expect(res.status).toBe(422);
+    const data = await res.json();
+    expect(data.details.fieldErrors.manualModelIds?.length).toBeGreaterThan(0);
+    expect(createOrUpdateProvider).not.toHaveBeenCalled();
+    expect(regenerateOpenClawConfig).not.toHaveBeenCalled();
+    expect(appendAuditLog).not.toHaveBeenCalled();
+  });
+
+  it("falls back to manualModelIds, resolved via the model catalog, when discovery finds nothing", async () => {
+    vi.mocked(fetchOpenAiCompatibleModels).mockResolvedValue([]);
+    vi.mocked(createOrUpdateProvider).mockResolvedValue(
+      listItem({ slug: "acme-llm", models: [modelDef("hand-entered-id", "hand-entered-id")] })
+    );
+
+    const res = await POST(
+      postRequest({
+        displayName: "Acme LLM",
+        baseUrl: "https://acme.example.com/v1",
+        apiKey: SECRET_KEY,
+        manualModelIds: ["hand-entered-id"],
+      }),
+      routeCtx
+    );
+
+    expect(res.status).toBe(200);
+    // Manual ids resolve to DEFAULT_MODEL_CAPS-shaped defs (unknown to the
+    // catalog) and are what gets persisted as the snapshot.
+    expect(createOrUpdateProvider).toHaveBeenCalledWith(
+      expect.objectContaining({ displayName: "Acme LLM" }),
+      [expect.objectContaining({ id: "hand-entered-id", name: "hand-entered-id" })]
+    );
+  });
+
+  it("keeps the existing model snapshot on update when live discovery finds nothing", async () => {
+    // Endpoint is transiently down (or between an update and a re-list): discovery
+    // returns nothing. An UPDATE must NOT 422 or blank the models — it keeps the
+    // stored snapshot so a rename during an outage still saves.
+    vi.mocked(fetchOpenAiCompatibleModels).mockResolvedValue([]);
+    const existing = [modelDef("acme-large", "Acme Large")];
+    vi.mocked(getModelsById).mockResolvedValue(existing);
+    vi.mocked(createOrUpdateProvider).mockResolvedValue(
+      listItem({ id: "row-1", slug: "acme-llm", models: existing })
+    );
+
+    const res = await POST(
+      postRequest({
+        id: "11111111-1111-4111-8111-111111111111",
+        displayName: "Acme LLM Renamed",
+        baseUrl: "https://acme.example.com/v1",
+      }),
+      routeCtx
+    );
+
+    expect(res.status).toBe(200);
+    expect(getModelsById).toHaveBeenCalledWith("11111111-1111-4111-8111-111111111111");
+    // The preserved snapshot is what gets persisted — not an empty list.
+    expect(createOrUpdateProvider).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "11111111-1111-4111-8111-111111111111" }),
+      existing
+    );
   });
 
   it("repoints agents off a model dropped during an update, and audits the migration", async () => {
@@ -256,7 +340,6 @@ describe("POST /api/settings/providers/openai-compatible", () => {
         id: "11111111-1111-4111-8111-111111111111",
         displayName: "Acme LLM",
         baseUrl: "https://acme.example.com/v1",
-        models: [modelDef("acme-large", "Acme Large")],
       }),
       routeCtx
     );
@@ -277,7 +360,6 @@ describe("POST /api/settings/providers/openai-compatible", () => {
         displayName: "Acme LLM",
         baseUrl: "https://acme.example.com/v1",
         apiKey: SECRET_KEY,
-        models: [modelDef("acme-large", "Acme Large")],
       }),
       routeCtx
     );
@@ -291,14 +373,20 @@ describe("POST /api/settings/providers/openai-compatible", () => {
     expect(regenerateOpenClawConfig).toHaveBeenCalled();
     expect(resetCache).toHaveBeenCalled();
 
-    // The parsed body reached the data-access layer.
+    // Discovery ran against the submitted baseUrl/apiKey, and its result (not
+    // a client-supplied list) reached the data-access layer as the explicit
+    // second argument.
+    expect(fetchOpenAiCompatibleModels).toHaveBeenCalledWith(
+      "https://acme.example.com/v1",
+      SECRET_KEY
+    );
     expect(createOrUpdateProvider).toHaveBeenCalledWith(
       expect.objectContaining({
         displayName: "Acme LLM",
         baseUrl: "https://acme.example.com/v1",
         apiKey: SECRET_KEY,
-        models: [expect.objectContaining({ id: "acme-large" })],
-      })
+      }),
+      [expect.objectContaining({ id: "acme-large" })]
     );
 
     expect(appendAuditLog).toHaveBeenCalledTimes(1);
@@ -320,7 +408,6 @@ describe("POST /api/settings/providers/openai-compatible", () => {
         displayName: "Acme LLM",
         baseUrl: "https://acme.example.com/v1/private/path",
         apiKey: SECRET_KEY,
-        models: [modelDef("acme-large")],
       }),
       routeCtx
     );
@@ -341,7 +428,6 @@ describe("POST /api/settings/providers/openai-compatible", () => {
         displayName: "Acme LLM",
         baseUrl: "https://acme.example.com/v1",
         apiKey: SECRET_KEY,
-        models: [modelDef("acme-large")],
       }),
       routeCtx
     );
@@ -353,7 +439,7 @@ describe("POST /api/settings/providers/openai-compatible", () => {
     expect(entry.detail).toMatchObject({ runtimeApplied: false });
   });
 
-  it("updates an existing provider without an api key and still succeeds", async () => {
+  it("updates an existing provider without an api key and still succeeds, discovering with the STORED key", async () => {
     vi.mocked(createOrUpdateProvider).mockResolvedValue(
       listItem({ slug: "acme-llm", displayName: "Acme Renamed" })
     );
@@ -363,14 +449,20 @@ describe("POST /api/settings/providers/openai-compatible", () => {
         id: "11111111-1111-4111-8111-111111111111",
         displayName: "Acme Renamed",
         baseUrl: "https://acme.example.com/v1",
-        models: [modelDef("acme-large")],
       }),
       routeCtx
     );
 
     expect(res.status).toBe(200);
+    // No apiKey in the body ⇒ the route falls back to the stored, decrypted key.
+    expect(getDecryptedKeyById).toHaveBeenCalledWith("11111111-1111-4111-8111-111111111111");
+    expect(fetchOpenAiCompatibleModels).toHaveBeenCalledWith(
+      "https://acme.example.com/v1",
+      "sk-stored-key"
+    );
     expect(createOrUpdateProvider).toHaveBeenCalledWith(
-      expect.objectContaining({ id: "11111111-1111-4111-8111-111111111111" })
+      expect.objectContaining({ id: "11111111-1111-4111-8111-111111111111" }),
+      expect.any(Array)
     );
     const entry = vi.mocked(appendAuditLog).mock.calls[0][0];
     expect(entry.detail).toMatchObject({
@@ -382,13 +474,12 @@ describe("POST /api/settings/providers/openai-compatible", () => {
     expect(setSetting).not.toHaveBeenCalled();
   });
 
-  it("rejects an invalid body (no models) with a structured 400 and no side effects", async () => {
+  it("rejects an invalid body (empty displayName) with a structured 400 and no side effects", async () => {
     const res = await POST(
       postRequest({
-        displayName: "Acme",
+        displayName: "",
         baseUrl: "https://acme.example.com/v1",
         apiKey: SECRET_KEY,
-        models: [],
       }),
       routeCtx
     );
@@ -407,7 +498,6 @@ describe("POST /api/settings/providers/openai-compatible", () => {
         displayName: "Acme",
         baseUrl: "not-a-url",
         apiKey: SECRET_KEY,
-        models: [modelDef("acme-large")],
       }),
       routeCtx
     );
@@ -425,7 +515,6 @@ describe("POST /api/settings/providers/openai-compatible", () => {
         displayName: "Acme LLM",
         baseUrl: "https://acme.example.com/v1",
         apiKey: SECRET_KEY,
-        models: [modelDef("acme-large")],
       }),
       routeCtx
     );
@@ -444,7 +533,6 @@ describe("POST /api/settings/providers/openai-compatible", () => {
         displayName: "Acme LLM",
         baseUrl: "https://acme.example.com/v1",
         apiKey: SECRET_KEY,
-        models: [modelDef("acme-large")],
       }),
       routeCtx
     );
@@ -478,7 +566,6 @@ describe("POST /api/settings/providers/openai-compatible", () => {
         displayName: "Acme LLM",
         baseUrl: "https://acme.example.com/v1",
         apiKey: SECRET_KEY,
-        models: [modelDef("acme-large")],
       }),
       routeCtx
     );
@@ -512,7 +599,6 @@ describe("POST /api/settings/providers/openai-compatible", () => {
         displayName: "Acme LLM",
         baseUrl: "https://acme.example.com/v1",
         apiKey: SECRET_KEY,
-        models: [modelDef("acme-large")],
       }),
       routeCtx
     );
@@ -530,7 +616,6 @@ describe("POST /api/settings/providers/openai-compatible", () => {
         displayName: "Acme LLM",
         baseUrl: "https://acme.example.com/v1",
         apiKey: SECRET_KEY,
-        models: [modelDef("acme-large")],
       }),
       routeCtx
     );
@@ -559,7 +644,6 @@ describe("POST /api/settings/providers/openai-compatible", () => {
         displayName: "Acme Renamed",
         baseUrl: "https://acme.example.com/v1",
         // No apiKey on an update — nothing to leak.
-        models: [modelDef("acme-large")],
       }),
       routeCtx
     );
@@ -583,7 +667,6 @@ describe("POST /api/settings/providers/openai-compatible", () => {
         displayName: "Acme LLM",
         baseUrl: "https://acme.example.com/v1",
         apiKey: SECRET_KEY,
-        models: [modelDef("acme-large")],
       }),
       routeCtx
     );

@@ -122,6 +122,21 @@ vi.mock("@/lib/openai-compatible-providers", () => ({
   getDecryptedApiKey: mockGetDecryptedApiKey,
 }));
 
+// #894 backend redesign: build.ts's model-providers emission resolves each
+// custom provider's list via `resolveCustomProviderModels` (live fetch +
+// cache + snapshot fallback), not by reading `p.models` directly. Default
+// mock is an identity pass-through of the snapshot it's given — every
+// existing emission test below asserts against `makeProvider()`'s `models`
+// verbatim, so a pass-through default keeps them green unchanged. Tests that
+// want to exercise the live-vs-snapshot distinction override this.
+const { mockResolveCustomProviderModels } = vi.hoisted(() => ({
+  mockResolveCustomProviderModels: vi.fn(async (p: { models: unknown }) => p.models),
+}));
+
+vi.mock("@/lib/openai-compatible-discovery", () => ({
+  resolveCustomProviderModels: mockResolveCustomProviderModels,
+}));
+
 const { mockValidateBuiltConfig } = vi.hoisted(() => ({
   mockValidateBuiltConfig: vi.fn().mockReturnValue({ ok: true }),
 }));
@@ -8011,6 +8026,8 @@ describe("OpenAI-compatible custom providers (#894)", () => {
     mockListOpenAiCompatibleProviders.mockResolvedValue([]);
     mockListProvidersWithApiKeys.mockResolvedValue([]);
     mockGetDecryptedApiKey.mockResolvedValue(null);
+    // Identity pass-through by default — see the mock's doc-comment above.
+    mockResolveCustomProviderModels.mockImplementation(async (p: { models: unknown }) => p.models);
   });
 
   it("emits a models.providers entry mirroring the ollama-cloud shape (SecretRef, api, compat)", async () => {
@@ -8070,6 +8087,59 @@ describe("OpenAI-compatible custom providers (#894)", () => {
     // The vision-less model encodes input as ["text"] only.
     expect(config.models.providers["acme-llm"].models[0].input).toEqual(["text"]);
     expect(config.models.providers["acme-llm"].models[0]).not.toHaveProperty("vision");
+  });
+
+  it("resolves each provider's emitted models via resolveCustomProviderModels, passing slug/baseUrl/apiKey/snapshot", async () => {
+    mockListOpenAiCompatibleProviders.mockResolvedValue([makeProvider()]);
+    mockListProvidersWithApiKeys.mockResolvedValue([
+      { slug: "swisscom-ai", apiKey: "swiss-plaintext-key" },
+    ]);
+    mockGetDecryptedApiKey.mockResolvedValue("swiss-plaintext-key");
+
+    await regenerateOpenClawConfig();
+
+    expect(mockResolveCustomProviderModels).toHaveBeenCalledWith(
+      expect.objectContaining({
+        slug: "swisscom-ai",
+        baseUrl: "https://api.swisscom.example/v1",
+        apiKey: "swiss-plaintext-key",
+        models: [makeModel()],
+      })
+    );
+  });
+
+  it("emits the LIVE model list from resolveCustomProviderModels, not the DB snapshot, when they differ", async () => {
+    // The snapshot (makeProvider().models) and the live result are
+    // deliberately different models, proving the emission reads the live
+    // result rather than `p.models` directly.
+    mockListOpenAiCompatibleProviders.mockResolvedValue([makeProvider()]);
+    mockListProvidersWithApiKeys.mockResolvedValue([
+      { slug: "swisscom-ai", apiKey: "swiss-plaintext-key" },
+    ]);
+    mockResolveCustomProviderModels.mockResolvedValueOnce([
+      makeModel({
+        id: "swiss-live-model",
+        name: "Swiss Live Model",
+        vision: false,
+        input: ["text"],
+      }),
+    ]);
+
+    await regenerateOpenClawConfig();
+
+    const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
+    expect(config.models.providers["swisscom-ai"].models).toEqual([
+      {
+        id: "swiss-live-model",
+        name: "Swiss Live Model",
+        contextWindow: 32000,
+        maxTokens: 4096,
+        reasoning: true,
+        input: ["text"],
+        cost: { input: 1, output: 2, cacheRead: 0.1, cacheWrite: 0.5 },
+        compat: { supportsUsageInStreaming: true },
+      },
+    ]);
   });
 
   it("carries each instance's decrypted key into the secrets bundle (never the config)", async () => {

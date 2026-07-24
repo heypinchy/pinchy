@@ -1,7 +1,11 @@
 import { PROVIDERS, resolveProviderBaseUrl, type ProviderName } from "@/lib/providers";
 import { getSetting } from "@/lib/settings";
 import { TOOL_CAPABLE_OLLAMA_CLOUD_MODEL_IDS } from "@/lib/ollama-cloud-models";
-import { listOpenAiCompatibleProviders } from "@/lib/openai-compatible-providers";
+import { listProvidersForModelFetch } from "@/lib/openai-compatible-providers";
+import {
+  resolveCustomProviderModels,
+  resetCustomModelCache,
+} from "@/lib/openai-compatible-discovery";
 
 export { isModelVisionCapable } from "@/lib/model-vision";
 import { setOllamaLocalVisionModels } from "@/lib/model-vision";
@@ -24,6 +28,10 @@ export function resetCache() {
   cachedResult = null;
   cachedAt = 0;
   ollamaLocalCache.clear();
+  // Custom OpenAI-compatible providers' live-model cache lives in
+  // openai-compatible-discovery.ts (#894 backend redesign) — clear it too so
+  // resetCache() remains the single "forget everything cached" entry point.
+  resetCustomModelCache();
 }
 
 export interface ModelInfo {
@@ -510,17 +518,22 @@ export async function fetchProviderModels(): Promise<ProviderModels[]> {
     }
   }
 
-  // Append one entry per custom OpenAI-compatible instance (#894). Fetched live
-  // from the DB every call (not cloud-cached) so a just-created/edited instance
-  // shows up immediately — mirroring how ollama-local is always fetched fresh.
-  // Model ids are namespaced `<slug>/<modelId>`, matching how an agent's model
-  // is emitted into openclaw.json for these providers.
-  const customProviders = await listOpenAiCompatibleProviders();
+  // Append one entry per custom OpenAI-compatible instance (#894). Identity +
+  // decrypted key + snapshot are fetched from the DB every call (not
+  // cloud-cached), and the model LIST itself is resolved live from the
+  // endpoint via `resolveCustomProviderModels` (short-TTL cache + snapshot
+  // fallback — mirrors ollama-local's `fetchOllamaLocalModelsFromUrl`, #894
+  // backend redesign) so a just-created/edited instance, or a newly added
+  // model on the endpoint, shows up without a manual re-discover step. Model
+  // ids are namespaced `<slug>/<modelId>`, matching how an agent's model is
+  // emitted into openclaw.json for these providers.
+  const customProviders = await listProvidersForModelFetch();
   for (const p of customProviders) {
+    const models = await resolveCustomProviderModels(p);
     results.push({
       id: p.slug,
       name: p.displayName,
-      models: p.models.map((m) => ({ id: `${p.slug}/${m.id}`, name: m.name })),
+      models: models.map((m) => ({ id: `${p.slug}/${m.id}`, name: m.name })),
     });
   }
 

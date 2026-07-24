@@ -2,8 +2,12 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
   validateOpenAiCompatibleProvider,
   fetchOpenAiCompatibleModels,
+  resolveCustomProviderModels,
+  resetCustomModelCache,
+  type CustomProviderModelSource,
 } from "@/lib/openai-compatible-discovery";
 import { DEFAULT_MODEL_CAPS } from "@/lib/model-catalog";
+import type { OpenClawModelDefinition } from "@/lib/openclaw-builtin-models";
 
 global.fetch = vi.fn();
 
@@ -156,5 +160,132 @@ describe("fetchOpenAiCompatibleModels", () => {
 
     // Only the one valid string id survives.
     expect(models.map((m) => m.id)).toEqual(["gpt-5.5"]);
+  });
+
+  it("filters out non-chat models (embeddings, rerankers, tts, whisper, moderation, guard)", async () => {
+    vi.mocked(fetch).mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          data: [
+            { id: "gpt-5.5" },
+            { id: "text-embedding-3-large" },
+            { id: "embedding-ada-002" },
+            { id: "rerank-english-v3.0" },
+            { id: "reranker-multilingual" },
+            { id: "tts-1" },
+            { id: "text-to-speech-v2" },
+            { id: "whisper-1" },
+            { id: "omni-moderation-latest" },
+            { id: "llama-guard-3" },
+            { id: "Whisper-Large-V3" }, // case-insensitive
+          ],
+        }),
+        { status: 200 }
+      )
+    );
+
+    const models = await fetchOpenAiCompatibleModels("https://api.example.com/v1", "sk-key");
+
+    expect(models.map((m) => m.id)).toEqual(["gpt-5.5"]);
+  });
+});
+
+describe("resolveCustomProviderModels", () => {
+  const snapshot: OpenClawModelDefinition[] = [
+    {
+      id: "acme-snapshot",
+      name: "Acme Snapshot",
+      contextWindow: 8192,
+      maxTokens: 4096,
+      reasoning: false,
+      vision: false,
+      input: ["text"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    },
+  ];
+
+  function source(overrides: Partial<CustomProviderModelSource> = {}): CustomProviderModelSource {
+    return {
+      slug: "acme",
+      baseUrl: "https://acme.example.com/v1",
+      apiKey: "sk-key",
+      models: snapshot,
+      ...overrides,
+    };
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetCustomModelCache();
+  });
+
+  it("fetches live on a cache miss and returns the discovered models", async () => {
+    vi.mocked(fetch).mockResolvedValue(
+      new Response(JSON.stringify({ data: [{ id: "acme-large" }] }), { status: 200 })
+    );
+
+    const result = await resolveCustomProviderModels(source());
+
+    expect(result.map((m) => m.id)).toEqual(["acme-large"]);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns the cached result within the TTL without refetching", async () => {
+    vi.mocked(fetch).mockResolvedValue(
+      new Response(JSON.stringify({ data: [{ id: "acme-large" }] }), { status: 200 })
+    );
+
+    const first = await resolveCustomProviderModels(source());
+    expect(fetch).toHaveBeenCalledTimes(1);
+
+    vi.mocked(fetch).mockClear();
+    const second = await resolveCustomProviderModels(source());
+
+    expect(second).toEqual(first);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the snapshot when live discovery returns zero models, without caching the empty result", async () => {
+    vi.mocked(fetch).mockResolvedValue(new Response(JSON.stringify({ data: [] }), { status: 200 }));
+
+    const result = await resolveCustomProviderModels(source());
+    expect(result).toEqual(snapshot);
+
+    // Not cached: the very next call retries live rather than pinning the
+    // fallback for the whole TTL window.
+    vi.mocked(fetch).mockClear();
+    vi.mocked(fetch).mockResolvedValue(
+      new Response(JSON.stringify({ data: [{ id: "acme-large" }] }), { status: 200 })
+    );
+    const retried = await resolveCustomProviderModels(source());
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(retried.map((m) => m.id)).toEqual(["acme-large"]);
+  });
+
+  it("falls back to the snapshot when live discovery throws, without caching", async () => {
+    vi.mocked(fetch).mockRejectedValue(new Error("network down"));
+
+    const result = await resolveCustomProviderModels(source());
+    expect(result).toEqual(snapshot);
+  });
+
+  it("caches independently per slug", async () => {
+    vi.mocked(fetch).mockImplementation(async (url) => {
+      const urlStr = typeof url === "string" ? url : url.toString();
+      if (urlStr.includes("acme")) {
+        return new Response(JSON.stringify({ data: [{ id: "acme-large" }] }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ data: [{ id: "beta-large" }] }), { status: 200 });
+    });
+
+    const acme = await resolveCustomProviderModels(
+      source({ slug: "acme", baseUrl: "https://acme.example.com/v1" })
+    );
+    const beta = await resolveCustomProviderModels(
+      source({ slug: "beta-corp", baseUrl: "https://beta.example.com/v1", models: [] })
+    );
+
+    expect(acme.map((m) => m.id)).toEqual(["acme-large"]);
+    expect(beta.map((m) => m.id)).toEqual(["beta-large"]);
   });
 });

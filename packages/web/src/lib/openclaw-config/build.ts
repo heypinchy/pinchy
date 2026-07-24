@@ -29,6 +29,7 @@ import {
   type OpenClawModelDefinition,
 } from "@/lib/openclaw-builtin-models";
 import { listOpenAiCompatibleProviders } from "@/lib/openai-compatible-providers";
+import { resolveCustomProviderModels } from "@/lib/openai-compatible-discovery";
 import {
   getOpenClawWorkspacePath,
   getAgentBootstrapSizes,
@@ -1446,12 +1447,26 @@ export async function regenerateOpenClawConfig() {
   // strip `vision` (the vision signal rides in `input`) and opt into
   // `compat.supportsUsageInStreaming` so usage tracking works against the
   // configured non-OpenAI endpoint (see the ollama-cloud block above).
+  //
+  // #894 backend redesign: the emitted model list is resolved LIVE via
+  // `resolveCustomProviderModels` (short-TTL cache + snapshot fallback — same
+  // helper the model dropdown uses in provider-models.ts), not read off
+  // `p.models` directly. `customProviders` (fetched key-free, above) still
+  // supplies slug/baseUrl/snapshot and backs the default-provider guard;
+  // `providerSecrets` (already fetched for the secrets bundle) supplies the
+  // decrypted key discovery needs without a second DB round trip.
   for (const p of customProviders) {
+    const models = await resolveCustomProviderModels({
+      slug: p.slug,
+      baseUrl: p.baseUrl,
+      apiKey: providerSecrets[p.slug]?.apiKey ?? "",
+      models: p.models,
+    });
     modelProviders[p.slug] = {
       baseUrl: p.baseUrl,
       api: "openai-completions",
       apiKey: secretRef(`/providers/${p.slug}/apiKey`),
-      models: stripVision(p.models).map((m) => ({
+      models: stripVision(models).map((m) => ({
         ...m,
         compat: { supportsUsageInStreaming: true },
       })),

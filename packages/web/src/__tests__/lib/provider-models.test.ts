@@ -65,7 +65,20 @@ vi.mock("@/lib/settings", () => ({
 }));
 
 vi.mock("@/lib/openai-compatible-providers", () => ({
-  listOpenAiCompatibleProviders: vi.fn().mockResolvedValue([]),
+  listProvidersForModelFetch: vi.fn().mockResolvedValue([]),
+}));
+
+// #894 backend redesign: the live model list is resolved via
+// resolveCustomProviderModels (openai-compatible-discovery.ts), not read
+// straight off the DB row. Default mock is an identity pass-through of the
+// snapshot, matching "nothing overrides it" behavior; individual tests below
+// override it to exercise the live-fetch and fallback paths explicitly. The
+// resolver's own cache/fallback mechanics are unit-tested in
+// openai-compatible-discovery.test.ts — this file only checks that
+// fetchProviderModels calls it correctly and namespaces its result.
+vi.mock("@/lib/openai-compatible-discovery", () => ({
+  resolveCustomProviderModels: vi.fn(async (p: { models: unknown }) => p.models),
+  resetCustomModelCache: vi.fn(),
 }));
 
 global.fetch = vi.fn();
@@ -80,24 +93,27 @@ import {
   selectDefaultModel,
 } from "@/lib/provider-models";
 import { getSetting } from "@/lib/settings";
-import { listOpenAiCompatibleProviders } from "@/lib/openai-compatible-providers";
-import type { OpenAiCompatibleProviderListItem } from "@/lib/openai-compatible-providers";
+import { listProvidersForModelFetch } from "@/lib/openai-compatible-providers";
+import type { ProviderModelFetchSource } from "@/lib/openai-compatible-providers";
+import { resolveCustomProviderModels } from "@/lib/openai-compatible-discovery";
 
 /**
- * Build a typed custom-provider list item. Only `slug`, `displayName` and
- * `models[].id/name` matter to fetchProviderModels; the rest satisfies the
- * OpenClawModelDefinition/list-item shape so the web-typecheck gate is happy.
+ * Build a typed custom-provider model-fetch source. Only `slug`,
+ * `displayName`, `baseUrl`, `apiKey` and `models[].id/name` matter to
+ * fetchProviderModels; the rest satisfies the OpenClawModelDefinition shape
+ * so the web-typecheck gate is happy.
  */
 function customProvider(
   slug: string,
   displayName: string,
   modelDefs: { id: string; name: string }[]
-): OpenAiCompatibleProviderListItem {
+): ProviderModelFetchSource {
   return {
     id: `id-${slug}`,
     slug,
     displayName,
     baseUrl: `https://${slug}.test/v1`,
+    apiKey: `sk-${slug}-key`,
     models: modelDefs.map((m) => ({
       id: m.id,
       name: m.name,
@@ -108,9 +124,6 @@ function customProvider(
       input: ["text"],
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     })),
-    keyHint: "abcd",
-    createdAt: new Date(),
-    updatedAt: new Date(),
   };
 }
 
@@ -119,7 +132,10 @@ describe("fetchProviderModels", () => {
     vi.clearAllMocks();
     resetCache();
     vi.mocked(getSetting).mockResolvedValue(null);
-    vi.mocked(listOpenAiCompatibleProviders).mockResolvedValue([]);
+    vi.mocked(listProvidersForModelFetch).mockResolvedValue([]);
+    vi.mocked(resolveCustomProviderModels).mockImplementation(
+      async (p: { models: unknown }) => p.models as never
+    );
   });
 
   it("returns models grouped by configured provider", async () => {
@@ -241,7 +257,7 @@ describe("fetchProviderModels", () => {
         { status: 200 }
       )
     );
-    vi.mocked(listOpenAiCompatibleProviders).mockResolvedValue([
+    vi.mocked(listProvidersForModelFetch).mockResolvedValue([
       customProvider("acme", "Acme LLM", [
         { id: "acme-large", name: "Acme Large" },
         { id: "acme-small", name: "Acme Small" },
@@ -269,7 +285,7 @@ describe("fetchProviderModels", () => {
 
   it("appends every custom instance and works with no built-ins configured", async () => {
     vi.mocked(getSetting).mockResolvedValue(null);
-    vi.mocked(listOpenAiCompatibleProviders).mockResolvedValue([
+    vi.mocked(listProvidersForModelFetch).mockResolvedValue([
       customProvider("acme", "Acme LLM", [{ id: "acme-large", name: "Acme Large" }]),
       customProvider("beta-corp", "Beta Corp", [{ id: "b1", name: "Beta One" }]),
     ]);
@@ -280,6 +296,61 @@ describe("fetchProviderModels", () => {
     expect(result.find((p) => p.id === "beta-corp")!.models).toEqual([
       { id: "beta-corp/b1", name: "Beta One" },
     ]);
+  });
+
+  it("resolves a custom provider's models via resolveCustomProviderModels (live path), passing baseUrl/apiKey/snapshot", async () => {
+    // #894 backend redesign: the list is no longer read straight off the DB
+    // row's `models` snapshot — it goes through resolveCustomProviderModels,
+    // which may return something DIFFERENT from the snapshot (a live-fetched
+    // model the snapshot doesn't know about yet).
+    vi.mocked(getSetting).mockResolvedValue(null);
+    const snapshot = customProvider("acme", "Acme LLM", [{ id: "acme-old", name: "Acme Old" }]);
+    vi.mocked(listProvidersForModelFetch).mockResolvedValue([snapshot]);
+    vi.mocked(resolveCustomProviderModels).mockResolvedValue([
+      {
+        id: "acme-fresh",
+        name: "Acme Fresh",
+        contextWindow: 8192,
+        maxTokens: 4096,
+        reasoning: false,
+        vision: false,
+        input: ["text"],
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      },
+    ]);
+
+    const result = await fetchProviderModels();
+
+    const custom = result.find((p) => p.id === "acme");
+    expect(custom!.models).toEqual([{ id: "acme/acme-fresh", name: "Acme Fresh" }]);
+    expect(resolveCustomProviderModels).toHaveBeenCalledWith(
+      expect.objectContaining({
+        slug: "acme",
+        baseUrl: "https://acme.test/v1",
+        apiKey: "sk-acme-key",
+        models: snapshot.models,
+      })
+    );
+  });
+
+  it("falls back to the last-known-good snapshot when live resolution can't discover anything", async () => {
+    // resolveCustomProviderModels itself owns the live-vs-snapshot decision
+    // (unit-tested in openai-compatible-discovery.test.ts); this only checks
+    // that fetchProviderModels surfaces whatever it returns, unmodified and
+    // correctly namespaced — including the fallback case.
+    vi.mocked(getSetting).mockResolvedValue(null);
+    const snapshotModels = customProvider("acme", "Acme LLM", [
+      { id: "acme-snapshot", name: "Acme Snapshot" },
+    ]).models;
+    vi.mocked(listProvidersForModelFetch).mockResolvedValue([
+      { ...customProvider("acme", "Acme LLM", []), models: snapshotModels },
+    ]);
+    vi.mocked(resolveCustomProviderModels).mockResolvedValue(snapshotModels);
+
+    const result = await fetchProviderModels();
+
+    const custom = result.find((p) => p.id === "acme");
+    expect(custom!.models).toEqual([{ id: "acme/acme-snapshot", name: "Acme Snapshot" }]);
   });
 
   it("filters OpenAI models to gpt- and o- prefixed", async () => {
@@ -908,7 +979,7 @@ describe("getDefaultModel", () => {
     vi.clearAllMocks();
     resetCache();
     vi.mocked(getSetting).mockResolvedValue(null);
-    vi.mocked(listOpenAiCompatibleProviders).mockResolvedValue([]);
+    vi.mocked(listProvidersForModelFetch).mockResolvedValue([]);
   });
 
   it("returns dynamically selected balanced-tier model from live model list", async () => {
@@ -948,7 +1019,7 @@ describe("getDefaultModel", () => {
     // slug carries no balanced/reasoning tier metadata, so its first persisted
     // model IS the default, mirroring the delete-migration choice.
     vi.mocked(getSetting).mockResolvedValue(null);
-    vi.mocked(listOpenAiCompatibleProviders).mockResolvedValue([
+    vi.mocked(listProvidersForModelFetch).mockResolvedValue([
       customProvider("acme", "Acme LLM", [
         { id: "acme-large", name: "Acme Large" },
         { id: "acme-small", name: "Acme Small" },
@@ -962,7 +1033,7 @@ describe("getDefaultModel", () => {
 
   it("throws a defined 'Unknown provider' error for a slug that matches no built-in and no instance (#894)", async () => {
     vi.mocked(getSetting).mockResolvedValue(null);
-    vi.mocked(listOpenAiCompatibleProviders).mockResolvedValue([]);
+    vi.mocked(listProvidersForModelFetch).mockResolvedValue([]);
 
     const { getDefaultModel } = await import("@/lib/provider-models");
     await expect(getDefaultModel("ghost")).rejects.toThrow("Unknown provider: ghost");
@@ -976,7 +1047,7 @@ describe("getDefaultModel", () => {
     // / PROVIDERS["constructor"].defaultModel. Object.hasOwn must route it into
     // the custom branch instead, where — with no matching instance — it throws.
     vi.mocked(getSetting).mockResolvedValue(null);
-    vi.mocked(listOpenAiCompatibleProviders).mockResolvedValue([]);
+    vi.mocked(listProvidersForModelFetch).mockResolvedValue([]);
 
     const { getDefaultModel } = await import("@/lib/provider-models");
     const result = getDefaultModel("constructor");
@@ -986,7 +1057,7 @@ describe("getDefaultModel", () => {
 
   it("resolves a live instance whose slug is an Object.prototype key (constructor) via the own-property check (#894)", async () => {
     vi.mocked(getSetting).mockResolvedValue(null);
-    vi.mocked(listOpenAiCompatibleProviders).mockResolvedValue([
+    vi.mocked(listProvidersForModelFetch).mockResolvedValue([
       customProvider("constructor", "Constructor LLM", [{ id: "c-large", name: "C Large" }]),
     ]);
 

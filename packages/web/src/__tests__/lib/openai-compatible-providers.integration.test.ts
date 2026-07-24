@@ -29,12 +29,14 @@ beforeEach(async () => {
 
 describe("createOrUpdateProvider — create", () => {
   it("derives the slug from displayName and stores the api key as ciphertext", async () => {
-    const created = await createOrUpdateProvider({
-      displayName: "Swisscom AI",
-      baseUrl: "https://api.swisscom.example/v1",
-      apiKey: "sk-secret-plaintext-value",
-      models: [MODEL],
-    });
+    const created = await createOrUpdateProvider(
+      {
+        displayName: "Swisscom AI",
+        baseUrl: "https://api.swisscom.example/v1",
+        apiKey: "sk-secret-plaintext-value",
+      },
+      [MODEL]
+    );
 
     expect(created.slug).toBe("swisscom-ai");
 
@@ -49,41 +51,49 @@ describe("createOrUpdateProvider — create", () => {
   });
 
   it("suffixes the slug on collision", async () => {
-    await createOrUpdateProvider({
-      displayName: "Swisscom AI",
-      baseUrl: "https://api.swisscom.example/v1",
-      apiKey: "sk-one",
-      models: [MODEL],
-    });
-    const second = await createOrUpdateProvider({
-      displayName: "Swisscom AI",
-      baseUrl: "https://api.swisscom.example/v1",
-      apiKey: "sk-two",
-      models: [MODEL],
-    });
+    await createOrUpdateProvider(
+      {
+        displayName: "Swisscom AI",
+        baseUrl: "https://api.swisscom.example/v1",
+        apiKey: "sk-one",
+      },
+      [MODEL]
+    );
+    const second = await createOrUpdateProvider(
+      {
+        displayName: "Swisscom AI",
+        baseUrl: "https://api.swisscom.example/v1",
+        apiKey: "sk-two",
+      },
+      [MODEL]
+    );
 
     expect(second.slug).toBe("swisscom-ai-2");
   });
 
   it("throws a clear error when apiKey is missing on create", async () => {
     await expect(
-      createOrUpdateProvider({
-        displayName: "No Key Provider",
-        baseUrl: "https://api.example/v1",
-        models: [MODEL],
-      })
+      createOrUpdateProvider(
+        {
+          displayName: "No Key Provider",
+          baseUrl: "https://api.example/v1",
+        },
+        [MODEL]
+      )
     ).rejects.toThrow(/api key/i);
   });
 });
 
 describe("listOpenAiCompatibleProviders (hot-path, key-free)", () => {
   it("returns identity + models with NO keyHint and NO key material", async () => {
-    await createOrUpdateProvider({
-      displayName: "Swisscom AI",
-      baseUrl: "https://api.swisscom.example/v1",
-      apiKey: "sk-secret-abcd",
-      models: [MODEL],
-    });
+    await createOrUpdateProvider(
+      {
+        displayName: "Swisscom AI",
+        baseUrl: "https://api.swisscom.example/v1",
+        apiKey: "sk-secret-abcd",
+      },
+      [MODEL]
+    );
 
     const rows = await listOpenAiCompatibleProviders();
     expect(rows).toHaveLength(1);
@@ -103,12 +113,14 @@ describe("listOpenAiCompatibleProviders (hot-path, key-free)", () => {
 
 describe("listOpenAiCompatibleProvidersForAdmin", () => {
   it("exposes only the last-4 keyHint and never the decrypted key", async () => {
-    await createOrUpdateProvider({
-      displayName: "Swisscom AI",
-      baseUrl: "https://api.swisscom.example/v1",
-      apiKey: "sk-secret-abcd",
-      models: [MODEL],
-    });
+    await createOrUpdateProvider(
+      {
+        displayName: "Swisscom AI",
+        baseUrl: "https://api.swisscom.example/v1",
+        apiKey: "sk-secret-abcd",
+      },
+      [MODEL]
+    );
 
     const rows = await listOpenAiCompatibleProvidersForAdmin();
     expect(rows).toHaveLength(1);
@@ -131,18 +143,22 @@ async function readStoredKey(slug: string): Promise<string | undefined> {
 
 describe("listProvidersWithApiKeys", () => {
   it("returns exactly { slug, apiKey } with real decrypted keys for every row", async () => {
-    await createOrUpdateProvider({
-      displayName: "Swisscom AI",
-      baseUrl: "https://api.swisscom.example/v1",
-      apiKey: "sk-swiss-real",
-      models: [MODEL],
-    });
-    await createOrUpdateProvider({
-      displayName: "Acme LLM",
-      baseUrl: "https://acme.example/v1",
-      apiKey: "sk-acme-real",
-      models: [MODEL],
-    });
+    await createOrUpdateProvider(
+      {
+        displayName: "Swisscom AI",
+        baseUrl: "https://api.swisscom.example/v1",
+        apiKey: "sk-swiss-real",
+      },
+      [MODEL]
+    );
+    await createOrUpdateProvider(
+      {
+        displayName: "Acme LLM",
+        baseUrl: "https://acme.example/v1",
+        apiKey: "sk-acme-real",
+      },
+      [MODEL]
+    );
 
     const rows = await listProvidersWithApiKeys();
     // Order-independent: assert the set of decrypted { slug, apiKey } pairs.
@@ -169,19 +185,23 @@ describe("listProvidersWithApiKeys", () => {
 
 describe("createOrUpdateProvider — update", () => {
   it("keeps the slug immutable and preserves the key when apiKey is omitted", async () => {
-    const created = await createOrUpdateProvider({
-      displayName: "Swisscom AI",
-      baseUrl: "https://api.swisscom.example/v1",
-      apiKey: "sk-original-key",
-      models: [MODEL],
-    });
+    const created = await createOrUpdateProvider(
+      {
+        displayName: "Swisscom AI",
+        baseUrl: "https://api.swisscom.example/v1",
+        apiKey: "sk-original-key",
+      },
+      [MODEL]
+    );
 
-    const updated = await createOrUpdateProvider({
-      id: created.id,
-      displayName: "Swisscom AI Renamed",
-      baseUrl: "https://api.swisscom.example/v2",
-      models: [MODEL],
-    });
+    const updated = await createOrUpdateProvider(
+      {
+        id: created.id,
+        displayName: "Swisscom AI Renamed",
+        baseUrl: "https://api.swisscom.example/v2",
+      },
+      [MODEL]
+    );
 
     expect(updated.slug).toBe("swisscom-ai");
     expect(updated.displayName).toBe("Swisscom AI Renamed");
@@ -190,36 +210,42 @@ describe("createOrUpdateProvider — update", () => {
     expect(await readStoredKey("swisscom-ai")).toBe("sk-original-key");
 
     // Now update WITH a new key.
-    await createOrUpdateProvider({
-      id: created.id,
-      displayName: "Swisscom AI Renamed",
-      baseUrl: "https://api.swisscom.example/v2",
-      apiKey: "sk-rotated-key",
-      models: [MODEL],
-    });
+    await createOrUpdateProvider(
+      {
+        id: created.id,
+        displayName: "Swisscom AI Renamed",
+        baseUrl: "https://api.swisscom.example/v2",
+        apiKey: "sk-rotated-key",
+      },
+      [MODEL]
+    );
     expect(await readStoredKey("swisscom-ai")).toBe("sk-rotated-key");
   });
 
   it("throws a clear error when the id does not exist", async () => {
     await expect(
-      createOrUpdateProvider({
-        id: "00000000-0000-0000-0000-000000000000",
-        displayName: "Ghost",
-        baseUrl: "https://api.example/v1",
-        models: [MODEL],
-      })
+      createOrUpdateProvider(
+        {
+          id: "00000000-0000-0000-0000-000000000000",
+          displayName: "Ghost",
+          baseUrl: "https://api.example/v1",
+        },
+        [MODEL]
+      )
     ).rejects.toThrow(/not found/i);
   });
 });
 
 describe("deleteProviderById", () => {
   it("returns the deleted row identity and removes it; null when nothing deleted", async () => {
-    const created = await createOrUpdateProvider({
-      displayName: "Swisscom AI",
-      baseUrl: "https://api.swisscom.example/v1",
-      apiKey: "sk-key",
-      models: [MODEL],
-    });
+    const created = await createOrUpdateProvider(
+      {
+        displayName: "Swisscom AI",
+        baseUrl: "https://api.swisscom.example/v1",
+        apiKey: "sk-key",
+      },
+      [MODEL]
+    );
 
     const deleted = await deleteProviderById(created.id);
     expect(deleted).toEqual({

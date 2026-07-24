@@ -9,9 +9,11 @@ vi.mock("@/lib/settings", () => ({
 // fetchProviderModels now also enumerates custom OpenAI-compatible instances
 // (#894), which is a DB read. This suite only exercises built-in base-URL
 // overrides, so stub the custom list empty — otherwise the live DB read fails
-// in the DB-less unit environment.
+// in the DB-less unit environment. An empty list means the per-provider
+// resolveCustomProviderModels loop body never runs, so that module needs no
+// mock here.
 vi.mock("@/lib/openai-compatible-providers", () => ({
-  listOpenAiCompatibleProviders: vi.fn().mockResolvedValue([]),
+  listProvidersForModelFetch: vi.fn().mockResolvedValue([]),
 }));
 
 import { fetchProviderModels, resetCache } from "@/lib/provider-models";
