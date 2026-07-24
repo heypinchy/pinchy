@@ -2410,14 +2410,15 @@ describe("regenerateOpenClawConfig", () => {
     expect(ctx["nemotron-3-nano:30b"]).toBe(1048576);
   });
 
-  it("emits deepseek-v4-pro's context cap as contextTokens, and nothing for uncapped models", async () => {
-    // Path B (2026-07-15 Piper incident): contextWindow stays the honest native
-    // size and a separate contextTokens carries Pinchy's policy cap. OpenClaw
-    // reads models.providers.*.models[].contextTokens and budgets compaction
-    // against it (< contextWindow), so preemptive compaction fires well before
-    // the model's long-context quality knee instead of never. The field must be
-    // absent for uncapped models so the config doesn't imply a limit that the
-    // native window doesn't have.
+  it("emits an effective contextTokens for every model — the global compaction ceiling, or a lower per-model knee", async () => {
+    // 2026-07-24 Piper incident: glm-5.2 (999,424 window, no per-model cap) ran a
+    // session to ~633K tokens with compactionCount:0, because OpenClaw's
+    // shouldCompact() budgets against (contextTokens ?? contextWindow) − 16384 and
+    // that threshold never fires for an uncapped 1M-window model. The per-model
+    // deepseek-v4-pro cap (2026-07-16) did not generalize. Pinchy now emits a
+    // contextTokens on EVERY model = min(per-model cap ?? window, 262,144), so
+    // native compaction fires below the incident's 633K regardless of the model's
+    // advertised window. contextWindow stays the honest native size.
     mockedGetSetting.mockImplementation(async (key: string) => {
       if (key === "ollama_cloud_api_key") return "sk-ollama-test";
       return null;
@@ -2434,11 +2435,29 @@ describe("regenerateOpenClawConfig", () => {
     }>;
     const byId = Object.fromEntries(models.map((m) => [m.id, m]));
 
+    // Large-window models are pulled down to the 256K operational ceiling so
+    // compaction fires (before: never). Native window stays honest.
+    expect(byId["glm-5.2"].contextWindow).toBe(999424);
+    expect(byId["glm-5.2"].contextTokens).toBe(262144);
+    expect(byId["deepseek-v4-flash"].contextWindow).toBe(1048576);
+    expect(byId["deepseek-v4-flash"].contextTokens).toBe(262144);
+    expect(byId["nemotron-3-nano:30b"].contextTokens).toBe(262144);
+    expect(byId["minimax-m3"].contextTokens).toBe(262144);
+
+    // A lower per-model quality-knee cap wins where it exists (min(131072, 262144)).
     expect(byId["deepseek-v4-pro"].contextWindow).toBe(524288);
     expect(byId["deepseek-v4-pro"].contextTokens).toBe(131072);
-    // Uncapped models must not carry the field at all.
-    expect(byId["deepseek-v4-flash"].contextTokens).toBeUndefined();
-    expect("contextTokens" in byId["deepseek-v4-flash"]).toBe(false);
+
+    // Models already at/below the ceiling are unchanged: contextTokens == window,
+    // so their compaction behavior is identical to before (kimi compacts fine).
+    expect(byId["kimi-k2.6"].contextTokens).toBe(262144);
+    expect(byId["glm-5.1"].contextTokens).toBe(202752);
+
+    // No model may ever carry a contextTokens above its native window.
+    for (const m of models) {
+      expect(m.contextTokens).toBeLessThanOrEqual(m.contextWindow);
+      expect(m.contextTokens).toBeLessThanOrEqual(262144);
+    }
   });
 
   it("writes reasoning, input (vision), and cost fields for every Ollama Cloud model", async () => {
