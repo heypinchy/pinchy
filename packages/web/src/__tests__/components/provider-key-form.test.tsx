@@ -796,20 +796,21 @@ describe("ProviderKeyForm", () => {
     });
   });
 
-  // #894 — the setup wizard offers a sixth "OpenAI-compatible" option that
-  // swaps in the multi-field custom provider form (reused from settings).
-  // Off by default so the settings page doesn't render it twice.
+  // #894 — the setup wizard offers a "Custom provider" action below the
+  // built-in tiles that swaps in the multi-field custom provider form
+  // (reused from settings). Off by default so the settings page doesn't
+  // render it twice.
   describe("OpenAI-compatible option (#894)", () => {
-    it("does not show the OpenAI-compatible button unless enabled", () => {
+    it("does not show the Custom provider button unless enabled", () => {
       render(<ProviderKeyForm onSuccess={onSuccess} />);
 
-      expect(screen.queryByRole("button", { name: /openai-compatible/i })).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /custom provider/i })).not.toBeInTheDocument();
     });
 
     it("reveals the custom multi-field form when selected", () => {
       render(<ProviderKeyForm onSuccess={onSuccess} showOpenAiCompatibleOption />);
 
-      fireEvent.click(screen.getByRole("button", { name: /openai-compatible/i }));
+      fireEvent.click(screen.getByRole("button", { name: /custom provider/i }));
 
       // Multi-field custom form: display name + base URL + key + discover.
       expect(screen.getByLabelText(/^name$/i)).toBeInTheDocument();
@@ -843,7 +844,7 @@ describe("ProviderKeyForm", () => {
         />
       );
 
-      fireEvent.click(screen.getByRole("button", { name: /openai-compatible/i }));
+      fireEvent.click(screen.getByRole("button", { name: /custom provider/i }));
       // Selecting the custom option must not post to the built-in setup route.
       expect(global.fetch).not.toHaveBeenCalled();
       // Cancel returns to the selector without touching the built-in flow.

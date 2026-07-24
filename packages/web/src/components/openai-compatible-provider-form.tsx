@@ -79,8 +79,10 @@ export function OpenAiCompatibleProviderForm({ provider, onSaved, onCancel }: Fo
   const [apiKey, setApiKey] = useState("");
 
   // Available models to choose from. On edit we seed from the saved models (all
-  // selected); a re-discover replaces the list. Each row can be individually
-  // selected and its context window / vision overridden before saving.
+  // selected); a re-discover replaces the list. Each row's full model def
+  // (contextWindow/vision/etc., resolved via lookupModelCapabilities or
+  // DEFAULT_MODEL_CAPS for manual entries) is still sent on save — only the
+  // per-model edit UI for those fields was removed (#894 UX simplification).
   const [models, setModels] = useState<OpenClawModelDefinition[]>(provider?.models ?? []);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(
     () => new Set((provider?.models ?? []).map((m) => m.id))
@@ -102,10 +104,6 @@ export function OpenAiCompatibleProviderForm({ provider, onSaved, onCancel }: Fo
       else next.add(id);
       return next;
     });
-  }
-
-  function updateModel(id: string, patch: Partial<OpenClawModelDefinition>) {
-    setModels((prev) => prev.map((m) => (m.id === id ? { ...m, ...patch } : m)));
   }
 
   async function handleDiscover() {
@@ -311,46 +309,18 @@ export function OpenAiCompatibleProviderForm({ provider, onSaved, onCancel }: Fo
       {models.length > 0 && (
         <div className="space-y-2">
           <Label>Models</Label>
+          <p className="text-xs text-muted-foreground">
+            Capabilities are detected automatically for known models, with safe defaults otherwise.
+          </p>
           <div className="space-y-2 rounded-md border p-3">
             {models.map((m) => {
               const selected = selectedIds.has(m.id);
               return (
-                <div key={m.id} className="space-y-2 border-b pb-2 last:border-b-0 last:pb-0">
-                  <label className="flex items-center gap-2 text-sm">
-                    <Checkbox checked={selected} onCheckedChange={() => toggleModel(m.id)} />
-                    <span className="font-medium">{m.name}</span>
-                    <span className="text-xs text-muted-foreground">{m.id}</span>
-                  </label>
-                  {selected && (
-                    <div className="flex flex-wrap items-center gap-4 pl-6">
-                      <div className="flex items-center gap-2">
-                        <Label htmlFor={`ctx-${m.id}`} className="text-xs text-muted-foreground">
-                          Context window
-                        </Label>
-                        <Input
-                          id={`ctx-${m.id}`}
-                          type="number"
-                          min={1}
-                          value={m.contextWindow}
-                          onChange={(e) =>
-                            updateModel(m.id, {
-                              contextWindow:
-                                Number(e.target.value) || DEFAULT_MODEL_CAPS.contextWindow,
-                            })
-                          }
-                          className="h-8 w-28"
-                        />
-                      </div>
-                      <label className="flex items-center gap-2 text-xs text-muted-foreground">
-                        <Checkbox
-                          checked={m.vision}
-                          onCheckedChange={(v) => updateModel(m.id, { vision: v === true })}
-                        />
-                        Vision
-                      </label>
-                    </div>
-                  )}
-                </div>
+                <label key={m.id} className="flex items-center gap-2 text-sm">
+                  <Checkbox checked={selected} onCheckedChange={() => toggleModel(m.id)} />
+                  <span className="font-medium">{m.name}</span>
+                  <span className="text-xs text-muted-foreground">{m.id}</span>
+                </label>
               );
             })}
           </div>
