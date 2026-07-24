@@ -15,6 +15,7 @@ import {
   pollAuditForTool,
   waitForOpenClawStable,
   waitForAgentDispatchable,
+  ensureAgentDispatchable,
 } from "../shared/dispatch-probe";
 import { login, getSmithersAgentId, waitForOpenClawConnected } from "./helpers";
 
@@ -465,9 +466,11 @@ test.describe.serial("Plugin behavior — pinchy-knowledge", () => {
   let agentId: string;
 
   test.beforeAll(async ({ browser }) => {
-    // The config-regen wait can exceed the 120 s per-test default; give the
-    // setup hook its own generous budget so the dispatch test stays focused.
-    test.setTimeout(300_000);
+    // The config-regen wait — plus recovery from OC's hardcoded config.apply
+    // rate limit (a toggle + extra stability waits) — can far exceed the 120 s
+    // per-test default; give the setup hook its own generous budget so the
+    // dispatch test stays focused.
+    test.setTimeout(420_000);
     const context = await browser.newContext();
     const page = await context.newPage();
     try {
@@ -491,19 +494,27 @@ test.describe.serial("Plugin behavior — pinchy-knowledge", () => {
       expect(patchRes.status(), await patchRes.text()).toBe(200);
 
       // Wait for OC to settle after the create+PATCH regens, then confirm the
-      // new agent is actually in OC's runtime agents.list before dispatching.
-      await waitForOpenClawStable(async () => {
-        const r = await page.request.get("/api/health/openclaw");
-        return { ok: r.ok(), json: () => r.json() };
-      });
-      await waitForAgentDispatchable(
-        async (id) => {
+      // new agent is actually in OC's runtime agents.list before dispatching —
+      // with recovery from OC's hardcoded config.apply rate limit
+      // (heypinchy/pinchy#881).
+      await ensureAgentDispatchable({
+        agentId,
+        allowedTools: ["knowledge_search"],
+        fetchHealth: async () => {
+          const r = await page.request.get("/api/health/openclaw");
+          return { ok: r.ok(), json: () => r.json() };
+        },
+        fetchDispatch: async (id) => {
           const r = await page.request.get(`/api/health/openclaw?agentId=${id}`);
           return { ok: r.ok(), json: () => r.json() };
         },
-        agentId,
-        { deadlineMs: 120_000 }
-      );
+        setAllowedTools: async (tools) => {
+          const r = await page.request.patch(`/api/agents/${agentId}`, {
+            data: { allowedTools: tools },
+          });
+          expect(r.status(), await r.text()).toBe(200);
+        },
+      });
     } finally {
       await context.close();
     }

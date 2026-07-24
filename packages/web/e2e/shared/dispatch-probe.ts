@@ -173,6 +173,85 @@ export async function waitForAgentDispatchable(
   );
 }
 
+export interface EnsureAgentDispatchableParams {
+  agentId: string;
+  /** The tool grant the agent must end up with (also the toggle's restore value). */
+  allowedTools: string[];
+  fetchHealth: () => Promise<{
+    ok: boolean;
+    json: () => Promise<{ connected?: boolean; configPushesPending?: number }>;
+  }>;
+  fetchDispatch: (
+    agentId: string
+  ) => Promise<{ ok: boolean; json: () => Promise<{ agentDispatchable?: boolean }> }>;
+  /** Sets the agent's `allowedTools` (a `PATCH /api/agents/:id`). */
+  setAllowedTools: (tools: string[]) => Promise<void>;
+  opts?: {
+    stableOpts?: { deadlineMs?: number; stableForMs?: number; intervalMs?: number };
+    /** Per-attempt dispatchability deadline (default 120 s). */
+    dispatchDeadlineMs?: number;
+    dispatchIntervalMs?: number;
+    /** Recovery toggles before giving up (default 2). */
+    maxRecoveryAttempts?: number;
+  };
+}
+
+/**
+ * Wait until a freshly-created agent is dispatchable, RECOVERING from OpenClaw's
+ * `config.apply` rate limit instead of flaking on it.
+ *
+ * OpenClaw hard-caps control-plane writes at 3 per 60 s per connection — a
+ * compiled-in constant (`CONTROL_PLANE_RATE_LIMIT_*`) with no env/config knob,
+ * shared across every `config.apply` Pinchy makes. Under the integration
+ * suite's cumulative config-mutation rate, `pushConfigInBackground` parks a
+ * rejected apply for ~2×50 s and then falls back to a file write whose inotify
+ * reload can lag past a fixed dispatchability deadline. When that happens
+ * `waitForOpenClawStable` reports settled (the fallback drained
+ * `configPushesPending`) while the agent is NOT yet in OC's runtime, and a
+ * plain `waitForAgentDispatchable` times out — the kb-attribution /
+ * pinchy-knowledge `beforeAll` flake (heypinchy/pinchy#881).
+ *
+ * The recovery works because this runs inside a BLOCKING `beforeAll`: no other
+ * `config.apply` competes, so the rate-limit window drains within ~60 s.
+ * Toggling the tool grant off→on (with a stability wait between, so each half
+ * is a genuine on-disk diff rather than a superseded no-op) forces a clean WS
+ * `config.apply`, and that path refreshes OC's runtime IN-PROCESS — it does not
+ * depend on the lagging file-watcher, so the agent reliably re-materialises
+ * regardless of whether the earlier file-write reload ever landed. Bounded by
+ * `maxRecoveryAttempts` so a genuinely-broken stack still fails loudly.
+ */
+export async function ensureAgentDispatchable(
+  params: EnsureAgentDispatchableParams
+): Promise<void> {
+  const { agentId, allowedTools, fetchHealth, fetchDispatch, setAllowedTools } = params;
+  const stableOpts = params.opts?.stableOpts;
+  const dispatchDeadlineMs = params.opts?.dispatchDeadlineMs ?? 120_000;
+  const dispatchIntervalMs = params.opts?.dispatchIntervalMs;
+  const maxRecoveryAttempts = params.opts?.maxRecoveryAttempts ?? 2;
+
+  await waitForOpenClawStable(fetchHealth, stableOpts);
+
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await waitForAgentDispatchable(fetchDispatch, agentId, {
+        deadlineMs: dispatchDeadlineMs,
+        intervalMs: dispatchIntervalMs,
+      });
+      return;
+    } catch (err) {
+      if (attempt >= maxRecoveryAttempts) throw err;
+      // Force a genuine config diff so a clean WS config.apply re-materialises
+      // the agent in OC's runtime. Clear the grant, let it settle to disk, then
+      // restore it — the stability wait between the halves is what makes each a
+      // real diff instead of a self-superseding no-op.
+      await setAllowedTools([]);
+      await waitForOpenClawStable(fetchHealth, stableOpts);
+      await setAllowedTools(allowedTools);
+      await waitForOpenClawStable(fetchHealth, stableOpts);
+    }
+  }
+}
+
 /**
  * Drive the UI login form so the Playwright `page` has a session cookie.
  * Asserts the post-login redirect to `/chat/...` so the next navigation does

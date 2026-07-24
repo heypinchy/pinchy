@@ -149,11 +149,12 @@ test.describe.serial("KB Eval Harness — Layer-2 attribution self-test", () => 
   let agentId: string;
 
   test.beforeAll(async ({ browser }) => {
-    // Setup grants a tool, waits for OC stability (up to 150s) and
-    // dispatchability (up to 120s) — give it its own generous budget so the
+    // Setup grants a tool, waits for OC stability, and confirms dispatchability
+    // WITH recovery from OC's hardcoded config.apply rate limit (which can add a
+    // toggle + extra stability waits) — give it its own generous budget so the
     // five dispatch tests below stay focused, mirroring the pinchy-knowledge
     // probe's beforeAll in agent-chat.spec.ts.
-    test.setTimeout(300_000);
+    test.setTimeout(420_000);
     const context = await browser.newContext();
     const page = await context.newPage();
     try {

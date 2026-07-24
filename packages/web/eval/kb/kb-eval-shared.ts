@@ -18,7 +18,7 @@
 import type { Page } from "@playwright/test";
 import { expect } from "@playwright/test";
 import { login } from "../../e2e/integration/helpers";
-import { waitForOpenClawStable, waitForAgentDispatchable } from "../../e2e/shared/dispatch-probe";
+import { ensureAgentDispatchable } from "../../e2e/shared/dispatch-probe";
 
 export const KB_EVAL_ALLOWED_TOOLS = ["knowledge_search"];
 
@@ -48,18 +48,26 @@ export async function setupKbAgent(page: Page): Promise<{ agentId: string }> {
   });
   expect(patchRes.status(), await patchRes.text()).toBe(200);
 
-  await waitForOpenClawStable(async () => {
-    const r = await page.request.get("/api/health/openclaw");
-    return { ok: r.ok(), json: () => r.json() };
-  });
-  await waitForAgentDispatchable(
-    async (id) => {
+  // Wait for OC to settle, then confirm the agent is in OC's runtime — with
+  // recovery from OC's hardcoded config.apply rate limit (heypinchy/pinchy#881).
+  await ensureAgentDispatchable({
+    agentId,
+    allowedTools: KB_EVAL_ALLOWED_TOOLS,
+    fetchHealth: async () => {
+      const r = await page.request.get("/api/health/openclaw");
+      return { ok: r.ok(), json: () => r.json() };
+    },
+    fetchDispatch: async (id) => {
       const r = await page.request.get(`/api/health/openclaw?agentId=${id}`);
       return { ok: r.ok(), json: () => r.json() };
     },
-    agentId,
-    { deadlineMs: 120_000 }
-  );
+    setAllowedTools: async (tools) => {
+      const r = await page.request.patch(`/api/agents/${agentId}`, {
+        data: { allowedTools: tools },
+      });
+      expect(r.status(), await r.text()).toBe(200);
+    },
+  });
 
   return { agentId };
 }
