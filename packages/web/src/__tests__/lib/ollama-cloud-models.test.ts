@@ -171,19 +171,23 @@ describe("Ollama Cloud model catalog — empirically verified capabilities", () 
     expect(byId("deepseek-v4-flash")?.contextWindow).toBe(1048576);
   });
 
-  it("caps deepseek-v4-pro's effective runtime context at 128K while keeping the native window honest", () => {
-    // Path B (2026-07-15 Piper incident): contextWindow stays the honest native
-    // size (512K, guarded above), and a separate contextTokens field carries
-    // Pinchy's policy cap. OpenClaw budgets compaction against contextTokens
-    // (< contextWindow, resolveContextWindowInfo source "modelsConfig"), so the
-    // model's long-context quality knee (~0.92 recall @128K → ~0.66 @512K) can't
-    // cause the silent confabulation the incident traced to context bloat past
-    // ~170K with compaction never firing. Only deepseek-v4-pro is capped —
-    // flash and every other model stay uncapped (no field at all).
+  it("caps both DeepSeek-V4 models' effective context at 128K while keeping native windows honest", () => {
+    // contextWindow stays the honest native size (pro 512K, flash 1M, guarded
+    // above), and a separate contextTokens field carries Pinchy's researched
+    // policy cap. OpenClaw budgets compaction against contextTokens (< window,
+    // resolveContextWindowInfo source "modelsConfig"), so the family's
+    // long-context quality knee can't cause the silent confabulation the
+    // 2026-07-15 pro incident traced to context bloat past ~170K.
+    //   - pro:   ~0.92 recall @128K → ~0.66 @512K (2026-07-15 incident).
+    //   - flash: DeepSeek-V4 MRCR "stable up to 128K, degradation beyond"; and
+    //     Flash-Max 0.49 < Pro-Max 0.59 MRCR 8-needle @1M, i.e. weaker at long
+    //     context than pro, so the same 128K knee applies a fortiori.
     const pro = byId("deepseek-v4-pro");
     expect(pro?.contextWindow).toBe(524288);
     expect(pro?.contextTokens).toBe(131072);
-    expect(byId("deepseek-v4-flash")?.contextTokens).toBeUndefined();
+    const flash = byId("deepseek-v4-flash");
+    expect(flash?.contextWindow).toBe(1048576);
+    expect(flash?.contextTokens).toBe(131072);
   });
 
   it("never sets a contextTokens cap above the native contextWindow", () => {
@@ -229,21 +233,30 @@ describe("effectiveContextTokens — global operational compaction ceiling", () 
     expect(MAX_EFFECTIVE_CONTEXT_TOKENS).toBe(262144);
   });
 
-  it("caps every large-window model at the ceiling so compaction fires below the incident's 633K", () => {
-    // These are the models with native window > 262,144 and no lower per-model cap.
-    // Before the fix, shouldCompact() never fired for them in the practical range.
-    for (const id of ["glm-5.2", "deepseek-v4-flash", "nemotron-3-nano:30b", "minimax-m3"]) {
+  it("caps large-window models with no researched knee at the operational ceiling", () => {
+    // Native window > 262,144 and no *published* sub-256K quality knee (glm-5.2
+    // sparse-attention 1M-trained; nemotron-3-nano RULER 68.2% @1M, perfect NIAH
+    // @700K; minimax-m3 512K floor). Before the fix, shouldCompact() never fired
+    // for them in the practical range; now the operational ceiling bounds them.
+    for (const id of ["glm-5.2", "nemotron-3-nano:30b", "minimax-m3"]) {
       const m = byId(id)!;
       expect(m.contextWindow).toBeGreaterThan(MAX_EFFECTIVE_CONTEXT_TOKENS);
       expect(effectiveContextTokens(m)).toBe(MAX_EFFECTIVE_CONTEXT_TOKENS);
     }
   });
 
-  it("preserves a lower per-model quality-knee cap below the ceiling (deepseek-v4-pro)", () => {
+  it("preserves a lower researched per-model quality-knee cap below the ceiling", () => {
     // min(131072, 262144) = 131072 — the researched knee wins where it is lower.
-    const pro = byId("deepseek-v4-pro")!;
-    expect(pro.contextTokens).toBe(131072);
-    expect(effectiveContextTokens(pro)).toBe(131072);
+    // deepseek-v4-pro: documented recall knee (~0.92@128K → ~0.66@512K).
+    // deepseek-v4-flash: DeepSeek-V4 family MRCR "stable up to 128K, degradation
+    // beyond" and Flash-Max 0.49 < Pro-Max 0.59 MRCR@1M — Flash is the weaker
+    // long-context sibling, so it warrants the same 128K knee as pro.
+    for (const id of ["deepseek-v4-pro", "deepseek-v4-flash"]) {
+      const m = byId(id)!;
+      expect(m.contextWindow).toBeGreaterThan(131072);
+      expect(m.contextTokens).toBe(131072);
+      expect(effectiveContextTokens(m)).toBe(131072);
+    }
   });
 
   it("is a no-op for models whose native window is at or below the ceiling", () => {

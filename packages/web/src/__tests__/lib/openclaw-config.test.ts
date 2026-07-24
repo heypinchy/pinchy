@@ -2435,18 +2435,20 @@ describe("regenerateOpenClawConfig", () => {
     }>;
     const byId = Object.fromEntries(models.map((m) => [m.id, m]));
 
-    // Large-window models are pulled down to the 256K operational ceiling so
-    // compaction fires (before: never). Native window stays honest.
+    // Large-window models with no researched knee are pulled down to the 256K
+    // operational ceiling so compaction fires (before: never). Window stays honest.
     expect(byId["glm-5.2"].contextWindow).toBe(999424);
     expect(byId["glm-5.2"].contextTokens).toBe(262144);
-    expect(byId["deepseek-v4-flash"].contextWindow).toBe(1048576);
-    expect(byId["deepseek-v4-flash"].contextTokens).toBe(262144);
     expect(byId["nemotron-3-nano:30b"].contextTokens).toBe(262144);
     expect(byId["minimax-m3"].contextTokens).toBe(262144);
 
-    // A lower per-model quality-knee cap wins where it exists (min(131072, 262144)).
+    // A lower researched per-model knee wins where it exists (min(131072, 262144)).
+    // Both DeepSeek-V4 models knee at ~128K (flash is the weaker long-context
+    // sibling — see ollama-cloud-models.ts); native windows stay honest.
     expect(byId["deepseek-v4-pro"].contextWindow).toBe(524288);
     expect(byId["deepseek-v4-pro"].contextTokens).toBe(131072);
+    expect(byId["deepseek-v4-flash"].contextWindow).toBe(1048576);
+    expect(byId["deepseek-v4-flash"].contextTokens).toBe(131072);
 
     // Models already at/below the ceiling are unchanged: contextTokens == window,
     // so their compaction behavior is identical to before (kimi compacts fine).

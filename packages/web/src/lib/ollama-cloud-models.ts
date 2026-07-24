@@ -74,9 +74,20 @@ export const TOOL_CAPABLE_OLLAMA_CLOUD_MODELS = [
     // The 1M here is real, unlike deepseek-v4-pro below: `ollama show
     // deepseek-v4-flash:cloud` reports 1048576, matching its library page
     // (checked 2026-07-16). Same family and same claimed size as pro, so it
-    // looks like it should carry pro's correction — it must not.
+    // looks like it should carry pro's contextWindow correction — it must not.
     id: "deepseek-v4-flash",
     contextWindow: 1048576,
+    // Effective context capped at 128K — the DeepSeek-V4 long-context quality
+    // knee. The V4 family's MRCR retrieval is "stable up to 128K tokens, with
+    // degradation beyond that point" (DeepSeek-V4 tech report / HF blog), and
+    // Flash is the *weaker* long-context sibling: Flash-Max scores 0.49 vs
+    // Pro-Max 0.59 on MRCR 8-needle @1M. So the 128K knee that caps pro applies
+    // to flash a fortiori — not mere family analogy but flash-specific evidence.
+    // flash is the fast-tier general pick (model-resolver), so this is a model
+    // agents actually run; without the cap OpenClaw's shouldCompact() would only
+    // fire past 1,032,192 on its 1M window — i.e. never (the 2026-07-24 Piper
+    // incident shape). See MAX_EFFECTIVE_CONTEXT_TOKENS for the global backstop.
+    contextTokens: 131072,
     maxTokens: 8192,
     reasoning: true,
     vision: false,
