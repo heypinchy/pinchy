@@ -196,12 +196,14 @@ test.describe.serial("Setup wizard + settings → OpenAI-compatible provider (#8
     await expect(page.getByText("OpenAI-compatible providers", { exact: true })).not.toBeVisible();
 
     // Add a second provider via the grid's dashed "Add custom provider" tile.
-    // The form now renders inline below the grid (no dialog) — same
-    // `OpenAiCompatibleProviderForm`, no discover step.
+    // The form now renders INLINE below the grid (no dialog) — so, unlike the old
+    // modal, it no longer makes the rest of the settings page inert, and a
+    // page-wide getByLabel("Name") is ambiguous (the settings page has its own
+    // "Name" field). Scope the fills to the custom form's own field ids.
     await page.getByRole("button", { name: "Add custom provider" }).click();
-    await page.getByLabel("Name", { exact: true }).fill(SETTINGS_PROVIDER_NAME);
-    await page.getByLabel("Base URL").fill(MOCK_BASE_URL);
-    await page.getByLabel("API key").fill(SETTINGS_KEY);
+    await page.locator("#oai-display-name").fill(SETTINGS_PROVIDER_NAME);
+    await page.locator("#oai-base-url").fill(MOCK_BASE_URL);
+    await page.locator("#oai-api-key").fill(SETTINGS_KEY);
     await page.getByRole("button", { name: /^add provider$/i }).click();
 
     // Its config.changed audit is written (host only, no key), distinct from
