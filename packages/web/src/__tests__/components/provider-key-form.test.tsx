@@ -812,13 +812,15 @@ describe("ProviderKeyForm", () => {
 
       fireEvent.click(screen.getByRole("button", { name: /custom provider/i }));
 
-      // Multi-field custom form: display name + base URL + key + discover.
+      // Multi-field custom form: display name + base URL + key + submit. Models
+      // are discovered server-side on save (#894), so there's no discover step.
       expect(screen.getByLabelText(/^name$/i)).toBeInTheDocument();
       expect(screen.getByLabelText(/base url/i)).toBeInTheDocument();
       expect(screen.getByLabelText(/api key/i)).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /^add provider$/i })).toBeInTheDocument();
       expect(
-        screen.getByRole("button", { name: /connect & discover models/i })
-      ).toBeInTheDocument();
+        screen.queryByRole("button", { name: /connect & discover models/i })
+      ).not.toBeInTheDocument();
     });
 
     it("keeps a built-in option on its single-key form (branch intact)", () => {
