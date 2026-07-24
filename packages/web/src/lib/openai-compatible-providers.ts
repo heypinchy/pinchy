@@ -108,24 +108,91 @@ export async function listProvidersWithApiKeys(): Promise<{ slug: string; apiKey
 }
 
 /**
+ * A provider's decrypted key + last-known-good model snapshot, keyed by slug —
+ * everything `resolveCustomProviderModels` needs to resolve the LIVE model
+ * list for the model dropdown (`fetchProviderModels` in provider-models.ts).
+ * One query, one decrypt per row — same shape as `listProvidersWithApiKeys`,
+ * with `id`/`displayName`/`models` added since the model-list caller needs
+ * them too (unlike the secrets bundle, which only needs `{ slug, apiKey }`).
+ */
+export interface ProviderModelFetchSource {
+  id: string;
+  slug: string;
+  displayName: string;
+  baseUrl: string;
+  apiKey: string;
+  models: OpenClawModelDefinition[];
+}
+
+export async function listProvidersForModelFetch(): Promise<ProviderModelFetchSource[]> {
+  const rows = await db.select().from(openaiCompatibleProviders);
+  return rows.map((r) => ({
+    id: r.id,
+    slug: r.slug,
+    displayName: r.displayName,
+    baseUrl: r.baseUrl,
+    apiKey: decrypt(r.apiKey),
+    models: r.models,
+  }));
+}
+
+/**
+ * Decrypted apiKey for a single provider row, by id. Purpose-built for the
+ * POST route's "no apiKey supplied on update" discovery path: the client
+ * never round-trips a key it can't read back, but live model discovery still
+ * needs to hit the endpoint with the STORED credential when the admin didn't
+ * rotate it. Returns `undefined` if the row doesn't exist.
+ */
+export async function getDecryptedKeyById(id: string): Promise<string | undefined> {
+  const [row] = await db
+    .select({ apiKey: openaiCompatibleProviders.apiKey })
+    .from(openaiCompatibleProviders)
+    .where(eq(openaiCompatibleProviders.id, id));
+  return row ? decrypt(row.apiKey) : undefined;
+}
+
+/**
+ * The stored last-known-good model snapshot for one provider, by id, or
+ * `undefined` if the row doesn't exist. Used by the POST route on an UPDATE
+ * whose live discovery found nothing (transient endpoint outage) and that
+ * carries no `manualModelIds`: it keeps the existing snapshot rather than
+ * blanking the column or blocking the save.
+ */
+export async function getModelsById(id: string): Promise<OpenClawModelDefinition[] | undefined> {
+  const [row] = await db
+    .select({ models: openaiCompatibleProviders.models })
+    .from(openaiCompatibleProviders)
+    .where(eq(openaiCompatibleProviders.id, id));
+  return row?.models;
+}
+
+/**
  * Create (no `id`) or update (`id` present) a provider.
  *
  * On create the slug is derived once from `displayName` (collision- and
  * reserved-name-safe) and the API key is required. On update the slug is
  * immutable and the API key is optional — omitting it keeps the existing
  * ciphertext untouched so the client never round-trips a secret it can't read.
+ *
+ * `models` is an explicit param, not read off `input`: #894's backend
+ * redesign moved model discovery server-side (the POST route resolves it via
+ * `fetchOpenAiCompatibleModels`/`manualModelIds` BEFORE calling this), so this
+ * is the last-known-good snapshot the route computed — not a client-supplied
+ * list. See the `models` column doc-comment in db/schema.ts.
  */
 export async function createOrUpdateProvider(
-  input: UpsertOpenAiCompatibleProviderInput
+  input: UpsertOpenAiCompatibleProviderInput,
+  models: OpenClawModelDefinition[]
 ): Promise<OpenAiCompatibleProviderListItem> {
   if (input.id) {
-    return updateProvider(input.id, input);
+    return updateProvider(input.id, input, models);
   }
-  return createProvider(input);
+  return createProvider(input, models);
 }
 
 async function createProvider(
-  input: UpsertOpenAiCompatibleProviderInput
+  input: UpsertOpenAiCompatibleProviderInput,
+  models: OpenClawModelDefinition[]
 ): Promise<OpenAiCompatibleProviderListItem> {
   if (!input.apiKey) {
     throw new Error("An API key is required to create an OpenAI-compatible provider.");
@@ -147,7 +214,7 @@ async function createProvider(
       displayName: input.displayName,
       baseUrl: input.baseUrl,
       apiKey: encrypt(input.apiKey),
-      models: input.models,
+      models,
     })
     .returning();
 
@@ -156,13 +223,14 @@ async function createProvider(
 
 async function updateProvider(
   id: string,
-  input: UpsertOpenAiCompatibleProviderInput
+  input: UpsertOpenAiCompatibleProviderInput,
+  models: OpenClawModelDefinition[]
 ): Promise<OpenAiCompatibleProviderListItem> {
   // Slug is immutable — never recomputed on update.
   const set: Partial<typeof openaiCompatibleProviders.$inferInsert> = {
     displayName: input.displayName,
     baseUrl: input.baseUrl,
-    models: input.models,
+    models,
     updatedAt: new Date(),
   };
   // Re-encrypt only when a new key is supplied; otherwise keep the stored one.

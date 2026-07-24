@@ -9,7 +9,12 @@ import {
   createOrUpdateProvider,
   listOpenAiCompatibleProvidersForAdmin,
   deleteProviderById,
+  getDecryptedKeyById,
+  getModelsById,
 } from "@/lib/openai-compatible-providers";
+import { fetchOpenAiCompatibleModels } from "@/lib/openai-compatible-discovery";
+import { DEFAULT_MODEL_CAPS, lookupModelCapabilities } from "@/lib/model-catalog";
+import type { OpenClawModelDefinition } from "@/lib/openclaw-builtin-models";
 import { getSetting, setSetting } from "@/lib/settings";
 import { countConfiguredProviders } from "@/lib/provider-count";
 import {
@@ -37,6 +42,11 @@ import { recordAuditFailure } from "@/lib/audit-deferred";
 // save (see setup/provider/route.ts + #880), `resetCache()`, and a
 // `config.changed` audit whose detail snapshots `{ id, name }` and NEVER carries
 // the API key or the full base URL (host only).
+//
+// #894 backend redesign: POST now DISCOVERS the model list itself (server-side
+// `GET <baseUrl>/models`) instead of trusting the client's `models` array —
+// see the schema's doc-comment. `manualModelIds` is the only client-supplied
+// model input left, and it's used only when live discovery finds nothing.
 
 /**
  * Create (no `id`) or update (`id` present) an OpenAI-compatible provider.
@@ -70,12 +80,53 @@ export const POST = withAdmin(async (request, _ctx, session) => {
   // can reuse it. `new URL(baseUrl)` is safe: the schema already validated it.
   const baseUrlHost = new URL(input.baseUrl).host;
 
+  // Server-side model discovery (#894 backend redesign). The effective key is
+  // the freshly-supplied one, or — on an update that omitted it — the stored,
+  // decrypted key: discovery must still hit the live endpoint with SOME
+  // credential even when the admin didn't rotate it. Undefined only on a
+  // CREATE with no apiKey, which createOrUpdateProvider itself rejects below;
+  // discovery is simply skipped rather than probing with no credential.
+  const effectiveKey = input.apiKey ?? (input.id ? await getDecryptedKeyById(input.id) : undefined);
+
+  let models: OpenClawModelDefinition[] = effectiveKey
+    ? await fetchOpenAiCompatibleModels(input.baseUrl, effectiveKey)
+    : [];
+
+  if (models.length === 0 && input.manualModelIds && input.manualModelIds.length > 0) {
+    models = input.manualModelIds.map(
+      (id) => lookupModelCapabilities(id) ?? { ...DEFAULT_MODEL_CAPS, id, name: id }
+    );
+  } else if (models.length === 0 && input.id) {
+    // UPDATE with no fresh discovery and no manual fallback (e.g. a pure rename
+    // while the endpoint is transiently down): keep the EXISTING snapshot rather
+    // than blanking the column or blocking the save. The provider always has ≥1
+    // model from create, so this preserves a usable list.
+    models = (await getModelsById(input.id)) ?? [];
+  } else if (models.length === 0 && effectiveKey) {
+    // CREATE: discovery genuinely ran (we had a key) and found nothing, and
+    // there's no manual fallback. Refuse to persist an inert new provider —
+    // surfaced on `manualModelIds` so the form can render it next to that input.
+    return NextResponse.json(
+      {
+        error: "No models found at this endpoint. Enter model ids manually.",
+        details: {
+          formErrors: [],
+          fieldErrors: {
+            manualModelIds: ["No models found at this endpoint. Enter model ids manually."],
+          },
+        },
+      },
+      { status: 422 }
+    );
+  }
+
   let row;
   try {
-    row = await createOrUpdateProvider(input);
+    row = await createOrUpdateProvider(input, models);
   } catch (err) {
-    // The persist itself failed (e.g. slug-unique collision, DB error). Record
-    // a failure audit that still avoids leaking the key, then surface a 500.
+    // The persist itself failed (e.g. slug-unique collision, DB error, or a
+    // CREATE with no apiKey at all — see createOrUpdateProvider). Record a
+    // failure audit that still avoids leaking the key, then surface a 500.
     recordAuditFailure(err, {
       actorType: "user",
       actorId: session.user.id!,
@@ -92,7 +143,7 @@ export const POST = withAdmin(async (request, _ctx, session) => {
           : { provider: { name: input.displayName } }),
         authType: "openai-compatible",
         baseUrlHost,
-        modelCount: input.models.length,
+        modelCount: models.length,
       },
     });
     return NextResponse.json(

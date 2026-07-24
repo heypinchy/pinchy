@@ -767,7 +767,14 @@ export const openaiCompatibleProviders = pgTable("openai_compatible_providers", 
   baseUrl: text("base_url").notNull(),
   // AES-256-GCM ciphertext (encrypt() from @/lib/encryption). Never plaintext.
   apiKey: text("api_key").notNull(),
-  // Persisted OpenClawModelDefinition[] resolved at discovery time.
+  // Last-known-good OpenClawModelDefinition[] SNAPSHOT, written only at save
+  // time (POST discovers server-side and persists the result here). This is
+  // NOT the live read path: both the agent model dropdown and openclaw.json
+  // emission fetch the endpoint's `/models` live (see
+  // `resolveCustomProviderModels` in openai-compatible-discovery.ts, mirroring
+  // ollama-local) and fall back to this column only when the live call fails
+  // or returns zero models — i.e. an offline/unreachable-endpoint fallback,
+  // not the source of truth for what the picker shows.
   models: jsonb("models").$type<OpenClawModelDefinition[]>().notNull().default([]),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
