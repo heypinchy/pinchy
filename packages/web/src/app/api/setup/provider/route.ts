@@ -45,6 +45,23 @@ export async function POST(request: NextRequest) {
 
   const config = PROVIDERS[provider];
 
+  // #894 "first provider" gate. Read BEFORE saving so it reflects the state
+  // prior to this provider. `default_provider` is null only on a pristine
+  // instance — both this route and the custom OpenAI-compatible route set it on
+  // the first provider — so `=== null` reliably means "nothing configured yet".
+  //
+  // This used to be decided two different, buggy ways: the default was set on
+  // EVERY save (stealing an admin's chosen default), and the Smithers seed
+  // repoint was gated on a built-in-ONLY key scan. When the instance's first
+  // provider was a CUSTOM one, adding any built-in afterwards saw no configured
+  // built-in, wrongly counted as "first", stole the default, and repointed the
+  // existing Smithers agent — contradicting the documented contract that only
+  // NEW agents follow a default change. Mirroring the custom route's
+  // `currentDefault === null` gate fixes both and keeps the two routes
+  // consistent: only the very first provider auto-defaults + seeds Smithers;
+  // afterwards the default is an explicit "Set as default" action.
+  const isFirstProvider = (await getSetting("default_provider")) === null;
+
   if (config.authType === "url") {
     // URL-based provider (ollama-local)
     const { url } = body;
@@ -114,7 +131,9 @@ export async function POST(request: NextRequest) {
 
     // Store URL unencrypted (not a secret)
     await setSetting(config.settingsKey, url, false);
-    await setSetting("default_provider", provider, false);
+    if (isFirstProvider) {
+      await setSetting("default_provider", provider, false);
+    }
   } else {
     // API-key-based provider (existing logic)
     const { apiKey } = body;
@@ -152,18 +171,8 @@ export async function POST(request: NextRequest) {
 
     // Store encrypted key and default provider
     await setSetting(config.settingsKey, apiKey, true);
-    await setSetting("default_provider", provider, false);
-  }
-
-  // Check if any other providers are already configured (before saving the new one)
-  let isFirstProvider = true;
-  for (const [name, providerConfig] of Object.entries(PROVIDERS)) {
-    if (name !== provider) {
-      const existingKey = await getSetting(providerConfig.settingsKey);
-      if (existingKey !== null) {
-        isFirstProvider = false;
-        break;
-      }
+    if (isFirstProvider) {
+      await setSetting("default_provider", provider, false);
     }
   }
 

@@ -215,9 +215,12 @@ describe("POST /api/setup/provider", () => {
   });
 
   it("should not update agent model when a second provider is added", async () => {
-    // OpenAI is already configured
+    // A provider is already configured, so a default is set. "First provider"
+    // is gated on `default_provider` being null (mirrors the custom route), not
+    // on a built-in-only key scan.
     vi.mocked(getSetting).mockImplementation(async (key: string) => {
       if (key === "openai_api_key") return "sk-openai-existing";
+      if (key === "default_provider") return "openai";
       return null;
     });
 
@@ -229,6 +232,32 @@ describe("POST /api/setup/provider", () => {
     );
 
     expect(db.update).not.toHaveBeenCalled();
+  });
+
+  it("does not repoint Smithers or steal the default when a custom provider is already configured (#894 regression)", async () => {
+    // The instance was first set up with a custom OpenAI-compatible provider,
+    // so `default_provider` holds its slug (no built-in key exists). The old
+    // built-in-only "first provider" scan saw no configured built-in, wrongly
+    // treated Ollama Cloud as the first provider, stole the default, and
+    // repointed the existing Smithers agent onto ollama-cloud/kimi-k2.6 —
+    // contradicting the documented contract that only NEW agents follow a
+    // default change.
+    vi.mocked(getSetting).mockImplementation(async (key: string) => {
+      if (key === "default_provider") return "litellm-local";
+      return null;
+    });
+
+    await POST(
+      makeRequest({
+        provider: "ollama-cloud",
+        apiKey: "sk-ollama-key",
+      }) as any
+    );
+
+    // Existing agent left untouched...
+    expect(db.update).not.toHaveBeenCalled();
+    // ...and the default is NOT stolen by the newly added built-in.
+    expect(setSetting).not.toHaveBeenCalledWith("default_provider", "ollama-cloud", false);
   });
 
   it("should regenerate full OpenClaw config including agent list", async () => {
