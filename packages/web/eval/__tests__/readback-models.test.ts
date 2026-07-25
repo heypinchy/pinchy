@@ -31,6 +31,15 @@ describe("readbackModelsFor", () => {
     };
     expect(readbackModelsFor(crmScenario)).toEqual(["crm.lead", "res.partner"]);
   });
+
+  it("throws on an explicitly empty list instead of silently reading nothing back", () => {
+    // An empty read-back leaves `odooMoves` empty for every run, which the
+    // state-based graders read as "the model created nothing" — a config typo
+    // would fail a whole sweep with plausible-looking numbers.
+    expect(() => readbackModelsFor({ ...hetznerInvoiceScenario, readbackModels: [] })).toThrow(
+      /empty readbackModels/
+    );
+  });
 });
 
 /**

@@ -230,6 +230,32 @@ describe("buildTrajectory", () => {
     expect(traj.tokens).toEqual({ prompt: 100, completion: 50 });
   });
 
+  it("leaves odooRecordsByModel undefined for single-model (invoice) runs", () => {
+    // The invoice family reads back one model, so the by-model map would only
+    // duplicate `odooMoves` into every persisted trajectory line (#803).
+    const traj = buildTrajectory(baseInput({ odooMoves: [{ id: 1, move_type: "in_invoice" }] }));
+    expect(traj.odooRecordsByModel).toBeUndefined();
+  });
+
+  it("maps odooRecordsByModel per model for multi-model scenarios", () => {
+    const lead = { id: 9, name: "Acme GmbH", email_from: "buyer@acme.example" };
+    const partner = { id: 501, name: "Acme GmbH" };
+
+    const traj = buildTrajectory(
+      baseInput({
+        odooMoves: [lead],
+        odooRecordsByModel: { "crm.lead": [lead], "res.partner": [partner] },
+      })
+    );
+
+    expect(traj.odooRecordsByModel).toEqual({
+      "crm.lead": [lead],
+      "res.partner": [partner],
+    });
+    // The first model's records mirror the grader-facing `odooMoves`.
+    expect(traj.odooRecordsByModel?.["crm.lead"]).toEqual(traj.odooMoves);
+  });
+
   describe("end-to-end against gradeRun", () => {
     it("a complete happy trajectory grades passed:true", () => {
       const msgHandle = handleFor(SEEDED_MESSAGE_ID, MSG_PREFIX);

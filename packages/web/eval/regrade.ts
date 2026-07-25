@@ -61,6 +61,7 @@ async function main(): Promise<void> {
       toolCalls: rec.toolCalls,
       finalMessage: rec.finalMessage,
       odooMoves: rec.odooMoves,
+      odooRecordsByModel: rec.odooRecordsByModel,
       latencyMs: rec.latencyMs,
       tokens: rec.tokens,
     };

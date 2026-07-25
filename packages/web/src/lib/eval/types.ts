@@ -116,14 +116,26 @@ export interface RunTrajectory {
    */
   odooMoves: OdooMoveRecord[];
   /**
-   * Post-run read-back keyed by Odoo model, for scenarios that declare more
-   * than one `readbackModels` entry (#803). Includes the first model too, so
-   * `odooRecordsByModel[models[0]]` always mirrors `odooMoves`.
+   * Post-run read-back keyed by Odoo model. Set ONLY by scenarios that declare
+   * more than one `readbackModels` entry (#803) — a single-model scenario
+   * would just duplicate `odooMoves` here, doubling the read-back payload of
+   * every persisted trajectory line (`results/<label>.trajectories.jsonl`) for
+   * no information. When present it includes the first model too, so
+   * `odooRecordsByModel[models[0]]` mirrors `odooMoves`.
    */
   odooRecordsByModel?: Record<string, OdooMoveRecord[]>;
   latencyMs: number;
   tokens?: RunTokenUsage;
 }
+
+/**
+ * The record domain a scenario grades against. The completion/non-persistence/
+ * failure phrase sets are calibrated per domain (see `PHRASE_SETS` in
+ * graders.ts); phrases for one domain must never trigger graders for another.
+ * A domain is only gradable once its phrase sets exist — `phraseSetFor` throws
+ * otherwise rather than passing every run.
+ */
+export type EvalDomain = "invoice" | "crm-lead";
 
 export interface ExpectedInvoice {
   /** Expected partner (display name). */

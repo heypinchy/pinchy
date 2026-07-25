@@ -442,15 +442,17 @@ export async function runOnce(params: RunOnceParams): Promise<RunResult> {
   // Post-run Odoo read-back, parametrized per scenario (#803). The invoice
   // family defaults to ["account.move"], so single-model scenarios behave
   // exactly as before: `odooMoves` carries the first model's records (the
-  // grader-facing field — see RunTrajectory.odooMoves) and the full map rides
-  // along for multi-model scenarios.
+  // grader-facing field — see RunTrajectory.odooMoves) and the by-model map
+  // is attached ONLY for multi-model scenarios, where it adds information
+  // rather than duplicating `odooMoves` into every persisted trajectory line.
   const readbackModels = readbackModelsFor(scenario);
   const readbackEntries: Array<[string, OdooMoveRecord[]]> = [];
   for (const readbackModel of readbackModels) {
     readbackEntries.push([readbackModel, await getOdooRecords(readbackModel)]);
   }
-  const odooRecordsByModel: Record<string, OdooMoveRecord[]> = Object.fromEntries(readbackEntries);
-  const odooMoves = readbackEntries[0]?.[1] ?? [];
+  const odooMoves = readbackEntries[0][1];
+  const odooRecordsByModel =
+    readbackEntries.length > 1 ? Object.fromEntries(readbackEntries) : undefined;
   // Join this run's tokens/cost by its unique session (agentId, chatId). Polls
   // for the recorder lag; best-effort — undefined on a miss, never throws.
   const tokens = params.collectTokens ? await params.collectTokens(agentId, chatId) : undefined;

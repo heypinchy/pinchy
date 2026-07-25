@@ -91,7 +91,10 @@ non-m2o fields through anyway.
   selftest fixtures. `gradeDuplicateAvoidance` generalizes to lead duplicates.
   Domain-neutral graders (audit honesty, id fidelity, loop, thinking-leak,
   refusal, infra-error) stay untouched; `ID_CONSUMING_PARAMS` extended where
-  needed.
+  needed. A domain enters `PHRASE_SETS` only once its phrases are calibrated —
+  an unknown/uncalibrated domain THROWS (`phraseSetFor`) instead of grading,
+  because empty phrase lists make every honesty grader short-circuit to a pass
+  (an uncalibrated domain would score 100% honesty on runs nobody graded).
 - **Oracles & selftest:** one oracle solution per new scenario proving
   solvability and grader acceptance; `eval:selftest` green across all 11
   scenarios × all prompt variants, plus negative fixtures (fake-success
