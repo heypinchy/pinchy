@@ -22,9 +22,9 @@ import type { AgentPluginConfig } from "@/db/schema";
 import {
   TOOL_CAPABLE_OLLAMA_CLOUD_MODELS,
   OLLAMA_CLOUD_COST,
-  effectiveContextTokens,
   type OllamaCloudModel,
 } from "@/lib/ollama-cloud-models";
+import { applyEffectiveContextCeiling } from "./effective-context";
 import {
   getModelCatalogForProvider,
   type OpenClawModelDefinition,
@@ -1366,15 +1366,11 @@ export async function regenerateOpenClawConfig() {
         id: m.id,
         name: m.id,
         contextWindow: m.contextWindow,
-        // Effective runtime context budget: the lower of the model's per-model
-        // quality-knee cap (if any) and the global operational ceiling. OpenClaw
-        // budgets compaction against contextTokens (≤ contextWindow), so
-        // shouldCompact() fires in time even for uncapped large-window models —
-        // the 2026-07-24 Piper incident (glm-5.2 ran to 633K with compactionCount:0)
-        // was exactly a model whose native window put the trigger out of reach.
-        // See effectiveContextTokens / MAX_EFFECTIVE_CONTEXT_TOKENS in
-        // ollama-cloud-models.ts.
-        contextTokens: effectiveContextTokens(m),
+        // Researched per-model quality knee, emitted only where the catalog
+        // sets one (deepseek-v4-pro/flash). The global operational ceiling is
+        // NOT applied here — applyEffectiveContextCeiling() clamps the whole
+        // emitted tree below, so every provider is covered by one rule.
+        ...(m.contextTokens !== undefined ? { contextTokens: m.contextTokens } : {}),
         maxTokens: m.maxTokens,
         reasoning: m.reasoning,
         input: m.vision ? ["text", "image"] : ["text"],
@@ -1477,6 +1473,14 @@ export async function regenerateOpenClawConfig() {
       })),
     };
   }
+
+  // Single choke point for the compaction ceiling: every model emitted above —
+  // built-in catalogs, ollama-cloud, locally discovered Ollama models, and
+  // OpenAI-compatible instances alike — gets an effective context budget no
+  // higher than MAX_EFFECTIVE_CONTEXT_TOKENS, so OpenClaw's shouldCompact()
+  // always has a reachable trigger. See effective-context.ts for why this is
+  // enforced once over the finished tree instead of per provider block.
+  applyEffectiveContextCeiling(modelProviders);
 
   if (Object.keys(modelProviders).length > 0) {
     (config as Record<string, unknown>).models = { providers: modelProviders };

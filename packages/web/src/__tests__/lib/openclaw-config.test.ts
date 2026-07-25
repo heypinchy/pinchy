@@ -2462,6 +2462,59 @@ describe("regenerateOpenClawConfig", () => {
     }
   });
 
+  it("applies the compaction ceiling to EVERY provider, not just ollama-cloud", async () => {
+    // The ceiling is enforced at a single choke point over the whole emitted
+    // models.providers tree, because capping one provider at a time is the same
+    // whack-a-mole that let the 2026-07-24 glm-5.2 incident happen after
+    // deepseek-v4-pro had already been capped. Built-in Gemini carries a
+    // 1,048,576 window — identical in shape to the incident model — so an
+    // uncapped built-in provider would reproduce the bug on a different route:
+    // shouldCompact() would only fire past 1,032,192, i.e. never.
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "google_api_key") return "AIza-test-key";
+      if (key === "anthropic_api_key") return "sk-ant-test";
+      if (key === "openai_api_key") return "sk-openai-test";
+      if (key === "ollama_cloud_api_key") return "sk-ollama-test";
+      if (key === "default_provider") return "google";
+      return null;
+    });
+
+    await regenerateOpenClawConfig();
+
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
+    const config = JSON.parse(written);
+    const providers = config.models.providers as Record<
+      string,
+      { models?: Array<{ id: string; contextWindow: number; contextTokens?: number }> }
+    >;
+
+    // The 1M-window built-in models are the ones that actually change.
+    const google = Object.fromEntries((providers.google?.models ?? []).map((m) => [m.id, m]));
+    expect(google["gemini-2.5-pro"].contextWindow).toBe(1048576);
+    expect(google["gemini-2.5-pro"].contextTokens).toBe(262144);
+    expect(google["gemini-2.5-flash"].contextTokens).toBe(262144);
+
+    // Providers already under the ceiling keep an honest, unchanged budget.
+    const anthropic = providers.anthropic?.models ?? [];
+    expect(anthropic.length).toBeGreaterThan(0);
+    for (const m of anthropic) {
+      expect(m.contextTokens).toBe(m.contextWindow);
+    }
+
+    // The invariant that matters, across the ENTIRE emitted tree: no model
+    // anywhere may budget compaction above the ceiling or above its own window.
+    let checked = 0;
+    for (const provider of Object.values(providers)) {
+      for (const m of provider.models ?? []) {
+        expect(m.contextTokens).toBeDefined();
+        expect(m.contextTokens).toBeLessThanOrEqual(262144);
+        expect(m.contextTokens).toBeLessThanOrEqual(m.contextWindow);
+        checked++;
+      }
+    }
+    expect(checked).toBeGreaterThan(0);
+  });
+
   it("writes reasoning, input (vision), and cost fields for every Ollama Cloud model", async () => {
     // OpenClaw's ModelDefinitionConfig requires `reasoning`, `input`, and
     // `cost` alongside contextWindow/maxTokens/compat. Without these the
@@ -8074,6 +8127,12 @@ describe("OpenAI-compatible custom providers (#894)", () => {
           id: "swiss-model",
           name: "Swiss Model",
           contextWindow: 32000,
+          // Custom providers ride the same compaction ceiling as every other
+          // provider (applyEffectiveContextCeiling). This window is far under
+          // it, so the budget equals the window — explicit rather than relying
+          // on OpenClaw's `contextTokens ?? contextWindow` fallback, so an
+          // absent field always means "escaped the clamp", never "fine".
+          contextTokens: 32000,
           maxTokens: 4096,
           reasoning: true,
           input: ["text", "image"],
@@ -8154,6 +8213,9 @@ describe("OpenAI-compatible custom providers (#894)", () => {
         id: "swiss-live-model",
         name: "Swiss Live Model",
         contextWindow: 32000,
+        // Ceiling clamp applies to live-discovered models too (window ≪ ceiling
+        // here, so the budget equals the window). See applyEffectiveContextCeiling.
+        contextTokens: 32000,
         maxTokens: 4096,
         reasoning: true,
         input: ["text"],
