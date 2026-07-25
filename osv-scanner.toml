@@ -43,3 +43,24 @@ reason = "astro — docs static-site build tooling (docs/pnpm-lock.yaml), not sh
 id = "GHSA-f48w-9m4c-m7f5"
 ignoreUntil = 2026-10-21
 reason = "astro — docs static-site build tooling (docs/pnpm-lock.yaml), not shipped to users; XSS via unescaped attribute names, needs an SSR runtime with a global HTMLElement — not reachable in static output. Fixes only in astro 7.x, which Starlight 0.38 blocks. Tracked: #851"
+
+# brace-expansion OOM DoS (unbounded brace expansion). The advisory patches ONLY
+# 5.0.8 (range <=5.0.7), and the 5.x line IS fixed here — the override forces
+# brace-expansion>=5.0.8 <6, so every modern minimatch@9/10 consumer is patched.
+# The residual flags are the 1.1.16 (minimatch@3 → glob@7) and 2.1.2
+# (minimatch@5 → readdir-glob) instances pulled transitively by archiver@5 (via
+# exceljs in pinchy-files) and by @eslint/config-array in the dev toolchain.
+# Those lines have NO upstream fix: 5.0.8 changed the CommonJS export from a
+# default-exported function to a named export, which breaks `require(...)()` in
+# minimatch@3/@5 (and crashes eslint), so bumping them to the fix is not possible
+# without breaking archiver and the linter. Not reachable regardless: the OOM
+# requires an attacker-controlled brace PATTERN passed to expand(); archiver
+# walks the filesystem with fixed internal globs and eslint matches code-authored
+# config globs — neither passes untrusted pattern strings. ignoreUntil forces a
+# re-triage once archiver/minimatch ships a major depending on brace-expansion
+# >=5.0.8 (or exceljs drops archiver@5).
+
+[[IgnoredVulns]]
+id = "GHSA-mh99-v99m-4gvg"
+ignoreUntil = 2026-10-25
+reason = "brace-expansion OOM — 5.x line IS fixed (override forces >=5.0.8); residual 1.1.16/2.1.2 come via archiver@5 (exceljs/pinchy-files) + @eslint/config-array, have no compatible upstream fix (5.0.8's changed CJS export breaks minimatch@3/@5), and are unreachable (archiver/eslint pass fixed internal globs, never attacker-controlled brace patterns). Re-triage when archiver depends on brace-expansion >=5.0.8."
