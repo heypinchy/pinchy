@@ -16,14 +16,19 @@ describe("lookupModelCapabilities", () => {
     expect(caps).not.toBeNull();
   });
 
-  it("resolves a full canonical snapshot key and de-prefixes the id", () => {
-    // Exercises the exact-match branch: a full `provider/model` key resolves,
-    // and the returned id must NOT carry the provider prefix (OpenClaw derives
-    // the qualified id from the provider block + this local id).
+  it("resolves a full canonical snapshot key but keeps the discovered id verbatim", () => {
+    // Exercises the exact-match branch. The catalog only ENRICHES capabilities —
+    // it must NOT rewrite the id. The id is whatever the endpoint's `/models`
+    // advertised, and OpenClaw sends exactly that string back as the `model`
+    // field at chat time (it splits only the provider slug off `<slug>/<id>`).
+    // De-prefixing here would send `mistral-large-2512` to a passthrough gateway
+    // (LiteLLM/OpenRouter) that advertised — and only accepts — the namespaced
+    // `mistral/mistral-large-2512`, producing a "model not found" at chat time.
     const caps = lookupModelCapabilities("mistral/mistral-large-2512");
     expect(caps).not.toBeNull();
-    expect(caps!.id).toBe("mistral-large-2512");
-    expect(caps!.id).not.toContain("/");
+    expect(caps!.id).toBe("mistral/mistral-large-2512");
+    // Real snapshot capabilities, not the fallback default — proves it matched.
+    expect(caps!.contextWindow).not.toBe(DEFAULT_MODEL_CAPS.contextWindow);
   });
 
   it("returns null for an ambiguous bare family id (multi-member family)", () => {

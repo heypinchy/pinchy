@@ -64,6 +64,13 @@ export function lookupModelCapabilities(modelId: string): OpenClawModelDefinitio
 }
 
 function toDefinition(e: CatalogEntry, requestedId: string): OpenClawModelDefinition {
+  // The catalog match only ENRICHES capabilities (contextWindow, cost, vision,
+  // …). The id and name stay the endpoint's discovered id VERBATIM: OpenClaw
+  // sends this string back as the `model` field at chat time (splitting only the
+  // provider slug off `<slug>/<id>`), so a passthrough gateway that advertised a
+  // namespaced `vendor/model` must get `vendor/model` back — de-prefixing it
+  // here would 404 at chat time. `normalizeId` is used ONLY for catalog LOOKUP
+  // above, never to rewrite the persisted/emitted id.
   const { family: _family, ...rest } = e;
-  return { ...rest, id: normalizeId(requestedId), name: requestedId };
+  return { ...rest, id: requestedId, name: requestedId };
 }
