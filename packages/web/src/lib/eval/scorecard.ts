@@ -2,7 +2,33 @@
  * Aggregates N graded runs (see `graders.ts`) into a per-model scorecard for
  * Eval-v1 (pinchy#669). Pure functions over `RunResult[]` — no I/O.
  */
-import type { FailureTag, RunResult } from "./types";
+import type { FailureTag, PromptVariantId, RunResult } from "./types";
+
+/**
+ * The wording a run was measured under, with pre-#803 rows grandfathered:
+ * every row persisted before the paraphrase variants lacks the field entirely,
+ * and every one of those runs was dispatched with the scenario's `userPrompt`
+ * — which IS `prompts.primary`. Absence therefore MEANS primary, never
+ * "unknown wording".
+ */
+export function promptVariantOf(run: { promptVariant?: PromptVariantId }): PromptVariantId {
+  return run.promptVariant ?? "primary";
+}
+
+/**
+ * The headline trials of a run list: the primary wording only (#803).
+ *
+ * Every capability number — pass@1, pass^k, Wilson, the pairwise comparisons —
+ * computes from these, because a paraphrase run measures prompt-WORDING
+ * sensitivity and belongs in the robustness block instead. The blend fails
+ * silently if it happens: primary and variant rows share a model AND a
+ * scenario label, so `buildScorecard`'s per-model grouping pools them into one
+ * innocuous-looking pass rate. On a variant-free run list this filter is a
+ * provable no-op (DATASET_FINGERPRINT is the standing proof).
+ */
+export function primaryRuns<T extends { promptVariant?: PromptVariantId }>(runs: T[]): T[] {
+  return runs.filter((r) => promptVariantOf(r) === "primary");
+}
 
 export interface ScorecardEntry {
   model: string;

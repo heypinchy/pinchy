@@ -1,11 +1,16 @@
+import { readdir, readFile, rm } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import path from "node:path";
 import type { Page } from "@playwright/test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PromptVariantId, RunResult } from "../../src/lib/eval/types";
 import {
+  RESULTS_DIR,
   countRunsForVariant,
   promptVariantsFromEnv,
   runOnce,
   variantRunsPerModelFromEnv,
+  writeScorecard,
 } from "../run-eval";
 
 /**
@@ -149,5 +154,65 @@ describe("runOnce both-params guard", () => {
 
   it("allows a non-default promptVariant WITHOUT a prompt override", async () => {
     await expect(runOnce({ ...base, promptVariant: "v1" })).rejects.toThrow(SENTINEL);
+  });
+});
+
+describe("writeScorecard: the stored scorecard is primary-only", () => {
+  const TEMP_PREFIX = "variant-scorecard-test-";
+
+  // The writer targets the real (gitignored) results/ dir; sweep by prefix so
+  // an aborted run never leaves temp files behind (same pattern as
+  // canary-writer.test.ts).
+  afterEach(async () => {
+    let entries: string[];
+    try {
+      entries = await readdir(RESULTS_DIR);
+    } catch {
+      return;
+    }
+    await Promise.all(
+      entries
+        .filter((f) => f.startsWith(TEMP_PREFIX))
+        .map((f) => rm(path.join(RESULTS_DIR, f), { force: true }))
+    );
+  });
+
+  const row = (overrides: Partial<RunResult>): RunResult => ({
+    model: "ollama-cloud/alpha",
+    passed: true,
+    tags: [],
+    notes: [],
+    latencyMs: 1000,
+    ...overrides,
+  });
+
+  it("aggregates the primary wording only, while persisting every dispatched run", async () => {
+    // The sweep accumulates primary AND paraphrase rows in one scenario list
+    // (they share a label — only the wording differs), so an unfiltered
+    // buildScorecard would blend a wording-sensitivity probe into the
+    // scenario's published pass rate. `<label>.json` is a dataset artifact
+    // (data/README.md: "the aggregate scorecard"), so that blend would ship as
+    // a headline number. The full run list must still be persisted — it is
+    // what the robustness block is computed from.
+    const label = `${TEMP_PREFIX}${randomUUID()}`;
+    const runs: RunResult[] = [
+      row({ passed: true }), // grandfathered pre-#803 row
+      row({ passed: true, promptVariant: "primary" }),
+      row({ passed: false, promptVariant: "v1" }),
+      row({ passed: false, promptVariant: "v2" }),
+    ];
+
+    const scorecard = await writeScorecard(label, runs);
+
+    expect(scorecard).toHaveLength(1);
+    expect(scorecard[0]).toMatchObject({ model: "ollama-cloud/alpha", n: 2, passes: 2 });
+    expect(scorecard[0].passRate).toBe(1);
+
+    const stored: unknown = JSON.parse(
+      await readFile(path.join(RESULTS_DIR, `${label}.json`), "utf8")
+    );
+    const parsed = stored as { runs: RunResult[]; scorecard: { n: number }[] };
+    expect(parsed.runs).toHaveLength(4);
+    expect(parsed.scorecard[0].n).toBe(2);
   });
 });

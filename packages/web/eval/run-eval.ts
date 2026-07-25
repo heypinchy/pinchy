@@ -28,7 +28,13 @@ import type { RunFingerprint } from "./fingerprint";
 import type { TokenCollector } from "./token-usage";
 import { buildTrajectory, type NormalizeAuditEntry } from "../src/lib/eval/normalize";
 import { gradeRunForScenario } from "../src/lib/eval/graders";
-import { buildScorecard, type ScorecardEntry } from "../src/lib/eval/scorecard";
+import {
+  buildScorecard,
+  primaryRuns,
+  promptVariantOf,
+  type ScorecardEntry,
+} from "../src/lib/eval/scorecard";
+import { PROMPT_VARIANT_IDS } from "../src/lib/eval/types";
 import type {
   OdooMoveRecord,
   PromptVariant,
@@ -771,6 +777,18 @@ export async function readExistingRuns(label: string): Promise<RunResult[]> {
   return parseEvalJsonl<RunResult>(text);
 }
 
+/**
+ * Writes `results/<label>.json`: every dispatched run plus the aggregate
+ * scorecard built from them.
+ *
+ * The scorecard is PRIMARY-ONLY (#803). Primary and paraphrase runs of one
+ * scenario share a label and a model, so `buildScorecard` would pool them into
+ * a single pass rate — and this file is a dataset artifact (`data/<label>.json`,
+ * "the aggregate scorecard" in data/README.md), so that blend would ship as a
+ * published capability number measured under mixed wordings. `runs` stays
+ * complete: the paraphrase rows are exactly what the export's robustness block
+ * is computed from.
+ */
 export async function writeScorecard(
   label: string,
   runs: RunResult[],
@@ -783,7 +801,7 @@ export async function writeScorecard(
     throw new Error(`Invalid scorecard label (must be a plain filename segment): ${label}`);
   }
 
-  const scorecard = buildScorecard(runs);
+  const scorecard = buildScorecard(primaryRuns(runs));
   await mkdir(RESULTS_DIR, { recursive: true });
   const filePath = path.join(RESULTS_DIR, `${label}.json`);
   // eslint-disable-next-line security/detect-non-literal-fs-filename -- label validated above (alnum/./_/- only, no path separators)
@@ -822,19 +840,29 @@ export function candidateModelsFromEnv(defaultModels: string[]): string[] {
     .filter(Boolean);
 }
 
+/**
+ * A positive-integer run count from a raw env value, falling back to
+ * `defaultN` on unset, zero, negative, or non-numeric — shared by EVAL_N and
+ * EVAL_VARIANT_RUNS so the two never drift in how they treat bad input.
+ */
+function runCountFromEnv(raw: string | undefined, defaultN: number): number {
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : defaultN;
+}
+
 export function runsPerModelFromEnv(defaultN: number): number {
-  const raw = Number(process.env.EVAL_N);
-  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : defaultN;
+  return runCountFromEnv(process.env.EVAL_N, defaultN);
 }
 
 // ── Variant sweep configuration (#803, PR 3) ──────────────────────────────
 
 /**
- * The paraphrase ids `EVAL_PROMPT_VARIANTS` may select. Deliberately excludes
- * "primary": the primary always runs (at EVAL_N) — listing it would
- * double-dispatch it at the variant run count.
+ * The paraphrase ids `EVAL_PROMPT_VARIANTS` may select — the shared
+ * `PROMPT_VARIANT_IDS` vocabulary, which deliberately excludes "primary": the
+ * primary always runs (at EVAL_N), so listing it would double-dispatch it at
+ * the variant run count.
  */
-const SELECTABLE_VARIANT_IDS: readonly PromptVariant["id"][] = ["v1", "v2"];
+const SELECTABLE_VARIANT_IDS: readonly PromptVariant["id"][] = PROMPT_VARIANT_IDS;
 
 /**
  * Parses `EVAL_PROMPT_VARIANTS` (comma-separated paraphrase ids, e.g.
@@ -870,8 +898,7 @@ export function promptVariantsFromEnv(): PromptVariant["id"][] {
 
 /** Per-variant run count from `EVAL_VARIANT_RUNS` (same shape as EVAL_N). */
 export function variantRunsPerModelFromEnv(defaultN: number): number {
-  const raw = Number(process.env.EVAL_VARIANT_RUNS);
-  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : defaultN;
+  return runCountFromEnv(process.env.EVAL_VARIANT_RUNS, defaultN);
 }
 
 /**
@@ -886,5 +913,5 @@ export function countRunsForVariant(
   model: string,
   variant: PromptVariantId
 ): number {
-  return runs.filter((r) => r.model === model && (r.promptVariant ?? "primary") === variant).length;
+  return runs.filter((r) => r.model === model && promptVariantOf(r) === variant).length;
 }

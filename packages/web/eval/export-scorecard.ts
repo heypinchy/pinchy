@@ -41,7 +41,13 @@ import { parseEvalJsonl } from "./canary";
 import { gradeRunForScenario } from "../src/lib/eval/graders";
 import { pooledClusteredDifference, tiedWithLeader } from "../src/lib/eval/comparisons";
 import { applyTrajectoryRegrade } from "../src/lib/eval/regrade-merge";
-import { passHatKCurve, wilsonInterval } from "../src/lib/eval/scorecard";
+import {
+  passHatKCurve,
+  primaryRuns,
+  promptVariantOf,
+  wilsonInterval,
+} from "../src/lib/eval/scorecard";
+import { ALL_PROMPT_VARIANT_IDS } from "../src/lib/eval/types";
 import type { PromptVariantId, RunResult, RunTrajectory } from "../src/lib/eval/types";
 import { DATASET_VERSION } from "./dataset-version";
 import { hetznerInvoiceDuplicateScenario } from "./scenarios/hetzner-invoice-duplicate";
@@ -166,16 +172,6 @@ async function readJsonl<T>(dataDir: string, file: string): Promise<T[]> {
     return [];
   }
 }
-
-/**
- * The wording a run was measured under, with pre-variant rows grandfathered:
- * every row persisted before #803 PR 3 lacks the field entirely, and every one
- * of those runs was dispatched with the scenario's `userPrompt` — which is
- * `prompts.primary` verbatim. Absence therefore MEANS primary; with today's
- * variant-free data files this makes the primary-only headline filter a
- * provable no-op (DATASET_FINGERPRINT is the standing proof).
- */
-const variantOf = (r: RunResult): PromptVariantId => r.promptVariant ?? "primary";
 
 function aggregate(runs: RunResult[]): Cell[] {
   const byModel = new Map<string, RunResult[]>();
@@ -391,14 +387,14 @@ function publishedFromLoaded(loaded: LoadedScenario[]): PublishedScenario[] {
     // The HEADLINE (pass@1, pass^k, Wilson, comparisons) is primary-only by
     // design (#803): paraphrase-variant rows measure wording sensitivity and
     // feed `buildRobustness`, never a capability number. Rows without the
-    // field are grandfathered as primary — see `variantOf`.
-    const primaryRuns = runs.filter((r) => variantOf(r) === "primary");
-    const models = aggregate(primaryRuns);
+    // field are grandfathered as primary — see `promptVariantOf`.
+    const headlineRuns = primaryRuns(runs);
+    const models = aggregate(headlineRuns);
     return {
       label: spec.label,
       slug: spec.slug,
       axis: spec.axis,
-      totalRuns: primaryRuns.length,
+      totalRuns: headlineRuns.length,
       models,
       tiedWithLeader: tiedWithLeader(models),
     };
@@ -476,10 +472,15 @@ function buildRobustness(loaded: LoadedScenario[]): RobustnessBlock | undefined 
     for (const [model, all] of byModel) {
       // A model with primary-only rows has nothing to compare — spread over a
       // single wording would be a claim from no comparison.
-      if (!all.some((r) => variantOf(r) !== "primary")) continue;
+      if (!all.some((r) => promptVariantOf(r) !== "primary")) continue;
       const variants: Partial<Record<PromptVariantId, number>> = {};
-      for (const id of ["primary", "v1", "v2"] satisfies PromptVariantId[]) {
-        const valid = all.filter((r) => variantOf(r) === id && !r.tags.includes("run-infra-error"));
+      // Iterates the shared vocabulary, so a new paraphrase id reports here
+      // automatically — a hand-copied list would silently publish no rate for
+      // a wording the sweep really did measure.
+      for (const id of ALL_PROMPT_VARIANT_IDS) {
+        const valid = all.filter(
+          (r) => promptVariantOf(r) === id && !r.tags.includes("run-infra-error")
+        );
         if (valid.length === 0) continue;
         variants[id] = round3(valid.filter((r) => r.passed).length / valid.length);
       }

@@ -509,7 +509,13 @@ How to read it:
   the pairwise comparisons are computed exclusively from primary runs; a
   variant row can never move a capability number. Rows without a
   `promptVariant` field are grandfathered as primary (every pre-variant run
-  was dispatched with the primary wording — see `data/README.md`).
+  was dispatched with the primary wording — see `data/README.md`). Every
+  aggregation goes through the one `primaryRuns` filter
+  (`src/lib/eval/scorecard.ts`): the export here, the sweep's stored
+  `<label>.json` scorecard, and `regrade.ts`'s printout. A primary and a
+  paraphrase run share a model and a scenario label, so an aggregation that
+  forgets the filter does not break — it quietly reports a wording-blended
+  pass rate.
 - **Spread 0 means the result did not depend on wording** at the measured n.
   A large spread is itself a finding: a model whose result depends on how the
   task is phrased is fragile in a way a single-wording pass rate cannot show,

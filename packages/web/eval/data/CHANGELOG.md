@@ -39,7 +39,9 @@ sweep**, which is when new numbers first exist to record.
   unchanged) plus two register-shifted paraphrases; run rows carry
   `promptVariant`, with absence grandfathered as primary (every existing row
   was dispatched with the primary wording).
-- **Robustness reporting**: headline numbers compute from primary runs only;
+- **Robustness reporting**: headline numbers compute from primary runs only
+  (every aggregation — the export, the sweep's stored `<scenario>.json`, the
+  offline re-grader — reduces through the same `primaryRuns` filter);
   once variant rows exist, the export adds a separate `robustness` block
   (per-variant pass rates, spread = max − min, per-model mean spread). Absent
   until then — today's export stays byte-identical.

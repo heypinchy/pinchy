@@ -18,7 +18,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { parseEvalJsonl } from "./canary";
 import { gradeRunForScenario } from "../src/lib/eval/graders";
-import { buildScorecard } from "../src/lib/eval/scorecard";
+import { buildScorecard, primaryRuns } from "../src/lib/eval/scorecard";
 import type { PromptVariantId, RunResult, RunTrajectory } from "../src/lib/eval/types";
 import { hetznerInvoiceScenario, type HetznerInvoiceScenario } from "./scenarios/hetzner-invoice";
 import { hetznerInvoiceRejectedScenario } from "./scenarios/hetzner-invoice-rejected";
@@ -115,8 +115,20 @@ async function main(): Promise<void> {
     }
   }
 
-  const scorecard = buildScorecard(results);
-  console.log(`\n=== Re-grade "${label}" (${String(results.length)} runs) ===`);
+  // Primary-only, like every other headline aggregation (#803): a variant-
+  // bearing log holds paraphrase runs of the SAME model and scenario, so an
+  // unfiltered scorecard would pool a wording probe into the re-graded pass
+  // rate — the number this CLI exists to check the published one against.
+  const headlineRuns = primaryRuns(results);
+  const scorecard = buildScorecard(headlineRuns);
+  const excludedVariantRuns = results.length - headlineRuns.length;
+  console.log(`\n=== Re-grade "${label}" (${String(headlineRuns.length)} primary runs) ===`);
+  if (excludedVariantRuns > 0) {
+    console.log(
+      `(${String(excludedVariantRuns)} paraphrase-variant run(s) excluded — the headline is ` +
+        `primary-only; see the export's robustness block for their pass rates)`
+    );
+  }
   for (const e of scorecard) {
     console.log(
       `${e.model.padEnd(40)} pass=${String(e.passes)}/${String(e.n)} rate=${e.passRate.toFixed(

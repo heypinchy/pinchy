@@ -51,7 +51,9 @@ here yet**; see "Not-yet-run scenarios and the robustness block" below.
 - `<scenario>.trajectories.jsonl` — the full normalized run (final message, tool
   calls, Odoo read-back) per line. The evidence corpus (verbatim model output).
 - `<scenario>.json` — the aggregate scorecard (pass rate, pass^k, Wilson 95%,
-  tag histogram, median latency).
+  tag histogram, median latency), computed over the **primary** rows of the
+  `.jsonl` only (see below); the file's own `runs` array still holds every
+  dispatched run.
 
 ### The `promptVariant` field on rows (#803)
 
@@ -66,6 +68,13 @@ headline numbers (pass@1, pass^k, Wilson, comparisons) are computed from
 primary rows only; on today's variant-free files that filter is a provable
 no-op (`DATASET_FINGERPRINT` is the standing proof). Paraphrase rows feed the
 robustness block exclusively.
+
+"All headline numbers" means every aggregation, not just the consolidated
+export: the sweep's `<scenario>.json`, the offline re-grader's printout and the
+export all reduce through the same `primaryRuns` filter
+(`src/lib/eval/scorecard.ts`). They have to — a primary and a paraphrase run of
+one scenario share a model AND a label, so an unfiltered aggregation pools them
+into one innocuous-looking pass rate instead of failing visibly.
 
 ## Comparing two models (read this before ranking them)
 

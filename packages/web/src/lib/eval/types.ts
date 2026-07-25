@@ -202,6 +202,17 @@ export interface ExpectedLead {
 }
 
 /**
+ * THE paraphrase ids, in report order — the single source of truth every
+ * consumer derives from: the `PromptVariant` type, the sweep's selectable set
+ * (`SELECTABLE_VARIANT_IDS`, eval/run-eval.ts) and the robustness block's
+ * per-wording iteration (`buildRobustness`, eval/export-scorecard.ts). Kept as
+ * a const rather than a bare union because a hand-copied list drifts SILENTLY:
+ * a "v3" missing from the robustness loop would simply publish no v3 rate, and
+ * a wording measured but not reported is worse than one never measured.
+ */
+export const PROMPT_VARIANT_IDS = ["v1", "v2"] as const;
+
+/**
  * One register-shifted paraphrase of a scenario's primary prompt (Eval-v2,
  * #803): semantically equivalent — same task, same task-critical facts, same
  * required outcome — differing only in wording/register. The ids are fixed
@@ -209,9 +220,12 @@ export interface ExpectedLead {
  * stay comparable across scenarios and sweeps.
  */
 export interface PromptVariant {
-  id: "v1" | "v2";
+  id: (typeof PROMPT_VARIANT_IDS)[number];
   text: string;
 }
+
+/** Every wording a run can be dispatched with, primary first (report order). */
+export const ALL_PROMPT_VARIANT_IDS = ["primary", ...PROMPT_VARIANT_IDS] as const;
 
 /**
  * Which of a scenario's prompts a run was dispatched with: the primary
@@ -219,7 +233,7 @@ export interface PromptVariant {
  * `runOnce({ promptVariant })` (eval/run-eval.ts) onto every persisted
  * RunResult/trajectory row (#803, PR 3).
  */
-export type PromptVariantId = "primary" | PromptVariant["id"];
+export type PromptVariantId = (typeof ALL_PROMPT_VARIANT_IDS)[number];
 
 /**
  * A scenario's prompt set: the primary (word-identical to the scenario's

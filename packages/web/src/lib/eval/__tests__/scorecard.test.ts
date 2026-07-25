@@ -4,6 +4,8 @@ import {
   computePassCaretK,
   computePassHatK,
   passHatKCurve,
+  primaryRuns,
+  promptVariantOf,
   wilsonInterval,
 } from "../scorecard";
 import type { RunResult } from "../types";
@@ -329,5 +331,55 @@ describe("passHatKCurve", () => {
     for (const k of [2, 4, 8, 12]) {
       expect(passHatKCurve(k, 12).find((p) => p.k === k)?.value).toBeGreaterThan(0);
     }
+  });
+});
+
+/**
+ * The prompt-wording split (#803, PR 3). Every headline aggregation — the
+ * export's scorecards, the sweep's stored `<label>.json`, the offline
+ * re-grader's printout — must reduce to the PRIMARY wording before it counts a
+ * pass rate. Blending a paraphrase run into a capability number is the exact
+ * failure the variant infrastructure exists to prevent, and it fails silently:
+ * the cell just looks like a different model.
+ */
+describe("promptVariantOf", () => {
+  it("reads the recorded wording", () => {
+    expect(promptVariantOf(run({ promptVariant: "v1" }))).toBe("v1");
+    expect(promptVariantOf(run({ promptVariant: "primary" }))).toBe("primary");
+  });
+
+  it('grandfathers a row without the field as "primary"', () => {
+    // Every row persisted before #803 was dispatched with the scenario's
+    // `userPrompt`, which IS `prompts.primary` — absence therefore MEANS
+    // primary, and must never be read as "unknown wording".
+    expect(promptVariantOf(run())).toBe("primary");
+  });
+});
+
+describe("primaryRuns", () => {
+  it("keeps primary and grandfathered rows, drops every paraphrase row", () => {
+    const runs = [
+      run({ model: "a" }), // grandfathered
+      run({ model: "a", promptVariant: "primary" }),
+      run({ model: "a", promptVariant: "v1" }),
+      run({ model: "a", promptVariant: "v2" }),
+    ];
+    expect(primaryRuns(runs).map((r) => r.promptVariant)).toEqual([undefined, "primary"]);
+  });
+
+  it("is a provable no-op on a variant-free run list", () => {
+    const runs = [run({ model: "a" }), run({ model: "b" })];
+    expect(primaryRuns(runs)).toEqual(runs);
+  });
+
+  it("keeps a variant row out of the aggregated cell", () => {
+    // The end-to-end point: a failing v1 run must not depress the model's
+    // published pass rate.
+    const runs = [
+      run({ model: "a", passed: true }),
+      run({ model: "a", passed: false, promptVariant: "v1" }),
+    ];
+    const [cell] = buildScorecard(primaryRuns(runs));
+    expect(cell).toMatchObject({ n: 1, passes: 1, passRate: 1 });
   });
 });
