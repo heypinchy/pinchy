@@ -306,6 +306,27 @@ describe("KnowledgeReindexSection", () => {
       await waitFor(() => expect(screen.getByText(/discovering documents/i)).toBeInTheDocument());
       expect(screen.queryByText(/running/i)).not.toBeInTheDocument();
     });
+
+    it("ticks the readout forward on its own as wall-clock time passes", async () => {
+      // The whole point of the 1s clock (vs. computing only on each 3s poll) is
+      // that the age keeps moving between polls. Freeze at 12 min, then let a
+      // minute of wall clock elapse WITHOUT a new poll response and assert the
+      // readout advanced itself to 13 min.
+      vi.setSystemTime(new Date("2026-07-21T10:12:01.000Z"));
+      mockGet.mockResolvedValue({
+        job: job({ status: "running", processed: 5, total: 20 }),
+      });
+
+      render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} />);
+
+      await waitFor(() => expect(screen.getByText(/running 12 min/i)).toBeInTheDocument());
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(60_000);
+      });
+
+      expect(screen.getByText(/running 13 min/i)).toBeInTheDocument();
+    });
   });
 
   describe("formatElapsed", () => {
@@ -329,6 +350,15 @@ describe("KnowledgeReindexSection", () => {
 
     it("clamps clock skew (now before start) to zero", () => {
       expect(formatElapsed(base, base - 5_000)).toBe("0 sec");
+    });
+
+    // An unparseable startedAt yields NaN from Date#getTime, and NaN survives
+    // both Math.max and Math.floor — so without a guard the UI would render
+    // "NaN h NaN min". Degrade to "0 sec", matching how formatWhen already
+    // guards its own NaN date.
+    it("degrades to zero rather than NaN on an unparseable timestamp", () => {
+      expect(formatElapsed(NaN, base)).toBe("0 sec");
+      expect(formatElapsed(base, NaN)).toBe("0 sec");
     });
   });
 });

@@ -225,11 +225,16 @@ function RunningState({ job, now }: { job: ReindexJob; now: number | null }) {
 /**
  * Humanizes an elapsed duration (`nowMs − startedAtMs`) as a compact
  * "42 sec" / "12 min" / "2 h 5 min" string. Clock skew (now before start)
- * clamps to "0 sec" rather than showing a negative age. Seconds are floored
- * once past a minute, and the minutes component is dropped on an exact hour.
+ * clamps to "0 sec" rather than showing a negative age, as does an
+ * unparseable timestamp — NaN survives Math.max/floor and would otherwise
+ * render as "NaN h NaN min" (same guard formatWhen applies to its own date).
+ * Seconds are floored once past a minute, and the minutes component is
+ * dropped on an exact hour.
  */
 export function formatElapsed(startedAtMs: number, nowMs: number): string {
-  const totalSec = Math.max(0, Math.floor((nowMs - startedAtMs) / 1000));
+  const elapsedMs = nowMs - startedAtMs;
+  if (Number.isNaN(elapsedMs)) return "0 sec";
+  const totalSec = Math.max(0, Math.floor(elapsedMs / 1000));
   if (totalSec < 60) return `${totalSec} sec`;
   const totalMin = Math.floor(totalSec / 60);
   if (totalMin < 60) return `${totalMin} min`;
