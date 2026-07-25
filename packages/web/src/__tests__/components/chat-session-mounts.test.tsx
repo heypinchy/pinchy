@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, act } from "@testing-library/react";
 import { useState } from "react";
 import { ChatSessionProvider, useChatSession } from "@/components/chat-session-provider";
@@ -10,9 +10,15 @@ let mockReconnectExhausted = false;
 let mockPayloadRejected = false;
 let mockPathname = "/agents";
 
+// Hoisted so tests can assert on navigation — the `/compact` and `/reset`
+// commands must act on THIS session in place and never route away like `/new`.
+const routerPushSpy = vi.fn();
 vi.mock("next/navigation", () => ({
   usePathname: () => mockPathname,
-  useRouter: () => ({ push: vi.fn(), replace: vi.fn() }),
+  useRouter: () => ({
+    push: (...args: unknown[]) => routerPushSpy(...args),
+    replace: vi.fn(),
+  }),
 }));
 
 const toastSuccessSpy = vi.fn();
@@ -71,6 +77,13 @@ describe("ChatSessionMounts", () => {
     mockReconnectExhausted = false;
     mockPayloadRejected = false;
     mockPathname = "/agents";
+    routerPushSpy.mockClear();
+  });
+
+  // Restore stubbed globals (`fetch`) here rather than at the end of each test,
+  // so a failing assertion can't leak the stub into the next one.
+  afterEach(() => {
+    vi.unstubAllGlobals();
   });
 
   it("calls useWsRuntime once per visited agentId", () => {
@@ -114,7 +127,6 @@ describe("ChatSessionMounts", () => {
           isDelayed: false,
           reconnectExhausted: false,
           payloadRejected: false,
-          isOrphaned: false,
           onRetryContinue: vi.fn(),
           onRetryResend: vi.fn(),
           lastError: null,
@@ -187,14 +199,14 @@ describe("ChatSessionMounts", () => {
       await new Promise((r) => setTimeout(r, 0));
     });
 
-    // Hit the compact route (not /new navigation) for THIS chat's session.
+    // Hit the compact route for THIS chat's session...
     expect(fetchMock).toHaveBeenCalledWith(
       "/api/agents/agent-A/sessions/compact",
       expect.objectContaining({ method: "POST", body: JSON.stringify({ chatId: "chat-x" }) })
     );
+    // ...and stay put: compaction acts in place, unlike /new.
+    expect(routerPushSpy).not.toHaveBeenCalled();
     expect(toastSuccessSpy).toHaveBeenCalledWith(expect.stringContaining("compacted"));
-
-    vi.unstubAllGlobals();
   });
 
   it("runs /reset against the reset route and remounts the thread (#611)", async () => {
@@ -248,11 +260,13 @@ describe("ChatSessionMounts", () => {
       await new Promise((r) => setTimeout(r, 0));
     });
 
-    // Hit the reset route (not /new navigation) for THIS chat's session.
+    // Hit the reset route for THIS chat's session...
     expect(fetchMock).toHaveBeenCalledWith(
       "/api/agents/agent-A/sessions/reset",
       expect.objectContaining({ method: "POST", body: JSON.stringify({ chatId: "chat-x" }) })
     );
+    // ...and stay put: reset clears in place, unlike /new.
+    expect(routerPushSpy).not.toHaveBeenCalled();
     // The bumped nonce changes the instance's React key → remount → a fresh
     // useWsRuntime call, cold-starting the (now-empty) session.
     const mountsAfter = useWsRuntimeSpy.mock.calls.filter(
@@ -260,8 +274,6 @@ describe("ChatSessionMounts", () => {
     ).length;
     expect(mountsAfter).toBeGreaterThan(mountsBefore);
     expect(toastSuccessSpy).toHaveBeenCalledWith(expect.stringContaining("reset"));
-
-    vi.unstubAllGlobals();
   });
 
   it("keeps a mount alive when an unrelated child remounts", () => {
@@ -339,8 +351,6 @@ describe("ChatSessionMounts", () => {
         "/api/internal/audit/background-run",
         expect.objectContaining({ method: "POST" })
       );
-
-      vi.unstubAllGlobals();
     });
 
     it("does NOT call fetch when isRunning flips true → false and user IS on the agent chat page", async () => {
@@ -368,8 +378,6 @@ describe("ChatSessionMounts", () => {
       });
 
       expect(fetchMock).not.toHaveBeenCalled();
-
-      vi.unstubAllGlobals();
     });
 
     it("does NOT call fetch on initial render when isRunning is already false", async () => {
@@ -389,8 +397,6 @@ describe("ChatSessionMounts", () => {
       });
 
       expect(fetchMock).not.toHaveBeenCalled();
-
-      vi.unstubAllGlobals();
     });
   });
 
