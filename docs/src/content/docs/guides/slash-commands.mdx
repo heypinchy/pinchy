@@ -1,6 +1,6 @@
 ---
 title: Slash Commands in Chat
-description: Type /compact, /new, /reset, or /help in the composer to act on the conversation without leaving the chat.
+description: Type /compact, /new, or /reset in the composer to act on the conversation without leaving the chat.
 ---
 
 The chat composer recognizes a few slash commands. Type one as the first thing in your message and press Send — Pinchy runs the action instead of sending the text to the model. The command is consumed; it does not appear as a message in the thread.
@@ -9,6 +9,8 @@ The chat composer recognizes a few slash commands. Type one as the first thing i
 
 Start a message with `/` and a menu opens above the composer listing the available commands with a short description of each. Keep typing to filter (`/c` narrows to `/compact`), use the **up/down arrows** to move, **Enter** to run the highlighted command, **Tab** to complete it into the input, and **Escape** to dismiss the menu. You can also click a command to run it. The composer placeholder hints at this: _"Send a message, or type / for commands."_
 
+This menu is the full list — there is no `/help` command. Typing `/help` sends it to the agent as a normal message.
+
 ## Available commands
 
 | Command    | What it does                                                                                                                                                      |
@@ -16,7 +18,6 @@ Start a message with `/` and a menu opens above the composer listing the availab
 | `/compact` | Compact the conversation: free up context by summarizing the in-context transcript. The full history stays on disk; compaction takes effect on your next message. |
 | `/new`     | Start a new conversation with this agent. The current chat stays in your chat list.                                                                               |
 | `/reset`   | Reset **this** conversation: clear its context so the agent starts fresh, in the same chat. The thread is cleared to a clean slate.                               |
-| `/help`    | Show the available slash commands.                                                                                                                                |
 
 ### `/reset` vs `/new`
 
@@ -29,7 +30,7 @@ Use `/new` when you want to keep a copy of the conversation; use `/reset` when y
 
 ## How commands are matched
 
-The composer looks at the **first whitespace-delimited token** of your message. If it is `/compact`, `/new`, `/reset`, or `/help` (case-insensitive), the command runs and the rest of the line is ignored. Anything else is sent to the model as a normal message — so text that merely _starts_ with a slash (like `/path/to/file`) is delivered unchanged, and unknown commands like `/foo` are sent through.
+The composer looks at the **first whitespace-delimited token** of your message. If it is `/compact`, `/new`, or `/reset` (case-insensitive), the command runs and the rest of the line is ignored. Anything else is sent to the model as a normal message — so text that merely _starts_ with a slash (like `/path/to/file`) is delivered unchanged, and unknown commands like `/foo` or `/help` are sent through.
 
 Commands only run when there are **no attachments**. If you attach a file, the message (even if it starts with a command) is sent as a captioned message to the agent.
 
@@ -38,7 +39,6 @@ Commands only run when there are **no attachments**. If you attach a file, the m
 - `/compact` shows a toast confirming the conversation was compacted (or an error if it couldn't be). Compaction is throttled — if you just compacted, wait a moment before trying again.
 - `/reset` clears the thread in place and shows a toast; the empty chat is your confirmation.
 - `/new` navigates you to a fresh chat immediately.
-- `/help` lists the commands in a toast.
 
 :::note
 Slash commands work in the web chat composer. Messages sent through Telegram or other channels are not affected — those go to the agent as normal text.
