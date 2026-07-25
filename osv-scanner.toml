@@ -16,6 +16,22 @@
 id = "GHSA-v2v4-37r5-5v8g"
 reason = "Transitive devDep via openclaw (test tool only — not in production build)"
 
+# brace-expansion OOM DoS. The only patched version is 5.0.8 — the advisory has
+# NO per-major backport (vulnerable <=5.0.7 spans the 1.x/2.x/5.x lines). We DO
+# bump the 5.x line to the fix (used by minimatch@10); the residual 1.1.16 /
+# 2.1.2 are latest-in-major and unfixable: forcing them to 5.0.8 breaks
+# minimatch@3.1.5 (still pulled under @eslint/config-array), which expects
+# brace-expansion's v1 API and crashes `eslint` with "expand is not a function".
+# Those 1.x/2.x lines are build/lint/test tooling matching file paths against
+# developer-authored globs — never untrusted runtime input, and in no production
+# runtime image — so the OOM DoS is not reachable. ignoreUntil forces re-triage
+# and the exception is cleared once the minimatch@3.x consumers are gone.
+# Tracked: #921
+[[IgnoredVulns]]
+id = "GHSA-mh99-v99m-4gvg"
+ignoreUntil = 2026-10-21
+reason = "brace-expansion OOM DoS — only fix (5.0.8) has no 1.x/2.x backport and breaks minimatch@3.1.5 (eslint); residual 1.1.16/2.1.2 are dev/build tooling over author-controlled globs, not reachable with untrusted input, not shipped to runtime. 5.x line IS patched. Tracked: #921"
+
 # astro (docs/pnpm-lock.yaml) is the static-site generator that builds the
 # documentation site AT BUILD TIME. It ships in no runtime image and reaches no
 # Pinchy user. Beyond that, all three residual advisories are XSS bugs the
