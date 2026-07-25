@@ -36,6 +36,15 @@ const fastOpts = {
   dispatchDeadlineMs: 40,
   dispatchIntervalMs: 5,
   maxRecoveryAttempts: 2,
+  overallDeadlineMs: 10_000,
+} as const;
+
+/** `fastOpts` without `maxRecoveryAttempts`, to exercise its `?? 2` default. */
+const fastOptsDefaultAttempts = {
+  stableOpts: fastOpts.stableOpts,
+  dispatchDeadlineMs: fastOpts.dispatchDeadlineMs,
+  dispatchIntervalMs: fastOpts.dispatchIntervalMs,
+  overallDeadlineMs: fastOpts.overallDeadlineMs,
 } as const;
 
 describe("ensureAgentDispatchable", () => {
@@ -94,9 +103,63 @@ describe("ensureAgentDispatchable", () => {
         setAllowedTools,
         opts: fastOpts,
       })
-    ).rejects.toThrow(/dispatchable/i);
+      // The helper's OWN attempt-counted message, not a bare relay of the inner
+      // wait's error — this is what a beforeAll timeout must not be allowed to
+      // mask (Fix: informative give-up).
+    ).rejects.toThrow(/dispatchable after 2 recovery attempt/i);
 
     // maxRecoveryAttempts (2) toggles, each = clear + restore = 2 calls.
     expect(setAllowedTools).toHaveBeenCalledTimes(4);
+  });
+
+  it("defaults to 2 recovery attempts when maxRecoveryAttempts is omitted", async () => {
+    const setAllowedTools = vi.fn(async () => {});
+
+    await expect(
+      ensureAgentDispatchable({
+        agentId: "a1",
+        allowedTools: TOOLS,
+        fetchHealth: settledHealth,
+        fetchDispatch: async () => ({
+          ok: true,
+          json: async () => ({ agentDispatchable: false }),
+        }),
+        setAllowedTools,
+        opts: fastOptsDefaultAttempts,
+      })
+    ).rejects.toThrow(/dispatchable after 2 recovery attempt/i);
+
+    // The `?? 2` default still yields exactly two toggles (4 calls).
+    expect(setAllowedTools).toHaveBeenCalledTimes(4);
+  });
+
+  it("honours the overall wall-clock budget even when maxRecoveryAttempts is high", async () => {
+    // With a huge attempt cap, only the overall budget can stop the loop — this
+    // pins the bound that keeps the helper self-throwing before a beforeAll
+    // Playwright timeout (Fix: overall budget clamps every internal wait).
+    const setAllowedTools = vi.fn(async () => {});
+
+    await expect(
+      ensureAgentDispatchable({
+        agentId: "a1",
+        allowedTools: TOOLS,
+        fetchHealth: settledHealth,
+        fetchDispatch: async () => ({
+          ok: true,
+          json: async () => ({ agentDispatchable: false }),
+        }),
+        setAllowedTools,
+        opts: {
+          stableOpts: { deadlineMs: 200, stableForMs: 10, intervalMs: 5 },
+          dispatchDeadlineMs: 20,
+          dispatchIntervalMs: 5,
+          maxRecoveryAttempts: 1_000,
+          overallDeadlineMs: 60,
+        },
+      })
+    ).rejects.toThrow(/dispatchable/i);
+
+    // It gave up on the budget, not the (never-reached) 1000-attempt cap.
+    expect(setAllowedTools.mock.calls.length).toBeLessThan(2_000);
   });
 });
