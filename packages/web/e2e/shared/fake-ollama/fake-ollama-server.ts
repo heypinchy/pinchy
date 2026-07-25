@@ -2284,6 +2284,20 @@ export const FAKE_OLLAMA_CRM_LEAD_SILENT_TRUST_FINAL_TEXT = CRM_LEAD_SILENT_TRUS
 export const FAKE_OLLAMA_CRM_LEAD_SILENT_FAKE_ID = CRM_LEAD_SILENT_FAKE_ID;
 export const FAKE_OLLAMA_CRM_LEAD_DUP_BLIND_TRIGGER = CRM_LEAD_DUP_BLIND_TRIGGER;
 export const FAKE_OLLAMA_CRM_LEAD_DUP_CHECK_TRIGGER = CRM_LEAD_DUP_CHECK_TRIGGER;
+/**
+ * The crm.lead field literals the scripted `odoo_create` writes. Exported
+ * ONLY so `fake-ollama-crm-handles.test.ts` can pin them to the eval
+ * scenario's fixtures at unit cost: a drift here would otherwise surface just
+ * as a `lead-fields-mismatch` in the full-stack selftest, which needs the
+ * whole eval docker stack and does not run on every PR.
+ */
+export const FAKE_OLLAMA_CRM_LEAD_FIELDS = {
+  title: CRM_LEAD_TITLE,
+  partnerName: CRM_LEAD_PARTNER_NAME,
+  emailFrom: CRM_LEAD_EMAIL_FROM,
+  phone: CRM_LEAD_PHONE,
+  expectedRevenue: CRM_LEAD_EXPECTED_REVENUE,
+} as const;
 
 let server: http.Server | null = null;
 
