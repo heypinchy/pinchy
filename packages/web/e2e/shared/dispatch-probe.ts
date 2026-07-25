@@ -193,6 +193,14 @@ export interface EnsureAgentDispatchableParams {
     dispatchIntervalMs?: number;
     /** Recovery toggles before giving up (default 2). */
     maxRecoveryAttempts?: number;
+    /**
+     * Overall wall-clock budget for the whole ensure (default 360 s). Every
+     * internal wait is clamped to the REMAINING budget, so once it expires the
+     * helper throws its own attempt-counted error almost immediately — before a
+     * surrounding `beforeAll` Playwright timeout (e.g. 420 s) can preempt it and
+     * mask the diagnostic. Must stay comfortably below that `beforeAll` budget.
+     */
+    overallDeadlineMs?: number;
   };
 }
 
@@ -217,8 +225,14 @@ export interface EnsureAgentDispatchableParams {
  * is a genuine on-disk diff rather than a superseded no-op) forces a clean WS
  * `config.apply`, and that path refreshes OC's runtime IN-PROCESS — it does not
  * depend on the lagging file-watcher, so the agent reliably re-materialises
- * regardless of whether the earlier file-write reload ever landed. Bounded by
- * `maxRecoveryAttempts` so a genuinely-broken stack still fails loudly.
+ * regardless of whether the earlier file-write reload ever landed.
+ *
+ * Bounded two ways so a genuinely-broken stack still fails loudly WITH this
+ * diagnostic: `maxRecoveryAttempts` caps the number of toggles, and
+ * `overallDeadlineMs` (default 360 s) caps total wall-clock. Every internal
+ * wait is clamped to the remaining overall budget, so the helper self-throws an
+ * attempt-counted error before a surrounding `beforeAll` Playwright timeout can
+ * preempt it and swap this message for an opaque one.
  */
 export async function ensureAgentDispatchable(
   params: EnsureAgentDispatchableParams
@@ -228,26 +242,54 @@ export async function ensureAgentDispatchable(
   const dispatchDeadlineMs = params.opts?.dispatchDeadlineMs ?? 120_000;
   const dispatchIntervalMs = params.opts?.dispatchIntervalMs;
   const maxRecoveryAttempts = params.opts?.maxRecoveryAttempts ?? 2;
+  const overallDeadline = Date.now() + (params.opts?.overallDeadlineMs ?? 360_000);
+  const remainingMs = () => Math.max(overallDeadline - Date.now(), 0);
 
-  await waitForOpenClawStable(fetchHealth, stableOpts);
+  // A stability wait clamped to the overall budget. When the budget is spent it
+  // returns immediately (rather than throwing "did not stabilise") so the loop's
+  // next dispatch check produces the informative, attempt-counted error instead.
+  const stableWithinBudget = async () => {
+    const budget = remainingMs();
+    if (budget === 0) return;
+    try {
+      await waitForOpenClawStable(fetchHealth, {
+        ...stableOpts,
+        deadlineMs: Math.min(stableOpts?.deadlineMs ?? 150_000, budget),
+      });
+    } catch (err) {
+      // Only swallow a stabilise timeout that coincides with budget exhaustion;
+      // a genuine early stabilise failure (budget left) is still surfaced.
+      if (remainingMs() > 0) throw err;
+    }
+  };
+
+  await stableWithinBudget();
 
   for (let attempt = 0; ; attempt++) {
     try {
       await waitForAgentDispatchable(fetchDispatch, agentId, {
-        deadlineMs: dispatchDeadlineMs,
+        deadlineMs: Math.min(dispatchDeadlineMs, remainingMs()),
         intervalMs: dispatchIntervalMs,
       });
       return;
-    } catch (err) {
-      if (attempt >= maxRecoveryAttempts) throw err;
+    } catch {
+      // Give up loudly — with our OWN attempt-counted message — the moment
+      // either bound trips, so the surrounding beforeAll timeout never masks it.
+      if (attempt >= maxRecoveryAttempts || remainingMs() === 0) {
+        throw new Error(
+          `OpenClaw runtime did not see agent ${agentId} as dispatchable after ${String(
+            attempt
+          )} recovery attempt(s) — config.apply likely stuck in file-watcher debounce`
+        );
+      }
       // Force a genuine config diff so a clean WS config.apply re-materialises
       // the agent in OC's runtime. Clear the grant, let it settle to disk, then
       // restore it — the stability wait between the halves is what makes each a
       // real diff instead of a self-superseding no-op.
       await setAllowedTools([]);
-      await waitForOpenClawStable(fetchHealth, stableOpts);
+      await stableWithinBudget();
       await setAllowedTools(allowedTools);
-      await waitForOpenClawStable(fetchHealth, stableOpts);
+      await stableWithinBudget();
     }
   }
 }

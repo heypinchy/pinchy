@@ -469,7 +469,9 @@ test.describe.serial("Plugin behavior — pinchy-knowledge", () => {
     // The config-regen wait — plus recovery from OC's hardcoded config.apply
     // rate limit (a toggle + extra stability waits) — can far exceed the 120 s
     // per-test default; give the setup hook its own generous budget so the
-    // dispatch test stays focused.
+    // dispatch test stays focused. `ensureAgentDispatchable` self-bounds to
+    // ~360 s, so this 420 s budget leaves margin for its own informative
+    // give-up error to surface instead of a bare Playwright timeout.
     test.setTimeout(420_000);
     const context = await browser.newContext();
     const page = await context.newPage();
