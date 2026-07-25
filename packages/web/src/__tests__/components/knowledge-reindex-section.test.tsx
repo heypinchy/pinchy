@@ -236,7 +236,16 @@ describe("KnowledgeReindexSection", () => {
       <KnowledgeReindexSection agentId="a1" allowedPathCount={2} pollIntervalMs={1_000_000} />
     );
     await user.click(screen.getByRole("button", { name: /reindex/i }));
-    await waitFor(() => expect(screen.getByRole("button", { name: /reindexing/i })).toBeDisabled());
+    // The optimistic pending job is a React commit queued by the POST's
+    // continuation — pending work to flush, not a timed event to poll for.
+    // `waitFor` would spend a 1000ms WALL-CLOCK budget on it, and under a full
+    // parallel suite a single blocked event-loop turn in exactly this window
+    // eats all of it (measured: >6s for this same await), which is how the line
+    // timed out under load while an isolated rerun stayed green. act() drains
+    // the work in ~2ms independent of machine load, and the assertion gets
+    // stricter: the run must be live the moment the click settles.
+    await act(async () => {});
+    expect(screen.getByRole("button", { name: /reindexing/i })).toBeDisabled();
 
     // The pre-click read finally answers "no job ever ran". It is stale — it
     // must not clear the run the admin just started and is watching. Flush its
