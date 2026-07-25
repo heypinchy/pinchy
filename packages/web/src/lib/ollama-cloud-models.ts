@@ -283,6 +283,13 @@ export const TOOL_CAPABLE_OLLAMA_CLOUD_MODELS = [
  * 262144 (256K) is not arbitrary: it is the largest native window that already
  * compacts healthily in production (kimi-k2.6, observed compactionCount up to
  * 79), i.e. a proven-tolerable operating point in this very deployment.
+ *
+ * Known limitation: because {@link effectiveContextTokens} takes the `min`, this
+ * is a HARD upper bound — a per-model `contextTokens` can only pull the effective
+ * budget *below* it, never above. If a future model genuinely warrants a >256K
+ * effective window (a proven-healthy large-context model whose worst-case turn
+ * latency we accept), raising it means lifting this global constant, not adding a
+ * per-model override — deliberately so, to keep the bug *class* closed by default.
  */
 export const MAX_EFFECTIVE_CONTEXT_TOKENS = 262144;
 
