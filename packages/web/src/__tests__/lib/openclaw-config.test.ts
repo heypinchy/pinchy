@@ -224,6 +224,7 @@ import {
   DOCS_PUBLIC_BASE_URL_SETTING_KEY,
   MEMORY_EMBEDDING_MODEL_PATH,
 } from "@/lib/openclaw-config";
+import { MAX_EFFECTIVE_CONTEXT_TOKENS } from "@/lib/openclaw-config/effective-context";
 import { pushConfigInBackground, _resetPushGeneration } from "@/lib/openclaw-config/write";
 import { getPendingConfigPushCount, _resetConfigPushState } from "@/lib/openclaw-config/push-state";
 import { db } from "@/db";
@@ -1669,11 +1670,14 @@ describe("regenerateOpenClawConfig", () => {
 
     // No env block when no provider keys are configured
     expect(config.env).toBeUndefined();
-    // No provider-derived defaults (no model). The memory-flush disable and the
-    // local memory-search embedding provider are provider-independent and always
-    // present (see dedicated tests above).
+    // No provider-derived defaults (no model). The memory-flush disable, the
+    // local memory-search embedding provider and the native compaction ceiling
+    // are provider-independent and always present (see dedicated tests above) —
+    // the ceiling especially so: it must bound models OpenClaw resolves on its
+    // own, which is exactly the case where Pinchy emits no provider tree at all.
     expect(config.agents.defaults).toEqual({
       compaction: { memoryFlush: { enabled: false } },
+      contextTokens: MAX_EFFECTIVE_CONTEXT_TOKENS,
       memorySearch: {
         provider: "local",
         local: { modelPath: MEMORY_EMBEDDING_MODEL_PATH },
@@ -2513,6 +2517,65 @@ describe("regenerateOpenClawConfig", () => {
       }
     }
     expect(checked).toBeGreaterThan(0);
+  });
+
+  it("also caps locally discovered Ollama models, whose window comes from /api/show", async () => {
+    // The one emission path with no curated catalog behind it: `contextLength`
+    // is whatever the local server reports, so a self-hosted model advertising a
+    // 1M window would reproduce the incident on a route nobody reviews. The
+    // ceiling lands here through the same choke point as every other provider —
+    // and the small model is the control: it must keep its honest 8K budget, not
+    // be raised to the ceiling.
+    vi.mocked(fetchOllamaLocalModelsFromUrl).mockResolvedValue([
+      {
+        id: "ollama/huge-window:70b",
+        name: "huge-window:70b (70B)",
+        parameterSize: "70B",
+        compatible: true,
+        capabilities: { tools: true, vision: false, completion: true, thinking: false },
+        contextLength: 1_048_576,
+      },
+      {
+        id: "ollama/llama3:8b",
+        name: "llama3:8b (8B)",
+        parameterSize: "8B",
+        compatible: true,
+        capabilities: { tools: true, vision: false, completion: true, thinking: false },
+        contextLength: 8_192,
+      },
+    ]);
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "ollama_local_url") return "http://host.docker.internal:11434";
+      return null;
+    });
+
+    await regenerateOpenClawConfig();
+
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
+    const config = JSON.parse(written);
+    const models = config.models.providers["ollama"].models;
+
+    expect(models[0].contextWindow).toBe(1_048_576);
+    expect(models[0].contextTokens).toBe(262_144);
+    expect(models[1].contextTokens).toBe(8_192);
+  });
+
+  it("also caps every model natively via agents.defaults.contextTokens", async () => {
+    // Layer two, and deliberately redundant with the emitted-tree clamp: OpenClaw
+    // applies `agents.defaults.contextTokens` as a min() over whatever it resolved
+    // for a model (resolveContextWindowInfo → source "agentContextTokens";
+    // resolveContextTokensForModel → capOverride). Its coverage is strictly wider
+    // than ours — it also bounds models OpenClaw resolves from its OWN catalog or
+    // runtime discovery, which Pinchy's tree never emits and the clamp therefore
+    // cannot reach. The per-model tree values stay because they carry the lower
+    // researched knees and make the budget visible in openclaw.json; this one
+    // makes the bug class unreachable rather than merely un-emitted.
+    await regenerateOpenClawConfig();
+
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
+    const config = JSON.parse(written);
+
+    expect(config.agents.defaults.contextTokens).toBe(262144);
   });
 
   it("writes reasoning, input (vision), and cost fields for every Ollama Cloud model", async () => {

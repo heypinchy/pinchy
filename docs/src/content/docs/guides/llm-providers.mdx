@@ -126,6 +126,8 @@ Pinchy resolves each model's capabilities — context window, vision, and more �
 
 The catalog refreshes with every Pinchy release, so **upgrading is how you pick up metadata for newer models**. See [Upgrading](/guides/upgrading/) to stay current.
 
+One capability is deliberately bounded: agents run on at most **256K tokens of context**, even where a model advertises more. That's what keeps automatic summarization firing on very-long-window models instead of letting a conversation grow until every turn is slow and expensive. Models at or below 256K are unaffected, and the model's real context window is still what the catalog says. See [Session lifecycle and compaction](/architecture/#session-lifecycle-and-compaction) for the full picture.
+
 ### Your keys stay yours
 
 Every OpenAI-compatible key is encrypted at rest and handled exactly like every other provider secret: it's never written into the OpenClaw configuration in plaintext — only an encrypted reference is — and it never appears in logs, audit events, or error messages. See [Secret handling](/security/secrets/) for the full picture.

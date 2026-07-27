@@ -20,6 +20,13 @@
  * compacts healthily in production (kimi-k2.6, observed compactionCount up to
  * 79), i.e. a proven-tolerable operating point in this very deployment.
  *
+ * It bounds worst-case turn cost, it does not make it small: a ~240K uncached
+ * turn is still a slow turn. At the incident's observed rate (633K → 543s) the
+ * post-fix worst case lands around 3.5 minutes, roughly 40% of what produced the
+ * "Piper is stuck" report. That is the honest claim — compaction now fires,
+ * which ends the unbounded growth; anyone chasing a *fast* worst case has to
+ * lower this constant, and should say so rather than assume this PR did it.
+ *
  * Known limitation: because the clamp below takes the `min`, this is a HARD
  * upper bound — a per-model `contextTokens` can only pull the effective budget
  * *below* it, never above. If a future model genuinely warrants a >256K
@@ -27,12 +34,26 @@
  * latency we accept), raising it means lifting this global constant, not adding
  * a per-model override — deliberately so, to keep the bug *class* closed by
  * default.
+ *
+ * The same value is ALSO written to `agents.defaults.contextTokens` (see
+ * build.ts), which is OpenClaw's own native cap for exactly this. The two layers
+ * are deliberately redundant and cover different gaps: the native knob bounds
+ * even models Pinchy never emits (OpenClaw's own catalog, runtime discovery),
+ * while the per-model values below carry the lower researched knees and keep the
+ * effective budget visible and assertable in the emitted `openclaw.json`.
  */
 export const MAX_EFFECTIVE_CONTEXT_TOKENS = 262144;
 
 /**
  * Clamps the effective context budget of every model in the emitted
- * `models.providers` tree, in place.
+ * `models.providers` tree, in place, and returns the same tree.
+ *
+ * Returning it is not cosmetic: the caller assigns
+ * `models: { providers: applyEffectiveContextCeiling(modelProviders) }` so the
+ * clamp cannot be outrun by a provider block added *below* it. As a free
+ * statement it was ordering-dependent — a future `modelProviders["x"] = …`
+ * inserted after the call would have escaped silently, which is precisely the
+ * whack-a-mole failure this module exists to end.
  *
  * This runs as a single choke point over the finished tree rather than at each
  * provider block, and that placement is the whole point: Pinchy emits models
@@ -51,9 +72,18 @@ export const MAX_EFFECTIVE_CONTEXT_TOKENS = 262144;
  * Models with no numeric `contextWindow` are left untouched: without a window
  * there is no honest budget to derive, and inventing one could claim MORE
  * context than the model actually supports. OpenClaw resolves those from its
- * own catalog instead.
+ * own catalog instead. For the same reason a declared knee never wins over the
+ * native window — three of the four emission paths are uncurated (live
+ * OpenAI-compatible discovery, local Ollama `/api/show`, admin snapshots), so
+ * `contextTokens > contextWindow` is reachable without any catalog review.
+ *
+ * Mutating in place is safe because every caller passes freshly built entries:
+ * the built-in path goes through `stripVision`'s `map(({vision, ...rest}) =>
+ * rest)` and the other three through their own `.map()`. Do NOT hand this the
+ * module-level `BUILTIN_MODEL_CATALOGS` arrays directly — that would stamp a
+ * Pinchy policy value onto the shared catalog every other consumer reads.
  */
-export function applyEffectiveContextCeiling(providers: Record<string, unknown>): void {
+export function applyEffectiveContextCeiling<T extends Record<string, unknown>>(providers: T): T {
   for (const provider of Object.values(providers)) {
     if (!provider || typeof provider !== "object") continue;
     const models = (provider as { models?: unknown }).models;
@@ -64,11 +94,18 @@ export function applyEffectiveContextCeiling(providers: Record<string, unknown>)
       const entry = model as { contextWindow?: unknown; contextTokens?: unknown };
 
       const knee = typeof entry.contextTokens === "number" ? entry.contextTokens : undefined;
-      const window = typeof entry.contextWindow === "number" ? entry.contextWindow : undefined;
-      const budget = knee ?? window;
+      const nativeWindow =
+        typeof entry.contextWindow === "number" ? entry.contextWindow : undefined;
+      const budget = knee ?? nativeWindow;
       if (budget === undefined) continue;
 
-      entry.contextTokens = Math.min(budget, MAX_EFFECTIVE_CONTEXT_TOKENS);
+      entry.contextTokens = Math.min(
+        budget,
+        nativeWindow ?? Number.POSITIVE_INFINITY,
+        MAX_EFFECTIVE_CONTEXT_TOKENS
+      );
     }
   }
+
+  return providers;
 }
