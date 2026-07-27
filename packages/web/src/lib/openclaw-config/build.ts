@@ -24,7 +24,7 @@ import {
   OLLAMA_CLOUD_COST,
   type OllamaCloudModel,
 } from "@/lib/ollama-cloud-models";
-import { applyEffectiveContextCeiling } from "./effective-context";
+import { applyEffectiveContextCeiling, MAX_EFFECTIVE_CONTEXT_TOKENS } from "./effective-context";
 import {
   getModelCatalogForProvider,
   type OpenClawModelDefinition,
@@ -457,6 +457,26 @@ export async function regenerateOpenClawConfig() {
     // byte-identical → zero changed paths → no reload at all. The field is also
     // schema-valid (OpenClaw's zod schema declares memoryFlush.enabled as boolean).
     compaction: { memoryFlush: { enabled: false } },
+    // Native backstop for the compaction ceiling, layered under the per-model
+    // `contextTokens` the emitted models tree carries (effective-context.ts).
+    // OpenClaw applies this as a min() over whatever it resolved for a model —
+    // resolveContextWindowInfo() returns it as source "agentContextTokens" when
+    // it is lower, and resolveContextTokensForModel() folds it in via capOverride
+    // — which is exactly the semantics the tree clamp implements by hand.
+    //
+    // Both layers ship on purpose. The tree clamp is the visible, assertable one
+    // (the budget is readable in openclaw.json and carries the lower researched
+    // knees), but it can only bound what Pinchy itself emits. This knob also
+    // bounds models OpenClaw resolves from its OWN catalog or runtime discovery,
+    // i.e. the one gap a tree walk structurally cannot close. Cheap, native, and
+    // it makes the bug class unreachable rather than merely un-emitted.
+    //
+    // Reload-safe on the same two grounds as the memoryFlush flag above: the
+    // changed path `agents.defaults.contextTokens` matches the broad `agents`
+    // rule in OpenClaw's reload classifier (kind "none" → noop, no gateway
+    // restart), and the `deepMerge(existingAgents, …)` below keeps later
+    // regenerates byte-identical.
+    contextTokens: MAX_EFFECTIVE_CONTEXT_TOKENS,
     // Pin memory-core's embedding provider to the bundled local GGUF model
     // (the llama-cpp provider + EmbeddingGemma-300m, baked into the openclaw
     // image — see Dockerfile.openclaw and REQUIRED_BUNDLED_PLUGINS below).
@@ -1480,10 +1500,14 @@ export async function regenerateOpenClawConfig() {
   // higher than MAX_EFFECTIVE_CONTEXT_TOKENS, so OpenClaw's shouldCompact()
   // always has a reachable trigger. See effective-context.ts for why this is
   // enforced once over the finished tree instead of per provider block.
-  applyEffectiveContextCeiling(modelProviders);
-
+  //
+  // The clamp is INLINED into the assignment rather than called as a statement
+  // above it, so a provider block added later in this function cannot slip past
+  // it unnoticed — the ordering is enforced by construction, not by memory.
   if (Object.keys(modelProviders).length > 0) {
-    (config as Record<string, unknown>).models = { providers: modelProviders };
+    (config as Record<string, unknown>).models = {
+      providers: applyEffectiveContextCeiling(modelProviders),
+    };
   }
 
   // Build Telegram channel config from DB settings using OpenClaw's multi-account format.

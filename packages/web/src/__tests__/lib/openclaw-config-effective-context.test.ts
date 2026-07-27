@@ -111,6 +111,33 @@ describe("applyEffectiveContextCeiling", () => {
     expect(() => applyEffectiveContextCeiling(providers)).not.toThrow();
   });
 
+  it("never budgets above the native window, even when a knee exceeds it", () => {
+    // The clamp now covers three UNCURATED emission paths (live OpenAI-compatible
+    // discovery, local Ollama /api/show, admin snapshots), so it cannot lean on
+    // the curated catalog's "contextTokens <= contextWindow" test. A knee above
+    // the window would otherwise survive as long as it stayed under the ceiling —
+    // claiming MORE context than the model actually has, which is the one thing
+    // the windowless-model skip below already refuses to do.
+    const providers = {
+      custom: provider([{ id: "mis-declared", contextWindow: 200000, contextTokens: 300000 }]),
+    };
+
+    applyEffectiveContextCeiling(providers);
+
+    expect(providers.custom.models[0].contextTokens).toBe(200000);
+  });
+
+  it("returns the same tree, so the clamp can be inlined into the config assignment", () => {
+    // build.ts assigns `models: { providers: applyEffectiveContextCeiling(...) }`
+    // rather than calling the clamp as a free statement. That is what makes the
+    // choke point ordering-proof: a future `modelProviders["fifth-path"] = …`
+    // inserted below the old call site would have escaped silently — the exact
+    // whack-a-mole failure this module exists to end.
+    const providers = { custom: provider([{ id: "m", contextWindow: 999424 }]) };
+
+    expect(applyEffectiveContextCeiling(providers)).toBe(providers);
+  });
+
   it("never lets any curated ollama-cloud model exceed the ceiling or its own window", () => {
     // Run the real catalog through the clamp — the invariant that actually ships.
     const catalog: readonly OllamaCloudModel[] = TOOL_CAPABLE_OLLAMA_CLOUD_MODELS;
