@@ -78,6 +78,29 @@ describe("pinchy-knowledge plugin", () => {
     });
   });
 
+  // The counterpart to the pinchy-files description tests: this tool carries the
+  // priority claim, because it only exists for agents that actually have it.
+  // Putting the claim here rather than into a template-specific prompt means a
+  // custom agent (no template at all) gets the same guidance, and a new template
+  // inherits it without a conditional anywhere.
+  //
+  // "Citable" is the load-bearing word: retrieval returns numbered passages WITH
+  // page numbers, which is what the cite-then-answer contract needs. Reading a
+  // file yields text with no such anchor, which is how a source ends up in the
+  // Sources list with no number in front of it.
+  it("knowledge_search description claims priority for content questions and names its citation advantage", async () => {
+    const api = createMockApi(defaultConfig);
+    const { default: plugin } = await import("./index");
+    plugin.register!(api as any);
+
+    const factory = mockRegisterTool.mock.calls[0][0];
+    const tool = factory({ agentId: "agent-1" });
+
+    expect(tool.description.toLowerCase()).toMatch(/\bfirst\b|\bbefore\b/);
+    expect(tool.description.toLowerCase()).toMatch(/cite|citable/);
+    expect(tool.description.toLowerCase()).toMatch(/page/);
+  });
+
   it("factory returns null for an agent not granted the tool", async () => {
     const api = createMockApi(defaultConfig);
     const { default: plugin } = await import("./index");

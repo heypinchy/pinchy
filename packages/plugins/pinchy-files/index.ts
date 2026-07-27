@@ -266,7 +266,7 @@ async function readPdf(
 const plugin = {
   id: "pinchy-files",
   name: "Pinchy Files",
-  description: "Scoped read-only file access for Pinchy Knowledge Base agents.",
+  description: "Scoped file access to the directories an agent has been granted.",
   configSchema: {
     validate: (value: unknown) => {
       if (value && typeof value === "object" && "agents" in value) {
@@ -313,7 +313,7 @@ const plugin = {
         return {
           name: "pinchy_ls",
           label: "List Files",
-          description: `List files and directories. Start here first to discover available files. Your knowledge base is at: ${pathList}`,
+          description: `List files and directories in the paths this agent may access: ${pathList}`,
           parameters: {
             type: "object",
             properties: {
@@ -378,7 +378,7 @@ const plugin = {
         return {
           name: "pinchy_read",
           label: "Read File",
-          description: `Read a file's content. Use pinchy_ls first to discover the exact file path. Your knowledge base is at: ${pathList}`,
+          description: `Read one file in full. Needs an exact path — use pinchy_ls to discover it. Best when you already know which document you need; it returns no page numbers, so what you read here cannot be cited. Accessible paths: ${pathList}`,
           parameters: {
             type: "object",
             properties: {

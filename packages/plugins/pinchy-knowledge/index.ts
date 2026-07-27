@@ -167,7 +167,7 @@ const plugin = {
           name: "knowledge_search",
           label: "Search Knowledge Base",
           description:
-            "Search the organization's knowledge base for passages relevant to a question. Returns numbered, citable source snippets — cite them by number in your answer.",
+            "Search the organization's indexed documents for passages relevant to a question. Use this FIRST for any question about document content, before reaching for file tools: it returns numbered passages together with their document path and page number, which is what makes an answer citable. Reading a file directly gives you no page anchor, so anything found that way cannot be cited. Cite the returned numbers inline in your answer.",
           parameters: {
             type: "object",
             properties: {

@@ -208,7 +208,20 @@ describe("pinchy-files plugin", () => {
     expect(pathParamDescription).toContain("/data/docs/");
   });
 
-  it("pinchy_ls description instructs model to use it first", async () => {
+  // pinchy-files predates real retrieval, back when it WAS the knowledge base.
+  // That wording now competes with knowledge_search for the same job: an agent
+  // told "your knowledge base is at /data/x — start here first" walks the folder
+  // tree instead of searching. Reading files returns no page numbers, so nothing
+  // it finds can be cited, and the answer's Sources list comes out broken.
+  // Measured on the Noack corpus: 4x ls + 5x read + 8x search over ~5 minutes
+  // with a malformed citation list, against 3 searches in ~30s once the agent
+  // stopped being pointed at the file tools.
+  //
+  // So these tools state what they DO; knowledge_search claims the priority
+  // (see its own description test). That split also keeps the document agents
+  // — Contract Analyzer and friends, which have no knowledge_search at all —
+  // working: with no alternative tool there is no priority to declare.
+  it("pinchy_ls description does not present itself as the knowledge base", async () => {
     const api = createMockApi({ "agent-1": { allowed_paths: ["/data/docs/"] } });
     const { default: plugin } = await import("./index");
     plugin.register!(api as any);
@@ -218,7 +231,21 @@ describe("pinchy-files plugin", () => {
     )?.[0];
     const tool = lsFactory({ agentId: "agent-1" });
 
-    expect(tool.description.toLowerCase()).toMatch(/first|start/);
+    expect(tool.description).not.toMatch(/knowledge base/i);
+    expect(tool.description).not.toMatch(/start here first/i);
+  });
+
+  it("pinchy_read description does not present itself as the knowledge base", async () => {
+    const api = createMockApi({ "agent-1": { allowed_paths: ["/data/docs/"] } });
+    const { default: plugin } = await import("./index");
+    plugin.register!(api as any);
+
+    const readFactory = mockRegisterTool.mock.calls.find(
+      (call: any[]) => call[1]?.name === "pinchy_read"
+    )?.[0];
+    const tool = readFactory({ agentId: "agent-1" });
+
+    expect(tool.description).not.toMatch(/knowledge base/i);
   });
 
   it("pinchy_read path parameter description includes the allowed paths", async () => {

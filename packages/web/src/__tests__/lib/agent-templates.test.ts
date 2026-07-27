@@ -316,12 +316,21 @@ describe("generateAgentsMd", () => {
     expect(content).toContain("/data/hr-docs/");
   });
 
-  it("should instruct the agent to use pinchy_ls before reading files", () => {
+  // This block used to prescribe "1. Always start with pinchy_ls / 2. Use
+  // pinchy_read", which contradicted the template's own "use knowledge_search
+  // for any question" two paragraphs above — and the numbered, more specific
+  // instruction won. The generated prompt now states only WHERE the documents
+  // are (a fact, identical for every template); WHICH tool to reach for is the
+  // tools' own descriptions to declare, which is where a model looks when
+  // choosing one and which also reaches agents created without a template.
+  it("states where the documents are without prescribing a file-tool workflow", () => {
     const template = AGENT_TEMPLATES["knowledge-base"];
     const content = generateAgentsMd(template, {
       "pinchy-files": { allowed_paths: ["/data/hr-docs/"] },
     });
-    expect(content).toContain("pinchy_ls");
+    expect(content).toContain("/data/hr-docs/");
+    expect(content).not.toContain("pinchy_ls");
+    expect(content).not.toContain("pinchy_read");
   });
 
   it("should preserve the base knowledge base instructions", () => {
