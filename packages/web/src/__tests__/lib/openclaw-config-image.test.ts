@@ -78,6 +78,16 @@ vi.mock("@/lib/provider-models", () => ({
   getDefaultModel: vi.fn(async () => ""),
 }));
 
+vi.mock("@/lib/openai-compatible-providers", () => ({
+  listOpenAiCompatibleProviders: vi.fn().mockResolvedValue([]),
+  listProvidersWithApiKeys: vi.fn().mockResolvedValue([]),
+  getDecryptedApiKey: vi.fn().mockResolvedValue(null),
+}));
+
+vi.mock("@/lib/openai-compatible-discovery", () => ({
+  resolveCustomProviderModels: vi.fn().mockResolvedValue([]),
+}));
+
 import { writeFileSync, readFileSync, existsSync } from "fs";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { db } from "@/db";
