@@ -697,7 +697,15 @@ describe("POST /api/agents", () => {
     );
   });
 
-  it("should include pinchy_ls instructions in AGENTS.md for knowledge-base agents", async () => {
+  // The route-level counterpart to the generateAgentsMd unit test: the file that
+  // actually lands in the workspace must not tell a KB agent to start from the
+  // file tools. It used to prescribe "1. Always start with `pinchy_ls`", which
+  // outranked the template's own "use knowledge_search for any question" and
+  // sent the agent walking the folder tree — producing answers whose sources
+  // carried no citation numbers, because only retrieval returns page anchors.
+  // Which tool to prefer is now stated in the tool descriptions themselves.
+  // The test above already pins that the granted paths still reach the file.
+  it("should not prescribe file-tool steps in AGENTS.md for knowledge-base agents", async () => {
     const request = new NextRequest("http://localhost:7777/api/agents", {
       method: "POST",
       body: JSON.stringify({
@@ -714,7 +722,7 @@ describe("POST /api/agents", () => {
     expect(writeWorkspaceFile).toHaveBeenCalledWith(
       "new-agent-id",
       "AGENTS.md",
-      expect.stringContaining("pinchy_ls")
+      expect.not.stringContaining("pinchy_ls")
     );
   });
 
