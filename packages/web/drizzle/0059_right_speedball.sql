@@ -8,8 +8,10 @@
 -- 0.9.0 -> 0.10 upgrade. The DDL below is byte-identical to what the release
 -- branch ran, so skipping it there is correct rather than merely tolerable.
 --
--- Do not regenerate this file with `db:generate` without re-adding the guard.
--- migration-090-upgrade-path.integration.test.ts fails if it goes missing.
+-- Do not regenerate this file with `db:generate` without re-adding the guard,
+-- and do not edit the DDL below: migration-090-baseline.test.ts fails on either
+-- (statically, in `pnpm test`), and migration-090-upgrade-path.integration.test
+-- reproduces the aborted upgrade itself under `pnpm test:db`.
 CREATE TABLE IF NOT EXISTS "openai_compatible_providers" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"slug" text NOT NULL,

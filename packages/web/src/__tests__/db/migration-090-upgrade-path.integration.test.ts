@@ -25,8 +25,12 @@
  * CREATE TABLE IF NOT EXISTS or the whole upgrade aborts on first boot.
  *
  * This test reproduces a released 0.9.0 database with the REAL migrator — never
- * hand-written DDL — and proves the upgrade to HEAD both succeeds and delivers
- * 0056-0058. It fails if someone regenerates 0059 without the guard.
+ * hand-written DDL — and proves the upgrade to HEAD both succeeds and applies
+ * every 0.10 migration. It fails if someone regenerates 0059 without the guard.
+ *
+ * The static premises it rests on (the watermark ordering, the guard's presence,
+ * the released DDL) are pinned in migration-090-baseline.test.ts as well, so
+ * they are also checked in the Docker-free suite.
  *
  * Runs under `pnpm -C packages/web test:db` against the dev-stack Postgres on
  * :5434 (or VITEST_INTEGRATION_DB_URL). Uses its own throwaway database.
@@ -38,32 +42,16 @@ import { migrate } from "drizzle-orm/postgres-js/migrator";
 import { cp, mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import {
+  PROVIDER_TABLE,
+  REL09_SQL,
+  REL09_TAG,
+  REL09_WHEN,
+  V090_LAST_IDX,
+} from "@/test-helpers/release-090";
 
 // vitest runs with cwd = packages/web; the real migrations live in ./drizzle.
 const REAL_MIGRATIONS = join(process.cwd(), "drizzle");
-
-// v0.9.0 branched after idx 55; 0056-0059 are the 0.10 additions.
-const V090_LAST_IDX = 55;
-
-// The release branch's own migration, mirrored here so this test reproduces a
-// real 0.9.0 database instead of approximating one. The SQL is byte-identical
-// to 0059_right_speedball's table definition (WITHOUT the IF NOT EXISTS guard —
-// on a 0.9.0 database the table cannot pre-exist), and the timestamp is the one
-// release/0.9 pins so its watermark stays below main's 0056.
-const REL09_TAG = "0056_openai_compatible_providers";
-const REL09_WHEN = 1784300000000;
-const REL09_SQL = `CREATE TABLE "openai_compatible_providers" (
-	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
-	"slug" text NOT NULL,
-	"display_name" text NOT NULL,
-	"base_url" text NOT NULL,
-	"api_key" text NOT NULL,
-	"models" jsonb DEFAULT '[]'::jsonb NOT NULL,
-	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
-	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
-	CONSTRAINT "openai_compatible_providers_slug_unique" UNIQUE("slug")
-);
-`;
 
 // Per-process DB name so concurrent runs can't collide on the throwaway DB.
 const DB_NAME = `pinchy_090_upgrade_test_${process.pid}`;
@@ -107,8 +95,8 @@ describe("migration upgrade path (v0.9.0 → HEAD)", () => {
     }
 
     // Build a "v0.9.0" migrations folder: every .sql file, the journal truncated
-    // to idx <= 55, plus the release branch's own 0056 appended exactly as
-    // release/0.9 ships it.
+    // to idx <= V090_LAST_IDX, plus the release branch's own 0056 appended
+    // exactly as release/0.9 ships it.
     v090MigrationsDir = await mkdtemp(join(tmpdir(), "pinchy-v090-"));
     await cp(REAL_MIGRATIONS, v090MigrationsDir, { recursive: true });
     const journal = await readJournal(v090MigrationsDir);
@@ -127,7 +115,7 @@ describe("migration upgrade path (v0.9.0 → HEAD)", () => {
     // main's 0056_serious_expediter.sql was copied along; the truncated journal
     // never references it, and the release tag gets its own file.
     await writeFile(join(v090MigrationsDir, `${REL09_TAG}.sql`), REL09_SQL);
-  }, 120_000);
+  });
 
   afterAll(async () => {
     if (v090MigrationsDir) await rm(v090MigrationsDir, { recursive: true, force: true });
@@ -139,23 +127,7 @@ describe("migration upgrade path (v0.9.0 → HEAD)", () => {
     }
   });
 
-  it("keeps the 0.9.0 watermark below every 0.10 migration", async () => {
-    // The premise the whole upgrade rests on. If a future 0.10 migration were
-    // ever backdated below REL09_WHEN it would be skipped on exactly this path,
-    // and the behavioral assertions below would not necessarily catch it (they
-    // only witness 0056 and 0058).
-    const journal = await readJournal(REAL_MIGRATIONS);
-    const laterThan090 = journal.entries.filter((e) => e.idx > V090_LAST_IDX);
-    expect(laterThan090.length).toBeGreaterThan(0);
-    for (const entry of laterThan090) {
-      expect({ tag: entry.tag, above: entry.when > REL09_WHEN }).toEqual({
-        tag: entry.tag,
-        above: true,
-      });
-    }
-  });
-
-  it("upgrades a released 0.9.0 database to HEAD without losing 0056-0058", async () => {
+  it("upgrades a released 0.9.0 database to HEAD without skipping 0056-0058", async () => {
     const relExists = async (client: postgres.Sql, rel: string): Promise<boolean> => {
       const [{ ok }] = await client`select to_regclass(${rel}) is not null as ok`;
       return ok as boolean;
@@ -168,7 +140,7 @@ describe("migration upgrade path (v0.9.0 → HEAD)", () => {
         await migrate(drizzle(client), { migrationsFolder: v090MigrationsDir });
 
         // It really is a 0.9.0 database: it HAS the backported provider table…
-        expect(await relExists(client, "public.openai_compatible_providers")).toBe(true);
+        expect(await relExists(client, `public.${PROVIDER_TABLE}`)).toBe(true);
         // …and none of the 0.10 migrations, or the upgrade below proves nothing.
         expect(await relExists(client, "public.agent_delivered_files")).toBe(false);
 
@@ -192,22 +164,35 @@ describe("migration upgrade path (v0.9.0 → HEAD)", () => {
       }
     }
 
-    // Phase 3 — the three migrations the naive backport would have skipped.
+    // Phase 3 — the migrations the naive backport would have skipped.
     {
       const client = postgres(testUrl, { max: 1 });
       try {
+        // Completeness first, and generically: one applied row per HEAD journal
+        // entry plus the release branch's own 0056, watermark parked at HEAD's
+        // last migration. This is what covers 0057 — a data backfill on a table
+        // 0056 truncates, so it can leave no witness of its own here; its
+        // behavior is pinned by migration-kb-archive-backfill — and every 0.10
+        // migration added after this test was written.
+        const journal = await readJournal(REAL_MIGRATIONS);
+        const applied = await client<{ created_at: string }[]>`
+          select created_at from drizzle.__drizzle_migrations order by created_at desc`;
+        expect(applied.length).toBe(journal.entries.length + 1);
+        expect(Number(applied[0].created_at)).toBe(journal.entries.at(-1)!.when);
+
         // 0058 — the clean binary signal.
         expect(await relExists(client, "public.agent_delivered_files")).toBe(true);
-        // 0056 — the KB embedding column really was re-widened to 768 dims.
+        // 0056 — the KB embedding column really was re-created at 768 dims.
+        // pgvector stores the declared dimension verbatim in atttypmod.
         const [{ dims }] = await client<{ dims: number | null }[]>`
           select atttypmod as dims from pg_attribute
           where attrelid = 'public.kb_chunks'::regclass and attname = 'embedding'`;
         expect(dims).toBe(768);
         // And the 0.9.0 table survived 0059 re-running as a no-op.
-        expect(await relExists(client, "public.openai_compatible_providers")).toBe(true);
+        expect(await relExists(client, `public.${PROVIDER_TABLE}`)).toBe(true);
       } finally {
         await client.end();
       }
     }
-  }, 180_000);
+  });
 });
