@@ -237,13 +237,11 @@ describe("KnowledgeReindexSection", () => {
     );
     await user.click(screen.getByRole("button", { name: /reindex/i }));
     // The optimistic pending job is a React commit queued by the POST's
-    // continuation — pending work to flush, not a timed event to poll for.
-    // `waitFor` would spend a 1000ms WALL-CLOCK budget on it, and under a full
-    // parallel suite a single blocked event-loop turn in exactly this window
-    // eats all of it (measured: >6s for this same await), which is how the line
-    // timed out under load while an isolated rerun stayed green. act() drains
-    // the work in ~2ms independent of machine load, and the assertion gets
-    // stricter: the run must be live the moment the click settles.
+    // continuation. `waitFor` would poll for it against a 1000ms WALL-CLOCK
+    // budget, which one blocked event-loop turn under a full parallel run
+    // consumes entirely. act() forces the pending work to settle first, so the
+    // assertion is both deterministic and stricter: the run must be live the
+    // moment the click settles.
     await act(async () => {});
     expect(screen.getByRole("button", { name: /reindexing/i })).toBeDisabled();
 
