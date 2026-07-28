@@ -9,7 +9,7 @@ import {
   useIsMarkdownCodeBlock,
 } from "@assistant-ui/react-markdown";
 import remarkGfm from "remark-gfm";
-import { type FC, memo, useContext, useMemo } from "react";
+import { type ComponentProps, type FC, memo, useContext, useMemo } from "react";
 import { CheckIcon, CopyIcon } from "lucide-react";
 import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
 
@@ -19,17 +19,34 @@ import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button
 import { remarkSourceLinks, parseSourceHref } from "@/lib/knowledge/source-links";
 import { cn } from "@/lib/utils";
 
+/** Taken from the consuming component so the list below cannot drift from what it accepts. */
+type RemarkPlugins = ComponentProps<typeof MarkdownTextPrimitive>["remarkPlugins"];
+
+/**
+ * The remark plugins a chat message is rendered with.
+ *
+ * Exported ONLY so a test can apply this list the way unified does. The types
+ * do not protect the distinction that matters here: unified wants an ATTACHER
+ * (`(options) => transformer`), and an already-applied transformer is also just
+ * a function, so `remarkSourceLinks({ agentId })` type-checks perfectly and then
+ * crashes the render of every message. That is not hypothetical — it shipped
+ * once and took the chat down with "Cannot read properties of undefined". The
+ * unit tests could not see it because they invoke the transformer directly,
+ * which is precisely the step this list gets to skip.
+ *
+ * Without an agent id there is no route to link a citation to, so the plugin is
+ * left out entirely rather than emitting hrefs that cannot resolve.
+ */
+export function buildRemarkPlugins(agentId: string | null): RemarkPlugins {
+  return agentId ? [remarkGfm, [remarkSourceLinks, { agentId }]] : [remarkGfm];
+}
+
 const MarkdownTextImpl = () => {
   const agentId = useContext(AgentIdContext);
 
   // Rebuilt only when the agent changes: remark re-parses the whole message on
   // a new plugin array identity, and this renderer runs per streamed chunk.
-  // Without an agent id there is no route to link to, so the plugin is left out
-  // entirely rather than emitting hrefs that cannot resolve.
-  const remarkPlugins = useMemo(
-    () => (agentId ? [remarkGfm, remarkSourceLinks({ agentId })] : [remarkGfm]),
-    [agentId]
-  );
+  const remarkPlugins = useMemo(() => buildRemarkPlugins(agentId), [agentId]);
 
   return (
     <MarkdownTextPrimitive
