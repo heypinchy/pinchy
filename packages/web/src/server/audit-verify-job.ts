@@ -39,24 +39,6 @@ const CHECKPOINT_ID = 1;
 // pathological run with thousands of violations.
 const MAX_REPORTED_IDS = 50;
 
-// Process-wide counter mirroring getAuditWriteFailedCount() (audit-deferred.ts).
-// Groundwork only: exported via getAuditIntegrityViolationCount() for a future
-// ADMIN-authenticated status surface (#699), but nothing reads it yet — a
-// violation is currently observable via the audit.integrity_check row + the
-// stderr line below. Deliberately NOT wired into the unauthenticated
-// /api/health (that would leak "tampering detected" to anonymous callers), and
-// being process-local it wouldn't survive a restart anyway: audit_verify_state
-// .lastStatus is the durable signal a real surface should read (see #699).
-let integrityViolationCount = 0;
-
-export function getAuditIntegrityViolationCount(): number {
-  return integrityViolationCount;
-}
-
-export function resetAuditIntegrityViolationCount(): void {
-  integrityViolationCount = 0;
-}
-
 interface Checkpoint {
   lastVerifiedId: number;
   lastVerifiedHmac: string | null;
@@ -240,9 +222,9 @@ export async function sweepAuditVerify(): Promise<AuditVerifySweepResult> {
   //
   // Advancing even on violation is intentional: re-scanning the same tampered
   // window forever would just re-alarm on every cycle without surfacing new
-  // information — the violation is recorded (audit row + stderr + counter)
-  // exactly once. On an audit-write failure there is no report row to fold, so
-  // fall back to the window actually scanned.
+  // information — the violation is recorded (audit row + stderr) exactly once.
+  // On an audit-write failure there is no report row to fold, so fall back to
+  // the window actually scanned.
   let ownRow: { id: number; rowHmac: string } | null = null;
   try {
     ownRow = await appendAuditLog(entry);
@@ -256,8 +238,15 @@ export async function sweepAuditVerify(): Promise<AuditVerifySweepResult> {
     await writeCheckpoint(scannedTo, lastVerifiedHmac, status);
   }
 
+  // A detected violation is observable in three places, all of them durable or
+  // externally shipped: the audit.integrity_check failure row above, the
+  // structured stderr line below, and the checkpoint's lastStatus. The
+  // admin-authenticated GET /api/audit/verify/status (#699) reads the first and
+  // third — deliberately with no process-local counter feeding it, since that
+  // resets to 0 on restart and would silently clear the alarm. Equally
+  // deliberate: none of this reaches the unauthenticated /api/health, which
+  // would confirm to an attacker that their manipulation was noticed.
   if (!result.valid) {
-    integrityViolationCount++;
     console.error(
       JSON.stringify({
         level: "error",

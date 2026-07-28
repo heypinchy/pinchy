@@ -114,8 +114,6 @@ import {
   startAuditVerifyJob,
   stopAuditVerifyJob,
   _isAuditVerifyJobRunning,
-  getAuditIntegrityViolationCount,
-  resetAuditIntegrityViolationCount,
 } from "@/server/audit-verify-job";
 
 function mockCheckpointRow(
@@ -156,7 +154,6 @@ function mockRacedRow(row: { id: number } | null) {
 describe("sweepAuditVerify", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    resetAuditIntegrityViolationCount();
     mockOnConflictDoUpdate.mockResolvedValue(undefined);
     mockInsertValues.mockReturnValue({ onConflictDoUpdate: mockOnConflictDoUpdate });
     mockInsert.mockReturnValue({ values: mockInsertValues });
@@ -289,7 +286,6 @@ describe("sweepAuditVerify", () => {
         }),
       })
     );
-    expect(getAuditIntegrityViolationCount()).toBe(0);
     // A clean run must never route through the audit-write-failure path.
     expect(mockRecordAuditFailure).not.toHaveBeenCalled();
   });
@@ -435,7 +431,7 @@ describe("sweepAuditVerify", () => {
     stderrSpy.mockRestore();
   });
 
-  it("violation: advances the checkpoint anyway, sets lastStatus='violation', emits failure audit + stderr + increments counter", async () => {
+  it("violation: advances the checkpoint anyway, sets lastStatus='violation', emits failure audit + stderr", async () => {
     mockCheckpointRow({ lastVerifiedId: 0, lastVerifiedHmac: null });
     mockCurrentMaxId(2);
     mockVerifyIntegrity.mockResolvedValue({
@@ -473,7 +469,6 @@ describe("sweepAuditVerify", () => {
         chainBreakCount: 0,
       })
     );
-    expect(getAuditIntegrityViolationCount()).toBe(1);
     stderrSpy.mockRestore();
   });
 

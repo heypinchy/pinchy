@@ -1379,6 +1379,37 @@ If tampered entries are found, `valid` is `false` and `invalidIds` contains the 
 - `401` — not authenticated
 - `403` — not an admin
 
+### `GET /api/audit/verify/status`
+
+Report the health of the periodic verify job without re-scanning the log. **Admin only.**
+
+**Response:**
+
+```json
+{
+  "lastStatus": "ok",
+  "lastVerifiedId": 4821,
+  "lastRunAt": "2026-07-28T09:14:02.417Z",
+  "lastViolationAt": null
+}
+```
+
+| Field             | Description                                                                                                  |
+| ----------------- | ------------------------------------------------------------------------------------------------------------ |
+| `lastStatus`      | Outcome of the most recent sweep: `ok`, `violation`, or `never_run` if no sweep result has been recorded yet |
+| `lastVerifiedId`  | Highest audit entry ID the job has verified so far                                                           |
+| `lastRunAt`       | When the last sweep completed, or `null` if it never has                                                     |
+| `lastViolationAt` | When an integrity violation was last recorded, or `null` if none ever was                                    |
+
+Read both status fields. `lastStatus` describes the most recent sweep only — the job advances past a tampered range on purpose, so a later sweep over intact rows reports `ok` again. `lastViolationAt` is derived from the append-only `audit.integrity_check` failure entries and is never cleared, so it answers whether the log was ever found tampered with. Both survive a restart; nothing here is held in process memory.
+
+This is intentionally not part of the unauthenticated `/api/health` endpoint: telling an anonymous caller that tampering was detected also tells an attacker that they were noticed.
+
+**Errors:**
+
+- `401` — not authenticated
+- `403` — not an admin
+
 ### `GET /api/audit/event-types`
 
 List the distinct event types present in the current audit log. Useful for populating filter dropdowns without enumerating the full schema. **Admin only.**
