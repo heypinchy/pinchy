@@ -618,15 +618,17 @@ export type AuditLogEntry =
       // (KB citation source PDFs today; the shared "agent, give me file X"
       // serve mechanism later). Audited deliberately even though it's
       // read-only (governance: which documents did a user actually open).
-      // `userId` mirrors the top-level `actorId` for detail-query
-      // convenience (same redundancy as `retrieval.query`'s `agent` field).
+      // The actor is carried by the top-level `actorId` ALONE: that column is
+      // pseudonymized on write (resolveActorId) so crypto-erasure can reach
+      // it, whereas `detail` is stored verbatim. Never mirror a raw users.id
+      // in here for query convenience (#824) — filter by actorId through
+      // `resolveActorIdMatchSet` instead.
       // `document.name` is a basename ONLY — never the full path, which
       // could embed a username (AGENTS.md PII rule). `reason` is present on
       // failure rows only (outside allowed_paths, traversal/symlink escape,
       // missing file, not a regular file, oversized).
       eventType: "knowledge.source_viewed";
       detail: {
-        userId: string;
         agent: EntityRef;
         document: { name: string };
         reason?: string;

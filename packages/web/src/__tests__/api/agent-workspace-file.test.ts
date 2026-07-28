@@ -92,13 +92,40 @@ describe("GET /api/agents/[agentId]/workspace-file", () => {
     expect(entry.outcome).toBe("success");
     expect(entry.actorId).toBe("user-1");
     expect(entry.detail).toMatchObject({
-      userId: "user-1",
       agent: { id: "agent-1", name: "Smithers" },
       document: { name: "handbook.pdf" },
     });
     // The full path (which could embed a username) must never land in the
     // audit detail — only the basename.
     expect(JSON.stringify(entry.detail)).not.toContain(tmpRoot);
+    // Nor may the raw users.id (#824): appendAuditLog pseudonymizes the
+    // actorId COLUMN only, `detail` is stored verbatim. An id written here
+    // would sit un-erasable in an HMAC-chained row and defeat crypto-erasure
+    // — and it is redundant with the (pseudonymized) actorId anyway.
+    expect(entry.detail).not.toHaveProperty("userId");
+    expect(JSON.stringify(entry.detail)).not.toContain("user-1");
+  });
+
+  it("keeps the raw user id out of the detail on failure rows too", async () => {
+    // Same crypto-erasure rule as the success row above (#824) — every audit
+    // path this route writes goes through the same detail builder, so a
+    // regression on any of them is a regression on all.
+    const secretPath = join(outsideDir, "secret.pdf");
+    writeFileSync(secretPath, SECRET_BYTES);
+
+    const res = await callGET("agent-1", secretPath);
+
+    expect(res.status).toBe(403);
+    expect(mockDeferAuditLog).toHaveBeenCalledTimes(1);
+    const entry = mockDeferAuditLog.mock.calls[0][0];
+    expect(entry.eventType).toBe("knowledge.source_viewed");
+    expect(entry.outcome).toBe("failure");
+    expect(entry.detail).toMatchObject({ reason: "outside_allowed_paths" });
+    // The actor is still attributable — through the column that gets
+    // pseudonymized, which is the whole point.
+    expect(entry.actorId).toBe("user-1");
+    expect(entry.detail).not.toHaveProperty("userId");
+    expect(JSON.stringify(entry.detail)).not.toContain("user-1");
   });
 
   it("sanitizes a filename containing a quote/backslash so it cannot break out of the quoted Content-Disposition value", async () => {

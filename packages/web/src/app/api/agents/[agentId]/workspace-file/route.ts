@@ -36,8 +36,11 @@ function sourceViewedAuditEntry(args: {
     eventType: "knowledge.source_viewed",
     resource: `agent:${args.agentId}`,
     outcome: args.outcome,
+    // The actor lives in `actorId` ONLY — appendAuditLog pseudonymizes that
+    // column (resolveActorId) for GDPR crypto-erasure, while `detail` is
+    // stored verbatim. A raw users.id repeated here would be un-erasable in
+    // an HMAC-chained row, and redundant besides (#824).
     detail: {
-      userId: args.userId,
       agent: { id: args.agentId, name: args.agentName ?? args.agentId },
       document: { name: args.documentName },
       ...(args.reason !== undefined ? { reason: args.reason } : {}),

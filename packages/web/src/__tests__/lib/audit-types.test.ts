@@ -62,6 +62,24 @@ describe("AuditLogEntry email_workflow.updated / .deleted (Automations managemen
   });
 });
 
+describe("AuditLogEntry knowledge.source_viewed (#824)", () => {
+  it("types the detail shape without a raw user id", () => {
+    // `detail` is stored verbatim — appendAuditLog pseudonymizes the actorId
+    // COLUMN only (resolveActorId). A `userId` field here would put a raw
+    // users.id into an immutable, HMAC-chained row that crypto-erasure cannot
+    // reach, and it duplicates the actor the row already carries. Pinned at
+    // compile time so it cannot come back through the type.
+    expectTypeOf<
+      Extract<AuditLogEntry, { eventType: "knowledge.source_viewed" }>["detail"]
+    >().toEqualTypeOf<{
+      agent: { id: string; name: string };
+      document: { name: string };
+      reason?: string;
+    }>();
+    expectTypeOf<"knowledge.source_viewed">().toExtend<AuditEventType>();
+  });
+});
+
 describe("AuditEventType is a subset of AuditLogEntry['eventType']", () => {
   it("every curated event type is one appendAuditLog can record", () => {
     // Intentionally NOT equal (the entry type is strictly broader), but the
