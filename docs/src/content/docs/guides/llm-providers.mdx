@@ -66,7 +66,9 @@ The **very first** provider you configure — built-in or custom — automatical
 2. Click the provider's tile in the grid
 3. Click **Remove key** / **Remove URL** (built-in) or **Remove provider** (custom), and confirm
 
-If any agent currently uses a model from the removed provider, the chat will fail to start until you assign that agent a model from a still-configured provider. Pinchy will not silently re-assign agents.
+Agents pinned to a model from the removed provider are moved to a still-configured one, so no agent is left on a model that no longer exists. The confirmation dialog states the outcome before you commit: how many agents are affected, and which provider and model they'll be moved to. If the removed provider was the default, that same provider becomes the new default.
+
+The move is a starting point, not a verdict: pick a different model for any agent afterwards — see [Change an agent's model](#change-an-agents-model).
 
 ## OpenAI-compatible providers
 

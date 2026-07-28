@@ -63,8 +63,8 @@ describe("migrateAgentsOffDeletedProvider", () => {
     const result = await migrateAgentsOffDeletedProvider({
       deletedPrefix: "acme/",
       remainingCandidates: [
-        { name: "openai", defaultModel: "openai/gpt-5.4-mini" },
-        { name: "other", defaultModel: "other/x" },
+        { name: "openai", label: "OpenAI", defaultModel: "openai/gpt-5.4-mini" },
+        { name: "other", label: "Other", defaultModel: "other/x" },
       ],
       wasDefault: false,
     });
@@ -82,7 +82,9 @@ describe("migrateAgentsOffDeletedProvider", () => {
   it("reassigns default_provider to the first candidate when wasDefault", async () => {
     const result = await migrateAgentsOffDeletedProvider({
       deletedPrefix: "acme/",
-      remainingCandidates: [{ name: "openai", defaultModel: "openai/gpt-5.4-mini" }],
+      remainingCandidates: [
+        { name: "openai", label: "OpenAI", defaultModel: "openai/gpt-5.4-mini" },
+      ],
       wasDefault: true,
     });
 
@@ -117,47 +119,55 @@ describe("buildRemainingCandidates", () => {
 
   it("lists built-ins first, then custom instances namespaced <slug>/<models[0].id>", async () => {
     vi.mocked(listConfiguredBuiltIns).mockResolvedValue([
-      { name: "anthropic", config: { defaultModel: "anthropic/claude-haiku" } },
-      { name: "openai", config: { defaultModel: "openai/gpt-5.4-mini" } },
+      { name: "anthropic", config: { name: "Anthropic", defaultModel: "anthropic/claude-haiku" } },
+      { name: "openai", config: { name: "OpenAI", defaultModel: "openai/gpt-5.4-mini" } },
     ] as any);
     vi.mocked(listOpenAiCompatibleProviders).mockResolvedValue([
-      { slug: "acme", models: [{ id: "acme-large" }, { id: "acme-small" }] },
+      {
+        slug: "acme",
+        displayName: "Acme LLM",
+        models: [{ id: "acme-large" }, { id: "acme-small" }],
+      },
     ] as any);
 
     const candidates = await buildRemainingCandidates();
 
+    // `label` is what the removal dialog prints (#949) — carried here so the
+    // display name comes from the same place the target itself does.
     expect(candidates).toEqual([
-      { name: "anthropic", defaultModel: "anthropic/claude-haiku" },
-      { name: "openai", defaultModel: "openai/gpt-5.4-mini" },
+      { name: "anthropic", label: "Anthropic", defaultModel: "anthropic/claude-haiku" },
+      { name: "openai", label: "OpenAI", defaultModel: "openai/gpt-5.4-mini" },
       // Custom instance uses the FIRST persisted model, namespaced by slug.
-      { name: "acme", defaultModel: "acme/acme-large" },
+      { name: "acme", label: "Acme LLM", defaultModel: "acme/acme-large" },
     ]);
   });
 
   it("excludes the named built-in when excludeBuiltInName is set", async () => {
     vi.mocked(listConfiguredBuiltIns).mockResolvedValue([
-      { name: "anthropic", config: { defaultModel: "anthropic/claude-haiku" } },
-      { name: "openai", config: { defaultModel: "openai/gpt-5.4-mini" } },
+      { name: "anthropic", config: { name: "Anthropic", defaultModel: "anthropic/claude-haiku" } },
+      { name: "openai", config: { name: "OpenAI", defaultModel: "openai/gpt-5.4-mini" } },
     ] as any);
 
     const candidates = await buildRemainingCandidates({ excludeBuiltInName: "anthropic" });
 
-    expect(candidates).toEqual([{ name: "openai", defaultModel: "openai/gpt-5.4-mini" }]);
+    expect(candidates).toEqual([
+      { name: "openai", label: "OpenAI", defaultModel: "openai/gpt-5.4-mini" },
+    ]);
   });
 
   it("excludes no built-in when excludeBuiltInName is absent (custom-delete path)", async () => {
     vi.mocked(listConfiguredBuiltIns).mockResolvedValue([
-      { name: "anthropic", config: { defaultModel: "anthropic/claude-haiku" } },
+      { name: "anthropic", config: { name: "Anthropic", defaultModel: "anthropic/claude-haiku" } },
     ] as any);
     vi.mocked(listOpenAiCompatibleProviders).mockResolvedValue([
-      { slug: "acme", models: [{ id: "acme-large" }] },
+      { slug: "acme", displayName: "Acme LLM", models: [{ id: "acme-large" }] },
     ] as any);
 
     const candidates = await buildRemainingCandidates();
 
     expect(candidates).toEqual([
-      { name: "anthropic", defaultModel: "anthropic/claude-haiku" },
-      { name: "acme", defaultModel: "acme/acme-large" },
+      { name: "anthropic", label: "Anthropic", defaultModel: "anthropic/claude-haiku" },
+      { name: "acme", label: "Acme LLM", defaultModel: "acme/acme-large" },
     ]);
   });
 });

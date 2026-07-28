@@ -4,6 +4,7 @@ import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import "@testing-library/jest-dom";
 import { ProviderKeyForm } from "@/components/provider-key-form";
 import { toast } from "sonner";
+import type { DeletionPreviewResponse } from "@/lib/schemas/provider-deletion";
 
 vi.mock("sonner", () => ({
   toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn() },
@@ -17,6 +18,47 @@ vi.mock("@/lib/github-issue", () => ({
 vi.mock("next/navigation", () => ({
   usePathname: () => "/setup/provider",
 }));
+
+/** A `GET /api/settings/providers/deletion-preview` body (#949). */
+function previewResponse(overrides: Partial<DeletionPreviewResponse> = {}): Response {
+  const body: DeletionPreviewResponse = {
+    targetProvider: "openai",
+    targetProviderLabel: "OpenAI",
+    targetModel: "openai/gpt-5.5",
+    affectedAgents: [
+      { id: "a1", name: "Hermes" },
+      { id: "a2", name: "Booker" },
+      { id: "a3", name: "Reader" },
+    ],
+    ...overrides,
+  };
+  return {
+    ok: true,
+    status: 200,
+    json: async () => body,
+    text: async () => JSON.stringify(body),
+  } as Response;
+}
+
+/**
+ * Routes the two requests a removal now makes: the preflight when the dialog
+ * opens, then the DELETE itself.
+ */
+function deleteFlowResponse(
+  url: string,
+  method: string,
+  deleteBody: unknown,
+  previewOverrides: Partial<DeletionPreviewResponse> = {}
+): Response {
+  if (url.includes("deletion-preview")) return previewResponse(previewOverrides);
+  void method;
+  return {
+    ok: true,
+    status: 200,
+    json: async () => deleteBody,
+    text: async () => JSON.stringify(deleteBody),
+  } as Response;
+}
 
 describe("ProviderKeyForm", () => {
   const onSuccess = vi.fn();
@@ -476,14 +518,18 @@ describe("ProviderKeyForm", () => {
       fireEvent.click(screen.getByRole("button", { name: /remove key/i }));
       fireEvent.click(screen.getByRole("button", { name: /cancel/i }));
 
-      expect(global.fetch).not.toHaveBeenCalled();
+      // Opening the dialog fetches the read-only removal preview (#949); the
+      // only thing Cancel must guarantee is that nothing was deleted.
+      expect(global.fetch).not.toHaveBeenCalledWith(
+        "/api/settings/providers",
+        expect.objectContaining({ method: "DELETE" })
+      );
     });
 
     it("should call DELETE endpoint and onSuccess after confirming removal", async () => {
-      vi.mocked(global.fetch).mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ success: true }),
-      } as Response);
+      vi.mocked(global.fetch).mockImplementation(async (input, init) =>
+        deleteFlowResponse(String(input), init?.method ?? "GET", { success: true })
+      );
 
       render(<ProviderKeyForm onSuccess={onSuccess} configuredProviders={configuredProviders} />);
 
@@ -502,12 +548,18 @@ describe("ProviderKeyForm", () => {
     });
 
     it("should show error toast when trying to remove the last configured provider", async () => {
-      vi.mocked(global.fetch).mockResolvedValueOnce({
-        ok: false,
-        json: async () => ({
-          error: "Cannot remove the last configured provider. Add another provider first.",
-        }),
-      } as Response);
+      vi.mocked(global.fetch).mockImplementation(async (input, init) => {
+        if (String(input).includes("deletion-preview")) {
+          return previewResponse();
+        }
+        void init;
+        return {
+          ok: false,
+          json: async () => ({
+            error: "Cannot remove the last configured provider. Add another provider first.",
+          }),
+        } as Response;
+      });
 
       render(<ProviderKeyForm onSuccess={onSuccess} configuredProviders={configuredProviders} />);
 
@@ -519,6 +571,151 @@ describe("ProviderKeyForm", () => {
         expect(toast.error).toHaveBeenCalledWith(
           "Cannot remove the last configured provider. Add another provider first."
         );
+      });
+    });
+
+    // #949 — the dialog used to say "agents will be switched to another
+    // configured provider" while the exact target was already determined. It
+    // now states the outcome, sourced from the server-side preflight so the
+    // built-ins-first ordering is never re-derived (and mis-derived) here.
+    describe("removal preview (#949)", () => {
+      it("names the affected agent count, the target provider and its model", async () => {
+        vi.mocked(global.fetch).mockImplementation(async (input) =>
+          String(input).includes("deletion-preview")
+            ? previewResponse({
+                affectedAgents: [
+                  { id: "a1", name: "Hermes" },
+                  { id: "a2", name: "Booker" },
+                  { id: "a3", name: "Reader" },
+                ],
+              })
+            : ({ ok: true, json: async () => ({}) } as Response)
+        );
+
+        render(<ProviderKeyForm onSuccess={onSuccess} configuredProviders={configuredProviders} />);
+
+        fireEvent.click(screen.getByRole("button", { name: /anthropic/i }));
+        fireEvent.click(screen.getByRole("button", { name: /remove key/i }));
+
+        expect(global.fetch).toHaveBeenCalledWith(
+          "/api/settings/providers/deletion-preview?provider=anthropic",
+          expect.anything()
+        );
+        const dialog = await screen.findByRole("alertdialog");
+        await waitFor(() => {
+          expect(dialog).toHaveTextContent(
+            /3 agents using its models will be moved to OpenAI \(gpt-5\.5\)/
+          );
+        });
+        expect(dialog).toHaveTextContent(/change each agent's model afterwards/i);
+      });
+
+      it("uses the singular for a single affected agent", async () => {
+        vi.mocked(global.fetch).mockImplementation(async (input) =>
+          String(input).includes("deletion-preview")
+            ? previewResponse({ affectedAgents: [{ id: "a1", name: "Hermes" }] })
+            : ({ ok: true, json: async () => ({}) } as Response)
+        );
+
+        render(<ProviderKeyForm onSuccess={onSuccess} configuredProviders={configuredProviders} />);
+
+        fireEvent.click(screen.getByRole("button", { name: /anthropic/i }));
+        fireEvent.click(screen.getByRole("button", { name: /remove key/i }));
+
+        const dialog = await screen.findByRole("alertdialog");
+        await waitFor(() => {
+          expect(dialog).toHaveTextContent(/1 agent using its models will be moved to OpenAI/);
+        });
+      });
+
+      it("says nothing about agents when none are affected — never '0 agents'", async () => {
+        vi.mocked(global.fetch).mockImplementation(async (input) =>
+          String(input).includes("deletion-preview")
+            ? previewResponse({ affectedAgents: [] })
+            : ({ ok: true, json: async () => ({}) } as Response)
+        );
+
+        render(<ProviderKeyForm onSuccess={onSuccess} configuredProviders={configuredProviders} />);
+
+        fireEvent.click(screen.getByRole("button", { name: /anthropic/i }));
+        fireEvent.click(screen.getByRole("button", { name: /remove key/i }));
+
+        const dialog = await screen.findByRole("alertdialog");
+        await waitFor(() => {
+          // The preview resolved: the fallback sentence is gone…
+          expect(dialog).not.toHaveTextContent(/another configured provider/i);
+        });
+        // …and no count is printed at all.
+        expect(dialog).not.toHaveTextContent(/0 agent/);
+        expect(dialog).not.toHaveTextContent(/will be moved/i);
+        expect(dialog).toHaveTextContent(/Removes your Anthropic API key\./);
+      });
+
+      it("falls back to the generic sentence when the preview fails", async () => {
+        vi.mocked(global.fetch).mockImplementation(async (input) =>
+          String(input).includes("deletion-preview")
+            ? ({
+                ok: false,
+                status: 500,
+                json: async () => ({ error: "boom" }),
+                text: async () => '{"error":"boom"}',
+              } as Response)
+            : ({ ok: true, json: async () => ({}) } as Response)
+        );
+
+        render(<ProviderKeyForm onSuccess={onSuccess} configuredProviders={configuredProviders} />);
+
+        fireEvent.click(screen.getByRole("button", { name: /anthropic/i }));
+        fireEvent.click(screen.getByRole("button", { name: /remove key/i }));
+
+        const dialog = await screen.findByRole("alertdialog");
+        expect(dialog).toHaveTextContent(/switched to another configured provider/i);
+        // No invented target when the preflight didn't answer.
+        expect(dialog).not.toHaveTextContent(/will be moved to/i);
+      });
+
+      it("confirms in the success toast what the removal actually did", async () => {
+        vi.mocked(global.fetch).mockImplementation(async (input, init) =>
+          deleteFlowResponse(String(input), init?.method ?? "GET", {
+            success: true,
+            migratedAgents: 3,
+          })
+        );
+
+        render(<ProviderKeyForm onSuccess={onSuccess} configuredProviders={configuredProviders} />);
+
+        fireEvent.click(screen.getByRole("button", { name: /anthropic/i }));
+        fireEvent.click(screen.getByRole("button", { name: /remove key/i }));
+        await screen.findByRole("alertdialog");
+        fireEvent.click(screen.getByRole("button", { name: /^remove$/i }));
+
+        await waitFor(() => {
+          expect(toast.success).toHaveBeenCalledWith(
+            "Anthropic removed. 3 agents moved to OpenAI."
+          );
+        });
+      });
+
+      it("keeps the toast to the removal alone when no agent moved", async () => {
+        vi.mocked(global.fetch).mockImplementation(async (input, init) =>
+          deleteFlowResponse(
+            String(input),
+            init?.method ?? "GET",
+            { success: true, migratedAgents: 0 },
+            { affectedAgents: [] }
+          )
+        );
+
+        render(<ProviderKeyForm onSuccess={onSuccess} configuredProviders={configuredProviders} />);
+
+        fireEvent.click(screen.getByRole("button", { name: /anthropic/i }));
+        fireEvent.click(screen.getByRole("button", { name: /remove key/i }));
+        await screen.findByRole("alertdialog");
+        fireEvent.click(screen.getByRole("button", { name: /^remove$/i }));
+
+        await waitFor(() => {
+          expect(toast.success).toHaveBeenCalledWith("Anthropic removed.");
+        });
       });
     });
   });
@@ -1078,11 +1275,14 @@ describe("ProviderKeyForm", () => {
       vi.mocked(global.fetch).mockImplementation(async (input, init) => {
         const url = String(input);
         const method = init?.method ?? "GET";
+        if (url.includes("deletion-preview")) {
+          return previewResponse();
+        }
         if (url.endsWith("/api/settings/providers/openai-compatible") && method === "GET") {
           return jsonResponse([acmeRow]);
         }
         if (url.endsWith("/api/settings/providers/openai-compatible") && method === "DELETE") {
-          return jsonResponse({ ok: true });
+          return jsonResponse({ ok: true, migratedAgents: 0 });
         }
         return jsonResponse({});
       });
@@ -1105,6 +1305,57 @@ describe("ProviderKeyForm", () => {
           })
         );
         expect(onSuccess).toHaveBeenCalled();
+      });
+    });
+
+    // #949 — the custom path carries the same disclosure as the built-in one:
+    // the dialog names the target the shared migration helper will pick, and
+    // the toast reports what happened.
+    it("names the migration target for a custom provider and confirms it in the toast", async () => {
+      vi.mocked(global.fetch).mockImplementation(async (input, init) => {
+        const url = String(input);
+        const method = init?.method ?? "GET";
+        if (url.includes("deletion-preview")) {
+          return previewResponse({
+            targetProvider: "anthropic",
+            targetProviderLabel: "Anthropic",
+            targetModel: "anthropic/claude-sonnet-4-6",
+            affectedAgents: [{ id: "a1", name: "Hermes" }],
+          });
+        }
+        if (url.endsWith("/api/settings/providers/openai-compatible") && method === "GET") {
+          return jsonResponse([acmeRow]);
+        }
+        if (url.endsWith("/api/settings/providers/openai-compatible") && method === "DELETE") {
+          return jsonResponse({ ok: true, migratedAgents: 1 });
+        }
+        return jsonResponse({});
+      });
+
+      render(<ProviderKeyForm onSuccess={onSuccess} manageCustomProviders />);
+
+      await waitFor(() => {
+        expect(screen.getByRole("button", { name: /acme llm/i })).toBeInTheDocument();
+      });
+      fireEvent.click(screen.getByRole("button", { name: /acme llm/i }));
+      fireEvent.click(screen.getByRole("button", { name: /remove provider/i }));
+
+      expect(global.fetch).toHaveBeenCalledWith(
+        "/api/settings/providers/deletion-preview?provider=acme-llm",
+        expect.anything()
+      );
+      const dialog = await screen.findByRole("alertdialog");
+      await waitFor(() => {
+        expect(dialog).toHaveTextContent(
+          /1 agent using its models will be moved to Anthropic \(claude-sonnet-4-6\)/
+        );
+      });
+      expect(dialog).toHaveTextContent(/Removes Acme LLM\./);
+
+      fireEvent.click(screen.getByRole("button", { name: /^remove$/i }));
+
+      await waitFor(() => {
+        expect(toast.success).toHaveBeenCalledWith("Acme LLM removed. 1 agent moved to Anthropic.");
       });
     });
   });

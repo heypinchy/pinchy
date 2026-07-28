@@ -9,6 +9,7 @@ import { countConfiguredProviders } from "@/lib/provider-count";
 import { appendAuditLog } from "@/lib/audit";
 import {
   buildRemainingCandidates,
+  builtInModelPrefix,
   migrateAgentsOffDeletedProvider,
   capMigratedAgents,
 } from "@/lib/provider-deletion";
@@ -70,9 +71,10 @@ export const DELETE = withAdmin(async (request, _ctx, session) => {
   const previousDefault = await getSetting("default_provider");
   const wasDefault = previousDefault === provider;
 
-  // Provider name to model prefix mapping.
-  // ollama-local uses "ollama/" as model prefix, not "ollama-local/".
-  const providerPrefix = provider === "ollama-local" ? "ollama/" : `${provider}/`;
+  // Provider name to model prefix mapping (ollama-local namespaces its models
+  // as "ollama/"). Shared with the deletion preview so the dialog counts
+  // exactly the agents this migration moves — see provider-deletion.ts.
+  const providerPrefix = builtInModelPrefix(provider);
 
   // Shared with the custom OpenAI-compatible DELETE route: migrate orphaned
   // agents onto the first remaining candidate and reassign the default when the
@@ -111,5 +113,8 @@ export const DELETE = withAdmin(async (request, _ctx, session) => {
     })
   );
 
-  return NextResponse.json({ success: true });
+  // `migratedAgents` mirrors the custom DELETE's response shape (#949): the
+  // success toast confirms what actually happened ("3 agents moved to …") for
+  // anyone who dismissed the confirmation dialog without reading it.
+  return NextResponse.json({ success: true, migratedAgents: migratedAgents.length });
 });

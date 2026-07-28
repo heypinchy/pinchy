@@ -482,9 +482,30 @@ Add or update a provider.
 
 Pinchy validates the credentials by calling the provider's `/models` endpoint before persisting. API keys are encrypted at rest with AES-256-GCM.
 
-### `DELETE /api/settings/providers?provider=<id>`
+### `DELETE /api/settings/providers`
 
-Remove a provider. Any agent still using a model from this provider will fail to start chats until reassigned.
+Remove a provider. Takes a JSON body: `{ "provider": "<id>" }`. Refused with `400` for the last configured provider.
+
+Every agent pinned to one of the provider's models is moved to the first remaining provider's default model, and that provider becomes the new default if the removed one was it.
+
+**Response:** `{ "success": true, "migratedAgents": 3 }`
+
+### `GET /api/settings/providers/deletion-preview?provider=<nameOrSlug>`
+
+What a removal would do, without doing it — the confirmation dialog uses this to name the migration target instead of guessing it. `provider` is a built-in provider name or a custom provider's slug.
+
+**Response:**
+
+```json
+{
+  "targetProvider": "anthropic",
+  "targetProviderLabel": "Anthropic",
+  "targetModel": "anthropic/claude-sonnet-4-6",
+  "affectedAgents": [{ "id": "…", "name": "Hermes" }]
+}
+```
+
+The target fields are `null` when no other provider is configured (that removal is refused anyway).
 
 ### `GET /api/providers/models`
 

@@ -35,6 +35,7 @@ import type { ProviderName } from "@/lib/providers";
 import { apiGet, apiPatch, apiDelete, ApiError } from "@/lib/api-client";
 import type { DeleteOpenAiCompatibleInput } from "@/lib/schemas/openai-compatible-provider";
 import type { SetDefaultProviderInput } from "@/lib/schemas/provider-default";
+import type { DeletionPreviewResponse } from "@/lib/schemas/provider-deletion";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -246,6 +247,63 @@ function CornerIndicator({ state }: { state: TileState }) {
   return null;
 }
 
+/** `anthropic/claude-sonnet-4-6` → `claude-sonnet-4-6`, for display only. */
+function bareModelId(model: string): string {
+  const slash = model.indexOf("/");
+  return slash === -1 ? model : model.slice(slash + 1);
+}
+
+/**
+ * What removing a provider does to the agents pinned to it (#949).
+ *
+ * The preflight (`/api/settings/providers/deletion-preview`) determines the
+ * target, so this only renders it — the ordering policy stays server-side.
+ * Three states, deliberately:
+ *
+ * - preview not (yet) available — still loading, or the request failed: fall
+ *   back to the old, vague-but-true sentence rather than guessing a target.
+ * - no affected agents: say nothing at all. "0 agents will be moved" is noise
+ *   in a confirmation dialog.
+ * - affected agents: name the count, the target provider and its model. The
+ *   move is reversible per agent, which is why the dialog states the outcome
+ *   instead of offering a picker.
+ */
+function RemovalConsequence({ preview }: { preview: DeletionPreviewResponse | null }) {
+  if (!preview) {
+    return <> Any agents using its models will be switched to another configured provider.</>;
+  }
+  const count = preview.affectedAgents.length;
+  if (count === 0 || !preview.targetModel) return null;
+  return (
+    <>
+      {" "}
+      {count} {count === 1 ? "agent" : "agents"} using its models will be moved to{" "}
+      {preview.targetProviderLabel} ({bareModelId(preview.targetModel)}). You can change each
+      agent&apos;s model afterwards.
+    </>
+  );
+}
+
+/**
+ * Success toast copy that closes the loop for anyone who clicked through the
+ * dialog without reading it. The count comes from the DELETE response (what
+ * actually happened), the target label from the preview (what was promised) —
+ * the preflight and the DELETE agree by construction, see provider-deletion.ts.
+ */
+function removalSummary(
+  providerLabel: string,
+  migratedAgents: number,
+  targetLabel: string | null
+): string {
+  const removed = `${providerLabel} removed.`;
+  // `!migratedAgents` also covers a response that omitted the count — better a
+  // plain confirmation than "undefined agents moved".
+  if (!migratedAgents || !targetLabel) return removed;
+  return `${removed} ${migratedAgents} ${
+    migratedAgents === 1 ? "agent" : "agents"
+  } moved to ${targetLabel}.`;
+}
+
 interface ProviderKeyFormProps {
   onSuccess: (provider?: ProviderName) => void;
   submitLabel?: string;
@@ -308,6 +366,10 @@ export function ProviderKeyForm({
   );
   const [settingDefault, setSettingDefault] = useState(false);
   const [deletingCustom, setDeletingCustom] = useState(false);
+  // #949 — what the pending removal would do, fetched when a removal dialog
+  // opens. Null while loading and after a failed preflight, which renders the
+  // generic consequence sentence instead of an invented target.
+  const [deletionPreview, setDeletionPreview] = useState<DeletionPreviewResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [guideOpen, setGuideOpen] = useState(false);
   const [removing, setRemoving] = useState(false);
@@ -354,6 +416,26 @@ export function ProviderKeyForm({
     };
   }, [fetchCustomProviders]);
 
+  // #949 — load (or clear) the removal preflight as a confirmation dialog opens
+  // or closes. Read-only, and deliberately non-blocking: on failure the dialog
+  // keeps the generic sentence rather than blocking a removal on a preview.
+  const handleRemovalDialogOpenChange = useCallback((open: boolean, nameOrSlug: string) => {
+    setDeletionPreview(null);
+    if (!open) return;
+    void (async () => {
+      try {
+        const data = await apiGet<DeletionPreviewResponse>(
+          `/api/settings/providers/deletion-preview?provider=${encodeURIComponent(nameOrSlug)}`
+        );
+        // Only a well-formed preview may replace the generic sentence — a
+        // partial body must not make the dialog state a wrong consequence.
+        if (Array.isArray(data?.affectedAgents)) setDeletionPreview(data);
+      } catch {
+        // Keep the generic consequence sentence.
+      }
+    })();
+  }, []);
+
   // Settings-only: flip `default_provider` to a built-in name or a custom
   // slug. Shared by both the built-in panel's and the custom panel's
   // "Set as default" button.
@@ -380,11 +462,17 @@ export function ProviderKeyForm({
     setDeletingCustom(true);
     try {
       const body: DeleteOpenAiCompatibleInput = { id: target.id };
-      await apiDelete<{ ok: true }, DeleteOpenAiCompatibleInput>(
-        "/api/settings/providers/openai-compatible",
-        body
+      const result = await apiDelete<
+        { ok: true; migratedAgents: number },
+        DeleteOpenAiCompatibleInput
+      >("/api/settings/providers/openai-compatible", body);
+      toast.success(
+        removalSummary(
+          target.displayName,
+          result.migratedAgents,
+          deletionPreview?.targetProviderLabel ?? null
+        )
       );
-      toast.success("Provider removed.");
       setSelectedCustomProvider(null);
       void fetchCustomProviders();
       onSuccess();
@@ -693,7 +781,11 @@ export function ProviderKeyForm({
                 {settingDefault ? "Setting as default..." : "Set as default"}
               </Button>
             )}
-            <AlertDialog>
+            <AlertDialog
+              onOpenChange={(open) =>
+                handleRemovalDialogOpenChange(open, selectedCustomProvider.slug)
+              }
+            >
               <AlertDialogTrigger asChild>
                 <Button
                   type="button"
@@ -708,8 +800,8 @@ export function ProviderKeyForm({
                 <AlertDialogHeader>
                   <AlertDialogTitle>Remove provider?</AlertDialogTitle>
                   <AlertDialogDescription>
-                    This removes {selectedCustomProvider.displayName}. Any agents using its models
-                    will be switched to another configured provider.
+                    Removes {selectedCustomProvider.displayName}.
+                    <RemovalConsequence preview={deletionPreview} />
                   </AlertDialogDescription>
                 </AlertDialogHeader>
                 <AlertDialogFooter>
@@ -851,7 +943,7 @@ export function ProviderKeyForm({
             )}
 
             {configuredProviders && isConfigured && (
-              <AlertDialog>
+              <AlertDialog onOpenChange={(open) => handleRemovalDialogOpenChange(open, provider)}>
                 <AlertDialogTrigger asChild>
                   <Button
                     type="button"
@@ -868,9 +960,8 @@ export function ProviderKeyForm({
                       {isUrlProvider ? "Remove URL?" : "Remove API key?"}
                     </AlertDialogTitle>
                     <AlertDialogDescription>
-                      This will remove your {provider ? PROVIDERS[provider].name : ""}{" "}
-                      {isUrlProvider ? "URL" : "API key"}. If this is the active provider, agents
-                      will be switched to another configured provider.
+                      Removes your {PROVIDERS[provider].name} {isUrlProvider ? "URL" : "API key"}.
+                      <RemovalConsequence preview={deletionPreview} />
                     </AlertDialogDescription>
                   </AlertDialogHeader>
                   <AlertDialogFooter>
@@ -885,10 +976,17 @@ export function ProviderKeyForm({
                             headers: { "Content-Type": "application/json" },
                             body: JSON.stringify({ provider }),
                           });
+                          const data = await res.json().catch(() => ({}));
                           if (!res.ok) {
-                            const data = await res.json();
                             throw new Error(data.error || "Failed to remove key");
                           }
+                          toast.success(
+                            removalSummary(
+                              PROVIDERS[provider].name,
+                              data.migratedAgents,
+                              deletionPreview?.targetProviderLabel ?? null
+                            )
+                          );
                           triggerRestart();
                           onSuccess(provider!);
                         } catch (err) {

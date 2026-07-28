@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { POST, GET, DELETE } from "@/app/api/settings/providers/openai-compatible/route";
 import { POST as DISCOVER } from "@/app/api/settings/providers/openai-compatible/discover/route";
+import { GET as PREVIEW } from "@/app/api/settings/providers/deletion-preview/route";
 
 vi.mock("next/headers", () => ({
   headers: vi.fn().mockResolvedValue(new Headers()),
@@ -1049,6 +1050,48 @@ describe("DELETE /api/settings/providers/openai-compatible", () => {
       slug: "acme-llm",
     });
     expect(JSON.stringify(entry.detail)).not.toContain(SECRET_KEY);
+  });
+
+  // #949 — the removal dialog names the target BEFORE the delete, from a
+  // preflight route. Its whole reason to exist is that it must not drift from
+  // what the delete then does, so assert the agreement on the custom path too:
+  // the preview runs while the row still exists (and must exclude it by slug),
+  // the delete runs after it's gone.
+  it("agrees with the deletion preview on the target model for the same state", async () => {
+    vi.mocked(listConfiguredBuiltIns).mockResolvedValue([
+      {
+        name: "anthropic",
+        config: { name: "Anthropic", defaultModel: "anthropic/claude-haiku-4-5-20251001" },
+      },
+    ] as any);
+    vi.mocked(db.query.agents.findMany).mockResolvedValue([
+      { id: "agent-1", name: "Booker", model: "acme-llm/acme-large" },
+    ] as any);
+
+    // Pre-delete state: the row the admin is about to remove is still listed.
+    vi.mocked(listOpenAiCompatibleProviders).mockResolvedValue([listItem()]);
+    const previewRes = await PREVIEW(
+      makeNextRequest("http://localhost/api/settings/providers/deletion-preview?provider=acme-llm"),
+      routeCtx
+    );
+    expect(previewRes.status).toBe(200);
+    const previewed = await previewRes.json();
+    expect(previewed.targetProviderLabel).toBe("Anthropic");
+    expect(previewed.affectedAgents).toEqual([{ id: "agent-1", name: "Booker" }]);
+
+    // Post-delete state, exactly as deleteProviderById leaves it.
+    vi.mocked(listOpenAiCompatibleProviders).mockResolvedValue([]);
+    const setSpy = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
+    vi.mocked(db.update).mockReturnValue({ set: setSpy } as any);
+
+    const res = await DELETE(deleteRequest({ id: PROVIDER_ID }), routeCtx);
+
+    expect(res.status).toBe(200);
+    expect(setSpy).toHaveBeenCalledWith({ model: previewed.targetModel });
+    expect(await res.json()).toMatchObject({
+      ok: true,
+      migratedAgents: previewed.affectedAgents.length,
+    });
   });
 
   it("still succeeds with runtimeApplied:false when regenerate throws (best-effort)", async () => {

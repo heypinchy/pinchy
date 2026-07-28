@@ -27,6 +27,8 @@ import { eq } from "drizzle-orm";
 export interface RemainingCandidate {
   /** Built-in ProviderName or custom slug — also the value written to default_provider. */
   name: string;
+  /** Human-readable name, for user-facing copy (#949). Never used for matching. */
+  label: string;
   /** The namespaced model an agent is repointed to (e.g. `anthropic/…` or `<slug>/…`). */
   defaultModel: string;
 }
@@ -54,16 +56,34 @@ export async function buildRemainingCandidates(opts?: {
   const candidates: RemainingCandidate[] = [];
   for (const builtIn of await listConfiguredBuiltIns()) {
     if (excludeBuiltInName !== undefined && builtIn.name === excludeBuiltInName) continue;
-    candidates.push({ name: builtIn.name, defaultModel: builtIn.config.defaultModel });
+    candidates.push({
+      name: builtIn.name,
+      label: builtIn.config.name,
+      defaultModel: builtIn.config.defaultModel,
+    });
   }
   for (const custom of await listOpenAiCompatibleProviders()) {
     // models non-empty by create schema (.min(1))
     candidates.push({
       name: custom.slug,
+      label: custom.displayName,
       defaultModel: `${custom.slug}/${custom.models[0].id}`,
     });
   }
   return candidates;
+}
+
+/**
+ * The model prefix a built-in provider's models carry.
+ *
+ * `ollama-local` is the one provider whose settings name and model namespace
+ * differ: its models are emitted as `ollama/…`. Both the DELETE route (which
+ * migrates agents off the prefix) and the deletion preview (#949, which counts
+ * them) need this mapping, and a second copy would make the dialog promise a
+ * different set of agents than the delete moves.
+ */
+export function builtInModelPrefix(provider: string): string {
+  return provider === "ollama-local" ? "ollama/" : `${provider}/`;
 }
 
 export interface MigratedAgent {
@@ -125,6 +145,48 @@ export async function migrateAgentsOffDeletedProvider(opts: {
   }
 
   return { migratedAgents, newDefault };
+}
+
+/**
+ * Read-only twin of `migrateAgentsOffDeletedProvider` (#949): what removing
+ * `providerName` WOULD do, so the confirmation dialog can name the target
+ * instead of saying "another configured provider".
+ *
+ * It answers with the same two facts the migration acts on — the first
+ * remaining candidate, and the agents matching the deleted prefix — by calling
+ * the very same `buildRemainingCandidates()`. That shared call is the point:
+ * any client-side re-derivation of the built-ins-first ordering would drift and
+ * make the dialog promise a target the DELETE doesn't use.
+ *
+ * Unlike the two DELETE routes, this runs while the provider still exists, so
+ * it excludes it from its own candidate set by NAME afterwards — which covers
+ * both flavours, since `RemainingCandidate.name` is the built-in name for
+ * built-ins and the slug for custom instances.
+ *
+ * With no remaining candidate the migration moves nothing, so neither does the
+ * preview: `affectedAgents` stays empty rather than promising a move that would
+ * not happen (the last-provider guard rejects that delete anyway).
+ */
+export async function previewProviderDeletion(opts: {
+  providerName: string;
+  deletedPrefix: string;
+}): Promise<{
+  target: RemainingCandidate | null;
+  affectedAgents: { id: string; name: string }[];
+}> {
+  const { providerName, deletedPrefix } = opts;
+
+  const candidates = await buildRemainingCandidates();
+  const target = candidates.find((candidate) => candidate.name !== providerName) ?? null;
+  if (!target) return { target: null, affectedAgents: [] };
+
+  const allAgents = await db.query.agents.findMany();
+  return {
+    target,
+    affectedAgents: allAgents
+      .filter((agent) => agent.model?.startsWith(deletedPrefix))
+      .map((agent) => ({ id: agent.id, name: agent.name })),
+  };
 }
 
 /**
