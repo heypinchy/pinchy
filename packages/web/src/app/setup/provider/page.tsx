@@ -71,7 +71,7 @@ export default function SetupProviderPage() {
           <CardHeader>
             <CardTitle>Connect your AI provider</CardTitle>
             <CardDescription>
-              Choose your LLM provider and enter your API key. This is used to power your agents.
+              Choose your AI provider and enter your API key. This is used to power your agents.
             </CardDescription>
           </CardHeader>
           <CardContent>
