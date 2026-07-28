@@ -38,6 +38,8 @@ function getStatusIndicator(status: ChatStatus): { colorClass: string; label: st
           return { colorClass: "bg-destructive", label: "Reconnecting..." };
         case "exhausted":
           return { colorClass: "bg-destructive", label: "Please reload the page" };
+        case "historyTimeout":
+          return { colorClass: "bg-destructive", label: "Chat didn't load" };
         default: {
           const _: never = status.reason;
           return { colorClass: "bg-destructive", label: "Unknown" };
@@ -199,6 +201,7 @@ export function Chat({
   const isOpenClawConnected = chatBundle?.isOpenClawConnected ?? false;
   const reconnectExhausted = chatBundle?.reconnectExhausted ?? false;
   const payloadRejected = chatBundle?.payloadRejected ?? false;
+  const historyTimedOut = chatBundle?.historyTimedOut ?? false;
   const onRetryContinue = chatBundle?.onRetryContinue ?? (() => {});
   const onRetryResend = chatBundle?.onRetryResend ?? (() => {});
   const pendingUploads = chatBundle?.pendingUploads ?? [];
@@ -214,6 +217,7 @@ export function Chat({
     isRunning,
     reconnectExhausted,
     payloadRejected,
+    historyTimedOut,
     configuring,
   });
 

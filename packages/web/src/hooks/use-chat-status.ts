@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 
-export type UnavailableReason = "disconnected" | "configuring" | "exhausted";
+export type UnavailableReason = "disconnected" | "configuring" | "exhausted" | "historyTimeout";
 export type ChatStatus =
   | { kind: "starting" }
   | { kind: "ready" }
@@ -22,6 +22,15 @@ export interface ChatStatusInputs {
   isRunning: boolean;
   reconnectExhausted: boolean;
   payloadRejected: boolean;
+  /**
+   * The deadline on the wait for a `history` frame expired (issue #956). Only
+   * meaningful while `hasInitialContent` is false: that combination is the dead
+   * end the user reported — a chat parked on the loading indicator with no
+   * error, no timeout and no way out but a manual reload. Once anything is
+   * renderable, a late/lost catch-up pull is not worth blanking the transcript
+   * for, so it is ignored.
+   */
+  historyTimedOut: boolean;
   configuring: boolean;
 }
 
@@ -49,6 +58,13 @@ export function useChatStatus(inputs: ChatStatusInputs): ChatStatus {
   if (inputs.reconnectExhausted) return { kind: "unavailable", reason: "exhausted" };
   if (inputs.configuring) return { kind: "unavailable", reason: "configuring" };
   if (inputs.payloadRejected) return { kind: "payloadRejected" };
+  // Ranked ABOVE "disconnected": the self-heal that follows the deadline closes
+  // the socket, so isConnected drops moments later. Letting the generic
+  // "Reconnecting..." win would hide the retry affordance behind exactly the
+  // recovery attempt the user is waiting on.
+  if (inputs.historyTimedOut && !inputs.hasInitialContent) {
+    return { kind: "unavailable", reason: "historyTimeout" };
+  }
   if (!fullyConnected && delayedDisconnect) return { kind: "unavailable", reason: "disconnected" };
   if (!inputs.isHistoryLoaded || !inputs.hasInitialContent) return { kind: "starting" };
   if (inputs.isRunning) return { kind: "responding" };

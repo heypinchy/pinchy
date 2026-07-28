@@ -1494,6 +1494,7 @@ describe("useWsRuntime", () => {
           isRunning: ws.isRunning,
           reconnectExhausted: ws.reconnectExhausted,
           payloadRejected: ws.payloadRejected,
+          historyTimedOut: ws.historyTimedOut,
           configuring: false,
         });
         return { ws, status };
@@ -1545,6 +1546,217 @@ describe("useWsRuntime", () => {
       });
 
       expect(result.current.hasInitialContent).toBe(false);
+    });
+  });
+
+  describe("initial history deadline (#956)", () => {
+    // The client used to wait for the `history` frame with no deadline at all:
+    // every timer in the hook covers SENDING. So a frame lost for any reason
+    // parked the chat on the loading indicator forever — no error, no retry,
+    // no way out but a manual reload. These tests pin the deadline, the
+    // self-heal, and the escape hatch.
+    const DEADLINE_MS = 20_000;
+
+    function openWithoutHistory() {
+      const rendered = renderHook(() => useWsRuntime("agent-1"));
+      const ws = wsInstances[0];
+      act(() => {
+        ws.simulateOpen();
+        ws.simulateMessage({ type: "openclaw_status", connected: true });
+      });
+      return { ...rendered, ws };
+    }
+
+    it("stays quiet while the server is still within the deadline", () => {
+      const { result } = openWithoutHistory();
+
+      act(() => {
+        vi.advanceTimersByTime(DEADLINE_MS - 1000);
+      });
+
+      expect(result.current.historyTimedOut).toBe(false);
+    });
+
+    it("reports a timeout when the history frame never arrives", () => {
+      const { result } = openWithoutHistory();
+
+      act(() => {
+        vi.advanceTimersByTime(DEADLINE_MS);
+      });
+
+      expect(result.current.historyTimedOut).toBe(true);
+    });
+
+    it("forces a reconnect on expiry so a silently dead socket self-heals", () => {
+      // The leading candidate cause: a backgrounded PWA socket torn down by the
+      // OS without a `close` event reaching the page. The client believes it is
+      // connected and sends the request into a void — only closing the socket
+      // ourselves gets a live one back.
+      const { ws } = openWithoutHistory();
+
+      act(() => {
+        vi.advanceTimersByTime(DEADLINE_MS);
+      });
+
+      expect(ws.close).toHaveBeenCalled();
+
+      act(() => {
+        ws.simulateClose();
+      });
+      act(() => {
+        vi.advanceTimersByTime(1000);
+      });
+      expect(wsInstances).toHaveLength(2);
+    });
+
+    it("re-arms the deadline for the reconnected socket's own request", () => {
+      const { result, ws } = openWithoutHistory();
+
+      act(() => {
+        vi.advanceTimersByTime(DEADLINE_MS);
+      });
+      act(() => {
+        ws.simulateClose();
+      });
+      act(() => {
+        vi.advanceTimersByTime(1000);
+      });
+
+      // Second socket answers → the dead end is over, without user action.
+      const ws2 = latestWs();
+      act(() => {
+        ws2.simulateOpen();
+        ws2.simulateMessage({
+          type: "history",
+          messages: [{ role: "assistant", content: "Hello!" }],
+        });
+      });
+
+      expect(result.current.historyTimedOut).toBe(false);
+      expect(result.current.hasInitialContent).toBe(true);
+    });
+
+    it("clears the timeout when a late history frame lands on the same socket", () => {
+      const { result, ws } = openWithoutHistory();
+
+      act(() => {
+        vi.advanceTimersByTime(DEADLINE_MS);
+      });
+      expect(result.current.historyTimedOut).toBe(true);
+
+      act(() => {
+        ws.simulateMessage({ type: "history", messages: [], sessionKnown: true });
+      });
+
+      expect(result.current.historyTimedOut).toBe(false);
+    });
+
+    it("stops self-healing after a bounded number of attempts", () => {
+      // A permanently unanswering server must not turn into an endless
+      // reconnect loop. The retry button stays as the way forward.
+      const { result } = openWithoutHistory();
+
+      for (let attempt = 0; attempt < 6; attempt++) {
+        act(() => {
+          vi.advanceTimersByTime(DEADLINE_MS);
+        });
+        const ws = latestWs();
+        if (!ws.close.mock.calls.length) break;
+        act(() => {
+          ws.simulateClose();
+        });
+        act(() => {
+          vi.advanceTimersByTime(5000);
+        });
+        act(() => {
+          latestWs().simulateOpen();
+        });
+      }
+
+      expect(result.current.historyTimedOut).toBe(true);
+      expect(wsInstances.length).toBeLessThanOrEqual(3);
+    });
+
+    it("retryHistory reconnects and re-arms a fresh self-heal budget", () => {
+      const { result } = openWithoutHistory();
+
+      act(() => {
+        vi.advanceTimersByTime(DEADLINE_MS);
+      });
+      const timedOutWs = latestWs();
+      act(() => {
+        timedOutWs.simulateClose();
+      });
+      act(() => {
+        vi.advanceTimersByTime(1000);
+      });
+      const socketsBeforeRetry = wsInstances.length;
+
+      act(() => {
+        result.current.retryHistory();
+      });
+
+      expect(result.current.historyTimedOut).toBe(false);
+
+      act(() => {
+        latestWs().simulateClose();
+      });
+      act(() => {
+        vi.advanceTimersByTime(1000);
+      });
+      expect(wsInstances.length).toBeGreaterThan(socketsBeforeRetry);
+
+      const fresh = latestWs();
+      act(() => {
+        fresh.simulateOpen();
+        fresh.simulateMessage({ type: "history", messages: [], sessionKnown: true });
+      });
+      expect(result.current.historyTimedOut).toBe(false);
+      expect(result.current.hasInitialContent).toBe(true);
+    });
+
+    it("does not fire while a turn is streaming", () => {
+      // A user send disarms the pre-history buffer; the deadline must go with
+      // it, or the watchdog would tear down a healthy mid-stream socket.
+      const { result, ws } = openWithoutHistory();
+      act(() => {
+        ws.simulateMessage({ type: "history", messages: [], sessionKnown: true });
+      });
+
+      act(() => {
+        void store(result.current.runtime).onNew(makeUserMessage("hi"));
+      });
+      act(() => {
+        vi.advanceTimersByTime(DEADLINE_MS * 2);
+      });
+
+      expect(result.current.historyTimedOut).toBe(false);
+      expect(ws.close).not.toHaveBeenCalled();
+    });
+
+    it("does not fire while the page is backgrounded", () => {
+      // The tab is suspended: the socket was closed on purpose and no history
+      // is pending. A watchdog firing here would reconnect a hidden tab.
+      const { result, ws } = openWithoutHistory();
+
+      act(() => {
+        Object.defineProperty(document, "visibilityState", {
+          value: "hidden",
+          configurable: true,
+        });
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+      act(() => {
+        vi.advanceTimersByTime(DEADLINE_MS * 2);
+      });
+
+      expect(result.current.historyTimedOut).toBe(false);
+
+      Object.defineProperty(document, "visibilityState", {
+        value: "visible",
+        configurable: true,
+      });
+      expect(ws).toBeDefined();
     });
   });
 
@@ -2285,6 +2497,7 @@ describe("useWsRuntime", () => {
           isRunning: ws.isRunning,
           reconnectExhausted: ws.reconnectExhausted,
           payloadRejected: ws.payloadRejected,
+          historyTimedOut: ws.historyTimedOut,
           configuring: false,
         });
         return { ws, status };
