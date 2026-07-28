@@ -42,11 +42,11 @@ describe("useTabParam", () => {
       result.current[1]("license");
     });
 
-    expect(mockReplace).toHaveBeenCalledWith("/settings?tab=license", {
+    expect(mockPush).toHaveBeenCalledWith("/settings?tab=license", {
       scroll: false,
     });
 
-    // Simulate the URL update that router.replace triggers
+    // Simulate the URL update that router.push triggers
     mockSearchParams.set("tab", "license");
     const { result: updated } = renderHook(() => useTabParam("context", SETTINGS_TABS));
     expect(updated.current[0]).toBe("license");
@@ -61,7 +61,7 @@ describe("useTabParam", () => {
       result.current[1]("context");
     });
 
-    expect(mockReplace).toHaveBeenCalledWith("/settings", { scroll: false });
+    expect(mockPush).toHaveBeenCalledWith("/settings", { scroll: false });
 
     // Simulate the URL update
     mockSearchParams.delete("tab");
@@ -130,7 +130,7 @@ describe("useTabParam", () => {
       result.current[1]("context");
     });
 
-    expect(mockReplace).toHaveBeenCalledWith("/settings?tab=context", {
+    expect(mockPush).toHaveBeenCalledWith("/settings?tab=context", {
       scroll: false,
     });
   });
@@ -144,14 +144,12 @@ describe("useTabParam", () => {
       result.current[1]("context");
     });
 
-    expect(mockReplace).toHaveBeenCalledWith("/settings", { scroll: false });
+    expect(mockPush).toHaveBeenCalledWith("/settings", { scroll: false });
   });
 
-  it("pushes a history entry when entering a tab from the menu (pushOnEnter, not yet explicit)", () => {
+  it("pushes a history entry when entering a tab from the menu (not yet explicit)", () => {
     // No `?tab=` param → not explicit → this is a drill-in from the menu level.
-    const { result } = renderHook(() =>
-      useTabParam("context", SETTINGS_TABS, undefined, { pushOnEnter: true })
-    );
+    const { result } = renderHook(() => useTabParam("context", SETTINGS_TABS));
 
     act(() => {
       result.current[1]("license");
@@ -161,30 +159,42 @@ describe("useTabParam", () => {
     expect(mockReplace).not.toHaveBeenCalled();
   });
 
-  it("replaces (no history spam) when switching tabs while already explicit (pushOnEnter)", () => {
+  it("pushes when switching tabs while already explicit, so Back walks the tabs (#951)", () => {
     mockSearchParams.set("tab", "profile");
 
-    const { result } = renderHook(() =>
-      useTabParam("context", SETTINGS_TABS, undefined, { pushOnEnter: true })
-    );
-
-    act(() => {
-      result.current[1]("license");
-    });
-
-    expect(mockReplace).toHaveBeenCalledWith("/settings?tab=license", { scroll: false });
-    expect(mockPush).not.toHaveBeenCalled();
-  });
-
-  it("never pushes when pushOnEnter is not set", () => {
     const { result } = renderHook(() => useTabParam("context", SETTINGS_TABS));
 
     act(() => {
       result.current[1]("license");
     });
 
-    expect(mockReplace).toHaveBeenCalledWith("/settings?tab=license", { scroll: false });
-    expect(mockPush).not.toHaveBeenCalled();
+    expect(mockPush).toHaveBeenCalledWith("/settings?tab=license", { scroll: false });
+    expect(mockReplace).not.toHaveBeenCalled();
+  });
+
+  it("gives every tab in a multi-tab walk its own history entry (#951)", () => {
+    // The reported repro: Context → Profile → Telegram → Support produced a
+    // single history entry, so two Back presses left Settings entirely.
+    for (const [from, to] of [
+      [null, "profile"],
+      ["profile", "telegram"],
+      ["telegram", "support"],
+    ] as const) {
+      if (from) mockSearchParams.set("tab", from);
+      else mockSearchParams.delete("tab");
+
+      const { result } = renderHook(() => useTabParam("context", SETTINGS_TABS));
+      act(() => {
+        result.current[1](to);
+      });
+    }
+
+    expect(mockPush.mock.calls.map(([url]) => url)).toEqual([
+      "/settings?tab=profile",
+      "/settings?tab=telegram",
+      "/settings?tab=support",
+    ]);
+    expect(mockReplace).not.toHaveBeenCalled();
   });
 });
 

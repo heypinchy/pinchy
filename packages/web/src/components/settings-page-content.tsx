@@ -83,9 +83,6 @@ export function SettingsPageContent({
     : ["context", "profile", "telegram", "support"];
   const [activeTab, setActiveTab, isTabExplicit] = useTabParam("context", visibleTabs, initialTab, {
     keepParamForDefault: true,
-    // Drilling into a tab on mobile pushes a history entry so the browser
-    // Back button (and back gesture) returns to the menu, not off the page.
-    pushOnEnter: true,
   });
   // Mark the (admin-only) Integrations tab when a connection needs attention, so
   // the error trail continues from the sidebar badge down to the exact tab.
