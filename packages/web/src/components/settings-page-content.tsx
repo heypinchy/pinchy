@@ -288,7 +288,7 @@ export function SettingsPageContent({
                 <div className="space-y-6">
                   <Card>
                     <CardHeader>
-                      <CardTitle>LLM Provider</CardTitle>
+                      <CardTitle>AI Provider</CardTitle>
                     </CardHeader>
                     <CardContent>
                       {loading ? (
