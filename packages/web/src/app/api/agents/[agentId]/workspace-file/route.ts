@@ -198,10 +198,18 @@ export const GET = withAuth<Params>(async (req, { params }, session) => {
   // corpus this was built against has a 268 MB scanned binder, and it is also
   // its most-cited document). `createReadStream` on the already-open handle
   // closes it when the stream ends OR when the client disconnects mid-download.
-  const body =
-    contentLength === 0
-      ? (await fh.close(), null)
-      : (Readable.toWeb(fh.createReadStream({ start, end })) as ReadableStream<Uint8Array>);
+  //
+  // A body nobody ever touches does NEITHER, and that is reachable: Next.js
+  // auto-implements HEAD by calling this handler and then discarding the body
+  // unread (`send-response.js` skips `pipeToNodeResponse` for HEAD), so a
+  // streamed HEAD parks the descriptor until a GC that may never come. On a
+  // route proxies and PDF viewers probe with HEAD, that is a descriptor leak
+  // per request. HEAD wants the headers anyway, so close the handle and answer
+  // without a body — which is also what the method is defined to return.
+  const wantsBody = req.method !== "HEAD" && contentLength > 0;
+  const body = wantsBody
+    ? (Readable.toWeb(fh.createReadStream({ start, end })) as ReadableStream<Uint8Array>)
+    : (await fh.close(), null);
 
   return new NextResponse(body, {
     status: isPartial ? 206 : 200,

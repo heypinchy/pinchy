@@ -23,6 +23,7 @@ import {
   writeSync,
   ftruncateSync,
   closeSync,
+  readdirSync,
 } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
@@ -80,6 +81,34 @@ async function callGET(agentId: string, requestedPath: string, headers?: Headers
   return GET(req, {
     params: Promise.resolve({ agentId }),
   } as unknown as Parameters<typeof GET>[1]);
+}
+
+/**
+ * Next.js does not route HEAD separately: with no HEAD export it calls the GET
+ * handler and then discards the body without reading or cancelling it
+ * (`send-response.js`: `if (response.body && req.method !== 'HEAD')`). So the
+ * handler must see the real method — passing it here is not test scaffolding,
+ * it is the only shape in which the HEAD path exists.
+ */
+async function callHEAD(agentId: string, requestedPath: string) {
+  const { GET } = await import("@/app/api/agents/[agentId]/workspace-file/route");
+  const url = new URL(`http://localhost/api/agents/${agentId}/workspace-file`);
+  url.searchParams.set("path", requestedPath);
+  const req = new NextRequest(url, { method: "HEAD" });
+  return GET(req, {
+    params: Promise.resolve({ agentId }),
+  } as unknown as Parameters<typeof GET>[1]);
+}
+
+/**
+ * Open file descriptors of this process. `/dev/fd` is a directory on both
+ * macOS and Linux (where it is a symlink to /proc/self/fd), which is what makes
+ * a descriptor leak assertable in an ordinary unit test instead of only in
+ * production, where it surfaces as EMFILE under load.
+ */
+function countOpenDescriptors(): number {
+  // eslint-disable-next-line security/detect-non-literal-fs-filename -- constant path
+  return readdirSync("/dev/fd").length;
 }
 
 /**
@@ -401,5 +430,81 @@ describe("GET /api/agents/[agentId]/workspace-file — large files and byte rang
     await callGET("agent-1", pdfPath);
 
     expect(mockDeferAuditLog.mock.calls[0][0].detail).toMatchObject({ partial: false });
+  });
+});
+
+/**
+ * Streaming replaced a buffered read, and it brought a failure mode buffering
+ * did not have: the descriptor now outlives the handler. `createReadStream` on
+ * an open handle closes it when the stream ENDS or is CANCELLED — but a body
+ * that is never touched at all does neither, and the handle stays open until a
+ * garbage collection that may not come ("Warning: Closing file descriptor N on
+ * garbage collection").
+ *
+ * That is not a hypothetical path. Next.js auto-implements HEAD by calling the
+ * GET handler (`auto-implement-methods.js`) and then throws the body away
+ * unread, so every HEAD request against this route parks a descriptor — and a
+ * file-serving route is exactly what proxies, monitors and PDF viewers probe
+ * with HEAD. Any authenticated user could then exhaust the process's descriptor
+ * limit with a loop.
+ */
+describe("GET /api/agents/[agentId]/workspace-file — HEAD does not leak descriptors", () => {
+  // Larger than the read stream's internal buffer. Below that the stream drains
+  // itself and closes the handle by accident, which would make this pass
+  // against a leaking implementation — and it is the LARGE knowledge-base
+  // binders this route exists for that never drain.
+  const BIGGER_THAN_ONE_READ = 8 * 1024 * 1024;
+
+  it("answers HEAD with the headers of a GET but no body", async () => {
+    const pdfPath = join(allowedRoot, "compilation-binder.pdf");
+    writeSparseFile(pdfPath, BIGGER_THAN_ONE_READ, PDF_BYTES);
+
+    const res = await callHEAD("agent-1", pdfPath);
+
+    expect(res.status).toBe(200);
+    // A HEAD must be usable for what clients ask it for: size and seekability.
+    expect(res.headers.get("content-length")).toBe(String(BIGGER_THAN_ONE_READ));
+    expect(res.headers.get("accept-ranges")).toBe("bytes");
+    expect(res.headers.get("content-type")).toBe("application/pdf");
+    expect(res.body).toBeNull();
+  });
+
+  it("holds no descriptor open after a burst of HEAD requests", async () => {
+    const pdfPath = join(allowedRoot, "compilation-binder.pdf");
+    writeSparseFile(pdfPath, BIGGER_THAN_ONE_READ, PDF_BYTES);
+
+    // Warm up first: the first call imports the route module and opens whatever
+    // it opens once, which would otherwise read as a leak.
+    await callHEAD("agent-1", pdfPath);
+    const before = countOpenDescriptors();
+
+    for (let i = 0; i < 40; i++) await callHEAD("agent-1", pdfPath);
+
+    // Slack for unrelated descriptors the runner may open concurrently; a leak
+    // is 40, not a handful.
+    expect(countOpenDescriptors() - before).toBeLessThan(10);
+  });
+
+  it("still audits the access, because a HEAD reveals the document exists", async () => {
+    const pdfPath = join(allowedRoot, "handbook.pdf");
+    writeFileSync(pdfPath, PDF_BYTES);
+
+    await callHEAD("agent-1", pdfPath);
+
+    expect(mockDeferAuditLog).toHaveBeenCalledTimes(1);
+    expect(mockDeferAuditLog.mock.calls[0][0]).toMatchObject({
+      eventType: "knowledge.source_viewed",
+      outcome: "success",
+    });
+  });
+
+  it("still refuses a path outside the allowed roots", async () => {
+    // The HEAD path must not become a way to probe for files by status code.
+    const secretPath = join(outsideDir, "secret.pdf");
+    writeFileSync(secretPath, SECRET_BYTES);
+
+    const res = await callHEAD("agent-1", secretPath);
+
+    expect(res.status).toBe(403);
   });
 });
