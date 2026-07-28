@@ -84,6 +84,12 @@ test.describe("Chat stop button — user-triggered abort (#550)", () => {
     //    provably had the time to finish. (The previous fixed 4000ms was
     //    shorter than the 4500ms it was meant to outlast, which would have let
     //    a no-op abort slip through green.)
+    //
+    //    Sleep exemption (pinchy/no-untracked-sleeps), tracked in #952: this
+    //    bounds a NEGATIVE window — there is no event that fires when tokens
+    //    stop arriving, so nothing to wait on. The deterministic replacement is
+    //    a fake-ollama control endpoint reporting whether this run's stream
+    //    completed or was client-aborted; #952 owns building it.
     await page.waitForTimeout(FAKE_OLLAMA_ABORT_STREAM_DEFAULT_DELAY_MS * STREAM_WORDS.length);
     //    Re-assert presence first: `not.toContainText` is also satisfied by a
     //    locator that matches NOTHING, so a reply that vanished from the DOM

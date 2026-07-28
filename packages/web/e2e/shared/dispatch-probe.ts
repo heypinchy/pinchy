@@ -368,6 +368,8 @@ export async function pollAuditForTool(
 export interface AuditApiEntry {
   eventType: string;
   resource: string | null;
+  actorType: string | null;
+  actorId: string | null;
   outcome: string;
   detail: Record<string, unknown> | null;
 }
@@ -389,9 +391,16 @@ export async function pollAuditForEvent(
     since?: string;
   }
 ): Promise<AuditApiEntry> {
-  const deadline = Date.now() + (params.deadlineMs ?? 60_000);
+  const deadlineMs = params.deadlineMs ?? 60_000;
+  const deadline = Date.now() + deadlineMs;
   const interval = params.intervalMs ?? 500;
   const sinceQs = params.since ? `&from=${encodeURIComponent(params.since)}` : "";
+  // A non-200 is retried rather than thrown on — the audit route can be
+  // transiently unavailable while the stack settles. But an endpoint that
+  // never recovers would otherwise surface as a bare "no entry matched",
+  // blaming the thing under test for a broken query. Carry the last bad
+  // status into the failure so it names itself.
+  let lastNon200: number | null = null;
   while (Date.now() < deadline) {
     const res = await page.request.get(
       `/api/audit?eventType=${encodeURIComponent(params.eventType)}&limit=25${sinceQs}`
@@ -400,10 +409,15 @@ export async function pollAuditForEvent(
       const audit = (await res.json()) as { entries: AuditApiEntry[] };
       const match = audit.entries.find(params.predicate);
       if (match) return match;
+      lastNon200 = null;
+    } else {
+      lastNon200 = res.status();
     }
     await new Promise((r) => setTimeout(r, interval));
   }
+  const suffix =
+    lastNon200 === null ? "" : ` (the audit query last answered HTTP ${lastNon200}, not 200)`;
   throw new Error(
-    `No "${params.eventType}" audit entry matched predicate within ${params.deadlineMs ?? 60_000}ms`
+    `No "${params.eventType}" audit entry matched predicate within ${deadlineMs}ms${suffix}`
   );
 }

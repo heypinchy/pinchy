@@ -80,6 +80,19 @@ Known limitations (it's a tripwire, not a precise metric):
 - It counts test-case calls with a regex, so it does **not** catch a test that is _commented out_ rather than deleted, and it counts `it(`/`test(` that appear inside string literals (including the guard's own fixtures). Review still owns these cases.
 - In CI it diffs against the merge-base; if a shallow clone has no merge-base it falls back to a tip-to-tip diff and logs a `::warning::`. A branch far behind the base can then report false removals — rebase on the base (or use the override) if that happens.
 
+## No Untracked Sleeps In E2E
+
+Every Playwright config here pins `retries: 0, workers: 1` on purpose: a flake is a signal, not something a rerun hides. A fixed sleep quietly trades that away. It is green on a fast host and red on a loaded runner, and when it does fail it says "timeout" instead of naming what was slow.
+
+The ESLint rule `pinchy/no-untracked-sleeps` bans `page.waitForTimeout(...)` across `e2e/**` (unit tests in `src/__tests__/eslint/no-untracked-sleeps.test.ts`). Wait on a real signal instead — a web-first assertion, `expect.poll(...)`, `page.waitForURL(...)`, `page.waitForResponse(...)`, or the shared `pollAuditForEvent` / `pollAuditForTool` helpers in `e2e/shared/dispatch-probe.ts`. When you replace a sleep in a retry loop, **the poll's exit condition must be the same condition the final assertion checks** — a weaker "something arrived" exit races the assertion and reintroduces the flake it was meant to remove.
+
+The exemption is the same contract as the skip policy: a comment carrying `#NNN` (or the issue URL). Two differences worth knowing:
+
+- **The comment must sit directly above the sleep's own statement**, with no code in between — not merely "within 40 lines" as with skips. A sleep is one statement and its reason belongs on it. The wide window also does not work here: scanning 40 lines around the two sleeps this rule was written for found `request #2` and `openclaw#42172` in unrelated comments and waved both through.
+- **The honest exemption is a bounded negative window** — proving further tokens never arrive, or that no error boundary engaged. There is no event to wait for, so no `waitFor` applies. It still needs an issue, because the deterministic replacement (a signal from the mock that the stream ended, a commit-level counter) is real work, not a fact of nature. The two current exemptions are tracked in #952.
+
+Known limitation, stated plainly: the rule bans the Playwright API, not the concept. `await new Promise((r) => setTimeout(r, 500))` is the same sleep and is **not** reported — banning it would sweep up ~85 poll-loop intervals across the e2e tree, a separate change with a separate argument. So this is a tripwire against the call a developer reaches for by reflex, not a proof that the suite contains no sleeps. Writing the `setTimeout` form to dodge the rule is a deliberate act, and review owns that case.
+
 ## Test Migrations Against Pre-Existing Data
 
 When you change **where a feature reads its data from** — a new table, a new store, a different source (e.g. the Telegram mirror switching from OpenClaw `chat.history` to Pinchy's `channel_messages`) — you MUST add a test that reads data written by the **old** source with the **new** code.
@@ -394,6 +407,8 @@ Every plugin tool must be covered at three layers:
    c. The test asserts the audit entry appears, either via a literal `/api/audit?eventType=tool.<toolName>&limit=10` query or via the shared `pollAuditForTool({ toolName, agentId })` helper in `packages/web/e2e/shared/dispatch-probe.ts`.
 
    The coverage guard (`plugin-tool-coverage.test.ts`) scans all `*.spec.ts` files for both `eventType=tool.<toolName>` and `pollAuditForTool(... toolName: "<toolName>" ...)` patterns. If a plugin has tools but no matching E2E assertion, CI fails there.
+
+   **A probe inside a skipped test does not count.** The scan drops matches inside `test.skip` / `test.describe.skip` / `.todo` / `.fixme` / `xit` / `xdescribe` blocks (`extractCoveredTools` in `plugin-tool-extraction.ts`, unit-tested in `plugin-tool-coverage-skips.test.ts`). It used to count them, and two specs kept dead probes in the tree for exactly that reason — the comments said "skipped tests count for static scans" out loud (#834). A guard a never-running test satisfies reports on the presence of a string, not on the existence of a test. `.skipIf(...)` is not a skip: it is a runtime gate, and its body still counts. When a probe is blocked on infrastructure, keep it (tracked, per the skip policy) but do not let it stand in for coverage — write one that runs, or accept that the plugin is covered by a different tool's probe.
 
 **Recipe for adding a new tool to an existing plugin:**
 

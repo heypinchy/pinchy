@@ -23,6 +23,7 @@ import { test, expect } from "@playwright/test";
 import { execSync } from "child_process";
 import path from "path";
 import { login, getSmithersAgentId } from "./helpers";
+import { pollAuditForEvent } from "../shared/dispatch-probe";
 
 const COMPOSE_FILES =
   "-f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.integration.yml";
@@ -104,59 +105,45 @@ test.describe("memory-audit watcher emits agent.memory_changed on MEMORY.md writ
     // 5. Poll the audit API. The watcher debounces writes through chokidar's
     //    awaitWriteFinish (200 ms stability + 50 ms poll), plus a 250 ms poll
     //    interval (usePolling) on the chokidar side, plus there's a
-    //    fs → handler hop and a DB insert. 30 × 500 ms = 15 s is comfortably
-    //    above the worst case under CI load.
-    type AuditEntry = {
-      eventType: string;
-      resource: string;
-      actorType: string;
-      actorId: string;
-      outcome: string;
-      detail: {
-        agent?: { id?: string; name?: string };
-        file?: string;
-        addedLines?: number;
-        removedLines?: number;
-        byteSize?: number;
-      };
+    //    fs → handler hop and a DB insert. 15 s is comfortably above the worst
+    //    case under CI load. The predicate is the same agent + file identity
+    //    the assertions below check, so the poll cannot exit on a weaker
+    //    condition and then race them.
+    type MemoryDetail = {
+      agent?: { id?: string; name?: string };
+      file?: string;
+      addedLines?: number;
+      removedLines?: number;
+      byteSize?: number;
     };
-    let entry: AuditEntry | undefined;
-    for (let attempt = 0; attempt < 30; attempt++) {
-      const res = await page
-        .context()
-        .request.get(`/api/audit?eventType=agent.memory_changed&limit=50`);
-      expect(res.ok()).toBe(true);
-      const body = (await res.json()) as { entries: AuditEntry[] };
-      entry = body.entries.find(
-        (e) => e.detail?.agent?.id === smithersId && e.detail?.file === "MEMORY.md"
-      );
-      if (entry) break;
-      await page.waitForTimeout(500);
-    }
-
-    expect(
-      entry,
-      `agent.memory_changed for ${smithersId}/MEMORY.md not found in audit log`
-    ).toBeDefined();
+    const entry = await pollAuditForEvent(page, {
+      eventType: "agent.memory_changed",
+      predicate: (e) => {
+        const detail = e.detail as MemoryDetail | null;
+        return detail?.agent?.id === smithersId && detail?.file === "MEMORY.md";
+      },
+      deadlineMs: 15_000,
+    });
+    const detail = entry.detail as MemoryDetail;
 
     // 6. Core shape: actor identity and resource framing.
-    expect(entry!.eventType).toBe("agent.memory_changed");
-    expect(entry!.resource).toBe(`agent:${smithersId}`);
-    expect(entry!.actorType).toBe("agent");
-    expect(entry!.actorId).toBe(smithersId);
-    expect(entry!.outcome).toBe("success");
+    expect(entry.eventType).toBe("agent.memory_changed");
+    expect(entry.resource).toBe(`agent:${smithersId}`);
+    expect(entry.actorType).toBe("agent");
+    expect(entry.actorId).toBe(smithersId);
+    expect(entry.outcome).toBe("success");
 
     // 7. Detail: snapshotted agent + file id + byte size match exactly.
-    expect(entry!.detail.agent).toEqual({ id: smithersId, name: smithersName });
-    expect(entry!.detail.file).toBe("MEMORY.md");
-    expect(entry!.detail.byteSize).toBe(expectedByteSize);
+    expect(detail.agent).toEqual({ id: smithersId, name: smithersName });
+    expect(detail.file).toBe("MEMORY.md");
+    expect(detail.byteSize).toBe(expectedByteSize);
 
     // 8. Line diff: we wrote 3 lines and never removed any in this write.
     //    `>= 3` (rather than `=== 3`) is intentional — the watcher's prior
     //    snapshot at the moment of our write is non-deterministic (an earlier
     //    test or a stale on-disk MEMORY.md could have populated it). Three
     //    new fact lines are guaranteed to surface as "added" regardless.
-    expect(entry!.detail.addedLines).toBeGreaterThanOrEqual(3);
-    expect(entry!.detail.removedLines).toBeGreaterThanOrEqual(0);
+    expect(detail.addedLines).toBeGreaterThanOrEqual(3);
+    expect(detail.removedLines).toBeGreaterThanOrEqual(0);
   });
 });

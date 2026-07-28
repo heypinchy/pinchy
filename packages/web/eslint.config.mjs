@@ -7,6 +7,7 @@ import requireParseRequestBody from "./eslint-rules/require-parse-request-body.j
 import noDirectSession from "./eslint-rules/no-direct-session.js";
 import noPiiInAuditDetail from "./eslint-rules/no-pii-in-audit-detail.js";
 import noUntrackedSkips from "./eslint-rules/no-untracked-skips.js";
+import noUntrackedSleeps from "./eslint-rules/no-untracked-sleeps.js";
 
 const pinchyPlugin = {
   rules: {
@@ -15,6 +16,7 @@ const pinchyPlugin = {
     "no-pii-in-audit-detail": noPiiInAuditDetail,
     "require-parse-request-body": requireParseRequestBody,
     "no-untracked-skips": noUntrackedSkips,
+    "no-untracked-sleeps": noUntrackedSleeps,
   },
 };
 
@@ -83,6 +85,23 @@ const eslintConfig = defineConfig([
     plugins: { pinchy: pinchyPlugin },
     rules: {
       "pinchy/no-untracked-skips": "error",
+    },
+  },
+  // Pinchy custom rules — Playwright specs and their helpers:
+  // - no-untracked-sleeps: forbid `page.waitForTimeout(...)` unless the
+  //   leading 40 lines reference a tracking issue. Every Playwright config
+  //   here pins `retries: 0, workers: 1` on purpose, so a flake is a signal
+  //   rather than something a rerun hides — a fixed sleep trades that away
+  //   for a wait that is green on a fast host and red on a loaded runner.
+  //   Wait on a real signal instead (web-first assertions, expect.poll,
+  //   waitForURL, waitForResponse). Same exemption contract as the skip
+  //   policy: a bounded negative window with no event to wait for is
+  //   allowed, but an issue has to be on the hook for removing it (#834).
+  {
+    files: ["e2e/**/*.{ts,tsx,js,jsx}"],
+    plugins: { pinchy: pinchyPlugin },
+    rules: {
+      "pinchy/no-untracked-sleeps": "error",
     },
   },
   // Pinchy custom rules — API route handlers only:

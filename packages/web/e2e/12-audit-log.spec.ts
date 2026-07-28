@@ -7,6 +7,7 @@ import {
   createSecondUserViaInvite,
   SECOND_USER,
 } from "./helpers";
+import { pollAuditForEvent } from "./shared/dispatch-probe";
 
 // Unique group name per run so retries don't collide with prior runs
 const AUDIT_TEST_GROUP = `AuditTestGroup-${Date.now()}`;
@@ -62,28 +63,19 @@ test.describe.serial("Audit log", () => {
     // Poll the audit API until the group.created entry appears.
     // The audit write is deferred via after(), which runs after the response
     // returns. Under CI load the deferred work can take several seconds, so the
-    // window is generous (20 × 500ms = 10s). Locally the loop almost always
-    // exits on the first or second attempt.
-    let entry: Record<string, unknown> | undefined;
-    for (let attempt = 0; attempt < 20; attempt++) {
-      const res = await page.context().request.get(`/api/audit?eventType=group.created&limit=100`);
-      expect(res.ok()).toBe(true);
-      const body = await res.json();
-      entry = (body.entries as Array<Record<string, unknown>>).find(
-        (e) => (e.detail as Record<string, unknown>)?.name === AUDIT_TEST_GROUP
-      );
-      if (entry) break;
-      await page.waitForTimeout(500);
-    }
+    // window is generous (10s). Locally it resolves on the first or second
+    // attempt. The predicate is the same identity the assertions below check,
+    // so the loop cannot exit on a weaker condition and then race them.
+    const entry = await pollAuditForEvent(page, {
+      eventType: "group.created",
+      predicate: (e) => e.detail?.name === AUDIT_TEST_GROUP,
+      deadlineMs: 10_000,
+    });
 
-    expect(
-      entry,
-      `group.created entry for "${AUDIT_TEST_GROUP}" not found in audit log`
-    ).toBeDefined();
-    expect(entry!.eventType).toBe("group.created");
-    expect(entry!.outcome).toBe("success");
-    expect(entry!.actorType).toBe("user");
-    expect((entry!.detail as Record<string, unknown>).name).toBe(AUDIT_TEST_GROUP);
+    expect(entry.eventType).toBe("group.created");
+    expect(entry.outcome).toBe("success");
+    expect(entry.actorType).toBe("user");
+    expect(entry.detail!.name).toBe(AUDIT_TEST_GROUP);
   });
 
   test("audit log UI shows the group.created entry to admin", async ({ page }) => {
