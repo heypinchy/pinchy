@@ -146,7 +146,7 @@ const defaultComponents = memoizeMarkdownComponents({
     const source = href ? parseSourceHref(href) : null;
     if (source && href) {
       return (
-        <PdfDialog url={href} title={source.path}>
+        <PdfDialog url={href} title={source.path} page={source.page}>
           <button type="button" className={cn(linkClasses, "cursor-pointer text-left")}>
             {children}
           </button>

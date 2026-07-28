@@ -156,16 +156,22 @@ const CapabilityWarning: FC<{ message: string }> = ({ message }) => (
 export const PdfDialog: FC<{
   url: string;
   title: string;
+  /**
+   * The page the url opens at, when it opens at one. Passed in rather than
+   * re-read from the url: `parseSourceHref` already answers that question for a
+   * citation, and a second reading here is a pair that drifts — the two had in
+   * fact already disagreed on what counts as a page fragment.
+   */
+  page?: number | null;
   children: ReactNode;
   /** Test-only escape hatch; the dialog is trigger-driven in the app. */
   defaultOpen?: boolean;
-}> = ({ url, title, children, defaultOpen }) => {
+}> = ({ url, title, page, children, defaultOpen }) => {
   // `title` is a filename for an attachment and a full path for a citation.
   // Show the leaf either way and keep the rest in the tooltip: a corpus has
   // same-named files in different folders, so the path has to stay reachable,
   // but spending header width on it would push the controls off a narrow screen.
   const filename = title.split("/").filter(Boolean).pop() ?? title;
-  const page = /#page=(\d+)/.exec(url)?.[1];
 
   return (
     <Dialog defaultOpen={defaultOpen}>
@@ -185,7 +191,9 @@ export const PdfDialog: FC<{
           <DialogTitle className="truncate font-medium text-sm" title={title}>
             {filename}
           </DialogTitle>
-          {page && <span className="shrink-0 text-muted-foreground text-xs">Page {page}</span>}
+          {page !== null && page !== undefined && (
+            <span className="shrink-0 text-muted-foreground text-xs">Page {page}</span>
+          )}
           <div className="ml-auto flex shrink-0 items-center gap-0.5">
             <Button variant="ghost" size="icon" className="size-8" asChild>
               <a href={url} target="_blank" rel="noreferrer noopener" aria-label="Open in new tab">

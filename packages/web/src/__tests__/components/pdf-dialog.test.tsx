@@ -22,9 +22,9 @@ import { render, screen } from "@testing-library/react";
 
 import { PdfDialog } from "@/components/assistant-ui/attachment-preview";
 
-function openDialog(url: string, title: string) {
+function openDialog(url: string, title: string, page: number | null = null) {
   return render(
-    <PdfDialog url={url} title={title} defaultOpen>
+    <PdfDialog url={url} title={title} page={page} defaultOpen>
       <button type="button">trigger</button>
     </PdfDialog>
   );
@@ -51,7 +51,11 @@ describe("PdfDialog", () => {
   });
 
   it("shows which page the citation pointed at", () => {
-    openDialog(SOURCE_URL, "/data/noack/PPR/document.pdf");
+    // The page is PASSED IN, not re-read from the url. `parseSourceHref` already
+    // decided what a citation's page is; a second regex here would be a second
+    // answer to the same question, and the two had already drifted (`\d{1,5}`
+    // against a whole fragment vs `\d+` anywhere in the string).
+    openDialog(SOURCE_URL, "/data/noack/PPR/document.pdf", 510);
 
     expect(screen.getByText(/page 510/i)).toBeInTheDocument();
   });
