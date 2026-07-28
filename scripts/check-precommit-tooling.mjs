@@ -29,13 +29,10 @@ const packageJson = JSON.parse(
 );
 const lintStaged = packageJson["lint-staged"];
 
-// Resolve from the repo root of THIS checkout, which is where lint-staged runs.
-// In a git worktree that has no node_modules of its own, the ancestor walk
-// reaches the main checkout's — the same path lint-staged's PATH takes.
-const missing = requiredBinaries(lintStaged).filter(
-  (binary) => resolveBinary(binary, binDirsFor(repoRoot)) === null,
-);
-
+// The message IS the product of this script, so it must not be truncated: a
+// `process.exit()` can drop a pending write when stderr is a pipe rather than a
+// terminal, which is what a GUI git client gives a hook. Set the code and let
+// the process end on its own instead.
 if (process.argv.includes("--explain")) {
   // Post-mortem for a lint-staged run that already failed. The rules scoped to a
   // package can only be judged here: whether they run at all depends on what is
@@ -52,10 +49,15 @@ if (process.argv.includes("--explain")) {
     console.error("");
     console.error(formatMissingToolingMessage(unresolvable));
   }
-  process.exit(0);
-}
-
-if (missing.length > 0) {
-  console.error(formatMissingToolingMessage(missing));
-  process.exit(1);
+} else {
+  // Resolve from the repo root of THIS checkout, which is where lint-staged
+  // runs. In a git worktree that has no node_modules of its own, the ancestor
+  // walk reaches the main checkout's — the same path lint-staged's PATH takes.
+  const missing = requiredBinaries(lintStaged).filter(
+    (binary) => resolveBinary(binary, binDirsFor(repoRoot)) === null,
+  );
+  if (missing.length > 0) {
+    console.error(formatMissingToolingMessage(missing));
+    process.exitCode = 1;
+  }
 }

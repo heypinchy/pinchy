@@ -18,11 +18,16 @@
  *   2. A PACKAGE-MANAGER WRAPPER around the whole-tree command. lint-staged puts
  *      every ancestor node_modules/.bin on PATH, so a directly-invoked binary
  *      resolves from a git worktree too: the worktrees live under the main
- *      checkout, and the walk reaches its node_modules. `pnpm exec` does not
- *      work that way — it wants a node_modules in the directory it runs in, and
- *      a worktree has none, so it fails with ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL.
- *      Wrapping the whole-tree rule therefore trades a stale-install failure for
- *      an every-worktree-commit failure.
+ *      checkout, and the walk reaches its node_modules. `pnpm exec` ignores that
+ *      PATH and resolves through the workspace it finds instead — and a worktree
+ *      root IS a workspace root (pnpm-workspace.yaml) with no node_modules, so
+ *      the exec goes recursive over the workspace packages and dies with
+ *      ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL ("Command not found"). The failure
+ *      keys on the workspace root, not on the missing node_modules as such:
+ *      measured, `pnpm -C <dir> exec` from a NON-workspace directory does reach
+ *      the ancestor install. That is why the wrapper looks harmless when tried
+ *      anywhere but where the hook actually runs. Wrapping the whole-tree rule
+ *      trades a stale-install failure for an every-worktree-commit failure.
  *
  * The third property is SCOPE, and it is the same one `format-gate.mjs` guards
  * for CI: the whole-tree rule is what makes the hook format anything outside
@@ -69,8 +74,9 @@ export function validateCatchAllCommand(command) {
   return [
     `the whole-tree lint-staged command must invoke its binary directly (got \`${binary}\` in ` +
       `\`${command}\`); lint-staged puts every ancestor node_modules/.bin on PATH, so a bare binary ` +
-      `resolves from a git worktree, while \`${binary}\` needs a node_modules in the directory it ` +
-      `runs in — which a worktree does not have`,
+      `resolves from a git worktree by walking up into the main checkout's install, while ` +
+      `\`${binary}\` ignores that PATH and resolves through the workspace it finds — at an ` +
+      `uninstalled worktree root that is a recursive exec over the workspace packages, and it fails`,
   ];
 }
 

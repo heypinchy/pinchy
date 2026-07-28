@@ -219,6 +219,12 @@ test("the whole-tree command really formats a file outside packages/web/src", ()
   // resolves and runs the configured binary exactly as lint-staged does, from a
   // directory with no node_modules of its own (the worktree case), on a file
   // that no packages/web-scoped rule would ever match.
+  //
+  // The probe dir lives inside the repo (the ancestor walk is the whole point)
+  // and is deliberately NOT gitignored: prettier reads the root .gitignore, and
+  // it skips an ignored path even when that path is passed explicitly — so an
+  // entry here would turn `--write` into a no-op. The content assertion below
+  // catches that, but only after the "obvious" cleanup has already been made.
   const probeDir = mkdtempSync(join(REPO_ROOT, ".precommit-probe-"));
   try {
     const probeFile = join(probeDir, "probe.js");
@@ -249,5 +255,32 @@ test("the whole-tree command really formats a file outside packages/web/src", ()
     assert.equal(readFileSync(probeFile, "utf8"), "const a = 1;\n");
   } finally {
     rmSync(probeDir, { recursive: true, force: true });
+  }
+});
+
+test("the preflight itself runs clean, and says nothing, on an installed checkout", () => {
+  // Nothing but the hook executes check-precommit-tooling.mjs, and the hook runs
+  // it at commit time — where a bad import or a stray console.log reads as "the
+  // pre-commit hook is broken" and produces exactly the --no-verify this guard
+  // exists to prevent. Both modes must therefore be silent when there is nothing
+  // to report, and `--explain` must stay exit 0 even so: it is a post-mortem for
+  // a failure the hook has already decided about.
+  const script = join(REPO_ROOT, "scripts/check-precommit-tooling.mjs");
+  for (const args of [[], ["--explain"]]) {
+    const result = spawnSync(process.execPath, [script, ...args], {
+      cwd: REPO_ROOT,
+      encoding: "utf8",
+    });
+    const invocation = ["check-precommit-tooling.mjs", ...args].join(" ");
+    assert.equal(
+      result.status,
+      0,
+      `${invocation} exited ${result.status}: ${result.stderr || result.stdout}`,
+    );
+    assert.equal(
+      `${result.stdout}${result.stderr}`.trim(),
+      "",
+      `${invocation} must be silent when every binary resolves`,
+    );
   }
 });
