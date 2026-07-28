@@ -39,29 +39,58 @@ const SKIP_DIRS = new Set([
   "playwright-report",
 ]);
 
+/**
+ * Does one path segment match one glob segment? `*` stands for any run of
+ * characters within the segment; everything else is literal.
+ *
+ * Matched by hand rather than by building a RegExp from the pattern: escaping
+ * a glob into a regex correctly means escaping every metacharacter, and doing
+ * it partially is a real defect (CodeQL js/incomplete-sanitization caught this
+ * file doing exactly that — it escaped `.` and `*` but not `\`).
+ */
+function segmentMatches(pattern, name) {
+  const parts = pattern.split("*");
+  if (parts.length === 1) return pattern === name;
+  if (!name.startsWith(parts[0])) return false;
+  if (!name.endsWith(parts[parts.length - 1])) return false;
+
+  let at = parts[0].length;
+  for (const part of parts.slice(1, -1)) {
+    const found = name.indexOf(part, at);
+    if (found === -1) return false;
+    at = found + part.length;
+  }
+  // The leading and trailing literals must not overlap on a short name.
+  return at <= name.length - parts[parts.length - 1].length;
+}
+
+/** Does a `/`-split glob match a `/`-split path? `**` spans any depth. */
+function pathMatches(patternSegments, pathSegments) {
+  if (patternSegments.length === 0) return pathSegments.length === 0;
+
+  const [head, ...rest] = patternSegments;
+  if (head === "**") {
+    for (let skip = 0; skip <= pathSegments.length; skip++) {
+      if (pathMatches(rest, pathSegments.slice(skip))) return true;
+    }
+    return false;
+  }
+  if (pathSegments.length === 0) return false;
+  if (!segmentMatches(head, pathSegments[0])) return false;
+  return pathMatches(rest, pathSegments.slice(1));
+}
+
 /** `exclude` entries from tsconfig.json, as predicates over a web-relative path. */
 function excludedBy(tsconfigText) {
   const excludes = JSON.parse(
     tsconfigText.replace(/^\s*\/\/.*$/gm, ""),
   ).exclude;
   return excludes.map((pattern) => {
-    // Only the shapes this tsconfig actually uses: a literal path, or a glob
-    // with `**` / `*` segments. Anything else should fail loudly rather than
-    // be silently treated as "matches nothing".
-    const rx = new RegExp(
-      "^" +
-        pattern
-          .split("/")
-          .map((seg) =>
-            seg === "**"
-              ? ".*"
-              : seg.replace(/\*/g, "[^/]*").replace(/\./g, "\\."),
-          )
-          .join("/")
-          .replace(/\.\*\//g, "(?:.*/)?") +
-        "$",
-    );
-    return (p) => rx.test(p) || p.startsWith(`${pattern}/`);
+    const segments = pattern.split("/");
+    // A bare directory name excludes everything beneath it, which is how
+    // `node_modules` is meant here.
+    return (p) =>
+      pathMatches(segments, p.split("/")) || p.startsWith(`${pattern}/`);
   });
 }
 
@@ -176,4 +205,28 @@ test("the exclude patterns still match the files they are meant to", () => {
       "which is exactly why it must stay self-contained",
   );
   assert.ok(!excluded("src/lib/audit.ts"), "production source must be scanned");
+});
+
+test("the glob matcher handles the shapes tsconfig actually uses", () => {
+  // `**` must span any depth, including none, and `*` must not leak across a
+  // path separator. A matcher that quietly says "no" to everything would make
+  // the guard scan excluded files and report false violations; one that says
+  // "yes" to everything would switch the guard off entirely.
+  const match = (pattern, path) =>
+    pathMatches(pattern.split("/"), path.split("/"));
+
+  assert.ok(match("src/**/*.test.ts", "src/a/b/c.test.ts"), "deep nesting");
+  assert.ok(match("src/**/*.test.ts", "src/c.test.ts"), "** spans zero dirs");
+  assert.ok(match("vitest.config.ts", "vitest.config.ts"), "literal");
+
+  assert.ok(!match("src/**/*.test.ts", "src/c.ts"), "non-test file");
+  assert.ok(!match("src/**/*.test.ts", "eval/c.test.ts"), "wrong root");
+  assert.ok(
+    !match("vitest.config.ts", "vitest.integration.config.ts"),
+    "prefix",
+  );
+  assert.ok(!match("src/*.ts", "src/a/b.ts"), "* must not cross a separator");
+
+  // A dot in the pattern is a literal dot, not "any character".
+  assert.ok(!match("vitest.config.ts", "vitestxconfig.ts"), "dot is literal");
 });
