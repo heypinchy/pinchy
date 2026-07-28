@@ -10,6 +10,7 @@ const base = {
   isRunning: false,
   reconnectExhausted: false,
   payloadRejected: false,
+  historyTimedOut: false,
   configuring: false,
 };
 
@@ -68,13 +69,59 @@ describe("useChatStatus", () => {
     expect(result.current).toEqual({ kind: "payloadRejected" });
   });
 
-  it("priority: exhausted > configuring > payloadRejected > disconnected > starting > responding > ready", () => {
+  it("returns 'unavailable' with reason 'historyTimeout' when the initial history never arrived", () => {
+    // Issue #956: the wait for the first history frame has a deadline. Once it
+    // expires with nothing renderable on screen, the chat must stop pretending
+    // to start and offer a way out instead.
+    const { result } = renderHook(() =>
+      useChatStatus({
+        ...base,
+        isHistoryLoaded: false,
+        hasInitialContent: false,
+        historyTimedOut: true,
+      })
+    );
+    expect(result.current).toEqual({ kind: "unavailable", reason: "historyTimeout" });
+  });
+
+  it("ignores a history timeout once there is content on screen", () => {
+    // A catch-up re-pull can time out mid-conversation. The transcript is still
+    // there, so the chat is not in a dead end — don't blank it with an error.
+    const { result } = renderHook(() =>
+      useChatStatus({ ...base, historyTimedOut: true, hasInitialContent: true })
+    );
+    expect(result.current).toEqual({ kind: "ready" });
+  });
+
+  it("prefers the history timeout over the generic 'disconnected' state", () => {
+    // The self-heal closes the socket, so isConnected drops right after the
+    // deadline. "Reconnecting..." would hide the retry the user needs.
+    vi.useFakeTimers();
+    const { result } = renderHook(() =>
+      useChatStatus({
+        ...base,
+        isConnected: false,
+        isHistoryLoaded: false,
+        hasInitialContent: false,
+        historyTimedOut: true,
+      })
+    );
+    act(() => {
+      vi.advanceTimersByTime(2100);
+    });
+    expect(result.current).toEqual({ kind: "unavailable", reason: "historyTimeout" });
+    vi.useRealTimers();
+  });
+
+  it("priority: exhausted > configuring > payloadRejected > historyTimeout > disconnected > starting > responding > ready", () => {
     const { result } = renderHook(() =>
       useChatStatus({
         ...base,
         reconnectExhausted: true,
         configuring: true,
         payloadRejected: true,
+        historyTimedOut: true,
+        hasInitialContent: false,
         isConnected: false,
         isHistoryLoaded: false,
         isRunning: true,

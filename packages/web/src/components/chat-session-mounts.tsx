@@ -160,6 +160,7 @@ function ChatSessionInstance({
   const {
     onRetryContinue,
     onRetryResend,
+    retryHistory,
     addPendingUpload,
     removePendingUpload,
     retryPendingUpload,
@@ -186,9 +187,11 @@ function ChatSessionInstance({
       isDelayed: bundle.isDelayed,
       reconnectExhausted: bundle.reconnectExhausted,
       payloadRejected: bundle.payloadRejected,
+      historyTimedOut: bundle.historyTimedOut,
       hasInlineError: bundle.hasInlineError,
       onRetryContinue,
       onRetryResend,
+      retryHistory,
       lastError,
       pendingUploads: bundle.pendingUploads,
       addPendingUpload,
@@ -210,6 +213,7 @@ function ChatSessionInstance({
     bundle.isDelayed,
     bundle.reconnectExhausted,
     bundle.payloadRejected,
+    bundle.historyTimedOut,
     bundle.hasInlineError,
     bundle.pendingUploads,
   ]);
