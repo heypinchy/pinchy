@@ -55,10 +55,10 @@ const {
   // A single db.select() stub serves both tables the module queries,
   // routing on which table object .from(...) is called with (identity
   // comparison against the __marker tag the @/db/schema mock below attaches).
-  // For auditLog there are two distinct call shapes: a bare await (MAX(id)
-  // snapshot) and .where().orderBy().limit() (last-scanned-row lookup). They're
-  // distinguished by which chain method is called first, exactly like the real
-  // query builder — this mock never calls .where() with no follow-on chain.
+  // For auditLog there are three distinct call shapes: a bare await (MAX(id)
+  // snapshot), .where().orderBy().limit() (last-scanned-row lookup) and
+  // .where().limit() (the #698 concurrency probe). They're distinguished by
+  // which chain method follows, exactly like the real query builder.
   const mockSelect = vi.fn((..._args: unknown[]) => ({
     from: (table: unknown) => {
       const isCheckpointTable =
@@ -402,6 +402,37 @@ describe("sweepAuditVerify", () => {
     expect(mockInsertValues).toHaveBeenCalledWith(
       expect.objectContaining({ lastVerifiedId: 14, lastVerifiedHmac: "hmac-14" })
     );
+  });
+
+  it("concurrency probe query fails: still advances the checkpoint, folding conservatively to the scanned window", async () => {
+    // The probe runs AFTER the report row is already written, so letting its
+    // error escape would leave the checkpoint behind entirely — and the next
+    // sweep would re-scan and re-report the very same window. Treat an
+    // unanswerable probe as "assume someone raced us": never skips a row.
+    mockCheckpointRow({ lastVerifiedId: 10, lastVerifiedHmac: "hmac-10" });
+    mockCurrentMaxId(13);
+    mockVerifyIntegrity.mockResolvedValue({
+      valid: true,
+      totalChecked: 3,
+      invalidIds: [],
+      chainBreakIds: [],
+    });
+    mockLastScannedRow({ id: 13, rowHmac: "hmac-13" });
+    mockOwnReportRow(16, "hmac-16");
+    mockRacedRowLimit.mockRejectedValueOnce(new Error("db blip"));
+    const stderrSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await expect(sweepAuditVerify()).resolves.toBeDefined();
+
+    expect(mockRacedRowLimit).toHaveBeenCalled();
+    expect(mockInsertValues).toHaveBeenCalledWith(
+      expect.objectContaining({ lastVerifiedId: 13, lastVerifiedHmac: "hmac-13", lastStatus: "ok" })
+    );
+    // A failed probe is not an audit-write failure — the audit row went in.
+    expect(mockRecordAuditFailure).not.toHaveBeenCalled();
+    // …but it is not swallowed silently either.
+    expect(stderrSpy).toHaveBeenCalled();
+    stderrSpy.mockRestore();
   });
 
   it("violation: advances the checkpoint anyway, sets lastStatus='violation', emits failure audit + stderr + increments counter", async () => {

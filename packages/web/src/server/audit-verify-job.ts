@@ -110,17 +110,29 @@ async function writeCheckpoint(
  *
  * Adjacent ids leave no room for a row in between, so the common uncontended
  * case (report row directly after the snapshot) answers without a query.
+ *
+ * An unanswerable probe answers "yes". This runs AFTER the report row is
+ * already written, so letting the error escape would leave the checkpoint
+ * behind entirely and make the next sweep re-scan and re-report the identical
+ * window. "Assume someone raced us" costs at most a redundant re-scan and can
+ * never skip a row — the same conservative direction as the audit-write
+ * failure fallback below.
  */
 async function hasRowsBetween(afterId: number, beforeId: number): Promise<boolean> {
   if (beforeId <= afterId + 1) return false;
 
-  const [row] = await db
-    .select({ id: auditLog.id })
-    .from(auditLog)
-    .where(and(gt(auditLog.id, afterId), lt(auditLog.id, beforeId)))
-    .limit(1);
+  try {
+    const [row] = await db
+      .select({ id: auditLog.id })
+      .from(auditLog)
+      .where(and(gt(auditLog.id, afterId), lt(auditLog.id, beforeId)))
+      .limit(1);
 
-  return row !== undefined;
+    return row !== undefined;
+  } catch (err) {
+    console.error("[audit-verify-job] concurrency probe failed, folding conservatively:", err);
+    return true;
+  }
 }
 
 export interface AuditVerifySweepResult {
