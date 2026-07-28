@@ -34,6 +34,13 @@ export interface RuntimeBundle {
   reconnectExhausted: boolean;
   payloadRejected: boolean;
   /**
+   * The wait for the initial history frame ran out of time (#956). Optional so
+   * the placeholder bundle and legacy publishers stay valid; absent ≙ false.
+   */
+  historyTimedOut?: boolean;
+  /** Reconnect and re-request history after a stalled load (#956). */
+  retryHistory?: () => void;
+  /**
    * The thread currently shows an inline turn-failure bubble (#583). Optional
    * so the placeholder bundle and legacy publishers stay valid; absent ≙ false.
    * Read by the durable paused-error banner to suppress itself when the same
@@ -166,6 +173,22 @@ export function useChatSessionHasInlineError(agentId: string, chatId?: string): 
   const store = useContext(ChatSessionStoreContext) ?? fallbackStore;
   const key = chatSessionKey(agentId, chatId);
   return useStore(store, (s) => s.bundles[key]?.hasInlineError ?? false);
+}
+
+/** Stable no-op so the selector below keeps a referentially stable snapshot. */
+const noop = () => {};
+
+/**
+ * Non-throwing subscription to the given chat's "reconnect and re-request
+ * history" action (#956), for the stalled-load state deep inside the thread.
+ * Read from the store rather than threaded down as yet another context provider
+ * — `<Chat>` already nests eight of them, and a ninth would re-indent the whole
+ * subtree for one callback. Same fallback-store pattern as its siblings.
+ */
+export function useChatSessionRetryHistory(agentId: string, chatId?: string): () => void {
+  const store = useContext(ChatSessionStoreContext) ?? fallbackStore;
+  const key = chatSessionKey(agentId, chatId);
+  return useStore(store, (s) => s.bundles[key]?.retryHistory ?? noop);
 }
 
 /**

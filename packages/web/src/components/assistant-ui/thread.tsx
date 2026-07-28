@@ -54,6 +54,7 @@ import {
   RetryPendingUploadContext,
   FileSourceContext,
 } from "@/components/chat";
+import { useChatSessionRetryHistory } from "@/components/chat-session-provider";
 import { DiagnosticsExportDialog } from "@/components/diagnostics-export-dialog";
 import { useAgentsContext } from "@/components/agents-provider";
 import { normalizeStarterPrompts } from "@/lib/schemas/starter-prompts";
@@ -163,6 +164,8 @@ const ROTATION_INTERVAL_MS = 3000;
 export const ThreadWelcome: FC = () => {
   const chatStatus = useContext(ChatStatusContext);
   const agentId = useContext(AgentIdContext);
+  const chatId = useContext(ChatIdContext);
+  const retryHistory = useChatSessionRetryHistory(agentId ?? "", chatId ?? undefined);
   const { getAgent } = useAgentsContext();
   const agent = agentId ? getAgent(agentId) : undefined;
   // Normalize (trim, drop blanks, de-duplicate) so `key={prompt}` chips never
@@ -224,6 +227,30 @@ export const ThreadWelcome: FC = () => {
           <p className="text-sm font-medium text-muted-foreground">
             Image too large. Send a smaller file to keep chatting.
           </p>
+        </div>
+      </div>
+    );
+  }
+
+  if (chatStatus.kind === "unavailable" && chatStatus.reason === "historyTimeout") {
+    // Issue #956: the wait for the initial history frame ran out. Say so and
+    // offer the way out — the chat used to sit on the loading indicator
+    // indefinitely, and only a page reload got the user unstuck.
+    return (
+      <div
+        data-testid="history-timeout"
+        className="aui-thread-welcome-root mx-auto my-auto flex w-full max-w-(--thread-max-width) grow flex-col"
+      >
+        <div className="aui-thread-welcome-center flex w-full grow flex-col items-center justify-center">
+          <div className="flex flex-col items-center gap-3 px-4 text-center">
+            <p className="text-sm font-medium text-muted-foreground">
+              This chat didn&apos;t load. The connection may have dropped.
+            </p>
+            <Button variant="outline" size="sm" onClick={retryHistory}>
+              <RotateCw className="size-4" />
+              Try again
+            </Button>
+          </div>
         </div>
       </div>
     );

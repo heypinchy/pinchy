@@ -84,11 +84,18 @@ vi.mock("@/components/chat", async () => {
   return {
     AgentAvatarContext: React.createContext<string | null>(null),
     AgentIdContext: React.createContext<string | null>(null),
+    ChatIdContext: React.createContext<string | null>(null),
     RetryResendContext: React.createContext<(messageId: string) => void>(() => {}),
     RetryContinueContext: React.createContext<() => void>(() => {}),
     ChatStatusContext: React.createContext<{ kind: string; reason?: string }>({ kind: "starting" }),
   };
 });
+
+// The stalled-load retry (#956) is read from the session store, not a context.
+const mockRetryHistory = vi.fn();
+vi.mock("@/components/chat-session-provider", () => ({
+  useChatSessionRetryHistory: () => mockRetryHistory,
+}));
 
 // ThreadWelcome reads the agent's starterPrompts via useAgentsContext (#570).
 // Mock it per-test via the returned object's getAgent.
@@ -247,5 +254,30 @@ describe("ThreadWelcome — disconnected state (kind=unavailable, reason=disconn
       </ChatStatusContext.Provider>
     );
     expect(screen.getByTestId("loading-spinner")).toBeInTheDocument();
+  });
+});
+
+describe("ThreadWelcome — stalled load (kind=unavailable, reason=historyTimeout)", () => {
+  // Issue #956: the chat used to sit on the loading indicator forever when the
+  // history frame never arrived. The user's only way out was knowing to reload.
+  it("explains the stall instead of showing the endless loading indicator", () => {
+    render(
+      <ChatStatusContext.Provider value={{ kind: "unavailable", reason: "historyTimeout" }}>
+        <ThreadWelcome />
+      </ChatStatusContext.Provider>
+    );
+    expect(screen.getByText(/didn't load/i)).toBeInTheDocument();
+    expect(screen.queryByTestId("startup-message")).not.toBeInTheDocument();
+  });
+
+  it("offers a retry that reconnects and re-requests history", () => {
+    mockRetryHistory.mockClear();
+    render(
+      <ChatStatusContext.Provider value={{ kind: "unavailable", reason: "historyTimeout" }}>
+        <ThreadWelcome />
+      </ChatStatusContext.Provider>
+    );
+    screen.getByRole("button", { name: /try again/i }).click();
+    expect(mockRetryHistory).toHaveBeenCalledTimes(1);
   });
 });

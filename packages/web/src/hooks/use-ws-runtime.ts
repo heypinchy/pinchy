@@ -295,6 +295,28 @@ export const attachmentAdapter = new CompositeAttachmentAdapter([
 const MAX_RECONNECT_ATTEMPTS = 10;
 const MAX_BUNDLED_MESSAGES = 200;
 
+/**
+ * Deadline for the server's answer to a `history` request (#956).
+ *
+ * The server answers on every branch of `ClientRouter.handleHistory` — with
+ * messages, with the authoritative `sessionKnown: true` empty signal, or with a
+ * greeting — so silence past this point means the request or the response was
+ * lost in transit, not that the server declined. Sized off that handler's own
+ * worst case: `waitForConnection` gives up after 10s, the catch path then sleeps
+ * 2s and refetches. 20s leaves room for that plus the RPC round trips, so a slow
+ * server is never mistaken for a dead socket.
+ */
+const HISTORY_TIMEOUT_MS = 20_000;
+
+/**
+ * How many times an expired deadline may drop the socket and reconnect by
+ * itself. One is usually enough — the reported failure is a socket the OS tore
+ * down without a `close` event, which a fresh connection cures. The cap keeps a
+ * server that genuinely never answers from turning into an endless reconnect
+ * loop; past it the user's Retry is the way forward.
+ */
+const MAX_HISTORY_SELF_HEALS = 2;
+
 function capMessages<T>(messages: T[]): T[] {
   if (messages.length <= MAX_BUNDLED_MESSAGES) return messages;
   return messages.slice(messages.length - MAX_BUNDLED_MESSAGES);
@@ -500,6 +522,16 @@ export function useWsRuntime(
   reconnectExhausted: boolean;
   payloadRejected: boolean;
   /**
+   * The client's deadline for the server's answer to a `history` request
+   * expired (issue #956). Combined with `hasInitialContent === false` this is
+   * the dead end users hit: a chat parked on the loading indicator forever.
+   * Cleared the moment any history frame lands, including one produced by the
+   * self-heal reconnect the expiry triggers.
+   */
+  historyTimedOut: boolean;
+  /** Reconnect and re-request history after a stalled load (#956). */
+  retryHistory: () => void;
+  /**
    * True while an inline turn-failure bubble is in the thread (#583). Lets the
    * durable paused-error banner suppress itself as a fallback rather than
    * duplicate a failure that is already visible inline.
@@ -546,6 +578,16 @@ export function useWsRuntime(
    * messages that won't arrive. Reset on every reconnect/agent-switch.
    */
   const [knownEmptyHistory, setKnownEmptyHistory] = useState(false);
+  /**
+   * The deadline on an outstanding `history` request expired (#956). Before
+   * this existed, a lost history frame parked the chat on the loading indicator
+   * with no error, no retry and no way out but a manual reload — every other
+   * timer in this hook covers SENDING, nothing covered the initial load.
+   */
+  const [historyTimedOut, setHistoryTimedOut] = useState(false);
+  const historyWatchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** Self-heal reconnects spent on the current stall; reset by an answer. */
+  const historySelfHealsRef = useRef(0);
   const [isOpenClawConnected, setIsOpenClawConnected] = useState(false);
   const [reconnectExhausted, setReconnectExhausted] = useState(false);
   const [payloadRejected, setPayloadRejected] = useState(false);
@@ -647,6 +689,7 @@ export function useWsRuntime(
     setIsHistoryLoaded(false);
     setIsReconcilingMessages(false);
     setKnownEmptyHistory(false);
+    setHistoryTimedOut(false);
     setPayloadRejected(false);
     // Multi-device live-sync: drop the poke-dedup identity so the newly-opened
     // session's first poke always re-pulls — its messageIds are unrelated to the
@@ -670,6 +713,17 @@ export function useWsRuntime(
       // eslint-disable-next-line react-hooks/refs
       reconcileFinishTimerRef.current = null;
     }
+    // The previous session's history deadline must not fire into the new one —
+    // it would drop a healthy socket the new session just opened (#956).
+    // eslint-disable-next-line react-hooks/refs
+    if (historyWatchdogRef.current) {
+      // eslint-disable-next-line react-hooks/refs
+      clearTimeout(historyWatchdogRef.current);
+      // eslint-disable-next-line react-hooks/refs
+      historyWatchdogRef.current = null;
+    }
+    // eslint-disable-next-line react-hooks/refs
+    historySelfHealsRef.current = 0;
     // Revoke object URLs from previous agent's pending uploads and clear the list.
     setPendingUploads((prev) => {
       for (const u of prev) {
@@ -712,6 +766,66 @@ export function useWsRuntime(
     livenessRef.current = livenessReducer(livenessRef.current, event);
   }, []);
 
+  const clearHistoryWatchdog = useCallback(() => {
+    if (historyWatchdogRef.current) {
+      clearTimeout(historyWatchdogRef.current);
+      historyWatchdogRef.current = null;
+    }
+  }, []);
+
+  /**
+   * Throw away the current socket and get a live one. Closing it ourselves is
+   * the point: the socket we hold may be dead without having said so (a
+   * backgrounded PWA torn down by the OS never fires `close`), so it still
+   * reports OPEN while everything we send goes nowhere. `onclose` then drives
+   * the normal reconnect, whose `onopen` re-requests history.
+   */
+  const forceReconnect = useCallback(() => {
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
+    shouldRecoverFromHistoryRef.current = true;
+    const ws = wsRef.current;
+    if (ws && ws.readyState !== WebSocket.CLOSED) {
+      ws.close();
+    } else {
+      connectRef.current?.();
+    }
+  }, []);
+
+  /**
+   * Start the clock on an outstanding history request (#956). Every path that
+   * sends one arms this, so no request can wait without a deadline.
+   */
+  const armHistoryWatchdog = useCallback(() => {
+    clearHistoryWatchdog();
+    historyWatchdogRef.current = setTimeout(() => {
+      historyWatchdogRef.current = null;
+      // Surface the stall immediately rather than after the self-heal has had
+      // its turn: the user has already been staring at a spinner for the whole
+      // deadline. If the reconnect below works, the history frame clears this
+      // again on its own and the retry affordance disappears unused.
+      setHistoryTimedOut(true);
+      if (historySelfHealsRef.current >= MAX_HISTORY_SELF_HEALS) return;
+      historySelfHealsRef.current++;
+      forceReconnect();
+    }, HISTORY_TIMEOUT_MS);
+  }, [clearHistoryWatchdog, forceReconnect]);
+
+  /**
+   * User-triggered escape from a stalled load (#956): reconnect with a fresh
+   * self-heal and reconnect budget, so a chat that gave up can be revived
+   * without reloading the page.
+   */
+  const retryHistory = useCallback(() => {
+    setHistoryTimedOut(false);
+    historySelfHealsRef.current = 0;
+    reconnectAttemptRef.current = 0;
+    setReconnectExhausted(false);
+    forceReconnect();
+  }, [forceReconnect]);
+
   useEffect(() => {
     // Update before connect() so stale handlers from the previous agent see
     // the new agentId as soon as the cleanup's ws.close() fires asynchronously.
@@ -737,9 +851,31 @@ export function useWsRuntime(
       }
     }
 
+    /**
+     * How this hook asks for history when the answer is something the UI waits
+     * on. Arms the pre-history frame buffer (Tier 2b) and the response deadline
+     * (#956) together, so the two can't drift apart: anything that waits for a
+     * history frame also has a clock on it.
+     *
+     * The one request that does NOT come through here is the OpenClaw
+     * rising-edge catch-up below, which fires only once history is already
+     * loaded — nothing is waiting on it, so it needs neither the buffer nor a
+     * deadline.
+     */
+    function sendHistoryRequest(ws: WebSocket) {
+      pendingHistoryRef.current = true;
+      frameBufferRef.current = [];
+      // #508: scope the history request to the active chat's session.
+      ws.send(JSON.stringify({ type: "history", agentId, ...(chatId && { chatId }) }));
+      armHistoryWatchdog();
+    }
+
     function clearUiTimers() {
       clearReconcileTimers();
       setIsReconcilingMessages(false);
+      // A suspended tab is not stalled — it closed its socket on purpose. Let
+      // the deadline fire here and it would reconnect a backgrounded page.
+      clearHistoryWatchdog();
       if (delayTimerRef.current) {
         clearTimeout(delayTimerRef.current);
         delayTimerRef.current = null;
@@ -780,13 +916,12 @@ export function useWsRuntime(
       if (!lifecycleSuspendedRef.current) return;
       lifecycleSuspendedRef.current = false;
       shouldRecoverFromHistoryRef.current = true;
-      if (wsRef.current?.readyState === WebSocket.OPEN) {
+      const ws = wsRef.current;
+      if (ws?.readyState === WebSocket.OPEN) {
         // Tier 2b: same buffer-then-drain protocol as ws.onopen — the
         // server may broadcast in-flight chunks between the addListener
         // (which runs in handleHistory) and the history-response send.
-        pendingHistoryRef.current = true;
-        frameBufferRef.current = [];
-        wsRef.current.send(JSON.stringify({ type: "history", agentId, ...(chatId && { chatId }) }));
+        sendHistoryRequest(ws);
       } else {
         connect();
       }
@@ -814,10 +949,9 @@ export function useWsRuntime(
       // the SENDING device double-renders its own just-streamed turn (the CI
       // integration E2E caught exactly this).
       shouldRecoverFromHistoryRef.current = true;
-      if (wsRef.current?.readyState === WebSocket.OPEN) {
-        pendingHistoryRef.current = true;
-        frameBufferRef.current = [];
-        wsRef.current.send(JSON.stringify({ type: "history", agentId, ...(chatId && { chatId }) }));
+      const ws = wsRef.current;
+      if (ws?.readyState === WebSocket.OPEN) {
+        sendHistoryRequest(ws);
       } else {
         connect();
       }
@@ -885,10 +1019,7 @@ export function useWsRuntime(
         // also missed the multi-tab case. Arming unconditionally is safe: on a
         // genuinely fresh load nothing is streaming, so the buffer drains empty
         // on the (always-sent) history response — no stall, no benefit lost.
-        pendingHistoryRef.current = true;
-        frameBufferRef.current = [];
-        // #508: scope the history request to the active chat's session.
-        ws.send(JSON.stringify({ type: "history", agentId, ...(chatId && { chatId }) }));
+        sendHistoryRequest(ws);
 
         // Flush any message that was queued while disconnected/connecting
         if (pendingMessageRef.current) {
@@ -907,6 +1038,11 @@ export function useWsRuntime(
         // re-arms pendingHistoryRef before sending its own history req.
         pendingHistoryRef.current = false;
         frameBufferRef.current = [];
+        // Nothing is outstanding on a dead socket. The next onopen sends its
+        // own request and arms its own deadline (#956); `historyTimedOut`
+        // deliberately survives, so a stall stays visible across the reconnect
+        // until a history frame actually lands.
+        clearHistoryWatchdog();
         if (delayTimerRef.current) {
           clearTimeout(delayTimerRef.current);
           delayTimerRef.current = null;
@@ -1052,6 +1188,13 @@ export function useWsRuntime(
         }
 
         if (data.type === "history") {
+          // The wait is over: disarm the deadline and clear any stall it
+          // already surfaced (#956). A frame that arrives late — on this
+          // socket or on a self-healed one — recovers the chat on its own,
+          // and the retry affordance disappears unused.
+          clearHistoryWatchdog();
+          historySelfHealsRef.current = 0;
+          setHistoryTimedOut(false);
           const serverMessages: Array<{
             role: string;
             content: string;
@@ -1560,6 +1703,7 @@ export function useWsRuntime(
         reconnectTimerRef.current = null;
       }
       clearReconcileTimers();
+      clearHistoryWatchdog();
       if (delayTimerRef.current) {
         clearTimeout(delayTimerRef.current);
       }
@@ -1603,34 +1747,41 @@ export function useWsRuntime(
    * handshake (see `connect()` in the main effect — it flushes
    * pendingMessageRef on open).
    */
-  const sendOrQueue = useCallback((payload: string) => {
-    const ws = wsRef.current;
-    if (ws?.readyState === WebSocket.OPEN) {
-      // A user-initiated send proves the client is interactive — i.e. past the
-      // initial history-load window (the composer is gated on isHistoryLoaded).
-      // The pre-history buffer (armed on every open) must therefore be disarmed
-      // now so THIS turn's chunks stream straight through instead of waiting for
-      // a history response that won't come mid-turn. A resuming reload never
-      // sends, so its buffer stays armed until the history response drains the
-      // raced-ahead deltas onto the anchored prefix. Only disarm when nothing is
-      // buffered — the gated composer can't produce a real pre-history backlog,
-      // and this guarantees such a backlog is never silently dropped.
-      if (pendingHistoryRef.current && frameBufferRef.current.length === 0) {
-        pendingHistoryRef.current = false;
+  const sendOrQueue = useCallback(
+    (payload: string) => {
+      const ws = wsRef.current;
+      if (ws?.readyState === WebSocket.OPEN) {
+        // A user-initiated send proves the client is interactive — i.e. past the
+        // initial history-load window (the composer is gated on isHistoryLoaded).
+        // The pre-history buffer (armed on every open) must therefore be disarmed
+        // now so THIS turn's chunks stream straight through instead of waiting for
+        // a history response that won't come mid-turn. A resuming reload never
+        // sends, so its buffer stays armed until the history response drains the
+        // raced-ahead deltas onto the anchored prefix. Only disarm when nothing is
+        // buffered — the gated composer can't produce a real pre-history backlog,
+        // and this guarantees such a backlog is never silently dropped.
+        if (pendingHistoryRef.current && frameBufferRef.current.length === 0) {
+          pendingHistoryRef.current = false;
+          // The deadline goes with the buffer (#956): nothing is waiting on a
+          // history frame any more, and a watchdog left armed would tear down a
+          // perfectly healthy socket in the middle of this turn.
+          clearHistoryWatchdog();
+        }
+        ws.send(payload);
+      } else {
+        pendingMessageRef.current = payload;
+        if (
+          ws?.readyState === WebSocket.CONNECTING ||
+          ws?.readyState === WebSocket.CLOSING ||
+          reconnectTimerRef.current
+        ) {
+          return;
+        }
+        connectRef.current?.();
       }
-      ws.send(payload);
-    } else {
-      pendingMessageRef.current = payload;
-      if (
-        ws?.readyState === WebSocket.CONNECTING ||
-        ws?.readyState === WebSocket.CLOSING ||
-        reconnectTimerRef.current
-      ) {
-        return;
-      }
-      connectRef.current?.();
-    }
-  }, []);
+    },
+    [clearHistoryWatchdog]
+  );
 
   const onNew = useCallback(
     async (message: AppendMessage) => {
@@ -2134,6 +2285,8 @@ export function useWsRuntime(
     isOpenClawConnected,
     reconnectExhausted,
     payloadRejected,
+    historyTimedOut,
+    retryHistory,
     // #583: whether an inline turn-failure bubble is currently in the thread.
     // The durable paused-error banner reads this (via the published bundle) to
     // suppress itself when the same failure is already shown inline.
