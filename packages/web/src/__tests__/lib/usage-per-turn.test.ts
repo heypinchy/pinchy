@@ -266,6 +266,9 @@ describe("recordSessionTurnsUsage with no trajectory file", () => {
   });
 
   it("still logs an error for a real IO failure, so genuine breakage stays visible", async () => {
+    // EACCES is the transient case `readFileResilient` already retries against
+    // OpenClaw's chmod window — reaching the recorder means those retries are
+    // exhausted, so this is real breakage and must NOT join the silent branch.
     const ioError = Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
     mockReadTrajectoryJsonl.mockRejectedValue(ioError);
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -274,6 +277,9 @@ describe("recordSessionTurnsUsage with no trajectory file", () => {
 
     expect(recorded).toBe(0);
     expect(consoleError).toHaveBeenCalledTimes(1);
+    // The original error must reach the log, not a rewrapped stand-in — the
+    // `code`/stack is what an operator diagnoses the volume mount from.
+    expect(consoleError).toHaveBeenCalledWith(expect.any(String), ioError);
     consoleError.mockRestore();
   });
 });
