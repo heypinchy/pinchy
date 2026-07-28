@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 // Unit tests for the config-push pending-state tracker.
 //
 // Why this exists: `pushConfigInBackground` is fire-and-forget, and under

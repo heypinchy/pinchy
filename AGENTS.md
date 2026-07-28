@@ -181,6 +181,39 @@ This exists because `next build` type-checks the web package but its `tsconfig.j
 - The drift guard `scripts/lib/web-typecheck-gate.test.mjs` (pure logic in `web-typecheck-gate.mjs`, run by `pnpm test:scripts`) fails if the tsconfig stops including test files, re-excludes them, the `typecheck` script drifts, or CI stops running the gate — the read-side sibling of the no-untracked-skips / no-test-deletion / plugin-typecheck guards.
 - Playwright `e2e/**/*.spec.ts` is intentionally out of this gate (separate Playwright type context).
 
+## Tests Run In Node; jsdom Is Opt-In Per File
+
+`packages/web/vitest.config.ts` sets `environment: "node"`. A test that needs a DOM declares it itself, as the **first line of the file**:
+
+```ts
+// @vitest-environment jsdom
+```
+
+Building and tearing down a jsdom is charged per test **file**, and most files here never touch a DOM: 152 of 714 web test files declare jsdom, so under the old global `environment: "jsdom"` roughly 79% paid for a browser they never opened. Measured back-to-back on one directory (87 files under `src/__tests__/api`, same machine, same load): **326.3s with a global jsdom against 151.0s with node**, with the environment bucket collapsing from 1805s summed across workers to 96ms. Every agent paid that on every verification.
+
+- **No drift guard, deliberately.** A file that needs a DOM and forgets the docblock fails immediately and unmissably with `document is not defined`. A guard would only duplicate a failure that already cannot be missed.
+- **The docblock must precede the imports.** Vitest reads it from the file's leading comment block; a `// @vitest-environment jsdom` sitting below an import is silently ignored and the file runs in node.
+- **Do not add the docblock speculatively.** It is not free — it is exactly the cost this change removed. Add it when a test fails without it.
+- Plugin tests under `packages/plugins/pinchy-*` run through this same config and were already node-only; most already carry `// @vitest-environment node`, which is now redundant but harmless.
+
+Related: `testTimeout` is 15s and `hookTimeout` 30s, not vitest's 5s/10s defaults. The defaults left no headroom, and on a busy machine failures appeared scattered across _unrelated_ files — `enterprise-banner`, `chat-switcher`, `auth-http-config`, `knowledge-reindex-section` — all timeout-shaped rather than genuinely broken. That is a suite-wide lack of slack, not a set of individual flakes; each one cost an agent a full re-run to rule out. A genuinely hanging test still fails, 15s later. **Headroom is not a weakened gate** — but if a specific test needs _minutes_, give that suite its own explicit `{ timeout: … }` and say why, as `pdf-extract.test.ts` does.
+
+## The Pre-Push Build Runs On Relevance, Not On Every Push
+
+`.husky/pre-push` still runs the real `pnpm build`. That is not negotiable: `next build` is the **only** check in the local loop that sees the Next.js client/server bundling boundary. A shared lib module imported by a Client Component must not transitively pull in `@/db` / `postgres` / `@/lib/settings`; when it does, the DB driver lands in the client bundle and the build fails with "module not found". `tsc --noEmit` checks types, not bundling, and vitest resolves `postgres` in Node without complaint — both stay green while the app does not build. That has shipped here before.
+
+What changed is _when_ it runs. It was the single largest per-iteration cost in the whole loop (>5 min under load, enough to blow a 5-minute tool timeout), and it ran on docs-only and test-only pushes too. `scripts/should-run-prepush-build.mjs` now reads git's pre-push stdin protocol for the exact pushed range and skips the build for two — and only two — reasons:
+
+1. **Nothing in the diff reaches the build.** Decided by `isBuildIrrelevant` in `scripts/lib/prepush-build-gate.mjs`. Worth ~1 commit in 40 on its own.
+2. **The build input is byte-identical to one that already built successfully in this worktree.** `buildInputFingerprint` hashes every build-relevant blob; `.husky/pre-push` records it via `--record` only after `pnpm build` exits 0, into the worktree's own git dir. This is where the real saving is: amend/rebase cycles, a follow-up docs commit, a test-only fix after review — all move the tree but not the build's input.
+
+Rules for touching this:
+
+- **Fail open, everywhere.** No stdin, an unresolvable range, a git error, a crash in the gate — every one of them builds. The hook builds on any output that is not exactly `skip`.
+- **The exclusion set is pinned to `packages/web/tsconfig.json`, not to intuition.** `next build` type-checks everything that tsconfig includes (`**/*.ts(x)` under `packages/web`) minus its `exclude` list. So `src/**/*.test.ts(x)` is safe to skip, but `e2e/**`, `eval/**` and `src/test-helpers/**` are **not** — they are inside the include and a type error in them really does fail the build. `prepush-build-gate.test.mjs` reads the tsconfig and fails if that pairing drifts.
+- **`pnpm build || exit 1`, then `--record`.** The record step runs last, so without the explicit `|| exit 1` a broken build would become a green push.
+- Adding a path to the irrelevant set is a claim that `next build` cannot read it. Check before claiming — the same discipline as the CI path filter above.
+
 ## One Format Gate, Whole-Tree, From The Root
 
 There is exactly **one** format gate: `pnpm format:check` → `prettier --check .`, run from the repo root by the `quality` job. `pnpm format` writes. Prettier is declared **once**, in the root `package.json`, and nowhere else.
@@ -359,6 +392,7 @@ Useful web package commands:
 pnpm -C packages/web lint
 pnpm -C packages/web db:generate
 pnpm -C packages/web test
+pnpm -C packages/web test:related
 pnpm -C packages/web test:db
 pnpm -C packages/web test:e2e
 pnpm -C packages/web test:e2e:telegram
@@ -376,6 +410,16 @@ cd docs && pnpm build
 ```
 
 `scripts/lib/agents-md-commands.test.mjs` (run by `pnpm test:scripts`) keeps these blocks honest: it walks every `pnpm` command in this file, resolves each to the package it runs in — handling `-C`/`--dir`/`--filter`, `cd x && pnpm y` chains, `pnpm run <script>`, and pnpm builtins like `install` — and fails if the script isn't declared there. That drift is how `pnpm lint`, `pnpm format` and `pnpm db:generate` sat here for months as root commands that never existed. Nothing else in CI reads this file.
+
+While iterating on a change, `test:related` runs only the test files that (transitively) import the sources you touched, instead of the whole ~10k-test suite:
+
+```bash
+pnpm -C packages/web test:related src/lib/audit.ts src/lib/audit-deferred.ts
+```
+
+It is a fast inner loop, **not** a verification gate: it cannot see a test that reaches your change through a mock, a string-keyed lookup, or a drift guard that reads the file from disk. Run the full `pnpm test` before pushing.
+
+How much it saves depends entirely on how widely the file is imported, so check the file count it prints rather than assuming. A leaf module pulls in a handful of files; `src/lib/openclaw-secrets.ts` pulls in 60 of 716 and still cost about a third of a full run, because vitest crawls and transforms the graph either way.
 
 Important: do not run the app with plain `pnpm dev` as the primary development path unless a task explicitly requires it. Direct local app startup can miss Docker-managed infrastructure and migrations.
 

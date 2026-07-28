@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 /**
  * Unit tests for the periodic incremental audit-chain verification job
  * (audit-verify-job.ts). verifyIntegrity and the checkpoint store are mocked

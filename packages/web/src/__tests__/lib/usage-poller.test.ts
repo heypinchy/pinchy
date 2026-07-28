@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // Real row shapes the mocked `db.select().from(...)` chain resolves to.

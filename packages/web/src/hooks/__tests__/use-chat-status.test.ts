@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { act, renderHook } from "@testing-library/react";
 import { vi } from "vitest";
 import { useChatStatus } from "../use-chat-status";

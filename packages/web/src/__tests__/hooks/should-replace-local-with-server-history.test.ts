@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 /**
  * Unit tests for `shouldReplaceLocalWithServerHistory` — the decision
  * function that gates whole-list reconcile on the history frame after a

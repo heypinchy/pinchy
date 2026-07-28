@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 /**
  * Regression guard (#470): on the streaming-resume path, the reconciled message
  * list handed to assistant-ui must ALWAYS end with an assistant message while

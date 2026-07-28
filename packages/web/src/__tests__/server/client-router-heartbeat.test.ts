@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 /**
  * Heartbeat lazy-start contract for `ClientRouter.pipeStream` (#310 Tier 2c).
  *

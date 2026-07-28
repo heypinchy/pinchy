@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 // Real-DB integration tests for the Inbox Agent reconciliation sweep (Brick D) —
 // the orchestrator that finally wires the finished bricks into one runnable pass:
 // loader (A) → mail lister (C) → dispatcher (§6 filter/claim/run/notify/finalize).

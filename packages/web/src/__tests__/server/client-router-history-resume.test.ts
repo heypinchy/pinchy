@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 /**
  * Tier 2b: `handleHistory` includes an `activeRun` signal when there's a
  * matching in-flight run, and adds the requesting ws to the listener set

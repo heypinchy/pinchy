@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { isOpenClawLocalBaseUrl } from "@/lib/openclaw-local-url";
 import { computeAllowedTools } from "@/lib/tool-registry";

@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 /**
  * Verifies the knowledge-base schema (kb_documents + kb_chunks) against a
  * real integration Postgres. kb_documents is the per-org, idempotent

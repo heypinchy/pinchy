@@ -11,6 +11,7 @@
     "test": "node ../../scripts/with-test-lock.mjs vitest run",
     "test:unit": "node ../../scripts/with-test-lock.mjs vitest run",
     "test:watch": "vitest",
+    "test:related": "vitest related --run",
     "test:db": "vitest run --config vitest.integration.config.ts",
     "test:db:watch": "vitest --config vitest.integration.config.ts",
     "test:e2e": "playwright test",

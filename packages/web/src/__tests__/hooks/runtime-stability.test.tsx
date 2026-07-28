@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 // Regression guard for the assistant-ui contract that #199 relies on:
 // the runtime instance, created once at a parent component, must survive
 // mount/unmount cycles of <AssistantRuntimeProvider> in a child — AND any

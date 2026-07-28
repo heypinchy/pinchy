@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 // Behavioural guard for the composer draft cache, rendered against the REAL
 // assistant-ui composer (no mock) and the REAL in-memory draft store.
 //

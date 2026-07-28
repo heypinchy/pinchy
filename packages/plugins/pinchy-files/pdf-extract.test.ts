@@ -3,7 +3,7 @@ import { describe, it, expect } from "vitest";
 import { readFileSync } from "fs";
 import { join } from "path";
 import PDFDocument from "pdfkit";
-import { extractPdfText } from "./pdf-extract";
+import { extractPdfText, isScannedPage, IMAGE_OBJECT_TIMEOUT_MS } from "./pdf-extract";
 
 const FIXTURES = join(import.meta.dirname, "test-fixtures");
 
@@ -23,7 +23,66 @@ function buildPdf(
   });
 }
 
-describe("extractPdfText", () => {
+describe("isScannedPage — what happens when the page's images cannot be measured", () => {
+  // pdfjs only resolves an image object through `page.objs.get(name, cb)`, which
+  // has no promise and no deadline of its own, so pdf-extract wraps it in a
+  // timeout. Measured on a loaded machine (load ~236) that callback took 14.0s
+  // for a single 1200x1600 scan — nearly 3x the 5s the timeout used to allow.
+  //
+  // What made that a product bug rather than a slow test: on timeout the old
+  // code fell through to `hasLargeImages = false`, so a sparse-text page that
+  // paints a full-page image was classified as an ordinary text page. No render,
+  // no OCR hand-off — the agent silently received a blank page for a scanned
+  // invoice, with nothing anywhere saying a measurement had been dropped.
+  //
+  // So an unmeasurable image is now evidence FOR a scan, not against one. The
+  // page already proved it paints an image; only the size check timed out.
+  it("is a scan when a sparse page has a large image", () => {
+    expect(isScannedPage({ sparseText: true, hasLargeImages: true, imageSizeUnknown: false })).toBe(
+      true
+    );
+  });
+
+  it("is a scan when a sparse page paints an image we could not measure in time", () => {
+    expect(isScannedPage({ sparseText: true, hasLargeImages: false, imageSizeUnknown: true })).toBe(
+      true
+    );
+  });
+
+  it("is not a scan when a sparse page paints no image at all", () => {
+    // imageSizeUnknown can only be set by an image that was actually painted, so
+    // a page with no paint op reaches this with both flags false and stays text.
+    expect(
+      isScannedPage({ sparseText: false, hasLargeImages: false, imageSizeUnknown: false })
+    ).toBe(false);
+    expect(
+      isScannedPage({ sparseText: true, hasLargeImages: false, imageSizeUnknown: false })
+    ).toBe(false);
+  });
+
+  it("is never a scan when the page has plenty of text", () => {
+    // A text-rich page with a big illustration is still a text page.
+    expect(
+      isScannedPage({ sparseText: false, hasLargeImages: true, imageSizeUnknown: false })
+    ).toBe(false);
+    expect(
+      isScannedPage({ sparseText: false, hasLargeImages: false, imageSizeUnknown: true })
+    ).toBe(false);
+  });
+
+  it("allows enough time for a real decode on a busy machine", () => {
+    // The measured worst case was 14.0s. Anything at or below it turns a busy
+    // machine back into silently degraded extraction, which is the whole defect.
+    expect(IMAGE_OBJECT_TIMEOUT_MS).toBeGreaterThan(14_000);
+  });
+});
+
+// Real fixtures, real pdfjs, real canvas rendering: a 60-page parse plus PNG
+// rasterisation is genuinely seconds of CPU, and with IMAGE_OBJECT_TIMEOUT_MS
+// now allowing a slow decode to finish, a single test can legitimately outlast
+// vitest's default. The explicit timeout is headroom for slow work, not cover
+// for a hang — every assertion below is unchanged.
+describe("extractPdfText", { timeout: 180_000 }, () => {
   it("extracts text from a text-only PDF", async () => {
     const buffer = readFileSync(join(FIXTURES, "text-only.pdf"));
     const result = await extractPdfText(buffer);

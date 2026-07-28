@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 // Component tests for the Automations create dialog — the form that finally
 // gives a human a way to author an email workflow in the UI (#139). Until this,
 // the only create path was the raw POST API; the tab could review/enable/delete

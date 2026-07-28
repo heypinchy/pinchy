@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 // packages/web/src/__tests__/components/provider-key-form.test.tsx
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";

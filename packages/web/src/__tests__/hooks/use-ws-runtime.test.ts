@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 /**
  * Canonical test suite for useWsRuntime.
  *

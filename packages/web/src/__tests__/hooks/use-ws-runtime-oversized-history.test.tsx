@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 /**
  * Regression guard for the vanishing/degraded user-message bug found in
  * v0.8.0 staging: a user sent an image to a text-only-model agent (the

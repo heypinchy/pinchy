@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 // Regression guard for the IME / dead-key composition freeze.
 //
 // Bug history: typing an accented character such as "é" via a dead-key

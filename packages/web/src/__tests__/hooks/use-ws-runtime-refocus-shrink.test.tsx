@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 /**
  * Regression guard for the tab-refocus tapClientLookup crash (#510) that survived
  * BOTH prior fixes (v0.5.7 anchor, v0.5.8 in-flight placeholder).

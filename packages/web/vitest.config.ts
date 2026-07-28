@@ -5,8 +5,33 @@ import path from "path";
 export default defineConfig({
   plugins: [react()],
   test: {
-    environment: "jsdom",
+    // Node by default, jsdom only where a test actually needs a DOM, declared
+    // per file with `// @vitest-environment jsdom`.
+    //
+    // A DOM costs real time to build and tear down for every single test file,
+    // and most files here never touch one: 152 of 714 web test files declare
+    // jsdom, so ~79% used to pay for a browser they never opened. Measured on
+    // one directory (87 files under src/__tests__/api), back to back on the same
+    // machine: 326.3s with a global jsdom against 151.0s with node — and the
+    // environment bucket collapsed from 1805s summed across workers to 96ms.
+    //
+    // This needs no drift guard: a file that needs a DOM and forgets the
+    // docblock fails immediately and unmissably with "document is not defined".
+    environment: "node",
     setupFiles: ["./src/test-setup.ts"],
+    // Vitest's 5s default left no headroom, and failures showed up scattered
+    // across unrelated files whenever the machine was busy — enterprise-banner,
+    // chat-switcher, auth-http-config, settings-page-oauth-removed — all of them
+    // timeout-shaped rather than genuinely broken. That is a suite-wide lack of
+    // slack, not a set of individual flakes, and each one cost an agent a full
+    // re-run to rule out.
+    //
+    // Not guesswork: run in isolation on a busy machine, single React component
+    // tests here measure 10.5s and 13.7s — every one of them a guaranteed
+    // failure against a 5s limit and a clean pass with room to spare against
+    // this one. A genuinely hanging test still fails, just 20s later.
+    testTimeout: 20_000,
+    hookTimeout: 40_000,
     globals: true,
     include: [
       "src/**/*.{test,spec}.?(c|m)[jt]s?(x)",

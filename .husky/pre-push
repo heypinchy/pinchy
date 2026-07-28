@@ -9,9 +9,35 @@ if [ ! -w "$HOME" ]; then
   exit 0
 fi
 
-# Bring node_modules in sync with the lockfile before building. This is a no-op
-# (<1s) when already consistent, and auto-heals stale installs after a branch
-# switch or rebase — without that, the build fails on missing platform-specific
-# native binaries (e.g. lightningcss-darwin-arm64) that the lockfile requires.
-CI=true pnpm install --frozen-lockfile
-pnpm build
+# The production build is the only local check that sees the Next.js
+# client/server bundling boundary (see scripts/lib/prepush-build-gate.mjs), so it
+# stays — but only for pushes that can actually break it. A docs-, plugin-,
+# script- or test-only push cannot change one byte of the build's input, and the
+# build is the single largest per-iteration cost in the whole loop.
+#
+# The gate reads git's pre-push stdin protocol to get the exact pushed range, and
+# fails open: anything that is not a clear `skip` builds, including a crash in
+# the gate itself.
+VERDICT=$(node scripts/should-run-prepush-build.mjs)
+
+if [ "$VERDICT" = "skip" ]; then
+  exit 0
+fi
+
+# Bring node_modules in sync with the lockfile before building. It auto-heals a
+# stale install after a branch switch or rebase — without it the build fails on
+# missing platform-specific native binaries (e.g. lightningcss-darwin-arm64) that
+# the lockfile requires.
+#
+# It is NOT the "<1s no-op" this comment used to claim: verifying an
+# already-consistent tree measured 49.9s on a busy machine. It is kept anyway,
+# and deliberately: it now runs only when we are going to build (the gate above
+# exits first otherwise), and the alternative — skipping it when the lockfile
+# looks unchanged — trades a self-healing install for a confusing build failure
+# nobody would connect to a branch switch.
+CI=true pnpm install --frozen-lockfile || exit 1
+pnpm build || exit 1
+
+# Remember what just built, so an amend/rebase/docs-only re-push of the same
+# build input skips it. Only reached when the build actually succeeded.
+node scripts/should-run-prepush-build.mjs --record

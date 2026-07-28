@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { renderHook, waitFor } from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { useModelCapabilities, _resetModuleCacheForTest } from "@/hooks/use-model-capabilities";

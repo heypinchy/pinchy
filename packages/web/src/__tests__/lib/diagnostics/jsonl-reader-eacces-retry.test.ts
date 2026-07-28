@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // OpenClaw (root) rewrites `sessions.json` / `*.trajectory.jsonl` as mode 0600

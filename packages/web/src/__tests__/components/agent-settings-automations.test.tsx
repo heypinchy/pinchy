@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 // Component tests for the Automations tab — the "review & activate" surface for
 // Inbox Agent email workflows (#139). A workflow is created pending+disabled
 // (write API #864); the sweep dispatches only ENABLED workflows, so this tab is

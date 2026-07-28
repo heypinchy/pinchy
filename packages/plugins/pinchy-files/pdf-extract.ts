@@ -60,12 +60,42 @@ function yieldToEventLoop(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve));
 }
 
+/**
+ * How long to wait for pdfjs to hand back a decoded image object.
+ *
+ * `page.objs.get(name, cb)` has no promise and no deadline of its own, and for
+ * some image types pdfjs never resolves the entry at all — hence a timeout. But
+ * decoding a full-page scan is real work: a 1200x1600 image measured 14.0s on a
+ * machine under load ~236, against the 5s this used to allow. Five seconds was
+ * therefore not a hang guard, it was a coin flip, and losing it silently changed
+ * the extraction result (see isScannedPage).
+ */
+export const IMAGE_OBJECT_TIMEOUT_MS = 30_000;
+
+type ImageObject = { width: number; height: number; data: Uint8ClampedArray };
+
+/**
+ * `timeout` and `unavailable` are deliberately distinct: pdfjs saying "no such
+ * image" is evidence, pdfjs not answering in time is the absence of evidence,
+ * and the two must not be collapsed into the same `null`.
+ */
+type ImageLookup =
+  { status: "resolved"; image: ImageObject } | { status: "timeout" } | { status: "unavailable" };
+
 function getImageObject(
   pageObjs: { get: (name: string, callback: (data: unknown) => void) => void },
   name: string
-): Promise<{ width: number; height: number; data: Uint8ClampedArray } | null> {
+): Promise<ImageLookup> {
   return new Promise((resolve) => {
-    const timeout = setTimeout(() => resolve(null), 5000);
+    const timeout = setTimeout(() => {
+      // Loud on purpose. A dropped measurement changes what the agent is shown,
+      // so it must never pass unnoticed — plugin stdout goes to OpenClaw's log.
+      console.warn(
+        `[pinchy-files] pdf image "${name}" not decoded within ${IMAGE_OBJECT_TIMEOUT_MS}ms — ` +
+          `treating the page as a scan rather than dropping it`
+      );
+      resolve({ status: "timeout" });
+    }, IMAGE_OBJECT_TIMEOUT_MS);
     try {
       pageObjs.get(name, (data: unknown) => {
         clearTimeout(timeout);
@@ -76,22 +106,34 @@ function getImageObject(
           "height" in data &&
           "data" in data
         ) {
-          resolve(
-            data as {
-              width: number;
-              height: number;
-              data: Uint8ClampedArray;
-            }
-          );
+          resolve({ status: "resolved", image: data as ImageObject });
         } else {
-          resolve(null);
+          resolve({ status: "unavailable" });
         }
       });
     } catch {
       clearTimeout(timeout);
-      resolve(null);
+      resolve({ status: "unavailable" });
     }
   });
+}
+
+/**
+ * Whether a page should be treated as a scan — i.e. rendered to PNG and handed
+ * to a vision model instead of being served as its (near-empty) text layer.
+ *
+ * `imageSizeUnknown` is set only when the page provably painted an image and the
+ * size lookup timed out. In that state the page has already shown it is not a
+ * plain text page, so the safe reading is "scan": the agent gets a picture it
+ * can actually read. The alternative — the behaviour this replaces — was to
+ * silently classify it as text and hand over a blank page.
+ */
+export function isScannedPage(opts: {
+  sparseText: boolean;
+  hasLargeImages: boolean;
+  imageSizeUnknown: boolean;
+}): boolean {
+  return opts.sparseText && (opts.hasLargeImages || opts.imageSizeUnknown);
 }
 
 export async function extractPdfText(
@@ -132,14 +174,25 @@ export async function extractPdfText(
     // Check if a sparse-text page contains large images (indicating it's a scan,
     // not just a short page like a title page or separator).
     let hasLargeImages = false;
+    let imageSizeUnknown = false;
     if (sparseText) {
       try {
         const ops = await page.getOperatorList();
         for (let j = 0; j < ops.fnArray.length; j++) {
           if (ops.fnArray[j] === OPS.paintImageXObject) {
             const imgName = ops.argsArray[j][0] as string;
-            const img = await getImageObject(page.objs, imgName);
-            if (img && img.width >= MIN_IMAGE_DIMENSION && img.height >= MIN_IMAGE_DIMENSION) {
+            const lookup = await getImageObject(page.objs, imgName);
+            if (lookup.status === "timeout") {
+              // The page painted an image we could not measure. Remember that
+              // rather than reading it as "no large image" — see isScannedPage.
+              imageSizeUnknown = true;
+              break;
+            }
+            if (
+              lookup.status === "resolved" &&
+              lookup.image.width >= MIN_IMAGE_DIMENSION &&
+              lookup.image.height >= MIN_IMAGE_DIMENSION
+            ) {
               hasLargeImages = true;
               break; // One large image is enough to confirm it's a scan
             }
@@ -150,7 +203,7 @@ export async function extractPdfText(
       }
     }
 
-    const isScanned = sparseText && hasLargeImages;
+    const isScanned = isScannedPage({ sparseText, hasLargeImages, imageSizeUnknown });
 
     // Extract embedded images (> 100x100px) from non-scanned pages
     const embeddedImages: ExtractedImage[] = [];
@@ -161,7 +214,8 @@ export async function extractPdfText(
           if (ops.fnArray[j] === OPS.paintImageXObject) {
             const imgName = ops.argsArray[j][0] as string;
             try {
-              const img = await getImageObject(page.objs, imgName);
+              const lookup = await getImageObject(page.objs, imgName);
+              const img = lookup.status === "resolved" ? lookup.image : null;
               if (img && img.width >= MIN_IMAGE_DIMENSION && img.height >= MIN_IMAGE_DIMENSION) {
                 embeddedImages.push({
                   width: img.width,
