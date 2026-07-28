@@ -60,7 +60,7 @@ echo "[entrypoint] all Pinchy plugins present in /openclaw-extensions/"
 # Issue #156: migrate the database off the public default password before
 # anything connects. The resolver prints the effective DATABASE_URL on stdout
 # (empty when unchanged, diagnostics on stderr) and never fails the boot —
-# drizzle-kit and the server below both consume the exported value.
+# the migrate runner and the server below both consume the exported value.
 echo '[pinchy] Resolving database credentials...'
 RESOLVED_DATABASE_URL=$(su -s /bin/sh pinchy -c 'cd /app/packages/web && node scripts/resolve-db-password.mjs' || true)
 if [ -n "$RESOLVED_DATABASE_URL" ]; then
