@@ -9,6 +9,8 @@ import {
   isBuildIrrelevant,
   buildInputFingerprint,
   canTrustFingerprint,
+  formatPendingRecord,
+  parsePendingRecord,
 } from "./prepush-build-gate.mjs";
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -266,6 +268,37 @@ describe("canTrustFingerprint — the build compiles the working tree, not the c
   test("treats an undetermined state as untrustworthy", () => {
     // A git call that failed leaves these undefined; that must not read as true.
     assert.equal(canTrustFingerprint({}), false);
+  });
+});
+
+describe("the pending record — what the gate staged must still be true when it is promoted", () => {
+  // canTrustFingerprint runs when the gate DECIDES, minutes before the build
+  // finishes. Editing files while a five-minute build runs is ordinary work,
+  // not an exotic race, and those edits are exactly what `next build` compiled.
+  // Promoting on the strength of the earlier check would credit the commit with
+  // a build of different bytes — and the next push of that commit would skip on
+  // a guarantee nobody established. So the record carries the HEAD it was
+  // staged against, and re-checks it.
+  test("round-trips a staged record", () => {
+    const record = { fingerprint: "abc123", headOid: "deadbeef" };
+    assert.deepEqual(parsePendingRecord(formatPendingRecord(record)), record);
+  });
+
+  test("tolerates the trailing newline a file write adds", () => {
+    assert.deepEqual(parsePendingRecord("abc123\ndeadbeef\n"), {
+      fingerprint: "abc123",
+      headOid: "deadbeef",
+    });
+  });
+
+  test("refuses a record that has lost half of itself", () => {
+    // A bare fingerprint is what the FIRST version of this file wrote. Reading
+    // it as valid would silently restore the unchecked promotion.
+    assert.equal(parsePendingRecord("abc123"), null);
+    assert.equal(parsePendingRecord("abc123\n"), null);
+    assert.equal(parsePendingRecord(""), null);
+    assert.equal(parsePendingRecord(null), null);
+    assert.equal(parsePendingRecord("\ndeadbeef"), null);
   });
 });
 

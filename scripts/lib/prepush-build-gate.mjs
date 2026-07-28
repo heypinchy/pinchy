@@ -155,3 +155,31 @@ export function buildInputFingerprint(entries) {
 export function canTrustFingerprint(opts) {
   return opts.workingTreeClean === true && opts.headMatchesPushedTip === true;
 }
+
+/**
+ * The fingerprint a run staged, together with the HEAD it was staged against.
+ *
+ * canTrustFingerprint above runs when the gate DECIDES — minutes before the
+ * build it gates has finished. Editing files while a five-minute build runs is
+ * ordinary work, and those edits are exactly what `next build` then compiled.
+ * Promoting on the strength of the earlier check would credit the commit with a
+ * build of different bytes, and a later push of that commit would skip on a
+ * guarantee nobody established. So `--record` re-checks, and it needs to know
+ * which HEAD the decision was made against.
+ */
+export function formatPendingRecord({ fingerprint, headOid }) {
+  return `${fingerprint}\n${headOid}\n`;
+}
+
+/**
+ * @returns {{fingerprint: string, headOid: string} | null} null for anything
+ *   that is not both halves — including the bare fingerprint the first version
+ *   of this file wrote, which must not read as valid and quietly restore the
+ *   unchecked promotion.
+ */
+export function parsePendingRecord(text) {
+  if (typeof text !== "string") return null;
+  const [fingerprint, headOid] = text.trim().split("\n");
+  if (!fingerprint || !headOid) return null;
+  return { fingerprint: fingerprint.trim(), headOid: headOid.trim() };
+}

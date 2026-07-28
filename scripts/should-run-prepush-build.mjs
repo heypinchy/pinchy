@@ -29,12 +29,14 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { readFileSync, writeFileSync, renameSync, rmSync } from "node:fs";
+import { readFileSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import {
   needsProductionBuild,
   buildInputFingerprint,
   canTrustFingerprint,
+  formatPendingRecord,
+  parsePendingRecord,
 } from "./lib/prepush-build-gate.mjs";
 
 const ZERO_OID = /^0+$/;
@@ -62,12 +64,32 @@ function readIfPresent(path) {
 }
 
 // --record: the build we staged a fingerprint for has just succeeded.
+//
+// "Succeeded" is not enough on its own. The gate decided minutes ago, and the
+// build compiles the WORKING TREE — so if anything moved since (an edit while
+// the build ran, a rebase, a commit), what just built is not what we staged a
+// fingerprint for. Re-check rather than promote on the strength of the earlier
+// verdict; the pending record carries the HEAD it was staged against precisely
+// so this check is possible.
 if (process.argv.includes("--record")) {
   try {
     const dir = gitDir();
-    renameSync(join(dir, STAGED), join(dir, LAST_GOOD));
+    const staged = join(dir, STAGED);
+    const record = parsePendingRecord(readIfPresent(staged));
+    const trustworthy =
+      record !== null &&
+      canTrustFingerprint({
+        workingTreeClean: git(["status", "--porcelain"]).trim() === "",
+        headMatchesPushedTip:
+          git(["rev-parse", "HEAD"]).trim() === record.headOid,
+      });
+    if (trustworthy)
+      writeFileSync(join(dir, LAST_GOOD), `${record.fingerprint}\n`);
+    // Either way the pending record is spent — leaving it would let a later
+    // --record promote a fingerprint whose build nobody re-verified.
+    rmSync(staged, { force: true });
   } catch {
-    // Nothing staged, or the git dir moved. The only consequence is that the
+    // Nothing staged, or a git call failed. The only consequence is that the
     // next push rebuilds, which is the safe direction.
   }
   process.exit(0);
@@ -169,12 +191,16 @@ function fingerprintOf(tips) {
 let verdict = true;
 let reason = "could not determine what this push changes";
 let fingerprint = null;
+let headOid = null;
 
 try {
   const tips = pushedTips(await readStdin());
   if (tips.length > 0) {
     const paths = changedPaths(tips);
     fingerprint = fingerprintOf(tips);
+    // fingerprintOf only answers when HEAD *is* the pushed tip, so this is the
+    // commit --record must still find checked out before it promotes anything.
+    headOid = fingerprint ? tips[0].localOid : null;
     const lastGood = fingerprint
       ? readIfPresent(join(gitDir(), LAST_GOOD))
       : null;
@@ -203,7 +229,8 @@ try {
 // unknown fingerprint clears it rather than leaving it in place.
 try {
   const staged = join(gitDir(), STAGED);
-  if (verdict && fingerprint) writeFileSync(staged, `${fingerprint}\n`);
+  if (verdict && fingerprint && headOid)
+    writeFileSync(staged, formatPendingRecord({ fingerprint, headOid }));
   else rmSync(staged, { force: true });
 } catch {
   // A read-only or missing git dir only costs the next push a rebuild.
