@@ -132,6 +132,33 @@ LABEL org.opencontainers.image.source="https://github.com/heypinchy/pinchy" \
 ENV COREPACK_HOME=/app/.cache/corepack
 RUN corepack enable
 
+# LibreOffice: the knowledge base converts page-shaped Office documents
+# (.doc/.docx/.ppt/.pptx) to PDF before indexing them (#936, lib/knowledge/
+# office-convert.ts). This is the only toolchain that reads the LEGACY binary
+# formats — 13 of the 19 Office files in the reference corpus are .doc/.ppt,
+# and the entire modern parsing ecosystem (Docling, MarkItDown, Unstructured,
+# python-docx/python-pptx) is OOXML-only. Conversion also produces the single
+# renderable artifact the citation chain needs, so a citation can never point
+# at something the reader cannot open.
+#
+# Measured on node:22-slim (247 MB): writer+impress+fonts-liberation = 669 MB
+# (+422 MB); the full `libreoffice` metapackage would be 772 MB. We install
+# only the two page-shaped filters:
+#   - libreoffice-calc is DELIBERATELY absent. A sheet is not a page, and
+#     spreadsheets take a different path entirely (#937/#940).
+#   - fonts-liberation is not optional. Without a metric-compatible font set
+#     LibreOffice substitutes, re-flows, and can drop glyphs — and the corpus
+#     is full of Central/Eastern European diacritics (GODIČ TORKAR, Domžale).
+#   - catdoc (~1 MB) ships catdoc/catppt, the INDEPENDENT text extractors the
+#     conversion's lower-bound word check compares against for the legacy
+#     formats. An oracle derived from LibreOffice would agree with LibreOffice
+#     about text it dropped and verify nothing.
+# `--no-install-recommends` matters here: the recommends pull in a JRE.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+       libreoffice-writer libreoffice-impress fonts-liberation catdoc \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 EXPOSE 7777
@@ -213,7 +240,12 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
 
 # Create non-root user (entrypoint drops privileges after fixing volume permissions)
 RUN groupadd -r -g 999 pinchy && useradd -r -u 999 -g pinchy -d /app pinchy
-RUN mkdir -p /app/secrets /openclaw-config/workspaces && chown -R pinchy:pinchy /app /app/secrets /openclaw-config/workspaces
+# /var/cache/pinchy-kb-artifacts is the converted-Office-PDF store (#936). It
+# is a named volume in docker-compose.yml precisely so nothing is ever written
+# next to the original: /data is mounted read-only and the docs state that as a
+# product promise. Mirrors the openclaw container's pinchy-pdf-cache.
+RUN mkdir -p /app/secrets /openclaw-config/workspaces /var/cache/pinchy-kb-artifacts \
+    && chown -R pinchy:pinchy /app /app/secrets /openclaw-config/workspaces /var/cache/pinchy-kb-artifacts
 
 COPY entrypoint.sh /entrypoint.sh
 # Plugin-source sync helper the entrypoint runs on every boot. Extracted from

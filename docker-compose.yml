@@ -23,6 +23,14 @@ services:
       # land in a separate store), which also keeps the corpus tamper-proof
       # from the web tier.
       - pinchy-data:/data:ro
+      # Converted-Office-PDF artifacts (#936). A separate volume because /data
+      # above is read-only and must stay that way: the converted PDF is what
+      # the index and the preview both point at, and writing it beside the
+      # original would break the corpus's tamper-proof promise. Same shape as
+      # the openclaw container's pinchy-pdf-cache. Safe to delete — every
+      # artifact is re-derivable from its source, keyed by content hash and
+      # converter format version.
+      - pinchy-kb-artifacts:/var/cache/pinchy-kb-artifacts
     restart: unless-stopped
     depends_on:
       db:
@@ -125,6 +133,7 @@ volumes:
   pinchy-secrets:
   openclaw-extensions:
   pinchy-pdf-cache:
+  pinchy-kb-artifacts:
   openclaw-secrets:
     driver: local
     driver_opts:

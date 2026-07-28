@@ -5,6 +5,16 @@ FROM mirror.gcr.io/library/node:22-slim
 
 RUN corepack enable
 
+# Same LibreOffice toolchain as the production image (see Dockerfile.pinchy for
+# why these exact packages). Dev needs it too: without it, indexing an Office
+# document in the dev stack reports every file as "converter did not run"
+# infrastructure failures, which looks nothing like the production behaviour it
+# is supposed to reproduce.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+       libreoffice-writer libreoffice-impress fonts-liberation catdoc \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 COPY pnpm-workspace.yaml package.json pnpm-lock.yaml ./

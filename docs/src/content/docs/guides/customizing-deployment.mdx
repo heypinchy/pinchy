@@ -129,6 +129,35 @@ DB_CPUS=0.5
   raise the limit before assuming something else is wrong.
 </Aside>
 
+### Memory when the knowledge base indexes Office documents
+
+Word and PowerPoint files take a detour on their way into the knowledge base: Pinchy converts them to PDF first, with LibreOffice running inside the `pinchy` container. That's what lets it read the legacy `.doc` and `.ppt` formats at all — no modern parsing library can — and it gives every citation one rendered document that the index and the preview agree on.
+
+Two things about that are worth knowing when you size the container.
+
+**LibreOffice is not a daemon.** It starts, converts a batch of documents, and exits. The memory it needs is transient: nothing stays resident between reindexes, and a deployment that never indexes an Office document never pays for it.
+
+**It shares the container with the embedding model.** The knowledge base embeds in-process, so during a reindex the same container holds a ~300 MB model that is _actively working_ while the converter runs. We measured that overlap directly — 17 Word documents converting while the embedder kept embedding, at several ceilings:
+
+| `PINCHY_MEM_LIMIT` | Result                                              |
+| ------------------ | --------------------------------------------------- |
+| `1g` (default)     | All 17 converted — the default has room to spare    |
+| `768m`             | All 17 converted, ~20 % slower                      |
+| `640m`             | All 17 converted, ~70 % slower                      |
+| `512m`             | **Out of memory.** The container was killed mid-run |
+
+So the **default `1g` is enough**, and the 4 GB VPS tuning above (`768m`) still works — but `512m` is below the floor once Office documents are in the corpus. Going the other way pays off in time rather than reliability: the converter is the one part of Pinchy that gets meaningfully faster with more memory, so `2g` is worth it for a large first-time index.
+
+<Aside type="tip">
+  If the container does run out of memory mid-conversion, Pinchy tells the two
+  cases apart: a document LibreOffice genuinely can't read is a permanent
+  failure for that one document, while an out-of-memory kill is treated as
+  retryable and left for the next reindex. A memory squeeze never brands good
+  documents as broken.
+</Aside>
+
+Converted PDFs live on their own volume, `pinchy-kb-artifacts`. Your source documents are never touched — `/data` stays read-only. The volume is a cache: every artifact is re-derivable from its source, so deleting it costs a reindex and nothing else.
+
 ### Health checks
 
 `db` and `pinchy` each have a Docker health check: `db` polls `pg_isready`, and `pinchy` polls its own `/api/internal/openclaw-config-ready` endpoint. `openclaw` has a lightweight **TCP liveness check** — a raw connect to the gateway's WebSocket port (`18789`) that succeeds as soon as the gateway is accepting connections. It doesn't inspect the gateway's internal state, only that something is listening; OpenClaw's own start script already respawns the gateway process if it dies internally, so this check exists to surface a fully stuck container (process alive, port not listening). Note that Compose does **not** restart a container just because it is `unhealthy` — `restart:` policies act on container _exit_, not health status. The check is diagnostic: a stuck container shows as `unhealthy` in `docker compose ps` so you can spot it and restart it yourself, rather than it silently sitting "up" but unreachable.

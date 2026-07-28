@@ -27,6 +27,12 @@ fi
 # it can enter the directory and rename files atomically.
 chown pinchy:pinchy /openclaw-secrets 2>/dev/null || true
 
+# Converted-Office-PDF artifact store (#936). Docker creates a fresh named
+# volume owned by root, so the unprivileged pinchy user could not write it —
+# and every Office document would fail conversion with EACCES, which reads like
+# a broken corpus rather than a permissions problem.
+chown -R pinchy:pinchy /var/cache/pinchy-kb-artifacts 2>/dev/null || true
+
 # Refresh plugin SOURCE in the shared openclaw-extensions volume on every
 # startup (the named volume is only seeded from the image on first creation;
 # upgrades otherwise keep stale content from the previous image). The sync
