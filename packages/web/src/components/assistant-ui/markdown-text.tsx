@@ -9,17 +9,31 @@ import {
   useIsMarkdownCodeBlock,
 } from "@assistant-ui/react-markdown";
 import remarkGfm from "remark-gfm";
-import { type FC, memo } from "react";
+import { type FC, memo, useContext, useMemo } from "react";
 import { CheckIcon, CopyIcon } from "lucide-react";
 import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
 
+import { AgentIdContext } from "@/components/chat";
+import { PdfDialog } from "@/components/assistant-ui/attachment-preview";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
+import { remarkSourceLinks, parseSourceHref } from "@/lib/knowledge/source-links";
 import { cn } from "@/lib/utils";
 
 const MarkdownTextImpl = () => {
+  const agentId = useContext(AgentIdContext);
+
+  // Rebuilt only when the agent changes: remark re-parses the whole message on
+  // a new plugin array identity, and this renderer runs per streamed chunk.
+  // Without an agent id there is no route to link to, so the plugin is left out
+  // entirely rather than emitting hrefs that cannot resolve.
+  const remarkPlugins = useMemo(
+    () => (agentId ? [remarkGfm, remarkSourceLinks({ agentId })] : [remarkGfm]),
+    [agentId]
+  );
+
   return (
     <MarkdownTextPrimitive
-      remarkPlugins={[remarkGfm]}
+      remarkPlugins={remarkPlugins}
       className="aui-md"
       components={defaultComponents}
     />
@@ -103,15 +117,32 @@ const defaultComponents = memoizeMarkdownComponents({
       {...props}
     />
   ),
-  a: ({ className, ...props }) => (
-    <a
-      className={cn(
-        "aui-md-a text-primary-accent underline underline-offset-2 hover:text-primary-accent/80",
-        className
-      )}
-      {...props}
-    />
-  ),
+  a: function Anchor({ className, href, children, ...props }) {
+    const linkClasses = cn(
+      "aui-md-a text-primary-accent underline underline-offset-2 hover:text-primary-accent/80",
+      className
+    );
+
+    // A cited source opens in the same lightbox as an uploaded PDF rather than
+    // navigating: the point of the citation is to check a claim against the
+    // answer still on screen. Every other link keeps normal anchor behaviour.
+    const source = href ? parseSourceHref(href) : null;
+    if (source && href) {
+      return (
+        <PdfDialog url={href} title={source.path}>
+          <button type="button" className={cn(linkClasses, "cursor-pointer text-left")}>
+            {children}
+          </button>
+        </PdfDialog>
+      );
+    }
+
+    return (
+      <a className={linkClasses} href={href} {...props}>
+        {children}
+      </a>
+    );
+  },
   blockquote: ({ className, ...props }) => (
     <blockquote
       className={cn(

@@ -1,6 +1,6 @@
 "use client";
 
-import { useContext, useEffect, useRef, useState, type FC } from "react";
+import { useContext, useEffect, useRef, useState, type FC, type ReactNode } from "react";
 import { useMessagePartFile } from "@assistant-ui/react";
 import { FileText, Loader2 } from "lucide-react";
 import { AgentIdContext, AgentModelContext, FileSourceContext } from "@/components/chat";
@@ -121,14 +121,47 @@ const CapabilityWarning: FC<{ message: string }> = ({ message }) => (
   <p className="mt-1 text-xs text-amber-600 dark:text-amber-500">{message}</p>
 );
 
+/**
+ * The lightbox a PDF opens into, and the only place its presentation is
+ * defined. Shared so a chat attachment and a cited knowledge-base source open
+ * the exact same way — two viewers for "look at this PDF" would drift in
+ * sizing, close-button treatment and keyboard behaviour, and the citation link
+ * exists precisely so a reader can check a claim without leaving the answer.
+ *
+ * `children` is the trigger, so each caller keeps its own affordance: the
+ * attachment renders an <embed> thumbnail, a citation renders its path as text.
+ */
+export const PdfDialog: FC<{ url: string; title: string; children: ReactNode }> = ({
+  url,
+  title,
+  children,
+}) => (
+  <Dialog>
+    <DialogTrigger asChild>{children}</DialogTrigger>
+    <DialogContent
+      className="p-2 sm:max-w-4xl [&>button]:rounded-full [&>button]:bg-foreground/60 [&>button]:p-1 [&>button]:opacity-100 [&>button]:ring-0! [&_svg]:text-background [&>button]:hover:[&_svg]:text-destructive"
+      aria-describedby={undefined}
+    >
+      <DialogTitle className="sr-only">{title}</DialogTitle>
+      {/*
+        Remounted per open (the dialog unmounts its content when closed), which
+        is what makes `#page=N` in the url actually land: a PDF viewer honours
+        the fragment on load, not on a later fragment change.
+       */}
+      <embed src={url} type="application/pdf" className="block h-[80dvh] w-full" />
+    </DialogContent>
+  </Dialog>
+);
+
 const PdfPreview: FC<{ url: string; filename: string; warning: string | null }> = ({
   url,
   filename,
   warning,
 }) => (
   <div>
-    <Dialog>
-      <DialogTrigger
+    <PdfDialog url={url} title={filename}>
+      <button
+        type="button"
         aria-label={`Preview ${filename}`}
         className={`my-2 block max-w-sm cursor-pointer overflow-hidden rounded-lg border bg-muted/40 transition-opacity hover:opacity-80${warning ? " border-amber-500/60" : ""}`}
       >
@@ -142,15 +175,8 @@ const PdfPreview: FC<{ url: string; filename: string; warning: string | null }> 
           <FileText className="size-4 shrink-0 text-muted-foreground" />
           <span className="truncate text-sm">{filename}</span>
         </div>
-      </DialogTrigger>
-      <DialogContent
-        className="p-2 sm:max-w-4xl [&>button]:rounded-full [&>button]:bg-foreground/60 [&>button]:p-1 [&>button]:opacity-100 [&>button]:ring-0! [&_svg]:text-background [&>button]:hover:[&_svg]:text-destructive"
-        aria-describedby={undefined}
-      >
-        <DialogTitle className="sr-only">{filename}</DialogTitle>
-        <embed src={url} type="application/pdf" className="block h-[80dvh] w-full" />
-      </DialogContent>
-    </Dialog>
+      </button>
+    </PdfDialog>
     {warning && <CapabilityWarning message={warning} />}
   </div>
 );
