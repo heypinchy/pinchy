@@ -29,10 +29,23 @@ export interface RequestOrigin {
  * prefix match.
  */
 function isLoopbackHost(host: string): boolean {
-  // Strip the port. IPv6 literals arrive bracketed (`[::1]:7777`), so take the
-  // bracketed part first and only then look for a trailing `:port`.
+  // Strip the port. IPv6 literals belong in brackets (`[::1]:7777`), so take
+  // the bracketed part first and only then look for a trailing `:port`.
+  //
+  // Unbracketed IPv6 has to survive too: `Host` is bracketed per RFC 7230, but
+  // `X-Forwarded-Host` is written by proxies and plenty of them emit the bare
+  // address. A naive `:port` strip turns `::1` into `:` and
+  // `0:0:0:0:0:0:0:1` into `0:0:0:0:0:0:0`, which silently made both loopback
+  // checks below unreachable for exactly those inputs. So only strip when what
+  // is left cannot be an IPv6 address — a single colon. An unbracketed IPv6
+  // address WITH a port (`::1:7777`) stays ambiguous by construction and is not
+  // handled; nothing legitimate produces it.
   const bracketed = /^\[([^\]]+)\](?::\d+)?$/.exec(host);
-  const hostname = (bracketed ? bracketed[1] : host.replace(/:\d+$/, "")).toLowerCase();
+  const unbracketed = (host.match(/:/g)?.length ?? 0) > 1 ? host : host.replace(/:\d+$/, "");
+  // A trailing dot is the fully-qualified spelling of the same name — browsers
+  // pass it through to `Host` verbatim — and it must not be able to dodge the
+  // label-boundary anchoring below.
+  const hostname = (bracketed ? bracketed[1] : unbracketed).toLowerCase().replace(/\.$/, "");
 
   if (hostname === "localhost" || hostname.endsWith(".localhost")) return true;
   if (hostname === "::1" || hostname === "0:0:0:0:0:0:0:1") return true;
@@ -54,14 +67,25 @@ function isLoopbackHost(host: string): boolean {
  * only have come from a real proxy, and then it — not `Host`, which describes
  * the internal hop — is the client-facing name.
  *
- * Known limitation, deliberately accepted: a proxy that rewrites `Host` to
+ * The hard case for the comparison alone: a proxy that rewrites `Host` to
  * `localhost` and sets no `X-Forwarded-Host` (nginx `proxy_pass` without
- * `proxy_set_header`) is indistinguishable from a genuinely local request, and
- * a public instance configured that way loses the banner. No header can tell
- * those apart, because that configuration destroys the only evidence. It is
- * also not a silent state: such a proxy breaks Better Auth's trusted origins
- * and every absolute redirect, so the install announces itself in louder ways
- * than a missing banner.
+ * `proxy_set_header`) leaves a public instance indistinguishable from a local
+ * one by every host-shaped measure. No HOST header can tell those apart — that
+ * configuration destroys the evidence. The scheme still can, which is why the
+ * caller in `insecure-banner.tsx` also consults `x-forwarded-proto`; see the
+ * note there. What remains uncovered is such a proxy that terminates plain HTTP
+ * as well, i.e. an instance that is unencrypted end to end AND lies about its
+ * host — and that one is not a silent state either: it breaks Better Auth's
+ * trusted origins (`auth.ts` derives them from these same headers) and every
+ * absolute redirect, so it announces itself far louder than by a missing
+ * banner.
+ *
+ * Note also that `X-Forwarded-Host` is only as trustworthy as whatever sits in
+ * front: with no proxy stripping it, a client can send it and thereby move this
+ * verdict. That is tolerable here and nowhere else — the header steers a banner
+ * the sender sees themselves, so the only thing anyone can do with it is hide
+ * their own warning. Do NOT reuse this helper for a decision with a blast
+ * radius beyond the requester.
  */
 function externalHost({ host, forwardedHost }: RequestOrigin): string | null {
   if (forwardedHost && forwardedHost !== host) {
