@@ -22,7 +22,11 @@ import assert from "node:assert/strict";
 import {
   projectSlug,
   allocatePorts,
+  candidatePorts,
+  unreservedBandConflicts,
   PORT_FAMILIES,
+  RESERVED_PORTS,
+  MAX_BLOCKS,
 } from "./worktree-ports.mjs";
 
 // ---------------------------------------------------------------------------
@@ -40,25 +44,42 @@ test("derives the compose project name from the worktree directory", () => {
   );
 });
 
-test("normalises what Docker will not accept in a project name", () => {
-  // Compose lowercases and strips; deriving the same thing ourselves keeps the
-  // name we WRITE identical to the one Docker USES, so `docker compose -p` and
-  // the volume prefixes agree.
-  assert.equal(
-    projectSlug("/repos/worktrees/Feat_Odoo.Sync"),
-    "feat-odoo-sync",
-  );
+test("normalises a project name exactly the way Docker does", () => {
+  // These expectations are not a guess at Docker's rule — they were measured
+  // against it (Docker 29.4.0, `docker compose config --format json | .name`
+  // in a directory of that name):
+  //
+  //   Feat_Odoo.Sync              -> feat_odoosync
+  //   feat+piper-tag-permissions  -> featpiper-tag-permissions
+  //   -Leading.Dash               -> leadingdash
+  //   9start_Name                 -> 9start_name
+  //
+  // So the rule is: lowercase, DELETE anything outside [a-z0-9_-] (`_` is
+  // legal and survives; it is not folded to `-`), then strip leading
+  // characters until the name starts with [a-z0-9].
+  //
+  // Getting this exactly right is the whole point of deriving the name here
+  // instead of letting Docker derive it: the name we WRITE has to be the name
+  // Docker would have USED, or a stack started with this `.env` and one
+  // started without it own two different sets of volumes — and the developer
+  // sees an empty dev database with no explanation.
+  assert.equal(projectSlug("/repos/worktrees/Feat_Odoo.Sync"), "feat_odoosync");
   assert.equal(
     projectSlug("/repos/worktrees/feat+piper-tag-permissions"),
-    "feat-piper-tag-permissions",
+    "featpiper-tag-permissions",
   );
+  assert.equal(projectSlug("/repos/worktrees/-Leading.Dash"), "leadingdash");
+  assert.equal(projectSlug("/repos/worktrees/9start_Name"), "9start_name");
 });
 
-test("never returns an empty project name", () => {
-  // A trailing slash or a pathological directory name must not produce ""
-  // — compose would then fall back to something unpredictable.
+test("falls back to a usable name where Docker would refuse outright", () => {
+  // A trailing slash must not change the answer.
   assert.equal(projectSlug("/repos/worktrees/kb-sources-ui/"), "kb-sources-ui");
-  assert.notEqual(projectSlug("/repos/worktrees/___"), "");
+  // `___` normalises to "" — Docker rejects that (its project names must match
+  // ^[a-z0-9][a-z0-9_-]*$) and refuses to start at all. This is the one place
+  // we deliberately diverge: a working stack beats a hard error, and there is
+  // no "name Docker would have used" to stay faithful to.
+  assert.equal(projectSlug("/repos/worktrees/___"), "pinchy");
 });
 
 // ---------------------------------------------------------------------------
@@ -122,5 +143,76 @@ test("reports exhaustion instead of looping forever", () => {
   assert.throws(
     () => allocatePorts("kb-sources-ui", () => false),
     /no free port block/i,
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Reserved ports
+// ---------------------------------------------------------------------------
+
+test("never allocates a port another stack has already claimed", () => {
+  // A probe only sees what is bound RIGHT NOW, and allocation is sticky by
+  // design. So a worktree allocated while the integration stack happens to be
+  // down would take 7779 and KEEP it — and every later
+  // `pnpm test:e2e:integration` in that worktree dies on a bound port, with
+  // nothing pointing back here. Reserved ports are excluded from the bands
+  // regardless of whether anything is listening at the time.
+  for (const slug of [
+    "kb-sources-ui",
+    "worktree-ports",
+    "eval-v2",
+    "a",
+    "zz",
+  ]) {
+    const p = allocatePorts(slug, allFree);
+    for (const name of Object.keys(PORT_FAMILIES)) {
+      assert.ok(
+        !RESERVED_PORTS.has(p[name]),
+        `${slug}: allocated reserved port ${p[name]} (${name})`,
+      );
+    }
+  }
+});
+
+test("still reports exhaustion when only reserved ports would be left", () => {
+  // The reserved set must shrink the search space, not make it silently wrap.
+  const onlyReservedFree = (port) => RESERVED_PORTS.has(port);
+  assert.throws(
+    () => allocatePorts("kb-sources-ui", onlyReservedFree),
+    /no free port block/i,
+  );
+});
+
+// ---------------------------------------------------------------------------
+// unreservedBandConflicts — the input to the repo-wide drift guard
+// ---------------------------------------------------------------------------
+
+test("flags a hard-coded port that falls inside a band", () => {
+  const inBand = PORT_FAMILIES.pinchyPort + 5;
+  assert.deepEqual(unreservedBandConflicts([inBand]), [inBand]);
+});
+
+test("ignores ports outside every band and ports that are reserved", () => {
+  const reserved = [...RESERVED_PORTS][0];
+  assert.deepEqual(unreservedBandConflicts([1234, 65000, reserved]), []);
+});
+
+test("reports each conflicting port once, in ascending order", () => {
+  const a = PORT_FAMILIES.dbPort + 7;
+  const b = PORT_FAMILIES.caddyPort + 3;
+  assert.deepEqual(unreservedBandConflicts([b, a, a, b]), [a, b]);
+});
+
+test("candidatePorts covers every port a block could ever use", () => {
+  const candidates = new Set(candidatePorts());
+  for (const base of Object.values(PORT_FAMILIES)) {
+    for (let i = 0; i < MAX_BLOCKS; i++) {
+      assert.ok(candidates.has(base + i), `missing candidate ${base + i}`);
+    }
+  }
+  assert.equal(
+    candidates.size,
+    Object.keys(PORT_FAMILIES).length * MAX_BLOCKS,
+    "candidatePorts must not probe ports outside the bands",
   );
 });

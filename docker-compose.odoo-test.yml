@@ -21,6 +21,13 @@ services:
       retries: 10
 
   pinchy:
+    # This is the one E2E stack that layers on docker-compose.dev.yml, so it
+    # would inherit that overlay's movable DEV_* ports. Pin them back: the
+    # Playwright config expects :7777 and the specs read the database from the
+    # host at :5434 (stackDbUrl in e2e/odoo/helpers.ts). Without this, running
+    # `pnpm worktree:env` once silently breaks `pnpm test:e2e:odoo`.
+    ports: !override
+      - "127.0.0.1:7777:7777"
     environment:
       # Allow private URLs so the integration wizard can reach the mock Odoo server
       - ALLOW_PRIVATE_URLS=1
@@ -32,3 +39,8 @@ services:
       # the host during regenerateOpenClawConfig(). OpenClaw already has this mapping
       # via the base docker-compose.yml extra_hosts block.
       - "ollama.local:host-gateway"
+
+  db:
+    # Same reason as pinchy above: pin the port the specs seed through.
+    ports: !override
+      - "5434:5432"

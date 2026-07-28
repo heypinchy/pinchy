@@ -216,11 +216,15 @@ Two worktrees cannot both run the dev stack on the default ports. Allocate a fre
 pnpm worktree:env
 ```
 
-It writes `COMPOSE_PROJECT_NAME`, `PINCHY_PORT`, `DB_PORT` and `CADDY_PORT` into a gitignored `.env`, which Compose reads automatically. Allocation happens **once** and is not re-derived on later runs — a worktree's address should stay bookmarkable — so pass `--force` if you need a new block.
+It writes `COMPOSE_PROJECT_NAME`, `DEV_PINCHY_PORT`, `DEV_DB_PORT` and `DEV_CADDY_PORT` into a gitignored `.env`, which Compose reads automatically. Allocation happens **once** and is not re-derived on later runs — a worktree's address should stay bookmarkable — so pass `--force` if you need a new block. `pnpm test:db` follows the allocation on its own.
 
 Do not hand-write a `docker-compose.local.yml` with `ports: !override` for this any more. That was the old workaround and it is easy to get wrong: a bare `ports:` **appends** instead of replacing, so the conflict survives the override that was meant to fix it.
 
-The compose defaults are unchanged (`7777`/`5434`/`8443`), so a checkout without `.env` behaves exactly as the docs describe. Note that the `5433` the standard E2E run expects is separate — see `playwright.config.ts`.
+The compose defaults are unchanged (`7777`/`5434`/`8443`), so a checkout without `.env` behaves exactly as the docs describe.
+
+**The `DEV_` prefix is load-bearing.** Compose reads `.env` for _every_ stack started from the repo root, and `docker-compose.yml` — the base file every E2E overlay layers on — reads `PINCHY_PORT`. Writing that key per worktree therefore moved six E2E suites off the `:7777` their Playwright configs expect (`telegram` hard-codes the URL and has no override at all), and the failure surfaces as a connection timeout with nothing pointing back at the allocation. Only `docker-compose.dev.yml` reads the `DEV_*` keys, so only stacks that include it move. A stack that _does_ layer the dev overlay (`odoo`, `eval`) must pin its ports back with `ports: !override`.
+
+Two guards in `scripts/lib/dev-stack-port-isolation.test.mjs` hold that line: one fails if a generated key is read outside the dev overlay or a dev-layered stack stops pinning, the other fails if a hard-coded host port anywhere in the repo lands inside an allocation band without being listed in `RESERVED_PORTS`. The reserved list matters because a probe only sees what is bound _right now_ while allocation is sticky: a worktree allocated while the integration stack was down would take `7779` and keep it.
 
 Common host commands from the repository root:
 

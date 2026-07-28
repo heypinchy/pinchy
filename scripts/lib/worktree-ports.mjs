@@ -30,21 +30,78 @@ export const PORT_FAMILIES = {
 export const MAX_BLOCKS = 60;
 
 /**
+ * Ports inside a band that some OTHER stack in this repo already owns.
+ *
+ * A probe only reports what is bound at the moment it runs, and allocation is
+ * deliberately sticky — so without this list a worktree allocated while the
+ * integration stack happened to be down would take 7779 and KEEP it. Every
+ * later `pnpm test:e2e:integration` in that worktree then dies on a bound
+ * port, and nothing points back to the allocation that caused it.
+ *
+ * `dev-stack-port-isolation.test.mjs` scans the compose files and Playwright
+ * configs and fails if a hard-coded host port lands in a band without being
+ * listed here, so this cannot quietly fall behind the repo.
+ */
+export const RESERVED_PORTS = new Set([
+  5433, // standard E2E Postgres (packages/web/playwright.config.ts)
+  5434, // dev default + docker-compose.e2e.yml / odoo-test db
+  5435, // docker-compose.integration.yml db
+  5437, // docker-compose.eval.yml db
+  7777, // dev default + the port every E2E stack's Playwright config expects
+  7778, // standard E2E web server (packages/web/playwright.config.ts)
+  7779, // docker-compose.integration.yml pinchy
+  7781, // docker-compose.eval.yml pinchy
+  8443, // dev default caddy
+]);
+
+/**
  * The compose project name, which also prefixes every volume. Derived from the
  * worktree directory rather than passed in, so it matches what plain
  * `docker compose up` would have chosen — otherwise a stack started with this
- * `.env` and one started without it would own two different sets of volumes.
+ * `.env` and one started without it would own two different sets of volumes,
+ * and the developer sees an empty dev database with no explanation.
  *
- * Docker's own normalisation is applied here rather than left to Docker, so the
- * name we WRITE is the name it USES.
+ * Docker's own normalisation is applied here rather than left to Docker, so
+ * the name we WRITE is the name it USES: lowercase, DELETE anything outside
+ * `[a-z0-9_-]` (an underscore is legal and survives — it is NOT folded to a
+ * dash), then strip leading characters until the name starts with `[a-z0-9]`.
+ * Measured against Docker 29.4.0, see the cases in the test file.
  */
 export function projectSlug(worktreePath) {
   const base = worktreePath.replace(/\/+$/, "").split("/").pop() ?? "";
   const slug = base
     .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
+    .replace(/[^a-z0-9_-]/g, "")
+    .replace(/^[^a-z0-9]+/, "");
+  // Only reachable for a name Docker itself would reject (it enforces
+  // ^[a-z0-9][a-z0-9_-]*$ and refuses to start). A working stack beats a hard
+  // error, and there is no "name Docker would have used" to stay faithful to.
   return slug || "pinchy";
+}
+
+/** Every port a block could ever use — the full probe set, nothing beyond. */
+export function candidatePorts() {
+  const ports = [];
+  for (const base of Object.values(PORT_FAMILIES)) {
+    for (let i = 0; i < MAX_BLOCKS; i++) ports.push(base + i);
+  }
+  return ports;
+}
+
+/**
+ * Which of `ports` fall inside a band without being reserved — i.e. ports this
+ * allocator could hand to a worktree even though something else in the repo
+ * already expects to own them. Drives the repo-wide drift guard.
+ *
+ * Sorted ascending and de-duplicated, so the guard's failure message reads the
+ * same whatever order the files were scanned in.
+ */
+export function unreservedBandConflicts(ports) {
+  const bands = new Set(candidatePorts());
+  const hits = new Set(
+    ports.filter((port) => bands.has(port) && !RESERVED_PORTS.has(port)),
+  );
+  return [...hits].sort((a, b) => a - b);
 }
 
 /**
@@ -76,7 +133,9 @@ export function allocatePorts(slug, isPortFree) {
 
   for (let i = 0; i < MAX_BLOCKS; i++) {
     const offset = (start + i) % MAX_BLOCKS;
-    if (bases.every((base) => isPortFree(base + offset))) {
+    const usable = (base) =>
+      !RESERVED_PORTS.has(base + offset) && isPortFree(base + offset);
+    if (bases.every(usable)) {
       const ports = { offset };
       for (const [name, base] of Object.entries(PORT_FAMILIES)) {
         ports[name] = base + offset;

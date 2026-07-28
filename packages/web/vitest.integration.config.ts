@@ -4,16 +4,35 @@
 //   - `pnpm test` stays fast and Docker-free.
 //   - `pnpm test:db` opts into the slower, DB-backed suite.
 //
-// Locally, point the suite at the dev-stack Postgres on :5434 (or override
+// Locally, point the suite at the dev-stack Postgres (or override
 // VITEST_INTEGRATION_DB_URL). In CI, the workflow spins up its own Postgres
 // service and sets VITEST_INTEGRATION_DB_URL accordingly.
+//
+// The port follows this worktree's allocation. `pnpm worktree:env` moves the
+// dev database off :5434 so two worktrees can run at once — and a gate that
+// kept pointing at the old default would either fail to connect or, worse,
+// quietly run against ANOTHER worktree's Postgres and truncate its tables.
 
 import { defineConfig } from "vitest/config";
+import { readFileSync } from "node:fs";
 import path from "node:path";
+
+import { parseEnvFile } from "../../scripts/lib/env-file.mjs";
+
+function devDbPort() {
+  if (process.env.DEV_DB_PORT) return process.env.DEV_DB_PORT;
+  try {
+    const env = parseEnvFile(readFileSync(path.resolve(__dirname, "../../.env"), "utf8"));
+    return env.DEV_DB_PORT ?? "5434";
+  } catch {
+    // No `.env` — this worktree never allocated, so it is on the default.
+    return "5434";
+  }
+}
 
 const TEST_DB_URL =
   process.env.VITEST_INTEGRATION_DB_URL ??
-  "postgresql://pinchy:pinchy_dev@localhost:5434/pinchy_test_vitest";
+  `postgresql://pinchy:pinchy_dev@localhost:${devDbPort()}/pinchy_test_vitest`;
 
 export default defineConfig({
   test: {
