@@ -292,6 +292,54 @@ describe("convertOfficeFiles", () => {
       expect(converter.calls).toHaveLength(1);
     });
 
+    it("quotes the converter's ERROR, not the warning it prints on every run", async () => {
+      // The runtime image has no JRE (the recommends that would pull one in are
+      // suppressed on purpose), so every single batch prints
+      // "Warning: failed to launch javaldx" as its FIRST stderr line. Taking
+      // the first non-empty line therefore attaches a benign, permanent
+      // warning to every document-level failure — sending an operator after a
+      // Java problem that does not exist, and hiding the one line that says
+      // what actually happened. Verified verbatim against the real binary.
+      const sources = [await corpusFile("broken.docx", "truncated zip")];
+      const converter: FakeConverter = {
+        calls: [],
+        run: async (call) => {
+          converter.calls.push(call);
+          return {
+            code: 0,
+            signal: null,
+            stderr:
+              "Warning: failed to launch javaldx - java may not function correctly\n" +
+              "Error: source file could not be loaded\n",
+          };
+        },
+      };
+
+      const outcomes = await convertOfficeFiles(sources, deps(converter));
+
+      expect(outcomes[0].status).toBe("failed");
+      expect(outcomes[0].reason).toContain("source file could not be loaded");
+      expect(outcomes[0].reason).not.toContain("javaldx");
+    });
+
+    it("does not invent a cause when the converter said nothing at all", async () => {
+      const sources = [await corpusFile("broken.docx", "truncated zip")];
+      const converter = fakeConverter({ outputs: { "broken.docx": null } });
+      // fakeConverter writes the real error line; blank it to model a silent run.
+      const silent: FakeConverter = {
+        calls: converter.calls,
+        run: async (call) => {
+          await converter.run(call);
+          return { code: 0, signal: null, stderr: "" };
+        },
+      };
+
+      const outcomes = await convertOfficeFiles(sources, deps(silent));
+
+      expect(outcomes[0].status).toBe("failed");
+      expect(outcomes[0].reason).toMatch(/no artifact/i);
+    });
+
     it("reports an empty artifact as a document-level failure", async () => {
       const sources = [await corpusFile("a.doc", "x")];
       const converter: FakeConverter = {
@@ -306,6 +354,56 @@ describe("convertOfficeFiles", () => {
       const outcomes = await convertOfficeFiles(sources, deps(converter));
 
       expect(outcomes[0].status).toBe("failed");
+    });
+  });
+
+  describe("a failing artifact store is infrastructure, not a verdict", () => {
+    // The whole point of the failed/infrastructure split is that a squeeze on
+    // the machine must never brand documents unreadable. A full or unwritable
+    // artifact volume is exactly such a squeeze — so it has to arrive as an
+    // outcome the caller can retry, not as an exception that aborts the run and
+    // throws away every batch that already succeeded.
+
+    it("keeps the outcomes of earlier batches when the store stops accepting artifacts", async () => {
+      const sources = await Promise.all(
+        Array.from({ length: 4 }, (_, i) => corpusFile(`f${i}.doc`, `body ${i}`))
+      );
+      const outputs = Object.fromEntries(sources.map((s, i) => [`f${i}.doc`, `body ${i}`]));
+      const store = new OfficeArtifactStore(storeDir);
+      let stored = 0;
+      store.put = async () => {
+        if (++stored > 2) throw Object.assign(new Error("ENOSPC: no space left on device"), {});
+        return join(storeDir, `artifact-${stored}.pdf`);
+      };
+
+      const outcomes = await convertOfficeFiles(
+        sources,
+        deps(fakeConverter({ outputs }), { store, batchSize: 2 })
+      );
+
+      expect(outcomes.map((o) => o.status)).toEqual([
+        "converted",
+        "converted",
+        "infrastructure",
+        "infrastructure",
+      ]);
+      expect(outcomes[2].reason).toMatch(/store/i);
+    });
+
+    it("reports the whole batch as infrastructure when staging cannot be created", async () => {
+      const sources = [await corpusFile("a.doc", "alpha"), await corpusFile("b.doc", "bravo")];
+      const store = new OfficeArtifactStore(storeDir);
+      store.createStagingDir = async () => {
+        throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
+      };
+      const converter = fakeConverter({ outputs: {} });
+
+      const outcomes = await convertOfficeFiles(sources, deps(converter, { store }));
+
+      expect(outcomes.map((o) => o.status)).toEqual(["infrastructure", "infrastructure"]);
+      // Nothing about the documents was learned, so the converter must not
+      // even have been asked.
+      expect(converter.calls).toHaveLength(0);
     });
   });
 

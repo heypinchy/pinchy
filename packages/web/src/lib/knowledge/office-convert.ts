@@ -307,7 +307,19 @@ interface BatchDeps {
  * target's.
  */
 async function convertBatch(batch: WorkItem[], deps: BatchDeps): Promise<ConversionOutcome[]> {
-  const stagingDir = await deps.store.createStagingDir();
+  let stagingDir: string;
+  try {
+    stagingDir = await deps.store.createStagingDir();
+  } catch (err) {
+    // A full or unwritable artifact volume is a squeeze on the machine, not a
+    // verdict on these documents — and it must arrive as a retryable outcome
+    // rather than an exception that also throws away the batches that already
+    // succeeded.
+    return batch.map((item) =>
+      infrastructureFailure(item.absPath, `artifact store unavailable: ${reasonOf(err)}`)
+    );
+  }
+
   const inDir = join(stagingDir, "in");
   const outDir = join(stagingDir, "out");
   const profileDir = join(stagingDir, "profile");
@@ -382,10 +394,7 @@ async function collectOne(
   if (!info?.isFile() || info.size === 0) {
     // THE failure the exit code hides. stderr is the only place LibreOffice
     // says anything, so carry a trimmed copy for the operator log.
-    return documentFailure(
-      item.absPath,
-      `no artifact produced (source file could not be loaded)${summarise(stderr)}`
-    );
+    return documentFailure(item.absPath, `no artifact produced${summarise(stderr)}`);
   }
 
   let pdfWords: number;
@@ -416,12 +425,17 @@ async function collectOne(
     };
   }
 
-  return {
-    sourcePath: item.absPath,
-    status: "converted",
-    artifactPath: await deps.store.put(item.contentHash, producedPdf),
-    verification,
-  };
+  let artifactPath: string;
+  try {
+    artifactPath = await deps.store.put(item.contentHash, producedPdf);
+  } catch (err) {
+    // The conversion itself succeeded and passed verification; only the volume
+    // refused it. Retrying costs a conversion, but calling this document
+    // unreadable would be a lie that nothing ever revisits.
+    return infrastructureFailure(item.absPath, `artifact store rejected the PDF: ${reasonOf(err)}`);
+  }
+
+  return { sourcePath: item.absPath, status: "converted", artifactPath, verification };
 }
 
 /**
@@ -446,21 +460,85 @@ function reasonOf(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-/** A short, single-line excerpt of converter stderr for the operator log. */
+/**
+ * Noise LibreOffice prints on EVERY run in our image and that says nothing
+ * about any document. The JRE is deliberately absent (`--no-install-recommends`
+ * in Dockerfile.pinchy keeps a whole Java runtime out of the image), so this
+ * warning is permanent — and it is the FIRST stderr line, which is exactly why
+ * "the first non-empty line" is the wrong excerpt to keep.
+ */
+const BENIGN_STDERR = /failed to launch javaldx/i;
+
+/**
+ * A short, single-line excerpt of converter stderr for the operator log.
+ *
+ * Prefers the line LibreOffice marks as an error, because stderr is batch-wide
+ * — it names no file (verified against the real binary: the message is a bare
+ * `Error: source file could not be loaded`) — and the interesting line is never
+ * the first one. Attaching the javaldx warning to a failed document instead
+ * sends an operator after a Java problem that does not exist.
+ */
 function summarise(stderr: string): string {
-  const line = stderr.split("\n").find((l) => l.trim().length > 0);
-  return line ? `: ${line.trim().slice(0, 200)}` : "";
+  const lines = stderr
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0 && !BENIGN_STDERR.test(l));
+  const line = lines.find((l) => /^error\b/i.test(l)) ?? lines[0];
+  return line ? ` (converter stderr, batch-wide: ${line.slice(0, 200)})` : "";
 }
 
 // ---------------------------------------------------------------------------
 // Production adapters
 // ---------------------------------------------------------------------------
 
-/** Overridable so a dev machine can point at its own LibreOffice. */
-const SOFFICE_BIN = process.env.KB_SOFFICE_BIN || "soffice";
-
 /** stderr we keep. LibreOffice repeats itself per file; a huge batch must not build a huge string. */
 const MAX_STDERR_BYTES = 8 * 1024;
+
+/**
+ * What a converter subprocess inherits from us — an allow-list, not a copy of
+ * `process.env`.
+ *
+ * Both subprocesses in this module parse documents the corpus owner did not
+ * write, in formats (legacy `.doc`/`.ppt`) with a long history of
+ * memory-safety bugs. Neither has any use for `DATABASE_URL`,
+ * `ENCRYPTION_KEY` or `BETTER_AUTH_SECRET`, so neither gets them. Verified
+ * against the real binary: `PATH` plus `HOME` is enough to convert, with the
+ * Central/Eastern European diacritics the corpus is full of intact; the rest
+ * are locale and timezone, which change how a document RENDERS and so are
+ * passed through when the operator set them.
+ */
+const INHERITED_ENV = ["PATH", "LANG", "LANGUAGE", "LC_ALL", "LC_CTYPE", "TZ"] as const;
+
+function childEnv(home: string): NodeJS.ProcessEnv {
+  // NODE_ENV carries no secret and is what every child process here already
+  // sees; it is listed explicitly because Next.js declares it non-optional.
+  const env: NodeJS.ProcessEnv = { NODE_ENV: process.env.NODE_ENV, HOME: home };
+  for (const key of INHERITED_ENV) {
+    const value = process.env[key];
+    if (value !== undefined) env[key] = value;
+  }
+  return env;
+}
+
+/**
+ * SIGKILLs a child AND everything it forked.
+ *
+ * `spawn` is given `detached: true` so the child leads its own process group,
+ * and this kills the group. That is not belt-and-braces: `soffice` execs
+ * `oosplash`, which **forks** `soffice.bin` — so killing the process we
+ * spawned leaves the real converter running, still holding the memory the
+ * timeout was meant to reclaim and still writing into a staging directory we
+ * are about to delete. Verified in the runtime image, both directions: killing
+ * the pid orphans `soffice.bin`, killing the group reaps it.
+ */
+function killTree(child: ReturnType<typeof spawn>): void {
+  try {
+    if (child.pid !== undefined) process.kill(-child.pid, "SIGKILL");
+  } catch {
+    // The group is already gone, or the platform has no process groups.
+    child.kill("SIGKILL");
+  }
+}
 
 /**
  * The real converter: ONE `soffice` per batch.
@@ -469,11 +547,15 @@ const MAX_STDERR_BYTES = 8 * 1024;
  * profile inside the staging directory. Without it LibreOffice shares one user
  * installation, and a second instance — a concurrent reindex, or a leftover
  * process — refuses to start or silently reuses the other's state.
+ *
+ * The binary is resolved per call rather than at import so a test can point at
+ * a stub: without that, everything below is only reachable on a machine with a
+ * 422 MB LibreOffice installed, which is no machine CI runs on.
  */
 export const runSoffice: RunConverter = ({ inputs, outDir, profileDir, timeoutMs }) =>
   new Promise<ConverterResult>((resolve, reject) => {
     const child = spawn(
-      SOFFICE_BIN,
+      process.env.KB_SOFFICE_BIN || "soffice",
       [
         "--headless",
         "--norestore",
@@ -487,7 +569,7 @@ export const runSoffice: RunConverter = ({ inputs, outDir, profileDir, timeoutMs
         outDir,
         ...inputs,
       ],
-      { stdio: ["ignore", "ignore", "pipe"], env: { ...process.env, HOME: profileDir } }
+      { stdio: ["ignore", "ignore", "pipe"], env: childEnv(profileDir), detached: true }
     );
 
     let stderr = "";
@@ -498,7 +580,7 @@ export const runSoffice: RunConverter = ({ inputs, outDir, profileDir, timeoutMs
 
     const timer = setTimeout(() => {
       timedOut = true;
-      child.kill("SIGKILL");
+      killTree(child);
     }, timeoutMs);
 
     child.on("error", (err) => {
@@ -553,23 +635,50 @@ export async function countSourceWordsWithOracle(absPath: string): Promise<numbe
   return null;
 }
 
-/** Runs a text-dumping CLI over `absPath` and counts its words; null if it is absent or unhappy. */
-function runTextOracle(bin: string, absPath: string): Promise<number | null> {
+/**
+ * Text an oracle may produce before we stop believing it. 16 MB is roughly 2.5
+ * million words — orders of magnitude past any document, and small enough that
+ * a `.doc` crafted to make catdoc emit without end cannot take the web process
+ * down with it. The oracle is a tripwire; it is not worth a single OOM.
+ */
+const MAX_ORACLE_BYTES = 16 * 1024 * 1024;
+
+/**
+ * Runs a text-dumping CLI over `absPath` and counts its words; null if it is
+ * absent, unhappy, too slow, or too talkative.
+ *
+ * Exported for the adapter test — the production callers pass a fixed binary
+ * name, so this is the only seam a stub can reach.
+ */
+export function runTextOracle(bin: string, absPath: string): Promise<number | null> {
   return new Promise((resolve) => {
-    const child = spawn(bin, [absPath], { stdio: ["ignore", "pipe", "ignore"] });
+    const child = spawn(bin, [absPath], {
+      stdio: ["ignore", "pipe", "ignore"],
+      env: childEnv(process.env.HOME ?? "/tmp"),
+      detached: true,
+    });
     let out = "";
+    let settled = false;
+    const finish = (words: number | null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(words);
+    };
+
     child.stdout.on("data", (chunk: Buffer) => {
       out += chunk.toString("utf8");
+      if (out.length > MAX_ORACLE_BYTES) {
+        killTree(child);
+        finish(null);
+      }
     });
-    const timer = setTimeout(() => child.kill("SIGKILL"), 30_000);
-    child.on("error", () => {
-      clearTimeout(timer);
-      resolve(null);
-    });
-    child.on("close", (code) => {
-      clearTimeout(timer);
-      resolve(code === 0 ? countWords(out) : null);
-    });
+    const timer = setTimeout(() => {
+      killTree(child);
+      finish(null);
+    }, 30_000);
+    child.on("error", () => finish(null));
+    child.on("close", (code) => finish(code === 0 ? countWords(out) : null));
   });
 }
 
