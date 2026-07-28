@@ -51,6 +51,7 @@
     "cmdk": "^1.1.1",
     "drizzle-kit": "^0.31.10",
     "drizzle-orm": "^0.45.2",
+    "exceljs": "^4.4.0",
     "file-type": "^22.0.1",
     "i18n-iso-countries": "^7.14.0",
     "imapflow": "^1.4.6",
