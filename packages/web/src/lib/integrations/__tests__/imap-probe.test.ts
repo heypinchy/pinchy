@@ -76,6 +76,15 @@ const { mockNetConnect, fakeSockets } = vi.hoisted(() => {
 
 vi.mock("node:net", () => ({ connect: mockNetConnect, default: { connect: mockNetConnect } }));
 
+// The SSRF guard resolves every probe host before connecting, so DNS is stubbed
+// here — no test in this file may depend on real name resolution.
+const { mockDnsLookup } = vi.hoisted(() => ({ mockDnsLookup: vi.fn() }));
+
+vi.mock("node:dns/promises", () => ({
+  lookup: mockDnsLookup,
+  default: { lookup: mockDnsLookup },
+}));
+
 import {
   testImapLogin,
   testSmtpVerify,
@@ -84,6 +93,7 @@ import {
   probeSmtpPorts,
   tlsModeForPort,
 } from "@/lib/integrations/imap-probe";
+import { MailHostBlockedError } from "@/lib/integrations/mail-host-guard";
 
 const input = {
   imapHost: "imap.example.com",
@@ -101,6 +111,7 @@ describe("imap-probe", () => {
     mockImapClient.connect.mockResolvedValue(undefined);
     mockImapClient.logout.mockResolvedValue(undefined);
     mockTransport.verify.mockResolvedValue(true);
+    mockDnsLookup.mockResolvedValue([{ address: "203.0.113.50", family: 4 }]);
   });
 
   describe("testImapLogin", () => {
@@ -150,6 +161,21 @@ describe("imap-probe", () => {
       mockImapClient.connect.mockRejectedValue(new Error("Authentication failed"));
 
       await expect(testImapLogin(input)).rejects.toThrow("Authentication failed");
+    });
+
+    it("never opens a socket to a host resolving to an internal address", async () => {
+      mockDnsLookup.mockResolvedValue([{ address: "127.0.0.1", family: 4 }]);
+
+      await expect(testImapLogin(input)).rejects.toThrow(MailHostBlockedError);
+      expect(ImapFlowMock).not.toHaveBeenCalled();
+      expect(mockImapClient.connect).not.toHaveBeenCalled();
+    });
+
+    it("resolves the IMAP host, not the SMTP host", async () => {
+      await testImapLogin(input);
+
+      expect(mockDnsLookup).toHaveBeenCalledWith(input.imapHost, expect.anything());
+      expect(mockDnsLookup).not.toHaveBeenCalledWith(input.smtpHost, expect.anything());
     });
   });
 
@@ -238,6 +264,21 @@ describe("imap-probe", () => {
       await expect(testSmtpVerify(input)).rejects.toThrow("ECONNREFUSED");
       expect(mockTransport.close).toHaveBeenCalled();
     });
+
+    it("never builds a transport for a host resolving to an internal address", async () => {
+      mockDnsLookup.mockResolvedValue([{ address: "169.254.169.254", family: 4 }]);
+
+      await expect(testSmtpVerify(input)).rejects.toThrow(MailHostBlockedError);
+      expect(createTransportMock).not.toHaveBeenCalled();
+      expect(mockTransport.verify).not.toHaveBeenCalled();
+    });
+
+    it("resolves the SMTP host, not the IMAP host", async () => {
+      await testSmtpVerify(input);
+
+      expect(mockDnsLookup).toHaveBeenCalledWith(input.smtpHost, expect.anything());
+      expect(mockDnsLookup).not.toHaveBeenCalledWith(input.imapHost, expect.anything());
+    });
   });
 
   describe("friendlyError", () => {
@@ -276,6 +317,14 @@ describe("imap-probe", () => {
     it("falls back to a generic message for unrecognized errors", () => {
       expect(friendlyError(new Error("something weird"))).toMatch(/connection failed/i);
       expect(friendlyError("not an Error instance")).toMatch(/connection failed/i);
+    });
+
+    it("passes an SSRF-guard rejection through verbatim", () => {
+      // The guard's message already says what to do about it; the generic
+      // "check your settings" fallback would hide that.
+      const message = "Blocked: this host resolves to a private network address.";
+
+      expect(friendlyError(new MailHostBlockedError(message))).toBe(message);
     });
   });
 
@@ -316,6 +365,18 @@ describe("imap-probe", () => {
     it("handles a non-Error value the same way friendlyError does", () => {
       const result = classifyProbeError("not an Error instance");
       expect(result.code).toBe("unknown");
+    });
+
+    it("classifies an SSRF-guard rejection as 'blocked' and keeps its message", () => {
+      // Its own code, not "unknown": the route branches on the code to decide
+      // whether an SMTP port scan is worth running, and a blocked host must
+      // never trigger the very port scan the guard exists to prevent.
+      const error = new MailHostBlockedError("Blocked: this host resolves to something internal.");
+
+      const result = classifyProbeError(error);
+
+      expect(result.code).toBe("blocked");
+      expect(result.message).toBe("Blocked: this host resolves to something internal.");
     });
   });
 

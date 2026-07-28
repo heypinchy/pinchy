@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
-import { validateExternalUrl, isPrivateUrl } from "../url-validation";
+import { validateExternalUrl, isPrivateUrl, classifyIpAddress } from "../url-validation";
 
 describe("isPrivateUrl", () => {
   it("rejects localhost", () => {
@@ -34,6 +34,12 @@ describe("isPrivateUrl", () => {
     expect(isPrivateUrl("http://[::1]:8069")).toBe(true);
   });
 
+  it("rejects an IPv4-mapped IPv6 loopback", () => {
+    // `URL` normalizes this to [::ffff:7f00:1], which no longer looks like a
+    // loopback address unless the mapped IPv4 is actually decoded.
+    expect(isPrivateUrl("http://[::ffff:127.0.0.1]:8069")).toBe(true);
+  });
+
   it("rejects IPv6 unique local address (fc00::/7)", () => {
     expect(isPrivateUrl("http://[fd12:3456:789a::1]:8069")).toBe(true);
   });
@@ -56,6 +62,69 @@ describe("isPrivateUrl", () => {
 
   it("does not reject 172.32.x.x (outside private range)", () => {
     expect(isPrivateUrl("http://172.32.0.1:8069")).toBe(false);
+  });
+
+  it.each(["https://fcbank.example.com", "https://fdservice.example.com", "https://fe80.co"])(
+    "accepts %s — a DNS name is not an IPv6 literal just because it starts like one",
+    (url) => {
+      expect(isPrivateUrl(url)).toBe(false);
+    }
+  );
+});
+
+describe("classifyIpAddress", () => {
+  it.each([
+    ["127.0.0.1", "loopback"],
+    ["127.99.42.7", "loopback"],
+    ["0.0.0.0", "unspecified"],
+    ["0.1.2.3", "unspecified"],
+    ["169.254.169.254", "link-local"],
+    ["10.1.2.3", "private"],
+    ["172.16.0.1", "private"],
+    ["172.31.255.255", "private"],
+    ["192.168.1.10", "private"],
+    ["172.32.0.1", "public"],
+    ["203.0.113.50", "public"],
+  ] as const)("classifies IPv4 %s as %s", (address, expected) => {
+    expect(classifyIpAddress(address)).toBe(expected);
+  });
+
+  it.each([
+    ["::1", "loopback"],
+    ["0:0:0:0:0:0:0:1", "loopback"],
+    ["::", "unspecified"],
+    ["fe80::1", "link-local"],
+    // fe80::/10 spans fe80 through febf — a prefix match on "fe80" alone
+    // would miss most of it.
+    ["feb0::1", "link-local"],
+    ["fc00::1", "private"],
+    ["fd12:3456:789a::1", "private"],
+    ["fd00:ec2::254", "private"],
+    ["2606:4700:4700::1111", "public"],
+    ["fec0::1", "public"],
+    // IPv4-mapped addresses carry an IPv4 destination; classify what they
+    // actually reach, not the IPv6 wrapper.
+    ["::ffff:127.0.0.1", "loopback"],
+    ["::ffff:192.168.1.10", "private"],
+    ["::ffff:203.0.113.50", "public"],
+  ] as const)("classifies IPv6 %s as %s", (address, expected) => {
+    expect(classifyIpAddress(address)).toBe(expected);
+  });
+
+  it.each([
+    ["imap.example.com"],
+    ["localhost"],
+    [""],
+    ["999.1.1.1"],
+    ["1.2.3"],
+    ["1.2.3.4.5"],
+    ["not:an:address"],
+  ])("returns null for %s, which is not an IP literal", (value) => {
+    expect(classifyIpAddress(value)).toBeNull();
+  });
+
+  it("ignores an IPv6 zone identifier", () => {
+    expect(classifyIpAddress("fe80::1%eth0")).toBe("link-local");
   });
 });
 

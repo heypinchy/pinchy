@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeAll, beforeEach } from "vitest";
 
 vi.mock("next/headers", () => ({
   headers: vi.fn().mockResolvedValue(new Headers()),
@@ -60,6 +60,17 @@ vi.mock("nodemailer", () => ({
   createTransport: createTransportMock,
 }));
 
+// The SSRF guard resolves both probe hosts before connecting; DNS is stubbed so
+// the route tests never depend on real name resolution. The default answer is a
+// public address (TEST-NET-3), i.e. "guard allows it" unless a test says
+// otherwise.
+const { mockDnsLookup } = vi.hoisted(() => ({ mockDnsLookup: vi.fn() }));
+
+vi.mock("node:dns/promises", () => ({
+  lookup: mockDnsLookup,
+  default: { lookup: mockDnsLookup },
+}));
+
 // Only probeSmtpPorts is mocked here (raw TCP reachability probe) — everything
 // else in the module (testImapLogin/testSmtpVerify/classifyProbeError) runs
 // for real, driven by the imapflow/nodemailer mocks above, so the route's
@@ -98,12 +109,24 @@ function makeRequest(body?: unknown) {
 }
 
 describe("POST /api/integrations/imap/test", () => {
+  // Compile the route's whole dependency graph (better-auth, drizzle, imapflow,
+  // nodemailer, …) ONCE here rather than inside whichever test happens to run
+  // first. Every test below re-imports the module, but nothing calls
+  // vi.resetModules(), so those are cache hits — the first one was paying the
+  // transform out of the 5s per-test budget and timing out on a cold cache.
+  // The generous hook budget covers that compile on a loaded machine; it bounds
+  // setup cost only, never an assertion.
+  beforeAll(async () => {
+    await import("@/app/api/integrations/imap/test/route");
+  }, 60_000);
+
   beforeEach(() => {
     vi.clearAllMocks();
     mockImapClient.connect.mockResolvedValue(undefined);
     mockImapClient.logout.mockResolvedValue(undefined);
     mockTransport.verify.mockResolvedValue(true);
     mockAppendAuditLog.mockResolvedValue(undefined);
+    mockDnsLookup.mockResolvedValue([{ address: "203.0.113.50", family: 4 }]);
     mockProbeSmtpPorts.mockReset();
     mockProbeSmtpPorts.mockResolvedValue([
       { port: 465, reachable: false },
@@ -344,6 +367,71 @@ describe("POST /api/integrations/imap/test", () => {
       expect(mockProbeSmtpPorts).not.toHaveBeenCalled();
       expect(body.smtpPortProbe).toBeUndefined();
       expect(body.suggestion).toBeUndefined();
+    });
+
+    // The endpoint probes an admin-supplied host:port and reports WHY the
+    // connection failed — refused vs. timeout vs. TLS vs. auth. Without a guard
+    // that is an internal port scanner with a friendly UI (pinchy#823), so a
+    // host pointing inside the network must never reach a socket at all.
+    describe("SSRF guard", () => {
+      it("blocks both legs, and never opens a socket, when the hosts resolve to loopback", async () => {
+        mockDnsLookup.mockResolvedValue([{ address: "127.0.0.1", family: 4 }]);
+
+        const { POST } = await import("@/app/api/integrations/imap/test/route");
+        const response = await POST(makeRequest(validBody), routeContext());
+        const body = await response.json();
+
+        expect(response.status).toBe(200);
+        expect(body.ok).toBe(false);
+        expect(body.imap.code).toBe("blocked");
+        expect(body.smtp.code).toBe("blocked");
+        expect(ImapFlowMock).not.toHaveBeenCalled();
+        expect(createTransportMock).not.toHaveBeenCalled();
+      });
+
+      it("does not run the SMTP port scan for a blocked host", async () => {
+        // The port scan is the sharpest edge of the oracle: three raw TCP
+        // connects per request, with the result reported back.
+        mockDnsLookup.mockResolvedValue([{ address: "169.254.169.254", family: 4 }]);
+
+        const { POST } = await import("@/app/api/integrations/imap/test/route");
+        const response = await POST(makeRequest(validBody), routeContext());
+        const body = await response.json();
+
+        expect(mockProbeSmtpPorts).not.toHaveBeenCalled();
+        expect(body.smtpPortProbe).toBeUndefined();
+        expect(body.suggestion).toBeUndefined();
+      });
+
+      it("writes a failure audit entry for a blocked host", async () => {
+        mockDnsLookup.mockResolvedValue([{ address: "10.0.0.5", family: 4 }]);
+
+        const { POST } = await import("@/app/api/integrations/imap/test/route");
+        await POST(makeRequest(validBody), routeContext());
+
+        expect(mockAppendAuditLog).toHaveBeenCalledTimes(1);
+        const entry = mockAppendAuditLog.mock.calls[0][0];
+        expect(entry.outcome).toBe("failure");
+        expect(entry.detail.imapCode).toBe("blocked");
+        expect(entry.detail.smtpCode).toBe("blocked");
+      });
+
+      it("blocks the IMAP leg alone when only the IMAP host is internal", async () => {
+        mockDnsLookup.mockImplementation(async (host: string) =>
+          host === validBody.imapHost
+            ? [{ address: "192.168.1.10", family: 4 }]
+            : [{ address: "203.0.113.50", family: 4 }]
+        );
+
+        const { POST } = await import("@/app/api/integrations/imap/test/route");
+        const response = await POST(makeRequest(validBody), routeContext());
+        const body = await response.json();
+
+        expect(body.imap.code).toBe("blocked");
+        expect(body.smtp).toEqual({ ok: true });
+        expect(ImapFlowMock).not.toHaveBeenCalled();
+        expect(createTransportMock).toHaveBeenCalled();
+      });
     });
 
     it("never includes the plaintext password in the audit detail across success and failure paths", async () => {

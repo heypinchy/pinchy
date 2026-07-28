@@ -158,6 +158,24 @@ The **Security** setting doesn't match what the server expects. Try `TLS` for po
 
 The server didn't respond in time — usually a network issue or an incorrect host/port combination.
 
+**"Blocked: this host resolves to a private network address"**
+
+See [Mail servers on your own network](#mail-servers-on-your-own-network) below.
+
+---
+
+## Mail servers on your own network
+
+The connection test reports exactly why an attempt failed — refused, timed out, TLS error, wrong password. That's what makes it useful for fixing a mailbox, and it's also what would make it useful for mapping the network Pinchy runs in. So we only probe hosts that resolve to a public address.
+
+If your mail server genuinely lives on your own network — an on-premise Exchange or Dovecot box on `10.x`, `172.16–31.x`, `192.168.x`, or an IPv6 unique-local range — set the environment variable on the Pinchy container and restart it:
+
+```bash
+ALLOW_PRIVATE_MAIL_HOSTS=1
+```
+
+Loopback and link-local addresses stay blocked either way — `127.0.0.1`, `::1`, `169.254.169.254` and `fd00:ec2::254`, the cloud metadata endpoints. No mail server lives there, so there's nothing to trade off.
+
 ---
 
 ## Ports, TLS & cloud firewalls
