@@ -9,7 +9,7 @@
  * by the opt-in block at the bottom, pointed at a local corpus via
  * KB_XLSX_CORPUS_DIR.
  */
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -199,6 +199,61 @@ describe("cell values", () => {
     ]);
   });
 
+  it("reads a hyperlink whose label is rich text", async () => {
+    const path = await buildWorkbook("rich-hyperlink.xlsx", (workbook) => {
+      const sheet = workbook.addWorksheet("Links");
+      sheet.addRow(["Kind", "Value"]);
+      sheet.addRow([
+        "richlink",
+        // exceljs types `text` as a string, but a hyperlink cell whose label
+        // carries mixed formatting — the normal case for a styled link — reads
+        // back with a richText OBJECT there. Its own typings do not model that.
+        {
+          text: { richText: [{ text: "Rich " }, { text: "link" }] },
+          hyperlink: "https://example.com/rich",
+        } as unknown as ExcelJS.CellHyperlinkValue,
+      ]);
+    });
+
+    const { chunks } = await extractXlsx(path);
+
+    expect(rowLines(chunks[0].text)).toEqual([
+      "Kind: richlink; Value: Rich link (https://example.com/rich)",
+    ]);
+  });
+
+  it("renders a percent-formatted cell the way the sheet displays it", async () => {
+    const path = await buildWorkbook("percent.xlsx", (workbook) => {
+      const sheet = workbook.addWorksheet("Margins");
+      sheet.addRow(["Product", "Margin", "Discount"]);
+      const row = sheet.addRow(["A-1", 0.15, 0.075]);
+      row.getCell(2).numFmt = "0%";
+      row.getCell(3).numFmt = "0.0%;[Red]-0.0%";
+    });
+
+    const { chunks } = await extractXlsx(path);
+
+    // Excel's `%` multiplies by 100 for display. Indexing the stored 0.15 would
+    // make the document answer "15%" with "0.15" — a wrong number, not merely
+    // an unformatted one, and exactly the failure the formula rule avoids.
+    expect(rowLines(chunks[0].text)).toEqual(["Product: A-1; Margin: 15%; Discount: 7.5%"]);
+  });
+
+  it("does not scale a value whose format only contains a quoted percent sign", async () => {
+    const path = await buildWorkbook("quoted-percent.xlsx", (workbook) => {
+      const sheet = workbook.addWorksheet("Literal");
+      sheet.addRow(["Kind", "Value"]);
+      const row = sheet.addRow(["literal", 0.15]);
+      // A quoted % is a literal suffix in Excel's format language and carries
+      // no multiplier — the cell reads 0.15%, so the value must stay 0.15.
+      row.getCell(2).numFmt = '0.00"%"';
+    });
+
+    const { chunks } = await extractXlsx(path);
+
+    expect(rowLines(chunks[0].text)).toEqual(["Kind: literal; Value: 0.15"]);
+  });
+
   it("drops error cells and collapses newlines inside a cell", async () => {
     const path = await buildWorkbook("noise.xlsx", (workbook) => {
       const sheet = workbook.addWorksheet("Noise");
@@ -384,6 +439,27 @@ describe("unreadable files fail at document level", () => {
 
     await expect(extractXlsx(path)).rejects.toThrow(XlsxExtractionError);
     await expect(extractXlsx(path)).rejects.toThrow(/no worksheets/i);
+  });
+
+  it("reports a failure raised while walking the workbook as a document-level failure", async () => {
+    const path = await buildWorkbook("walk-explodes.xlsx", (workbook) => {
+      const sheet = workbook.addWorksheet("Data");
+      sheet.addRow(["Key"]);
+      sheet.addRow(["value"]);
+    });
+
+    // The file opens fine and only the walk fails. Without a net that surfaces
+    // as a raw TypeError from library internals, which the caller cannot tell
+    // apart from a systemic fault — so a per-file problem would look like a
+    // reason to abort the whole ingest run.
+    const spy = vi.spyOn(ExcelJS.Workbook.prototype, "worksheets", "get").mockImplementation(() => {
+      throw new TypeError("value.text.replace is not a function");
+    });
+    try {
+      await expect(extractXlsx(path)).rejects.toThrow(XlsxExtractionError);
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it("keeps the source path on the error so the caller can name the document", async () => {

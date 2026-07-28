@@ -104,6 +104,45 @@ function renderDate(value: Date): string {
 }
 
 /**
+ * Removes everything in a number-format section that is a literal rather than a
+ * directive: quoted runs, backslash-escaped characters, and the bracketed
+ * blocks Excel uses for colours and conditions.
+ */
+function stripFormatLiterals(section: string): string {
+  return section
+    .replace(/"[^"]*"/g, "")
+    .replace(/\\./g, "")
+    .replace(/\[[^\]]*\]/g, "");
+}
+
+/**
+ * Does this number format scale its value by 100? An unquoted `%` is Excel's
+ * multiplier directive; a quoted or escaped one is just a character to print.
+ * Only the first section is consulted — it governs positive numbers, and a
+ * format that switches the multiplier between sections does not occur in
+ * practice.
+ */
+function isPercentFormat(numFmt: string | undefined): boolean {
+  if (!numFmt) return false;
+  return stripFormatLiterals(numFmt.split(";")[0]).includes("%");
+}
+
+/**
+ * A percent-formatted cell stores 0.15 and shows `15%`. Indexing the stored
+ * number would answer with a value that is wrong by two orders of magnitude,
+ * not merely unformatted, so the multiplier is applied. Other formats
+ * (currency, thousands separators) only change how the same number looks and
+ * are deliberately left alone.
+ */
+function renderNumber(value: number, numFmt: string | undefined): string {
+  if (!isPercentFormat(numFmt)) return String(value);
+  // 0.15 * 100 is 15.000000000000002 in binary floating point. Re-rounding to
+  // the ~15 significant digits a double actually carries drops the artefact
+  // without touching a legitimately long value.
+  return `${Number.parseFloat((value * 100).toPrecision(15))}%`;
+}
+
+/**
  * Renders a cell the way its reader sees it, or "" for a cell that carries no
  * readable content.
  *
@@ -113,10 +152,11 @@ function renderDate(value: Date): string {
  * formula the writer never calculated has no result to show and contributes
  * nothing — same rule, applied honestly.
  */
-function renderCellValue(value: ExcelJS.CellValue): string {
+function renderCellValue(value: ExcelJS.CellValue, numFmt?: string): string {
   if (value === null || value === undefined) return "";
   if (typeof value === "string") return normalizeWhitespace(value);
-  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (typeof value === "number") return renderNumber(value, numFmt);
+  if (typeof value === "boolean") return String(value);
   if (value instanceof Date) return renderDate(value);
   if (typeof value !== "object") return "";
 
@@ -128,13 +168,17 @@ function renderCellValue(value: ExcelJS.CellValue): string {
     return normalizeWhitespace(value.richText.map((run) => run.text).join(""));
   }
   if ("hyperlink" in value) {
-    const text = normalizeWhitespace(value.text ?? "");
-    const href = normalizeWhitespace(value.hyperlink ?? "");
+    // `text` is typed as a string but is not always one: a link whose label
+    // carries mixed formatting reads back as a richText object, and a link on a
+    // numeric cell as a number. Recursing renders every one of those shapes
+    // instead of assuming the declared type and throwing on the rest.
+    const text = renderCellValue(value.text ?? null, numFmt);
+    const href = normalizeWhitespace(String(value.hyperlink ?? ""));
     if (!href || href === text) return text;
     return text ? `${text} (${href})` : href;
   }
   if ("formula" in value || "sharedFormula" in value) {
-    return renderCellValue(value.result ?? null);
+    return renderCellValue(value.result ?? null, numFmt);
   }
   return "";
 }
@@ -177,7 +221,7 @@ function readSheet(worksheet: ExcelJS.Worksheet): { rows: SheetRow[]; hiddenRows
       [];
     row.eachCell({ includeEmpty: false }, (cell, colNumber) => {
       if (isHiddenColumn(colNumber)) return;
-      const text = renderCellValue(cell.value);
+      const text = renderCellValue(cell.value, cell.numFmt);
       if (!text) return;
       cells.push({ column: colNumber, letter: columnLetter(cell.address), raw: cell.value, text });
     });
@@ -275,14 +319,6 @@ export async function extractXlsx(
     });
   }
 
-  // Excel cannot save a workbook without a sheet, so zero worksheets means we
-  // opened something that merely LOOKS like one — a .docx renamed .xlsx unzips
-  // fine and lands exactly here. exceljs reports that as a clean, empty
-  // success, which is the silent-zero this extractor exists to refuse.
-  if (workbook.worksheets.length === 0) {
-    throw new XlsxExtractionError(absPath, "the file opened but contains no worksheets");
-  }
-
   const targetChars = (opts.targetTokens ?? DEFAULT_TARGET_TOKENS) * CHARS_PER_TOKEN;
 
   const sheets: string[] = [];
@@ -290,15 +326,36 @@ export async function extractXlsx(
   const chunks: XlsxChunk[] = [];
   let hiddenRows = 0;
 
-  for (const worksheet of workbook.worksheets) {
-    if (worksheet.state === "hidden" || worksheet.state === "veryHidden") {
-      hiddenSheets.push(worksheet.name);
-      continue;
+  // The walk runs on shapes exceljs's own typings understate (see the hyperlink
+  // branch), so an unexpected cell can still raise from library internals. That
+  // is a fault of THIS document and has to read as one: an unwrapped TypeError
+  // is indistinguishable from a systemic fault, which a caller would reasonably
+  // treat as a reason to abort the whole run rather than skip one file.
+  try {
+    // Excel cannot save a workbook without a sheet, so zero worksheets means we
+    // opened something that merely LOOKS like one — a .docx renamed .xlsx unzips
+    // fine and lands exactly here. exceljs reports that as a clean, empty
+    // success, which is the silent-zero this extractor exists to refuse.
+    if (workbook.worksheets.length === 0) {
+      throw new XlsxExtractionError(absPath, "the file opened but contains no worksheets");
     }
-    sheets.push(worksheet.name);
-    const sheet = readSheet(worksheet);
-    hiddenRows += sheet.hiddenRows;
-    chunks.push(...chunkSheet({ name: worksheet.name, rows: sheet.rows }, targetChars));
+
+    for (const worksheet of workbook.worksheets) {
+      if (worksheet.state === "hidden" || worksheet.state === "veryHidden") {
+        hiddenSheets.push(worksheet.name);
+        continue;
+      }
+      sheets.push(worksheet.name);
+      const sheet = readSheet(worksheet);
+      hiddenRows += sheet.hiddenRows;
+      chunks.push(...chunkSheet({ name: worksheet.name, rows: sheet.rows }, targetChars));
+    }
+  } catch (err) {
+    // A diagnosis we already made keeps its own, more specific reason.
+    if (err instanceof XlsxExtractionError) throw err;
+    throw new XlsxExtractionError(absPath, "the workbook could not be read to the end", {
+      cause: err,
+    });
   }
 
   return { chunks, sheets, hiddenSheets, hiddenRows };
