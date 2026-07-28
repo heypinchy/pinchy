@@ -188,6 +188,16 @@ The config sits at `packages/`, not `packages/web/`, and that is load-bearing ra
 
 `docs-format.yml` used to check docs and workflows separately, because `ci.yml` once carried a workflow-level `paths-ignore` and skipped docs PRs. It no longer does (see above), and `quality` is ungated — so the root gate covers those files on every PR and the extra workflow was removed rather than left to duplicate it.
 
+### The pre-commit hook invokes its binaries directly
+
+The same gate runs locally through `.husky/pre-commit` → lint-staged, and there the **whole-tree rule must invoke its binary directly** (`prettier --write --ignore-unknown`), never through `pnpm exec` / `npx` / `pnpm -C … exec`. lint-staged puts every ancestor `node_modules/.bin` on `PATH`, and the worktrees live under the main checkout (`.claude/worktrees/…`), so a bare binary resolves from a worktree by walking up to the main checkout's install. `pnpm exec` does not work that way — it wants a `node_modules` in the directory it runs in, which a worktree has none of, and fails with `ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL`. Wrapping the rule trades a rare stale-install failure for a failure on **every** worktree commit (#838 proposed exactly that wrapper; the reported ENOENT was a stale `node_modules` — prettier became a root devDependency only in `9fd765023`, so an older install never linked the bin).
+
+Why this matters beyond formatting: when lint-staged cannot run, committers reach for `--no-verify`, and that skips the _whole_ hook — the drizzle-snapshot check and the absolute-path guard included. So a formatter that is merely not installed silently disables two integrity checks. `scripts/check-precommit-tooling.mjs` runs before lint-staged and turns that into one actionable line (`pnpm install`) instead of a bare ENOENT.
+
+The drift guard is `scripts/lib/precommit-tooling.test.mjs` (pure logic in `precommit-tooling.mjs`, run by `pnpm test:scripts`). As with the format gate, the wiring assertions are the cheap half; the load-bearing one is the **execution probe**, which resolves and runs the configured command exactly as lint-staged would, from a directory with no `node_modules` of its own, on a file outside `packages/web/src` — the case every packages/web-scoped check is blind to.
+
+The `packages/web/src/**/*.{ts,tsx}` eslint rule _is_ wrapped, correctly: its binary lives in that package, and eslint genuinely cannot run from an uninstalled worktree anyway (its flat config resolves plugins from `packages/web/node_modules`). Unwrapping it would move the failure, not remove it. But a scoped rule runs only for the files it matches, so blocking on it up front would reject a docs commit over a binary it never invokes — hence the split: the preflight blocks only on what runs on **every** commit, and `--explain` runs **after** a lint-staged failure to name a missing per-package binary as `pnpm install` rather than leaving it to read as a lint error.
+
 ## Commands
 
 Development should use Docker Compose because the app depends on PostgreSQL, OpenClaw, and migrations:

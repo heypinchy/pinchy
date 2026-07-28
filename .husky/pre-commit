@@ -22,4 +22,14 @@ fi
 # See scripts/check-drizzle-snapshots.mjs for the rationale (PR #334 incident).
 node scripts/check-drizzle-snapshots.mjs || exit 1
 
-npx lint-staged
+# Fail with an instruction instead of lint-staged's bare ENOENT when the local
+# install is older than package.json. Without this, a missing formatter pushes
+# committers to --no-verify, which skips the two guards above as well (#838).
+node scripts/check-precommit-tooling.mjs || exit 1
+
+# A per-package binary (the eslint rule) can only be judged after the fact: it
+# runs only for the files it matches. On failure, say so in terms of the fix.
+npx lint-staged || {
+  node scripts/check-precommit-tooling.mjs --explain
+  exit 1
+}
