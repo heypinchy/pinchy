@@ -252,6 +252,7 @@ Audit logging rules:
 - Include resource names in delete-event details because deleted rows may no longer be queryable.
 - Keep audit `detail` under 2048 bytes. Summarize bulk operations.
 - Never write plaintext email addresses or other PII into audit `detail`. Use `redactEmail()` from `@/lib/audit` when email identity is required.
+- Never mirror the **acting** user's raw `users.id` into `detail`. `appendAuditLog` pseudonymizes the `actorId` **column** (`resolveActorId`) so GDPR crypto-erasure can reach it, while `detail` is stored verbatim in an immutable, HMAC-chained row that cannot be rewritten. The actor is already on the row; to filter audit rows by a known user, resolve `actorId` through `resolveActorIdMatchSet` on the read side (#824).
 - For batched maintenance operations (e.g. GC sweeps), include a `sweepId` UUID in every emitted audit row so analysts can correlate the full sweep from one drill-down query.
 
 Checklist for state-changing routes:
@@ -264,7 +265,7 @@ Checklist for state-changing routes:
 6. Referenced entities are snapshotted as `{ id, name }`.
 7. A test verifies the audit call and payload.
 8. `outcome` is set correctly.
-9. No plaintext PII appears in audit `detail`.
+9. No plaintext PII appears in audit `detail`, and the acting user's raw id is carried by `actorId` alone.
 
 ## Shared Schemas And Typed Client
 
