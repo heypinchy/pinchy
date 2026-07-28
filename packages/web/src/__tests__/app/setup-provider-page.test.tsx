@@ -70,11 +70,12 @@ describe("Setup Provider Page", () => {
     expect(screen.getByText("Connect your AI provider")).toBeInTheDocument();
   });
 
+  // Same rename as the settings card heading: the wizard card says "AI
+  // provider" in its title, so the description right below it must not fall
+  // back to the old "LLM provider" wording.
   it("should display page description", () => {
     render(<SetupProviderPage />);
-    expect(
-      screen.getByText(/choose your llm provider and enter your api key/i)
-    ).toBeInTheDocument();
+    expect(screen.getByText(/choose your ai provider and enter your api key/i)).toBeInTheDocument();
   });
 
   it("should render the ProviderKeyForm", () => {
