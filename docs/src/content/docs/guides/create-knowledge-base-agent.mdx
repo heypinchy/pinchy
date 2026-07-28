@@ -128,6 +128,14 @@ That makes every claim in the answer traceable back to a specific document and p
 
 Sources are named by their full path, not just the filename. In a real document tree a bare filename is often impossible to act on — you can't tell which of several folders it lives in, and two folders may hold files with the same name. The path is what lets you open the document and check the claim for yourself.
 
+### Open a source and check it
+
+Each source path in an answer is a link. Click it and the PDF opens in a viewer over the chat, at the cited page, with the answer still visible behind it — the same viewer a PDF you attach to a message opens into. Checking a claim takes a click instead of a hunt through folders.
+
+Document size is not a limit. Knowledge bases routinely contain scanned compilation binders of several hundred megabytes, and because those contain the most, they tend to be cited the most. Pinchy streams the file and serves byte ranges, so the viewer fetches the pages it renders rather than the whole document — opening page 510 of a 268 MB binder transfers a fraction of it.
+
+Opening a source is governed like every other access. The link resolves against the same allowed directories that scope the agent's search, so a path outside them is refused even if an answer names one, and each view is written to the audit trail as `knowledge.source_viewed`.
+
 The list resolves exactly the numbers the answer cites — no more and no fewer. A number with no entry would be a dead end, and an entry the answer never cited would make a single source look like several.
 
 ### Regression-protected

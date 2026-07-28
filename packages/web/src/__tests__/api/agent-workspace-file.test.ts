@@ -13,7 +13,17 @@
  * `api/knowledge-search.test.ts`).
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from "fs";
+import {
+  mkdtempSync,
+  mkdirSync,
+  writeFileSync,
+  rmSync,
+  symlinkSync,
+  openSync,
+  writeSync,
+  ftruncateSync,
+  closeSync,
+} from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { NextRequest, NextResponse } from "next/server";
@@ -62,15 +72,43 @@ afterEach(() => {
   rmSync(tmpRoot, { recursive: true, force: true });
 });
 
-async function callGET(agentId: string, requestedPath: string) {
+async function callGET(agentId: string, requestedPath: string, headers?: HeadersInit) {
   const { GET } = await import("@/app/api/agents/[agentId]/workspace-file/route");
   const url = new URL(`http://localhost/api/agents/${agentId}/workspace-file`);
   url.searchParams.set("path", requestedPath);
-  const req = new NextRequest(url);
+  const req = new NextRequest(url, headers ? { headers } : undefined);
   return GET(req, {
     params: Promise.resolve({ agentId }),
   } as unknown as Parameters<typeof GET>[1]);
 }
+
+/**
+ * Creates a file of `size` bytes that occupies almost no disk: the header is
+ * written, then the length is extended with `ftruncate`, which allocates no
+ * blocks on any filesystem this runs on (apfs, ext4, xfs, overlayfs, tmpfs).
+ * That is what makes it practical to assert behaviour on a file larger than
+ * memory in an ordinary unit test.
+ */
+function writeSparseFile(path: string, size: number, header: Buffer): void {
+  // eslint-disable-next-line security/detect-non-literal-fs-filename -- test-local path under a per-test temp dir
+  const fd = openSync(path, "w");
+  try {
+    writeSync(fd, header, 0, header.length, 0);
+    ftruncateSync(fd, size);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/**
+ * One byte past the largest buffer `fs.readFile` will produce — it throws
+ * ERR_FS_FILE_TOO_LARGE above 2 GiB. A file this size therefore cannot be
+ * served by any implementation that materialises it first, which is what makes
+ * the two tests below a structural proof of streaming rather than a
+ * measurement of it. If Node ever raises that ceiling the tests stay valid;
+ * they assert the route's behaviour, not Node's limit.
+ */
+const OVER_BUFFER_LIMIT = 2 * 1024 * 1024 * 1024 + 1;
 
 describe("GET /api/agents/[agentId]/workspace-file", () => {
   it("serves a PDF under an allowed root inline with the right headers, bytes, and audit row", async () => {
@@ -229,5 +267,139 @@ describe("GET /api/agents/[agentId]/workspace-file", () => {
     } as unknown as Parameters<typeof GET>[1]);
 
     expect(res.status).toBe(400);
+  });
+});
+
+/**
+ * A knowledge-base corpus is not a folder of small handouts. The corpus this
+ * route was built against contains a 268 MB and a 174 MB scanned compilation
+ * binder, and because they contain the most, retrieval cites them the most —
+ * so the largest files in the corpus are exactly the ones a user is most
+ * likely to click. An earlier revision refused anything over 50 MB with 413 to
+ * avoid loading it into memory; the fix is to stop loading it into memory.
+ */
+describe("GET /api/agents/[agentId]/workspace-file — large files and byte ranges", () => {
+  it("serves a file too large to fit in a buffer at all", async () => {
+    // No implementation that reads the file into memory can pass this: at this
+    // size fs.readFile throws ERR_FS_FILE_TOO_LARGE before producing a byte.
+    const hugePath = join(allowedRoot, "compilation-binder.pdf");
+    writeSparseFile(hugePath, OVER_BUFFER_LIMIT, PDF_BYTES);
+
+    const res = await callGET("agent-1", hugePath);
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-length")).toBe(String(OVER_BUFFER_LIMIT));
+    expect(res.headers.get("content-type")).toBe("application/pdf");
+    expect(res.headers.get("content-disposition")).toMatch(/^inline/);
+
+    // Read one chunk and walk away. A buffering implementation would have had
+    // to finish the whole file before the first byte ever arrived here.
+    const reader = res.body!.getReader();
+    const { value } = await reader.read();
+    await reader.cancel();
+    expect(Buffer.from(value!.subarray(0, PDF_BYTES.length)).equals(PDF_BYTES)).toBe(true);
+  });
+
+  it("advertises range support so a PDF viewer fetches pages instead of the whole file", async () => {
+    // Without this header a viewer has no way to know it may seek, and opening
+    // a citation at #page=510 downloads every byte before rendering anything.
+    const pdfPath = join(allowedRoot, "handbook.pdf");
+    writeFileSync(pdfPath, PDF_BYTES);
+
+    const res = await callGET("agent-1", pdfPath);
+
+    expect(res.headers.get("accept-ranges")).toBe("bytes");
+  });
+
+  it("answers a byte range from a file too large to buffer, reading only that span", async () => {
+    const hugePath = join(allowedRoot, "compilation-binder.pdf");
+    writeSparseFile(hugePath, OVER_BUFFER_LIMIT, PDF_BYTES);
+
+    const res = await callGET("agent-1", hugePath, { Range: "bytes=0-7" });
+
+    expect(res.status).toBe(206);
+    expect(res.headers.get("content-range")).toBe(`bytes 0-7/${OVER_BUFFER_LIMIT}`);
+    expect(res.headers.get("content-length")).toBe("8");
+    const body = Buffer.from(await res.arrayBuffer());
+    expect(body.equals(PDF_BYTES.subarray(0, 8))).toBe(true);
+  });
+
+  it("answers a suffix range with the tail of the file", async () => {
+    // How a PDF viewer starts: it reads the trailer to find the cross-reference
+    // table before it knows where anything else lives.
+    const pdfPath = join(allowedRoot, "handbook.pdf");
+    writeFileSync(pdfPath, PDF_BYTES);
+
+    const res = await callGET("agent-1", pdfPath, { Range: "bytes=-6" });
+
+    expect(res.status).toBe(206);
+    expect(res.headers.get("content-range")).toBe(
+      `bytes ${PDF_BYTES.length - 6}-${PDF_BYTES.length - 1}/${PDF_BYTES.length}`
+    );
+    const body = Buffer.from(await res.arrayBuffer());
+    expect(body.equals(PDF_BYTES.subarray(PDF_BYTES.length - 6))).toBe(true);
+  });
+
+  it("rejects a range past the end of the file with 416 rather than wrong bytes", async () => {
+    const pdfPath = join(allowedRoot, "handbook.pdf");
+    writeFileSync(pdfPath, PDF_BYTES);
+
+    const res = await callGET("agent-1", pdfPath, { Range: `bytes=${PDF_BYTES.length}-99999` });
+
+    expect(res.status).toBe(416);
+    // Tells the client the real length so it can retry correctly instead of guessing.
+    expect(res.headers.get("content-range")).toBe(`bytes */${PDF_BYTES.length}`);
+  });
+
+  it("serves the whole file when the range header is one it does not implement", async () => {
+    // Multi-range needs a multipart/byteranges body; answering with only the
+    // first span while claiming 206 would misplace every following byte.
+    const pdfPath = join(allowedRoot, "handbook.pdf");
+    writeFileSync(pdfPath, PDF_BYTES);
+
+    const res = await callGET("agent-1", pdfPath, { Range: "bytes=0-3,8-11" });
+
+    expect(res.status).toBe(200);
+    const body = Buffer.from(await res.arrayBuffer());
+    expect(body.equals(PDF_BYTES)).toBe(true);
+  });
+
+  it("still enforces access control on a range request", async () => {
+    // The range path must not become a second, unguarded way in.
+    const secretPath = join(outsideDir, "secret.pdf");
+    writeFileSync(secretPath, SECRET_BYTES);
+
+    const res = await callGET("agent-1", secretPath, { Range: "bytes=0-10" });
+
+    expect(res.status).toBe(403);
+    expect(await res.text()).not.toContain("top secret");
+  });
+
+  it("records a partial read as such in the audit trail", async () => {
+    // Governance still sees every access — a viewer fetching a document in
+    // twenty range requests must not be a way to read it unlogged. The flag is
+    // what lets an analyst count document views without counting chunks.
+    const pdfPath = join(allowedRoot, "handbook.pdf");
+    writeFileSync(pdfPath, PDF_BYTES);
+
+    await callGET("agent-1", pdfPath, { Range: "bytes=0-7" });
+
+    expect(mockDeferAuditLog).toHaveBeenCalledTimes(1);
+    const entry = mockDeferAuditLog.mock.calls[0][0];
+    expect(entry.eventType).toBe("knowledge.source_viewed");
+    expect(entry.outcome).toBe("success");
+    expect(entry.detail).toMatchObject({
+      document: { name: "handbook.pdf" },
+      partial: true,
+    });
+  });
+
+  it("marks a whole-file read as not partial, so views are countable", async () => {
+    const pdfPath = join(allowedRoot, "handbook.pdf");
+    writeFileSync(pdfPath, PDF_BYTES);
+
+    await callGET("agent-1", pdfPath);
+
+    expect(mockDeferAuditLog.mock.calls[0][0].detail).toMatchObject({ partial: false });
   });
 });

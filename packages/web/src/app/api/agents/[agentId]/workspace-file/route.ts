@@ -3,7 +3,8 @@
 // the ESLint require-audit-log rule only gates POST/PUT/PATCH/DELETE, so this
 // comment documents intent for a human reader rather than satisfying the rule.
 import { NextResponse } from "next/server";
-import { stat, readFile } from "node:fs/promises";
+import { open } from "node:fs/promises";
+import { Readable } from "node:stream";
 import { basename } from "node:path";
 
 import { withAuth } from "@/lib/api-auth";
@@ -12,15 +13,10 @@ import { deferAuditLog } from "@/lib/audit-deferred";
 import type { AuditLogEntry } from "@/lib/audit";
 import { resolveAllowedFile } from "@/lib/agent-file-access";
 import { contentTypeForFile } from "@/lib/agent-file-content-type";
+import { parseRangeHeader } from "@/lib/http-range";
 import type { AgentPluginConfig } from "@/db/schema";
 
 type Params = { params: Promise<{ agentId: string }> };
-
-// Defense in depth against loading an oversized file fully into memory. Well
-// above any real KB source PDF; mirrors pinchy-files' MAX_PDF_FILE_SIZE (50MB)
-// in packages/plugins/pinchy-files/validate.ts (a separate package, so the
-// constant is duplicated rather than imported).
-const MAX_SERVE_FILE_SIZE = 50 * 1024 * 1024;
 
 function sourceViewedAuditEntry(args: {
   userId: string;
@@ -29,6 +25,7 @@ function sourceViewedAuditEntry(args: {
   documentName: string;
   outcome: "success" | "failure";
   reason?: string;
+  partial?: boolean;
 }): AuditLogEntry {
   return {
     actorType: "user",
@@ -41,6 +38,11 @@ function sourceViewedAuditEntry(args: {
       agent: { id: args.agentId, name: args.agentName ?? args.agentId },
       document: { name: args.documentName },
       ...(args.reason !== undefined ? { reason: args.reason } : {}),
+      // A PDF viewer fetches a large document as a series of ranges, so one
+      // opened document produces several rows. Every access stays logged —
+      // reading a file in chunks must not be a way to read it unobserved — and
+      // this flag is what lets an analyst count views rather than chunks.
+      ...(args.partial !== undefined ? { partial: args.partial } : {}),
     },
   };
 }
@@ -112,59 +114,72 @@ export const GET = withAuth<Params>(async (req, { params }, session) => {
   }
 
   const { realPath } = resolved;
+  const documentName = basename(realPath);
 
-  let info;
-  try {
-    // eslint-disable-next-line security/detect-non-literal-fs-filename -- realPath is containment-checked by resolveAllowedFile above
-    info = await stat(realPath);
-  } catch {
+  const auditFailure = (reason: string) => {
     deferAuditLog(
       sourceViewedAuditEntry({
         userId: session.user.id!,
         agentId: agent.id,
         agentName: agent.name,
-        documentName: basename(realPath),
+        documentName,
         outcome: "failure",
-        reason: "not_found",
+        reason,
       })
     );
+  };
+
+  // Open FIRST, then stat the open handle rather than re-stat the path: a
+  // stat-then-open pair is a TOCTOU race (js/file-system-race), and the
+  // handle's own stat is authoritative for the bytes we are about to serve.
+  // Same posture as `serve-workspace-file.ts`.
+  let fh;
+  try {
+    // eslint-disable-next-line security/detect-non-literal-fs-filename -- realPath is containment-checked by resolveAllowedFile above
+    fh = await open(realPath, "r");
+  } catch {
+    auditFailure("not_found");
+    return new NextResponse("Not found", { status: 404 });
+  }
+
+  // From here every path that does NOT hand the handle to a stream must close
+  // it, or the process leaks a descriptor per request.
+  let info;
+  try {
+    info = await fh.stat();
+  } catch {
+    await fh.close();
+    auditFailure("not_found");
     return new NextResponse("Not found", { status: 404 });
   }
 
   // Only regular files. A directory (or anything else — socket, FIFO, ...)
   // is not servable content; treat it the same as "missing" rather than
-  // disclosing what it actually is.
+  // disclosing what it actually is. Note a directory opens successfully on
+  // Linux and macOS, so this check is what rejects it.
   if (!info.isFile()) {
-    deferAuditLog(
-      sourceViewedAuditEntry({
-        userId: session.user.id!,
-        agentId: agent.id,
-        agentName: agent.name,
-        documentName: basename(realPath),
-        outcome: "failure",
-        reason: "not_a_file",
-      })
-    );
+    await fh.close();
+    auditFailure("not_a_file");
     return new NextResponse("Not found", { status: 404 });
   }
 
-  if (info.size > MAX_SERVE_FILE_SIZE) {
-    deferAuditLog(
-      sourceViewedAuditEntry({
-        userId: session.user.id!,
-        agentId: agent.id,
-        agentName: agent.name,
-        documentName: basename(realPath),
-        outcome: "failure",
-        reason: "file_too_large",
-      })
-    );
-    return new NextResponse("File too large", { status: 413 });
+  const range = parseRangeHeader(req.headers.get("range"), info.size);
+  if (range.kind === "unsatisfiable") {
+    await fh.close();
+    auditFailure("range_not_satisfiable");
+    return new NextResponse("Range not satisfiable", {
+      status: 416,
+      // Tell the client the real length so it can retry correctly rather than
+      // probe for it.
+      headers: { "content-range": `bytes */${info.size}`, "accept-ranges": "bytes" },
+    });
   }
 
-  // eslint-disable-next-line security/detect-non-literal-fs-filename -- realPath is containment-checked by resolveAllowedFile above
-  const buffer = await readFile(realPath);
-  const documentName = basename(realPath);
+  const isPartial = range.kind === "partial";
+  const start = isPartial ? range.start : 0;
+  const end = isPartial ? range.end : Math.max(0, info.size - 1);
+  const contentLength = info.size === 0 ? 0 : end - start + 1;
+
   const { contentType, disposition } = contentTypeForFile(realPath);
 
   deferAuditLog(
@@ -174,13 +189,30 @@ export const GET = withAuth<Params>(async (req, { params }, session) => {
       agentName: agent.name,
       documentName,
       outcome: "success",
+      partial: isPartial,
     })
   );
 
-  return new NextResponse(Uint8Array.from(buffer), {
+  // The bytes are streamed off disk, never materialised: a knowledge base
+  // legitimately contains documents larger than this process's memory (the
+  // corpus this was built against has a 268 MB scanned binder, and it is also
+  // its most-cited document). `createReadStream` on the already-open handle
+  // closes it when the stream ends OR when the client disconnects mid-download.
+  const body =
+    contentLength === 0
+      ? (await fh.close(), null)
+      : (Readable.toWeb(fh.createReadStream({ start, end })) as ReadableStream<Uint8Array>);
+
+  return new NextResponse(body, {
+    status: isPartial ? 206 : 200,
     headers: {
       "content-type": contentType,
-      "content-length": String(buffer.byteLength),
+      "content-length": String(contentLength),
+      // Advertised on every response: without it a viewer has no way to know it
+      // may seek, so opening a citation at `#page=510` would pull the entire
+      // document before rendering anything.
+      "accept-ranges": "bytes",
+      ...(isPartial ? { "content-range": `bytes ${start}-${end}/${info.size}` } : {}),
       "cache-control": "private, max-age=3600",
       // nosniff so the browser can never override our extension-derived
       // Content-Type via its own MIME sniffing — the anti-XSS control that
