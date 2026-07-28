@@ -1,8 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { Mock } from "vitest";
-import { render, screen, waitFor, act } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
+import { flushPendingRenders } from "@/test-helpers/react";
 import { NewAgentForm } from "@/components/new-agent-form";
 import { toast } from "sonner";
 
@@ -269,7 +270,7 @@ describe("NewAgentForm — tagline field", () => {
 
     // Flush remaining async effects (name prefill + fetchDirectories) so they
     // complete before the mock is torn down in afterEach.
-    await act(async () => {});
+    await flushPendingRenders();
   });
 
   it("shows empty tagline field when template has null defaultTagline", async () => {

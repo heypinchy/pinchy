@@ -3,6 +3,7 @@ import { render, screen, waitFor, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
 
+import { flushPendingRenders } from "@/test-helpers/react";
 import { KnowledgeReindexSection, formatElapsed } from "@/components/knowledge-reindex-section";
 import { apiGet, apiPost, ApiError } from "@/lib/api-client";
 import { toast } from "sonner";
@@ -239,10 +240,10 @@ describe("KnowledgeReindexSection", () => {
     // The optimistic pending job is a React commit queued by the POST's
     // continuation. `waitFor` would poll for it against a 1000ms WALL-CLOCK
     // budget, which one blocked event-loop turn under a full parallel run
-    // consumes entirely. act() forces the pending work to settle first, so the
-    // assertion is both deterministic and stricter: the run must be live the
-    // moment the click settles.
-    await act(async () => {});
+    // consumes entirely. Draining forces the pending work to settle first, so
+    // the assertion is both deterministic and stricter: the run must be live
+    // the moment the click settles.
+    await flushPendingRenders();
     expect(screen.getByRole("button", { name: /reindexing/i })).toBeDisabled();
 
     // The pre-click read finally answers "no job ever ran". It is stale — it
@@ -301,13 +302,11 @@ describe("KnowledgeReindexSection", () => {
       // The two halves of this assertion land in DIFFERENT commits: the status
       // read renders "Discovering documents…" while `now` is still null, and
       // only the effect that starts the elapsed clock appends the " · running
-      // 43 sec" suffix. A waitFor gated on the phase text passes on the FIRST
-      // commit and races the second — an ordering that holds in a warm run and
-      // opens under preemption, which is how the elapsed line failed in a full
-      // parallel run while an isolated rerun stayed green. act() drains both
-      // commits, so the readout is asserted on settled output rather than on
-      // whichever commit the poll happened to catch.
-      await act(async () => {});
+      // 43 sec" suffix. Gating on the phase text is therefore the flake shape
+      // flushPendingRenders documents — and it did flake exactly so, failing on
+      // the elapsed line in a full parallel run while an isolated rerun stayed
+      // green. Draining both commits asserts the readout on settled output.
+      await flushPendingRenders();
       expect(screen.getByText(/discovering documents/i)).toBeInTheDocument();
       expect(screen.getByText(/running 43 sec/i)).toBeInTheDocument();
     });

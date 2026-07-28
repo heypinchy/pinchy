@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
+import { flushPendingRenders } from "@/test-helpers/react";
 import { useOdooPermissions, type Connection } from "../use-odoo-permissions";
 
 // Mock fetch — only used for /api/agents/:id/integrations (per-agent permissions)
@@ -72,7 +73,7 @@ describe("useOdooPermissions", () => {
 
     expect(result.current.loading).toBe(true);
 
-    await act(async () => {});
+    await flushPendingRenders();
 
     expect(result.current.loading).toBe(false);
     expect(result.current.connections).toHaveLength(2);
@@ -94,7 +95,7 @@ describe("useOdooPermissions", () => {
     ]);
 
     const { result } = renderHook(() => useOdooPermissions("agent-1", CONNECTIONS));
-    await act(async () => {});
+    await flushPendingRenders();
 
     expect(result.current.connectionId).toBe("conn-1");
     expect(result.current.addedModels.size).toBe(2);
@@ -117,7 +118,7 @@ describe("useOdooPermissions", () => {
     ]);
 
     const { result } = renderHook(() => useOdooPermissions("agent-1", []));
-    await act(async () => {});
+    await flushPendingRenders();
 
     expect(result.current.connectionId).toBe("");
     expect(result.current.addedModels.size).toBe(0);
@@ -141,7 +142,7 @@ describe("useOdooPermissions", () => {
     ]);
 
     const { result } = renderHook(() => useOdooPermissions("agent-1", CONNECTIONS));
-    await act(async () => {});
+    await flushPendingRenders();
 
     expect(result.current.connectionId).toBe("conn-1");
     expect(result.current.addedModels.size).toBe(1);
@@ -159,7 +160,7 @@ describe("useOdooPermissions", () => {
     ]);
 
     const { result } = renderHook(() => useOdooPermissions("agent-1", CONNECTIONS));
-    await act(async () => {});
+    await flushPendingRenders();
 
     expect(result.current.addedModels.size).toBe(1);
 
@@ -177,7 +178,7 @@ describe("useOdooPermissions", () => {
   it("setAccessLevel('read-only') sets all added models to read only", async () => {
     mockAgentPerms();
     const { result } = renderHook(() => useOdooPermissions("agent-1", CONNECTIONS));
-    await act(async () => {});
+    await flushPendingRenders();
 
     act(() => {
       result.current.setConnectionId("conn-1");
@@ -205,7 +206,7 @@ describe("useOdooPermissions", () => {
   it("setAccessLevel('read-write') sets all added models to read, create, write", async () => {
     mockAgentPerms();
     const { result } = renderHook(() => useOdooPermissions("agent-1", CONNECTIONS));
-    await act(async () => {});
+    await flushPendingRenders();
 
     act(() => {
       result.current.setConnectionId("conn-1");
@@ -227,7 +228,7 @@ describe("useOdooPermissions", () => {
   it("setAccessLevel('full') sets all added models to all operations", async () => {
     mockAgentPerms();
     const { result } = renderHook(() => useOdooPermissions("agent-1", CONNECTIONS));
-    await act(async () => {});
+    await flushPendingRenders();
 
     act(() => {
       result.current.setConnectionId("conn-1");
@@ -264,7 +265,7 @@ describe("useOdooPermissions", () => {
     ]);
 
     const { result } = renderHook(() => useOdooPermissions("agent-1", CONNECTIONS));
-    await act(async () => {});
+    await flushPendingRenders();
 
     expect(result.current.accessLevel).toBe("read-write");
   });
@@ -284,7 +285,7 @@ describe("useOdooPermissions", () => {
     ]);
 
     const { result } = renderHook(() => useOdooPermissions("agent-1", CONNECTIONS));
-    await act(async () => {});
+    await flushPendingRenders();
 
     expect(result.current.accessLevel).toBe("custom");
   });
@@ -294,7 +295,7 @@ describe("useOdooPermissions", () => {
   it("addModel adds a model with operations based on current access level", async () => {
     mockAgentPerms();
     const { result } = renderHook(() => useOdooPermissions("agent-1", CONNECTIONS));
-    await act(async () => {});
+    await flushPendingRenders();
 
     act(() => {
       result.current.setConnectionId("conn-1");
@@ -330,7 +331,7 @@ describe("useOdooPermissions", () => {
   it("addAllModels adds all available models", async () => {
     mockAgentPerms();
     const { result } = renderHook(() => useOdooPermissions("agent-1", CONNECTIONS));
-    await act(async () => {});
+    await flushPendingRenders();
 
     act(() => {
       result.current.setConnectionId("conn-1");
@@ -353,7 +354,7 @@ describe("useOdooPermissions", () => {
   it("removeModel removes a model", async () => {
     mockAgentPerms();
     const { result } = renderHook(() => useOdooPermissions("agent-1", CONNECTIONS));
-    await act(async () => {});
+    await flushPendingRenders();
 
     act(() => {
       result.current.setConnectionId("conn-1");
@@ -376,7 +377,7 @@ describe("useOdooPermissions", () => {
   it("availableModels excludes already-added models", async () => {
     mockAgentPerms();
     const { result } = renderHook(() => useOdooPermissions("agent-1", CONNECTIONS));
-    await act(async () => {});
+    await flushPendingRenders();
 
     act(() => {
       result.current.setConnectionId("conn-1");
@@ -397,7 +398,7 @@ describe("useOdooPermissions", () => {
   it("toggleOperation toggles a single operation", async () => {
     mockAgentPerms();
     const { result } = renderHook(() => useOdooPermissions("agent-1", CONNECTIONS));
-    await act(async () => {});
+    await flushPendingRenders();
 
     act(() => {
       result.current.setConnectionId("conn-1");
@@ -425,7 +426,7 @@ describe("useOdooPermissions", () => {
   it("toggleOperation switches access level to custom when it diverges from preset", async () => {
     mockAgentPerms();
     const { result } = renderHook(() => useOdooPermissions("agent-1", CONNECTIONS));
-    await act(async () => {});
+    await flushPendingRenders();
 
     act(() => {
       result.current.setConnectionId("conn-1");
@@ -452,7 +453,7 @@ describe("useOdooPermissions", () => {
   it("toggleOperation detects when operations match a preset again", async () => {
     mockAgentPerms();
     const { result } = renderHook(() => useOdooPermissions("agent-1", CONNECTIONS));
-    await act(async () => {});
+    await flushPendingRenders();
 
     act(() => {
       result.current.setConnectionId("conn-1");
@@ -478,7 +479,7 @@ describe("useOdooPermissions", () => {
   it("getPermissions returns flat array of {model, operation} tuples", async () => {
     mockAgentPerms();
     const { result } = renderHook(() => useOdooPermissions("agent-1", CONNECTIONS));
-    await act(async () => {});
+    await flushPendingRenders();
 
     act(() => {
       result.current.setConnectionId("conn-1");
@@ -506,7 +507,7 @@ describe("useOdooPermissions", () => {
   it("isDirty is false when connection selected but no models added", async () => {
     mockAgentPerms();
     const { result } = renderHook(() => useOdooPermissions("agent-1", CONNECTIONS));
-    await act(async () => {});
+    await flushPendingRenders();
 
     expect(result.current.isDirty).toBe(false);
 
@@ -520,7 +521,7 @@ describe("useOdooPermissions", () => {
   it("isDirty is true when connection selected AND models added", async () => {
     mockAgentPerms();
     const { result } = renderHook(() => useOdooPermissions("agent-1", CONNECTIONS));
-    await act(async () => {});
+    await flushPendingRenders();
 
     act(() => {
       result.current.setConnectionId("conn-1");
@@ -536,7 +537,7 @@ describe("useOdooPermissions", () => {
   it("getPermissions returns empty array when no models added", async () => {
     mockAgentPerms();
     const { result } = renderHook(() => useOdooPermissions("agent-1", CONNECTIONS));
-    await act(async () => {});
+    await flushPendingRenders();
 
     act(() => {
       result.current.setConnectionId("conn-1");
@@ -556,7 +557,7 @@ describe("useOdooPermissions", () => {
     ]);
 
     const { result } = renderHook(() => useOdooPermissions("agent-1", CONNECTIONS));
-    await act(async () => {});
+    await flushPendingRenders();
 
     expect(result.current.isDirty).toBe(false);
   });
@@ -567,7 +568,7 @@ describe("useOdooPermissions", () => {
     mockAgentPerms();
 
     const { result } = renderHook(() => useOdooPermissions("agent-1", []));
-    await act(async () => {});
+    await flushPendingRenders();
 
     expect(result.current.connections).toHaveLength(0);
     expect(result.current.availableModels).toHaveLength(0);
@@ -579,7 +580,7 @@ describe("useOdooPermissions", () => {
     const { result } = renderHook(() =>
       useOdooPermissions("agent-1", [makeConnection("conn-no-models", "No Models", undefined)])
     );
-    await act(async () => {});
+    await flushPendingRenders();
 
     act(() => {
       result.current.setConnectionId("conn-no-models");
@@ -593,7 +594,7 @@ describe("useOdooPermissions", () => {
   it("addModel respects access restrictions", async () => {
     mockAgentPerms();
     const { result } = renderHook(() => useOdooPermissions("agent-1", CONNECTIONS));
-    await act(async () => {});
+    await flushPendingRenders();
 
     act(() => {
       result.current.setConnectionId("conn-1");
@@ -614,7 +615,7 @@ describe("useOdooPermissions", () => {
   it("setAccessLevel respects access restrictions", async () => {
     mockAgentPerms();
     const { result } = renderHook(() => useOdooPermissions("agent-1", CONNECTIONS));
-    await act(async () => {});
+    await flushPendingRenders();
 
     act(() => {
       result.current.setConnectionId("conn-1");
@@ -639,7 +640,7 @@ describe("useOdooPermissions", () => {
   it("toggleOperation is no-op for restricted operations", async () => {
     mockAgentPerms();
     const { result } = renderHook(() => useOdooPermissions("agent-1", CONNECTIONS));
-    await act(async () => {});
+    await flushPendingRenders();
 
     act(() => {
       result.current.setConnectionId("conn-1");
@@ -659,7 +660,7 @@ describe("useOdooPermissions", () => {
   it("addAllModels respects per-model access restrictions", async () => {
     mockAgentPerms();
     const { result } = renderHook(() => useOdooPermissions("agent-1", CONNECTIONS));
-    await act(async () => {});
+    await flushPendingRenders();
 
     act(() => {
       result.current.setConnectionId("conn-1");
@@ -702,7 +703,7 @@ describe("useOdooPermissions", () => {
     const { result } = renderHook(() =>
       useOdooPermissions("agent-1", [makeConnection("conn-legacy", "Legacy", modelsWithoutAccess)])
     );
-    await act(async () => {});
+    await flushPendingRenders();
 
     act(() => {
       result.current.setConnectionId("conn-legacy");
@@ -715,7 +716,7 @@ describe("useOdooPermissions", () => {
   it("addAllModels does not re-add already existing models", async () => {
     mockAgentPerms();
     const { result } = renderHook(() => useOdooPermissions("agent-1", CONNECTIONS));
-    await act(async () => {});
+    await flushPendingRenders();
 
     act(() => {
       result.current.setConnectionId("conn-1");
@@ -750,7 +751,7 @@ describe("useOdooPermissions", () => {
     mockAgentPerms();
 
     renderHook(() => useOdooPermissions("agent-1", CONNECTIONS));
-    await act(async () => {});
+    await flushPendingRenders();
 
     const calls = mockFetch.mock.calls.map((c) => c[0] as string);
     expect(calls).not.toContain("/api/integrations");
