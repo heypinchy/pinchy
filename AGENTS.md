@@ -154,6 +154,24 @@ The guard derives the expected `source` from the route's file path and prints th
 
 **The general lesson: assert the value a concrete URL resolves to, not the value a handler asked for.** The two are different questions, and only one of them is what the user's browser gets.
 
+## Workspace Filenames Are NFC At Every Write Boundary
+
+Any code path that turns an **externally-supplied name** into a file in an agent workspace must `.normalize("NFC")` the basename before it becomes a path. External means: a browser upload, an email attachment, a channel document, a name the model typed — anything Pinchy did not spell itself.
+
+macOS emits filenames decomposed (NFD): `ä` arrives as `a` + U+0308. The workspace volume is Linux and does **no** Unicode folding, so the NFD bytes are what land on disk — while every path that round-trips through JSON and the agent's own model comes back **composed** (NFC). The two never match, and the file the user just uploaded is unreadable to the agent (`ENOENT`, prod incident 2026-07-14). Composing at the boundary makes the bytes on disk, the DB row, and the path the model sees the same string.
+
+Today's boundaries, with the policy each one deliberately uses:
+
+- `packages/web/src/lib/upload-validation.ts` — `sanitizeFilename` **rejects** unsafe names: the uploader is present and can pick another one.
+- `packages/plugins/pinchy-email/index.ts` — `sanitizeNameToken` **sanitizes**: the sender picks the name and there is nobody to ask.
+- `packages/plugins/pinchy-files/deliverable-filename.ts` — `normalizeDeliverableBasename` rejects, and must stay a fixed point of the serve route's sanitizer (`sanitize(name) === name`) or a generated file 404s on its own download grant (#788).
+
+The two sanitizers are near-duplicates on purpose — plugins cannot import from `packages/web` — with intentionally different reject-vs-sanitize policies. Do not "unify" them into one lenient helper.
+
+**The read fallback is for legacy files only.** `resolveOnDiskPath` in `packages/plugins/pinchy-files/index.ts` tries a path as-given → NFC → NFD, and `pinchy_write` uses it so an NFC request overwrites a pre-existing NFD file instead of duplicating it. That tolerance exists for files written before this convention held; it is not a licence for a new boundary to skip normalizing.
+
+The drift guard is `packages/web/src/__tests__/lib/workspace-filename-nfc.test.ts`. It requires every plugin module that writes a file to be **classified**: either a boundary (and then it normalizes) or explicitly not one (and then the reason is written down, as for pinchy-transcript's media mirror, which copies a file that already exists under OpenClaw's own basename). A new plugin that saves user-named files fails the guard until someone decides which it is — that decision is the whole point.
+
 ## Web Test Files Are Type-Checked
 
 `packages/web` test files (`*.test.ts(x)`, `*.integration.test.ts`, `*.test-d.ts`) are type-checked in CI by the `quality` job's "Typecheck web (incl. tests)" step: `pnpm -C packages/web typecheck` → `tsc --noEmit -p packages/web/tsconfig.typecheck.json`.
