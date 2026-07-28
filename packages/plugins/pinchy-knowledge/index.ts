@@ -92,21 +92,6 @@ export function returnedDocumentIds(results: KnowledgeSearchResult[]): DocumentR
 }
 
 /**
- * Render retrieval results as a numbered, citable source list so the model
- * can cite-then-answer against a closed set of ids (the knowledge-base
- * agent template teaches this pattern in its AGENTS.md). Deterministic and
- * unit-tested: the same input always yields the same output string.
- *
- * Sources are identified by full `sourcePath`, not `docName`. A citation only
- * earns trust if the reader can FIND the document and check it: a bare
- * basename is unfindable in a deep corpus and, worse, collapses same-named
- * files from different folders into one indistinguishable citation. The model
- * can only cite what it is shown, so the path has to be in this string — the
- * tool result never reaches the browser. `docName` stays in the response shape
- * for `returnedDocumentIds`, which wants a human-readable name for the audit
- * row, not a locator.
- */
-/**
  * What the caller is expected to do with these passages, carried by the result
  * itself rather than by the agent's instructions.
  *
@@ -121,9 +106,21 @@ export function returnedDocumentIds(results: KnowledgeSearchResult[]): DocumentR
  *
  * It leads rather than trails so it reads as a directive about the passages
  * instead of one more block of text after the last quoted one.
+ *
+ * The Sources sentence is not decoration. Inline numbers alone would turn "no
+ * citation" into "unresolvable citation" — the reader never sees this tool
+ * result, so a bare `[1]` in the answer points at nothing. Pinchy's own KB
+ * graders name both halves of that failure: `gradeCitationResolution` fails an
+ * inline `[N]` with no Sources entry ("the reader hits a dead end") and a
+ * Sources entry never cited inline (a retrieved-but-unused chunk dressed up as
+ * corroboration), and `gradePathCitation` fails an entry shortened to a bare
+ * filename.
  */
 const CITATION_CONTRACT =
   "Cite the passages you use inline as [1], [2] next to the claim each one supports. " +
+  "The reader sees only your answer, never these passages, so end it with a Sources list " +
+  "giving each number you cited the document path and page exactly as written above — " +
+  "every number you cite, and no number you did not. " +
   "If they do not answer the question, say so instead of answering from memory.";
 
 /**
@@ -135,6 +132,21 @@ const NO_RESULTS =
   "No matching passages found in the knowledge base. Tell the user the knowledge base " +
   "does not cover this instead of answering from memory.";
 
+/**
+ * Render retrieval results as a numbered, citable source list so the model
+ * can cite-then-answer against a closed set of ids, prefixed by the contract
+ * that says what to do with them. Deterministic and unit-tested: the same
+ * input always yields the same output string.
+ *
+ * Sources are identified by full `sourcePath`, not `docName`. A citation only
+ * earns trust if the reader can FIND the document and check it: a bare
+ * basename is unfindable in a deep corpus and, worse, collapses same-named
+ * files from different folders into one indistinguishable citation. The model
+ * can only cite what it is shown, so the path has to be in this string — the
+ * tool result never reaches the browser. `docName` stays in the response shape
+ * for `returnedDocumentIds`, which wants a human-readable name for the audit
+ * row, not a locator.
+ */
 export function formatWithCitations(results: KnowledgeSearchResult[]): string {
   if (results.length === 0) {
     return NO_RESULTS;

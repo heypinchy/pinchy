@@ -168,6 +168,9 @@ describe("pinchy-knowledge plugin", () => {
         type: "text",
         text:
           "Cite the passages you use inline as [1], [2] next to the claim each one supports. " +
+          "The reader sees only your answer, never these passages, so end it with a Sources list " +
+          "giving each number you cited the document path and page exactly as written above — " +
+          "every number you cite, and no number you did not. " +
           "If they do not answer the question, say so instead of answering from memory.\n\n" +
           '[1] /data/kb/a.pdf (p. 3): "Snippet one."',
       },
@@ -329,6 +332,9 @@ describe("formatWithCitations", () => {
   it("formats results as numbered, citable sources with sourcePath and page", () => {
     expect(formatWithCitations(results)).toBe(
       "Cite the passages you use inline as [1], [2] next to the claim each one supports. " +
+        "The reader sees only your answer, never these passages, so end it with a Sources list " +
+        "giving each number you cited the document path and page exactly as written above — " +
+        "every number you cite, and no number you did not. " +
         "If they do not answer the question, say so instead of answering from memory.\n\n" +
         '[1] /data/kb/a.pdf (p. 3): "Snippet one."\n\n[2] /data/kb/b.pdf: "Snippet two."'
     );
@@ -361,6 +367,23 @@ describe("formatWithCitations", () => {
     expect(instruction).toBeGreaterThanOrEqual(0);
     expect(firstSource).toBeGreaterThanOrEqual(0);
     expect(instruction).toBeLessThan(firstSource);
+  });
+
+  it("demands a Sources list, so an inline number resolves to something", () => {
+    // Without this the contract turns "no citation" into "unresolvable
+    // citation", which is not an improvement: the reader never sees this tool
+    // result, so a bare inline [1] in the answer points at nothing. Pinchy's
+    // own KB grader calls that out by name — `gradeCitationResolution` fails
+    // an answer whose inline [N] has no matching Sources entry ("the reader
+    // hits a dead end and cannot verify the claim"), and `gradePathCitation`
+    // fails a Sources entry that shortens the path to a bare filename.
+    //
+    // The knowledge-base template spells all of this out. An agent built
+    // without a template does not have it — which is the exact gap this whole
+    // change exists to close, so the contract has to close it here too.
+    const out = formatWithCitations(results);
+    expect(out).toMatch(/sources list/i);
+    expect(out).toMatch(/path and page/i);
   });
 
   it("tells the model to admit a miss rather than answer from memory", () => {

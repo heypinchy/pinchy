@@ -231,6 +231,11 @@ describe("pinchy-files plugin", () => {
     )?.[0];
     const tool = lsFactory({ agentId: "agent-1" });
 
+    // Paired with a positive assertion on purpose: two `not.toMatch`es alone
+    // pass loudest against an empty description, which would delete the tool's
+    // guidance rather than correct it. The granted paths still have to reach
+    // the model — the description is where it learns which tree it may list.
+    expect(tool.description).toContain("/data/docs/");
     expect(tool.description).not.toMatch(/knowledge base/i);
     expect(tool.description).not.toMatch(/start here first/i);
   });
@@ -245,6 +250,13 @@ describe("pinchy-files plugin", () => {
     )?.[0];
     const tool = readFactory({ agentId: "agent-1" });
 
+    // Positive anchor first, same reason as the pinchy_ls test above. The
+    // "cannot be cited" half is asserted too: it is the reason a KB agent
+    // reaches for knowledge_search instead, and it is a claim about this
+    // tool's OWN output — formatPdfResult emits <pages>N</pages> for the
+    // document and no per-page marker, so a passage read here has no anchor.
+    expect(tool.description).toContain("/data/docs/");
+    expect(tool.description).toMatch(/cannot be cited/i);
     expect(tool.description).not.toMatch(/knowledge base/i);
   });
 
