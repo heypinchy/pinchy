@@ -3,7 +3,13 @@ import { describe, it, expect } from "vitest";
 import { readFileSync } from "fs";
 import { join } from "path";
 import PDFDocument from "pdfkit";
-import { extractPdfText, isScannedPage, IMAGE_OBJECT_TIMEOUT_MS } from "./pdf-extract";
+import {
+  extractPdfText,
+  isScannedPage,
+  getImageObject,
+  remainingImageBudget,
+  IMAGE_OBJECT_TIMEOUT_MS,
+} from "./pdf-extract";
 
 const FIXTURES = join(import.meta.dirname, "test-fixtures");
 
@@ -74,6 +80,70 @@ describe("isScannedPage — what happens when the page's images cannot be measur
     // The measured worst case was 14.0s. Anything at or below it turns a busy
     // machine back into silently degraded extraction, which is the whole defect.
     expect(IMAGE_OBJECT_TIMEOUT_MS).toBeGreaterThan(14_000);
+  });
+});
+
+describe("getImageObject — telling 'pdfjs said no' apart from 'pdfjs said nothing'", () => {
+  const anImage = { width: 1200, height: 1600, data: new Uint8ClampedArray(4) };
+
+  it("resolves an image pdfjs hands back", async () => {
+    const objs = { get: (_n: string, cb: (d: unknown) => void) => cb(anImage) };
+    expect(await getImageObject(objs, "img0", 50)).toEqual({
+      status: "resolved",
+      image: anImage,
+    });
+  });
+
+  it("reports unavailable when pdfjs answers with something that is not an image", async () => {
+    const objs = { get: (_n: string, cb: (d: unknown) => void) => cb(null) };
+    expect(await getImageObject(objs, "img0", 50)).toEqual({ status: "unavailable" });
+  });
+
+  it("reports unavailable when the lookup itself throws", async () => {
+    const objs = {
+      get: () => {
+        throw new Error("not in the object store");
+      },
+    };
+    expect(await getImageObject(objs, "img0", 50)).toEqual({ status: "unavailable" });
+  });
+
+  it("reports a timeout — never 'unavailable' — when pdfjs simply never answers", async () => {
+    // This is the distinction the whole discriminated union exists for: an
+    // unanswered lookup used to collapse into the same `null` as a genuine
+    // "no such image", which is what silently reclassified scanned pages.
+    const objs = { get: () => {} };
+    expect(await getImageObject(objs, "img0", 20)).toEqual({ status: "timeout" });
+  });
+
+  it("still resolves a cached image once the page's budget is exhausted", async () => {
+    // A zero budget must not blind us to images pdfjs already has in hand: it
+    // answers synchronously for those, before the timer can fire.
+    const objs = { get: (_n: string, cb: (d: unknown) => void) => cb(anImage) };
+    expect(await getImageObject(objs, "img0", 0)).toEqual({
+      status: "resolved",
+      image: anImage,
+    });
+  });
+});
+
+describe("remainingImageBudget — one page cannot spend the timeout once per image", () => {
+  // The timeout is per lookup, so without a per-page budget a page painting N
+  // undecodable images waits N x 30s. Raising the per-image allowance from 5s to
+  // 30s multiplied that worst case by six, which is why the budget exists.
+  it("gives the first lookup on a page the full allowance", () => {
+    expect(remainingImageBudget(0)).toBe(IMAGE_OBJECT_TIMEOUT_MS);
+  });
+
+  it("charges what earlier lookups on the same page already spent", () => {
+    expect(remainingImageBudget(1_000)).toBe(IMAGE_OBJECT_TIMEOUT_MS - 1_000);
+  });
+
+  it("never goes negative once the page has spent its budget", () => {
+    // A negative timeout would fire immediately in setTimeout, but it would also
+    // read as "no limit" to anyone skimming the call site. Clamp it.
+    expect(remainingImageBudget(IMAGE_OBJECT_TIMEOUT_MS)).toBe(0);
+    expect(remainingImageBudget(IMAGE_OBJECT_TIMEOUT_MS + 60_000)).toBe(0);
   });
 });
 

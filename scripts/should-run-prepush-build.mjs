@@ -116,11 +116,12 @@ function changedPaths(tips) {
 
     let diff;
     try {
-      diff = git(["diff", "--name-only", `${base}..${localOid}`]);
+      // -z for the same reason as ls-tree below: unquoted, real paths.
+      diff = git(["diff", "--name-only", "-z", `${base}..${localOid}`]);
     } catch {
       return null;
     }
-    for (const p of diff.split("\n")) if (p.trim()) paths.add(p.trim());
+    for (const p of diff.split("\0")) if (p.trim()) paths.add(p.trim());
   }
   return [...paths];
 }
@@ -143,8 +144,13 @@ function fingerprintOf(tips) {
     return null;
   }
   try {
-    const entries = git(["ls-tree", "-r", tips[0].localOid])
-      .split("\n")
+    // -z, because without it git C-quotes any path outside ASCII
+    // ("packages/web/src/f\303\274r.ts", quotes included). Those paths would
+    // then miss every prefix and suffix rule in isBuildIrrelevant and read as
+    // build-relevant — safe, but it quietly turns the fingerprint into a value
+    // that never matches for anyone with an umlaut in a filename.
+    const entries = git(["ls-tree", "-r", "-z", tips[0].localOid])
+      .split("\0")
       .filter(Boolean)
       .map((line) => {
         // "<mode> <type> <oid>\t<path>"

@@ -72,6 +72,25 @@ function yieldToEventLoop(): Promise<void> {
  */
 export const IMAGE_OBJECT_TIMEOUT_MS = 30_000;
 
+/**
+ * How much of a page's decode allowance is left after `elapsedMs` of waiting.
+ *
+ * The timeout above is charged per lookup, so on its own it bounds nothing: a
+ * page painting N images pdfjs never answers for waits N x 30s, and raising the
+ * per-image allowance from 5s to 30s multiplied that worst case by six. The
+ * budget makes the page — not the image — the unit that is bounded.
+ *
+ * Passing the remainder down rather than giving up on the page keeps cheap
+ * images: pdfjs answers synchronously for anything already decoded, so those
+ * still resolve even on a zero budget. Only genuine waiting is cut off.
+ */
+export function remainingImageBudget(
+  elapsedMs: number,
+  capMs: number = IMAGE_OBJECT_TIMEOUT_MS
+): number {
+  return Math.max(0, capMs - elapsedMs);
+}
+
 type ImageObject = { width: number; height: number; data: Uint8ClampedArray };
 
 /**
@@ -82,20 +101,21 @@ type ImageObject = { width: number; height: number; data: Uint8ClampedArray };
 type ImageLookup =
   { status: "resolved"; image: ImageObject } | { status: "timeout" } | { status: "unavailable" };
 
-function getImageObject(
+export function getImageObject(
   pageObjs: { get: (name: string, callback: (data: unknown) => void) => void },
-  name: string
+  name: string,
+  timeoutMs: number = IMAGE_OBJECT_TIMEOUT_MS
 ): Promise<ImageLookup> {
   return new Promise((resolve) => {
     const timeout = setTimeout(() => {
       // Loud on purpose. A dropped measurement changes what the agent is shown,
       // so it must never pass unnoticed — plugin stdout goes to OpenClaw's log.
       console.warn(
-        `[pinchy-files] pdf image "${name}" not decoded within ${IMAGE_OBJECT_TIMEOUT_MS}ms — ` +
+        `[pinchy-files] pdf image "${name}" not decoded within ${timeoutMs}ms — ` +
           `treating the page as a scan rather than dropping it`
       );
       resolve({ status: "timeout" });
-    }, IMAGE_OBJECT_TIMEOUT_MS);
+    }, timeoutMs);
     try {
       pageObjs.get(name, (data: unknown) => {
         clearTimeout(timeout);
@@ -208,13 +228,24 @@ export async function extractPdfText(
     // Extract embedded images (> 100x100px) from non-scanned pages
     const embeddedImages: ExtractedImage[] = [];
     if (!isScanned && !sparseText) {
+      // Unlike the classification loop above, this one cannot stop at the first
+      // answer — it wants every embedded image — so the per-lookup timeout does
+      // not bound it: a page painting N images pdfjs never answers for would
+      // wait N x IMAGE_OBJECT_TIMEOUT_MS. One budget for the whole page fixes
+      // that without dropping images pdfjs already has decoded, since those come
+      // back synchronously even when nothing is left to spend.
+      const budgetStartedAt = Date.now();
       try {
         const ops = await page.getOperatorList();
         for (let j = 0; j < ops.fnArray.length; j++) {
           if (ops.fnArray[j] === OPS.paintImageXObject) {
             const imgName = ops.argsArray[j][0] as string;
             try {
-              const lookup = await getImageObject(page.objs, imgName);
+              const lookup = await getImageObject(
+                page.objs,
+                imgName,
+                remainingImageBudget(Date.now() - budgetStartedAt)
+              );
               const img = lookup.status === "resolved" ? lookup.image : null;
               if (img && img.width >= MIN_IMAGE_DIMENSION && img.height >= MIN_IMAGE_DIMENSION) {
                 embeddedImages.push({
