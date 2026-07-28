@@ -170,7 +170,7 @@ The two sanitizers are near-duplicates on purpose — plugins cannot import from
 
 **The read fallback is for legacy files only.** `resolveOnDiskPath` in `packages/plugins/pinchy-files/index.ts` tries a path as-given → NFC → NFD, and `pinchy_write` uses it so an NFC request overwrites a pre-existing NFD file instead of duplicating it. That tolerance exists for files written before this convention held; it is not a licence for a new boundary to skip normalizing.
 
-The drift guard is `packages/web/src/__tests__/lib/workspace-filename-nfc.test.ts`. It requires every plugin module that writes a file to be **classified**: either a boundary (and then it normalizes) or explicitly not one (and then the reason is written down, as for pinchy-transcript's media mirror, which copies a file that already exists under OpenClaw's own basename). A new plugin that saves user-named files fails the guard until someone decides which it is — that decision is the whole point.
+The drift guard is `packages/web/src/__tests__/lib/workspace-filename-nfc.test.ts`. It requires every module under `packages/web/src` or `packages/plugins` that writes a file to be **classified**: either a boundary (and then it normalizes, itself or through a listed module) or explicitly not one (and then the reason is written down, as for pinchy-transcript's media mirror, which copies a file that already exists under OpenClaw's own basename). A new channel or plugin that saves user-named files fails the guard until someone decides which it is — that decision is the whole point. The web half is not optional: the next boundary is at least as likely to land in the app as in a plugin, and today's browser-upload boundary already does.
 
 ## Web Test Files Are Type-Checked
 
