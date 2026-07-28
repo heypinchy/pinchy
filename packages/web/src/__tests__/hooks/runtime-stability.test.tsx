@@ -11,7 +11,7 @@
 // regresses (chats appear to "reset" on every navigation). These tests
 // pin the contract so that breakage shows up here, not in production.
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { render, screen, act } from "@testing-library/react";
 import { useState, type FC } from "react";
 import {
@@ -222,5 +222,44 @@ describe("[spike] assistant-ui runtime stability across consumer remount", () =>
     //    runtime state is persistent, consumer rendering is incidental.
     expect(screen.getByTestId("user-msg")).toHaveTextContent("hello");
     expect(screen.getByTestId("assistant-msg")).toHaveTextContent("from-background");
+  });
+
+  // Regression guard for #916. <ThreadPrimitive.Viewport> queues an animation
+  // frame to auto-scroll to the bottom as soon as the thread has messages, and
+  // that frame calls `viewport.scrollTo(...)`. jsdom implements scrollTo on
+  // Window but NOT on Element, and its requestAnimationFrame is a real ~16ms
+  // timer — so which of two racers wins decides whether the suite is green:
+  // React Testing Library's unmount cancels the frame (fast run), or the frame
+  // fires first and throws inside a callback no test can catch (loaded run,
+  // e.g. the full suite). That is a TypeError attributed to file teardown, not
+  // an assertion failure, which is why it looked like a mystery flake.
+  //
+  // The fix is the `HTMLElement.prototype.scrollTo` stub in src/test-setup.ts,
+  // beside the scrollIntoView stub that exists for the same jsdom gap. Here we
+  // force the losing ordering deterministically: run the queued frame WHILE
+  // mounted and require it to complete.
+  it("runs the viewport's queued auto-scroll frame while mounted, without crashing", async () => {
+    const store: Store = {
+      messages: [{ role: "user", content: [{ type: "text", text: "hello" }] }],
+      isRunning: false,
+    };
+
+    // Throws outright if the environment has no scrollTo to spy on — which is
+    // exactly the missing API the flake trips over.
+    const scrollTo = vi.spyOn(HTMLElement.prototype, "scrollTo");
+
+    try {
+      render(<Harness store={store} mounted={true} />);
+
+      // Let jsdom drive one real frame. The viewport's frame was queued during
+      // the layout effect above, so it runs in this same batch — ahead of ours.
+      await act(async () => {
+        await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      });
+
+      expect(scrollTo).toHaveBeenCalled();
+    } finally {
+      scrollTo.mockRestore();
+    }
   });
 });

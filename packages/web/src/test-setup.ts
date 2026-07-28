@@ -76,6 +76,17 @@ if (typeof window !== "undefined") {
   if (!HTMLElement.prototype.scrollIntoView) {
     HTMLElement.prototype.scrollIntoView = vi.fn();
   }
+  // jsdom implements scrollTo on Window but not on Element, while every real
+  // browser has it. assistant-ui's <ThreadPrimitive.Viewport> calls it from a
+  // requestAnimationFrame callback to keep the thread pinned to the bottom —
+  // and jsdom's rAF is a real ~16ms timer, so whether that frame fires before
+  // the test unmounts (which cancels it) depends on machine load. Without this
+  // stub the loser of that race is an uncaught TypeError inside a frame
+  // callback, i.e. a flake that no assertion can catch and that surfaces as a
+  // teardown crash in whichever test file happened to be running (#916).
+  if (!HTMLElement.prototype.scrollTo) {
+    HTMLElement.prototype.scrollTo = vi.fn();
+  }
 }
 
 // Only set up browser globals when running in jsdom environment
