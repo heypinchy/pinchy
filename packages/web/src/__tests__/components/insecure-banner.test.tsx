@@ -21,7 +21,9 @@ import { isInsecureMode } from "@/lib/domain";
  * feature did nothing. `extra` overrides it to model a real proxy.
  */
 function requestFrom(host: string, extra: Record<string, string> = {}) {
-  mockHeaders.mockResolvedValue(new Headers({ host, "x-forwarded-host": host, ...extra }));
+  mockHeaders.mockResolvedValue(
+    new Headers({ host, "x-forwarded-host": host, "x-forwarded-proto": "http", ...extra })
+  );
 }
 
 describe("InsecureBanner", () => {
@@ -90,6 +92,26 @@ describe("InsecureBanner", () => {
     // who needs it, so the forwarded client-facing host decides instead.
     vi.mocked(isInsecureMode).mockResolvedValue(true);
     requestFrom("localhost:7777", { "x-forwarded-host": "pinchy.example.com" });
+    const Component = await InsecureBanner({ isAdmin: true });
+    render(Component);
+    expect(screen.getByRole("alert")).toBeDefined();
+  });
+
+  it("keeps warning a loopback host reached over HTTPS, where locking IS possible", async () => {
+    // The gap the host comparison alone cannot close: nginx `proxy_pass
+    // http://localhost:7777` without `proxy_set_header Host` rewrites `Host` to
+    // `localhost` and sets no `X-Forwarded-Host`, so a PUBLIC instance looks
+    // local by every host-shaped measure.
+    //
+    // The scheme still gives it away. Next derives its back-fill from
+    // `socket.encrypted`, so a plain-HTTP container cannot manufacture `https`
+    // — whoever set it terminated TLS. And over HTTPS the banner's advice is
+    // actionable rather than empty: `POST /api/settings/domain` gates the lock
+    // on this very header, and settings then offers "Lock <host> & restart",
+    // localhost included. Suppressing here would hide an action the operator
+    // can actually take.
+    vi.mocked(isInsecureMode).mockResolvedValue(true);
+    requestFrom("localhost:7777", { "x-forwarded-proto": "https" });
     const Component = await InsecureBanner({ isAdmin: true });
     render(Component);
     expect(screen.getByRole("alert")).toBeDefined();

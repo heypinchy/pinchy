@@ -24,10 +24,17 @@
  * exactly as a real request does, and `e2e/21-insecure-banner.spec.ts` proves
  * the same thing against a real Next.js server rather than a fixture.
  *
- * `x-forwarded-for` and `x-forwarded-proto` are consequently not read at all:
- * they are present either way and can discriminate nothing. A check on them
- * would look like a safeguard while deciding nothing, which is worse than no
- * check.
+ * `x-forwarded-for` is consequently not read at all: it is present either way
+ * and can discriminate nothing. A check on it would look like a safeguard while
+ * deciding nothing, which is worse than no check.
+ *
+ * `x-forwarded-proto` is the one exception, and it is NOT read here — it is a
+ * question about the scheme, not about the host, so the banner asks it (see
+ * `insecure-banner.test.tsx`). Its back-fill is one-directional: Next derives
+ * `isHttps` from the incoming header or from `socket.encrypted`, so a container
+ * serving plain HTTP can never manufacture the value `https`. Whoever set it
+ * terminated TLS. `POST /api/settings/domain` already gates the domain lock on
+ * exactly that header.
  */
 import { describe, it, expect } from "vitest";
 
@@ -52,6 +59,16 @@ describe("isLoopbackRequest", () => {
     "127.1.2.3:8080",
     "[::1]",
     "[::1]:7777",
+    // RFC 7230 wants IPv6 literals bracketed in `Host`, but `X-Forwarded-Host`
+    // is written by proxies, and plenty of them emit the bare address. Stripping
+    // a `:port` off THAT naively turns `::1` into `:`, which is how the two
+    // equality checks below used to be unreachable for anything unbracketed.
+    "::1",
+    "0:0:0:0:0:0:0:1",
+    // A trailing dot is the fully-qualified form of the same name, and browsers
+    // put it in `Host` verbatim when the user types it.
+    "localhost.",
+    "127.0.0.1.",
     // RFC 6761 reserves the whole .localhost TLD for loopback.
     "app.localhost",
     "app.localhost:7777",
@@ -66,6 +83,9 @@ describe("isLoopbackRequest", () => {
     "notlocalhost",
     "localhost.evil.com",
     "127.0.0.1.evil.com",
+    // Fully-qualified spelling of the same trap: the trailing dot must not turn
+    // a registrable name into a loopback one.
+    "localhost.evil.com.",
     // A private range is still a network the traffic travels over.
     "10.0.0.5",
   ])("does not treat a direct request to %s as loopback", (host) => {
