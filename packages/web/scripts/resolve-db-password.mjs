@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Entrypoint runner for the DB password auto-migration (#156).
 //
-// Called by entrypoint.sh BEFORE drizzle-kit migrate and the server start,
+// Called by entrypoint.sh BEFORE the migrate runner and the server start,
 // because both consume DATABASE_URL. Prints the resolved URL to stdout
 // (nothing when the URL is unchanged); all diagnostics go to stderr so the
 // captured stdout never mixes with logs. Always exits 0 — a failed migration

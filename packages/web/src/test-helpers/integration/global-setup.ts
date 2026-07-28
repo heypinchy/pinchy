@@ -37,7 +37,13 @@ export default async function globalSetup() {
   const dbName = dbNameFromUrl(testDbUrl);
 
   const postgres = (await import("postgres")).default;
-  const sql = postgres(adminUrl);
+  // `database "…" does not exist, skipping` is the expected first-run NOTICE;
+  // postgres.js's default handler console.logs the whole notice object, which
+  // opens every `pnpm test:db` with a JSON blob that reads like a failure.
+  const onnotice = (notice: Record<string, string>) => {
+    process.stderr.write(`[test:db] ${notice.severity}: ${notice.message}\n`);
+  };
+  const sql = postgres(adminUrl, { onnotice });
   try {
     await sql.unsafe(`DROP DATABASE IF EXISTS ${dbName} WITH (FORCE)`);
     await sql.unsafe(`CREATE DATABASE ${dbName}`);
@@ -57,7 +63,7 @@ export default async function globalSetup() {
 
   // Teardown
   return async () => {
-    const sql2 = postgres(adminUrl);
+    const sql2 = postgres(adminUrl, { onnotice });
     try {
       await sql2.unsafe(`DROP DATABASE IF EXISTS ${dbName} WITH (FORCE)`);
     } finally {

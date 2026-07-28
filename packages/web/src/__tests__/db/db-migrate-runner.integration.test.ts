@@ -45,7 +45,7 @@ function runMigrate(databaseUrl: string) {
   const result = spawnSync(process.execPath, [RUNNER], {
     // Deliberately not packages/web: the runner must resolve its migrations
     // folder from its own location, not from whoever's cwd invoked it.
-    cwd: WEB_ROOT === "/" ? WEB_ROOT : join(WEB_ROOT, ".."),
+    cwd: join(WEB_ROOT, ".."),
     env: { ...process.env, DATABASE_URL: databaseUrl },
     encoding: "utf-8",
   });
@@ -136,6 +136,14 @@ describe("db:migrate runner", () => {
     // The PostgresError, with the server's own code.
     expect(run.output).toContain('relation "agent_delivered_files" already exists');
     expect(run.output).toContain("42P07");
+
+    // WHICH database it reached — the clue that would have ended this bug's
+    // investigation in a minute — but never the password that gets it there.
+    // stderr from this runner lands in CI logs and container logs verbatim.
+    expect(run.output).toContain(FAIL_DB);
+    const password = new URL(url).password;
+    expect(password.length).toBeGreaterThan(0);
+    expect(run.output).not.toContain(password);
 
     // The report claims nothing was applied. Prove that claim is true rather
     // than merely reassuring: drizzle wraps all pending migrations in one

@@ -73,20 +73,84 @@ function indent(text, pad = "    ") {
 }
 
 /**
- * Find the migration a statement came from.
+ * Find the migrations a statement could have come from.
  *
  * Substring match against the file, not an equality check against a re-split
  * statement list: drizzle splits on `--> statement-breakpoint` and trims, and
  * replicating that split here would be a second implementation to keep in sync
- * for no gain. A DDL statement is distinctive enough that the first file
- * containing it verbatim is the right one.
+ * for no gain.
  *
- * @returns {string | null} the migration tag, or null when nothing matches.
+ * ALL matches are returned, not the first. Migrations do repeat a statement
+ * verbatim (`DROP VIEW "public"."active_agents";` is byte-identical in 0016,
+ * 0042 and 0045), and naming one of them reads as a fact. The runner narrows
+ * the candidate list to the pending migrations first, which usually leaves
+ * exactly one; when it does not, saying so beats guessing.
+ *
+ * @returns {string[]} matching migration tags, in journal order.
  */
 function attributeStatement(statement, migrationFiles) {
   const needle = statement.trim();
-  const hit = migrationFiles.find((file) => file.sql.includes(needle));
-  return hit ? hit.tag : null;
+  return migrationFiles.filter((file) => file.sql.includes(needle)).map((file) => file.tag);
+}
+
+/**
+ * The database a connection string points at, as `host:port/database`.
+ *
+ * The failing target is often the whole answer — the bug that prompted this
+ * runner was a migration hitting a stale Postgres container on the port the
+ * test suite defaults to. But a connection string carries a password, so the
+ * URL is never echoed: only `host` (which by definition excludes credentials)
+ * and the database name. An unparseable string yields null rather than a
+ * best-effort print, because we cannot know which part of it is the secret.
+ *
+ * @returns {string | null}
+ */
+export function describeTarget(databaseUrl) {
+  if (typeof databaseUrl !== "string") return null;
+  try {
+    const url = new URL(databaseUrl);
+    if (!url.host) return null;
+    const database = url.pathname.replace(/^\//, "");
+    return database ? `${url.host}/${database}` : url.host;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The journal entries drizzle would still have to apply, given the watermark
+ * currently in `drizzle.__drizzle_migrations`.
+ *
+ * Mirrors drizzle's own boundary (`entry.when > lastRow.created_at`, strictly
+ * greater) so statement attribution cannot blame a migration that was applied
+ * releases ago. A null watermark means the table does not exist yet: a fresh
+ * database, where everything is pending.
+ *
+ * @template {{when: number|string}} T
+ * @param {T[]} entries
+ * @param {number|string|null|undefined} watermark
+ * @returns {T[]}
+ */
+export function pendingMigrations(entries, watermark) {
+  if (watermark === null || watermark === undefined) return entries;
+  return entries.filter((entry) => Number(entry.when) > Number(watermark));
+}
+
+/** Render the attribution honestly: none, one, or "these three all contain it". */
+function describeAttribution(tags) {
+  if (tags.length === 0) return "unknown (statement matched no migration)";
+  if (tags.length === 1) return `${tags[0]}.sql`;
+  return `${tags[0]}.sql (identical statement also in ${tags.slice(1).join(", ")})`;
+}
+
+/** The error's stack with its leading "Name: message" headline removed. */
+function stripStackHeadline(error) {
+  if (typeof error.stack !== "string") return null;
+  const headline = `${error.name}: ${error.message}`;
+  const frames = error.stack.startsWith(headline)
+    ? error.stack.slice(headline.length)
+    : error.stack;
+  return frames.trim() ? frames.replace(/^\n/, "") : null;
 }
 
 /**
@@ -95,17 +159,22 @@ function attributeStatement(statement, migrationFiles) {
  * @param {object} args
  * @param {unknown} args.error  what the migrator threw
  * @param {{tag: string, sql: string}[]} args.migrationFiles  journal order
+ * @param {string | null} [args.target]  from describeTarget(), never a raw URL
  * @returns {string}
  */
-export function formatMigrationFailure({ error, migrationFiles = [] }) {
+export function formatMigrationFailure({ error, migrationFiles = [], target = null }) {
   const lines = ["[db:migrate] migration failed", ""];
+
+  if (target) lines.push(`  target: ${target}`);
 
   const statement = findStatement(error);
   if (statement) {
-    const tag = attributeStatement(statement, migrationFiles);
-    lines.push(`  migration: ${tag ? `${tag}.sql` : "unknown (statement matched no migration)"}`);
+    const tags = attributeStatement(statement, migrationFiles);
+    lines.push(`  migration: ${describeAttribution(tags)}`);
     lines.push("  statement:");
     lines.push(indent(statement.trim()));
+    lines.push("");
+  } else if (target) {
     lines.push("");
   }
 
@@ -120,7 +189,12 @@ export function formatMigrationFailure({ error, migrationFiles = [] }) {
     }
   } else if (error instanceof Error) {
     lines.push(`  ${error.name}: ${error.message}`);
-    if (error.stack) lines.push(indent(error.stack));
+    // A stack opens by repeating "Name: message" verbatim; strip that prefix so
+    // the headline is stated once and the frames still get printed. Matching
+    // the prefix rather than slicing the first line keeps multi-line messages
+    // intact instead of leaking their tail into the frame list.
+    const frames = stripStackHeadline(error);
+    if (frames) lines.push(indent(frames));
   } else {
     lines.push(`  ${String(error)}`);
   }
