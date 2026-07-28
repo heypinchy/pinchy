@@ -298,7 +298,17 @@ describe("KnowledgeReindexSection", () => {
 
       render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} />);
 
-      await waitFor(() => expect(screen.getByText(/discovering documents/i)).toBeInTheDocument());
+      // The two halves of this assertion land in DIFFERENT commits: the status
+      // read renders "Discovering documents…" while `now` is still null, and
+      // only the effect that starts the elapsed clock appends the " · running
+      // 43 sec" suffix. A waitFor gated on the phase text passes on the FIRST
+      // commit and races the second — an ordering that holds in a warm run and
+      // opens under preemption, which is how the elapsed line failed in a full
+      // parallel run while an isolated rerun stayed green. act() drains both
+      // commits, so the readout is asserted on settled output rather than on
+      // whichever commit the poll happened to catch.
+      await act(async () => {});
+      expect(screen.getByText(/discovering documents/i)).toBeInTheDocument();
       expect(screen.getByText(/running 43 sec/i)).toBeInTheDocument();
     });
 
