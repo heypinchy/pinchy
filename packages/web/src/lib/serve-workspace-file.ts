@@ -47,8 +47,9 @@ export const SERVABLE_DELIVERED_MIMES: ReadonlySet<string> = new Set<string>([
  * (`uploads/[filename]`) and agent-delivered artifacts (`artifacts/[filename]`) —
  * which differ only in how they AUTHORIZE the request; once a caller is
  * authorized and a concrete on-disk path resolved, the serving posture is
- * identical (magic-byte MIME allowlist, inline disposition, SAMEORIGIN so the
- * PDF/image preview can embed).
+ * identical (magic-byte MIME allowlist, inline disposition, a SAMEORIGIN
+ * frame posture — see the header comment below for why that posture only
+ * takes effect together with a next.config.ts entry for the route).
  *
  * The caller MUST have already sanitized the filename and verified `fullPath`
  * is contained within the intended workspace zone — this helper does not
@@ -116,9 +117,20 @@ export async function streamWorkspaceFile(
       // Inline so the browser renders PDFs/images directly instead of forcing a
       // download. The filename is advisory.
       "content-disposition": `inline; filename="${safeName.replace(/[^\x20-\x7e]/g, "_")}"; filename*=UTF-8''${encodeURIComponent(safeName)}`,
-      // Allow same-origin embeds (<embed> thumbnail in AttachmentPreview).
-      // Without this override Next.js emits X-Frame-Options: DENY by default,
-      // which blocks the <embed> from loading the file.
+      // Declares the posture this response wants: same-origin embedding is
+      // fine (the <embed> thumbnail + lightbox in AttachmentPreview),
+      // cross-origin is not.
+      //
+      // It is NOT what makes the embed work. next.config.ts's `headers()`
+      // applies `X-Frame-Options: DENY` to `/(.*)`, and that value OVERRIDES
+      // whatever a route handler sets here — so what a URL actually receives is
+      // decided in next.config.ts, which carries an explicit SAMEORIGIN
+      // relaxation for each serving route. Adding a new serving route without
+      // that entry yields a valid 200 the browser refuses to render
+      // (net::ERR_BLOCKED_BY_RESPONSE) — which is exactly how the artifacts
+      // route shipped, while this line sat here looking sufficient. See
+      // `describe("X-Frame-Options as a given URL actually receives it")` in
+      // src/__tests__/security/security-headers.test.ts.
       "x-frame-options": "SAMEORIGIN",
     },
   });

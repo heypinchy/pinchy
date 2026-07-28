@@ -51,6 +51,16 @@ const nextConfig: NextConfig = {
         headers: [{ key: "X-Frame-Options", value: "SAMEORIGIN" }],
       },
       {
+        // An agent-delivered file (#703 / #788) opens in the SAME
+        // AttachmentPreview <embed> as an upload — only the source zone differs
+        // — so it needs the same relaxation. The route handler sets SAMEORIGIN
+        // itself, but that header LOSES to the catch-all above, which is how
+        // this shipped broken: a valid 200 application/pdf and a blank viewer
+        // pane with net::ERR_BLOCKED_BY_RESPONSE. Same-origin only.
+        source: "/api/agents/:agentId/artifacts/:filename",
+        headers: [{ key: "X-Frame-Options", value: "SAMEORIGIN" }],
+      },
+      {
         // Service worker must not be long-cached, otherwise future SW updates
         // never reach users. Same pattern as other PWAs (Slack, Mattermost).
         source: "/sw.js",

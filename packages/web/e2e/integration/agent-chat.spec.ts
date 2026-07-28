@@ -672,6 +672,15 @@ test.describe.serial("Plugin behavior — pinchy-files generate_file", () => {
       const res = await page.request.get(`/api/agents/${agentId}/artifacts/e2e-export.csv`);
       if (res.status() === 200) {
         expect(res.headers()["content-type"]).toContain("text/csv");
+        // The RESOLVED header off a real Next.js server, not the one the route
+        // handler asked for. next.config.ts's `/(.*)` rule sets
+        // X-Frame-Options: DENY and OVERRIDES the handler's SAMEORIGIN, so
+        // without a per-route relaxation in next.config.ts this route serves
+        // perfect bytes that the browser then refuses to embed
+        // (net::ERR_BLOCKED_BY_RESPONSE → blank PDF viewer). Asserting it here,
+        // against the production image, is the only layer that sees the value
+        // a user's browser actually gets.
+        expect(res.headers()["x-frame-options"]).toBe("SAMEORIGIN");
         downloadOk = true;
         break;
       }
