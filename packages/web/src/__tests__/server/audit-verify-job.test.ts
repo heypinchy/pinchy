@@ -13,6 +13,7 @@ const {
   mockCheckpointWhere,
   mockMaxIdThen,
   mockLastScannedLimit,
+  mockRacedRowLimit,
   mockInsertValues,
   mockOnConflictDoUpdate,
   mockInsert,
@@ -30,8 +31,17 @@ const {
   // db.select(...).from(auditLog).where(...).orderBy(desc(...)).limit(1) ->
   // the highest real row actually scanned in [fromId, toId]
   const mockLastScannedLimit = vi.fn();
+  // db.select(...).from(auditLog).where(...).limit(1) -> the #698 concurrency
+  // probe: any row another request appended in (toId, reportId). Shares the
+  // `where` stub with the last-scanned lookup above and is told apart by which
+  // chain method follows — .orderBy().limit() vs a bare .limit() — exactly
+  // like the real query builder.
+  const mockRacedRowLimit = vi.fn().mockResolvedValue([]);
   const mockLastScannedOrderBy = vi.fn().mockReturnValue({ limit: mockLastScannedLimit });
-  const mockLastScannedWhere = vi.fn().mockReturnValue({ orderBy: mockLastScannedOrderBy });
+  const mockLastScannedWhere = vi.fn().mockReturnValue({
+    orderBy: mockLastScannedOrderBy,
+    limit: mockRacedRowLimit,
+  });
   // NOTE: there is deliberately no "own report row" query stub any more. The
   // sweep folds its own audit.integrity_check row into the checkpoint from the
   // {id, rowHmac} that appendAuditLog RETURNS (INSERT ... RETURNING), not from
@@ -70,6 +80,7 @@ const {
     mockCheckpointWhere,
     mockMaxIdThen,
     mockLastScannedLimit,
+    mockRacedRowLimit,
     mockInsertValues,
     mockOnConflictDoUpdate,
     mockInsert,
@@ -135,6 +146,13 @@ function mockOwnReportRow(id: number, rowHmac: string) {
   mockAppendAuditLog.mockResolvedValue({ id, rowHmac });
 }
 
+// Whether another request appended a row in (toId, reportId) — the #698 window
+// between the sweep's MAX(id) snapshot and its own report row. `null` is the
+// normal case (nobody raced us).
+function mockRacedRow(row: { id: number } | null) {
+  mockRacedRowLimit.mockResolvedValue(row ? [row] : []);
+}
+
 describe("sweepAuditVerify", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -146,6 +164,7 @@ describe("sweepAuditVerify", () => {
     // keeps implementations, so a prior test's mockOwnReportRow could leak in).
     // Tests that reach the append override this via mockOwnReportRow.
     mockAppendAuditLog.mockResolvedValue(undefined);
+    mockRacedRow(null);
   });
 
   it("no new rows since the checkpoint (toId < fromId): no-op, verifyIntegrity never called", async () => {
@@ -299,6 +318,89 @@ describe("sweepAuditVerify", () => {
 
     expect(mockInsertValues).toHaveBeenCalledWith(
       expect.objectContaining({ lastVerifiedId: 14, lastVerifiedHmac: "hmac-14", lastStatus: "ok" })
+    );
+  });
+
+  it("concurrent append during the verify pass: folds only to the scanned window so the raced rows are re-scanned (#698)", async () => {
+    // Another request appended row 14 between the toId=13 snapshot and this
+    // sweep's own report row (id 16). Row 14 is outside the scanned window
+    // (> toId) — and folding the checkpoint to 16 would put it BELOW the next
+    // sweep's start too, so the incremental job would never verify it. The
+    // sweep therefore folds only to the window it really scanned.
+    mockCheckpointRow({ lastVerifiedId: 10, lastVerifiedHmac: "hmac-10" });
+    mockCurrentMaxId(13);
+    mockVerifyIntegrity.mockResolvedValue({
+      valid: true,
+      totalChecked: 3,
+      invalidIds: [],
+      chainBreakIds: [],
+    });
+    mockLastScannedRow({ id: 13, rowHmac: "hmac-13" });
+    mockOwnReportRow(16, "hmac-16");
+    mockRacedRow({ id: 14 });
+
+    const result = await sweepAuditVerify();
+
+    // The report itself still describes the window that was actually scanned.
+    expect(result.scannedTo).toBe(13);
+    // Checkpoint stays at row 13, so the next sweep re-scans [14, …] — the
+    // raced rows AND this sweep's own report row. One extra non-converged
+    // sweep, then the steady state is a no-op again.
+    expect(mockInsertValues).toHaveBeenCalledWith(
+      expect.objectContaining({ lastVerifiedId: 13, lastVerifiedHmac: "hmac-13", lastStatus: "ok" })
+    );
+    expect(mockOnConflictDoUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        set: expect.objectContaining({ lastVerifiedId: 13, lastVerifiedHmac: "hmac-13" }),
+      })
+    );
+    // The append succeeded — a deferred fold is not an audit-write failure.
+    expect(mockRecordAuditFailure).not.toHaveBeenCalled();
+  });
+
+  it("report row not adjacent to the snapshot but the gap is empty (sequence gap): still folds past its own report", async () => {
+    // A rolled-back transaction burned ids 14–15, so the report row lands at
+    // 16 without anyone racing us. The probe finds nothing, so this is the
+    // normal converging fold — a sequence gap must not be mistaken for
+    // concurrency and cost a redundant re-scan every sweep.
+    mockCheckpointRow({ lastVerifiedId: 10, lastVerifiedHmac: "hmac-10" });
+    mockCurrentMaxId(13);
+    mockVerifyIntegrity.mockResolvedValue({
+      valid: true,
+      totalChecked: 3,
+      invalidIds: [],
+      chainBreakIds: [],
+    });
+    mockLastScannedRow({ id: 13, rowHmac: "hmac-13" });
+    mockOwnReportRow(16, "hmac-16");
+    mockRacedRow(null);
+
+    await sweepAuditVerify();
+
+    expect(mockInsertValues).toHaveBeenCalledWith(
+      expect.objectContaining({ lastVerifiedId: 16, lastVerifiedHmac: "hmac-16", lastStatus: "ok" })
+    );
+  });
+
+  it("report row immediately follows the snapshot: no concurrency probe query is issued at all", async () => {
+    // reportId === toId + 1 leaves no id strictly between the two, so the
+    // common (uncontended) case must not pay for an extra round trip.
+    mockCheckpointRow({ lastVerifiedId: 10, lastVerifiedHmac: "hmac-10" });
+    mockCurrentMaxId(13);
+    mockVerifyIntegrity.mockResolvedValue({
+      valid: true,
+      totalChecked: 3,
+      invalidIds: [],
+      chainBreakIds: [],
+    });
+    mockLastScannedRow({ id: 13, rowHmac: "hmac-13" });
+    mockOwnReportRow(14, "hmac-14");
+
+    await sweepAuditVerify();
+
+    expect(mockRacedRowLimit).not.toHaveBeenCalled();
+    expect(mockInsertValues).toHaveBeenCalledWith(
+      expect.objectContaining({ lastVerifiedId: 14, lastVerifiedHmac: "hmac-14" })
     );
   });
 

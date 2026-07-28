@@ -7,14 +7,45 @@
 // `audit_verify_state` table and the real `verifyIntegrity` seedPrevHmac
 // option, genuinely closes the boundary-link gap against a real DB. That
 // proof — plus a control assertion that the same attack slips through
-// WITHOUT the seed — lives here.
+// WITHOUT the seed — lives here. So does the #698 proof that a row appended
+// concurrently with a sweep is picked up by the NEXT sweep instead of falling
+// through the checkpoint fold, which likewise only means something against
+// real ids and a real chain.
 
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { asc, eq, sql } from "drizzle-orm";
 import { appendAuditLog, verifyIntegrity } from "@/lib/audit";
 import { db } from "@/db";
 import { auditLog, auditVerifyState } from "@/db/schema";
 import { sweepAuditVerify } from "@/server/audit-verify-job";
+
+// Hook for the #698 concurrency test: when armed, one real audit row is
+// appended right BEFORE the sweep writes its own report row — i.e. inside the
+// window between the sweep's MAX(id) snapshot and its report. That window is
+// milliseconds wide in production and can't be hit reliably from the outside,
+// so we interpose on the sweep's own append instead of racing it. Everything
+// else stays real: real DB, real hash chain, real verifyIntegrity.
+const { raceState } = vi.hoisted(() => ({ raceState: { armed: false } }));
+
+vi.mock("@/lib/audit", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/audit")>();
+  return {
+    ...actual,
+    appendAuditLog: async (entry: Parameters<typeof actual.appendAuditLog>[0]) => {
+      if (raceState.armed && entry.eventType === "audit.integrity_check") {
+        raceState.armed = false;
+        await actual.appendAuditLog({
+          actorType: "user",
+          actorId: "racer",
+          eventType: "auth.login",
+          resource: "user:racer",
+          outcome: "success",
+        });
+      }
+      return actual.appendAuditLog(entry);
+    },
+  };
+});
 
 async function appendRow(actorId: string) {
   await appendAuditLog({
@@ -61,6 +92,9 @@ async function deleteRowPastTrigger(id: number) {
 
 describe("audit-verify-job (integration)", () => {
   beforeEach(async () => {
+    // Only the #698 test arms the concurrent-append interposer; make sure a
+    // leftover arming can never bleed into another test's row sequence.
+    raceState.armed = false;
     // Fresh checkpoint per test — the shared per-test TRUNCATE in
     // src/test-helpers/integration/setup.ts already resets audit_verify_state,
     // this is just documentation of that assumption.
@@ -183,6 +217,50 @@ describe("audit-verify-job (integration)", () => {
 
     const checkpointAfterSecondSweep = await readCheckpointRow();
     expect(checkpointAfterSecondSweep!.lastStatus).toBe("violation");
+  });
+
+  it("CONCURRENT APPEND during the sweep: the raced row is verified by the next sweep, not skipped forever (#698)", async () => {
+    await appendRow("u1");
+    await appendRow("u2");
+    const rowsBeforeSweep = await allRowsById();
+    const lastPreSweepRow = rowsBeforeSweep[rowsBeforeSweep.length - 1];
+
+    // Arm the interposer: one real row lands between the sweep's MAX(id)
+    // snapshot and its own report row, i.e. in the (toId, reportId) window
+    // that neither this sweep (> toId) nor a report-folded checkpoint
+    // (< reportId + 1) would ever cover.
+    raceState.armed = true;
+    const firstSweep = await sweepAuditVerify();
+    expect(firstSweep.scanned).toBe(true);
+    expect(firstSweep.scannedTo).toBe(lastPreSweepRow.id);
+
+    const rowsAfterSweep = await allRowsById();
+    const racedRow = rowsAfterSweep[rowsAfterSweep.length - 2];
+    const reportRow = rowsAfterSweep[rowsAfterSweep.length - 1];
+    // Sanity: the interposer really produced the (toId, reportId) window.
+    expect(racedRow.id).toBeGreaterThan(lastPreSweepRow.id);
+    expect(racedRow.id).toBeLessThan(reportRow.id);
+
+    // The fix: because a row exists in that window, the checkpoint is folded
+    // only to the window actually scanned instead of past the report row.
+    const checkpoint = await readCheckpointRow();
+    expect(checkpoint!.lastVerifiedId).toBe(lastPreSweepRow.id);
+    expect(checkpoint!.lastVerifiedHmac).toBe(lastPreSweepRow.rowHmac);
+    expect(checkpoint!.lastStatus).toBe("ok");
+
+    // Self-healing: the next sweep re-scans the raced row AND the previous
+    // sweep's own report row — with the chain seeded from the checkpoint, so
+    // the boundary link into the raced row is checked too.
+    const secondSweep = await sweepAuditVerify();
+    expect(secondSweep.scanned).toBe(true);
+    expect(secondSweep.valid).toBe(true);
+    expect(secondSweep.scannedFrom).toBe(lastPreSweepRow.id + 1);
+    expect(secondSweep.scannedTo).toBe(reportRow.id);
+
+    // …and converges: nothing raced the second sweep, so it folded past its
+    // own report and the third sweep is a genuine no-op again.
+    const third = await sweepAuditVerify();
+    expect(third.scanned).toBe(false);
   });
 
   it("SEQUENCE GAP: scannedTo reflects the true highest scanned id, not fromId + count - 1", async () => {
