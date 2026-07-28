@@ -2,7 +2,11 @@ import { db } from "@/db";
 import { usageRecords } from "@/db/schema";
 import type { OpenClawClient } from "openclaw-node";
 import { parseJsonlLines } from "@/lib/diagnostics/jsonl-parser";
-import { resolveSessionId, readTrajectoryJsonl } from "@/lib/diagnostics/jsonl-reader";
+import {
+  resolveSessionId,
+  readTrajectoryJsonl,
+  TrajectoryFileNotFoundError,
+} from "@/lib/diagnostics/jsonl-reader";
 import { extractPerTurnUsage, type PerTurnUsage } from "@/lib/usage-from-trajectory";
 import { getModelPricing } from "@/lib/usage";
 import { estimateTurnCostUsd, type ModelPricing } from "@/lib/usage-cost";
@@ -152,8 +156,16 @@ export async function recordSessionTurnsUsage(params: RecordSessionTurnsParams):
     );
     return await insertPerTurnUsage(priced);
   } catch (error) {
-    // Trajectory missing / unreadable / DB hiccup — never throw into the
-    // poller or chat path. The next scan retries; dedup keeps it safe.
+    // A session with no trajectory file is an EXPECTED state, not a failure:
+    // the run may have died before OpenClaw wrote one (e.g. its model was
+    // retired), and there is simply nothing to record. Logging it would repeat
+    // on every poll cycle forever (#885) — flooding the container logs and
+    // evicting real signal from log-capture's bounded diagnostics ring. Stay
+    // quiet; a trajectory that appears later is picked up by the next scan.
+    if (error instanceof TrajectoryFileNotFoundError) return 0;
+    // Everything else (unreadable file, DB hiccup) is real breakage worth
+    // surfacing — but still never thrown into the poller or chat path. The
+    // next scan retries; dedup keeps it safe.
     console.error("[usage-per-turn] Failed to record session turns:", error);
     return 0;
   }
