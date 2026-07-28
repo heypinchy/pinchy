@@ -89,11 +89,12 @@ async function login(email = ADMIN_USER.email, password = ADMIN_USER.password): 
 // agent then fails with EACCES (same blocker as the skipped pinchy_ls
 // probe in e2e/integration/agent-chat.spec.ts).
 //
-// The tests stay in the file (skipped) so the plugin-tool-coverage drift
-// guard still finds the `pollAuditForTool` references for pinchy_ls,
-// pinchy_read, and pinchy_write. Re-enable once #427 ships uid-aligned
-// mounts for shared-agent creation (or an internal test-only "create
-// shared agent" API).
+// The tests stay in the file as the work #427 will re-enable, NOT as
+// coverage: since #834 the plugin-tool-coverage guard drops matches inside
+// skipped blocks, so the `pollAuditForTool` references below count for
+// nothing. (They used to count, and this comment used to say so.) Re-enable
+// once #427 ships uid-aligned mounts for shared-agent creation (or an
+// internal test-only "create shared agent" API).
 test.describe.skip("Workspace filesystem dispatch probe (pinchy-files plugin coverage)", () => {
   let cookie: string;
   let agentId: string;

@@ -312,11 +312,17 @@ test.describe("Plugin behavior — pinchy-context", () => {
 // agents"). The pre-#196 /tmp-ownership blocker on the create-new-agent
 // path is gone (the integration stack now runs Pinchy in a container with
 // uid 999 matching production), but the personal-agent permission rule
-// still prevents the easier reuse path. Leaving the test code in place so
-// the dispatch-probe coverage guard still sees the pinchy_ls token (skipped
-// tests count for static scans). Re-enable once Pinchy supports either
+// still prevents the easier reuse path. Re-enable once Pinchy supports either
 // (a) creating a shared agent via API for tests, or (b) overriding the
 // permissions guard for the integration admin.
+//
+// This block is kept for the work #427 will do, NOT as coverage: since #834
+// the plugin-tool-coverage guard drops matches inside skipped blocks, so the
+// `pinchy_ls` reference below counts for nothing. (It used to count, and the
+// comment here used to say so — a guard a never-running test satisfies
+// reports on a string, not on a test.) pinchy-files' real dispatch coverage
+// is the running `pinchy_generate_file` probe further down this file and the
+// `pinchy_read` probe in upload-and-send.spec.ts.
 test.describe("Plugin behavior — pinchy-files", () => {
   test.skip("pinchy_ls dispatches via fake-LLM and writes audit entry", async ({ page }) => {
     await login(page);
@@ -377,12 +383,10 @@ test.describe("Plugin behavior — pinchy-files", () => {
     }
   });
 
-  // Skipped (tracked in #427) for the same /tmp ownership reasons as
-  // pinchy_ls above. Kept as a static coverage probe so the
-  // plugin-tool-coverage guard sees a `eventType=tool.pinchy_read`
-  // reference for the .docx code path. The real .docx extraction is
-  // exercised by docx-extract.test.ts and the pinchy_read DOCX
-  // integration block in pinchy-files/index.test.ts.
+  // Skipped (tracked in #427) for the same reasons as pinchy_ls above, and
+  // likewise NOT counted as coverage since #834. The .docx extraction it
+  // would exercise is covered by docx-extract.test.ts and the pinchy_read
+  // DOCX integration block in pinchy-files/index.test.ts.
   test.skip("pinchy_read dispatches on .docx via fake-LLM and writes audit entry", async ({
     page,
   }) => {
