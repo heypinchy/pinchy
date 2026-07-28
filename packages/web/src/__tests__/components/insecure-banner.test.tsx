@@ -5,12 +5,30 @@ vi.mock("@/lib/domain", () => ({
   isInsecureMode: vi.fn(),
 }));
 
+const mockHeaders = vi.fn();
+vi.mock("next/headers", () => ({ headers: () => mockHeaders() }));
+
 import { InsecureBanner } from "@/components/insecure-banner";
 import { isInsecureMode } from "@/lib/domain";
+
+/**
+ * Requests arrive at a real domain unless a test says otherwise.
+ *
+ * `x-forwarded-host` is back-filled from `host` because that is what Next.js
+ * itself does to every request that lacks one (`base-server.js`) — a fixture
+ * without it describes a request that never reaches a Server Component, and an
+ * earlier version of this suite passed against exactly that fiction while the
+ * feature did nothing. `extra` overrides it to model a real proxy.
+ */
+function requestFrom(host: string, extra: Record<string, string> = {}) {
+  mockHeaders.mockResolvedValue(new Headers({ host, "x-forwarded-host": host, ...extra }));
+}
 
 describe("InsecureBanner", () => {
   beforeEach(() => {
     vi.mocked(isInsecureMode).mockReset();
+    mockHeaders.mockReset();
+    requestFrom("pinchy.example.com");
   });
 
   it("should render nothing when not in insecure mode", async () => {
@@ -53,6 +71,28 @@ describe("InsecureBanner", () => {
     const Component = await InsecureBanner({ isAdmin: true });
     render(Component);
     expect(screen.getByRole("alert").getAttribute("data-testid")).toBe("insecure-banner");
+  });
+
+  it("stays silent on a local install, where the advice cannot be acted on", async () => {
+    // A browser already treats http://localhost as a secure context, and there
+    // is no domain to lock. The warning would be wrong, not merely noisy.
+    vi.mocked(isInsecureMode).mockResolvedValue(true);
+    requestFrom("localhost:7777");
+    const Component = await InsecureBanner({ isAdmin: true });
+    const { container } = render(Component);
+    expect(container.innerHTML).toBe("");
+  });
+
+  it("still warns a proxied instance that merely looks local from inside", async () => {
+    // The case worth protecting: behind a proxy the `Host` header describes the
+    // hop into the container, so a PUBLIC instance can report `localhost`.
+    // Suppressing the banner there would hide it from precisely the operator
+    // who needs it, so the forwarded client-facing host decides instead.
+    vi.mocked(isInsecureMode).mockResolvedValue(true);
+    requestFrom("localhost:7777", { "x-forwarded-host": "pinchy.example.com" });
+    const Component = await InsecureBanner({ isAdmin: true });
+    render(Component);
+    expect(screen.getByRole("alert")).toBeDefined();
   });
 
   it("should show 'contact administrator' for non-admins", async () => {
