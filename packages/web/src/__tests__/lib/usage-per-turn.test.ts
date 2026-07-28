@@ -12,12 +12,22 @@ vi.mock("@/db/schema", () => ({
   usageRecords: { _table: "usage_records", sessionKey: "session_key", runId: "run_id" },
 }));
 
-vi.mock("@/lib/diagnostics/jsonl-reader", () => ({
-  resolveSessionId: (...args: unknown[]) => mockResolveSessionId(...args),
-  readTrajectoryJsonl: (...args: unknown[]) => mockReadTrajectoryJsonl(...args),
-}));
+// Partial mock: only the two readers are stubbed. `TrajectoryFileNotFoundError`
+// stays the REAL class so the `instanceof` branch under test is exercised
+// against the same identity production code sees.
+vi.mock("@/lib/diagnostics/jsonl-reader", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/diagnostics/jsonl-reader")>(
+    "@/lib/diagnostics/jsonl-reader"
+  );
+  return {
+    ...actual,
+    resolveSessionId: (...args: unknown[]) => mockResolveSessionId(...args),
+    readTrajectoryJsonl: (...args: unknown[]) => mockReadTrajectoryJsonl(...args),
+  };
+});
 
 import { buildUsageRows, recordSessionTurnsUsage } from "@/lib/usage-per-turn";
+import { TrajectoryFileNotFoundError } from "@/lib/diagnostics/jsonl-reader";
 import { _resetPricingCacheForTest } from "@/lib/usage";
 import type { PerTurnUsage } from "@/lib/usage-from-trajectory";
 
@@ -214,6 +224,57 @@ describe("recordSessionTurnsUsage cost wiring", () => {
     expect(recorded).toBe(1);
     const rows = mockValues.mock.calls[0][0] as Array<Record<string, unknown>>;
     expect(rows[0].estimatedCostUsd).toBeNull();
+  });
+});
+
+// #885: a session whose run never wrote a trajectory (e.g. it failed on a
+// retired model) is an EXPECTED state, not an error — but the poller re-scans
+// it forever, so logging it as an error floods the container logs and evicts
+// real signal from log-capture's 100-entry diagnostics ring.
+describe("recordSessionTurnsUsage with no trajectory file", () => {
+  function client() {
+    return {
+      config: { get: vi.fn().mockResolvedValue({ config: {} }) },
+    } as unknown as Parameters<typeof recordSessionTurnsUsage>[0]["openclawClient"];
+  }
+
+  const params = () => ({
+    openclawClient: client(),
+    agentId: "a1",
+    userId: "u1",
+    agentName: "Ada",
+    sessionKey: "agent:a1:direct:u1",
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    _resetPricingCacheForTest();
+    mockResolveSessionId.mockResolvedValue("sess-1");
+  });
+
+  it("returns 0 without logging an error when the trajectory file is absent", async () => {
+    mockReadTrajectoryJsonl.mockRejectedValue(
+      new TrajectoryFileNotFoundError("/openclaw-config/agents/a1/sessions/sess-1.trajectory.jsonl")
+    );
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const recorded = await recordSessionTurnsUsage(params());
+
+    expect(recorded).toBe(0);
+    expect(consoleError).not.toHaveBeenCalled();
+    consoleError.mockRestore();
+  });
+
+  it("still logs an error for a real IO failure, so genuine breakage stays visible", async () => {
+    const ioError = Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
+    mockReadTrajectoryJsonl.mockRejectedValue(ioError);
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const recorded = await recordSessionTurnsUsage(params());
+
+    expect(recorded).toBe(0);
+    expect(consoleError).toHaveBeenCalledTimes(1);
+    consoleError.mockRestore();
   });
 });
 
