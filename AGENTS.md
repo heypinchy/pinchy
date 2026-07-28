@@ -415,6 +415,22 @@ A dedicated guard, `odoo-ref-tool-e2e-coverage.test.ts` (pinchy#791), enforces t
 - When behavior changes, update docs in the same PR.
 - Read `PERSONALITY.md` before writing user-facing text. Use English, "we" perspective, and the established Pinchy voice.
 
+### In-Page Anchors Are Checked By The Docs Build
+
+A link to a heading that does not exist — `[see the config](/guides/setup/#nope)` — used to be caught by nothing (#769). The `links` job (lychee) passes `--exclude-path docs` **on purpose**: in the source `.mdx`, `/guides/setup/#configure-openclaw` is a route into the _generated_ site, not a file on disk, so checking it there produces noise rather than signal. And the astro build fails on MDX _syntax_ while being perfectly happy with a dead anchor. So the docs — the thing users read, and the thing Smithers reads on demand through `pinchy-docs` — were the one place a broken link shipped silently. Five were live on docs.heypinchy.com when the check landed, two of them because a `<Badge>` inside a heading gives it a trailing hyphen (`#access-tab` is really `#access-tab-`).
+
+The check is `docs/scripts/check-anchors.mjs`, run by `pnpm -C docs check:anchors` **after** `pnpm -C docs build`. It reads `docs/dist/` — every `<a href>` and every `id="…"` in the HTML that actually ships — and resolves the two against each other. Same rule as the X-Frame-Options gate below: assert what a concrete URL resolves to, not what a source file asked for. `scripts/lib/docs-link-gate.test.mjs` (`pnpm test:scripts`) pins the wiring, including the **order**: the checker reads the build's output, so a check that runs first passes against a stale dist.
+
+It lives in `quality` because `quality` already builds the docs and is ungated (see § "CI Path Filtering Is Job-Level, Never Workflow-Level"). A job of its own would have needed a `changes` gate and then skipped on exactly the docs-only PRs it guards — bug #764 from the other direction.
+
+**Do not reach for `starlight-links-validator` instead; it was tried and it does not work here.** The plugin registers its collectors through `markdown.remarkPlugins`/`rehypePlugins`, which Astro 6.4 deprecated and `@astrojs/mdx@5` no longer forwards. Against our 64 `.mdx` pages and one `.md` page it collects nothing from the `.mdx` files, reports one _bogus_ "invalid link" from the `.md` one, and misses a deliberately broken anchor entirely — a gate that fails loudly on the wrong thing while checking nothing. Both `0.24.1` (the Astro 6 line) and `0.25.2` (Astro 7 / Starlight ≥ 0.41) behave that way here. Revisit only after the docs move to Astro 7, and then only with the canary below.
+
+**Verify a change to this gate with a canary, never by reading the code.** Add a link to a heading that does not exist, build, confirm the check fails on that exact link, remove it. That step is what caught the plugin being a no-op; nothing cheaper would have.
+
+Unrelated to the anchors but found while building them: `pnpm -C docs build` now runs `scripts/with-restore.sh astro build` rather than `astro build && restore`. The old `&&` chain short-circuited, so a failed or interrupted build left `vX.Y.Z` injected into the six committed source files `inject-version.sh` touches — and stayed that way, because the next run found no placeholders to inject and therefore registered nothing to restore. The wrapper restores either way and forwards the exit code.
+
+What it does **not** cover, so nobody reads the green check as more than it is: only `<a href>` elements, never `<img src>`. Every `![…](/screenshots/….png)` is still checked by nothing — and has to be, because `docs/public/screenshots/` is written by `screenshots.yml` at release time and does not exist in a normal checkout, so checking it would fail every build rather than catch anything. External links out of `docs/` remain unchecked too; that is the `--exclude-path docs` half this did not close.
+
 ## Product Context
 
 Pinchy's core differentiator is agent permissions and control: granular agent permissions, RBAC, audit trail, and self-hosted governance. Multi-user support alone is not the value proposition.

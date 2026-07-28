@@ -293,6 +293,14 @@ jobs:
       - name: Docs build
         run: cd docs && pnpm build
 
+      - name: Docs anchor check (built output)
+        # The only thing checking in-page anchors inside docs/ (#769). It reads
+        # docs/dist/, so it MUST follow the build step. It lives here, in the
+        # ungated `quality` job, rather than in a job of its own: a docs check
+        # gated on `changes` would skip on exactly the docs-only PRs it guards —
+        # see AGENTS.md § "CI Path Filtering Is Job-Level, Never Workflow-Level".
+        run: cd docs && pnpm check:anchors
+
       - name: Squawk migration lint (changed files only)
         if: github.event_name == 'pull_request'
         run: |
@@ -2622,6 +2630,13 @@ jobs:
           # only /stargazers 404s). It's a decorative stars-badge click-through,
           # not documentation, so its false-positive 404 must not red-light every
           # PR — the badge IMAGE (img.shields.io/github/stars) is checked normally.
+          # `--exclude-path docs` stays: in the source .mdx a link like
+          # `/guides/setup/#configure-openclaw` is a route into the GENERATED
+          # site, not a file on disk, so lychee can only produce noise there.
+          # Internal docs links and their #anchors are checked instead against
+          # the BUILT site by the `quality` job's `pnpm check:anchors` step
+          # (#769; see AGENTS.md § "In-Page Anchors Are Checked By The Docs
+          # Build"). External links out of docs/ remain unchecked.
           args: "--no-progress --max-retries 3 --retry-wait-time 5 --accept '200..=299,429,500..=599' '**/*.md' '**/*.mdx' --exclude-path node_modules --exclude-path .git --exclude-path docs --exclude 'localhost' --exclude 'github\\.com/heypinchy/website' --exclude 'github\\.com/heypinchy/pinchy/stargazers' --exclude 'linkedin\\.com' --exclude 'sonner\\.emilkowal\\.dev' --exclude 'squawkhq\\.com' --exclude 'contributor-covenant\\.org' --exclude 'star-history\\.com'"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

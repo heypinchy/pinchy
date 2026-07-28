@@ -45,7 +45,11 @@ function setupDocsLikeTree() {
 function copyScripts(targetDocsDir) {
   const scriptsDir = path.join(targetDocsDir, "scripts");
   mkdirSync(scriptsDir, { recursive: true });
-  for (const name of ["inject-version.sh", "restore-placeholders.sh"]) {
+  for (const name of [
+    "inject-version.sh",
+    "restore-placeholders.sh",
+    "with-restore.sh",
+  ]) {
     const dest = path.join(scriptsDir, name);
     writeFileSync(dest, readFileSync(path.join(__dirname, name)), {
       mode: 0o755,
@@ -111,6 +115,68 @@ test("inject + restore round-trip preserves a heading that names the current ver
 
   const restored = readFileSync(file, "utf-8");
   assert.equal(restored, original);
+
+  rmSync(root, { recursive: true, force: true });
+});
+
+// ── with-restore.sh ───────────────────────────────────────────────────────
+//
+// `inject && astro build && restore` short-circuits: a failed build never
+// restores, leaving vX.Y.Z baked into six committed docs source files, where
+// the next `git commit -a` picks them up. The state is sticky, too — the next
+// run finds no placeholders left to inject, so it registers nothing for the
+// next restore to undo. with-restore.sh runs the restore either way and
+// forwards the exit code, so a red build stays red without dirtying the tree.
+
+function runWithRestore(scriptsDir, version, command) {
+  const env = { ...process.env, PINCHY_VERSION: version };
+  execFileSync("sh", [path.join(scriptsDir, "inject-version.sh")], {
+    env,
+    stdio: "ignore",
+  });
+  try {
+    execFileSync("sh", [path.join(scriptsDir, "with-restore.sh"), ...command], {
+      env,
+      stdio: "ignore",
+    });
+    return 0;
+  } catch (error) {
+    return error.status;
+  }
+}
+
+test("with-restore.sh restores placeholders after a FAILING command", () => {
+  const { root, srcDir } = setupDocsLikeTree();
+  const scriptsDir = copyScripts(path.join(root, "docs"));
+
+  const file = path.join(srcDir, "installation.mdx");
+  const original = "Pinchy %%PINCHY_VERSION%% is out.\n";
+  writeFileSync(file, original);
+
+  const status = runWithRestore(scriptsDir, "v0.8.0", ["false"]);
+
+  assert.equal(status, 1, "the failing command's exit code must survive");
+  assert.equal(
+    readFileSync(file, "utf-8"),
+    original,
+    "a failed build must not leave the injected version in the source tree",
+  );
+
+  rmSync(root, { recursive: true, force: true });
+});
+
+test("with-restore.sh restores placeholders after a SUCCEEDING command", () => {
+  const { root, srcDir } = setupDocsLikeTree();
+  const scriptsDir = copyScripts(path.join(root, "docs"));
+
+  const file = path.join(srcDir, "installation.mdx");
+  const original = "Pinchy %%PINCHY_VERSION%% is out.\n";
+  writeFileSync(file, original);
+
+  const status = runWithRestore(scriptsDir, "v0.8.0", ["true"]);
+
+  assert.equal(status, 0);
+  assert.equal(readFileSync(file, "utf-8"), original);
 
   rmSync(root, { recursive: true, force: true });
 });
