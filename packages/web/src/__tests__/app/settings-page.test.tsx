@@ -241,7 +241,7 @@ describe("Settings Page", () => {
     it("should render AI Provider section with ProviderKeyForm", async () => {
       setupAdminFetchMocks();
 
-      const { container } = render(<SettingsPage isAdmin={isCurrentTestAdmin} />);
+      render(<SettingsPage isAdmin={isCurrentTestAdmin} />);
 
       await waitFor(() => {
         expect(screen.getByTestId("mock-provider-form")).toBeInTheDocument();
@@ -251,7 +251,13 @@ describe("Settings Page", () => {
       // error hint ("Go to Settings > AI Provider…"), which both already say
       // "AI Provider". 3966c06b renamed the tab and missed this heading, so a
       // user following that hint landed on a card still titled "LLM Provider".
-      expect(container.querySelector('[data-slot="card-title"]')).toHaveTextContent("AI Provider");
+      // Scoped to the card that holds the provider form — several tabs stay
+      // mounted, so the first card-title in the container is not necessarily
+      // this one.
+      const providerCard = screen.getByTestId("mock-provider-form").closest('[data-slot="card"]');
+      expect(providerCard?.querySelector('[data-slot="card-title"]')).toHaveTextContent(
+        "AI Provider"
+      );
     });
 
     it("should show loading state while fetching provider status", () => {
