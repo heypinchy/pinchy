@@ -22,19 +22,82 @@
  */
 
 /**
- * An absolute path ending in an extension we can serve. The extension is baked
- * into the pattern rather than checked separately: a second predicate deciding
- * the same thing is a pair that drifts, and a mutation test proved the separate
- * check was already unreachable. Widening what is linkable therefore means
- * editing this alternation — today only `.pdf`, which is also the only type the
- * ingest accepts and the only one the route renders inline.
+ * An absolute path ending in an extension we can serve, anchored at the END of
+ * the slice it is run against — see `findSourcePaths` for why it is never let
+ * loose on a whole text node. The extension is baked into the pattern rather
+ * than checked separately: a second predicate deciding the same thing is a pair
+ * that drifts, and a mutation test proved the separate check was already
+ * unreachable. Widening what is linkable therefore means editing this
+ * alternation — today only `.pdf`, which is also the only type the ingest
+ * accepts and the only one the route renders inline.
  *
  * Anchoring on the extension is what keeps arbitrary path-shaped strings
- * (`/etc/passwd`) out. The lookahead trims trailing sentence punctuation, so
- * "…/doc.pdf." links the file and not the full stop. Paths in a real corpus
- * routinely contain spaces ("PF LAB/…"), so segments allow them.
+ * (`/etc/passwd`) out. Paths in a real corpus routinely contain spaces
+ * ("PF LAB/…"), so segments allow them.
  */
-const SOURCE_PATH = /\/(?:[^\s/]|[^\s/][^/]*?[^\s/])?(?:\/[^/\n]+?)*?\.pdf(?=[\s,.;:)\]]|$)/gi;
+const SOURCE_PATH_ENDING_HERE = /\/(?:[^\s/]|[^\s/][^/]*?[^\s/])?(?:\/[^/\n]+?)*?\.pdf$/i;
+
+/** What may follow a path so that "…/doc.pdf." links the file and not the full stop. */
+const PATH_BOUNDARY = /[\s,.;:)\]]/;
+
+/**
+ * Locates the extension case-insensitively. A plain `indexOf` on a lowercased
+ * copy would be the obvious way and is wrong: case folding is not
+ * length-preserving ("İ".toLowerCase() is two characters), so every offset
+ * after such a character shifts and the path is extracted one character short.
+ * Matching on the ORIGINAL string keeps offsets meaning what they say.
+ */
+const EXTENSION = /\.pdf/gi;
+
+/**
+ * How far back from an extension a path may reasonably start. The longest path
+ * in the corpus this was built against is under 120 characters; 256 is slack,
+ * not a fit. A path longer than this is read from its last 256 characters, so
+ * the worst case is a link that opens a shorter path (and 403s) rather than a
+ * scan that grows with the message.
+ */
+const MAX_PATH_LENGTH = 256;
+
+/**
+ * Finds the cited paths in one text node, left to right, non-overlapping.
+ *
+ * The obvious implementation — one global regex over the whole string — is what
+ * this replaces, and the reason is not style. The pattern's nested lazy
+ * quantifiers backtrack catastrophically on text that is path-SHAPED but never
+ * completes a match (`/a/a/a/…/bbbb`, or an extension the boundary check
+ * rejects): 18 KB of it took nearly seven seconds. This transform runs
+ * synchronously in the browser on every streamed chunk of every message, so
+ * that is a frozen chat, and the text is model output about documents a
+ * knowledge base ingested — not something we get to assume is benign.
+ *
+ * So the scan is driven by the ONE landmark a citation must contain: the
+ * extension. Each occurrence is found with `indexOf` (linear, no backtracking),
+ * and only then is the regex run — anchored, over at most `MAX_PATH_LENGTH`
+ * characters ending exactly there. Total work is bounded by
+ * occurrences × constant instead of growing with the text.
+ */
+function findSourcePaths(value: string): Array<{ start: number; end: number }> {
+  const found: Array<{ start: number; end: number }> = [];
+  let cursor = 0;
+
+  EXTENSION.lastIndex = 0;
+  for (let hit = EXTENSION.exec(value); hit !== null; hit = EXTENSION.exec(value)) {
+    const end = hit.index + hit[0].length;
+
+    // The character AFTER the extension, read from the real text rather than
+    // the window below, so a path at the very end of the node is still a path.
+    if (end < value.length && !PATH_BOUNDARY.test(value[end])) continue;
+
+    const windowStart = Math.max(cursor, end - MAX_PATH_LENGTH);
+    const match = SOURCE_PATH_ENDING_HERE.exec(value.slice(windowStart, end));
+    if (!match) continue;
+
+    found.push({ start: windowStart + match.index, end });
+    cursor = end;
+  }
+
+  return found;
+}
 
 /** `p. 44`, `S. 275`, `page 12`, `Seite 3` — the page hint that may follow a path. */
 const TRAILING_PAGE = /^\s*[—–\-,]?\s*(?:p\.?|pp\.?|page|s\.|seite)\s*(\d{1,5})\b/i;
@@ -57,8 +120,21 @@ export function buildSourceHref(agentId: string, path: string, page: number | nu
   return page === null ? base : `${base}#page=${page}`;
 }
 
-/** The marker that identifies an href this module produced. Exported so the renderer recognises its own links without re-deriving the shape. */
-export const WORKSPACE_FILE_MARKER = "/workspace-file?path=";
+/**
+ * The shape of an href this module produced, anchored at the START of the
+ * string. The anchor is the security-relevant part.
+ *
+ * Recognising a citation by a substring search let ANY absolute url carrying
+ * `/workspace-file?path=` through — `https://evil.example/workspace-file?path=…`
+ * included. What the renderer recognises it hands to `<embed src>`, so that is
+ * an arbitrary cross-origin frame inside the chat, reachable from model output
+ * about documents the knowledge base ingested. There is no CSP to stop it
+ * downstream. A citation is a same-origin path under `/api/agents/`, and the
+ * only thing that can assert "same origin" is a leading `/` with no second one.
+ *
+ * Exported so the renderer recognises its own links without re-deriving the shape.
+ */
+export const WORKSPACE_FILE_HREF = /^\/api\/agents\/[^/]+\/workspace-file\?path=([^#]*)(?:#(.*))?$/;
 
 /**
  * Recovers the document path from an href built by `buildSourceHref`, for use
@@ -69,11 +145,10 @@ export const WORKSPACE_FILE_MARKER = "/workspace-file?path=";
  * a url is exactly the kind of code that decays quietly.
  */
 export function parseSourceHref(href: string): { path: string; page: number | null } | null {
-  const markerIndex = href.indexOf(WORKSPACE_FILE_MARKER);
-  if (markerIndex === -1) return null;
+  const match = WORKSPACE_FILE_HREF.exec(href);
+  if (!match) return null;
 
-  const afterMarker = href.slice(markerIndex + WORKSPACE_FILE_MARKER.length);
-  const [encodedPath, fragment] = afterMarker.split("#");
+  const [, encodedPath, fragment] = match;
   if (!encodedPath) return null;
 
   const pageMatch = /^page=(\d{1,5})$/.exec(fragment ?? "");
@@ -91,31 +166,30 @@ export function parseSourceHref(href: string): { path: string; page: number | nu
  * replace it with an equivalent copy.
  */
 function linkifyText(value: string, agentId: string): MdastNode[] | null {
+  const matches = findSourcePaths(value);
+  if (matches.length === 0) return null;
+
   const parts: MdastNode[] = [];
   let cursor = 0;
-  SOURCE_PATH.lastIndex = 0;
 
-  for (let match = SOURCE_PATH.exec(value); match !== null; match = SOURCE_PATH.exec(value)) {
-    const path = match[0];
+  for (const { start, end } of matches) {
+    const path = value.slice(start, end);
 
     // A page number may trail the path ("— p. 44"). It is consumed into the
     // href but left in the visible text: the reader still sees which page is
     // being cited, and the link merely opens there.
-    const pageMatch = TRAILING_PAGE.exec(value.slice(match.index + path.length));
+    const pageMatch = TRAILING_PAGE.exec(value.slice(end));
     const page = pageMatch ? Number(pageMatch[1]) : null;
 
-    if (match.index > cursor) {
-      parts.push({ type: "text", value: value.slice(cursor, match.index) });
-    }
+    if (start > cursor) parts.push({ type: "text", value: value.slice(cursor, start) });
     parts.push({
       type: "link",
       url: buildSourceHref(agentId, path, page),
       children: [{ type: "text", value: path }],
     });
-    cursor = match.index + path.length;
+    cursor = end;
   }
 
-  if (parts.length === 0) return null;
   if (cursor < value.length) parts.push({ type: "text", value: value.slice(cursor) });
   return parts;
 }
