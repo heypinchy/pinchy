@@ -80,6 +80,12 @@ services:
       # takes effect with this explicit flag, so the TLS downgrade can never
       # happen silently in production.
       - PINCHY_INSECURE_MAIL_MOCK=1
+      # GreenMail lives on the compose network, i.e. behind a private Docker IP —
+      # exactly the on-premise mail server this flag exists for. Without it the
+      # IMAP SSRF guard (mail-host-guard.ts) refuses every probe of a stored
+      # `greenmail` host. NOT an E2E-only flag: it is the same production opt-in
+      # an operator sets for an internal mail server, off by default.
+      - ALLOW_PRIVATE_MAIL_HOSTS=1
       # Emit a dummy API-key SecretRef for the local Ollama provider so
       # OpenClaw authenticates when the dispatch probe (email-imap.spec.ts)
       # swaps default_provider to ollama-local and routes to host fake-Ollama

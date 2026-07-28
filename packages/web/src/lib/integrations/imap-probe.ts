@@ -2,13 +2,16 @@ import { ImapFlow } from "imapflow";
 import nodemailer from "nodemailer";
 import { connect as netConnect } from "node:net";
 import type { ImapTestInput } from "@/lib/schemas/imap";
+import { assertMailHostAllowed, MailHostBlockedError } from "@/lib/integrations/mail-host-guard";
 
 // Shared IMAP/SMTP probe logic used by BOTH:
 //   - the pre-create "Test Connection" route (packages/web/src/app/api/integrations/imap/test/route.ts)
 //   - the imap branch of probeIntegrationCredentials (packages/web/src/lib/integrations/probe.ts),
 //     which re-probes an EXISTING connection's stored credentials.
-// Kept in one place (DRY) so timeout bounds and error-message mapping never drift
-// between the two callers.
+// Kept in one place (DRY) so timeout bounds, error-message mapping and the SSRF
+// guard never drift between the two callers — the guard lives at the two entry
+// points below (testImapLogin/testSmtpVerify) precisely so neither caller can
+// forget it.
 
 // Maps low-level probe errors to short, friendly messages that never leak a
 // stack trace or the password. Order matters: unambiguous network-error CODES
@@ -17,6 +20,10 @@ import type { ImapTestInput } from "@/lib/schemas/imap";
 // A host named e.g. "smtp-auth.example.com" would otherwise turn a DNS/timeout/
 // refused failure into a bogus "authentication failed".
 export function friendlyError(error: unknown): string {
+  // The SSRF guard's own message already names the cause and the fix; the
+  // fuzzy mapping below would only bury it under "check your settings".
+  if (error instanceof MailHostBlockedError) return error.message;
+
   const message = error instanceof Error ? error.message : String(error);
   const lower = message.toLowerCase();
 
@@ -51,13 +58,19 @@ export function friendlyError(error: unknown): string {
 // failure category — e.g. to decide whether it's worth probing raw SMTP port
 // reachability — instead of pattern-matching the friendly string again.
 // friendlyError() itself is kept unchanged/exported for its existing callers.
-export type ProbeFailureCode = "timeout" | "refused" | "dns" | "auth" | "tls" | "unknown";
+export type ProbeFailureCode =
+  "timeout" | "refused" | "dns" | "auth" | "tls" | "blocked" | "unknown";
 
 // Per-leg (IMAP or SMTP) outcome of a connection test — see ImapTestResult in
 // @/lib/schemas/imap for how the two legs combine into the full API response.
 export type LegResult = { ok: true } | { ok: false; code: ProbeFailureCode; message: string };
 
 export function classifyProbeError(error: unknown): { code: ProbeFailureCode; message: string } {
+  // Its own code, ahead of every message-shaped rule: the caller uses the code
+  // to decide whether to run the SMTP port-reachability probe, and a host the
+  // guard just refused must not be scanned on three more ports.
+  if (error instanceof MailHostBlockedError) return { code: "blocked", message: error.message };
+
   const message = error instanceof Error ? error.message : String(error);
   const lower = message.toLowerCase();
 
@@ -136,6 +149,11 @@ function probeTcpPort(host: string, port: number, timeoutMs: number): Promise<bo
 // smtpHost on a fixed, hardcoded port list — never to a host/port derived
 // from user-controlled input beyond what the caller already validated and
 // intended to probe. Do not widen this to accept arbitrary ports/hosts.
+//
+// It is deliberately NOT guarded again here: its only caller runs it after the
+// SMTP leg failed with code "timeout"/"refused", and a host the SSRF guard
+// refuses fails with code "blocked" — so a blocked host never reaches this
+// scan. A new caller MUST call assertMailHostAllowed() first.
 export async function probeSmtpPorts(
   host: string,
   ports: number[] = [465, 587, 25]
@@ -165,6 +183,8 @@ export function tlsModeForPort(
 }
 
 export async function testImapLogin(input: ImapTestInput): Promise<void> {
+  await assertMailHostAllowed(input.imapHost);
+
   const client = new ImapFlow({
     host: input.imapHost,
     port: input.imapPort,
@@ -185,6 +205,8 @@ export async function testImapLogin(input: ImapTestInput): Promise<void> {
 }
 
 export async function testSmtpVerify(input: ImapTestInput): Promise<void> {
+  await assertMailHostAllowed(input.smtpHost);
+
   const { secure, requireTLS } = tlsModeForPort(input.smtpPort, input.security);
   const transport = nodemailer.createTransport({
     host: input.smtpHost,
