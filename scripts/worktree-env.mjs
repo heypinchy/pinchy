@@ -21,7 +21,7 @@
  * started from the repo root, so that name moved the E2E stacks off :7777 too.
  * A `.env` from the earlier version is migrated automatically on the next run.
  */
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 
@@ -55,7 +55,15 @@ function worktreeRoot() {
 const root = worktreeRoot();
 const envPath = join(root, ".env");
 const force = process.argv.includes("--force");
-const existing = existsSync(envPath) ? readFileSync(envPath, "utf8") : "";
+// Read-then-handle rather than exists-then-read: the check-and-use pair is a
+// file-system race (CodeQL js/file-system-race), and "no file yet" is not an
+// error case here — it is a worktree that has never been allocated.
+let existing = "";
+try {
+  existing = readFileSync(envPath, "utf8");
+} catch {
+  existing = "";
+}
 const parsed = parseEnvFile(existing);
 
 if (!force && MANAGED_KEYS.every((k) => k in parsed)) {

@@ -17,13 +17,17 @@ import { defineConfig } from "vitest/config";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 
-import { parseEnvFile } from "../../scripts/lib/env-file.mjs";
-
-function devDbPort() {
+// Read the one key inline rather than importing scripts/lib/env-file.mjs.
+// `Dockerfile.pinchy` copies only `packages/web` into the image and then runs
+// `pnpm build`, which type-checks this file — anything reached through `../..`
+// simply does not exist there. Keeping the package self-contained is the
+// constraint; one regex for one key is the cheaper side of that trade.
+function devDbPort(): string {
   if (process.env.DEV_DB_PORT) return process.env.DEV_DB_PORT;
   try {
-    const env = parseEnvFile(readFileSync(path.resolve(__dirname, "../../.env"), "utf8"));
-    return env.DEV_DB_PORT ?? "5434";
+    const env = readFileSync(path.resolve(__dirname, "../../.env"), "utf8");
+    const match = /^\s*(?:export\s+)?DEV_DB_PORT\s*=\s*"?(\d+)"?\s*$/m.exec(env);
+    return match ? match[1] : "5434";
   } catch {
     // No `.env` — this worktree never allocated, so it is on the default.
     return "5434";

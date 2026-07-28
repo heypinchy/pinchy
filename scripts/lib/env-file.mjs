@@ -36,11 +36,6 @@ const LEGACY_HEADER = /^#\s*Per-worktree dev stack/;
  * would make the script believe a key is missing and re-allocate ports that
  * were meant to stay put.
  *
- * The JSDoc types are load-bearing, not decoration: `vitest.integration.config.ts`
- * imports this, and that file IS part of what `next build` type-checks. Without
- * them TypeScript infers `{}` for the return value and the build fails with
- * TS2339 on the first property access.
- *
  * @param {string} text
  * @returns {Record<string, string>}
  */
