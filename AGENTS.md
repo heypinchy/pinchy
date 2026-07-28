@@ -208,6 +208,20 @@ Production-style run:
 docker compose pull && docker compose up -d
 ```
 
+### Running a dev stack per worktree
+
+Two worktrees cannot both run the dev stack on the default ports. Allocate a free block for the current worktree once, then use the ordinary command:
+
+```bash
+pnpm worktree:env
+```
+
+It writes `COMPOSE_PROJECT_NAME`, `PINCHY_PORT`, `DB_PORT` and `CADDY_PORT` into a gitignored `.env`, which Compose reads automatically. Allocation happens **once** and is not re-derived on later runs — a worktree's address should stay bookmarkable — so pass `--force` if you need a new block.
+
+Do not hand-write a `docker-compose.local.yml` with `ports: !override` for this any more. That was the old workaround and it is easy to get wrong: a bare `ports:` **appends** instead of replacing, so the conflict survives the override that was meant to fix it.
+
+The compose defaults are unchanged (`7777`/`5434`/`8443`), so a checkout without `.env` behaves exactly as the docs describe. Note that the `5433` the standard E2E run expects is separate — see `playwright.config.ts`.
+
 Common host commands from the repository root:
 
 ```bash

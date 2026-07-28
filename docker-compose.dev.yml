@@ -77,11 +77,13 @@ services:
     environment:
       - POSTGRES_PASSWORD=pinchy_dev
     ports:
-      - "5434:5432"
+      # Overridable so two worktrees can run a dev stack at once.
+      # `node scripts/worktree-env.mjs` writes a free block into .env.
+      - "${DB_PORT:-5434}:5432"
   caddy:
     image: caddy:2
     ports:
-      - "8443:443"
+      - "${CADDY_PORT:-8443}:443"
     volumes:
       - ./Caddyfile.dev:/etc/caddy/Caddyfile:ro
       - caddy_data_dev:/data
