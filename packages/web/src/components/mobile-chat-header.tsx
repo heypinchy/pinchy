@@ -20,7 +20,7 @@ export function MobileChatHeader({
   canEdit = false,
 }: MobileChatHeaderProps) {
   return (
-    <header className="md:hidden flex items-center justify-between p-3 border-b">
+    <header className="md:hidden shrink-0 flex items-center justify-between p-3 border-b">
       <Link href="/agents" aria-label="Back" className="p-1">
         <ArrowLeft className="size-5" />
       </Link>
