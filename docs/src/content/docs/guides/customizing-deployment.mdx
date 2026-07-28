@@ -63,6 +63,25 @@ services:
 
 Mount read-only (`:ro`) when possible — OpenClaw reads extensions at startup; it doesn't need write access.
 
+## Recipe 4: Mount your own document directories
+
+Host directories you want agents to read belong under `/data/`, on both the `openclaw` and the `pinchy` service:
+
+```yaml
+# docker-compose.override.yml
+services:
+  openclaw:
+    volumes:
+      - /srv/docs/hr:/data/hr:ro
+
+  pinchy:
+    volumes:
+      - pinchy-data:/data
+      - /srv/docs/hr:/data/hr:ro
+```
+
+The `- pinchy-data:/data` line re-declares that mount without the base file's `:ro`, which Docker needs before it can create a mount point underneath it. [Mount Data Directories](/guides/mount-data-directories/) covers the details, including how the directories show up in the agent permissions picker.
+
 ## What's not supported
 
 The override file is for _additions_, not _replacements_. The following are outside the supported surface and may break on any release:

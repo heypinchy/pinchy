@@ -1,54 +1,83 @@
 ---
 title: Mount Data Directories
-description: How to make files available to Pinchy agents by mounting directories into the container.
+description: How to make files available to Pinchy agents by mounting directories into the containers.
 ---
 
-Pinchy agents can only access files inside the `/data/` directory in the container. To make your documents available, you mount host directories into subdirectories of `/data/` using Docker volumes.
+import { Aside } from "@astrojs/starlight/components";
+
+Pinchy agents can only access files inside the `/data/` directory. To make your documents available, you mount host directories into subdirectories of `/data/` — in a `docker-compose.override.yml`, so upgrades never touch them.
 
 ## The `/data/` convention
 
 ![Agent permissions with directory picker — select which directories each agent can access](/screenshots/agent-settings-permissions.png)
 
-All agent-accessible files live under `/data/` inside the **OpenClaw** container. Pinchy's `pinchy-files` plugin runs inside OpenClaw and reads files from that path. The `pinchy-data` named volume is mounted there by default, but you can bind-mount additional host directories as subdirectories.
+All agent-accessible files live under `/data/`. The `pinchy-data` named volume is mounted there in **both** the `openclaw` and the `pinchy` container, at the same path, so a directory you grant an agent resolves identically wherever Pinchy reads it. You can bind-mount additional host directories as subdirectories.
 
 This convention provides a clear boundary: anything under `/data/` is potentially accessible to agents (depending on their permissions), and nothing outside `/data/` is.
 
-## Adding volumes in `docker-compose.yml`
+## Put your mounts in `docker-compose.override.yml`
 
-To mount a local folder, add a bind mount under the **`openclaw`** service's `volumes` section:
+`docker-compose.yml` belongs to the Pinchy project and gets replaced whenever you upgrade — mounts you add there are gone after the next `curl -o docker-compose.yml ...`. `docker-compose.override.yml` is yours: Docker Compose merges it on top of the base file on every `docker compose up`, and upgrades leave it alone. See [Customizing your deployment](/guides/customizing-deployment/) for the full picture.
+
+Create the file next to `docker-compose.yml`:
 
 ```yaml
+# docker-compose.override.yml
 services:
   openclaw:
     volumes:
-      - openclaw-config:/root/.openclaw
-      - openclaw-secrets:/openclaw-secrets
-      - pinchy-workspaces:/root/.openclaw/workspaces
-      - openclaw-extensions:/root/.openclaw/extensions
+      - /path/on/host/hr-policies:/data/hr-policies:ro
+      - /path/on/host/engineering-docs:/data/engineering-docs:ro
+
+  pinchy:
+    volumes:
+      # Keep this line first — see the note below.
       - pinchy-data:/data
-      - pinchy-pdf-cache:/var/cache/pinchy-files
-      # Add your data directories here:
       - /path/on/host/hr-policies:/data/hr-policies:ro
       - /path/on/host/engineering-docs:/data/engineering-docs:ro
 ```
 
+Compose merges volumes by mount path, so you only list what you're adding — the mounts already in `docker-compose.yml` stay as they are.
+
 The `:ro` suffix mounts the directory as read-only, which is recommended since agents only need to read files.
 
-After updating `docker-compose.yml`, restart the OpenClaw container:
+Then apply the change:
 
 ```bash
-docker compose up -d --no-deps openclaw
+docker compose up -d
 ```
 
+<Aside type="caution">
+  **The `- pinchy-data:/data` line on `pinchy` is required**, not decoration.
+  The base file mounts `/data` read-only in that container, and Docker can't
+  create a `/data/hr-policies` mount point inside a read-only mount — the
+  container refuses to start with `error mounting ... read-only file system`.
+  Re-declaring the same mount without `:ro` makes `/data` writable and the
+  nested mounts work. Your own directories stay read-only either way, because
+  each one carries its own `:ro`.
+</Aside>
+
+## Why both services
+
+Two containers read `/data`, for different jobs:
+
+| Service    | Reads `/data` for                                                         | Needed when                                     |
+| ---------- | ------------------------------------------------------------------------- | ----------------------------------------------- |
+| `openclaw` | Agent file access, and the directory list shown in the permissions picker | Always                                          |
+| `pinchy`   | Knowledge Base indexing                                                   | You index those documents into a knowledge base |
+
+Mounting in both is the simple path, and it's what we recommend: the paths stay identical, and a directory you later point a [Knowledge Base agent](/guides/create-knowledge-base-agent/) at is already there. A directory mounted only on `openclaw` shows up in the picker and agents can read it, but indexing it finds nothing.
+
 ## Examples
+
+Each example shows the mount line to add. Add the same line to **both** services in your override file.
 
 ### Local folder
 
 Mount a folder from your host machine:
 
 ```yaml
-volumes:
-  - /home/admin/company-docs:/data/company-docs:ro
+- /home/admin/company-docs:/data/company-docs:ro
 ```
 
 ### NAS or network drive
@@ -56,9 +85,8 @@ volumes:
 If your NAS is mounted on the host at `/mnt/nas/shared`, mount a subdirectory:
 
 ```yaml
-volumes:
-  - /mnt/nas/shared/legal:/data/legal:ro
-  - /mnt/nas/shared/finance:/data/finance:ro
+- /mnt/nas/shared/legal:/data/legal:ro
+- /mnt/nas/shared/finance:/data/finance:ro
 ```
 
 ### Multiple directories
@@ -66,10 +94,9 @@ volumes:
 You can mount as many directories as you need:
 
 ```yaml
-volumes:
-  - /srv/docs/hr:/data/hr:ro
-  - /srv/docs/engineering:/data/engineering:ro
-  - /srv/docs/compliance:/data/compliance:ro
+- /srv/docs/hr:/data/hr:ro
+- /srv/docs/engineering:/data/engineering:ro
+- /srv/docs/compliance:/data/compliance:ro
 ```
 
 Each mounted directory appears as a separate selectable option in the Permissions tab when configuring an agent.
@@ -78,17 +105,39 @@ Each mounted directory appears as a separate selectable option in the Permission
 
 When you configure an agent's permissions in the **Permissions tab** of Agent Settings, Pinchy scans `/data/` for subdirectories and displays them as selectable options. Each mounted directory shows up by name — for example, `/data/hr-policies` appears as "hr-policies".
 
+The scan runs when the `openclaw` container starts, so a new mount appears in the picker after `docker compose up -d`, not before.
+
 Only top-level subdirectories of `/data/` are listed. Nested directories within those are accessible to the agent but are not listed separately in the directory picker.
 
 ## Verifying your mounts
 
-To check that your directories are correctly mounted, you can exec into the running container:
+Check the merged configuration before starting anything:
+
+```bash
+docker compose config
+```
+
+Then confirm both containers see your directories:
 
 ```bash
 docker compose exec openclaw ls /data/
 ```
 
-You should see your mounted directories listed.
+```bash
+docker compose exec pinchy ls /data/
+```
+
+Both should list your mounted directories.
+
+## Moving mounts out of `docker-compose.yml`
+
+If you added your mounts to `docker-compose.yml` directly, move them now — before the next upgrade overwrites them:
+
+1. Copy your `- /host/path:/data/name:ro` lines into `docker-compose.override.yml`, under both services as shown above (don't forget the `- pinchy-data:/data` line on `pinchy`).
+2. Delete those lines from `docker-compose.yml`, leaving the rest of the file untouched.
+3. Run `docker compose config` to confirm the merged result still has every mount, then `docker compose up -d`.
+
+Nothing is re-indexed or re-uploaded by this — the mounts point at the same host directories as before, and your knowledge base index lives in Postgres.
 
 ## Supported file types
 

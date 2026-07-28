@@ -16,7 +16,7 @@ The knowledge base embeds your documents with a local model (`embeddinggemma`) t
 
 ## 1. Mount your data directories
 
-Before creating a Knowledge Base agent, make sure the documents you want the agent to access are mounted under `/data/` in the Pinchy container. See the [Mount Data Directories](/guides/mount-data-directories/) guide for detailed instructions.
+Before creating a Knowledge Base agent, make sure the documents you want the agent to access are mounted under `/data/` — on **both** the `openclaw` and the `pinchy` service, since indexing reads them in the `pinchy` container. See the [Mount Data Directories](/guides/mount-data-directories/) guide for detailed instructions.
 
 ## 2. Navigate to "New Agent"
 

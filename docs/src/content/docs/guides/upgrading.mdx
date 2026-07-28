@@ -214,8 +214,10 @@ Your data is safe across the image swap: it's the same PostgreSQL 17 on the same
 <Aside type="caution">
   **If you edited `docker-compose.yml` to [mount data
   directories](/guides/mount-data-directories/)**, re-apply those `volumes:`
-  lines after re-fetching — the download overwrites them. Keeping custom mounts
-  in a `docker-compose.override.yml` instead makes future upgrades hands-off.
+  lines after re-fetching — the download overwrites them. Better: [move them
+  into a
+  `docker-compose.override.yml`](/guides/mount-data-directories/#moving-mounts-out-of-docker-composeyml)
+  while you're there, and no upgrade touches them again.
 </Aside>
 
 <Aside type="note">
