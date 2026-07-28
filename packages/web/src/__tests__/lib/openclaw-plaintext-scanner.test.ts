@@ -1,5 +1,13 @@
-import { describe, it, expect } from "vitest";
-import { assertNoPlaintextSecrets, findPlaintextSecrets } from "@/lib/openclaw-plaintext-scanner";
+import { describe, it, expect, vi, afterEach } from "vitest";
+import {
+  assertNoPlaintextSecrets,
+  findNewPlaintextSecrets,
+  findPlaintextSecrets,
+} from "@/lib/openclaw-plaintext-scanner";
+
+// Shape-accurate Ollama Cloud key: 32 hex + "." + ≥16 base62.
+const LEGACY_KEY = "d09762adf39c4d1cbdca5f5fc7ca13d5.JyGHlyB0m9yYcpIVkavQIBH7";
+const OTHER_KEY = "1a2b3c4d5e6f70718293a4b5c6d7e8f9.ZqWx0EcRvTyBnUmIoPlK9876";
 
 describe("findPlaintextSecrets", () => {
   it("flags Anthropic-style keys", () => {
@@ -102,7 +110,59 @@ describe("findPlaintextSecrets", () => {
   });
 });
 
+// #884: a write is only a leak when it INTRODUCES the plaintext. Installs
+// upgraded from a pre-SecretRef Pinchy still carry a top-level `env` block with
+// plaintext provider keys, and targeted writers (the boot seeds, the Telegram
+// channel writer) spread the whole on-disk config through verbatim. Judging
+// those writes by the absolute scan permanently wedged them — the write was
+// rejected, the secret stayed on disk anyway, and the restart-class overrides
+// were never seeded.
+describe("findNewPlaintextSecrets", () => {
+  it("ignores a secret the previous config already carried at the same path", () => {
+    const previous = {
+      env: { OLLAMA_CLOUD_API_KEY: LEGACY_KEY },
+      models: { providers: { "ollama-cloud": { apiKey: LEGACY_KEY } } },
+    };
+    const next = { ...previous, update: { checkOnStart: false } };
+
+    expect(findNewPlaintextSecrets(next, previous)).toEqual([]);
+  });
+
+  it("flags a different value at a path that already leaked", () => {
+    const previous = { env: { OLLAMA_CLOUD_API_KEY: LEGACY_KEY } };
+    const next = { env: { OLLAMA_CLOUD_API_KEY: OTHER_KEY } };
+
+    expect(findNewPlaintextSecrets(next, previous)).toEqual([
+      { path: "env.OLLAMA_CLOUD_API_KEY", pattern: "ollama-cloud" },
+    ]);
+  });
+
+  it("flags a secret at a path the previous config did not carry", () => {
+    const previous = { env: { OLLAMA_CLOUD_API_KEY: LEGACY_KEY } };
+    const next = {
+      env: { OLLAMA_CLOUD_API_KEY: LEGACY_KEY },
+      models: { providers: { "ollama-cloud": { apiKey: LEGACY_KEY } } },
+    };
+
+    expect(findNewPlaintextSecrets(next, previous)).toEqual([
+      { path: "models.providers.ollama-cloud.apiKey", pattern: "ollama-cloud" },
+    ]);
+  });
+
+  it("flags everything when there is no previous config (cold start)", () => {
+    const next = { env: { OLLAMA_CLOUD_API_KEY: LEGACY_KEY } };
+
+    expect(findNewPlaintextSecrets(next, undefined)).toEqual([
+      { path: "env.OLLAMA_CLOUD_API_KEY", pattern: "ollama-cloud" },
+    ]);
+  });
+});
+
 describe("assertNoPlaintextSecrets", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it("throws when plaintext found", () => {
     expect(() =>
       assertNoPlaintextSecrets({ env: { ANTHROPIC_API_KEY: "sk-ant-leaked1234567890" } })
@@ -113,5 +173,37 @@ describe("assertNoPlaintextSecrets", () => {
     expect(() =>
       assertNoPlaintextSecrets({ gateway: { mode: "local", bind: "lan" } })
     ).not.toThrow();
+  });
+
+  it("does not throw when every finding is carried over from the previous config", () => {
+    const previous = { env: { OLLAMA_CLOUD_API_KEY: LEGACY_KEY } };
+    const next = { ...previous, update: { checkOnStart: false } };
+
+    expect(() => assertNoPlaintextSecrets(next, () => previous)).not.toThrow();
+  });
+
+  it("reports the carried-over leak instead of swallowing it", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const previous = { env: { OLLAMA_CLOUD_API_KEY: LEGACY_KEY } };
+
+    assertNoPlaintextSecrets({ ...previous, update: { checkOnStart: false } }, () => previous);
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    const message = String(warn.mock.calls[0][0]);
+    expect(message).toContain("env.OLLAMA_CLOUD_API_KEY");
+    // The value itself must never reach the logs.
+    expect(message).not.toContain(LEGACY_KEY);
+  });
+
+  it("still throws for a newly introduced secret even when another one is carried over", () => {
+    const previous = { env: { OLLAMA_CLOUD_API_KEY: LEGACY_KEY } };
+    const next = {
+      env: { OLLAMA_CLOUD_API_KEY: LEGACY_KEY },
+      models: { providers: { anthropic: { apiKey: "sk-ant-regression1234567890" } } },
+    };
+
+    expect(() => assertNoPlaintextSecrets(next, () => previous)).toThrow(
+      /models\.providers\.anthropic\.apiKey/
+    );
   });
 });

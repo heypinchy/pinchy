@@ -26,7 +26,8 @@ export function writeConfigAtomic(content: string) {
     }
   }
   // Defense-in-depth: never let a plaintext secret land in openclaw.json.
-  assertNoPlaintextSecrets(JSON.parse(content));
+  // Judged against what is already on disk — see readSecretBaseline.
+  assertNoPlaintextSecrets(JSON.parse(content), readSecretBaseline);
   const tmpPath = CONFIG_PATH + ".tmp";
   // Mode 0o666: Pinchy and OpenClaw both need read/write access. OpenClaw
   // rewrites the file as root:0600 on every internal SIGUSR1 restart and
@@ -37,6 +38,36 @@ export function writeConfigAtomic(content: string) {
   // because the volume itself is namespaced inside Docker; not exposed.)
   writeFileSync(tmpPath, content, { encoding: "utf-8", mode: 0o666 });
   renameSync(tmpPath, CONFIG_PATH);
+}
+
+/**
+ * The config currently on disk, as the baseline the plaintext-secret guard
+ * judges a write against. Best-effort: a missing, unreadable or corrupt file
+ * yields nothing to inherit, so the guard scans the whole payload — the strict
+ * reading, and the right one for a cold start.
+ *
+ * Why a baseline at all: Pinchy's targeted writers (`seedRestartClass-
+ * OverridesIfMissing`, `seedGatewayTokenIfMissing`, `sanitizeOpenClawConfig`,
+ * `updateTelegramChannelConfig`) spread the whole on-disk config through so
+ * OpenClaw-enriched fields survive. On an install that already carries a
+ * plaintext provider key — the legacy top-level `env` block written by a
+ * pre-SecretRef Pinchy, or a `models.providers.*.apiKey` left un-healed
+ * because regenerate itself is failing (#878) — the absolute scan rejected
+ * every one of those writes forever. That never removed the secret; it only
+ * meant the write's actual payload was silently dropped, which is how #884
+ * left the restart-class overrides unseeded on every boot of the apsa box.
+ *
+ * Passed to the guard as a thunk, so a clean payload — nearly every write —
+ * pays neither this read nor the comparison.
+ */
+function readSecretBaseline(): Record<string, unknown> | undefined {
+  // Reuses readExistingConfig for its EACCES retry (OC's 0600 restart-write
+  // race). A persistent EACCES throws there; here it just means "no baseline".
+  try {
+    return readExistingConfig();
+  } catch {
+    return undefined;
+  }
 }
 
 export function readExistingConfig(): Record<string, unknown> {
@@ -232,7 +263,12 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
     // tries to write with a stale initialSnapshotRead hash.
     // Without the prior file write, currentCompareConfig stays as startup_source;
     // config.apply's output only differs in agents/plugins/secrets — no restart.
-    assertNoPlaintextSecrets(JSON.parse(newContent));
+    // Same on-disk baseline as writeConfigAtomic: `newContent` can be a
+    // targeted writer's payload, which carries the whole existing config
+    // through. Throwing here would reject the change in a background
+    // coroutine — an unhandled rejection, and the channel update lost with
+    // it (#884).
+    assertNoPlaintextSecrets(JSON.parse(newContent), readSecretBaseline);
 
     // Brief retry across transient WS disconnects. Beyond ~3.5 s the WS is
     // probably down due to the cold-start cascade, and inotify will catch

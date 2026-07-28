@@ -4709,6 +4709,46 @@ describe("seedRestartClassOverridesIfMissing", () => {
     expect(written.agents).toEqual(existing.agents);
     expect(written.plugins).toEqual(existing.plugins);
   });
+
+  it("still seeds when the on-disk config carries a legacy plaintext provider key (#884)", () => {
+    // Installs upgraded from a pre-SecretRef Pinchy (which wrote a top-level
+    // `env` block holding raw provider keys) still carry that block, and keep
+    // a plaintext models.providers.*.apiKey whenever the healing regenerate
+    // never completes — e.g. the apsa box, whose regenerate died on an
+    // unmounted secrets volume (#878).
+    //
+    // The seed spreads the whole on-disk config through verbatim, so the
+    // absolute plaintext guard rejected the entire write:
+    //   [pinchy] Failed to seed restart-class overrides: plaintext secret
+    //   detected in config: env.OLLAMA_CLOUD_API_KEY matches ollama-cloud
+    // Rejecting it never removed the secret — it only meant the four
+    // restart-class overrides were silently never applied, on every boot.
+    // The guard judges what a write INTRODUCES, not what it inherits.
+    const legacyKey = "d09762adf39c4d1cbdca5f5fc7ca13d5.JyGHlyB0m9yYcpIVkavQIBH7";
+    const existing = {
+      gateway: { mode: "local", bind: "lan" },
+      env: { OLLAMA_CLOUD_API_KEY: legacyKey },
+      models: { providers: { "ollama-cloud": { apiKey: legacyKey } } },
+    };
+    mockedReadFileSync.mockReturnValue(JSON.stringify(existing));
+
+    const changed = seedRestartClassOverridesIfMissing();
+
+    expect(changed).toBe(true);
+    const writtenAtomic = findOpenClawConfigWrite(mockedWriteFileSync);
+    expect(writtenAtomic).toBeDefined();
+    const written = JSON.parse(String(writtenAtomic![1]));
+    expect(written.gateway.controlUi.enabled).toBe(false);
+    expect(written.gateway.terminal.enabled).toBe(false);
+    expect(written.discovery.mdns.mode).toBe("off");
+    expect(written.update.checkOnStart).toBe(false);
+    expect(written.canvasHost.enabled).toBe(false);
+
+    // The pre-existing blocks ride through untouched — the seed heals the
+    // restart-class fields, it does not silently drop provider config.
+    expect(written.env).toEqual(existing.env);
+    expect(written.models).toEqual(existing.models);
+  });
 });
 
 describe("seedGatewayTokenIfMissing", () => {
