@@ -2,9 +2,16 @@
 
 import { useContext, useEffect, useRef, useState, type FC, type ReactNode } from "react";
 import { useMessagePartFile } from "@assistant-ui/react";
-import { FileText, Loader2 } from "lucide-react";
+import { ExternalLink, FileText, Loader2, X } from "lucide-react";
 import { AgentIdContext, AgentModelContext, FileSourceContext } from "@/components/chat";
-import { Dialog, DialogContent, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
 import { imageInputNote } from "@/lib/attachment-capability";
 
 import { useModelCapabilities } from "@/hooks/use-model-capabilities";
@@ -125,33 +132,85 @@ const CapabilityWarning: FC<{ message: string }> = ({ message }) => (
  * The lightbox a PDF opens into, and the only place its presentation is
  * defined. Shared so a chat attachment and a cited knowledge-base source open
  * the exact same way — two viewers for "look at this PDF" would drift in
- * sizing, close-button treatment and keyboard behaviour, and the citation link
- * exists precisely so a reader can check a claim without leaving the answer.
+ * sizing, close treatment and keyboard behaviour, and the citation link exists
+ * precisely so a reader can check a claim without leaving the answer.
+ *
+ * The layout is dictated by one constraint: the viewer inside is the BROWSER's,
+ * not ours. Chrome, Firefox and Safari each draw a different toolbar in a
+ * different place, so there is no region we can reliably float a control over.
+ * An earlier version tried — the close button landed on Chrome's overflow menu
+ * and had to be tinted dark just to stay legible against a surface whose colour
+ * we cannot predict, while the dialog's own padding showed as a pale frame
+ * around a viewer that already draws its own.
+ *
+ * So our chrome occupies a row ABOVE the viewer and the viewer gets everything
+ * below it, edge to edge. Nothing overlaps, nothing needs tinting, and the row
+ * earns its height: it names the document (the browser's title bar shows the
+ * route segment, "workspace-file", which tells a reader nothing) and it offers
+ * a full tab — the only thing that works on iOS Safari, where an embedded PDF
+ * renders blank whatever we do.
  *
  * `children` is the trigger, so each caller keeps its own affordance: the
  * attachment renders an <embed> thumbnail, a citation renders its path as text.
  */
-export const PdfDialog: FC<{ url: string; title: string; children: ReactNode }> = ({
-  url,
-  title,
-  children,
-}) => (
-  <Dialog>
-    <DialogTrigger asChild>{children}</DialogTrigger>
-    <DialogContent
-      className="p-2 sm:max-w-4xl [&>button]:rounded-full [&>button]:bg-foreground/60 [&>button]:p-1 [&>button]:opacity-100 [&>button]:ring-0! [&_svg]:text-background [&>button]:hover:[&_svg]:text-destructive"
-      aria-describedby={undefined}
-    >
-      <DialogTitle className="sr-only">{title}</DialogTitle>
-      {/*
-        Remounted per open (the dialog unmounts its content when closed), which
-        is what makes `#page=N` in the url actually land: a PDF viewer honours
-        the fragment on load, not on a later fragment change.
-       */}
-      <embed src={url} type="application/pdf" className="block h-[80dvh] w-full" />
-    </DialogContent>
-  </Dialog>
-);
+export const PdfDialog: FC<{
+  url: string;
+  title: string;
+  children: ReactNode;
+  /** Test-only escape hatch; the dialog is trigger-driven in the app. */
+  defaultOpen?: boolean;
+}> = ({ url, title, children, defaultOpen }) => {
+  // `title` is a filename for an attachment and a full path for a citation.
+  // Show the leaf either way and keep the rest in the tooltip: a corpus has
+  // same-named files in different folders, so the path has to stay reachable,
+  // but spending header width on it would push the controls off a narrow screen.
+  const filename = title.split("/").filter(Boolean).pop() ?? title;
+  const page = /#page=(\d+)/.exec(url)?.[1];
+
+  return (
+    <Dialog defaultOpen={defaultOpen}>
+      <DialogTrigger asChild>{children}</DialogTrigger>
+      <DialogContent
+        // Taller and wider than a default dialog because a page of A4 at a
+        // readable zoom is simply large — but deliberately not full-screen: the
+        // answer staying visible behind it is the point of checking a citation
+        // here rather than in a new tab. `dvh` (not `vh`) so a mobile browser's
+        // collapsing toolbar cannot cut off the bottom of the viewer.
+        className="flex h-[92dvh] flex-col gap-0 overflow-hidden p-0 sm:max-w-6xl"
+        showCloseButton={false}
+        aria-describedby={undefined}
+      >
+        <div className="flex shrink-0 items-center gap-2 border-b bg-background px-3 py-2">
+          <FileText className="size-4 shrink-0 text-muted-foreground" />
+          <DialogTitle className="truncate font-medium text-sm" title={title}>
+            {filename}
+          </DialogTitle>
+          {page && <span className="shrink-0 text-muted-foreground text-xs">Page {page}</span>}
+          <div className="ml-auto flex shrink-0 items-center gap-0.5">
+            <Button variant="ghost" size="icon" className="size-8" asChild>
+              <a href={url} target="_blank" rel="noreferrer noopener" aria-label="Open in new tab">
+                <ExternalLink className="size-4" />
+              </a>
+            </Button>
+            <DialogClose asChild>
+              <Button variant="ghost" size="icon" className="size-8" aria-label="Close">
+                <X className="size-4" />
+              </Button>
+            </DialogClose>
+          </div>
+        </div>
+        {/*
+          Remounted per open (the dialog unmounts its content when closed), which
+          is what makes `#page=N` in the url actually land: a PDF viewer honours
+          the fragment on load, not on a later fragment change.
+          `min-h-0` lets this shrink inside the flex column — without it the
+          embed keeps its intrinsic height and pushes the header off-screen.
+         */}
+        <embed src={url} type="application/pdf" className="block min-h-0 w-full flex-1" />
+      </DialogContent>
+    </Dialog>
+  );
+};
 
 const PdfPreview: FC<{ url: string; filename: string; warning: string | null }> = ({
   url,
