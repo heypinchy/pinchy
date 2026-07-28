@@ -25,7 +25,7 @@
  * passed as `seedPrevHmac`, forcing that boundary link to be checked on every
  * run.
  */
-import { eq, desc, and, gte, lte, sql } from "drizzle-orm";
+import { eq, desc, and, gt, gte, lt, lte, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { auditVerifyState, auditLog } from "@/db/schema";
 import { verifyIntegrity, appendAuditLog } from "@/lib/audit";
@@ -96,6 +96,31 @@ async function writeCheckpoint(
       target: auditVerifyState.id,
       set: { lastVerifiedId, lastVerifiedHmac, lastStatus, updatedAt: new Date() },
     });
+}
+
+/**
+ * Did another writer land a row in the open interval (afterId, beforeId)?
+ *
+ * Used to detect a concurrent append that happened between this sweep's
+ * MAX(id) snapshot and its own report row (#698). The answer is trustworthy
+ * despite the read happening outside any of those transactions: appendAuditLog
+ * allocates the id and commits while holding the chain's advisory xact lock,
+ * so id order IS commit order — once the report row at `beforeId` is visible,
+ * every row below it that will ever exist is committed and visible too.
+ *
+ * Adjacent ids leave no room for a row in between, so the common uncontended
+ * case (report row directly after the snapshot) answers without a query.
+ */
+async function hasRowsBetween(afterId: number, beforeId: number): Promise<boolean> {
+  if (beforeId <= afterId + 1) return false;
+
+  const [row] = await db
+    .select({ id: auditLog.id })
+    .from(auditLog)
+    .where(and(gt(auditLog.id, afterId), lt(auditLog.id, beforeId)))
+    .limit(1);
+
+  return row !== undefined;
 }
 
 export interface AuditVerifySweepResult {
@@ -190,20 +215,32 @@ export async function sweepAuditVerify(): Promise<AuditVerifySweepResult> {
   // is what makes this race-free: a separate "current highest row" query could
   // observe a row another request appended concurrently right after our report
   // and mis-fold THAT into the checkpoint, silently skipping the rows between
-  // on the next sweep. (A smaller residual remains: rows appended DURING the
-  // verify pass, in (toId, reportId), are caught by the full GET
-  // /api/audit/verify scan but skipped by this incremental job — see #698.)
+  // on the next sweep.
+  //
+  // Folding past the report is only safe when nothing else wrote while this
+  // sweep was running. Rows another request appends between the toId snapshot
+  // and the report land in (toId, reportId): outside this sweep's window
+  // (> toId) AND below the next sweep's start (reportId + 1) — never verified
+  // incrementally at all (#698). So probe that interval, and when it isn't
+  // empty fold only to the window actually scanned: the next sweep re-scans
+  // the raced rows together with this report row and converges again. One
+  // extra non-converged sweep, paid only when concurrency really happened.
   //
   // Advancing even on violation is intentional: re-scanning the same tampered
   // window forever would just re-alarm on every cycle without surfacing new
   // information — the violation is recorded (audit row + stderr + counter)
   // exactly once. On an audit-write failure there is no report row to fold, so
   // fall back to the window actually scanned.
+  let ownRow: { id: number; rowHmac: string } | null = null;
   try {
-    const ownRow = await appendAuditLog(entry);
-    await writeCheckpoint(ownRow.id, ownRow.rowHmac, status);
+    ownRow = await appendAuditLog(entry);
   } catch (err) {
     recordAuditFailure(err, entry);
+  }
+
+  if (ownRow && !(await hasRowsBetween(toId, ownRow.id))) {
+    await writeCheckpoint(ownRow.id, ownRow.rowHmac, status);
+  } else {
     await writeCheckpoint(scannedTo, lastVerifiedHmac, status);
   }
 
