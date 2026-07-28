@@ -26,6 +26,15 @@ describe("MobileChatHeader", () => {
     expect(header).toHaveClass("border-b");
   });
 
+  it("does not shrink when the chat column runs out of space (#955)", () => {
+    // The header sits in `flex flex-col h-full min-h-0` next to a growing
+    // message list. Without shrink-0 it gets compressed — visibly so once the
+    // on-screen keyboard shortens the layout viewport. Its desktop sibling in
+    // chat.tsx has carried shrink-0 all along.
+    render(<MobileChatHeader {...defaultProps} />);
+    expect(screen.getByRole("banner")).toHaveClass("shrink-0");
+  });
+
   it("is hidden on md screens and above", () => {
     render(<MobileChatHeader {...defaultProps} />);
     const header = screen.getByRole("banner");

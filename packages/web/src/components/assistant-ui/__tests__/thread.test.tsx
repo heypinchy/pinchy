@@ -1,4 +1,4 @@
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import React from "react";
 import "@testing-library/jest-dom";
@@ -824,6 +824,55 @@ describe("Composer no longer gates attachments client-side", () => {
     );
 
     expect(screen.queryByRole("region", { name: /can't be sent/i })).not.toBeInTheDocument();
+  });
+});
+
+// Autofocus is a desktop convenience and a mobile annoyance: on a touch device
+// it forces the on-screen keyboard open the moment a chat is opened, before the
+// user has decided to type — which is what made the composer disappear behind
+// the keyboard in #955, share attachment and all. Gate it on a pointing device.
+describe("Composer autofocus is pointer-gated (#955)", () => {
+  const realMatchMedia = window.matchMedia;
+
+  function stubPointer(fine: boolean) {
+    window.matchMedia = vi.fn().mockImplementation((query: string) => ({
+      matches: query.includes("pointer: fine") ? fine : false,
+      media: query,
+      onchange: null,
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    })) as unknown as typeof window.matchMedia;
+  }
+
+  afterEach(() => {
+    window.matchMedia = realMatchMedia;
+  });
+
+  async function renderComposer() {
+    const { ChatStatusContext } = await import("@/components/chat");
+    const { Composer } = await import("@/components/assistant-ui/thread");
+    return render(
+      <ChatStatusContext.Provider value={{ kind: "ready" }}>
+        <Composer />
+      </ChatStatusContext.Provider>
+    );
+  }
+
+  it("focuses the input on a device with a fine pointer", async () => {
+    stubPointer(true);
+    await renderComposer();
+
+    expect(screen.getByRole("textbox")).toHaveFocus();
+  });
+
+  it("leaves the input unfocused on a touch device, so the keyboard stays closed", async () => {
+    stubPointer(false);
+    await renderComposer();
+
+    expect(screen.getByRole("textbox")).not.toHaveFocus();
   });
 });
 

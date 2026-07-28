@@ -462,6 +462,20 @@ export function PendingUploadChips() {
   );
 }
 
+/**
+ * True when the device's primary input is a pointing device (mouse, trackpad).
+ *
+ * Read once, lazily, rather than tracked: React only honours `autoFocus` when
+ * the DOM node first mounts, so a value arriving later from an effect would
+ * never focus anything.
+ */
+function useFinePointer(): boolean {
+  const [finePointer] = useState(
+    () => typeof window !== "undefined" && window.matchMedia("(pointer: fine)").matches
+  );
+  return finePointer;
+}
+
 export const Composer: FC = () => {
   // Capability gating used to live here: a text-only model would block an image
   // send and pop the recovery dialog. That's gone — the WebSocket chat router
@@ -474,6 +488,11 @@ export const Composer: FC = () => {
   // key handler sits on the Root form element so it can intercept Enter/↑/↓
   // before the form submits when the menu is open.
   const slashMenu = useSlashCommandMenu();
+  // Autofocus is a desktop convenience and a mobile annoyance: on a touch
+  // device it forces the on-screen keyboard open on every chat entry, before
+  // the user has decided to type — hiding the composer, and with it whatever a
+  // share just pre-filled into it (#955).
+  const autoFocus = useFinePointer();
   return (
     <ComposerPrimitive.Root
       className="aui-composer-root relative flex w-full flex-col"
@@ -490,7 +509,7 @@ export const Composer: FC = () => {
           placeholder="Send a message, or type / for commands"
           className="aui-composer-input mb-0.5 md:mb-1 max-h-32 min-h-10 md:min-h-14 w-full resize-none bg-transparent px-4 pt-2 pb-1 md:pb-3 text-sm outline-none placeholder:text-muted-foreground focus-visible:ring-0"
           rows={1}
-          autoFocus
+          autoFocus={autoFocus}
           aria-label="Message input"
           {...slashMenu.inputAriaProps}
         />
