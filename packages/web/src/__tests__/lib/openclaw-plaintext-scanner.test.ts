@@ -1,8 +1,9 @@
-import { describe, it, expect, vi, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
   assertNoPlaintextSecrets,
   findNewPlaintextSecrets,
   findPlaintextSecrets,
+  _resetInheritedSecretReports,
 } from "@/lib/openclaw-plaintext-scanner";
 
 // Shape-accurate Ollama Cloud key: 32 hex + "." + ≥16 base62.
@@ -159,6 +160,12 @@ describe("findNewPlaintextSecrets", () => {
 });
 
 describe("assertNoPlaintextSecrets", () => {
+  // The once-per-process report dedup is module state; clear it so the tests
+  // below don't silence each other through it.
+  beforeEach(() => {
+    _resetInheritedSecretReports();
+  });
+
   afterEach(() => {
     vi.restoreAllMocks();
   });
@@ -193,6 +200,32 @@ describe("assertNoPlaintextSecrets", () => {
     expect(message).toContain("env.OLLAMA_CLOUD_API_KEY");
     // The value itself must never reach the logs.
     expect(message).not.toContain(LEGACY_KEY);
+  });
+
+  it("reports a carried-over leak once per process, not on every config write", () => {
+    // The message is a one-time instruction ("rotate that key and delete the
+    // entry"), but config writes are not one-time: boot seeds, every settings
+    // save, every agent create. Repeating a four-line paragraph on each of
+    // them is how an actionable warning turns into background noise nobody
+    // reads. A leak at a NEW path still gets its own report.
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const previous = { env: { OLLAMA_CLOUD_API_KEY: LEGACY_KEY } };
+    const next = { ...previous, update: { checkOnStart: false } };
+
+    assertNoPlaintextSecrets(next, () => previous);
+    assertNoPlaintextSecrets(next, () => previous);
+    assertNoPlaintextSecrets(next, () => previous);
+
+    expect(warn).toHaveBeenCalledTimes(1);
+
+    const widened = {
+      ...previous,
+      models: { providers: { "ollama-cloud": { apiKey: LEGACY_KEY } } },
+    };
+    assertNoPlaintextSecrets(widened, () => widened);
+
+    expect(warn).toHaveBeenCalledTimes(2);
+    expect(String(warn.mock.calls[1][0])).toContain("models.providers.ollama-cloud.apiKey");
   });
 
   it("still throws for a newly introduced secret even when another one is carried over", () => {

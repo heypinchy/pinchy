@@ -464,5 +464,21 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
         await new Promise((resolve) => setTimeout(resolve, backoffsMs[i]));
       }
     }
-  })().finally(trackConfigPushSettled);
+  })()
+    .finally(trackConfigPushSettled)
+    .catch((err: unknown) => {
+      // Terminal safety net. Everything inside the retry loop already handles
+      // its own errors, but the pre-loop section does not: the plaintext guard
+      // throws by design, and `writeConfigAtomic` can throw on a full or
+      // read-only volume. This coroutine is voided, so such a throw becomes an
+      // unhandled rejection — which Node ≥ 15 escalates to an uncaught
+      // exception and terminates the Pinchy server with it. Refusing the push
+      // is the correct outcome; taking the process down with it is not.
+      // `.finally` before `.catch` so the pending-push counter settles either
+      // way (the health endpoint's `configPushesPending` must not leak).
+      console.error(
+        `[openclaw-config] push gen=${String(generation)}: aborted before delivery —`,
+        err instanceof Error ? err.message : String(err)
+      );
+    });
 }

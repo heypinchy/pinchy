@@ -98,6 +98,19 @@ function walk(value: unknown, path: string, hits: Hit[]): void {
 }
 
 /**
+ * Paths already reported as carrying a pre-existing plaintext secret, so the
+ * warning below fires once per process instead of once per config write. Holds
+ * `path` and pattern name only — never a value; the point of the report is that
+ * the value must not be logged.
+ */
+const reportedInheritedPaths = new Set<string>();
+
+/** Exposed only for unit-testing the once-per-process report; do not call in app code. */
+export function _resetInheritedSecretReports(): void {
+  reportedInheritedPaths.clear();
+}
+
+/**
  * Throw if `config` introduces a plaintext secret.
  *
  * `readPrevious` supplies the config currently on disk, for writes that spread
@@ -114,13 +127,17 @@ export function assertNoPlaintextSecrets(config: unknown, readPrevious?: () => u
 
   // Report before throwing: an inherited leak is still a leak, and staying
   // quiet about it is how it survived every upgrade so far. Paths and pattern
-  // names only — never the value.
-  if (inherited.length > 0) {
+  // names only — never the value. Once per process per path: an affected
+  // install writes this config on every boot seed, settings save and agent
+  // create, and a paragraph repeated that often stops being read.
+  const unreported = inherited.filter((h) => !reportedInheritedPaths.has(`${h.path}|${h.pattern}`));
+  if (unreported.length > 0) {
+    for (const h of unreported) reportedInheritedPaths.add(`${h.path}|${h.pattern}`);
     console.warn(
       "[openclaw-config] Carrying pre-existing plaintext secrets through this " +
         "config write (Pinchy did not add them; refusing the write would not " +
         "remove them):\n" +
-        inherited.map((h) => `  ${h.path} matches ${h.pattern}`).join("\n") +
+        unreported.map((h) => `  ${h.path} matches ${h.pattern}`).join("\n") +
         "\nInstalls upgraded from a pre-SecretRef Pinchy still carry a top-level " +
         "`env` block holding raw provider keys. Pinchy resolves provider keys " +
         "from the secrets file, so an entry whose provider is configured under " +

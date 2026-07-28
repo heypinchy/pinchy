@@ -4493,6 +4493,72 @@ describe("regenerateOpenClawConfig", () => {
         vi.useRealTimers();
       }
     });
+
+    it("still applies when the payload carries a plaintext key the on-disk config already had (#884)", async () => {
+      // The WS path is where the inherited-secret abort hurt most: the guard
+      // runs inside the fire-and-forget coroutine, so a throw did not surface
+      // to the caller at all — the config change was simply lost. The
+      // restart-class seed and updateTelegramChannelConfig both push through
+      // here carrying the whole on-disk config, legacy `env` block included.
+      const legacyKey = "d09762adf39c4d1cbdca5f5fc7ca13d5.JyGHlyB0m9yYcpIVkavQIBH7";
+      const onDisk = {
+        gateway: { mode: "local", bind: "lan" },
+        env: { OLLAMA_CLOUD_API_KEY: legacyKey },
+      };
+      mockedReadFileSync.mockReturnValue(JSON.stringify(onDisk));
+      mockConfigGet.mockResolvedValue({ hash: "h1", config: onDisk });
+      mockConfigApply.mockResolvedValue(undefined);
+      mockGetClient.mockReturnValue({
+        config: { get: mockConfigGet, apply: mockConfigApply },
+      });
+
+      pushConfigInBackground(JSON.stringify({ ...onDisk, update: { checkOnStart: false } }));
+
+      await vi.waitFor(() => expect(mockConfigApply).toHaveBeenCalledOnce());
+      await drainBackgroundCoroutine();
+
+      const applied = JSON.parse(String(mockConfigApply.mock.calls[0][0]));
+      expect(applied.update).toEqual({ checkOnStart: false });
+    });
+
+    it("refuses a newly introduced plaintext key without crashing the process (#884)", async () => {
+      // The other half of the contract: a Pinchy regression that routes a
+      // secret around SecretRef must still never reach OpenClaw. It must not
+      // take the server down doing so either — the guard throws inside a
+      // voided coroutine, and Node ≥15 turns an unhandled rejection into an
+      // uncaught exception that terminates the process.
+      const unhandled: unknown[] = [];
+      const onUnhandled = (reason: unknown) => unhandled.push(reason);
+      process.on("unhandledRejection", onUnhandled);
+      const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      try {
+        mockedReadFileSync.mockReturnValue(JSON.stringify({ gateway: { mode: "local" } }));
+        mockConfigGet.mockResolvedValue({ hash: "h1", config: { gateway: { mode: "local" } } });
+        mockConfigApply.mockResolvedValue(undefined);
+        mockGetClient.mockReturnValue({
+          config: { get: mockConfigGet, apply: mockConfigApply },
+        });
+
+        pushConfigInBackground(
+          JSON.stringify({
+            gateway: { mode: "local" },
+            models: { providers: { anthropic: { apiKey: "sk-ant-regression1234567890" } } },
+          })
+        );
+        await drainBackgroundCoroutine();
+        await drainBackgroundCoroutine();
+
+        expect(mockConfigApply).not.toHaveBeenCalled();
+        expect(unhandled).toEqual([]);
+        const logged = errorSpy.mock.calls.map((c) => c.join(" ")).join("\n");
+        expect(logged).toMatch(/plaintext secret detected/);
+        // Never the value itself, not even on the refusal path.
+        expect(logged).not.toContain("sk-ant-regression1234567890");
+      } finally {
+        errorSpy.mockRestore();
+        process.off("unhandledRejection", onUnhandled);
+      }
+    });
   });
 });
 
