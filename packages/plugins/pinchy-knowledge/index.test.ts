@@ -158,8 +158,19 @@ describe("pinchy-knowledge plugin", () => {
       })
     );
 
+    // Whole text asserted, not a substring: what the model receives is the
+    // citation contract AND the sources, and this is the only test that sees
+    // them as one dispatched payload rather than as a formatter's return
+    // value. Matching loosely here would let the contract silently fall out of
+    // the wiring while `formatWithCitations`'s own tests stayed green.
     expect(result.content).toEqual([
-      { type: "text", text: '[1] /data/kb/a.pdf (p. 3): "Snippet one."' },
+      {
+        type: "text",
+        text:
+          "Cite the passages you use inline as [1], [2] next to the claim each one supports. " +
+          "If they do not answer the question, say so instead of answering from memory.\n\n" +
+          '[1] /data/kb/a.pdf (p. 3): "Snippet one."',
+      },
     ]);
     // details keeps the human-readable docName: an audit reviewer wants to
     // read WHICH document was returned, while the model needs a locator it
@@ -317,8 +328,46 @@ describe("formatWithCitations", () => {
 
   it("formats results as numbered, citable sources with sourcePath and page", () => {
     expect(formatWithCitations(results)).toBe(
-      '[1] /data/kb/a.pdf (p. 3): "Snippet one."\n\n[2] /data/kb/b.pdf: "Snippet two."'
+      "Cite the passages you use inline as [1], [2] next to the claim each one supports. " +
+        "If they do not answer the question, say so instead of answering from memory.\n\n" +
+        '[1] /data/kb/a.pdf (p. 3): "Snippet one."\n\n[2] /data/kb/b.pdf: "Snippet two."'
     );
+  });
+
+  it("states the citation contract in the result, not only in a template", () => {
+    // The behaviour this pins: an agent cites its sources because the TOOL
+    // asked it to, not because someone pasted the instruction into its
+    // AGENTS.md. Observed on the Noack corpus 2026-07-27: the same question,
+    // the same 5 successful knowledge_search calls with 8 hits each, produced
+    // a fully-cited answer for an agent carrying the knowledge-base template
+    // and an uncited one for an agent whose template slot was empty. The
+    // retrieval was identical; only the prose differed. Anything that depends
+    // on a template is missing for every agent created without one — including
+    // every agent an admin builds from scratch.
+    const out = formatWithCitations(results);
+    expect(out).toMatch(/cite the passages you use inline as \[1\], \[2\]/i);
+  });
+
+  it("puts the instruction ahead of the passages so it cannot read as content", () => {
+    // Trailing it would sit flush against the last snippet, where it is one
+    // more block of text after a quoted passage rather than a directive about
+    // all of them.
+    const out = formatWithCitations(results);
+    const instruction = out.indexOf("Cite the passages");
+    const firstSource = out.indexOf("[1]");
+    // Both anchors asserted present first: `indexOf` returns -1 for a missing
+    // needle, and -1 is less than any real index, so a bare ordering
+    // comparison passes loudest when the instruction is absent entirely.
+    expect(instruction).toBeGreaterThanOrEqual(0);
+    expect(firstSource).toBeGreaterThanOrEqual(0);
+    expect(instruction).toBeLessThan(firstSource);
+  });
+
+  it("tells the model to admit a miss rather than answer from memory", () => {
+    // The other half of grounding, and the one a template is least likely to
+    // spell out: a retrieval tool that returns nothing is a fact about the
+    // corpus, not an invitation to fall back on training data.
+    expect(formatWithCitations(results)).toMatch(/say so instead of answering from memory/i);
   });
 
   it("identifies a source by its full path, not its bare filename", () => {
@@ -368,7 +417,10 @@ describe("formatWithCitations", () => {
   });
 
   it("returns a deterministic empty-state message for no results", () => {
-    expect(formatWithCitations([])).toBe("No matching passages found in the knowledge base.");
+    expect(formatWithCitations([])).toBe(
+      "No matching passages found in the knowledge base. Tell the user the knowledge base " +
+        "does not cover this instead of answering from memory."
+    );
   });
 });
 

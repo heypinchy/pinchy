@@ -106,16 +106,46 @@ export function returnedDocumentIds(results: KnowledgeSearchResult[]): DocumentR
  * for `returnedDocumentIds`, which wants a human-readable name for the audit
  * row, not a locator.
  */
+/**
+ * What the caller is expected to do with these passages, carried by the result
+ * itself rather than by the agent's instructions.
+ *
+ * The distinction is not cosmetic. On the Noack corpus (2026-07-27) the same
+ * question produced a fully-cited answer from an agent carrying the
+ * knowledge-base template and an uncited one from an agent whose template slot
+ * was empty — identical retrieval, five successful searches with eight hits
+ * each, only the prose differed. Anything stated only in a template is absent
+ * for every agent created without one, which includes every agent an admin
+ * builds from scratch. A tool result reaches the model on every call, for
+ * every agent, whatever it was configured from.
+ *
+ * It leads rather than trails so it reads as a directive about the passages
+ * instead of one more block of text after the last quoted one.
+ */
+const CITATION_CONTRACT =
+  "Cite the passages you use inline as [1], [2] next to the claim each one supports. " +
+  "If they do not answer the question, say so instead of answering from memory.";
+
+/**
+ * The other half of grounding, and the half a template is least likely to
+ * spell out: an empty retrieval is a fact about the corpus, not an invitation
+ * to fall back on training data.
+ */
+const NO_RESULTS =
+  "No matching passages found in the knowledge base. Tell the user the knowledge base " +
+  "does not cover this instead of answering from memory.";
+
 export function formatWithCitations(results: KnowledgeSearchResult[]): string {
   if (results.length === 0) {
-    return "No matching passages found in the knowledge base.";
+    return NO_RESULTS;
   }
-  return results
+  const sources = results
     .map((result, index) => {
       const pageSuffix = result.page != null ? ` (p. ${result.page})` : "";
       return `[${index + 1}] ${result.sourcePath}${pageSuffix}: "${result.text}"`;
     })
     .join("\n\n");
+  return `${CITATION_CONTRACT}\n\n${sources}`;
 }
 
 function normalizeBaseUrl(url: string): string {
