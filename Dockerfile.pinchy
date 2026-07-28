@@ -10,7 +10,7 @@
 #   4. runtime  — a clean node:22-slim that copies in ONLY what the server
 #      needs at boot: pruned node_modules, the built `.next` (minus the
 #      build-only `.next/cache`), the TypeScript source `tsx` executes
-#      directly, the drizzle migrations `drizzle-kit migrate` applies, the
+#      directly, the drizzle migrations `pnpm db:migrate` applies, the
 #      `scripts/` the entrypoint runs, and the 8 Pinchy plugins.
 #
 # Why this is correct for THIS app (no Next.js standalone, no compiled
@@ -18,10 +18,12 @@
 #   NODE_ENV=production node -r ./server-preload.cjs --import tsx server.ts
 # run from /app/packages/web. The server runs the TypeScript source directly
 # via `tsx` — so `tsx`, the TS source, and the `.next` build all have to be
-# present at runtime. `tsx` and `drizzle-kit` are therefore genuine RUNTIME
-# dependencies (the entrypoint runs `drizzle-kit migrate` at boot) and live
-# in `dependencies`, not `devDependencies`, so `pnpm install --prod` keeps
-# them.
+# present at runtime. `tsx` is therefore a genuine RUNTIME dependency and
+# lives in `dependencies`, not `devDependencies`, so `pnpm install --prod`
+# keeps it. `drizzle-kit` sits there too, but no longer needs to: the boot
+# migration is `node scripts/db-migrate.mjs` (drizzle-orm's migrator, which
+# reports failures — drizzle-kit's CLI swallowed them), and drizzle-kit is
+# now only a `db:generate` / `db:studio` tool. Prunable, separately.
 
 # ---------------------------------------------------------------------------
 # Stage: base — shared layout + corepack-enabled pnpm.
@@ -159,9 +161,11 @@ COPY --from=prod-deps /app/node_modules ./node_modules
 COPY --from=prod-deps /app/packages/web/node_modules ./packages/web/node_modules
 
 # The runtime TypeScript source that `tsx` executes directly, plus the config
-# the server + drizzle-kit read at boot (next.config.ts, drizzle.config.ts,
-# tsconfig.json), the scripts/ the entrypoint calls (resolve-db-password.mjs),
-# the drizzle migrations drizzle-kit applies, server.ts and server-preload.cjs,
+# the server reads at boot (next.config.ts, tsconfig.json; drizzle.config.ts
+# rides along for `db:generate`/`db:studio` — the boot migration resolves its
+# folder from its own path, not from the config), the scripts/ the entrypoint
+# calls (resolve-db-password.mjs, db-migrate.mjs), the drizzle migrations
+# db-migrate.mjs applies, server.ts and server-preload.cjs,
 # and the public/ assets. The source tree is small; node_modules and
 # .next/cache (the bloat) are handled separately above. Build-only configs
 # (postcss.config.mjs, components.json) are intentionally NOT copied — PostCSS
