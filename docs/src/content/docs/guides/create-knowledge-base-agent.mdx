@@ -103,7 +103,7 @@ curl -b session_cookie "https://pinchy.example.com/api/agents/<agentId>/knowledg
 | `unsearchable` | Read without error, but the file holds no text to search — nearly always a scanned PDF (see [Scope in this release](#scope-in-this-release)). |
 | `failed`       | Couldn't be read or parsed at all. The run continues; if an earlier version of the file was indexed, that version stays searchable.           |
 
-`indexed` counts documents the agent can actually reach, not documents we processed — that's why a scanned PDF lands under `unsearchable` instead. If either of the last two numbers is above zero, part of your corpus can't answer questions yet, and it's worth knowing which part before someone asks it something.
+`indexed` counts documents the agent can actually reach, not documents we processed — that's why a scanned PDF lands under `unsearchable` instead. If either of the last two numbers is above zero, part of your corpus can't answer questions yet, and it's worth knowing which part before someone asks it something. For `unsearchable` you don't have to go looking: the **Index** section names those documents, one path per document (see [Documents that can't be searched](#documents-that-cant-be-searched)). A `failed` file can't be named there — it never got far enough to have an entry in the index — so that one you find in the run's log.
 
 A `status` of `failed` is a different thing from a `failed` file: it means something systemic stopped the whole run — the embedding model failed to load, or the database did — and `error` says what. A broken file never gets that far; it's counted and stepped over.
 
@@ -163,6 +163,18 @@ Phase 1 of the knowledge base is deliberately narrow:
 - Only **text-based PDFs** are indexed and searchable via `knowledge_search`. Scanned/image-only PDFs and Office documents (`.docx`, etc.) are on the roadmap, not indexed today.
 - There's no clickable link from a citation into the PDF viewer yet — citations are text (document path + page), not a jump-to-passage link.
 - Indexing is a manual admin action (step 7). It runs in the background and reports progress, but you still have to ask for it — a scheduled sweep and a progress UI in the app are planned for a later phase.
+
+### Documents that can't be searched
+
+A gap you can't see is worse than one you can. If an agent answers "I found nothing" about a scanned certificate, it sounds like a statement about your company — not about the index — and nobody thinks to check.
+
+So the **Index** section in the agent's Permissions tab lists the documents this applies to, by full path: everything that was indexed but produced no searchable text. It's scoped to the folders that agent is granted, exactly like search itself, so the list never mentions a document the agent isn't allowed to know about. Documents in archived folders are listed last and marked as such — they're already out of everyday search.
+
+The list covers everything in those folders, while the `unsearchable` count above it covers only the documents the last run actually touched — a file that hasn't changed since the run before is `skipped`, not counted again. So the list is usually the larger of the two, and that's them agreeing, not disagreeing.
+
+Today these are almost always scans, and reading text from scans is on the roadmap. When it lands, the list empties itself. Until then it tells you which questions your agent can't answer yet, before somebody asks one of them.
+
+If the list is empty after a run that finished, that's the whole message: every document in those folders came back with searchable text. After a run that failed we don't say it — the run stopped early, so there's nothing solid to say it about.
 
 Every retrieval and every reindex is recorded in the [audit trail](/concepts/audit-trail/) — each `knowledge_search` call as `retrieval.query` with the documents it drew on (and a flag when the search reached into archived material), and every reindex as two `knowledge.reindex` entries sharing a `jobId`: who asked for it, and how it turned out, including how many documents were archived. Both are needed, because the run finishes long after the request that started it. The search query text itself is never stored in plaintext, only a one-way hash.
 

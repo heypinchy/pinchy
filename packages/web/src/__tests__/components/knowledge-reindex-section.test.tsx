@@ -19,6 +19,25 @@ vi.mock("sonner", () => ({
   toast: { error: vi.fn(), info: vi.fn(), success: vi.fn(), message: vi.fn() },
 }));
 
+// The unsearchable-document list owns its own read (and is tested on its own in
+// knowledge-unsearchable-list.test.tsx). Stubbed here so this file keeps testing
+// ONE network conversation, with the props rendered as attributes so the
+// section's decisions about WHEN to show it stay assertable.
+vi.mock("@/components/knowledge-unsearchable-list", () => ({
+  KnowledgeUnsearchableList: (props: {
+    agentId: string;
+    announceNone: boolean;
+    reloadKey: string;
+  }) => (
+    <div
+      data-testid="unsearchable-list"
+      data-agent-id={props.agentId}
+      data-announce-none={String(props.announceNone)}
+      data-reload-key={props.reloadKey}
+    />
+  ),
+}));
+
 const mockGet = vi.mocked(apiGet);
 const mockPost = vi.mocked(apiPost);
 
@@ -204,6 +223,93 @@ describe("KnowledgeReindexSection", () => {
 
     const bar = await screen.findByRole("progressbar");
     await waitFor(() => expect(bar).toHaveAttribute("aria-valuenow", "100"));
+  });
+
+  // #935: the reindex summary counts unsearchable documents; the list beside it
+  // names them. Which documents an admin may see is the route's business — this
+  // is only about when the section asks for them at all.
+  describe("unsearchable documents", () => {
+    it("shows the list beside the counts once a run has finished, and lets it announce zero", async () => {
+      mockGet.mockResolvedValue({
+        job: job({
+          status: "succeeded",
+          counts: { indexed: 90, skipped: 5, removed: 0, unsearchable: 4, failed: 1 },
+        }),
+      });
+
+      render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} />);
+
+      const list = await screen.findByTestId("unsearchable-list");
+      expect(list).toHaveAttribute("data-agent-id", "a1");
+      expect(list).toHaveAttribute("data-announce-none", "true");
+    });
+
+    // The index is corpus-wide: another agent's run can have left unsearchable
+    // documents inside this agent's scope, so the list is still asked for — it
+    // just may not reassure about a zero it has no run to stand on.
+    it("still shows the list before any run of its own, but without announcing zero", async () => {
+      render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} />);
+
+      const list = await screen.findByTestId("unsearchable-list");
+      expect(list).toHaveAttribute("data-announce-none", "false");
+    });
+
+    // A failed run stopped somewhere; what it indexed before that is a partial
+    // corpus. Listing what it found is useful, but "every document came back
+    // with searchable text" printed under "Last reindex failed" is an all-clear
+    // about a run that never finished — the one place this panel could add a
+    // false reassurance instead of removing one.
+    it("shows the list after a failed run but never lets it announce zero", async () => {
+      mockGet.mockResolvedValue({
+        job: job({ status: "failed", error: "Embedding model failed to load" }),
+      });
+
+      render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} />);
+
+      const list = await screen.findByTestId("unsearchable-list");
+      expect(list).toHaveAttribute("data-announce-none", "false");
+    });
+
+    it("hides the list while a run is in flight", async () => {
+      mockGet.mockResolvedValue({ job: job({ status: "running", processed: 3, total: 10 }) });
+
+      render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} />);
+
+      await waitFor(() => expect(screen.getByText(/indexing 3 of 10/i)).toBeInTheDocument());
+      expect(screen.queryByTestId("unsearchable-list")).not.toBeInTheDocument();
+    });
+
+    it("hides the list when no directory is granted", async () => {
+      render(<KnowledgeReindexSection agentId="a1" allowedPathCount={0} />);
+
+      await waitFor(() => expect(screen.getByRole("button", { name: /reindex/i })).toBeDisabled());
+      expect(screen.queryByTestId("unsearchable-list")).not.toBeInTheDocument();
+    });
+
+    // Both inputs that can invalidate the list: a finished run (new findings)
+    // and a changed grant count (a different scope to report on).
+    it("re-reads the list after a finished run and after a grant change", async () => {
+      mockGet.mockResolvedValue({ job: job({ id: "job-1", status: "succeeded" }) });
+      const first = render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} />);
+      const afterJob1 = (await screen.findByTestId("unsearchable-list")).getAttribute(
+        "data-reload-key"
+      );
+      first.unmount();
+
+      // A later run of its own is new evidence about the same scope.
+      mockGet.mockResolvedValue({ job: job({ id: "job-2", status: "succeeded" }) });
+      const second = render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} />);
+      const afterJob2 = (await screen.findByTestId("unsearchable-list")).getAttribute(
+        "data-reload-key"
+      );
+      expect(afterJob2).not.toBe(afterJob1);
+
+      // So is a changed grant: same run, different scope to report on.
+      second.rerender(<KnowledgeReindexSection agentId="a1" allowedPathCount={3} />);
+      expect(screen.getByTestId("unsearchable-list").getAttribute("data-reload-key")).not.toBe(
+        afterJob2
+      );
+    });
   });
 
   it("warns that a reindex uses the saved grants while directory changes are unsaved", async () => {

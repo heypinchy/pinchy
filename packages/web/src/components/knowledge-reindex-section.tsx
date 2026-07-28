@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { KnowledgeUnsearchableList } from "@/components/knowledge-unsearchable-list";
 import { apiGet, apiPost, ApiError } from "@/lib/api-client";
 import type { IngestResult } from "@/lib/knowledge/types";
 import type { KnowledgeReindexRequest } from "@/lib/schemas/knowledge-base";
@@ -183,6 +184,26 @@ export function KnowledgeReindexSection({
         <FailedState job={job} />
       ) : (
         <p className="text-sm text-muted-foreground">Not yet indexed.</p>
+      )}
+
+      {/* Which documents the counts above mean by "unsearchable" (#935). Hidden
+          while a run is in flight — the list is about to change — and hidden
+          without a grant, where there is nothing to report on. Documents that
+          exist are listed in every other state, since the index is corpus-wide
+          and another agent's run can have filled this scope.
+
+          A zero, though, is only announced after a SUCCEEDED run. Before any
+          run, "every document came back with searchable text" is trivially true
+          of an empty index and would sit under "Not yet indexed"; after a
+          FAILED one it would sit under "Last reindex failed" and read as an
+          all-clear about a run that stopped early. Both are reassurances the
+          evidence doesn't support. */}
+      {allowedPathCount > 0 && !active && (
+        <KnowledgeUnsearchableList
+          agentId={agentId}
+          announceNone={job?.status === "succeeded"}
+          reloadKey={`${allowedPathCount}:${job?.id ?? "none"}:${job?.status ?? "none"}`}
+        />
       )}
     </div>
   );

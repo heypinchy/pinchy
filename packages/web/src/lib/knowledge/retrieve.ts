@@ -15,9 +15,9 @@
  * so the integration suite stays hermetic — no Ollama required.
  */
 import { sql } from "drizzle-orm";
-import { sep } from "node:path";
 
 import { db } from "@/db";
+import { buildPathFilter } from "./path-filter";
 
 export interface RetrievedChunk {
   chunkId: string;
@@ -87,34 +87,6 @@ interface RetrieveRow extends Record<string, unknown> {
 }
 
 /**
- * Escapes Postgres LIKE metacharacters (`\`, `%`, `_`) in a path segment
- * before it's used as a LIKE prefix pattern. Without this, an allowed path
- * that happens to contain a literal `_` (a single-character LIKE wildcard,
- * common in real folder names like "my_folder") would silently widen the
- * match to unrelated paths — a security-relevant boundary bypass.
- */
-function escapeLikePattern(value: string): string {
-  return value.replace(/\\/g, "\\\\").replace(/%/g, "\\%").replace(/_/g, "\\_");
-}
-
-/**
- * Builds the WHERE fragment scoping retrieval to `allowedPaths`. A chunk
- * (aliased `c` in the caller's query) qualifies iff its `source_path`
- * equals an allowed path exactly, or sits under an allowed directory. The
- * path separator is appended to the allowed path before prefix-matching so
- * "/data/foo" never matches "/data/foobar/x.pdf" — the same boundary
- * reasoning as ingest.ts's removal pass.
- */
-function buildPathFilter(allowedPaths: string[]) {
-  const conditions = allowedPaths.map((allowedPath) => {
-    const prefix = allowedPath.endsWith(sep) ? allowedPath : allowedPath + sep;
-    const likePattern = `${escapeLikePattern(prefix)}%`;
-    return sql`(c.source_path = ${allowedPath} OR c.source_path LIKE ${likePattern} ESCAPE '\\')`;
-  });
-  return sql.join(conditions, sql` OR `);
-}
-
-/**
  * Retrieves the top-`k` kb_chunks for `query`, scoped to `orgId` and
  * `allowedPaths`. An empty `allowedPaths` list denies by default and
  * returns `[]` without calling `deps.embed` — an agent granted no paths
@@ -138,7 +110,7 @@ export async function retrieve(
   // pgvector's textual literal is the same `[1,2,3]` form JSON.stringify
   // produces for a number array (see db/vector.ts's customType).
   const queryVectorLiteral = JSON.stringify(queryVector);
-  const pathFilter = buildPathFilter(allowedPaths);
+  const pathFilter = buildPathFilter(allowedPaths, sql`c.source_path`);
   const statusFilter = opts.includeArchived ? sql`` : sql`AND d.status = 'active'`;
   const baseFilter = sql`c.org_id = ${orgId} ${statusFilter} AND (${pathFilter})`;
 
