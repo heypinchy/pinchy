@@ -13,6 +13,8 @@ import { type ComponentProps, type FC, memo, useContext, useMemo } from "react";
 import { CheckIcon, CopyIcon } from "lucide-react";
 import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
 
+import type { TextMessagePartProps } from "@assistant-ui/react";
+
 import { AgentIdContext } from "@/components/chat";
 import { PdfDialog } from "@/components/assistant-ui/attachment-preview";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
@@ -41,7 +43,16 @@ export function buildRemarkPlugins(agentId: string | null): RemarkPlugins {
   return agentId ? [remarkGfm, [remarkSourceLinks, { agentId }]] : [remarkGfm];
 }
 
-const MarkdownTextImpl = () => {
+/**
+ * This component is registered as assistant-ui's `Text` part renderer, so it
+ * must stay assignable to `TextMessagePartComponent` — it is handed the part's
+ * own props even though it reads none of them. Declaring only `smooth` would
+ * make the props type share no field with that signature, which TypeScript
+ * rejects outright (and the typecheck gate caught).
+ */
+type MarkdownTextProps = Partial<TextMessagePartProps> & { smooth?: boolean };
+
+const MarkdownTextImpl = ({ smooth = true }: MarkdownTextProps) => {
   const agentId = useContext(AgentIdContext);
 
   // Rebuilt only when the agent changes: remark re-parses the whole message on
@@ -51,6 +62,12 @@ const MarkdownTextImpl = () => {
   return (
     <MarkdownTextPrimitive
       remarkPlugins={remarkPlugins}
+      // On by default, which is the streaming look the chat wants. A test that
+      // renders a whole answer at once turns it OFF: the animation is driven by
+      // requestAnimationFrame, so with it on the assertion is really waiting on
+      // an animation clock, and that is a timing-dependent test rather than a
+      // test of the markdown pipeline it is actually about.
+      smooth={smooth}
       className="aui-md"
       components={defaultComponents}
     />
