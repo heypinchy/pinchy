@@ -25,6 +25,9 @@
   "author": "Clemens Helm",
   "license": "AGPL-3.0",
   "packageManager": "pnpm@10.33.0",
+  "engines": {
+    "node": ">=22 <23"
+  },
   "devDependencies": {
     "husky": "^9.1.7",
     "lint-staged": "^17.0.8",
