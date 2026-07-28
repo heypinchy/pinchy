@@ -141,7 +141,12 @@ describe("GET /api/agents/[agentId]/artifacts/[filename]", () => {
     expect(res.status).toBe(415);
   });
 
-  it("sets X-Frame-Options: SAMEORIGIN so the browser can <embed> the file inline", async () => {
+  it("declares X-Frame-Options: SAMEORIGIN so the browser can <embed> the file inline", async () => {
+    // Handler-level declaration only — next.config.ts decides what the URL
+    // really receives and can override this to DENY. That is exactly how
+    // agent-delivered PDFs shipped unviewable with this test green. The
+    // resolved value is asserted in security-headers.test.ts, and enforced for
+    // every serving route by frame-options-route-coverage.test.ts.
     writeArtifact("agent-1", "workbench", "report.pdf", PDF_BYTES);
     const res = await callGET("agent-1", "report.pdf");
     expect(res.status).toBe(200);

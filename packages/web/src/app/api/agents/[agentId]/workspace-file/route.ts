@@ -187,10 +187,17 @@ export const GET = withAuth<Params>(async (req, { params }, session) => {
       // makes the inline/attachment split above meaningful.
       "x-content-type-options": "nosniff",
       "content-disposition": `${disposition}; filename="${documentName.replace(/[^\x20-\x7e]|["\\]/g, "_")}"; filename*=UTF-8''${encodeURIComponent(documentName)}`,
-      // Only relevant for the inline (PDF) case: without this override
-      // Next.js emits X-Frame-Options: DENY by default, which blocks a
-      // same-origin <embed>/<iframe> PDF viewer (see uploads/[filename]/route.ts
-      // for the same gotcha with the same fix).
+      // Declares the posture the inline (PDF) case wants: a same-origin
+      // <embed>/<iframe> viewer may frame this, nothing else may.
+      //
+      // It is NOT what makes the viewer work. next.config.ts's `headers()`
+      // applies `X-Frame-Options: DENY` to `/(.*)`, and that value OVERRIDES
+      // whatever is set here — the URL's real value is decided there, by the
+      // per-route SAMEORIGIN relaxation. Both this route and the artifacts
+      // route shipped without one: a valid 200 the browser refuses to render
+      // (net::ERR_BLOCKED_BY_RESPONSE, blank pane), while a line like this one
+      // sat here looking sufficient. `frame-options-route-coverage.test.ts`
+      // now fails CI if a serving route lacks its entry.
       ...(disposition === "inline" ? { "x-frame-options": "SAMEORIGIN" } : {}),
     },
   });

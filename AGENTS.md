@@ -141,6 +141,19 @@ Two things a shard must get right:
 
 Related: the images are built by a `build-images` **matrix** (two runners, ~2× faster than the old serial job) and fanned back in through `build-image`, whose only job is to preserve the `result` + `outputs` contract the 11 downstream jobs already encode. Its `if:` mirrors the matrix's verbatim, and `!cancelled()` plus its guard step is what keeps a _failed_ build from reading as `skipped` — which downstream would take as "fork PR, build locally" and cheerfully rebuild a Dockerfile CI just proved broken. Because a matrix cannot export per-entry outputs, the fan-in recomputes the tags; `scripts/lib/ci-image-tags.test.mjs` pins the two expressions together.
 
+## Embeddable Serving Routes Need A next.config Entry
+
+A header set by a route handler **loses** to `next.config.ts`'s `headers()`. The global `/(.*)` rule sets `X-Frame-Options: DENY`, so a file-serving route that sets `x-frame-options: SAMEORIGIN` in its own response still gets DENY on the wire: a valid `200 application/pdf` that the browser refuses to render, `net::ERR_BLOCKED_BY_RESPONSE`, blank viewer pane. It shipped twice this way — the KB citation viewer and agent-delivered artifacts (#703 / #788) — and every test was green both times, because route tests assert the header the **handler** declares.
+
+So a route that serves embeddable content needs **two** things, and `packages/web/src/__tests__/security/frame-options-route-coverage.test.ts` fails CI when they drift apart:
+
+- the handler's own `x-frame-options: SAMEORIGIN` (directly, or via `streamWorkspaceFile`), and
+- a `{ source, headers: [{ key: "X-Frame-Options", value: "SAMEORIGIN" }] }` entry in `next.config.ts`, written **after** the catch-all — later rules win.
+
+The guard derives the expected `source` from the route's file path and prints the exact line to add. It checks both directions: a serving route without an entry, and an entry without a serving route (a relaxation must not outlive its route, nor be widened to one that renders HTML). `resolveHeader`/`matchesSource` in `packages/web/src/test-helpers/next-headers.ts` model Next.js's resolution for a concrete path; they throw on `has`/`missing` rather than guess.
+
+**The general lesson: assert the value a concrete URL resolves to, not the value a handler asked for.** The two are different questions, and only one of them is what the user's browser gets.
+
 ## Web Test Files Are Type-Checked
 
 `packages/web` test files (`*.test.ts(x)`, `*.integration.test.ts`, `*.test-d.ts`) are type-checked in CI by the `quality` job's "Typecheck web (incl. tests)" step: `pnpm -C packages/web typecheck` → `tsc --noEmit -p packages/web/tsconfig.typecheck.json`.

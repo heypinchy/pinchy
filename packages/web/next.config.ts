@@ -61,6 +61,16 @@ const nextConfig: NextConfig = {
         headers: [{ key: "X-Frame-Options", value: "SAMEORIGIN" }],
       },
       {
+        // A cited knowledge-base source opens in the same PDF viewer, embedded
+        // over the chat. The route handler sets SAMEORIGIN itself, but that
+        // header LOSES to the catch-all above — which is how this shipped
+        // broken: perfect bytes, and a blank pane with
+        // ERR_BLOCKED_BY_RESPONSE. The relaxation has to be declared here, and
+        // stays same-origin only.
+        source: "/api/agents/:agentId/workspace-file",
+        headers: [{ key: "X-Frame-Options", value: "SAMEORIGIN" }],
+      },
+      {
         // Service worker must not be long-cached, otherwise future SW updates
         // never reach users. Same pattern as other PWAs (Slack, Mattermost).
         source: "/sw.js",

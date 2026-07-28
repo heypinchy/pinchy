@@ -150,12 +150,14 @@ describe("GET /api/agents/[agentId]/uploads/[filename]", () => {
     expect(res.status).toBe(415);
   });
 
-  it("sets X-Frame-Options: SAMEORIGIN so the browser can <embed> the file inline (PDF viewer)", async () => {
-    // Pinchy's global Next.js header rule emits X-Frame-Options: DENY for every
-    // path — which blocks AttachmentPreview's <embed> from loading the PDF.
-    // The uploads route MUST override this with SAMEORIGIN. Without this
-    // header the PDF preview silently fails: the user sees an empty modal
-    // and no console error.
+  it("declares X-Frame-Options: SAMEORIGIN so the browser can <embed> the file inline (PDF viewer)", async () => {
+    // This asserts what the HANDLER declares, which is NOT what the URL
+    // receives: next.config.ts's global `/(.*)` rule sets DENY and overrides
+    // anything set here, so this test stays green even when every PDF renders
+    // as a blank pane. The value a browser actually gets is asserted in
+    // src/__tests__/security/security-headers.test.ts (resolved per path) and
+    // enforced for every serving route by frame-options-route-coverage.test.ts.
+    // Keep this one anyway — the declaration is what those two resolve against.
     writeUpload("agent-1", "invoice.pdf", PDF_BYTES);
     const res = await callGET("agent-1", "invoice.pdf");
     expect(res.status).toBe(200);

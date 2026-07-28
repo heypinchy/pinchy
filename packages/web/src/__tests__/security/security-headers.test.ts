@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import nextConfig from "../../../next.config";
+import { matchesSource, resolveHeader } from "@/test-helpers/next-headers";
 
 /**
  * Security test: ensures all required security headers are configured.
@@ -65,34 +66,32 @@ describe("Security headers", () => {
  * own header stayed green while every delivered PDF rendered as a blank pane
  * with net::ERR_BLOCKED_BY_RESPONSE.
  *
- * So these tests resolve a concrete path the way Next.js does and assert the
- * value that path ends up with.
+ * So these tests resolve a concrete path the way Next.js does (see
+ * `@/test-helpers/next-headers`) and assert the value that path ends up with.
+ * The companion guard `frame-options-route-coverage.test.ts` enforces the same
+ * property for EVERY serving route, so a new one cannot ship without an entry.
  */
 
-/** Converts a next.config `source` pattern to a matcher: `:param` is one segment, `(.*)` is anything. */
-function matchesSource(source: string, path: string): boolean {
-  const pattern = source
-    .replace(/\(\.\*\)/g, " ANY ")
-    .replace(/:[A-Za-z0-9_]+/g, "[^/]+")
-    .replace(/ ANY /g, ".*");
-  return new RegExp(`^${pattern}$`).test(path);
-}
+describe("matchesSource", () => {
+  it("treats a `:param` as exactly one segment", () => {
+    const source = "/api/agents/:agentId/uploads/:filename";
+    expect(matchesSource(source, "/api/agents/a1/uploads/report.pdf")).toBe(true);
+    // Two segments where the pattern allows one.
+    expect(matchesSource(source, "/api/agents/a1/uploads/nested/report.pdf")).toBe(false);
+  });
 
-/**
- * Later entries override earlier ones for the same key — which is exactly why
- * the relaxing rules are written after the catch-all in next.config.ts.
- */
-async function resolveHeader(path: string, key: string): Promise<string | undefined> {
-  const entries = await nextConfig.headers!();
-  let value: string | undefined;
-  for (const entry of entries) {
-    if (!matchesSource(entry.source, path)) continue;
-    for (const header of entry.headers) {
-      if (header.key.toLowerCase() === key.toLowerCase()) value = header.value;
-    }
-  }
-  return value;
-}
+  it("treats a literal dot as a dot, not a wildcard", () => {
+    // Without escaping, `^/sw.js$` matches `/swXjs` — a rule silently applying
+    // to a path it was never meant to cover.
+    expect(matchesSource("/sw.js", "/sw.js")).toBe(true);
+    expect(matchesSource("/sw.js", "/swXjs")).toBe(false);
+  });
+
+  it("expands the `(.*)` catch-all across segments", () => {
+    expect(matchesSource("/(.*)", "/chat/agent-1")).toBe(true);
+    expect(matchesSource("/(.*)", "/")).toBe(true);
+  });
+});
 
 describe("X-Frame-Options as a given URL actually receives it", () => {
   it("keeps DENY for ordinary pages", () => {
@@ -116,7 +115,19 @@ describe("X-Frame-Options as a given URL actually receives it", () => {
     ).resolves.toBe("SAMEORIGIN");
   });
 
-  it("does not relax any route beyond those two", async () => {
+  it("relaxes to SAMEORIGIN for the workspace-file route a cited source opens from", () => {
+    // Without this the browser blocks the <embed> outright and the viewer shows
+    // a blank pane — the route can serve perfect bytes and the user sees nothing.
+    return expect(
+      resolveHeader("/api/agents/agent-1/workspace-file", "X-Frame-Options")
+    ).resolves.toBe("SAMEORIGIN");
+  });
+
+  it("relaxes no route beyond the file-serving ones", async () => {
+    // The list is the spec — deliberately exhaustive, so widening the
+    // relaxation to a route that renders HTML is a failing test, not a review
+    // catch. `frame-options-route-coverage.test.ts` keeps it tied to the
+    // routes that actually exist.
     const entries = await nextConfig.headers!();
     const relaxed = entries
       .filter((e) => e.headers.some((h) => h.key === "X-Frame-Options" && h.value === "SAMEORIGIN"))
@@ -125,6 +136,7 @@ describe("X-Frame-Options as a given URL actually receives it", () => {
     expect(relaxed.sort()).toEqual([
       "/api/agents/:agentId/artifacts/:filename",
       "/api/agents/:agentId/uploads/:filename",
+      "/api/agents/:agentId/workspace-file",
     ]);
   });
 });

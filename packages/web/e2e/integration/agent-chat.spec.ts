@@ -680,6 +680,11 @@ test.describe.serial("Plugin behavior — pinchy-files generate_file", () => {
         // (net::ERR_BLOCKED_BY_RESPONSE → blank PDF viewer). Asserting it here,
         // against the production image, is the only layer that sees the value
         // a user's browser actually gets.
+        //
+        // Limit worth knowing: this artifact is a CSV, so a pass proves the
+        // header, not that an <embed> renders. Nothing in CI drives the PDF
+        // lightbox end to end — that was verified by hand when the defect was
+        // reproduced.
         expect(res.headers()["x-frame-options"]).toBe("SAMEORIGIN");
         downloadOk = true;
         break;
