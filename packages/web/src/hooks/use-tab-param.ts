@@ -47,23 +47,22 @@ export type AgentSettingsTab = (typeof AGENT_SETTINGS_TABS)[number];
  * menu) should pass `keepParamForDefault: true` so selecting the
  * default tab still writes `?tab=<default>` instead of clearing it.
  *
- * `pushOnEnter: true` makes the first selection out of the menu level
- * (i.e. while not yet `isExplicit`) a `router.push` instead of `replace`,
- * so the browser Back button returns to the menu in a mobile drill-down.
- * Switching between tabs afterwards still uses `replace` to avoid piling
- * up one history entry per tab click.
+ * `setTab` pushes a history entry. The tab lives in the URL, which makes
+ * each tab an addressable location, so Back walks back through the tabs
+ * the user visited — on desktop laterally, and on a mobile drill-down out
+ * to the menu level. Call it only for user-initiated switches; a
+ * programmatic normalisation of the URL belongs in a `router.replace`.
  */
 export function useTabParam<T extends string>(
   defaultTab: T,
   validTabs: readonly T[],
   initialTab?: string | null,
-  options?: { keepParamForDefault?: boolean; pushOnEnter?: boolean }
+  options?: { keepParamForDefault?: boolean }
 ): readonly [T, (tab: string) => void, boolean] {
   const searchParams = useSearchParams();
   const pathname = usePathname();
   const router = useRouter();
   const keepParamForDefault = options?.keepParamForDefault ?? false;
-  const pushOnEnter = options?.pushOnEnter ?? false;
 
   const rawTab = (searchParams.get("tab") ?? initialTab ?? null) as T | null;
   const isExplicit = Boolean(rawTab && validTabs.includes(rawTab));
@@ -82,24 +81,11 @@ export function useTabParam<T extends string>(
 
       const query = params.toString();
       const url = query ? `${pathname}?${query}` : pathname;
-      // Drilling in from the menu (not yet explicit) gets its own history
-      // entry so Back returns to the menu; every later switch replaces.
-      if (pushOnEnter && !isExplicit) {
-        router.push(url, { scroll: false });
-      } else {
-        router.replace(url, { scroll: false });
-      }
+      // Every tab is its own URL, so every switch is its own history entry
+      // and Back returns to the tab the user came from (#951).
+      router.push(url, { scroll: false });
     },
-    [
-      defaultTab,
-      isExplicit,
-      keepParamForDefault,
-      pushOnEnter,
-      pathname,
-      router,
-      searchParams,
-      validTabs,
-    ]
+    [defaultTab, keepParamForDefault, pathname, router, searchParams, validTabs]
   );
 
   return [tab, setTab, isExplicit] as const;
