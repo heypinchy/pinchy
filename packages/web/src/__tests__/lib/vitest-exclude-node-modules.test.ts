@@ -21,6 +21,16 @@ import { resolve } from "node:path";
 const WEB_ROOT = resolve(__dirname, "../../..");
 
 describe("vitest.config.ts exclude", () => {
+  // The test budget must exceed the child's own `timeout` below, not vitest's
+  // default 5s: this test boots a SECOND, complete vitest process (config
+  // load, vite transform, collection glob over the whole workspace), which
+  // costs ~3.7s on an idle machine. That is a 1.35x margin against the
+  // default, and parallel worktree sessions eat it routinely (measured 5162ms
+  // on 2026-07-28). The budget is pure subprocess infrastructure — the
+  // assertion is about WHICH files vitest collects, never how fast. Keeping
+  // it above the execFileSync timeout also means a genuinely hung child is
+  // killed by the child timeout, which reports the child's own output,
+  // instead of by a bare "Test timed out" that says nothing.
   it("does not collect vendored test files from nested plugin node_modules", () => {
     const output = execFileSync("npx", ["vitest", "list", "--filesOnly"], {
       cwd: WEB_ROOT,
@@ -39,5 +49,5 @@ describe("vitest.config.ts exclude", () => {
         "found'). Fix the `exclude` glob in vitest.config.ts.",
       ].join("\n")
     ).toEqual([]);
-  });
+  }, 90_000);
 });
