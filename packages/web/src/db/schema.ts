@@ -449,6 +449,18 @@ export const auditLog = pgTable(
     // Typical audit query: filter by resource, order by time descending. A
     // backward scan of this composite index serves it without a sort.
     index("idx_audit_resource_timestamp").on(table.resource, table.timestamp),
+    // "When was tampering last detected?" — GET /api/audit/verify/status.
+    // Partial, because the rows it indexes are the ones that should never
+    // exist: on a healthy instance this index stays empty (8 KB) and the
+    // lookup is an index-only scan that touches one page. Without it the
+    // planner reads the `LIMIT 1` as "the match will turn up early", walks
+    // idx_audit_timestamp backwards, and — finding nothing, which is the
+    // healthy case — scans the entire audit_log on every call (measured: 55 ms
+    // and 13k buffers at 500k rows, growing linearly with a log that never
+    // shrinks).
+    index("idx_audit_integrity_violation")
+      .on(table.timestamp.desc())
+      .where(sql`${table.eventType} = 'audit.integrity_check' AND ${table.outcome} = 'failure'`),
     check(
       "audit_log_v2_outcome_required",
       sql`${table.version} = 1 OR ${table.outcome} IS NOT NULL`

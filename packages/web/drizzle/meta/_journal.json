@@ -421,6 +421,13 @@
       "when": 1784794312121,
       "tag": "0059_right_speedball",
       "breakpoints": true
+    },
+    {
+      "idx": 60,
+      "version": "7",
+      "when": 1785323913327,
+      "tag": "0060_gigantic_texas_twister",
+      "breakpoints": true
     }
   ]
 }
