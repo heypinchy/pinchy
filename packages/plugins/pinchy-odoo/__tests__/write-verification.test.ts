@@ -245,7 +245,13 @@ describe("odoo_create verification", () => {
     expect(res.details?.verified).toBe(false);
     // Audit failure signal is present.
     expect(res.details?.error).toBeTruthy();
-    expect(res.content[0].text.toLowerCase()).toContain("could not be read back");
+    const msg = res.content[0].text.toLowerCase();
+    expect(msg).toContain("could not be read back");
+    // The message must not invite a blind identical retry (weak models loop
+    // 15–25× on "retry the create"); it must tell the agent to stop and report.
+    expect(msg).not.toContain("retry the create or check");
+    expect(msg).toContain("do not retry");
+    expect(msg).toContain("report");
   });
 
   it("fails when a written verbatim scalar reads back different", async () => {
@@ -263,6 +269,11 @@ describe("odoo_create verification", () => {
     expect(res.isError).toBe(true);
     expect(res.details?.verified).toBe(false);
     expect(res.content[0].text).toContain("ref");
+    // A mismatched create must not be retried (the record exists — retrying
+    // would duplicate); tell the agent to stop and report.
+    const msg = res.content[0].text.toLowerCase();
+    expect(msg).toContain("do not retry");
+    expect(msg).toContain("report");
   });
 
   it("does not verify non-covered models (no read-back, no verified flag)", async () => {
@@ -359,6 +370,10 @@ describe("odoo_write verification", () => {
     expect(res.isError).toBe(true);
     expect(res.details?.verified).toBe(false);
     expect(res.content[0].text).toContain("ref");
+    // A persist-mismatch on write must not trigger a blind identical retry.
+    const msg = res.content[0].text.toLowerCase();
+    expect(msg).toContain("do not retry");
+    expect(msg).toContain("report");
   });
 
   it("does not verify non-covered models", async () => {
