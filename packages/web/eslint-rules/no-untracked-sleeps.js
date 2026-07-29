@@ -29,6 +29,14 @@
 // not a proof that the suite contains no sleeps. Writing the setTimeout form
 // to dodge this rule is a deliberate act, and review owns that case.
 //
+// The scope is `packages/web/e2e/**`, which is every Playwright `testDir` in
+// the repo. The two waitForTimeout users outside it are deliberate:
+// screenshots/capture.ts (a capture script — a sleep there yields an ugly
+// screenshot, never a false green) and the poll interval in
+// packages/web/eval/run-eval.ts. A new Playwright testDir outside e2e/ would
+// escape the rule; widen the `files:` glob in eslint.config.mjs if that
+// happens.
+//
 // The scan is narrower than no-untracked-skips' 40-line window on purpose. A
 // skip's justification legitimately sits above the enclosing `describe`; a
 // sleep's does not — it is one statement and its reason belongs on it. The

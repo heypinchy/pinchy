@@ -123,6 +123,7 @@ test.describe("memory-audit watcher emits agent.memory_changed on MEMORY.md writ
         return detail?.agent?.id === smithersId && detail?.file === "MEMORY.md";
       },
       deadlineMs: 15_000,
+      limit: 50,
     });
     const detail = entry.detail as MemoryDetail;
 

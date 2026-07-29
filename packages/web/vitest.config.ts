@@ -44,6 +44,16 @@ export default defineConfig({
       "e2e",
       "**/*.integration.test.{ts,tsx,js,jsx}",
     ],
+    server: {
+      deps: {
+        // The plugin-tool-coverage guard parses spec files with the TypeScript
+        // compiler API. `typescript.js` carries a sourceMappingURL but ships no
+        // .map, so letting vite transform it prints a ten-line ENOENT stack on
+        // every run. Externalizing loads it through node directly — same
+        // module, no transform, no noise.
+        external: ["typescript"],
+      },
+    },
   },
   resolve: {
     alias: {

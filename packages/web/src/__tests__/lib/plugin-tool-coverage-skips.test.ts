@@ -47,6 +47,18 @@ describe("skippedRanges", () => {
     const source = `test.describe.skip("group", () => {\n  test("a", () => {});\n  test("b", () => {});\n});`;
     expect(skippedRanges(source)).toHaveLength(1);
   });
+
+  it("sees a skip behind a modifier chain", () => {
+    // Playwright allows `test.describe.serial.skip(...)` / `.parallel.skip`.
+    // A guard that stops matching at a fixed chain depth silently starts
+    // counting those blocks as coverage again.
+    for (const call of [
+      `test.describe.serial.skip("a", () => {})`,
+      `test.describe.parallel.skip("a", () => {})`,
+    ]) {
+      expect(skippedRanges(call), call).toHaveLength(1);
+    }
+  });
 });
 
 describe("extractCoveredTools", () => {
@@ -88,6 +100,36 @@ describe("extractCoveredTools", () => {
       `});`,
       `test("alive", async () => {`,
       `  await pollAuditForTool(page, { toolName: "pinchy_generate_file", agentId });`,
+      `});`,
+    ].join("\n");
+    expect(extractCoveredTools(source)).toEqual(["pinchy_generate_file"]);
+  });
+
+  it("does NOT let a comment mentioning the helper reach into a skipped block", () => {
+    // The scan anchors pattern 2 on `pollAuditForTool(`. A prose mention of
+    // the helper — the kind this very policy's explanatory comments contain —
+    // sits OUTSIDE the skipped block, so if the match is allowed to run on
+    // until it finds any `toolName:` literal, and skippedness is judged at the
+    // match START, the skipped probe below counts again. That is the exact
+    // loophole #834 closes, re-opened by a comment.
+    const source = [
+      `// Kept for #427. It used to call pollAuditForTool(page, {...}) here.`,
+      `test.skip("dead probe", async () => {`,
+      `  await pollAuditForTool(page, { toolName: "pinchy_ls", agentId });`,
+      `});`,
+    ].join("\n");
+    expect(extractCoveredTools(source)).toEqual([]);
+  });
+
+  it("does NOT let a running probe's match spill into a later skipped one", () => {
+    // Same failure from the other side: the tool name that counts must be the
+    // one inside the running call, never a later literal the match ran on to.
+    const source = [
+      `test("alive", async () => {`,
+      `  await pollAuditForTool(page, { agentId, toolName: "pinchy_generate_file" });`,
+      `});`,
+      `test.skip("dead", async () => {`,
+      `  await pollAuditForTool(page, { toolName: "pinchy_ls", agentId });`,
       `});`,
     ].join("\n");
     expect(extractCoveredTools(source)).toEqual(["pinchy_generate_file"]);

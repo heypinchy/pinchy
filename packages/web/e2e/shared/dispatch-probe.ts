@@ -389,11 +389,19 @@ export async function pollAuditForEvent(
     deadlineMs?: number;
     intervalMs?: number;
     since?: string;
+    /**
+     * How many rows of this event type to scan per poll, newest first.
+     * Raise it when the same event type is emitted by other tests in the same
+     * run: entries written after ours push it off the page, and the poll then
+     * times out on an entry that is sitting in the log.
+     */
+    limit?: number;
   }
 ): Promise<AuditApiEntry> {
   const deadlineMs = params.deadlineMs ?? 60_000;
   const deadline = Date.now() + deadlineMs;
   const interval = params.intervalMs ?? 500;
+  const limit = params.limit ?? 25;
   const sinceQs = params.since ? `&from=${encodeURIComponent(params.since)}` : "";
   // A non-200 is retried rather than thrown on — the audit route can be
   // transiently unavailable while the stack settles. But an endpoint that
@@ -403,7 +411,7 @@ export async function pollAuditForEvent(
   let lastNon200: number | null = null;
   while (Date.now() < deadline) {
     const res = await page.request.get(
-      `/api/audit?eventType=${encodeURIComponent(params.eventType)}&limit=25${sinceQs}`
+      `/api/audit?eventType=${encodeURIComponent(params.eventType)}&limit=${limit}${sinceQs}`
     );
     if (res.status() === 200) {
       const audit = (await res.json()) as { entries: AuditApiEntry[] };

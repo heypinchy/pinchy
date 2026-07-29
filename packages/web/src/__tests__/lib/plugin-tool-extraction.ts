@@ -69,12 +69,15 @@ export function deriveToolsFromSource(pluginId: KnownPinchyPlugin): string[] {
 // skipped blocks out before matching, so the guard reports on tests that run.
 //
 // This is the one place in the repo that parses instead of grepping, and it
-// buys ~1s of `typescript` module load in `pnpm test`. That is deliberate:
+// pulls the `typescript` module into `pnpm test`. That is deliberate:
 // finding where a skipped block ENDS means balancing braces through strings,
 // template literals, comments and regex literals, and a guard that gets the
 // range wrong either swallows real coverage or waves a skip through — the two
 // failures it exists to prevent. Everywhere the answer is a token rather than
-// a range, the other guards' regexes stay the right tool.
+// a range, the other guards' regexes stay the right tool. `typescript` is
+// externalized in vitest.config.ts so vite does not transform it — that costs
+// nothing measurable, whereas transforming it costs ~11s and prints a
+// sourcemap ENOENT stack on every run.
 
 const SKIP_MEMBERS = new Set(["skip", "todo", "fixme"]);
 const SKIP_BARE_NAMES = new Set(["xit", "xdescribe"]);
@@ -94,14 +97,14 @@ function isSkipCallee(expr: ts.Expression): boolean {
   if (!ts.isPropertyAccessExpression(expr)) return false;
   if (!SKIP_MEMBERS.has(expr.name.text)) return false;
 
-  const base = expr.expression;
-  // `test.skip` / `it.todo` / `describe.fixme`
-  if (ts.isIdentifier(base)) return TEST_OBJECTS.has(base.text);
-  // `test.describe.skip`
-  if (ts.isPropertyAccessExpression(base) && ts.isIdentifier(base.expression)) {
-    return TEST_OBJECTS.has(base.expression.text);
-  }
-  return false;
+  // Walk the whole property chain to its root identifier rather than checking
+  // a fixed depth: `test.skip`, `test.describe.skip` and Playwright's
+  // `test.describe.serial.skip` / `.parallel.skip` are all the same thing, and
+  // a guard that stops at two levels quietly starts counting the longer forms
+  // as coverage again.
+  let base: ts.Expression = expr.expression;
+  while (ts.isPropertyAccessExpression(base)) base = base.expression;
+  return ts.isIdentifier(base) && TEST_OBJECTS.has(base.text);
 }
 
 /**
@@ -138,8 +141,16 @@ export function skippedRanges(source: string): Array<[number, number]> {
  *   2. the shared helper — `pollAuditForTool(page, { toolName: "<name>", … })`
  *
  * Pattern 2 is anchored on the helper name so unrelated `toolName: "…"`
- * literals (e.g. an audit POST body in an auth test) are not counted.
- * Matches inside a skipped block are dropped.
+ * literals (e.g. an audit POST body in an auth test) are not counted. Its gap
+ * matcher is `[^)]*?`, not `[\s\S]*?`: the tool name must sit inside the
+ * call's own argument list. Otherwise a prose mention of `pollAuditForTool(`
+ * — the kind this policy's own explanatory comments contain — runs on until
+ * it finds a `toolName:` literal somewhere later in the file, quite possibly
+ * inside the skipped block it was explaining.
+ *
+ * Skippedness is judged at the offset of the captured tool name, not at the
+ * match start, for the same reason: the thing that has to be inside a running
+ * test is the name, not whatever text the match happened to begin at.
  */
 export function extractCoveredTools(source: string): string[] {
   const skipped = skippedRanges(source);
@@ -149,10 +160,12 @@ export function extractCoveredTools(source: string): string[] {
   const tools = new Set<string>();
   for (const pattern of [
     /eventType=tool\.([a-z_]+)/g,
-    /pollAuditForTool\s*\([\s\S]*?toolName:\s*"([a-z_]+)"/g,
+    /pollAuditForTool\s*\([^)]*?toolName:\s*"([a-z_]+)"/g,
   ]) {
     for (const match of source.matchAll(pattern)) {
-      if (match.index !== undefined && isSkipped(match.index)) continue;
+      if (match.index === undefined) continue;
+      const nameOffset = match.index + match[0].lastIndexOf(match[1]);
+      if (isSkipped(nameOffset)) continue;
       tools.add(match[1]);
     }
   }

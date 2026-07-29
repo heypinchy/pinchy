@@ -70,6 +70,7 @@ test.describe.serial("Audit log", () => {
       eventType: "group.created",
       predicate: (e) => e.detail?.name === AUDIT_TEST_GROUP,
       deadlineMs: 10_000,
+      limit: 100,
     });
 
     expect(entry.eventType).toBe("group.created");

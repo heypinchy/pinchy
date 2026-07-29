@@ -89,7 +89,11 @@ const eslintConfig = defineConfig([
   },
   // Pinchy custom rules — Playwright specs and their helpers:
   // - no-untracked-sleeps: forbid `page.waitForTimeout(...)` unless the
-  //   leading 40 lines reference a tracking issue. Every Playwright config
+  //   comment block directly above the statement references a tracking issue.
+  //   (Narrower than no-untracked-skips' 40-line window on purpose: a sleep is
+  //   one statement and its reason belongs on it — a wide scan around the two
+  //   sleeps this rule was written for picked up `request #2` and
+  //   `openclaw#42172` from unrelated comments.) Every Playwright config
   //   here pins `retries: 0, workers: 1` on purpose, so a flake is a signal
   //   rather than something a rerun hides — a fixed sleep trades that away
   //   for a wait that is green on a fast host and red on a loaded runner.
