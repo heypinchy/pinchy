@@ -180,7 +180,7 @@ describe("POST /api/internal/knowledge/search", () => {
     expect(body.results[0].sourcePath).toBe(
       "/data/noack/OLD/QF_2012/PrintingFiles_QF/PI_EColi.pdf"
     );
-    expect(body.results[0].citationPath).toBe("OLD/QF_2012/PrintingFiles_QF/PI_EColi.pdf");
+    expect(body.results[0].citationPath).toBe("noack/OLD/QF_2012/PrintingFiles_QF/PI_EColi.pdf");
   });
 
   it("passes a null locator through instead of inventing a page for it", async () => {

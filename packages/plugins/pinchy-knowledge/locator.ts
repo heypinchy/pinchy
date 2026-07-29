@@ -40,7 +40,11 @@ export type ChunkLocator =
    * chunks carry a null locator instead.
    */
   | { kind: "heading"; headings: string[] }
-  /** A spreadsheet sheet and the 1-based, inclusive row range the chunk spans. */
+  /**
+   * A spreadsheet sheet and the 1-based, inclusive row range the chunk spans.
+   * Field-for-field what `xlsx-extract.ts`'s `XlsxChunk` already produces, so
+   * wiring that extractor into the ingest is a spread rather than a mapping.
+   */
   | { kind: "sheet"; sheet: string; startRow: number; endRow: number };
 
 /**
