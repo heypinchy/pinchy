@@ -26,6 +26,7 @@ describe("assertMailHostAllowed", () => {
       ["IPv6 link-local", "fe80::1"],
       ["IPv6 link-local, upper half of fe80::/10", "feb0::1"],
       ["IPv4-mapped IPv6 loopback", "::ffff:127.0.0.1"],
+      ["IPv4-compatible IPv6 loopback", "::7f00:1"],
     ];
 
     it.each(alwaysBlocked)("blocks a host resolving to %s (%s)", async (_label, address) => {

@@ -176,6 +176,8 @@ ALLOW_PRIVATE_MAIL_HOSTS=1
 
 Loopback and link-local addresses stay blocked either way — `127.0.0.1`, `::1`, `169.254.169.254` and `fd00:ec2::254`, the cloud metadata endpoints. No mail server lives there, so there's nothing to trade off.
 
+The same check runs when the connection is saved, not only when it's tested, so a blocked host can't be stored and quietly reconnected to later by an inbox sweep.
+
 ---
 
 ## Ports, TLS & cloud firewalls

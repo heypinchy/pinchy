@@ -40,6 +40,12 @@ describe("isPrivateUrl", () => {
     expect(isPrivateUrl("http://[::ffff:127.0.0.1]:8069")).toBe(true);
   });
 
+  it("rejects an IPv4-compatible IPv6 loopback", () => {
+    // The deprecated `::a.b.c.d` form. `URL` hands it over as [::7f00:1] —
+    // it reads as an ordinary public IPv6 address unless the tail is decoded.
+    expect(isPrivateUrl("http://[::127.0.0.1]:8069")).toBe(true);
+  });
+
   it("rejects IPv6 unique local address (fc00::/7)", () => {
     expect(isPrivateUrl("http://[fd12:3456:789a::1]:8069")).toBe(true);
   });
@@ -107,6 +113,12 @@ describe("classifyIpAddress", () => {
     ["::ffff:127.0.0.1", "loopback"],
     ["::ffff:192.168.1.10", "private"],
     ["::ffff:203.0.113.50", "public"],
+    // ::a.b.c.d, the deprecated IPv4-compatible form. ::/96 is reserved, so
+    // nothing public lives there — decode the tail rather than wave it past.
+    ["::127.0.0.1", "loopback"],
+    ["::7f00:1", "loopback"],
+    ["::169.254.169.254", "link-local"],
+    ["::192.168.1.10", "private"],
   ] as const)("classifies IPv6 %s as %s", (address, expected) => {
     expect(classifyIpAddress(address)).toBe(expected);
   });

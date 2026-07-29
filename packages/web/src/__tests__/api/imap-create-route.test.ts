@@ -4,6 +4,16 @@ vi.mock("next/headers", () => ({
   headers: vi.fn().mockResolvedValue(new Headers()),
 }));
 
+// The route resolves both mail hosts through the SSRF guard, so DNS is stubbed
+// here — no test in this file may depend on what the machine's resolver says
+// about example.com.
+const { mockDnsLookup } = vi.hoisted(() => ({ mockDnsLookup: vi.fn() }));
+
+vi.mock("node:dns/promises", () => ({
+  lookup: mockDnsLookup,
+  default: { lookup: mockDnsLookup },
+}));
+
 const mockGetSession = vi.fn();
 vi.mock("@/lib/auth", () => ({
   getSession: (...args: unknown[]) => mockGetSession(...args),
@@ -90,6 +100,7 @@ describe("POST /api/integrations/imap", () => {
     vi.clearAllMocks();
     mockGetSession.mockResolvedValue(adminSession);
     mockInsertReturning.mockResolvedValue([insertedConnection]);
+    mockDnsLookup.mockResolvedValue([{ address: "203.0.113.50", family: 4 }]);
   });
 
   it("returns 401 when not authenticated and does not insert a row", async () => {
@@ -313,6 +324,78 @@ describe("POST /api/integrations/imap", () => {
       expect(response.status).toBe(400);
       expect(mockInsertValues).not.toHaveBeenCalled();
       expect(mockAppendAuditLog).not.toHaveBeenCalled();
+    });
+  });
+
+  // The SSRF guard on POST /api/integrations/imap/test only covers the
+  // diagnostic. Storing a connection is the more durable path to the same
+  // internal address: the inbox sweep and the pinchy-email plugin reconnect to
+  // whatever host is on the row, on a schedule, and report their errors — so a
+  // saved connection is a standing oracle, not a one-shot one. The UI tests
+  // before it saves; the API is the contract (pinchy#823).
+  describe("SSRF guard", () => {
+    it("refuses to store a connection whose IMAP host resolves to loopback", async () => {
+      mockDnsLookup.mockResolvedValue([{ address: "127.0.0.1", family: 4 }]);
+      const { POST } = await import("@/app/api/integrations/imap/route");
+
+      const response = await POST(makeRequest(validBody), routeContext());
+      const body = await response.json();
+
+      expect(response.status).toBe(400);
+      expect(body.error).toMatch(/loopback/i);
+      expect(mockInsertValues).not.toHaveBeenCalled();
+    });
+
+    it("refuses to store a connection whose SMTP host resolves to cloud metadata", async () => {
+      // Only the SMTP leg is internal — the guard must check both hosts, not
+      // just the first one.
+      mockDnsLookup.mockImplementation(async (host: string) =>
+        host === "smtp.example.com"
+          ? [{ address: "169.254.169.254", family: 4 }]
+          : [{ address: "203.0.113.50", family: 4 }]
+      );
+      const { POST } = await import("@/app/api/integrations/imap/route");
+
+      const response = await POST(makeRequest(validBody), routeContext());
+
+      expect(response.status).toBe(400);
+      expect(mockInsertValues).not.toHaveBeenCalled();
+    });
+
+    it("audits the refusal as a failed integration.created without leaking identity", async () => {
+      mockDnsLookup.mockResolvedValue([{ address: "10.0.0.5", family: 4 }]);
+      const { POST } = await import("@/app/api/integrations/imap/route");
+
+      await POST(makeRequest(validBody), routeContext());
+
+      expect(mockAppendAuditLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          eventType: "integration.created",
+          outcome: "failure",
+          actorType: "user",
+          actorId: "user-1",
+          detail: expect.objectContaining({ type: "imap", blocked: "host" }),
+        })
+      );
+
+      const auditCall = mockAppendAuditLog.mock.calls[0][0];
+      const serialized = JSON.stringify(auditCall);
+      expect(serialized).not.toContain("super-secret-password");
+      expect(serialized).not.toContain("support@example.com");
+    });
+
+    it("stores a connection on a private range when ALLOW_PRIVATE_MAIL_HOSTS=1", async () => {
+      // The on-premise case the flag exists for: the operator has said reaching
+      // their own network is intended, so saving must work end to end.
+      vi.stubEnv("ALLOW_PRIVATE_MAIL_HOSTS", "1");
+      mockDnsLookup.mockResolvedValue([{ address: "192.168.1.10", family: 4 }]);
+      const { POST } = await import("@/app/api/integrations/imap/route");
+
+      const response = await POST(makeRequest(validBody), routeContext());
+
+      expect(response.status).toBe(201);
+      expect(mockInsertValues).toHaveBeenCalled();
+      vi.unstubAllEnvs();
     });
   });
 });
