@@ -24,13 +24,19 @@ function buildTitle(error: string): string {
 /**
  * Returns a GitHub new-issue URL with only the title and a short paste hint.
  * The full issue body should be copied to clipboard separately via buildIssueBody().
+ *
+ * The labels are load-bearing, not decoration: this deeplink bypasses
+ * `.github/ISSUE_TEMPLATE/bug_report.yml`, which is where `bug` + `triage`
+ * normally come from. Without them a report born from a real in-app failure
+ * lands unlabelled and shows up in no triage filter — which is exactly how
+ * #849 sat unanswered for a week.
  */
 export function buildGitHubIssueUrl(context: IssueContext): string {
   const title = buildTitle(context.error);
   const body =
     "**Paste your clipboard below** (Cmd+V / Ctrl+V) — diagnostic info was copied automatically.\n\n---\n";
 
-  const params = new URLSearchParams({ title, body });
+  const params = new URLSearchParams({ title, body, labels: "bug,triage" });
   return `${REPO_URL}?${params.toString()}`;
 }
 
