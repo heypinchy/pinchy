@@ -1398,10 +1398,12 @@ Report the health of the periodic verify job without re-scanning the log. **Admi
 | ----------------- | ------------------------------------------------------------------------------------------------------------ |
 | `lastStatus`      | Outcome of the most recent sweep: `ok`, `violation`, or `never_run` if no sweep result has been recorded yet |
 | `lastVerifiedId`  | Highest audit entry ID the job has verified so far                                                           |
-| `lastRunAt`       | When the last sweep completed, or `null` if it never has                                                     |
+| `lastRunAt`       | When a sweep last advanced the checkpoint, or `null` if none ever has                                        |
 | `lastViolationAt` | When an integrity violation was last recorded, or `null` if none ever was                                    |
 
 Read both status fields. `lastStatus` describes the most recent sweep only — the job advances past a tampered range on purpose, so a later sweep over intact rows reports `ok` again. `lastViolationAt` is derived from the append-only `audit.integrity_check` failure entries and is never cleared, so it answers whether the log was ever found tampered with. Both survive a restart; nothing here is held in process memory.
+
+`lastRunAt` is not a liveness check. A sweep that finds nothing new to verify returns without touching the checkpoint, so on a quiet instance this timestamp legitimately sits hours behind the job's last run. It answers "verified up to here, at this time", not "the job is still ticking".
 
 This is intentionally not part of the unauthenticated `/api/health` endpoint: telling an anonymous caller that tampering was detected also tells an attacker that they were noticed.
 

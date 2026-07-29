@@ -38,7 +38,14 @@ export interface AuditVerifyStatusResponse {
   lastStatus: "ok" | "violation" | "never_run";
   /** Highest audit_log id the incremental job has verified. */
   lastVerifiedId: number;
-  /** When the checkpoint was last written, i.e. when a sweep last completed. */
+  /**
+   * When a sweep last ADVANCED the checkpoint — not a liveness signal. A sweep
+   * that finds no rows appended since the last one returns without writing, so
+   * on a quiet instance this legitimately sits hours behind the job's actual
+   * last run. Read it as "verified up to here, at this time"; "is the job still
+   * ticking?" needs alerting on the sweep itself (#262), not a staleness check
+   * here.
+   */
   lastRunAt: string | null;
   /** Timestamp of the newest recorded integrity violation, if any ever was. */
   lastViolationAt: string | null;

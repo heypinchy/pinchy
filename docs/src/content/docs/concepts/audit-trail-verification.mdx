@@ -105,7 +105,7 @@ Because the alarm is a first-class audit event, you can wire your normal audit m
 
 ### Checking the job's own health
 
-If you'd rather ask than watch, `GET /api/audit/verify/status` (admin only) answers directly — when the job last ran, how far it has verified, whether the last sweep was clean, and whether a violation was ever recorded:
+If you'd rather ask than watch, `GET /api/audit/verify/status` (admin only) answers directly — how far the job has verified, when it last got there, whether the last sweep was clean, and whether a violation was ever recorded:
 
 ```bash
 curl -b session_cookie https://your-pinchy-instance/api/audit/verify/status
@@ -121,6 +121,8 @@ curl -b session_cookie https://your-pinchy-instance/api/audit/verify/status
 ```
 
 Every field is read back out of the database, so a restart can't quietly reset the answer. Read both status fields: `lastStatus` covers the most recent sweep only — the job deliberately moves past a tampered range instead of re-alarming on it every cycle, so a later sweep over intact rows reports `ok` again — while `lastViolationAt` comes from the append-only failure entries and is never cleared.
+
+One thing `lastRunAt` is not: a heartbeat. When a sweep finds nothing new to verify it leaves the checkpoint alone, so a quiet instance shows a timestamp hours old while the job runs exactly on schedule.
 
 We keep this behind admin authentication on purpose. It is not part of the public `/api/health` endpoint your container runtime polls, because telling an anonymous caller that tampering was detected also tells the attacker they were noticed.
 
