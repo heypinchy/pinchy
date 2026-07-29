@@ -29,6 +29,8 @@ import { join } from "path";
 import { tmpdir } from "os";
 import { NextRequest, NextResponse } from "next/server";
 
+import { resolveHeader } from "@/test-helpers/next-headers";
+
 const mockGetSession = vi.fn();
 vi.mock("@/lib/auth", () => ({ getSession: (...args: unknown[]) => mockGetSession(...args) }));
 
@@ -92,8 +94,8 @@ async function callGET(
 }
 
 /** The same route, asked for a copy to keep rather than a pane to read. */
-async function callDownload(agentId: string, requestedPath: string, headers?: HeadersInit) {
-  return callGET(agentId, requestedPath, headers, { download: "1" });
+async function callDownload(agentId: string, requestedPath: string) {
+  return callGET(agentId, requestedPath, undefined, { download: "1" });
 }
 
 /**
@@ -576,16 +578,39 @@ describe("GET /api/agents/[agentId]/workspace-file — download", () => {
     expect(body.equals(PDF_BYTES)).toBe(true);
   });
 
-  it("does not invite framing of a response it just told the browser to save", async () => {
-    // The SAMEORIGIN relaxation exists for the embedded viewer. A download is
-    // not embedded, so the relaxation has no business travelling with it.
+  it("still forbids the browser from second-guessing the content type", async () => {
+    // nosniff is what makes the disposition split mean anything: without it a
+    // browser may override our extension-derived Content-Type with its own
+    // guess, and the download path must not be the one place that lapses.
     const pdfPath = join(allowedRoot, "handbook.pdf");
     writeFileSync(pdfPath, PDF_BYTES);
 
     const res = await callDownload("agent-1", pdfPath);
 
-    expect(res.headers.get("x-frame-options")).toBeNull();
     expect(res.headers.get("x-content-type-options")).toBe("nosniff");
+  });
+
+  it("carries SAMEORIGIN on the wire even though the handler drops it, harmlessly", async () => {
+    // Worth pinning because the obvious assertion here is wrong. The handler
+    // omits `x-frame-options` for a download — the relaxation exists for the
+    // embedded viewer, and nothing embeds an attachment — but next.config.ts
+    // applies SAMEORIGIN to `/api/agents/:agentId/workspace-file` with no
+    // regard for the query string, and a config header WINS over a route's
+    // (AGENTS.md § Embeddable Serving Routes). So a route-level assertion of
+    // "no framing invitation" would describe a response no browser receives.
+    //
+    // It is inert rather than a gap: `Content-Disposition: attachment` is never
+    // rendered in a frame at all, so the frame posture has nothing to govern.
+    const pdfPath = join(allowedRoot, "handbook.pdf");
+    writeFileSync(pdfPath, PDF_BYTES);
+
+    const res = await callDownload("agent-1", pdfPath);
+    expect(res.headers.get("content-disposition")).toMatch(/^attachment/);
+    expect(res.headers.get("x-frame-options")).toBeNull();
+
+    expect(await resolveHeader("/api/agents/agent-1/workspace-file", "X-Frame-Options")).toBe(
+      "SAMEORIGIN"
+    );
   });
 
   it("distinguishes taking the document from looking at it in the audit trail", async () => {

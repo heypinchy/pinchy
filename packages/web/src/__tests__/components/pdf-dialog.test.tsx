@@ -132,6 +132,20 @@ describe("PdfDialog — taking the document", () => {
     expect(parsed.searchParams.get("path")).toBe("/data/noack/PPR/document.pdf");
   });
 
+  it("also asks the browser to save, for the routes that never see the flag", () => {
+    // A chat attachment is served by uploads/[filename], which knows nothing
+    // about `download=1` and hands back `inline` for a PDF. The attribute is
+    // the ONLY thing that makes the control do its job there, so it cannot be
+    // left to survive `asChild` by luck.
+    //
+    // Deliberately valueless: a filled-in name would override the
+    // Content-Disposition filename, which is the one carrying umlauts intact.
+    openDialog("/api/agents/a1/uploads/report.pdf", "report.pdf");
+
+    const link = screen.getByRole("link", { name: /download/i });
+    expect(link).toHaveAttribute("download", "");
+  });
+
   it("downloads the whole document even when the citation opened at one page", () => {
     // `#page=510` positions a viewer. Carried onto a download it means nothing,
     // and a saved file named after a fragment would be worse than nothing.

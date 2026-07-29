@@ -245,7 +245,7 @@ export const PdfDialog: FC<{
                 key={download.url}
                 variant="ghost"
                 size={namesDownloads ? "sm" : "icon"}
-                className={namesDownloads ? "h-8" : "size-8"}
+                className={namesDownloads ? undefined : "size-8"}
                 asChild
               >
                 {/*
