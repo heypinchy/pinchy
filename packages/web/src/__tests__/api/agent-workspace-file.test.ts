@@ -73,14 +73,27 @@ afterEach(() => {
   rmSync(tmpRoot, { recursive: true, force: true });
 });
 
-async function callGET(agentId: string, requestedPath: string, headers?: HeadersInit) {
+async function callGET(
+  agentId: string,
+  requestedPath: string,
+  headers?: HeadersInit,
+  extraParams?: Record<string, string>
+) {
   const { GET } = await import("@/app/api/agents/[agentId]/workspace-file/route");
   const url = new URL(`http://localhost/api/agents/${agentId}/workspace-file`);
   url.searchParams.set("path", requestedPath);
+  for (const [key, value] of Object.entries(extraParams ?? {})) {
+    url.searchParams.set(key, value);
+  }
   const req = new NextRequest(url, headers ? { headers } : undefined);
   return GET(req, {
     params: Promise.resolve({ agentId }),
   } as unknown as Parameters<typeof GET>[1]);
+}
+
+/** The same route, asked for a copy to keep rather than a pane to read. */
+async function callDownload(agentId: string, requestedPath: string, headers?: HeadersInit) {
+  return callGET(agentId, requestedPath, headers, { download: "1" });
 }
 
 /**
@@ -533,5 +546,149 @@ describe("GET /api/agents/[agentId]/workspace-file — HEAD does not leak descri
     const res = await callHEAD("agent-1", secretPath);
 
     expect(res.status).toBe(403);
+  });
+});
+
+/**
+ * Reading a cited document in the viewer and taking a copy out of the building
+ * are different acts. The customer this was built for reaches the file through
+ * Citrix today — save to a local disk, then attach to a mail — and asked for the
+ * detour to go away; governance, meanwhile, asks a question a view row cannot
+ * answer: who has the actual spec sheet on their own machine?
+ *
+ * So the download is the same read, gated the same way, with two differences the
+ * caller asks for explicitly: the browser is told to keep the bytes rather than
+ * render them, and the row it writes says `knowledge.source_downloaded`.
+ */
+describe("GET /api/agents/[agentId]/workspace-file — download", () => {
+  it("tells the browser to keep a PDF instead of rendering it", async () => {
+    // Without `download=1` this exact file is served `inline` (see above) —
+    // which is what makes the flag, not the file type, the thing being tested.
+    const pdfPath = join(allowedRoot, "handbook.pdf");
+    writeFileSync(pdfPath, PDF_BYTES);
+
+    const res = await callDownload("agent-1", pdfPath);
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("application/pdf");
+    expect(res.headers.get("content-disposition")).toMatch(/^attachment/);
+    const body = Buffer.from(await res.arrayBuffer());
+    expect(body.equals(PDF_BYTES)).toBe(true);
+  });
+
+  it("does not invite framing of a response it just told the browser to save", async () => {
+    // The SAMEORIGIN relaxation exists for the embedded viewer. A download is
+    // not embedded, so the relaxation has no business travelling with it.
+    const pdfPath = join(allowedRoot, "handbook.pdf");
+    writeFileSync(pdfPath, PDF_BYTES);
+
+    const res = await callDownload("agent-1", pdfPath);
+
+    expect(res.headers.get("x-frame-options")).toBeNull();
+    expect(res.headers.get("x-content-type-options")).toBe("nosniff");
+  });
+
+  it("distinguishes taking the document from looking at it in the audit trail", async () => {
+    const pdfPath = join(allowedRoot, "handbook.pdf");
+    writeFileSync(pdfPath, PDF_BYTES);
+
+    await callDownload("agent-1", pdfPath);
+
+    expect(mockDeferAuditLog).toHaveBeenCalledTimes(1);
+    const entry = mockDeferAuditLog.mock.calls[0][0];
+    expect(entry.eventType).toBe("knowledge.source_downloaded");
+    expect(entry.outcome).toBe("success");
+    expect(entry.actorId).toBe("user-1");
+    expect(entry.resource).toBe("agent:agent-1");
+    expect(entry.detail).toMatchObject({
+      agent: { id: "agent-1", name: "Smithers" },
+      document: { name: "handbook.pdf" },
+      partial: false,
+    });
+    // Same PII rules as the view row: the basename only, never a path that
+    // could embed a username, and no raw users.id in a detail that
+    // appendAuditLog stores verbatim (#824).
+    expect(JSON.stringify(entry.detail)).not.toContain(tmpRoot);
+    expect(JSON.stringify(entry.detail)).not.toContain("user-1");
+  });
+
+  it("leaves an ordinary view logged as a view", async () => {
+    // The two event types have to stay separable in both directions, or the
+    // download row is just a rename of the view row.
+    const pdfPath = join(allowedRoot, "handbook.pdf");
+    writeFileSync(pdfPath, PDF_BYTES);
+
+    await callGET("agent-1", pdfPath);
+
+    expect(mockDeferAuditLog.mock.calls[0][0].eventType).toBe("knowledge.source_viewed");
+  });
+
+  it("records a refused download as a refused download, not as a refused view", async () => {
+    // A denied attempt to take a document out is the row an analyst most wants
+    // to find; folding it into the view family would hide it.
+    const secretPath = join(outsideDir, "secret.pdf");
+    writeFileSync(secretPath, SECRET_BYTES);
+
+    const res = await callDownload("agent-1", secretPath);
+
+    expect(res.status).toBe(403);
+    const entry = mockDeferAuditLog.mock.calls[0][0];
+    expect(entry.eventType).toBe("knowledge.source_downloaded");
+    expect(entry.outcome).toBe("failure");
+    expect(entry.detail).toMatchObject({ reason: "outside_allowed_paths" });
+  });
+
+  it("keeps a filename with umlauts and diacritics intact for the saved file", async () => {
+    // The corpus this serves is German and full of these. `filename="…"` can
+    // only carry ASCII, so the real name rides in `filename*=UTF-8''…`; without
+    // it the user saves `Pr_fbericht_Nr._5_-_lwanne.pdf` and has to rename it
+    // before attaching it to a mail — the very detour this feature removes.
+    const documentName = "Prüfbericht Nr. 5 – Ölwanne (Größe).pdf";
+    const pdfPath = join(allowedRoot, documentName);
+    writeFileSync(pdfPath, PDF_BYTES);
+
+    const res = await callDownload("agent-1", pdfPath);
+
+    expect(res.status).toBe(200);
+    const disposition = res.headers.get("content-disposition")!;
+    const extended = /filename\*=UTF-8''(\S+)/.exec(disposition)?.[1];
+    expect(extended).toBeDefined();
+    // Compared under NFC because a filesystem is free to hand the name back in
+    // a different normalisation than it was written in (HFS+ does); the bytes
+    // the user ends up with must be the same name either way.
+    expect(decodeURIComponent(extended!).normalize("NFC")).toBe(documentName.normalize("NFC"));
+    // The ASCII fallback must still be a safe quoted value, not a broken header.
+    const quoted = /filename="([^]*?)";\s*filename\*=/.exec(disposition)?.[1];
+    expect(quoted).toBeDefined();
+    expect(quoted).not.toContain('"');
+    expect(quoted).not.toContain("\\");
+  });
+
+  it("is still refused for a file outside the agent's allowed paths", async () => {
+    // The download flag must not become a second, unguarded way in.
+    const secretPath = join(outsideDir, "secret.pdf");
+    writeFileSync(secretPath, SECRET_BYTES);
+
+    const res = await callDownload("agent-1", secretPath);
+
+    expect(res.status).toBe(403);
+    expect(await res.text()).not.toContain("top secret");
+  });
+
+  it("streams a document too large to buffer rather than refusing to hand it over", async () => {
+    // The most-cited documents in this corpus are the biggest ones, so the
+    // download path has to survive exactly what the view path does.
+    const hugePath = join(allowedRoot, "compilation-binder.pdf");
+    writeSparseFile(hugePath, OVER_BUFFER_LIMIT, PDF_BYTES);
+
+    const res = await callDownload("agent-1", hugePath);
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-length")).toBe(String(OVER_BUFFER_LIMIT));
+    expect(res.headers.get("content-disposition")).toMatch(/^attachment/);
+    const reader = res.body!.getReader();
+    const { value } = await reader.read();
+    await reader.cancel();
+    expect(Buffer.from(value!.subarray(0, PDF_BYTES.length)).equals(PDF_BYTES)).toBe(true);
   });
 });

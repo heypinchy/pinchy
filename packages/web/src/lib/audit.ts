@@ -20,6 +20,24 @@ export type UpdateDetail = {
 
 export type DeleteDetail = { name: string; [key: string]: unknown };
 
+/**
+ * Shared by `knowledge.source_viewed` and `knowledge.source_downloaded` — the
+ * same access to the same document, differing only in what the reader asked to
+ * do with it.
+ *
+ * `partial` marks a byte-range read: a PDF viewer fetches a large document as a
+ * series of ranges, so one opened document produces several rows. Every access
+ * stays logged — reading a file in chunks must not be a way to read it
+ * unobserved — and this flag is what lets an analyst count documents rather
+ * than chunks.
+ */
+export type SourceAccessDetail = {
+  agent: EntityRef;
+  document: { name: string };
+  reason?: string;
+  partial?: boolean;
+};
+
 export type MembershipDetail = {
   added: EntityRef[];
   removed: EntityRef[];
@@ -104,6 +122,7 @@ export type AuditEventType =
   | "file.delivered"
   | "retrieval.query"
   | "knowledge.source_viewed"
+  | "knowledge.source_downloaded"
   | "knowledge.reindex"
   | "inbox.claim_reset";
 
@@ -628,11 +647,22 @@ export type AuditLogEntry =
       // failure rows only (outside allowed_paths, traversal/symlink escape,
       // missing file, not a regular file, oversized).
       eventType: "knowledge.source_viewed";
-      detail: {
-        agent: EntityRef;
-        document: { name: string };
-        reason?: string;
-      };
+      detail: SourceAccessDetail;
+    })
+  | (AuditLogBase & {
+      // The same read through the same gate as `knowledge.source_viewed`, told
+      // apart by what the caller asked for: a view renders the bytes in a pane,
+      // a download hands the user a copy to keep. Separate event types because
+      // the governance question is separate — "who read the spec sheet" and
+      // "who has the spec sheet on their own machine" are not the same
+      // question, and only the second one leaves the building.
+      //
+      // Spelled out as its own union member rather than widening the event type
+      // above: `Extract<AuditLogEntry, { eventType: "…" }>` — how the type tests
+      // and every narrowing caller reach a detail shape — collapses to `never`
+      // against a member whose eventType is itself a union.
+      eventType: "knowledge.source_downloaded";
+      detail: SourceAccessDetail;
     })
   | (AuditLogBase & {
       // Knowledge-base index management. Since #714 a reindex is asynchronous,

@@ -18,7 +18,21 @@ import type { AgentPluginConfig } from "@/db/schema";
 
 type Params = { params: Promise<{ agentId: string }> };
 
-function sourceViewedAuditEntry(args: {
+/**
+ * Reading a cited document and taking a copy of it out of the building are
+ * different acts, so they are different rows: `knowledge.source_viewed` for the
+ * pane, `knowledge.source_downloaded` for the copy. Same read, same gate, same
+ * detail shape — the event type is the only thing that differs, and it is the
+ * thing an analyst filters on when the question is "who has this file now".
+ *
+ * Chosen by the caller rather than inferred from the response, because the
+ * disposition alone cannot tell them apart: a .docx is served `attachment`
+ * whether the user opened it or saved it.
+ */
+type SourceAccessEvent = "knowledge.source_viewed" | "knowledge.source_downloaded";
+
+function sourceAccessAuditEntry(args: {
+  eventType: SourceAccessEvent;
   userId: string;
   agentId: string;
   agentName: string | null;
@@ -30,7 +44,7 @@ function sourceViewedAuditEntry(args: {
   return {
     actorType: "user",
     actorId: args.userId,
-    eventType: "knowledge.source_viewed",
+    eventType: args.eventType,
     resource: `agent:${args.agentId}`,
     outcome: args.outcome,
     // The actor lives in `actorId` ONLY — appendAuditLog pseudonymizes that
@@ -81,6 +95,16 @@ export const GET = withAuth<Params>(async (req, { params }, session) => {
     return NextResponse.json({ error: "Missing path query parameter" }, { status: 400 });
   }
 
+  // The reader asked to keep the file rather than look at it. Two consequences,
+  // and both have to be decided here rather than in the browser: the response
+  // is forced to `attachment` (a `download` attribute on the link would do it
+  // too, but only for a same-origin fetch, and it would leave the server
+  // believing every download was a view), and the audit row says so.
+  const isDownload = req.nextUrl.searchParams.get("download") === "1";
+  const eventType: SourceAccessEvent = isDownload
+    ? "knowledge.source_downloaded"
+    : "knowledge.source_viewed";
+
   // Same allowlist source as knowledge_search's retrieval scope (see
   // /api/internal/knowledge/search/route.ts): an agent's file-serving scope
   // is exactly the folders an admin has granted it, no separate allowlist to
@@ -92,7 +116,8 @@ export const GET = withAuth<Params>(async (req, { params }, session) => {
   if (!resolved.ok) {
     if (resolved.status === 403) {
       deferAuditLog(
-        sourceViewedAuditEntry({
+        sourceAccessAuditEntry({
+          eventType,
           userId: session.user.id!,
           agentId: agent.id,
           agentName: agent.name,
@@ -104,7 +129,8 @@ export const GET = withAuth<Params>(async (req, { params }, session) => {
       return new NextResponse("Forbidden", { status: 403 });
     }
     deferAuditLog(
-      sourceViewedAuditEntry({
+      sourceAccessAuditEntry({
+        eventType,
         userId: session.user.id!,
         agentId: agent.id,
         agentName: agent.name,
@@ -121,7 +147,8 @@ export const GET = withAuth<Params>(async (req, { params }, session) => {
 
   const auditFailure = (reason: string) => {
     deferAuditLog(
-      sourceViewedAuditEntry({
+      sourceAccessAuditEntry({
+        eventType,
         userId: session.user.id!,
         agentId: agent.id,
         agentName: agent.name,
@@ -183,10 +210,15 @@ export const GET = withAuth<Params>(async (req, { params }, session) => {
   const end = isPartial ? range.end : Math.max(0, info.size - 1);
   const contentLength = info.size === 0 ? 0 : end - start + 1;
 
-  const { contentType, disposition } = contentTypeForFile(realPath);
+  // `attachment` is the stricter of the two, so forcing it can only narrow what
+  // the browser is allowed to do with these bytes — it never relaxes the
+  // extension-derived anti-XSS split, it only ever overrides `inline`.
+  const { contentType, disposition: servedDisposition } = contentTypeForFile(realPath);
+  const disposition = isDownload ? "attachment" : servedDisposition;
 
   deferAuditLog(
-    sourceViewedAuditEntry({
+    sourceAccessAuditEntry({
+      eventType,
       userId: session.user.id!,
       agentId: agent.id,
       agentName: agent.name,

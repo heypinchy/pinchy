@@ -2,7 +2,7 @@
 
 import { useContext, useEffect, useRef, useState, type FC, type ReactNode } from "react";
 import { useMessagePartFile } from "@assistant-ui/react";
-import { ExternalLink, FileText, Loader2, X } from "lucide-react";
+import { Download, ExternalLink, FileText, Loader2, X } from "lucide-react";
 import { AgentIdContext, AgentModelContext, FileSourceContext } from "@/components/chat";
 import { Button } from "@/components/ui/button";
 import {
@@ -129,6 +129,31 @@ const CapabilityWarning: FC<{ message: string }> = ({ message }) => (
 );
 
 /**
+ * One "take this document" entry in the dialog header. A list rather than a
+ * single url because the second entry is already on the way: once a scanned
+ * Office file is converted, the same dialog offers the original beside its
+ * converted PDF, and that has to be a datum rather than a redesign of the row.
+ */
+export type DocumentDownload = { label: string; url: string };
+
+/**
+ * The url the same document is fetched from when the reader wants to keep it.
+ *
+ * Two things happen here rather than in the browser. `download=1` is what makes
+ * the route serve `attachment` instead of `inline` AND what makes it write
+ * `knowledge.source_downloaded` — a `download` attribute alone would leave the
+ * server believing every download was a view, and governance asks a different
+ * question about a copy that left the building than about a pane someone read.
+ *
+ * The fragment goes: `#page=510` positions a viewer and means nothing to a
+ * saved file.
+ */
+function downloadUrlFor(url: string): string {
+  const withoutFragment = url.split("#")[0];
+  return `${withoutFragment}${withoutFragment.includes("?") ? "&" : "?"}download=1`;
+}
+
+/**
  * The lightbox a PDF opens into, and the only place its presentation is
  * defined. Shared so a chat attachment and a cited knowledge-base source open
  * the exact same way — two viewers for "look at this PDF" would drift in
@@ -163,15 +188,28 @@ export const PdfDialog: FC<{
    * fact already disagreed on what counts as a page fragment.
    */
   page?: number | null;
+  /**
+   * What the reader may take away. Defaults to the document being shown, which
+   * is the only thing there is to take today; a caller that has more than one
+   * representation of the same document passes them all.
+   */
+  downloads?: DocumentDownload[];
   children: ReactNode;
   /** Test-only escape hatch; the dialog is trigger-driven in the app. */
   defaultOpen?: boolean;
-}> = ({ url, title, page, children, defaultOpen }) => {
+}> = ({ url, title, page, downloads, children, defaultOpen }) => {
   // `title` is a filename for an attachment and a full path for a citation.
   // Show the leaf either way and keep the rest in the tooltip: a corpus has
   // same-named files in different folders, so the path has to stay reachable,
   // but spending header width on it would push the controls off a narrow screen.
   const filename = title.split("/").filter(Boolean).pop() ?? title;
+
+  const documentDownloads = downloads ?? [{ label: filename, url: downloadUrlFor(url) }];
+  // With one entry the icon is unambiguous. With two it is not — "the original
+  // or the converted one?" is exactly the question a bare pair of identical
+  // icons refuses to answer — so each names itself as soon as there is a
+  // choice to make.
+  const namesDownloads = documentDownloads.length > 1;
 
   return (
     <Dialog defaultOpen={defaultOpen}>
@@ -194,7 +232,36 @@ export const PdfDialog: FC<{
           {page !== null && page !== undefined && (
             <span className="shrink-0 text-muted-foreground text-xs">Page {page}</span>
           )}
+          {/*
+            `shrink-0` is what keeps these on screen: the title above is the
+            element allowed to give up width (it truncates), and without this
+            the controls are what a long document name pushes off the right
+            edge of a phone — where a reader forwarding a document to a
+            customer is most likely to be standing.
+           */}
           <div className="ml-auto flex shrink-0 items-center gap-0.5">
+            {documentDownloads.map((download) => (
+              <Button
+                key={download.url}
+                variant="ghost"
+                size={namesDownloads ? "sm" : "icon"}
+                className={namesDownloads ? "h-8" : "size-8"}
+                asChild
+              >
+                {/*
+                  `download` covers the routes that do not read `download=1`
+                  (a chat attachment is served by uploads/[filename]); the query
+                  parameter is what makes the knowledge-base route both serve an
+                  attachment and log the act as a download. Left without a value
+                  on purpose, so a Content-Disposition filename — the one that
+                  carries umlauts intact — still wins.
+                 */}
+                <a href={download.url} download aria-label={`Download ${download.label}`}>
+                  <Download className="size-4" />
+                  {namesDownloads && <span className="max-w-32 truncate">{download.label}</span>}
+                </a>
+              </Button>
+            ))}
             <Button variant="ghost" size="icon" className="size-8" asChild>
               <a href={url} target="_blank" rel="noreferrer noopener" aria-label="Open in new tab">
                 <ExternalLink className="size-4" />

@@ -94,3 +94,103 @@ describe("PdfDialog", () => {
     expect(embed).toHaveAttribute("type", "application/pdf");
   });
 });
+
+/**
+ * Reading the answer is often not the end of the job. The customer this was
+ * built for reaches the cited file through Citrix — save it to a local disk,
+ * then attach it to a mail, because Citrix cannot attach directly — and asked
+ * for that detour to go away: "hätte aber trotzdem gern das Dokument, dass man
+ * den Kunden schicken kann."
+ *
+ * The serving half was already there (the route derives its disposition from
+ * the extension); only the affordance was missing. What these tests pin is that
+ * it is an affordance a keyboard reaches and a screen reader names, and that it
+ * asks the server for a copy rather than quietly reusing the view request —
+ * governance has to be able to tell the two apart.
+ */
+describe("PdfDialog — taking the document", () => {
+  it("offers a way to keep the document, not just look at it", () => {
+    openDialog(SOURCE_URL, "/data/noack/PPR/document.pdf");
+
+    // A link, not a div with a click handler: that is what makes it reachable
+    // by keyboard at all, and `getByRole("link")` only matches an element that
+    // actually has an href.
+    const link = screen.getByRole("link", { name: /download/i });
+    expect(link).toHaveAttribute("href");
+  });
+
+  it("asks the server for a copy, so the download is logged as one", () => {
+    // Same bytes, different act. Without the flag the request is
+    // indistinguishable from opening the viewer, and the audit trail cannot
+    // answer who took the actual spec sheet out of the building.
+    openDialog(SOURCE_URL, "/data/noack/PPR/document.pdf");
+
+    const href = screen.getByRole("link", { name: /download/i }).getAttribute("href")!;
+    const parsed = new URL(href, "http://localhost");
+    expect(parsed.searchParams.get("download")).toBe("1");
+    // The path has to survive intact — it is what the route resolves.
+    expect(parsed.searchParams.get("path")).toBe("/data/noack/PPR/document.pdf");
+  });
+
+  it("downloads the whole document even when the citation opened at one page", () => {
+    // `#page=510` positions a viewer. Carried onto a download it means nothing,
+    // and a saved file named after a fragment would be worse than nothing.
+    openDialog(SOURCE_URL, "/data/noack/PPR/document.pdf");
+
+    const href = screen.getByRole("link", { name: /download/i }).getAttribute("href")!;
+    expect(href).not.toContain("#");
+  });
+
+  it("names the document in the download label rather than saying just 'download'", () => {
+    // Wave 2 puts a second entry beside this one (the original next to its
+    // converted PDF), and two controls both labelled "Download" would be a
+    // coin flip for anyone not looking at the screen.
+    openDialog(SOURCE_URL, "/data/noack/PPR/document.pdf");
+
+    expect(screen.getByRole("link", { name: /download document\.pdf/i })).toBeInTheDocument();
+  });
+
+  it("takes a second document action as a list entry, not a redesign", () => {
+    // The header is built for a small set of document actions. This is the
+    // shape Wave 2 uses when a scanned Office file gains a converted PDF
+    // alongside the original — data, not a rewrite of the header.
+    render(
+      <PdfDialog
+        url={SOURCE_URL}
+        title="/data/noack/PPR/report.docx"
+        downloads={[
+          {
+            label: "original",
+            url: "/api/agents/a1/workspace-file?path=%2Freport.docx&download=1",
+          },
+          {
+            label: "converted PDF",
+            url: "/api/agents/a1/workspace-file?path=%2Freport.pdf&download=1",
+          },
+        ]}
+        defaultOpen
+      >
+        <button type="button">trigger</button>
+      </PdfDialog>
+    );
+
+    expect(screen.getByRole("link", { name: /download original/i })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /download converted pdf/i })).toBeInTheDocument();
+  });
+
+  it("keeps the controls on screen when the document name is too long for the row", () => {
+    // jsdom has no layout, so this asserts the mechanism rather than measuring
+    // the result: the title is the element allowed to give up width, and the
+    // control group is the one that must not. Getting this backwards pushes
+    // Download and Close off the right edge of a phone, which is exactly where
+    // a reader forwarding a document to a customer is most likely to be.
+    const longName = "Prüfbericht Nr. 5 – Ölwanne, Revision C, freigegeben 2026-07-28.pdf";
+    openDialog(SOURCE_URL, `/data/noack/PPR/${longName}`);
+
+    const title = screen.getByText(longName);
+    expect(title.className).toContain("truncate");
+
+    const controls = screen.getByRole("link", { name: /download/i }).parentElement!;
+    expect(controls.className).toContain("shrink-0");
+  });
+});

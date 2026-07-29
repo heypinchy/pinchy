@@ -142,7 +142,9 @@ Each source path in an answer is a link. Click it and the PDF opens in a viewer 
 
 Document size is not a limit. Knowledge bases routinely contain scanned compilation binders of several hundred megabytes, and because those contain the most, they tend to be cited the most. Pinchy streams the file and serves byte ranges, so the viewer fetches the pages it renders rather than the whole document — opening page 510 of a 268 MB binder transfers a fraction of it.
 
-Opening a source is governed like every other access. The link resolves against the same allowed directories that scope the agent's search, so a path outside them is refused even if an answer names one, and each view is written to the audit trail as `knowledge.source_viewed`.
+Reading the answer is often not the end of the job — sometimes you want the document itself, to send it on to a customer. The viewer's header carries a **Download** control beside the document's name, so the file lands in your downloads folder under its own name, umlauts and all, without a detour through a remote desktop.
+
+Opening a source is governed like every other access. The link resolves against the same allowed directories that scope the agent's search, so a path outside them is refused even if an answer names one. Each view is written to the audit trail as `knowledge.source_viewed`, and each download as `knowledge.source_downloaded` — reading a document and taking a copy of it out of the building are different acts, and only the second one can be answered with "who has this file now".
 
 The list resolves exactly the numbers the answer cites — no more and no fewer. A number with no entry would be a dead end, and an entry the answer never cited would make a single source look like several.
 
@@ -177,7 +179,6 @@ We cap how many passages any one document can contribute to a single answer, so 
 Phase 1 of the knowledge base is deliberately narrow:
 
 - Only **text-based PDFs** are indexed and searchable via `knowledge_search`. Scanned/image-only PDFs and Office documents (`.docx`, etc.) are on the roadmap, not indexed today.
-- There's no clickable link from a citation into the PDF viewer yet — citations are text (document path + page), not a jump-to-passage link.
 - Indexing is a manual admin action (step 7). It runs in the background and reports progress, but you still have to ask for it — a scheduled sweep and a progress UI in the app are planned for a later phase.
 
 ### Documents that can't be searched

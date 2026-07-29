@@ -75,8 +75,32 @@ describe("AuditLogEntry knowledge.source_viewed (#824)", () => {
       agent: { id: string; name: string };
       document: { name: string };
       reason?: string;
+      partial?: boolean;
     }>();
     expectTypeOf<"knowledge.source_viewed">().toExtend<AuditEventType>();
+  });
+});
+
+describe("AuditLogEntry knowledge.source_downloaded (#934)", () => {
+  it("carries the view row's shape, so the two stay comparable", () => {
+    // Taking a copy of a document out of the building is a different act from
+    // reading it, which is why it is a different event type — but it is the
+    // same access to the same file, so an analyst must be able to ask both
+    // questions of one detail shape.
+    expectTypeOf<
+      Extract<AuditLogEntry, { eventType: "knowledge.source_downloaded" }>["detail"]
+    >().toEqualTypeOf<Extract<AuditLogEntry, { eventType: "knowledge.source_viewed" }>["detail"]>();
+    expectTypeOf<"knowledge.source_downloaded">().toExtend<AuditEventType>();
+  });
+
+  it("stays reachable by narrowing, not just by name", () => {
+    // The two are separate union members rather than one member with a union
+    // eventType, because `Extract` against a member whose eventType is itself a
+    // union yields `never` — silently turning every narrowing caller, and the
+    // assertion above, into a check of nothing.
+    expectTypeOf<
+      Extract<AuditLogEntry, { eventType: "knowledge.source_downloaded" }>
+    >().not.toBeNever();
   });
 });
 
