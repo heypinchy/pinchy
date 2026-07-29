@@ -167,21 +167,44 @@ const PROVIDER_FETCH_CONFIG: Record<ProviderName, ProviderFetchConfig> = {
   },
 };
 
+// The cloud catalog fetch runs in request context — `/api/templates` awaits it
+// before the agent-creation page can render — so it needs the same bound the
+// key-validation probe (`PROVIDER_PROBE_TIMEOUT_MS`) and Ollama discovery
+// (`OLLAMA_FETCH_TIMEOUT_MS`) already carry. It was the one provider call left
+// unbounded, and undici's own fallback is coarse enough (minutes) to read as a
+// page that simply never loads. Shorter than the 10s probe on purpose: the
+// probe reports a key as valid or not, where a slow answer is worth waiting
+// for, while here every miss has a good offline answer sitting in
+// FALLBACK_MODELS.
+export const PROVIDER_CATALOG_FETCH_TIMEOUT_MS = 5_000;
+
 async function fetchModelsForProvider(
   provider: ProviderName,
   apiKey: string
 ): Promise<ModelInfo[]> {
   const config = PROVIDER_FETCH_CONFIG[provider];
-  const response = await fetch(config.url(apiKey), {
-    headers: config.headers(apiKey),
-  });
+  // AbortController + setTimeout rather than `AbortSignal.timeout`: the latter
+  // schedules on a libuv timer that vitest's fake clock cannot advance, so the
+  // timeout would be untestable except in real time (see the equivalent in
+  // `infrastructure.ts#checkOpenClaw`).
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), PROVIDER_CATALOG_FETCH_TIMEOUT_MS);
 
-  if (!response.ok) {
-    return FALLBACK_MODELS[provider];
+  try {
+    const response = await fetch(config.url(apiKey), {
+      headers: config.headers(apiKey),
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      return FALLBACK_MODELS[provider];
+    }
+
+    const data = await response.json();
+    return config.transform(data);
+  } finally {
+    clearTimeout(timeout);
   }
-
-  const data = await response.json();
-  return config.transform(data);
 }
 
 export const BALANCED_PATTERNS: Record<ProviderName, RegExp> = {
