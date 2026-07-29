@@ -241,6 +241,25 @@ The guard reads `FROM` lines only, never prose. These Dockerfiles explain their 
 
 `engine-strict` is deliberately **not** set: a mismatch is a pnpm warning, not a refused install. The goal is to make drift visible at install time, not to lock a contributor out of the repo over a minor.
 
+## An Outside Reporter Never Waits Silently
+
+A stranger's bug report is the one input with no owner, no retry and no second chance. #849 proved it: someone reported that saving an OpenAI key fails, the report landed through the in-app deeplink **with no labels**, appeared in no triage filter, and sat unanswered for a week. Nothing was broken, no check went red, and that is exactly the failure — the same shape as a gate that reports on what it looks at rather than what it should.
+
+Two mechanisms, because good will is not one:
+
+- **Labelled at the source.** `buildGitHubIssueUrl()` in `packages/web/src/lib/github-issue.ts` passes `labels: "bug,triage"`. It bypasses `.github/ISSUE_TEMPLATE/bug_report.yml`, which is where those labels normally come from, so without them a report born from a real in-app failure is invisible to triage. `.github/workflows/issue-triage.yml` labels every other path into the tracker (`external` + `triage`) on `issues: opened`.
+- **Red until answered.** The same workflow sweeps on weekday mornings and **fails** while an external report has gone past the grace period (48 h) with no comment from anyone holding write access. The failed run _is_ the notification — GitHub emails the repo owner, and the run stays red until somebody replies. No new service, no secret, no dashboard nobody opens.
+
+The rule is deliberately blunt: **only a maintainer comment clears the alarm.** No "acknowledged" label, no assignee carve-out, no snooze. If we don't want to answer, the honest move is to close the issue with a reason — not to teach the sweep a way to look away.
+
+Pure logic lives in `scripts/lib/issue-triage.mjs`, covered by `scripts/lib/issue-triage.test.mjs` (`pnpm test:scripts`). Three things it exists to stop, each of which would leave the check **green**:
+
+- **Reading part of the tracker.** The sweep paginates and asserts `pageInfo` is present. The repo had 151 open issues against a 100-item page when this landed — the first draft asked for the newest 100 and would have cut off exactly the 51 oldest, i.e. the ones waiting longest. `parsePageInfo` throws rather than assuming one page.
+- **Decoding nothing.** `parseIssuesResponse` / `parseIssueEvent` throw on an unrecognised payload instead of returning `[]`. An auth failure or a renamed field must fail loudly; `[]` reads as "nothing is waiting". Note the two payloads disagree on spelling — the webhook says `author_association` / `user` / `html_url`, GraphQL says `authorAssociation` / `author` / `url` — and reading the wrong one yields `undefined`, which classifies as external and would label every issue we open ourselves.
+- **Rescuing the failure.** The wiring guard rejects `continue-on-error` and `|| true` anywhere in the workflow. A green run restores the original bug in one line.
+
+`CONTRIBUTOR` counts as **external** (it only means someone had a PR merged once); bot authors do not (automation files issues under an identity with no team association, and counting those would leave the sweep permanently red over reports no human is waiting on). Grace is measured in plain hours rather than business days — the weekday-only cron is what pays for that simplification, and the guard pins it, so a Friday-evening report is surfaced Monday morning instead of waking anyone on Sunday.
+
 ## Commands
 
 Development should use Docker Compose because the app depends on PostgreSQL, OpenClaw, and migrations:

@@ -1,0 +1,65 @@
+name: Issue Triage
+
+# Makes sure a report from outside the team is never lost in the tracker.
+#
+# #849 was the lesson: a stranger reported a real setup bug through the in-app
+# link, it arrived with no labels, and it sat unanswered for a week. Nothing
+# was broken and nothing turned red — which is precisely the problem.
+#
+# Two halves:
+#   - label-new-issue  tags every external report `external` + `triage` the
+#                      moment it lands, so it shows up in a filter at all.
+#   - unanswered-sweep runs on weekday mornings and FAILS while an external
+#                      report has gone unanswered past the grace period. The
+#                      failed run is the notification: GitHub emails the repo
+#                      owner, and the run stays red until somebody replies.
+#
+# Deliberately not gated on `changes` like ci.yml's jobs — this workflow hosts
+# no required status check and reads the tracker, not the diff.
+
+on:
+  issues:
+    types: [opened, reopened]
+  schedule:
+    # Weekday mornings only. The grace period is measured in plain hours, so a
+    # weekday-only cron is what keeps a Friday-evening report from paging
+    # anyone on Sunday — see the note in scripts/lib/issue-triage.mjs.
+    - cron: "0 7 * * 1-5"
+  workflow_dispatch:
+
+permissions:
+  issues: write
+
+jobs:
+  label-new-issue:
+    name: Label external reports
+    if: github.event_name == 'issues'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Label the issue if it came from outside the team
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/triage-new-issue.mjs
+
+  unanswered-sweep:
+    name: External issues awaiting a reply
+    if: github.event_name != 'issues'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Fail while an outside reporter is still waiting
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TRIAGE_GRACE_HOURS: "48"
+        run: node scripts/check-unanswered-issues.mjs
