@@ -40,8 +40,12 @@ import { fromCitationPath, toCitationPath } from "./citation-path";
  * At least one `/` is required. A bare `report.pdf` is exactly the citation
  * shape a full path exists to prevent — unfindable in a deep tree, ambiguous
  * across folders — and linking it would dress that failure up as a working
- * reference. Anchoring on the extension is what keeps arbitrary path-shaped
- * strings (`/etc/passwd`) out.
+ * reference. The known cost: a grant that points at a single FILE at the data
+ * root (`/data/report.pdf`, a shape `discoverFiles` supports) cites as a bare
+ * name legitimately, and that citation stays plain text. Prose mentioning a
+ * filename is far commoner than that grant, so the trade goes this way.
+ * Anchoring on the extension is what keeps arbitrary path-shaped strings
+ * (`/etc/passwd`) out.
  *
  * Paths in a real corpus routinely contain spaces ("PF LAB/…"), so segments
  * allow them — except the FIRST one, which must be a whitespace-delimited

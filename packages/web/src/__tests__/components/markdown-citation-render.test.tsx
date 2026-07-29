@@ -38,16 +38,22 @@ import { AgentIdContext } from "@/components/chat";
 
 /**
  * The template's Sources shape, verbatim: a markdown list, a bracketed index,
- * an em dash, a page. Every element here is one markdown could parse into
+ * an em dash, a position. Every element here is one markdown could parse into
  * something other than a plain text node.
+ *
+ * The paths are data-root-relative, because that is what `knowledge_search`
+ * shows the model and a model can only cite what it is shown (#933). Which also
+ * makes this the one test that would catch the whole feature going dark on that
+ * change: with no leading `/` to key off, a linkifier still looking for an
+ * absolute path matches nothing and every answer renders as flat text.
  */
 const ANSWER = [
   "Die Nachweisgrenze liegt bei 0,05 mg/kg.",
   "",
   "**Quellen:**",
   "",
-  "- [1] /data/noack/PPR/document.pdf — p. 510",
-  "- [2] /data/noack/PF LAB/afnor_update_&_support.pdf — p. 44",
+  "- [1] noack/PPR/document.pdf — p. 510",
+  "- [2] noack/PF LAB/afnor_update_&_support.pdf — p. 44",
 ].join("\n");
 
 function renderAnswer(agentId: string | null, text = ANSWER) {
@@ -74,8 +80,8 @@ describe("a cited source rendered through the real markdown pipeline", () => {
     // rescans the whole tree on every retry, which is slow enough under load to
     // exhaust the timeout before the assertion ever runs. The tag check below
     // keeps the guarantee that matters.
-    const first = await screen.findByText("/data/noack/PPR/document.pdf");
-    const second = await screen.findByText("/data/noack/PF LAB/afnor_update_&_support.pdf");
+    const first = await screen.findByText("noack/PPR/document.pdf");
+    const second = await screen.findByText("noack/PF LAB/afnor_update_&_support.pdf");
 
     // A citation opens the lightbox rather than navigating away from the answer
     // it belongs to, so the trigger is a button and not an anchor.
@@ -97,9 +103,9 @@ describe("a cited source rendered through the real markdown pipeline", () => {
     // Inside backticks a path is being displayed, not referenced. remark gives
     // it its own node type, and the plugin has to respect that in the real tree
     // and not only in a hand-built one.
-    renderAnswer("agent-1", "Der Pfad `/data/noack/PPR/document.pdf` liegt im Korpus.");
+    renderAnswer("agent-1", "Der Pfad `noack/PPR/document.pdf` liegt im Korpus.");
 
-    expect(await screen.findByText("/data/noack/PPR/document.pdf")).toBeInTheDocument();
+    expect(await screen.findByText("noack/PPR/document.pdf")).toBeInTheDocument();
     expect(screen.queryByRole("button")).not.toBeInTheDocument();
   });
 });

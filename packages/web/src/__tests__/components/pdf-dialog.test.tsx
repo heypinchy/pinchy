@@ -37,7 +37,7 @@ describe("PdfDialog", () => {
   it("names the document by its filename, not the route or the full path", () => {
     // Chrome's own title bar reads "workspace-file" here — the route segment.
     // A reader checking a citation needs to know WHICH document opened.
-    openDialog(SOURCE_URL, "/data/noack/PPR/document.pdf");
+    openDialog(SOURCE_URL, "noack/PPR/document.pdf");
 
     expect(screen.getByText("document.pdf")).toBeInTheDocument();
   });
@@ -45,9 +45,9 @@ describe("PdfDialog", () => {
   it("keeps the full path reachable without spending width on it", () => {
     // A corpus has same-named files in different folders, so the path has to
     // survive somewhere — but it must not push the controls off a narrow screen.
-    openDialog(SOURCE_URL, "/data/noack/PPR/document.pdf");
+    openDialog(SOURCE_URL, "noack/PPR/document.pdf");
 
-    expect(screen.getByTitle("/data/noack/PPR/document.pdf")).toBeInTheDocument();
+    expect(screen.getByTitle("noack/PPR/document.pdf")).toBeInTheDocument();
   });
 
   it("shows which page the citation pointed at", () => {
@@ -55,7 +55,7 @@ describe("PdfDialog", () => {
     // decided what a citation's page is; a second regex here would be a second
     // answer to the same question, and the two had already drifted (`\d{1,5}`
     // against a whole fragment vs `\d+` anywhere in the string).
-    openDialog(SOURCE_URL, "/data/noack/PPR/document.pdf", 510);
+    openDialog(SOURCE_URL, "noack/PPR/document.pdf", 510);
 
     expect(screen.getByText(/page 510/i)).toBeInTheDocument();
   });
@@ -70,7 +70,7 @@ describe("PdfDialog", () => {
   it("offers a full tab, which is the only working path on iOS Safari", () => {
     // iOS Safari renders an embedded PDF blank regardless of headers or markup.
     // Without this link the dialog is a dead end on every iPhone.
-    openDialog(SOURCE_URL, "/data/noack/PPR/document.pdf");
+    openDialog(SOURCE_URL, "noack/PPR/document.pdf");
 
     const link = screen.getByRole("link", { name: /open in new tab/i });
     expect(link).toHaveAttribute("href", SOURCE_URL);
@@ -80,14 +80,14 @@ describe("PdfDialog", () => {
   });
 
   it("still closes", () => {
-    openDialog(SOURCE_URL, "/data/noack/PPR/document.pdf");
+    openDialog(SOURCE_URL, "noack/PPR/document.pdf");
 
     expect(screen.getByRole("button", { name: /close/i })).toBeInTheDocument();
   });
 
   it("renders the viewer at the exact url it was given, fragment included", () => {
     // The `#page=N` fragment is the whole reason a citation lands where it does.
-    const { container } = openDialog(SOURCE_URL, "/data/noack/PPR/document.pdf");
+    const { container } = openDialog(SOURCE_URL, "noack/PPR/document.pdf");
 
     const embed = container.ownerDocument.querySelector("embed");
     expect(embed).toHaveAttribute("src", SOURCE_URL);
