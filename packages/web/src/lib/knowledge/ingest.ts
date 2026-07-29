@@ -47,6 +47,7 @@ import {
 import { isArchivedPath, statusForPath } from "./archive-paths";
 import { chunkPages } from "./chunk";
 import { detectLang } from "./lid";
+import type { ChunkLocator } from "./locator";
 import type { IngestPage, IngestResult } from "./types";
 
 // IngestPage/IngestResult live in ./types (a runtime-free module) because
@@ -203,7 +204,10 @@ async function writeChunks(
       orgId,
       sourcePath,
       chunkText: chunk.text,
-      page: chunk.page,
+      // The only locator producer that exists today. PDF pages are intrinsic,
+      // so `page` is the honest anchor here; Wave 2 adds the heading/slide/
+      // sheet producers against the same closed union (locator.ts, #933).
+      locator: { kind: "page", page: chunk.page } satisfies ChunkLocator,
       lang: detectLang(chunk.text),
       embedding: vectors[i],
     }))

@@ -35,6 +35,8 @@
  * concern belongs here, on what the model actually CITES, not on what
  * retrieval returns.
  */
+import { toCitationPath } from "@/lib/knowledge/citation-path";
+
 import type { KbFailureTag, KbGraderResult } from "./types";
 
 /** A source `knowledge_search` returned for the query this answer responds to. */
@@ -298,7 +300,15 @@ export function gradeCitationResolution(input: AttributionInput): KbGraderResult
  */
 export function gradePathCitation(input: AttributionInput): KbGraderResult {
   const { entries } = parseAnswer(input.answer);
-  const retrievedPaths = new Set(input.retrieved.map((source) => source.sourcePath));
+  // Compared in CITATION form on both sides. `retrieved` is built from the
+  // audit row, which records the absolute sourcePath because that is a
+  // document's identity; the answer reproduces what `knowledge_search` printed,
+  // which is data-root-relative (#933). `toCitationPath` is a no-op on a path
+  // that is already relative, so an answer echoing either form still resolves
+  // to the same document instead of reading as a fabrication.
+  const retrievedPaths = new Set(
+    input.retrieved.map((source) => toCitationPath(source.sourcePath))
+  );
 
   const notes: string[] = [];
   for (const entry of entries) {
@@ -308,7 +318,7 @@ export function gradePathCitation(input: AttributionInput): KbGraderResult {
       );
       continue;
     }
-    if (!retrievedPaths.has(entry.path)) {
+    if (!retrievedPaths.has(toCitationPath(entry.path))) {
       notes.push(
         `Sources entry [${entry.n}] cites path "${entry.path}", which does not match any path in the returned sources.`
       );

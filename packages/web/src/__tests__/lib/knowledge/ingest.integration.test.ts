@@ -109,7 +109,18 @@ it("indexes a PDF into kb_documents + kb_chunks with real embeddings, then skips
     expect(chunk.embedding).toHaveLength(768);
     expect(chunk.sourcePath).toBe(pdfPath);
     expect(chunk.orgId).toBe(ORG_ID);
+    // The anchor a citation will point at. PDF pages are intrinsic, so `page`
+    // is the honest locator kind here — and it is the ONLY producer that
+    // exists, so anything else in this column means a chunk was written by
+    // something that has not been reviewed against the union (#933).
+    expect(chunk.locator).toEqual({ kind: "page", page: expect.any(Number) });
   }
+  // Both extracted pages are represented, so a citation can distinguish them.
+  // A set, not a list: how many chunks a page yields is the chunker's business.
+  const anchoredPages = new Set(
+    chunks.map((c) => (c.locator?.kind === "page" ? c.locator.page : null))
+  );
+  expect([...anchoredPages].sort()).toEqual([1, 2]);
   // notes.txt must never have reached extraction/embedding.
   expect(embed).toHaveBeenCalledTimes(1);
 

@@ -9,6 +9,8 @@
  * of Pinchy's governance logic already lives.
  */
 
+import { formatLocator, type ChunkLocator } from "./locator";
+
 interface PluginToolContext {
   agentId?: string;
 }
@@ -57,13 +59,19 @@ interface AgentTool {
 // Mirrors the response shape of POST /api/internal/knowledge/search
 // (packages/web/src/app/api/internal/knowledge/search/route.ts). Note there
 // is deliberately no `documentId` here — the route's public response only
-// exposes chunkId/text/sourcePath/page/docName, so the plugin uses
-// `sourcePath` as the per-document identity below.
+// exposes chunkId/text/sourcePath/citationPath/locator/docName, so the plugin
+// uses `sourcePath` as the per-document identity below.
+//
+// Two paths, two jobs: `sourcePath` is absolute and IDENTIFIES the document
+// (audit refs, anything that has to open the file); `citationPath` is what the
+// reader is shown, relative to the data root, and is the only one that belongs
+// in the citation string.
 export interface KnowledgeSearchResult {
   chunkId: string;
   text: string;
   sourcePath: string;
-  page: number | null;
+  citationPath: string;
+  locator: ChunkLocator | null;
   docName: string;
 }
 
@@ -119,7 +127,11 @@ export function returnedDocumentIds(results: KnowledgeSearchResult[]): DocumentR
 const CITATION_CONTRACT =
   "Cite the passages you use inline as [1], [2] next to the claim each one supports. " +
   "The reader sees only your answer, never these passages, so end it with a Sources list " +
-  "giving each number you cited the document path and page exactly as written above — " +
+  // "position", not "page": the anchor is a ChunkLocator now, and only PDFs
+  // have pages. Asking for a page would make the model state something false of
+  // a Word file, whose pagination is a rendering result rather than a property
+  // of the document the reader opens (#933).
+  "giving each number you cited the document path and position exactly as written above — " +
   "every number you cite, and no number you did not. " +
   "If they do not answer the question, say so instead of answering from memory.";
 
@@ -138,14 +150,21 @@ const NO_RESULTS =
  * that says what to do with them. Deterministic and unit-tested: the same
  * input always yields the same output string.
  *
- * Sources are identified by full `sourcePath`, not `docName`. A citation only
- * earns trust if the reader can FIND the document and check it: a bare
- * basename is unfindable in a deep corpus and, worse, collapses same-named
- * files from different folders into one indistinguishable citation. The model
- * can only cite what it is shown, so the path has to be in this string — the
- * tool result never reaches the browser. `docName` stays in the response shape
- * for `returnedDocumentIds`, which wants a human-readable name for the audit
- * row, not a locator.
+ * Sources are identified by their PATH, not `docName`. A citation only earns
+ * trust if the reader can FIND the document and check it: a bare basename is
+ * unfindable in a deep corpus and, worse, collapses same-named files from
+ * different folders into one indistinguishable citation. The model can only
+ * cite what it is shown, so the path has to be in this string — the tool result
+ * never reaches the browser. `docName` stays in the response shape for
+ * `returnedDocumentIds`, which wants a human-readable name for the audit row,
+ * not a locator.
+ *
+ * The path shown is `citationPath` — relative to the data root — because the
+ * absolute `/data/<mount>/…` form is what the CONTAINER sees and nobody at the
+ * customer recognises it (#933). And the anchor is a `ChunkLocator`, not a
+ * page: only PDFs have pages, and a Word file's page number is a rendering
+ * result, so citing one would state something false of the document the reader
+ * opens.
  */
 export function formatWithCitations(results: KnowledgeSearchResult[]): string {
   if (results.length === 0) {
@@ -153,8 +172,8 @@ export function formatWithCitations(results: KnowledgeSearchResult[]): string {
   }
   const sources = results
     .map((result, index) => {
-      const pageSuffix = result.page != null ? ` (p. ${result.page})` : "";
-      return `[${index + 1}] ${result.sourcePath}${pageSuffix}: "${result.text}"`;
+      const anchor = result.locator ? ` (${formatLocator(result.locator)})` : "";
+      return `[${index + 1}] ${result.citationPath}${anchor}: "${result.text}"`;
     })
     .join("\n\n");
   return `${CITATION_CONTRACT}\n\n${sources}`;

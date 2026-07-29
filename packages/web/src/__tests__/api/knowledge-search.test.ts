@@ -80,7 +80,7 @@ const retrievedChunks = [
     documentId: "doc-1",
     text: "Employees get 25 days of vacation per year.",
     sourcePath: "/data/hr/handbook.pdf",
-    page: 4,
+    locator: { kind: "page" as const, page: 4 },
     score: 0.9,
   },
   {
@@ -88,7 +88,7 @@ const retrievedChunks = [
     documentId: "doc-1",
     text: "Unused vacation carries over up to 5 days.",
     sourcePath: "/data/hr/handbook.pdf",
-    page: 5,
+    locator: { kind: "page" as const, page: 5 },
     score: 0.7,
   },
 ];
@@ -144,18 +144,63 @@ describe("POST /api/internal/knowledge/search", () => {
           chunkId: "chunk-1",
           text: "Employees get 25 days of vacation per year.",
           sourcePath: "/data/hr/handbook.pdf",
-          page: 4,
+          citationPath: "hr/handbook.pdf",
+          locator: { kind: "page", page: 4 },
           docName: "handbook.pdf",
         },
         {
           chunkId: "chunk-2",
           text: "Unused vacation carries over up to 5 days.",
           sourcePath: "/data/hr/handbook.pdf",
-          page: 5,
+          citationPath: "hr/handbook.pdf",
+          locator: { kind: "page", page: 5 },
           docName: "handbook.pdf",
         },
       ],
     });
+  });
+
+  it("derives citationPath from the data root so the container path never reaches the model", async () => {
+    // The response keeps `sourcePath` absolute — the audit trail and anything
+    // that opens the file need the path the filesystem answers to — but the
+    // model is shown `citationPath`, and that one must not carry /data/<mount>.
+    mockRetrieve.mockResolvedValueOnce([
+      {
+        chunkId: "chunk-9",
+        documentId: "doc-9",
+        text: "Incubate 24 h.",
+        sourcePath: "/data/noack/OLD/QF_2012/PrintingFiles_QF/PI_EColi.pdf",
+        locator: { kind: "page" as const, page: 2 },
+        score: 0.5,
+      },
+    ]);
+    const res = await POST(makeRequest(validBody));
+    const body = await res.json();
+
+    expect(body.results[0].sourcePath).toBe(
+      "/data/noack/OLD/QF_2012/PrintingFiles_QF/PI_EColi.pdf"
+    );
+    expect(body.results[0].citationPath).toBe("OLD/QF_2012/PrintingFiles_QF/PI_EColi.pdf");
+  });
+
+  it("passes a null locator through instead of inventing a page for it", async () => {
+    // A chunk from a document with no stable anchor (a Word file with no
+    // outline) has none. The citation then names the document and nothing
+    // more, which is honest; a fabricated "p. 1" would not be.
+    mockRetrieve.mockResolvedValueOnce([
+      {
+        chunkId: "chunk-8",
+        documentId: "doc-8",
+        text: "No anchor here.",
+        sourcePath: "/data/hr/notes.pdf",
+        locator: null,
+        score: 0.4,
+      },
+    ]);
+    const res = await POST(makeRequest(validBody));
+    const body = await res.json();
+
+    expect(body.results[0].locator).toBeNull();
   });
 
   it("resolves agentId -> allowedPaths from the agent's pinchy-files admin config and denies by default with []", async () => {

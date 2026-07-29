@@ -43,7 +43,7 @@ async function seedReadable(sourcePath: string): Promise<void> {
     orgId: ORG_ID,
     sourcePath,
     chunkText: "Some extracted text.",
-    page: 1,
+    locator: { kind: "page", page: 1 },
   });
 }
 
@@ -78,14 +78,14 @@ it("never lists a document that has chunks, not even once per chunk", async () =
       orgId: ORG_ID,
       sourcePath: "/data/certs/Handbook.pdf",
       chunkText: "Page one.",
-      page: 1,
+      locator: { kind: "page", page: 1 },
     },
     {
       documentId: doc.id,
       orgId: ORG_ID,
       sourcePath: "/data/certs/Handbook.pdf",
       chunkText: "Page two.",
-      page: 2,
+      locator: { kind: "page", page: 2 },
     },
   ]);
 
@@ -180,7 +180,7 @@ it("decides per document, not per path", async () => {
     orgId: ORG_ID,
     sourcePath: "/data/certs/Shared name.pdf",
     chunkText: "Text belonging to the other document.",
-    page: 1,
+    locator: { kind: "page", page: 1 },
   });
   await seedUnsearchable("/data/certs/Shared name.pdf");
 

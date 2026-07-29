@@ -19,12 +19,15 @@ import { sql } from "drizzle-orm";
 import { db } from "@/db";
 import { buildPathFilter } from "./path-filter";
 
+import type { ChunkLocator } from "./locator";
+
 export interface RetrievedChunk {
   chunkId: string;
   documentId: string;
   text: string;
   sourcePath: string;
-  page: number | null;
+  /** Where in the document this chunk sits (page / slide / heading path / sheet+rows). Null when the format offers no stable anchor. */
+  locator: ChunkLocator | null;
   /** Fused RRF score (higher is more relevant). Not a probability or a distance. */
   score: number;
 }
@@ -82,7 +85,7 @@ interface RetrieveRow extends Record<string, unknown> {
   document_id: string;
   chunk_text: string;
   source_path: string;
-  page: number | null;
+  locator: ChunkLocator | null;
   score: string | number;
 }
 
@@ -180,7 +183,7 @@ export async function retrieve(
              c.document_id AS document_id,
              c.chunk_text AS chunk_text,
              c.source_path AS source_path,
-             c.page AS page,
+             c.locator AS locator,
              r.score AS score
       FROM ranked r
       JOIN kb_chunks c ON c.id = r.chunk_id
@@ -194,7 +197,7 @@ export async function retrieve(
       documentId: row.document_id,
       text: row.chunk_text,
       sourcePath: row.source_path,
-      page: row.page,
+      locator: row.locator,
       score: Number(row.score),
     }));
   });

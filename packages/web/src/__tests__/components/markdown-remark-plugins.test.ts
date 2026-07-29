@@ -72,7 +72,7 @@ function firstLink(tree: MdastNode): MdastNode | null {
 describe("buildRemarkPlugins", () => {
   it("registers the source-link plugin so unified can attach it and it rewrites a citation", () => {
     const transformers = applyPlugins(buildRemarkPlugins("agent-1"));
-    const tree = paragraph("- [1] /data/noack/PPR/document.pdf — p. 510");
+    const tree = paragraph("- [1] noack/PPR/document.pdf — p. 510");
 
     // Every transformer runs, exactly as it would during a real render. If the
     // list carried a transformer instead of an attacher, `applyPlugins` above
@@ -90,7 +90,7 @@ describe("buildRemarkPlugins", () => {
     // An href without an agent id cannot resolve to anything the route would
     // authorize, so no link is better than a broken one.
     const transformers = applyPlugins(buildRemarkPlugins(null));
-    const tree = paragraph("- [1] /data/noack/PPR/document.pdf — p. 510");
+    const tree = paragraph("- [1] noack/PPR/document.pdf — p. 510");
 
     for (const transform of transformers) transform(tree);
 

@@ -12,6 +12,7 @@ import { retrieve, type RetrievedChunk } from "@/lib/knowledge/retrieve";
 import { embedTexts } from "@/lib/knowledge/embeddings";
 import { kbEmbedderAvailable, kbEmbeddingConfig } from "@/lib/knowledge/kb-embedder";
 import { DEFAULT_ORG_ID } from "@/lib/knowledge/constants";
+import { toCitationPath } from "@/lib/knowledge/citation-path";
 import { deferAuditLog } from "@/lib/audit-deferred";
 import { safeProviderError, type AuditLogEntry, type EntityRef } from "@/lib/audit";
 
@@ -176,11 +177,18 @@ export async function POST(request: NextRequest) {
   );
 
   return NextResponse.json({
+    // Two paths, two jobs. `sourcePath` stays ABSOLUTE: it identifies the
+    // document for the audit trail and for anything that has to open the file.
+    // `citationPath` is what the model is shown and therefore what lands in a
+    // citation, and it is relative to the data root — the `/data/<mount>/`
+    // prefix is what the container sees, and nobody at the customer recognises
+    // it (#933).
     results: chunks.map((chunk) => ({
       chunkId: chunk.chunkId,
       text: chunk.text,
       sourcePath: chunk.sourcePath,
-      page: chunk.page,
+      citationPath: toCitationPath(chunk.sourcePath),
+      locator: chunk.locator,
       docName: basename(chunk.sourcePath),
     })),
   });

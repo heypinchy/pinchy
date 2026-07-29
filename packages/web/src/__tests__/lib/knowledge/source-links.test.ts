@@ -3,14 +3,19 @@
  * Sources list is written by the model — nothing renders it. Three real shapes
  * were observed against the same corpus within one day:
  *
- *   - kimi-k2.6, obeying the template:  `- [2] /data/x/doc.pdf — p. 44`
- *   - kimi-k2.6, embellishing:          `[1] /data/x/doc.pdf – AOAC study, Tabelle 18 …`
+ *   - kimi-k2.6, obeying the template:  `- [2] noack/x/doc.pdf — p. 44`
+ *   - kimi-k2.6, embellishing:          `[1] noack/x/doc.pdf – AOAC study, Tabelle 18 …`
  *   - deepseek-v4-pro, its own idea:    `*Quelle: PPR document.pdf, S. 275*`
  *
  * So the transform keys off the ONE thing every shape carries — a path with a
  * known document extension — and never off the surrounding format. Whatever it
  * does not recognise it leaves untouched: the fallback is today's plain text,
  * so a model inventing a fourth shape costs a link, never a broken answer.
+ *
+ * The paths are DATA-ROOT-RELATIVE, because that is what `knowledge_search`
+ * shows the model and the model can only cite what it is shown (#933). The href
+ * carries the absolute path the route needs — `citation-path.ts` is the single
+ * place that converts between the two, in both directions.
  */
 import { describe, it, expect } from "vitest";
 
@@ -46,30 +51,44 @@ const run = (tree: Node) => {
 };
 
 describe("buildSourceHref", () => {
-  it("points at the agent's workspace-file route with the path encoded", () => {
-    // Spaces and & are both real in this corpus ("PF LAB/… afnor_update_&_support.pdf")
-    // and both break a bare query string, so encoding is not cosmetic.
-    const href = buildSourceHref(AGENT, "/data/noack/PF LAB/a & b.pdf", null);
+  it("points at the agent's workspace-file route with the ABSOLUTE path encoded", () => {
+    // The citation is relative; the route opens a file, so the href has to
+    // carry the path the filesystem answers to. Spaces and & are both real in
+    // this corpus ("PF LAB/… afnor_update_&_support.pdf") and both break a bare
+    // query string, so encoding is not cosmetic either.
+    const href = buildSourceHref(AGENT, "noack/PF LAB/a & b.pdf", null);
     expect(href).toBe(
       "/api/agents/agent-1/workspace-file?path=%2Fdata%2Fnoack%2FPF%20LAB%2Fa%20%26%20b.pdf"
     );
   });
 
   it("appends the PDF viewer's page fragment when a page is known", () => {
-    const href = buildSourceHref(AGENT, "/data/x/doc.pdf", 44);
+    const href = buildSourceHref(AGENT, "x/doc.pdf", 44);
     expect(href.endsWith("#page=44")).toBe(true);
+  });
+
+  it("cannot be talked out of the data root by a fabricated citation", () => {
+    // The path comes from model output. This is the outer of two gates — the
+    // route still resolves the result against the agent's allowed_paths — but a
+    // fabricated citation must not even be SHAPED into an escape.
+    expect(buildSourceHref(AGENT, "../../etc/passwd.pdf", null)).toBe(
+      "/api/agents/agent-1/workspace-file?path=%2Fdata%2Fetc%2Fpasswd.pdf"
+    );
   });
 });
 
 describe("parseSourceHref", () => {
   it("round-trips a path built by buildSourceHref, so the viewer gets a real title", () => {
-    const path = "/data/noack/PF LAB/a & b.pdf";
+    // Round-trips to the CITATION path, not the absolute one: this value is the
+    // viewer's title, and a title reading "/data/noack/…" would put the
+    // container path back in front of the reader that #933 took out of it.
+    const path = "noack/PF LAB/a & b.pdf";
     expect(parseSourceHref(buildSourceHref(AGENT, path, 44))).toEqual({ path, page: 44 });
   });
 
   it("reports no page when the href carries none", () => {
-    expect(parseSourceHref(buildSourceHref(AGENT, "/data/x/doc.pdf", null))).toEqual({
-      path: "/data/x/doc.pdf",
+    expect(parseSourceHref(buildSourceHref(AGENT, "x/doc.pdf", null))).toEqual({
+      path: "x/doc.pdf",
       page: null,
     });
   });
@@ -101,31 +120,31 @@ describe("parseSourceHref", () => {
 
 describe("remarkSourceLinks", () => {
   it("links a template-formatted source and keeps its page", () => {
-    const tree = run(paragraph("- [2] /data/noack/PPR/document.pdf — p. 44"));
+    const tree = run(paragraph("- [2] noack/PPR/document.pdf — p. 44"));
     expect(links(tree)).toEqual([
       {
         url: "/api/agents/agent-1/workspace-file?path=%2Fdata%2Fnoack%2FPPR%2Fdocument.pdf#page=44",
-        text: "/data/noack/PPR/document.pdf",
+        text: "noack/PPR/document.pdf",
       },
     ]);
   });
 
   it("links a source buried in prose, where the format collapsed", () => {
     const tree = run(
-      paragraph("Quellen: [1] /data/noack/PF RAC/study.pdf – AOAC Performance Tested Method Study")
+      paragraph("Quellen: [1] noack/PF RAC/study.pdf – AOAC Performance Tested Method Study")
     );
     const found = links(tree);
     expect(found).toHaveLength(1);
-    expect(found[0].text).toBe("/data/noack/PF RAC/study.pdf");
+    expect(found[0].text).toBe("noack/PF RAC/study.pdf");
   });
 
   it("reads a German page abbreviation", () => {
-    const tree = run(paragraph("Quelle: /data/noack/PPR/document.pdf, S. 275"));
+    const tree = run(paragraph("Quelle: noack/PPR/document.pdf, S. 275"));
     expect(links(tree)[0].url.endsWith("#page=275")).toBe(true);
   });
 
   it("keeps the surrounding words as text around the link", () => {
-    const tree = run(paragraph("siehe /data/x/doc.pdf für Details"));
+    const tree = run(paragraph("siehe x/doc.pdf für Details"));
     const para = tree.children![0];
     expect(para.children!.map((c) => c.type)).toEqual(["text", "link", "text"]);
     expect(para.children![0].value).toBe("siehe ");
@@ -133,8 +152,8 @@ describe("remarkSourceLinks", () => {
   });
 
   it("links every source when one line names several", () => {
-    const tree = run(paragraph("[1] /data/a/one.pdf — p. 1 [2] /data/b/two.pdf — p. 2"));
-    expect(links(tree).map((l) => l.text)).toEqual(["/data/a/one.pdf", "/data/b/two.pdf"]);
+    const tree = run(paragraph("[1] a/one.pdf — p. 1 [2] b/two.pdf — p. 2"));
+    expect(links(tree).map((l) => l.text)).toEqual(["a/one.pdf", "b/two.pdf"]);
   });
 
   it("leaves text without a document path completely alone", () => {
@@ -151,16 +170,16 @@ describe("remarkSourceLinks", () => {
     const tree: Node = {
       type: "root",
       children: [
-        { type: "inlineCode", value: "/data/x/doc.pdf" },
-        { type: "link", url: "/elsewhere", children: [{ type: "text", value: "/data/x/doc.pdf" }] },
+        { type: "inlineCode", value: "x/doc.pdf" },
+        { type: "link", url: "/elsewhere", children: [{ type: "text", value: "x/doc.pdf" }] },
       ],
     };
     run(tree);
-    expect(links(tree)).toEqual([{ url: "/elsewhere", text: "/data/x/doc.pdf" }]);
+    expect(links(tree)).toEqual([{ url: "/elsewhere", text: "x/doc.pdf" }]);
   });
 
   it("ignores a path whose extension we cannot serve", () => {
-    const tree = paragraph("/etc/passwd and /data/x/notes.exe");
+    const tree = paragraph("/etc/passwd and x/notes.exe");
     const before = JSON.stringify(tree);
     run(tree);
     expect(JSON.stringify(tree)).toBe(before);
@@ -169,11 +188,30 @@ describe("remarkSourceLinks", () => {
   it("links a url-shaped path the same way, because the route decides access", () => {
     // remark-gfm turns a real `https://…` url into a link node before this
     // plugin runs, so it never sees one. What DOES reach here is a bare
-    // `example.com/docs/manual.pdf`, which gfm does not autolink. Linking its
-    // path part is harmless — the route resolves it against allowed_paths and
-    // 403s — but it should be a decision on record, not an accident.
+    // `example.com/docs/manual.pdf`, which gfm does not autolink. Linking it is
+    // harmless — the route resolves it against allowed_paths and 403s — but it
+    // should be a decision on record, not an accident.
     const tree = run(paragraph("siehe example.com/docs/manual.pdf"));
-    expect(links(tree).map((l) => l.text)).toEqual(["/docs/manual.pdf"]);
+    expect(links(tree).map((l) => l.text)).toEqual(["example.com/docs/manual.pdf"]);
+  });
+
+  it("does not link a bare filename, which names no findable document", () => {
+    // A citation shortened to a basename is the failure a path exists to
+    // prevent — unfindable in a deep tree, ambiguous across folders. Linking it
+    // would dress that failure up as a working reference.
+    const tree = paragraph("siehe report.pdf für Details");
+    const before = JSON.stringify(tree);
+    run(tree);
+    expect(JSON.stringify(tree)).toBe(before);
+  });
+
+  it("treats an absolute path a model invented as just another citation path", () => {
+    // Nothing shows the model an absolute path any more, so one appearing in an
+    // answer is fabricated or copied from elsewhere. It resolves under the data
+    // root like everything else and 403s there — a decision on record, not a
+    // second code path.
+    const tree = run(paragraph("siehe /data/x/doc.pdf hier"));
+    expect(links(tree).map((l) => l.text)).toEqual(["data/x/doc.pdf"]);
   });
 
   it("keeps the path intact when earlier text case-folds to a different length", () => {
@@ -182,8 +220,8 @@ describe("remarkSourceLinks", () => {
     // characters, so every offset after it shifts by one and the extracted path
     // silently loses its first character. A German lab corpus with a Turkish
     // name in a sentence is enough to hit it.
-    const tree = run(paragraph("İ siehe /data/x/doc.PDF hier"));
-    expect(links(tree).map((l) => l.text)).toEqual(["/data/x/doc.PDF"]);
+    const tree = run(paragraph("İ siehe x/doc.PDF hier"));
+    expect(links(tree).map((l) => l.text)).toEqual(["x/doc.PDF"]);
   });
 
   it("reads a doubled extension as the shorter path", () => {
@@ -191,8 +229,8 @@ describe("remarkSourceLinks", () => {
     // pinned only so the windowed scan below cannot change it unnoticed: the
     // scan stops at the FIRST `.pdf` that a path can legally end on, where the
     // earlier unbounded regex kept expanding across it.
-    const tree = run(paragraph("/data/x/report.pdf.pdf"));
-    expect(links(tree).map((l) => l.text)).toEqual(["/data/x/report.pdf"]);
+    const tree = run(paragraph("x/report.pdf.pdf"));
+    expect(links(tree).map((l) => l.text)).toEqual(["x/report.pdf"]);
   });
 
   describe("pathological input", () => {

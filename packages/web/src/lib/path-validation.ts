@@ -1,6 +1,14 @@
 import { resolve, normalize } from "path";
 
-const DATA_ROOT = "/data/";
+// DATA_ROOT is defined in knowledge/citation-path.ts, not here, and imported
+// back — a one-way dependency chosen for a bundling reason, not a layering
+// one. citation-path.ts is reached from a client component (the markdown
+// renderer, via source-links.ts); this module imports `node:path`, so a
+// dependency in the other direction would pull a Node builtin into the browser
+// bundle. Re-exported so existing importers of path-validation keep working and
+// there is still exactly one definition.
+export { DATA_ROOT } from "./knowledge/citation-path";
+import { DATA_ROOT } from "./knowledge/citation-path";
 
 export function sanitizePath(inputPath: string): string {
   if (typeof inputPath !== "string") {

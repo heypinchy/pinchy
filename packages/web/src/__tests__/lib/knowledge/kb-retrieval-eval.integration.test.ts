@@ -144,7 +144,7 @@ async function seedCorpus(
           orgId: ORG_ID,
           sourcePath: doc.sourcePath,
           chunkText: chunk.text,
-          page: chunk.page,
+          locator: { kind: "page", page: chunk.page },
           embedding,
         })
         .returning();

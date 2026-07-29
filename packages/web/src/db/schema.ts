@@ -42,6 +42,7 @@ import {
 } from "./enums";
 import type { EmailWorkflowFilter, ProcessedEmailOutcome } from "@/lib/email-workflows/types";
 import type { IngestResult } from "@/lib/knowledge/ingest";
+import type { ChunkLocator } from "@/lib/knowledge/locator";
 import type { OpenClawModelDefinition } from "@/lib/openclaw-builtin-models";
 import { vector } from "./vector";
 
@@ -1003,7 +1004,13 @@ export const kbChunks = pgTable(
     orgId: text("org_id").notNull(),
     sourcePath: text("source_path").notNull(),
     chunkText: text("chunk_text").notNull(),
-    page: integer("page"),
+    // Where in the document this chunk sits — a closed union (page / slide /
+    // heading path / sheet+rows), not a page number, because only PDFs have
+    // pages and Word pagination is a rendering result rather than a property
+    // of the file (see lib/knowledge/locator.ts, #933). Null when the format
+    // offers no stable anchor at all; a citation then names the document and
+    // says nothing more, which beats inventing a page.
+    locator: jsonb("locator").$type<ChunkLocator>(),
     lang: text("lang"),
     embedding: vector("embedding"),
   },

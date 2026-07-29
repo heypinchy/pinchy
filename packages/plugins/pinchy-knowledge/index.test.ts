@@ -134,7 +134,8 @@ describe("pinchy-knowledge plugin", () => {
               chunkId: "c1",
               text: "Snippet one.",
               sourcePath: "/data/kb/a.pdf",
-              page: 3,
+              citationPath: "kb/a.pdf",
+              locator: { kind: "page", page: 3 },
               docName: "a.pdf",
             },
           ],
@@ -169,10 +170,10 @@ describe("pinchy-knowledge plugin", () => {
         text:
           "Cite the passages you use inline as [1], [2] next to the claim each one supports. " +
           "The reader sees only your answer, never these passages, so end it with a Sources list " +
-          "giving each number you cited the document path and page exactly as written above — " +
+          "giving each number you cited the document path and position exactly as written above — " +
           "every number you cite, and no number you did not. " +
           "If they do not answer the question, say so instead of answering from memory.\n\n" +
-          '[1] /data/kb/a.pdf (p. 3): "Snippet one."',
+          '[1] kb/a.pdf (p. 3): "Snippet one."',
       },
     ]);
     // details keeps the human-readable docName: an audit reviewer wants to
@@ -317,26 +318,33 @@ describe("formatWithCitations", () => {
       chunkId: "c1",
       text: "Snippet one.",
       sourcePath: "/data/kb/a.pdf",
-      page: 3,
+      citationPath: "kb/a.pdf",
+      locator: { kind: "page", page: 3 },
       docName: "a.pdf",
     },
     {
       chunkId: "c2",
       text: "Snippet two.",
       sourcePath: "/data/kb/b.pdf",
-      page: null,
+      citationPath: "kb/b.pdf",
+      locator: null,
       docName: "b.pdf",
     },
   ];
 
-  it("formats results as numbered, citable sources with sourcePath and page", () => {
+  // The contract prefix, spelled once so the locator/citation assertions below
+  // stay readable. It is still pinned literally where it matters most — the
+  // dispatch test above asserts the whole payload without this indirection.
+  const CONTRACT =
+    "Cite the passages you use inline as [1], [2] next to the claim each one supports. " +
+    "The reader sees only your answer, never these passages, so end it with a Sources list " +
+    "giving each number you cited the document path and position exactly as written above — " +
+    "every number you cite, and no number you did not. " +
+    "If they do not answer the question, say so instead of answering from memory.\n\n";
+
+  it("formats results as numbered, citable sources with citationPath and locator", () => {
     expect(formatWithCitations(results)).toBe(
-      "Cite the passages you use inline as [1], [2] next to the claim each one supports. " +
-        "The reader sees only your answer, never these passages, so end it with a Sources list " +
-        "giving each number you cited the document path and page exactly as written above — " +
-        "every number you cite, and no number you did not. " +
-        "If they do not answer the question, say so instead of answering from memory.\n\n" +
-        '[1] /data/kb/a.pdf (p. 3): "Snippet one."\n\n[2] /data/kb/b.pdf: "Snippet two."'
+      CONTRACT + '[1] kb/a.pdf (p. 3): "Snippet one."\n\n[2] kb/b.pdf: "Snippet two."'
     );
   });
 
@@ -383,7 +391,10 @@ describe("formatWithCitations", () => {
     // change exists to close, so the contract has to close it here too.
     const out = formatWithCitations(results);
     expect(out).toMatch(/sources list/i);
-    expect(out).toMatch(/path and page/i);
+    // "position", not "page": only PDFs have pages, and asking for one would
+    // make the model state something false of a Word file (#933).
+    expect(out).toMatch(/path and position/i);
+    expect(out).not.toMatch(/path and page/i);
   });
 
   it("tells the model to admit a miss rather than answer from memory", () => {
@@ -393,26 +404,48 @@ describe("formatWithCitations", () => {
     expect(formatWithCitations(results)).toMatch(/say so instead of answering from memory/i);
   });
 
-  it("identifies a source by its full path, not its bare filename", () => {
+  it("cites the path the reader recognises, never the container path", () => {
+    // The absolute path is what the CONTAINER sees. Showing it in a citation
+    // misleads: the customer knows the tree below the mount from Explorer and
+    // has never seen "/data/noack". The model can only cite what it is shown,
+    // so the leak has to be closed here, in the string. (#933)
+    const noack: KnowledgeSearchResult[] = [
+      {
+        chunkId: "c1",
+        text: "Incubate 24 h.",
+        sourcePath: "/data/noack/OLD/QF_2012/PrintingFiles_QF/PI_EColi.pdf",
+        citationPath: "OLD/QF_2012/PrintingFiles_QF/PI_EColi.pdf",
+        locator: { kind: "page", page: 2 },
+        docName: "PI_EColi.pdf",
+      },
+    ];
+    const out = formatWithCitations(noack);
+    expect(out).toBe(
+      CONTRACT + '[1] OLD/QF_2012/PrintingFiles_QF/PI_EColi.pdf (p. 2): "Incubate 24 h."'
+    );
+    expect(out).not.toContain("/data/");
+  });
+
+  it("identifies a source by its path, not its bare filename", () => {
     // A real corpus nests documents many levels deep and reuses filenames
     // across folders (the 3M/Noack corpus has ~194 docs under
-    // /data/noack/OLD/QF_2012/PrintingFiles_QF/...). The model can only cite
-    // what it is shown, so a bare basename leaves the reader unable to FIND
-    // the document and verify the claim — which is the entire point of
-    // cite-then-answer. Found in the 2026-07-16 live Block-A test: the answer
-    // was fully grounded, but the citation "PI_EColi-Coliform_Count_Plate.pdf"
-    // was unfindable in a 194-document tree.
+    // /data/noack/OLD/QF_2012/PrintingFiles_QF/...). A bare basename leaves the
+    // reader unable to FIND the document and verify the claim — which is the
+    // entire point of cite-then-answer. Found in the 2026-07-16 live Block-A
+    // test: the answer was fully grounded, but the citation
+    // "PI_EColi-Coliform_Count_Plate.pdf" was unfindable in a 194-document tree.
     const nested: KnowledgeSearchResult[] = [
       {
         chunkId: "c1",
         text: "Incubate 24 h.",
         sourcePath: "/data/noack/OLD/QF_2012/PrintingFiles_QF/PI_EColi.pdf",
-        page: 2,
+        citationPath: "OLD/QF_2012/PrintingFiles_QF/PI_EColi.pdf",
+        locator: { kind: "page", page: 2 },
         docName: "PI_EColi.pdf",
       },
     ];
     const out = formatWithCitations(nested);
-    expect(out).toContain("/data/noack/OLD/QF_2012/PrintingFiles_QF/PI_EColi.pdf");
+    expect(out).toContain("OLD/QF_2012/PrintingFiles_QF/PI_EColi.pdf");
   });
 
   it("distinguishes same-named documents in different folders", () => {
@@ -423,20 +456,60 @@ describe("formatWithCitations", () => {
         chunkId: "c1",
         text: "A.",
         sourcePath: "/data/kb/2011/spec.pdf",
-        page: 1,
+        citationPath: "2011/spec.pdf",
+        locator: { kind: "page", page: 1 },
         docName: "spec.pdf",
       },
       {
         chunkId: "c2",
         text: "B.",
         sourcePath: "/data/kb/2012/spec.pdf",
-        page: 1,
+        citationPath: "2012/spec.pdf",
+        locator: { kind: "page", page: 1 },
         docName: "spec.pdf",
       },
     ];
     const out = formatWithCitations(collision);
-    expect(out).toContain("/data/kb/2011/spec.pdf");
-    expect(out).toContain("/data/kb/2012/spec.pdf");
+    expect(out).toContain("2011/spec.pdf");
+    expect(out).toContain("2012/spec.pdf");
+  });
+
+  it("renders a Word anchor as its heading path, a slide as its number, a sheet as its rows", () => {
+    // Only the page producer exists today; these three are what Wave 2 emits.
+    // Pinned now so a later producer cannot quietly invent a second spelling
+    // for the same anchor — the whole reason the locator is a closed union.
+    const mixed: KnowledgeSearchResult[] = [
+      {
+        chunkId: "c1",
+        text: "Goods are checked on arrival.",
+        sourcePath: "/data/noack/QM/handbook.docx",
+        citationPath: "QM/handbook.docx",
+        locator: { kind: "heading", headings: ["Quality", "Incoming goods"] },
+        docName: "handbook.docx",
+      },
+      {
+        chunkId: "c2",
+        text: "Q3 revenue was flat.",
+        sourcePath: "/data/noack/Sales/review.pptx",
+        citationPath: "Sales/review.pptx",
+        locator: { kind: "slide", slide: 4 },
+        docName: "review.pptx",
+      },
+      {
+        chunkId: "c3",
+        text: "Acme GmbH, DE, approved.",
+        sourcePath: "/data/noack/Platform/suppliers.xlsx",
+        citationPath: "Platform/suppliers.xlsx",
+        locator: { kind: "sheet", sheet: "Suppliers", startRow: 5, endRow: 12 },
+        docName: "suppliers.xlsx",
+      },
+    ];
+    expect(formatWithCitations(mixed)).toBe(
+      CONTRACT +
+        '[1] QM/handbook.docx (§ Quality > Incoming goods): "Goods are checked on arrival."\n\n' +
+        '[2] Sales/review.pptx (slide 4): "Q3 revenue was flat."\n\n' +
+        '[3] Platform/suppliers.xlsx (Suppliers, rows 5-12): "Acme GmbH, DE, approved."'
+    );
   });
 
   it("returns a deterministic empty-state message for no results", () => {
@@ -449,10 +522,34 @@ describe("formatWithCitations", () => {
 
 describe("returnedDocumentIds", () => {
   it("dedupes chunks from the same document into a single ref", () => {
+    // Keyed on the ABSOLUTE sourcePath, not the citation path: this ref is a
+    // document identity for the audit trail, and the trail has to name the
+    // path the filesystem answers to.
     const results: KnowledgeSearchResult[] = [
-      { chunkId: "c1", text: "a", sourcePath: "/data/kb/a.pdf", page: 1, docName: "a.pdf" },
-      { chunkId: "c2", text: "b", sourcePath: "/data/kb/a.pdf", page: 2, docName: "a.pdf" },
-      { chunkId: "c3", text: "c", sourcePath: "/data/kb/b.pdf", page: 1, docName: "b.pdf" },
+      {
+        chunkId: "c1",
+        text: "a",
+        sourcePath: "/data/kb/a.pdf",
+        citationPath: "kb/a.pdf",
+        locator: { kind: "page", page: 1 },
+        docName: "a.pdf",
+      },
+      {
+        chunkId: "c2",
+        text: "b",
+        sourcePath: "/data/kb/a.pdf",
+        citationPath: "kb/a.pdf",
+        locator: { kind: "page", page: 2 },
+        docName: "a.pdf",
+      },
+      {
+        chunkId: "c3",
+        text: "c",
+        sourcePath: "/data/kb/b.pdf",
+        citationPath: "kb/b.pdf",
+        locator: { kind: "page", page: 1 },
+        docName: "b.pdf",
+      },
     ];
     expect(returnedDocumentIds(results)).toEqual([
       { id: "/data/kb/a.pdf", name: "a.pdf" },

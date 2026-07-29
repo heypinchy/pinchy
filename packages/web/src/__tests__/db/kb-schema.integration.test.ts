@@ -31,7 +31,7 @@ it("inserts a document + chunk and queries the chunk by orgId", async () => {
     orgId: ORG_ID,
     sourcePath: "/data/handbook.pdf",
     chunkText: "Onboarding starts on day one.",
-    page: 1,
+    locator: { kind: "page", page: 1 },
     embedding: Array(768).fill(0.1),
   });
 
@@ -40,6 +40,10 @@ it("inserts a document + chunk and queries the chunk by orgId", async () => {
   expect(rows[0].chunkText).toBe("Onboarding starts on day one.");
   expect(rows[0].sourcePath).toBe("/data/handbook.pdf");
   expect(rows[0].embedding).toHaveLength(768);
+  // Round-trips through jsonb as the typed union, not as an opaque blob: the
+  // citation renderer switches on `kind`, so a column that came back as a
+  // string would fail there rather than here.
+  expect(rows[0].locator).toEqual({ kind: "page", page: 1 });
 });
 
 it("keys a document by (org_id, source_path), with content_hash as a non-unique change-detection column", async () => {

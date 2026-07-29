@@ -123,18 +123,22 @@ Go back to the agent's chat and start asking questions. The agent calls `knowled
 
 ### Cite-then-answer
 
-Every grounded answer cites its sources inline, like `[1]` and `[2]`, and ends with a **Sources** list mapping each number to its document path and page:
+Every grounded answer cites its sources inline, like `[1]` and `[2]`, and ends with a **Sources** list mapping each number to its document path and the spot inside it:
 
 ```
 **Sources:**
 
-- [1] /data/handbook/policies/Employee Handbook.pdf — p. 12
-- [2] /data/handbook/policies/Employee Handbook.pdf — p. 14
+- [1] handbook/policies/Employee Handbook.pdf — p. 12
+- [2] handbook/policies/Employee Handbook.pdf — p. 14
 ```
 
-That makes every claim in the answer traceable back to a specific document and page, even though the underlying search results aren't shown in the chat.
+That makes every claim in the answer traceable back to a specific document and a specific spot in it, even though the underlying search results aren't shown in the chat.
 
-Sources are named by their full path, not just the filename. In a real document tree a bare filename is often impossible to act on — you can't tell which of several folders it lives in, and two folders may hold files with the same name. The path is what lets you open the document and check the claim for yourself.
+Sources are named by their path, not just the filename. In a real document tree a bare filename is often impossible to act on — you can't tell which of several folders it lives in, and two folders may hold files with the same name. The path is what lets you open the document and check the claim for yourself.
+
+The path you see is the one you'd recognise: it starts at the folder you mounted, not at the container path underneath. If you mounted a share as `quality`, a citation reads `quality/QM/Handbook.pdf` — the same tree you see in Explorer, minus the plumbing.
+
+Not every document has pages, which is why a citation says "the spot" rather than "the page". A PDF is cited by page and a slide deck by slide number, because both are properties of the file itself. A Word document is cited by its heading path instead: where a Word page break falls depends on fonts and printer settings, so a page number would describe our rendering of the document rather than yours, and a citation should never state something you can't verify in the file you open.
 
 ### Open a source and check it
 

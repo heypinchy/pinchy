@@ -24,6 +24,7 @@ import { db } from "@/db";
 import { kbChunks, kbDocuments } from "@/db/schema";
 import { EMBEDDING_DIMENSIONS } from "@/lib/knowledge/constants";
 import { retrieve, type RetrieveDeps } from "@/lib/knowledge/retrieve";
+import type { ChunkLocator } from "@/lib/knowledge/locator";
 
 const ORG_ID = "org-kb-retrieve-test";
 // Match the live column width so inserts don't fail the vector(N) check; a
@@ -58,6 +59,8 @@ interface SeedChunk {
   embedding: number[];
   page?: number;
   status?: "active" | "archived";
+  /** Set to null to seed a chunk with no anchor at all, the way a format without a stable one would. */
+  locator?: ChunkLocator | null;
 }
 
 async function seedChunk(seed: SeedChunk): Promise<{ documentId: string; chunkId: string }> {
@@ -78,7 +81,7 @@ async function seedChunk(seed: SeedChunk): Promise<{ documentId: string; chunkId
       orgId: ORG_ID,
       sourcePath: seed.sourcePath,
       chunkText: seed.text,
-      page: seed.page ?? 1,
+      locator: seed.locator === undefined ? { kind: "page", page: seed.page ?? 1 } : seed.locator,
       embedding: seed.embedding,
     })
     .returning();
@@ -106,7 +109,7 @@ it("ranks the chunk matching both the embedding and the query terms on top", asy
     chunkId: best.chunkId,
     documentId: best.documentId,
     sourcePath: "/data/handbook.pdf",
-    page: 1,
+    locator: { kind: "page", page: 1 },
   });
   expect(typeof results[0].score).toBe("number");
   expect(results[0].score).toBeGreaterThan(0);
@@ -273,7 +276,7 @@ it("only retrieves chunks for the given org (ignores another org's data even und
       orgId: "org-kb-retrieve-other",
       sourcePath: "/data/shared-name.pdf",
       chunkText: "The vacation policy allows unlimited PTO.",
-      page: 1,
+      locator: { kind: "page", page: 1 },
       embedding: oneHot(0),
     })
     .returning();
@@ -344,7 +347,7 @@ async function seedDoc(
         orgId: ORG_ID,
         sourcePath,
         chunkText: chunk.text,
-        page: i + 1,
+        locator: { kind: "page", page: i + 1 },
         embedding: chunk.embedding,
       })
       .returning();

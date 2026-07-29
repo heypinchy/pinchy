@@ -20,22 +20,38 @@
  * the view. A fabricated path in an answer therefore yields a link that 403s —
  * it cannot widen what the user may read.
  */
+import { fromCitationPath, toCitationPath } from "./citation-path";
 
 /**
- * An absolute path ending in an extension we can serve, anchored at the END of
- * the slice it is run against — see `findSourcePaths` for why it is never let
- * loose on a whole text node. The extension is baked into the pattern rather
+ * A DATA-ROOT-RELATIVE path ending in an extension we can serve, anchored at the
+ * END of the slice it is run against — see `findSourcePaths` for why it is never
+ * let loose on a whole text node. The extension is baked into the pattern rather
  * than checked separately: a second predicate deciding the same thing is a pair
  * that drifts, and a mutation test proved the separate check was already
  * unreachable. Widening what is linkable therefore means editing this
  * alternation — today only `.pdf`, which is also the only type the ingest
  * accepts and the only one the route renders inline.
  *
- * Anchoring on the extension is what keeps arbitrary path-shaped strings
- * (`/etc/passwd`) out. Paths in a real corpus routinely contain spaces
- * ("PF LAB/…"), so segments allow them.
+ * Relative, with NO leading slash, because that is the shape `knowledge_search`
+ * shows the model and a model can only cite what it is shown (#933). The
+ * absolute form is rebuilt in `buildSourceHref` via `fromCitationPath`, the one
+ * place that knows the data root.
+ *
+ * At least one `/` is required. A bare `report.pdf` is exactly the citation
+ * shape a full path exists to prevent — unfindable in a deep tree, ambiguous
+ * across folders — and linking it would dress that failure up as a working
+ * reference. Anchoring on the extension is what keeps arbitrary path-shaped
+ * strings (`/etc/passwd`) out.
+ *
+ * Paths in a real corpus routinely contain spaces ("PF LAB/…"), so segments
+ * allow them — except the FIRST one, which must be a whitespace-delimited
+ * token. That asymmetry replaces the leading `/` the absolute form used to be
+ * pinned by: without something marking where a path may begin, the leftmost
+ * match happily swallows the prose in front of it and links "[1] a/one.pdf"
+ * rather than "a/one.pdf". A mount name with a space in it is the price, and
+ * "the citation starts at a word" is a rule a reader can predict.
  */
-const SOURCE_PATH_ENDING_HERE = /\/(?:[^\s/]|[^\s/][^/]*?[^\s/])?(?:\/[^/\n]+?)*?\.pdf$/i;
+const SOURCE_PATH_ENDING_HERE = /[^\s/]+(?:\/[^/\n]+?)+?\.pdf$/i;
 
 /** What may follow a path so that "…/doc.pdf." links the file and not the full stop. */
 const PATH_BOUNDARY = /[\s,.;:)\]]/;
@@ -110,13 +126,23 @@ interface MdastNode {
 }
 
 /**
- * Builds the href for one cited document. The path is carried as a query
- * parameter (not a path segment) because it is absolute and may contain any
- * character a filesystem allows; `#page=N` is the fragment Chrome's and
- * Firefox's built-in PDF viewers both honour, and it is inert for anything else.
+ * Builds the href for one cited document from the citation path the answer
+ * shows. The route opens a file, so the href carries the ABSOLUTE path — the
+ * conversion is `fromCitationPath`, which also confines the result to the data
+ * root, since `citationPath` reaches here from model output.
+ *
+ * The path is carried as a query parameter (not a path segment) because it is
+ * absolute and may contain any character a filesystem allows; `#page=N` is the
+ * fragment Chrome's and Firefox's built-in PDF viewers both honour, and it is
+ * inert for anything else.
  */
-export function buildSourceHref(agentId: string, path: string, page: number | null): string {
-  const base = `/api/agents/${encodeURIComponent(agentId)}/workspace-file?path=${encodeURIComponent(path)}`;
+export function buildSourceHref(
+  agentId: string,
+  citationPath: string,
+  page: number | null
+): string {
+  const absolutePath = fromCitationPath(citationPath);
+  const base = `/api/agents/${encodeURIComponent(agentId)}/workspace-file?path=${encodeURIComponent(absolutePath)}`;
   return page === null ? base : `${base}#page=${page}`;
 }
 
@@ -137,12 +163,15 @@ export function buildSourceHref(agentId: string, path: string, page: number | nu
 export const WORKSPACE_FILE_HREF = /^\/api\/agents\/[^/]+\/workspace-file\?path=([^#]*)(?:#(.*))?$/;
 
 /**
- * Recovers the document path from an href built by `buildSourceHref`, for use
- * as the viewer's title. Returns null for anything else, which is how the
- * renderer tells a citation from an ordinary link. Kept beside the builder so
- * the two cannot drift — a dialog whose accessible name silently came back
- * empty would be a real defect for a screen-reader user, and string surgery on
- * a url is exactly the kind of code that decays quietly.
+ * Recovers the CITATION path from an href built by `buildSourceHref`, for use
+ * as the viewer's title. Citation and not absolute: this value is what the
+ * reader sees above the document, and `/data/noack/…` there would put the
+ * container path straight back in front of them (#933). Returns null for
+ * anything else, which is how the renderer tells a citation from an ordinary
+ * link. Kept beside the builder so the two cannot drift — a dialog whose
+ * accessible name silently came back empty would be a real defect for a
+ * screen-reader user, and string surgery on a url is exactly the kind of code
+ * that decays quietly.
  */
 export function parseSourceHref(href: string): { path: string; page: number | null } | null {
   const match = WORKSPACE_FILE_HREF.exec(href);
@@ -153,7 +182,10 @@ export function parseSourceHref(href: string): { path: string; page: number | nu
 
   const pageMatch = /^page=(\d{1,5})$/.exec(fragment ?? "");
   try {
-    return { path: decodeURIComponent(encodedPath), page: pageMatch ? Number(pageMatch[1]) : null };
+    return {
+      path: toCitationPath(decodeURIComponent(encodedPath)),
+      page: pageMatch ? Number(pageMatch[1]) : null,
+    };
   } catch {
     // A malformed percent-escape must not take down the render of a whole message.
     return null;

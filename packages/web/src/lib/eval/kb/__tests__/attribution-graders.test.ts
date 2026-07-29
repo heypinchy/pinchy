@@ -179,6 +179,26 @@ describe("gradePathCitation", () => {
     expect(gradePathCitation(input)).toEqual<KbGraderResult>({ passed: true, tags: [], notes: [] });
   });
 
+  it("passes when the answer cites the data-root-relative path the tool actually showed it", () => {
+    // The two sides arrive in different forms and always have: `retrieved`
+    // comes from the audit row, which records the ABSOLUTE sourcePath because
+    // that is a document's identity, while the answer reproduces what
+    // `knowledge_search` printed — data-root-relative since #933. Comparing
+    // them raw would fail every correctly-cited answer, which is the worst
+    // possible grader bug: it makes the metric that guards citation integrity
+    // read zero precisely when citation integrity is fine.
+    const input: AttributionInput = {
+      answer: `X [1].
+
+**Sources:**
+
+- [1] handbook-2012/policy.md — p. 12`,
+      retrieved: [src(1, "/data/handbook-2012/policy.md")],
+    };
+
+    expect(gradePathCitation(input)).toEqual<KbGraderResult>({ passed: true, tags: [], notes: [] });
+  });
+
   it("does not choke on a hyphen inside the path itself when parsing the trailing page suffix", () => {
     // "/data/handbook-2012/policy.md" has a hyphen in the folder name; the
     // page-suffix parser must land on the LAST "— p. N" and not mistake the
