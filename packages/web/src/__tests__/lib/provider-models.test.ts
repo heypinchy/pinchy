@@ -91,6 +91,7 @@ import {
   extractModelDate,
   isRejectedVariant,
   selectDefaultModel,
+  PROVIDER_CATALOG_FETCH_TIMEOUT_MS,
 } from "@/lib/provider-models";
 import { getSetting } from "@/lib/settings";
 import { listProvidersForModelFetch } from "@/lib/openai-compatible-providers";
@@ -195,6 +196,43 @@ describe("fetchProviderModels", () => {
       { id: "anthropic/claude-sonnet-4-6", name: "Claude Sonnet 4.6" },
       { id: "anthropic/claude-haiku-4-5-20251001", name: "Claude Haiku 4.5" },
     ]);
+  });
+
+  it("bounds a hanging provider fetch instead of pinning the request", async () => {
+    // `/api/templates` awaits this on every first render after a cache miss, so
+    // an unbounded fetch is a page that never loads — the exact failure mode a
+    // self-hosted deployment behind a filtering proxy hits, where the provider
+    // host accepts the connection and then never answers. Bounded, we degrade
+    // to the offline catalog, which is what "offline-first" has to mean here.
+    vi.mocked(getSetting).mockImplementation(async (key: string) => {
+      if (key === "anthropic_api_key") return "sk-ant-test-key";
+      return null;
+    });
+
+    vi.useFakeTimers();
+    try {
+      vi.mocked(fetch).mockImplementation(
+        (_url: string | Request | URL, init?: RequestInit) =>
+          new Promise<Response>((_resolve, reject) => {
+            init?.signal?.addEventListener("abort", () =>
+              reject(new DOMException("The operation was aborted", "AbortError"))
+            );
+          })
+      );
+
+      const pending = fetchProviderModels();
+      await vi.advanceTimersByTimeAsync(PROVIDER_CATALOG_FETCH_TIMEOUT_MS + 100);
+      const result = await pending;
+
+      expect(result).toHaveLength(1);
+      expect(result[0].models).toEqual([
+        { id: "anthropic/claude-opus-4-7", name: "Claude Opus 4.7" },
+        { id: "anthropic/claude-sonnet-4-6", name: "Claude Sonnet 4.6" },
+        { id: "anthropic/claude-haiku-4-5-20251001", name: "Claude Haiku 4.5" },
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("handles multiple configured providers", async () => {
