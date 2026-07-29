@@ -263,6 +263,30 @@ One GitHub-Actions detail worth knowing before editing the workflow: **a `permis
 
 `CONTRIBUTOR` counts as **external** (it only means someone had a PR merged once); bot authors do not (automation files issues under an identity with no team association, and counting those would leave the sweep permanently red over reports no human is waiting on). Grace is measured in plain hours rather than business days — the weekday-only cron is what pays for that simplification, and the guard pins it, so a Friday-evening report is surfaced Monday morning instead of waking anyone on Sunday.
 
+## One Full Suite At A Time, And `test:related` For The Rest
+
+Several agent sessions share this machine, and the full vitest suite assumes it owns it: vitest sizes its worker pool from `availableParallelism()` regardless of how many other sessions are doing exactly the same thing. Measured here on 14 cores:
+
+|                      | processes | peak RSS | wall clock             |
+| -------------------- | --------- | -------- | ---------------------- |
+| one full `pnpm test` | 14–16     | ~4 GB    | 55s                    |
+| two at the same time | 54        | ~10 GB   | unfinished after 10min |
+
+That is not a factor of two. Two runs oversubscribe the cores threefold while each holds its own heaps, and the box thrashes. **Serialized, those same two runs cost about 110s.**
+
+Turning vitest's own knobs down was measured and does **not** help — do not reach for them again without new numbers:
+
+- `--maxWorkers=4` made both numbers **worse** (4982 MB, 204s). A vitest worker is reused across files and its heap grows monotonically (122 MB → 504 MB over one run), so fewer workers means more files per worker.
+- `pool: "threads"` turns jsdom tests red (`audit-log-table`).
+- Capping the per-fork heap (`--max-old-space-size=384`) buys ~15% for ~11% more wall clock.
+
+There is no meaningful saving _inside_ a run. The saving is in not overlapping runs, and in not doing a full run at all when you don't need one:
+
+- **`pnpm test` takes a machine-wide lock** (`scripts/with-test-lock.mjs`, decision logic and measurements in `scripts/lib/test-lock.mjs`). A second run queues instead of piling on. The lock **fails open** in every direction: an unreadable lock, a holder whose process died, a clock that jumped, or a wait beyond 20 minutes all end with the suite running. It also bypasses itself under `CI` (one job per runner) and under `PINCHY_TEST_LOCK_HELD` (so a suite that shells out to another test command cannot deadlock against its own parent). The worst thing it may do is make a run slow; it must never make one impossible.
+- **`pnpm test:related` needs no arguments.** It takes your own change set from git, translates it for the vitest root, and runs only the tests that import it — 127 files in 19s where the full suite is 717 in 55s. This is the inner loop. It takes no lock.
+
+`test:related` is **not** a verification gate. It cannot see a test that reaches your change through a mock, a string-keyed lookup, or a drift guard that reads the file from disk. Run the full suite before you push.
+
 ## Commands
 
 Development should use Docker Compose because the app depends on PostgreSQL, OpenClaw, and migrations:
@@ -305,6 +329,7 @@ Common host commands from the repository root:
 
 ```bash
 pnpm test
+pnpm test:related
 pnpm build
 pnpm test:scripts
 pnpm typecheck:plugins
