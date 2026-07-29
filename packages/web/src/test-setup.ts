@@ -84,8 +84,13 @@ if (typeof window !== "undefined") {
   // stub the loser of that race is an uncaught TypeError inside a frame
   // callback, i.e. a flake that no assertion can catch and that surfaces as a
   // teardown crash in whichever test file happened to be running (#916).
-  if (!HTMLElement.prototype.scrollTo) {
-    HTMLElement.prototype.scrollTo = vi.fn();
+  //
+  // On Element, not HTMLElement, because that is where the platform defines it
+  // — a stub one level down does not satisfy an `Element.prototype` check, which
+  // is why audit-log-table/settings-users/user-detail-sheet each hand-roll their
+  // own Element-level copies of the four shims above.
+  if (!Element.prototype.scrollTo) {
+    Element.prototype.scrollTo = vi.fn();
   }
 }
 

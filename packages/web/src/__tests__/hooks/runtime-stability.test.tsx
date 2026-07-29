@@ -234,7 +234,7 @@ describe("[spike] assistant-ui runtime stability across consumer remount", () =>
   // e.g. the full suite). That is a TypeError attributed to file teardown, not
   // an assertion failure, which is why it looked like a mystery flake.
   //
-  // The fix is the `HTMLElement.prototype.scrollTo` stub in src/test-setup.ts,
+  // The fix is the `Element.prototype.scrollTo` stub in src/test-setup.ts,
   // beside the scrollIntoView stub that exists for the same jsdom gap. Here we
   // force the losing ordering deterministically: run the queued frame WHILE
   // mounted and require it to complete.
@@ -245,8 +245,9 @@ describe("[spike] assistant-ui runtime stability across consumer remount", () =>
     };
 
     // Throws outright if the environment has no scrollTo to spy on — which is
-    // exactly the missing API the flake trips over.
-    const scrollTo = vi.spyOn(HTMLElement.prototype, "scrollTo");
+    // exactly the missing API the flake trips over. Spy where the stub lives,
+    // so this asserts the real lookup rather than an own property one level down.
+    const scrollTo = vi.spyOn(Element.prototype, "scrollTo");
 
     try {
       render(<Harness store={store} mounted={true} />);
