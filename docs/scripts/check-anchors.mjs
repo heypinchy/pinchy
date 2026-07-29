@@ -121,11 +121,14 @@ function resolve(fromRoute, path) {
   const baseDir = fromRoute.endsWith("/")
     ? fromRoute
     : `${posix.dirname(fromRoute)}/`;
-  const absolute = path.startsWith("/")
-    ? path
-    : posix.resolve(baseDir, path) + (path.endsWith("/") ? "/" : "");
+  // `posix.resolve` handles an absolute `path` too, and normalizes `..` in it —
+  // which a special case for absolute paths would skip, turning a link that a
+  // browser follows fine into a red build.
+  const absolute = posix.resolve(baseDir, path);
   // Extensionless routes are directories; Astro serves them with or without the
-  // trailing slash, so normalize to the form dist/ produces.
+  // trailing slash, so normalize to the form dist/ produces. A route whose last
+  // segment does contain a dot (/upgrade-notes/v0.5.0/ is one) is caught by the
+  // caller's trailing-slash fallback instead.
   return posix.basename(absolute).includes(".")
     ? absolute
     : ensureTrailingSlash(absolute);
@@ -173,10 +176,31 @@ function walk(dir, base = dir) {
   return { html, other };
 }
 
+/**
+ * @param {string} distDir a built site's output directory
+ * @returns {{ pages: Map<string, { ids: Set<string>, links: string[] }>, assets: Set<string> }}
+ */
+export function collectSite(distDir) {
+  const entries = walk(distDir);
+
+  const pages = new Map();
+  for (const file of entries.html) {
+    const html = readFileSync(join(distDir, file), "utf8");
+    pages.set(routeForHtmlFile(file), {
+      ids: collectAnchorIds(html),
+      links: collectLinkHrefs(html),
+    });
+  }
+  return {
+    pages,
+    assets: new Set(entries.other.map((file) => `/${file}`)),
+  };
+}
+
 function main() {
-  let entries;
+  let site;
   try {
-    entries = walk(DIST_DIR);
+    site = collectSite(DIST_DIR);
   } catch {
     console.error(
       "❌ docs/dist/ not found — run `pnpm -C docs build` before `check:anchors`.",
@@ -184,15 +208,18 @@ function main() {
     process.exit(1);
   }
 
-  const pages = new Map();
-  for (const file of entries.html) {
-    const html = readFileSync(join(DIST_DIR, file), "utf8");
-    pages.set(routeForHtmlFile(file), {
-      ids: collectAnchorIds(html),
-      links: collectLinkHrefs(html),
-    });
+  const { pages, assets } = site;
+
+  // A gate reports on what it looked at, not on what it should have. Without
+  // this, a changed `outDir` or a build that emitted nothing prints
+  // "✅ 0 pages checked" and passes — green against no evidence at all.
+  if (pages.size === 0) {
+    console.error(
+      "❌ docs/dist/ contains no HTML pages — nothing was checked.\n" +
+        "   Run `pnpm -C docs build` first, or check astro's `outDir`.",
+    );
+    process.exit(1);
   }
-  const assets = new Set(entries.other.map((file) => `/${file}`));
 
   const problems = findBrokenLinks(pages, assets);
 

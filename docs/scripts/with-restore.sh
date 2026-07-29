@@ -17,6 +17,14 @@ set -u
 "$@"
 status=$?
 
-sh "$(dirname "$0")/restore-placeholders.sh"
+if ! sh "$(dirname "$0")/restore-placeholders.sh"; then
+  # A restore that failed leaves vX.Y.Z in the source tree — the exact state
+  # this wrapper exists to prevent. Never let it hide behind a green build.
+  echo "[docs] restore-placeholders.sh FAILED — the source tree may still" \
+    "carry an injected version." >&2
+  if [ "$status" -eq 0 ]; then
+    status=1
+  fi
+fi
 
 exit $status

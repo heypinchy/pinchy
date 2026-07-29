@@ -165,6 +165,30 @@ test("with-restore.sh restores placeholders after a FAILING command", () => {
   rmSync(root, { recursive: true, force: true });
 });
 
+test("with-restore.sh fails when the restore itself fails", () => {
+  // The whole point of the wrapper is that the source tree comes back clean.
+  // A restore that failed and was reported as success is the original bug with
+  // an extra step: vX.Y.Z stays in six committed files, and nothing says so.
+  const { root, srcDir } = setupDocsLikeTree();
+  const scriptsDir = copyScripts(path.join(root, "docs"));
+  writeFileSync(
+    path.join(scriptsDir, "restore-placeholders.sh"),
+    "#!/bin/sh\nexit 3\n",
+    { mode: 0o755 },
+  );
+
+  writeFileSync(
+    path.join(srcDir, "installation.mdx"),
+    "Pinchy %%PINCHY_VERSION%% is out.\n",
+  );
+
+  const status = runWithRestore(scriptsDir, "v0.8.0", ["true"]);
+
+  assert.notEqual(status, 0, "a failed restore must not report success");
+
+  rmSync(root, { recursive: true, force: true });
+});
+
 test("with-restore.sh restores placeholders after a SUCCEEDING command", () => {
   const { root, srcDir } = setupDocsLikeTree();
   const scriptsDir = copyScripts(path.join(root, "docs"));

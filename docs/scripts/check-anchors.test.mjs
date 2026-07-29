@@ -1,8 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   collectAnchorIds,
   collectLinkHrefs,
+  collectSite,
   findBrokenLinks,
   routeForHtmlFile,
 } from "./check-anchors.mjs";
@@ -159,6 +163,29 @@ test("resolves a relative link from a page that is a file, not a directory", () 
   assert.deepEqual(findBrokenLinks(pages, new Set()), []);
 });
 
+test("normalizes '..' segments in an absolute link", () => {
+  // Rare in hand-written prose, common in generated markup. Left unnormalized
+  // it is a false POSITIVE — the loud kind, which reds the build over a link
+  // that works fine in a browser.
+  const pages = pagesOf({
+    "/guides/hardening/": { ids: ["tls"] },
+    "/a/": { links: ["/guides/vps-deployment/../hardening/#tls"] },
+  });
+  assert.deepEqual(findBrokenLinks(pages, new Set()), []);
+});
+
+test("resolves a route whose last segment contains a dot", () => {
+  // /upgrade-notes/v0.5.0/ is a real route: a DIRECTORY whose name looks like a
+  // filename. Both link styles must resolve to it.
+  const pages = pagesOf({
+    "/upgrade-notes/v0.5.0/": { ids: ["breaking"] },
+    "/a/": {
+      links: ["/upgrade-notes/v0.5.0/#breaking", "/upgrade-notes/v0.5.0"],
+    },
+  });
+  assert.deepEqual(findBrokenLinks(pages, new Set()), []);
+});
+
 test("strips a query string before resolving", () => {
   const pages = pagesOf({
     "/": { ids: ["x"] },
@@ -187,4 +214,46 @@ test("reports each distinct broken link once per page", () => {
     problems.map((p) => p.route),
     ["/a/", "/b/"],
   );
+});
+
+// ── Reading a dist/ tree ──────────────────────────────────────────────────
+
+function makeDist(files) {
+  const dir = mkdtempSync(join(tmpdir(), "check-anchors-"));
+  for (const [rel, content] of Object.entries(files)) {
+    const full = join(dir, rel);
+    mkdirSync(join(full, ".."), { recursive: true });
+    writeFileSync(full, content);
+  }
+  return dir;
+}
+
+test("collectSite maps a dist tree to routes, ids and assets", () => {
+  const dist = makeDist({
+    "index.html": '<a href="/guides/hardening/#tls">TLS</a>',
+    "guides/hardening/index.html": '<h2 id="tls">TLS</h2>',
+    "cloud-init.yml": "#cloud-config\n",
+  });
+  try {
+    const { pages, assets } = collectSite(dist);
+    assert.deepEqual([...pages.keys()].sort(), ["/", "/guides/hardening/"]);
+    assert.deepEqual(pages.get("/").links, ["/guides/hardening/#tls"]);
+    assert.ok(pages.get("/guides/hardening/").ids.has("tls"));
+    assert.deepEqual([...assets], ["/cloud-init.yml"]);
+    assert.deepEqual(findBrokenLinks(pages, assets), []);
+  } finally {
+    rmSync(dist, { recursive: true, force: true });
+  }
+});
+
+test("collectSite reports zero pages for a dist that emitted no HTML", () => {
+  // A gate reports on what it looks at, not on what it should look at: without
+  // a caller-side check on this count, a wrong outDir or a build that emitted
+  // nothing prints "✅ 0 pages checked" and exits green.
+  const dist = makeDist({ "sitemap-index.xml": "<urlset/>" });
+  try {
+    assert.equal(collectSite(dist).pages.size, 0);
+  } finally {
+    rmSync(dist, { recursive: true, force: true });
+  }
 });
