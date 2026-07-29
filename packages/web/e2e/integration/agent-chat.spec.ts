@@ -704,3 +704,90 @@ test.describe.serial("Plugin behavior — pinchy-files generate_file", () => {
     expect(downloadOk).toBe(true);
   });
 });
+
+// ── Plugin behavior: pinchy-image (#333) ────────────────────────────────────
+// DISPATCH COVERAGE (only). Proves the plugin loaded and image_crop
+// registered end to end, satisfying plugin-tool-coverage.test.ts's
+// running-probe requirement (post-#834 a skipped test no longer counts).
+//
+// Fresh SHARED custom agent, same reasoning as the pinchy-files
+// generate_file block: PATCH allowedTools on Smithers 400s ("Cannot
+// change permissions for personal agents", #427). image_crop is granted
+// directly.
+//
+// Not asserting outcome=success on purpose: the dispatch here fires with
+// a source filename that isn't uploaded first, so pinchy-image's
+// readSourceImage rejects with a `File not found` error content. The
+// pinchy-audit `after_tool_call` hook still writes the audit row for the
+// invocation, which is what this probe (and the coverage guard) rely on.
+// A round-trip probe that seeds a real PNG and asserts outcome=success
+// is a nice-to-have for a follow-up (#333 tracks pinchy-image itself,
+// see AGENTS.md § Tool dispatch coverage).
+test.describe.serial("Plugin behavior — pinchy-image", () => {
+  let agentId: string;
+
+  test.beforeAll(async ({ browser }) => {
+    test.setTimeout(300_000);
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    try {
+      await login(page);
+      const createRes = await page.request.post("/api/agents", {
+        data: { name: `ImageDispatch-${Date.now()}`, templateId: "custom" },
+      });
+      expect(createRes.status(), await createRes.text()).toBe(201);
+      agentId = ((await createRes.json()) as { id: string }).id;
+
+      const patchRes = await page.request.patch(`/api/agents/${agentId}`, {
+        data: { allowedTools: ["image_crop"] },
+      });
+      expect(patchRes.status(), await patchRes.text()).toBe(200);
+
+      await waitForOpenClawStable(async () => {
+        const r = await page.request.get("/api/health/openclaw");
+        return { ok: r.ok(), json: () => r.json() };
+      });
+      await waitForAgentDispatchable(
+        async (id) => {
+          const r = await page.request.get(`/api/health/openclaw?agentId=${id}`);
+          return { ok: r.ok(), json: () => r.json() };
+        },
+        agentId,
+        { deadlineMs: 120_000 }
+      );
+    } finally {
+      await context.close();
+    }
+  });
+
+  test.afterAll(async ({ browser }) => {
+    if (!agentId) return;
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    try {
+      await login(page);
+      await page.request.delete(`/api/agents/${agentId}`);
+    } finally {
+      await context.close();
+    }
+  });
+
+  test("image_crop dispatches via fake-LLM and writes audit entry", async ({ page }, testInfo) => {
+    testInfo.setTimeout(180_000);
+    await login(page);
+    await page.goto(`/chat/${agentId}`);
+    await expect(page).toHaveURL(`/chat/${agentId}`, { timeout: 10_000 });
+
+    const input = page.getByPlaceholder(/send a message/i);
+    await expect(input).toBeVisible({ timeout: 10_000 });
+    await input.fill(`${FAKE_OLLAMA_IMAGE_CROP_TOOL_TRIGGER}: crop the receipt`);
+    await input.press("Enter");
+
+    const found = await pollAuditForTool(page, {
+      toolName: "image_crop",
+      agentId,
+      deadlineMs: 160_000,
+    });
+    expect(found).toBe(true);
+  });
+});
