@@ -742,7 +742,17 @@ describe("ProviderKeyForm", () => {
 
         fireEvent.click(screen.getByRole("button", { name: /anthropic/i }));
         fireEvent.click(screen.getByRole("button", { name: /remove key/i }));
-        await screen.findByRole("alertdialog");
+        const dialog = await screen.findByRole("alertdialog");
+        // The dialog opens before its preflight answers, and the toast's
+        // migration clause needs that answer: the count comes from the DELETE
+        // response, but the target label comes from the preview. Clicking
+        // Remove the moment the dialog appears therefore races the preflight,
+        // and a loaded CI runner loses it — the toast came out as the bare
+        // "Anthropic removed." (run 30459145209). Wait for the state the
+        // assertion depends on, exactly like the late-preflight test above.
+        await waitFor(() => {
+          expect(dialog).toHaveTextContent(/3 agents using its models will be moved to OpenAI/);
+        });
         fireEvent.click(screen.getByRole("button", { name: /^remove$/i }));
 
         await waitFor(() => {
@@ -765,7 +775,15 @@ describe("ProviderKeyForm", () => {
 
         fireEvent.click(screen.getByRole("button", { name: /anthropic/i }));
         fireEvent.click(screen.getByRole("button", { name: /remove key/i }));
-        await screen.findByRole("alertdialog");
+        const dialog = await screen.findByRole("alertdialog");
+        // Same race, opposite direction: an empty preview renders nothing,
+        // which looks exactly like a preview that has not arrived — so without
+        // this wait the test would also pass if the preflight never answered,
+        // i.e. it would not actually cover the no-agents path it names. The
+        // placeholder sentence disappearing is what marks the preview settled.
+        await waitFor(() => {
+          expect(dialog).not.toHaveTextContent(/will be switched to another configured provider/);
+        });
         fireEvent.click(screen.getByRole("button", { name: /^remove$/i }));
 
         await waitFor(() => {
