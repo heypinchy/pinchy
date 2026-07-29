@@ -1555,10 +1555,17 @@ describe("useWsRuntime", () => {
     // parked the chat on the loading indicator forever — no error, no retry,
     // no way out but a manual reload. These tests pin the deadline, the
     // self-heal, and the escape hatch.
+    //
+    // The literal is deliberately NOT imported from the hook: it pins the
+    // agreed contract (20s, sized off the server's own worst case) instead of
+    // tracking whatever the implementation currently says. A change to
+    // HISTORY_TIMEOUT_MS is supposed to fail here and be argued for.
     const DEADLINE_MS = 20_000;
 
-    function openWithoutHistory() {
-      const rendered = renderHook(() => useWsRuntime("agent-1"));
+    function openWithoutHistory(agentId = "agent-1") {
+      const rendered = renderHook(({ id }) => useWsRuntime(id), {
+        initialProps: { id: agentId },
+      });
       const ws = wsInstances[0];
       act(() => {
         ws.simulateOpen();
@@ -1732,6 +1739,55 @@ describe("useWsRuntime", () => {
 
       expect(result.current.historyTimedOut).toBe(false);
       expect(ws.close).not.toHaveBeenCalled();
+    });
+
+    it("does not let one chat's pending deadline fire into the next", () => {
+      // Switch away while the first chat's deadline is STILL RUNNING, and let
+      // the new chat's socket never open — so it never sends a request of its
+      // own and never arms a deadline of its own. Anything that fires now is
+      // the abandoned timer, and it would pin a stall on a chat that has not
+      // yet asked the server anything (whose honest state is "connecting").
+      const { result, rerender } = openWithoutHistory();
+      act(() => {
+        vi.advanceTimersByTime(DEADLINE_MS / 4);
+      });
+      expect(result.current.historyTimedOut).toBe(false);
+
+      act(() => {
+        rerender({ id: "agent-2" });
+      });
+      act(() => {
+        vi.advanceTimersByTime(DEADLINE_MS * 2);
+      });
+
+      expect(result.current.historyTimedOut).toBe(false);
+    });
+
+    it("does not carry a stall into the next chat", () => {
+      const { result, rerender } = openWithoutHistory();
+      act(() => {
+        vi.advanceTimersByTime(DEADLINE_MS);
+      });
+      expect(result.current.historyTimedOut).toBe(true);
+
+      act(() => {
+        rerender({ id: "agent-2" });
+      });
+
+      expect(result.current.historyTimedOut).toBe(false);
+    });
+
+    it("disarms the deadline on unmount", () => {
+      // Asserted on the timer itself rather than on an observable side effect:
+      // an unmounted hook has no socket and no connect() left to call, so a
+      // leaked watchdog produces no visible damage — it just holds the whole
+      // closure alive for another 20 seconds per chat the user opens.
+      const { unmount } = openWithoutHistory();
+      expect(vi.getTimerCount()).toBeGreaterThan(0);
+
+      unmount();
+
+      expect(vi.getTimerCount()).toBe(0);
     });
 
     it("does not fire while the page is backgrounded", () => {

@@ -5,16 +5,15 @@ description: How Pinchy tracks the health of the agent connection and what each 
 
 Pinchy tracks the health of the agent connection in real time so you always know what's happening — and what to do if something goes wrong.
 
-## The states
+## The five states
 
-| State            | Indicator     | What it means                                         |
-| ---------------- | ------------- | ----------------------------------------------------- |
-| Starting         | Yellow        | Pinchy is loading your conversation history.          |
-| Ready            | Green         | The agent is available and waiting for your message.  |
-| Responding       | Green         | The agent is generating a reply. You can still type.  |
-| Unavailable      | Red or Yellow | The agent can't be reached right now.                 |
-| Chat didn't load | Red           | Your conversation history didn't arrive in time.      |
-| Image too large  | Red           | An attachment you tried to send exceeds the size cap. |
+| State           | Indicator     | What it means                                         |
+| --------------- | ------------- | ----------------------------------------------------- |
+| Starting        | Yellow        | Pinchy is loading your conversation history.          |
+| Ready           | Green         | The agent is available and waiting for your message.  |
+| Responding      | Green         | The agent is generating a reply. You can still type.  |
+| Unavailable     | Red or Yellow | The agent can't be reached right now.                 |
+| Image too large | Red           | An attachment you tried to send exceeds the size cap. |
 
 When an attachment is rejected, the indicator reads **Image too large** and a banner asks you to send a smaller file before you can keep chatting.
 
@@ -25,7 +24,7 @@ When the state is Unavailable, the indicator and status message explain why:
 - **Disconnected** (red): The connection dropped. Pinchy is trying to reconnect automatically.
 - **Configuring** (yellow): You recently changed agent settings. Pinchy is applying the changes and will be ready in a moment.
 - **Exhausted** (red): Reconnection attempts failed. You need to reload the page to resume.
-- **Chat didn't load** (red): Your conversation history didn't arrive within 20 seconds. See below.
+- **Chat didn't load** (red): Your conversation history didn't arrive within 20 seconds of opening the chat. See below.
 
 ## When the conversation doesn't load
 
