@@ -161,7 +161,11 @@ export async function migrateAgentsOffDeletedProvider(opts: {
  * Unlike the two DELETE routes, this runs while the provider still exists, so
  * it excludes it from its own candidate set by NAME afterwards — which covers
  * both flavours, since `RemainingCandidate.name` is the built-in name for
- * built-ins and the slug for custom instances.
+ * built-ins and the slug for custom instances. That one exclusion can stand in
+ * for the DELETEs' two only because the namespaces are disjoint:
+ * `RESERVED_PROVIDER_SLUGS` (openai-compatible-slug.ts) keeps a custom slug
+ * from ever equalling a built-in name, so no candidate is dropped by accident.
+ * Its "reserves every built-in provider name" test guards that.
  *
  * With no remaining candidate the migration moves nothing, so neither does the
  * preview: `affectedAgents` stays empty rather than promising a move that would

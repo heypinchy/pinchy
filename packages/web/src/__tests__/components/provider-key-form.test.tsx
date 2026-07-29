@@ -1,6 +1,6 @@
 // packages/web/src/__tests__/components/provider-key-form.test.tsx
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
 import "@testing-library/jest-dom";
 import { ProviderKeyForm } from "@/components/provider-key-form";
 import { toast } from "sonner";
@@ -46,12 +46,10 @@ function previewResponse(overrides: Partial<DeletionPreviewResponse> = {}): Resp
  */
 function deleteFlowResponse(
   url: string,
-  method: string,
   deleteBody: unknown,
   previewOverrides: Partial<DeletionPreviewResponse> = {}
 ): Response {
   if (url.includes("deletion-preview")) return previewResponse(previewOverrides);
-  void method;
   return {
     ok: true,
     status: 200,
@@ -527,8 +525,8 @@ describe("ProviderKeyForm", () => {
     });
 
     it("should call DELETE endpoint and onSuccess after confirming removal", async () => {
-      vi.mocked(global.fetch).mockImplementation(async (input, init) =>
-        deleteFlowResponse(String(input), init?.method ?? "GET", { success: true })
+      vi.mocked(global.fetch).mockImplementation(async (input) =>
+        deleteFlowResponse(String(input), { success: true })
       );
 
       render(<ProviderKeyForm onSuccess={onSuccess} configuredProviders={configuredProviders} />);
@@ -674,12 +672,70 @@ describe("ProviderKeyForm", () => {
         expect(dialog).not.toHaveTextContent(/will be moved to/i);
       });
 
+      // The preflight exists so the dialog never names a target the DELETE
+      // won't use. A slow response is the second way to break that promise:
+      // it belongs to a provider the admin has since moved on from, and
+      // committing it would state one provider's consequence in another
+      // provider's dialog — the same confidently-wrong failure, arriving over
+      // the network instead of through a duplicated ordering policy.
+      it("ignores a preflight that lands after another provider's dialog opened", async () => {
+        const twoConfigured = {
+          anthropic: { configured: true, hint: "xY9z" },
+          openai: { configured: true, hint: "ab12" },
+        };
+        let landStalePreview!: (res: Response) => void;
+        const stalePreview = new Promise<Response>((resolve) => {
+          landStalePreview = resolve;
+        });
+        vi.mocked(global.fetch).mockImplementation(async (input) => {
+          const url = String(input);
+          if (url.includes("deletion-preview?provider=anthropic")) return stalePreview;
+          if (url.includes("deletion-preview?provider=openai")) {
+            return previewResponse({
+              targetProvider: "google",
+              targetProviderLabel: "Google",
+              targetModel: "google/gemini-3-pro",
+              affectedAgents: [{ id: "a1", name: "Hermes" }],
+            });
+          }
+          return { ok: true, json: async () => ({}) } as Response;
+        });
+
+        render(<ProviderKeyForm onSuccess={onSuccess} configuredProviders={twoConfigured} />);
+
+        // Open Anthropic's dialog — its preflight stays in flight — then leave.
+        fireEvent.click(screen.getByRole("button", { name: /anthropic/i }));
+        fireEvent.click(screen.getByRole("button", { name: /remove key/i }));
+        await screen.findByRole("alertdialog");
+        fireEvent.click(screen.getByRole("button", { name: /cancel/i }));
+
+        // Now OpenAI's, whose preflight answers immediately.
+        fireEvent.click(screen.getByRole("button", { name: /^openai$/i }));
+        fireEvent.click(screen.getByRole("button", { name: /remove key/i }));
+        const dialog = await screen.findByRole("alertdialog");
+        await waitFor(() => {
+          expect(dialog).toHaveTextContent(/1 agent using its models will be moved to Google/);
+        });
+
+        // Anthropic's answer arrives late, naming a different target.
+        await act(async () => {
+          landStalePreview(
+            previewResponse({
+              targetProvider: "anthropic",
+              targetProviderLabel: "Anthropic",
+              targetModel: "anthropic/claude-sonnet-4-6",
+              affectedAgents: [{ id: "a9", name: "Ghost" }],
+            })
+          );
+        });
+
+        expect(dialog).toHaveTextContent(/moved to Google \(gemini-3-pro\)/);
+        expect(dialog).not.toHaveTextContent(/Anthropic/);
+      });
+
       it("confirms in the success toast what the removal actually did", async () => {
-        vi.mocked(global.fetch).mockImplementation(async (input, init) =>
-          deleteFlowResponse(String(input), init?.method ?? "GET", {
-            success: true,
-            migratedAgents: 3,
-          })
+        vi.mocked(global.fetch).mockImplementation(async (input) =>
+          deleteFlowResponse(String(input), { success: true, migratedAgents: 3 })
         );
 
         render(<ProviderKeyForm onSuccess={onSuccess} configuredProviders={configuredProviders} />);
@@ -697,10 +753,9 @@ describe("ProviderKeyForm", () => {
       });
 
       it("keeps the toast to the removal alone when no agent moved", async () => {
-        vi.mocked(global.fetch).mockImplementation(async (input, init) =>
+        vi.mocked(global.fetch).mockImplementation(async (input) =>
           deleteFlowResponse(
             String(input),
-            init?.method ?? "GET",
             { success: true, migratedAgents: 0 },
             { affectedAgents: [] }
           )

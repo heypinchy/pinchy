@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -419,7 +419,16 @@ export function ProviderKeyForm({
   // #949 — load (or clear) the removal preflight as a confirmation dialog opens
   // or closes. Read-only, and deliberately non-blocking: on failure the dialog
   // keeps the generic sentence rather than blocking a removal on a preview.
+  //
+  // Every open/close bumps the request id, and only the newest request may
+  // commit. A response that outlived its dialog belongs to a provider the admin
+  // has since left, and showing it would state one provider's consequence in
+  // another provider's dialog — the same confidently-wrong outcome this whole
+  // preflight exists to prevent, arriving over the network rather than through
+  // a second copy of the ordering policy.
+  const previewRequestId = useRef(0);
   const handleRemovalDialogOpenChange = useCallback((open: boolean, nameOrSlug: string) => {
+    const requestId = ++previewRequestId.current;
     setDeletionPreview(null);
     if (!open) return;
     void (async () => {
@@ -427,6 +436,7 @@ export function ProviderKeyForm({
         const data = await apiGet<DeletionPreviewResponse>(
           `/api/settings/providers/deletion-preview?provider=${encodeURIComponent(nameOrSlug)}`
         );
+        if (previewRequestId.current !== requestId) return;
         // Only a well-formed preview may replace the generic sentence — a
         // partial body must not make the dialog state a wrong consequence.
         if (Array.isArray(data?.affectedAgents)) setDeletionPreview(data);
