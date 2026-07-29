@@ -71,6 +71,19 @@ describe("buildGitHubIssueUrl", () => {
     const parsed = new URL(url);
     expect(parsed.searchParams.get("title")).toContain("key=abc&status=error#hash");
   });
+
+  // #849 shipped with no labels at all, which is how it sat unanswered for a
+  // week: it never appeared in a `triage` filter. The deeplink is the only
+  // report path born from a real in-app failure, so it must arrive labelled
+  // exactly like a bug_report.yml submission.
+  it("should label the issue for bug triage", () => {
+    const url = buildGitHubIssueUrl({
+      error: "Setup failed",
+      page: "/setup",
+    });
+    const params = new URLSearchParams(url.split("?")[1]);
+    expect(params.get("labels")).toBe("bug,triage");
+  });
 });
 
 describe("buildBugReportUrl", () => {
