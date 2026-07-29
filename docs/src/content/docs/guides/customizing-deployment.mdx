@@ -80,7 +80,7 @@ services:
       - /srv/docs/hr:/data/hr:ro
 ```
 
-The `- pinchy-data:/data` line re-declares that mount without the base file's `:ro`, which Docker needs before it can create a mount point underneath it. [Mount Data Directories](/guides/mount-data-directories/) covers the details, including how the directories show up in the agent permissions picker.
+The `- pinchy-data:/data` line re-declares that mount without the base file's `:ro`, which Docker needs before it can create a mount point underneath it — at the cost of the read-only protection that line carried. [Mount Data Directories](/guides/mount-data-directories/) covers the details and the trade-off, including how the directories show up in the agent permissions picker.
 
 ## What's not supported
 

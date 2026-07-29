@@ -133,8 +133,9 @@ curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/%%PINCHY_VERSION%%
 docker compose up -d
 ```
 
-Re-apply any custom `volumes:` mounts afterwards (or keep them in a
-`docker-compose.override.yml` so upgrades stay hands-off).
+Re-apply any custom `volumes:` mounts afterwards — or better, [move them into a
+`docker-compose.override.yml`](/guides/mount-data-directories/#moving-mounts-out-of-docker-composeyml)
+so no upgrade can overwrite them again.
 
 </Aside>
 

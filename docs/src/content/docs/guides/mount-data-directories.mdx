@@ -31,7 +31,7 @@ services:
 
   pinchy:
     volumes:
-      # Keep this line first — see the note below.
+      # Required — see the note below.
       - pinchy-data:/data
       - /path/on/host/hr-policies:/data/hr-policies:ro
       - /path/on/host/engineering-docs:/data/engineering-docs:ro
@@ -55,6 +55,14 @@ docker compose up -d
   Re-declaring the same mount without `:ro` makes `/data` writable and the
   nested mounts work. Your own directories stay read-only either way, because
   each one carries its own `:ro`.
+
+What you trade away is one layer of defence in depth: the `pinchy-data` volume
+itself is no longer read-only from the web container. Nothing in Pinchy writes
+to it — the agent runtime already mounts it writable, and user uploads go to a
+different store — but a compromised web tier could. If that trade isn't one
+you want to make, mount your directories on `openclaw` only; agents can still
+read them, you just can't index them into a knowledge base.
+
 </Aside>
 
 ## Why both services

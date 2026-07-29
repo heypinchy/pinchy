@@ -195,7 +195,7 @@ All permission changes are logged in the [audit trail](/concepts/audit-trail/). 
 
 ## The `/data/` convention
 
-All agent-accessible files live under `/data/` inside the Pinchy container. This is mounted as a Docker volume, and you can bind-mount host directories into subdirectories of `/data/`.
+All agent-accessible files live under `/data/`, at the same path in both Pinchy containers. A named Docker volume is mounted there, and you can bind-mount host directories into subdirectories of `/data/` from a `docker-compose.override.yml`.
 
 For example, if you mount your company's HR policies at `/data/hr-policies`, an agent configured to access that directory can read those documents — and nothing else.
 
