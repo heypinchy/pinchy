@@ -428,6 +428,20 @@
       "when": 1785323913327,
       "tag": "0060_gigantic_texas_twister",
       "breakpoints": true
+    },
+    {
+      "idx": 61,
+      "version": "7",
+      "when": 1785348706074,
+      "tag": "0061_kb_chunk_locator",
+      "breakpoints": true
+    },
+    {
+      "idx": 62,
+      "version": "7",
+      "when": 1785348713884,
+      "tag": "0062_kb_chunk_locator_drop_page",
+      "breakpoints": true
     }
   ]
 }

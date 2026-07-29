@@ -1,5 +1,5 @@
 /**
- * Migration-against-populated-data test for 0060_kb_chunk_locator (#933), in
+ * Migration-against-populated-data test for 0061_kb_chunk_locator (#933), in
  * the spirit AGENTS.md § "Test Migrations Against Pre-Existing Data" asks for:
  * every kb_chunks row that exists BEFORE this migration was written by code
  * that stored a bare `page` integer, so a fresh-DB run proves nothing. The
@@ -7,8 +7,8 @@
  * new code — and getting it wrong silently blanks the anchor on every citation
  * in an existing corpus while the whole suite stays green.
  *
- * Phase 1 migrates a throwaway DB to the pre-locator state (journal idx < 60,
- * i.e. before 0060's ADD + backfill and 0061's DROP),
+ * Phase 1 migrates a throwaway DB to the pre-locator state (journal idx < 61,
+ * i.e. before 0061's ADD + backfill and 0062's DROP),
  * phase 2 seeds chunks the way the OLD ingest wrote them (`page` integer, NULL
  * included), phase 3 migrates to HEAD and asserts every page became the
  * equivalent page locator — and that a NULL page did NOT become a fabricated
@@ -33,9 +33,9 @@ import { formatLocator, type ChunkLocator } from "@/lib/knowledge/locator";
 
 // vitest runs with cwd = packages/web; the real migrations live in ./drizzle.
 const REAL_MIGRATIONS = join(process.cwd(), "drizzle");
-// The ADD + backfill (0060) and the DROP (0061) are separate migrations, so
+// The ADD + backfill (0061) and the DROP (0062) are separate migrations, so
 // "before the change" means before the first of them.
-const LOCATOR_IDX = 60;
+const LOCATOR_IDX = 61;
 
 // Per-process DB name so concurrent runs can't collide on the throwaway DB.
 const DB_NAME = `pinchy_kb_chunk_locator_test_${process.pid}`;
@@ -73,7 +73,7 @@ function withDbName(url: string, name: string): string {
   return u.toString();
 }
 
-describe("0060 kb chunk locator (populated pre-#933 data)", () => {
+describe("0061 kb chunk locator (populated pre-#933 data)", () => {
   const baseUrl =
     process.env.DATABASE_URL ??
     process.env.VITEST_INTEGRATION_DB_URL ??
@@ -139,7 +139,7 @@ describe("0060 kb chunk locator (populated pre-#933 data)", () => {
         `;
       }
 
-      // Phase 3 — upgrade to HEAD (applies 0060).
+      // Phase 3 — upgrade to HEAD (applies 0061 + 0062).
       await migrate(drizzle(client), { migrationsFolder: REAL_MIGRATIONS });
 
       const rows = await client<{ chunk_text: string; locator: ChunkLocator | null }[]>`
