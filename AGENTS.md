@@ -198,9 +198,9 @@ The drift guard is `scripts/lib/precommit-tooling.test.mjs` (pure logic in `prec
 
 The `packages/web/src/**/*.{ts,tsx}` eslint rule _is_ wrapped, correctly: its binary lives in that package, and eslint genuinely cannot run from an uninstalled worktree anyway (its flat config resolves plugins from `packages/web/node_modules`). Unwrapping it would move the failure, not remove it. But a scoped rule runs only for the files it matches, so blocking on it up front would reject a docs commit over a binary it never invokes — hence the split: the preflight blocks only on what runs on **every** commit, and `--explain` runs **after** a lint-staged failure to name a missing per-package binary as `pnpm install` rather than leaving it to read as a lint error.
 
-## One Node Version, Stated In Three Places That Must Agree
+## One Node Version, Stated In Four Kinds Of Place That Must Agree
 
-Node is pinned in `.nvmrc` (`22`) and `engines.node` (`>=22 <23`), and CI's `node-version:` must name the same major. `scripts/lib/node-version-pin.test.mjs` (pure logic in `node-version-pin.mjs`, run by `pnpm test:scripts`) fails if the three drift apart.
+Node is pinned in `.nvmrc` (`22`) and `engines.node` (`>=22 <23`); CI's `node-version:` and every Dockerfile's `FROM …node:<major>` must name the same major. `scripts/lib/node-version-pin.test.mjs` (pure logic in `node-version-pin.mjs`, run by `pnpm test:scripts`) fails if any of them drifts.
 
 Until 2026-07 only CI said a version. A local Node could be anything, and nothing anywhere mentioned it — until a **native** module noticed, which is where this gets expensive. On Node v25.2.1 against a `better-sqlite3` built for Node 22, every `pinchy_read PDF integration` test failed like this:
 
@@ -212,11 +212,16 @@ requires NODE_MODULE_VERSION 141.' to contain '<document>'
 
 Read the shape, not just the text: `pinchy-files` returns the module loader's error as the tool's **result** rather than throwing, so an environment fault arrives as an ordinary assertion failure **on a product assertion**. Nothing says "rebuild your native modules". The honest reading is "the PDF path is broken", and the hours go into code that is fine (pinchy#947).
 
-Three rules keep the pin honest:
+**The Dockerfiles are the place it is tempting to forget and the worst one to get wrong.** `better-sqlite3` is compiled _inside_ those images, so an image on a different major than the pin reproduces the mismatch above in production rather than on a laptop — and the laptop at least gets a stack trace. Eleven Dockerfiles name a node image (runtime, dev, and every E2E mock), which is exactly the count that makes hand-checking them unreliable.
 
-- **`.nvmrc` holds a version, never an alias.** `lts/*` resolves to a different major as the calendar moves and per machine — that is the drift, not a way to express a pin.
+Four rules keep the pin honest:
+
+- **`.nvmrc` holds a version, never an alias.** `lts/*` resolves to a different major as the calendar moves and per machine — that is the drift, not a way to express a pin. A patch wildcard (`22.x`) is fine: the major is fixed, and a moving minor never moves the ABI.
 - **`engines.node` is bounded above.** A bare `>=22` admits Node 25, which is the version that caused the incident above. The guard requires the exact `>=<major> <<major+1>` shape and prints the line to paste.
-- **Bumping Node means bumping all three in one change.** That is the whole point; a bump in one is what the guard exists to catch.
+- **A workflow may name the version or read the file.** `node-version-file: .nvmrc` is the better spelling — it cannot drift, because it _is_ the pin — and the guard accepts it. Pointing it at any _other_ file creates a second pin and is rejected.
+- **Bumping Node means bumping all four in one change.** That is the whole point; a bump in some of them is what the guard exists to catch.
+
+The guard reads `FROM` lines only, never prose. These Dockerfiles explain their base image in a comment right above it (`# Pull node:22-slim via …`), so a text search for `node:` would read a stale comment as drift and a sentence as a pin.
 
 `engine-strict` is deliberately **not** set: a mismatch is a pnpm warning, not a refused install. The goal is to make drift visible at install time, not to lock a contributor out of the repo over a minor.
 
