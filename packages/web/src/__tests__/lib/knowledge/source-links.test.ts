@@ -254,6 +254,15 @@ describe("remarkSourceLinks", () => {
       ["path-shaped text with no extension at all", "/" + "a/".repeat(6000) + "b".repeat(6000)],
       ["an extension the lookahead rejects", "/" + "a/".repeat(6000) + "b".repeat(6000) + ".pdfX"],
       ["many near-misses in one node", ("/" + "a/".repeat(20) + "b.pdfX ").repeat(300)],
+      // The three above never reach the anchored pattern — the boundary check
+      // rejects them first — so none of them measures the pattern itself. This
+      // one does: every `.pdf` passes the boundary check, and the window behind
+      // it holds no `/` at all, so the pattern has to fail from every start
+      // position in the window. That search only stays bounded because
+      // MAX_PATH_LENGTH bounds the window; the case matters more since the path
+      // became relative, because a leading `/` no longer pins where a match may
+      // begin.
+      ["an extension with no path in front of it", ("a".repeat(300) + ".pdf ").repeat(200)],
     ])("finishes %s in linear time", (_label, text) => {
       const tree = paragraph(text);
       const before = JSON.stringify(tree);

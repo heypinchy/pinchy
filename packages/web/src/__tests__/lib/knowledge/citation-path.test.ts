@@ -10,6 +10,8 @@
  * citation they recognise attached to a link that opens nothing.
  */
 import { describe, it, expect } from "vitest";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 
 import { toCitationPath, fromCitationPath, DATA_ROOT } from "@/lib/knowledge/citation-path";
 
@@ -53,6 +55,22 @@ describe("toCitationPath", () => {
     for (const absolute of CORPUS) {
       expect(toCitationPath(absolute).startsWith(DATA_ROOT), absolute).toBe(false);
     }
+  });
+});
+
+describe("client-bundle safety", () => {
+  it("imports nothing, so the markdown renderer cannot drag node:path into the browser", () => {
+    // `source-links.ts` is reached from a client component and imports this
+    // module. DATA_ROOT therefore lives HERE and `path-validation.ts` (which
+    // imports `node:path`) imports it back, not the other way round. The real
+    // authority on this is `next build` in CI — a source check cannot see a
+    // transitive pull-in through a barrel file — but this states the constraint
+    // where the constraint lives, and fails in seconds rather than minutes.
+    const source = readFileSync(
+      resolve(import.meta.dirname, "../../../lib/knowledge/citation-path.ts"),
+      "utf-8"
+    );
+    expect(source).not.toMatch(/^\s*import\b/m);
   });
 });
 

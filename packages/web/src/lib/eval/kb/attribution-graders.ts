@@ -139,6 +139,16 @@ const BULLET_LINE = /^[ \t]*[-*][ \t]+\[(\d+)\]\s*(.+)$/gm;
  * range from folding into `entry.path` and spuriously failing the exact
  * path-match in `gradePathCitation`. `page` stores the FIRST page number
  * (`parseInt` of the range) — it is not asserted downstream yet.
+ *
+ * Only pages, deliberately, and only correct while only pages exist. Since
+ * #933 the anchor is a `ChunkLocator` and the contract asks for a POSITION:
+ * `slide 4`, `§ Quality > Incoming goods`, `Suppliers, rows 5-12`. None of
+ * those match here, so the whole line would fall into `entry.path` and grade a
+ * correct citation as a fabricated one. Nothing writes a non-page locator yet
+ * (xlsx-extract is not wired into the ingest, the Office path produces pages),
+ * so this cannot fire today — but the producer that changes that must
+ * generalise this parser in the same change. #982 has the trap and the reason
+ * a naive "split on any dash" fix would move committed eval numbers.
  */
 const PAGE_SUFFIX = /^(.*?)\s*[—-]\s*pp?\.?\s*(\d+(?:\s*[-–]\s*\d+)?)\s*$/i;
 
