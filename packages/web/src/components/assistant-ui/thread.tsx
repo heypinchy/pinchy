@@ -468,6 +468,13 @@ export function PendingUploadChips() {
  * Read once, lazily, rather than tracked: React only honours `autoFocus` when
  * the DOM node first mounts, so a value arriving later from an effect would
  * never focus anything.
+ *
+ * `pointer`, not `any-pointer`: the latter matches a phone with a stylus (an
+ * S-Pen counts as a fine pointer), which is the device this exists to spare.
+ * Measured in Playwright's Chromium: a default context reports `fine`, a
+ * `hasTouch` or device-emulated one reports `coarse` — so the e2e suite keeps
+ * the autofocus it has always had, and a future mobile-emulating project would
+ * legitimately not.
  */
 function useFinePointer(): boolean {
   const [finePointer] = useState(

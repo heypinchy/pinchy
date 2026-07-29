@@ -834,9 +834,13 @@ describe("Composer no longer gates attachments client-side", () => {
 describe("Composer autofocus is pointer-gated (#955)", () => {
   const realMatchMedia = window.matchMedia;
 
+  // Matches the EXACT query, not a substring: `(any-pointer: fine)` contains
+  // `pointer: fine`, and that one is a different gate — it matches a phone with
+  // a stylus, i.e. precisely the device this is supposed to spare. A loose
+  // stub would let that swap through green.
   function stubPointer(fine: boolean) {
     window.matchMedia = vi.fn().mockImplementation((query: string) => ({
-      matches: query.includes("pointer: fine") ? fine : false,
+      matches: query === "(pointer: fine)" ? fine : false,
       media: query,
       onchange: null,
       addListener: vi.fn(),
