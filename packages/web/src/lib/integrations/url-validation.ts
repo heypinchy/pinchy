@@ -137,9 +137,14 @@ export function classifyIpAddress(address: string): IpAddressClass | null {
   if (groups.every((group) => group === 0)) return "unspecified";
   if (groups.slice(0, 7).every((group) => group === 0) && groups[7] === 1) return "loopback";
 
-  // IPv4-mapped (::ffff:a.b.c.d) — what it actually reaches is the IPv4
-  // address, so classify that instead of the wrapper.
-  if (groups.slice(0, 5).every((group) => group === 0) && groups[5] === 0xffff) {
+  // Both forms that carry an IPv4 address in the low 32 bits: IPv4-mapped
+  // (::ffff:a.b.c.d) and the deprecated IPv4-compatible (::a.b.c.d). Classify
+  // the address they name rather than the wrapper — `URL` hands the latter over
+  // as "[::7f00:1]", which reads as an ordinary public IPv6 address. Nothing
+  // public lives in ::/96 either way, so decoding the tail can only be safer.
+  const embedsIPv4 =
+    groups.slice(0, 5).every((group) => group === 0) && (groups[5] === 0xffff || groups[5] === 0);
+  if (embedsIPv4) {
     return classifyIPv4([groups[6] >> 8, groups[6] & 0xff, groups[7] >> 8, groups[7] & 0xff]);
   }
 

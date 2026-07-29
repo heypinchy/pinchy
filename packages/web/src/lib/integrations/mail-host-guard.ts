@@ -1,5 +1,9 @@
 import { lookup } from "node:dns/promises";
-import { canonicalizeIpAddress, classifyIpAddress } from "@/lib/integrations/url-validation";
+import {
+  canonicalizeIpAddress,
+  classifyIpAddress,
+  type IpAddressClass,
+} from "@/lib/integrations/url-validation";
 
 /**
  * SSRF guard for the IMAP/SMTP probes.
@@ -47,11 +51,24 @@ export type MailHostResolver = (host: string) => Promise<string[]>;
 // off, and reaching IMDS must not become collateral of an operator enabling
 // their on-premise mail server. Canonicalized so no alternate spelling of the
 // same address slips past the comparison.
-const ALWAYS_BLOCKED_ADDRESSES = new Set(
-  ["fd00:ec2::254"].map((address) => canonicalizeIpAddress(address))
+const ALWAYS_BLOCKED_ADDRESSES: ReadonlySet<string> = new Set(
+  ["fd00:ec2::254"].map((address) => {
+    const canonical = canonicalizeIpAddress(address);
+    // A typo in this list would canonicalize to null and silently stop
+    // blocking anything. Fail at import instead of shipping a dead entry.
+    if (canonical === null) throw new Error(`Not an IP address: ${address}`);
+    return canonical;
+  })
 );
 
-const ALWAYS_BLOCKED_CLASSES = new Set(["loopback", "unspecified", "link-local"]);
+// Typed against IpAddressClass so a misspelt class is a compile error rather
+// than an entry that never matches — the failure mode of a security list is
+// that it silently lets things through.
+const ALWAYS_BLOCKED_CLASSES: ReadonlySet<IpAddressClass> = new Set([
+  "loopback",
+  "unspecified",
+  "link-local",
+]);
 
 const INTERNAL_MESSAGE =
   "Blocked: this host resolves to a loopback, link-local, or cloud-metadata address.";
@@ -109,7 +126,7 @@ export async function assertMailHostAllowed(
 
     if (
       (canonical !== null && ALWAYS_BLOCKED_ADDRESSES.has(canonical)) ||
-      ALWAYS_BLOCKED_CLASSES.has(addressClass ?? "")
+      (addressClass !== null && ALWAYS_BLOCKED_CLASSES.has(addressClass))
     ) {
       throw new MailHostBlockedError(INTERNAL_MESSAGE);
     }
