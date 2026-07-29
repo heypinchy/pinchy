@@ -58,9 +58,17 @@ test.describe("Settings tab history", () => {
       "true"
     );
 
-    // …and only once the tabs are exhausted does Back leave Settings.
+    // Back to the tab-less entry, which renders the default tab. Landing here
+    // was the reported symptom — it just arrived one press too early, because
+    // the tabs in between never got entries of their own.
     await page.goBack();
     await expect(page).toHaveURL(/\/settings$/);
+    await expect(page.getByRole("tab", { name: "Context" })).toHaveAttribute(
+      "aria-selected",
+      "true"
+    );
+
+    // …and only once the tabs are exhausted does Back leave Settings.
     await page.goBack();
     await expect(page).toHaveURL(chatUrl);
   });

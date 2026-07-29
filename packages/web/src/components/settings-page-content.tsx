@@ -92,6 +92,11 @@ export function SettingsPageContent({
   // (level 1) vs. a selected tab's content with a back header (level 2).
   // Desktop always shows the split layout regardless of this flag.
   const goToMenu = useCallback(() => {
+    // `replace`, deliberately, even though every tab switch now pushes (#951):
+    // this control means "leave the tab I am in", so pushing would make the
+    // next Back walk straight back into it. Replacing drops the tab entry
+    // instead, which is what a back control should do.
+    //
     // Only drop `tab`; keep any unrelated query params (e.g. an OAuth `?error=`)
     // so the back control doesn't silently discard page state.
     const params = new URLSearchParams(searchParams.toString());
