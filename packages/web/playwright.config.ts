@@ -46,6 +46,14 @@ export default defineConfig({
     // suite asserts nothing about provider catalogs; it just must not depend on
     // the internet to render a page. Suites with a real catalog to serve use
     // `config/llm-providers-mock` instead (docker-compose.setup-wizard-test.yml).
+    //
+    // These vars feed `resolveProviderBaseUrl`, so they redirect every provider
+    // URL — the key-validation probe and the `baseUrl` emitted into
+    // openclaw.json too, not just the catalog fetch. Both are inert here: no
+    // spec in this suite submits an API key, and this stack runs no OpenClaw. A
+    // spec that later drives the wizard's key step would see a refused
+    // connection where it expected a 401 — serve it a real catalog from
+    // `config/llm-providers-mock` rather than dropping the override.
     env: {
       PINCHY_PROVIDER_BASEURL_ANTHROPIC: "http://127.0.0.1:1",
       PINCHY_PROVIDER_BASEURL_OPENAI: "http://127.0.0.1:1",

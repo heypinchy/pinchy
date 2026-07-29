@@ -176,6 +176,12 @@ const PROVIDER_FETCH_CONFIG: Record<ProviderName, ProviderFetchConfig> = {
 // probe reports a key as valid or not, where a slow answer is worth waiting
 // for, while here every miss has a good offline answer sitting in
 // FALLBACK_MODELS.
+//
+// It bounds one provider call, not one request: `fetchProviderModels` walks the
+// configured cloud providers sequentially, so a deployment with all four keys
+// stored can still spend 4 × this before the page renders. That is a ceiling
+// instead of undici's minutes, which is the point — but do not read it as a 5s
+// page budget.
 export const PROVIDER_CATALOG_FETCH_TIMEOUT_MS = 5_000;
 
 async function fetchModelsForProvider(

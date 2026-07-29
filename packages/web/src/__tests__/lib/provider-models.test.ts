@@ -232,6 +232,11 @@ describe("fetchProviderModels", () => {
       ]);
     } finally {
       vi.useRealTimers();
+      // `beforeEach` runs `clearAllMocks`, which clears calls but keeps
+      // implementations — so this never-settling one would outlive the test.
+      // Every test below happens to stub `fetch` itself; the first that forgets
+      // would hang for the abort timeout and fail somewhere unrelated to it.
+      vi.mocked(fetch).mockReset();
     }
   });
 
