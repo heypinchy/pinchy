@@ -32,6 +32,26 @@ export default defineConfig({
   webServer: {
     command:
       "DATABASE_URL=postgresql://pinchy:pinchy_dev@localhost:5433/pinchy_test BETTER_AUTH_SECRET=test-secret-for-e2e-at-least-32chars ENCRYPTION_KEY=0000000000000000000000000000000000000000000000000000000000000001 AUDIT_HMAC_SECRET=deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef WORKSPACE_BASE_PATH=/tmp/pinchy-test-workspaces OPENCLAW_CONFIG_PATH=/tmp/pinchy-e2e-config/openclaw.json OPENCLAW_DATA_PATH=/tmp/pinchy-e2e-config OPENCLAW_SECRETS_PATH=/tmp/pinchy-e2e-secrets/secrets.json PORT=7778 node -r ./server-preload.cjs --import tsx server.ts",
+    // `helpers.ts` seeds `default_provider=anthropic` with a fake key, so the
+    // first `/api/templates` render calls the REAL api.anthropic.com from the
+    // runner and waits out DNS + TLS + a 401 before falling back to the offline
+    // catalog. Measured at 5.2s on the merge-queue run that ejected PR #930,
+    // against a 5s `toBeVisible` — and 109ms on the next call, once the 1h
+    // provider cache was warm. That is a network round trip deciding whether a
+    // test passes, which is the definition of a flake.
+    //
+    // Point the catalog at a port nothing listens on: the connection is refused
+    // in microseconds and `fetchProviderModels` degrades to FALLBACK_MODELS —
+    // byte for byte what the 401 produced, so no assertion changes meaning. The
+    // suite asserts nothing about provider catalogs; it just must not depend on
+    // the internet to render a page. Suites with a real catalog to serve use
+    // `config/llm-providers-mock` instead (docker-compose.setup-wizard-test.yml).
+    env: {
+      PINCHY_PROVIDER_BASEURL_ANTHROPIC: "http://127.0.0.1:1",
+      PINCHY_PROVIDER_BASEURL_OPENAI: "http://127.0.0.1:1",
+      PINCHY_PROVIDER_BASEURL_GOOGLE: "http://127.0.0.1:1",
+      PINCHY_PROVIDER_BASEURL_OLLAMA_CLOUD: "http://127.0.0.1:1",
+    },
     port: 7778,
     reuseExistingServer: false,
     stdout: "pipe",
