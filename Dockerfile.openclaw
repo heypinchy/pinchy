@@ -232,11 +232,17 @@ COPY config/install-plugin-deps.sh /install-plugin-deps.sh
 # the staging contract is unit-testable — see
 # packages/web/src/__tests__/lib/stage-llama-cpp-provider.test.ts.
 COPY config/stage-llama-cpp-provider.sh /stage-llama-cpp-provider.sh
+# Cross-uid permission repair for the shared openclaw-config volume, sourced by
+# start-openclaw.sh and re-run on a 50 ms tick. Kept as a separate script (same
+# pattern as install-plugin-deps.sh) so the per-agent directory-ownership
+# invariant that keeps Pinchy able to write auth-profiles.json is unit-testable —
+# see packages/web/src/__tests__/lib/fix-config-permissions.test.ts.
+COPY config/fix-config-permissions.sh /fix-config-permissions.sh
 # Device-pairing auto-approver invoked per tick by start-openclaw.sh. Kept as a
 # separate Node module so its requestId-churn convergence is unit-testable
 # (config/__tests__/auto-approve-once.test.mjs) instead of embedded bash.
 COPY config/auto-approve-once.mjs /auto-approve-once.mjs
-RUN chmod +x /start-openclaw.sh /install-plugin-deps.sh /stage-llama-cpp-provider.sh
+RUN chmod +x /start-openclaw.sh /install-plugin-deps.sh /stage-llama-cpp-provider.sh /fix-config-permissions.sh
 
 # Bake Pinchy's user-facing docs into the image so Smithers' docs_list /
 # docs_read tools (pinchy-docs plugin) work in every deploy. Previously
