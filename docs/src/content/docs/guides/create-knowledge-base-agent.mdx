@@ -30,9 +30,9 @@ Choose **Knowledge Base** from the template options. This template gives the age
 
 Give your agent a descriptive name, for example "HR Policy Assistant" or "Engineering Docs". You can also add an optional tagline like "Answers questions about company HR policies". Then click **Create**.
 
-The agent is created with an auto-generated avatar and you are taken to its chat page. The Knowledge Base template pre-fills operating instructions (AGENTS.md) with cite-then-answer guidelines, but the agent doesn't know which documents to search yet — you scope that in the Permissions tab, then index those documents.
+The agent is created with an auto-generated avatar and you are taken to its chat page. The Knowledge Base template pre-fills operating instructions (AGENTS.md) with the agent's role, and attaches the [`knowledge-search` skill](/explanation/skills-and-templates/), which carries the cite-then-answer workflow. But the agent doesn't know which documents to search yet — you scope that in the Permissions tab, then index those documents.
 
-Citing isn't left to those instructions alone. `knowledge_search` states the contract in its own results — cite the passages you used, list them with path and page so a reader can check them, and say so when they don't answer the question — so an agent cites its sources even if you rewrite the instructions or build an agent without this template.
+Citing isn't left to the skill alone either. `knowledge_search` states the contract in its own results — cite the passages you used, list them with path and page so a reader can check them, and say so when they don't answer the question — so an agent cites its sources even if you rewrite the instructions or build an agent without this template.
 
 :::caution[Agents you created earlier]
 Operating instructions are written once, when the agent is created, and are yours to edit from then on — Pinchy never rewrites them behind your back, which also means an upgrade cannot fix them for you. Open an existing agent's settings and check the **Instructions** tab: if they end in a `## File Access` block with a numbered **"Tool use workflow"** list, that agent still carries older guidance telling it to walk the folder tree instead of searching.

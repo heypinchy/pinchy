@@ -153,7 +153,12 @@ describe("agent-templates", () => {
     const kb = AGENT_TEMPLATES["knowledge-base"];
     expect(kb.defaultAgentsMd).not.toBeNull();
     expect(kb.defaultAgentsMd).toContain("knowledge base agent");
-    expect(kb.defaultAgentsMd).toContain("cite");
+    // The citation contract used to be asserted here as a literal "cite" in
+    // the template prose. Migration #544 moved it into the knowledge-search
+    // SKILL.md, so assert it at its new home rather than dropping it — the
+    // agent must still be told to cite, wherever that instruction now lives.
+    expect(kb.defaultSkills).toContain("knowledge-search");
+    expect(getSkillBody("knowledge-search")).toContain("Cite");
   });
 
   it("custom should have null defaultAgentsMd", () => {
@@ -338,8 +343,11 @@ describe("generateAgentsMd", () => {
     const content = generateAgentsMd(template, {
       "pinchy-files": { allowed_paths: ["/data/hr-docs/"] },
     });
+    // Appending the Document Access block must not truncate or replace the
+    // template's own persona prose — the whole body has to survive.
     expect(content).toContain("knowledge base agent");
-    expect(content).toContain("cite");
+    expect(content).toContain(template.defaultAgentsMd);
+    expect(content).toContain("## Output Formatting");
   });
 
   it("should include all provided paths when multiple paths given", () => {

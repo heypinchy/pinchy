@@ -9,6 +9,9 @@ import { join } from "path";
 export const KNOWN_SKILLS = [
   "web-search",
   "email",
+  "knowledge-search",
+  "files-search-and-read",
+  "document-comparison",
   "odoo-read",
   "odoo-write",
   "odoo-attach",

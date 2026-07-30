@@ -1,9 +1,19 @@
 import { describe, it, expect } from "vitest";
 import { AGENT_TEMPLATES } from "@/lib/agent-templates";
+import { getSkillBody } from "@/lib/skills";
 
+/**
+ * Every rule below was written after a live retrieval regression. Migration
+ * #544 moved them out of the template's defaultAgentsMd and into the
+ * knowledge-search SKILL.md, so the subject under test is the skill body —
+ * but the rules themselves are unchanged, because the incidents they came
+ * from are unchanged. The first two tests pin the wiring that makes the
+ * skill body actually reach the agent; without them this suite could stay
+ * green while the template stopped attaching the skill at all.
+ */
 describe("knowledge-base template", () => {
   const template = AGENT_TEMPLATES["knowledge-base"];
-  const md = template.defaultAgentsMd ?? "";
+  const md = getSkillBody("knowledge-search");
 
   it("grants the knowledge_search tool", () => {
     // The KB agent can only retrieve grounded, citable passages via this
@@ -11,6 +21,14 @@ describe("knowledge-base template", () => {
     // the plugin never registers the tool for this agent (presence-only
     // per-agent gating, see build.ts).
     expect(template.allowedTools).toContain("knowledge_search");
+  });
+
+  it("attaches the knowledge-search skill that carries these rules", () => {
+    // The rules below are asserted against the skill body. They only reach a
+    // real agent because the template lists the skill, which is what makes
+    // Pinchy write the SKILL.md into that agent's workspace and name it in
+    // the OpenClaw allowlist (build.ts).
+    expect(template.defaultSkills).toContain("knowledge-search");
   });
 
   it("instructs the agent to search the knowledge base before answering from memory", () => {
