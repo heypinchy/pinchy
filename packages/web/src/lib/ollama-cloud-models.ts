@@ -179,16 +179,25 @@ export const TOOL_CAPABLE_OLLAMA_CLOUD_MODELS = [
   },
   {
     // Tools verified 4/4 rounds (structured tool_call + clean multi-turn,
-    // 2026-06-25) — reliably tool-capable, no multi-turn-500 regression. The
-    // library page lists "vision" (image/video via MoonViT), but the live
-    // /v1/chat/completions returns HTTP 500 on image_url payloads (2026-06-25,
-    // 2 rounds), so vision:false — the page lies and we never hand it an image.
+    // 2026-06-25) — reliably tool-capable, no multi-turn-500 regression.
     // `reasoning:true` from the library "thinking" tag (kimi-k2.5/2.6 parity).
+    //
+    // vision:true since 2026-07-30. It was false from 2026-06-25, when
+    // /v1/chat/completions HTTP 500'd on every image_url payload (2 rounds).
+    // Re-probed 2026-07-30 with a 512x512 PNG carrying a random 4-digit number
+    // and a coloured circle: HTTP 200 and BOTH read correctly in 6/6 trials.
+    // Guessing the number alone is ~1/9000 per trial, so this is real sight,
+    // not a lucky pass — the serving path was fixed upstream.
+    //
+    // Read the old 500 in the light of the fixture bug fixed in the same
+    // change: verify-ollama-cloud-vision.mjs pinned a 64x64 PNG that Ollama's
+    // decoders now refuse outright, and this model still 500s on it today. The
+    // 6/6 above used a real image, which is why the probe now sends 512x512.
     id: "kimi-k2.7-code",
     contextWindow: 262144,
     maxTokens: 8192,
     reasoning: true,
-    vision: false,
+    vision: true,
   },
   {
     id: "minimax-m2.5",
@@ -226,13 +235,6 @@ export const TOOL_CAPABLE_OLLAMA_CLOUD_MODELS = [
     vision: true,
   },
   {
-    id: "nemotron-3-nano:30b",
-    contextWindow: 1048576,
-    maxTokens: 8192,
-    reasoning: true,
-    vision: false,
-  },
-  {
     id: "nemotron-3-super",
     contextWindow: 262144,
     maxTokens: 8192,
@@ -250,17 +252,24 @@ export const TOOL_CAPABLE_OLLAMA_CLOUD_MODELS = [
     vision: false,
   },
   {
-    // The ollama.com/library/qwen3.5 page lists image input, but the live
-    // /v1/chat/completions endpoint hallucinates image contents (wrong number
-    // AND wrong color across distinct test images) rather than rejecting them
-    // — it does not actually see images. qwen3.5 is a text/reasoning model,
-    // not a VL model (contrast qwen3-vl). Flagged vision:false so it is never
-    // picked as an image model or offered as a vision-capable choice.
+    // vision:true since 2026-07-30 — this entry was vision:false for a month
+    // and the reversal is deliberate, so do not "restore" it from the old
+    // comment. In 2026-06 this model accepted images and HALLUCINATED their
+    // contents (wrong number AND wrong colour across distinct PIL-generated
+    // test images), which is the dangerous failure the flag existed to contain.
+    // Re-probed 2026-07-30 with 512x512 PNGs carrying a random 4-digit number
+    // and a coloured circle: 6/6 trials read BOTH correctly, no miss. Random
+    // agreement on the number alone is ~1/9000 per trial, so the hallucination
+    // is gone rather than merely unlucky — Ollama evidently fixed or replaced
+    // the serving path. If it regresses, put the flag back and say so here with
+    // the date; a flip in this direction needs fresh probe evidence, never a
+    // library page (which claimed image input throughout, including while the
+    // model was demonstrably blind).
     id: "qwen3.5:397b",
     contextWindow: 262144,
     maxTokens: 8192,
     reasoning: true,
-    vision: false,
+    vision: true,
   },
 ] as const satisfies readonly OllamaCloudModel[];
 

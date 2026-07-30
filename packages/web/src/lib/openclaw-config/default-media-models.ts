@@ -206,6 +206,13 @@ export const OLLAMA_CLOUD_IMAGE_PREFERENCE: readonly OllamaCloudModelId[] = [
   // mangling nested TOOL arguments, and this slot describes images rather than
   // driving tools. Consumer (1) still applies `isBlocked`, so a tool-using turn
   // keeps skipping it down to kimi-k2.6.
+  // kimi-k2.7-code and qwen3.5:397b became vision:true on 2026-07-30 (6/6
+  // fixture reads each) and are deliberately NOT listed here. This list ranks
+  // image-description QUALITY on comparative evidence — the eval sweeps cited
+  // above — and "reads a 4-digit number off a test image" is a capability
+  // check, not a quality ranking. Adding them would imply a ranking nobody
+  // measured. They are available for vision through their catalog flags; give
+  // them a place here once an eval sweep puts a number on them.
   "minimax-m3",
   "kimi-k2.6",
   "gemma4:31b",

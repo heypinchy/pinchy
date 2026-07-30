@@ -2354,7 +2354,6 @@ describe("regenerateOpenClawConfig", () => {
         "minimax-m2.7",
         "minimax-m3",
         "mistral-large-3:675b",
-        "nemotron-3-nano:30b",
         "nemotron-3-super",
         "nemotron-3-ultra",
         "qwen3.5:397b",
@@ -2411,7 +2410,6 @@ describe("regenerateOpenClawConfig", () => {
     expect(ctx["minimax-m3"]).toBe(524288);
     // 1M
     expect(ctx["deepseek-v4-flash"]).toBe(1048576);
-    expect(ctx["nemotron-3-nano:30b"]).toBe(1048576);
   });
 
   it("emits an effective contextTokens for every model — the global compaction ceiling, or a lower per-model knee", async () => {
@@ -2443,7 +2441,6 @@ describe("regenerateOpenClawConfig", () => {
     // operational ceiling so compaction fires (before: never). Window stays honest.
     expect(byId["glm-5.2"].contextWindow).toBe(999424);
     expect(byId["glm-5.2"].contextTokens).toBe(262144);
-    expect(byId["nemotron-3-nano:30b"].contextTokens).toBe(262144);
     expect(byId["minimax-m3"].contextTokens).toBe(262144);
 
     // A lower researched per-model knee wins where it exists (min(131072, 262144)).
@@ -2610,8 +2607,15 @@ describe("regenerateOpenClawConfig", () => {
       "gemma4:31b",
       "kimi-k2.5",
       "kimi-k2.6",
+      // Both promoted on 2026-07-30 after reading a 512x512 fixture correctly in
+      // 6/6 trials each. They were text-only here for a month for two DIFFERENT
+      // reasons — qwen3.5 hallucinated contents on a 200, kimi-k2.7-code HTTP
+      // 500'd on every image — and both now genuinely see. See
+      // ollama-cloud-models.ts for the dated evidence behind each flip.
+      "kimi-k2.7-code",
       "minimax-m3",
       "mistral-large-3:675b",
+      "qwen3.5:397b",
     ];
     for (const id of visionModels) {
       // eslint-disable-next-line security/detect-object-injection
@@ -2620,13 +2624,6 @@ describe("regenerateOpenClawConfig", () => {
     // Spot-check that text-only models stay text-only (gemma4 was the
     // specific counter-example the user flagged during review). devstral-
     // small-2:24b joined this list after the #416 smoke test demoted it.
-    // qwen3.5:397b joined it too: its library page claims image input but the
-    // live endpoint hallucinates image contents, so it is flagged text-only.
-    expect(byId["qwen3.5:397b"].input).toEqual(["text"]);
-    // kimi-k2.7-code: library page claims image input (MoonViT), but the live
-    // /v1/chat/completions returns HTTP 500 on image_url payloads (probed
-    // 2026-06-25, 2 rounds) — text-only, unlike its kimi-k2.5/2.6 siblings.
-    expect(byId["kimi-k2.7-code"].input).toEqual(["text"]);
     // 2026-06 additions: both are text-only lines (no image input tag, and
     // vision is never assumed without an empirical probe).
     expect(byId["nemotron-3-ultra"].input).toEqual(["text"]);
@@ -2649,7 +2646,6 @@ describe("regenerateOpenClawConfig", () => {
       "minimax-m2.5",
       "minimax-m2.7",
       "minimax-m3",
-      "nemotron-3-nano:30b",
       "nemotron-3-super",
       "nemotron-3-ultra",
       "qwen3.5:397b",

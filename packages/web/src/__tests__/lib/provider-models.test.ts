@@ -500,13 +500,17 @@ describe("fetchProviderModels", () => {
             { id: "minimax-m2.7" },
             { id: "minimax-m3" },
             { id: "mistral-large-3:675b" },
-            { id: "nemotron-3-nano:30b" },
             { id: "nemotron-3-super" },
             { id: "nemotron-3-ultra" },
             { id: "qwen3-next:80b" },
             { id: "qwen3.5:397b" },
             // Tool-broken on the live chat/completions endpoint — must be filtered out
             { id: "cogito-2.1:671b" },
+            // Still served, but dropped from the catalog on 2026-07-30: it skips
+            // the tool call in 3 of 4 rounds. Kept in this served list on purpose
+            // — the interesting assertion is that the filter removes a model the
+            // API still offers, which is the whole job of the allowlist.
+            { id: "nemotron-3-nano:30b" },
             { id: "gemma3:27b" },
             { id: "gemma3:12b" },
             { id: "gemma3:4b" },
@@ -538,7 +542,6 @@ describe("fetchProviderModels", () => {
         "ollama-cloud/minimax-m2.7",
         "ollama-cloud/minimax-m3",
         "ollama-cloud/mistral-large-3:675b",
-        "ollama-cloud/nemotron-3-nano:30b",
         "ollama-cloud/nemotron-3-super",
         "ollama-cloud/nemotron-3-ultra",
         "ollama-cloud/qwen3.5:397b",
@@ -546,13 +549,16 @@ describe("fetchProviderModels", () => {
     );
     // kimi-k2-thinking removed from allowlist (#305 — Ollama Cloud returns HTTP 500 for this model)
     expect(ids).not.toContain("ollama-cloud/kimi-k2-thinking");
+    // nemotron-3-nano:30b is still served (see the mock list above) but was
+    // dropped from the catalog on 2026-07-30 for skipping tool calls 3/4 rounds.
+    expect(ids).not.toContain("ollama-cloud/nemotron-3-nano:30b");
     // qwen3-next:80b is still returned by /v1/models but no longer allow-listed:
     // tool calls are still flaky on the OpenAI-completions endpoint (re-probed
     // 2026-06-12: one of four rounds returned empty content with no call).
     expect(ids).not.toContain("ollama-cloud/qwen3-next:80b");
     // minimax-m3 was added to the allowlist (vision + tools confirmed live).
     expect(ids).toContain("ollama-cloud/minimax-m3");
-    expect(ids).toHaveLength(18);
+    expect(ids).toHaveLength(17);
 
     // Tool-broken models are filtered out (probed 2026-06-12: gemma3:4b leaks
     // pseudo tool calls as text, gemma3:12b serves HTTP 500, gemma3:27b
@@ -601,7 +607,7 @@ describe("fetchProviderModels", () => {
     const ids = ollama!.models.map((m) => m.id);
     // kimi-k2-thinking removed from allowlist (#305 — Ollama Cloud returns HTTP 500 for this model)
     expect(ids).not.toContain("ollama-cloud/kimi-k2-thinking");
-    expect(ids).toHaveLength(18);
+    expect(ids).toHaveLength(17);
     expect(ids).toEqual(
       expect.arrayContaining([
         "ollama-cloud/deepseek-v4-flash",
@@ -618,7 +624,6 @@ describe("fetchProviderModels", () => {
         "ollama-cloud/minimax-m2.7",
         "ollama-cloud/minimax-m3",
         "ollama-cloud/mistral-large-3:675b",
-        "ollama-cloud/nemotron-3-nano:30b",
         "ollama-cloud/nemotron-3-super",
         "ollama-cloud/nemotron-3-ultra",
         "ollama-cloud/qwen3.5:397b",

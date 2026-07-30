@@ -52,21 +52,22 @@ describe("Ollama cloud vision models (from DB seed)", () => {
     expect(isModelVisionCapable("ollama-cloud/minimax-m3")).toBe(true);
   });
 
-  it("returns FALSE for qwen3.5:397b (claims vision, hallucinates)", () => {
-    // The library page lists image input, but the live `/v1/chat/completions`
-    // endpoint hallucinates image contents rather than rejecting them — it
-    // does not actually see images. qwen3.5 is a text/reasoning model, not a
-    // VL model (contrast qwen3-vl). Flagged vision:false in the catalog.
-    expect(isModelVisionCapable("ollama-cloud/qwen3.5:397b")).toBe(false);
+  it("returns true for qwen3.5:397b since the 2026-07-30 re-probe", () => {
+    // This asserted FALSE until 2026-07-30, because the live endpoint used to
+    // accept images and hallucinate their contents — worse than a rejection,
+    // since it looks like a working answer. A 2026-07-30 re-probe with 512x512
+    // fixtures read the number and colour correctly in 6/6 trials, so the
+    // catalog flag flipped and so does this expectation.
+    expect(isModelVisionCapable("ollama-cloud/qwen3.5:397b")).toBe(true);
   });
 
-  it("returns FALSE for kimi-k2.7-code (library claims vision, live API 500s)", () => {
-    // Unlike its kimi-k2.5/2.6 siblings (vision-capable above), the -code
-    // variant's library page claims image input (MoonViT) but the live
-    // `/v1/chat/completions` returns HTTP 500 on image_url payloads (probed
-    // 2026-06-25, 2 rounds). Flagged vision:false so it's never picked for
-    // images — its value is reliable tools, not vision.
-    expect(isModelVisionCapable("ollama-cloud/kimi-k2.7-code")).toBe(false);
+  it("returns true for kimi-k2.7-code since the 2026-07-30 re-probe", () => {
+    // Also FALSE until 2026-07-30, for a different reason: the live endpoint
+    // HTTP 500'd on every image_url payload (probed 2026-06-25). It reads the
+    // 512x512 fixture correctly in 6/6 trials now. Part of the same flip is a
+    // fixture fix — the old 64x64 probe image is refused outright by Ollama's
+    // decoders today, and this model still 500s on it.
+    expect(isModelVisionCapable("ollama-cloud/kimi-k2.7-code")).toBe(true);
   });
 
   it("returns true for kimi-k2.6", () => {
@@ -98,6 +99,9 @@ describe("Ollama cloud vision models (from DB seed)", () => {
   it("returns false for tool-capable cloud models that are text-only", () => {
     expect(isModelVisionCapable("ollama-cloud/deepseek-v3.2")).toBe(false);
     expect(isModelVisionCapable("ollama-cloud/glm-4.7")).toBe(false);
+    // Dropped from the catalog on 2026-07-30 for skipping tool calls, so this
+    // now also covers the "model we no longer carry" path — same answer either
+    // way, which is the point: nothing removed may come back vision-capable.
     expect(isModelVisionCapable("ollama-cloud/nemotron-3-nano:30b")).toBe(false);
     expect(isModelVisionCapable("ollama-cloud/gpt-oss:20b")).toBe(false);
     expect(isModelVisionCapable("ollama-cloud/qwen3-coder:480b")).toBe(false);

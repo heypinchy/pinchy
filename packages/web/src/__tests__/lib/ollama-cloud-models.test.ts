@@ -36,17 +36,24 @@ describe("Ollama Cloud model catalog — empirically verified capabilities", () 
     expect(m!.reasoning).toBe(true);
   });
 
-  it("flags qwen3.5:397b as text-only despite its library page", () => {
-    // The /v1/chat/completions endpoint returns HTTP 200 on image payloads
-    // for this model but hallucinates the contents (colors 1/3, numbers 0/3
-    // across distinct test images) — it does not actually see the image.
-    // Unlike qwen3-vl, qwen3.5 is a text/reasoning model, not a VL model.
-    // Flagged vision:false so it is never picked as an image model and is
-    // not offered as a vision-capable choice.
+  it("promotes qwen3.5:397b to vision — the 2026-06 hallucination is gone (2026-07-30)", () => {
+    // This assertion is the REVERSE of what it pinned until 2026-07-30, and the
+    // reversal is the interesting part. In 2026-06 the endpoint returned HTTP
+    // 200 on image payloads and hallucinated the contents (colours 1/3, numbers
+    // 0/3 across distinct test images) — accepted-but-blind, the failure a
+    // library tag cannot show you.
+    //
+    // Re-probed 2026-07-30 with 512x512 PNGs carrying a random 4-digit number
+    // and a coloured circle: 6/6 trials returned BOTH correctly. Guessing one
+    // 4-digit number is ~1/9000, so six in a row is sight, not luck.
+    //
+    // Kept as an explicit test rather than folded into a generic vision list
+    // because the direction of travel matters: anyone who finds the old comment
+    // in git history should see that the flip was measured, not assumed.
     const m = byId("qwen3.5:397b");
     expect(m).toBeDefined();
-    expect(m!.vision).toBe(false);
-    expect(VISION_OLLAMA_CLOUD_MODEL_IDS.has("qwen3.5:397b")).toBe(false);
+    expect(m!.vision).toBe(true);
+    expect(VISION_OLLAMA_CLOUD_MODEL_IDS.has("qwen3.5:397b")).toBe(true);
   });
 
   it("drops qwen3-next:80b — tool calls still flaky on Ollama Cloud", () => {
@@ -143,20 +150,63 @@ describe("Ollama Cloud model catalog — empirically verified capabilities", () 
     }
   });
 
-  it("includes kimi-k2.7-code with reasoning, text-only, 256K context", () => {
+  it("includes kimi-k2.7-code with reasoning, vision since 2026-07-30, 256K context", () => {
     // Added 2026-06-25 (v0.7.x catalog sweep). ollama.com/library/kimi-k2.7-code
     // lists tools + thinking + vision (image/video via MoonViT), 256K context.
     // Tools verified empirically 4/4 rounds against /v1/chat/completions
     // (structured tool_call + clean multi-turn follow-up) — no multi-turn-500
-    // regression, unlike its kimi-k2-thinking sibling. Vision is flagged false:
-    // the live endpoint returns HTTP 500 on image_url payloads (2 rounds), so
-    // the library "vision" tag is a lie here, same shape as qwen3.5:397b.
+    // regression, unlike its kimi-k2-thinking sibling.
+    //
+    // Vision was false from 2026-06-25 to 2026-07-30 because the endpoint HTTP
+    // 500'd on every image_url payload. Re-probed 2026-07-30 with a 512x512
+    // PNG: HTTP 200 and the number + colour read correctly in 6/6 trials.
+    //
+    // Worth knowing WHY the old verdict was wrong, because it was not simply
+    // an upstream fix: the probe's own fixture was a 64x64 PNG that Ollama's
+    // decoders refuse, and this model still 500s on that image today. A dead
+    // fixture reads exactly like a missing capability. The probe now sends
+    // 512x512 and reports a decode refusal as its own verdict — see
+    // scripts/lib/ollama-cloud-vision-probe.mjs.
     const m = TOOL_CAPABLE_OLLAMA_CLOUD_MODELS.find((x) => x.id === "kimi-k2.7-code");
     expect(m).toBeDefined();
     expect(m!.reasoning).toBe(true);
-    expect(m!.vision).toBe(false);
+    expect(m!.vision).toBe(true);
     expect(m!.contextWindow).toBe(262144);
-    expect(VISION_OLLAMA_CLOUD_MODEL_IDS.has("kimi-k2.7-code")).toBe(false);
+    expect(VISION_OLLAMA_CLOUD_MODEL_IDS.has("kimi-k2.7-code")).toBe(true);
+  });
+
+  it("drops nemotron-3-nano:30b — tool calls now fail 3 of 4 rounds (2026-07-30)", () => {
+    // Carried since 2026-06 as a fast/cheap 1M-context option. The 2026-07-30
+    // sweep found it silently skipping the tool call: HTTP 200, empty content,
+    // no tool_calls — qwen3-next's exact failure mode. Re-probed four more
+    // times: 1 clean, 3 no-call. An agent on this model would ignore its tools
+    // three turns out of four, which is worse than an outright error because it
+    // looks like the model simply chose not to act.
+    //
+    // Intermittent, not dead — and intermittent is still disqualifying here,
+    // the same bar qwen3-next was held to. Re-adding needs a clean multi-round
+    // sweep, not one lucky pass.
+    expect(TOOL_CAPABLE_OLLAMA_CLOUD_MODEL_IDS).not.toContain("nemotron-3-nano:30b");
+  });
+
+  it("keeps kimi-k3 out — extra-usage-only billing, not plan usage (2026-07-30)", () => {
+    // Appeared in /v1/models on 2026-07-30 with everything we look for on
+    // ollama.com/library/kimi-k3: "vision tools thinking cloud", 1M context
+    // (/api/show agrees: 1048576). It is still not a candidate, and the reason
+    // is commercial rather than technical.
+    //
+    // Every request returns HTTP 402: "this model uses extra usage only (not
+    // included plan usage) and your extra usage balance is empty". Confirmed
+    // twice — through the API with a valid key and through the signed-in CLI.
+    // So it cannot be capability-probed without buying balance, and more to the
+    // point, surfacing it would hand Pro/Max users an agent that 402s on every
+    // turn. It would also break this catalog's zero-cost premise (see
+    // ZERO_COST): Ollama Cloud is subscription-billed, which is exactly why
+    // Pinchy reports tokens and not spend.
+    //
+    // Add it only once the account carries an extra-usage balance AND the tools
+    // and vision probes have run. Never from the library page alone.
+    expect(TOOL_CAPABLE_OLLAMA_CLOUD_MODEL_IDS).not.toContain("kimi-k3");
   });
 
   it("keeps the deepseek-v4 pair's context windows split: pro 512K, flash 1M", () => {

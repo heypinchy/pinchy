@@ -70,9 +70,17 @@ const BY_TIER_FAMILY: Record<
   },
   reasoning: {
     general: "ollama-cloud/deepseek-v4-pro",
-    // qwen3.5:397b was the original pick but only claims vision — the live
-    // endpoint hallucinates image contents (see ollama-cloud-models.ts), so it
-    // is flagged vision:false and can no longer fill a vision slot.
+    // qwen3.5:397b was the original pick, then lost the slot because the live
+    // endpoint hallucinated image contents rather than seeing them.
+    //
+    // As of 2026-07-30 it genuinely sees again (6/6 fixture reads — see
+    // ollama-cloud-models.ts) and is flagged vision:true once more. It is still
+    // NOT reinstated here, and that is a decision rather than an oversight:
+    // proving a model can read a number off a test image says nothing about
+    // whether it carries opaque refs through a multi-turn tool loop, which is
+    // this slot's actual job. Reinstating it needs comparative evidence against
+    // kimi-k2.6 — an eval sweep, not a vision probe.
+    //
     // minimax-m3 replaced it on confirmed vision quality, then had to go too:
     // it is now tools-blocked for mangling nested tool arguments (Penny,
     // 2026-07-15 — see blocklist.ts). A vision slot always resolves alongside
