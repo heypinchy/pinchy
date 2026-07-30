@@ -1,6 +1,6 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -254,10 +254,15 @@ describe("the build graph is not the same thing as the web package", () => {
       REPO_ROOT,
       "packages/web/src/lib/openclaw-config/plugin-manifest-loader.ts",
     );
-    assert.ok(statSync(loader).isFile());
+    // Read it directly rather than stat-then-read. The read IS the existence
+    // proof and a stricter one: it throws ENOENT if the file moved and EISDIR if
+    // the path became a directory, which is every case `statSync(…).isFile()`
+    // caught. A separate check first only adds a window in which the answer can
+    // change between the two calls (CodeQL js/file-system-race).
+    const source = readFileSync(loader, "utf8");
     const targets = escapingImportTargets(
       "packages/web/src/lib/openclaw-config/plugin-manifest-loader.ts",
-      readFileSync(loader, "utf8"),
+      source,
     );
     assert.ok(
       targets.includes("packages/plugins/pinchy-files/openclaw.plugin.json"),
