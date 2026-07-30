@@ -533,26 +533,47 @@ Backed by the models table, so it reflects the catalog seed and any provider the
 
 ### `GET /api/settings/domain`
 
-Get the current domain lock status.
+Get the current domain lock status, together with the hostname and scheme this request arrived on — which is what the UI compares against to tell you whether locking is safe right now.
 
 **Response:**
 
 ```json
 {
-  "lockedDomain": "pinchy.example.com",
-  "insecureMode": false
+  "domain": "pinchy.example.com",
+  "currentHost": "pinchy.example.com",
+  "isHttps": true
 }
 ```
 
-### `PUT /api/settings/domain`
+`domain` is `null` when no domain is locked.
 
-Set or clear the locked domain. See [Lock Pinchy to a Domain](/guides/domain-lock/) for the full flow and safety guarantees.
+### `POST /api/settings/domain`
 
-**Request body:**
+Lock Pinchy to a domain. **Takes no request body.** The domain is the hostname the request itself arrived on (`X-Forwarded-Host`, falling back to `Host`), and that is deliberate: you can only lock Pinchy to an address you have just proven reachable, so a typo can't lock you out of your own instance. See [Lock Pinchy to a Domain](/guides/domain-lock/) for the full flow and safety guarantees.
 
-| Field          | Type         | Required | Description                                                      |
-| -------------- | ------------ | -------- | ---------------------------------------------------------------- |
-| `lockedDomain` | string\|null | Yes      | Canonical HTTPS hostname. Pass `null` to disable domain locking. |
+The request must arrive over HTTPS (`X-Forwarded-Proto: https`).
+
+**Response:** `{ "domain": "pinchy.example.com", "restart": true }`
+
+`restart: true` is not advisory. The process exits half a second later so the secure-cookie settings take effect, and your container runtime restarts it — expect a few seconds of downtime and one dropped WebSocket.
+
+**Errors:**
+
+- `400` — the request did not arrive over HTTPS, or no hostname could be determined
+- `401` — not authenticated
+- `403` — not an admin
+
+### `DELETE /api/settings/domain`
+
+Unlock the domain. Same restart behaviour as `POST`.
+
+**Response:** `{ "removed": true, "restart": true }`
+
+**Errors:**
+
+- `400` — no domain is currently locked
+- `401` — not authenticated
+- `403` — not an admin
 
 ## Organization Context (admin only)
 
@@ -1136,7 +1157,7 @@ Get the current enterprise license status and seat usage. Any authenticated user
 
 - `401` — not authenticated
 
-### `POST /api/enterprise/key`
+### `PUT /api/enterprise/key`
 
 Save or update the enterprise license key. **Admin only.** Not available when the key is managed via the `PINCHY_ENTERPRISE_KEY` environment variable (`managedByEnv: true`).
 
