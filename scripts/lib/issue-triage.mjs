@@ -144,6 +144,15 @@ export function parseIssueEvent(payload) {
     throw new Error("unexpected webhook payload: no `issue` object");
   }
 
+  // The number goes straight into a request path, and the payload arrives from
+  // a file on disk (GITHUB_EVENT_PATH). Pinning it to a positive integer is
+  // what stops a malformed or tampered payload from steering that URL.
+  if (!Number.isInteger(issue.number) || issue.number <= 0) {
+    throw new Error(
+      `unexpected webhook payload: issue number is not a positive integer`,
+    );
+  }
+
   return {
     number: issue.number,
     title: issue.title,
@@ -159,9 +168,15 @@ export function parseIssueEvent(payload) {
  * Issue titles and logins are text somebody else wrote. An unescaped `|`
  * splits a Markdown row into extra cells and pushes the link — the only
  * actionable column — out of view.
+ *
+ * The backslash pass has to come first, and it is not cosmetic: escaping only
+ * the pipe turns a title containing `\|` into `\\|`, which Markdown reads as a
+ * literal backslash followed by a LIVE separator — worse than no escaping at
+ * all. `structuralPipes` in the test counts what Markdown will actually treat
+ * as a separator, so it fails on that shape rather than on the spelling.
  */
 function escapeCell(text) {
-  return String(text).replace(/\|/g, "\\|");
+  return String(text).replace(/\\/g, "\\\\").replace(/\|/g, "\\|");
 }
 
 /** Renders the sweep's verdict for the GitHub Actions job summary. */

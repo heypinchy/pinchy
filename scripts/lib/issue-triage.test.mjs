@@ -208,9 +208,12 @@ test("formatOverdueSummary names each issue, its age and its link", () => {
   assert.match(summary, /Error: Setup failed/);
   assert.match(summary, /Flindor/);
   assert.match(summary, /7/);
-  assert.match(
-    summary,
-    /https:\/\/github\.com\/heypinchy\/pinchy\/issues\/849/,
+  // A plain substring check, not a regex: an unanchored URL pattern is exactly
+  // what CodeQL's js/regex/missing-regexp-anchor flags, and `includes` says
+  // what this actually asserts anyway.
+  assert.ok(
+    summary.includes("https://github.com/heypinchy/pinchy/issues/849"),
+    "the summary must carry the issue link",
   );
 });
 
@@ -540,4 +543,79 @@ test("the sweep query asks for every page, not just the first", () => {
   );
   assert.match(source, /pageInfo/, "the query must select pageInfo");
   assert.match(source, /hasNextPage/, "the script must follow the cursor");
+});
+
+/**
+ * Counts the pipes Markdown will read as cell separators — a pipe preceded by
+ * an even number of backslashes is structural, an odd number escapes it. A
+ * four-column row must have exactly five.
+ */
+function structuralPipes(row) {
+  let count = 0;
+  for (let i = 0; i < row.length; i++) {
+    if (row[i] !== "|") continue;
+    let backslashes = 0;
+    for (let j = i - 1; j >= 0 && row[j] === "\\"; j--) backslashes++;
+    if (backslashes % 2 === 0) count++;
+  }
+  return count;
+}
+
+test("formatOverdueSummary escapes a backslash before the pipe it protects", () => {
+  // Escaping `|` but not `\` is worse than not escaping at all: a title
+  // containing `\|` becomes `\\|`, which Markdown reads as a literal
+  // backslash followed by a LIVE cell separator. Found by CodeQL
+  // (js/incomplete-sanitization) after the first version shipped.
+  const summary = formatOverdueSummary([
+    {
+      number: 1,
+      title: "Crash \\| on save",
+      url: "https://example.test/1",
+      authorLogin: "outsider",
+      waitingDays: 2,
+    },
+  ]);
+  const row = summary.split("\n").find((line) => line.includes("Crash"));
+  assert.equal(
+    structuralPipes(row),
+    5,
+    `a four-column row must have exactly 5 separators: ${row}`,
+  );
+});
+
+test("formatOverdueSummary keeps the plain-pipe case structural too", () => {
+  const summary = formatOverdueSummary([
+    {
+      number: 1,
+      title: "Crash | on save",
+      url: "https://example.test/1",
+      authorLogin: "outsider",
+      waitingDays: 2,
+    },
+  ]);
+  const row = summary.split("\n").find((line) => line.includes("Crash"));
+  assert.equal(structuralPipes(row), 5, `unescaped separator leaked: ${row}`);
+});
+
+test("parseIssueEvent insists on a numeric issue number", () => {
+  // The number lands in a request path. It arrives from a file on disk
+  // (GITHUB_EVENT_PATH), so validating it here is what keeps a malformed or
+  // tampered payload from steering the URL — CodeQL js/file-access-to-http.
+  for (const number of ["12/../../foo", "", null, undefined, 1.5, -3, NaN]) {
+    assert.throws(
+      () =>
+        parseIssueEvent({
+          issue: {
+            number,
+            title: "t",
+            html_url: "u",
+            created_at: "2026-07-21T10:54:16Z",
+            author_association: "NONE",
+            user: { login: "x" },
+          },
+        }),
+      /issue number/i,
+      `expected a throw for number=${String(number)}`,
+    );
+  }
 });

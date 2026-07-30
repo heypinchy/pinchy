@@ -81,14 +81,26 @@ export async function ensureLabel({ owner, name }, label) {
 }
 
 export async function addLabels({ owner, name }, issueNumber, labels) {
+  // The caller's number originates in a webhook payload read off disk, so it
+  // reaches this path as untrusted input. parseIssueEvent already rejects a
+  // non-integer, but the function that builds the URL should not depend on
+  // that: anything but a positive integer here would let the payload steer
+  // the request path.
+  const number = Number(issueNumber);
+  if (!Number.isInteger(number) || number <= 0) {
+    throw new Error(
+      `Refusing to build a request path for issue "${issueNumber}"`,
+    );
+  }
+
   const { ok, status, body } = await request(
-    `/repos/${owner}/${name}/issues/${issueNumber}/labels`,
+    `/repos/${owner}/${name}/issues/${number}/labels`,
     { method: "POST", body: JSON.stringify({ labels }) },
   );
 
   if (!ok) {
     throw new Error(
-      `Could not label issue #${issueNumber} (HTTP ${status}): ${body}`,
+      `Could not label issue #${number} (HTTP ${status}): ${body}`,
     );
   }
 }
