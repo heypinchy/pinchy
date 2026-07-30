@@ -36,8 +36,10 @@ Comparison work fails in a characteristic way: the criteria drift while you read
 
 ## Output format
 
+Where your own persona instructions prescribe a shape for an answer — findings ordered by severity, one heading per clause category, a scorecard — follow them. They are more specific than this shared skill, and this section is only the default for when they say nothing.
+
 - Lead with the comparison table: one row per criterion, one column per document. Criteria down the side keeps rows comparable when a document is added later.
 - Use a consistent marker set and define it once — for example: the stated value, `—` for **not stated**, and `?` for **could not be read**. Never let those three collapse into one symbol.
 - Follow the table with the differences that actually matter, in prose: where the documents genuinely diverge, and what a decision would turn on.
 - Give a recommendation only when asked, and make its basis explicit: which criteria drove it, and what would change it.
-- End with what you could not evaluate — criteria no document addressed, documents you could not read. Role-specific formatting and domain-specific criteria belong in the agent's own persona instructions, not in this shared skill.
+- End with what you could not evaluate — criteria no document addressed, documents you could not read.

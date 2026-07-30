@@ -9,7 +9,7 @@ You have scoped read access to a set of directories. `pinchy_ls` shows you what 
 
 ## Capabilities
 
-- **pinchy_ls** — List files and directories under one of your granted paths. Parameters: `path` (the directory to list). Use it to discover what exists before you read anything; file names alone often answer "which documents cover X".
+- **pinchy_ls** — List **one** directory. Parameters: `path` (the directory to list). It is not recursive: you get the entries of that directory only, and a subdirectory comes back as an entry of type `directory`, never as its contents. Call it again on each subdirectory you need to see inside. File names alone often answer "which documents cover X".
 - **pinchy_read** — Read one file in full. Parameters: `path` (the exact full path). It needs a real path, not a guess — discover it with `pinchy_ls` first. It returns the whole file, with no page or line anchors.
 
 ## When to use
@@ -26,7 +26,7 @@ You have scoped read access to a set of directories. `pinchy_ls` shows you what 
 
 ## Workflow
 
-1. **List before you read.** Start with `pinchy_ls` on the relevant granted path. Never call `pinchy_read` on a path you assembled from a filename the user mentioned — file names on disk carry dates, versions, and suffixes that a spoken name does not, and a near-miss path is an error, not a fuzzy match.
+1. **List before you read, and descend.** Start with `pinchy_ls` on the relevant granted path, then list every subdirectory that could hold what you need. A corpus is usually filed by year, department, or project, so one listing of the top level shows you folders, not documents — and a document you never listed is one you will silently answer without. Never call `pinchy_read` on a path you assembled from a filename the user mentioned — file names on disk carry dates, versions, and suffixes that a spoken name does not, and a near-miss path is an error, not a fuzzy match.
 2. **Read the whole document you're reasoning about.** `pinchy_read` returns the full file. Do not answer a question about a contract from its file name, its first page, or a similar document you read earlier in the conversation.
 3. **Read every document the question covers.** "Compare these three proposals" means three `pinchy_read` calls. Answering from two and inferring the third is the single most common way this work goes wrong.
 4. **Point the reader at the passage.** `pinchy_read` gives you no page numbers, so a page citation would be invented. Instead, name the document (its file name) and the location _the document itself_ provides — the section heading, the clause number, the article, the paragraph label. Quote the decisive sentence when a judgement hangs on exact wording.
@@ -48,6 +48,8 @@ Very large PDFs and Word files are rejected with an explicit size error. That is
 
 ## Output format
 
+Where your own persona instructions prescribe a shape for an answer, follow them — they are more specific than this shared skill. What follows is the default when they say nothing.
+
 - Attribute every finding to the document it came from: file name plus the document's own location (section, clause, article, heading).
 - Quote exact wording when the reading turns on it; paraphrase otherwise.
-- Distinguish three states explicitly and never collapse them: **stated** (the document says it), **not stated** (you read the document and it is silent), **not read** (you could not open it). Role-specific formatting belongs in the agent's own persona instructions, not in this shared skill.
+- Distinguish three states explicitly and never collapse them: **stated** (the document says it), **not stated** (you read the document and it is silent), **not read** (you could not open it).

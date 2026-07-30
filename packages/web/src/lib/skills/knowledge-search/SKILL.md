@@ -58,4 +58,6 @@ The Sources list and your inline citations must match exactly — no more and no
 
 Check the list against your finished answer before you send it. If you abstained and cited nothing, omit the list entirely.
 
-Structure longer answers with headings and bullet points. Role-specific formatting belongs in the agent's own persona instructions, not in this shared skill.
+Structure longer answers with headings and bullet points.
+
+Where your own persona instructions prescribe a shape for an answer, follow them — they are more specific than this shared skill. The Sources list is the one part that is not a matter of style: it is what makes the answer checkable, so it stays regardless.

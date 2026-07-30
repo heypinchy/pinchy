@@ -1231,6 +1231,60 @@ describe("POST /api/agents", () => {
     );
   });
 
+  // The skill layer (#543) only reaches an agent if creation copies the
+  // template's defaultSkills onto the agent row: build.ts reads agent.skills,
+  // not the template, when it materializes SKILL.md files and writes the
+  // OpenClaw allowlist. Every "template X carries skill Y" contract test is
+  // asserted one level above this hand-off, so without these two the whole
+  // chain could stay green while no agent ever received a skill.
+  it("seeds the agent's skills column from the template's defaultSkills", async () => {
+    const request = new NextRequest("http://localhost:7777/api/agents", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "HR Knowledge Base",
+        templateId: "knowledge-base",
+        pluginConfig: { "pinchy-files": { allowed_paths: ["/data/hr-docs/"] } },
+      }),
+    });
+
+    await POST(request, routeContext());
+
+    expect(insertValuesMock).toHaveBeenCalledWith(
+      expect.objectContaining({ skills: ["knowledge-search"] })
+    );
+  });
+
+  it("seeds every skill when a template declares more than one", async () => {
+    const request = new NextRequest("http://localhost:7777/api/agents", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "Contract Bot",
+        templateId: "contract-analyzer",
+        pluginConfig: { "pinchy-files": { allowed_paths: ["/data/contracts/"] } },
+      }),
+    });
+
+    await POST(request, routeContext());
+
+    expect(insertValuesMock).toHaveBeenCalledWith(
+      expect.objectContaining({ skills: ["files-search-and-read", "document-comparison"] })
+    );
+  });
+
+  it("seeds an empty skills list for a template that declares none", async () => {
+    // Backwards compatibility: a pre-migration template must produce [], not
+    // undefined — build.ts treats an absent skills field as "let OpenClaw's 58
+    // bundled desktop skills in", which is the opposite of fail-closed.
+    const request = new NextRequest("http://localhost:7777/api/agents", {
+      method: "POST",
+      body: JSON.stringify({ name: "Blank", templateId: "custom" }),
+    });
+
+    await POST(request, routeContext());
+
+    expect(insertValuesMock).toHaveBeenCalledWith(expect.objectContaining({ skills: [] }));
+  });
+
   it("audit log includes modelSelection source and reason", async () => {
     const { appendAuditLog } = await import("@/lib/audit");
     const spy = vi.mocked(appendAuditLog);

@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { DOCUMENT_TEMPLATES } from "@/lib/agent-templates/data/document-agents";
 import { KNOWLEDGE_BASE_TEMPLATES } from "@/lib/agent-templates/data/knowledge-base";
-import { KNOWN_SKILLS, getSkillBody, isKnownSkill } from "@/lib/skills";
+import { KNOWN_SKILLS, getSkillBody } from "@/lib/skills";
 import type { AgentTemplate } from "@/lib/agent-templates/types";
 
 /**
@@ -26,13 +26,10 @@ describe("document + knowledge-base template ↔ skill contract", () => {
     }
   });
 
-  it("every declared skill is a KNOWN_SKILLS entry (drift guard)", () => {
-    for (const [id, t] of allEntries) {
-      for (const skill of t.defaultSkills ?? []) {
-        expect(isKnownSkill(skill), `${id} references unknown skill "${skill}"`).toBe(true);
-      }
-    }
-  });
+  // The "every declared skill is in KNOWN_SKILLS" drift guard is deliberately
+  // NOT repeated here: agent-templates-web.test.ts already asserts it across
+  // every entry of AGENT_TEMPLATES, which is strictly wider than these two
+  // groups. A second copy would only decay out of step with the first.
 
   it("declared skills are unique per template (no duplicates)", () => {
     for (const [id, t] of allEntries) {
