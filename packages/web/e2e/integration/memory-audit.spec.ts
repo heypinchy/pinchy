@@ -106,9 +106,21 @@ test.describe("memory-audit watcher emits agent.memory_changed on MEMORY.md writ
     //    awaitWriteFinish (200 ms stability + 50 ms poll), plus a 250 ms poll
     //    interval (usePolling) on the chokidar side, plus there's a
     //    fs → handler hop and a DB insert. 15 s is comfortably above the worst
-    //    case under CI load. The predicate is the same agent + file identity
-    //    the assertions below check, so the poll cannot exit on a weaker
-    //    condition and then race them.
+    //    case under CI load.
+    //
+    //    The predicate must match every condition the assertions below check,
+    //    not just agent + file. One write can surface as MORE THAN ONE
+    //    memory_changed row — `mkdir -p` then `base64 -d >` can settle as an
+    //    empty-file event followed by a content event, and awaitWriteFinish
+    //    only narrows that window rather than closing it. The later row diffs
+    //    the new content against a snapshot that ALREADY holds it, so it
+    //    carries addedLines: 0 with an identical byteSize.
+    //
+    //    pollAuditForEvent scans newest-first and returns the first match, so a
+    //    predicate that only knows agent + file happily returns that zero row —
+    //    every identity assertion passes and the line-diff one fails with
+    //    "Expected >= 3, Received 0", blaming the watcher for a poll that
+    //    picked the wrong row. Observed on this branch in CI.
     type MemoryDetail = {
       agent?: { id?: string; name?: string };
       file?: string;
@@ -120,7 +132,12 @@ test.describe("memory-audit watcher emits agent.memory_changed on MEMORY.md writ
       eventType: "agent.memory_changed",
       predicate: (e) => {
         const detail = e.detail as MemoryDetail | null;
-        return detail?.agent?.id === smithersId && detail?.file === "MEMORY.md";
+        return (
+          detail?.agent?.id === smithersId &&
+          detail?.file === "MEMORY.md" &&
+          detail?.byteSize === expectedByteSize &&
+          (detail?.addedLines ?? 0) >= 3
+        );
       },
       deadlineMs: 15_000,
       limit: 50,
@@ -144,6 +161,12 @@ test.describe("memory-audit watcher emits agent.memory_changed on MEMORY.md writ
     //    snapshot at the moment of our write is non-deterministic (an earlier
     //    test or a stale on-disk MEMORY.md could have populated it). Three
     //    new fact lines are guaranteed to surface as "added" regardless.
+    //
+    //    This now restates what the poll already required, deliberately: the
+    //    predicate is what makes the poll pick the right row, and this line is
+    //    what says why the number matters. If the watcher genuinely stops
+    //    counting added lines, the failure arrives as the poll timing out with
+    //    no matching row rather than as this assertion.
     expect(detail.addedLines).toBeGreaterThanOrEqual(3);
     expect(detail.removedLines).toBeGreaterThanOrEqual(0);
   });
