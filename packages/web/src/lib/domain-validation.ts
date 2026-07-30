@@ -35,9 +35,14 @@ export const pluginConfigSchema = z
         allowed_paths: z.array(z.string()).refine((paths) => paths.every(isPathUnderDataRoot), {
           message: "allowed_paths entries must be directories under /data",
         }),
-        // Not confined to /data: build.ts appends the agent's workspace memory
-        // dir to the EMITTED config, and write_paths ⊆ allowed_paths is
-        // checked against that post-build list (validate-built-config.ts).
+        // Not confined to /data, and it does not have to be: nothing reads a
+        // STORED write_paths. `build.ts` derives the emitted list itself
+        // (workspace uploads/workbench/memory, only when pinchy_write is
+        // granted) and never looks at this field, so it is accepted for
+        // backward compatibility with rows that already carry it rather than
+        // as a grant anyone can widen. `write_paths ⊆ allowed_paths` is
+        // enforced on that emitted list (validate-built-config.ts) and again
+        // in the plugin at runtime (pinchy-files validate.ts).
         write_paths: z.array(z.string()).optional(),
         allowed_extensions: z.array(z.string()).optional(),
       })
