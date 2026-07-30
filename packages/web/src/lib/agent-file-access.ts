@@ -2,12 +2,24 @@
  * Path containment for serving a workspace/allowed-path file to the browser.
  *
  * `allowed_paths` (see `AgentPluginConfig["pinchy-files"]`) is the SAME
- * admin-configured allowlist that already scopes an agent's file tools
- * (pinchy-files) and its knowledge-base retrieval (`/api/internal/knowledge/
- * search`) — see `openclaw-config/build.ts`'s `adminPaths` and
- * `retrieve.ts`'s `buildPathFilter`. This module answers one question: given
- * a requested absolute path and that allowlist, is it safe to read the file
- * off disk and hand its bytes to the browser?
+ * allowlist that already scopes an agent's file tools (pinchy-files) and its
+ * knowledge-base retrieval (`/api/internal/knowledge/search`) — see
+ * `openclaw-config/build.ts`'s `adminPaths` and `retrieve.ts`'s
+ * `buildPathFilter`. This module answers one question: given a requested
+ * absolute path and that allowlist, is it safe to read the file off disk and
+ * hand its bytes to the browser?
+ *
+ * This used to say "the SAME ADMIN-CONFIGURED allowlist", and that adjective
+ * was the whole vulnerability: `PATCH /api/agents/[id]` gated `allowedTools`,
+ * `visibility` and `groupIds` on the admin role but never gated
+ * `pluginConfig`, so any member could widen their own seeded personal agent's
+ * grant to `/`. The write side is confined now (`pluginConfigSchema`), but a
+ * clamp on new writes says nothing about rows already in the database — an
+ * upgraded install can carry an older grant that was never checked. So
+ * containment is measured against the intersection of the agent's grant and
+ * an absolute ceiling this module owns (`FILE_SERVE_ROOTS`), exactly as
+ * `pinchy-files` measures against its own `ALLOWED_ROOTS` rather than
+ * trusting its config alone. Neither list may widen the other.
  *
  * Two-stage containment, mirroring `packages/plugins/pinchy-files/validate.ts`:
  *
@@ -32,6 +44,10 @@
 import { realpath } from "node:fs/promises";
 import { resolve, sep } from "node:path";
 
+import { FILE_SERVE_ROOTS } from "./file-serve-roots";
+
+export { FILE_SERVE_ROOTS };
+
 export type ResolveAllowedFileResult =
   { ok: true; realPath: string } | { ok: false; status: 403 | 404 };
 
@@ -48,9 +64,17 @@ function isContained(path: string, root: string): boolean {
 
 export async function resolveAllowedFile(
   requestedPath: string,
-  allowedPaths: string[]
+  allowedPaths: string[],
+  /**
+   * The absolute ceiling. Injected rather than read directly so tests can
+   * exercise real containment against a temporary directory — the production
+   * value is a container mount point they cannot create.
+   */
+  serveRoots: readonly string[] = FILE_SERVE_ROOTS
 ): Promise<ResolveAllowedFileResult> {
-  if (allowedPaths.length === 0) {
+  // Either list being empty denies everything: no grant, or no ceiling to
+  // grant within. Both are configuration faults, and both fail closed.
+  if (allowedPaths.length === 0 || serveRoots.length === 0) {
     return { ok: false, status: 403 };
   }
 
@@ -58,8 +82,14 @@ export async function resolveAllowedFile(
   // and relative segments purely as string manipulation, so an obviously
   // out-of-scope request (traversal, absolute path elsewhere) is rejected
   // before we ever stat/read anything the caller doesn't have a right to.
+  //
+  // Both lists must contain the target. The grant says what this agent may
+  // see; the ceiling says what this route may serve at all. An over-broad
+  // grant that predates the write-side clamp therefore buys nothing.
   const lexicalTarget = resolve(requestedPath);
-  const lexicallyContained = allowedPaths.some((root) => isContained(lexicalTarget, resolve(root)));
+  const lexicallyContained =
+    allowedPaths.some((root) => isContained(lexicalTarget, resolve(root))) &&
+    serveRoots.some((root) => isContained(lexicalTarget, resolve(root)));
   if (!lexicallyContained) {
     return { ok: false, status: 403 };
   }
@@ -80,29 +110,34 @@ export async function resolveAllowedFile(
     return { ok: false, status: 403 };
   }
 
-  // ...and on every allowed root, so a root that is itself a symlink (or
-  // whose ancestor is, e.g. macOS `/var` -> `/private/var`) still compares
-  // consistently. Roots that fail to resolve (misconfigured/missing) are
-  // skipped rather than treated as a hard error — another root may still be
-  // valid.
-  const realRoots = await Promise.all(
-    allowedPaths.map(async (root) => {
-      try {
-        // eslint-disable-next-line security/detect-non-literal-fs-filename -- root comes from the admin-configured allowed_paths list (pinchy-files config), not request input.
-        return await realpath(resolve(root));
-      } catch {
-        return null;
-      }
-    })
-  );
+  // ...and on every root of both lists, so a root that is itself a symlink
+  // (or whose ancestor is, e.g. macOS `/var` -> `/private/var`) still
+  // compares consistently. Roots that fail to resolve (misconfigured/missing)
+  // are skipped rather than treated as a hard error — another root may still
+  // be valid.
+  const containsRealTarget = async (roots: readonly string[]) => {
+    const realRoots = await Promise.all(
+      roots.map(async (root) => {
+        try {
+          // eslint-disable-next-line security/detect-non-literal-fs-filename -- root comes from the agent's allowed_paths list or the module's own serve-root ceiling, not from request input.
+          return await realpath(resolve(root));
+        } catch {
+          return null;
+        }
+      })
+    );
+    return realRoots.some((realRoot) => realRoot !== null && isContained(realTarget, realRoot));
+  };
 
-  const reallyContained = realRoots.some(
-    (realRoot) => realRoot !== null && isContained(realTarget, realRoot)
-  );
+  // The ceiling is re-applied to the REAL path, not just the lexical one.
+  // Without that, a symlink planted inside a served directory and pointing at
+  // the secrets mount would satisfy both stage-1 checks and still be read.
+  const reallyContained =
+    (await containsRealTarget(allowedPaths)) && (await containsRealTarget(serveRoots));
   if (!reallyContained) {
     // The lexical path was in scope, but its real (symlink-resolved) target
-    // escapes every allowed root — a symlink planted inside an allowed
-    // directory pointing outside it. Deny.
+    // escapes the grant or the ceiling — e.g. a symlink planted inside an
+    // allowed directory pointing outside it. Deny.
     return { ok: false, status: 403 };
   }
 

@@ -48,6 +48,22 @@ vi.mock("@/lib/audit-deferred", () => ({
   deferAuditLog: (...args: unknown[]) => mockDeferAuditLog(...args),
 }));
 
+// The route enforces an absolute ceiling (`FILE_SERVE_ROOTS`, "/data/" in
+// production) on top of the agent's grant. The cases below are about the
+// grant and their fixtures live in a temp dir, so the ceiling is MOVED there
+// rather than switched off — every assertion still runs against a real one.
+// The ceiling's own behaviour is covered in `lib/agent-file-access.test.ts`,
+// and end-to-end through this route in
+// `agent-workspace-file-legacy-grant.test.ts`.
+// Not realpath'd on purpose: the fixtures below are built on the raw
+// `tmpdir()` path, and stage 1 of the check is lexical. Stage 2 realpaths
+// both sides itself, which is what makes macOS's /var -> /private/var
+// symlink compare equal there.
+vi.mock("@/lib/file-serve-roots", async () => {
+  const { tmpdir } = await import("node:os");
+  return { FILE_SERVE_ROOTS: [tmpdir()] };
+});
+
 let tmpRoot: string;
 let allowedRoot: string;
 let outsideDir: string;

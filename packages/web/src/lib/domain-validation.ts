@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { isPathUnderDataRoot } from "./knowledge/citation-path";
+
 // Each label: 1-63 chars, alphanumeric + hyphens (not leading/trailing hyphen).
 // At least two labels required (no bare "localhost" etc.).
 const DOMAIN_RE = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/;
@@ -13,12 +15,29 @@ export function isValidDomain(domain: string): boolean {
  * type in @/db/schema and is the shape-of-truth for both POST and PATCH agent
  * routes. Domain validity inside `pinchy-web` is layered on top via
  * `validatePinchyWebConfig` (it's a content check, not a shape check).
+ *
+ * `allowed_paths` is confined HERE rather than in a route, and that placement
+ * is the fix rather than an implementation detail. It is not a preference: it
+ * is the allowlist that scopes the agent's file tools, its knowledge-base
+ * retrieval filter, and the browser-facing
+ * `GET /api/agents/[id]/workspace-file` route. The two routes that write it
+ * disagreed — POST confined it only when `template.pluginId ===
+ * "pinchy-files"`, PATCH not at all — and since PATCH gates `allowedTools`,
+ * `visibility` and `groupIds` on the admin role but never gated
+ * `pluginConfig`, any member could point their own seeded personal agent at
+ * `/` and read the container's secrets. A boundary each caller has to
+ * remember is a boundary that a third caller will not have.
  */
 export const pluginConfigSchema = z
   .object({
     "pinchy-files": z
       .object({
-        allowed_paths: z.array(z.string()),
+        allowed_paths: z.array(z.string()).refine((paths) => paths.every(isPathUnderDataRoot), {
+          message: "allowed_paths entries must be directories under /data",
+        }),
+        // Not confined to /data: build.ts appends the agent's workspace memory
+        // dir to the EMITTED config, and write_paths ⊆ allowed_paths is
+        // checked against that post-build list (validate-built-config.ts).
         write_paths: z.array(z.string()).optional(),
         allowed_extensions: z.array(z.string()).optional(),
       })
