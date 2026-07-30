@@ -2205,6 +2205,21 @@ function verificationError(text: string): {
 // acknowledge" pattern, mirroring `odoo_reconcile`'s `didReconcile` check).
 // ---------------------------------------------------------------------------
 
+// #723: eval-only governance toggle. The write guards (duplicate guard #721 +
+// read-back verification #720) are DEFAULT-ON. The governed-tools comparison
+// sweep needs to run the SAME scenarios with the guards OFF (the ungoverned
+// arm) so the before/after delta isolates the guards' effect. The switch is the
+// env var PINCHY_ODOO_GOVERNANCE, read at the two guard decision points in
+// odoo_create. It is stack-level and eval-only: never emitted into product
+// config, never settable from the product UI, set only by docker-compose.eval.yml.
+//
+// Fail-safe: enforced unless the value is EXACTLY "off" (case-insensitive,
+// trimmed). Any unrecognized value keeps the guards on, so a typo can never
+// silently disable governance in production.
+export function governanceEnforced(): boolean {
+  return (process.env.PINCHY_ODOO_GOVERNANCE ?? "").trim().toLowerCase() !== "off";
+}
+
 // Models whose writes we verify. Start with account.move + its line model (the
 // highest-stakes writes, per #720); widen only if the eval supports it.
 const VERIFIED_WRITE_MODELS = new Set(["account.move", "account.move.line"]);
@@ -2398,6 +2413,18 @@ const plugin = {
     const agentConfigs = pluginConfig?.agents ?? {};
     const apiBaseUrl = pluginConfig?.apiBaseUrl ?? "";
     const gatewayToken = pluginConfig?.gatewayToken ?? "";
+
+    // #723: make an ungoverned stack impossible to miss. The write guards
+    // (#720/#721) are default-on; PINCHY_ODOO_GOVERNANCE=off disables them for
+    // the eval's ungoverned arm ONLY. Warn once at load so an operator can never
+    // mistake an ungoverned run for a governed one (goes to OpenClaw stdout).
+    if (!governanceEnforced()) {
+      console.warn(
+        "[pinchy-odoo] governance is OFF (PINCHY_ODOO_GOVERNANCE=off): write " +
+          "guards (duplicate guard #721, read-back verification #720) are " +
+          "DISABLED. This is an eval-only mode — never run it in production."
+      );
+    }
 
     // Client cache per agent. Built lazily on first tool call: fetch
     // credentials from Pinchy → instantiate OdooClient. TTL keeps the
@@ -3144,6 +3171,7 @@ const plugin = {
                   let override: ExistingBillSnapshot | null = null;
                   const moveType = typeof values.move_type === "string" ? values.move_type : "";
                   if (
+                    governanceEnforced() &&
                     model === "account.move" &&
                     VENDOR_DOCUMENT_MOVE_TYPES.has(moveType) &&
                     typeof values.ref === "string" &&
@@ -3212,14 +3240,18 @@ const plugin = {
               // reporting success. On a silent no-op (id returned, nothing
               // saved) or a verbatim-scalar mismatch this returns a hard error
               // so the model surfaces the failure instead of narrating success.
-              const verify = await verifyCreate(
-                agentId,
-                config,
-                model,
-                id,
-                outcome.sentValues,
-                outcome.modelFields
-              );
+              // #723: skipped in the ungoverned eval arm (governance off) so the
+              // sweep can measure the silent no-op the guard was built to catch.
+              const verify = governanceEnforced()
+                ? await verifyCreate(
+                    agentId,
+                    config,
+                    model,
+                    id,
+                    outcome.sentValues,
+                    outcome.modelFields
+                  )
+                : ({ ok: true, verified: false } as const);
               if (!verify.ok) return verificationError(verify.error);
 
               // Emit a self-ref so the LLM can chain into tools that consume
