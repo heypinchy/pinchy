@@ -183,3 +183,58 @@ test("no hard-coded port in the repo sits inside an allocation band", () => {
       `port out of the bands or add it to RESERVED_PORTS in worktree-ports.mjs.`,
   );
 });
+
+// ---------------------------------------------------------------------------
+
+/**
+ * 3. THE SPLIT BRAIN. `vitest.integration.config.ts` resolves the test-DB port
+ *    from this worktree's allocation; `test-helpers/integration/global-setup.ts`
+ *    used to carry its OWN `localhost:5434` default. So in any allocated
+ *    worktree the two halves of `pnpm test:db` addressed different servers: the
+ *    config pointed the tests at :5444 while global-setup ran DROP DATABASE /
+ *    CREATE DATABASE plus migrations on :5434.
+ *
+ *    Nothing listening on 5434 makes that a loud ECONNREFUSED, which is the
+ *    lucky case. The unlucky case is another worktree's dev stack sitting there:
+ *    then `pnpm test:db` in worktree A drops and recreates `pinchy_test_vitest`
+ *    on worktree B's Postgres. That is the exact hazard the config file's own
+ *    comment warns about ("or, worse, quietly run against ANOTHER worktree's
+ *    Postgres and truncate its tables") — written next to the half that was
+ *    fixed, while the other half still had the default.
+ *
+ *    Guard 2 cannot catch this: 5434 is the allocator's own base port and is
+ *    legitimately in RESERVED_PORTS, so a hard-coded 5434 looks fine to it. The
+ *    defect is not the number, it is having a SECOND source for it.
+ */
+test("the test-db URL has exactly one source, shared by config and global-setup", () => {
+  const files = [
+    join("packages", "web", "vitest.integration.config.ts"),
+    join(
+      "packages",
+      "web",
+      "src",
+      "test-helpers",
+      "integration",
+      "global-setup.ts",
+    ),
+  ];
+
+  const offenders = [];
+  for (const file of files) {
+    const text = read(file);
+    // A literal postgres:// URL in either file is a second source of truth,
+    // whichever port it names.
+    const literals = text.match(/postgres(?:ql)?:\/\/[^\s"'`]+/g) ?? [];
+    if (literals.length > 0) offenders.push(`${file}: ${literals.join(", ")}`);
+  }
+
+  assert.deepEqual(
+    offenders,
+    [],
+    `These files hard-code a Postgres URL instead of importing the shared ` +
+      `resolver (packages/web/src/test-helpers/integration/db-url.ts): ` +
+      `${offenders.join("; ")}. Two sources means the suite can provision one ` +
+      `database and test against another — and DROP DATABASE on a port this ` +
+      `worktree does not own.`,
+  );
+});
