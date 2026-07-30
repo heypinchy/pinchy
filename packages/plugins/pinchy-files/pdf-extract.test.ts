@@ -1,14 +1,18 @@
 // @vitest-environment node
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { readFileSync } from "fs";
 import { join } from "path";
 import PDFDocument from "pdfkit";
+import { OPS } from "pdfjs-dist/legacy/build/pdf.mjs";
 import {
   extractPdfText,
   isScannedPage,
   getImageObject,
+  classifyPageImages,
+  collectEmbeddedImages,
   remainingImageBudget,
   IMAGE_OBJECT_TIMEOUT_MS,
+  type ImageLookup,
 } from "./pdf-extract";
 
 const FIXTURES = join(import.meta.dirname, "test-fixtures");
@@ -144,6 +148,165 @@ describe("remainingImageBudget — one page cannot spend the timeout once per im
     // read as "no limit" to anyone skimming the call site. Clamp it.
     expect(remainingImageBudget(IMAGE_OBJECT_TIMEOUT_MS)).toBe(0);
     expect(remainingImageBudget(IMAGE_OBJECT_TIMEOUT_MS + 60_000)).toBe(0);
+  });
+});
+
+describe("the page — not the image — is the unit both scan paths bound", () => {
+  // remainingImageBudget above is only arithmetic; these tests are about whether
+  // the two loops that walk a page's paintImageXObject ops actually spend ONE
+  // budget between them. Until they did, the budget bounded the embedded-image
+  // loop alone, while the classification loop — the one that runs on every
+  // sparse page of every document, up to DEFAULT_MAX_PAGES of them — still paid
+  // the full per-lookup allowance per image. Raising that allowance 5s -> 30s
+  // therefore multiplied the document-level worst case by six with nothing
+  // capping it: 50 pages x 30s of pure waiting.
+  //
+  // Both functions take the operator list as an ARGUMENT on purpose. The budget
+  // clock cannot start before `page.getOperatorList()` has resolved, so parsing
+  // a heavy page's ops can no longer eat the allowance its images need.
+  const smallImage = { width: 10, height: 10, data: new Uint8ClampedArray(4) };
+  const largeImage = { width: 1200, height: 1600, data: new Uint8ClampedArray(4) };
+  /** Never consulted: every test here injects `lookup` instead of hitting pdfjs. */
+  const noImageStore = { get: () => {} };
+
+  /** An operator list painting `count` images, with a non-image op in between. */
+  function paintOps(count: number) {
+    const fnArray: number[] = [];
+    const argsArray: unknown[][] = [];
+    for (let i = 0; i < count; i++) {
+      fnArray.push(OPS.save);
+      argsArray.push([]);
+      fnArray.push(OPS.paintImageXObject);
+      argsArray.push([`img${i}`]);
+    }
+    return { fnArray, argsArray };
+  }
+
+  /** A lookup that records the allowance it was handed and burns `costMs`. */
+  function spendingLookup(costMs: number, result: ImageLookup) {
+    const allowances: number[] = [];
+    let clock = 0;
+    return {
+      allowances,
+      now: () => clock,
+      lookup: async (_objs: unknown, _name: string, timeoutMs: number) => {
+        allowances.push(timeoutMs);
+        clock += costMs;
+        return result;
+      },
+    };
+  }
+
+  it("shrinks the classification allowance as the page spends it", async () => {
+    const spy = spendingLookup(10_000, { status: "resolved", image: smallImage });
+    await classifyPageImages(paintOps(4), noImageStore, {
+      now: spy.now,
+      lookup: spy.lookup,
+    });
+    // Four small images that each take 10s used to cost 4 x 30s of allowance;
+    // they now share the page's single 30s and the last one gets nothing left.
+    expect(spy.allowances).toEqual([30_000, 20_000, 10_000, 0]);
+  });
+
+  it("shrinks the embedded-image allowance the same way", async () => {
+    const spy = spendingLookup(12_000, { status: "resolved", image: smallImage });
+    await collectEmbeddedImages(paintOps(3), noImageStore, {
+      now: spy.now,
+      lookup: spy.lookup,
+    });
+    expect(spy.allowances).toEqual([30_000, 18_000, 6_000]);
+  });
+
+  it("stops classifying at the first large image", async () => {
+    const spy = spendingLookup(0, { status: "resolved", image: largeImage });
+    const verdict = await classifyPageImages(paintOps(5), noImageStore, {
+      now: spy.now,
+      lookup: spy.lookup,
+    });
+    expect(verdict).toEqual({ hasLargeImages: true, imageSizeUnknown: false });
+    expect(spy.allowances).toHaveLength(1);
+  });
+
+  it("reports an unmeasurable image as a scan, and says so", async () => {
+    const warnings: string[] = [];
+    const spy = spendingLookup(0, { status: "timeout" });
+    const verdict = await classifyPageImages(paintOps(3), noImageStore, {
+      now: spy.now,
+      lookup: spy.lookup,
+      warn: (m) => warnings.push(m),
+    });
+    expect(verdict).toEqual({ hasLargeImages: false, imageSizeUnknown: true });
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatch(/scan/i);
+  });
+
+  it("stays text when every painted image is measurably small", async () => {
+    const spy = spendingLookup(0, { status: "resolved", image: smallImage });
+    expect(
+      await classifyPageImages(paintOps(3), noImageStore, {
+        now: spy.now,
+        lookup: spy.lookup,
+      })
+    ).toEqual({ hasLargeImages: false, imageSizeUnknown: false });
+  });
+
+  it("collects the large images pdfjs did answer for and skips the rest", async () => {
+    const answers: ImageLookup[] = [
+      { status: "resolved", image: largeImage },
+      { status: "unavailable" },
+      { status: "timeout" },
+      { status: "resolved", image: smallImage },
+    ];
+    let i = 0;
+    const images = await collectEmbeddedImages(paintOps(4), noImageStore, {
+      now: () => 0,
+      lookup: async () => answers[i++],
+      warn: () => {},
+    });
+    expect(images).toHaveLength(1);
+    expect(images[0]).toMatchObject({ width: 1200, height: 1600 });
+  });
+
+  it("never claims a scan when it gives up on an embedded image", async () => {
+    // This loop only runs for a page that is NOT sparse and NOT a scan, so the
+    // classification wording would be actively false here: the image is dropped
+    // and the page keeps its text. One warning per page, not one per image —
+    // once the budget is spent every remaining lookup times out instantly, and a
+    // 50-image page would otherwise emit 50 identical lines.
+    const warnings: string[] = [];
+    await collectEmbeddedImages(paintOps(6), noImageStore, {
+      now: () => 0,
+      lookup: async () => ({ status: "timeout" }) as ImageLookup,
+      warn: (m) => warnings.push(m),
+    });
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).not.toMatch(/scan/i);
+  });
+
+  it("says nothing when the whole page decoded in time", async () => {
+    const warnings: string[] = [];
+    await collectEmbeddedImages(paintOps(2), noImageStore, {
+      now: () => 0,
+      lookup: async () => ({ status: "resolved", image: largeImage }) as ImageLookup,
+      warn: (m) => warnings.push(m),
+    });
+    expect(warnings).toEqual([]);
+  });
+
+  it("leaves the interpretation of a timeout to its caller", async () => {
+    // getImageObject is used by both loops, which draw opposite conclusions from
+    // a timeout. A warning inside it can therefore only be right for one of them
+    // — it used to announce "treating the page as a scan" to the loop that does
+    // the exact opposite.
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect(await getImageObject({ get: () => {} }, "img0", 10)).toEqual({
+        status: "timeout",
+      });
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
 

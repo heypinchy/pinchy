@@ -98,24 +98,26 @@ type ImageObject = { width: number; height: number; data: Uint8ClampedArray };
  * image" is evidence, pdfjs not answering in time is the absence of evidence,
  * and the two must not be collapsed into the same `null`.
  */
-type ImageLookup =
+export type ImageLookup =
   { status: "resolved"; image: ImageObject } | { status: "timeout" } | { status: "unavailable" };
 
+type ImageStore = { get: (name: string, callback: (data: unknown) => void) => void };
+
+/**
+ * Deliberately silent about what a timeout MEANS. The two loops below draw
+ * opposite conclusions from one — the classifier reads it as evidence of a scan,
+ * the embedded-image collector drops the image and keeps the page's text — so a
+ * warning from in here can only ever be right for one of them. It used to
+ * announce "treating the page as a scan" to the caller that does the opposite.
+ * Each loop logs its own outcome instead.
+ */
 export function getImageObject(
-  pageObjs: { get: (name: string, callback: (data: unknown) => void) => void },
+  pageObjs: ImageStore,
   name: string,
   timeoutMs: number = IMAGE_OBJECT_TIMEOUT_MS
 ): Promise<ImageLookup> {
   return new Promise((resolve) => {
-    const timeout = setTimeout(() => {
-      // Loud on purpose. A dropped measurement changes what the agent is shown,
-      // so it must never pass unnoticed — plugin stdout goes to OpenClaw's log.
-      console.warn(
-        `[pinchy-files] pdf image "${name}" not decoded within ${timeoutMs}ms — ` +
-          `treating the page as a scan rather than dropping it`
-      );
-      resolve({ status: "timeout" });
-    }, timeoutMs);
+    const timeout = setTimeout(() => resolve({ status: "timeout" }), timeoutMs);
     try {
       pageObjs.get(name, (data: unknown) => {
         clearTimeout(timeout);
@@ -154,6 +156,139 @@ export function isScannedPage(opts: {
   imageSizeUnknown: boolean;
 }): boolean {
   return opts.sparseText && (opts.hasLargeImages || opts.imageSizeUnknown);
+}
+
+/** The operator list shape both image loops read out of `page.getOperatorList()`. */
+type PaintOperatorList = { fnArray: ArrayLike<number>; argsArray: ArrayLike<unknown[]> };
+
+/**
+ * Both loops below walk one page's paint ops under ONE decode budget.
+ *
+ * `now` and `lookup` exist so the budget arithmetic is testable in milliseconds
+ * instead of only through the slow fixtures; `warn` so each loop's own wording
+ * can be asserted. The operator list is a parameter rather than something these
+ * functions fetch, which is what keeps `page.getOperatorList()` — seconds of
+ * parsing on a heavy page — from being charged to the images' allowance.
+ */
+interface PageImageOptions {
+  budgetMs?: number;
+  now?: () => number;
+  warn?: (message: string) => void;
+  lookup?: (objs: ImageStore, name: string, timeoutMs: number) => Promise<ImageLookup>;
+}
+
+function isLargeImage(image: ImageObject): boolean {
+  return image.width >= MIN_IMAGE_DIMENSION && image.height >= MIN_IMAGE_DIMENSION;
+}
+
+/** Every paintImageXObject op on a page, with the image name it paints. */
+function paintedImageNames(ops: PaintOperatorList): string[] {
+  const names: string[] = [];
+  for (let j = 0; j < ops.fnArray.length; j++) {
+    if (ops.fnArray[j] === OPS.paintImageXObject) names.push(ops.argsArray[j][0] as string);
+  }
+  return names;
+}
+
+/**
+ * Whether a sparse-text page paints a large image — i.e. whether it is a scan.
+ *
+ * Stops at the first answer that settles it, and shares one page-wide budget
+ * across the lookups it needs to get there. Without that budget the per-lookup
+ * allowance bounded nothing at page level: a page painting images that each take
+ * most of 30s to decode paid the allowance once per image, and this loop runs on
+ * every sparse page of a document, up to DEFAULT_MAX_PAGES of them.
+ */
+export async function classifyPageImages(
+  ops: PaintOperatorList,
+  pageObjs: ImageStore,
+  options: PageImageOptions = {}
+): Promise<{ hasLargeImages: boolean; imageSizeUnknown: boolean }> {
+  const {
+    budgetMs = IMAGE_OBJECT_TIMEOUT_MS,
+    now = Date.now,
+    warn = console.warn,
+    lookup = getImageObject,
+  } = options;
+  const startedAt = now();
+
+  for (const name of paintedImageNames(ops)) {
+    const result = await lookup(pageObjs, name, remainingImageBudget(now() - startedAt, budgetMs));
+    if (result.status === "timeout") {
+      // Loud on purpose: a dropped measurement changes what the agent is shown,
+      // so it must never pass unnoticed. Plugin stdout goes to OpenClaw's log.
+      warn(
+        `[pinchy-files] pdf image "${name}" not decoded within the page's ${budgetMs}ms ` +
+          `budget — treating the page as a scan rather than serving a blank text layer`
+      );
+      return { hasLargeImages: false, imageSizeUnknown: true };
+    }
+    if (result.status === "resolved" && isLargeImage(result.image)) {
+      return { hasLargeImages: true, imageSizeUnknown: false };
+    }
+  }
+
+  return { hasLargeImages: false, imageSizeUnknown: false };
+}
+
+/**
+ * Every large embedded image on a page that is neither sparse nor a scan.
+ *
+ * Unlike the classifier this cannot stop early — it wants all of them — so the
+ * page budget is what bounds it. Handing the remainder down rather than
+ * abandoning the page keeps the cheap images: pdfjs answers synchronously for
+ * anything already decoded, so those still resolve on a zero budget.
+ */
+export async function collectEmbeddedImages(
+  ops: PaintOperatorList,
+  pageObjs: ImageStore,
+  options: PageImageOptions = {}
+): Promise<ExtractedImage[]> {
+  const {
+    budgetMs = IMAGE_OBJECT_TIMEOUT_MS,
+    now = Date.now,
+    warn = console.warn,
+    lookup = getImageObject,
+  } = options;
+  const startedAt = now();
+  const images: ExtractedImage[] = [];
+  let gaveUp = false;
+
+  for (const name of paintedImageNames(ops)) {
+    try {
+      const result = await lookup(
+        pageObjs,
+        name,
+        remainingImageBudget(now() - startedAt, budgetMs)
+      );
+      if (result.status === "timeout") {
+        gaveUp = true;
+        continue;
+      }
+      if (result.status === "resolved" && isLargeImage(result.image)) {
+        const { width, height, data } = result.image;
+        images.push({
+          width,
+          height,
+          data: Buffer.from(data.buffer, data.byteOffset, data.byteLength),
+        });
+      }
+    } catch {
+      // Skip images that can't be extracted
+    }
+  }
+
+  // Once per page, not once per image: after the budget is spent every remaining
+  // lookup times out at once, and a 50-image page would emit 50 identical lines.
+  // The wording must not mention a scan — this page is definitively not one.
+  if (gaveUp) {
+    warn(
+      `[pinchy-files] gave up waiting for at least one embedded image after the page's ` +
+        `${budgetMs}ms decode budget — the page's text is unaffected, those images are not attached`
+    );
+  }
+
+  return images;
 }
 
 export async function extractPdfText(
@@ -197,27 +332,10 @@ export async function extractPdfText(
     let imageSizeUnknown = false;
     if (sparseText) {
       try {
-        const ops = await page.getOperatorList();
-        for (let j = 0; j < ops.fnArray.length; j++) {
-          if (ops.fnArray[j] === OPS.paintImageXObject) {
-            const imgName = ops.argsArray[j][0] as string;
-            const lookup = await getImageObject(page.objs, imgName);
-            if (lookup.status === "timeout") {
-              // The page painted an image we could not measure. Remember that
-              // rather than reading it as "no large image" — see isScannedPage.
-              imageSizeUnknown = true;
-              break;
-            }
-            if (
-              lookup.status === "resolved" &&
-              lookup.image.width >= MIN_IMAGE_DIMENSION &&
-              lookup.image.height >= MIN_IMAGE_DIMENSION
-            ) {
-              hasLargeImages = true;
-              break; // One large image is enough to confirm it's a scan
-            }
-          }
-        }
+        ({ hasLargeImages, imageSizeUnknown } = await classifyPageImages(
+          await page.getOperatorList(),
+          page.objs
+        ));
       } catch {
         // If we can't check, assume it's not a scan
       }
@@ -226,39 +344,10 @@ export async function extractPdfText(
     const isScanned = isScannedPage({ sparseText, hasLargeImages, imageSizeUnknown });
 
     // Extract embedded images (> 100x100px) from non-scanned pages
-    const embeddedImages: ExtractedImage[] = [];
+    let embeddedImages: ExtractedImage[] = [];
     if (!isScanned && !sparseText) {
-      // Unlike the classification loop above, this one cannot stop at the first
-      // answer — it wants every embedded image — so the per-lookup timeout does
-      // not bound it: a page painting N images pdfjs never answers for would
-      // wait N x IMAGE_OBJECT_TIMEOUT_MS. One budget for the whole page fixes
-      // that without dropping images pdfjs already has decoded, since those come
-      // back synchronously even when nothing is left to spend.
-      const budgetStartedAt = Date.now();
       try {
-        const ops = await page.getOperatorList();
-        for (let j = 0; j < ops.fnArray.length; j++) {
-          if (ops.fnArray[j] === OPS.paintImageXObject) {
-            const imgName = ops.argsArray[j][0] as string;
-            try {
-              const lookup = await getImageObject(
-                page.objs,
-                imgName,
-                remainingImageBudget(Date.now() - budgetStartedAt)
-              );
-              const img = lookup.status === "resolved" ? lookup.image : null;
-              if (img && img.width >= MIN_IMAGE_DIMENSION && img.height >= MIN_IMAGE_DIMENSION) {
-                embeddedImages.push({
-                  width: img.width,
-                  height: img.height,
-                  data: Buffer.from(img.data.buffer, img.data.byteOffset, img.data.byteLength),
-                });
-              }
-            } catch {
-              // Skip images that can't be extracted
-            }
-          }
-        }
+        embeddedImages = await collectEmbeddedImages(await page.getOperatorList(), page.objs);
       } catch {
         // Skip image extraction if operator list fails
       }
