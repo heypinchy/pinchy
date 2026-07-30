@@ -54,6 +54,26 @@ sweep**, which is when new numbers first exist to record.
   0-run scorecard. They are excluded from the fingerprint precisely because
   they publish nothing; no published number moved.
 
+**Governed-tools comparison harness** (#723). Harness capabilities only: **no
+dataset change** — no run row was added, moved, or re-graded, so
+`DATASET_VERSION` stays 1.1.0 and the fingerprint test proves it. The version
+bumps (MINOR) with the **first `-governed` sweep**.
+
+- **Governance toggle**: the stack-level env `PINCHY_ODOO_GOVERNANCE`
+  (`enforced` default | `off`) turns the pinchy-odoo write guards (#720/#721)
+  off for the ungoverned arm. Read by both the plugin (at guard time) and the
+  harness, so the recorded arm cannot disagree with plugin behaviour. Eval-only.
+- **Run stamping**: run rows carry `governance` (`"enforced" | "off"`), absence
+  grandfathered as `"off"` (every pre-guard baseline row was ungoverned). The
+  governed arm writes `<scenario>-governed.jsonl`; the plain label stays the
+  frozen ungoverned baseline.
+- **Export**: a `governedComparison` block pairs the ungoverned baseline cell
+  with the governed cell per (model, scenario) over four scenarios
+  (duplicate-guard, silent-failure, happy-path, line-items) and reports the
+  delta. Absent until the first `-governed` sweep lands — today's export stays
+  byte-identical. When it appears it joins the fingerprint, and the keep-or-
+  revert verdict per guard is recorded in `../governed-comparison-decision.md`.
+
 ## [1.1.0] - 2026-07-17
 
 **Output field — pass^k reliability curve** (#796): every cell now carries

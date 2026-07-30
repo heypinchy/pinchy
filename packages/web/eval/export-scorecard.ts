@@ -50,6 +50,7 @@ import {
 import { ALL_PROMPT_VARIANT_IDS } from "../src/lib/eval/types";
 import type { PromptVariantId, RunResult, RunTrajectory } from "../src/lib/eval/types";
 import { DATASET_VERSION } from "./dataset-version";
+import type { HetznerInvoiceScenario } from "./scenarios/hetzner-invoice";
 import { hetznerInvoiceDuplicateScenario } from "./scenarios/hetzner-invoice-duplicate";
 import { hetznerInvoiceRejectedScenario } from "./scenarios/hetzner-invoice-rejected";
 import { hetznerInvoiceSilentFailureScenario } from "./scenarios/hetzner-invoice-silent-failure";
@@ -321,51 +322,57 @@ interface LoadedScenario {
  * trajectory re-grades. Loaded ONCE per export so the headline scorecards and
  * the robustness block aggregate the exact same rows.
  */
+/**
+ * Loads one scorecard label's runs from `dataDir`, applying the trajectory
+ * re-grade when `regradeScenario` is set. Returns null when the label's data
+ * file does not exist (announced-but-unmeasured), which callers surface as
+ * `not-yet-run`. Shared by the plain-label scenario load AND the #723
+ * "-governed" arm, so the governed cells re-grade through the exact same path
+ * as their ungoverned baseline — the comparison delta then reflects the tool
+ * layer only, never a grader asymmetry between the arms.
+ */
+async function loadRunsForLabel(
+  dataDir: string,
+  label: string,
+  regradeScenario: HetznerInvoiceScenario | undefined
+): Promise<RunResult[] | null> {
+  // File EXISTENCE is the discriminator, deliberately narrower than readJsonl's
+  // catch — a file that exists but fails to parse still surfaces as an anomalous
+  // published 0-run entry a human will question, rather than being waved through
+  // as pending.
+  if (!existsSync(path.join(dataDir, `${label}.jsonl`))) return null;
+
+  const stored = await readJsonl<RunResult>(dataDir, `${label}.jsonl`);
+  if (!regradeScenario) return stored;
+
+  const trajectories = await readJsonl<RunTrajectory & { promptVariant?: PromptVariantId }>(
+    dataDir,
+    `${label}.trajectories.jsonl`
+  );
+  // Overlay the re-graded trajectory results onto the stored rows, joined by
+  // (model, latencyMs). Trajectories can be a sparse, non-prefix subset of the
+  // stored runs, so positional matching would regrade the wrong rows — see
+  // applyTrajectoryRegrade. Rows with no trajectory (e.g. run-timeouts) keep
+  // their stored grade; n is preserved. `promptVariant` rides through when
+  // present so a re-graded row keeps its wording identity.
+  return applyTrajectoryRegrade(
+    stored,
+    trajectories,
+    (traj: RunTrajectory & { promptVariant?: PromptVariantId }) => ({
+      ...gradeRunForScenario(traj, regradeScenario),
+      model: traj.model,
+      ...(traj.promptVariant !== undefined ? { promptVariant: traj.promptVariant } : {}),
+    }),
+    label
+  );
+}
+
 async function loadScenarioRuns(dataDir: string): Promise<LoadedScenario[]> {
   const loaded: LoadedScenario[] = [];
   for (const s of SCENARIOS) {
     // A registered scenario whose sweep hasn't run yet (no data file at all) is
-    // announced as `not-yet-run`, not published as a 0-run scorecard: readJsonl
-    // would quietly return [] and downstream could not tell "no data yet" from
-    // "measured and empty". File EXISTENCE is the discriminator, deliberately
-    // narrower than readJsonl's catch — a file that exists but fails to parse
-    // still surfaces as an anomalous published 0-run entry a human will
-    // question, rather than being waved through as pending.
-    if (!existsSync(path.join(dataDir, `${s.label}.jsonl`))) {
-      loaded.push({ spec: s, runs: null });
-      continue;
-    }
-
-    const stored = await readJsonl<RunResult>(dataDir, `${s.label}.jsonl`);
-    let runs: RunResult[] = stored;
-
-    const regradeScenario = REGRADE_FROM_TRAJECTORIES.get(s.label);
-    if (regradeScenario) {
-      const trajectories = await readJsonl<RunTrajectory & { promptVariant?: PromptVariantId }>(
-        dataDir,
-        `${s.label}.trajectories.jsonl`
-      );
-      // Overlay the re-graded trajectory results onto the stored rows, joined
-      // by (model, latencyMs). Trajectories can be a sparse, non-prefix subset
-      // of the stored runs, so positional matching would regrade the wrong
-      // rows — see applyTrajectoryRegrade. Rows with no trajectory (e.g.
-      // run-timeouts) keep their stored grade; n is preserved. Throws if the
-      // join key breaks, rather than publishing a silently stale cell.
-      // `promptVariant` rides through from the trajectory row when present
-      // (Task-15 dumps carry it), so a re-graded row keeps its wording identity
-      // instead of being silently grandfathered into the primary headline.
-      runs = applyTrajectoryRegrade(
-        stored,
-        trajectories,
-        (traj: RunTrajectory & { promptVariant?: PromptVariantId }) => ({
-          ...gradeRunForScenario(traj, regradeScenario),
-          model: traj.model,
-          ...(traj.promptVariant !== undefined ? { promptVariant: traj.promptVariant } : {}),
-        }),
-        s.label
-      );
-    }
-
+    // announced as `not-yet-run`, not published as a 0-run scorecard.
+    const runs = await loadRunsForLabel(dataDir, s.label, REGRADE_FROM_TRAJECTORIES.get(s.label));
     loaded.push({ spec: s, runs });
   }
   return loaded;
@@ -540,22 +547,136 @@ function buildRobustness(loaded: LoadedScenario[]): RobustnessBlock | undefined 
  * variant rows makes the key appear, the fingerprint moves, and that is the
  * intended MINOR-bump prompt — published numbers are published numbers.
  */
+// ── Governed-tools comparison (#723) ──────────────────────────────────────
+
+/**
+ * The four scenarios the governed/ungoverned comparison covers, in
+ * presentation order: the two the write guards target (duplicate-guard,
+ * silent-failure), then two regression controls (happy-path, line-items). Kept
+ * as slugs so it binds to the SCENARIOS registry rather than restating labels.
+ */
+export const GOVERNED_COMPARISON_SLUGS = [
+  "duplicate-guard",
+  "silent-failure",
+  "happy-path",
+  "line-items",
+] as const;
+
+/** One arm's numbers for a (model, scenario) — infra-errors already excluded. */
+export interface GovernedArmCell {
+  n: number;
+  passes: number;
+  passRate: number;
+}
+
+export interface GovernedComparisonCell {
+  model: string;
+  /** The frozen Eval-v1 baseline (plain label), null if this arm lacks the model. */
+  ungoverned: GovernedArmCell | null;
+  /** The "-governed" arm, null if that sweep lacks the model. */
+  governed: GovernedArmCell | null;
+  /** governed.passRate − ungoverned.passRate, only when BOTH arms measured it. */
+  delta: number | null;
+}
+
+export interface GovernedComparisonScenario {
+  label: string;
+  slug: string;
+  axis: string;
+  /**
+   * Present (and always "not-yet-run") until the scenario's "-governed" sweep
+   * has produced data — the before/after is announced but carries no numbers,
+   * exactly like a not-yet-run PublishedScenario. Downstream must treat it as
+   * "coming", never as a zero delta.
+   */
+  status?: "not-yet-run";
+  models: GovernedComparisonCell[];
+}
+
+const armCell = (c: Cell): GovernedArmCell => ({ n: c.n, passes: c.passes, passRate: c.passRate });
+
+/**
+ * The governed-vs-ungoverned before/after (#723). For each designated
+ * scenario, pairs the published ungoverned baseline cell (plain label) with the
+ * freshly-loaded governed cell ("-governed" label, re-graded through the SAME
+ * path) per model, and reports the pass-rate delta. A scenario whose governed
+ * sweep hasn't run stays `not-yet-run`. `publishedScenarios` may be passed in to
+ * reuse an already-built ungoverned baseline (buildExport does).
+ */
+export async function buildGovernedComparison(
+  dataDir: string = DATA_DIR,
+  publishedScenarios?: PublishedScenario[]
+): Promise<GovernedComparisonScenario[]> {
+  const published = publishedScenarios ?? (await buildPublishedScenarios(dataDir));
+  const bySlug = new Map(SCENARIOS.map((s) => [s.slug, s]));
+  const result: GovernedComparisonScenario[] = [];
+
+  for (const slug of GOVERNED_COMPARISON_SLUGS) {
+    const spec = bySlug.get(slug);
+    if (!spec) throw new Error(`GOVERNED_COMPARISON_SLUGS names an unknown slug: ${slug}`);
+
+    const governedRuns = await loadRunsForLabel(
+      dataDir,
+      `${spec.label}-governed`,
+      REGRADE_FROM_TRAJECTORIES.get(spec.label)
+    );
+    if (governedRuns === null) {
+      result.push({
+        label: spec.label,
+        slug: spec.slug,
+        axis: spec.axis,
+        status: "not-yet-run",
+        models: [],
+      });
+      continue;
+    }
+
+    const ungovernedByModel = new Map(
+      (published.find((p) => p.label === spec.label)?.models ?? []).map((c) => [c.model, c])
+    );
+    const governedByModel = new Map(aggregate(primaryRuns(governedRuns)).map((c) => [c.model, c]));
+    const models = [...new Set([...ungovernedByModel.keys(), ...governedByModel.keys()])]
+      .sort()
+      .map((model) => {
+        const u = ungovernedByModel.get(model) ?? null;
+        const g = governedByModel.get(model) ?? null;
+        return {
+          model,
+          ungoverned: u ? armCell(u) : null,
+          governed: g ? armCell(g) : null,
+          delta: u && g ? round3(g.passRate - u.passRate) : null,
+        };
+      });
+    result.push({ label: spec.label, slug: spec.slug, axis: spec.axis, models });
+  }
+  return result;
+}
+
 export async function buildExport(dataDir: string = DATA_DIR): Promise<{
   datasetVersion: string;
   generatedFrom: string;
   scenarios: PublishedScenario[];
   comparisons: ModelComparison[];
   robustness?: RobustnessBlock;
+  governedComparison?: GovernedComparisonScenario[];
 }> {
   const loaded = await loadScenarioRuns(dataDir);
   const scenarios = publishedFromLoaded(loaded);
   const robustness = buildRobustness(loaded);
+  const governedComparison = await buildGovernedComparison(dataDir, scenarios);
+  // Spread in CONDITIONALLY, like `robustness`: while every arm is not-yet-run
+  // the key is ABSENT (not undefined), so the export stays byte-identical and
+  // DATASET_FINGERPRINT does not move until real governed numbers land. The
+  // first governed sweep makes the key appear, the fingerprint moves, and that
+  // is the intended version-bump prompt.
+  const anyGoverned = governedComparison.some((s) => s.status === undefined);
   return {
     datasetVersion: DATASET_VERSION,
     generatedFrom: "packages/web/eval/data (heypinchy/pinchy)",
     scenarios,
     comparisons: buildComparisons(scenarios),
     ...(robustness !== undefined ? { robustness } : {}),
+    ...(anyGoverned ? { governedComparison } : {}),
   };
 }
 
