@@ -27,7 +27,17 @@ const ORG_ID = "org-kb-eval-chunk-texts";
 const PATH_A = "/data/eval/alpha.pdf";
 const PATH_B = "/data/eval/beta.pdf";
 
-const DB_URL = process.env.DATABASE_URL ?? "";
+// The same URL the integration harness points `db` at (vitest.integration.
+// config.ts sets it). Read it strictly rather than `?? ""`: postgres.js treats
+// an empty connection string as "use libpq defaults", so a missing env var
+// would silently point this test at whatever Postgres the host happens to run
+// — including another worktree's — instead of saying what went wrong.
+const DB_URL = process.env.DATABASE_URL;
+if (!DB_URL) {
+  throw new Error(
+    "DATABASE_URL is unset. This suite must run through vitest.integration.config.ts (pnpm test:db)."
+  );
+}
 
 async function seed(sourcePath: string, texts: string[]) {
   const [doc] = await db

@@ -209,9 +209,11 @@ function seedNoackCorpus(): never {
  * Creates a fresh **Knowledge Base** agent scoped to `knowledge_search` + the
  * eval corpus root, waits for it to be dispatchable.
  *
- * The template is the measurement, not a detail: it is what carries the
- * cite-then-answer instructions the graders enforce. See `sweep-agent.ts` for
- * why a bare `custom` agent made the first sweep unreadable (#869 item 4).
+ * The template is the measurement, not a detail: it is what brings in the
+ * cite-then-answer instructions the graders enforce — today through the
+ * `knowledge-search` skill it declares, which agent creation copies onto the
+ * agent row. See `sweep-agent.ts` for why a bare `custom` agent made the first
+ * sweep unreadable (#869 item 4).
  */
 async function setupKbSweepAgent(cookie: string): Promise<{ agentId: string }> {
   const createRes = await pinchyPost(

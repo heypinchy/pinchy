@@ -19,10 +19,13 @@
  * and `citation-unresolved` for exactly that reason — a setup artifact wearing
  * the costume of a quality signal.
  *
- * The graders encode the KB template's contract clause for clause, so the
- * agent under test has to be the one that carries it. Keeping the two pinned
- * together is what the accompanying test is for: if the template's
- * instructions lose the contract, the sweep stops measuring what it claims to
- * and the test says so.
+ * The graders encode the cited-answer contract clause for clause, so the agent
+ * under test has to be the one that carries it. Since the skill-layer
+ * migration (#543/#544) that contract is delivered by the `knowledge-search`
+ * SKILL.md the template declares, not by its `defaultAgentsMd` — which is why
+ * the accompanying test reads the union of both rather than one file. Keeping
+ * them pinned together is what that test is for: if the contract disappears
+ * from everything the agent is told, the sweep stops measuring what it claims
+ * to and the test says so.
  */
 export const KB_SWEEP_TEMPLATE_ID = "knowledge-base";
