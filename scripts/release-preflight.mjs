@@ -34,6 +34,7 @@ import {
   assertUpgradingSectionExists,
   deriveStagingChecklist,
   checkReleaseVerification,
+  findSkippedReleases,
   isReleasableBranch,
 } from "./lib/release-logic.mjs";
 
@@ -155,6 +156,24 @@ out(
 );
 out(
   `  ${mark(upgradeNotesOk)} upgrade-notes section present${upgradeNotesOk ? "" : ` — ${upgradeNotesMsg}`}`,
+);
+// A cut from a branch that never learned about an earlier release would
+// relabel that release's upgrade notes as this one's delta. `git describe`
+// can't see it (the tag isn't an ancestor of this branch) and package.json
+// can't either (the bump lives on the release branch) — only the full tag
+// list can.
+const skipped = prevVersion
+  ? findSkippedReleases(
+      prevVersion,
+      version,
+      tags.ok ? tags.out.split("\n") : [],
+    )
+  : [];
+out(
+  `  ${mark(tags.ok ? skipped.length === 0 : null)} no release skipped between v${prevVersion ?? "?"} and ${tag}` +
+    (skipped.length
+      ? ` — ${skipped.join(", ")} exists but this branch doesn't know about it. Bump the version pins and open a fresh upgrade-notes section first, or those notes get relabelled as ${tag}'s.`
+      : ""),
 );
 out(
   `  ${mark(ciState)} CI green on ${branch.out || "?"}${ciState === null ? " (could not query gh — check manually)" : ci.out ? ` (${ci.out})` : ""}`,

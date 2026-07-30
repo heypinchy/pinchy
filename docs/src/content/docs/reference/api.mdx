@@ -37,6 +37,25 @@ Service health check. **Public — no authentication required.** Suitable for lo
 
 `configRegeneration` reports the outcome of the most recent boot-time OpenClaw config regeneration. It is `{ "ok": true }` in normal operation. When a startup regeneration fails — most commonly because an image-only upgrade dropped the `openclaw-secrets` volume (see [Upgrading Pinchy](/guides/upgrading/)) — it becomes `{ "ok": false, "error": "<actionable message>", "at": "<ISO timestamp>" }`. This is the one signal that catches a **frozen config**: Pinchy still marks itself healthy so the OpenClaw container can start and hot-reload a fixed config later, so `status` stays `"ok"` and `openclaw.connected` can be `true` while new providers, agents, and model changes silently never take effect. `error` carries operator guidance only — never secret material. Alert on `configRegeneration.ok == false`. A later successful regeneration (for example after you fix the compose file and restart) clears it back to `{ "ok": true }`.
 
+### `GET /api/version`
+
+Which build is running. **Public — no authentication required**, and exempt from Domain Lock, so upgrade verification and monitoring work from any host.
+
+```json
+{
+  "pinchyVersion": "v0.9.0",
+  "openclawVersion": "2026.6.1",
+  "build": "086161f92bc1",
+  "nodeEnv": "production"
+}
+```
+
+This is the endpoint to check after an upgrade: it answers what the container actually is, not what the compose file asked for.
+
+### `GET /api/diagnostics`
+
+Database and OpenClaw reachability, plus the running version. **Public**, but the session is inspected: authenticated callers additionally get a `logs` field with recent server logs. Anonymous callers get the status only.
+
 ### `GET /api/health/openclaw`
 
 OpenClaw gateway reachability check. **Public — no authentication required.**
@@ -271,6 +290,65 @@ Send `id` in the chat message's `attachmentIds` (up to **10** attachments per me
 - `413` — file exceeds the 15 MB limit
 - `415` — unsupported or mismatched file type
 
+### `GET /api/agents/:agentId/chats`
+
+List the caller's conversations with this agent, newest first — the data behind the chat switcher. A chat with no explicit label is titled from its first user message; if that message can't be read, the chat falls back to its date rather than failing the list.
+
+### `POST /api/agents/:agentId/sessions/reset`
+
+Clear the caller's conversation context with this agent — the `/reset` slash command. The OpenClaw session key stays the same but starts empty on the next turn; the old transcript remains on disk, just unreachable from that key. Audited as `chat.session_reset`.
+
+**Response:** `{ "ok": true }`
+
+### `POST /api/agents/:agentId/sessions/compact`
+
+Summarize the caller's conversation with this agent so a long context stops degrading model quality — the `/compact` slash command. Takes effect on the next turn, and the visible messages stay where they are.
+
+**Response:** `{ "ok": true }`
+
+**Errors:**
+
+- `429` — a compaction for this session is already in flight
+- `502` — OpenClaw could not compact the session
+
+### `GET /api/agents/:agentId/active-error`
+
+The agent's current "paused" banner for the caller: the latest error that has not been superseded or dismissed, or `null`. Pass `?chatId=` to address one specific chat; omit it for the default per-user session. The session key embeds the caller's own id, so a user can only ever read their own errors.
+
+### `DELETE /api/agents/:agentId/active-error?id=<errorId>`
+
+Dismiss the error the banner is showing. Scoped to the owning user, so one user can never clear another's banner.
+
+**Errors:**
+
+- `404` — no un-dismissed error with that id belongs to the caller
+
+### `GET /api/agents/:agentId/uploads/:filename`
+
+Download a file the caller uploaded to this agent.
+
+### `GET /api/agents/:agentId/artifacts/:filename`
+
+Download a file the agent produced and delivered in chat — see [Generating files](/guides/file-uploads/#generating-files).
+
+### `GET /api/agents/:agentId/files/:filename`
+
+Read a file in the agent's own workspace.
+
+### `PUT /api/agents/:agentId/files/:filename`
+
+Write a file into the agent's own workspace.
+
+### `GET /api/agents/:agentId/workspace-file?path=<path>&event=<viewed|downloaded>`
+
+Serve a file from a directory this agent is granted under `allowed_paths` — the path behind a knowledge-base citation you click. Supports byte ranges, so a PDF viewer can jump straight to the cited page.
+
+`event` decides which audit row is written: `knowledge.source_viewed` for reading it in the pane, `knowledge.source_downloaded` for taking a copy. Reading a cited document and taking it out of the building are different acts, so they are different rows — the caller says which one this is, because the response alone cannot tell them apart.
+
+### `GET /api/agents/:agentId/telegram-chat`
+
+The mirrored transcript of this agent's Telegram conversations, for reading them in the web UI.
+
 ## Knowledge Base
 
 See [Create a Knowledge Base Agent](/guides/create-knowledge-base-agent/) for the end-to-end setup flow.
@@ -373,6 +451,59 @@ Every run writes two `knowledge.reindex` audit entries, correlated by `jobId`: t
 **Internal** — authenticated with the shared OpenClaw gateway token, not a user session. Called by the `pinchy-knowledge` plugin's `knowledge_search` tool, never by the browser.
 
 Runs a hybrid (vector + full-text) search over the requesting agent's indexed, granted documents and returns numbered, citable passages. The raw query is never persisted — only a one-way hash, since a knowledge-base question can itself carry PII.
+
+### `GET /api/agents/:agentId/knowledge/unsearchable`
+
+**Which** documents the index holds but cannot search — the list behind the `unsearchable` counter in the reindex status. **Admin only.**
+
+The counter answers for the last run; this answers for everything currently in the agent's granted folders, so it is usually the larger of the two. That is the two numbers agreeing, not disagreeing: a file unchanged since an earlier run is `skipped` by the next one and never counted again.
+
+Scoped to the folders that agent is granted, exactly like search itself, so the list never names a document the agent isn't allowed to know about.
+
+## Automations
+
+Standing email workflows an agent runs on its own — see [the Automations tab](/concepts/agent-settings/#automations-tab). You can manage automations on a personal agent you own; admins can manage them on any agent.
+
+### `GET /api/automations?agentId=<agentId>`
+
+List the agent's email workflows.
+
+### `POST /api/automations`
+
+Create a workflow. It is always created **disabled** and `pending`, whatever the payload says — Pinchy proposes an automation, it never activates one on its own. Enabling is the separate, human-gated step below.
+
+**Request body:**
+
+| Field             | Type     | Required | Description                                                                       |
+| ----------------- | -------- | -------- | --------------------------------------------------------------------------------- |
+| `agentId`         | string   | Yes      | The agent that will run the workflow                                              |
+| `name`            | string   | Yes      | Label for the workflow, up to 200 characters                                      |
+| `action`          | string   | Yes      | The instruction the agent follows for each matching mail                          |
+| `connectionIds`   | string[] | Yes      | One to 50 email connections to watch. A workflow with no mailbox would never fire |
+| `filter`          | object   | No       | Trigger filters, AND-combined. Omit for the whole mailbox                         |
+| `sweepWindowDays` | number   | No       | How far back the reconciliation sweep re-lists, 1–365 (default `14`)              |
+
+`filter` accepts `from` (string[]), `toDomain` (string[]), `subjectContains` (string[]), `hasAttachment` (boolean), `attachmentType` (string), and `folder` (string).
+
+**Response:** `201 Created`
+
+### `PATCH /api/automations/:id`
+
+Enable or disable a workflow — the human-gated step that turns a proposal into a live automation, and the way to pause one without deleting it.
+
+**Request body:** `{ "enabled": true }`
+
+**Response:** `{ "id": "...", "enabled": true }`
+
+### `DELETE /api/automations/:id`
+
+Delete a workflow for good.
+
+**Response:** `{ "id": "..." }`
+
+### `GET /api/automations/connections?agentId=<agentId>`
+
+The email connections this agent can watch — what the create form offers in its mailbox picker.
 
 ## Templates
 
@@ -510,6 +641,42 @@ What a removal would do, without doing it — the confirmation dialog uses this 
 
 The target fields are `null` when no other provider is configured (that removal is refused anyway).
 
+### `PATCH /api/settings/providers/default`
+
+Make a configured provider the default for new agents.
+
+**Request body:** `{ "provider": "anthropic" }` — a built-in provider name or a custom provider's slug.
+
+### `GET /api/settings/providers/openai-compatible`
+
+List the OpenAI-compatible providers that have been added. Keys are never returned.
+
+### `POST /api/settings/providers/openai-compatible`
+
+Add or update an OpenAI-compatible provider. See [OpenAI-compatible providers](/guides/llm-providers/#openai-compatible-providers).
+
+**Request body:**
+
+| Field            | Type     | Required | Description                                                                               |
+| ---------------- | -------- | -------- | ----------------------------------------------------------------------------------------- |
+| `id`             | uuid     | No       | Omit to create, pass to update                                                            |
+| `displayName`    | string   | Yes      | Name on the provider tile, up to 120 characters                                           |
+| `baseUrl`        | string   | Yes      | Endpoint that speaks the OpenAI API. Rejected if it resolves to a private-network address |
+| `apiKey`         | string   | No       | Omit on update to keep the stored key                                                     |
+| `manualModelIds` | string[] | No       | Model ids to fall back on when the endpoint's live discovery returns none                 |
+
+The key is encrypted at rest and never written into the OpenClaw configuration in plaintext — see [Secret handling](/security/secrets/).
+
+### `DELETE /api/settings/providers/openai-compatible`
+
+Remove a custom provider. Agents pinned to one of its models are migrated to a still-configured provider, exactly as for a built-in one.
+
+**Request body:** `{ "id": "<uuid>" }`
+
+### `POST /api/settings/providers/openai-compatible/discover`
+
+Ask an endpoint which models it serves, before saving it. Requires `baseUrl` and `apiKey`. The same SSRF guard applies as on save, including across redirects.
+
 ### `GET /api/providers/models`
 
 List available models across all configured providers. Populates the model dropdown in agent settings.
@@ -557,26 +724,47 @@ Backed by the models table, so it reflects the catalog seed and any provider the
 
 ### `GET /api/settings/domain`
 
-Get the current domain lock status.
+Get the current domain lock status, together with the hostname and scheme this request arrived on — which is what the UI compares against to tell you whether locking is safe right now.
 
 **Response:**
 
 ```json
 {
-  "lockedDomain": "pinchy.example.com",
-  "insecureMode": false
+  "domain": "pinchy.example.com",
+  "currentHost": "pinchy.example.com",
+  "isHttps": true
 }
 ```
 
-### `PUT /api/settings/domain`
+`domain` is `null` when no domain is locked.
 
-Set or clear the locked domain. See [Lock Pinchy to a Domain](/guides/domain-lock/) for the full flow and safety guarantees.
+### `POST /api/settings/domain`
 
-**Request body:**
+Lock Pinchy to a domain. **Takes no request body.** The domain is the hostname the request itself arrived on (`X-Forwarded-Host`, falling back to `Host`), and that is deliberate: you can only lock Pinchy to an address you have just proven reachable, so a typo can't lock you out of your own instance. See [Lock Pinchy to a Domain](/guides/domain-lock/) for the full flow and safety guarantees.
 
-| Field          | Type         | Required | Description                                                      |
-| -------------- | ------------ | -------- | ---------------------------------------------------------------- |
-| `lockedDomain` | string\|null | Yes      | Canonical HTTPS hostname. Pass `null` to disable domain locking. |
+The request must arrive over HTTPS (`X-Forwarded-Proto: https`).
+
+**Response:** `{ "domain": "pinchy.example.com", "restart": true }`
+
+`restart: true` is not advisory. The process exits half a second later so the secure-cookie settings take effect, and your container runtime restarts it — expect a few seconds of downtime and one dropped WebSocket.
+
+**Errors:**
+
+- `400` — the request did not arrive over HTTPS, or no hostname could be determined
+- `401` — not authenticated
+- `403` — not an admin
+
+### `DELETE /api/settings/domain`
+
+Unlock the domain. Same restart behaviour as `POST`.
+
+**Response:** `{ "removed": true, "restart": true }`
+
+**Errors:**
+
+- `400` — no domain is currently locked
+- `401` — not authenticated
+- `403` — not an admin
 
 ## Organization Context (admin only)
 
@@ -791,6 +979,14 @@ Revoke a pending invite.
 - `404` — invite not found
 
 ## Invite Claim (public)
+
+### `GET /api/invite/:token`
+
+What kind of flow this token opens, so the page can render the right form. **No authentication required.**
+
+**Response:** `{ "type": "invite" }` for a new-user claim, `{ "type": "reset" }` for a password reset on an existing account. The distinction matters: the reset form deliberately has no name field, so resetting a password can't overwrite the user's display name.
+
+**Errors:** `404` / `410` with an `error` message when the token is unknown, already claimed, or expired.
 
 ### `POST /api/invite/claim`
 
@@ -1029,6 +1225,39 @@ Credentials are encrypted at rest with AES-256-GCM.
 
 Reset a provider's OAuth app credentials. Existing mailbox connections for that provider are left untouched but will need to be reconnected once a new app is configured.
 
+### `GET /api/integrations/imap/autodiscover?email=<address>`
+
+Guess IMAP and SMTP settings for a mailbox address, so the connect form arrives pre-filled. Answers from a provider table first, then an MX-record lookup. A guess, not a promise — `POST /api/integrations/imap/test` is what proves it.
+
+### `POST /api/integrations/imap/test`
+
+Try the settings without saving them. Both halves are exercised: an IMAP login and an SMTP handshake.
+
+**Request body:**
+
+| Field                  | Type   | Required | Description                  |
+| ---------------------- | ------ | -------- | ---------------------------- |
+| `imapHost`, `imapPort` |        | Yes      | IMAP server and port         |
+| `smtpHost`, `smtpPort` |        | Yes      | SMTP server and port         |
+| `username`, `password` | string | Yes      | Mailbox credentials          |
+| `security`             | string | Yes      | `tls`, `starttls`, or `none` |
+
+### `POST /api/integrations/imap`
+
+Create an IMAP email connection. Same body as `/imap/test`, plus an optional `name` (defaults to the mailbox address) and an optional `senderName` for the From header of agent-sent mail. Line breaks in `senderName` are rejected — the first of two header-injection barriers.
+
+### `POST /api/integrations/test-credentials`
+
+Try a connection's credentials without saving them — the generic counterpart to `/imap/test`, used by the Odoo and Web Search forms.
+
+### `POST /api/integrations/list-databases`
+
+List the databases an Odoo server exposes, so the setup wizard can offer them instead of asking you to type one.
+
+### `POST /api/integrations/sync-preview`
+
+What a sync would import, without importing it.
+
 ### `GET /api/integrations/health`
 
 Summary counts of integration connection health (active, `auth_failed`, and connections whose credentials cannot be decrypted under the current encryption key). Backs the red `!` badge on the Settings sidebar entry.
@@ -1160,7 +1389,7 @@ Get the current enterprise license status and seat usage. Any authenticated user
 
 - `401` — not authenticated
 
-### `POST /api/enterprise/key`
+### `PUT /api/enterprise/key`
 
 Save or update the enterprise license key. **Admin only.** Not available when the key is managed via the `PINCHY_ENTERPRISE_KEY` environment variable (`managedByEnv: true`).
 
@@ -1177,6 +1406,14 @@ Save or update the enterprise license key. **Admin only.** Not available when th
 - `400` — key is missing or the JWT signature is invalid
 - `401` — not authenticated
 - `403` — not an admin, or key is managed by env var
+
+### `DELETE /api/enterprise/gated-config`
+
+Remove the configuration that only an enterprise license can hold — delete every group and reset the agents whose visibility depended on one. **Admin only.** This is the deliberate way to come off a license without leaving an instance whose access rules nothing enforces.
+
+Refused with a `409` while a license is active: there is nothing to unwind, and doing it by accident would delete real groups. Audited as `config.gated_config_removed` with the groups and agents it touched.
+
+**Response:** `{ "groupsRemoved": 2, "agentsReset": 5 }`
 
 ## Groups (admin only, enterprise)
 
@@ -1301,6 +1538,20 @@ Replace the members of a group. **Admin only.**
 - `401` — not authenticated
 - `403` — not an admin or no enterprise license
 - `404` — group not found
+
+### `PUT /api/users/:userId/groups`
+
+Replace one user's group memberships — the same relationship as `PUT /api/groups/:id/members`, addressed from the user's side. **Admin only.** The replace is atomic: it commits in full or not at all.
+
+**Request body:** `{ "groupIds": ["<groupId>", ...] }`
+
+Without an active license this endpoint still **removes** memberships, and only refuses to add them. Restrictions must always be tightenable — an expired license may not leave you unable to take someone's access away.
+
+**Errors:**
+
+- `400` — unknown group ids (the response names them)
+- `403` — not an admin, or adding memberships without an active license
+- `404` — user not found
 
 ## Audit Trail (admin only)
 
@@ -1472,6 +1723,23 @@ Export the audit log as a CSV file. Supports the same filters as `GET /api/audit
 - `403` — not an admin
 
 ## User Self-Service
+
+### `POST /api/diagnostics/export`
+
+Build a diagnostics bundle for a bug report — recent turns of a conversation plus the matching audit rows. See [Reporting issues](/guides/reporting-issues/).
+
+**Request body:**
+
+| Field             | Type   | Required | Description                                          |
+| ----------------- | ------ | -------- | ---------------------------------------------------- |
+| `agentId`         | string | Yes      | The agent whose conversation to bundle               |
+| `anchorMessageId` | string | No       | The message the report is about                      |
+| `userDescription` | string | No       | What went wrong, in your words, up to 500 characters |
+
+**Errors:**
+
+- `404` — no such chat for this user and agent
+- `502` — the chat list could not be loaded
 
 ### `PATCH /api/users/me`
 

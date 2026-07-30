@@ -79,7 +79,7 @@ Session keys follow the format `agent:<agentId>:<scope>`. OpenClaw validates tha
 
 This format is used for both personal and shared agents. Each user always gets their own session, which means converting a personal agent to a shared agent is seamless — the original user keeps their session, and other users get new ones.
 
-**Planned formats (not yet implemented):**
+**Planned formats — not yet implemented, and reserved so that background work ([#704](https://github.com/heypinchy/pinchy/issues/704)) doesn't collide with a user's own session:**
 
 | Scope            | Key format                      | Example                               | Use case                   |
 | ---------------- | ------------------------------- | ------------------------------------- | -------------------------- |
@@ -260,7 +260,9 @@ Because the same volume is mounted at two different paths, two helpers in `lib/w
 
 ## Channels
 
-Users don't have to reach their agents through the web UI. Pinchy supports external **channels** that connect agents to messaging platforms. Telegram is the first implemented channel; additional channels (email, Slack) are planned.
+Users don't have to reach their agents through the web UI. Pinchy supports external **channels** that connect agents to messaging platforms. Telegram is the channel implemented today.
+
+Mail reaches agents by a different route: it is an [integration](/concepts/integrations/) they poll rather than a channel that pushes to them, and standing rules over that mailbox are [automations](/concepts/agent-settings/#automations-tab).
 
 ### Per-agent bots
 

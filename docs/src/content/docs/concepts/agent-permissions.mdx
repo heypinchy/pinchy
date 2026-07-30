@@ -25,13 +25,23 @@ Safe tools provide **sandboxed access** to approved directories and the agent's 
 
 Every agent can always list and read files from its own workspace — any text-based file you upload in a chat is immediately accessible. This includes Markdown, CSV, JSON, source code, and more, in addition to PDF text extraction and image analysis.
 
-| Tool               | Always on? | What it does                                                                                                  |
-| ------------------ | ---------- | ------------------------------------------------------------------------------------------------------------- |
-| **Read workspace** | ✓ always   | List and read any file in the agent's workspace (both `uploads/` and `workbench/`), including PDFs and images |
+| Tool               | Tool ID                    | Always on? | What it does                                                                                                  |
+| ------------------ | -------------------------- | ---------- | ------------------------------------------------------------------------------------------------------------- |
+| **Read workspace** | `pinchy_ls`, `pinchy_read` | ✓ always   | List and read any file in the agent's workspace (both `uploads/` and `workbench/`), including PDFs and images |
 
 The workspace has two subdirectories: `uploads/` holds files the user attached in chat, and `workbench/` is the agent's own writable area for notes, exports, and drafts. See [Agent Workspaces](/concepts/workspaces/) for the full three-zone model.
 
 The **Knowledge Base** section below the tools lets you select which directories under `/data/` this agent can also read. These are admin-curated directories mounted into the container — separate from the agent's own workspace. Every access request is validated at runtime against the configured paths.
+
+### Knowledge search
+
+| Tool                 | Tool ID            | What it does                                                                                                                                                              |
+| -------------------- | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Search documents** | `knowledge_search` | Search the indexed knowledge base and return passages with a citable source path and position — see [Create a Knowledge Base agent](/guides/create-knowledge-base-agent/) |
+
+`knowledge_search` is the one tool the Permissions tab does **not** toggle. It reaches an agent through the **Knowledge Base template**, which grants it at creation time — so if you want an agent that searches documents, create it from that template rather than adding the capability to an existing Custom Agent.
+
+It is also the one tool whose reach is set entirely by something else: it searches exactly the directories the agent is granted under the Knowledge Base section above, and nothing outside them. Two agents with the same tool see different corpora.
 
 ### Web Search Tools
 
@@ -160,10 +170,16 @@ For the full setup walkthrough, see [Connect Email](/guides/connect-email/). For
 
 When you create an agent, you pick a template. Each template comes with different default tool permissions. Every new agent also starts with **Write files** (`pinchy_write`) enabled by default — reading the workspace is always on, and the create flow adds write so the agent can save notes and exports out of the box. You can toggle it off later in the Permissions tab.
 
-| Template           | Default tools   | Use case                                           |
-| ------------------ | --------------- | -------------------------------------------------- |
-| **Knowledge Base** | **Write files** | Answer questions from selected documents           |
-| **Custom Agent**   | **Write files** | Start from scratch, configure permissions manually |
+| Template family                                                                                    | Default tools on top of Write files                  | Use case                                                 |
+| -------------------------------------------------------------------------------------------------- | ---------------------------------------------------- | -------------------------------------------------------- |
+| **Knowledge Base**                                                                                 | `knowledge_search`                                   | Answer questions from selected documents, with citations |
+| **Document agents** (Contract Analyzer, Resume Screener, Proposal Comparator, …)                   | none                                                 | Read and reason over files you attach in chat            |
+| **Email agents** ([Email, Sales, Support Assistant](/guides/connect-email/#email-agent-templates)) | the email tools an assistant needs                   | Triage, read, and draft mail                             |
+| **Odoo agents** ([two dozen roles](/guides/connect-odoo/#agent-templates))                         | the Odoo tools that role needs, read-only or writing | Work in a connected Odoo, scoped to one job              |
+| **[Market & News Monitor](/guides/create-market-monitor-agent/)**                                  | `pinchy_web_search`, `pinchy_web_fetch`              | Research a topic on the web and report back              |
+| **Custom Agent**                                                                                   | none                                                 | Start from scratch, configure permissions manually       |
+
+A template is a starting point, not a ceiling: everything except `knowledge_search` can be turned on or off afterwards in the Permissions tab.
 
 After creating an agent, you can change its permissions at any time via the Permissions tab.
 

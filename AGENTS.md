@@ -561,6 +561,39 @@ It lives in `quality` because `quality` already builds the docs and is ungated (
 
 **Do not reach for `starlight-links-validator` instead; it was tried and it does not work here.** The plugin registers its collectors through `markdown.remarkPlugins`/`rehypePlugins`, which Astro 6.4 deprecated and `@astrojs/mdx@5` no longer forwards. Against our 64 `.mdx` pages and one `.md` page it collects nothing from the `.mdx` files, reports one _bogus_ "invalid link" from the `.md` one, and misses a deliberately broken anchor entirely — a gate that fails loudly on the wrong thing while checking nothing. Both `0.24.1` (the Astro 6 line) and `0.25.2` (Astro 7 / Starlight ≥ 0.41) behave that way here. Revisit only after the docs move to Astro 7, and then only with the canary below.
 
+### A Hand-Maintained List That Mirrors Code Will Be Wrong
+
+The 2026-07-30 post-release docs audit found the same defect in three files: `reference/api.mdx` documented 60 of 96 API routes, `concepts/audit-trail.mdx` listed 47 of 56 audit event types, and `concepts/agent-permissions.mdx` — the canonical "what can an agent do" page — never mentioned `knowledge_search`, the tool behind the release's headline feature. Three whole feature families (Automations, OpenAI-compatible providers, IMAP) had shipped with no reference entry at all.
+
+The control group is the argument: `contracts.tools` did **not** drift, because `manifest-tools-drift.test.ts` guards it. The one list with a guard is the one list that stayed correct. Diligence does not scale; a diff does.
+
+So every docs list that mirrors something derivable from code now has one:
+
+- **`scripts/lib/docs-coverage.test.mjs`** — every API route appears in the API reference, **method and path**. That pairing matters: the audit's own manual pass compared paths only, and therefore missed `PUT /api/enterprise/key` documented as `POST`, and a whole Domain Lock section documenting a `PUT` that does not exist (the route is `POST` + `DELETE`, and its response fields were wrong too). It also checks that every `AuditEventType` appears in the audit-trail reference and every grantable tool in the permissions reference. Reading BOTH the tool registry and the plugin manifests is load-bearing — `knowledge_search` is in no registry, it reaches an agent only through the Knowledge Base template, so a registry-only check would have kept missing exactly the tool that went undocumented.
+- **`scripts/lib/docs-consistency.test.mjs`** — no docs page is orphaned from the sidebar (`security/secrets.md` was reachable only from inline links for months); every `Settings → X` names a tab that exists (four pages still said "Settings → Providers" after the rename to "AI Provider" — one commit had claimed to align them all); and every forward-looking promise cites a tracking issue.
+
+Both run under `pnpm test:scripts` in the `quality` job — no new CI wiring, no docs build needed.
+
+Two rules keep them honest. **Exemptions carry a reason and are themselves checked**: an exemption naming a route, event, or tool that no longer exists fails, because a stale exemption is the same drift one level up. And **each check asserts it found a real corpus** (`handlers.length > 50`) — a broken walker that finds nothing would otherwise pass in silence, which is how a coverage gate becomes decoration.
+
+#### Forward-looking claims need an issue, for the same reason skips do
+
+A script cannot know whether "a progress UI is planned for a later phase" is still true — and it wasn't: the progress UI had shipped, and the same page described it 120 lines earlier. So the check does not judge the claim. It requires the sentence to **name a tracking issue**, which converts an un-checkable promise into a checkable one: a closed issue behind a "planned" sentence is a doc describing a world that no longer exists. Same contract as § "No Untracked Test Skips" — the issue number is what makes the promise auditable.
+
+Keep `FORWARD_LOOKING_PHRASES` narrow. It matches commitments ("on the roadmap", "in a later phase"), never descriptions of the present: an invite "not yet claimed" and an upload "not yet part of a conversation" are ordinary prose, and a check that flags those gets switched off within a week.
+
+### The Deployed Docs Are The Release Branch, Not `main`
+
+`docs.yml` is manual-only; the real deploy path is `release.yml` → `screenshots.yml`, checked out at the tag. So **a docs fix merged to `main` is not live until the next release**, and a correction that belongs to the shipped version has to be backported like any other fix.
+
+The v0.9.0 audit found exactly one live-docs error this way: the provider-removal section on `release/0.9` said "Pinchy will not silently re-assign agents", while v0.9.0's `DELETE /api/settings/providers` calls `migrateAgentsOffDeletedProvider` and does precisely that. The corrected wording had been on `main` since before the cut and was never carried over.
+
+At release time, diff `docs/` between the release branch and `main` and classify every hunk: **main-only feature** (leave it) or **correction that applies to the shipped version** (backport it). The `cut-pinchy-release` skill carries this as a step.
+
+Do not "fix" this by deploying docs from `main` instead. Pinning the docs to the release is what makes them describe the software users actually run; the cost is a backport, and the backport is the cheaper half.
+
+`docs.yml`'s manual dispatch takes a required `pinchy_version` input for the same reason: without it, `inject-version.sh` falls back to `packages/web/package.json`, which on `main` still carries the _previous_ release — so an "urgent typo fix" dispatched from `main` would publish install instructions pinned to an older image than the one users can run.
+
 **Verify a change to this gate with a canary, never by reading the code.** Add a link to a heading that does not exist, build, confirm the check fails on that exact link, remove it. That step is what caught the plugin being a no-op; nothing cheaper would have.
 
 Unrelated to the anchors but found while building them: `pnpm -C docs build` now runs `scripts/with-restore.sh astro build` rather than `astro build && restore`. The old `&&` chain short-circuited, so a failed or interrupted build left `vX.Y.Z` injected into the six committed source files `inject-version.sh` touches — and stayed that way, because the next run found no placeholders to inject and therefore registered nothing to restore. The wrapper restores either way and forwards the exit code.

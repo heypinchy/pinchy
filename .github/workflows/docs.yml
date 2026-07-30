@@ -8,6 +8,16 @@ on:
   # deploys docs with whatever screenshots are already in the artifact store —
   # intended for typo fixes, not feature changes.
   workflow_dispatch:
+    inputs:
+      pinchy_version:
+        description: >-
+          Version to render into %%PINCHY_VERSION%% (e.g. v0.9.0). REQUIRED when
+          dispatching from a branch with no release tag on it: inject-version.sh
+          would otherwise fall back to packages/web/package.json, which on `main`
+          still carries the PREVIOUS release — publishing docs that tell users to
+          pull an older image than the one they can run.
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -43,6 +53,7 @@ jobs:
         working-directory: docs
         run: pnpm build
         env:
+          PINCHY_VERSION: ${{ inputs.pinchy_version }}
           UMAMI_WEBSITE_ID: ${{ vars.UMAMI_DOCS_WEBSITE_ID }}
           # Authenticates the GitHub releases loader (Releases page) so it isn't
           # rate-limited and returns the live release list. github.token has

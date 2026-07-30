@@ -32,7 +32,11 @@ Pinchy validates the value against `Intl.DateTimeFormat` before saving. Invalid 
 
 ## What uses the timezone today
 
-No feature consumes this value yet. It is the foundation for scheduled background work — briefings and inbox automations — which will read it when they ship (see the [Background Jobs foundation, #704](https://github.com/heypinchy/pinchy/issues/704), and [Scheduled Briefings, #138](https://github.com/heypinchy/pinchy/issues/138)). Setting the timezone now means those features pick up the correct value from day one.
+No feature consumes this value yet.
+
+[Automations](/concepts/agent-settings/#automations-tab) have shipped since this page was written, and they deliberately don't read it: the reconciliation sweep runs on a short, fixed cadence rather than at a time of day, so there is no clock for a timezone to sit on.
+
+The value is the foundation for background work that genuinely runs at a time — [Scheduled Briefings, #138](https://github.com/heypinchy/pinchy/issues/138), on the [Background Jobs foundation, #704](https://github.com/heypinchy/pinchy/issues/704). Setting the timezone now means those pick up the correct value from day one.
 
 ## Audit trail
 

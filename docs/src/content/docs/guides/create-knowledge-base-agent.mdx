@@ -62,7 +62,7 @@ curl -X POST -b session_cookie "https://pinchy.example.com/api/agents/<agentId>/
 
 This reads the agent's granted folders, extracts text from each PDF, splits it into overlapping chunks, embeds every chunk with a bundled local model (`embeddinggemma`), and stores the result in Pinchy's own Postgres database (using `pgvector`) so it can be searched later.
 
-Indexing is idempotent — unchanged files are skipped on the next run, changed files are re-indexed, and files removed from disk are dropped from the index. **Re-run reindex whenever documents change** — new files, edits, or deletions. There's no automatic file-watcher yet; a scheduled sweep is planned for a later phase.
+Indexing is idempotent — unchanged files are skipped on the next run, changed files are re-indexed, and files removed from disk are dropped from the index. **Re-run reindex whenever documents change** — new files, edits, or deletions. There's no automatic file-watcher yet; a scheduled sweep is tracked in [#714](https://github.com/heypinchy/pinchy/issues/714).
 
 The request comes back immediately with a job to watch:
 
@@ -189,7 +189,7 @@ We cap how many passages any one document can contribute to a single answer, so 
 Phase 1 of the knowledge base is deliberately narrow:
 
 - Only **text-based PDFs** are indexed and searchable via `knowledge_search`. Scanned/image-only PDFs and Office documents (`.docx`, etc.) are on the roadmap, not indexed today.
-- Indexing is a manual admin action (step 6). It runs in the background and reports progress in the app, but you still have to ask for it — a scheduled sweep is planned for a later phase.
+- Indexing is a manual admin action (step 6). It runs in the background and reports its progress in the app, but you still have to ask for it — there is no file-watcher and no scheduled sweep yet ([#714](https://github.com/heypinchy/pinchy/issues/714)).
 
 ### Documents that can't be searched
 
@@ -199,7 +199,7 @@ So the **Index** section in the agent's Permissions tab lists the documents this
 
 The list covers everything in those folders, while the `unsearchable` count above it covers only the documents the last run actually touched — a file that hasn't changed since the run before is `skipped`, not counted again. So the list is usually the larger of the two, and that's them agreeing, not disagreeing.
 
-Today these are almost always scans, and reading text from scans is on the roadmap. When it lands, the list empties itself. Until then it tells you which questions your agent can't answer yet, before somebody asks one of them.
+Today these are almost always scans, and reading text from scans is on the roadmap ([#941](https://github.com/heypinchy/pinchy/issues/941)). When it lands, the list empties itself. Until then it tells you which questions your agent can't answer yet, before somebody asks one of them.
 
 If the list is empty after a run that finished, that's the whole message: every document in those folders came back with searchable text. After a run that failed we don't say it — the run stopped early, so there's nothing solid to say it about.
 

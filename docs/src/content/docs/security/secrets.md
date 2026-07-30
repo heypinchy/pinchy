@@ -85,13 +85,13 @@ Different consumers reach their secrets through different paths. Knowing which p
 
 **Pattern B — Pinchy plugins fetch credentials at call time.** Used by every Pinchy-built plugin that talks to a third-party SaaS: `pinchy-odoo`, `pinchy-email`, `pinchy-web`. `openclaw.json` only carries the plugin's `apiBaseUrl`, the gateway auth token, and an opaque `connectionId`. The plugin calls `GET /api/internal/integrations/:connectionId/credentials` with the gateway token as Bearer auth when it actually needs the credential, caches it in-process with a 5-minute TTL, and invalidates the cache on a 401 so credential rotation works without restarts. The credential itself never appears in `openclaw.json`.
 
-**Pattern C — Bootstrap credentials in `openclaw.json`.** Used only for `gateway.auth.token` and the matching `plugins.entries.pinchy-*.config.gatewayToken`. These are the trust root for the OpenClaw container and cannot be fetched through Pinchy's API by definition — they are written in plaintext into `openclaw.json` on purpose. The `openclaw-plaintext-scanner` validates that no other provider key prefixes have leaked into the config file. Rotate by regenerating the config (any change in **Settings → Providers**) and restarting the OpenClaw container.
+**Pattern C — Bootstrap credentials in `openclaw.json`.** Used only for `gateway.auth.token` and the matching `plugins.entries.pinchy-*.config.gatewayToken`. These are the trust root for the OpenClaw container and cannot be fetched through Pinchy's API by definition — they are written in plaintext into `openclaw.json` on purpose. The `openclaw-plaintext-scanner` validates that no other provider key prefixes have leaked into the config file. Rotate by regenerating the config (any change in **Settings → AI Provider**) and restarting the OpenClaw container.
 
 The defense-in-depth scan that runs at config-write time recognises known provider-key prefixes (`sk-ant-`, `sk-`, etc.) and refuses to write the config if any appear outside the legitimate Pattern A SecretRef slots.
 
 ## Key rotation
 
-If you suspect an API key has been exposed, rotate it at the provider and update it in Pinchy via **Settings → Providers**. Pinchy will write the new encrypted value to PostgreSQL and regenerate the secrets file immediately.
+If you suspect an API key has been exposed, rotate it at the provider and update it in Pinchy via **Settings → AI Provider**. Pinchy will write the new encrypted value to PostgreSQL and regenerate the secrets file immediately.
 
 ## Reporting a vulnerability
 

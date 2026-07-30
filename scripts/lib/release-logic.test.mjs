@@ -15,6 +15,7 @@ import {
   checkReleaseVerification,
   bumpReadmeComposePin,
   isReleasableBranch,
+  findSkippedReleases,
   movingTagForRef,
 } from "./release-logic.mjs";
 
@@ -812,4 +813,40 @@ test("movingTagForRef gives each release branch its own rc-X.Y moving tag", () =
 
 test("movingTagForRef collapses any remaining slash so the tag stays valid", () => {
   assert.equal(movingTagForRef("release/0.9/hotfix"), "rc-0.9-hotfix");
+});
+
+// findSkippedReleases — the guard against the v0.9.0-on-a-release-branch trap:
+// `main` never learned 0.9.0 happened, so both package.json and `git describe`
+// answer 0.8.0 and the next cut would relabel v0.9.0's upgrade notes.
+
+test("findSkippedReleases names a release the cut would step over", () => {
+  assert.deepEqual(
+    findSkippedReleases("0.8.0", "0.10.0", ["v0.8.0", "v0.9.0", "v0.10.0"]),
+    ["v0.9.0"],
+  );
+});
+
+test("findSkippedReleases is quiet on a consecutive release", () => {
+  assert.deepEqual(
+    findSkippedReleases("0.9.0", "0.9.1", ["v0.8.0", "v0.9.0"]),
+    [],
+  );
+});
+
+test("findSkippedReleases sorts numerically, not lexically", () => {
+  assert.deepEqual(
+    findSkippedReleases("0.8.0", "0.20.0", ["v0.9.0", "v0.10.0", "v0.8.0"]),
+    ["v0.9.0", "v0.10.0"],
+  );
+});
+
+test("findSkippedReleases ignores tags that are not releases", () => {
+  assert.deepEqual(
+    findSkippedReleases("0.8.0", "0.10.0", [
+      "pre-rebase-backup",
+      "next",
+      "rc-0.9",
+    ]),
+    [],
+  );
 });

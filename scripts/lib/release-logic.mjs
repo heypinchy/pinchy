@@ -516,3 +516,46 @@ export function movingTagForRef(refName) {
   const rc = refName.replace(/^release\//, "").replaceAll("/", "-");
   return `rc-${rc}`;
 }
+
+/**
+ * Releases that sit between the "from" version and the target — i.e. releases
+ * this cut would silently skip.
+ *
+ * This exists because of what the v0.9.0 cycle did to `main`. The release was
+ * cut on `release/0.9`, so the version bump and the frozen upgrade section
+ * live only on that branch: `main`'s package.json still says 0.8.0, and
+ * `git describe` on `main` still answers v0.8.0 because the v0.9.0 tag is not
+ * an ancestor. Both of the inputs the release machinery trusts therefore agree
+ * on a "from" version that is one release out of date — and agreeing is
+ * exactly what makes it invisible.
+ *
+ * The consequence is not a bad version number. It is that
+ * `finalizeUpgradeSection` would relabel the v0.9.0 upgrade notes as the
+ * v0.10.0 delta, so a user upgrading FROM v0.9.0 would find no section
+ * addressed to them and the pgvector/Knowledge-Base notes would be attributed
+ * to the wrong release. Docs are the only place that damage shows up, and by
+ * then they are published.
+ *
+ * The full tag list is the one input that cannot be fooled by which branch you
+ * are standing on.
+ *
+ * @param {string} prevVersion - the "from" version, no leading 'v' (e.g. "0.8.0")
+ * @param {string} targetVersion - the version being cut, no leading 'v'
+ * @param {string[]} allTags - every tag in the repo (`git tag --list`)
+ * @returns {string[]} skipped release tags, oldest first (empty = ok)
+ */
+export function findSkippedReleases(prevVersion, targetVersion, allTags) {
+  const key = (v) => v.split(".").map(Number);
+  const cmp = (a, b) => {
+    const [x, y] = [key(a), key(b)];
+    for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return x[i] - y[i];
+    return 0;
+  };
+  return allTags
+    .map((t) => t.trim())
+    .filter((t) => /^v\d+\.\d+\.\d+$/.test(t))
+    .map((t) => t.slice(1))
+    .filter((v) => cmp(v, prevVersion) > 0 && cmp(v, targetVersion) < 0)
+    .sort(cmp)
+    .map((v) => `v${v}`);
+}
