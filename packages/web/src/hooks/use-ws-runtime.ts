@@ -1057,11 +1057,12 @@ export function useWsRuntime(
         // state (e.g. an in-flight run whose history has since shrunk) can
         // change while the tab wasn't listening even though the socket
         // itself never dropped. Same buffer-then-drain protocol as
-        // ws.onopen / recoverFromPageLifecycle's OPEN branch.
+        // ws.onopen / recoverFromPageLifecycle's OPEN branch — and the same
+        // #956 deadline: a socket that "survived" the hidden spell is
+        // exactly the one that may be half-dead (still reports OPEN, sends
+        // go nowhere), so this request must not wait without a watchdog.
         shouldRecoverFromHistoryRef.current = true;
-        pendingHistoryRef.current = true;
-        frameBufferRef.current = [];
-        wsRef.current.send(JSON.stringify({ type: "history", agentId, ...(chatId && { chatId }) }));
+        sendHistoryRequest(wsRef.current);
         return;
       }
 

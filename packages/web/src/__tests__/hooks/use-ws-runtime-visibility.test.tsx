@@ -238,6 +238,43 @@ describe("useWsRuntime — visibility-driven reconnect lifecycle (#895)", () => 
     expect(historyRequestCount()).toBe(2);
   });
 
+  it("arms the #956 watchdog on the visible reconcile, so a stalled answer still self-heals", () => {
+    // The visible-with-OPEN-socket reconcile is a history request the UI
+    // waits on, so it must carry the same deadline as every other one
+    // (sendHistoryRequest's invariant). The socket that "survived" the
+    // hidden spell is exactly the one that may be half-dead — still
+    // reporting OPEN after a network change while the tab wasn't looking,
+    // with every send going nowhere (the forceReconnect scenario). Without
+    // the watchdog, pendingHistoryRef then sticks forever: focus- and
+    // poke-driven catch-ups both coalesce on it and skip, no timeout is
+    // surfaced, and the chat hangs until a full reload.
+    const { result } = renderHook(() => useWsRuntime("agent-1"));
+    const ws1 = latestWs();
+
+    act(() => {
+      ws1.simulateOpen();
+    });
+
+    act(() => {
+      setVisibility("hidden");
+    });
+    act(() => {
+      setVisibility("visible");
+    });
+    // Reconcile request went out over the still-open socket; nobody answers.
+    expect(ws1.close).not.toHaveBeenCalled();
+
+    // Advance past the 20s history-answer deadline while visible: the
+    // watchdog must surface the stall and self-heal via forceReconnect
+    // (deliberate close of the half-dead socket).
+    act(() => {
+      vi.advanceTimersByTime(20_000);
+    });
+
+    expect(result.current.historyTimedOut).toBe(true);
+    expect(ws1.close).toHaveBeenCalledTimes(1);
+  });
+
   it("closes the WebSocket cleanly after the hidden grace period elapses, with no reconnect scheduled", () => {
     const { result } = renderHook(() => useWsRuntime("agent-1"));
     const ws1 = latestWs();
@@ -437,6 +474,13 @@ describe("useWsRuntime — visibility-driven reconnect lifecycle (#895)", () => 
 
     act(() => {
       setVisibility("visible");
+    });
+
+    // Answer the visible-reconcile history request so its (correctly armed)
+    // #956 watchdog disarms — this test pins only the grace-timer cancel,
+    // not a stalled reconcile.
+    act(() => {
+      ws1.simulateMessage({ type: "history", messages: [], sessionKnown: true });
     });
 
     // The grace timer must be cancelled — advancing well past where it would
