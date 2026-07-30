@@ -185,7 +185,7 @@ If you need to roll back after an upgrade:
   backup step matters.
 </Aside>
 
-## Upgrading from v0.8.0 to %%PINCHY_VERSION%%
+## Upgrading from v0.8.0 to v0.9.0
 
 ### Breaking changes
 
@@ -205,8 +205,8 @@ Re-fetch the compose file **before** pulling images:
 
 ```bash
 cd /opt/pinchy
-curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/%%PINCHY_VERSION%%/docker-compose.yml -o docker-compose.yml
-sed -i 's/^PINCHY_VERSION=.*/PINCHY_VERSION=%%PINCHY_VERSION%%/' .env
+curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/v0.9.0/docker-compose.yml -o docker-compose.yml
+sed -i 's/^PINCHY_VERSION=.*/PINCHY_VERSION=v0.9.0/' .env
 docker compose pull && docker compose up -d && docker image prune -f
 ```
 
