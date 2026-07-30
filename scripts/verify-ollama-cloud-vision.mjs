@@ -93,20 +93,32 @@ async function testModel(id, apiKey) {
   const body = buildVisionProbeRequest(id, TEST_IMAGE_DATA_URL);
 
   let last;
+  let lastError;
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-    const res = await fetch("https://ollama.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify(body),
-    });
-    const text = await res.text();
-    last = { status: res.status, body: text, attempts: attempt };
-    if (!isTransientStatus(res.status)) return last;
+    try {
+      const res = await fetch("https://ollama.com/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify(body),
+      });
+      const text = await res.text();
+      last = { status: res.status, body: text, attempts: attempt };
+      if (!isTransientStatus(res.status)) return last;
+    } catch (err) {
+      // A dropped connection is exactly as transient as the 503 above and gets
+      // the same retries. Without this the drift report tells you a model "gave
+      // no usable answer after 4 attempts" when a single ECONNRESET was all that
+      // happened — a diagnostic that sends you looking at the model instead of
+      // the network. `last` is deliberately NOT cleared: a real HTTP response
+      // from an earlier attempt is more informative than a later socket error.
+      lastError = err;
+    }
     if (attempt < MAX_ATTEMPTS) await sleep(2000 * attempt);
   }
+  if (!last) throw lastError;
   return last;
 }
 
