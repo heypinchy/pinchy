@@ -38,8 +38,6 @@ overrides:
   sharp@<0.35.0: '>=0.35.0'
   '@hono/node-server@<2.0.5': '>=2.0.5'
 
-packageExtensionsChecksum: sha256-Z4t9Uf0HcxYkO7zWHwm3rH14i6p+ghtNFOa7bSyEucY=
-
 patchedDependencies:
   '@assistant-ui/react@0.14.24':
     hash: 1e949ecdd81e8757649b52a913cb9a2d6c08ad466a01eb9a313b1d6689701f8e

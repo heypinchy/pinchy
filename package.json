@@ -40,18 +40,6 @@
         "GHSA-mh99-v99m-4gvg"
       ]
     },
-    "packageExtensions": {
-      "@hookform/resolvers@5.2.2": {
-        "peerDependencies": {
-          "zod": "^3.25.0 || ^4.0.0"
-        },
-        "peerDependenciesMeta": {
-          "zod": {
-            "optional": true
-          }
-        }
-      }
-    },
     "overrides": {
       "rollup@>=4.0.0 <4.59.0": ">=4.59.0",
       "esbuild@<0.28.1": ">=0.28.1",
