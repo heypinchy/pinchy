@@ -9,14 +9,16 @@ export default defineConfig({
     // per file with `// @vitest-environment jsdom`.
     //
     // A DOM costs real time to build and tear down for every single test file,
-    // and most files here never touch one: 152 of 714 web test files declare
-    // jsdom, so ~79% used to pay for a browser they never opened. Measured on
+    // and most files here never touch one: 155 of 714 web test files declare
+    // jsdom, so ~78% used to pay for a browser they never opened. Measured on
     // one directory (87 files under src/__tests__/api), back to back on the same
     // machine: 326.3s with a global jsdom against 151.0s with node — and the
     // environment bucket collapsed from 1805s summed across workers to 96ms.
     //
     // This needs no drift guard: a file that needs a DOM and forgets the
     // docblock fails immediately and unmissably with "document is not defined".
+    // The exception is feature-detected code, which quietly takes its
+    // non-browser branch instead of failing — see AGENTS.md for that caveat.
     environment: "node",
     setupFiles: ["./src/test-setup.ts"],
     // Vitest's 5s default left no headroom, and failures showed up scattered
