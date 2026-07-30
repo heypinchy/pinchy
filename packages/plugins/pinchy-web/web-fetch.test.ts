@@ -6,6 +6,10 @@ vi.mock("node:dns/promises", () => ({
   default: {
     resolve4: vi.fn(),
     resolve6: vi.fn(),
+    // The guard's last word before it gives up. Deliberately distinct from
+    // resolve4/6: only lookup consults /etc/hosts, and only lookup is what
+    // the real request would have used.
+    lookup: vi.fn(),
   },
 }));
 
@@ -64,6 +68,7 @@ describe("webFetch", () => {
   let fetchMock: ReturnType<typeof vi.fn>;
   const resolve4Mock = dns.resolve4 as ReturnType<typeof vi.fn>;
   const resolve6Mock = dns.resolve6 as ReturnType<typeof vi.fn>;
+  const lookupMock = dns.lookup as unknown as ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
     fetchMock = undiciFetchMock as unknown as ReturnType<typeof vi.fn>;
@@ -71,6 +76,9 @@ describe("webFetch", () => {
     // Default: resolve to public IPs
     resolve4Mock.mockResolvedValue(["93.184.216.34"]);
     resolve6Mock.mockResolvedValue(["2606:2800:220:1:248:1893:25c8:1946"]);
+    // Default: /etc/hosts knows nothing. Only reached when DNS came back
+    // empty, so it does not affect the cases above.
+    lookupMock.mockResolvedValue([]);
   });
 
   afterEach(() => {
@@ -430,6 +438,86 @@ describe("webFetch", () => {
 
       expect(result.isError).toBe(true);
       expect(result.content).toContain("Too many redirects");
+    });
+
+    /**
+     * A name DNS cannot answer is not a name the request cannot reach.
+     *
+     * `dns.resolve4/6` query DNS servers; the fetch resolves through
+     * `dns.lookup`, which also reads `/etc/hosts`. A host that lives only
+     * there was therefore classified "unresolvable" — and the guard used to
+     * carry on anyway, with no pinned address, handing resolution straight
+     * back to undici. This stack puts such a host in its own containers:
+     * compose adds `ollama.local:host-gateway`, i.e. the docker host, and
+     * `web_fetch` is a tool an agent calls on model instruction, so the URL
+     * can come from a prompt-injected page.
+     */
+    describe("hosts-file names", () => {
+      beforeEach(() => {
+        // DNS knows nothing about these names.
+        resolve4Mock.mockReset().mockResolvedValue([]);
+        resolve6Mock.mockReset().mockResolvedValue([]);
+      });
+
+      it("blocks a host that only /etc/hosts knows and that points at a private address", async () => {
+        lookupMock.mockResolvedValue([{ address: "172.17.0.1", family: 4 }]);
+        mockHtmlResponse(ROUTING_FIXTURE);
+
+        const result = await webFetch("http://ollama.local:11434/");
+
+        expect(result.isError).toBe(true);
+        expect(result.content).toContain("private network");
+        expect(fetchMock).not.toHaveBeenCalled();
+      });
+
+      it("blocks it via an IPv6 hosts entry too", async () => {
+        lookupMock.mockResolvedValue([{ address: "fd00::1", family: 6 }]);
+
+        const result = await webFetch("http://internal.local/");
+
+        expect(result.isError).toBe(true);
+        expect(result.content).toContain("private network");
+        expect(fetchMock).not.toHaveBeenCalled();
+      });
+
+      it("refuses a name nothing can resolve instead of fetching it unpinned", async () => {
+        lookupMock.mockResolvedValue([]);
+
+        const result = await webFetch("http://nowhere.invalid/");
+
+        expect(result.isError).toBe(true);
+        expect(result.content).toContain("Could not resolve host");
+        expect(fetchMock).not.toHaveBeenCalled();
+      });
+
+      it("pins and allows a public hosts-file entry", async () => {
+        lookupMock.mockResolvedValue([{ address: "93.184.216.34", family: 4 }]);
+        mockHtmlResponse(ROUTING_FIXTURE);
+
+        const result = await webFetch("http://mirror.local/page");
+
+        expect(result.isError).toBeUndefined();
+        const callArgs = fetchMock.mock.calls[0] as [string, Record<string, unknown>];
+        expect(callArgs[1].dispatcher).toBeDefined();
+      });
+    });
+
+    it.each([
+      ["fd00::1", "the fd00::/8 half of ULA, which is the half in actual use"],
+      ["fd12:3456:789a::1", "a routable-looking ULA prefix"],
+      ["fdff:ffff::1", "the top of the ULA range"],
+      ["::", "the unspecified address, which most stacks route to loopback"],
+    ])("blocks %s (%s)", async (address) => {
+      // `/^fc00:/` matched one hextet of one /8. Every fd00::/8 address —
+      // and `::` — classified as public and was fetched.
+      resolve4Mock.mockReset().mockResolvedValue([]);
+      resolve6Mock.mockReset().mockResolvedValue([address]);
+
+      const result = await webFetch("https://ula.example/page");
+
+      expect(result.isError).toBe(true);
+      expect(result.content).toContain("private network");
+      expect(fetchMock).not.toHaveBeenCalled();
     });
   });
 

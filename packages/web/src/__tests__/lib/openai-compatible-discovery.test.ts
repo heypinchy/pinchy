@@ -289,3 +289,116 @@ describe("resolveCustomProviderModels", () => {
     expect(beta.map((m) => m.id)).toEqual(["beta-large"]);
   });
 });
+
+/**
+ * A redirect is a new destination, and the SSRF guard has to see it.
+ *
+ * The two routes that reach this module validate the admin's `baseUrl` before
+ * calling in — and then `fetchModels` used the default `redirect: "follow"`,
+ * so a host that passed the guard could answer `302 Location:
+ * http://169.254.169.254/` and undici would follow it, carrying the
+ * Authorization header. The guard's verdict applied to a URL the request
+ * never ended at.
+ *
+ * No mock of the guard here on purpose: these use IP literals, which it
+ * classifies without touching DNS, so what is asserted is the real thing.
+ */
+describe("fetchModels — redirects are re-validated", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetCustomModelCache();
+  });
+
+  function redirectTo(location: string, status = 302) {
+    return new Response(null, { status, headers: { location } });
+  }
+
+  const modelBody = () =>
+    new Response(JSON.stringify({ data: [{ id: "gpt-4o-mini" }] }), { status: 200 });
+
+  it("requests with redirect: manual rather than letting undici follow", async () => {
+    vi.mocked(fetch).mockResolvedValue(modelBody());
+
+    await fetchOpenAiCompatibleModels("https://api.example.com/v1", "sk-key");
+
+    expect(fetch).toHaveBeenCalledWith(
+      "https://api.example.com/v1/models",
+      expect.objectContaining({ redirect: "manual" })
+    );
+  });
+
+  /**
+   * Asserted as a CONTRAST, and that is the point: a mocked `fetch` never
+   * follows a redirect by itself, so "we returned []" holds whether the guard
+   * runs or not — those assertions would stay green against the vulnerable
+   * code. What actually separates the two worlds is whether the hop gets
+   * REQUESTED. A permitted target produces a second call; a blocked one must
+   * not. Delete the `assertAllowedProviderUrl` call and the blocked rows
+   * below make two calls and fail.
+   */
+  it.each([
+    ["the cloud metadata address", "http://169.254.169.254/latest/meta-data/", 1],
+    // The form that bypassed the guard entirely until the hostname was
+    // de-bracketed before classification.
+    ["loopback as an IPv6 literal", "http://[::1]/v1/models", 1],
+    ["IMDS through an IPv4-mapped IPv6 literal", "http://[::ffff:169.254.169.254]/", 1],
+    // Protocol-relative: changes host without looking like an absolute URL.
+    ["a protocol-relative hop to a blocked host", "//169.254.169.254/latest/", 1],
+    ["an ordinary public host", "https://93.184.216.34/v2/models", 2],
+  ])("redirect to %s is requested %s time(s) in total", async (_label, location, expectedCalls) => {
+    vi.mocked(fetch).mockResolvedValueOnce(redirectTo(location)).mockResolvedValue(modelBody());
+
+    await fetchOpenAiCompatibleModels("https://api.example.com/v1", "sk-key");
+
+    expect(fetch).toHaveBeenCalledTimes(expectedCalls);
+  });
+
+  it("reports a blocked redirect as an unreachable provider, not a bad key", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(redirectTo("http://169.254.169.254/"));
+
+    const result = await validateOpenAiCompatibleProvider("https://api.example.com/v1", "sk-key");
+
+    expect(result).toEqual({ valid: false, error: "network_error" });
+  });
+
+  it("still follows an ordinary redirect to a public host", async () => {
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(redirectTo("https://93.184.216.34/v2/models"))
+      .mockResolvedValueOnce(modelBody());
+
+    const models = await fetchOpenAiCompatibleModels("https://api.example.com/v1", "sk-key");
+
+    expect(models.map((m) => m.id)).toEqual(["gpt-4o-mini"]);
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(fetch).mock.calls[1][0]).toBe("https://93.184.216.34/v2/models");
+  });
+
+  it("resolves a relative Location against the URL actually requested", async () => {
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(redirectTo("/v2/models"))
+      .mockResolvedValueOnce(modelBody());
+
+    await fetchOpenAiCompatibleModels("https://93.184.216.34/v1", "sk-key");
+
+    expect(vi.mocked(fetch).mock.calls[1][0]).toBe("https://93.184.216.34/v2/models");
+  });
+
+  it("gives up rather than looping on an endless redirect chain", async () => {
+    vi.mocked(fetch).mockResolvedValue(redirectTo("https://93.184.216.34/again"));
+
+    const models = await fetchOpenAiCompatibleModels("https://93.184.216.34/v1", "sk-key");
+
+    expect(models).toEqual([]);
+    // Initial request + MAX_REDIRECT_HOPS follows, then it stops.
+    expect(fetch).toHaveBeenCalledTimes(4);
+  });
+
+  it("treats a redirect status with no Location as an ordinary non-2xx", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(new Response(null, { status: 302 }));
+
+    const models = await fetchOpenAiCompatibleModels("https://api.example.com/v1", "sk-key");
+
+    expect(models).toEqual([]);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+});

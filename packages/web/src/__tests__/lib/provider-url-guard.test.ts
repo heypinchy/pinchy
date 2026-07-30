@@ -120,3 +120,87 @@ describe("assertAllowedProviderUrl", () => {
     ).rejects.toMatchObject({ reason: "blocked_address" });
   });
 });
+
+/**
+ * An address literal must never reach the resolver.
+ *
+ * `new URL("http://[::1]/v1").hostname` is `"[::1]"` — WITH the brackets. That
+ * string is not an IP as far as `isIP()` is concerned, and `dns.lookup()`
+ * rejects it, so it landed in the `catch { return }` that fails open for
+ * temporarily-unreachable hosts. Every branch of `classifyIpv6` was therefore
+ * unreachable from URL input: the whole IPv6 half of the guard was dead code,
+ * `PINCHY_PROVIDER_BLOCK_PRIVATE_NETWORKS=1` did nothing for ULA, and IMDS was
+ * one `::ffff:` prefix away.
+ *
+ * The existing suite could not see it, because `resolveTo([...])` answers any
+ * host including a bracketed one. These cases use a resolver that throws the
+ * way the real one does — so a literal only passes if the guard classified it
+ * WITHOUT DNS, which is the actual claim.
+ */
+describe("assertAllowedProviderUrl — address literals bypass DNS", () => {
+  /** Behaves like dns.lookup on input that is not a resolvable name. */
+  const unresolvable = async () => {
+    throw new Error("ENOTFOUND");
+  };
+
+  afterEach(() => {
+    delete process.env.PINCHY_PROVIDER_BLOCK_PRIVATE_NETWORKS;
+  });
+
+  it.each([
+    ["IPv6 loopback", "http://[::1]/v1"],
+    ["IPv6 unspecified", "http://[::]/v1"],
+    ["IPv6 link-local", "http://[fe80::1]/v1"],
+    ["IMDS through an IPv4-mapped IPv6 literal", "http://[::ffff:169.254.169.254]/latest/"],
+    ["loopback through an IPv4-mapped IPv6 literal", "http://[::ffff:127.0.0.1]/v1"],
+    ["IPv4 loopback", "http://127.0.0.1/v1"],
+    ["IMDS as a bare IPv4 literal", "http://169.254.169.254/latest/meta-data/"],
+  ])("blocks %s", async (_label, url) => {
+    await expect(assertAllowedProviderUrl(url, unresolvable)).rejects.toMatchObject({
+      reason: "blocked_address",
+    });
+  });
+
+  it("refuses a zone-id link-local host at the URL parse step", async () => {
+    // `http://[fe80::1%eth0]/` is not a valid URL to the WHATWG parser, so it
+    // never reaches address classification. Pinned because it is the reason
+    // the literal path needs no zone-id handling of its own.
+    await expect(
+      assertAllowedProviderUrl("http://[fe80::1%25eth0]/v1", unresolvable)
+    ).rejects.toMatchObject({ reason: "unsupported_scheme" });
+  });
+
+  it("refuses a bracketed host that is not a parseable address", async () => {
+    await expect(
+      assertAllowedProviderUrl("http://[not-an-address]/v1", unresolvable)
+    ).rejects.toBeInstanceOf(ProviderUrlBlockedError);
+  });
+
+  it("blocks a ULA literal when the deployment opts out of private networks", async () => {
+    // The documented lockdown for the hosted topology. It was a no-op for
+    // every IPv6 literal.
+    process.env.PINCHY_PROVIDER_BLOCK_PRIVATE_NETWORKS = "1";
+    await expect(
+      assertAllowedProviderUrl("http://[fd00::1]/v1", unresolvable)
+    ).rejects.toMatchObject({ reason: "private_address" });
+  });
+
+  it("still allows a ULA literal by default, so self-hosted IPv6 LANs keep working", async () => {
+    await expect(
+      assertAllowedProviderUrl("http://[fd00::1]:8000/v1", unresolvable)
+    ).resolves.toBeUndefined();
+  });
+
+  it("allows a public IPv6 literal", async () => {
+    await expect(
+      assertAllowedProviderUrl("https://[2606:4700:4700::1111]/v1", unresolvable)
+    ).resolves.toBeUndefined();
+  });
+
+  it("still fails open for a genuine name that does not resolve", async () => {
+    // The documented trade-off stays: only LITERALS stop depending on DNS.
+    await expect(
+      assertAllowedProviderUrl("https://maybe-down.example/v1", unresolvable)
+    ).resolves.toBeUndefined();
+  });
+});
