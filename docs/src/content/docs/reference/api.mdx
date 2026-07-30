@@ -107,7 +107,9 @@ Create the first admin account.
 
 ### `POST /api/setup/provider`
 
-Configure the first LLM provider as part of the setup flow.
+Add or update a built-in LLM provider. Despite the path, this is not setup-only:
+the setup wizard and **Settings → AI Provider** both post here, so it is the one
+endpoint that configures a built-in provider's credentials. Admin only.
 
 **Request body:**
 
@@ -116,6 +118,11 @@ Configure the first LLM provider as part of the setup flow.
 | `provider` | string | Yes      | `anthropic`, `openai`, `google`, `ollama-cloud`, `ollama-local` |
 | `apiKey`   | string | Cond.    | Required for cloud providers                                    |
 | `url`      | string | Cond.    | Required for `ollama-local`                                     |
+
+Pinchy validates the credential against the provider before persisting it, and
+API keys are encrypted at rest with AES-256-GCM. Only the **first** provider
+configured on an instance becomes the default automatically; afterwards the
+default is an explicit action ([`PATCH /api/settings/providers/default`](#patch-apisettingsprovidersdefault)).
 
 **Response:** `{ "success": true }`
 
@@ -601,20 +608,10 @@ List configured LLM providers. Credentials are masked.
 ]
 ```
 
-### `POST /api/settings/providers`
-
-Add or update a provider.
-
-**Request body:**
-
-| Field       | Type    | Required | Description                                 |
-| ----------- | ------- | -------- | ------------------------------------------- |
-| `provider`  | string  | Yes      | Provider identifier                         |
-| `apiKey`    | string  | Cond.    | API key (required for cloud providers)      |
-| `baseUrl`   | string  | Cond.    | URL (required for `ollama-local`)           |
-| `isDefault` | boolean | No       | Mark as the default provider for new agents |
-
-Pinchy validates the credentials by calling the provider's `/models` endpoint before persisting. API keys are encrypted at rest with AES-256-GCM.
+This route is read-only apart from removal. Adding or updating a built-in
+provider's credentials goes to [`POST /api/setup/provider`](#post-apisetupprovider),
+and a custom provider's to
+[`POST /api/settings/providers/openai-compatible`](#post-apisettingsprovidersopenai-compatible).
 
 ### `DELETE /api/settings/providers`
 

@@ -119,6 +119,30 @@ test("inject + restore round-trip preserves a heading that names the current ver
   rmSync(root, { recursive: true, force: true });
 });
 
+test("inject normalizes a bare version from the env var to the v-prefixed tag", () => {
+  // docs.yml takes PINCHY_VERSION as free-text operator input. The other two
+  // sources are v-prefixed by construction, so a bare "0.9.0" only ever arrives
+  // this way — and it renders `ghcr.io/heypinchy/pinchy:0.9.0`, a tag that does
+  // not exist, in the install instructions the input exists to keep honest.
+  const { root, srcDir } = setupDocsLikeTree();
+  const scriptsDir = copyScripts(path.join(root, "docs"));
+
+  const file = path.join(srcDir, "installation.mdx");
+  writeFileSync(file, "Pull `ghcr.io/heypinchy/pinchy:%%PINCHY_VERSION%%`.\n");
+
+  execFileSync("sh", [path.join(scriptsDir, "inject-version.sh")], {
+    env: { ...process.env, PINCHY_VERSION: "0.9.0" },
+    stdio: "ignore",
+  });
+
+  assert.equal(
+    readFileSync(file, "utf-8"),
+    "Pull `ghcr.io/heypinchy/pinchy:v0.9.0`.\n",
+  );
+
+  rmSync(root, { recursive: true, force: true });
+});
+
 // ── with-restore.sh ───────────────────────────────────────────────────────
 //
 // `inject && astro build && restore` short-circuits: a failed build never

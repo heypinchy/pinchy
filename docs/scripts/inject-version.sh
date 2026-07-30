@@ -40,6 +40,17 @@ if [ -z "$TAG" ]; then
   exit 0
 fi
 
+# Normalize to the v-prefixed spelling every consumer expects. The other two
+# sources are v-prefixed by construction (`git describe` reports the tag,
+# package.json gets the prefix added above), so only the env var can arrive as
+# a bare "0.9.0" — and docs.yml now takes it as free-text operator input. A bare
+# version renders `ghcr.io/heypinchy/pinchy:0.9.0`, which is not a tag that
+# exists, in exactly the install instructions that input is meant to keep honest.
+case "$TAG" in
+  v*) ;;
+  *) TAG="v$TAG" ;;
+esac
+
 # Find files that actually contain the placeholder — we only touch (and
 # back up) those, so unrelated docs files are left alone.
 PLACEHOLDER_FILES=$(grep -r '%%PINCHY_VERSION%%' "$DOCS_DIR/src" --include='*.mdx' --include='*.md' --include='*.yml' -l 2>/dev/null || true)

@@ -11,6 +11,7 @@ import {
   extractDocumentedEndpoints,
   extractGrantableTools,
   extractRouteHandlers,
+  findGhostEndpoints,
   findUndocumentedAuditEvents,
   findUndocumentedEndpoints,
   findUndocumentedTools,
@@ -107,6 +108,43 @@ test("findUndocumentedEndpoints honours an exemption", () => {
   );
 });
 
+test("findGhostEndpoints names the methods that path really serves", () => {
+  // The audit's headline finding: a whole section documenting a `PUT` that was
+  // never a route, while the real POST/DELETE were documented too — so the
+  // code → docs direction stayed green.
+  const problems = findGhostEndpoints(
+    [{ route: "/api/settings/domain", methods: ["GET", "POST", "DELETE"] }],
+    new Set([
+      "GET /api/settings/domain",
+      "PUT /api/settings/domain",
+      "POST /api/settings/domain",
+      "DELETE /api/settings/domain",
+    ]),
+  );
+  assert.equal(problems.length, 1);
+  assert.match(problems[0], /PUT \/api\/settings\/domain/);
+  assert.match(problems[0], /served by DELETE, GET, POST/);
+});
+
+test("findGhostEndpoints says so when no handler serves the path at all", () => {
+  const problems = findGhostEndpoints(
+    [{ route: "/api/setup/provider", methods: ["POST"] }],
+    new Set(["POST /api/settings/providers"]),
+  );
+  assert.equal(problems.length, 1);
+  assert.match(problems[0], /no route handler serves that path at all/);
+});
+
+test("findGhostEndpoints is quiet when the docs match the handlers", () => {
+  assert.deepEqual(
+    findGhostEndpoints(
+      [{ route: "/api/agents/[id]", methods: ["GET", "DELETE"] }],
+      new Set(["GET /api/agents/{}", "DELETE /api/agents/{}"]),
+    ),
+    [],
+  );
+});
+
 test("extractAuditEventTypes takes the literals and skips the tool.* family", () => {
   const types = extractAuditEventTypes(
     'export type AuditEventType =\n | `tool.${string}`\n | "agent.created"\n | "agent.deleted";',
@@ -114,10 +152,58 @@ test("extractAuditEventTypes takes the literals and skips the tool.* family", ()
   assert.deepEqual(types, ["agent.created", "agent.deleted"]);
 });
 
+test("extractAuditEventTypes reads a member with more than two segments", () => {
+  // A two-segment-only pattern dropped all three `file.upload.*` events, and
+  // the corpus floor was satisfied by the survivors — 61 of 64, checked in
+  // silence.
+  assert.deepEqual(
+    extractAuditEventTypes(
+      'export type AuditEventType =\n | "file.upload.staged"\n | "agent.created";',
+    ),
+    ["agent.created", "file.upload.staged"],
+  );
+});
+
+test("extractAuditEventTypes throws on a member it cannot read", () => {
+  // The failure mode this guards is a SHORT list that reads like a complete
+  // one, so an unrecognised member must be an error, never a silent omission.
+  assert.throws(
+    () =>
+      extractAuditEventTypes(
+        'export type AuditEventType =\n | "agent.created"\n | "Agent.Renamed";',
+      ),
+    /Agent\.Renamed/,
+  );
+});
+
 test("extractAuditEventTypes fails loudly when the union moves", () => {
   assert.throws(
     () => extractAuditEventTypes("export type Something = string;"),
     /AuditEventType/,
+  );
+});
+
+test("findUndocumentedAuditEvents does not accept a longer event as the shorter one", () => {
+  // `mdx.includes` would read the page's mention of `user.invite_blocked` as
+  // documentation of `user.invite`.
+  const problems = findUndocumentedAuditEvents(
+    ["user.invite"],
+    "| `user.invite_blocked` | An invite was refused. |",
+    {},
+  );
+  assert.equal(problems.length, 1);
+  assert.match(problems[0], /user\.invite/);
+});
+
+test("findUndocumentedTools does not accept a longer tool name as the shorter one", () => {
+  assert.equal(
+    findUndocumentedTools(["odoo_read"], "`odoo_read_group` reads groups.", {})
+      .length,
+    1,
+  );
+  assert.deepEqual(
+    findUndocumentedTools(["odoo_read"], "`odoo_read` reads records.", {}),
+    [],
   );
 });
 
@@ -186,6 +272,25 @@ test("every API route is in the API reference", () => {
     readFileSync(join(DOCS, "reference/api.mdx"), "utf8"),
   );
   assert.deepEqual(findUndocumentedEndpoints(handlers, documented), []);
+});
+
+test("the API reference documents no endpoint that does not exist", () => {
+  // The other direction, and the one the audit's worst finding lived in: a
+  // documented endpoint sends a reader off to write against something that
+  // isn't there, and the code → docs check above cannot see it.
+  const handlers = extractRouteHandlers(readRouteFiles());
+  assert.ok(
+    handlers.length > 50,
+    `expected the full route set, found ${handlers.length}`,
+  );
+  const documented = extractDocumentedEndpoints(
+    readFileSync(join(DOCS, "reference/api.mdx"), "utf8"),
+  );
+  assert.ok(
+    documented.size > 50,
+    `expected the full documented set, found ${documented.size}`,
+  );
+  assert.deepEqual(findGhostEndpoints(handlers, documented), []);
 });
 
 test("every audit event type is in the audit-trail reference", () => {

@@ -7,7 +7,8 @@
  *
  *   - `reference/api.mdx` documented 60 of 96 API routes. Three whole feature
  *     families shipped without an entry (Automations, OpenAI-compatible
- *     providers, IMAP).
+ *     providers, IMAP) — and, in the other direction, a whole Domain Lock
+ *     section described a `PUT` that was never a route.
  *   - `concepts/audit-trail.mdx` listed 47 of 56 audit event types. The three
  *     missing knowledge-base events are the ones the KB guide points AT that
  *     page to find.
@@ -192,10 +193,66 @@ export function findUndocumentedEndpoints(
 }
 
 /**
+ * Documented endpoints that no route handler serves.
+ *
+ * `findUndocumentedEndpoints` walks code → docs and catches an endpoint nobody
+ * wrote down. This walks docs → code and catches the opposite: a section
+ * describing an endpoint that does not exist. Both are drift; only the second
+ * one sends a reader to write an integration against fiction.
+ *
+ * It is not a hypothetical direction. The audit's own headline finding was a
+ * whole Domain Lock section documenting a `PUT /api/settings/domain` that was
+ * never a route, and a code → docs check is structurally blind to it — the real
+ * `POST` and `DELETE` were both documented, so that half stayed green.
+ *
+ * Method matters as much as path here, for the same reason: `PUT /api/x`
+ * documented against a `POST /api/x` handler is wrong in the way that costs a
+ * reader an afternoon, and comparing paths alone reads it as covered.
+ *
+ * @param {Array<{route: string, methods: string[]}>} handlers
+ * @param {Set<string>} documented from `extractDocumentedEndpoints`
+ * @returns {string[]} problems (empty = ok)
+ */
+export function findGhostEndpoints(handlers, documented) {
+  const real = new Set(
+    handlers.flatMap(({ route, methods }) =>
+      methods.map((m) => `${m} ${normalizeRoute(route)}`),
+    ),
+  );
+  const paths = new Set([...real].map((entry) => entry.split(" ")[1]));
+  return [...documented]
+    .filter((entry) => !real.has(entry))
+    .sort()
+    .map((entry) => {
+      const [, path] = entry.split(" ");
+      const served = [...real]
+        .filter((r) => r.endsWith(` ${path}`))
+        .map((r) => r.split(" ")[0]);
+      const hint = served.length
+        ? ` — that path is served by ${served.sort().join(", ")}`
+        : paths.has(path)
+          ? ""
+          : " — no route handler serves that path at all";
+      return (
+        `docs/src/content/docs/reference/api.mdx documents \`${entry}\`, which no route handler serves${hint}. ` +
+        `Correct the reference (a documented endpoint that does not exist is worse than an undocumented one).`
+      );
+    });
+}
+
+/**
  * Pulls the concrete string members out of the `AuditEventType` union.
  *
  * Template members (`` `tool.${string}` ``) are skipped: they are a family, and
  * the reference documents the family as `tool.<toolName>`.
+ *
+ * Members carry an arbitrary number of dot-separated segments — `agent.created`
+ * has two, `file.upload.staged` three. An earlier two-segment-only pattern
+ * dropped all three `file.upload.*` events on the floor, and no assertion could
+ * see it: the corpus floor (`> 40`) was satisfied by the 61 that survived, so a
+ * coverage guard was silently checking 61 of 64. Hence the final loop — every
+ * quoted member the union declares must end up in the result, or this throws
+ * rather than returning a short list that reads like a complete one.
  *
  * @param {string} source contents of packages/web/src/lib/audit.ts
  * @returns {string[]} sorted event types
@@ -204,8 +261,36 @@ export function extractAuditEventTypes(source) {
   const union = /export type AuditEventType =([\s\S]*?);/.exec(source);
   if (!union)
     throw new Error("audit.ts: could not find the AuditEventType union");
-  const literals = union[1].matchAll(/"([a-z_]+\.[a-z_]+)"/g);
-  return [...new Set([...literals].map((m) => m[1]))].sort();
+  const literals = union[1].matchAll(/"([a-z_]+(?:\.[a-z_]+)+)"/g);
+  const types = [...new Set([...literals].map((m) => m[1]))].sort();
+
+  const declared = [...union[1].matchAll(/"([^"]*)"/g)].map((m) => m[1]);
+  const unread = declared.filter((d) => !types.includes(d));
+  if (unread.length > 0) {
+    throw new Error(
+      `audit.ts: AuditEventType declares ${unread.map((u) => `"${u}"`).join(", ")}, ` +
+        `which this extractor does not recognise. Widen the member pattern — a ` +
+        `member it cannot read is a member the docs guard never checks.`,
+    );
+  }
+  return types;
+}
+
+/**
+ * Whether a doc page names an identifier, as a whole word.
+ *
+ * `String.includes` would let `user.invite_blocked` satisfy the check for
+ * `user.invite`: the page mentions the longer event and the shorter one is
+ * never documented, yet the guard reads green. Dots and underscores both count
+ * as part of the identifier, so neither end may continue.
+ *
+ * @param {string} mdx
+ * @param {string} id
+ * @returns {boolean}
+ */
+function mentions(mdx, id) {
+  const escaped = id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(?<![\\w.])${escaped}(?![\\w.])`).test(mdx);
 }
 
 /**
@@ -220,7 +305,7 @@ export function findUndocumentedAuditEvents(
   exemptions = AUDIT_EVENT_DOC_EXEMPTIONS,
 ) {
   return eventTypes
-    .filter((t) => !(t in exemptions) && !mdx.includes(t))
+    .filter((t) => !(t in exemptions) && !mentions(mdx, t))
     .map(
       (t) =>
         `audit event "${t}" is not in docs/src/content/docs/concepts/audit-trail.mdx ` +
@@ -262,7 +347,7 @@ export function findUndocumentedTools(
   exemptions = TOOL_DOC_EXEMPTIONS,
 ) {
   return toolIds
-    .filter((t) => !(t in exemptions) && !mdx.includes(t))
+    .filter((t) => !(t in exemptions) && !mentions(mdx, t))
     .map(
       (t) =>
         `tool "${t}" is not in docs/src/content/docs/concepts/agent-permissions.mdx ` +
