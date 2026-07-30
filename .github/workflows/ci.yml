@@ -775,18 +775,21 @@ jobs:
             exit 1
           fi
 
-          docker compose exec -T openclaw sh -c "
-            rm -rf /root/.openclaw/agents/$AGENT_ID/agent
-            mkdir -p -m 700 /root/.openclaw/agents/$AGENT_ID/agent
-            chown -R root:root /root/.openclaw/agents/$AGENT_ID/agent
-          "
-          # Sanity-check the fixture itself: a directory that starts out
-          # writable would pass no matter what the tick does.
-          OWNER=$(docker compose exec -T openclaw stat -c '%u' "/root/.openclaw/agents/$AGENT_ID/agent" | tr -d '\r\n')
-          if [ "$OWNER" != "0" ]; then
-            echo "::error::probe fixture is not root-owned (uid $OWNER) — this step would pass vacuously"
-            exit 1
-          fi
+          # The fixture is root-owned BY CONSTRUCTION: root runs chmod 700 and an
+          # explicit chown, both under `set -e`, so a fixture that didn't take
+          # fails the exec. A post-hoc `stat` from a second exec cannot be the
+          # guard — the repair is a 50 ms tick and a docker exec round-trip is
+          # slower, so it reports uid 999 and fails on the fix working (first run
+          # of this step did exactly that). The uid is logged for diagnostics;
+          # either value is expected, and the write below is the assertion.
+          OWNER=$(docker compose exec -T openclaw sh -c "
+            set -e
+            mkdir -p /root/.openclaw/agents/$AGENT_ID/agent
+            chmod 700 /root/.openclaw/agents/$AGENT_ID/agent
+            chown root:root /root/.openclaw/agents/$AGENT_ID/agent
+            stat -c '%u' /root/.openclaw/agents/$AGENT_ID/agent
+          " | tr -d '\r\n')
+          echo "fixture created root-owned 0700; uid observed right after chown: $OWNER (999 = the tick already won)"
 
           # 20 s: the repair is a 50 ms tick, so this only has to ride out a
           # gateway restart that has the loop paused.
