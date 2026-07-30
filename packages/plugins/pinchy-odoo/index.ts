@@ -2510,8 +2510,8 @@ const plugin = {
             `Odoo returned id ${id} for ${model} but the record could not be read back — ` +
             `the write did not persist. Odoo reports no error in this case, so this is not a ` +
             `transient failure: nothing was saved, and repeating the identical create will not ` +
-            `change that. Do not retry the same create — report this failure to the user and ` +
-            `stop; the Odoo connection needs checking.`,
+            `change that. Do not report success and do not retry the same create — report this ` +
+            `failure to the user and stop; the Odoo connection needs checking.`,
         };
       }
 
@@ -2521,9 +2521,9 @@ const plugin = {
           ok: false,
           error:
             `Odoo created ${model} id ${id} but the saved values do not match what was written ` +
-            `(${formatMismatches(mismatches)}). The record was not persisted as intended. Do not ` +
-            `retry the identical create — the record exists, so retrying would duplicate it. ` +
-            `Report this discrepancy to the user and stop.`,
+            `(${formatMismatches(mismatches)}). The record was not persisted as intended, so do ` +
+            `not report success. Do not retry the identical create — the record exists, so ` +
+            `retrying would duplicate it. Report this discrepancy to the user and stop.`,
         };
       }
 
@@ -2574,8 +2574,8 @@ const plugin = {
             ok: false,
             error:
               `Odoo reported the write to ${model} id ${id} succeeded but the record could not ` +
-              `be read back — the change did not persist. Do not retry the identical write; ` +
-              `report this failure to the user and stop.`,
+              `be read back — the change did not persist. Do not report success and do not retry ` +
+              `the identical write; report this failure to the user and stop.`,
           };
         }
         const mismatches = findVerbatimMismatches(compareFields, sentValues, record);
@@ -2584,8 +2584,9 @@ const plugin = {
             ok: false,
             error:
               `Odoo reported the write to ${model} id ${id} succeeded but the saved values do ` +
-              `not match what was written (${formatMismatches(mismatches)}). Do not retry the ` +
-              `identical write; report this discrepancy to the user and stop.`,
+              `not match what was written (${formatMismatches(mismatches)}). Do not report ` +
+              `success and do not retry the identical write; report this discrepancy to the user ` +
+              `and stop.`,
           };
         }
       }

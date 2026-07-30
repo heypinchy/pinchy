@@ -199,6 +199,29 @@ describe("findVerbatimMismatches", () => {
   });
 });
 
+/**
+ * The contract every verification failure message must satisfy.
+ *
+ * Weak models take a retry invitation literally and repeat the identical call
+ * 15–25× (detectLoop `tool-result-not-recognized`), so no message may invite
+ * one — and the #720 reason the read-back exists at all, "do not report
+ * success", has to survive the rewording.
+ *
+ * Asserted positively on the exact clauses. A bare `toContain("report")` is
+ * vacuous here: two of these messages already open with "Odoo reports no
+ * error" / "Odoo reported the write", so they pass it with the instruction
+ * deleted.
+ */
+function expectStopAndReportContract(text: string, kind: "failure" | "discrepancy") {
+  const msg = text.toLowerCase();
+  expect(msg).toContain("do not report success");
+  expect(msg).toContain("do not retry");
+  expect(msg).toContain(`report this ${kind} to the user`);
+  // Once the prohibitions are removed, no retry invitation may remain —
+  // catches a reworded invitation, not just the literal old wording.
+  expect(msg.replaceAll("do not retry", "")).not.toMatch(/\bretry\b/);
+}
+
 // ---------------------------------------------------------------------------
 // odoo_create verification
 // ---------------------------------------------------------------------------
@@ -245,13 +268,10 @@ describe("odoo_create verification", () => {
     expect(res.details?.verified).toBe(false);
     // Audit failure signal is present.
     expect(res.details?.error).toBeTruthy();
-    const msg = res.content[0].text.toLowerCase();
-    expect(msg).toContain("could not be read back");
-    // The message must not invite a blind identical retry (weak models loop
-    // 15–25× on "retry the create"); it must tell the agent to stop and report.
-    expect(msg).not.toContain("retry the create or check");
-    expect(msg).toContain("do not retry");
-    expect(msg).toContain("report");
+    expect(res.content[0].text.toLowerCase()).toContain("could not be read back");
+    // The message must not invite a blind identical retry; it must tell the
+    // agent to stop and report the failure.
+    expectStopAndReportContract(res.content[0].text, "failure");
   });
 
   it("fails when a written verbatim scalar reads back different", async () => {
@@ -271,9 +291,7 @@ describe("odoo_create verification", () => {
     expect(res.content[0].text).toContain("ref");
     // A mismatched create must not be retried (the record exists — retrying
     // would duplicate); tell the agent to stop and report.
-    const msg = res.content[0].text.toLowerCase();
-    expect(msg).toContain("do not retry");
-    expect(msg).toContain("report");
+    expectStopAndReportContract(res.content[0].text, "discrepancy");
   });
 
   it("does not verify non-covered models (no read-back, no verified flag)", async () => {
@@ -371,9 +389,25 @@ describe("odoo_write verification", () => {
     expect(res.details?.verified).toBe(false);
     expect(res.content[0].text).toContain("ref");
     // A persist-mismatch on write must not trigger a blind identical retry.
-    const msg = res.content[0].text.toLowerCase();
-    expect(msg).toContain("do not retry");
-    expect(msg).toContain("report");
+    expectStopAndReportContract(res.content[0].text, "discrepancy");
+  });
+
+  it("fails when the written record cannot be read back at all", async () => {
+    mockWrite.mockResolvedValue(true);
+    mockSearchRead.mockResolvedValueOnce(empty()); // verification read: id MISSING
+
+    const tool = findTool(createApi({ [agentId]: moveConfig() }), "odoo_write", agentId);
+    const res = await tool.execute("w1", {
+      model: "account.move",
+      ids: [42],
+      values: { ref: "INV-2" },
+    });
+
+    expect(res.isError).toBe(true);
+    expect(res.details?.verified).toBe(false);
+    expect(res.details?.error).toBeTruthy();
+    expect(res.content[0].text.toLowerCase()).toContain("could not be read back");
+    expectStopAndReportContract(res.content[0].text, "failure");
   });
 
   it("does not verify non-covered models", async () => {
