@@ -2599,10 +2599,15 @@ describe("regenerateOpenClawConfig", () => {
     }>;
     const byId = Object.fromEntries(models.map((m) => [m.id, m]));
 
-    // Vision-capable cloud models per the empirical API smoke test in #416
-    // (live `/v1/chat/completions` accepts image_url payloads with HTTP 200).
+    // Vision-capable cloud models, per live `/v1/chat/completions` probes.
     // devstral-small-2:24b is explicitly excluded — its library page claims
-    // "Text, Image" but the runtime API rejects images with HTTP 400.
+    // "Text, Image" but the runtime API rejects images with HTTP 400 (#416).
+    //
+    // The bar used to be "accepts an image_url payload with HTTP 200" (the #416
+    // smoke test). It is not any more, and the difference is the whole reason
+    // this list moved on 2026-07-30: qwen3.5:397b answered 200 for a month while
+    // inventing what it saw. A model earns a place here by REPORTING the number
+    // rendered in the probe fixture — see scripts/lib/ollama-cloud-vision-probe.mjs.
     const visionModels = [
       "gemma4:31b",
       "kimi-k2.5",

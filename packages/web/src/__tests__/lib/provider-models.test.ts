@@ -507,7 +507,7 @@ describe("fetchProviderModels", () => {
             // Tool-broken on the live chat/completions endpoint — must be filtered out
             { id: "cogito-2.1:671b" },
             // Still served, but dropped from the catalog on 2026-07-30: it skips
-            // the tool call in 3 of 4 rounds. Kept in this served list on purpose
+            // the tool call in 4 of 5 rounds. Kept in this served list on purpose
             // — the interesting assertion is that the filter removes a model the
             // API still offers, which is the whole job of the allowlist.
             { id: "nemotron-3-nano:30b" },
@@ -550,7 +550,7 @@ describe("fetchProviderModels", () => {
     // kimi-k2-thinking removed from allowlist (#305 — Ollama Cloud returns HTTP 500 for this model)
     expect(ids).not.toContain("ollama-cloud/kimi-k2-thinking");
     // nemotron-3-nano:30b is still served (see the mock list above) but was
-    // dropped from the catalog on 2026-07-30 for skipping tool calls 3/4 rounds.
+    // dropped from the catalog on 2026-07-30 for skipping tool calls 4/5 rounds.
     expect(ids).not.toContain("ollama-cloud/nemotron-3-nano:30b");
     // qwen3-next:80b is still returned by /v1/models but no longer allow-listed:
     // tool calls are still flaky on the OpenAI-completions endpoint (re-probed
@@ -1539,8 +1539,11 @@ describe("isRejectedVariant", () => {
     "google/gemini-3-pro-experimental",
     // Ollama Cloud reasoning/fast-tier models: correctly rejected for balanced-default
     // selection. kimi-k2-thinking is a reasoning model; nemotron-3-nano is fast/cheap.
-    // They appear in the allowlist because they are tool-capable, but isRejectedVariant
-    // intentionally filters them from the auto-selected balanced default.
+    // isRejectedVariant matches on the ID alone, so these stay valid cases even
+    // though NEITHER is in the allowlist any more (kimi-k2-thinking removed for
+    // HTTP 500s, #305; nemotron-3-nano on 2026-07-30 for skipping tool calls).
+    // That is the point of keeping them: the balanced default must reject a
+    // reasoning or fast-tier ID whether or not the catalog still carries it.
     "ollama-cloud/kimi-k2-thinking",
     "ollama-cloud/nemotron-3-nano:30b",
   ])("rejects %s", (id) => {

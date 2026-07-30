@@ -171,7 +171,7 @@ export const MODEL_PRICING: PricingSnapshot = {
       note: "OpenRouter Mistral Large 3 (2512) (Jul 2026). Single listing — verify the 675B open-weight variant at sweep.",
     },
     // nemotron-3-nano:30b's entry was removed on 2026-07-30 with the model
-    // itself (it skipped tool calls in 3 of 4 probe rounds). The Record is keyed
+    // itself (it skipped tool calls in 4 of 5 probe rounds). The Record is keyed
     // by OllamaCloudModelId, so leaving a price for a model the catalog no
     // longer carries is a compile error rather than dead data — which is how
     // this one was found.

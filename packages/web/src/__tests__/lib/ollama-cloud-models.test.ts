@@ -175,13 +175,17 @@ describe("Ollama Cloud model catalog — empirically verified capabilities", () 
     expect(VISION_OLLAMA_CLOUD_MODEL_IDS.has("kimi-k2.7-code")).toBe(true);
   });
 
-  it("drops nemotron-3-nano:30b — tool calls now fail 3 of 4 rounds (2026-07-30)", () => {
+  it("drops nemotron-3-nano:30b — tool calls now fail 4 of 5 rounds (2026-07-30)", () => {
     // Carried since 2026-06 as a fast/cheap 1M-context option. The 2026-07-30
     // sweep found it silently skipping the tool call: HTTP 200, empty content,
     // no tool_calls — qwen3-next's exact failure mode. Re-probed four more
-    // times: 1 clean, 3 no-call. An agent on this model would ignore its tools
-    // three turns out of four, which is worse than an outright error because it
-    // looks like the model simply chose not to act.
+    // times: 1 clean, 3 no-call. So 4 no-call out of 5 rounds in total; the
+    // denominator includes the sweep round that raised the suspicion, because
+    // dropping it would flatter the model and break comparison with the
+    // qwen3-next record below ("one of four rounds"), which counts the same way.
+    // An agent on this model would ignore its tools four turns out of five,
+    // which is worse than an outright error because it looks like the model
+    // simply chose not to act.
     //
     // Intermittent, not dead — and intermittent is still disqualifying here,
     // the same bar qwen3-next was held to. Re-adding needs a clean multi-round
