@@ -1,7 +1,23 @@
 import { resolve, normalize } from "path";
 
-const DATA_ROOT = "/data/";
+// DATA_ROOT is defined in data-root-path.ts, not here, and imported back — a
+// one-way dependency chosen for a bundling reason, not a layering one. That
+// module is reached from a client component (via pluginConfigSchema); this one
+// imports `node:path`, so a dependency in the other direction would pull a Node
+// builtin into the browser bundle. Re-exported so existing importers of
+// path-validation keep working and there is still exactly one definition.
+export { DATA_ROOT } from "./data-root-path";
+import { DATA_ROOT, isPathUnderDataRoot } from "./data-root-path";
 
+/**
+ * Throwing form of `isPathUnderDataRoot`, returning the normalized directory.
+ *
+ * The DECISION lives in `data-root-path.ts` so that `pluginConfigSchema` — which
+ * a client component transitively imports and which therefore cannot pull in
+ * `node:path` — enforces the identical boundary. Keeping a second copy of the
+ * rule here is how the two writers of `allowed_paths` drifted apart in the
+ * first place.
+ */
 export function sanitizePath(inputPath: string): string {
   if (typeof inputPath !== "string") {
     throw new Error("Invalid path: must be a string");
@@ -11,14 +27,12 @@ export function sanitizePath(inputPath: string): string {
     throw new Error("Invalid path: contains null bytes");
   }
 
-  const resolved = resolve(normalize(inputPath));
-  const normalized = resolved.endsWith("/") ? resolved : resolved + "/";
-
-  if (!normalized.startsWith(DATA_ROOT)) {
+  if (!isPathUnderDataRoot(inputPath)) {
     throw new Error(`Invalid path: must be under ${DATA_ROOT}`);
   }
 
-  return normalized;
+  const resolved = resolve(normalize(inputPath));
+  return resolved.endsWith("/") ? resolved : resolved + "/";
 }
 
 export function validateAllowedPaths(paths: string[]): string[] {

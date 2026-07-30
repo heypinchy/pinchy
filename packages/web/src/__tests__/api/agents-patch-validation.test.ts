@@ -520,3 +520,131 @@ describe("PATCH /api/agents/[agentId] — starterPrompts validation (#570)", () 
     expect(vi.mocked(updateAgent)).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * Privilege escalation, member -> arbitrary file read on the Pinchy container.
+ *
+ * Every user is seeded a personal agent they are allowed to write
+ * (`requireAgentWriteAccess` lets the owner through), and PATCH gates
+ * `allowedTools`, `visibility` and `groupIds` on the admin role — but NOT
+ * `pluginConfig`. `pinchy-files.allowed_paths` inside it is the allowlist the
+ * browser-facing `/api/agents/[id]/workspace-file` route reads files against,
+ * so widening it to `/` turns an ordinary member into a reader of
+ * `/app/secrets` (AES master key), `/openclaw-secrets/secrets.json`
+ * (decrypted provider keys) and `/openclaw-config/openclaw.json` (the
+ * plaintext gateway token, which in turn unlocks `/api/internal/*`).
+ *
+ * The write is the boundary, so this is asserted at the route: a rejection
+ * that only happens further down (at read time) would still let the poisoned
+ * allowlist reach the database, where the agent's file TOOLS and the
+ * knowledge-base retrieval filter also read it.
+ */
+describe("PATCH /api/agents/[agentId] — allowed_paths cannot be widened past /data", () => {
+  let PATCH: typeof import("@/app/api/agents/[agentId]/route").PATCH;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    const mod = await import("@/app/api/agents/[agentId]/route");
+    PATCH = mod.PATCH;
+  });
+
+  function memberSession() {
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
+      user: { id: "user-1", role: "member" },
+      expires: "",
+    } as never);
+  }
+
+  /** The personal agent every user is seeded and is allowed to write. */
+  function mockOwnPersonalAgent() {
+    mockAgent({
+      id: "agent-1",
+      name: "My Assistant",
+      model: "m",
+      isPersonal: true,
+      ownerId: "user-1",
+      visibility: "private",
+    });
+  }
+
+  function patchRequest(body: Record<string, unknown>) {
+    return new NextRequest("http://localhost/api/agents/agent-1", {
+      method: "PATCH",
+      body: JSON.stringify(body),
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
+  const params = { params: Promise.resolve({ agentId: "agent-1" }) };
+
+  it("refuses a member widening their own personal agent's scope to the filesystem root", async () => {
+    memberSession();
+    mockOwnPersonalAgent();
+
+    const res = await PATCH(
+      patchRequest({ pluginConfig: { "pinchy-files": { allowed_paths: ["/"] } } }),
+      params
+    );
+
+    expect(res.status).toBe(400);
+    expect(vi.mocked(updateAgent)).not.toHaveBeenCalled();
+  });
+
+  it("refuses a member pointing the scope straight at the decrypted provider keys", async () => {
+    memberSession();
+    mockOwnPersonalAgent();
+
+    const res = await PATCH(
+      patchRequest({ pluginConfig: { "pinchy-files": { allowed_paths: ["/openclaw-secrets"] } } }),
+      params
+    );
+
+    expect(res.status).toBe(400);
+    expect(vi.mocked(updateAgent)).not.toHaveBeenCalled();
+  });
+
+  it("refuses a traversal that escapes /data", async () => {
+    memberSession();
+    mockOwnPersonalAgent();
+
+    const res = await PATCH(
+      patchRequest({ pluginConfig: { "pinchy-files": { allowed_paths: ["/data/../etc"] } } }),
+      params
+    );
+
+    expect(res.status).toBe(400);
+    expect(vi.mocked(updateAgent)).not.toHaveBeenCalled();
+  });
+
+  it("refuses an admin too — the clamp is a container boundary, not a role check", async () => {
+    adminSession();
+    mockAgent({ id: "agent-1", name: "Shared", model: "m", isPersonal: false, ownerId: null });
+
+    const res = await PATCH(
+      patchRequest({ pluginConfig: { "pinchy-files": { allowed_paths: ["/etc"] } } }),
+      params
+    );
+
+    expect(res.status).toBe(400);
+    expect(vi.mocked(updateAgent)).not.toHaveBeenCalled();
+  });
+
+  it("still persists a legitimate scope under /data", async () => {
+    memberSession();
+    mockOwnPersonalAgent();
+    vi.mocked(updateAgent).mockResolvedValueOnce({ id: "agent-1" } as never);
+
+    const res = await PATCH(
+      patchRequest({ pluginConfig: { "pinchy-files": { allowed_paths: ["/data/kb"] } } }),
+      params
+    );
+
+    expect(res.status).toBe(200);
+    expect(vi.mocked(updateAgent)).toHaveBeenCalledWith(
+      "agent-1",
+      expect.objectContaining({
+        pluginConfig: { "pinchy-files": { allowed_paths: ["/data/kb"] } },
+      })
+    );
+  });
+});
