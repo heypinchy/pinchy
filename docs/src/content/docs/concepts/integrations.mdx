@@ -188,7 +188,7 @@ Pinchy only marks an integration as failed on **permanent** errors — responses
 
 ### When the OAuth app itself goes missing
 
-Email connections (Gmail and Microsoft 365) depend on a separate, shared OAuth app — see [The app and the mailboxes](#the-app-and-the-mailboxes). If an admin resets or deletes that app's credentials in **Connected apps** while mailboxes are still connected through it, each affected mailbox shows an amber **"App not configured"** badge on **Settings → Integrations**, distinct from the red **"Authentication failed"** state used for revoked or expired credentials.
+Email connections (Gmail and Microsoft 365) depend on a separate, shared OAuth app — see [The OAuth app and the mailboxes](#the-oauth-app-and-the-mailboxes-gmail-and-microsoft-365). If an admin resets or deletes that app's credentials in **Connected apps** while mailboxes are still connected through it, each affected mailbox shows an amber **"App not configured"** badge on **Settings → Integrations**, distinct from the red **"Authentication failed"** state used for revoked or expired credentials.
 
 Restoring the **same app** — same Client ID, with a new secret if needed — clears the badge for every affected mailbox automatically, with no per-mailbox reconnect required. Refresh tokens are bound to the app's Client ID plus the connected user and scope, not to the secret, so as soon as the app is configured again, the next token refresh just works.
 
