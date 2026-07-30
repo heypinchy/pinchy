@@ -265,6 +265,27 @@ describe("remarkSourceLinks", () => {
     expect(links(tree).map((l) => l.text)).toEqual(["noack/Angebot.docx"]);
   });
 
+  it.each([".doc", ".docx", ".ppt", ".pptx"])(
+    "cites %s.pdf as the one document it is, not as the office file inside its name",
+    (inner) => {
+      // `Angebot.doc.pdf` is a single PDF whose author kept the source
+      // extension in the name — the commonest filename shape in exactly the
+      // corpora this feature targets, because it is what a batch conversion
+      // produces. Stopping at the inner extension would cite `Angebot.doc`, a
+      // document that does not exist, and hand the reader a 403 on a link that
+      // looked right.
+      const tree = run(paragraph(`siehe noack/Angebot${inner}.pdf hier`));
+      expect(links(tree).map((l) => l.text)).toEqual([`noack/Angebot${inner}.pdf`]);
+    }
+  );
+
+  it("still stops at an extension followed by a full stop", () => {
+    // The chained-extension rule must not swallow the sentence: `.doc.` is a
+    // path ending in `.doc`, not the start of `.docx`.
+    const tree = run(paragraph("siehe noack/Angebot.doc. Und weiter"));
+    expect(links(tree).map((l) => l.text)).toEqual(["noack/Angebot.doc"]);
+  });
+
   it("still leaves a spreadsheet alone, because nothing converts one", () => {
     // Spreadsheets take a different path entirely (#937/#940): a sheet is not a
     // page, so there is no artifact to preview and a link would open a pane
@@ -314,13 +335,18 @@ describe("remarkSourceLinks", () => {
     expect(links(tree).map((l) => l.text)).toEqual(["x/doc.PDF"]);
   });
 
-  it("reads a doubled extension as the shorter path", () => {
-    // `/x.pdf.pdf` is ambiguous and neither reading is more correct. It is
-    // pinned only so the windowed scan below cannot change it unnoticed: the
-    // scan stops at the FIRST `.pdf` that a path can legally end on, where the
-    // earlier unbounded regex kept expanding across it.
+  it("reads a doubled extension as the whole name", () => {
+    // This used to pin the SHORTER reading (`x/report.pdf`), on the grounds
+    // that `/x.pdf.pdf` is ambiguous and neither reading is more correct — the
+    // assertion existed to make a change visible rather than to defend an
+    // answer. #939 made it visible, and the answer moved: once `.doc` is
+    // linkable too, `Angebot.doc.pdf` reads as a citation of `Angebot.doc`, a
+    // document in another format that does not exist. Stopping early does not
+    // pick between two readings of one name, it invents a second name — so the
+    // scan now runs to the last extension in a chain, and this case comes
+    // along.
     const tree = run(paragraph("x/report.pdf.pdf"));
-    expect(links(tree).map((l) => l.text)).toEqual(["x/report.pdf"]);
+    expect(links(tree).map((l) => l.text)).toEqual(["x/report.pdf.pdf"]);
   });
 
   describe("pathological input", () => {

@@ -110,9 +110,28 @@ function findSourcePaths(value: string): Array<{ start: number; end: number }> {
   const found: Array<{ start: number; end: number }> = [];
   let cursor = 0;
 
+  // Collected first so a hit can see the one after it. `Angebot.doc.pdf` is a
+  // SINGLE document — a PDF whose author kept the source extension in the
+  // name, which is what a batch conversion produces and therefore the commonest
+  // shape in exactly the corpora this feature serves. `.` is a legal path
+  // boundary (so that "…/doc.pdf." links the file and not the full stop), so
+  // without this the scan stops at the inner `.doc` and cites `Angebot.doc` —
+  // a document that does not exist, handed to the reader as a link that looks
+  // right and 403s. Only `.pdf` was linkable before #939, which is why the
+  // question could not arise until the alternation grew.
+  const hits: Array<{ start: number; end: number }> = [];
   EXTENSION.lastIndex = 0;
   for (let hit = EXTENSION.exec(value); hit !== null; hit = EXTENSION.exec(value)) {
-    const end = hit.index + hit[0].length;
+    hits.push({ start: hit.index, end: hit.index + hit[0].length });
+  }
+
+  for (const [index, hit] of hits.entries()) {
+    const end = hit.end;
+
+    // A chained extension defers to the last one in the chain. Adjacency is the
+    // whole test: `Angebot.doc. Und` has a hit at `.doc` and none at `. Un`, so
+    // the sentence is still left where it is.
+    if (hits[index + 1]?.start === end) continue;
 
     // The character AFTER the extension, read from the real text rather than
     // the window below, so a path at the very end of the node is still a path.
