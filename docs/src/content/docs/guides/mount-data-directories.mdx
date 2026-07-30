@@ -97,6 +97,16 @@ If your NAS is mounted on the host at `/mnt/nas/shared`, mount a subdirectory:
 - /mnt/nas/shared/finance:/data/finance:ro
 ```
 
+**Mount the share for the container user.** The `pinchy` container runs as uid 999. A network share mounted without an owner mapping belongs to `root`, so Pinchy can't read it — and indexing then fails with a permission error that never mentions the mount. For an SMB/CIFS share, pass `uid=999,gid=999`:
+
+```
+//fileserver/share/suppliers /mnt/suppliers cifs ro,_netdev,credentials=/etc/smb.cred,uid=999,gid=999,iocharset=utf8,vers=3.0 0 0
+```
+
+`_netdev` matters just as much: it holds the mount back until the network is up, so a reboot doesn't leave the containers pointing at an empty directory.
+
+Mount the share read-only — `ro` on both the host mount and the Compose volume. Pinchy never writes to `/data/`, and a read-only mount makes that structural rather than a promise.
+
 ### Multiple directories
 
 You can mount as many directories as you need:
@@ -149,7 +159,13 @@ Nothing is re-indexed or re-uploaded by this — the mounts point at the same ho
 
 ## Supported file types
 
-Knowledge Base agents can read text files, Markdown, **Word documents** (`.docx`), and **PDF documents** — including scanned PDFs, which are analyzed using the configured model's vision capabilities. See [Create a Knowledge Base Agent — Scope in this release](/guides/create-knowledge-base-agent/#scope-in-this-release) for what is and isn't searchable today.
+Two different paths read the files under `/data/`, and they support different formats. The distinction matters when you plan a corpus, so it's worth knowing before you mount one.
+
+**Knowledge Base search** (`knowledge_search`) indexes **text-based PDFs**, plain text and Markdown. Scanned PDFs and Office documents are not indexed today — see [Create a Knowledge Base Agent — Scope in this release](/guides/create-knowledge-base-agent/#scope-in-this-release).
+
+**Reading a file directly** (the agent's file tools) additionally handles **Word documents** (`.docx`) and **scanned PDFs**, which are analyzed using the configured model's vision capabilities.
+
+So a scanned certificate under `/data/` can be opened and read on request, but it won't come back as a search hit — the agent has to be pointed at it. If a large part of your corpus is scans, the reindex report tells you so: it counts them under `unsearchable` rather than `indexed`.
 
 ## Knowledge Base vs. workspace files
 
