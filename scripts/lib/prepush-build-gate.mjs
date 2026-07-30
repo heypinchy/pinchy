@@ -24,6 +24,7 @@
  */
 
 import { createHash } from "node:crypto";
+import { posix } from "node:path";
 
 /** Repo-root directories whose contents never reach `next build`. */
 const IRRELEVANT_PREFIXES = [
@@ -45,7 +46,8 @@ const IRRELEVANT_PREFIXES = [
   // 1-Click deploy templates.
   "marketplace/",
   // OpenClaw plugins run under tsx in their own container with their own
-  // tsconfigs; `pnpm typecheck:plugins` is their gate, not `next build`.
+  // tsconfigs; `pnpm typecheck:plugins` is their gate, not `next build`. Their
+  // MANIFESTS are the exception — see BUILD_RELEVANT_OUTSIDE_WEB below.
   "packages/plugins/",
   // Agent/editor local configuration.
   ".claude/",
@@ -68,12 +70,37 @@ const IRRELEVANT_FILES = new Set([
 ]);
 
 /**
+ * Files OUTSIDE packages/web that `next build` nevertheless compiles, because a
+ * web source imports them with a relative path that climbs out of the package.
+ *
+ * tsconfig's include globs decide which files are type-checked; they do not
+ * decide where those files may reach. `src/lib/openclaw-config/plugin-manifest-
+ * loader.ts` statically imports all nine `packages/plugins/pinchy-*
+ * /openclaw.plugin.json` manifests (`resolveJsonModule`), so a manifest that is
+ * malformed — or that loses a field the loader reads — really does fail
+ * `next build`. "packages/plugins/ never reaches the build" was true of the
+ * plugin source and false of these, and a manifest-only push skipped anyway.
+ *
+ * This is a carve-out from IRRELEVANT_PREFIXES, checked before it. Do not extend
+ * it by hand: `escapingImportTargets` + the drift guard in
+ * prepush-build-gate.test.mjs derive the escapes from the source, so a new
+ * cross-package import fails the tests until it is classified here.
+ */
+const BUILD_RELEVANT_OUTSIDE_WEB = [
+  /^packages\/plugins\/[^/]+\/openclaw\.plugin\.json$/,
+];
+
+/**
  * @param {string} path repo-relative path of a changed file
  * @returns {boolean} true when the path cannot change `next build`'s outcome
  */
 export function isBuildIrrelevant(path) {
   const p = path.trim();
   if (p.length === 0) return false;
+
+  // Before every rule below, including the .md shortcut: a file the build
+  // genuinely imports is build-relevant whatever else it looks like.
+  if (BUILD_RELEVANT_OUTSIDE_WEB.some((re) => re.test(p))) return false;
 
   // Prose anywhere, including docs/, PERSONALITY.md and every package README.
   if (p.endsWith(".md") || p.endsWith(".mdx")) return true;
@@ -92,6 +119,47 @@ export function isBuildIrrelevant(path) {
   if (/^packages\/web\/src\/.*\.test\.tsx?$/.test(p)) return true;
 
   return false;
+}
+
+/**
+ * Every module specifier in `source` that resolves OUTSIDE packages/web.
+ *
+ * The point is the drift guard, not the resolution: hard-coding today's one
+ * escape (the plugin manifests) would pin only today's, and the next relative
+ * import out of the package would land in the build graph with the gate still
+ * calling it irrelevant — green checks, silent hole. Deriving the escapes from
+ * the source turns that into a failing test.
+ *
+ * Deliberately a regex over text rather than a parse: it needs to see a
+ * type-only import exactly like a value one, and it runs over ~700 files on
+ * every `pnpm test:scripts`.
+ *
+ * Matches the forms that make TypeScript RESOLVE a module — `from "…"`, a
+ * side-effect `import "…"`, `import("…")`, `import x = require("…")` — and not a
+ * bare `require("…")`. That exclusion is not a gap: the only bare require here
+ * is `createRequire(import.meta.url)` in eval/__tests__/odoo-mock-eval-reset,
+ * whose result is typed `any` and cast at the call site, so the mock server it
+ * loads is a runtime dependency that `next build` never reads. Its own comment
+ * says as much ("without a build-graph entanglement").
+ *
+ * @param {string} fromRepoPath repo-relative path of the importing file
+ * @param {string} source its text
+ * @returns {string[]} repo-relative, extension-preserving targets, deduplicated
+ */
+export function escapingImportTargets(fromRepoPath, source) {
+  const dir = posix.dirname(fromRepoPath);
+  const targets = [];
+  const specifiers =
+    /(?:\bfrom\s*|\bimport\s*\(?\s*|\bimport\s+[\w$]+\s*=\s*require\s*\(\s*)["']([^"'\n]+)["']/g;
+  for (const [, specifier] of source.matchAll(specifiers)) {
+    // Bare specifiers resolve through node_modules / tsconfig paths, never out
+    // of the package by climbing; `@/…` is the web package's own alias.
+    if (!specifier.startsWith(".")) continue;
+    const resolved = posix.join(dir, specifier);
+    if (resolved.startsWith("packages/web/")) continue;
+    if (!targets.includes(resolved)) targets.push(resolved);
+  }
+  return targets;
 }
 
 /**

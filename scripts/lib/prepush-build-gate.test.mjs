@@ -1,6 +1,6 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -11,6 +11,7 @@ import {
   canTrustFingerprint,
   formatPendingRecord,
   parsePendingRecord,
+  escapingImportTargets,
 } from "./prepush-build-gate.mjs";
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -142,6 +143,210 @@ describe("the exclusion set stays pinned to packages/web/tsconfig.json", () => {
         "packages/web/src/__tests__/lib/no-untracked-skips.test.ts",
       ),
       true, // …but a *.test.ts under src/ is excluded, so this one is safe.
+    );
+  });
+});
+
+describe("the build graph is not the same thing as the web package", () => {
+  // The exclusion set above reasons from packages/web/tsconfig.json, and that is
+  // the right anchor for WHICH files are type-checked — but not for WHERE they
+  // are. A relative import reaches out of packages/web and drags whatever it
+  // finds into the build graph, tsconfig include globs notwithstanding:
+  // src/lib/openclaw-config/plugin-manifest-loader.ts statically imports all
+  // nine packages/plugins/pinchy-*/openclaw.plugin.json manifests, so an invalid
+  // manifest — or one that loses a field the loader reads — fails `next build`.
+  // "packages/plugins/ never reaches the build" was true of the plugin SOURCE
+  // and false of the manifests, and the gate skipped on both.
+  test("a plugin manifest the web build imports is build-relevant", () => {
+    assert.equal(
+      isBuildIrrelevant("packages/plugins/pinchy-files/openclaw.plugin.json"),
+      false,
+    );
+    assert.equal(
+      needsProductionBuild([
+        "packages/plugins/pinchy-odoo/openclaw.plugin.json",
+      ]),
+      true,
+    );
+  });
+
+  test("plugin source and plugin tests still skip the build", () => {
+    // The carve-out is the manifests, not the whole package: nothing under
+    // packages/plugins is imported by packages/web except those JSON files, and
+    // `pnpm typecheck:plugins` is the gate for the rest.
+    assert.equal(
+      isBuildIrrelevant("packages/plugins/pinchy-odoo/index.ts"),
+      true,
+    );
+    assert.equal(
+      isBuildIrrelevant("packages/plugins/pinchy-files/pdf-extract.test.ts"),
+      true,
+    );
+    assert.equal(
+      isBuildIrrelevant("packages/plugins/pinchy-files/openclaw.plugin.md"),
+      true,
+    );
+  });
+
+  // The drift guard. Hard-coding "the manifests" would only pin today's one
+  // escape; the next `import ... from "../../../../plugins/foo/bar"` would land
+  // in the build graph with the gate still calling it irrelevant, and every
+  // check would stay green. So derive the escapes from the source instead:
+  // whatever a build-relevant web file imports from outside packages/web must
+  // itself be build-relevant.
+  test("every file the web build reaches outside packages/web is build-relevant", () => {
+    const WEB = join(REPO_ROOT, "packages/web");
+    const offenders = [];
+
+    const walk = (absDir) => {
+      for (const entry of readdirSync(absDir, { withFileTypes: true })) {
+        const abs = join(absDir, entry.name);
+        if (entry.isDirectory()) {
+          if (entry.name === "node_modules" || entry.name === ".next") continue;
+          walk(abs);
+          continue;
+        }
+        if (!/\.(ts|tsx|mts)$/.test(entry.name)) continue;
+        const repoPath = abs
+          .slice(REPO_ROOT.length + 1)
+          .split("\\")
+          .join("/");
+        // A file the build does not read cannot drag anything into the build.
+        if (isBuildIrrelevant(repoPath)) continue;
+
+        for (const target of escapingImportTargets(
+          repoPath,
+          readFileSync(abs, "utf8"),
+        )) {
+          // Extension-less specifiers: check what actually exists on disk, and
+          // fall back to the bare path so an unresolvable import is still judged
+          // rather than silently waved through.
+          const candidates = [
+            target,
+            `${target}.ts`,
+            `${target}.tsx`,
+            `${target}.json`,
+            `${target}/index.ts`,
+          ].filter((c) => existsSync(join(REPO_ROOT, c)));
+          for (const candidate of candidates.length ? candidates : [target]) {
+            if (isBuildIrrelevant(candidate))
+              offenders.push(`${repoPath} imports ${candidate}`);
+          }
+        }
+      }
+    };
+
+    walk(WEB);
+
+    assert.deepEqual(
+      offenders,
+      [],
+      `these imports reach into the build from a path the gate calls irrelevant, ` +
+        `so a change to them would skip the build that checks them:\n  ` +
+        offenders.join("\n  "),
+    );
+  });
+
+  test("the walk above actually reads the web tree", () => {
+    // A guard that silently traverses nothing is the failure mode here: it stays
+    // green forever. Pin the one import we know escapes today.
+    const loader = join(
+      REPO_ROOT,
+      "packages/web/src/lib/openclaw-config/plugin-manifest-loader.ts",
+    );
+    assert.ok(statSync(loader).isFile());
+    const targets = escapingImportTargets(
+      "packages/web/src/lib/openclaw-config/plugin-manifest-loader.ts",
+      readFileSync(loader, "utf8"),
+    );
+    assert.ok(
+      targets.includes("packages/plugins/pinchy-files/openclaw.plugin.json"),
+      `expected the plugin manifest imports to be detected, got ${JSON.stringify(targets)}`,
+    );
+  });
+});
+
+describe("escapingImportTargets — which imports leave packages/web", () => {
+  const FROM = "packages/web/src/lib/openclaw-config/build.ts";
+
+  test("resolves a relative import that climbs out of packages/web", () => {
+    assert.deepEqual(
+      escapingImportTargets(
+        FROM,
+        `import x from "../../../../plugins/pinchy-web/openclaw.plugin.json";`,
+      ),
+      ["packages/plugins/pinchy-web/openclaw.plugin.json"],
+    );
+  });
+
+  test("ignores imports that stay inside packages/web", () => {
+    assert.deepEqual(
+      escapingImportTargets(
+        FROM,
+        [
+          `import a from "./sibling";`,
+          `import b from "../parent";`,
+          `import c from "@/lib/audit";`,
+          `import d from "next/server";`,
+        ].join("\n"),
+      ),
+      [],
+    );
+  });
+
+  test("sees export-from, side-effect import, dynamic import and import-equals", () => {
+    assert.deepEqual(
+      escapingImportTargets(
+        FROM,
+        [
+          `export { a } from "../../../../plugins/pinchy-files/a";`,
+          `import "../../../../plugins/pinchy-files/b";`,
+          `const c = await import("../../../../plugins/pinchy-files/c");`,
+          `import d = require("../../../../plugins/pinchy-files/d");`,
+          `import type { E } from "../../../../plugins/pinchy-files/e";`,
+        ].join("\n"),
+      ),
+      [
+        "packages/plugins/pinchy-files/a",
+        "packages/plugins/pinchy-files/b",
+        "packages/plugins/pinchy-files/c",
+        "packages/plugins/pinchy-files/d",
+        "packages/plugins/pinchy-files/e",
+      ],
+    );
+  });
+
+  test("does not report a createRequire runtime require", () => {
+    // The distinction is what TypeScript RESOLVES. `createRequire`'s require
+    // returns `any` and its call sites cast the result, so the module it loads
+    // never enters the build graph — eval/__tests__/odoo-mock-eval-reset.test.ts
+    // loads the odoo mock exactly this way and says so in its own comment. A
+    // guard that reported it would demand a build for a file `next build` cannot
+    // read, i.e. the mirror image of the hole it exists to close.
+    assert.deepEqual(
+      escapingImportTargets(
+        "packages/web/eval/__tests__/odoo-mock-eval-reset.test.ts",
+        [
+          `const require = createRequire(import.meta.url);`,
+          `const { start } = require("../../../../config/odoo-mock/server.js") as {`,
+          `  start: () => void;`,
+          `};`,
+        ].join("\n"),
+      ),
+      [],
+    );
+  });
+
+  test("does not report the same target twice", () => {
+    assert.deepEqual(
+      escapingImportTargets(
+        FROM,
+        [
+          `import a from "../../../../plugins/p/m.json";`,
+          `import b from "../../../../plugins/p/m.json";`,
+        ].join("\n"),
+      ),
+      ["packages/plugins/p/m.json"],
     );
   });
 });
