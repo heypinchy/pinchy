@@ -346,11 +346,19 @@ Read a file in the agent's own workspace.
 
 Write a file into the agent's own workspace.
 
-### `GET /api/agents/:agentId/workspace-file?path=<path>&event=<viewed|downloaded>`
+### `GET /api/agents/:agentId/workspace-file?path=<path>`
 
 Serve a file from a directory this agent is granted under `allowed_paths` — the path behind a knowledge-base citation you click. Supports byte ranges, so a PDF viewer can jump straight to the cited page.
 
-`event` decides which audit row is written: `knowledge.source_viewed` for reading it in the pane, `knowledge.source_downloaded` for taking a copy. Reading a cited document and taking it out of the building are different acts, so they are different rows — the caller says which one this is, because the response alone cannot tell them apart.
+**Query parameters:**
+
+| Field      | Required | Description                                                                                         |
+| ---------- | -------- | --------------------------------------------------------------------------------------------------- |
+| `path`     | Yes      | The file, which must resolve inside one of the agent's granted directories                          |
+| `download` | No       | `1` marks this as taking a copy rather than reading it                                              |
+| `variant`  | No       | `original` or `converted` — the converted PDF is what previews an Office source. Anything else 400s |
+
+`download` decides which audit row is written: `knowledge.source_viewed` without it, `knowledge.source_downloaded` with it. Reading a cited document and carrying it out of the building are different acts, so they are different rows — and the caller has to say which, because the response cannot: a `.docx` is served as an attachment either way.
 
 ### `GET /api/agents/:agentId/telegram-chat`
 

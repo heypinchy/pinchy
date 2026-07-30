@@ -1,5 +1,5 @@
 /**
- * Drift guard for the docs in-page anchor check (#769).
+ * Drift guard for the checks that read the BUILT docs site (#769).
  *
  * A broken anchor inside `docs/` — `[see the config](/guides/setup/#nope)` —
  * used to be caught by nothing. The `links` job (lychee) passes
@@ -12,22 +12,32 @@
  * `quality` job already builds the docs, `quality` is ungated (it is a required
  * check), and the same two commands an author runs locally fail the same way.
  *
- * All of which holds only as long as three things stay true, and each of them
- * can be undone while every check stays green:
- *   1. docs/package.json keeps declaring the `check:anchors` script,
- *   2. that script keeps running check-anchors.mjs,
- *   3. CI's `quality` job keeps running BOTH `pnpm build` and
- *      `pnpm check:anchors`, in that order — the checker reads the build's
- *      output, so a check that runs first reads a stale (or missing) dist/.
+ * The same three things must hold for `check:rendered`
+ * (`check-rendered-tables.mjs`), which catches the other way a built page lies:
+ * v0.9.0 shipped every `.mdx` table as a paragraph of `|` characters, because
+ * astro@6 deprecated `markdown.gfm` and @astrojs/mdx read the now-undefined
+ * option. The build was green, the anchors were fine, and 41 of 69 live pages
+ * were unreadable.
+ *
+ * All of which holds only as long as three things stay true per check, and each
+ * of them can be undone while every check stays green:
+ *   1. docs/package.json keeps declaring the script,
+ *   2. that script keeps running the checker it is named for,
+ *   3. CI's `quality` job keeps running BOTH `pnpm build` and the check, in
+ *      that order — the checkers read the build's output, so a check that runs
+ *      first reads a stale (or missing) dist/.
  *
  * Same shape as the format-gate / web-typecheck / plugin-typecheck guards (see
  * AGENTS.md): make a silent narrowing of the gate a loud, deliberate act.
  */
 
-const SCRIPT_NAME = "check:anchors";
-const SCRIPT_FILE = "check-anchors.mjs";
+/** Every check that reads `docs/dist/`. Adding one here wires its whole gate. */
+const BUILT_OUTPUT_CHECKS = [
+  { script: "check:anchors", file: "check-anchors.mjs" },
+  { script: "check:rendered", file: "check-rendered-tables.mjs" },
+];
 const BUILD_COMMAND = "cd docs && pnpm build";
-const CHECK_COMMAND = `cd docs && pnpm ${SCRIPT_NAME}`;
+const checkCommand = (script) => `cd docs && pnpm ${script}`;
 
 /**
  * @param {unknown} pkg parsed docs/package.json
@@ -37,16 +47,19 @@ export function validateDocsPackage(pkg) {
   if (pkg === null || typeof pkg !== "object" || Array.isArray(pkg)) {
     return ["docs/package.json must be a JSON object"];
   }
-  const scripts = pkg.scripts;
-  const script =
-    scripts && typeof scripts === "object" ? scripts[SCRIPT_NAME] : undefined;
+  const scripts =
+    pkg.scripts && typeof pkg.scripts === "object" ? pkg.scripts : {};
 
-  if (typeof script !== "string") {
-    return [`docs/package.json needs a "${SCRIPT_NAME}" script`];
+  const problems = [];
+  for (const { script: name, file } of BUILT_OUTPUT_CHECKS) {
+    const script = scripts[name];
+    if (typeof script !== "string") {
+      problems.push(`docs/package.json needs a "${name}" script`);
+    } else if (!script.includes(file)) {
+      problems.push(`"${name}" must run scripts/${file} (got "${script}")`);
+    }
   }
-  return script.includes(SCRIPT_FILE)
-    ? []
-    : [`"${SCRIPT_NAME}" must run scripts/${SCRIPT_FILE} (got "${script}")`];
+  return problems;
 }
 
 /**
@@ -68,21 +81,27 @@ export function validateCiWiring(qualityJobBody) {
 
   const problems = [];
   const buildAt = code.indexOf(BUILD_COMMAND);
-  const checkAt = code.indexOf(CHECK_COMMAND);
 
   if (buildAt === -1) {
     problems.push(`CI's \`quality\` job must run \`${BUILD_COMMAND}\``);
   }
-  if (checkAt === -1) {
-    problems.push(`CI's \`quality\` job must run \`${CHECK_COMMAND}\``);
-  }
-  if (buildAt !== -1 && checkAt !== -1 && checkAt < buildAt) {
-    // The checker reads docs/dist/. Running it first reads a missing dist (it
-    // exits 1, loudly) or — worse, on a warm runner — a stale one, which is a
-    // green check against yesterday's HTML.
-    problems.push(
-      `\`${CHECK_COMMAND}\` must come AFTER \`${BUILD_COMMAND}\` — it reads the build's output`,
-    );
+
+  for (const { script } of BUILT_OUTPUT_CHECKS) {
+    const command = checkCommand(script);
+    const checkAt = code.indexOf(command);
+
+    if (checkAt === -1) {
+      problems.push(`CI's \`quality\` job must run \`${command}\``);
+      continue;
+    }
+    if (buildAt !== -1 && checkAt < buildAt) {
+      // The checkers read docs/dist/. Running one first reads a missing dist (it
+      // exits 1, loudly) or — worse, on a warm runner — a stale one, which is a
+      // green check against yesterday's HTML.
+      problems.push(
+        `\`${command}\` must come AFTER \`${BUILD_COMMAND}\` — it reads the build's output`,
+      );
+    }
   }
   return problems;
 }

@@ -8,6 +8,7 @@
     "preview": "astro preview",
     "check:tables": "node scripts/check-no-tables-in-lists.mjs",
     "check:anchors": "node scripts/check-anchors.mjs",
+    "check:rendered": "node scripts/check-rendered-tables.mjs",
     "test": "node --test scripts/*.test.mjs"
   },
   "dependencies": {

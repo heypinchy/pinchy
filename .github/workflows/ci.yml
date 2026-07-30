@@ -301,6 +301,11 @@ jobs:
         # see AGENTS.md § "CI Path Filtering Is Job-Level, Never Workflow-Level".
         run: cd docs && pnpm check:anchors
 
+      - name: Docs rendered-table check (built output)
+        # Also reads docs/dist/, same ordering rule. Catches the class of bug
+        # where a page builds and links fine but ships markdown as text.
+        run: cd docs && pnpm check:rendered
+
       - name: Squawk migration lint (changed files only)
         if: github.event_name == 'pull_request'
         run: |

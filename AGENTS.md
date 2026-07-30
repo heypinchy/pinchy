@@ -561,6 +561,16 @@ It lives in `quality` because `quality` already builds the docs and is ungated (
 
 **Do not reach for `starlight-links-validator` instead; it was tried and it does not work here.** The plugin registers its collectors through `markdown.remarkPlugins`/`rehypePlugins`, which Astro 6.4 deprecated and `@astrojs/mdx@5` no longer forwards. Against our 64 `.mdx` pages and one `.md` page it collects nothing from the `.mdx` files, reports one _bogus_ "invalid link" from the `.md` one, and misses a deliberately broken anchor entirely — a gate that fails loudly on the wrong thing while checking nothing. Both `0.24.1` (the Astro 6 line) and `0.25.2` (Astro 7 / Starlight ≥ 0.41) behave that way here. Revisit only after the docs move to Astro 7, and then only with the canary below.
 
+#### A second check reads the built site: does the markdown render?
+
+`check:anchors` asks whether links resolve. It says nothing about whether a page is legible, and v0.9.0 shipped 41 of 69 pages where every table was a paragraph of literal `|` characters. astro@6 deprecated `markdown.gfm` and leaves it `undefined`; `.md` falls back to the default (`true`), but `@astrojs/mdx@5` reads `config.markdown.gfm` and takes `undefined` as off — so every `.mdx` page lost remark-gfm. Nothing was red: the build succeeded, prettier sees a paragraph and formats it as one, and the anchor check only ever looked at links.
+
+`docs/astro.config.mjs` now sets `markdown.gfm: true` explicitly. Astro prints a deprecation warning pointing at `unified({ gfm })` instead — **do not follow it.** MDX reads `config.markdown.gfm`, not the processor's copy, so that move looks like a modernisation and silently restores the bug.
+
+`docs/scripts/check-rendered-tables.mjs` (`pnpm -C docs check:rendered`, in `quality` after the build) is the guard, and it checks the **symptom**, not the config: a built page containing a line that both starts and ends with `|`. The next way to lose gfm will not look like this one, but it will look like this in `dist/`. `scripts/lib/docs-link-gate.mjs` pins both built-site checks — script, checker, and the ordering.
+
+The general rule is the one the X-Frame-Options gate follows: assert what a built page contains, not what a source file asked for. Neither check covers `<img src>`, and external links out of `docs/` stay unchecked.
+
 ### A Hand-Maintained List That Mirrors Code Will Be Wrong
 
 The 2026-07-30 post-release docs audit found the same defect in three files: `reference/api.mdx` documented 60 of 96 API routes, `concepts/audit-trail.mdx` listed 47 of 56 audit event types, and `concepts/agent-permissions.mdx` — the canonical "what can an agent do" page — never mentioned `knowledge_search`, the tool behind the release's headline feature. Three whole feature families (Automations, OpenAI-compatible providers, IMAP) had shipped with no reference entry at all.

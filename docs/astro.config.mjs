@@ -7,6 +7,22 @@ export default defineConfig({
   image: {
     service: passthroughImageService(),
   },
+  // GFM must be stated explicitly, even though it is on by default.
+  // `.md` and `.mdx` resolve this option through different paths: the markdown
+  // processor falls back to `markdownConfigDefaults.gfm` (true), while
+  // @astrojs/mdx@5 reads `config.markdown.gfm` — which astro@6 leaves
+  // *undefined* now that the option is deprecated. Undefined is falsy there, so
+  // every .mdx page silently lost remark-gfm: every table in these docs shipped
+  // as a paragraph of literal `|` characters, live on docs.heypinchy.com.
+  //
+  // Astro prints a deprecation warning for this option and points at
+  // `unified({ gfm })` instead — which does NOT work here: @astrojs/mdx reads
+  // `config.markdown.gfm`, not the processor's copy, so moving it would restore
+  // the bug while looking like a modernisation. `pnpm -C docs check:rendered`
+  // is what proves the tables actually render; re-check it before touching this.
+  markdown: {
+    gfm: true,
+  },
   redirects: {
     // Brief-lived alternate URL added by the openclaw-tmpfs PR before
     // v0.5.0 shipped. Content was consolidated into /guides/upgrading/.
