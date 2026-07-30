@@ -16,13 +16,18 @@
  * than as a silence nobody hears. A guard that only fired after expiry would
  * report the outage, not prevent it.
  *
- * Two further rules exist because both were tempting to get wrong:
+ * The remaining rules all guard the same thing from other angles — a file that
+ * looks fine in the repo and is refused, or ignored, out on the wire:
  *   - `Expires` must stay under a year (§2.5.5). A ten-year date would silence
  *     the alarm above while making the contact details unfalsifiable.
+ *   - `Expires` must be a real RFC 3339 timestamp, checked by pattern rather
+ *     than by `new Date()`, which accepts several forms no reader does.
  *   - Every `mailto:` Contact must be an address SECURITY.md actually names.
  *     The two files are edited months apart and each looks complete on its
  *     own; a reporter routed to a dead alias gets no answer and concludes we
  *     do not care. Same paired-list drift the other guards in here cover.
+ *   - `Policy:` must resolve to a file that exists here. Nothing else looks at
+ *     it: lychee reads `.md`, never a `.txt`.
  *
  * THERE ARE TWO PUBLISHED COPIES, AND ONLY ONE OF THEM IS GUARDED HERE.
  * This module validates the docs.heypinchy.com file that lives in this repo.
@@ -41,6 +46,48 @@ export const RENEWAL_WINDOW_DAYS = 30;
 
 const DAY_MS = 86_400_000;
 const MAX_VALIDITY_DAYS = 365;
+
+/**
+ * RFC 3339 date-time, which is the format §2.5.5 requires of `Expires`.
+ *
+ * Checked with a pattern rather than by handing the string to `new Date()`,
+ * because `Date` is far more generous than any security.txt reader: it accepts
+ * `2027-01-31`, `Jan 31 2027`, and even a bare `2027` (silently January 1st).
+ * Each is a file a scanner rejects outright, so parsing alone would wave
+ * through precisely the invisible invalidity this module exists to catch. The
+ * two zone-less forms are also parsed as *local* time, which would put a
+ * Vienna laptop and a UTC runner an hour apart at the edge of the renewal
+ * window.
+ */
+const RFC3339 =
+  /^(?<year>\d{4})-(?<month>\d{2})-(?<day>\d{2})[Tt]\d{2}:\d{2}:\d{2}(\.\d+)?([Zz]|[+-]\d{2}:\d{2})$/;
+
+/**
+ * Whether a matched `Expires` names a day the calendar actually has.
+ *
+ * A separate check because `Date` rolls over instead of refusing: it turns
+ * `2027-02-31` into March 3rd, so parsing alone reports success on a value a
+ * strict reader rejects — the same silent invalidity as a malformed date, just
+ * quieter.
+ *
+ * @param {{ year: string, month: string, day: string }} groups
+ */
+function isRealCalendarDay({ year, month, day }) {
+  const probe = new Date(
+    Date.UTC(Number(year), Number(month) - 1, Number(day)),
+  );
+  return (
+    probe.getUTCFullYear() === Number(year) &&
+    probe.getUTCMonth() === Number(month) - 1 &&
+    probe.getUTCDate() === Number(day)
+  );
+}
+
+/**
+ * `Policy:` values are pinned to a blob URL on main so the target can be
+ * resolved to a path in this checkout and checked for existence.
+ */
+const POLICY_BLOB_PREFIX = "https://github.com/heypinchy/pinchy/blob/main/";
 
 /**
  * Parse the `field: value` grammar of RFC 9116 §2.
@@ -98,7 +145,31 @@ export function validateSecurityTxt(content, { now, canonical }) {
     );
   }
 
+  if (!fields.has("policy")) {
+    problems.push(
+      "security.txt needs a `Policy:` field — it is what carries our answer on paid bounties, and dropping it invites the negotiation the policy exists to refuse",
+    );
+  }
+
   return problems;
+}
+
+/**
+ * The repo-relative path a `Policy:` value points at, or `null` if it is not a
+ * blob URL on main.
+ *
+ * Nothing else checks this link: lychee reads `.md`/`.mdx` and never opens a
+ * `.txt`, so a renamed SECURITY.md would leave a 404 in the first file a
+ * reporter looks at. Resolving the URL back to a path lets the test assert the
+ * target still exists.
+ *
+ * @param {string} securityTxt
+ * @returns {string | null}
+ */
+export function policyRepoPath(securityTxt) {
+  const policy = parseFields(securityTxt).get("policy")?.[0];
+  if (!policy?.startsWith(POLICY_BLOB_PREFIX)) return null;
+  return policy.slice(POLICY_BLOB_PREFIX.length);
 }
 
 /**
@@ -120,9 +191,16 @@ function validateExpires(values, now) {
     ];
   }
 
+  const shape = RFC3339.exec(values[0]);
+  if (!shape) {
+    return [
+      `\`Expires\` must be an RFC 3339 timestamp with a timezone, e.g. 2027-01-31T00:00:00.000Z (got "${values[0]}")`,
+    ];
+  }
+
   const expires = new Date(values[0]);
-  if (Number.isNaN(expires.getTime())) {
-    return [`\`Expires\` must be an ISO 8601 timestamp (got "${values[0]}")`];
+  if (Number.isNaN(expires.getTime()) || !isRealCalendarDay(shape.groups)) {
+    return [`\`Expires\` names a day that does not exist (got "${values[0]}")`];
   }
 
   const daysLeft = (expires.getTime() - now.getTime()) / DAY_MS;

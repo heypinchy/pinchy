@@ -1,11 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
 import {
   RENEWAL_WINDOW_DAYS,
+  policyRepoPath,
   validateContactParity,
   validateSecurityTxt,
 } from "./security-txt.mjs";
@@ -21,6 +22,7 @@ const SECURITY_TXT = join(
 const SECURITY_MD = join(repoRoot, "SECURITY.md");
 
 const CANONICAL = "https://docs.heypinchy.com/.well-known/security.txt";
+const POLICY = "https://github.com/heypinchy/pinchy/blob/main/SECURITY.md";
 const NOW = new Date("2026-07-30T12:00:00Z");
 
 const daysFromNow = (days) =>
@@ -31,6 +33,7 @@ const build = (overrides = {}) => {
     Contact: "mailto:security@heypinchy.com",
     Expires: daysFromNow(180),
     Canonical: CANONICAL,
+    Policy: POLICY,
     ...overrides,
   };
   return Object.entries(fields)
@@ -58,6 +61,7 @@ test("field names are matched case-insensitively", () => {
     `contact: mailto:security@heypinchy.com`,
     `EXPIRES: ${daysFromNow(180)}`,
     `Canonical: ${CANONICAL}`,
+    `policy: ${POLICY}`,
   ].join("\n");
   assert.deepEqual(check(content), []);
 });
@@ -78,6 +82,42 @@ test("an unparseable Expires value is reported", () => {
   const problems = check(build({ Expires: "next tuesday" }));
   assert.equal(problems.length, 1);
   assert.match(problems[0], /next tuesday/);
+});
+
+// RFC 9116 §2.5.5 wants an RFC 3339 timestamp, and `new Date()` is far more
+// generous than that — it happily accepts every value below. Each one is a
+// file a scanner rejects outright, so accepting them here would mean the guard
+// waves through exactly the silent invalidity it exists to catch. Worse, the
+// two forms without a zone are parsed as LOCAL time, so `daysLeft` would come
+// out an hour apart on a Vienna laptop and a UTC runner — green locally, red
+// in CI, right at the edge of the renewal window.
+for (const [label, value] of [
+  ["date-only", "2027-01-31"],
+  ["year-only", "2027"],
+  ["no timezone", "2027-01-31T00:00:00"],
+  ["a human date", "Jan 31 2027"],
+]) {
+  test(`an Expires that is ${label} is reported, though Date() accepts it`, () => {
+    assert.ok(
+      !Number.isNaN(new Date(value).getTime()),
+      "fixture must be a value Date() accepts, or the test proves nothing",
+    );
+
+    const problems = check(build({ Expires: value }));
+    assert.equal(problems.length, 1);
+    assert.match(problems[0], /RFC 3339/);
+  });
+}
+
+test("an Expires with a numeric UTC offset passes", () => {
+  // RFC 3339 permits `+01:00` as well as `Z`; rejecting it would push the next
+  // renewal towards the sloppier date-only form the tests above ban.
+  assert.deepEqual(check(build({ Expires: "2026-11-30T00:00:00+01:00" })), []);
+});
+
+test("an Expires with a calendar-impossible date is reported", () => {
+  const problems = check(build({ Expires: "2027-02-31T00:00:00Z" }));
+  assert.equal(problems.length, 1);
 });
 
 test("RFC 9116 allows Expires exactly once", () => {
@@ -124,6 +164,12 @@ test("a Canonical pointing at another URL is reported", () => {
   const problems = check(build({ Canonical: "https://example.com/x.txt" }));
   assert.equal(problems.length, 1);
   assert.match(problems[0], /example\.com/);
+});
+
+test("a missing Policy field is reported", () => {
+  const problems = check(build({ Policy: undefined }));
+  assert.equal(problems.length, 1);
+  assert.match(problems[0], /Policy/);
 });
 
 test("several problems are reported together", () => {
@@ -197,6 +243,22 @@ test("the committed security.txt agrees with SECURITY.md", () => {
       readFileSync(SECURITY_MD, "utf8"),
     ),
     [],
+  );
+});
+
+test("the committed Policy URL resolves to a file in this repo", () => {
+  // `Policy:` is the field carrying our "no paid bounty" answer, and nothing
+  // else checks it: lychee skips `.txt`, so a renamed or moved SECURITY.md
+  // would leave a 404 in the one file a reporter reads first. Pinning it to a
+  // blob URL on main makes the target checkable from here.
+  const path = policyRepoPath(readFileSync(SECURITY_TXT, "utf8"));
+  assert.ok(
+    path,
+    "`Policy:` must be a github.com blob URL on main, so this check can resolve it",
+  );
+  assert.ok(
+    existsSync(join(repoRoot, path)),
+    `\`Policy:\` points at ${path}, which does not exist in this repo`,
   );
 });
 

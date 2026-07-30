@@ -1,5 +1,4 @@
 # Pinchy security contact (RFC 9116)
-# Policy: https://github.com/heypinchy/pinchy/blob/main/SECURITY.md
 #
 # We do not run a paid bug bounty programme and do not pay for reports.
 # Valid findings are credited in our release notes.
