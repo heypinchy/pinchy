@@ -34,8 +34,12 @@
 //      diagnostics export) — see that file's own "NEEDS VALIDATION" note.
 //   4. `createOllamaCloudChatFn`'s judge wiring (llm-nli.ts) — needs a real
 //      key + confirming the pinned judge model id is available.
-//   5. `fetchChunkTexts`'s raw SQL against `kb_chunks` for the groundedness
-//      premise material.
+//   5. (NO LONGER UNVALIDATED) `fetchChunkTexts`'s raw SQL against `kb_chunks`
+//      for the groundedness premise material now lives in `chunk-texts.ts` and
+//      is covered by `kb-eval-chunk-texts.integration.test.ts` against a real
+//      Postgres. It was broken the whole time this note called it unvalidated
+//      (#869): `sql.array(...)` on the right side of `ANY` throws, so the
+//      premise material never loaded.
 import { test } from "@playwright/test";
 import { randomUUID } from "node:crypto";
 
@@ -83,6 +87,7 @@ import {
 } from "../../src/lib/eval/kb/llm-nli";
 import { DEFAULT_ORG_ID } from "../../src/lib/knowledge/constants";
 import { fetchChunkTexts } from "./chunk-texts";
+import { KB_SWEEP_TEMPLATE_ID } from "./sweep-agent";
 import { KB_EVAL_CORPUS } from "./corpus/manifest";
 import { GOLD_QA } from "./corpus/gold-qa";
 import { loadEmbeddings } from "./embeddings-fixture";
@@ -200,11 +205,18 @@ function seedNoackCorpus(): never {
   );
 }
 
-/** Creates a fresh custom agent scoped to `knowledge_search` + the eval corpus root, waits for it to be dispatchable. */
+/**
+ * Creates a fresh **Knowledge Base** agent scoped to `knowledge_search` + the
+ * eval corpus root, waits for it to be dispatchable.
+ *
+ * The template is the measurement, not a detail: it is what carries the
+ * cite-then-answer instructions the graders enforce. See `sweep-agent.ts` for
+ * why a bare `custom` agent made the first sweep unreadable (#869 item 4).
+ */
 async function setupKbSweepAgent(cookie: string): Promise<{ agentId: string }> {
   const createRes = await pinchyPost(
     "/api/agents",
-    { name: `KB-Sweep-${Date.now()}`, templateId: "custom" },
+    { name: `KB-Sweep-${Date.now()}`, templateId: KB_SWEEP_TEMPLATE_ID },
     cookie
   );
   if (!createRes.ok)
