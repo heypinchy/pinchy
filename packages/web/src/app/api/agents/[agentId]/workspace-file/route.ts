@@ -37,6 +37,13 @@ type Params = { params: Promise<{ agentId: string }> };
  */
 type Variant = "original" | "converted";
 
+/**
+ * Three answers, not two: the variant itself, `null` for "not named" (serve
+ * what this document is meant to be looked at as), and `undefined` for "named
+ * something that is not a variant" — which is a 400, not a default. A parser
+ * that folded the last two together would answer an unknown `variant=` with a
+ * document, and a client with a typo would never learn it had one.
+ */
 function parseVariant(raw: string | null): Variant | null | undefined {
   if (raw === null) return null;
   return raw === "original" || raw === "converted" ? raw : undefined;
