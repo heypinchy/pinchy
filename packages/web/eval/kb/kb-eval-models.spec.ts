@@ -82,6 +82,7 @@ import {
   createOllamaCloudChatFn,
 } from "../../src/lib/eval/kb/llm-nli";
 import { DEFAULT_ORG_ID } from "../../src/lib/knowledge/constants";
+import { fetchChunkTexts } from "./chunk-texts";
 import { KB_EVAL_CORPUS } from "./corpus/manifest";
 import { GOLD_QA } from "./corpus/gold-qa";
 import { loadEmbeddings } from "./embeddings-fixture";
@@ -197,40 +198,6 @@ function seedNoackCorpus(): never {
       "from inside the stack (it binds to @/db) with a live embedder, not this external Playwright " +
       "process. Use --corpus=synthetic (default) for the harness's own committed corpus."
   );
-}
-
-/**
- * Fetches every chunk's `chunk_text` for the given `sourcePaths`, keyed by
- * path — the groundedness premise material for whichever sources the
- * answer's Sources list actually cited (`citedSourcePaths`, not the full
- * retrieved set — see that function's doc comment for why). A direct SELECT
- * against the already-seeded corpus, not a re-run of `retrieve()`: we
- * already know exactly which paths were retrieved (from the audit row), so
- * this needs no new search/embedding call, only the stored text.
- */
-async function fetchChunkTexts(
-  dbUrl: string,
-  sourcePaths: string[]
-): Promise<Map<string, string[]>> {
-  const map = new Map<string, string[]>();
-  if (sourcePaths.length === 0) return map;
-
-  const { default: postgres } = await import("postgres");
-  const sql = postgres(dbUrl);
-  try {
-    const rows = await sql<{ source_path: string; chunk_text: string }[]>`
-      SELECT source_path, chunk_text FROM kb_chunks
-      WHERE org_id = ${DEFAULT_ORG_ID} AND source_path = ANY(${sql.array(sourcePaths)})
-    `;
-    for (const row of rows) {
-      const texts = map.get(row.source_path) ?? [];
-      texts.push(row.chunk_text);
-      map.set(row.source_path, texts);
-    }
-    return map;
-  } finally {
-    await sql.end();
-  }
 }
 
 /** Creates a fresh custom agent scoped to `knowledge_search` + the eval corpus root, waits for it to be dispatchable. */
@@ -428,7 +395,7 @@ test.describe("KB Eval Harness Layer 3: groundedness sweep (real Ollama Cloud)",
 
         const retrieved = retrievedSourcesFromAuditEntries(auditEntries);
         const citedPaths = citedSourcePaths(answer);
-        const chunkTextsByPath = await fetchChunkTexts(dbUrl, citedPaths);
+        const chunkTextsByPath = await fetchChunkTexts(dbUrl, DEFAULT_ORG_ID, citedPaths);
         const citedPassageTexts = citedPaths.flatMap((p) => chunkTextsByPath.get(p) ?? []);
 
         const trajectory: KbRunTrajectory = {
