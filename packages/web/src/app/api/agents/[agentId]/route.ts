@@ -77,6 +77,21 @@ export const PATCH = withAuth<RouteContext>(async (request, { params }, session)
     return NextResponse.json({ error: pluginConfigError }, { status: 400 });
   }
 
+  // pluginConfig is a permission, not a preference. `pinchy-files.
+  // allowed_paths` inside it is the allowlist that scopes the agent's file
+  // tools, its knowledge-base retrieval filter, and the browser-facing
+  // `GET /api/agents/[id]/workspace-file` route — which consults that list and
+  // nothing else, so a grant alone is a read, with no tool and no group
+  // membership needed. `pluginConfigSchema` confines the VALUE to /data, but
+  // /data is every corpus: a member who may still write `["/data/hr"]` onto
+  // their own seeded personal agent reads HR's documents. Same gate as
+  // allowedTools, and it costs the UI nothing — the Permissions tab that emits
+  // this field renders only for `isAdmin && !isPersonal`, and every request it
+  // sends carries allowedTools anyway.
+  if (body.pluginConfig !== undefined && session.user.role !== "admin") {
+    return NextResponse.json({ error: "Only admins can change permissions" }, { status: 403 });
+  }
+
   // Only admins can change permissions on shared agents
   if (body.allowedTools !== undefined) {
     if (session.user.role !== "admin") {

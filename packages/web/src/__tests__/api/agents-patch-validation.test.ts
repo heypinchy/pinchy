@@ -629,9 +629,57 @@ describe("PATCH /api/agents/[agentId] — allowed_paths cannot be widened past /
     expect(vi.mocked(updateAgent)).not.toHaveBeenCalled();
   });
 
-  it("still persists a legitimate scope under /data", async () => {
+  /**
+   * The clamp bounds the DAMAGE; it does not restore the missing gate.
+   *
+   * `/data` is not one corpus — it is every corpus, and which subtree an agent
+   * may see is exactly what an admin decides when they scope a knowledge-base
+   * agent. A member who can still write `allowed_paths: ["/data/hr"]` onto
+   * their own seeded personal agent reads HR's documents through
+   * `GET /api/agents/[id]/workspace-file`, which consults that list and
+   * nothing else — no tool grant, no group membership, no admin role.
+   *
+   * So `pluginConfig` gets the gate its neighbours already have. The UI never
+   * loses anything: the Permissions tab that produces this field renders only
+   * for `isAdmin && !isPersonal`, and every request it sends carries
+   * `allowedTools`, which 403s for a member already.
+   */
+  it("refuses a member setting pluginConfig at all, even a scope inside /data", async () => {
     memberSession();
     mockOwnPersonalAgent();
+
+    const res = await PATCH(
+      patchRequest({ pluginConfig: { "pinchy-files": { allowed_paths: ["/data/hr"] } } }),
+      params
+    );
+
+    expect(res.status).toBe(403);
+    expect(vi.mocked(updateAgent)).not.toHaveBeenCalled();
+  });
+
+  it("refuses a member clearing pluginConfig too — the field is the boundary", async () => {
+    memberSession();
+    mockOwnPersonalAgent();
+
+    const res = await PATCH(patchRequest({ pluginConfig: null }), params);
+
+    expect(res.status).toBe(403);
+    expect(vi.mocked(updateAgent)).not.toHaveBeenCalled();
+  });
+
+  it("lets a member patch a field that is not pluginConfig", async () => {
+    memberSession();
+    mockOwnPersonalAgent();
+    vi.mocked(updateAgent).mockResolvedValueOnce({ id: "agent-1" } as never);
+
+    const res = await PATCH(patchRequest({ tagline: "My helper" }), params);
+
+    expect(res.status).toBe(200);
+  });
+
+  it("still persists a legitimate scope under /data for an admin", async () => {
+    adminSession();
+    mockAgent({ id: "agent-1", name: "Shared", model: "m", isPersonal: false, ownerId: null });
     vi.mocked(updateAgent).mockResolvedValueOnce({ id: "agent-1" } as never);
 
     const res = await PATCH(
