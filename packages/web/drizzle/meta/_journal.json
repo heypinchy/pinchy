@@ -442,6 +442,13 @@
       "when": 1785348713884,
       "tag": "0062_kb_chunk_locator_drop_page",
       "breakpoints": true
+    },
+    {
+      "idx": 63,
+      "version": "7",
+      "when": 1785423989404,
+      "tag": "0063_kb_index_job_byte_progress",
+      "breakpoints": true
     }
   ]
 }

@@ -133,11 +133,23 @@ export async function claimNextIndexJob(): Promise<KbIndexJob | null> {
  */
 export async function recordIndexJobProgress(
   jobId: string,
-  progress: { processed: number; total: number; counts: IngestResult }
+  progress: {
+    processed: number;
+    total: number;
+    processedBytes: number;
+    totalBytes: number;
+    counts: IngestResult;
+  }
 ): Promise<void> {
   await db
     .update(kbIndexJobs)
-    .set({ processed: progress.processed, total: progress.total, counts: progress.counts })
+    .set({
+      processed: progress.processed,
+      total: progress.total,
+      processedBytes: progress.processedBytes,
+      totalBytes: progress.totalBytes,
+      counts: progress.counts,
+    })
     .where(eq(kbIndexJobs.id, jobId));
 }
 
@@ -180,7 +192,15 @@ export async function finishIndexJob(jobId: string, args: FinishIndexJobArgs): P
 export async function requeueOrphanedIndexJobs(): Promise<number> {
   const requeued = await db
     .update(kbIndexJobs)
-    .set({ status: "pending", processed: 0, total: null, counts: null, startedAt: null })
+    .set({
+      status: "pending",
+      processed: 0,
+      total: null,
+      processedBytes: 0,
+      totalBytes: null,
+      counts: null,
+      startedAt: null,
+    })
     .where(eq(kbIndexJobs.status, "running"))
     .returning({ id: kbIndexJobs.id });
   return requeued.length;

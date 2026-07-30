@@ -84,6 +84,25 @@ export interface IngestProgress {
   /** Files discovered across every root, deduplicated. Known before the first file, so a bar built on it never runs backwards. */
   total: number;
   /**
+   * Bytes of the corpus behind us. Whole files that are done, plus the current
+   * file's bytes pro rata to the chunks embedded from it so far — so a document
+   * worth a third of the corpus advances progress while it runs instead of
+   * freezing it (#907).
+   */
+  processedBytes: number;
+  /**
+   * Bytes discovered across every root, deduplicated. Like `total`, known
+   * before the first extract — and unlike `total` it is work-proportional,
+   * which is what makes a time-to-completion estimate possible at all. A
+   * document is NOT a unit of work: one compilation PDF measured 38% of a
+   * 193-document corpus's chunks, so a doc-count projection promises "2 min
+   * left" at 190/193 and then spends an hour. See lib/knowledge/index-eta.ts.
+   *
+   * Zero when nothing could be weighed (an empty corpus, or files whose size
+   * is zero); consumers must treat that as "no estimate", not as "done".
+   */
+  totalBytes: number;
+  /**
    * The tally so far.
    *
    * Reported alongside progress rather than only returned, because the return
@@ -102,10 +121,37 @@ function isEligibleFile(name: string, allowedExtensions: readonly string[]): boo
   return isAllowedExtension(name, allowedExtensions);
 }
 
-/** Recursively lists ingest-eligible files under a DIRECTORY, applying the allowlist + skip-hidden + A/B denylist (exclude-globs.ts). */
-async function walkDir(dir: string, allowedExtensions: readonly string[]): Promise<string[]> {
+/**
+ * Bytes on disk, or 0 when the size cannot be read.
+ *
+ * Discovery must not fail over a single file: one that vanished between the
+ * readdir and this stat stays in the queue and is counted `failed` at read time,
+ * exactly as before. It simply carries no weight, which is the honest thing to
+ * do about a size we do not know — unlike dropping the file, which would make
+ * the removal pass believe it is gone.
+ */
+async function fileSize(absPath: string): Promise<number> {
+  try {
+    return (await stat(absPath)).size;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Recursively lists ingest-eligible files under a DIRECTORY with their sizes,
+ * applying the allowlist + skip-hidden + A/B denylist (exclude-globs.ts).
+ *
+ * A map, not a list, because discovery is also where the run's byte total comes
+ * from: sizes are free here (one stat per eligible file) and unknowable later
+ * without a second walk.
+ */
+async function walkDir(
+  dir: string,
+  allowedExtensions: readonly string[]
+): Promise<Map<string, number>> {
   const entries = await readdir(dir, { withFileTypes: true });
-  const files: string[] = [];
+  const files = new Map<string, number>();
 
   for (const entry of entries) {
     if (isHiddenSegment(entry.name)) continue;
@@ -113,9 +159,10 @@ async function walkDir(dir: string, allowedExtensions: readonly string[]): Promi
 
     if (entry.isDirectory()) {
       if (isDenylistedDirName(entry.name)) continue;
-      files.push(...(await walkDir(absPath, allowedExtensions)));
+      for (const [path, size] of await walkDir(absPath, allowedExtensions)) files.set(path, size);
     } else if (entry.isFile()) {
-      if (isEligibleFile(entry.name, allowedExtensions)) files.push(absPath);
+      if (isEligibleFile(entry.name, allowedExtensions))
+        files.set(absPath, await fileSize(absPath));
     }
   }
 
@@ -143,7 +190,7 @@ async function walkDir(dir: string, allowedExtensions: readonly string[]): Promi
 async function discoverFiles(
   rootDir: string,
   allowedExtensions: readonly string[]
-): Promise<string[] | null> {
+): Promise<Map<string, number> | null> {
   let rootStat;
   try {
     rootStat = await stat(rootDir);
@@ -152,10 +199,12 @@ async function discoverFiles(
   }
 
   if (rootStat.isFile()) {
-    return isEligibleFile(basename(rootDir), allowedExtensions) ? [rootDir] : [];
+    return isEligibleFile(basename(rootDir), allowedExtensions)
+      ? new Map([[rootDir, rootStat.size]])
+      : new Map();
   }
   // A socket, device, or dangling symlink: readable, and holds no documents.
-  if (!rootStat.isDirectory()) return [];
+  if (!rootStat.isDirectory()) return new Map();
 
   try {
     return await walkDir(rootDir, allowedExtensions);
@@ -180,6 +229,21 @@ function isUnderRoot(sourcePath: string, rootDir: string): boolean {
 }
 
 /**
+ * How many chunks are embedded per call, and therefore how often a long
+ * document can report on itself.
+ *
+ * Not a throughput knob: the local embedder (node-llama-cpp) processes one
+ * input per call regardless, and the Ollama client already slices at the same
+ * default internally, so this changes the shape of no request. It is purely the
+ * granularity at which a document worth a third of the corpus is allowed to say
+ * "still moving" — see the progress credit in ingestPaths.
+ */
+export const EMBED_PROGRESS_BATCH = 32;
+
+/** Reports that `embedded` of `total` chunks of the CURRENT document are done. */
+export type ChunkProgressCallback = (embedded: number, total: number) => void | Promise<void>;
+
+/**
  * Chunks `pages`, embeds every chunk, and inserts the resulting kb_chunks rows
  * for `documentId`. Returns the number of chunks written — zero means the
  * document is indexed but unsearchable (e.g. an image-only scan whose text
@@ -191,12 +255,21 @@ async function writeChunks(
   orgId: string,
   sourcePath: string,
   pages: IngestPage[],
-  deps: IngestDeps
+  deps: IngestDeps,
+  onChunkProgress?: ChunkProgressCallback
 ): Promise<number> {
   const chunks = chunkPages(pages);
   if (chunks.length === 0) return 0;
 
-  const vectors = await deps.embed(chunks.map((chunk) => chunk.text));
+  const vectors: number[][] = [];
+  for (let i = 0; i < chunks.length; i += EMBED_PROGRESS_BATCH) {
+    const batch = chunks.slice(i, i + EMBED_PROGRESS_BATCH);
+    vectors.push(...(await deps.embed(batch.map((chunk) => chunk.text))));
+    // Only BETWEEN batches. The last batch's report would say exactly what the
+    // per-file report following it immediately says, and an extra report that
+    // carries no new information is a write the worker pays for twice.
+    if (vectors.length < chunks.length) await onChunkProgress?.(vectors.length, chunks.length);
+  }
 
   await db.insert(kbChunks).values(
     chunks.map((chunk, i) => ({
@@ -251,7 +324,12 @@ type FileOutcome = "indexed" | "skipped" | "unsearchable";
  * THIS file owns surfaces as a FileIngestError; embedding and DB calls are
  * deliberately left bare so a systemic outage aborts the whole run.
  */
-async function ingestFile(orgId: string, absPath: string, deps: IngestDeps): Promise<FileOutcome> {
+async function ingestFile(
+  orgId: string,
+  absPath: string,
+  deps: IngestDeps,
+  onChunkProgress?: ChunkProgressCallback
+): Promise<FileOutcome> {
   const { buffer, fileStat } = await fileStep(absPath, async () => ({
     buffer: await readFile(absPath),
     fileStat: await stat(absPath),
@@ -293,7 +371,7 @@ async function ingestFile(orgId: string, absPath: string, deps: IngestDeps): Pro
     // to zero chunks again — the write result, not the branch, is what tells
     // the two apart.
     const pages = await fileStep(absPath, () => deps.extractPdf(absPath));
-    const written = await writeChunks(existing.id, orgId, absPath, pages, deps);
+    const written = await writeChunks(existing.id, orgId, absPath, pages, deps, onChunkProgress);
     return written > 0 ? "indexed" : "unsearchable";
   }
 
@@ -325,7 +403,7 @@ async function ingestFile(orgId: string, absPath: string, deps: IngestDeps): Pro
     })
     .returning();
 
-  const written = await writeChunks(doc.id, orgId, absPath, pages, deps);
+  const written = await writeChunks(doc.id, orgId, absPath, pages, deps, onChunkProgress);
   return written > 0 ? "indexed" : "unsearchable";
 }
 
@@ -348,7 +426,7 @@ async function ingestFile(orgId: string, absPath: string, deps: IngestDeps): Pro
 async function removeVanishedDocuments(
   orgId: string,
   rootDir: string,
-  discovered: ReadonlySet<string>
+  discovered: ReadonlyMap<string, number>
 ): Promise<number> {
   const existingForOrg = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, orgId));
 
@@ -387,29 +465,32 @@ export async function ingestPaths(
   // no files to ingest AND no removal pass, because we have no evidence about
   // what is under it. See discoverFiles for why that distinction is not
   // pedantry.
-  const perRoot: Array<{ rootDir: string; discovered: Set<string> }> = [];
+  const perRoot: Array<{ rootDir: string; discovered: Map<string, number> }> = [];
   for (const rootDir of rootDirs) {
     const discovered = await discoverFiles(rootDir, allowedExtensions);
     if (discovered === null) continue;
-    perRoot.push({ rootDir, discovered: new Set(discovered) });
+    perRoot.push({ rootDir, discovered });
   }
 
   // Deduplicated across roots, but ordered so each file is ingested while its
   // first root is being processed — the order only matters for readability of
-  // the progress stream, not for correctness.
-  const queue: string[] = [];
+  // the progress stream, not for correctness. Deduplication covers the byte
+  // total too: a file granted under both /data and /data/hr is one unit of
+  // work and must be weighed once, or the run would stop short of its total.
+  const queue: Array<{ absPath: string; bytes: number }> = [];
   const seen = new Set<string>();
   for (const { discovered } of perRoot) {
-    for (const absPath of discovered) {
+    for (const [absPath, bytes] of discovered) {
       if (seen.has(absPath)) continue;
       seen.add(absPath);
-      queue.push(absPath);
+      queue.push({ absPath, bytes });
     }
   }
 
   const tally: Record<FileOutcome, number> = { indexed: 0, skipped: 0, unsearchable: 0 };
   let failed = 0;
   let processed = 0;
+  let processedBytes = 0;
   let removed = 0;
   // Orthogonal to the outcome tally: an archived document is ALSO indexed or
   // skipped (archived files are fully ingested; only default retrieval hides
@@ -417,16 +498,35 @@ export async function ingestPaths(
   // `failed` file under OLD/ inflates neither bucket.
   let archived = 0;
   const total = queue.length;
+  const totalBytes = queue.reduce((sum, file) => sum + file.bytes, 0);
   const snapshot = (): IngestResult => ({ ...tally, removed, failed, archived });
+
+  /** `inFlightBytes` is the part of the CURRENT file already embedded — see the callback below. */
+  const report = (inFlightBytes = 0) =>
+    opts.onProgress?.({
+      processed,
+      total,
+      processedBytes: processedBytes + inFlightBytes,
+      totalBytes,
+      counts: snapshot(),
+    });
 
   // Reported before any work: "0 of N" is what tells a caller the run started
   // and how big it is. A caller that hears nothing until the first file lands
   // cannot tell a slow run from a dead one.
-  await opts.onProgress?.({ processed, total, counts: snapshot() });
+  await report();
 
-  for (const absPath of queue) {
+  for (const { absPath, bytes } of queue) {
     try {
-      tally[await ingestFile(orgId, absPath, deps)]++;
+      const outcome = await ingestFile(orgId, absPath, deps, (embedded, chunkTotal) =>
+        // Credit this file's bytes in proportion to the chunks embedded from
+        // it. Its chunk count IS known once it is split, and that is the one
+        // thing chunk-level progress is uniquely good for: without it the
+        // compilation PDF worth 38% of the corpus would hold both bar and ETA
+        // still for over an hour (#907).
+        report(chunkTotal > 0 ? Math.round((bytes * embedded) / chunkTotal) : 0)
+      );
+      tally[outcome]++;
       if (isArchivedPath(absPath)) archived++;
     } catch (err) {
       // One unreadable or corrupt file is a normal property of a real corpus,
@@ -443,7 +543,11 @@ export async function ingestPaths(
       failed++;
     }
     processed++;
-    await opts.onProgress?.({ processed, total, counts: snapshot() });
+    // A file that failed still moved the run forward, so its bytes go behind us
+    // too — progress measures how much of the corpus is done, not how much of
+    // it succeeded.
+    processedBytes += bytes;
+    await report();
   }
 
   for (const { rootDir, discovered } of perRoot) {

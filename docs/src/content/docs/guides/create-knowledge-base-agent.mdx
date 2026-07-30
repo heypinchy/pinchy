@@ -52,7 +52,7 @@ Click **Save** to apply the permissions.
 
 ## 6. Index the documents
 
-Granting a directory doesn't index it automatically — an admin has to trigger indexing. The simplest way is right where you granted the directories: in the agent's **Permissions** tab, the **Knowledge Base** section has an **Index** control. Click **Reindex now** and the section shows the run inline — discovery, a live progress bar with how long the run has been going, and the last run's outcome — so you never have to leave the page or read a log. (It's an elapsed time, not an estimate to completion: on a real corpus a single large document can dominate the work, so any countdown would mislead more than it helps.)
+Granting a directory doesn't index it automatically — an admin has to trigger indexing. The simplest way is right where you granted the directories: in the agent's **Permissions** tab, the **Knowledge Base** section has an **Index** control. Click **Reindex now** and the section shows the run inline — discovery, a live progress bar, how long the run has been going, an estimate of how much longer, and the last run's outcome — so you never have to leave the page or read a log. The estimate is deliberately shy: it appears only once the run has produced enough readings to support one, and it disappears again if progress stalls. On a real corpus a single large document can dominate the work, so a countdown that always shows a number would mislead more than it helps.
 
 The same action is available over the API, which is what you'd script for scheduled re-indexing:
 
@@ -94,6 +94,8 @@ curl -b session_cookie "https://pinchy.example.com/api/agents/<agentId>/knowledg
     "status": "running",
     "processed": 340,
     "total": 1893,
+    "processedBytes": 806531072,
+    "totalBytes": 4183396352,
     "counts": null
   }
 }
@@ -101,7 +103,7 @@ curl -b session_cookie "https://pinchy.example.com/api/agents/<agentId>/knowledg
 
 `total` is every document we found across the granted folders, counted before the first one is read — so it doesn't move once the run starts. `counts` fills in as the run goes, so you don't have to wait until the end to see how it's going:
 
-`processed` counts whole documents, so a long one holds the number still while we work through it — a 300-page PDF can sit there for minutes. That's the run being slow, not stuck.
+`processed` counts whole documents, so a long one holds the number still while we work through it — a 300-page PDF can sit there for minutes. That's the run being slow, not stuck. `processedBytes` keeps moving through it, though: it's weighed by file size and credited as each document's pages are embedded, which is why the progress bar and the estimate are built on those two rather than on the document counters.
 
 | Field          | What it means                                                                                                                                 |
 | -------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -183,7 +185,7 @@ We cap how many passages any one document can contribute to a single answer, so 
 Phase 1 of the knowledge base is deliberately narrow:
 
 - Only **text-based PDFs** are indexed and searchable via `knowledge_search`. Scanned/image-only PDFs and Office documents (`.docx`, etc.) are on the roadmap, not indexed today.
-- Indexing is a manual admin action (step 7). It runs in the background and reports progress, but you still have to ask for it — a scheduled sweep and a progress UI in the app are planned for a later phase.
+- Indexing is a manual admin action (step 7). It runs in the background and reports progress in the app, but you still have to ask for it — a scheduled sweep is planned for a later phase.
 
 ### Documents that can't be searched
 

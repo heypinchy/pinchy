@@ -8,6 +8,12 @@ import { Progress } from "@/components/ui/progress";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { KnowledgeUnsearchableList } from "@/components/knowledge-unsearchable-list";
 import { apiGet, apiPost, ApiError } from "@/lib/api-client";
+import {
+  appendProgressSample,
+  estimateRemainingMs,
+  formatEta,
+  type ProgressSample,
+} from "@/lib/knowledge/index-eta";
 import type { IngestResult } from "@/lib/knowledge/types";
 import type { KnowledgeReindexRequest } from "@/lib/schemas/knowledge-base";
 
@@ -19,6 +25,9 @@ interface ReindexJob {
   status: JobStatus;
   processed: number;
   total: number | null;
+  /** The same progress weighted by bytes of the corpus — the work-proportional measure the bar and the estimate are built on (#907). `totalBytes` is null until discovery has walked every root. */
+  processedBytes: number;
+  totalBytes: number | null;
   counts: IngestResult | null;
   error: string | null;
   createdAt: string;
@@ -121,6 +130,23 @@ export function KnowledgeReindexSection({
     return () => clearInterval(id);
   }, [active]);
 
+  // Byte readings over time, the input the time-to-completion estimate is
+  // computed from (#907). Sampled here rather than derived from `startedAt`,
+  // because the run's own average keeps paying for the model load and the
+  // discovery walk forever and never notices a change in throughput. One
+  // sample per status read; index-eta.ts owns the window and the arithmetic.
+  const [samples, setSamples] = useState<ProgressSample[]>([]);
+  useEffect(() => {
+    if (!active || job === null || job.totalBytes === null) {
+      // Identity-preserving so an already-empty series does not re-render.
+      setSamples((prev) => (prev.length === 0 ? prev : []));
+      return;
+    }
+    setSamples((prev) =>
+      appendProgressSample(prev, { at: Date.now(), processedBytes: job.processedBytes })
+    );
+  }, [active, job]);
+
   const handleReindex = useCallback(async () => {
     setSubmitting(true);
     try {
@@ -138,6 +164,8 @@ export function KnowledgeReindexSection({
         status: "pending",
         processed: 0,
         total: null,
+        processedBytes: 0,
+        totalBytes: null,
         counts: null,
         error: null,
         createdAt: new Date().toISOString(),
@@ -177,7 +205,7 @@ export function KnowledgeReindexSection({
           Grant at least one directory to enable indexing.
         </p>
       ) : active && job ? (
-        <RunningState job={job} now={now} />
+        <RunningState job={job} now={now} samples={samples} />
       ) : job?.status === "succeeded" ? (
         <SucceededState job={job} />
       ) : job?.status === "failed" ? (
@@ -209,16 +237,31 @@ export function KnowledgeReindexSection({
   );
 }
 
-function RunningState({ job, now }: { job: ReindexJob; now: number | null }) {
-  // How long the worker has been on this run. Deliberately an elapsed readout,
-  // NOT an ETA: per-document embedding cost varies too wildly on a real corpus
-  // (a single compilation PDF can be ~38% of all chunks) for a doc-count
-  // projection to be honest. A true ETA needs chunk-level progress (#907).
+function RunningState({
+  job,
+  now,
+  samples,
+}: {
+  job: ReindexJob;
+  now: number | null;
+  samples: readonly ProgressSample[];
+}) {
+  // How long the worker has been on this run — measured, and shown beside the
+  // projection below rather than replaced by it: an operator needs to tell
+  // "this is how long it HAS taken" from "this is how long it MIGHT take".
   // Empty until the worker has started the job AND the clock ticked.
   const elapsedSuffix =
     job.startedAt && now !== null
       ? ` · running ${formatElapsed(new Date(job.startedAt).getTime(), now)}`
       : "";
+
+  // Null whenever the readings cannot support an answer — too little evidence,
+  // no measurable movement, no known total. Absent is a state this readout is
+  // expected to spend real time in: an ETA that lies is worse than no ETA, and
+  // the doc-count projection this replaces lied by construction (see
+  // lib/knowledge/index-eta.ts).
+  const remainingMs = estimateRemainingMs(samples, job.totalBytes);
+  const etaSuffix = remainingMs === null ? "" : ` · ${formatEta(remainingMs)}`;
 
   // `total` is null until discovery has walked every root — an indeterminate
   // phase we name rather than fake a percentage for.
@@ -226,21 +269,45 @@ function RunningState({ job, now }: { job: ReindexJob; now: number | null }) {
     return (
       <div className="space-y-2">
         <Progress value={0} />
-        <p className="text-sm text-muted-foreground">Discovering documents…{elapsedSuffix}</p>
+        <p className="text-sm text-muted-foreground">
+          Discovering documents…{elapsedSuffix}
+          {etaSuffix}
+        </p>
       </div>
     );
   }
-  // Clamped: `processed` can momentarily overshoot a stale `total` snapshot,
-  // and a >100 value flips the Radix progressbar into its indeterminate state.
-  const pct = job.total > 0 ? Math.min(100, Math.round((job.processed / job.total) * 100)) : 0;
   return (
     <div className="space-y-2">
-      <Progress value={pct} />
+      <Progress value={progressPct(job)} />
       <p className="text-sm text-muted-foreground">
         Indexing {job.processed} of {job.total} documents…{elapsedSuffix}
+        {etaSuffix}
       </p>
     </div>
   );
+}
+
+/**
+ * How full the bar is, in percent.
+ *
+ * Bytes when discovery has weighed the corpus, documents otherwise. Documents
+ * are not equal units of work — in the 2026-07 dry-run one compilation PDF was
+ * 38% of all chunks beside hundreds of one-chunk product sheets — so a
+ * doc-count bar sits at 98% while an hour of work remains. Bytes track text
+ * volume closely enough that the outsized document is anticipated instead of
+ * discovered at the end, and the worker credits a long document's bytes as its
+ * chunks are embedded, so the bar keeps moving inside it.
+ *
+ * Clamped: either counter can momentarily overshoot a total snapshotted a poll
+ * earlier, and a >100 value flips the Radix progressbar into its indeterminate
+ * state.
+ */
+function progressPct(job: ReindexJob): number {
+  const [done, all] =
+    job.totalBytes !== null && job.totalBytes > 0
+      ? [job.processedBytes, job.totalBytes]
+      : [job.processed, job.total ?? 0];
+  return all > 0 ? Math.min(100, Math.round((done / all) * 100)) : 0;
 }
 
 /**

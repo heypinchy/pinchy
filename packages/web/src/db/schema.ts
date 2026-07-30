@@ -1050,6 +1050,17 @@ export const kbIndexJobs = pgTable(
     // run backwards, so it is written once, upfront.
     total: integer("total"),
     processed: integer("processed").notNull().default(0),
+    // Progress, in BYTES of the corpus — the work-proportional counters a
+    // time-to-completion estimate is computed from (#907). A document is not a
+    // unit of work (one compilation PDF measured 38% of a 193-document
+    // corpus's chunks), so `processed`/`total` above can only ever drive an
+    // honest "how many files are behind us", never an ETA.
+    //
+    // bigint, not integer: a real corpus passes 2.1 GB long before it passes
+    // 2.1 billion documents. Null until discovery has walked every root, for
+    // the same reason `total` is.
+    totalBytes: bigint("total_bytes", { mode: "number" }),
+    processedBytes: bigint("processed_bytes", { mode: "number" }).notNull().default(0),
     // The ingest's findings (IngestResult), written when the job reaches a
     // terminal state — on failure too, since partial counts are the operator's
     // only evidence of how far the run got.

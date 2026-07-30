@@ -79,6 +79,8 @@ function makeJob(overrides: Partial<KbIndexJob> = {}): KbIndexJob {
     status: "pending",
     total: null,
     processed: 0,
+    totalBytes: null,
+    processedBytes: 0,
     counts: null,
     error: null,
     createdAt: new Date("2026-07-17T10:00:00Z"),
@@ -318,6 +320,42 @@ describe("GET /api/agents/[agentId]/knowledge/reindex", () => {
     expect(await res.json()).toMatchObject({
       job: { id: "job-1", status: "running", processed: 30, total: 42, counts: null },
     });
+  });
+
+  // The byte counters are what a time-to-completion estimate is computed from
+  // (#907): documents are not equal units of work, so `processed`/`total` can
+  // only answer "how many files are behind us". Dropping these from the
+  // projection would silently take the ETA back to the doc-count projection the
+  // elapsed-only readout shipped instead of.
+  it("exposes the byte-weighted progress an ETA is computed from", async () => {
+    mockGetLatestIndexJobForAgent.mockResolvedValueOnce(
+      makeJob({
+        status: "running",
+        processed: 30,
+        total: 42,
+        processedBytes: 12_000_000,
+        totalBytes: 40_000_000,
+        startedAt: new Date("2026-07-17T10:00:05Z"),
+      })
+    );
+
+    const res = await GET(makeGetRequest(), ctx as never);
+
+    expect(await res.json()).toMatchObject({
+      job: { processedBytes: 12_000_000, totalBytes: 40_000_000 },
+    });
+  });
+
+  // Discovery has to walk every root before the total is real. A zero here
+  // would read as "an empty corpus" and let the client divide by it; null is
+  // the state the run is actually in.
+  it("reports an unknown byte total as null while discovery is still walking", async () => {
+    mockGetLatestIndexJobForAgent.mockResolvedValueOnce(makeJob({ status: "running" }));
+
+    const body = await (await GET(makeGetRequest(), ctx as never)).json();
+
+    expect(body.job.totalBytes).toBeNull();
+    expect(body.job.processedBytes).toBe(0);
   });
 
   // This endpoint is now the only place an admin sees the counts, so the two

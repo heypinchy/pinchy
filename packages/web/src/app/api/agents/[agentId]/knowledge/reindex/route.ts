@@ -218,6 +218,18 @@ export const GET = withAdmin<RouteContext>(async (_request, { params }) => {
       /** Documents behind the run, and how many discovery found. `total` is null until discovery has walked every root. */
       processed: job.processed,
       total: job.total,
+      /**
+       * The same progress in BYTES of the corpus — the work-proportional
+       * measure a time-to-completion estimate is computed from (#907). A
+       * document is not a unit of work (one compilation PDF was 38% of a
+       * 193-document corpus's chunks), so the doc counters above can only
+       * answer "how many files are behind us", never "how long is left".
+       *
+       * `totalBytes` is null until discovery has walked every root; a zero
+       * would read as an empty corpus and invite a division by it.
+       */
+      processedBytes: job.processedBytes,
+      totalBytes: job.totalBytes,
       /** The run's findings; null until it finishes. `unsearchable` and `failed` are the counters that say a document will never answer a question. */
       counts: job.counts,
       /** Scrubbed failure summary; null unless the run failed systemically. */

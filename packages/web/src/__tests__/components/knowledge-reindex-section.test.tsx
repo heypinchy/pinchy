@@ -46,6 +46,8 @@ type Job = {
   status: "pending" | "running" | "succeeded" | "failed";
   processed: number;
   total: number | null;
+  processedBytes: number;
+  totalBytes: number | null;
   counts: {
     indexed: number;
     skipped: number;
@@ -65,6 +67,8 @@ function job(overrides: Partial<Job>): Job {
     status: "succeeded",
     processed: 0,
     total: 0,
+    processedBytes: 0,
+    totalBytes: null,
     counts: null,
     error: null,
     createdAt: "2026-07-21T10:00:00.000Z",
@@ -375,10 +379,10 @@ describe("KnowledgeReindexSection", () => {
     expect(screen.getByRole("button", { name: /reindex/i })).toBeEnabled();
   });
 
-  // Elapsed-time readout: an honest "it's still moving" signal for a long index,
-  // deliberately NOT an ETA — per-document embedding cost varies too wildly
-  // (one compilation PDF can be 38% of all chunks) for a doc-count projection to
-  // be anything but a lie. Chunk-level progress + a real ETA is tracked in #907.
+  // Elapsed-time readout: an honest "it's still moving" signal for a long index.
+  // It is MEASURED, which is what keeps it here beside the projected estimate
+  // below (#907) rather than being replaced by it — the estimate is allowed to
+  // be absent, and a run must still show it is alive when it is.
   describe("elapsed time while a run is in flight", () => {
     beforeEach(() => vi.useFakeTimers({ shouldAdvanceTime: true }));
     afterEach(() => vi.useRealTimers());
@@ -448,6 +452,162 @@ describe("KnowledgeReindexSection", () => {
       });
 
       expect(screen.getByText(/running 13 min/i)).toBeInTheDocument();
+    });
+  });
+
+  // #907. Documents are not equal units of work — one compilation PDF was 38%
+  // of a 193-document corpus's chunks — so the bar is driven by the corpus's
+  // bytes, which discovery knows in full before the first extract.
+  describe("byte-weighted progress", () => {
+    it("drives the progress bar off the corpus's bytes, not its document count", async () => {
+      mockGet.mockResolvedValue({
+        job: job({
+          status: "running",
+          processed: 12,
+          total: 193,
+          processedBytes: 500_000,
+          totalBytes: 1_000_000,
+        }),
+      });
+
+      render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} />);
+
+      const bar = await screen.findByRole("progressbar");
+      // 12 of 193 documents is 6%; half the corpus's bytes are behind the run.
+      await waitFor(() => expect(bar).toHaveAttribute("aria-valuenow", "50"));
+      // The document counters stay in the label — they answer a different,
+      // still useful question.
+      expect(screen.getByText(/12 of 193/i)).toBeInTheDocument();
+    });
+
+    it("falls back to the document count while the byte total is unknown", async () => {
+      mockGet.mockResolvedValue({
+        job: job({ status: "running", processed: 5, total: 10, totalBytes: null }),
+      });
+
+      render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} />);
+
+      const bar = await screen.findByRole("progressbar");
+      await waitFor(() => expect(bar).toHaveAttribute("aria-valuenow", "50"));
+    });
+
+    it("clamps a byte reading that overshoots a stale total", async () => {
+      mockGet.mockResolvedValue({
+        job: job({
+          status: "running",
+          processed: 3,
+          total: 10,
+          processedBytes: 1_200_000,
+          totalBytes: 1_000_000,
+        }),
+      });
+
+      render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} />);
+
+      const bar = await screen.findByRole("progressbar");
+      await waitFor(() => expect(bar).toHaveAttribute("aria-valuenow", "100"));
+    });
+  });
+
+  describe("time-to-completion estimate", () => {
+    beforeEach(() => vi.useFakeTimers({ shouldAdvanceTime: true }));
+    afterEach(() => vi.useRealTimers());
+
+    /**
+     * Answers every poll with a FRESH job object, the way the real api-client
+     * does (it parses JSON per response). Returning one shared object instead
+     * makes React bail out of the state update entirely, so the sample series
+     * never grows and every absence assertion below passes for the wrong
+     * reason — which is exactly how the first draft of these tests was green.
+     */
+    const alwaysRunningAt = (processedBytes: number, processed: number) =>
+      mockGet.mockImplementation(async () => ({
+        job: job({
+          status: "running",
+          processed,
+          total: 10,
+          processedBytes,
+          totalBytes: 1_000_000,
+        }),
+      }));
+
+    /**
+     * Advances the fake clock in poll-sized steps, letting React commit between
+     * them. ONE long advance instead collapses all 90 status reads into a
+     * single batched render, so the sample series never grows past its mount
+     * reading — and a stalled run then looks indistinguishable from a run with
+     * no readings at all, quietly passing every absence assertion here.
+     */
+    const tick = async (seconds: number) => {
+      for (let elapsed = 0; elapsed < seconds; elapsed += 5) {
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(5_000);
+        });
+      }
+    };
+
+    it("projects the remaining time from the observed byte rate", async () => {
+      vi.setSystemTime(new Date("2026-07-21T10:00:01.000Z"));
+      alwaysRunningAt(100_000, 1);
+
+      render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} pollIntervalMs={1000} />);
+      await waitFor(() => expect(screen.getByText(/indexing 1 of 10/i)).toBeInTheDocument());
+
+      // 100 kB over the next 20 s = 5 kB/s, and 800 kB are left ≈ 160 s.
+      alwaysRunningAt(200_000, 2);
+      await tick(20);
+
+      expect(screen.getByText(/~3 min left/)).toBeInTheDocument();
+      // Beside the elapsed readout, not instead of it: one is measured, the
+      // other projected, and an operator needs to tell them apart.
+      expect(screen.getByText(/running \d+ sec/)).toBeInTheDocument();
+    });
+
+    // An estimate off two readings a second apart is noise wearing a number's
+    // clothes — and the whole reason the elapsed-only readout shipped first is
+    // that a number nobody can trust is worse than no number.
+    it("says nothing until the readings support an estimate", async () => {
+      vi.setSystemTime(new Date("2026-07-21T10:00:01.000Z"));
+      alwaysRunningAt(100_000, 1);
+
+      render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} pollIntervalMs={1000} />);
+      await waitFor(() => expect(screen.getByText(/indexing 1 of 10/i)).toBeInTheDocument());
+
+      alwaysRunningAt(200_000, 2);
+      await tick(5);
+
+      expect(screen.queryByText(/left/i)).not.toBeInTheDocument();
+      expect(screen.getByText(/running \d+ sec/)).toBeInTheDocument();
+    });
+
+    // A run wedged on one document has no rate to divide by. "∞ min left" and a
+    // countdown frozen at "~1 min left" are both lies; silence is not.
+    it("withdraws the estimate when the run stops making measurable progress", async () => {
+      vi.setSystemTime(new Date("2026-07-21T10:00:01.000Z"));
+      alwaysRunningAt(100_000, 1);
+
+      render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} pollIntervalMs={1000} />);
+      await waitFor(() => expect(screen.getByText(/indexing 1 of 10/i)).toBeInTheDocument());
+
+      await tick(90);
+
+      expect(screen.queryByText(/left/i)).not.toBeInTheDocument();
+      // Still visibly alive: the elapsed readout is what says "not dead".
+      expect(screen.getByText(/running 1 min/)).toBeInTheDocument();
+    });
+
+    it("offers no estimate during the indeterminate discovery phase", async () => {
+      vi.setSystemTime(new Date("2026-07-21T10:00:01.000Z"));
+      mockGet.mockImplementation(async () => ({
+        job: job({ status: "running", processed: 0, total: null, totalBytes: null }),
+      }));
+
+      render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} pollIntervalMs={1000} />);
+      await waitFor(() => expect(screen.getByText(/discovering documents/i)).toBeInTheDocument());
+
+      await tick(30);
+
+      expect(screen.queryByText(/left/i)).not.toBeInTheDocument();
     });
   });
 

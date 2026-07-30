@@ -149,16 +149,29 @@ describe("kb index job store", () => {
     await enqueueIndexJob(enqueueArgs(agent.id));
     const job = await claimNextIndexJob();
 
-    await recordIndexJobProgress(job!.id, { processed: 0, total: 42, counts: zeroCounts() });
+    await recordIndexJobProgress(job!.id, {
+      processed: 0,
+      total: 42,
+      processedBytes: 0,
+      totalBytes: 90_000_000,
+      counts: zeroCounts(),
+    });
     await recordIndexJobProgress(job!.id, {
       processed: 7,
       total: 42,
+      processedBytes: 12_500_000,
+      totalBytes: 90_000_000,
       counts: { ...zeroCounts(), indexed: 2, unsearchable: 5 },
     });
 
     const latest = await getLatestIndexJobForAgent(agent.id);
     expect(latest).toMatchObject({ processed: 7, total: 42, status: "running" });
     expect(latest?.counts).toEqual({ ...zeroCounts(), indexed: 2, unsearchable: 5 });
+    // The byte pair travels in the same write. It is what a progress bar and a
+    // time-to-completion estimate are built on (#907) — 7 of 42 documents says
+    // nothing about how much work is left, because documents are not equal
+    // units of work. `bigint` columns must come back as numbers, not strings.
+    expect(latest).toMatchObject({ processedBytes: 12_500_000, totalBytes: 90_000_000 });
   });
 
   it("records the findings and the terminal status when a job succeeds", async () => {
@@ -208,6 +221,8 @@ describe("kb index job store", () => {
     await recordIndexJobProgress(job!.id, {
       processed: 30,
       total: 42,
+      processedBytes: 30_000_000,
+      totalBytes: 42_000_000,
       counts: { ...zeroCounts(), indexed: 30 },
     });
 
@@ -221,6 +236,10 @@ describe("kb index job store", () => {
     // "processed ≠ real" lie the counters exist to prevent — and leaving
     // `indexed: 30` next to `processed: 0` would be a row contradicting itself.
     expect(latest).toMatchObject({ processed: 0, total: null, startedAt: null });
+    // The byte counters reset with them, for the same reason: a resumed run
+    // re-discovers from scratch, and 30 MB behind a total the run has not
+    // re-derived yet would put the progress bar somewhere it has not been.
+    expect(latest).toMatchObject({ processedBytes: 0, totalBytes: null });
     expect(latest?.counts).toBeNull();
     expect(await claimNextIndexJob()).not.toBeNull();
   });

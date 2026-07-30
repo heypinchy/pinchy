@@ -17,6 +17,7 @@ import { and, eq } from "drizzle-orm";
 import { db } from "@/db";
 import { kbChunks, kbDocuments } from "@/db/schema";
 import {
+  EMBED_PROGRESS_BATCH,
   ingestDirectory,
   ingestPaths,
   type IngestDeps,
@@ -469,12 +470,15 @@ it("keeps the last indexed version searchable when a file changes into one that 
 /** Records every onProgress call so a test can assert the SEQUENCE, not just the final number — a bar that jumps 0 → done is not progress. */
 function progressRecorder() {
   const seen: Array<{ processed: number; total: number }> = [];
+  const bytes: Array<{ processedBytes: number; totalBytes: number }> = [];
   const counts: IngestResult[] = [];
   return {
     seen,
+    bytes,
     counts,
     onProgress: (p: IngestProgress) => {
       seen.push({ processed: p.processed, total: p.total });
+      bytes.push({ processedBytes: p.processedBytes, totalBytes: p.totalBytes });
       counts.push({ ...p.counts });
     },
   };
@@ -666,6 +670,74 @@ it("advances progress past a file that failed to extract", async () => {
 
   expect(result).toEqual(counts({ indexed: 1, failed: 1 }));
   expect(seen.at(-1)).toEqual({ processed: 2, total: 2 });
+});
+
+// ── byte-weighted progress: the denominator a real ETA needs (#907) ──────
+
+// Documents are not equal units of work — the 2026-07 dry-run had one
+// compilation PDF worth 38% of every chunk in the corpus beside hundreds of
+// one-chunk product sheets. Bytes on disk are the one work-proportional
+// measure discovery knows in FULL before the first extract, which is what lets
+// a projection off them be an estimate rather than a guess.
+it("reports a byte total known in full upfront, and counts bytes up to it", async () => {
+  writePdf(tmpRoot, "big.pdf", "b".repeat(900));
+  writePdf(tmpRoot, "small.pdf", "s".repeat(100));
+  const { deps } = fakeDeps();
+  const { bytes, onProgress } = progressRecorder();
+
+  await ingestPaths(ORG_ID, [tmpRoot], deps, { onProgress });
+
+  expect(bytes[0]).toEqual({ processedBytes: 0, totalBytes: 1000 });
+  expect(bytes.at(-1)).toEqual({ processedBytes: 1000, totalBytes: 1000 });
+});
+
+it("counts bytes across all roots against one total, and a shared file only once", async () => {
+  const hr = join(tmpRoot, "hr");
+  writePdf(hr, "shared.pdf", "x".repeat(500));
+  const { deps } = fakeDeps();
+  const { bytes, onProgress } = progressRecorder();
+
+  await ingestPaths(ORG_ID, [tmpRoot, hr], deps, { onProgress });
+
+  expect(bytes.at(-1)).toEqual({ processedBytes: 500, totalBytes: 500 });
+});
+
+// The document worth 38% of the corpus is exactly the one that would otherwise
+// freeze both bar and ETA for over an hour. Its chunk count IS known once it is
+// split, so its bytes are credited as those chunks are embedded.
+it("credits a long document's bytes as its chunks are embedded, rather than freezing the bar", async () => {
+  const pages = Array.from({ length: EMBED_PROGRESS_BATCH * 2 + 1 }, (_, i) => ({
+    page: i + 1,
+    text: `Page ${i + 1} of the compilation.`,
+  }));
+  writePdf(tmpRoot, "compilation.pdf", "x".repeat(1000));
+  const { deps } = fakeDeps(pages);
+  const { bytes, onProgress } = progressRecorder();
+
+  await ingestPaths(ORG_ID, [tmpRoot], deps, { onProgress });
+
+  // 65 chunks embed as 32 / 32 / 1, so two reports land INSIDE the document
+  // carrying its bytes pro rata. The third batch reports nothing — the per-file
+  // report that follows it immediately would say the same thing.
+  expect(bytes.map((b) => b.processedBytes)).toEqual([0, 492, 985, 1000]);
+  // Monotonic throughout: a bar that runs backwards is worse than a coarse one.
+  expect(bytes.map((b) => b.processedBytes)).toEqual(
+    [...bytes.map((b) => b.processedBytes)].sort((a, b) => a - b)
+  );
+});
+
+// A corpus of empty files has no bytes to divide by. The run still reports, and
+// the byte total stays an honest zero — the ETA's job is to decline, not to
+// invent a rate (see estimateRemainingMs).
+it("reports a zero byte total rather than faking one when there is nothing to weigh", async () => {
+  writePdf(tmpRoot, "empty.pdf", "");
+  const { deps } = fakeDeps();
+  const { bytes, seen, onProgress } = progressRecorder();
+
+  await ingestPaths(ORG_ID, [tmpRoot], deps, { onProgress });
+
+  expect(seen.at(-1)).toEqual({ processed: 1, total: 1 });
+  expect(bytes.at(-1)).toEqual({ processedBytes: 0, totalBytes: 0 });
 });
 
 // --- archive/freshness gating (#858): status assignment + archived counter ---
