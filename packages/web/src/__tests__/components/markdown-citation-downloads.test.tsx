@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 /**
  * What the markdown renderer HANDS the lightbox for a citation — specifically,
  * the download list.
