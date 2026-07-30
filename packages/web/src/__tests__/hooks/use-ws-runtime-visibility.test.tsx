@@ -146,6 +146,40 @@ describe("useWsRuntime — visibility-driven reconnect lifecycle (#895)", () => 
     expect(result.current.isConnected).toBe(false);
   });
 
+  it("does not let the #956 history-answer watchdog fire while hidden, even past its deadline", () => {
+    // Nobody is watching a stalled load on a hidden tab: the watchdog must
+    // stand down exactly like the reconnect backoff does, not force its own
+    // reconnect (forceReconnect) or surface historyTimedOut independently of
+    // — and bypassing — the hidden-aware pause #895 provides. A real
+    // interaction bug this test guards: fixed alongside the E2E follow-up
+    // above, an earlier version of the grace-period change let this
+    // watchdog fire mid-hidden-period and force-reconnect regardless of
+    // visibility, which also cascaded into leaving jsdom's
+    // `document.visibilityState` stuck on "hidden" for later tests once the
+    // resulting assertion failure skipped this file's own cleanup line.
+    const { result } = renderHook(() => useWsRuntime("agent-1"));
+    const ws1 = latestWs();
+
+    act(() => {
+      ws1.simulateOpen();
+      // Deliberately do NOT deliver a history response — the request stays
+      // outstanding, arming the #956 watchdog.
+    });
+
+    act(() => {
+      setVisibility("hidden");
+    });
+
+    // Advance well past the 20s history-answer deadline while hidden.
+    act(() => {
+      vi.advanceTimersByTime(40_000);
+    });
+
+    expect(result.current.historyTimedOut).toBe(false);
+    expect(ws1.close).not.toHaveBeenCalled();
+    expect(wsInstances).toHaveLength(1);
+  });
+
   it("keeps the WebSocket open when hidden for less than the grace period", () => {
     const { result } = renderHook(() => useWsRuntime("agent-1"));
     const ws1 = latestWs();
