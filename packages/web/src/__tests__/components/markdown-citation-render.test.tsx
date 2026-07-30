@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 /**
  * Renders a knowledge-base answer through the REAL markdown pipeline and
  * checks that a cited source ends up clickable.

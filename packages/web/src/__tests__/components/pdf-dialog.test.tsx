@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 /**
  * The lightbox a PDF opens into — shared by a chat attachment and a cited
  * knowledge-base source.
