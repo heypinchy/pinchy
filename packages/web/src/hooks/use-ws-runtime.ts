@@ -1039,7 +1039,18 @@ export function useWsRuntime(
       }
 
       if (wsRef.current?.readyState === WebSocket.OPEN) {
-        // Connection survived the entire hidden period — nothing to recover.
+        // Connection survived the entire hidden period (grace close never
+        // fired) — no reconnect needed, but a refocus must still reconcile
+        // against canonical server history exactly like a real reconnect
+        // would. e2e/18-tab-refocus-shrink.spec.ts pins this: server-side
+        // state (e.g. an in-flight run whose history has since shrunk) can
+        // change while the tab wasn't listening even though the socket
+        // itself never dropped. Same buffer-then-drain protocol as
+        // ws.onopen / recoverFromPageLifecycle's OPEN branch.
+        shouldRecoverFromHistoryRef.current = true;
+        pendingHistoryRef.current = true;
+        frameBufferRef.current = [];
+        wsRef.current.send(JSON.stringify({ type: "history", agentId, ...(chatId && { chatId }) }));
         return;
       }
 
