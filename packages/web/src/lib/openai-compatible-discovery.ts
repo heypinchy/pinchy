@@ -1,4 +1,5 @@
 import { DEFAULT_MODEL_CAPS, lookupModelCapabilities } from "@/lib/model-catalog";
+import { assertAllowedProviderUrl } from "@/lib/provider-url-guard";
 import type { OpenClawModelDefinition } from "@/lib/openclaw-builtin-models";
 import {
   AUTH_RETRY_DELAY_MS,
@@ -27,13 +28,49 @@ function readProp(x: unknown, key: string): unknown {
     : undefined;
 }
 
-function fetchModels(baseUrl: string, apiKey: string): Promise<Response> {
-  return fetch(modelsUrl(baseUrl), {
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-    },
-    signal: AbortSignal.timeout(PROVIDER_PROBE_TIMEOUT_MS),
-  });
+// Follow a handful of hops like any HTTP client — but every hop is a fresh
+// destination that has to earn the same trust the base URL did.
+const MAX_REDIRECT_HOPS = 3;
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+
+/**
+ * `GET <baseUrl>/models`, re-running the SSRF guard on every redirect target.
+ *
+ * The routes validate `baseUrl` before calling in here (see
+ * `settings/providers/openai-compatible/{route,discover/route}.ts`), but this
+ * fetched with the default `redirect: "follow"` — so a base URL that passed
+ * the guard could answer `302 Location: http://169.254.169.254/` and undici
+ * would obediently go there. A single check at the head of a redirect chain
+ * says nothing about where the request lands, and the probe carries the
+ * provider's API key in an Authorization header while it travels.
+ */
+async function fetchModels(baseUrl: string, apiKey: string): Promise<Response> {
+  let current = modelsUrl(baseUrl);
+
+  for (let hop = 0; ; hop++) {
+    const response = await fetch(current, {
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+      },
+      redirect: "manual",
+      signal: AbortSignal.timeout(PROVIDER_PROBE_TIMEOUT_MS),
+    });
+
+    if (!REDIRECT_STATUSES.has(response.status)) return response;
+
+    const location = response.headers.get("location");
+    // A redirect without a Location is the provider's problem — hand it back
+    // and let the caller treat it as the non-2xx it is.
+    if (!location) return response;
+    if (hop >= MAX_REDIRECT_HOPS) {
+      throw new Error("Too many redirects from the provider endpoint");
+    }
+
+    // Relative Locations are legal and common, so resolve against the URL
+    // actually requested before classifying it.
+    current = new URL(location, current).toString();
+    await assertAllowedProviderUrl(current);
+  }
 }
 
 /**

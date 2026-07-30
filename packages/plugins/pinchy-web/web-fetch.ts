@@ -18,7 +18,11 @@ const PRIVATE_IP_PATTERNS = [
   /^169\.254\./,
   /^0\./,
   /^::1$/,
-  /^fc00:/i,
+  /^::$/, // unspecified — routes to loopback on most stacks
+  // ULA is fc00::/7, i.e. fc00: THROUGH fdff:. A literal /^fc00:/ matched only
+  // the first hextet of the first /8 and let every fd00::/8 address — the half
+  // that is actually used, since fc00::/8 is unassigned — pass as public.
+  /^f[cd][0-9a-f]{2}:/i,
   /^fe80:/i,
 ];
 
@@ -77,13 +81,32 @@ async function resolveHost(hostname: string): Promise<ResolvedHost> {
     dns.resolve6(hostname).catch(() => [] as string[]),
   ]);
   const all = [...ipv4s, ...ipv6s];
-  if (all.length === 0) return { kind: "unresolvable" };
   // Reject if ANY returned record is private — DNS servers controlled by an
   // attacker could mix public and private addresses to slip past a "first
   // address only" check.
-  if (all.some(isPrivateIp)) return { kind: "private" };
-  if (ipv4s[0]) return { kind: "resolved", address: ipv4s[0], family: 4 };
-  if (ipv6s[0]) return { kind: "resolved", address: ipv6s[0], family: 6 };
+  if (all.length > 0) {
+    if (all.some(isPrivateIp)) return { kind: "private" };
+    if (ipv4s[0]) return { kind: "resolved", address: ipv4s[0], family: 4 };
+    if (ipv6s[0]) return { kind: "resolved", address: ipv6s[0], family: 6 };
+  }
+
+  // resolve4/resolve6 ask DNS servers and nothing else. The fetch below
+  // resolves through dns.lookup, which ALSO consults /etc/hosts — so a name
+  // that exists only there was reported "unresolvable" here and then
+  // connected perfectly well down there, unpinned and never classified.
+  // That is not hypothetical: this stack adds `ollama.local:host-gateway`
+  // to its own containers via compose `extra_hosts`, which makes the docker
+  // host reachable from a tool an agent invokes on model instruction.
+  //
+  // So ask the resolver the request will actually use before concluding
+  // anything.
+  const viaLookup = await dns.lookup(hostname, { all: true }).catch(() => []);
+  if (viaLookup.length > 0) {
+    if (viaLookup.some((entry) => isPrivateIp(entry.address))) return { kind: "private" };
+    const first = viaLookup[0];
+    return { kind: "resolved", address: first.address, family: first.family === 6 ? 6 : 4 };
+  }
+
   return { kind: "unresolvable" };
 }
 
@@ -328,6 +351,13 @@ export async function webFetch(
       content: `Access to private network addresses is not allowed.`,
       isError: true,
     };
+  }
+  if (resolved.kind === "unresolvable") {
+    // Refuse rather than continue with no pinned address. A name neither DNS
+    // nor dns.lookup can answer is one the fetch cannot reach either, so this
+    // forfeits nothing — while continuing meant handing resolution back to
+    // undici with the guard's conclusion thrown away.
+    return { content: `Could not resolve host: ${hostname}`, isError: true };
   }
 
   const maxChars = config.maxChars ?? 50000;
