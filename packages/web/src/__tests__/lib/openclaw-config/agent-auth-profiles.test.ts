@@ -3,24 +3,46 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import * as path from "path";
 import * as os from "os";
 
-// Hoist the real renameSync before mocking so we can use it as the default implementation.
-const { realRenameSync } = vi.hoisted(() => {
+// Hoist the real implementations before mocking so we can use them as defaults.
+const { realRenameSync, realWriteFileSync, realMkdirSync } = vi.hoisted(() => {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const realFs = require("fs") as typeof import("fs");
-  return { realRenameSync: realFs.renameSync.bind(realFs) };
+  return {
+    realRenameSync: realFs.renameSync.bind(realFs),
+    realWriteFileSync: realFs.writeFileSync.bind(realFs),
+    realMkdirSync: realFs.mkdirSync.bind(realFs),
+  };
 });
 
-// Mock fs so renameSync can be intercepted per-test. All other methods call
+// Mock fs so the write path can be intercepted per-test. All other methods call
 // through to the real implementation so tmpDir creation and assertions work.
 vi.mock("fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("fs")>();
   const renameSyncMock = vi.fn(realRenameSync);
+  const writeFileSyncMock = vi.fn(realWriteFileSync);
+  const mkdirSyncMock = vi.fn(realMkdirSync);
   return {
     ...actual,
-    default: { ...actual, renameSync: renameSyncMock },
+    default: {
+      ...actual,
+      renameSync: renameSyncMock,
+      writeFileSync: writeFileSyncMock,
+      mkdirSync: mkdirSyncMock,
+    },
     renameSync: renameSyncMock,
+    writeFileSync: writeFileSyncMock,
+    mkdirSync: mkdirSyncMock,
   };
 });
+
+/** Build the exact error Node raises when the target directory denies uid 999. */
+function eaccesError(): NodeJS.ErrnoException {
+  const err = new Error("EACCES: permission denied, open 'auth-profiles.json.tmp-100'");
+  (err as NodeJS.ErrnoException).code = "EACCES";
+  (err as NodeJS.ErrnoException).errno = -13;
+  (err as NodeJS.ErrnoException).syscall = "open";
+  return err;
+}
 
 import * as fs from "fs";
 import {
@@ -34,11 +56,15 @@ describe("writeAgentAuthProfiles", () => {
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "agent-auth-test-"));
     vi.mocked(fs.renameSync).mockImplementation(realRenameSync);
+    vi.mocked(fs.writeFileSync).mockImplementation(realWriteFileSync);
+    vi.mocked(fs.mkdirSync).mockImplementation(realMkdirSync);
   });
 
   afterEach(() => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
     vi.mocked(fs.renameSync).mockReset();
+    vi.mocked(fs.writeFileSync).mockReset();
+    vi.mocked(fs.mkdirSync).mockReset();
   });
 
   it("writes auth-profiles.json with one profile per configured provider", async () => {
@@ -127,5 +153,64 @@ describe("writeAgentAuthProfiles", () => {
     await expect(
       writeAgentAuthProfiles({ configRoot: tmpDir, agentId: "no-file-agent", providers: [] })
     ).resolves.toBeUndefined();
+  });
+
+  // #934: agents/<id>/agent is shared with OpenClaw, which creates it root-owned
+  // at mode 0700 when it derives that agent's models.json. start-openclaw.sh's
+  // 50 ms tick chowns it back to uid 999, but a write landing INSIDE that window
+  // still gets EACCES. Same shape (and same budget) as readExistingConfig's
+  // 5 × 100 ms retry, which is what the 50 ms tick was tuned against.
+  describe("EACCES retry — rides out the permission-repair tick", () => {
+    it("retries a denied write and succeeds once the tick lands", async () => {
+      vi.mocked(fs.writeFileSync)
+        .mockImplementationOnce(() => {
+          throw eaccesError();
+        })
+        .mockImplementationOnce(() => {
+          throw eaccesError();
+        });
+
+      await writeAgentAuthProfiles({ configRoot: tmpDir, agentId: "a", providers: ["openai"] });
+
+      const target = path.join(tmpDir, "agents", "a", "agent", "auth-profiles.json");
+      expect(fs.existsSync(target)).toBe(true);
+      expect(vi.mocked(fs.writeFileSync).mock.calls.length).toBe(3);
+    });
+
+    it("retries a denied mkdir too — agents/<id> can be root-owned as well", async () => {
+      vi.mocked(fs.mkdirSync).mockImplementationOnce(() => {
+        throw eaccesError();
+      });
+
+      await writeAgentAuthProfiles({ configRoot: tmpDir, agentId: "a", providers: ["openai"] });
+
+      expect(fs.existsSync(path.join(tmpDir, "agents", "a", "agent", "auth-profiles.json"))).toBe(
+        true
+      );
+    });
+
+    it("gives up after a bounded budget and rethrows, rather than hanging the regenerate", async () => {
+      vi.mocked(fs.writeFileSync).mockImplementation(() => {
+        throw eaccesError();
+      });
+
+      await expect(
+        writeAgentAuthProfiles({ configRoot: tmpDir, agentId: "a", providers: ["openai"] })
+      ).rejects.toThrow(/EACCES/);
+      expect(vi.mocked(fs.writeFileSync).mock.calls.length).toBe(5);
+    });
+
+    it("does not retry an error the tick cannot fix", async () => {
+      const enospc = new Error("ENOSPC: no space left on device");
+      (enospc as NodeJS.ErrnoException).code = "ENOSPC";
+      vi.mocked(fs.writeFileSync).mockImplementation(() => {
+        throw enospc;
+      });
+
+      await expect(
+        writeAgentAuthProfiles({ configRoot: tmpDir, agentId: "a", providers: ["openai"] })
+      ).rejects.toThrow(/ENOSPC/);
+      expect(vi.mocked(fs.writeFileSync).mock.calls.length).toBe(1);
+    });
   });
 });
