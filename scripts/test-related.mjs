@@ -3,10 +3,11 @@
  * `pnpm test:related` — runs only the tests that transitively import what you
  * changed, with no arguments required.
  *
- * See lib/test-related.mjs for why the no-arguments part is the whole point: the
- * documented `pnpm -C packages/web test:related <files>` asks you to know and
- * type your own change set at the moment you want a fast answer, and `pnpm test`
- * asks for nothing — so the expensive habit wins by default.
+ * See lib/test-related.mjs for why the no-arguments part is the whole point:
+ * `vitest related <files>` asks you to know and type your own change set at the
+ * moment you want a fast answer, and `pnpm test` asks for nothing — so the
+ * expensive habit wins by default. The change set covers this branch's commits as
+ * well as the working tree, so it does not empty out the moment you commit.
  *
  * This is an inner-loop check, NOT a verification gate. It cannot see a test
  * that reaches your change through a mock, a string-keyed lookup, or a drift
@@ -18,7 +19,7 @@ import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
 
-import { toVitestPaths } from "./lib/test-related.mjs";
+import { toVitestPaths, collectChangedFiles } from "./lib/test-related.mjs";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const WEB_DIR = join(REPO_ROOT, "packages", "web");
@@ -31,29 +32,10 @@ function git(args) {
   });
 }
 
-/**
- * Everything the working tree changes against HEAD, tracked and untracked.
- *
- * -z throughout: without it git C-quotes any path outside ASCII
- * ("packages/web/src/f\303\274r.ts", quotes included), and such a path then
- * matches no prefix rule and is silently dropped — the tests for a file with an
- * umlaut in its name would quietly never run.
- */
-function changedFiles() {
-  const tracked = git(["diff", "--name-only", "-z", "HEAD"]).split("\0");
-  const untracked = git([
-    "ls-files",
-    "--others",
-    "--exclude-standard",
-    "-z",
-  ]).split("\0");
-  return [...tracked, ...untracked];
-}
-
 const explicit = process.argv.slice(2);
 let candidates;
 try {
-  candidates = explicit.length > 0 ? explicit : changedFiles();
+  candidates = explicit.length > 0 ? explicit : collectChangedFiles(git);
 } catch (err) {
   console.error(`test:related: could not read the change set (${err.message})`);
   process.exit(1);

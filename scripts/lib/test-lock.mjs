@@ -73,13 +73,18 @@ export function parseLockRecord(text) {
 
 /**
  * @param {object} opts
- * @param {ReturnType<parseLockRecord>} opts.record current holder, or null
+ * @param {boolean} opts.lockExists whether a lock is present at all. This is a
+ *   SEPARATE question from whether we could read its owner, and conflating the
+ *   two is a hang rather than a wrong answer — see the null-record branch below.
+ * @param {ReturnType<parseLockRecord>} opts.record the holder it names, or null
+ *   when there is no lock or its owner file is missing/corrupt
  * @param {number} opts.now epoch ms
  * @param {(pid: number) => boolean} opts.isAlive process-liveness probe
  * @param {number} opts.waitedMs how long this caller has already queued
  * @returns {{action: "acquire"|"steal"|"wait"|"proceed", reason: string}}
  */
 export function decideLockAction({
+  lockExists,
   record,
   now,
   isAlive,
@@ -87,8 +92,20 @@ export function decideLockAction({
   maxAgeMs = MAX_LOCK_AGE_MS,
   maxWaitMs = MAX_WAIT_MS,
 }) {
-  if (record === null)
+  if (!lockExists)
     return { action: "acquire", reason: "no other run holds the lock" };
+
+  // A lock that names nobody. Taking the lock is two syscalls — mkdir, then the
+  // owner write — so a session killed between them, or a truncated write, leaves
+  // exactly this state, and it is common enough to matter.
+  //
+  // It must be CLEARED, never reported as free: the caller only reaches this
+  // function after its own mkdir lost to an existing directory, so answering
+  // "acquire" sends it straight back to a mkdir that will lose again — a tight
+  // loop at 100% CPU that never runs the suite and never times out. That is the
+  // one outcome this mechanism is not allowed to have.
+  if (record === null)
+    return { action: "steal", reason: "the lock names no readable owner" };
 
   if (!isAlive(record.pid))
     return {

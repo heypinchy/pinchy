@@ -1,16 +1,15 @@
 /**
  * Turns a list of changed files into the arguments `vitest related` expects.
  *
- * WHY THIS EXISTS. `pnpm -C packages/web test:related <files>` has been the
- * documented inner loop for a while and is barely used, and the reason is not
- * that people disagree with it: it asks you to know AND type which files you
- * touched, at the exact moment you want a quick answer. `pnpm test` asks for
- * nothing. So the cheap habit wins, and the machine pays — see lib/test-lock.mjs
- * for what a full suite actually costs when several sessions do that at once.
+ * WHY THIS EXISTS. `vitest related <files>` is the cheap inner loop and nobody
+ * reaches for it, and the reason is not that people disagree with it: it asks you
+ * to know AND type which files you touched, at the exact moment you want a quick
+ * answer. `pnpm test` asks for nothing. So the expensive habit wins by default,
+ * and the machine pays — see lib/test-lock.mjs for what a full suite actually
+ * costs when several sessions do that at once.
  *
- * This module removes the typing. `pnpm test:related` with no arguments takes
- * the working tree's own change set from git; arguments still win when you want
- * a specific file.
+ * This module removes the typing. `pnpm test:related` with no arguments takes the
+ * change set from git; arguments still win when you want a specific file.
  *
  * The translation itself is the other half. `vitest related` resolves paths
  * against the vitest root (packages/web), while git reports them relative to the
@@ -31,7 +30,7 @@ const PLUGINS_PREFIX = "packages/plugins/";
  * root and under packages/web, and guessing wrong there means either dropping a
  * real target or feeding vitest a path it cannot resolve.
  */
-const WEB_RELATIVE_ROOTS = ["src/", "eval/"];
+const WEB_RELATIVE_ROOTS = ["src/", "eval/", "../plugins/"];
 
 /**
  * `vitest related` traces the module graph, so only files that can BE a module
@@ -82,4 +81,54 @@ export function toVitestPaths(paths, opts = {}) {
     out.push(translated);
   }
   return out;
+}
+
+/**
+ * Everything this branch changes: the working tree AND the commits on it.
+ *
+ * The working tree alone is the obvious answer and the wrong one. `git diff HEAD`
+ * goes empty the moment you commit, so the tool would report "nothing changed"
+ * and exit 0 on a branch full of work — a zero-test run that reads exactly like a
+ * pass, arriving precisely when you are trying to check a commit before pushing.
+ * The union is what a reader means by "what I changed".
+ *
+ * @param {(args: string[]) => string} git runs git and returns its stdout
+ * @param {{baseRef?: string}} [opts] what this branch is measured against
+ * @returns {string[]} repo-relative paths, possibly with duplicates and blanks —
+ *   `toVitestPaths` is the one place that normalizes both.
+ *
+ * -z throughout: without it git C-quotes any path outside ASCII
+ * ("packages/web/src/f\303\274r.ts", quotes included), and such a path then
+ * matches no prefix rule and is silently dropped — the tests for a file with an
+ * umlaut in its name would quietly never run.
+ */
+export function collectChangedFiles(git, opts = {}) {
+  const baseRef = opts.baseRef ?? "origin/main";
+
+  // Not wrapped: a git that cannot answer this at all is worth reporting to the
+  // user, not papering over. The branch range below is the optional half.
+  const files = [
+    ...git(["diff", "--name-only", "-z", "HEAD"]).split("\0"),
+    ...git(["ls-files", "--others", "--exclude-standard", "-z"]).split("\0"),
+  ];
+
+  try {
+    // The merge base, not the ref itself: diffing against a moved origin/main
+    // would report every file anyone else changed since you branched.
+    const base = git(["merge-base", baseRef, "HEAD"]).trim();
+    // An empty base is not an error but it is not a revision either, and passing
+    // "" to git diff means something else entirely.
+    if (base) {
+      files.push(
+        ...git(["diff", "--name-only", "-z", base, "HEAD"]).split("\0"),
+      );
+    }
+  } catch {
+    // No base ref — a fresh clone with no remote, a shallow checkout, a branch
+    // taken from something other than main. Fail open, like the test lock: half
+    // a change set still runs useful tests, where refusing to run any is the
+    // outcome that sends the reader back to the full suite.
+  }
+
+  return files;
 }

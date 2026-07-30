@@ -282,10 +282,15 @@ Turning vitest's own knobs down was measured and does **not** help — do not re
 
 There is no meaningful saving _inside_ a run. The saving is in not overlapping runs, and in not doing a full run at all when you don't need one:
 
-- **`pnpm test` takes a machine-wide lock** (`scripts/with-test-lock.mjs`, decision logic and measurements in `scripts/lib/test-lock.mjs`). A second run queues instead of piling on. The lock **fails open** in every direction: an unreadable lock, a holder whose process died, a clock that jumped, or a wait beyond 20 minutes all end with the suite running. It also bypasses itself under `CI` (one job per runner) and under `PINCHY_TEST_LOCK_HELD` (so a suite that shells out to another test command cannot deadlock against its own parent). The worst thing it may do is make a run slow; it must never make one impossible.
-- **`pnpm test:related` needs no arguments.** It takes your own change set from git, translates it for the vitest root, and runs only the tests that import it — 127 files in 19s where the full suite is 717 in 55s. This is the inner loop. It takes no lock.
+- **`pnpm test` takes a machine-wide lock** (`scripts/with-test-lock.mjs`, decision logic and measurements in `scripts/lib/test-lock.mjs`). A second run queues instead of piling on. The lock **fails open, and never spins**: an unreadable lock, a lock nobody owns, a holder whose process died, a clock that jumped, or a wait beyond 20 minutes all end with the suite running. It also bypasses itself under `CI` (one job per runner) and under `PINCHY_TEST_LOCK_HELD` (so a suite that shells out to another test command cannot deadlock against its own parent). The worst thing it may do is make a run slow; it must never make one impossible.
+- **`pnpm test:related` needs no arguments.** It takes your change set from git — this branch's commits as well as the working tree — translates it for the vitest root, and runs only the tests that import it: 127 files in 19s where the full suite is 717 in 55s. This is the inner loop. It takes no lock.
 
 `test:related` is **not** a verification gate. It cannot see a test that reaches your change through a mock, a string-keyed lookup, or a drift guard that reads the file from disk. Run the full suite before you push.
+
+Two properties are load-bearing enough to have cost a rewrite each, and both are guarded by execution probes in `scripts/lib/test-lock.test.mjs` and `test-related.test.mjs` rather than by wiring assertions:
+
+- **The lock is one exclusively-created file, not a directory.** Directory-as-mutex needs `mkdir` and then a second write for the owner, and a waiter landing between the two sees a lock that names nobody — indistinguishable from the genuinely broken lock a killed session leaves, so it clears a live one and both suites run (measured: 3 of 8 concurrent pairs). And "names nobody" must be **cleared**, never reported free: the waiter only looks after its own create already lost, so calling it free sends it back into a create that loses again — a spin at 100% CPU that never runs and never times out.
+- **The change set includes commits.** `git diff HEAD` empties the moment you commit, so a working-tree-only reading answers "nothing changed" on a branch full of work — a zero-test run, exit 0, arriving exactly when you are checking a commit before pushing.
 
 ## Commands
 
