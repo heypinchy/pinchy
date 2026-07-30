@@ -611,7 +611,24 @@ The CI guards find missing **identifiers**. They cannot read a sentence, and the
 
 The `review-docs` skill (`.claude/skills/review-docs/`) is that reading pass: scope the behaviour change, grep the docs for the thing **and its consequences**, then check the claim, the specifics (response fields, status codes, defaults, limits — wrong far more often than names are), self-contradiction within a page, and contradiction across pages. It also asks the one question no guard asks: does a doc describe something the code **no longer has**?
 
-Run it locally before opening a PR that changes docs or a user-visible surface. It is deliberately not a CI job: it wants the whole repo in context and produces prose the author acts on immediately, not a bot comment on a diff.
+It is deliberately not a CI job: it wants the whole repo in context and produces prose the author acts on immediately, not a bot comment on a diff.
+
+#### The skill has a trigger, because an instruction is not one
+
+"Run this before opening a PR" is the same kind of sentence as "update docs in the same PR" — the one that sat in this file for a year while three feature families shipped undocumented. So the skill does not rely on being remembered.
+
+`.claude/settings.json` registers a `PreToolUse` hook on `Bash(gh pr create*)` → `scripts/hooks/require-docs-review.mjs`. It diffs the branch against the PR's base, reuses `analyzeChangedPaths` from the docs-required guard, and **denies the tool call** — with the list of surfaces and what to do about it — unless one of these holds:
+
+- the branch moved no user-visible surface (a docs-only or internal PR is never blocked);
+- a review is recorded for **this exact HEAD sha**;
+- a `Docs-not-needed:` trailer is in the branch's commits — the same escape hatch the CI gate honours, so one decision is recorded once.
+
+`scripts/mark-docs-reviewed.mjs` writes the marker, and writes the HEAD sha into it. Land another commit and the recorded sha stops matching, so the review expires with the state it reviewed. The marker lives at `git rev-parse --git-path pinchy-docs-review` — untracked, per-worktree, and resolved that way rather than as a literal `.git/…` because inside a worktree `.git` is a file pointing elsewhere.
+
+Two properties worth keeping if you touch it:
+
+- **It fails open.** A hook that breaks must never make it impossible to open a pull request. Unreadable payload, unresolvable base, git not answering — all of them `allow`.
+- **It is not a security boundary and does not pretend to be.** An agent can write the marker without reading a line, exactly as a human can `git push --no-verify`. It exists to make _forgetting_ impossible, which is the failure mode that actually happens.
 
 ### The Deployed Docs Are The Release Branch, Not `main`
 

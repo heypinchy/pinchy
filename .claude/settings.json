@@ -22,5 +22,20 @@
       "Bash(wget *)",
       "Bash(rm -rf *)"
     ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node scripts/hooks/require-docs-review.mjs",
+            "if": "Bash(gh pr create*)",
+            "statusMessage": "Checking the docs have been read"
+          }
+        ]
+      }
+    ]
   }
 }

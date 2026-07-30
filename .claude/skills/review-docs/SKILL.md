@@ -107,6 +107,26 @@ pnpm test:scripts && pnpm format:check
 cd docs && pnpm build && pnpm check:anchors && pnpm check:tables
 ```
 
+Then record the review — this is what lets `gh pr create` through:
+
+```bash
+node scripts/mark-docs-reviewed.mjs
+```
+
+The marker holds the current HEAD sha. **Record it last**, after any fix you
+made in response to the review: land another commit and the marker no longer
+matches, the hook fires again, and you review the new state. That is the
+intent, not an inconvenience.
+
+If the honest answer is that the docs don't move, don't mark — put the reason
+in a commit trailer instead, where the next reader will find it:
+
+```
+Docs-not-needed: gateway-only ingress, no reader-facing path
+```
+
+The same trailer waives the CI gate, so one decision is recorded once.
+
 ## What this skill is not
 
 Not a rewrite. Do not restructure a page you were asked to check. If a page
