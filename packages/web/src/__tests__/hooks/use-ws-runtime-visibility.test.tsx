@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 /**
  * Chat WebSocket lifecycle following tab visibility (#895).
  *
