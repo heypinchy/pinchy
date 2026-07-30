@@ -46,6 +46,7 @@ import {
 } from "./exclude-globs";
 import { isArchivedPath, statusForPath } from "./archive-paths";
 import { chunkPages } from "./chunk";
+import { DEFAULT_BATCH_SIZE } from "./embeddings";
 import { detectLang } from "./lid";
 import type { ChunkLocator } from "./locator";
 import type { IngestPage, IngestResult } from "./types";
@@ -233,12 +234,17 @@ function isUnderRoot(sourcePath: string, rootDir: string): boolean {
  * document can report on itself.
  *
  * Not a throughput knob: the local embedder (node-llama-cpp) processes one
- * input per call regardless, and the Ollama client already slices at the same
- * default internally, so this changes the shape of no request. It is purely the
+ * input per call regardless, and the Ollama client already slices at this exact
+ * size internally, so this changes the shape of no request. It is purely the
  * granularity at which a document worth a third of the corpus is allowed to say
  * "still moving" — see the progress credit in ingestPaths.
+ *
+ * Aliased from the embedder's own default rather than spelled as a second 32:
+ * a smaller slice here would silently cap a larger configured `batchSize`, and
+ * "silently" is the problem — the request would just get smaller, with nothing
+ * to notice.
  */
-export const EMBED_PROGRESS_BATCH = 32;
+export const EMBED_PROGRESS_BATCH = DEFAULT_BATCH_SIZE;
 
 /** Reports that `embedded` of `total` chunks of the CURRENT document are done. */
 export type ChunkProgressCallback = (embedded: number, total: number) => void | Promise<void>;

@@ -73,8 +73,14 @@ const DEFAULT_MODEL = "bge-m3";
  * size (~1.3-1.5s/chunk on a loaded CPU), so a larger batch buys no throughput
  * — only a bigger payload and a longer request. 32 keeps each POST small and
  * fast while matching the batch size the pipeline ran at historically.
+ *
+ * Exported because ingest.ts slices its embed calls at exactly this size to
+ * report progress inside a long document (#907): sliced at the size the
+ * embedder would have sliced at anyway, that reporting changes the shape of no
+ * request. A second literal there would let the two drift, and the drift would
+ * be silent — a smaller slice caps a configured `batchSize` without saying so.
  */
-const DEFAULT_BATCH_SIZE = 32;
+export const DEFAULT_BATCH_SIZE = 32;
 /**
  * See EmbeddingConfig.timeoutMs. The worst 32-batch measured on a loaded CPU
  * was ~42s; add a ~25s cold model load and 180s clears the realistic worst

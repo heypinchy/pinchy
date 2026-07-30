@@ -22,6 +22,19 @@
  * anticipated rather than discovered at 98%. Chunk-level progress still does the
  * work it is uniquely good at — inside a long document, where byte credit is
  * awarded per embedded chunk so the bar keeps moving (see ingest.ts).
+ *
+ * KNOWN LIMITATION, stated because this module's whole argument is honesty: a
+ * byte does not cost the same everywhere. A document whose content hash is
+ * unchanged is credited its full size in the milliseconds it takes to read and
+ * hash it, while a new one of the same size costs minutes of embedding. On a
+ * re-run over a mostly-unchanged corpus — the common case for this button — the
+ * skipped files therefore hand the window a rate the embedding phase cannot
+ * sustain, and the estimate reads too low until they have aged out of it. The
+ * rolling window is what bounds that to ONE window rather than poisoning the
+ * run's average forever, which is the second reason it is a window (the first
+ * is up at ETA_WINDOW_MS). Fixing it properly needs a second counter — bytes
+ * EMBEDDED beside bytes seen — and that is a change to the ingest contract, not
+ * to the arithmetic here.
  */
 
 export interface ProgressSample {

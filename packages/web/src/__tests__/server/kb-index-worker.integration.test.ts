@@ -184,6 +184,54 @@ describe("kb index worker", () => {
     expect(await getLatestIndexJobForAgent(agent.id)).toMatchObject({ processed: 2, total: 2 });
   });
 
+  // The seam the ETA hangs from (#907), and the one nothing else covers: ingest
+  // emits the byte counters, index-jobs writes them, the route projects them —
+  // each tested on its own. This asserts the WORKER carries them between the
+  // first two. A `{ processed, total, counts }` destructuring here would leave
+  // total_bytes null and processed_bytes at 0 forever: no error, no red test,
+  // just an estimate that never appears again and a bar quietly back on the
+  // document count it was built to replace.
+  //
+  // Sizes are deliberately unequal — two 1-byte files would let a doc-count
+  // projection pass this by coincidence.
+  it("carries the byte counters onto the job row, not just the document counts", async () => {
+    const agent = await makeAgent();
+    writePdf(tmpRoot, "small.pdf", "s".repeat(300));
+    writePdf(tmpRoot, "large.pdf", "l".repeat(700));
+    await enqueueIndexJob({
+      orgId: ORG_ID,
+      agentId: agent.id,
+      agentName: agent.name,
+      requestedBy: "admin-1",
+      paths: [tmpRoot],
+    });
+
+    const seen: Array<{ processedBytes: number; totalBytes: number | null }> = [];
+    const deps = fakeDeps();
+    const realExtract = deps.extractPdf;
+    deps.extractPdf = async (p: string) => {
+      const [row] = await db.select().from(kbIndexJobs).limit(1);
+      seen.push({ processedBytes: row.processedBytes, totalBytes: row.totalBytes });
+      return realExtract(p);
+    };
+
+    await runNextIndexJob({ deps });
+
+    // The total is known in full from the first reading — that is what makes it
+    // a denominator rather than a guess — and the run climbs to it.
+    expect(seen[0]).toEqual({ processedBytes: 0, totalBytes: 1000 });
+    // readdir order is the filesystem's business, not ours, so this names the
+    // sizes rather than the sequence: whichever file the walk reached first,
+    // the credit after it is exactly THAT file's size on disk. A run that
+    // credited an even share per document would read 500 and fail here.
+    expect(seen[1].totalBytes).toBe(1000);
+    expect([300, 700]).toContain(seen[1].processedBytes);
+    expect(await getLatestIndexJobForAgent(agent.id)).toMatchObject({
+      processedBytes: 1000,
+      totalBytes: 1000,
+    });
+  });
+
   // A corrupt file is the job's finding, not the job's failure: the run did
   // what it was asked to and the rest of the corpus is indexed.
   it("succeeds with a failed-file count when only individual files are broken", async () => {
