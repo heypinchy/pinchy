@@ -401,6 +401,17 @@ export async function webFetch(
           isError: true,
         };
       }
+      if (redirectResolved.kind === "unresolvable") {
+        // Same rule as the initial URL above, and the easier half to reach:
+        // that one can be domain-filtered, this Location is chosen by whoever
+        // answered. Continuing dropped the dispatcher and let undici resolve
+        // the hop itself — the guard's conclusion thrown away at exactly the
+        // point it was re-derived.
+        return {
+          content: `Could not resolve host: ${redirectUrl.hostname}`,
+          isError: true,
+        };
+      }
 
       if (i === MAX_REDIRECT_HOPS) {
         return { content: `Too many redirects.`, isError: true };

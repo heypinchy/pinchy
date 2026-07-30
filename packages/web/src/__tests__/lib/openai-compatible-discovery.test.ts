@@ -401,4 +401,69 @@ describe("fetchModels — redirects are re-validated", () => {
     expect(models).toEqual([]);
     expect(fetch).toHaveBeenCalledTimes(1);
   });
+
+  /**
+   * Following redirects by hand means owning what the platform used to do.
+   *
+   * `redirect: "follow"` is not a plain "go there": the fetch spec strips
+   * `Authorization` when a redirect crosses an origin, precisely so a
+   * redirecting server cannot harvest a credential meant for itself. Taking
+   * the loop over and re-sending the same headers hands the provider API key
+   * to whatever host the `Location` names — and the SSRF guard is no help
+   * here, because an attacker's collector is an ordinary public address it is
+   * right to allow.
+   *
+   * Same origin keeps the header, or every provider that redirects
+   * `/v1/models` to `/v1/models/` would stop authenticating.
+   */
+  describe("credentials across a redirect", () => {
+    function authHeaderOfCall(index: number): string | undefined {
+      const init = vi.mocked(fetch).mock.calls[index][1] as { headers: Record<string, string> };
+      return init.headers.Authorization;
+    }
+
+    it("does not carry the API key to a different origin", async () => {
+      vi.mocked(fetch)
+        .mockResolvedValueOnce(redirectTo("https://93.184.216.34/harvest"))
+        .mockResolvedValueOnce(modelBody());
+
+      await fetchOpenAiCompatibleModels("https://api.example.com/v1", "sk-secret");
+
+      expect(authHeaderOfCall(0)).toBe("Bearer sk-secret");
+      expect(authHeaderOfCall(1)).toBeUndefined();
+    });
+
+    it("does not carry it to a different port or scheme on the same host either", async () => {
+      vi.mocked(fetch)
+        .mockResolvedValueOnce(redirectTo("http://api.example.com:8080/v1/models"))
+        .mockResolvedValueOnce(modelBody());
+
+      await fetchOpenAiCompatibleModels("https://api.example.com/v1", "sk-secret");
+
+      expect(authHeaderOfCall(1)).toBeUndefined();
+    });
+
+    it("keeps it on a same-origin redirect", async () => {
+      vi.mocked(fetch)
+        .mockResolvedValueOnce(redirectTo("/v1/models/"))
+        .mockResolvedValueOnce(modelBody());
+
+      await fetchOpenAiCompatibleModels("https://api.example.com/v1", "sk-secret");
+
+      expect(authHeaderOfCall(1)).toBe("Bearer sk-secret");
+    });
+
+    it("never regains it after a hop back to the original origin", async () => {
+      // The spec strips on the first cross-origin hop and does not restore the
+      // header afterwards — a redirect chain must not be a way to launder one.
+      vi.mocked(fetch)
+        .mockResolvedValueOnce(redirectTo("https://93.184.216.34/hop"))
+        .mockResolvedValueOnce(redirectTo("https://api.example.com/v1/models"))
+        .mockResolvedValueOnce(modelBody());
+
+      await fetchOpenAiCompatibleModels("https://api.example.com/v1", "sk-secret");
+
+      expect(authHeaderOfCall(2)).toBeUndefined();
+    });
+  });
 });

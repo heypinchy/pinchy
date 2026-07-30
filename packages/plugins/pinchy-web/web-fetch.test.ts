@@ -500,6 +500,33 @@ describe("webFetch", () => {
         const callArgs = fetchMock.mock.calls[0] as [string, Record<string, unknown>];
         expect(callArgs[1].dispatcher).toBeDefined();
       });
+
+      /**
+       * The same reasoning, one hop later.
+       *
+       * Every redirect target is re-resolved and re-pinned — except when the
+       * resolution comes back empty, where the loop dropped the dispatcher and
+       * carried on. That is the identical "hand resolution back to undici with
+       * the guard's conclusion thrown away" the initial request no longer
+       * does, and a redirect is the easier half to reach: the first URL can be
+       * domain-filtered, the `Location` is chosen by the server that answered.
+       */
+      it("refuses a redirect hop nothing can resolve instead of following it unpinned", async () => {
+        // Hop 0 resolves publicly and is fetched; the target does not resolve.
+        resolve4Mock.mockResolvedValueOnce(["93.184.216.34"]);
+        lookupMock.mockResolvedValue([]);
+        fetchMock.mockResolvedValueOnce({
+          status: 302,
+          ok: false,
+          headers: new Map([["location", "https://nowhere.invalid/next"]]),
+        });
+
+        const result = await webFetch("https://example.com/start");
+
+        expect(result.isError).toBe(true);
+        expect(result.content).toContain("Could not resolve host");
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+      });
     });
 
     it.each([
