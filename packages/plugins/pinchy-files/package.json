@@ -8,7 +8,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@napi-rs/canvas": "^1.0.2",
+    "@napi-rs/canvas": "^1.0.3",
     "better-sqlite3": "^12.11.1",
     "exceljs": "^4.4.0",
     "mammoth": "^1.12.0",
@@ -19,7 +19,7 @@
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
-    "@types/node": "^26.1.1",
+    "@types/node": "^26.1.2",
     "@types/pdfkit": "^0.17.6",
     "@types/turndown": "^5.0.5",
     "docx": "^9.7.1",
