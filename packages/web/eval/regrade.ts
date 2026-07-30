@@ -39,6 +39,18 @@ const SCENARIO_BY_LABEL: Record<string, HetznerInvoiceScenario> = {
 };
 
 /**
+ * Resolves a persisted scorecard label to its scenario, transparently across
+ * the governed/ungoverned arms of the #723 comparison sweep: a "-governed"
+ * label re-grades against the SAME scenario object as its plain baseline (the
+ * arm changes the tool layer, never the task or its graders). Returns undefined
+ * for an unknown label so the CLI can print the known-labels list.
+ */
+export function scenarioForLabel(label: string): HetznerInvoiceScenario | undefined {
+  const base = label.endsWith("-governed") ? label.slice(0, -"-governed".length) : label;
+  return SCENARIO_BY_LABEL[base];
+}
+
+/**
  * One line of a `results/<label>.trajectories.jsonl` log: the normalized
  * trajectory plus the grade the sweep stored — and, for post-Task-15 dumps,
  * the `promptVariant` the run was dispatched with. Optional because rows
@@ -84,13 +96,15 @@ export function rebuildRunResult(
 async function main(): Promise<void> {
   const label = process.argv[2];
   const withQuotes = process.argv.includes("--quotes");
-  if (!label || !SCENARIO_BY_LABEL[label]) {
+  const scenario = label ? scenarioForLabel(label) : undefined;
+  if (!label || !scenario) {
     console.error(`Usage: tsx eval/regrade.ts <label> [--quotes]`);
-    console.error(`Known labels: ${Object.keys(SCENARIO_BY_LABEL).join(", ")}`);
+    console.error(
+      `Known labels: ${Object.keys(SCENARIO_BY_LABEL).join(", ")} (each also with a "-governed" suffix)`
+    );
     process.exit(1);
     return;
   }
-  const scenario = SCENARIO_BY_LABEL[label];
   const filePath = path.join(__dirname, "results", `${label}.trajectories.jsonl`);
   const text = await readFile(filePath, "utf8");
   const records = parseEvalJsonl<TrajectoryRecord>(text);

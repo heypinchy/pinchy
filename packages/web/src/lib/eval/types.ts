@@ -319,6 +319,15 @@ export interface RunResult<Tag extends string = FailureTag> {
    * `prompts.primary` verbatim. New writes always carry it (see `runOnce`).
    */
   promptVariant?: PromptVariantId;
+  /**
+   * Which tool-layer governance mode produced this run (#723): "enforced" =
+   * Pinchy's write guards active (duplicate guard #721 + read-back #720);
+   * "off" = the ungoverned arm of the comparison sweep. Optional because rows
+   * persisted by pre-#723 sweeps (the frozen Eval-v1 baseline) lack the field:
+   * every historical run predates the guards, so readers MUST treat ABSENCE as
+   * "off" (grandfathering — see governanceOfRun). New writes always carry it.
+   */
+  governance?: "enforced" | "off";
   passed: boolean;
   tags: Tag[];
   notes: string[];

@@ -81,6 +81,14 @@ services:
       # The pinchy-email plugin (running inside OpenClaw) calls the Graph API
       # directly for attachment downloads.
       - GRAPH_API_BASE_URL=http://graph-mock:9005
+      # #723 governed-tools comparison sweep: the pinchy-odoo write guards
+      # (duplicate guard #721 + read-back #720) are read from this env at guard
+      # time. Default "enforced" = governed arm; set PINCHY_ODOO_GOVERNANCE=off
+      # on the host to run the ungoverned arm. ONE host var drives both this
+      # container and the harness's RunResult.governance stamp, so the recorded
+      # arm can never disagree with what the plugin did. Eval-only — never off
+      # in production.
+      - PINCHY_ODOO_GOVERNANCE=${PINCHY_ODOO_GOVERNANCE:-enforced}
 
   db:
     ports:

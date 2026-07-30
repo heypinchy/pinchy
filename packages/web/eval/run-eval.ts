@@ -554,6 +554,16 @@ export interface RunOnceParams {
    */
   scenarioLabel?: string;
   /**
+   * The tool-layer governance mode this run is measured under (#723). Stamped
+   * verbatim onto `RunResult.governance` so the governed/ungoverned arms of the
+   * comparison sweep are distinguishable in the persisted rows regardless of
+   * the label. The sweep resolves it once via `governanceModeFromEnv()` (which
+   * reads the same env the plugin obeys). Omitted for non-comparison callers
+   * (e.g. the selftest), leaving `RunResult.governance` undefined → grandfathered
+   * as "off" by `governanceOfRun`.
+   */
+  governance?: GovernanceMode;
+  /**
    * Joins this run to its `usage_records` tokens/cost by (agentId, chatId), for
    * the #798 cost metric. Optional and injected (the DB coupling lives in the
    * sweep spec, not here) — when omitted, `RunResult.tokens` stays undefined and
@@ -660,10 +670,13 @@ export async function runOnce(params: RunOnceParams): Promise<RunResult> {
     }
   }
   // Every returned (and therefore every persisted) run states its wording —
-  // `promptVariant` rides beside the `scenario` label the same way.
+  // `promptVariant` rides beside the `scenario` label the same way. The
+  // governance mode (#723) rides along too when the caller sets it; omitted
+  // callers leave it undefined (grandfathered "off").
+  const governanceStamp = params.governance ? { governance: params.governance } : {};
   return params.scenarioLabel
-    ? { ...result, scenario: params.scenarioLabel, promptVariant }
-    : { ...result, promptVariant };
+    ? { ...result, scenario: params.scenarioLabel, promptVariant, ...governanceStamp }
+    : { ...result, promptVariant, ...governanceStamp };
 }
 
 /**
@@ -804,11 +817,16 @@ export async function writeScorecard(
   const scorecard = buildScorecard(primaryRuns(runs));
   await mkdir(RESULTS_DIR, { recursive: true });
   const filePath = path.join(RESULTS_DIR, `${label}.json`);
+  // The governance arm this file belongs to (#723), recorded explicitly beside
+  // the fingerprint so the mode is auditable without re-deriving it from the
+  // label downstream. Taken from the label (authoritative for the file); every
+  // stamped run row carries the same mode.
+  const governance = governanceFromLabel(label);
   // eslint-disable-next-line security/detect-non-literal-fs-filename -- label validated above (alnum/./_/- only, no path separators)
   await writeFile(
     filePath,
     JSON.stringify(
-      { generatedAt: new Date().toISOString(), fingerprint, runs, scorecard },
+      { generatedAt: new Date().toISOString(), fingerprint, governance, runs, scorecard },
       null,
       2
     ),
@@ -852,6 +870,54 @@ function runCountFromEnv(raw: string | undefined, defaultN: number): number {
 
 export function runsPerModelFromEnv(defaultN: number): number {
   return runCountFromEnv(process.env.EVAL_N, defaultN);
+}
+
+// ── Governance mode (#723, governed-tools comparison sweep) ────────────────
+
+export type GovernanceMode = "enforced" | "off";
+
+const GOVERNED_LABEL_SUFFIX = "-governed";
+
+/**
+ * The tool-layer governance mode this sweep runs under. Read from the SAME env
+ * var the plugin's `governanceEnforced()` reads (PINCHY_ODOO_GOVERNANCE), with
+ * the SAME fail-safe parse — only the exact literal "off" (case-insensitive,
+ * trimmed) is the ungoverned arm; everything else is "enforced". A single
+ * source drives both the openclaw container (docker-compose.eval.yml) and this
+ * host-side stamp, so the recorded mode can never disagree with what the plugin
+ * actually did. There is no in-spec loop over modes: the container's env is
+ * fixed for one stack (iron rule "ONE SWEEP PER STACK"), so the two arms are
+ * two separate sweep invocations.
+ */
+export function governanceModeFromEnv(): GovernanceMode {
+  return (process.env.PINCHY_ODOO_GOVERNANCE ?? "").trim().toLowerCase() === "off"
+    ? "off"
+    : "enforced";
+}
+
+/**
+ * The scorecard label for a base scenario label under a governance mode. The
+ * plugin is governed BY DEFAULT, so a default sweep produces GOVERNED data and
+ * must not overwrite the frozen ungoverned Eval-v1 baseline that lives under
+ * the plain label (design decision D2 = frozen baseline). Enforced therefore
+ * suffixes "-governed"; the ungoverned arm keeps the plain label. Idempotent so
+ * a re-run never double-suffixes.
+ */
+export function governedScorecardLabel(baseLabel: string, mode: GovernanceMode): string {
+  if (mode === "off") return baseLabel;
+  return baseLabel.endsWith(GOVERNED_LABEL_SUFFIX)
+    ? baseLabel
+    : `${baseLabel}${GOVERNED_LABEL_SUFFIX}`;
+}
+
+/**
+ * The inverse of `governedScorecardLabel` — recovers the governance mode from a
+ * persisted label. Used by the offline re-grader and the comparison exporter,
+ * which see only the label. A trailing "-governed" is the enforced arm; any
+ * other label is ungoverned (the frozen baseline).
+ */
+export function governanceFromLabel(label: string): GovernanceMode {
+  return label.endsWith(GOVERNED_LABEL_SUFFIX) ? "enforced" : "off";
 }
 
 // ── Variant sweep configuration (#803, PR 3) ──────────────────────────────

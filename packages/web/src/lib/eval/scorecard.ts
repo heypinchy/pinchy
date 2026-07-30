@@ -16,6 +16,18 @@ export function promptVariantOf(run: { promptVariant?: PromptVariantId }): Promp
 }
 
 /**
+ * The tool-layer governance mode a run was measured under, with pre-#723 rows
+ * grandfathered (#723): every row persisted before the governed-tools
+ * comparison sweep lacks the field, and every one of those runs was measured
+ * BEFORE the write guards existed — i.e. ungoverned. Absence therefore MEANS
+ * "off", never "unknown". Kept identical in spirit to the plugin's
+ * governanceEnforced() so a cell's mode and the plugin's real behaviour agree.
+ */
+export function governanceOfRun(run: { governance?: "enforced" | "off" }): "enforced" | "off" {
+  return run.governance ?? "off";
+}
+
+/**
  * The headline trials of a run list: the primary wording only (#803).
  *
  * Every capability number — pass@1, pass^k, Wilson, the pairwise comparisons —

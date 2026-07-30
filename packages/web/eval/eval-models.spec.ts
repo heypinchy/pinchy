@@ -55,6 +55,8 @@ import {
   countRunsForVariant,
   injectOdooCreateFailure,
   injectOdooCreateSilentSuccess,
+  governanceModeFromEnv,
+  governedScorecardLabel,
 } from "./run-eval";
 import { DEFAULT_INVOICE_CANDIDATES } from "./candidates";
 import { captureRunFingerprint } from "./fingerprint";
@@ -218,6 +220,16 @@ test.describe("Eval-v1: model sweep (real Ollama Cloud)", () => {
       ? SWEEP_SCENARIOS.filter((s) => scenarioFilter.includes(s.label))
       : SWEEP_SCENARIOS;
 
+    // The tool-layer governance arm this sweep measures (#723). Resolved ONCE
+    // from PINCHY_ODOO_GOVERNANCE — the same env the openclaw container obeys —
+    // so the scorecard label and the plugin's real behaviour cannot disagree.
+    // "enforced" writes to "<label>-governed" (protecting the frozen ungoverned
+    // Eval-v1 baseline that lives under the plain label); "off" writes the plain
+    // label. EVAL_SCENARIO still filters on the BASE label (the scenario name),
+    // not the arm-specific one.
+    const governance = governanceModeFromEnv();
+    console.log(`[eval] governance arm: ${governance}`);
+
     // Retry a stack/network operation a few times — over a multi-hour sweep a
     // host<->container fetch transiently fails ("TypeError: fetch failed")
     // without the containers crashing, and one such blip must not abort the run.
@@ -238,7 +250,12 @@ test.describe("Eval-v1: model sweep (real Ollama Cloud)", () => {
     };
 
     try {
-      for (const { label, scenario, extraSetup } of scenariosToRun) {
+      for (const { label: baseLabel, scenario, extraSetup } of scenariosToRun) {
+        // The arm-specific scorecard label: "<base>-governed" for the enforced
+        // arm, the plain base label for the ungoverned arm (#723). Everything
+        // downstream (resume, append, scorecard) keys on this so the two arms
+        // never share a JSONL file.
+        const label = governedScorecardLabel(baseLabel, governance);
         // Resume: seed the scorecard with runs already persisted to the JSONL
         // (from a prior interrupted invocation) and skip models already at N.
         const existingRuns = await readExistingRuns(label);
@@ -302,6 +319,7 @@ test.describe("Eval-v1: model sweep (real Ollama Cloud)", () => {
                   scenario,
                   scenarioLabel: label,
                   promptVariant: variant,
+                  governance,
                   collectTokens,
                 });
                 scenarioRuns.push(result);
@@ -327,6 +345,9 @@ test.describe("Eval-v1: model sweep (real Ollama Cloud)", () => {
                   // counts against ITS cell on resume, not the primary's
                   // (#803, PR 3).
                   promptVariant: variant,
+                  // Stamp the governance arm too (#723) so a timed-out row is
+                  // attributed to the correct arm, matching runOnce's stamp.
+                  governance,
                 };
                 scenarioRuns.push(timeoutResult);
                 await appendRunResult(label, timeoutResult);
