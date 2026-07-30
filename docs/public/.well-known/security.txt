@@ -1,0 +1,11 @@
+# Pinchy security contact (RFC 9116)
+# Policy: https://github.com/heypinchy/pinchy/blob/main/SECURITY.md
+#
+# We do not run a paid bug bounty programme and do not pay for reports.
+# Valid findings are credited in our release notes.
+
+Contact: mailto:hey@clemenshelm.com
+Expires: 2027-01-31T00:00:00.000Z
+Canonical: https://docs.heypinchy.com/.well-known/security.txt
+Policy: https://github.com/heypinchy/pinchy/blob/main/SECURITY.md
+Preferred-Languages: en, de
