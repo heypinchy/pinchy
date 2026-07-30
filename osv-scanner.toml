@@ -74,8 +74,16 @@ reason = "astro — docs static-site build tooling (docs/pnpm-lock.yaml), not sh
 # that cannot be cut, or a scanner that says nothing while the other says high.
 # Ignoring the id wholesale is bounded by the override above: the 5.x line cannot
 # regress below 5.0.8, and a future 6.x advisory would carry a different id.
+#
+# That lockstep is CHECKED, not merely requested: scripts/lib/audit-ignore-parity
+# .test.mjs (`pnpm test:scripts`) fails if an id in `ignoreGhsas` has no entry
+# here, or if the entry it has is missing a reason, missing an ignoreUntil, or
+# EXPIRED. The expiry rule is the load-bearing one — `ignoreGhsas` has no
+# ignoreUntil of its own and never will, so on 2026-10-25 osv-scanner re-opens
+# this question while `pnpm audit` goes on ignoring it silently. The guard is
+# how the pnpm-side silence inherits the deadline written down here.
 
 [[IgnoredVulns]]
 id = "GHSA-mh99-v99m-4gvg"
 ignoreUntil = 2026-10-25
-reason = "brace-expansion OOM — 5.x line IS fixed (override forces >=5.0.8); residual 1.1.16/2.1.2 come via archiver@5 (exceljs/pinchy-files) + @eslint/config-array, have no compatible upstream fix (5.0.8's changed CJS export breaks minimatch@3/@5), and are unreachable (archiver/eslint pass fixed internal globs, never attacker-controlled brace patterns). Re-triage when archiver depends on brace-expansion >=5.0.8."
+reason = "brace-expansion OOM — 5.x line IS fixed (override forces >=5.0.8); residual 1.1.16/2.1.2 come via three routes: archiver@5 (exceljs/pinchy-files), googleapis>googleapis-common>gaxios>rimraf (pinchy-email), and @eslint/config-array (dev toolchain). None has a compatible upstream fix (5.0.8's changed CJS export breaks minimatch@3/@5), and none is reachable: archiver walks fixed internal globs, rimraf deletes gaxios' own temp paths, eslint matches code-authored config globs — no attacker-controlled brace pattern reaches expand(). Re-triage when archiver depends on brace-expansion >=5.0.8."

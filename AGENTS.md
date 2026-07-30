@@ -175,6 +175,16 @@ The config sits at `packages/`, not `packages/web/`, and that is load-bearing ra
 
 `docs-format.yml` used to check docs and workflows separately, because `ci.yml` once carried a workflow-level `paths-ignore` and skipped docs PRs. It no longer does (see above), and `quality` is ungated — so the root gate covers those files on every PR and the extra workflow was removed rather than left to duplicate it.
 
+## Two Scanners, One Acceptance
+
+A vulnerability can be accepted in two places, and they read different files. `osv-scanner.toml` feeds CI's `vuln-scan` job; `pnpm.auditConfig.ignoreGhsas` in the root `package.json` feeds `pnpm audit --audit-level=high --prod`, the gate `scripts/release.mjs` runs before a tag is cut. **`pnpm audit` does not read `osv-scanner.toml`.** GHSA-mh99-v99m-4gvg was triaged and accepted in #914 and told only to osv-scanner, so v0.9.0 could not be cut over an advisory the repo had already accepted — the acceptance sat on record in a place the release path never consults (#993).
+
+`scripts/lib/audit-ignore-parity.test.mjs` (pure logic in `audit-ignore-parity.mjs`, run by `pnpm test:scripts`) enforces the pairing. Every id in `ignoreGhsas` must have an `[[IgnoredVulns]]` entry with a `reason` and a **non-expired** `ignoreUntil`.
+
+- **The expiry rule is the load-bearing one.** `ignoreGhsas` is a bare array of ids — no reason, no expiry, and pnpm offers no `ignoreUntil`. So on the expiry date osv-scanner re-opens the question and `pnpm audit` structurally cannot; the two configs diverge by construction, with the _release_ path the silent one. The guard is how the pnpm-side silence inherits the deadline written next to the rationale.
+- **The check is one-directional on purpose** — `ignoreGhsas` ⊆ osv ids, never the reverse. Most entries here are things `pnpm audit --prod` at the root cannot see anyway (the astro advisories live in `docs/pnpm-lock.yaml`; the openclaw one is a devDependency). Mirroring those would silence a scanner about findings it never emits.
+- **The `reason` is the machine-readable record; the TOML comment above it is not.** osv-scanner prints `reason` and nothing else, so a route named only in the comment is not named at all — an acceptance that does not name a path it accepts is not an acceptance of that path.
+
 ## Commands
 
 Development should use Docker Compose because the app depends on PostgreSQL, OpenClaw, and migrations:
