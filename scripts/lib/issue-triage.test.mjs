@@ -208,13 +208,16 @@ test("formatOverdueSummary names each issue, its age and its link", () => {
   assert.match(summary, /Error: Setup failed/);
   assert.match(summary, /Flindor/);
   assert.match(summary, /7/);
-  // A plain substring check, not a regex: an unanchored URL pattern is exactly
-  // what CodeQL's js/regex/missing-regexp-anchor flags, and `includes` says
-  // what this actually asserts anyway.
-  assert.ok(
-    summary.includes("https://github.com/heypinchy/pinchy/issues/849"),
-    "the summary must carry the issue link",
-  );
+
+  // Compare the link CELL for equality rather than searching the whole
+  // summary for the URL. Both a regex and an `includes` over a URL are
+  // "does this string appear somewhere" checks, which CodeQL flags
+  // (missing-regexp-anchor / incomplete-url-substring-sanitization) — and it
+  // has a point even in a test: this now asserts the link is in the column a
+  // reader will click, not merely present in the text.
+  const row = summary.split("\n").find((line) => line.includes("#849"));
+  const cells = row.split("|").map((cell) => cell.trim());
+  assert.equal(cells[4], "https://github.com/heypinchy/pinchy/issues/849");
 });
 
 test("formatOverdueSummary says so plainly when nothing is waiting", () => {
