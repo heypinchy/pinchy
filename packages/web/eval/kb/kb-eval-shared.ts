@@ -49,7 +49,7 @@ export async function setupKbAgent(page: Page): Promise<{ agentId: string }> {
   expect(patchRes.status(), await patchRes.text()).toBe(200);
 
   // Wait for OC to settle, then confirm the agent is in OC's runtime — with
-  // recovery from OC's hardcoded config.apply rate limit (heypinchy/pinchy#881).
+  // recovery from OC's hardcoded config.apply rate limit (heypinchy/pinchy#901).
   await ensureAgentDispatchable({
     agentId,
     allowedTools: KB_EVAL_ALLOWED_TOOLS,

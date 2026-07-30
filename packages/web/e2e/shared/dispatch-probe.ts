@@ -217,7 +217,8 @@ export interface EnsureAgentDispatchableParams {
  * `waitForOpenClawStable` reports settled (the fallback drained
  * `configPushesPending`) while the agent is NOT yet in OC's runtime, and a
  * plain `waitForAgentDispatchable` times out — the kb-attribution /
- * pinchy-knowledge `beforeAll` flake (heypinchy/pinchy#881).
+ * pinchy-knowledge `beforeAll` flake (heypinchy/pinchy#901; the class fix — an
+ * explicit `config.apply` readiness signal instead of a probe — is #465).
  *
  * The recovery works because this runs inside a BLOCKING `beforeAll`: no other
  * `config.apply` competes, so the rate-limit window drains within ~60 s.

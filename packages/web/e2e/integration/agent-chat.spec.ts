@@ -502,7 +502,7 @@ test.describe.serial("Plugin behavior — pinchy-knowledge", () => {
       // Wait for OC to settle after the create+PATCH regens, then confirm the
       // new agent is actually in OC's runtime agents.list before dispatching —
       // with recovery from OC's hardcoded config.apply rate limit
-      // (heypinchy/pinchy#881).
+      // (heypinchy/pinchy#901).
       await ensureAgentDispatchable({
         agentId,
         allowedTools: ["knowledge_search"],
