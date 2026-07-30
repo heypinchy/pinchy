@@ -27,20 +27,28 @@ on:
     - cron: "0 7 * * 1-5"
   workflow_dispatch:
 
-permissions:
-  issues: write
-
+# Permissions are per job, not shared: only the labelling half writes.
+#
+# `contents: read` is spelled out in both because a `permissions:` block sets
+# every scope it does not list to NO access — and both jobs check the repo out
+# to run the scripts. A canary run on 2026-07-30 showed checkout still
+# succeeding on `issues: write` alone (cloning a public repo needs no
+# authorization), so this is not a live break; it is an unstated dependency on
+# the repo staying public, and one line removes it.
 jobs:
   label-new-issue:
     name: Label external reports
     if: github.event_name == 'issues'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
     steps:
       - uses: actions/checkout@v7
 
       - uses: actions/setup-node@v6
         with:
-          node-version: 22
+          node-version-file: .nvmrc
 
       - name: Label the issue if it came from outside the team
         env:
@@ -51,12 +59,15 @@ jobs:
     name: External issues awaiting a reply
     if: github.event_name != 'issues'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: read
     steps:
       - uses: actions/checkout@v7
 
       - uses: actions/setup-node@v6
         with:
-          node-version: 22
+          node-version-file: .nvmrc
 
       - name: Fail while an outside reporter is still waiting
         env:

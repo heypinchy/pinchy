@@ -166,6 +166,48 @@ test("findUnansweredIssues puts the longest-waiting reporter first", () => {
   );
 });
 
+test("findUnansweredIssues refuses a grace period that is not a real number", () => {
+  // The grace period arrives as a string from the workflow's env. `Number()`
+  // turns a typo into NaN, and every `waited > NaN` comparison is false — so
+  // the sweep would announce "nothing is waiting" and pass. One mistyped
+  // character in the workflow would disable the whole check without a trace,
+  // which is the exact failure mode this check exists to prevent.
+  for (const graceHours of [NaN, "48h", "", undefined, null, -1, Infinity]) {
+    assert.throws(
+      () => findUnansweredIssues([issue()], { now: NOW, graceHours }),
+      /grace/i,
+      `expected a throw for graceHours=${String(graceHours)}`,
+    );
+  }
+});
+
+test("the grace-period error quotes the value as it was written", () => {
+  // A NaN stringifies to "null", so a message built from the converted number
+  // hides the typo it is reporting. Naming "48h" is the whole point of failing.
+  assert.throws(
+    () => findUnansweredIssues([issue()], { now: NOW, graceHours: "48h" }),
+    /"48h"/,
+  );
+});
+
+test("findUnansweredIssues refuses an issue whose creation date does not parse", () => {
+  // A renamed or missing `createdAt` makes `new Date(...)` invalid, and the
+  // NaN comparison that follows drops the issue from the result — the reporter
+  // vanishes from a sweep that still reports success. parseIssuesResponse
+  // checks the payload's SHAPE; a null in a field of the right name passes it.
+  for (const createdAt of [undefined, null, "", "not-a-date"]) {
+    assert.throws(
+      () =>
+        findUnansweredIssues([issue({ createdAt })], {
+          now: NOW,
+          graceHours: 48,
+        }),
+      /creation date/i,
+      `expected a throw for createdAt=${String(createdAt)}`,
+    );
+  }
+});
+
 test("findUnansweredIssues annotates how long the reporter has waited", () => {
   const [overdue] = findUnansweredIssues([issue({ createdAt: hoursAgo(72) })], {
     now: NOW,
@@ -218,6 +260,23 @@ test("formatOverdueSummary names each issue, its age and its link", () => {
   const row = summary.split("\n").find((line) => line.includes("#849"));
   const cells = row.split("|").map((cell) => cell.trim());
   assert.equal(cells[4], "https://github.com/heypinchy/pinchy/issues/849");
+});
+
+test("formatOverdueSummary names a deleted account instead of printing @null", () => {
+  // GitHub returns `author: null` once the account is gone — parseIssuesResponse
+  // decodes that to null on purpose. Rendering it as "@null" reads like a
+  // username and sends the reader looking for a profile that never existed.
+  const summary = formatOverdueSummary([
+    {
+      number: 7,
+      title: "Ghost report",
+      url: "https://example.test/7",
+      authorLogin: null,
+      waitingDays: 9,
+    },
+  ]);
+  assert.doesNotMatch(summary, /@null/);
+  assert.match(summary, /deleted account/i);
 });
 
 test("formatOverdueSummary says so plainly when nothing is waiting", () => {
@@ -437,6 +496,44 @@ function uncommented(yaml) {
     .join("\n");
 }
 
+/**
+ * Reads each job's own `permissions:` mapping out of the workflow text.
+ *
+ * There is no YAML parser at the repo root (husky, lint-staged and prettier are
+ * the only root devDependencies), so this walks indentation: a job is a
+ * two-space key under `jobs:`, its permissions are the four-space `permissions:`
+ * block, and the entries sit six spaces in. Anything shaped differently yields
+ * no entry, which fails the assertion rather than passing it.
+ */
+function jobPermissions(yaml) {
+  const jobs = {};
+  let job = null;
+  let inPermissions = false;
+
+  for (const line of yaml.split("\n")) {
+    const jobStart = /^ {2}([\w-]+):\s*$/.exec(line);
+    if (jobStart) {
+      job = jobStart[1];
+      jobs[job] = {};
+      inPermissions = false;
+      continue;
+    }
+    if (!job) continue;
+
+    if (/^ {4}permissions:\s*$/.test(line)) {
+      inPermissions = true;
+      continue;
+    }
+    const entry = /^ {6}([\w-]+):\s*(\S+)\s*$/.exec(line);
+    if (inPermissions && entry) {
+      jobs[job][entry[1]] = entry[2];
+      continue;
+    }
+    if (line.trim() && !/^ {6}/.test(line)) inPermissions = false;
+  }
+  return jobs;
+}
+
 test("the triage workflow exists", () => {
   assert.ok(
     existsSync(WORKFLOW_PATH),
@@ -479,6 +576,29 @@ test("the sweep is never allowed to pass while issues are waiting", () => {
   const yaml = uncommented(workflowSource());
   assert.doesNotMatch(yaml, /continue-on-error/);
   assert.doesNotMatch(yaml, /\|\|\s*true/);
+  assert.doesNotMatch(yaml, /exit 0/);
+});
+
+test("the triage workflow grants the repo read access its checkout needs", () => {
+  // A `permissions:` block sets every scope it does NOT list to no access.
+  // This workflow checks out the repo to run the scripts, so it needs
+  // `contents: read` spelled out.
+  //
+  // Measured, not assumed: a canary run on 2026-07-30 with `issues: write`
+  // alone reported "Issues: write / Metadata: read" and checkout STILL
+  // succeeded — cloning a public repo needs no authorization. So this is not a
+  // live break; it is a dependency on the repo staying public that nothing
+  // would state. Making the grant explicit costs one line and removes it.
+  const yaml = uncommented(workflowSource());
+  assert.match(yaml, /contents:\s*read/);
+});
+
+test("the sweep is not handed write access it never uses", () => {
+  // Only the labelling job writes. Granting the sweep `issues: write` too
+  // would hand a token that can edit the tracker to a job that only reads it.
+  const permissions = jobPermissions(uncommented(workflowSource()));
+  assert.equal(permissions["unanswered-sweep"]?.issues, "read");
+  assert.equal(permissions["label-new-issue"]?.issues, "write");
 });
 
 test("the sweep only runs on weekdays", () => {

@@ -52,18 +52,52 @@ export function hasMaintainerReply(issue) {
 const MS_PER_DAY = 24 * 3600 * 1000;
 
 /**
+ * Every arithmetic input is validated up front, because NaN is this function's
+ * silent-green path: `waited > NaN` is false for every issue, so one unusable
+ * number would make the sweep announce that nothing is waiting and pass.
+ *
+ * The grace period arrives as a string from the workflow's env, where a typo
+ * (`"48h"`) is a plausible mistake. An unparseable date means the query's
+ * `createdAt` was renamed or came back null — the same class of decode failure
+ * parseIssuesResponse throws on, and it must be just as loud here.
+ */
+function requirePositiveNumber(value, what) {
+  const number = typeof value === "string" ? Number(value) : value;
+  if (typeof number !== "number" || !Number.isFinite(number) || number <= 0) {
+    // `JSON.stringify(NaN)` is "null", which would hide the very thing the
+    // reader needs — quote the value as given instead. This is why the caller
+    // hands over the raw env string rather than a pre-`Number()`ed NaN.
+    throw new Error(
+      `${what} must be a positive finite number of hours, got ${typeof value === "string" ? JSON.stringify(value) : String(value)}`,
+    );
+  }
+  return number;
+}
+
+function createdAtMs(issue) {
+  const ms = new Date(issue.createdAt ?? NaN).getTime();
+  if (!Number.isFinite(ms)) {
+    throw new Error(
+      `issue #${issue.number} has no usable creation date: ${JSON.stringify(issue.createdAt)}`,
+    );
+  }
+  return ms;
+}
+
+/**
  * Returns the external issues that have gone unanswered past the grace
  * period, longest wait first, each annotated with `waitingDays`.
  */
 export function findUnansweredIssues(issues, { now, graceHours }) {
   const nowMs = now.getTime();
-  const graceMs = graceHours * 3600 * 1000;
+  const graceMs =
+    requirePositiveNumber(graceHours, "the grace period") * 3600 * 1000;
 
   return issues
     .filter((issue) => isExternalIssue(issue) && !hasMaintainerReply(issue))
     .map((issue) => ({
       ...issue,
-      waitedMs: nowMs - new Date(issue.createdAt).getTime(),
+      waitedMs: nowMs - createdAtMs(issue),
     }))
     .filter((issue) => issue.waitedMs > graceMs)
     .sort((a, b) => b.waitedMs - a.waitedMs)
@@ -179,6 +213,16 @@ function escapeCell(text) {
   return String(text).replace(/\\/g, "\\\\").replace(/\|/g, "\\|");
 }
 
+/**
+ * GitHub returns `author: null` once an account is deleted, which
+ * parseIssuesResponse keeps as null rather than inventing a name. Printing
+ * "@null" would read like a username and send the reader hunting for a profile
+ * that never existed.
+ */
+function reporter(authorLogin) {
+  return authorLogin ? `@${escapeCell(authorLogin)}` : "(deleted account)";
+}
+
 /** Renders the sweep's verdict for the GitHub Actions job summary. */
 export function formatOverdueSummary(overdue) {
   if (overdue.length === 0) {
@@ -195,7 +239,7 @@ export function formatOverdueSummary(overdue) {
   for (const issue of overdue) {
     const days = `${issue.waitingDays} day${issue.waitingDays === 1 ? "" : "s"}`;
     lines.push(
-      `| #${issue.number} ${escapeCell(issue.title)} | @${escapeCell(issue.authorLogin)} | ${days} | ${issue.url} |`,
+      `| #${issue.number} ${escapeCell(issue.title)} | ${reporter(issue.authorLogin)} | ${days} | ${issue.url} |`,
     );
   }
 

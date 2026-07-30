@@ -19,7 +19,13 @@ import {
 } from "./lib/issue-triage.mjs";
 import { currentRepo, graphql } from "./lib/github-api.mjs";
 
-const GRACE_HOURS = Number(process.env.TRIAGE_GRACE_HOURS ?? 48);
+/**
+ * Passed on as given, not pre-converted: findUnansweredIssues rejects anything
+ * that is not a positive finite number, and it can only name the offending
+ * value in its error if it still has the string. `Number("48h")` is NaN, and a
+ * NaN reads back as "null" — the one detail the reader needs, gone.
+ */
+const GRACE_HOURS = process.env.TRIAGE_GRACE_HOURS ?? 48;
 
 /**
  * Guards against an unbounded loop if the cursor ever fails to advance. At
@@ -43,6 +49,11 @@ const QUERY = `
           createdAt
           authorAssociation
           author { login }
+          # An issue with more than 100 comments and not one of them from the
+          # team is not a case worth engineering for. Note which way this
+          # errs: a missed maintainer reply keeps the sweep RED, so the worst
+          # outcome is an alarm we clear by closing the issue — never a
+          # reporter who silently drops out of the report.
           comments(first: 100) {
             nodes {
               authorAssociation
