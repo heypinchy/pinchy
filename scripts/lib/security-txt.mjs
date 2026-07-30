@@ -24,9 +24,16 @@
  *     own; a reporter routed to a dead alias gets no answer and concludes we
  *     do not care. Same paired-list drift the other guards in here cover.
  *
- * heypinchy.com carries its own copy in the (private) website repo. This
- * module validates the docs.heypinchy.com one that lives in this repo; the
- * `canonical` argument is what keeps a copy-paste between them honest.
+ * THERE ARE TWO PUBLISHED COPIES, AND ONLY ONE OF THEM IS GUARDED HERE.
+ * This module validates the docs.heypinchy.com file that lives in this repo.
+ * heypinchy.com — the domain people actually write to — carries its own copy
+ * in the separate, private website repo (heypinchy/website,
+ * `public/.well-known/security.txt`), which has no equivalent harness. Both
+ * were published with the same `Expires`, so when this alarm goes off, RENEW
+ * BOTH. Renewing only this one leaves the alarm quiet and the more important
+ * file expired, which is strictly worse than the gap this guard closed.
+ *
+ * The `canonical` argument is what keeps a copy-paste between the two honest.
  */
 
 /** Fail this many days before `Expires`, so the renewal has room to happen. */

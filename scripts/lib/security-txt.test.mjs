@@ -174,9 +174,16 @@ test("the committed security.txt is valid and not about to expire", () => {
   assert.deepEqual(
     problems,
     [],
-    `${SECURITY_TXT}\n` +
-      `Renew it: set Expires to ~6 months out, keep it under a year.\n` +
-      problems.join("\n"),
+    [
+      ...problems,
+      "",
+      `Renew ${SECURITY_TXT}: set Expires ~6 months out, under a year.`,
+      "THEN RENEW THE SECOND COPY, which nothing checks:",
+      "  heypinchy/website (private) -> public/.well-known/security.txt",
+      "It shares this Expires date and serves heypinchy.com, the domain",
+      "reporters actually write to. Renewing only this file leaves that one",
+      "expired with the alarm silent.",
+    ].join("\n"),
   );
 });
 
