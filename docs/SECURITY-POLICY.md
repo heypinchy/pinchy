@@ -174,7 +174,7 @@ The Files Plugin allows AI agents to read files from the host filesystem within 
 
 Security vulnerabilities in Pinchy should be reported to:
 
-**Email:** hey@clemenshelm.com
+**Email:** security@heypinchy.com
 **Subject line:** `[SECURITY] <brief description>`
 
 Please include:

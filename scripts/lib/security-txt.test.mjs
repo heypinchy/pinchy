@@ -28,7 +28,7 @@ const daysFromNow = (days) =>
 
 const build = (overrides = {}) => {
   const fields = {
-    Contact: "mailto:hey@clemenshelm.com",
+    Contact: "mailto:security@heypinchy.com",
     Expires: daysFromNow(180),
     Canonical: CANONICAL,
     ...overrides,
@@ -55,7 +55,7 @@ test("comments and blank lines are ignored", () => {
 
 test("field names are matched case-insensitively", () => {
   const content = [
-    `contact: mailto:hey@clemenshelm.com`,
+    `contact: mailto:security@heypinchy.com`,
     `EXPIRES: ${daysFromNow(180)}`,
     `Canonical: ${CANONICAL}`,
   ].join("\n");
@@ -136,7 +136,7 @@ test("several problems are reported together", () => {
 test("a Contact address absent from SECURITY.md is reported", () => {
   const problems = validateContactParity(
     build({ Contact: "mailto:stale@example.com" }),
-    "Email us at hey@clemenshelm.com",
+    "Email us at security@heypinchy.com",
   );
   assert.equal(problems.length, 1);
   assert.match(problems[0], /stale@example\.com/);
@@ -144,7 +144,10 @@ test("a Contact address absent from SECURITY.md is reported", () => {
 
 test("a Contact address present in SECURITY.md passes parity", () => {
   assert.deepEqual(
-    validateContactParity(build(), "Email us at **hey@clemenshelm.com** with:"),
+    validateContactParity(
+      build(),
+      "Email us at **security@heypinchy.com** with:",
+    ),
     [],
   );
 });

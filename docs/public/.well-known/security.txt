@@ -4,7 +4,7 @@
 # We do not run a paid bug bounty programme and do not pay for reports.
 # Valid findings are credited in our release notes.
 
-Contact: mailto:hey@clemenshelm.com
+Contact: mailto:security@heypinchy.com
 Expires: 2027-01-31T00:00:00.000Z
 Canonical: https://docs.heypinchy.com/.well-known/security.txt
 Policy: https://github.com/heypinchy/pinchy/blob/main/SECURITY.md

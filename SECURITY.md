@@ -4,7 +4,7 @@
 
 If you discover a security vulnerability in Pinchy, **please do not open a public issue.**
 
-Instead, email us at **hey@clemenshelm.com** with:
+Instead, email us at **security@heypinchy.com** with:
 
 1. A description of the vulnerability
 2. Steps to reproduce it
