@@ -1000,6 +1000,17 @@ export function useWsRuntime(
     // lifecycle-driven so recoverFromPageLifecycle knows to reopen it).
     function scheduleHiddenGraceClose() {
       clearHiddenGraceTimer();
+      // The #956 history-answer watchdog also has to stand down here, not
+      // only when the grace period eventually elapses and
+      // suspendForPageLifecycle's clearUiTimers() runs. Nobody is watching a
+      // stalled load on a hidden tab, so it must not fire its own
+      // reconnect (forceReconnect) independently of — and bypassing — the
+      // hidden-aware pause this function exists to provide. Whichever path
+      // brings the tab back (handleTabVisible's OPEN-socket reconcile or a
+      // post-grace-close recoverFromPageLifecycle) re-requests history and
+      // re-arms a fresh deadline, so a genuine stall is still caught, just
+      // not while nobody is looking.
+      clearHistoryWatchdog();
       hiddenGraceTimerRef.current = setTimeout(() => {
         hiddenGraceTimerRef.current = null;
         suspendForPageLifecycle();
