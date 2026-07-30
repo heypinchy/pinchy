@@ -144,11 +144,15 @@ Not every document has pages, which is why a citation says "the spot" rather tha
 
 Each source path in an answer is a link. Click it and the PDF opens in a viewer over the chat, at the cited page, with the answer still visible behind it — the same viewer a PDF you attach to a message opens into. Checking a claim takes a click instead of a hunt through folders.
 
+Word documents and slide decks open in that same viewer. No browser renders a `.doc`, so what you see is the PDF Pinchy converted on its way into the index — the same rendering the citation was measured against, which is what lets it point at a spot you can actually find. The original is never modified and never replaced; it stays exactly where it is on your share.
+
 Document size is not a limit. Knowledge bases routinely contain scanned compilation binders of several hundred megabytes, and because those contain the most, they tend to be cited the most. Pinchy streams the file and serves byte ranges, so the viewer fetches the pages it renders rather than the whole document — opening page 510 of a 268 MB binder transfers a fraction of it.
 
 Reading the answer is often not the end of the job — sometimes you want the document itself, to send it on to a customer. The viewer's header carries a **Download** control beside the document's name, so the file lands in your downloads folder under its own name, umlauts and all, without a detour through a remote desktop.
 
-Opening a source is governed like every other access. The link resolves against the same allowed directories that scope the agent's search, so a path outside them is refused even if an answer names one. Each view is written to the audit trail as `knowledge.source_viewed`, and each download as `knowledge.source_downloaded` — reading a document and taking a copy of it out of the building are different acts, and only the second one can be answered with "who has this file now".
+For a Word document or slide deck you get two, named so you can tell them apart: `Angebot.doc` is the original — the file as it sits on your share, the one to attach to a mail — and `Angebot.pdf` is the converted version you were just reading. Often that PDF is what you wanted to send anyway, and this saves you converting it yourself.
+
+Opening a source is governed like every other access. The link resolves against the same allowed directories that scope the agent's search, so a path outside them is refused even if an answer names one. A converted PDF is reachable only through the document it came from, so it is governed by exactly the same grant — there is no second door into it, and a document nobody may read has no readable conversion. Each view is written to the audit trail as `knowledge.source_viewed`, and each download as `knowledge.source_downloaded` — reading a document and taking a copy of it out of the building are different acts, and only the second one can be answered with "who has this file now".
 
 The list resolves exactly the numbers the answer cites — no more and no fewer. A number with no entry would be a dead end, and an entry the answer never cited would make a single source look like several.
 

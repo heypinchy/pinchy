@@ -14,9 +14,74 @@ import type { AuditLogEntry } from "@/lib/audit";
 import { resolveAllowedFile } from "@/lib/agent-file-access";
 import { contentTypeForFile } from "@/lib/agent-file-content-type";
 import { parseRangeHeader } from "@/lib/http-range";
+import { getOfficeArtifactStore, hashFileContents } from "@/lib/knowledge/office-artifacts";
+import { convertedPdfName, isOfficeFile } from "@/lib/knowledge/office-formats";
 import type { AgentPluginConfig } from "@/db/schema";
 
 type Params = { params: Promise<{ agentId: string }> };
+
+/**
+ * Which representation of one document the caller wants.
+ *
+ * An Office source has two, and they answer different needs: the reader looks
+ * at the CONVERTED PDF (a `.doc` renders in no browser) and sends a customer
+ * the ORIGINAL (the file that exists on their drive). Both are the same
+ * document, which is why this is a parameter on one route rather than a second
+ * route with a second access check to keep in step.
+ *
+ * Absent means "whatever this document is meant to be LOOKED at as", which is
+ * the converted PDF for an Office source and the file itself for everything
+ * else. That default is what keeps `buildSourceHref` — and every citation
+ * already rendered — unchanged: a viewer asks for the document, not for a
+ * representation of it.
+ */
+type Variant = "original" | "converted";
+
+function parseVariant(raw: string | null): Variant | null | undefined {
+  if (raw === null) return null;
+  return raw === "original" || raw === "converted" ? raw : undefined;
+}
+
+/**
+ * The stored PDF for an Office source, or null when there is none to serve.
+ *
+ * ## Why this cannot widen what a request can reach
+ *
+ * The artifact store lives OUTSIDE `/data` — it has to, because `/data` is
+ * mounted read-only and that is a product promise (#936) — so it is outside
+ * `FILE_SERVE_ROOTS` and `resolveAllowedFile` would refuse every artifact.
+ * Containment is therefore re-argued rather than reused, and it rests on two
+ * facts:
+ *
+ *   1. This is reached ONLY after `resolveAllowedFile` accepted the ORIGINAL
+ *      path. An artifact is exactly as reachable as the document it was
+ *      converted from, never more.
+ *   2. The artifact path is DERIVED, never requested: `pathFor` re-hashes its
+ *      argument, so what is opened is `<root>/v<n>/ab/<64 hex>.pdf` — a shape
+ *      no caller-supplied string can steer, whatever it contains.
+ *
+ * ## Why this is also the staleness check
+ *
+ * The store is keyed on the source's content hash, so an artifact is only
+ * found while the bytes it was converted from are still the bytes on disk.
+ * Replace the document on the share and the key moves with it: the old
+ * artifact becomes unreachable in the same instant, with no invalidation pass
+ * to run and no window in which a reader is shown a document that no longer
+ * exists. The cost is a hash per request, paid on a file small enough that
+ * LibreOffice converted it in about a second.
+ */
+async function resolveConvertedArtifact(realPath: string): Promise<string | null> {
+  if (!isOfficeFile(realPath)) return null;
+  try {
+    return await getOfficeArtifactStore().get(await hashFileContents(realPath));
+  } catch {
+    // An unreadable source, or an artifact volume that is missing, full or not
+    // mounted. Neither is a verdict on this document and neither is worth a
+    // 500: the answer is the same as "not converted yet", and the ORIGINAL
+    // download keeps working throughout.
+    return null;
+  }
+}
 
 /**
  * Reading a cited document and taking a copy of it out of the building are
@@ -40,6 +105,7 @@ function sourceAccessAuditEntry(args: {
   outcome: "success" | "failure";
   reason?: string;
   partial?: boolean;
+  representation?: Variant;
 }): AuditLogEntry {
   return {
     actorType: "user",
@@ -53,7 +119,13 @@ function sourceAccessAuditEntry(args: {
     // an HMAC-chained row, and redundant besides (#824).
     detail: {
       agent: { id: args.agentId, name: args.agentName ?? args.agentId },
+      // Always the SOURCE document's name, even when the bytes served are its
+      // converted PDF: the artifact is named for its content key, and a row
+      // saying `3f9a2c….pdf` names nothing an analyst can act on. Which of the
+      // two representations actually left is a separate field, because "who
+      // took the spec sheet" and "in which format" are different questions.
       document: { name: args.documentName },
+      ...(args.representation !== undefined ? { representation: args.representation } : {}),
       ...(args.reason !== undefined ? { reason: args.reason } : {}),
       // A PDF viewer fetches a large document as a series of ranges, so one
       // opened document produces several rows. Every access stays logged —
@@ -104,6 +176,17 @@ export const GET = withAuth<Params>(async (req, { params }, session) => {
   const eventType: SourceAccessEvent = isDownload
     ? "knowledge.source_downloaded"
     : "knowledge.source_viewed";
+
+  // Rejected before any path is resolved and before any audit row is written:
+  // a request naming a representation that does not exist has not asked for a
+  // document, so there is no access decision to record about one.
+  const variant = parseVariant(req.nextUrl.searchParams.get("variant"));
+  if (variant === undefined) {
+    return NextResponse.json(
+      { error: "variant must be 'original' or 'converted'" },
+      { status: 400 }
+    );
+  }
 
   // Same allowlist source as knowledge_search's retrieval scope (see
   // /api/internal/knowledge/search/route.ts): an agent's file-serving scope
@@ -159,14 +242,32 @@ export const GET = withAuth<Params>(async (req, { params }, session) => {
     );
   };
 
+  // Which representation is actually served. `converted` is asked for
+  // explicitly by the second download control, and implicitly by any viewer
+  // opening an Office source — a `.doc` renders in no browser, so the document
+  // a reader was promised IS the converted PDF.
+  const wantsConverted = variant === "converted" || (variant === null && isOfficeFile(realPath));
+  const artifactPath = wantsConverted ? await resolveConvertedArtifact(realPath) : null;
+  if (wantsConverted && artifactPath === null) {
+    // Falling back to the original here would be worse than answering nothing:
+    // it is served `attachment`, so a viewer's <embed> would turn an
+    // unconverted document into a surprise download rather than a preview.
+    auditFailure("no_converted_artifact");
+    return new NextResponse("Not found", { status: 404 });
+  }
+
+  const servedPath = artifactPath ?? realPath;
+  const servedName = artifactPath ? convertedPdfName(documentName) : documentName;
+  const representation: Variant = artifactPath ? "converted" : "original";
+
   // Open FIRST, then stat the open handle rather than re-stat the path: a
   // stat-then-open pair is a TOCTOU race (js/file-system-race), and the
   // handle's own stat is authoritative for the bytes we are about to serve.
   // Same posture as `serve-workspace-file.ts`.
   let fh;
   try {
-    // eslint-disable-next-line security/detect-non-literal-fs-filename -- realPath is containment-checked by resolveAllowedFile above
-    fh = await open(realPath, "r");
+    // eslint-disable-next-line security/detect-non-literal-fs-filename -- servedPath is either realPath (containment-checked by resolveAllowedFile above) or an artifact path derived from the store's content key, which no request input can steer — see resolveConvertedArtifact.
+    fh = await open(servedPath, "r");
   } catch {
     auditFailure("not_found");
     return new NextResponse("Not found", { status: 404 });
@@ -213,7 +314,11 @@ export const GET = withAuth<Params>(async (req, { params }, session) => {
   // `attachment` is the stricter of the two, so forcing it can only narrow what
   // the browser is allowed to do with these bytes — it never relaxes the
   // extension-derived anti-XSS split, it only ever overrides `inline`.
-  const { contentType, disposition: servedDisposition } = contentTypeForFile(realPath);
+  // Derived from the name the bytes are SERVED under, not from the source's:
+  // the converted artifact is a PDF and has to be typed and dispositioned as
+  // one, or the viewer gets an `application/msword` attachment where it asked
+  // for something to render.
+  const { contentType, disposition: servedDisposition } = contentTypeForFile(servedName);
   const disposition = isDownload ? "attachment" : servedDisposition;
 
   deferAuditLog(
@@ -225,6 +330,7 @@ export const GET = withAuth<Params>(async (req, { params }, session) => {
       documentName,
       outcome: "success",
       partial: isPartial,
+      representation,
     })
   );
 
@@ -261,7 +367,7 @@ export const GET = withAuth<Params>(async (req, { params }, session) => {
       // Content-Type via its own MIME sniffing — the anti-XSS control that
       // makes the inline/attachment split above meaningful.
       "x-content-type-options": "nosniff",
-      "content-disposition": `${disposition}; filename="${documentName.replace(/[^\x20-\x7e]|["\\]/g, "_")}"; filename*=UTF-8''${encodeURIComponent(documentName)}`,
+      "content-disposition": `${disposition}; filename="${servedName.replace(/[^\x20-\x7e]|["\\]/g, "_")}"; filename*=UTF-8''${encodeURIComponent(servedName)}`,
       // Declares the posture the inline (PDF) case wants: a same-origin
       // <embed>/<iframe> viewer may frame this, nothing else may.
       //

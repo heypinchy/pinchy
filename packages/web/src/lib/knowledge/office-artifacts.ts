@@ -31,9 +31,25 @@
  * (`pruneOtherFormatVersions`) instead of a table scan.
  */
 import { createHash, randomUUID } from "node:crypto";
-import { mkdirSync } from "node:fs";
+import { createReadStream, mkdirSync } from "node:fs";
 import { mkdir, readdir, rename, rm, stat, utimes } from "node:fs/promises";
 import { join } from "node:path";
+
+/**
+ * sha256 of a file's bytes, streamed — the artifact-store key.
+ *
+ * Lives here rather than in `office-convert.ts` because computing the key is
+ * the store's business, and because the preview route (#939) needs it without
+ * importing a module that spawns LibreOffice and loads pdfjs. The ingest
+ * pipeline already hashes every file for its own idempotency check and should
+ * pass that hash rather than pay for a second read.
+ */
+export async function hashFileContents(absPath: string): Promise<string> {
+  const hash = createHash("sha256");
+  // eslint-disable-next-line security/detect-non-literal-fs-filename -- absPath is a containment-checked path from the caller (ingest's discovery, or the workspace-file route after resolveAllowedFile).
+  for await (const chunk of createReadStream(absPath)) hash.update(chunk);
+  return hash.digest("hex");
+}
 
 /**
  * Bump this whenever a change makes the converter produce a materially

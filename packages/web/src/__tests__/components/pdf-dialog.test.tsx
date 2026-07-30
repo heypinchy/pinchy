@@ -21,6 +21,7 @@ import { describe, it, expect } from "vitest";
 import { render, screen } from "@testing-library/react";
 
 import { PdfDialog } from "@/components/assistant-ui/attachment-preview";
+import { buildSourceDownloads, buildSourceHref } from "@/lib/knowledge/source-links";
 
 function openDialog(url: string, title: string, page: number | null = null) {
   return render(
@@ -190,6 +191,29 @@ describe("PdfDialog — taking the document", () => {
 
     expect(screen.getByRole("link", { name: /download original/i })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /download converted pdf/i })).toBeInTheDocument();
+  });
+
+  it("offers an Office citation both representations, built by the renderer", () => {
+    // The pair is not hand-assembled at the call site: `buildSourceDownloads`
+    // derives it from the same href the viewer opens, which is what keeps the
+    // download urls and the preview url describing one document. Rendering it
+    // here proves the two halves fit — the list shape and the labels a reader
+    // actually distinguishes them by.
+    const href = buildSourceHref("a1", "noack/QF_2012/Angebot.doc", 3);
+    render(
+      <PdfDialog
+        url={href}
+        title="noack/QF_2012/Angebot.doc"
+        page={3}
+        downloads={buildSourceDownloads(href)!}
+        defaultOpen
+      >
+        <button type="button">trigger</button>
+      </PdfDialog>
+    );
+
+    expect(screen.getByRole("link", { name: "Download Angebot.doc" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Download Angebot.pdf" })).toBeInTheDocument();
   });
 
   it("keeps the controls on screen when the document name is too long for the row", () => {

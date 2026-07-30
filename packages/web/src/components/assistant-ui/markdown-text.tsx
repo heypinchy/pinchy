@@ -18,7 +18,11 @@ import type { TextMessagePartProps } from "@assistant-ui/react";
 import { AgentIdContext } from "@/components/chat";
 import { PdfDialog } from "@/components/assistant-ui/attachment-preview";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
-import { remarkSourceLinks, parseSourceHref } from "@/lib/knowledge/source-links";
+import {
+  remarkSourceLinks,
+  buildSourceDownloads,
+  parseSourceHref,
+} from "@/lib/knowledge/source-links";
 import { cn } from "@/lib/utils";
 
 /** Taken from the consuming component so the list below cannot drift from what it accepts. */
@@ -163,7 +167,16 @@ const defaultComponents = memoizeMarkdownComponents({
     const source = href ? parseSourceHref(href) : null;
     if (source && href) {
       return (
-        <PdfDialog url={href} title={source.path} page={source.page}>
+        // The download list is derived from the SAME href the viewer opens, so
+        // what the reader is shown and what they can take away can never
+        // describe two different documents. For an Office source that is the
+        // original next to its converted PDF (#939).
+        <PdfDialog
+          url={href}
+          title={source.path}
+          page={source.page}
+          downloads={buildSourceDownloads(href) ?? undefined}
+        >
           <button type="button" className={cn(linkClasses, "cursor-pointer text-left")}>
             {children}
           </button>

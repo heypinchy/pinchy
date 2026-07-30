@@ -51,21 +51,22 @@
  * alarm. It is a tripwire against the failure that actually hurts (clipped
  * text), NOT a guarantee.
  */
-import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
-import { createReadStream } from "node:fs";
 import { mkdir, rm, stat, symlink } from "node:fs/promises";
 import { extname, join } from "node:path";
 
-import { getOfficeArtifactStore, OfficeArtifactStore } from "./office-artifacts";
+import { getOfficeArtifactStore, hashFileContents, OfficeArtifactStore } from "./office-artifacts";
+import { OFFICE_EXTENSIONS, isOfficeFile } from "./office-formats";
 import { extractPdfPages } from "./pdf-extract";
 
 /**
- * The page-shaped Office formats. Spreadsheets are deliberately absent: a
- * sheet is not a page, and rendering one to PDF produces arbitrary page breaks
- * that no citation can honestly point at (#937/#940).
+ * Re-exported so this module stays the one place a caller has to know about
+ * for conversion. The definitions themselves live where the PREVIEW route and
+ * the markdown renderer can reach them without pulling `child_process` and
+ * pdfjs into a browser bundle (#939) — see `office-formats.ts` and
+ * `office-artifacts.ts`.
  */
-export const OFFICE_EXTENSIONS = [".doc", ".docx", ".ppt", ".pptx"] as const;
+export { OFFICE_EXTENSIONS, isOfficeFile, hashFileContents };
 
 /**
  * Tolerance of the lower-bound word check. 10 % is head-room for tokenisation
@@ -183,19 +184,6 @@ export interface ConvertOptions {
   batchSize?: number;
   epsilon?: number;
   onProgress?: (progress: ConvertProgress) => void | Promise<void>;
-}
-
-/** Is this a page-shaped Office document this module converts? */
-export function isOfficeFile(path: string): boolean {
-  const ext = extname(path).toLowerCase();
-  return (OFFICE_EXTENSIONS as readonly string[]).includes(ext);
-}
-
-/** sha256 of a file's bytes, streamed — the artifact-store key. */
-export async function hashFileContents(absPath: string): Promise<string> {
-  const hash = createHash("sha256");
-  for await (const chunk of createReadStream(absPath)) hash.update(chunk);
-  return hash.digest("hex");
 }
 
 /** One document's slot in the run, so results can be returned in input order. */

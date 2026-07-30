@@ -99,6 +99,16 @@ describe("a cited source rendered through the real markdown pipeline", () => {
     expect(screen.queryByRole("button")).not.toBeInTheDocument();
   });
 
+  it("makes an Office source clickable too, now that it has a preview to open", async () => {
+    // Nothing indexes Office documents yet (#938 wires that), so this is the
+    // renderer half of the chain arriving first — and the half that would fail
+    // silently: an unlinkified citation is not an error, it is flat text
+    // nobody notices until someone asks why the .doc is not clickable.
+    renderAnswer("agent-1", "- [1] noack/QF_2012/Angebot.doc — S. 3");
+
+    expect((await screen.findByText("noack/QF_2012/Angebot.doc")).tagName).toBe("BUTTON");
+  });
+
   it("does not touch a path shown as code", async () => {
     // Inside backticks a path is being displayed, not referenced. remark gives
     // it its own node type, and the plugin has to respect that in the real tree

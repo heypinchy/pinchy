@@ -19,7 +19,13 @@
  */
 import { describe, it, expect } from "vitest";
 
-import { remarkSourceLinks, buildSourceHref, parseSourceHref } from "@/lib/knowledge/source-links";
+import {
+  remarkSourceLinks,
+  buildSourceHref,
+  buildSourceDownloads,
+  parseSourceHref,
+} from "@/lib/knowledge/source-links";
+import { OFFICE_EXTENSIONS } from "@/lib/knowledge/office-formats";
 
 /** Minimal mdast subset — the plugin only ever walks children and rewrites text nodes. */
 type Node = { type: string; value?: string; url?: string; children?: Node[] };
@@ -118,6 +124,64 @@ describe("parseSourceHref", () => {
   });
 });
 
+describe("buildSourceDownloads", () => {
+  const hrefFor = (citationPath: string) => buildSourceHref(AGENT, citationPath, 510);
+
+  it("offers one copy of a PDF, because a PDF has only one representation", () => {
+    const downloads = buildSourceDownloads(hrefFor("noack/PPR/document.pdf"))!;
+
+    expect(downloads).toHaveLength(1);
+    expect(downloads[0].label).toBe("document.pdf");
+  });
+
+  it("offers the original AND the converted PDF for an Office source", () => {
+    // The two answer different needs: a `.doc` renders in no browser, and the
+    // file the reader forwards to a customer is the one that exists on their
+    // drive. The original comes first — it is the document; the PDF is a
+    // convenience that sometimes saves them the conversion.
+    const downloads = buildSourceDownloads(hrefFor("noack/QF_2012/Angebot.doc"))!;
+
+    expect(downloads.map((d) => d.label)).toEqual(["Angebot.doc", "Angebot.pdf"]);
+  });
+
+  it("names each representation explicitly, so the pair is not a coin flip", () => {
+    const [original, converted] = buildSourceDownloads(hrefFor("noack/Bericht.pptx"))!;
+
+    expect(new URL(original.url, "http://localhost").searchParams.get("variant")).toBe("original");
+    expect(new URL(converted.url, "http://localhost").searchParams.get("variant")).toBe(
+      "converted"
+    );
+  });
+
+  it("asks the server for a copy, so both are audited as downloads", () => {
+    for (const download of buildSourceDownloads(hrefFor("noack/Angebot.docx"))!) {
+      const parsed = new URL(download.url, "http://localhost");
+      expect(parsed.searchParams.get("download")).toBe("1");
+      expect(parsed.searchParams.get("path")).toBe("/data/noack/Angebot.docx");
+    }
+  });
+
+  it("drops the page fragment, which means nothing to a saved file", () => {
+    for (const download of buildSourceDownloads(hrefFor("noack/Angebot.docx"))!) {
+      expect(download.url).not.toContain("#");
+    }
+  });
+
+  it("offers a pair for every format the knowledge base converts", () => {
+    // Paired with OFFICE_EXTENSIONS rather than spelled out: teaching the
+    // converter a new format without teaching the renderer would leave a
+    // citation whose preview works and whose download list silently does not.
+    for (const ext of OFFICE_EXTENSIONS) {
+      expect(buildSourceDownloads(hrefFor(`noack/report${ext}`))).toHaveLength(2);
+    }
+  });
+
+  it("says nothing about a link that is not a citation", () => {
+    expect(buildSourceDownloads("/some/other/link")).toBeNull();
+    expect(buildSourceDownloads("https://evil.example/workspace-file?path=%2Fx.docx")).toBeNull();
+  });
+});
+
 describe("remarkSourceLinks", () => {
   it("links a template-formatted source and keeps its page", () => {
     const tree = run(paragraph("- [2] noack/PPR/document.pdf — p. 44"));
@@ -180,6 +244,32 @@ describe("remarkSourceLinks", () => {
 
   it("ignores a path whose extension we cannot serve", () => {
     const tree = paragraph("/etc/passwd and x/notes.exe");
+    const before = JSON.stringify(tree);
+    run(tree);
+    expect(JSON.stringify(tree)).toBe(before);
+  });
+
+  it.each(OFFICE_EXTENSIONS)("links a cited %s, which now opens as its converted PDF", (ext) => {
+    // Paired with OFFICE_EXTENSIONS on purpose: the alternation in the pattern
+    // and the converter's list are two spellings of one decision, and a format
+    // the converter learns without the renderer learning it cites as flat text.
+    const tree = run(paragraph(`- [1] noack/QF_2012/Angebot${ext} — p. 3`));
+    expect(links(tree).map((l) => l.text)).toEqual([`noack/QF_2012/Angebot${ext}`]);
+  });
+
+  it("keeps a whole .docx rather than stopping at the .doc inside it", () => {
+    // `docx?` is one alternation, and a non-greedy reading of it would cite
+    // `Angebot.doc` — a document that does not exist — for every .docx in the
+    // corpus.
+    const tree = run(paragraph("siehe noack/Angebot.docx hier"));
+    expect(links(tree).map((l) => l.text)).toEqual(["noack/Angebot.docx"]);
+  });
+
+  it("still leaves a spreadsheet alone, because nothing converts one", () => {
+    // Spreadsheets take a different path entirely (#937/#940): a sheet is not a
+    // page, so there is no artifact to preview and a link would open a pane
+    // that can never render.
+    const tree = paragraph("siehe noack/Budget.xlsx hier");
     const before = JSON.stringify(tree);
     run(tree);
     expect(JSON.stringify(tree)).toBe(before);

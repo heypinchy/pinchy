@@ -21,6 +21,7 @@
  * it cannot widen what the user may read.
  */
 import { fromCitationPath, toCitationPath } from "./citation-path";
+import { convertedPdfName, isOfficeFile } from "./office-formats";
 
 /**
  * A DATA-ROOT-RELATIVE path ending in an extension we can serve, anchored at the
@@ -29,13 +30,22 @@ import { fromCitationPath, toCitationPath } from "./citation-path";
  * than checked separately: a second predicate deciding the same thing is a pair
  * that drifts, and a mutation test proved the separate check was already
  * unreachable. Widening what is linkable therefore means editing this
- * alternation — today only `.pdf`, which is also the only type the ingest
- * accepts and the only one the route renders inline.
+ * alternation — everything the route can put in front of a reader, and nothing
+ * else.
  *
  * Relative, with NO leading slash, because that is the shape `knowledge_search`
  * shows the model and a model can only cite what it is shown (#933). The
  * absolute form is rebuilt in `buildSourceHref` via `fromCitationPath`, the one
  * place that knows the data root.
+ *
+ * The Office formats joined `.pdf` here when their conversion gained a preview
+ * (#939): the route answers a request for one with the converted PDF, so a
+ * citation to a `.doc` now opens in the same viewer as everything else. The
+ * alternation and `OFFICE_EXTENSIONS` are paired by a test rather than shared
+ * as a variable — a built RegExp would hide the one thing a reader of this
+ * comment needs to see, and the pattern's cost model (see `findSourcePaths`)
+ * depends on what is written here. Spreadsheets stay out: nothing converts
+ * one, so a link would open a pane that can never render (#937/#940).
  *
  * At least one `/` is required. A bare `report.pdf` is exactly the citation
  * shape a full path exists to prevent — unfindable in a deep tree, ambiguous
@@ -55,7 +65,7 @@ import { fromCitationPath, toCitationPath } from "./citation-path";
  * rather than "a/one.pdf". A mount name with a space in it is the price, and
  * "the citation starts at a word" is a rule a reader can predict.
  */
-const SOURCE_PATH_ENDING_HERE = /[^\s/]+(?:\/[^/\n]+?)+?\.pdf$/i;
+const SOURCE_PATH_ENDING_HERE = /[^\s/]+(?:\/[^/\n]+?)+?\.(?:pdf|docx?|pptx?)$/i;
 
 /** What may follow a path so that "…/doc.pdf." links the file and not the full stop. */
 const PATH_BOUNDARY = /[\s,.;:)\]]/;
@@ -67,7 +77,7 @@ const PATH_BOUNDARY = /[\s,.;:)\]]/;
  * after such a character shifts and the path is extracted one character short.
  * Matching on the ORIGINAL string keeps offsets meaning what they say.
  */
-const EXTENSION = /\.pdf/gi;
+const EXTENSION = /\.(?:pdf|docx?|pptx?)/gi;
 
 /**
  * How far back from an extension a path may reasonably start. The longest path
@@ -194,6 +204,39 @@ export function parseSourceHref(href: string): { path: string; page: number | nu
     // A malformed percent-escape must not take down the render of a whole message.
     return null;
   }
+}
+
+/**
+ * What a reader may take away from the viewer for one cited document, in the
+ * order the header shows them. Null for anything that is not a citation.
+ *
+ * A PDF has one representation and yields one entry — today's behaviour,
+ * spelled out rather than left to the dialog's default so the two cases are
+ * decided in one place. An Office source has two, and they answer different
+ * needs: the ORIGINAL is the file that exists on the reader's drive and the one
+ * they forward to a customer; the CONVERTED PDF is what the viewer just showed
+ * them, and sometimes exactly what they wanted to send anyway — it saves them
+ * the conversion. Original first, because it is the document; the PDF is the
+ * convenience.
+ *
+ * `variant` is named on BOTH, including the single-entry PDF case. A default
+ * that means "the thing to look at" is right for a viewer and wrong for a save:
+ * being explicit here is what stops a later widening of that default from
+ * silently changing which bytes a download control hands over.
+ *
+ * The fragment goes: `#page=510` positions a viewer and means nothing to a
+ * saved file.
+ */
+export function buildSourceDownloads(href: string): Array<{ label: string; url: string }> | null {
+  const source = parseSourceHref(href);
+  if (!source) return null;
+
+  const base = href.split("#")[0];
+  const name = source.path.split("/").filter(Boolean).pop() ?? source.path;
+  const original = { label: name, url: `${base}&download=1&variant=original` };
+  if (!isOfficeFile(source.path)) return [original];
+
+  return [original, { label: convertedPdfName(name), url: `${base}&download=1&variant=converted` }];
 }
 
 /**
