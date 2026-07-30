@@ -168,6 +168,42 @@ describe("useWsRuntime — visibility-driven reconnect lifecycle (#895)", () => 
     expect(wsInstances).toHaveLength(1);
   });
 
+  it("re-requests history over an already-open socket on visible, even without an intervening close (#895 follow-up)", () => {
+    // e2e/18-tab-refocus-shrink.spec.ts pins the real-browser invariant this
+    // guards: a refocus must reconcile against canonical server history even
+    // when the grace period never elapsed and the socket never dropped —
+    // server-side state (e.g. an in-flight run whose history has since
+    // shrunk) can change while the tab wasn't listening. Before the grace
+    // period existed, EVERY hidden→visible cycle tore the socket down and
+    // reopened it, so a fresh history request was a side effect of the
+    // reconnect. The grace period made a short hide/show a no-op WS-wise —
+    // this test pins that the history re-request still happens even though
+    // the socket itself does not.
+    renderHook(() => useWsRuntime("agent-1"));
+    const ws1 = latestWs();
+
+    act(() => {
+      ws1.simulateOpen();
+    });
+
+    const historyRequestCount = () =>
+      ws1.send.mock.calls.filter((call: string[]) => JSON.parse(call[0]).type === "history").length;
+    expect(historyRequestCount()).toBe(1);
+
+    act(() => {
+      setVisibility("hidden");
+    });
+    act(() => {
+      setVisibility("visible");
+    });
+
+    // Same open socket — no reconnect, no new WS instance — but a second
+    // history request must have gone out over it.
+    expect(wsInstances).toHaveLength(1);
+    expect(ws1.close).not.toHaveBeenCalled();
+    expect(historyRequestCount()).toBe(2);
+  });
+
   it("closes the WebSocket cleanly after the hidden grace period elapses, with no reconnect scheduled", () => {
     const { result } = renderHook(() => useWsRuntime("agent-1"));
     const ws1 = latestWs();
