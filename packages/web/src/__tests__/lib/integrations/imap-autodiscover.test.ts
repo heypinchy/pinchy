@@ -7,6 +7,20 @@ import {
 } from "@/lib/integrations/imap-autodiscover";
 import { lookupProviderTable, lookupProviderByMx } from "@/lib/integrations/imap-providers";
 
+// `autodiscover`'s default resolver dynamically imports `node:dns/promises`.
+// Stubbing it with rejections keeps the one test that exercises that default
+// path off the network: every other test here injects its own resolver and never
+// reaches this module. Without the stub that test performs a live DNS lookup and
+// times out under load (see its own comment).
+vi.mock("node:dns/promises", () => ({
+  resolveSrv: vi.fn(async () => {
+    throw new Error("ENOTFOUND (mocked: tests must not perform live DNS)");
+  }),
+  resolveMx: vi.fn(async () => {
+    throw new Error("ENOTFOUND (mocked: tests must not perform live DNS)");
+  }),
+}));
+
 describe("isSafeAutodiscoverUrl", () => {
   it.each([
     ["http://autoconfig.example.com", "http instead of https"],
@@ -349,11 +363,30 @@ describe("autodiscover", () => {
     expect(result.config.imapHost).toBe("imap.unknown-domain.example");
   });
 
-  it("uses the default (real) resolver dependency when none is injected, without throwing", async () => {
-    // No resolver injected — exercises the default dependency wiring. Uses an
-    // unresolvable domain so this stays fast and network-result-agnostic; the
-    // only contract under test is "never throws, always resolves".
-    await expect(autodiscover("user@unknown-domain.example")).resolves.toBeDefined();
+  it("uses the default resolver dependency when none is injected, without throwing", async () => {
+    // No resolver injected — exercises the default dependency wiring, i.e.
+    // `defaultResolver()` reaching for `node:dns/promises` (mocked at the top of
+    // this file to reject). The contract under test is "never throws, always
+    // resolves", and with DNS unavailable that means falling through to a guess.
+    //
+    // This used to hit the REAL resolver on `user@unknown-domain.example`,
+    // reasoning that a reserved TLD makes the query fast. It does not: the query
+    // still leaves for whatever resolver the host is configured with, and under
+    // load or on a VPN it can outlast the 5s test timeout — observed failing on
+    // 2026-07-30 with the suite otherwise green, then passing on a re-run. A
+    // test whose verdict depends on the machine's DNS is not testing our wiring.
+    const dns = await import("node:dns/promises");
+    const result = await autodiscover("user@unknown-domain.example");
+
+    expect(result).toBeDefined();
+    expect(result.source).toBe("guess");
+    expect(result.config.imapHost).toBe("imap.unknown-domain.example");
+
+    // Assert the default path actually went through the stub. Without this the
+    // test passes whether or not the mock engaged — a reserved TLD yields
+    // "guess" over real DNS too — so it would silently go back to being a
+    // network test the day the mock stops matching the import specifier.
+    expect(vi.mocked(dns.resolveSrv)).toHaveBeenCalled();
   });
 
   it("uses MX-provider detection when the provider table misses (the helmcraft.ai/Migadu case)", async () => {
