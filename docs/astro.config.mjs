@@ -292,6 +292,7 @@ export default defineConfig({
               slug: "reference/organization-timezone",
             },
             { label: "SBOM", slug: "reference/sbom" },
+            { label: "Secret Handling", slug: "security/secrets" },
           ],
         },
       ],

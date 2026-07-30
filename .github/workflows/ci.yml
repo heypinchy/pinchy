@@ -293,6 +293,11 @@ jobs:
       - name: Docs build
         run: cd docs && pnpm build
 
+      - name: Docs anchor check (built output)
+        # Reads docs/dist/, so it MUST run after "Docs build" — a check that
+        # runs first passes against a stale (or missing) dist.
+        run: cd docs && pnpm check:anchors
+
       - name: Squawk migration lint (changed files only)
         if: github.event_name == 'pull_request'
         run: |
