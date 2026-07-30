@@ -35,6 +35,11 @@
     "prettier": "^3.9.5"
   },
   "pnpm": {
+    "auditConfig": {
+      "ignoreGhsas": [
+        "GHSA-mh99-v99m-4gvg"
+      ]
+    },
     "packageExtensions": {
       "@hookform/resolvers@5.2.2": {
         "peerDependencies": {

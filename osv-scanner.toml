@@ -48,17 +48,32 @@ reason = "astro — docs static-site build tooling (docs/pnpm-lock.yaml), not sh
 # 5.0.8 (range <=5.0.7), and the 5.x line IS fixed here — the override forces
 # brace-expansion>=5.0.8 <6, so every modern minimatch@9/10 consumer is patched.
 # The residual flags are the 1.1.16 (minimatch@3 → glob@7) and 2.1.2
-# (minimatch@5 → readdir-glob) instances pulled transitively by archiver@5 (via
-# exceljs in pinchy-files) and by @eslint/config-array in the dev toolchain.
+# (minimatch@5 → readdir-glob) instances, reached by THREE routes — two of them
+# production dependencies:
+#   1. archiver@5 → archiver-utils → glob@7  (exceljs, in pinchy-files)
+#   2. googleapis → googleapis-common → gaxios → rimraf → glob@7  (pinchy-email)
+#      — missing from this rationale until v0.9.0's release audit reported it.
+#      The argument below always covered it, but an acceptance that does not
+#      name a path it accepts is not an acceptance of that path.
+#   3. @eslint/config-array, in the dev toolchain
 # Those lines have NO upstream fix: 5.0.8 changed the CommonJS export from a
 # default-exported function to a named export, which breaks `require(...)()` in
 # minimatch@3/@5 (and crashes eslint), so bumping them to the fix is not possible
 # without breaking archiver and the linter. Not reachable regardless: the OOM
 # requires an attacker-controlled brace PATTERN passed to expand(); archiver
-# walks the filesystem with fixed internal globs and eslint matches code-authored
-# config globs — neither passes untrusted pattern strings. ignoreUntil forces a
-# re-triage once archiver/minimatch ships a major depending on brace-expansion
-# >=5.0.8 (or exceljs drops archiver@5).
+# walks the filesystem with fixed internal globs, rimraf deletes gaxios' own
+# temp paths, and eslint matches code-authored config globs — none of the three
+# passes an untrusted pattern string. ignoreUntil forces a re-triage once
+# archiver/minimatch ships a major depending on brace-expansion >=5.0.8 (or
+# exceljs drops archiver@5).
+#
+# `pnpm audit` has to be told the same thing separately: it does not read this
+# file, and `pnpm release` gates on `pnpm audit --audit-level=high --prod`. So
+# the root package.json carries a matching `pnpm.auditConfig.ignoreGhsas` entry
+# for this GHSA. Keep the two in lockstep — dropping either one leaves a release
+# that cannot be cut, or a scanner that says nothing while the other says high.
+# Ignoring the id wholesale is bounded by the override above: the 5.x line cannot
+# regress below 5.0.8, and a future 6.x advisory would carry a different id.
 
 [[IgnoredVulns]]
 id = "GHSA-mh99-v99m-4gvg"
