@@ -258,6 +258,12 @@ Inbound channel media (Telegram photos, documents) is now copied into the agent 
 
 The OpenClaw runtime this release ships (2026.7.1) adds an interactive terminal into agent workspaces. Pinchy pins it off: a shell would bypass agent permission allow-lists and the audit trail. It will return as an RBAC-scoped, audited feature.
 
+#### Ollama Cloud catalog: one model removed, two gain vision
+
+Re-verified against the live API. `nemotron-3-nano:30b` is **no longer offered**: it now skips the tool call outright in most attempts, which for an agent looks like deciding not to act rather than failing. Any agent pinned to it needs a new model — the fast tier's general pick (`deepseek-v4-flash`) is the closest equivalent.
+
+`kimi-k2.7-code` and `qwen3.5:397b` can now **accept images**. Both previously could not — `qwen3.5:397b` was the model an [earlier release note](#ollama-cloud-model-catalog-refreshed-against-the-live-api) marked text-only for hallucinating image contents — and both read test images correctly now. They become selectable for image work; the default image model is unchanged, so nothing re-routes on its own.
+
 ### Database migrations
 
 Thirteen migrations (`0044`–`0056`) run automatically on startup — no manual steps. No existing data is dropped: every one is additive except `0056`, which recreates a Knowledge Base index column introduced earlier in this same release (see below), so the tables it rewrites are empty on upgrade.
