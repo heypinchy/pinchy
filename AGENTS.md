@@ -582,6 +582,37 @@ A script cannot know whether "a progress UI is planned for a later phase" is sti
 
 Keep `FORWARD_LOOKING_PHRASES` narrow. It matches commitments ("on the roadmap", "in a later phase"), never descriptions of the present: an invite "not yet claimed" and an upload "not yet part of a conversation" are ordinary prose, and a check that flags those gets switched off within a week.
 
+The payoff is the weekly `docs-freshness.yml` cron: it takes the issues those sentences cite, asks GitHub which have closed, and reports the docs still promising something the repo already shipped. A cron rather than a PR gate on purpose — the question needs the network, the answer changes without anyone touching the repo, and a check that can go red between two identical commits does not belong in front of a merge button. A claim citing several issues is stale only when they are **all** closed, and an issue the API could not answer for counts as unknown, never as closed.
+
+### A User-Visible Change Needs A Docs Change
+
+The bullet above ("when behavior changes, update docs in the same PR") has been in this file for as long as it has existed, and nothing enforced it. `scripts/check-docs-required.mjs` does now, PR-only in the `quality` job — the same shape as the test-deletion guard.
+
+It fails when a PR touches a **user-visible surface** and no file under `docs/`. The surfaces are listed in `scripts/lib/docs-required.mjs`: an API route, the tool registry, an agent template, the audit event catalogue, the settings navigation, a plugin's declared tools. Deliberately **not** every source file — a guard that fires on refactors gets an escape hatch typed into it reflexively, and then it guards nothing. Run against the three commits that actually caused the v0.9.0 drift (the Automations management API, the OpenAI-compatible delete route, the IMAP test endpoint), it fires on all three.
+
+The escape hatch is the `docs-not-needed` label, or a commit trailer:
+
+```
+Docs-not-needed: gateway-only ingress, no reader-facing path
+```
+
+A written reason, **not** an issue number — and that difference from the skip and test-deletion guards is deliberate. A skip _defers_ work, so it needs somewhere for the work to live. "No docs needed" _asserts a fact_, and the useful artefact is the assertion itself, sitting in the history next to the change it describes. An issue number here would be a placeholder for an issue nobody ever opens. Bare non-answers (`n/a`, `none`) are rejected by length.
+
+What this guard cannot do is check that the docs change is the _right_ one. That is `review-docs`'s job.
+
+### Some Docs Checks Can Only Be Read, Not Run
+
+The CI guards find missing **identifiers**. They cannot read a sentence, and the four worst findings of the v0.9.0 audit were all sentences:
+
+- `GET /api/settings/domain` was documented with the wrong **response fields** — path and method both correct, body fiction.
+- A page promised "a progress UI is planned for a later phase" while **describing the shipped progress UI 120 lines earlier**.
+- "Agent templates and default permissions" listed **2 of ~35** templates, with the wrong tools on the row that mattered.
+- A live guide said "Pinchy will not silently re-assign agents" about code that does exactly that.
+
+The `review-docs` skill (`.claude/skills/review-docs/`) is that reading pass: scope the behaviour change, grep the docs for the thing **and its consequences**, then check the claim, the specifics (response fields, status codes, defaults, limits — wrong far more often than names are), self-contradiction within a page, and contradiction across pages. It also asks the one question no guard asks: does a doc describe something the code **no longer has**?
+
+Run it locally before opening a PR that changes docs or a user-visible surface. It is deliberately not a CI job: it wants the whole repo in context and produces prose the author acts on immediately, not a bot comment on a diff.
+
 ### The Deployed Docs Are The Release Branch, Not `main`
 
 `docs.yml` is manual-only; the real deploy path is `release.yml` → `screenshots.yml`, checked out at the tag. So **a docs fix merged to `main` is not live until the next release**, and a correction that belongs to the shipped version has to be backported like any other fix.

@@ -137,6 +137,37 @@ Mechanically:
 3. **Verify every finding against the source before acting on it.** An agent reporting a fail-open is not a fail-open. Two v0.9.0 findings turned out narrower than reported and one turned out **wider**: `/^fc00:/` was reported as missing `fd00::/8`, but ULA is `fc00::/7` and that regex anchors a whole hextet — so it matched only literal `fc00:` and let through nearly all of `fc00::/7`, `fc01:`–`fdff:`, `fd00::/8` (the half actually in use) included. The fix is `/^f[cd][0-9a-f]{2}:/i`, and the same read turned up `::` unguarded beside it. Read the pattern, don't accept the summary.
 4. **Findings are release blockers, exactly like staging-pass bugs — TDD-fix them, don't file-and-ship.** Then distrust the fix's own test: a mocked `fetch` never follows a redirect, so three "refuses to follow the redirect" tests passed identically against the vulnerable code. Run every new security test against the **unpatched** source and watch it fail before you believe it.
 
+### Classify the docs delta between the release branch and `main` — before the cut
+
+Short, and not optional. The docs published from this branch are what users read about the version they run, so a correction stranded on `main` is a wrong page in front of customers for a whole cycle. v0.9.0 shipped exactly one such error and it stood the whole time: `llm-providers.mdx` on `release/0.9` said "Pinchy will not silently re-assign agents" while the shipped `DELETE /api/settings/providers` migrates them. The corrected sentence had been on `main` since before the cut.
+
+```bash
+git diff --stat origin/release/X.Y origin/main -- docs/src/content/docs/
+```
+
+Read the diff and put **every hunk** in one of two buckets:
+
+- **A feature only `main` has** → leave it. Documenting it here would promise users something this release does not contain.
+- **A correction to something this release ships** → backport it. Wrong is wrong in both branches.
+
+The tell is not the size of the hunk, it's what it replaces: an **added section** is usually a new feature, a **changed sentence** is usually a fix. Read the changed sentences first.
+
+Don't shortcut this by deploying docs from `main`. Pinning the docs to the release is what makes them describe the software users actually run.
+
+### Read the guides for what changed this cycle
+
+CI now covers the mechanical half — `docs-coverage`, `docs-consistency` and `check-docs-required` run on every PR, so by the time you are here no API route, audit event or tool is missing from a reference and no page is orphaned. Don't re-do that by hand.
+
+What's left is the reading, and it's the part that found the real damage in the v0.9.0 audit: a documented response body that was fiction, a page contradicting itself 120 lines apart, a table listing 2 of 35 templates. Use the `review-docs` skill, scoped to the features this release changed.
+
+### After the docs deploy, verify the live site
+
+"Workflow green" is not "content right" — v0.5.8 proved that when the version-placeholder freeze silently didn't happen. Once `screenshots.yml` has deployed, check on docs.heypinchy.com itself:
+
+- the upgrade guide's newest heading names **this** version, and no `%%PINCHY_VERSION%%` survives anywhere;
+- the install snippets pin this version;
+- the pages for whatever this release changed actually say the new thing.
+
 ## After the release
 
 1. **Watch BOTH post-tag runs to a _verified_ green — never trust a watch's exit code.** The tag push starts the **Release** workflow (images + GitHub Release) **and** a fresh **CI** run on the new `chore: release` commit. That commit carries new content the pre-release CI never saw — the version bumps and the **auto-finalized `upgrading.mdx`** — which is exactly how v0.6.0 turned `main` red (the finalize removed the `%%PINCHY_VERSION%%` placeholder a test anchored on). So a green pre-release CI does **not** mean the release commit is green.

@@ -345,6 +345,23 @@ jobs:
           git fetch --no-tags --depth=200 origin "$PR_HEAD_SHA" || true
           node scripts/check-test-deletions.mjs --base "origin/${{ github.base_ref }}"
 
+      - name: Docs required for a user-visible change
+        if: github.event_name == 'pull_request'
+        env:
+          DOCS_NOT_NEEDED: ${{ contains(github.event.pull_request.labels.*.name, 'docs-not-needed') }}
+        run: |
+          # Fail if the PR moves a user-visible surface (an API route, the tool
+          # registry, an agent template, the audit event catalogue, the settings
+          # navigation, a plugin's declared tools) without touching docs/.
+          # The docs-coverage guard catches a drifted LIST; this catches prose
+          # that quietly became untrue. See AGENTS.md § "A User-Visible Change
+          # Needs A Docs Change".
+          #
+          # The fetches above already deepened base and HEAD for the
+          # test-deletion guard, and this guard has the same merge-base
+          # fallback, so no extra fetching is needed here.
+          node scripts/check-docs-required.mjs --base "origin/${{ github.base_ref }}"
+
       - name: Drizzle snapshot integrity
         # Catches the PR #334 class of bug: a committed migration .sql whose
         # _snapshot.json is missing from drizzle/meta/, silently breaking the

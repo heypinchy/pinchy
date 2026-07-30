@@ -148,6 +148,71 @@ export function findUnknownSettingsPaths(docs, tabLabels) {
 }
 
 /**
+ * Every forward-looking sentence together with the issues it cites.
+ *
+ * This is the other half of the contract `findUntrackedForwardClaims`
+ * enforces. That check runs offline on every PR and only asks whether an issue
+ * is named; this one gives the weekly freshness job the list to ask GitHub
+ * about, so a promise whose issue has since closed can be found without anyone
+ * re-reading the docs.
+ *
+ * @param {Array<{path: string, source: string}>} docs
+ * @param {string[]} [phrases]
+ * @returns {Array<{path: string, line: number, phrase: string, text: string, issues: number[]}>}
+ */
+export function extractForwardClaims(docs, phrases = FORWARD_LOOKING_PHRASES) {
+  const claims = [];
+  for (const { path, source } of docs) {
+    const lines = source.split("\n");
+    lines.forEach((line, i) => {
+      const phrase = phrases.find((p) => line.toLowerCase().includes(p));
+      if (!phrase) return;
+      const window = lines
+        .slice(
+          Math.max(0, i - ISSUE_PROXIMITY_LINES),
+          i + ISSUE_PROXIMITY_LINES + 1,
+        )
+        .join("\n");
+      const issues = [
+        ...new Set(
+          [...window.matchAll(/#(\d+)|\/issues\/(\d+)/g)].map((m) =>
+            Number(m[1] ?? m[2]),
+          ),
+        ),
+      ];
+      if (issues.length > 0) {
+        claims.push({
+          path,
+          line: i + 1,
+          phrase,
+          text: line.trim().slice(0, 160),
+          issues,
+        });
+      }
+    });
+  }
+  return claims;
+}
+
+/**
+ * Claims whose every cited issue is closed — the doc promises something that
+ * has, by the repo's own record, already happened.
+ *
+ * A claim citing several issues is only stale when they are ALL closed: "X and
+ * Y are on the roadmap (#1, #2)" is still true while Y is open.
+ *
+ * @param {ReturnType<typeof extractForwardClaims>} claims
+ * @param {Record<number, "open"|"closed">} issueStates
+ * @returns {ReturnType<typeof extractForwardClaims>}
+ */
+export function findResolvedForwardClaims(claims, issueStates) {
+  return claims.filter((c) => {
+    const known = c.issues.filter((n) => n in issueStates);
+    return known.length > 0 && known.every((n) => issueStates[n] === "closed");
+  });
+}
+
+/**
  * @param {Array<{path: string, source: string}>} docs
  * @param {string[]} [phrases]
  * @returns {string[]} problems (empty = ok)

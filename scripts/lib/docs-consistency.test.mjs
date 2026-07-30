@@ -6,7 +6,9 @@ import { dirname, join, relative, resolve } from "node:path";
 import {
   NAV_EXEMPT_PAGES,
   extractAgentSettingsTabLabels,
+  extractForwardClaims,
   extractSettingsTabLabels,
+  findResolvedForwardClaims,
   findOrphanPages,
   findUnknownSettingsPaths,
   findUntrackedForwardClaims,
@@ -146,6 +148,62 @@ test("findUntrackedForwardClaims does not flag ordinary prose about the present"
     ]),
     [],
   );
+});
+
+test("extractForwardClaims reports the issues a promise cites", () => {
+  const claims = extractForwardClaims([
+    {
+      path: "a.mdx",
+      source:
+        "OCR is on the roadmap ([#941](https://github.com/heypinchy/pinchy/issues/941)).",
+    },
+  ]);
+  assert.equal(claims.length, 1);
+  assert.deepEqual(claims[0].issues, [941]);
+  assert.equal(claims[0].line, 1);
+});
+
+test("extractForwardClaims skips a promise with no issue — the PR gate owns that", () => {
+  assert.deepEqual(
+    extractForwardClaims([{ path: "a.mdx", source: "is planned." }]),
+    [],
+  );
+});
+
+test("findResolvedForwardClaims flags a promise whose issue has closed", () => {
+  const claims = extractForwardClaims([
+    { path: "a.mdx", source: "A progress UI is planned (#714)." },
+  ]);
+  assert.equal(findResolvedForwardClaims(claims, { 714: "closed" }).length, 1);
+  assert.equal(findResolvedForwardClaims(claims, { 714: "open" }).length, 0);
+});
+
+test("findResolvedForwardClaims keeps a multi-issue promise alive while one issue is open", () => {
+  // "custom roles (#527) and SSO (#526) are on the roadmap" is still true when
+  // only one of them has shipped.
+  const claims = extractForwardClaims([
+    {
+      path: "a.mdx",
+      source: "Custom roles (#527) and SSO (#526) are planned.",
+    },
+  ]);
+  assert.equal(
+    findResolvedForwardClaims(claims, { 527: "closed", 526: "open" }).length,
+    0,
+  );
+  assert.equal(
+    findResolvedForwardClaims(claims, { 527: "closed", 526: "closed" }).length,
+    1,
+  );
+});
+
+test("findResolvedForwardClaims treats an unknown issue as unknown, not as closed", () => {
+  // A GitHub call that failed must not turn into a verdict in either
+  // direction; silence is silence.
+  const claims = extractForwardClaims([
+    { path: "a.mdx", source: "Something is planned (#999)." },
+  ]);
+  assert.deepEqual(findResolvedForwardClaims(claims, {}), []);
 });
 
 // ── the repo itself ───────────────────────────────────────────────────────
