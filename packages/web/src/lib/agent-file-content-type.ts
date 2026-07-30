@@ -32,6 +32,12 @@ const EXTENSION_CONTENT_TYPES: Record<string, string> = {
   ".json": "application/json",
   ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
   ".doc": "application/msword",
+  // Every OFFICE_EXTENSIONS format reaches this route as an "original"
+  // download once a citation offers both representations (#939), so the slide
+  // formats belong here beside the Word ones. Nothing about the anti-XSS split
+  // changes: only application/pdf is ever `inline`.
+  ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  ".ppt": "application/vnd.ms-powerpoint",
   ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
   ".xls": "application/vnd.ms-excel",
 };

@@ -295,6 +295,24 @@ describe("workspace-file — both downloads", () => {
     expect(await res.text()).toContain("pretend this is a .docx");
   });
 
+  it("types a slide deck as a slide deck, not as anonymous bytes", async () => {
+    // `buildSourceDownloads` offers an original for every format in
+    // OFFICE_EXTENSIONS, so every one of them reaches this route as a download.
+    // `.ppt`/`.pptx` were missing from the content-type table, which is not a
+    // security hole (unknown types are served `attachment` either way) but does
+    // hand the reader `application/octet-stream` — a file their OS opens with a
+    // shrug instead of with PowerPoint.
+    const source = writeSource("Bericht.pptx");
+
+    const res = await callGET(source, { download: "1", variant: "original" });
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe(
+      "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+    );
+    expect(res.headers.get("content-disposition")).toMatch(/^attachment;/);
+  });
+
   it("hands over the converted PDF under a name that tells the two apart", async () => {
     const source = writeSource("angebot.docx");
     await storeArtifactFor(DOCX_BYTES);
