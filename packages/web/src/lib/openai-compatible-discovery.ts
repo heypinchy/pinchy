@@ -43,15 +43,29 @@ const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
  * would obediently go there. A single check at the head of a redirect chain
  * says nothing about where the request lands, and the probe carries the
  * provider's API key in an Authorization header while it travels.
+ *
+ * Driving the chain by hand means taking over the part of `redirect: "follow"`
+ * that was never about convenience: the fetch spec DROPS `Authorization` when
+ * a redirect crosses an origin, so a provider cannot redirect its way to a
+ * credential meant only for itself. The SSRF guard does not cover this — a
+ * collector on an ordinary public address is exactly what it should allow —
+ * so the header is re-attached only while the destination's origin still
+ * matches the one the key was issued for, and never restored once a chain has
+ * left it.
  */
 async function fetchModels(baseUrl: string, apiKey: string): Promise<Response> {
   let current = modelsUrl(baseUrl);
+  const keyOrigin = new URL(current).origin;
+  let sendKey = true;
 
   for (let hop = 0; ; hop++) {
+    // Annotated, not inferred: `sendKey` is decided from the hop's URL, which
+    // is read off the previous response, which is this call — so letting the
+    // header object's type flow into the fetch overload closes a loop tsc
+    // cannot resolve (TS7022).
+    const headers: Record<string, string> = sendKey ? { Authorization: `Bearer ${apiKey}` } : {};
     const response = await fetch(current, {
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-      },
+      headers,
       redirect: "manual",
       signal: AbortSignal.timeout(PROVIDER_PROBE_TIMEOUT_MS),
     });
@@ -68,7 +82,12 @@ async function fetchModels(baseUrl: string, apiKey: string): Promise<Response> {
 
     // Relative Locations are legal and common, so resolve against the URL
     // actually requested before classifying it.
-    current = new URL(location, current).toString();
+    const next = new URL(location, current);
+    // Once, and permanently: a hop back to the original origin does not earn
+    // the key back, or a chain through an attacker would be a way to launder
+    // one past this check.
+    sendKey = sendKey && next.origin === keyOrigin;
+    current = next.toString();
     await assertAllowedProviderUrl(current);
   }
 }
