@@ -3544,6 +3544,95 @@ describe("regenerateOpenClawConfig", () => {
     expect(Object.keys(betaContent.profiles)).not.toContain("anthropic-default");
   });
 
+  // #934: a single agent's auth-profiles write is not allowed to decide whether
+  // OpenClaw ever hears about the config at all.
+  //
+  // agents/<id>/agent is shared with OpenClaw, which creates it root-owned 0700
+  // when it derives that agent's models.json. When it wins that race, Pinchy
+  // (uid 999) gets a permanent EACCES — and because the per-agent loop ran
+  // BEFORE `pushConfigInBackground`, the throw took the whole push with it. The
+  // provider the user had just saved never reached OpenClaw, so every dispatch
+  // for EVERY agent died with `Unknown model: openai/gpt-5.5`. What the user saw
+  // was Smithers going silent, with the real cause only in the container log.
+  //
+  // The same escalation disabled the recovery path: maybeSelfHealOnModelError
+  // re-resolves the model by calling regenerateOpenClawConfig, which threw on
+  // the identical EACCES before pushing anything.
+  describe("a per-agent auth-profiles failure does not sink the config push (#934)", () => {
+    // The denied agent comes FIRST so "the other agent still got its profiles"
+    // is a real assertion rather than an artefact of iteration order.
+    const agentsData = [
+      {
+        id: "agent-denied",
+        name: "Jeeves",
+        model: "openai/gpt-5.4",
+        allowedTools: [],
+        pluginConfig: null,
+        createdAt: new Date(),
+      },
+      {
+        id: "agent-ok",
+        name: "Smithers",
+        model: "anthropic/claude-sonnet-4-6",
+        allowedTools: [],
+        pluginConfig: null,
+        createdAt: new Date(),
+      },
+    ];
+
+    beforeEach(() => {
+      mockedDb.select.mockReturnValue({ from: mockFrom(agentsData) } as never);
+      mockedGetSetting.mockImplementation(async (key: string) => {
+        if (key === "anthropic_api_key") return "sk-ant-test";
+        if (key === "openai_api_key") return "sk-openai-test";
+        return null;
+      });
+      // Deny exactly one agent's directory, the way a root-owned 0700
+      // agents/<id>/agent does. Every other write behaves normally.
+      mockedWriteFileSync.mockImplementation((target) => {
+        if (String(target).includes("agents/agent-denied/agent/auth-profiles.json")) {
+          const err = new Error(
+            `EACCES: permission denied, open '${String(target)}.tmp-100'`
+          ) as NodeJS.ErrnoException;
+          err.code = "EACCES";
+          throw err;
+        }
+      });
+    });
+
+    it("still writes openclaw.json so OpenClaw learns the provider and the model", async () => {
+      await regenerateOpenClawConfig().catch(() => {});
+      await drainBackgroundCoroutine();
+
+      const written = findOpenClawConfigWrite(mockedWriteFileSync);
+      expect(written).toBeDefined();
+      const config = JSON.parse(String(written![1]));
+      expect(config.models.providers.openai).toBeDefined();
+    });
+
+    it("still writes the auth profiles of every other agent", async () => {
+      await regenerateOpenClawConfig().catch(() => {});
+
+      const okCall = mockedWriteFileSync.mock.calls.find((call) =>
+        String(call[0]).includes("agents/agent-ok/agent/auth-profiles.json")
+      );
+      expect(okCall).toBeDefined();
+    });
+
+    it("still reports the failure to the caller, naming the agent and what did land", async () => {
+      // Silence is the other half of the bug: the wizard turns this rejection
+      // into a warning toast and records runtimeApplied:false in the audit
+      // trail. Swallowing it would trade a loud failure for a silent one.
+      //
+      // But the message has to say what actually happened now — the raw EACCES
+      // reads as "the regenerate failed", which is no longer true: the config
+      // did reach OpenClaw, one agent just has no auth profile.
+      await expect(regenerateOpenClawConfig()).rejects.toThrow(/agent-denied/);
+      await expect(regenerateOpenClawConfig()).rejects.toThrow(/auth-profiles/);
+      await expect(regenerateOpenClawConfig()).rejects.toThrow(/rest of the config was applied/i);
+    });
+  });
+
   it("does not write auth-profiles.json for ollama-local agents (URL-based, no API key)", async () => {
     const agentsData = [
       {

@@ -254,6 +254,12 @@ A shared agent's `MEMORY.md` — what it learned in one-to-one conversations —
 
 Inbound channel media (Telegram photos, documents) is now copied into the agent workspace on arrival, and the runtime's internal media cache is swept after 48 hours instead of growing forever. Attachments received **before** this upgrade were never copied, so ones older than 48 hours are removed by the first sweep and may no longer open from old conversations. Export anything you still need from pre-upgrade chats before upgrading.
 
+#### A provider key that can't reach the runtime now says so
+
+Pinchy and the agent runtime share one config volume under two different users, and each agent has a directory in it that both of them write to. If the runtime got there first, the directory came out owned by the wrong user and Pinchy could no longer store that agent's credentials — which stopped the whole config from reaching the runtime. The agent then simply stopped answering, with the real reason only in `docker compose logs pinchy`.
+
+The runtime now hands that directory back on every tick, so the case should not arise. If it ever does, saving a provider key tells you plainly that it saved but couldn't be applied, and the affected agent says it has no API key instead of going quiet. Nothing to do on upgrade.
+
 #### Workspace terminals stay disabled
 
 The OpenClaw runtime this release ships (2026.7.1) adds an interactive terminal into agent workspaces. Pinchy pins it off: a shell would bypass agent permission allow-lists and the audit trail. It will return as an RBAC-scoped, audited feature.

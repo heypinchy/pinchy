@@ -86,57 +86,18 @@ fi
 # OpenClaw creates openclaw.json with 600 (root-only). Pinchy needs write access
 # to update provider keys and agent configuration via regenerateOpenClawConfig().
 #
-# Also fix the telegram-pairing.json file: OpenClaw 2026.4.12 writes it as
-# root:0600, but Pinchy (uid 999) needs to read it to look up Telegram user
-# IDs from pairing codes. Without this chmod, every linkTelegram POST returns
-# "Invalid or expired pairing code" because readFileSync throws EACCES inside
-# resolvePairingCode and the bare catch returns { found: false } silently.
-fix_config_permissions() {
-    chmod 666 /root/.openclaw/openclaw.json 2>/dev/null || true
-    # Use a glob so we also catch any sibling credential files OpenClaw
-    # writes alongside the pairing file (allowFrom stores etc.) — they too
-    # are written by root and consumed by Pinchy.
-    # a+rX: r for all files, x only for directories (capital X) so uid 999
-    # can both enter the credentials/ dir (exec bit) and read files inside it.
-    chmod -R a+rX /root/.openclaw/credentials 2>/dev/null || true
-    # Re-take ownership of secrets.json. Pinchy writes it as uid 999 (the
-    # pinchy user inside its container); OpenClaw's secret-resolver requires
-    # owner == process uid (root) and refuses to reload otherwise. The 30 s
-    # mtime watch loop further down chowns it after a write, but the [reload]
-    # pipeline triggered by inotify on openclaw.json fires within ~100 ms of
-    # Pinchy's regenerateOpenClawConfig() — long before that loop wakes up.
-    # Without this fast tick, a freshly created agent surfaces as
-    # `unknown agent id` because the reload fails on secrets and the new
-    # agents.list never enters runtime. See issue #200.
-    if [ -f "$SECRETS_FILE" ]; then
-        chown root:root "$SECRETS_FILE" 2>/dev/null || true
-        chmod 0600 "$SECRETS_FILE" 2>/dev/null || true
-    fi
-    # Per-agent auth-profiles.json files written by Pinchy (uid 999).
-    # OpenClaw (root) can read uid-999-owned files directly — no chown needed.
-    # The agents/ directory must stay writable by Pinchy (uid 999) so new
-    # agent subdirectories can be created. Only secure the files themselves.
-    chown 999:999 /root/.openclaw/agents 2>/dev/null || true
-    find /root/.openclaw/agents -name "auth-profiles.json" -type f -exec chmod 0600 {} \; 2>/dev/null || true
-    # Cross-uid read access for Pinchy's self-service diagnostics export.
-    # OpenClaw writes per-agent sessions.json and *.trajectory.jsonl as root
-    # under agents/<agentId>/sessions/ — with default umask these emerge
-    # 0644/0755, but OpenClaw 2026.5.x ships with a tighter umask that
-    # produces 0600/0700, so Pinchy (uid 999) gets EACCES on the dir traversal.
-    # Diagnostics is read-only against these files; 0755/0644 is sufficient.
-    # The 50 ms fix_config_permissions tick catches runtime-created sessions
-    # (same pattern as the openclaw.json mode race).
-    #
-    # `-not -perm` gates: skip files that already have the right mode. chmod
-    # would otherwise rewrite the inode's ctime on every tick, and OpenClaw's
-    # embedded-prompt session-takeover detector treats any ctime change as
-    # "session file modified externally" and aborts the in-flight turn with
-    # EmbeddedAttemptSessionTakeoverError. Without the gate, every chat turn
-    # races our 50 ms loop against the assistant's response.
-    find /root/.openclaw/agents -mindepth 1 -maxdepth 1 -type d -not -perm 0755 -exec chmod 0755 {} \; 2>/dev/null || true
-    find /root/.openclaw/agents -type d -name sessions -not -perm 0755 -exec chmod 0755 {} \; 2>/dev/null || true
-    find /root/.openclaw/agents \( -name "sessions.json" -o -name "*.trajectory.jsonl" \) -type f -not -perm 0644 -exec chmod 0644 {} \; 2>/dev/null || true
-}
+# Also fixes the telegram-pairing.json file (OpenClaw 2026.4.12 writes it as
+# root:0600, but Pinchy needs to read it to look up Telegram user IDs from
+# pairing codes) and the per-agent directory OWNERSHIP that lets Pinchy write
+# agents/<id>/agent/auth-profiles.json at all (#934).
+#
+# Extracted to config/fix-config-permissions.sh (same pattern as
+# install-plugin-deps.sh / stage-llama-cpp-provider.sh) so each of those
+# cross-uid invariants is unit-testable — see
+# packages/web/src/__tests__/lib/fix-config-permissions.test.ts. Defines
+# fix_config_permissions() into this shell; it reads $SECRETS_FILE from above.
+# shellcheck source=fix-config-permissions.sh
+source /fix-config-permissions.sh
 fix_config_permissions
 
 # Scan /data/ for available directories and write to shared config

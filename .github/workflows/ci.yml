@@ -745,6 +745,59 @@ jobs:
           docker compose exec -T openclaw ls -la /root/.openclaw/openclaw.json
           exit 1
 
+      - name: Verify Pinchy can write per-agent auth-profiles (#934)
+        run: |
+          # agents/<id>/agent is shared: Pinchy (uid 999) writes auth-profiles.json
+          # there, OpenClaw (root) derives models.json in the same directory —
+          # creating it at mode 0700 and re-asserting that mode on every write.
+          # Root ignores mode bits, so the ONLY thing keeping Pinchy able to write
+          # is OWNERSHIP, repaired by start-openclaw.sh's fix_config_permissions
+          # tick. Without that repair the next provider save fails with EACCES,
+          # regenerateOpenClawConfig never pushes openclaw.json, and every dispatch
+          # dies with `Unknown model: …` — what the user sees is the agent going
+          # silent (setup-wizard E2E, CI run 30554860337).
+          #
+          # This probes the real thing rather than a mode: write a file, as the
+          # pinchy user, in the directory it actually has to write. Polls because
+          # the repair is a 50 ms tick and OpenClaw may be mid-restart.
+          PROBE='
+            found=0
+            for d in /openclaw-config/agents/*/; do
+              [ -d "$d" ] || continue
+              found=1
+              mkdir -p "$d/agent" || exit 1
+              touch "$d/agent/.pinchy-write-probe" || exit 1
+              rm -f "$d/agent/.pinchy-write-probe"
+            done
+            [ "$found" = 1 ]
+          '
+          LAST_ERROR="no agent directories present"
+          for i in $(seq 1 20); do
+            if OUT=$(docker compose exec -T --user pinchy pinchy sh -c "$PROBE" 2>&1); then
+              echo "Per-agent directories are writable by Pinchy (attempt $i)"
+              exit 0
+            fi
+            # Distinguish "denied" from "nothing to check yet": only the former
+            # is a failure. A denied write keeps failing, so polling rides out a
+            # slow boot or a mid-flight restart without turning it into a red.
+            if docker compose exec -T --user pinchy pinchy sh -c 'ls -d /openclaw-config/agents/*/ >/dev/null 2>&1'; then
+              LAST_ERROR="$OUT"
+            fi
+            sleep 1
+          done
+          if [ "$LAST_ERROR" = "no agent directories present" ]; then
+            # The wizard above creates Smithers but configures no provider, so
+            # Pinchy writes no auth-profiles.json and OpenClaw may not derive a
+            # models.json either — leaving nothing on disk to probe. Say so out
+            # loud instead of reporting a pass we didn't earn; the setup-wizard
+            # E2E exercises the same invariant with a provider configured.
+            echo "::warning::no /openclaw-config/agents/<id>/ directory appeared within 20s — per-agent write access was NOT verified"
+            exit 0
+          fi
+          echo "::error::Pinchy (uid 999) cannot write /openclaw-config/agents/<id>/agent — auth-profiles.json writes will fail with EACCES: $LAST_ERROR"
+          docker compose exec -T openclaw sh -c 'ls -lan /root/.openclaw/agents; ls -lan /root/.openclaw/agents/*/' || true
+          exit 1
+
       - name: Verify clean startup (production)
         run: |
           LOGS=$(docker compose logs 2>&1)

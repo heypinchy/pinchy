@@ -1806,7 +1806,19 @@ export async function regenerateOpenClawConfig() {
       .filter((p): p is AuthProfilesProvider => p !== undefined)
   );
 
+  // Per-agent failures are collected rather than thrown, because this loop sits
+  // in front of the config push and a throw here used to cancel it (#934).
+  // agents/<id>/agent is shared with OpenClaw, which creates it root-owned 0700
+  // when it derives that agent's models.json; when it wins that race, Pinchy
+  // (uid 999) gets EACCES on the auth-profiles write. Letting that abort the
+  // whole regenerate turned one agent's permission problem into "OpenClaw never
+  // heard about the provider at all" — so EVERY agent then failed with
+  // `Unknown model: <provider>/<model>`, and `maybeSelfHealOnModelError`, whose
+  // whole job is to re-resolve exactly that, died on the same EACCES before it
+  // could push anything. The blast radius is now one agent's credentials, and
+  // the recovery path no longer runs through the broken write.
   const configRoot = dirname(CONFIG_PATH);
+  const authProfileFailures: { agentId: string; error: unknown }[] = [];
   for (const agent of liveAgents) {
     const modelPrefix = agent.model?.split("/")[0] ?? "";
     const agentProfileProvider = MODEL_PREFIX_TO_AUTH_PROFILE[modelPrefix];
@@ -1814,11 +1826,15 @@ export async function regenerateOpenClawConfig() {
       agentProfileProvider && configuredAuthProviders.has(agentProfileProvider)
         ? [agentProfileProvider]
         : [];
-    await writeAgentAuthProfiles({
-      configRoot,
-      agentId: agent.id,
-      providers: agentProviders,
-    });
+    try {
+      await writeAgentAuthProfiles({
+        configRoot,
+        agentId: agent.id,
+        providers: agentProviders,
+      });
+    } catch (err) {
+      authProfileFailures.push({ agentId: agent.id, error: err });
+    }
   }
 
   // Push config to OpenClaw. When a WS client is available, config.apply
@@ -1830,4 +1846,28 @@ export async function regenerateOpenClawConfig() {
   // can take 10–30 s when a gateway restart is needed, which broke
   // interactive save flows (Odoo "Save & Restart", UI waits for 200 OK).
   pushConfigInBackground(newContent);
+
+  // Report AFTER the push, never instead of it. The caller has to hear about
+  // this — the setup wizard turns the rejection into a warning toast and records
+  // `runtimeApplied: false` in the audit trail, which is the only reason this
+  // failure is visible outside the container logs at all. But the message must
+  // describe what actually happened: the config DID reach OpenClaw, these agents
+  // just have no credentials, so they answer "No API key found" rather than
+  // going silent.
+  if (authProfileFailures.length > 0) {
+    for (const failure of authProfileFailures) {
+      console.error(
+        `[openclaw-config] auth-profiles.json write failed for agent ${failure.agentId}:`,
+        failure.error
+      );
+    }
+    const agentIds = authProfileFailures.map((f) => f.agentId).join(", ");
+    throw new Error(
+      `[openclaw-config] Could not write auth-profiles.json for ${authProfileFailures.length} ` +
+        `agent(s) (${agentIds}); the rest of the config was applied. Those agents have no ` +
+        `credentials until this is repaired — check that ${configRoot}/agents/<id>/agent is ` +
+        `owned by the pinchy uid (start-openclaw.sh's fix_config_permissions tick).`,
+      { cause: authProfileFailures[0].error }
+    );
+  }
 }
