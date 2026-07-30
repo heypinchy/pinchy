@@ -15,17 +15,20 @@ const WIRED_JOB = [
   "",
   "      - name: Docs anchor check (built output)",
   "        run: cd docs && pnpm check:anchors",
+  "",
+  "      - name: Docs rendered-table check (built output)",
+  "        run: cd docs && pnpm check:rendered",
 ].join("\n");
+
+const WIRED_SCRIPTS = {
+  "check:anchors": "node scripts/check-anchors.mjs",
+  "check:rendered": "node scripts/check-rendered-tables.mjs",
+};
 
 // ── docs/package.json ─────────────────────────────────────────────────────
 
 test("validateDocsPackage accepts a package that wires the check script", () => {
-  assert.deepEqual(
-    validateDocsPackage({
-      scripts: { "check:anchors": "node scripts/check-anchors.mjs" },
-    }),
-    [],
-  );
+  assert.deepEqual(validateDocsPackage({ scripts: { ...WIRED_SCRIPTS } }), []);
 });
 
 test("validateDocsPackage flags a missing check script", () => {
@@ -33,13 +36,35 @@ test("validateDocsPackage flags a missing check script", () => {
   assert.ok(problems.some((p) => /check:anchors/.test(p)));
 });
 
+test("validateDocsPackage flags a missing rendered-table script", () => {
+  // The gfm regression is the reason this second check exists; dropping its
+  // script while keeping the anchor one must not read as "wired".
+  const problems = validateDocsPackage({
+    scripts: { "check:anchors": WIRED_SCRIPTS["check:anchors"] },
+  });
+  assert.ok(problems.some((p) => /check:rendered/.test(p)));
+});
+
 test("validateDocsPackage flags a check script pointed elsewhere", () => {
   // e.g. repointed at check-no-tables-in-lists.mjs during a refactor: the
   // script name survives, the check it runs does not.
   const problems = validateDocsPackage({
-    scripts: { "check:anchors": "node scripts/check-no-tables-in-lists.mjs" },
+    scripts: {
+      ...WIRED_SCRIPTS,
+      "check:anchors": "node scripts/check-no-tables-in-lists.mjs",
+    },
   });
   assert.ok(problems.some((p) => /check-anchors\.mjs/.test(p)));
+});
+
+test("validateDocsPackage flags the rendered-table script pointed elsewhere", () => {
+  const problems = validateDocsPackage({
+    scripts: {
+      ...WIRED_SCRIPTS,
+      "check:rendered": "node scripts/check-no-tables-in-lists.mjs",
+    },
+  });
+  assert.ok(problems.some((p) => /check-rendered-tables\.mjs/.test(p)));
 });
 
 test("validateDocsPackage reports a problem (not a throw) on a non-object", () => {
@@ -69,14 +94,27 @@ test("validateCiWiring flags a quality job that never builds the docs", () => {
   );
 });
 
+test("validateCiWiring flags a quality job that never runs the rendered-table check", () => {
+  const anchorsOnly = [
+    "      - run: cd docs && pnpm build",
+    "      - run: cd docs && pnpm check:anchors",
+  ].join("\n");
+  assert.ok(
+    validateCiWiring(anchorsOnly).some((p) => /check:rendered/.test(p)),
+  );
+});
+
 test("validateCiWiring flags the check running BEFORE the build", () => {
   // The checker reads docs/dist/. Ahead of the build it either exits 1 on a
   // missing dist or — on a warm runner — passes against yesterday's HTML.
   const reversed = [
     "      - run: cd docs && pnpm check:anchors",
+    "      - run: cd docs && pnpm check:rendered",
     "      - run: cd docs && pnpm build",
   ].join("\n");
-  assert.ok(validateCiWiring(reversed).some((p) => /AFTER/.test(p)));
+  const problems = validateCiWiring(reversed);
+  assert.ok(problems.some((p) => /check:anchors.*AFTER/.test(p)));
+  assert.ok(problems.some((p) => /check:rendered.*AFTER/.test(p)));
 });
 
 test("validateCiWiring flags steps that are only present as comments", () => {
@@ -85,7 +123,7 @@ test("validateCiWiring flags steps that are only present as comments", () => {
     .join("\n");
   assert.equal(
     validateCiWiring(commented).length,
-    2,
+    3,
     "a commented-out step must not satisfy the guard",
   );
 });
@@ -95,7 +133,8 @@ test("validateCiWiring does not treat a '#' inside a command as a comment", () =
   // falsely report the gate as un-wired.
   const withHash =
     '      - run: echo "#docs" && cd docs && pnpm build\n' +
-    "      - run: cd docs && pnpm check:anchors\n";
+    "      - run: cd docs && pnpm check:anchors\n" +
+    "      - run: cd docs && pnpm check:rendered\n";
   assert.deepEqual(validateCiWiring(withHash), []);
 });
 

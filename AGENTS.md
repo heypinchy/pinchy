@@ -413,6 +413,17 @@ A dedicated guard, `odoo-ref-tool-e2e-coverage.test.ts` (pinchy#791), enforces t
 - When behavior changes, update docs in the same PR.
 - Read `PERSONALITY.md` before writing user-facing text. Use English, "we" perspective, and the established Pinchy voice.
 
+### Two Checks Read The BUILT Docs, Not The Source
+
+`quality` runs `pnpm -C docs build` and then two checks against `docs/dist/`. Both must stay **after** the build — they read its output, so a check that runs first passes against a stale or missing `dist/`. `scripts/lib/docs-link-gate.mjs` (`pnpm test:scripts`) fails if either the npm script or the CI step drifts, including the ordering.
+
+- **`check:anchors`** (`docs/scripts/check-anchors.mjs`) resolves every `<a href>` in the built HTML against the `id` attributes that actually ship. The source `.mdx` cannot answer this: `/guides/setup/#configure` is a route into the generated site, which is why the `links` job (lychee) passes `--exclude-path docs`, and the astro build is perfectly happy with a link to a heading that does not exist.
+- **`check:rendered`** (`docs/scripts/check-rendered-tables.mjs`) fails if a built page contains a line that starts and ends with `|` — markdown table syntax that never became a table.
+
+The second check exists because v0.9.0 shipped that way: astro@6 deprecated `markdown.gfm` and leaves it `undefined`, `.md` falls back to the default (`true`), but `@astrojs/mdx@5` reads `config.markdown.gfm` and treats `undefined` as off. Every `.mdx` table on docs.heypinchy.com rendered as a paragraph of `|` characters — 41 of 69 pages — with a green build, green prettier (it sees a paragraph and formats it as one), and green anchors. `docs/astro.config.mjs` now sets `markdown.gfm: true` explicitly. Astro's deprecation warning points at `unified({ gfm })` instead; **do not follow it** — MDX does not read the processor's copy, so that move silently restores the bug.
+
+The general rule, same as the X-Frame-Options gate: assert what a built page contains, not what a source file asked for. Neither check covers `<img src>`, and external links out of `docs/` stay unchecked.
+
 ## Product Context
 
 Pinchy's core differentiator is agent permissions and control: granular agent permissions, RBAC, audit trail, and self-hosted governance. Multi-user support alone is not the value proposition.

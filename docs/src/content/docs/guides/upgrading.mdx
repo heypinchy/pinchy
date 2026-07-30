@@ -1118,7 +1118,7 @@ Before v0.5.0, decrypted API keys were written into `openclaw.json` on disk. Doc
 - **Ollama Cloud** — ollama.com/settings → API Keys
 - **Telegram bot** — message @BotFather → `/revoke` → `/newtoken` (only if you suspect exposure; revoking invalidates the previous webhook setup)
 
-Then in Pinchy, go to **Settings → Providers** and re-enter each new key. Pinchy validates each one against the provider's API before saving. Optionally, delete old volume backups that predate v0.5.0 if you no longer need them.
+Then in Pinchy, go to **Settings → AI Provider** and re-enter each new key. Pinchy validates each one against the provider's API before saving. Optionally, delete old volume backups that predate v0.5.0 if you no longer need them.
 
 This is a "nice to do" for most deployments, but if your server was ever compromised or you share volume backups with third parties, treat it as required.
 

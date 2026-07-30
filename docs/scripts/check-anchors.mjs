@@ -201,9 +201,15 @@ function main() {
   let site;
   try {
     site = collectSite(DIST_DIR);
-  } catch {
+  } catch (err) {
+    // Only a missing dist/ means "you forgot to build". Anything else (a
+    // permission error, an unreadable file mid-walk) must say what it was —
+    // printing the build hint for every failure sends the reader to fix a
+    // thing that is not broken.
     console.error(
-      "❌ docs/dist/ not found — run `pnpm -C docs build` before `check:anchors`.",
+      err?.code === "ENOENT"
+        ? "❌ docs/dist/ not found — run `pnpm -C docs build` before `check:anchors`."
+        : `❌ could not read docs/dist/: ${err?.message ?? err}`,
     );
     process.exit(1);
   }
