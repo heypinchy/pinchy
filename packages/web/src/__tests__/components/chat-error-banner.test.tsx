@@ -125,11 +125,38 @@ describe("ChatErrorBanner", () => {
 
   it("retries directly (no confirm) for a read-only run", async () => {
     const onRetry = vi.fn();
-    mockApiGet.mockResolvedValue({ error: { ...transientRow, sideEffects: false } });
+    // Two different endpoints now: the banner's own fetch, and the retry gate
+    // re-asked at click time (#1013). Answer each for what it is.
+    mockApiGet.mockImplementation((url: string) =>
+      url.includes("/retry-gate")
+        ? Promise.resolve({ sideEffects: false })
+        : Promise.resolve({ error: { ...transientRow, sideEffects: false } })
+    );
     render(<ChatErrorBanner agentId="agent-1" onRetry={onRetry} />);
     await waitFor(() => expect(screen.getByText("Penny paused")).toBeInTheDocument());
 
     fireEvent.click(screen.getByRole("button", { name: /^retry$/i }));
-    expect(onRetry).toHaveBeenCalledTimes(1);
+
+    await waitFor(() => expect(onRetry).toHaveBeenCalledTimes(1));
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+  });
+
+  it("confirms after all when the gate has flipped since the banner was fetched (#1013)", async () => {
+    // The banner is fetched on mount and clicked whenever the user gets round
+    // to it. Between those two moments the audit row proving the agent acted can
+    // land — so the row's flag is a floor, never the last word.
+    const onRetry = vi.fn();
+    mockApiGet.mockImplementation((url: string) =>
+      url.includes("/retry-gate")
+        ? Promise.resolve({ sideEffects: true })
+        : Promise.resolve({ error: { ...transientRow, sideEffects: false } })
+    );
+    render(<ChatErrorBanner agentId="agent-1" onRetry={onRetry} />);
+    await waitFor(() => expect(screen.getByText("Penny paused")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: /^retry$/i }));
+
+    expect(await screen.findByRole("alertdialog")).toBeInTheDocument();
+    expect(onRetry).not.toHaveBeenCalled();
   });
 });

@@ -6,7 +6,7 @@ import { useChatSessionHasInlineError } from "@/components/chat-session-provider
 import { ChatErrorMessage, type ChatError } from "@/components/assistant-ui/chat-error-message";
 import type { TransientReason } from "@/lib/schemas/chat-frames";
 import { Button } from "@/components/ui/button";
-import { DuplicateRetryConfirm } from "@/components/chat/duplicate-retry-confirm";
+import { GatedRetry } from "@/components/chat/gated-retry";
 
 interface ActiveError {
   id: string;
@@ -105,18 +105,29 @@ export function ChatErrorBanner({
     onRetry();
   };
 
-  const retryControl = error.sideEffects ? (
-    <DuplicateRetryConfirm agentName={error.agentName} onConfirm={handleRetry}>
-      {(open) => (
-        <Button variant="outline" size="sm" className="h-7 text-xs" onClick={open}>
+  // The row's `sideEffects` was already re-derived server-side when this banner
+  // was fetched, but the fetch happened on mount and the click can come minutes
+  // later — so ask once more here, on the same terms as the inline bubble.
+  const retryControl = (
+    <GatedRetry
+      agentId={agentId}
+      chatId={chatId}
+      agentName={error.agentName}
+      sideEffects={error.sideEffects}
+      onRetry={handleRetry}
+    >
+      {(start, pending) => (
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-7 text-xs"
+          onClick={start}
+          disabled={pending}
+        >
           Retry
         </Button>
       )}
-    </DuplicateRetryConfirm>
-  ) : (
-    <Button variant="outline" size="sm" className="h-7 text-xs" onClick={handleRetry}>
-      Retry
-    </Button>
+    </GatedRetry>
   );
 
   return (

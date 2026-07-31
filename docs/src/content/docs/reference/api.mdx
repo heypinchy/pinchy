@@ -330,6 +330,18 @@ Dismiss the error the banner is showing. Scoped to the owning user, so one user 
 
 - `404` — no un-dismissed error with that id belongs to the caller
 
+### `GET /api/agents/:agentId/retry-gate`
+
+Whether retrying the caller's last failed run in this conversation could duplicate actions the agent already performed. Pass `?chatId=` to address one specific chat; omit it for the default per-user session.
+
+**Response:**
+
+| Field         | Type      | Description                                                            |
+| ------------- | --------- | ---------------------------------------------------------------------- |
+| `sideEffects` | `boolean` | `true` when the failed run had already executed at least one tool call |
+
+The chat asks this when you press Retry, not when the run failed — see [Retrying after the agent already acted](/guides/retry-messages/#retrying-after-the-agent-already-acted). The time window comes from the stored run, never from the request, so this cannot be used to query an agent's tool history.
+
 ### `GET /api/agents/:agentId/uploads/:filename`
 
 Download a file the caller uploaded to this agent.

@@ -61,7 +61,7 @@ import { normalizeStarterPrompts } from "@/lib/schemas/starter-prompts";
 import { Progress } from "@/components/ui/progress";
 import type { PendingUpload } from "@/hooks/use-ws-runtime";
 import { RetryButton } from "@/components/chat/retry-button";
-import { DuplicateRetryConfirm } from "@/components/chat/duplicate-retry-confirm";
+import { GatedRetry } from "@/components/chat/gated-retry";
 import { useComposerRuntime } from "@assistant-ui/react";
 import { getDraft, saveDraft, draftKey } from "@/lib/draft-store";
 import { useShareIntake } from "@/components/share/use-share-intake";
@@ -663,9 +663,11 @@ export const AssistantMessage: FC = () => {
       "partial_stream_failure"
   );
   const isLast = useMessage((s) => s.isLast);
-  // The failed run already ran a tool → gate retry behind a duplicate-write
-  // confirm, matching the durable banner (the live retry is the most common
-  // retry moment, so it must be gated too).
+  // What the error frame claimed about tool use. Provisional: the flag is
+  // derived from an audit row that OpenClaw's unawaited `after_tool_call` hook
+  // may not have written yet (#1013), so `false` here means "not proven", not
+  // "read-only". GatedRetry re-asks the server on click, where the answer has
+  // had time to settle. `true` short-circuits — the gate never re-opens.
   const sideEffects = useMessage(
     (s) => !!(s.metadata?.custom?.error as ChatError | undefined)?.sideEffects
   );
@@ -673,19 +675,20 @@ export const AssistantMessage: FC = () => {
     (s) => (s.metadata?.custom?.error as ChatError | undefined)?.agentName
   );
   const onRetryContinue = useContext(RetryContinueContext);
+  const retryAgentId = useContext(AgentIdContext);
+  const retryChatId = useContext(ChatIdContext);
 
   const showRetry = isRetryable && isLast;
   const retryButton = showRetry ? (
-    sideEffects ? (
-      <DuplicateRetryConfirm
-        agentName={errorAgentName}
-        onConfirm={() => onRetryContinue(retryReason)}
-      >
-        {(open) => <RetryButton onClick={open} />}
-      </DuplicateRetryConfirm>
-    ) : (
-      <RetryButton onClick={() => onRetryContinue(retryReason)} />
-    )
+    <GatedRetry
+      agentId={retryAgentId ?? undefined}
+      chatId={retryChatId}
+      agentName={errorAgentName}
+      sideEffects={sideEffects}
+      onRetry={() => onRetryContinue(retryReason)}
+    >
+      {(start, pending) => <RetryButton onClick={start} checking={pending} />}
+    </GatedRetry>
   ) : null;
 
   return (

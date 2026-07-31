@@ -551,18 +551,98 @@ describe("AssistantMessage retryable error bubble", () => {
       id: "msg-err-nose",
     });
 
+    // The gate is re-checked at click time (#1013), so this needs a real agent
+    // in context and a server that answers "no tool ran". Without the provider
+    // the component takes its no-agent shortcut and the test would pass while
+    // proving nothing about the read-only case.
+    const { apiGet } = await import("@/lib/api-client");
+    vi.mocked(apiGet).mockResolvedValue({ sideEffects: false });
+
     const mockRetryContinue = vi.fn();
-    const { RetryContinueContext } = await import("@/components/chat");
+    const { RetryContinueContext, AgentIdContext } = await import("@/components/chat");
     const { AssistantMessage } = await import("@/components/assistant-ui/thread");
     render(
-      <RetryContinueContext.Provider value={mockRetryContinue}>
-        <AssistantMessage />
-      </RetryContinueContext.Provider>
+      <AgentIdContext.Provider value="agent-1">
+        <RetryContinueContext.Provider value={mockRetryContinue}>
+          <AssistantMessage />
+        </RetryContinueContext.Provider>
+      </AgentIdContext.Provider>
     );
 
     fireEvent.click(screen.getByRole("button", { name: /^retry$/i }));
-    expect(mockRetryContinue).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(mockRetryContinue).toHaveBeenCalledTimes(1));
+    expect(apiGet).toHaveBeenCalledWith("/api/agents/agent-1/retry-gate");
     expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+  });
+
+  it("gates the live Retry when the frame said no but the server knows better (#1013)", async () => {
+    // The failure that made this a bug: OpenClaw fires `after_tool_call`
+    // without awaiting it, so the frame's flag was derived before the audit row
+    // landed. The bubble says "no tool ran" and the run had already booked.
+    const { useMessage } = await import("@assistant-ui/react");
+    stubUseMessage(useMessage, {
+      metadata: {
+        custom: {
+          error: { providerError: "rate limit", agentName: "Penny", sideEffects: false },
+          retryable: true,
+        },
+      },
+      isLast: true,
+      id: "msg-err-race",
+    });
+
+    const { apiGet } = await import("@/lib/api-client");
+    vi.mocked(apiGet).mockResolvedValue({ sideEffects: true });
+
+    const mockRetryContinue = vi.fn();
+    const { RetryContinueContext, AgentIdContext } = await import("@/components/chat");
+    const { AssistantMessage } = await import("@/components/assistant-ui/thread");
+    render(
+      <AgentIdContext.Provider value="agent-1">
+        <RetryContinueContext.Provider value={mockRetryContinue}>
+          <AssistantMessage />
+        </RetryContinueContext.Provider>
+      </AgentIdContext.Provider>
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /^retry$/i }));
+
+    expect(await screen.findByRole("alertdialog")).toHaveTextContent(/duplicate/i);
+    expect(mockRetryContinue).not.toHaveBeenCalled();
+  });
+
+  it("warns rather than retrying when the gate check fails (#1013)", async () => {
+    // Fail closed: an unreachable gate is not evidence the run was read-only.
+    const { useMessage } = await import("@assistant-ui/react");
+    stubUseMessage(useMessage, {
+      metadata: {
+        custom: {
+          error: { providerError: "rate limit", agentName: "Penny", sideEffects: false },
+          retryable: true,
+        },
+      },
+      isLast: true,
+      id: "msg-err-gate-down",
+    });
+
+    const { apiGet } = await import("@/lib/api-client");
+    vi.mocked(apiGet).mockRejectedValue(new Error("offline"));
+
+    const mockRetryContinue = vi.fn();
+    const { RetryContinueContext, AgentIdContext } = await import("@/components/chat");
+    const { AssistantMessage } = await import("@/components/assistant-ui/thread");
+    render(
+      <AgentIdContext.Provider value="agent-1">
+        <RetryContinueContext.Provider value={mockRetryContinue}>
+          <AssistantMessage />
+        </RetryContinueContext.Provider>
+      </AgentIdContext.Provider>
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /^retry$/i }));
+
+    expect(await screen.findByRole("alertdialog")).toBeInTheDocument();
+    expect(mockRetryContinue).not.toHaveBeenCalled();
   });
 
   it("disables Retry button and sets tooltip when ChatStatusContext is unavailable", async () => {

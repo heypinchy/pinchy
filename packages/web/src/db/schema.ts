@@ -897,6 +897,20 @@ export const agentDeliveredFiles = pgTable(
  * the triggering user message, the anchor for both supersede (the same message
  * later succeeds) and a safe retry. `sideEffects` records whether the failed
  * run already executed a tool call, so the UI can warn about duplicate writes.
+ *
+ * `runStartedAt` is the lower bound `sideEffects` was derived over, and it is
+ * what makes the answer re-derivable LATER (#1013). OpenClaw fires its
+ * `after_tool_call` hook without awaiting it, so `pinchy-audit`'s `tool.*` row
+ * is ordered against nothing and can land after the run has already failed —
+ * the derivation at error time therefore reads `false` for a run that did act.
+ * Storing the window lets the retry gate ask the same question again when the
+ * user actually presses Retry, by which point the row is long committed.
+ *
+ * `showBanner` separates "record this failed run" from "re-surface it as a
+ * paused banner". They used to be the same decision (`shouldPersistDurableError`
+ * gated the INSERT), which meant the classes that get no banner also got no
+ * stored window — and therefore no re-derivable retry gate. Every failed run is
+ * recorded now; only banner-worthy ones are read back by the banner.
  */
 export const chatSessionErrors = pgTable(
   "chat_session_errors",
@@ -919,6 +933,11 @@ export const chatSessionErrors = pgTable(
     transientReason: text("transient_reason"),
     providerError: text("provider_error").notNull(),
     sideEffects: boolean("side_effects").notNull().default(false),
+    // Nullable on purpose: rows written before #1013 have no window, and the
+    // retry gate must fall back to the stored `sideEffects` for them rather
+    // than invent a bound and re-derive over the wrong range.
+    runStartedAt: timestamp("run_started_at"),
+    showBanner: boolean("show_banner").notNull().default(true),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     supersededAt: timestamp("superseded_at"),
     dismissedAt: timestamp("dismissed_at"),

@@ -22,6 +22,8 @@ When Pinchy sees that the failed run already performed an action, Retry asks fir
 
 It's the same prompt wherever you retry: the live error bubble in the thread and the paused banner you see after a reload both ask the same question before re-running anything.
 
+The check happens when you press Retry, not when the run failed. A tool call is recorded in the audit trail a moment after it finishes, and a run can fail before that record has landed — so asking at the moment of failure could miss an action the agent had genuinely taken. By the time you reach for Retry, the record is there. If Pinchy cannot check at all, it asks for confirmation rather than assuming nothing happened.
+
 ## What you don't need to do
 
 You don't need to copy your message, refresh the page, or figure out what went wrong. Click Retry — Pinchy picks up from the right place.

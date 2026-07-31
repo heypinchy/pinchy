@@ -2003,35 +2003,46 @@ export class ClientRouter {
     providerError: string;
     errorClass: AgentErrorClass;
     runStartedAt: Date;
+    /**
+     * Force the row off the banner regardless of class. The #882 generic path
+     * needs it: the class can say "banner-worthy" while the text is not safe to
+     * re-render, and the row is written there only to carry the retry-gate
+     * window.
+     */
+    suppressBanner?: boolean;
   }): Promise<boolean> {
     try {
       // Derive sideEffects from the audit trail: OpenClaw doesn't signal tool
       // execution as a chat chunk, so a `tool.*` audit row since this run began
-      // is the reliable "the agent already acted" signal. Computed for EVERY
-      // class — the live inline retry's duplicate-write gate needs it even when
-      // we skip the durable row below.
+      // is the reliable "the agent already acted" signal.
+      //
+      // This answer is provisional. OpenClaw fires `after_tool_call` WITHOUT
+      // awaiting it, so `pinchy-audit`'s row is ordered against nothing and can
+      // still be in flight right now — `false` here does not mean the run was
+      // read-only (#1013). `runStartedAt` goes into the row so `resolveRetryGate`
+      // can ask the same question again when the user reaches for Retry.
       const sideEffects = await agentRanToolSince(args.agent.id, args.runStartedAt);
-      // Only persist a durable "paused" banner for retryable/intermittent
-      // classes. A persistent problem (retired model, over-large prompt, bad
-      // provider config → `unknown`/`provider_config`) recurs every attempt, so
-      // a sticky banner that reappears on every navigation is annoyance, not
-      // help — the inline turn-failure is enough. See shouldPersistDurableError.
-      if (shouldPersistDurableError(args.errorClass)) {
-        await recordChatSessionError({
-          userId: this.userId,
-          agentId: args.agent.id,
-          sessionKey: args.sessionKey,
-          clientMessageId: args.clientMessageId ?? null,
-          runId: args.runId ?? null,
-          agentName: args.agent.name,
-          model: args.agent.model ?? null,
-          errorClass: args.errorClass,
-          transientReason:
-            args.errorClass === "transient" ? classifyTransientReason(args.providerError) : null,
-          providerError: safeProviderError(args.providerError),
-          sideEffects,
-        });
-      }
+      // EVERY failed run is recorded, because every failed run can be retried
+      // and every retry needs the gate. Whether it also re-surfaces as a
+      // "paused" banner is a separate question: a persistent problem with
+      // nothing actionable to say (`unknown`) is inline-only, and so is a
+      // failure whose text we must not re-render. See shouldPersistDurableError.
+      await recordChatSessionError({
+        userId: this.userId,
+        agentId: args.agent.id,
+        sessionKey: args.sessionKey,
+        clientMessageId: args.clientMessageId ?? null,
+        runId: args.runId ?? null,
+        agentName: args.agent.name,
+        model: args.agent.model ?? null,
+        errorClass: args.errorClass,
+        transientReason:
+          args.errorClass === "transient" ? classifyTransientReason(args.providerError) : null,
+        providerError: safeProviderError(args.providerError),
+        sideEffects,
+        runStartedAt: args.runStartedAt,
+        showBanner: !args.suppressBanner && shouldPersistDurableError(args.errorClass),
+      });
       return sideEffects;
     } catch (err) {
       console.error("Failed to persist durable chat error:", err);
@@ -2102,6 +2113,20 @@ export class ClientRouter {
     // none of this: `chunk.text` is provider-facing by construction. (#882)
     const safeMessage = cannedProviderMessage(args.providerError, args.agent.model ?? undefined);
     if (safeMessage === null) {
+      // The generic bubble is still RETRYABLE, and this run may already have
+      // written to Odoo before it died. Record the run window — with the canned
+      // text, never `err.message` — so `resolveRetryGate` can answer for this
+      // retry too. `suppressBanner` keeps the row where it was: off screen.
+      await this.persistDurableChatError({
+        agent: args.agent,
+        sessionKey: args.sessionKey,
+        clientMessageId: args.clientMessageId,
+        runId: args.runId,
+        providerError: GENERIC_RUN_FAILURE_MESSAGE,
+        errorClass,
+        runStartedAt: args.runStartedAt,
+        suppressBanner: true,
+      });
       this.broadcastForRun(args.sessionKey, args.clientWs, {
         type: "error",
         message: GENERIC_RUN_FAILURE_MESSAGE,

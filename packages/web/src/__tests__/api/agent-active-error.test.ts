@@ -17,9 +17,11 @@ vi.mock("@/lib/agent-access", () => ({
 
 const mockGetActive = vi.fn();
 const mockDismiss = vi.fn();
+const mockResolveRetryGate = vi.fn();
 vi.mock("@/server/chat-session-errors", () => ({
   getActiveChatSessionError: (...args: unknown[]) => mockGetActive(...args),
   dismissChatSessionError: (...args: unknown[]) => mockDismiss(...args),
+  resolveRetryGate: (...args: unknown[]) => mockResolveRetryGate(...args),
 }));
 
 const mockAppendAuditLog = vi.fn().mockResolvedValue(undefined);
@@ -58,6 +60,7 @@ describe("/api/agents/[agentId]/active-error", () => {
     vi.clearAllMocks();
     mockGetSession.mockResolvedValue({ user: { id: "user-1", role: "member" } });
     mockGetAgentWithAccess.mockResolvedValue({ id: "agent-1", name: "Penny" });
+    mockResolveRetryGate.mockResolvedValue(true);
     const mod = await import("@/app/api/agents/[agentId]/active-error/route");
     GET = mod.GET;
     DELETE = mod.DELETE;
@@ -137,6 +140,24 @@ describe("/api/agents/[agentId]/active-error", () => {
       const res = await GET(getRequest(), ctx as never);
       const body = await res.json();
       expect(body.error).toBeNull();
+      // Nothing to gate, so don't pay for the audit lookup.
+      expect(mockResolveRetryGate).not.toHaveBeenCalled();
+    });
+
+    it("re-derives sideEffects instead of trusting the stored flag (#1013)", async () => {
+      // The row was written while the run's `tool.*` audit row could still have
+      // been in flight, so `row.sideEffects` may be a false `false`. The banner
+      // is fetched a reload later at the earliest — long enough for the truth.
+      mockGetActive.mockResolvedValueOnce({ ...activeRow, sideEffects: false });
+      mockResolveRetryGate.mockResolvedValueOnce(true);
+
+      const res = await GET(getRequest(), ctx as never);
+
+      expect((await res.json()).error.sideEffects).toBe(true);
+      expect(mockResolveRetryGate).toHaveBeenCalledWith({
+        sessionKey: "agent:agent-1:direct:user-1",
+        agentId: "agent-1",
+      });
     });
   });
 

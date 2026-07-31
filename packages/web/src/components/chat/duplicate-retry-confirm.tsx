@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type ReactNode } from "react";
+import type { ReactNode } from "react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -13,27 +13,33 @@ import {
 } from "@/components/ui/alert-dialog";
 
 /**
- * Gate a retry behind a duplicate-write confirmation when the failed run had
- * already executed a tool. `children` receives an `open` callback to wire to the
- * trigger (a RetryButton, a plain Button, …) — a controlled dialog rather than
- * an `asChild` trigger so it works with any control regardless of ref/prop
- * forwarding. Shared by the durable "paused" banner AND the live in-chat error
- * bubble so the duplicate-write copy is identical on both retry paths.
+ * The duplicate-write confirmation itself: copy plus dialog, nothing else.
+ * Shared by the durable "paused" banner AND the live in-chat error bubble so
+ * both retry paths say the same thing.
+ *
+ * Fully controlled — whether to show it is decided by `GatedRetry`, which asks
+ * the server at click time (#1013) rather than trusting a flag computed while
+ * the evidence was still in flight. `children` renders the trigger alongside
+ * the dialog; it is a plain node rather than an `asChild` trigger so it works
+ * with any control regardless of ref/prop forwarding.
  */
 export function DuplicateRetryConfirm({
   agentName,
+  open,
+  onOpenChange,
   onConfirm,
   children,
 }: {
   agentName?: string;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
   onConfirm: () => void;
-  children: (open: () => void) => ReactNode;
+  children: ReactNode;
 }) {
-  const [open, setOpen] = useState(false);
   return (
     <>
-      {children(() => setOpen(true))}
-      <AlertDialog open={open} onOpenChange={setOpen}>
+      {children}
+      <AlertDialog open={open} onOpenChange={onOpenChange}>
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Retry may duplicate actions</AlertDialogTitle>
@@ -47,7 +53,7 @@ export function DuplicateRetryConfirm({
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
               onClick={() => {
-                setOpen(false);
+                onOpenChange(false);
                 onConfirm();
               }}
             >

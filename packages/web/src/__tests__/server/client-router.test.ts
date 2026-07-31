@@ -337,6 +337,100 @@ describe("ClientRouter", () => {
       );
     });
 
+    it("stores the run window so the gate can be re-derived later (#1013)", async () => {
+      // `sideEffects: false` above is exactly the answer #1013 says may be
+      // wrong — the audit row can still be in flight. Persisting the window it
+      // was derived over is what lets the retry gate ask again at click time;
+      // without it the stale `false` is the final word.
+      async function* stream() {
+        yield { type: "error" as const, text: "the model is overloaded", runId: "r1" };
+      }
+      mockChat.mockReturnValue(stream());
+      const before = Date.now();
+
+      await router.handleMessage(createMockClientWs() as any, {
+        type: "message",
+        content: "hi",
+        agentId: "agent-1",
+        clientMessageId: "cm-window",
+      });
+
+      const [entry] = mockRecordChatSessionError.mock.calls.at(-1)!;
+      const runStartedAt = (entry as { runStartedAt: Date }).runStartedAt;
+      expect(runStartedAt).toBeInstanceOf(Date);
+      // The same bound `agentRanToolSince` was asked with, so re-deriving later
+      // covers the same run rather than a wider or narrower slice of history.
+      expect(mockAgentRanToolSince).toHaveBeenLastCalledWith("agent-1", runStartedAt);
+      // Starts before the run and not in the future — a window that opens after
+      // the first tool call would miss exactly what it exists to find.
+      expect(runStartedAt.getTime()).toBeLessThanOrEqual(before);
+    });
+
+    it("records an inline-only class too, but keeps it out of the banner", async () => {
+      // `unknown` shows no banner (nothing actionable to put in one) — but the
+      // inline bubble still offers Retry, so the gate still needs a window.
+      // Gating the INSERT on `shouldPersistDurableError` left that retry with
+      // nothing to re-derive from.
+      async function* stream() {
+        yield { type: "error" as const, text: "LLM request failed.", runId: "r1" };
+      }
+      mockChat.mockReturnValue(stream());
+
+      await router.handleMessage(createMockClientWs() as any, {
+        type: "message",
+        content: "hi",
+        agentId: "agent-1",
+        clientMessageId: "cm-unknown",
+      });
+
+      expect(mockRecordChatSessionError).toHaveBeenCalledWith(
+        expect.objectContaining({ errorClass: "unknown", showBanner: false })
+      );
+    });
+
+    it("marks a banner-worthy class as banner-eligible", async () => {
+      async function* stream() {
+        yield { type: "error" as const, text: "⚠️ API rate limit reached", runId: "r1" };
+      }
+      mockChat.mockReturnValue(stream());
+
+      await router.handleMessage(createMockClientWs() as any, {
+        type: "message",
+        content: "hi",
+        agentId: "agent-1",
+        clientMessageId: "cm-transient",
+      });
+
+      expect(mockRecordChatSessionError).toHaveBeenCalledWith(
+        expect.objectContaining({ errorClass: "transient", showBanner: true })
+      );
+    });
+
+    it("records a window for a thrown failure too generic to show, without storing its text", async () => {
+      // The #882 security gate: a thrown failure whose message isn't
+      // provider-facing gets the generic bubble and is deliberately NOT stored,
+      // because the banner would re-render the raw text. That bubble is still
+      // retryable, so the retry gate had no window here at all. Store the
+      // window — never the text — and keep it off the banner.
+      async function* stream(): AsyncGenerator<never> {
+        throw new Error("connect ECONNREFUSED 10.1.2.3:5432");
+      }
+      mockChat.mockReturnValue(stream());
+
+      await router.handleMessage(createMockClientWs() as any, {
+        type: "message",
+        content: "hi",
+        agentId: "agent-1",
+        clientMessageId: "cm-generic",
+      });
+
+      expect(mockRecordChatSessionError).toHaveBeenCalledWith(
+        expect.objectContaining({ showBanner: false, runStartedAt: expect.any(Date) })
+      );
+      const [entry] = mockRecordChatSessionError.mock.calls.at(-1)!;
+      expect((entry as { providerError: string }).providerError).not.toContain("10.1.2.3");
+    });
+
     it("supersedes the triggering message's durable error once its run succeeds", async () => {
       async function* stream() {
         yield {
@@ -521,9 +615,22 @@ describe("ClientRouter", () => {
         // No cause-specific fields that would carry the raw text.
         expect(errorFrame.providerError).toBeUndefined();
 
-        // Nothing persisted: the durable banner re-renders the stored raw text on
-        // reload, so an unsafe thrown error must never create a row.
-        expect(mockRecordChatSessionError).not.toHaveBeenCalled();
+        // A row IS written now — the generic bubble is retryable, and #1013's
+        // gate needs this run's window to answer for that retry. What must never
+        // happen is the leak this branch exists to prevent, so assert the row's
+        // WHOLE payload rather than its absence: no secret in any field, and no
+        // path to the banner that would re-render it.
+        expect(mockRecordChatSessionError).toHaveBeenCalledTimes(1);
+        const [persisted] = mockRecordChatSessionError.mock.calls[0];
+        const stored = JSON.stringify(persisted);
+        for (const secret of secrets) {
+          expect(stored).not.toContain(secret);
+        }
+        expect(persisted).toMatchObject({
+          showBanner: false,
+          providerError: "Something went wrong. Please try again.",
+          runStartedAt: expect.any(Date),
+        });
 
         // But it IS audited server-side (PII-scrubbed) — the diagnosability trail
         // #882 asks for is kept even for the failures we won't show the user.

@@ -5,14 +5,21 @@ import { Button } from "@/components/ui/button";
 
 interface RetryButtonProps {
   onClick: () => void;
+  /**
+   * The duplicate-write gate is being checked with the server (#1013). Short —
+   * one GET — but it must not be clickable twice, and the click has visibly
+   * done something.
+   */
+  checking?: boolean;
 }
 
-export function RetryButton({ onClick }: RetryButtonProps) {
+export function RetryButton({ onClick, checking = false }: RetryButtonProps) {
   const status = useContext(ChatStatusContext);
-  const disabled = status.kind !== "ready";
-  const loading = status.kind === "responding";
-  const tooltip =
-    status.kind === "unavailable"
+  const disabled = status.kind !== "ready" || checking;
+  const loading = status.kind === "responding" || checking;
+  const tooltip = checking
+    ? "Checking whether this retry could duplicate actions"
+    : status.kind === "unavailable"
       ? "Agent unavailable"
       : status.kind === "responding"
         ? "Waiting for the current response"

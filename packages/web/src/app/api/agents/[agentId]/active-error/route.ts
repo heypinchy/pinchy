@@ -4,7 +4,11 @@ import { getAgentWithAccess } from "@/lib/agent-access";
 import { appendAuditLog } from "@/lib/audit";
 import { recordAuditFailure } from "@/lib/audit-deferred";
 import { directSessionKey } from "@/lib/session-key";
-import { getActiveChatSessionError, dismissChatSessionError } from "@/server/chat-session-errors";
+import {
+  getActiveChatSessionError,
+  dismissChatSessionError,
+  resolveRetryGate,
+} from "@/server/chat-session-errors";
 import { getErrorHint, presentProviderError } from "@/server/error-hints";
 
 type RouteContext = { params: Promise<{ agentId: string }> };
@@ -26,6 +30,11 @@ export const GET = withAuth<RouteContext>(async (request, { params }, session) =
   const sessionKey = directSessionKey(agentId, session.user.id!, chatId);
 
   const row = await getActiveChatSessionError(sessionKey);
+  // Re-derived, not read off the row (#1013). The stored flag was decided while
+  // the run's `tool.*` audit row could still have been in flight; by the time a
+  // banner is being fetched — a reload later, at the earliest — the answer has
+  // settled. Skipped entirely when there's no banner to render.
+  const sideEffects = row ? await resolveRetryGate({ sessionKey, agentId }) : false;
   return NextResponse.json({
     error: row
       ? {
@@ -43,7 +52,7 @@ export const GET = withAuth<RouteContext>(async (request, { params }, session) =
           // guidance the live error frame gets (client-router) so a durable
           // provider-rejection points an admin at their provider config (#584).
           hint: getErrorHint(row.providerError, session.user.role),
-          sideEffects: row.sideEffects,
+          sideEffects,
           clientMessageId: row.clientMessageId,
           createdAt: row.createdAt,
         }
