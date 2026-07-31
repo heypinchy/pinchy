@@ -403,36 +403,49 @@ describe("UserDetailSheet", () => {
 
   it("should show copied feedback when reset link Copy button is clicked", async () => {
     const user = userEvent.setup();
-    const writeText = vi.fn().mockResolvedValue(undefined);
-    Object.defineProperty(navigator, "clipboard", {
-      value: { writeText },
-      writable: true,
-      configurable: true,
-    });
+    // Spy on the clipboard user-event installed, rather than replacing
+    // `navigator.clipboard` wholesale with Object.defineProperty. `setup()`
+    // above defines the property itself (Clipboard.js: `attachClipboardStubToView`),
+    // so redefining it shadows the stub user-event will later look for, and
+    // `resetClipboardStubOnView` then silently does nothing between tests —
+    // leaving this test's mock in place for every later test in the file.
+    // A spy leaves that descriptor intact and `mockRestore` hands it back.
+    // Same pattern as add-integration-google-wizard.test.tsx.
+    const writeText = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue(undefined);
 
-    vi.spyOn(global, "fetch").mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ token: "reset-token-xyz" }),
-    } as Response);
+    try {
+      vi.spyOn(global, "fetch").mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ token: "reset-token-xyz" }),
+      } as Response);
 
-    render(
-      <UserDetailSheet
-        user={mockUser}
-        allGroups={allGroups}
-        isEnterprise={true}
-        currentUserId="admin-1"
-        open={true}
-        onOpenChange={vi.fn()}
-        onSaved={vi.fn()}
-      />
-    );
+      render(
+        <UserDetailSheet
+          user={mockUser}
+          allGroups={allGroups}
+          isEnterprise={true}
+          currentUserId="admin-1"
+          open={true}
+          onOpenChange={vi.fn()}
+          onSaved={vi.fn()}
+        />
+      );
 
-    await user.click(screen.getByRole("button", { name: /reset password/i }));
+      await user.click(screen.getByRole("button", { name: /reset password/i }));
 
-    await screen.findByText(/reset-token-xyz/);
+      await screen.findByText(/reset-token-xyz/);
 
-    await user.click(screen.getByRole("button", { name: "Copy" }));
+      await user.click(screen.getByRole("button", { name: "Copy" }));
 
-    await screen.findByRole("button", { name: "Copied!" });
+      await screen.findByRole("button", { name: "Copied!" });
+      // The spy is what makes the success path deterministic, so assert the
+      // reset link really reached the clipboard — otherwise the spy is
+      // decoration and only the button label is under test.
+      expect(writeText).toHaveBeenCalledWith(expect.stringContaining("reset-token-xyz"));
+    } finally {
+      // In a `finally` so a failing assertion above still restores the spy —
+      // otherwise one red test leaves it in place for the rest of the file.
+      writeText.mockRestore();
+    }
   });
 });

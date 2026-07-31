@@ -635,30 +635,40 @@ describe("AuditLogTable", () => {
     renderWithEntriesLoaded();
     await openFirstEntryDetail();
 
-    // Install the clipboard mock AFTER openFirstEntryDetail: userEvent.setup()
-    // attaches its own navigator.clipboard stub and would otherwise shadow ours.
-    const writeText = vi.fn().mockResolvedValue(undefined);
-    Object.defineProperty(navigator, "clipboard", {
-      value: { writeText },
-      writable: true,
-      configurable: true,
-    });
+    // Spy AFTER openFirstEntryDetail, whose userEvent.setup() is what defines
+    // `navigator.clipboard` in the first place (Clipboard.js:
+    // `attachClipboardStubToView`) — there is nothing to spy on before it.
+    //
+    // A spy rather than a wholesale Object.defineProperty: redefining the
+    // property shadows the stub user-event will later look for, so its per-test
+    // `resetClipboardStubOnView` silently does nothing and this mock leaks into
+    // every later test in the file.
+    const writeText = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue(undefined);
 
-    // fireEvent (not userEvent) — the button lives inside the Radix Sheet, whose
-    // open state sets pointer-events:none on body, which userEvent rejects.
-    fireEvent.click(screen.getByRole("button", { name: /copy json/i }));
+    try {
+      // fireEvent (not userEvent) — the button lives inside the Radix Sheet, whose
+      // open state sets pointer-events:none on body, which userEvent rejects.
+      fireEvent.click(screen.getByRole("button", { name: /copy json/i }));
 
-    // entry 1 detail is { email: "admin@example.com" }, pretty-printed.
-    await waitFor(() => {
-      expect(writeText).toHaveBeenCalledWith(
-        JSON.stringify({ email: "admin@example.com" }, null, 2)
-      );
-    });
+      // entry 1 detail is { email: "admin@example.com" }, pretty-printed.
+      await waitFor(() => {
+        expect(writeText).toHaveBeenCalledWith(
+          JSON.stringify({ email: "admin@example.com" }, null, 2)
+        );
+      });
+    } finally {
+      // In a `finally` so a failing assertion above still restores the spy —
+      // otherwise one red test leaves it in place for the rest of the file.
+      writeText.mockRestore();
+    }
   });
 
   it("surfaces a toast.error when copying the JSON detail fails", async () => {
     const originalExec = document.execCommand;
     document.execCommand = vi.fn().mockReturnValue(false);
+    // Captured inside the try, right before the property is redefined, so the
+    // restore below runs only if the redefinition actually happened.
+    let clipboardDescriptor: PropertyDescriptor | undefined;
 
     try {
       renderWithEntriesLoaded();
@@ -666,6 +676,15 @@ describe("AuditLogTable", () => {
 
       // After openFirstEntryDetail (userEvent.setup attaches a working clipboard
       // stub) simulate a non-secure context: no clipboard API, execCommand fails.
+      //
+      // This is the one clipboard test in the tree that cannot use a spy: the
+      // branch under test is `navigator.clipboard` being ABSENT, and a spy can
+      // only change what an existing method does. So the property is redefined
+      // here — and handed back in the `finally`, because leaving the
+      // redefinition in place shadows the stub user-event tracks, which makes
+      // its per-test `resetClipboardStubOnView` a silent no-op and leaks an
+      // undefined clipboard into every later test in the file.
+      clipboardDescriptor = Object.getOwnPropertyDescriptor(navigator, "clipboard");
       Object.defineProperty(navigator, "clipboard", {
         value: undefined,
         writable: true,
@@ -679,6 +698,9 @@ describe("AuditLogTable", () => {
       });
     } finally {
       document.execCommand = originalExec;
+      if (clipboardDescriptor) {
+        Object.defineProperty(navigator, "clipboard", clipboardDescriptor);
+      }
     }
   });
 

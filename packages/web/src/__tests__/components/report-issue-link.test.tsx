@@ -24,14 +24,16 @@ vi.mock("next/navigation", () => ({
 describe("ReportIssueLink", () => {
   let windowOpenSpy: ReturnType<typeof vi.spyOn>;
 
+  // No clipboard stub here on purpose. Every test that clicks calls
+  // `userEvent.setup()` first, and `setup()` defines `navigator.clipboard`
+  // itself (Clipboard.js: `attachClipboardStubToView`) with a `writeText` that
+  // resolves — which is all the success path needs. Redefining the property on
+  // top of that shadows the stub user-event will later look for, so its
+  // per-test `resetClipboardStubOnView` silently does nothing and the mock
+  // leaks into every later test in the file.
   beforeEach(() => {
     vi.clearAllMocks();
     windowOpenSpy = vi.spyOn(window, "open").mockImplementation(() => null);
-    Object.defineProperty(navigator, "clipboard", {
-      value: { writeText: vi.fn().mockResolvedValue(undefined) },
-      writable: true,
-      configurable: true,
-    });
   });
 
   afterEach(() => {
@@ -141,17 +143,28 @@ describe("ReportIssueLink", () => {
   it("should still open GitHub URL when clipboard write fails", async () => {
     const user = userEvent.setup();
     mockFetchDiagnostics.mockResolvedValueOnce(null);
-    Object.defineProperty(navigator, "clipboard", {
-      value: { writeText: vi.fn().mockRejectedValue(new Error("Clipboard denied")) },
-      writable: true,
-      configurable: true,
-    });
+    // Spy on user-event's own stub rather than redefining the property (see the
+    // note on beforeEach above): a rejecting `writeText` is exactly the denial
+    // this test needs, and the descriptor user-event tracks stays intact.
+    const writeText = vi
+      .spyOn(navigator.clipboard, "writeText")
+      .mockRejectedValue(new Error("Clipboard denied"));
 
-    render(<ReportIssueLink error="Test error" />);
-    await user.click(screen.getByRole("button", { name: /report this issue/i }));
+    try {
+      render(<ReportIssueLink error="Test error" />);
+      await user.click(screen.getByRole("button", { name: /report this issue/i }));
 
-    await waitFor(() => {
-      expect(windowOpenSpy).toHaveBeenCalled();
-    });
+      await waitFor(() => {
+        expect(windowOpenSpy).toHaveBeenCalled();
+      });
+      // The write really was attempted and really did reject — otherwise this
+      // would pass just as well against a clipboard that was never touched.
+      expect(writeText).toHaveBeenCalled();
+      expect(screen.queryByText(/copied/i)).not.toBeInTheDocument();
+    } finally {
+      // In a `finally` so a failing assertion above still restores the spy —
+      // otherwise one red test leaves a rejecting clipboard in place.
+      writeText.mockRestore();
+    }
   });
 });

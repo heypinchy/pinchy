@@ -294,36 +294,52 @@ describe("SettingsUsers", () => {
 
   it("should show copied feedback when invite link Copy button is clicked", async () => {
     const user = userEvent.setup();
-    Object.defineProperty(navigator, "clipboard", {
-      value: { writeText: vi.fn().mockResolvedValue(undefined) },
-      writable: true,
-      configurable: true,
-    });
+    // Spy on the clipboard user-event installed, rather than replacing
+    // `navigator.clipboard` wholesale with Object.defineProperty. `setup()`
+    // above defines the property itself (Clipboard.js: `attachClipboardStubToView`),
+    // so redefining it shadows the stub user-event will later look for, and
+    // `resetClipboardStubOnView` then silently does nothing between tests —
+    // leaving this test's mock in place for every later test in the file.
+    // A spy leaves that descriptor intact and `mockRestore` hands it back.
+    // Same pattern as add-integration-google-wizard.test.tsx.
+    const writeText = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue(undefined);
 
-    mockFetchForUsers(mockUsers, mockInvites);
-    render(<SettingsUsers currentUserId="user-1" />);
+    try {
+      mockFetchForUsers(mockUsers, mockInvites);
+      render(<SettingsUsers currentUserId="user-1" />);
 
-    await waitFor(() => {
-      expect(screen.getByRole("button", { name: "Invite User" })).toBeInTheDocument();
-    });
-    await user.click(screen.getByRole("button", { name: "Invite User" }));
-    await waitFor(() => expect(screen.getByLabelText("Role")).toBeInTheDocument());
+      await waitFor(() => {
+        expect(screen.getByRole("button", { name: "Invite User" })).toBeInTheDocument();
+      });
+      await user.click(screen.getByRole("button", { name: "Invite User" }));
+      await waitFor(() => expect(screen.getByLabelText("Role")).toBeInTheDocument());
 
-    vi.mocked(global.fetch).mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ token: "invite-token-abc" }),
-    } as Response);
-    await user.click(screen.getByRole("button", { name: "Create Invite" }));
+      vi.mocked(global.fetch).mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ token: "invite-token-abc" }),
+      } as Response);
+      await user.click(screen.getByRole("button", { name: "Create Invite" }));
 
-    await waitFor(() =>
-      expect(screen.getByText("http://localhost:7777/invite/invite-token-abc")).toBeInTheDocument()
-    );
+      await waitFor(() =>
+        expect(
+          screen.getByText("http://localhost:7777/invite/invite-token-abc")
+        ).toBeInTheDocument()
+      );
 
-    await user.click(screen.getByRole("button", { name: "Copy" }));
+      await user.click(screen.getByRole("button", { name: "Copy" }));
 
-    await waitFor(() => {
-      expect(screen.getByRole("button", { name: "Copied!" })).toBeInTheDocument();
-    });
+      await waitFor(() => {
+        expect(screen.getByRole("button", { name: "Copied!" })).toBeInTheDocument();
+      });
+      // The spy is what makes the success path deterministic, so assert it was
+      // really the invite link that went to the clipboard — otherwise the spy
+      // is decoration and only the button label is under test.
+      expect(writeText).toHaveBeenCalledWith("http://localhost:7777/invite/invite-token-abc");
+    } finally {
+      // In a `finally` so a failing assertion above still restores the spy —
+      // otherwise one red test leaves it in place for the rest of the file.
+      writeText.mockRestore();
+    }
   });
 
   it("should render group badges for users", async () => {
