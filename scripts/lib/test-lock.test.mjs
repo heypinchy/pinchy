@@ -337,13 +337,21 @@ describe("the wrapper, run for real", () => {
   }
 
   /**
-   * Two sessions queued behind ONE dead holder is the ordinary case — a killed
+   * Sessions queued behind ONE dead holder is the ordinary case — a killed
    * session leaves a lock and every waiting session sees it. If they clear it by
    * "delete, then mkdir", both delete and both mkdir, and both then run: the
    * pile-up this whole mechanism exists to prevent, arriving through its own
    * recovery path. Taking over has to be atomic, exactly like taking the lock is.
+   *
+   * FOUR sessions, not two, and the count is the point. A takeover that removes
+   * the owner file and puts it back if it guessed wrong leaves the path empty in
+   * between — which two sessions cannot exploit (the one that guesses wrong is
+   * the one that would have to acquire) and a third can, by acquiring in exactly
+   * that gap. Measured on the way to fixing this: the two-session probe passed
+   * 40 rounds against an implementation the four-session one failed 3 of 15.
+   * Real machines run more than two agent sessions, so the probe should too.
    */
-  test("two runs facing one dead holder still take turns", PROBE, async () => {
+  test("runs facing one dead holder still take turns", PROBE, async () => {
     const lock = freshLockPath();
     mkdirSync(lock, { recursive: true });
     writeFileSync(
@@ -357,17 +365,25 @@ describe("the wrapper, run for real", () => {
 
     const log = join(mkdtempSync(join(tmpdir(), "pinchy-probe-log-")), "seq");
     writeFileSync(log, "");
-    await Promise.all([
-      runWrapper(lock, overlapProbe, { PROBE_LOG: log }),
-      runWrapper(lock, overlapProbe, { PROBE_LOG: log }),
-    ]);
+    await Promise.all(
+      Array.from({ length: 4 }, () =>
+        runWrapper(lock, overlapProbe, { PROBE_LOG: log }),
+      ),
+    );
 
-    assert.deepEqual(readFileSync(log, "utf8").trim().split("\n"), [
-      "in",
-      "out",
-      "in",
-      "out",
-    ]);
+    // Depth rather than a literal sequence: the property is "never two inside at
+    // once", and stating it that way keeps the assertion readable as the runner
+    // count grows — and names the actual failure when it breaks.
+    const sequence = readFileSync(log, "utf8").trim().split("\n");
+    let depth = 0;
+    for (const marker of sequence) {
+      depth += marker === "in" ? 1 : -1;
+      assert.ok(
+        depth <= 1,
+        `two runs were inside the lock at once: ${sequence.join(",")}`,
+      );
+    }
+    assert.equal(sequence.length, 8, `every run must report in and out`);
     rmSync(lock, { recursive: true, force: true });
   });
 

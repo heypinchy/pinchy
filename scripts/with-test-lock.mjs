@@ -21,7 +21,14 @@
  */
 
 import { spawn, execFileSync } from "node:child_process";
-import { mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import {
+  mkdirSync,
+  writeFileSync,
+  readFileSync,
+  linkSync,
+  rmSync,
+} from "node:fs";
+import { createHash } from "node:crypto";
 import { join } from "node:path";
 
 import {
@@ -44,6 +51,8 @@ const OWNER_PATH = join(LOCK_DIR, OWNER_FILE);
 const POLL_MS = 2_000;
 /** Backoff for a lock that was free but lost to another create — not a wait. */
 const RETRY_MS = 50;
+/** Takeover attempts a single generation may resist before we give up on it. */
+const MAX_CONTESTED = 200;
 
 const [command, ...args] = process.argv.slice(2);
 if (!command) {
@@ -81,6 +90,9 @@ function readOwner() {
   }
 }
 
+/** The exact owner bytes we wrote, or null while we hold nothing. */
+let heldRecord = null;
+
 function isAlive(pid) {
   try {
     // Signal 0 performs the permission and existence checks without delivering.
@@ -107,22 +119,91 @@ function isAlive(pid) {
  * and both suites run. Measured: 3 of 8 concurrent pairs overlapped that way.
  */
 function tryAcquire(label) {
+  const record = formatLockRecord({
+    pid: process.pid,
+    startedAtMs: Date.now(),
+    label,
+  });
   try {
     // The directory is a container, and creating it must therefore be tolerant
     // of already existing — it decides nothing.
     mkdirSync(LOCK_DIR, { recursive: true });
-    writeFileSync(
-      OWNER_PATH,
-      formatLockRecord({ pid: process.pid, startedAtMs: Date.now(), label }),
-      { flag: "wx" },
-    );
+    writeFileSync(OWNER_PATH, record, { flag: "wx" });
   } catch (err) {
     // EEXIST: somebody holds it. ENOENT: the holder removed the directory from
     // under us as it released — both mean "try again", not "give up".
     if (err.code === "EEXIST" || err.code === "ENOENT") return false;
     throw err; // unwritable /tmp and friends — the caller falls through to fail-open
   }
+  // Remembered rather than re-read at exit: release must be able to ask "is the
+  // owner file still the one I wrote?", and only the exact bytes answer that.
+  heldRecord = record;
   return true;
+}
+
+/** Names a generation of the owner file by its exact bytes. */
+function fingerprint(raw) {
+  return createHash("sha1").update(raw).digest("hex").slice(0, 16);
+}
+
+/**
+ * Removes the owner file — but only while it still holds EXACTLY `judgedRaw`.
+ *
+ * @returns {"removed"|"contested"|"blocked"}
+ *
+ * This is the one operation the whole mechanism turns on, and the reason it has
+ * to be built this carefully rather than as read-then-remove.
+ *
+ * Two sessions queued behind ONE dead holder is the ordinary case, not an edge
+ * case: a killed session leaves a lock and everybody waiting sees the same one.
+ * Deciding on a file and then acting on it reads like one operation and is two,
+ * with the whole world free to move in between — so both removed the dead owner,
+ * both created their own, and both ran. That is the pile-up this mechanism
+ * exists to prevent, arriving through its own recovery path. Measured before
+ * this change: 2 of 20 rounds overlapped with two sessions, and CI failed the
+ * probe outright.
+ *
+ * The fix is that the tombstone name is derived from the bytes, and `link`
+ * REFUSES a name that exists. So of all the sessions judging one generation
+ * exactly one gets to the removal, and it re-reads the bytes through its own
+ * link — a question about a private name rather than a guess about a shared one.
+ *
+ * `link`+read+remove rather than a plain rename, because renaming a FILE
+ * overwrites its target without complaint: it would move whatever happens to sit
+ * at the owner path at that instant, including a live successor's record, and
+ * putting that back leaves the path empty in the meantime — which is exactly the
+ * window a third session acquires in. Measured: that variant still overlapped 3
+ * of 15 rounds with four sessions. Directory renames report ENOTEMPTY and files
+ * do not; `link` is the primitive that says no.
+ *
+ * Removing is still never what GRANTS the lock — the `wx` create in tryAcquire
+ * is, it stays the only such place, and only one caller can win it.
+ */
+function removeOwnerIf(judgedRaw) {
+  const tomb = `${OWNER_PATH}.gen.${fingerprint(judgedRaw)}`;
+  try {
+    linkSync(OWNER_PATH, tomb);
+  } catch {
+    // ENOENT: already gone. EEXIST: another session holds this same generation
+    // and is removing it. Both mean "look again", never "give up".
+    return "contested";
+  }
+  try {
+    // The bytes as they were at the instant we linked them, whatever the shared
+    // path says now. Anything else means the lock moved on without us.
+    if (readFileSync(tomb, "utf8") !== judgedRaw) return "contested";
+    rmSync(OWNER_PATH, { force: true });
+    return "removed";
+  } catch {
+    return "blocked";
+  } finally {
+    try {
+      rmSync(tomb, { force: true });
+    } catch {
+      // An orphaned tombstone only blocks its own generation, and the loop in
+      // acquire() bounds how long it may do so.
+    }
+  }
 }
 
 /**
@@ -133,44 +214,18 @@ function tryAcquire(label) {
  * session acquires immediately while two suites are already running, and every
  * later release repeats it. The serialization degrades permanently and nothing
  * about it looks broken, which is the worst property a guard can have.
+ *
+ * Same conditional removal as a takeover, with our own record as the condition —
+ * so a lock that is no longer ours survives our exit untouched.
  */
 function release() {
-  const { record } = readOwner();
-  if (record !== null && record.pid !== process.pid) return;
+  if (heldRecord === null) return;
+  if (removeOwnerIf(heldRecord) !== "removed") return;
   try {
     rmSync(LOCK_DIR, { recursive: true, force: true });
   } catch {
     // A lock we cannot remove is cleared by the age rule within 20 minutes.
   }
-}
-
-/**
- * Clears a lock we have judged unusable — dead holder, unreadable owner, too old.
- *
- * @param {string | null} judgedRaw the owner bytes the judgement was made on
- * @returns {boolean} false means "could not clear it": the caller falls through
- *   to fail-open rather than retrying something it cannot fix.
- *
- * Two sessions queued behind ONE dead holder is the ordinary case — a killed
- * session leaves a lock and everybody waiting sees the same one — so a takeover
- * that both of them win is not an edge case, it is the pile-up this mechanism
- * exists to prevent arriving through its own recovery path.
- *
- * Removing the owner file is what makes that safe: it is only removed while it
- * still holds the exact bytes we judged, and whoever wins the following exclusive
- * create replaces those bytes with its own live record, so the loser re-decides
- * and waits. Clearing is therefore never the step that grants the lock — the
- * `wx` create in tryAcquire is, and only one caller can win it.
- */
-function clearStaleLock(judgedRaw) {
-  if (readOwner().raw !== judgedRaw) return true; // someone else took it over
-  try {
-    rmSync(OWNER_PATH, { force: true });
-  } catch (err) {
-    console.error(`ℹ test lock: cannot clear ${OWNER_PATH} (${err.message})`);
-    return false;
-  }
-  return true;
 }
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -182,6 +237,7 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 async function acquire(label) {
   const startedWaitingAt = Date.now();
   let announced = false;
+  let contested = 0;
 
   for (;;) {
     try {
@@ -210,10 +266,32 @@ async function acquire(label) {
     });
 
     if (action === "steal") {
-      console.error(`ℹ test lock: clearing a stale lock — ${reason}`);
-      if (!clearStaleLock(raw)) return false;
+      const outcome = removeOwnerIf(raw);
+      if (outcome === "blocked") {
+        console.error(
+          `ℹ test lock: cannot clear ${OWNER_PATH} — running unserialized`,
+        );
+        return false;
+      }
+      if (outcome === "removed") {
+        console.error(`ℹ test lock: clearing a stale lock — ${reason}`);
+        continue;
+      }
+      // "contested": somebody else is clearing this same generation, or it
+      // changed under us. Look again — but bounded, because a takeover is the
+      // one action decideLockAction ranks ABOVE the wait limit, so a generation
+      // that stays contested (a tombstone orphaned by a session killed mid-
+      // takeover) would otherwise spin here forever at full tilt.
+      if (++contested > MAX_CONTESTED) {
+        console.error(
+          `⚠ test lock: a stale lock resisted ${MAX_CONTESTED} takeover attempts — running anyway rather than blocking`,
+        );
+        return false;
+      }
+      await sleep(RETRY_MS);
       continue;
     }
+    contested = 0;
     if (action === "proceed") {
       console.error(`⚠ test lock: ${reason}`);
       return false;
