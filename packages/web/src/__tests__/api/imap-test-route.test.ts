@@ -214,11 +214,20 @@ describe("POST /api/integrations/imap/test", () => {
       const entry = mockAppendAuditLog.mock.calls[0][0];
       expect(entry.eventType).toBe("integration.credentials_tested");
       expect(entry.outcome).toBe("success");
-      expect(entry.detail.imapHost).toBe("imap.example.com");
-      expect(entry.detail.smtpHost).toBe("smtp.example.com");
+      // Whole-shape, not field-by-field: the point is that a success row
+      // carries NO failure code (and no stray field the AuditLogEntry union
+      // doesn't declare). A per-field assertion cannot see an extra key.
+      expect(entry.detail).toEqual({
+        imapHost: "imap.example.com",
+        smtpHost: "smtp.example.com",
+        emailHash: expect.any(String),
+        emailPreview: expect.any(String),
+      });
 
       const serializedEntry = JSON.stringify(entry);
       expect(serializedEntry).not.toContain(validBody.password);
+      // The username is email-shaped, so it must reach the log redacted.
+      expect(serializedEntry).not.toContain("mailbox@example.com");
     });
 
     it("returns 200 { ok: false, imap } and writes a failure audit entry when the IMAP login fails", async () => {
@@ -249,8 +258,17 @@ describe("POST /api/integrations/imap/test", () => {
       const entry = mockAppendAuditLog.mock.calls[0][0];
       expect(entry.eventType).toBe("integration.credentials_tested");
       expect(entry.outcome).toBe("failure");
-      // Failure codes go into detail, never the raw error/stack trace.
-      expect(entry.detail.imapCode).toBe("auth");
+      // Failure codes go into detail, never the raw error/stack trace. Asserted
+      // as a whole shape so the row that a reader of AuditLogEntry expects is
+      // the row that is actually written: the failing leg's code is present,
+      // the passing leg's is absent, and nothing else rides along.
+      expect(entry.detail).toEqual({
+        imapHost: "imap.example.com",
+        smtpHost: "smtp.example.com",
+        imapCode: "auth",
+        emailHash: expect.any(String),
+        emailPreview: expect.any(String),
+      });
 
       const serializedEntry = JSON.stringify(entry);
       expect(serializedEntry).not.toContain(validBody.password);
@@ -278,7 +296,14 @@ describe("POST /api/integrations/imap/test", () => {
       const entry = mockAppendAuditLog.mock.calls[0][0];
       expect(entry.eventType).toBe("integration.credentials_tested");
       expect(entry.outcome).toBe("failure");
-      expect(entry.detail.smtpCode).toBe("refused");
+      // Mirror image of the IMAP case: only the failing leg contributes a code.
+      expect(entry.detail).toEqual({
+        imapHost: "imap.example.com",
+        smtpHost: "smtp.example.com",
+        smtpCode: "refused",
+        emailHash: expect.any(String),
+        emailPreview: expect.any(String),
+      });
 
       const serializedEntry = JSON.stringify(entry);
       expect(serializedEntry).not.toContain(validBody.password);
@@ -412,8 +437,16 @@ describe("POST /api/integrations/imap/test", () => {
         expect(mockAppendAuditLog).toHaveBeenCalledTimes(1);
         const entry = mockAppendAuditLog.mock.calls[0][0];
         expect(entry.outcome).toBe("failure");
-        expect(entry.detail.imapCode).toBe("blocked");
-        expect(entry.detail.smtpCode).toBe("blocked");
+        // The both-legs-failed shape: a row can carry either code, both, or
+        // neither, and the type has to admit all three.
+        expect(entry.detail).toEqual({
+          imapHost: "imap.example.com",
+          smtpHost: "smtp.example.com",
+          imapCode: "blocked",
+          smtpCode: "blocked",
+          emailHash: expect.any(String),
+          emailPreview: expect.any(String),
+        });
       });
 
       it("blocks the IMAP leg alone when only the IMAP host is internal", async () => {
@@ -431,6 +464,21 @@ describe("POST /api/integrations/imap/test", () => {
         expect(body.smtp).toEqual({ ok: true });
         expect(ImapFlowMock).not.toHaveBeenCalled();
         expect(createTransportMock).toHaveBeenCalled();
+      });
+    });
+
+    it("omits the redaction fields entirely for a username that is not email-shaped", async () => {
+      // `emailHash`/`emailPreview` are optional in the declared detail shape
+      // because not every IMAP username is an email address — a bare login name
+      // is not identity data and gets no redaction pair at all.
+      const { POST } = await import("@/app/api/integrations/imap/test/route");
+      await POST(makeRequest({ ...validBody, username: "mailbox" }), routeContext());
+
+      expect(mockAppendAuditLog).toHaveBeenCalledTimes(1);
+      const entry = mockAppendAuditLog.mock.calls[0][0];
+      expect(entry.detail).toEqual({
+        imapHost: "imap.example.com",
+        smtpHost: "smtp.example.com",
       });
     });
 
