@@ -4,13 +4,14 @@ import * as path from "path";
 import * as os from "os";
 
 // Hoist the real implementations before mocking so we can use them as defaults.
-const { realRenameSync, realWriteFileSync, realMkdirSync } = vi.hoisted(() => {
+const { realRenameSync, realWriteFileSync, realMkdirSync, realUnlinkSync } = vi.hoisted(() => {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const realFs = require("fs") as typeof import("fs");
   return {
     realRenameSync: realFs.renameSync.bind(realFs),
     realWriteFileSync: realFs.writeFileSync.bind(realFs),
     realMkdirSync: realFs.mkdirSync.bind(realFs),
+    realUnlinkSync: realFs.unlinkSync.bind(realFs),
   };
 });
 
@@ -21,6 +22,7 @@ vi.mock("fs", async (importOriginal) => {
   const renameSyncMock = vi.fn(realRenameSync);
   const writeFileSyncMock = vi.fn(realWriteFileSync);
   const mkdirSyncMock = vi.fn(realMkdirSync);
+  const unlinkSyncMock = vi.fn(realUnlinkSync);
   return {
     ...actual,
     default: {
@@ -28,10 +30,12 @@ vi.mock("fs", async (importOriginal) => {
       renameSync: renameSyncMock,
       writeFileSync: writeFileSyncMock,
       mkdirSync: mkdirSyncMock,
+      unlinkSync: unlinkSyncMock,
     },
     renameSync: renameSyncMock,
     writeFileSync: writeFileSyncMock,
     mkdirSync: mkdirSyncMock,
+    unlinkSync: unlinkSyncMock,
   };
 });
 
@@ -58,6 +62,7 @@ describe("writeAgentAuthProfiles", () => {
     vi.mocked(fs.renameSync).mockImplementation(realRenameSync);
     vi.mocked(fs.writeFileSync).mockImplementation(realWriteFileSync);
     vi.mocked(fs.mkdirSync).mockImplementation(realMkdirSync);
+    vi.mocked(fs.unlinkSync).mockImplementation(realUnlinkSync);
   });
 
   afterEach(() => {
@@ -65,6 +70,7 @@ describe("writeAgentAuthProfiles", () => {
     vi.mocked(fs.renameSync).mockReset();
     vi.mocked(fs.writeFileSync).mockReset();
     vi.mocked(fs.mkdirSync).mockReset();
+    vi.mocked(fs.unlinkSync).mockReset();
   });
 
   it("writes auth-profiles.json with one profile per configured provider", async () => {
@@ -198,6 +204,62 @@ describe("writeAgentAuthProfiles", () => {
         writeAgentAuthProfiles({ configRoot: tmpDir, agentId: "a", providers: ["openai"] })
       ).rejects.toThrow(/EACCES/);
       expect(vi.mocked(fs.writeFileSync).mock.calls.length).toBe(5);
+    });
+
+    // The empty-provider path is not a side case — it is the state EVERY agent
+    // is in before a provider is configured, which is exactly when #934 strikes
+    // (Smithers exists before the wizard's provider step). And `unlink` inside a
+    // root-owned 0700 directory returns EACCES, not ENOENT. A bare catch here
+    // therefore reports the broken directory as a clean removal: nothing lands
+    // in `authProfileFailures`, no warning toast, no `runtimeApplied: false` —
+    // the permission problem stays invisible until a provider is saved, which is
+    // the very silence the rest of this fix exists to remove.
+    it("retries a denied removal and succeeds once the tick lands", async () => {
+      const agentDir = path.join(tmpDir, "agents", "a", "agent");
+      fs.mkdirSync(agentDir, { recursive: true });
+      const filePath = path.join(agentDir, "auth-profiles.json");
+      fs.writeFileSync(filePath, "{}\n");
+
+      vi.mocked(fs.unlinkSync)
+        .mockImplementationOnce(() => {
+          throw eaccesError();
+        })
+        .mockImplementationOnce(() => {
+          throw eaccesError();
+        });
+
+      await writeAgentAuthProfiles({ configRoot: tmpDir, agentId: "a", providers: [] });
+
+      expect(fs.existsSync(filePath)).toBe(false);
+      expect(vi.mocked(fs.unlinkSync).mock.calls.length).toBe(3);
+    });
+
+    it("surfaces a persistently denied removal instead of reporting a clean agent", async () => {
+      vi.mocked(fs.unlinkSync).mockImplementation(() => {
+        throw eaccesError();
+      });
+
+      await expect(
+        writeAgentAuthProfiles({ configRoot: tmpDir, agentId: "a", providers: [] })
+      ).rejects.toThrow(/EACCES/);
+      expect(vi.mocked(fs.unlinkSync).mock.calls.length).toBe(5);
+    });
+
+    it("surfaces a removal failure the tick cannot fix either", async () => {
+      // ENOENT is the one code that means "nothing to remove" — everything else
+      // is a real problem. The blanket catch swallowed all of them equally.
+      // (`empty providers — no-op when auth-profiles.json does not exist` above
+      // pins the ENOENT half of the same classification.)
+      const eisdir = new Error("EISDIR: illegal operation on a directory, unlink");
+      (eisdir as NodeJS.ErrnoException).code = "EISDIR";
+      vi.mocked(fs.unlinkSync).mockImplementation(() => {
+        throw eisdir;
+      });
+
+      await expect(
+        writeAgentAuthProfiles({ configRoot: tmpDir, agentId: "a", providers: [] })
+      ).rejects.toThrow(/EISDIR/);
+      expect(vi.mocked(fs.unlinkSync).mock.calls.length).toBe(1);
     });
 
     it("does not retry an error the tick cannot fix", async () => {
