@@ -68,6 +68,8 @@ The **very first** provider you configure — built-in or custom — automatical
 
 Agents pinned to a model from the removed provider are moved to a still-configured one, so no agent is left on a model that no longer exists. The confirmation dialog states the outcome before you commit: how many agents are affected, and which provider and model they'll be moved to. If you removed your default provider, the provider those agents moved to becomes the new default.
 
+Pinchy refuses to remove the **last** configured provider — add another one first. That is what keeps the sentence above true: there is always somewhere for an orphaned agent to go.
+
 The move is a starting point, not a verdict: pick a different model for any agent afterwards — see [Change an agent's model](#change-an-agents-model).
 
 ## OpenAI-compatible providers
