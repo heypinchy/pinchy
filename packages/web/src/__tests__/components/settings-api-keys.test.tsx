@@ -233,27 +233,50 @@ describe("SettingsApiKeys", () => {
       name: "New Key",
       scopes: ["agents:read"],
     });
-    Object.defineProperty(navigator, "clipboard", {
-      value: { writeText: vi.fn().mockResolvedValue(undefined) },
-      writable: true,
-      configurable: true,
-    });
+    // Spy on the clipboard user-event installed, rather than replacing
+    // `navigator.clipboard` wholesale with Object.defineProperty.
+    //
+    // `userEvent.setup()` above attaches its own clipboard stub to the view and
+    // registers `detachClipboardStubFromView` to take it back down. Redefining
+    // the property strands that teardown: it later reads `window.navigator` on a
+    // view that no longer has its stub, and by the time the deferred cleanup
+    // runs the jsdom global can already be gone —
+    //
+    //   TypeError: Cannot read properties of undefined (reading 'navigator')
+    //     ❯ detachClipboardStubFromView .../dataTransfer/Clipboard.js:120
+    //
+    // That throw lands as a FAILED SUITE, not a failed test, so it takes the
+    // whole file's environment with it and all 16 tests report the symptom
+    // `ReferenceError: document is not defined` — including the ones that never
+    // touch the clipboard. Whether the cleanup wins the race against teardown is
+    // load-dependent, which is why this passed locally and in one CI run before
+    // failing the next on an unrelated docs commit.
+    //
+    // A spy leaves the descriptor user-event owns intact, and `mockRestore`
+    // hands it back. Same pattern as add-integration-google-wizard.test.tsx.
+    const writeText = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue(undefined);
 
-    render(<SettingsApiKeys />);
-    await openCreateDialog(user);
-    await user.type(screen.getByLabelText("Name"), "New Key");
-    await user.click(screen.getByRole("checkbox", { name: "Read agents" }));
-    await user.click(screen.getByRole("button", { name: "Create" }));
+    try {
+      render(<SettingsApiKeys />);
+      await openCreateDialog(user);
+      await user.type(screen.getByLabelText("Name"), "New Key");
+      await user.click(screen.getByRole("checkbox", { name: "Read agents" }));
+      await user.click(screen.getByRole("button", { name: "Create" }));
 
-    await waitFor(() => {
-      expect(screen.getByText(plaintextSecret)).toBeInTheDocument();
-    });
+      await waitFor(() => {
+        expect(screen.getByText(plaintextSecret)).toBeInTheDocument();
+      });
 
-    await user.click(screen.getByRole("button", { name: "Copy" }));
+      await user.click(screen.getByRole("button", { name: "Copy" }));
 
-    await waitFor(() => {
-      expect(navigator.clipboard.writeText).toHaveBeenCalledWith(plaintextSecret);
-    });
+      await waitFor(() => {
+        expect(writeText).toHaveBeenCalledWith(plaintextSecret);
+      });
+    } finally {
+      // In a `finally` so a failing assertion above still restores the spy —
+      // otherwise one red test leaves the stub in place for the rest of the file.
+      writeText.mockRestore();
+    }
   });
 
   it("★ clears the one-time plaintext key from state once its modal is dismissed", async () => {
