@@ -16,7 +16,9 @@ import postgres from "postgres";
 import {
   FAKE_OLLAMA_RATE_LIMIT_TRIGGER,
   FAKE_OLLAMA_TOOL_THEN_RATE_LIMIT_TRIGGER,
+  FAKE_OLLAMA_TOOL_THEN_RATE_LIMIT_TOOL as TOOL_THEN_RATE_LIMIT_TOOL,
 } from "../shared/fake-ollama/fake-ollama-server";
+import { describeToolAudit } from "../shared/dispatch-probe";
 import { stackDbUrl } from "../shared/stack-db";
 import { login, getSmithersAgentId, waitForOpenClawConnected } from "./helpers";
 
@@ -94,7 +96,16 @@ test.describe("Durable agent-error banner", () => {
     // assertions below.
     await page.getByRole("button", { name: /^retry$/i }).click();
     const liveConfirm = page.getByRole("alertdialog");
-    await expect(liveConfirm).toBeVisible();
+    // #1013: this assertion has failed in CI, and the run's artifacts could not
+    // say why — OpenClaw doesn't log tool executions at this level, postgres has
+    // no statement logging, pinchy has no request logging. The gate depends on
+    // an audit lookup, so ask the audit trail here, while the stack is still up,
+    // and carry the answer into the failure message. See describeToolAudit for
+    // how the three possible answers map to three different bugs.
+    await expect(
+      liveConfirm,
+      await describeToolAudit(page, { toolName: TOOL_THEN_RATE_LIMIT_TOOL, agentId })
+    ).toBeVisible();
     await expect(liveConfirm).toContainText(/duplicate/i);
     await liveConfirm.getByRole("button", { name: /cancel/i }).click();
     await expect(liveConfirm).toHaveCount(0);

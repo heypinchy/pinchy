@@ -429,3 +429,55 @@ export async function pollAuditForEvent(
     `No "${params.eventType}" audit entry matched predicate within ${deadlineMs}ms${suffix}`
   );
 }
+
+/**
+ * Describe what the audit trail knows about a tool the run was supposed to
+ * execute — for use in an assertion message (#1013).
+ *
+ * The duplicate-write retry gate is driven by `agentRanToolSince()`, which asks
+ * whether a `tool.%` row exists for `resource = agent:<agentId>`. When the gate
+ * is missing, the interesting question is *why* that lookup came back empty,
+ * and a run's artifacts cannot answer it: OpenClaw does not log tool executions
+ * at the E2E log level, postgres has no statement logging, and pinchy has no
+ * request logging. So ask the audit API directly, while the stack is still up.
+ *
+ * The three answers map to three different bugs:
+ *   - no row at all              → the tool never ran (fake-LLM / dispatch side)
+ *   - row under a different
+ *     `resource`                 → written, but not attributable to this agent
+ *                                  (the `unknown-agent` fallback, or a
+ *                                  sessionKey that didn't resolve)
+ *   - row present and matching   → it existed but the lookup missed it — a race
+ *                                  between the plugin's audit POST and the
+ *                                  error chunk's `agentRanToolSince()`
+ *
+ * Never throws: a diagnostic that fails takes the real failure's message with
+ * it, which is the opposite of the point.
+ */
+export async function describeToolAudit(
+  page: Page,
+  params: { toolName: string; agentId: string }
+): Promise<string> {
+  const eventType = `tool.${params.toolName}`;
+  try {
+    const res = await page.request.get(
+      `/api/audit?eventType=${encodeURIComponent(eventType)}&limit=10`
+    );
+    if (res.status() !== 200) {
+      return `[#1013] could not read the audit trail: HTTP ${res.status()} from /api/audit?eventType=${eventType}`;
+    }
+    const audit = (await res.json()) as { entries: AuditApiEntry[] };
+    if (audit.entries.length === 0) {
+      return `[#1013] no "${eventType}" audit row exists at all — the tool never ran, so sideEffects=false was CORRECT and the fault is upstream of the retry gate (fake-LLM round selection or tool dispatch).`;
+    }
+    const wanted = `agent:${params.agentId}`;
+    const mine = audit.entries.filter((e) => e.resource === wanted);
+    if (mine.length === 0) {
+      const seen = [...new Set(audit.entries.map((e) => e.resource ?? "null"))].join(", ");
+      return `[#1013] ${audit.entries.length} "${eventType}" row(s) exist but none under "${wanted}" (saw: ${seen}) — the tool ran and was audited, but the row is not attributable to this agent, so agentRanToolSince() can never find it.`;
+    }
+    return `[#1013] ${mine.length} matching "${eventType}" row(s) under "${wanted}" — the row the gate looks for DOES exist, so the lookup raced the audit write.`;
+  } catch (err) {
+    return `[#1013] audit diagnostic itself failed: ${err instanceof Error ? err.message : String(err)}`;
+  }
+}
