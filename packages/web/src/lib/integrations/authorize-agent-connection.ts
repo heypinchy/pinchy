@@ -29,6 +29,15 @@ import type { IntegrationConnectionType } from "@/db/enums";
 /**
  * The tools that grant an agent the instance-wide web-search connection.
  *
+ * This list is one half of a pair. `openclaw-config/build.ts` writes the
+ * web-search `connectionId` into an agent's `pinchy-web` config exactly when
+ * the agent holds one of these tools, and the rule below re-asks that same
+ * question when the plugin comes back for the key. The two must name the same
+ * set: a tool added to the emission side alone hands a plugin a connectionId
+ * whose credentials this route then refuses — a 403 on a key the config just
+ * gave it, reported as an agent reaching beyond a grant it visibly has.
+ * `web-search-tools-drift.test.ts` pins them together.
+ *
  * Kept beside the rule rather than imported from the tool registry on purpose:
  * this is the authorization list, and it must change only when someone means
  * to widen who can read the Brave API key.
@@ -63,11 +72,19 @@ export function decideConnectionAccess(
   connection: ConnectionForAuth | null,
   grantCount: number
 ): ConnectionAccessDecision {
-  // Connection first: a missing connection is answered by the route's existing
-  // "no longer connected" 404, which is what an admin needs to see. Checking
-  // the agent first would turn that into a 403 for anyone whose agent id is
-  // also wrong, and would let a caller distinguish "connection exists" from
-  // "connection does not" purely by varying the agent id.
+  // Connection first, so a connection that no longer exists is reported as
+  // such whatever agent id arrived with it: the route answers that with the
+  // actionable "no longer connected" 404 an admin can act on, and checking the
+  // agent first would bury it under a 403 whenever the agent id is stale too —
+  // which is precisely the case where an integration was removed and its
+  // grants went with it.
+  //
+  // What this order costs, stated plainly rather than argued away: 404-vs-403
+  // tells the caller whether a connection id exists, and it can ask without a
+  // valid agent id. That is accepted here. The caller already holds the
+  // gateway token, so it is code inside the OpenClaw container, and that
+  // container reads an `openclaw.json` listing every connection id it is wired
+  // to. Existence is not the secret this endpoint keeps; the credentials are.
   if (!connection) return { allowed: false, reason: "connection-unknown" };
   if (!agent) return { allowed: false, reason: "agent-unknown" };
 
