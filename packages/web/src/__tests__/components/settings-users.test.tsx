@@ -773,6 +773,67 @@ describe("SettingsUsers", () => {
       });
     });
 
+    // The test above only proves the link is *rendered*. Its Copy button is a
+    // second one, in settings-users.tsx rather than invite-dialog.tsx, and it
+    // was covered by nothing: emptying its onClick left all 34 tests in this
+    // file green.
+    it("copies the invite link offered after a Resend", async () => {
+      const user = userEvent.setup();
+      // Spy on user-event's own clipboard stub rather than redefining the
+      // property — same reason as the invite-dialog copy test above.
+      const writeText = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue(undefined);
+
+      try {
+        mockFetchForUsers(mockUsers, [expiredInvite]);
+        render(<SettingsUsers currentUserId="user-1" />);
+
+        await waitFor(() => {
+          expect(screen.getAllByText("expired@example.com").length).toBeGreaterThanOrEqual(1);
+        });
+
+        vi.mocked(global.fetch).mockImplementation(async (url, init) => {
+          if (String(url) === "/api/users/invites/inv-2" && init?.method === "DELETE") {
+            return { ok: true, json: async () => ({ success: true }) } as Response;
+          }
+          if (String(url) === "/api/users/invite" && init?.method === "POST") {
+            return { ok: true, json: async () => ({ token: "resend-token-xyz" }) } as Response;
+          }
+          if (String(url) === "/api/users") {
+            return { ok: true, json: async () => ({ users: mockUsers }) } as Response;
+          }
+          if (String(url) === "/api/users/invites") {
+            return { ok: true, json: async () => ({ invites: [] }) } as Response;
+          }
+          if (String(url) === "/api/groups") {
+            return { ok: true, json: async () => [] } as Response;
+          }
+          if (String(url) === "/api/enterprise/status") {
+            return { ok: true, json: async () => ({ enterprise: false }) } as Response;
+          }
+          return { ok: false } as Response;
+        });
+
+        const table = screen.getByRole("table");
+        const inviteRow = within(table).getAllByText("expired@example.com")[0].closest("tr")!;
+        await user.click(within(inviteRow).getByRole("button", { name: "Resend" }));
+
+        // Scope to the link panel: the button carries the bare label "Copy",
+        // which is not unique on this screen once a dialog is open.
+        const link = await screen.findByText("http://localhost:7777/invite/resend-token-xyz");
+        const panel = link.closest("div")!;
+        await user.click(within(panel).getByRole("button", { name: "Copy" }));
+
+        await waitFor(() => {
+          expect(within(panel).getByRole("button", { name: "Copied!" })).toBeInTheDocument();
+        });
+        expect(writeText).toHaveBeenCalledWith("http://localhost:7777/invite/resend-token-xyz");
+      } finally {
+        // In a `finally` so a failing assertion above still restores the spy —
+        // otherwise one red test leaves it in place for the rest of the file.
+        writeText.mockRestore();
+      }
+    });
+
     it("reports which resend step failed: revoking the old invite", async () => {
       const user = userEvent.setup();
       mockFetchForUsers(mockUsers, [expiredInvite]);
