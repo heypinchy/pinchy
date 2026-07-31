@@ -32,20 +32,31 @@ import { SERVER_WS_MAX_PAYLOAD_BYTES } from "@/lib/limits";
  * for, and the wait was bounded only by the suite's testTimeout. Verified
  * against a server that accepts TCP and never answers the upgrade: still
  * hanging after 20 s without this option, "Opening handshake has timed out"
- * after 6.6 s with it.
+ * after 6.3 s with it.
  *
  * 2 s is ~75× the observed handshake (4–27 ms, isolated and under 2.5× CPU
  * oversubscription), so a merely slow handshake is still awaited to completion.
  * Only a stall is cut short and retried.
  *
- * The worst case this can cost — 3 attempts × 2 s plus 100/200 ms backoff =
- * 6.3 s — has to stay comfortably inside vitest.config.ts's `testTimeout`
- * (20 s). A retry budget that cannot finish inside the deadline is not bounded
- * at all: the run reports a timeout and hides the error that names the cause.
+ * The worst case this can cost — 3 attempts × 2 s plus the 100/200 ms backoff
+ * BETWEEN them = 6.3 s, measured against the black-hole server — has to stay
+ * comfortably inside vitest.config.ts's `testTimeout` (20 s). A retry budget
+ * that cannot finish inside the deadline is not bounded at all: the run reports
+ * a timeout and hides the error that names the cause.
  */
 const HANDSHAKE_TIMEOUT_MS = 2_000;
 
 const CONNECT_ATTEMPTS = 3;
+
+/**
+ * Drop a socket we are not going to use. The `error` listener is what keeps a
+ * terminate on an already-broken socket from surfacing as an unhandled 'error'
+ * event, which vitest reports against whichever test happens to be running.
+ */
+function discardSocket(ws: WebSocket): void {
+  ws.on("error", () => {});
+  ws.terminate();
+}
 
 /**
  * Open a WebSocket to the local test server and return BOTH ends, retrying the
@@ -68,6 +79,16 @@ const CONNECT_ATTEMPTS = 3;
  * "server closed before message" on a connection that is perfectly healthy.
  * Returning the socket that belongs to the connection we keep lets each test
  * listen to that one only.
+ *
+ * Why each attempt tags itself with a subprotocol: dropping the listener on
+ * failure is not enough to keep attempts apart. It stops THIS attempt's
+ * listener from eating the NEXT attempt's connection, but not the reverse — a
+ * server that completes the upgrade late (the stall resolving after we gave up)
+ * emits `connection` while attempt i+1 is already listening, and that attempt
+ * would await a dead socket while sending over a live one. `ws` echoes the
+ * first offered protocol back on `ws.protocol` with no handleProtocols
+ * configuration, so matching on it identifies the socket that belongs to this
+ * attempt, and a stale one is discarded rather than handed on.
  */
 async function connectPair(
   wss: WebSocketServer,
@@ -76,14 +97,21 @@ async function connectPair(
 ): Promise<{ client: WebSocket; server: WebSocket }> {
   let lastError: unknown;
   for (let i = 0; i < attempts; i++) {
-    // Claim this attempt's server-side socket before the client exists, so a
-    // socket accepted for this attempt can never be picked up by a later one.
+    // Claim this attempt's server-side socket before the client exists, and
+    // identify it by the attempt's own subprotocol so neither a late socket
+    // from an earlier attempt nor this attempt's socket arriving after we gave
+    // up can be mistaken for the connection we return.
+    const attemptId = `connect-attempt-${i}`;
     let onConnection!: (ws: WebSocket) => void;
     const serverSocket = new Promise<WebSocket>((resolve) => {
-      onConnection = resolve;
+      onConnection = (ws) => {
+        if (ws.protocol === attemptId) return resolve(ws);
+        discardSocket(ws);
+        wss.once("connection", onConnection);
+      };
       wss.once("connection", onConnection);
     });
-    const client = new WebSocket(`ws://127.0.0.1:${port}`, {
+    const client = new WebSocket(`ws://127.0.0.1:${port}`, [attemptId], {
       handshakeTimeout: HANDSHAKE_TIMEOUT_MS,
     });
     try {
@@ -100,11 +128,12 @@ async function connectPair(
       // Drop this attempt's listener so it cannot consume the next attempt's
       // connection, and discard the socket if the server did accept one.
       wss.off("connection", onConnection);
-      void serverSocket.then((ws) => {
-        ws.on("error", () => {});
-        ws.terminate();
-      });
-      await new Promise((r) => setTimeout(r, 100 * (i + 1)));
+      void serverSocket.then(discardSocket);
+      // No backoff after the final attempt — it would only delay the throw,
+      // and the budget the constant above states has to be the real one.
+      if (i < attempts - 1) {
+        await new Promise((r) => setTimeout(r, 100 * (i + 1)));
+      }
     }
   }
   throw lastError;
