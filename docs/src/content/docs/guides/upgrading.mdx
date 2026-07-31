@@ -184,6 +184,34 @@ If you need to roll back after an upgrade:
   backup step matters.
 </Aside>
 
+## Upgrading from v0.9.0 to %%PINCHY_VERSION%%
+
+### Breaking changes
+
+None. This is a bugfix release: no schema migration, no compose change, no configuration you have to touch. Pull the new images and restart.
+
+### Upgrade notes
+
+#### Chat now survives a backgrounded tab
+
+If you use Pinchy on a phone, as an installed PWA, or just leave a tab in the background, the chat connection could come back in a state where the thread was missing recent messages until you reloaded. The websocket now pauses its reconnect loop while the tab is hidden, closes cleanly after a grace period, resumes the moment the tab is visible again, and reconciles the thread history over the connection it already has. A request for that history is bounded by a deadline, so a stall surfaces as an error instead of an empty thread that looks like a lost conversation.
+
+#### The security banner no longer fires on a local install
+
+Running on `http://localhost` produced a red banner telling you to lock your domain for HTTPS hardening — advice you cannot act on, because there is no domain and the browser already treats `localhost` as a secure context. The banner now reads the request origin rather than the build mode, so it stays silent on loopback and still appears on a production deployment that happens to boot in development mode.
+
+#### A failed migration says what failed
+
+The boot migration reported a guess at which file had broken, derived from a count rather than from the failure itself. It now names the target and reports the actual error. Mechanically, the boot step moved from the `drizzle-kit` CLI, which swallowed failures, to drizzle-orm's own migrator (`scripts/db-migrate.mjs`); nothing changes for you at upgrade time.
+
+#### Audit-chain verification no longer steps over rows
+
+The verify sweep could skip rows written while it was running, and its checkpoint could stall when the concurrency probe failed. Both are fixed. If you have been running periodic verification, earlier "clean" results covered slightly less than they claimed — re-run a full verification once after upgrading if you rely on those reports.
+
+#### OpenClaw config directories keep their owner
+
+On the shared config volume, per-agent directories could end up owned by the wrong uid, leaving Pinchy unable to write agent auth profiles. The OpenClaw container now repairs ownership on start and on each tick. This runs automatically; there is nothing to configure.
+
 ## Upgrading from v0.8.0 to v0.9.0
 
 ### Breaking changes
