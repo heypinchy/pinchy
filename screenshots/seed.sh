@@ -98,8 +98,14 @@ ADMIN_ID=$(docker compose exec -T db psql -U pinchy -d pinchy -t -A -c "SELECT i
 # Saved through the API rather than psql on purpose: the route regenerates
 # openclaw.json, which is what carries the base URL to the runtime. A direct
 # settings INSERT would leave OpenClaw with no provider and fail at chat time.
-if curl -sf --max-time 3 "http://fake-ollama.local:11435/api/tags" > /dev/null 2>&1 \
-   || docker compose exec -T pinchy sh -c 'curl -sf --max-time 3 http://fake-ollama.local:11435/api/tags' > /dev/null 2>&1; then
+# Probed from inside the pinchy container, with node: the alias only resolves
+# on the compose network, and the image has no curl — which is also why the
+# service healthcheck uses `node -e fetch(...)`.
+if docker compose exec -T pinchy node -e "
+  fetch('http://fake-ollama.local:11435/api/tags')
+    .then(r => process.exit(r.ok ? 0 : 1))
+    .catch(() => process.exit(1))
+" > /dev/null 2>&1; then
   echo "🤖 Wiring the deterministic model..."
   api -X POST "$BASE_URL/api/setup/provider" \
     -d '{"provider":"ollama-local","url":"http://fake-ollama.local:11435"}' > /dev/null 2>&1 \
@@ -237,7 +243,12 @@ fi
 if [ "${HAS_FAKE_OLLAMA:-0}" = "1" ] && [ -n "$FRINK_ID" ]; then
   echo "📚 Indexing the knowledge base..."
   api -X PATCH "$BASE_URL/api/agents/$FRINK_ID" -d '{"model":"ollama/llama3.2"}' > /dev/null 2>&1
-  api -X POST "$BASE_URL/api/agents/$FRINK_ID/knowledge/reindex" > /dev/null 2>&1
+  # `-d '{}'` is required, not decoration: the route runs parseRequestBody, and
+  # a POST with a JSON content-type but no body fails validation with a 400.
+  # Printed rather than discarded, because the first version of this swallowed
+  # exactly that 400 and left "the reindex did nothing" with no way to see why.
+  KB_POST=$(api -X POST "$BASE_URL/api/agents/$FRINK_ID/knowledge/reindex" -d '{}' 2>&1)
+  echo "  → $KB_POST"
 
   # Poll rather than sleep: a fixed wait is either too short on a loaded
   # runner or wasted time on a fast one, and a half-built index produces a
@@ -246,12 +257,15 @@ if [ "${HAS_FAKE_OLLAMA:-0}" = "1" ] && [ -n "$FRINK_ID" ]; then
   for _ in $(seq 1 60); do
     KB_STATUS=$(api "$BASE_URL/api/agents/$FRINK_ID/knowledge/reindex" 2>/dev/null \
       | python3 -c "import sys,json; print(json.load(sys.stdin).get('job',{}).get('status',''))" 2>/dev/null || echo "")
+    # "succeeded", not "completed" — the terminal value the job actually
+    # reports. Guessing it wrong is silent: the loop simply times out and the
+    # index is fine, so the only symptom is a misleading warning.
     case "$KB_STATUS" in
-      completed|failed) break ;;
+      succeeded|failed) break ;;
     esac
     sleep 2
   done
-  if [ "$KB_STATUS" = "completed" ]; then
+  if [ "$KB_STATUS" = "succeeded" ]; then
     echo "  ✅ Knowledge base indexed"
   else
     echo "  ⚠️  Reindex ended as '${KB_STATUS:-unknown}' — the KB screenshot will fail loudly"
