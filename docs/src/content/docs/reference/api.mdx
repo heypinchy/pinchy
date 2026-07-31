@@ -1308,15 +1308,17 @@ Returns the decrypted credentials for a connection, auto-refreshing an expired O
 | --------------- | -------- | ------------------------------------------ |
 | `agentId`       | yes      | The agent the calling plugin is acting for |
 
-| Status | Meaning                                                                   |
-| ------ | ------------------------------------------------------------------------- |
-| `200`  | Credentials returned                                                      |
-| `400`  | `agentId` missing                                                         |
-| `401`  | Gateway token missing or wrong                                            |
-| `403`  | The agent is not granted this connection, or the connection is not active |
-| `404`  | The connection no longer exists                                           |
+| Status | Meaning                                                                                                                                        |
+| ------ | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `200`  | Credentials returned                                                                                                                           |
+| `400`  | `agentId` missing                                                                                                                              |
+| `401`  | Gateway token missing or wrong                                                                                                                 |
+| `403`  | The agent is not granted this connection, or the connection is still `pending`                                                                 |
+| `404`  | The connection no longer exists — the body says so in words an admin can act on, because plugins surface it into the tool error                |
+| `500`  | The stored credentials could not be decrypted under the current encryption key                                                                 |
+| `503`  | An OAuth access token expired and the app's OAuth settings are gone, so it cannot be refreshed. Deliberately not a `200` carrying stale tokens |
 
-A refusal writes an `integration.credentials_denied` audit row naming the agent and the connection — see [Audit Trail](/concepts/audit-trail/). A successful fetch is not audited: plugins re-fetch on every cache miss, so a row per success would be volume without signal.
+A refusal for a missing grant writes an `integration.credentials_denied` audit row naming the agent and the connection — see [Audit Trail](/concepts/audit-trail/). A successful fetch is not audited: plugins re-fetch on every cache miss, so a row per success would be volume without signal.
 
 ### `POST /api/internal/integrations/:connectionId/report-auth-failure`
 
