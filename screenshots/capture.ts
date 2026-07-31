@@ -68,10 +68,25 @@ async function screenshot(page: Page, name: string, target?: string | Locator) {
   // Injected here, after the page has loaded (head exists) — an addInitScript
   // runs before document.documentElement exists and silently throws, leaving
   // the banners visible. There is no CSP to block the injected <style>.
+  //
+  // Matched by testid *suffix* rather than by the two names, so a banner added
+  // later is hidden by convention instead of quietly shipping in every
+  // marketing shot. Nothing else in the app carries a `*banner` testid.
   await page.addStyleTag({
-    content:
-      '[data-testid="insecure-banner"],[data-testid="enterprise-banner"]{display:none !important}',
+    content: '[data-testid$="banner"]{display:none !important}',
   });
+  // Then check it took. This one rule is all that stands between a marketing
+  // screenshot and an orange security warning across the top, and until now
+  // nothing verified it — rename a testid and every published shot silently
+  // regains the stripe. A security warning in an advertising screenshot is
+  // worse than no screenshot, so this fails the capture instead.
+  const banners = page.locator('[data-testid$="banner"]');
+  for (let i = 0; i < (await banners.count()); i++) {
+    await expect(
+      banners.nth(i),
+      `a banner is visible in ${name} — check the testid convention`,
+    ).toBeHidden();
+  }
   const out = `${OUTPUT_DIR}/${name}`;
   if (target) {
     // .first() guards against nested matches; animations:"disabled" freezes
