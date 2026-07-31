@@ -45,6 +45,22 @@ describe("the full suite cannot be run unserialized by accident", () => {
     assert.doesNotMatch(rootScripts["test:related"] ?? "", /with-test-lock/);
   });
 
+  // It lives at the root ONLY. `packages/web` carried a second `test:related`
+  // (`vitest related --run`) for weeks, because the two landed from different
+  // branches — and they are not equivalent: the web one takes no change set of
+  // its own and only understands vitest-root-relative paths, so it answers
+  // "no test files found" to a repo-relative path, which reads like a pass.
+  // Which of the two a reader reached for decided whether the tool worked.
+  test("packages/web declares no second test:related", () => {
+    assert.equal(
+      webScripts["test:related"],
+      undefined,
+      `test:related belongs at the root (scripts/test-related.mjs), once. A ` +
+        `web-local copy cannot derive your change set and silently matches ` +
+        `nothing when handed a repo-relative path.`,
+    );
+  });
+
   // The runner's own suites must stay reachable by `pnpm test:scripts`, which
   // globs scripts/lib/*.test.mjs — a file moved out of that directory would
   // still pass locally and never run in CI again.
