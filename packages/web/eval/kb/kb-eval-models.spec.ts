@@ -87,26 +87,13 @@ import {
 } from "../../src/lib/eval/kb/llm-nli";
 import { DEFAULT_ORG_ID } from "../../src/lib/knowledge/constants";
 import { fetchChunkTexts } from "./chunk-texts";
+import { DEFAULT_KB_CANDIDATES } from "../candidates";
 import { KB_SWEEP_TEMPLATE_ID } from "./sweep-agent";
 import { KB_EVAL_CORPUS } from "./corpus/manifest";
 import { GOLD_QA } from "./corpus/gold-qa";
 import { loadEmbeddings } from "./embeddings-fixture";
 
 const RESULT_LABEL = "kb-groundedness-sweep";
-
-// The KB Layer-3 candidate set. Deliberately a SMALLER list than the
-// invoice sweep's `DEFAULT_CANDIDATES` (`../eval-models.spec.ts`) — the
-// groundedness gate is per-sentence NLI-judged, k=3 by default
-// (`nli.ts`'s `DEFAULT_NLI_K`), against every GOLD_QA item, so the call
-// count multiplies fast (models x goldQAs x sentences x k). Override with
-// EVAL_CANDIDATE_MODELS, same env var the invoice sweep reads
-// (`candidateModelsFromEnv`).
-const DEFAULT_KB_CANDIDATES = [
-  "ollama-cloud/kimi-k2.6",
-  "ollama-cloud/glm-4.7",
-  "ollama-cloud/qwen3.5:397b",
-  "ollama-cloud/gpt-oss:120b",
-];
 
 const KB_ALLOWED_TOOLS = ["knowledge_search"];
 const CORPUS_ROOT = "/data";
