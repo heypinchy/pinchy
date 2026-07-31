@@ -38,13 +38,13 @@ jobs:
         with:
           install: "false" # CodeQL handles build, no pnpm install needed
 
-      - uses: github/codeql-action/init@v4
+      - uses: github/codeql-action/init@v4.37.3
         with:
           languages: ${{ matrix.language }}
           queries: security-extended,security-and-quality
 
-      - uses: github/codeql-action/autobuild@v4
+      - uses: github/codeql-action/autobuild@v4.37.3
 
-      - uses: github/codeql-action/analyze@v4
+      - uses: github/codeql-action/analyze@v4.37.3
         with:
           category: "/language:${{ matrix.language }}"
