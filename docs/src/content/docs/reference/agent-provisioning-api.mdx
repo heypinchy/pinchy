@@ -89,6 +89,8 @@ curl https://pinchy.example.com/api/v1/agents \
 }
 ```
 
+The example is abridged — an agent object carries every column the web UI reads, including `skills`, `starterPrompts`, `tagline`, `greetingMessage`, and `visibility`. Treat it as the shape, not the field list.
+
 `ownerId` is `null` for agents created through this API: a key acts for the organization, so there's no person to name as the owner. Agents created by an admin in the web UI carry that admin's id instead.
 
 Unlike the session `GET /api/agents`, there's no per-user filtering: restricted agents are returned whether or not the key's creator shares a group with them. An API key acts for the organization, not for a person, so per-person visibility doesn't apply to it.
@@ -120,6 +122,18 @@ curl -X POST https://pinchy.example.com/api/v1/agents \
 ```
 
 **Response:** `201 Created` with the created agent — the same object shape as the list above, returned bare (not wrapped in an envelope).
+
+One field can join it. The agent row is committed before Pinchy pushes the new configuration to the OpenClaw runtime, and that push is best-effort: if it fails, the agent still exists and the response is still `201`, but it carries a `warning` string saying so.
+
+```json
+{
+  "id": "uuid",
+  "name": "Demo Sales Assistant",
+  "warning": "Agent created. Applying it to the runtime failed — check the server logs; it will retry on the next restart or config change."
+}
+```
+
+The field is absent on a clean create, so `warning` is the whole check. It matters most for the use case this API exists for: a provisioning script that treats `201` as done would create an agent that can't be chatted with yet. OpenClaw reconciles on its next restart or config change, so the usual response is to log it and re-check — not to retry the create, which would give you a second agent. The failure is also recorded in the audit trail as a `config.changed` entry with `action: "runtime_apply_failed"`.
 
 **Errors:**
 
@@ -214,7 +228,7 @@ To create a key:
 The plaintext key is displayed exactly once, right after creation. Copy it before closing the dialog — Pinchy never stores or displays it again. If you lose it, revoke the key and issue a new one.
 :::
 
-Afterward, the key list shows only its name, first few characters, scopes, and dates — never the secret itself.
+Afterward, the key list shows its name, first few characters, scopes, who created it, and its dates — never the secret itself.
 
 To revoke a key, click **Revoke** next to it in the list and confirm. Revocation is immediate: any client still using that key gets `401 Unauthorized` on its very next request.
 
@@ -256,14 +270,14 @@ This is a known gap, not a feature. If you expose this API outside a trusted net
 
 Every provisioning action taken with a key is written to the [audit trail](/concepts/audit-trail/). So is key lifecycle when an admin drives it — issuing and revoking a key through Settings → API Keys.
 
-| Event               | Actor       | When                                                                                                  |
-| ------------------- | ----------- | ----------------------------------------------------------------------------------------------------- |
-| `agent.created`     | the API key | `POST /api/v1/agents` succeeds, or fails with `422`                                                   |
-| `agent.deleted`     | the API key | `DELETE /api/v1/agents/:agentId` succeeds                                                             |
-| `config.changed`    | the API key | `POST /api/v1/agents` auto-configures an integration connection's permissions for the agent           |
-| `auth.scope_denied` | the API key | A verified key is missing a required [scope](#scopes) (403) — throttled to one row per key per minute |
-| `api_key.created`   | the admin   | A key is issued in Settings → API Keys                                                                |
-| `api_key.deleted`   | the admin   | A key is revoked in Settings → API Keys                                                               |
+| Event               | Actor       | When                                                                                                                                                                                                                                                                                                                             |
+| ------------------- | ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `agent.created`     | the API key | `POST /api/v1/agents` succeeds, or fails with `422`                                                                                                                                                                                                                                                                              |
+| `agent.deleted`     | the API key | `DELETE /api/v1/agents/:agentId` succeeds                                                                                                                                                                                                                                                                                        |
+| `config.changed`    | the API key | `POST /api/v1/agents` auto-configures an integration connection's permissions for the agent (`action: "agent_integration_permissions_auto_configured"`), or the agent was created but couldn't be applied to the runtime (`action: "runtime_apply_failed"`, `outcome: failure` — the same condition the `warning` field reports) |
+| `auth.scope_denied` | the API key | A verified key is missing a required [scope](#scopes) (403) — throttled to one row per key per minute                                                                                                                                                                                                                            |
+| `api_key.created`   | the admin   | A key is issued in Settings → API Keys                                                                                                                                                                                                                                                                                           |
+| `api_key.deleted`   | the admin   | A key is revoked in Settings → API Keys                                                                                                                                                                                                                                                                                          |
 
 A denial that lands inside an open one-minute window isn't dropped, either — the next `auth.scope_denied` row that does get written carries a `suppressedSinceLastEntry` count of how many were folded into it, so the trail still shows the volume even though it isn't writing a row per attempt.
 

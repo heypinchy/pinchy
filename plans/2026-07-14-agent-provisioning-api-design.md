@@ -134,6 +134,13 @@ Sources: Stripe/GitHub/GitLab/AWS/GCP/Azure/Datadog/Okta/Vault official docs; El
 
 ## 6. Technical design
 
+> **Superseded in four places by the D2 and D4 revisions above (noted 2026-07-31, branch review).** The section below is left as written — it is the record of what was designed — but four of its specifics no longer describe the shipped code, and one of them would be actively re-introduced by anyone implementing from here:
+>
+> - **`issuer` is gone**, per D2. §6.2's `apiKeyContext (key id/name, scopes, issuer)`, §6.3's "issuer in `detail`", and §6.7's "issuer `{ id, name }`" all predate that revision. The shipped `ApiKeyContext` is `{ keyId, name, scopes }` and no audit detail carries an issuer — a key acts for the organization, so there is no delegation to record.
+> - **`listAgents()` is not "all agents"**, per D4. §6.3's table says so; the shipped signature is `listAgents({ scope: "shared" })` and there is deliberately no scope that returns personal agents.
+> - **The mask is not "prefix + last-4"** (§6.5, §6.6). Better Auth's `start` column holds a leading substring only, so the shipped mask is `pinchy_` + 6 characters. A last-4 would have meant storing a second fragment of the secret ourselves.
+> - **§6.8's pepper was dropped**, as §7.1 records — the plugin exposes no custom-hash hook.
+
 ### 6.1 Schema
 
 - Enable the Better Auth `apiKey` plugin → generates the `apiKey` table (id, name, prefix/start, hashed key, `userId`, permissions/scopes, `expiresAt`, `enabled`, …). Generate the Drizzle migration.

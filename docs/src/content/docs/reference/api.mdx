@@ -386,7 +386,7 @@ List every API key (masked `start`, scopes, expiry, last-used, enabled state). *
 
 ### `POST /api/settings/api-keys`
 
-Mint a new API key. **Admin only.** Body: `name`, `scopes` (`agents:read` / `agents:write`), and an optional `expiresAt`. The response carries the plaintext key exactly once; store it then, because no endpoint can return it later. Audited as `api_key.created`.
+Mint a new API key. **Admin only.** Body: `name` (32 characters max), `scopes` (one or more of `agents:read`, `agents:write`, `agents:delete`), and an optional `expiresInDays` (1–365; omit it for a key that never expires). The response carries the plaintext key exactly once; store it then, because no endpoint can return it later. Audited as `api_key.created`.
 
 ### `DELETE /api/settings/api-keys/:keyId`
 
@@ -406,7 +406,7 @@ Key-authenticated (`agents:read`). Fetches one shared agent by id; a personal ag
 
 ### `DELETE /api/v1/agents/:agentId`
 
-Key-authenticated (`agents:write`). Soft-deletes a shared agent, audited with the key as actor. See the [Agent Provisioning API reference](/reference/agent-provisioning-api/).
+Key-authenticated (`agents:delete`) — its own scope, separate from `agents:write`, because deletion is irreversible. Soft-deletes a shared agent, audited with the key as actor. See the [Agent Provisioning API reference](/reference/agent-provisioning-api/).
 
 ## Knowledge Base
 
