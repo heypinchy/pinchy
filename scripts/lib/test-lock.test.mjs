@@ -250,6 +250,31 @@ describe("the wrapper, run for real", () => {
     assert.equal(existsSync(lock), false);
   });
 
+  /**
+   * The lock sits at a FIXED path in a world-writable /tmp, because worktrees
+   * have to find the same one — so the modes are what keep a predictable name
+   * from being an invitation. Without them any local account can read the lock,
+   * take it over, or park a permanent one there and be obeyed (CodeQL
+   * js/insecure-temporary-file). `mode:` is one word to drop in a refactor and
+   * nothing else in this file would notice, so assert it on the real artefact
+   * rather than trusting the call site.
+   */
+  test("creates the lock unreadable to other users", async () => {
+    const lock = freshLockPath();
+    const modes = [
+      process.execPath,
+      "-e",
+      `const {statSync}=require("fs");
+       const d=process.env.PINCHY_TEST_LOCK_DIR;
+       console.log((statSync(d).mode & 0o777).toString(8),
+                   (statSync(d+"/owner").mode & 0o777).toString(8));`,
+    ];
+
+    const { stdout } = await runWrapper(lock, modes);
+
+    assert.equal(stdout.trim(), "700 600");
+  });
+
   test("two runs take turns instead of overlapping", PROBE, async () => {
     const lock = freshLockPath();
     const log = join(mkdtempSync(join(tmpdir(), "pinchy-probe-log-")), "seq");

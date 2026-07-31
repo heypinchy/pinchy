@@ -127,8 +127,22 @@ function tryAcquire(label) {
   try {
     // The directory is a container, and creating it must therefore be tolerant
     // of already existing — it decides nothing.
-    mkdirSync(LOCK_DIR, { recursive: true });
-    writeFileSync(OWNER_PATH, record, { flag: "wx" });
+    //
+    // Owner-only modes because this lives at a FIXED path in a world-writable
+    // /tmp: without them any local user can read the lock, take it over, or park
+    // a permanent one there, and this process would obey it (CodeQL
+    // js/insecure-temporary-file). The mode is what makes a predictable name
+    // safe — and a predictable name is the point, since worktrees have to find
+    // the SAME lock. mkdtemp would be the usual answer to this rule and is
+    // exactly wrong here.
+    //
+    // Trade-off, stated because it is a real one: two DIFFERENT users on one
+    // machine no longer serialize against each other — the second gets EACCES
+    // and falls through to fail-open. That is the behaviour before this lock
+    // existed, it needs a genuinely shared machine to matter, and it is the
+    // better half of the deal against a lock any local account can seize.
+    mkdirSync(LOCK_DIR, { recursive: true, mode: 0o700 });
+    writeFileSync(OWNER_PATH, record, { flag: "wx", mode: 0o600 });
   } catch (err) {
     // EEXIST: somebody holds it. ENOENT: the holder removed the directory from
     // under us as it released — both mean "try again", not "give up".
