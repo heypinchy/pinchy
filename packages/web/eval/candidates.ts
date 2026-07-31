@@ -9,6 +9,11 @@
  * a Playwright-free module is what lets that guard run in `pnpm test`, the same
  * move `eval/kb/sweep-agent.ts` and `eval/kb/chunk-texts.ts` made.
  *
+ * Removing a retired id here governs only what a FUTURE sweep dispatches. The
+ * numbers already measured for it stay published and citable — that is
+ * `data/CHANGELOG.md`'s legacy policy, and the reason this file is not the
+ * place to "clean up" a model's history.
+ *
  * Both are overridable per run with `EVAL_CANDIDATE_MODELS`.
  */
 
@@ -22,19 +27,18 @@ export const OLLAMA_CLOUD_PREFIX = "ollama-cloud/";
  * tool-using workflow?).
  */
 export const DEFAULT_INVOICE_CANDIDATES = [
-  // — original 8-model sweep (2026-07-11) —
+  // — the original eight, now seven: `glm-4.7` sat here until Ollama retired
+  //   it on 2026-07-15. (The published 2026-07-11 sweep in `data/` already ran
+  //   all 14, expansion included — this block is a lineage, not a sweep.) —
   "ollama-cloud/kimi-k2.6",
   "ollama-cloud/gemma4:31b",
-  // `glm-4.7` and `deepseek-v3.2` sat here until Ollama retired both on
-  // 2026-07-15. Their measured numbers stay published (`data/CHANGELOG.md`);
-  // only the serving path lost them, and a sweep that still dispatched them
-  // collected 404s.
   "ollama-cloud/glm-5.2",
   "ollama-cloud/qwen3.5:397b",
   "ollama-cloud/minimax-m3",
   "ollama-cloud/gpt-oss:120b",
   "ollama-cloud/mistral-large-3:675b",
-  // — breadth expansion: new vendors (DeepSeek, NVIDIA) + intra-family pairs —
+  // — breadth expansion: new vendors (DeepSeek, NVIDIA) + intra-family pairs.
+  //   `deepseek-v3.2` sat here, retired in the same 2026-07-15 wave —
   "ollama-cloud/deepseek-v4-pro",
   "ollama-cloud/nemotron-3-ultra",
   "ollama-cloud/gpt-oss:20b",
@@ -54,6 +58,14 @@ export const DEFAULT_KB_CANDIDATES = [
   // the same family's successor rather than dropped: the four entries buy
   // vendor breadth (Moonshot / Z.ai / Alibaba / OpenAI), and removing one
   // would narrow what the sweep can say about groundedness across vendors.
+  //
+  // Read a weak glm-5.2 score here with that in mind: the family is
+  // thinking-by-default and emits tool calls in its own format, and over
+  // ollama-cloud's OpenAI `/v1` path we have already observed the result —
+  // `odoo_create` reported success while nothing persisted (2026-06-25).
+  // A KB run that never lands its `knowledge_search` call scores ungrounded
+  // for a transport reason, not a groundedness one. That is a finding worth
+  // having, but only if it is attributed correctly.
   "ollama-cloud/glm-5.2",
   "ollama-cloud/qwen3.5:397b",
   "ollama-cloud/gpt-oss:120b",

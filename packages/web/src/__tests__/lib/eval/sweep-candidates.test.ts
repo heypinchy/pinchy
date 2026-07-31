@@ -21,13 +21,15 @@
  * runs in `pnpm test`, so a catalog refresh that removes a model can no longer
  * leave a sweep default pointing at it.
  *
- * Retired models keep their published numbers (`eval/data/README.md`); this
- * guard only governs what a FUTURE sweep would dispatch.
+ * Retired models keep their published numbers — every superseded version stays
+ * published and citable, per `eval/data/CHANGELOG.md`. This guard only governs
+ * what a FUTURE sweep would dispatch.
  */
 
 import { describe, expect, it } from "vitest";
 
 import { TOOL_CAPABLE_OLLAMA_CLOUD_MODELS } from "@/lib/ollama-cloud-models";
+import { DEFAULT_KB_JUDGE_MODEL } from "@/lib/eval/kb/llm-nli";
 
 import {
   DEFAULT_INVOICE_CANDIDATES,
@@ -69,5 +71,35 @@ describe.each(SWEEPS)("the $name sweep's default candidates", ({ candidates }) =
 
   it("lists each model once, so a cell cannot be measured twice", () => {
     expect(new Set(candidates).size).toBe(candidates.length);
+  });
+});
+
+/**
+ * The KB sweep dispatches one model the candidate lists do not name: the
+ * NLI/relevance judge (`llm-nli.ts`). It is deliberately pinned and separate
+ * from the models under test, so score drift over a long sweep reflects the
+ * candidate's behavior rather than the judge's — which is exactly why it is
+ * the id nobody thinks to re-check after a retirement wave.
+ *
+ * Its failure is louder than a candidate's (`createOllamaCloudChatFn` throws
+ * on a non-2xx, and the spec's `withRetry` gives up after 4 attempts) but it
+ * arrives later and costs more: the sweep has already booted the stack, seeded
+ * the corpus and spent a real key by the time the first sentence is judged.
+ */
+describe("the KB sweep's pinned NLI judge", () => {
+  it("carries the ollama-cloud provider prefix", () => {
+    expect(DEFAULT_KB_JUDGE_MODEL.startsWith(OLLAMA_CLOUD_PREFIX)).toBe(true);
+  });
+
+  it("names a model the curated catalog still serves", () => {
+    const bare = DEFAULT_KB_JUDGE_MODEL.slice(OLLAMA_CLOUD_PREFIX.length);
+
+    expect(
+      SERVED_IDS.has(bare),
+      `The pinned judge \`${bare}\` is not in TOOL_CAPABLE_OLLAMA_CLOUD_MODELS. ` +
+        `Every NLI verdict would fail against a retired judge, so no KB run ` +
+        `can be graded at all — after the stack is up and the key is spent. ` +
+        `Repin DEFAULT_KB_JUDGE_MODEL in src/lib/eval/kb/llm-nli.ts.`
+    ).toBe(true);
   });
 });

@@ -235,6 +235,20 @@ export class LlmRelevanceJudge implements RelevanceJudge {
 }
 
 /**
+ * The pinned NLI/relevance judge. Kept FIXED while candidates vary, so score
+ * drift over a long sweep reflects the candidate's behavior and not the
+ * judge's (same reasoning as `groundedness-grader.ts`'s `DEFAULT_TAU`).
+ *
+ * Exported rather than inlined so `kb-eval-models.spec.ts` reads the same
+ * constant instead of repeating the literal, and so
+ * `src/__tests__/lib/eval/sweep-candidates.test.ts` can check it against the
+ * curated catalog. A judge Ollama has retired fails every verdict, so no KB
+ * run is gradeable at all — and it surfaces only after the stack is up and a
+ * real key has been spent. Override per run with `KB_EVAL_JUDGE_MODEL`.
+ */
+export const DEFAULT_KB_JUDGE_MODEL = "ollama-cloud/gpt-oss:20b";
+
+/**
  * Wires an `LlmChatFn` to a real Ollama Cloud model via its OpenAI-compatible
  * `/v1/chat/completions` endpoint (same endpoint `src/lib/providers.ts` and
  * `src/lib/openclaw-config/build.ts` use for provider validation/config —
@@ -256,7 +270,7 @@ export function createOllamaCloudChatFn(opts: {
   model?: string;
   baseUrl?: string;
 }): LlmChatFn {
-  const model = opts.model ?? "ollama-cloud/gpt-oss:20b";
+  const model = opts.model ?? DEFAULT_KB_JUDGE_MODEL;
   const baseUrl = opts.baseUrl ?? "https://ollama.com";
 
   return async (prompt: string): Promise<string> => {

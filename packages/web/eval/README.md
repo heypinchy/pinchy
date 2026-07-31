@@ -361,7 +361,7 @@ DB_PASSWORD=eval_dev_pw OLLAMA_CLOUD_API_KEY=... pnpm -C packages/web eval:model
 Override the candidate set or run count with env vars:
 
 ```bash
-EVAL_CANDIDATE_MODELS="ollama-cloud/kimi-k2.6,ollama-cloud/glm-4.7" \
+EVAL_CANDIDATE_MODELS="ollama-cloud/kimi-k2.6,ollama-cloud/gemma4:31b" \
 EVAL_N=10 \
 OLLAMA_CLOUD_API_KEY=... pnpm -C packages/web eval:models
 ```
@@ -577,16 +577,36 @@ what it is: evidence-based, and what it does not name is allowed.
 
 ## Current candidate set and why
 
-The default candidates in `eval-models.spec.ts` are `kimi-k2.6`, `gemma4:31b`, and
-`glm-4.7` — the three models named in the model-selection methodology's R1
-evidence (the 2026-07-07 staging incident: `gemma4:31b` corrupted a Graph
-message id across turns while the audit trail showed green; `glm-4.7` loops
-when `reasoning_content` is dropped; `kimi-k2.6` is the current
-`balanced.general` / `balanced.vision` pick per the methodology's "Current
-standing decision"). Running Eval-v1 against this exact set is the action
-item the methodology names under `kimi-k2.6`: _"Eval-v1 (the Hetzner
-scenario) quantifies its residual false-success rate before any deeper
-intervention."_ A scorecard produced here is the evidence tier-1 input the
+**Both sweeps' defaults live in `eval/candidates.ts`** — not in the spec files,
+which import them. They sit in a Playwright-free module so a vitest guard can
+reach them: `src/__tests__/lib/eval/sweep-candidates.test.ts` asserts every id
+still exists in `src/lib/ollama-cloud-models.ts`. That rule was prose for two
+sweeps and was broken by the 2026-07-15 retirement wave before anything checked
+it (a dispatched-but-retired id 404s into `run-infra-error` rows the exporter
+drops from `n`, so the scorecard quietly holds fewer models than intended).
+
+The set started as three models — `kimi-k2.6`, `gemma4:31b` and `glm-4.7` — the
+ones named in the model-selection methodology's R1 evidence (the 2026-07-07
+staging incident: `gemma4:31b` corrupted a Graph message id across turns while
+the audit trail showed green; `glm-4.7` loops when `reasoning_content` is
+dropped; `kimi-k2.6` is the current `balanced.general` / `balanced.vision` pick
+per the methodology's "Current standing decision"). It reached eight, then 14
+with a breadth expansion (new vendors + intra-family pairs: does the
+bigger/newer sibling behave better on a real tool-using workflow?), and all 14
+are what the published sweep in `data/` measured. Ollama's 2026-07-15
+retirement wave then took `glm-4.7` and `deepseek-v3.2` out of the serving
+path, leaving the **12** a sweep dispatches today. Their measured numbers stay
+published — see `data/CHANGELOG.md`'s legacy policy; only what a future sweep
+dispatches changed.
+
+The KB Layer-3 sweep (`eval/kb/`) keeps a deliberately smaller set of 4, plus a
+pinned NLI judge (`DEFAULT_KB_JUDGE_MODEL` in `src/lib/eval/kb/llm-nli.ts`),
+because its groundedness gate multiplies calls by `models × goldQAs ×
+sentences × k`.
+
+Running Eval-v1 against this set is the action item the methodology names under
+`kimi-k2.6`: _"Eval-v1 (the Hetzner scenario) quantifies its residual
+false-success rate before any deeper intervention."_ A scorecard produced here is the evidence tier-1 input the
 methodology expects for any future rule change — see
 `packages/web/eval/model-selection-methodology.md` for the full evidence
 hierarchy and how a scorecard is meant to feed back into the resolver

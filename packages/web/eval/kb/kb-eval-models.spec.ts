@@ -81,6 +81,7 @@ import { gradeKbRun } from "../../src/lib/eval/kb/answer-graders";
 import type { KbRunTrajectory, KbRunResult } from "../../src/lib/eval/kb/answer-graders";
 import { citedSourcePaths } from "../../src/lib/eval/kb/attribution-graders";
 import {
+  DEFAULT_KB_JUDGE_MODEL,
   LlmNliClient,
   LlmRelevanceJudge,
   createOllamaCloudChatFn,
@@ -319,8 +320,10 @@ test.describe("KB Eval Harness Layer 3: groundedness sweep (real Ollama Cloud)",
     // separate model from the candidates under test, same reasoning as
     // groundedness-grader.ts's DEFAULT_TAU comment: keep the JUDGE fixed so
     // score drift over a long sweep reflects the candidate's behavior, not
-    // the judge's. Overridable via KB_EVAL_JUDGE_MODEL.
-    const judgeModel = process.env.KB_EVAL_JUDGE_MODEL || "ollama-cloud/gpt-oss:20b";
+    // the judge's. The default lives in llm-nli.ts (one literal, checked
+    // against the catalog by sweep-candidates.test.ts); override per run with
+    // KB_EVAL_JUDGE_MODEL.
+    const judgeModel = process.env.KB_EVAL_JUDGE_MODEL || DEFAULT_KB_JUDGE_MODEL;
     const chat = createOllamaCloudChatFn({ apiKey: ollamaKey, model: judgeModel });
     const nli = new LlmNliClient(chat);
     const relevance = new LlmRelevanceJudge(chat);
