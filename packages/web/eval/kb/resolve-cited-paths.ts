@@ -18,24 +18,56 @@
  *     exists to catch; resolving it would grade a citation defect as grounded.
  */
 
+/**
+ * Every path suffix of `sourcePath` at segment boundaries, longest last:
+ * `/data/handbook-2012/policy.md` → `policy.md`, `handbook-2012/policy.md`,
+ * `data/handbook-2012/policy.md`, …
+ */
+function pathSuffixes(sourcePath: string): string[] {
+  const segments = sourcePath.split("/").filter(Boolean);
+  return segments.map((_, i) => segments.slice(segments.length - 1 - i).join("/"));
+}
+
+/** The longest suffix of `sourcePath` that appears in `entry`, or "" for none. */
+function longestSuffixIn(entry: string, sourcePath: string): string {
+  let best = "";
+  for (const suffix of pathSuffixes(sourcePath)) {
+    if (entry.includes(suffix) && suffix.length > best.length) best = suffix;
+  }
+  return best;
+}
+
 export function resolveCitedSourcePaths(
-  citedPaths: string[],
+  citedEntries: string[],
   retrieved: readonly { sourcePath: string }[]
 ): string[] {
   const resolved: string[] = [];
   const seen = new Set<string>();
 
-  for (const cited of citedPaths) {
-    const matches = retrieved.filter(
-      (r) => r.sourcePath === cited || r.sourcePath.endsWith(`/${cited}`)
-    );
-    // Zero matches: not retrieved. More than one: the citation is ambiguous.
-    if (matches.length !== 1) continue;
+  for (const entry of citedEntries) {
+    // Score every retrieved document by how specifically this entry names it.
+    // `handbook-2012/policy.md: "…"` scores 23 for the 2012 document and 9
+    // (`policy.md`) for its 2011 sibling, so the qualified path wins. A bare
+    // `policy.md` scores 9 for both — a tie, and a tie is the ambiguity that
+    // must NOT resolve.
+    let best: { sourcePath: string; score: number } | null = null;
+    let tied = false;
 
-    const sourcePath = matches[0].sourcePath;
-    if (seen.has(sourcePath)) continue;
-    seen.add(sourcePath);
-    resolved.push(sourcePath);
+    for (const { sourcePath } of retrieved) {
+      const score = longestSuffixIn(entry, sourcePath).length;
+      if (score === 0) continue;
+      if (best === null || score > best.score) {
+        best = { sourcePath, score };
+        tied = false;
+      } else if (score === best.score && sourcePath !== best.sourcePath) {
+        tied = true;
+      }
+    }
+
+    if (best === null || tied) continue;
+    if (seen.has(best.sourcePath)) continue;
+    seen.add(best.sourcePath);
+    resolved.push(best.sourcePath);
   }
 
   return resolved;

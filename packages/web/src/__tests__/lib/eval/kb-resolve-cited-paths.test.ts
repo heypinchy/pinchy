@@ -21,6 +21,13 @@
  * ambiguity is the `path-not-cited` defect the whole path-citation axis exists
  * to catch. A harness that helpfully picked one would grade a citation defect
  * as grounded.
+ *
+ * The INPUTS below are transcribed from a real sweep's trajectories, not
+ * invented. `citedSourcePaths` does not hand back a path — it hands back the
+ * whole Sources entry, backticks, colon, quoted passage and all. A first cut
+ * of this function compared those strings to `sourcePath` for equality and
+ * resolved nothing at all, on a run where every answer cited correctly. What
+ * matters is which document an entry NAMES, and how specifically.
  */
 
 import { describe, expect, it } from "vitest";
@@ -38,6 +45,30 @@ describe("resolveCitedSourcePaths", () => {
     expect(resolveCitedSourcePaths(["it-equipment-policy.md"], RETRIEVED)).toEqual([
       "/data/it-equipment-policy.md",
     ]);
+  });
+
+  it("resolves a real Sources entry, backticks and quoted passage included", () => {
+    // Verbatim from a kimi-k2.6 run (gqa-happy-1).
+    const entry =
+      '`it-equipment-policy.md`: "Northwind issues each full-time employee a ' +
+      'standard-configuration laptop upon hire, replaced on a 3-year refresh cycle."';
+
+    expect(resolveCitedSourcePaths([entry], RETRIEVED)).toEqual(["/data/it-equipment-policy.md"]);
+  });
+
+  it("prefers the folder-qualified sibling when an entry names one of two", () => {
+    // Verbatim from gqa-pathcite-2, where both handbook years were retrieved.
+    const entry =
+      'handbook-2012/policy.md: "Effective the 2012 revision, the daily meal per diem ' +
+      'for approved business travel was increased from $45 to $60."';
+
+    expect(resolveCitedSourcePaths([entry], RETRIEVED)).toEqual(["/data/handbook-2012/policy.md"]);
+  });
+
+  it("refuses an entry that names only the shared basename", () => {
+    const entry = '`policy.md` — "the daily meal per diem was increased"';
+
+    expect(resolveCitedSourcePaths([entry], RETRIEVED)).toEqual([]);
   });
 
   it("keeps an already-absolute path as it is", () => {
