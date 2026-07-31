@@ -281,7 +281,10 @@ export type CreateAgentResult =
         capabilityFailure: {
           templateId: string;
           missingCapabilities: ModelCapability[];
-          provider: ProviderName;
+          // Widened to match main's TemplateCapabilityUnavailableError.provider
+          // (#894): resolve-available passes the raw input.provider, which can
+          // be a custom OpenAI-compatible slug, not only a built-in ProviderName.
+          provider: ProviderName | (string & {});
         };
       };
     };

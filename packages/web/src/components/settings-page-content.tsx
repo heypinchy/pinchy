@@ -58,6 +58,7 @@ const TAB_LABELS: Record<SettingsTab, string> = {
   provider: "AI Provider",
   users: "Users",
   groups: "Groups",
+  apikeys: "API Keys",
   integrations: "Integrations",
   organization: "Organization",
   license: "License",

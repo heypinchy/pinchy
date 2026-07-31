@@ -2,15 +2,15 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Companion design:** [`plans/2026-07-14-agent-provisioning-api-design.md`](2026-07-14-agent-provisioning-api-design.md) — read it first for the *why*. This file is the *how*.
+**Companion design:** [`plans/2026-07-14-agent-provisioning-api-design.md`](2026-07-14-agent-provisioning-api-design.md) — read it first for the _why_. This file is the _how_.
 
 **Goal:** Ship the API-key auth foundation: issue/verify API keys (hashed at rest), a scope-gated `withApiKey()` wrapper, `/api/v1/agents` (create/list/get/delete) reusing extracted service logic, `api_key` as a first-class audit actor, key-management API + minimal admin UI. demo-reset is a separate follow-up.
 
-**Architecture:** Hybrid — the `@better-auth/api-key` plugin owns key storage/hashing/verification; our own `withApiKey()` wrapper owns scope enforcement + audit + actor mapping (no auto session resolution). Domain logic is extracted into `lib/agents.ts` service functions called by *both* the session routes and the new `/api/v1` routes.
+**Architecture:** Hybrid — the `@better-auth/api-key` plugin owns key storage/hashing/verification; our own `withApiKey()` wrapper owns scope enforcement + audit + actor mapping (no auto session resolution). Domain logic is extracted into `lib/agents.ts` service functions called by _both_ the session routes and the new `/api/v1` routes.
 
-**Tech Stack:** Next.js 16 route handlers, Better Auth (`admin` + new `@better-auth/api-key`), Drizzle/Postgres, Zod schemas in `lib/schemas/*`, Vitest. Follow `AGENTS.md`: `parseRequestBody`, audit every state change with `outcome` + `{id,name}` snapshots, shared schemas imported by route *and* client, typed helpers from `lib/api-client.ts`, TDD (no untracked skips/deletions).
+**Tech Stack:** Next.js 16 route handlers, Better Auth (`admin` + new `@better-auth/api-key`), Drizzle/Postgres, Zod schemas in `lib/schemas/*`, Vitest. Follow `AGENTS.md`: `parseRequestBody`, audit every state change with `outcome` + `{id,name}` snapshots, shared schemas imported by route _and_ client, typed helpers from `lib/api-client.ts`, TDD (no untracked skips/deletions).
 
-**Conventions for every task:** TDD order = write failing test → run it, confirm the *expected* failure → minimal implement → run, confirm pass → `pnpm -C packages/web test <file>` green → commit (`feat:`/`test:`/`refactor:`/`docs:`). Never `it.skip`/`it.todo` without a `#NNN` ref. Keep audit `detail` < 2048 bytes, no plaintext PII.
+**Conventions for every task:** TDD order = write failing test → run it, confirm the _expected_ failure → minimal implement → run, confirm pass → `pnpm -C packages/web test <file>` green → commit (`feat:`/`test:`/`refactor:`/`docs:`). Never `it.skip`/`it.todo` without a `#NNN` ref. Keep audit `detail` < 2048 bytes, no plaintext PII.
 
 ---
 
@@ -44,6 +44,7 @@
 ### Task 1.1: Register `apiKey()` plugin + generate the key table migration
 
 **Files:**
+
 - Modify: `packages/web/src/lib/auth.ts:203-207` (plugins array), `packages/web/src/lib/auth-client.ts` (add `apiKeyClient()`)
 - Generate: `packages/web/drizzle/<n>_*.sql` via `pnpm db:generate`
 - Test: `packages/web/src/__tests__/lib/auth-apikey-plugin.test.ts`
@@ -53,6 +54,7 @@
 **Step 2:** run → fails (`createApiKey` undefined).
 
 **Step 3 — implement:** add to the plugins array (from design D1; use the disable-session option per Task 0.1):
+
 ```ts
 import { apiKey } from "@better-auth/api-key";
 // ...
@@ -66,6 +68,7 @@ import { apiKey } from "@better-auth/api-key";
     }),
   ],
 ```
+
 Add `apiKeyClient()` to `auth-client.ts` mirroring `adminClient()`. Then `pnpm db:generate` to emit the `apiKey` table migration; review the generated SQL.
 
 **Step 4:** run test → pass. Also `pnpm -C packages/web test:db` to confirm the migration applies.
@@ -75,6 +78,7 @@ Add `apiKeyClient()` to `auth-client.ts` mirroring `adminClient()`. Then `pnpm d
 ### Task 1.2: Add `api_key` audit actor type (enum migration + TS)
 
 **Files:**
+
 - Modify: `packages/web/src/db/schema.ts:390` (`actorTypeEnum`), `packages/web/src/lib/audit.ts:311` (`AuditLogBase.actorType`), `packages/web/src/lib/audit-pdf.ts:6` if it re-declares the union
 - Generate: migration via `pnpm db:generate` (Postgres `ALTER TYPE "actor_type" ADD VALUE 'api_key'`)
 - Test: `packages/web/src/__tests__/lib/audit-apikey-actor.test.ts`
@@ -84,12 +88,19 @@ Add `apiKeyClient()` to `auth-client.ts` mirroring `adminClient()`. Then `pnpm d
 **Step 2:** run → fails (TS rejects `"api_key"`; enum lacks value).
 
 **Step 3 — implement:**
+
 ```ts
 // schema.ts:390
-export const actorTypeEnum = pgEnum("actor_type", ["user", "agent", "system", "api_key"]);
+export const actorTypeEnum = pgEnum("actor_type", [
+  "user",
+  "agent",
+  "system",
+  "api_key",
+]);
 // audit.ts:311
 actorType: "user" | "agent" | "system" | "api_key";
 ```
+
 `pnpm db:generate`. Note: `ADD VALUE` cannot run inside a transaction in Postgres — verify the generated migration isn't wrapped in one; if Drizzle wraps it, split into its own migration file.
 
 **Step 4:** run → pass.
@@ -113,24 +124,36 @@ actorType: "user" | "agent" | "system" | "api_key";
 ### Task 2.1: Scope-gated `withApiKey` alongside `withAuth`/`withAdmin`
 
 **Files:**
+
 - Modify: `packages/web/src/lib/api-auth.ts` (append wrapper + types)
 - Create: `packages/web/src/lib/api-key-scopes.ts` (`export const API_KEY_SCOPES = ["agents:read","agents:write","agents:delete"] as const; export type ApiKeyScope = typeof API_KEY_SCOPES[number];`)
 - Test: `packages/web/src/__tests__/lib/with-api-key.test.ts`
 
 **Step 1 — failing tests (one per behavior, all in one file):**
+
 - no key header → 401 `{ error: "Unauthorized" }`
 - invalid key (mock `verifyApiKey` → `{ valid: false }`) → 401
 - valid key missing required scope → 403 `{ error: "Forbidden" }`
 - valid key with scope → calls handler, receives `apiKeyContext` `{ keyId, name, scopes, issuerUserId }`
-Mock `@/lib/auth`'s `auth.api.verifyApiKey` the same way `agents-audit.test.ts` mocks `getSession`.
+  Mock `@/lib/auth`'s `auth.api.verifyApiKey` the same way `agents-audit.test.ts` mocks `getSession`.
 
 **Step 3 — implement** (finalize `verifyApiKey` call shape from Task 0.1):
+
 ```ts
 import { auth } from "@/lib/auth";
 import type { ApiKeyScope } from "@/lib/api-key-scopes";
 
-export type ApiKeyContext = { keyId: string; name: string; scopes: ApiKeyScope[]; issuerUserId: string };
-type ApiKeyHandler<C> = (req: NextRequest, ctx: C, key: ApiKeyContext) => Promise<NextResponse> | NextResponse;
+export type ApiKeyContext = {
+  keyId: string;
+  name: string;
+  scopes: ApiKeyScope[];
+  issuerUserId: string;
+};
+type ApiKeyHandler<C> = (
+  req: NextRequest,
+  ctx: C,
+  key: ApiKeyContext,
+) => Promise<NextResponse> | NextResponse;
 
 function readApiKey(req: NextRequest): string | null {
   const h = req.headers.get("Authorization");
@@ -138,7 +161,10 @@ function readApiKey(req: NextRequest): string | null {
   return req.headers.get("x-api-key");
 }
 
-export function withApiKey<C = unknown>(required: ApiKeyScope[], handler: ApiKeyHandler<C>) {
+export function withApiKey<C = unknown>(
+  required: ApiKeyScope[],
+  handler: ApiKeyHandler<C>,
+) {
   return async (req: NextRequest, ctx: C): Promise<NextResponse> => {
     const key = readApiKey(req);
     if (!key) return unauthorized();
@@ -147,7 +173,10 @@ export function withApiKey<C = unknown>(required: ApiKeyScope[], handler: ApiKey
     const scopes = extractScopes(res.key.permissions); // permissions is Record<resource, action[]>|null (e.g. { agents: ["read","write"] }); flatten to ApiKeyScope[] (["agents:read","agents:write"]); null → []
     if (!required.every((s) => scopes.includes(s))) return forbidden();
     return handler(req, ctx, {
-      keyId: res.key.id, name: res.key.name ?? "", scopes, issuerUserId: res.key.referenceId, // Task 0.1: owner is `referenceId`, NOT `userId`
+      keyId: res.key.id,
+      name: res.key.name ?? "",
+      scopes,
+      issuerUserId: res.key.referenceId, // Task 0.1: owner is `referenceId`, NOT `userId`
     });
   };
 }
@@ -170,10 +199,12 @@ export function withApiKey<C = unknown>(required: ApiKeyScope[], handler: ApiKey
 ### Task 3.1: Extract `createAgent()` and refactor the POST route onto it
 
 **Files:**
+
 - Modify: `packages/web/src/lib/agents.ts` (add `createAgent()`), `packages/web/src/app/api/agents/route.ts:58-329` (call the service)
 - Test: `packages/web/src/__tests__/lib/create-agent-service.test.ts` (new) + existing `agents-create.test.ts` / `agents-audit.test.ts` must stay green
 
 **The extraction boundary (from the codebase, do NOT move audit/session into the service):**
+
 - **Service `createAgent(input)`:** template resolution + model selection (route lines 64-160, returning a typed error instead of logging on the capability path), the DB insert (171-192), Odoo/email permission auto-config (215-291), workspace materialization (293-308), and the OpenClaw regen + runtime wait (310-324).
 - **Route keeps:** `withAdmin` wrapper + `session`, `parseRequestBody(createAgentSchema)`, all 400/422 branches, all `appendAuditLog`/`deferAuditLog` calls (now fed by the service's return value), `revalidatePath`, final `NextResponse.json(agent, 201)`.
 
@@ -208,6 +239,7 @@ export function withApiKey<C = unknown>(required: ApiKeyScope[], handler: ApiKey
 **Step 1 — failing test:** with a mocked valid key having `agents:read` → 200 + all agents; with a key lacking the scope → 403; no key → 401.
 
 **Step 3 — implement:**
+
 ```ts
 export const GET = withApiKey<unknown>(["agents:read"], async () => {
   const agents = await listAgents({ scope: "all" });
@@ -224,29 +256,48 @@ export const GET = withApiKey<unknown>(["agents:read"], async () => {
 **Step 1 — failing tests:** valid `agents:write` key + valid body → 201 + agent, and audit called with `actorType:"api_key"`, `resource:"agent:<id>"`, `detail` including issuer `{ id, name }`; invalid body → 400 via `parseRequestBody(createAgentSchema)`; missing scope → 403.
 
 **Step 3 — implement:**
+
 ```ts
-export const POST = withApiKey<unknown>(["agents:write"], async (req, _ctx, key) => {
-  const parsed = await parseRequestBody(createAgentSchema, req);
-  if ("error" in parsed) return parsed.error;
-  const result = await createAgent(parsed.data, /* ownerId */ key.issuerUserId);
-  if ("error" in result) return NextResponse.json({ error: result.error }, { status: 422 });
-  after(() => appendAuditLog({
-    actorType: "api_key", actorId: key.keyId,
-    eventType: "agent.created", resource: `agent:${result.agent.id}`,
-    detail: { name: result.agent.name, apiKey: { id: key.keyId, name: key.name }, issuer: { id: key.issuerUserId } },
-    outcome: "success",
-  }));
-  return NextResponse.json(result.agent, { status: 201 });
-});
+export const POST = withApiKey<unknown>(
+  ["agents:write"],
+  async (req, _ctx, key) => {
+    const parsed = await parseRequestBody(createAgentSchema, req);
+    if ("error" in parsed) return parsed.error;
+    const result = await createAgent(
+      parsed.data,
+      /* ownerId */ key.issuerUserId,
+    );
+    if ("error" in result)
+      return NextResponse.json({ error: result.error }, { status: 422 });
+    after(() =>
+      appendAuditLog({
+        actorType: "api_key",
+        actorId: key.keyId,
+        eventType: "agent.created",
+        resource: `agent:${result.agent.id}`,
+        detail: {
+          name: result.agent.name,
+          apiKey: { id: key.keyId, name: key.name },
+          issuer: { id: key.issuerUserId },
+        },
+        outcome: "success",
+      }),
+    );
+    return NextResponse.json(result.agent, { status: 201 });
+  },
+);
 ```
+
 (Reuse `createAgentSchema` — export it from a shared `lib/schemas/agents.ts` if it currently lives inline in the session route; import into both.)
 
 **Step 5 — commit:** `feat: POST /api/v1/agents via api key (#572)`
 
 ### Task 4.3: `GET /api/v1/agents/[agentId]` — scope `agents:read`
+
 Create `packages/web/src/app/api/v1/agents/[agentId]/route.ts`; `getAgent(id, { scope: "all" })`; 404 when absent. Test 200/404/403/401. Commit `feat: GET /api/v1/agents/[id] via api key (#572)`.
 
 ### Task 4.4: `DELETE /api/v1/agents/[agentId]` — scope `agents:delete`
+
 Same file. Guard `agent.isPersonal` → 400 (mirror the session DELETE). `await deleteAgent(id)`, audit `agent.deleted` with `actorType:"api_key"` + issuer. Test delete/persistent-guard/scope. Commit `feat: DELETE /api/v1/agents/[id] via api key (#572)`.
 
 ---
@@ -256,6 +307,7 @@ Same file. Guard `agent.isPersonal` → 400 (mirror the session DELETE). `await 
 > **✅ Org-wide list + revoke (decided 2026-07-14, supersedes the session-scoped `auth.api.listApiKeys`/`deleteApiKey` in Tasks 5.2/5.3 below):** those plugin endpoints only touch the calling admin's own keys (no `userId`/org override; no `organization` plugin), orphaning keys when an admin leaves. So **GET and DELETE run directly against `schema.apiKeys`** (Drizzle) — any admin sees/revokes any key. `POST` still uses `auth.api.createApiKey`. Revoke = hard `db.delete`, proven to actually invalidate the key (`storage: "database"`, no cache) in `settings-api-keys-revoke.integration.test.ts`. `GET` parses the JSON-string `permissions` column via a `parsePermissions` helper before `extractScopes`. Shipped as `feat: org-wide API key list + revoke (#572)`.
 
 ### Task 5.1: `POST /api/settings/api-keys` — issue a key (one-time plaintext)
+
 **Files:** Create `packages/web/src/app/api/settings/api-keys/route.ts`; `packages/web/src/lib/schemas/api-keys.ts` (`createApiKeySchema`: `{ name: string; scopes: ApiKeyScope[]; expiresInDays?: number }`); test `__tests__/api/api-keys-create.test.ts`.
 
 **Behavior:** `withAdmin` → `parseRequestBody(createApiKeySchema)` → `auth.api.createApiKey({ body: { name, permissions: mapScopes(scopes), expiresIn: expiresInDays ? expiresInDays * 86400 : undefined } })` **(no `headers`/`request` in the call — `permissions` is a server-only prop; passing headers throws `SERVER_ONLY_PROPERTY`, Task 0.1; `prefix` comes from the global `defaultPrefix: "pinchy_"` set in Task 1.1)** → return the plaintext key **once** `{ id, key, name, scopes }` (the plugin returns the plaintext in the response `key` field). Note `expiresIn` is in **seconds** while the schema takes `expiresInDays`. Audit `api_key.created` with `{ id, name, scopes, expiresAt }` (no plaintext key in audit). Test: 201 + plaintext returned + audit asserted; non-admin → 403.
@@ -263,9 +315,11 @@ Same file. Guard `agent.isPersonal` → 400 (mirror the session DELETE). `await 
 **Commit:** `feat: issue API keys via admin endpoint (#572)`
 
 ### Task 5.2: `GET /api/settings/api-keys` — list masked
+
 `auth.api.listApiKeys(...)` → return `{ id, name, start/prefix + last4, scopes, createdAt, expiresAt, lastRequest, enabled }`, never the secret. `withAdmin`. Test shape + masking. Commit `feat: list API keys (masked) (#572)`.
 
 ### Task 5.3: `DELETE /api/settings/api-keys/[keyId]` — revoke
+
 Create `.../api-keys/[keyId]/route.ts`; `auth.api.deleteApiKey(...)`; audit `api_key.deleted` with `{ name }`. `withAdmin`. Test revoke + audit + 404. Commit `feat: revoke API keys (#572)`.
 
 ---
@@ -273,7 +327,9 @@ Create `.../api-keys/[keyId]/route.ts`; `auth.api.deleteApiKey(...)`; audit `api
 ## Phase 6 — Minimal admin UI (Settings → API Keys)
 
 ### Task 6.1: `settings-api-keys.tsx` + tab wiring
+
 **Files (per Explore §5):**
+
 - Modify: `packages/web/src/hooks/use-tab-param.ts:6-17` (add `"apikeys"` to `SETTINGS_TABS`)
 - Modify: `packages/web/src/components/settings-page-content.tsx` (add admin-gated `<TabsTrigger value="apikeys">` + `<TabsContent value="apikeys" keepMounted>` mounting the new component, following the groups block at :253-257)
 - Create: `packages/web/src/components/settings-api-keys.tsx` — copy the shape of `settings-groups.tsx`: `fetchData` via `fetch("/api/settings/api-keys")`, list in a `Table`, create `Dialog` (name input + scope `Checkbox`es + optional expiry), submit via `apiPost<...>("/api/settings/api-keys", body: CreateApiKeyInput)` with `extractFieldErrors` on `ApiError`, revoke via `AlertDialog` → `apiDelete`.
@@ -288,23 +344,27 @@ Create `.../api-keys/[keyId]/route.ts`; `auth.api.deleteApiKey(...)`; audit `api
 ## Phase 7 — Docs & Smithers (same PR, per AGENTS.md)
 
 ### Task 7.1: Docs reference page
+
 Add a reference page under `docs/` (Astro Starlight, Diataxis "reference") for the agent-provisioning API: auth (API key header), scopes, the four `/api/v1/agents` endpoints with request/response examples, and how to issue/revoke keys in Settings. Read `PERSONALITY.md` first (English, "we" voice). Commit `docs: agent provisioning API reference (#572)`.
 
 ### Task 7.2: Update Smithers — ❌ DROPPED, not needed (verified 2026-07-15)
-**Task 7.1 IS the Smithers update.** `smithers-soul.ts` contains NO feature list — it is purely personality plus a docs-driven procedure, and explicitly instructs Smithers: *"You do NOT know Pinchy's features from memory… never assume an API or endpoint exists"*, mandating `docs_list` → `docs_read` for ANY platform question and answering "based ONLY on what you read". The `pinchy-docs` plugin (`packages/plugins/pinchy-docs/index.ts`) implements `docs_list` by scanning the docs directory **dynamically** (`readdirSync`, ~line 97) and exposing each page's frontmatter — so Task 7.1's `reference/agent-provisioning-api.mdx` is discoverable with no code change. Hardcoding the API into the soul prompt would directly contradict that prompt's own core instruction and re-introduce the "describing features from memory" failure mode it exists to prevent.
 
-> CLAUDE.md's rule *"update smithers-soul.ts when user-facing features change"* is stale for the same reason — tracked as a separate follow-up, out of scope for #572.
+**Task 7.1 IS the Smithers update.** `smithers-soul.ts` contains NO feature list — it is purely personality plus a docs-driven procedure, and explicitly instructs Smithers: _"You do NOT know Pinchy's features from memory… never assume an API or endpoint exists"_, mandating `docs_list` → `docs_read` for ANY platform question and answering "based ONLY on what you read". The `pinchy-docs` plugin (`packages/plugins/pinchy-docs/index.ts`) implements `docs_list` by scanning the docs directory **dynamically** (`readdirSync`, ~line 97) and exposing each page's frontmatter — so Task 7.1's `reference/agent-provisioning-api.mdx` is discoverable with no code change. Hardcoding the API into the soul prompt would directly contradict that prompt's own core instruction and re-introduce the "describing features from memory" failure mode it exists to prevent.
+
+> CLAUDE.md's rule _"update smithers-soul.ts when user-facing features change"_ is stale for the same reason — tracked as a separate follow-up, out of scope for #572.
 
 ---
 
 ## Done-criteria checklist (verify before PR)
+
 - [ ] `pnpm -C packages/web test` green; `pnpm lint`, `pnpm build` clean.
 - [ ] Session routes reject API keys (Task 2.2 test).
 - [ ] Every `/api/v1` + key-mgmt state change audited with correct `actorType` + `{id,name}` + `outcome` (AGENTS.md checklist).
-- [ ] Shared `createAgentSchema` / `createApiKeySchema` imported by route *and* client; client uses `lib/api-client.ts` helpers.
+- [ ] Shared `createAgentSchema` / `createApiKeySchema` imported by route _and_ client; client uses `lib/api-client.ts` helpers.
 - [ ] No untracked `.skip`/`.todo`; no net test deletions.
 - [ ] Design doc §7 updated with Task 0.1 findings.
 - [x] Docs page shipped (`docs/.../reference/agent-provisioning-api.mdx`). Smithers needs no soul change — he discovers it via `docs_list`/`docs_read` (see Task 7.2).
 
 ## Deliberately out of scope (see design §3 / §9)
+
 demo-reset consumer · `PATCH`/update over key API · non-agent resources · public stability guarantee · rate limiting · rotation UI.

@@ -32,7 +32,7 @@ Building the API for (2) makes us the first consumer of (1) — the best way to 
 - **demo-reset consumer** → separate follow-up PR + its own design (it has real complexity: preserve Smithers state + knowledge bases + user/org context; recreate role-agents from versioned definitions).
 - **`update` / PATCH** over the key API (MVP is create/list/get/delete per the issue).
 - **Non-agent resources** (connections, knowledge bases, users) — follow once the auth foundation is proven.
-- **Public stability / versioning guarantees** — ship as an admin/token API first, graduate a documented subset later. (URL carries `v1` from day one; the *guarantee* is a separate, later, docs concern.)
+- **Public stability / versioning guarantees** — ship as an admin/token API first, graduate a documented subset later. (URL carries `v1` from day one; the _guarantee_ is a separate, later, docs concern.)
 - **Rate limiting, key rotation UI** — later. Expiry (optional per key) is in scope.
 
 ---
@@ -40,47 +40,53 @@ Building the API for (2) makes us the first consumer of (1) — the best way to 
 ## 4. Design decisions (from brainstorming)
 
 ### D1 — Build vs. buy: **hybrid**
+
 Use the **Better Auth `apiKey` plugin** for the security-critical mechanics (hashing at rest, verification, expiry, revocation) — we already run Better Auth with the `admin` plugin, so this is "don't rebuild what the platform gives us" (the same principle we apply to OpenClaw). But write our **own explicit `withApiKey()` wrapper** for scope enforcement, audit writing, and actor mapping.
 
 > **Verified 2026-07-14 against installed deps:** the plugin is a **separate package `@better-auth/api-key` (v1.6.23, matches our better-auth 1.6.23)**, imported as `import { apiKey } from "@better-auth/api-key"` — it is **not** in core `better-auth/plugins` (confirmed absent from the barrel export and the package `exports` map). D1 stands; we just add this dependency. The package advertises "sessions from API keys" as a feature — see the open questions (§7) for the two things to confirm before coding: its hashing method and whether merely registering it auto-resolves keys into `getSession()`.
 
-**Critical:** do **not** enable the plugin's automatic session resolution. If a `x-api-key` header auto-resolved to a session, *every* existing `withAuth`/`withAdmin` route (settings, user deletion, provider keys, integrations, chat) would silently become API-key reachable. That is the opposite of the curated, default-deny surface we're selling. The key must open **only** the routes we explicitly expose.
+**Critical:** do **not** enable the plugin's automatic session resolution. If a `x-api-key` header auto-resolved to a session, _every_ existing `withAuth`/`withAdmin` route (settings, user deletion, provider keys, integrations, chat) would silently become API-key reachable. That is the opposite of the curated, default-deny surface we're selling. The key must open **only** the routes we explicitly expose.
 
 ### D2 — Audit actor model: **machine as actor, human as separate issuer metadata**
+
 Research across mature IAM (AWS/GCP/Azure), dev platforms (GitHub/GitLab/Stripe), and modern SaaS (Datadog/Okta/Vault) converges on one pattern: a key-driven action is logged as an **independent machine principal**, with human accountability carried in a **separate delegation field** — never merged.
 
 For Pinchy:
+
 - **Actor** = `actorType: "api_key"`, `actorId: <keyId>`, with an `{ id, name }` snapshot of the key.
 - **Issuing admin** = separate issuer field inside `detail` (Pinchy's version of AWS `sourceIdentity` / GCP `serviceAccountDelegationInfo`).
 - **Forward-compatible:** Pinchy has no service-account concept yet, so the technical owner (Better Auth `userId`) is the issuing admin. When real service accounts arrive, only the owner field moves — the actor model stays.
 
-The rejected alternative ("key acts as the admin") is exactly what Datadog and Okta are migrating *away from* — it breaks on staff turnover (orphaning) and gives poor attribution.
+The rejected alternative ("key acts as the admin") is exactly what Datadog and Okta are migrating _away from_ — it breaks on staff turnover (orphaning) and gives poor attribution.
 
 > **Revised 2026-07-15 (PR review, finding B1) — the owner moved, and the issuer field went away.**
 >
 > The bullet above turned out to be the load-bearing one, and its "when real service accounts arrive" was not far enough away: the halfway state it described is **not a coherent model**, and review found it doesn't survive an offboarding.
 >
-> The industry ships exactly two: **(1) human-owned**, where the credential carries its holder's live authority and dies with their account (GitHub PAT, Okta API token, AWS access key); **(2) machine-owned**, where it belongs to a non-human principal and survives offboarding by design (GCP service account key, Datadog org API key). No vendor ships a third — human-owned but with frozen, independent permissions outliving the human — which is precisely where "`userId` = the issuing admin, scopes = the key's own" had put us. Model 1 is only coherent for a vendor that *also* offers service accounts, so it has an answer to "then how do I run CI?". Pinchy has no such escape hatch, and this API's own motivating use case is CI.
+> The industry ships exactly two: **(1) human-owned**, where the credential carries its holder's live authority and dies with their account (GitHub PAT, Okta API token, AWS access key); **(2) machine-owned**, where it belongs to a non-human principal and survives offboarding by design (GCP service account key, Datadog org API key). No vendor ships a third — human-owned but with frozen, independent permissions outliving the human — which is precisely where "`userId` = the issuing admin, scopes = the key's own" had put us. Model 1 is only coherent for a vendor that _also_ offers service accounts, so it has an answer to "then how do I run CI?". Pinchy has no such escape hatch, and this API's own motivating use case is CI.
 >
 > So Pinchy takes (2) now rather than later:
+>
 > - `referenceId` is a constant service-account id (`PINCHY_SERVICE_ACCOUNT_ID`), not any user's id. Becomes the org id under real multi-tenancy — same shape, new value.
 > - The creating admin is recorded as **provenance** in the key's `metadata`, not as authority: `{ createdBy: { id, name } }`.
 > - **The `issuer` delegation field in `detail` is removed.** With no human owner, there is no delegation to record — attributing a machine's 3am deletion to whoever issued its key eighteen months ago names someone who had no part in it. The actor model itself stands exactly as designed: the key is the actor, with its `{ id, name }` snapshot.
 > - Agents created via the key get `ownerId: null` for the same reason.
 >
-> **The cost, stated plainly:** this does *not* solve custody. The one-time plaintext was seen only by its creator, so a departed admin may still hold a working org credential — inherent to the model; GCP has the same property. It is answered operationally, and those answers ARE the control, not garnish: a **Created by** column flagging inactive creators, and an offboarding/rotation section in the docs.
+> **The cost, stated plainly:** this does _not_ solve custody. The one-time plaintext was seen only by its creator, so a departed admin may still hold a working org credential — inherent to the model; GCP has the same property. It is answered operationally, and those answers ARE the control, not garnish: a **Created by** column flagging inactive creators, and an offboarding/rotation section in the docs.
 >
 > Coupling worth knowing: this works because of **D1**. `createApiKey` stores `referenceId` verbatim and `verifyApiKey` never resolves it; the plugin's session-from-key hook is the one place that would (`findUserById`, UNAUTHORIZED on a miss), and `enableSessionForAPIKeys: false` stops that hook from ever being registered. Turning D1 on would break every key at once. D1 and the service-account id are one decision.
 
 ### D3 — Scopes: **three, `agents:read` / `agents:write` / `agents:delete`**
+
 `delete` is split from `write` because deletion is irreversible and the highest-blast-radius operation on a leaked key — it deserves its own grant (least privilege, default-deny). Defining three scopes now is ~free (one extra constant; the DELETE route checks `agents:delete`) and avoids an unclean future breaking change (splitting `delete` out of `write` later would either silently grant it to existing keys or break them). The `<resource>:<action>` axis is the real extensibility mechanism (`connections:read`, `knowledge:write`, … later).
 
 - demo-reset key → `read write delete`.
 - future IaC provisioning key → `read write` (no delete). Real least-privilege.
 
 ### D4 — Route architecture: **service extraction + `/api/v1/agents`**
-- **Reuse (non-negotiable, per issue):** extract the pure domain logic into service functions in `lib/agents.ts` (`createAgent()`, `listAgents()`, `getAgent()`; `deleteAgent()` already exists). Both auth worlds (session routes + key routes) call the same functions; each world does its own auth + audit *around* them. No parallel path, no duplicated logic.
-- **Namespace:** new `/api/v1/agents`, separate from the `/api/agents` session routes. **URL versioning ≠ stability guarantee** — `v1` in the path is cheap future-proofing; the documented-stable *contract* graduates later without a URL migration.
+
+- **Reuse (non-negotiable, per issue):** extract the pure domain logic into service functions in `lib/agents.ts` (`createAgent()`, `listAgents()`, `getAgent()`; `deleteAgent()` already exists). Both auth worlds (session routes + key routes) call the same functions; each world does its own auth + audit _around_ them. No parallel path, no duplicated logic.
+- **Namespace:** new `/api/v1/agents`, separate from the `/api/agents` session routes. **URL versioning ≠ stability guarantee** — `v1` in the path is cheap future-proofing; the documented-stable _contract_ graduates later without a URL migration.
 - **Semantic difference to capture:** the session `GET /api/agents` filters by per-user visibility (`getVisibleAgents` / `getAgentWithAccess`). The key API is admin/org-scoped and sees **all** agents — the extracted `listAgents()`/`getAgent()` must support the "sees everything" case (no visibility filtering).
 
 > **Revised 2026-07-15 (PR review, finding B3) — "all" was one agent class too many.**
@@ -89,9 +95,10 @@ The rejected alternative ("key acts as the admin") is exactly what Datadog and O
 >
 > The exclusion lives in the query, not in a route branch: `getAgent` returns `undefined` for a personal agent, indistinguishable from an unknown id, so all three endpoints answer a plain `404`. That symmetry is the point — DELETE previously answered `400 "Personal agents cannot be deleted"`, which is fine on the session route (its admin caller can already enumerate every agent) but an oracle here: probe an id, read the status, learn who has a personal agent.
 >
-> Worth recording, because it says something about test design: the original D4 integration test proved "the key sees what the visibility filter hides" using **a personal agent** as its example — the only one that worked, since this DB is a community instance where `effectiveVisibility` downgrades `restricted` to `all`. The test demonstrating D4 *was* the B3 exposure.
+> Worth recording, because it says something about test design: the original D4 integration test proved "the key sees what the visibility filter hides" using **a personal agent** as its example — the only one that worked, since this DB is a community instance where `effectiveVisibility` downgrades `restricted` to `all`. The test demonstrating D4 _was_ the B3 exposure.
 
 ### D5 — This-PR scope: **foundation + minimal admin UI; demo-reset separate**
+
 Minimal admin UI (Settings → API Keys: list, create with scope selection, revoke). The decisive reason is **security, not convenience**: the plaintext key may only be shown **once** (one-time display). Creating keys via `curl` against a backend leaks the plaintext into shell history and logs — a UI shows it once and forgets it. "Admins manage keys in the UI, every action audited" is also the governance story Pinchy sells.
 
 ---
@@ -100,21 +107,22 @@ Minimal admin UI (Settings → API Keys: list, create with scope selection, revo
 
 **Actor model — the two-axis pattern** (actor = machine principal, credential + human = separate metadata):
 
-| Platform | Actor on key action | Human/owner |
-|---|---|---|
-| **Stripe** | `actor.type = "api_key"`, `api_key.id` — *our exact case* | separate |
-| AWS CloudTrail | `type: AssumedRole` + `accessKeyId` | `sourceIdentity` |
-| GCP Audit Logs | service-account email as `principalEmail` | `serviceAccountDelegationInfo[]` |
-| GitLab | auto-created bot user (`project_x_bot_y`) | creator as metadata |
-| Datadog / Okta | Service Account / Service App as actor | deliberately decoupled |
+| Platform       | Actor on key action                                       | Human/owner                      |
+| -------------- | --------------------------------------------------------- | -------------------------------- |
+| **Stripe**     | `actor.type = "api_key"`, `api_key.id` — _our exact case_ | separate                         |
+| AWS CloudTrail | `type: AssumedRole` + `accessKeyId`                       | `sourceIdentity`                 |
+| GCP Audit Logs | service-account email as `principalEmail`                 | `serviceAccountDelegationInfo[]` |
+| GitLab         | auto-created bot user (`project_x_bot_y`)                 | creator as metadata              |
+| Datadog / Okta | Service Account / Service App as actor                    | deliberately decoupled           |
 
-Datadog and Okta are *actively migrating away* from "key belongs to the creating admin" because it orphans on staff turnover and attributes poorly. → validates D2.
+Datadog and Okta are _actively migrating away_ from "key belongs to the creating admin" because it orphans on staff turnover and attributes poorly. → validates D2.
 
 **Key hashing — HMAC-SHA256 + server-wide pepper, NOT bcrypt/scrypt/argon2:**
+
 1. Security comes from ≥256-bit key entropy, not hash slowness — a random 256-bit key is brute-force-immune regardless of hash speed (Elastic's design rationale for salted SHA-256).
-2. Only a *deterministic* hash is indexable → **O(1) lookup on a UNIQUE index**; bcrypt/argon2's embedded random salt forces O(n) scans.
-3. Auth runs on *every* request — a deliberately slow hash is a throughput/latency killer here.
-4. HMAC with an externally-held pepper stays deterministic (indexable) *and* makes a pure DB leak worthless.
+2. Only a _deterministic_ hash is indexable → **O(1) lookup on a UNIQUE index**; bcrypt/argon2's embedded random salt forces O(n) scans.
+3. Auth runs on _every_ request — a deliberately slow hash is a throughput/latency killer here.
+4. HMAC with an externally-held pepper stays deterministic (indexable) _and_ makes a pure DB leak worthless.
 
 **Pinchy already has the infrastructure:** `getOrCreateSecret()` for the pepper (same mechanism as `audit_hmac_secret`), and HMAC-SHA256 is already used in the audit trail.
 
@@ -127,26 +135,30 @@ Sources: Stripe/GitHub/GitLab/AWS/GCP/Azure/Datadog/Okta/Vault official docs; El
 ## 6. Technical design
 
 ### 6.1 Schema
+
 - Enable the Better Auth `apiKey` plugin → generates the `apiKey` table (id, name, prefix/start, hashed key, `userId`, permissions/scopes, `expiresAt`, `enabled`, …). Generate the Drizzle migration.
 - **Migration:** extend the `actor_type` pgEnum (`packages/web/src/db/schema.ts:390`) from `["user","agent","system"]` to include `"api_key"` (Postgres `ALTER TYPE … ADD VALUE`). Update the TS union in `lib/audit.ts` (:91, :311) and `lib/audit-pdf.ts` (:6).
 
 ### 6.2 `withApiKey()` wrapper (`lib/api-auth.ts`, alongside `withAuth`/`withAdmin`)
+
 - Reads the bearer/API-key header, verifies via the plugin, resolves the key → scopes + issuing user.
 - Scope-gated: `withApiKey(["agents:write"], handler)`. Default-deny if the scope is absent → standardized 403 (same shape as `withAuth`).
 - Constant-time comparison; standardized 401 on missing/invalid key. **No** session resolution.
 - Passes an `apiKeyContext` (key id/name, scopes, issuer) to the handler for audit.
 
 ### 6.3 `/api/v1/agents` routes
-| Method | Route | Scope | Service fn | Audit |
-|---|---|---|---|---|
-| GET | `/api/v1/agents` | `agents:read` | `listAgents()` (all agents) | — |
-| POST | `/api/v1/agents` | `agents:write` | `createAgent()` | `agent.created` (actor=api_key) |
-| GET | `/api/v1/agents/[id]` | `agents:read` | `getAgent()` | — |
-| DELETE | `/api/v1/agents/[id]` | `agents:delete` | `deleteAgent()` | `agent.deleted` (actor=api_key) |
+
+| Method | Route                 | Scope           | Service fn                  | Audit                           |
+| ------ | --------------------- | --------------- | --------------------------- | ------------------------------- |
+| GET    | `/api/v1/agents`      | `agents:read`   | `listAgents()` (all agents) | —                               |
+| POST   | `/api/v1/agents`      | `agents:write`  | `createAgent()`             | `agent.created` (actor=api_key) |
+| GET    | `/api/v1/agents/[id]` | `agents:read`   | `getAgent()`                | —                               |
+| DELETE | `/api/v1/agents/[id]` | `agents:delete` | `deleteAgent()`             | `agent.deleted` (actor=api_key) |
 
 State-changing calls audited with `actorType:"api_key"`, `actorId:<keyId>`, `{id,name}` snapshot, issuer in `detail`.
 
 ### 6.4 Service extraction (`lib/agents.ts`)
+
 Extract from the inline POST handler: `createAgent()` (DB insert + OpenClaw config regen + runtime wait). Extract `listAgents()` / `getAgent()` supporting the admin "sees all" case. `deleteAgent()` exists. Session routes refactored to call the same functions (keeps them DRY and proves the extraction).
 
 ### 6.5 Key-management API (session/admin)
@@ -158,13 +170,16 @@ Extract from the inline POST handler: `createAgent()` (DB insert + OpenClaw conf
 - `DELETE /api/settings/api-keys/[id]` — revoke ANY key (hard `db.delete` on `apiKeys`, org-wide — NOT session-scoped `deleteApiKey`). Audit `api_key.deleted` (`DeleteDetail { name }`).
 
 ### 6.6 Minimal admin UI (Settings → API Keys)
+
 List (name, prefix+last-4, scopes, created, expiry, last-used) · Create dialog (name, scope checkboxes, optional expiry) · one-time-display modal · Revoke.
 
 ### 6.7 Audit additions
+
 - New `AuditResource`: `"api_key"`. New event types: `api_key.created`, `api_key.deleted` (revocation hard-deletes the key, so `.deleted` + `DeleteDetail` per the audit convention — matches the implementation plan's Task 1.3/5.3).
 - Detail snapshots per AGENTS.md: `{ id, name }` for the key; scopes; issuer `{ id, name }`; expiry.
 
 ### 6.8 Crypto
+
 Target: `HMAC-SHA256(pepper, secret)`, pepper via `getOrCreateSecret("api_key_pepper")`, timing-safe compare. **Verify** what the Better Auth plugin does internally — if it diverges (e.g. non-deterministic or a slow hash), configure a custom hasher or reconsider the storage layer. Deps are installed in the worktree → verifiable now.
 
 ---
@@ -185,7 +200,9 @@ Installed `@better-auth/api-key@1.6.23` (pinned to match `better-auth`). All evi
 - `index.mjs:2246-2248` — the default hasher is plain SHA-256, base64url-encoded (no padding), fast and deterministic:
   ```js
   const defaultKeyHasher = async (key) => {
-    const hash = await createHash("SHA-256").digest(new TextEncoder().encode(key));
+    const hash = await createHash("SHA-256").digest(
+      new TextEncoder().encode(key),
+    );
     return base64Url.encode(new Uint8Array(hash), { padding: false });
   };
   ```
@@ -205,14 +222,16 @@ Installed `@better-auth/api-key@1.6.23` (pinned to match `better-auth`). All evi
 - **Task 2.2 instruction:** the "can't disable" branch does **not** apply — it can be disabled and is off by default. The regression test proving `GET /api/users` rejects an `x-api-key` header is therefore **downgraded from required to recommended defense-in-depth** (cheap guard against a future accidental `enableSessionForAPIKeys: true`). Given Pinchy's security posture, keeping one small regression test is advised, but it is no longer a gating requirement.
 
 **`verifyApiKey` signature (gate for Phase 2).** Server-only endpoint — `createAuthEndpoint.serverOnly({ method: "POST", body: verifyApiKeyBodySchema }, ...)` at `index.mjs:1951-1954`; call as `auth.api.verifyApiKey({ body })`, not a public HTTP route.
+
 - Request body (`index-CI6mGUwK.d.mts:446-450`): `{ configId?: string; key: string; permissions?: Record<string, string[]> }`. Passing `permissions` authorizes the required permissions against the key's stored permissions (`index.mjs:1666-1669`, via `role(apiKeyPermissions).authorize(permissions)`).
 - Response — **does not throw** on an invalid key; it catches internally and returns a discriminated union (`index-CI6mGUwK.d.mts:444-477`, impl `index.mjs:1988-2024`):
   - Failure: `{ valid: false, error: { message, code }, key: null }` (codes: `KEY_NOT_FOUND`, `INVALID_API_KEY`, and `KEY_DISABLED`/`KEY_EXPIRED`/`USAGE_EXCEEDED` from `validateApiKey`).
   - Success: `{ valid: true, error: null, key: Omit<ApiKey, "key"> }` — the hashed `key` is stripped at `index.mjs:2011` (`const { key: _, ...returningApiKey } = apiKey`).
 - Returned `key` object fields (`index-CI6mGUwK.d.mts:640-666`): `id: string`, `name: string | null`, **`referenceId: string`** (owner), `permissions: { [k: string]: string[] } | null` (JSON-parsed at `index.mjs:2016`), `prefix`, `start`, `enabled`, `expiresAt`, `metadata`, `remaining`, rate-limit fields, `configId`, `createdAt`, `updatedAt`.
-- **GOTCHA (Task 2 critical):** the owner field on the output is **`referenceId`, not `userId`** — there is no `userId` on the returned object. (`userId` appears only as a stale property in the getApiKey OpenAPI *doc* block, `index-CI6mGUwK.d.mts:~579`, and as a server-only *input* alias on create.) Read the principal from `result.key.referenceId`.
+- **GOTCHA (Task 2 critical):** the owner field on the output is **`referenceId`, not `userId`** — there is no `userId` on the returned object. (`userId` appears only as a stale property in the getApiKey OpenAPI _doc_ block, `index-CI6mGUwK.d.mts:~579`, and as a server-only _input_ alias on create.) Read the principal from `result.key.referenceId`.
 
 **`createApiKey` signature (gate for Phase 5).** Endpoint `POST /api-key/create` (`index-CI6mGUwK.d.mts:261`); also `auth.api.createApiKey({ body })`.
+
 - Request body (`index-CI6mGUwK.d.mts:262-277`): `configId?`, `name?`, `expiresIn` (number|null, **seconds**), `prefix?`, `remaining?`, `metadata?`, `refillAmount?`, `refillInterval?`, `rateLimit*?`, `permissions?: Record<string, string[]>`, `userId?` (server-only), `organizationId?`.
   - `expiresIn` is in **seconds** (`index.mjs:584` meta "in seconds"; `getDate(expiresIn, "sec")` at `index.mjs:821`), but is range-checked against `keyExpiration.minExpiresIn`/`maxExpiresIn` which are in **days** (defaults 1 / 365) after dividing by `3600*24` (`index.mjs:785-789`) ⇒ default max life 365 days.
 - Response (`index-CI6mGUwK.d.mts:406-431`, impl `index.mjs:853-858`) returns the full row spread with **`key` overridden to the PLAINTEXT key including prefix** — the one-time secret:
@@ -223,6 +242,7 @@ Installed `@better-auth/api-key@1.6.23` (pinned to match `better-auth`). All evi
 - **GOTCHA (Task 5 critical):** `permissions`, `remaining`, and all `rateLimit*` fields are **server-only** — passing any of them when `ctx.request || ctx.headers` is truthy throws `SERVER_ONLY_PROPERTY` (`index.mjs:735-736`); a body `userId` is rejected when `ctx.request` is set (`index.mjs:737`). ⇒ To mint a scoped key for an arbitrary agent principal, call `auth.api.createApiKey({ body: { userId, name, prefix, permissions, expiresIn } })` **server-side with NO `headers`/`request`** in the call options. That reaches the `else` branch (`index.mjs:754-766`) where `referenceId = body.userId` and `permissions` is accepted.
 
 **Key format / prefix.** Two ways to get a `pinchy_` prefix:
+
 - Per-key: pass `prefix: "pinchy_"` in the create body (not server-only; accepted on any call).
 - Global (recommended): set **`defaultPrefix: "pinchy_"`** in `apiKey({...})` config — used as `prefix || opts.defaultPrefix` (`index.mjs:805`) and stored (`index.mjs:817`). Type `defaultPrefix?: string` (`types-BR70O3Q3.d.mts:281`). Bounds: `minimumPrefixLength` 1 / `maximumPrefixLength` 32 (`index.mjs:2262-2263`) ⇒ `pinchy_` (7 chars) is valid. Prefix is stored as plain text and prepended to the key.
 

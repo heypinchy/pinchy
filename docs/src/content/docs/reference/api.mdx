@@ -376,6 +376,38 @@ Serve a file from a directory this agent is granted under `allowed_paths` — th
 
 The mirrored transcript of this agent's Telegram conversations, for reading them in the web UI.
 
+## Agent Provisioning API
+
+Machine clients (CI, scripts) provision agents with a scoped API key instead of a session. Admins mint and revoke keys under **Settings → API Keys**; the key then authenticates the versioned `/api/v1/*` surface. The [Agent Provisioning API reference](/reference/agent-provisioning-api/) carries the authentication model, scopes, `curl` examples, and full request/response shapes — the entries below are the index.
+
+### `GET /api/settings/api-keys`
+
+List every API key (masked `start`, scopes, expiry, last-used, enabled state). **Admin only.** The plaintext secret is never returned — it is shown once at creation and never again.
+
+### `POST /api/settings/api-keys`
+
+Mint a new API key. **Admin only.** Body: `name`, `scopes` (`agents:read` / `agents:write`), and an optional `expiresAt`. The response carries the plaintext key exactly once; store it then, because no endpoint can return it later. Audited as `api_key.created`.
+
+### `DELETE /api/settings/api-keys/:keyId`
+
+Revoke (hard-delete) a key by id. **Admin only.** Returns `404` when no key has that id; the revocation touches no other key. Audited as `api_key.deleted` with the key's snapshotted name.
+
+### `GET /api/v1/agents`
+
+Key-authenticated (`agents:read`). Lists every **shared** agent org-wide — unlike the session `GET /api/agents`, it is not filtered by the caller's group membership. Personal agents are always excluded. See the [Agent Provisioning API reference](/reference/agent-provisioning-api/).
+
+### `POST /api/v1/agents`
+
+Key-authenticated (`agents:write`). Creates a shared agent from a template, identically to `POST /api/agents` but with the key as the audit actor (`actorType: "api_key"`). The created agent is unowned (`ownerId: null`). See the [Agent Provisioning API reference](/reference/agent-provisioning-api/).
+
+### `GET /api/v1/agents/:agentId`
+
+Key-authenticated (`agents:read`). Fetches one shared agent by id; a personal agent's id answers `404` indistinguishably. See the [Agent Provisioning API reference](/reference/agent-provisioning-api/).
+
+### `DELETE /api/v1/agents/:agentId`
+
+Key-authenticated (`agents:write`). Soft-deletes a shared agent, audited with the key as actor. See the [Agent Provisioning API reference](/reference/agent-provisioning-api/).
+
 ## Knowledge Base
 
 See [Create a Knowledge Base Agent](/guides/create-knowledge-base-agent/) for the end-to-end setup flow.
