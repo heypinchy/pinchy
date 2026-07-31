@@ -19,13 +19,14 @@
 // NEEDS VALIDATION AGAINST THE RUNNING STACK (orchestrator's dry-run — NOT
 // run from this task, no key available here). Every piece below is read from
 // source, not observed live:
-//   1. Corpus seeding (seedSyntheticCorpus) — raw SQL INSERTs against
-//      kb_documents/kb_chunks with the committed embeddinggemma-300m embeddings fixture,
-//      mirroring `kb-retrieval-eval.integration.test.ts`'s Drizzle-based
-//      seeding but via the `postgres` package + stackDbUrl (this file runs
-//      as an external Playwright spec against a docker-mapped port, not
-//      inside the Next.js process — see `../eval-models.spec.ts`'s identical
-//      DB-access pattern for its settings seeding).
+//   1. (NO LONGER UNVALIDATED) Corpus seeding now lives in `seed-corpus.ts`
+//      and is covered by `kb-eval-seed-corpus.integration.test.ts` against a
+//      real Postgres. It was broken in two ways while this note called it
+//      unvalidated: it INSERTed a `page` column that does not exist (the
+//      locator is jsonb), which killed every sweep 200ms in, and it hard-coded
+//      status 'active', which would have seeded the archived `OLD/` copy as
+//      current and made the freshness axis (#858) grade the opposite of what
+//      it asks.
 //   2. The agent grant shape (`allowedTools: ["knowledge_search"]` +
 //      `pluginConfig["pinchy-files"].allowed_paths`) — mirrors
 //      `e2e/integration/agent-chat.spec.ts`'s pinchy-knowledge probe, not
@@ -88,83 +89,20 @@ import {
 } from "../../src/lib/eval/kb/llm-nli";
 import { DEFAULT_ORG_ID } from "../../src/lib/knowledge/constants";
 import { fetchChunkTexts } from "./chunk-texts";
+import { seedSyntheticCorpus } from "./seed-corpus";
+import { resolveCitedSourcePaths } from "./resolve-cited-paths";
 import { DEFAULT_KB_CANDIDATES } from "../candidates";
-import { KB_SWEEP_TEMPLATE_ID } from "./sweep-agent";
-import { KB_EVAL_CORPUS } from "./corpus/manifest";
+import {
+  KB_SWEEP_ALLOWED_TOOLS,
+  KB_SWEEP_CORPUS_ROOT,
+  KB_SWEEP_TEMPLATE_ID,
+  buildKbSweepAgentPayload,
+  missingSweepSkills,
+} from "./sweep-agent";
+import { getTemplate } from "../../src/lib/agent-templates/registry";
 import { GOLD_QA } from "./corpus/gold-qa";
-import { loadEmbeddings } from "./embeddings-fixture";
 
 const RESULT_LABEL = "kb-groundedness-sweep";
-
-const KB_ALLOWED_TOOLS = ["knowledge_search"];
-const CORPUS_ROOT = "/data";
-
-/**
- * Seeds `KB_EVAL_CORPUS` (`./corpus/manifest.ts`) into the live stack's
- * Postgres via raw SQL, using the COMMITTED embeddinggemma-300m embeddings fixture
- * (`./embeddings-fixture.ts`) — the same fixture Layer 1's
- * `kb-retrieval-eval.integration.test.ts` uses, so chunk embeddings need no
- * live embedder call. The real `retrieve()` (invoked through
- * `POST /api/internal/knowledge/search` when the agent's `knowledge_search`
- * tool fires) still calls a live embedder for the QUERY at search time —
- * that dependency is unchanged, this only removes it from CORPUS ingestion.
- * `orgId` MUST be `DEFAULT_ORG_ID` ("default") — the real route hardcodes
- * this single-tenant seam (`src/lib/knowledge/constants.ts`), unlike the
- * Layer-1 vitest suite's isolated `"org-kb-eval"` test-DB constant.
- */
-async function seedSyntheticCorpus(dbUrl: string): Promise<void> {
-  const embeddings = loadEmbeddings();
-  const { default: postgres } = await import("postgres");
-  const sql = postgres(dbUrl);
-  try {
-    for (const doc of KB_EVAL_CORPUS) {
-      // kb_documents.id / kb_chunks.id are `text` with NO database default —
-      // the app supplies them via Drizzle's `$defaultFn(() => crypto.randomUUID())`,
-      // so a raw INSERT that omits `id` hits a NOT NULL violation. Mint one in
-      // SQL (gen_random_uuid() is built into Postgres 13+, no extension) to
-      // mirror the app's uuid-shaped text id.
-      const [dbDoc] = await sql<{ id: string }[]>`
-        INSERT INTO kb_documents (id, org_id, content_hash, source_path, status)
-        VALUES (gen_random_uuid()::text, ${DEFAULT_ORG_ID}, ${`hash-${doc.sourcePath}`}, ${doc.sourcePath}, 'active')
-        ON CONFLICT DO NOTHING
-        RETURNING id
-      `;
-      // A prior sweep invocation may have already seeded this doc (ON
-      // CONFLICT DO NOTHING then returns no row) — re-select rather than
-      // re-insert chunks on top of an existing document.
-      const dbDocId =
-        dbDoc?.id ??
-        (
-          await sql<{ id: string }[]>`
-            SELECT id FROM kb_documents WHERE org_id = ${DEFAULT_ORG_ID} AND source_path = ${doc.sourcePath}
-          `
-        )[0]?.id;
-      if (!dbDocId) throw new Error(`Failed to resolve kb_documents.id for ${doc.sourcePath}`);
-
-      for (const chunk of doc.chunks) {
-        const embedding = embeddings.chunks[chunk.id];
-        if (!embedding) {
-          throw new Error(
-            `Missing embedding fixture for chunk id ${chunk.id} — run pnpm kb-eval:reembed`
-          );
-        }
-        const existing = await sql<{ id: string }[]>`
-          SELECT id FROM kb_chunks WHERE document_id = ${dbDocId} AND chunk_text = ${chunk.text}
-        `;
-        if (existing.length > 0) continue; // already seeded by a prior invocation
-        // pgvector's textual literal is the same `[1,2,3]` form JSON.stringify
-        // produces for a number array — see src/lib/knowledge/retrieve.ts's
-        // identical `${queryVectorLiteral}::vector` pattern.
-        await sql`
-          INSERT INTO kb_chunks (id, document_id, org_id, source_path, chunk_text, page, embedding)
-          VALUES (gen_random_uuid()::text, ${dbDocId}, ${DEFAULT_ORG_ID}, ${doc.sourcePath}, ${chunk.text}, ${chunk.page}, ${JSON.stringify(embedding)}::vector)
-        `;
-      }
-    }
-  } finally {
-    await sql.end();
-  }
-}
 
 /**
  * The (local-only, guarded) real Noack corpus path. `corpusFromEnv()` already
@@ -206,24 +144,56 @@ function seedNoackCorpus(): never {
 async function setupKbSweepAgent(cookie: string): Promise<{ agentId: string }> {
   const createRes = await pinchyPost(
     "/api/agents",
-    { name: `KB-Sweep-${Date.now()}`, templateId: KB_SWEEP_TEMPLATE_ID },
+    buildKbSweepAgentPayload(`KB-Sweep-${Date.now()}`),
     cookie
   );
-  if (!createRes.ok)
-    throw new Error(`Failed to create KB sweep agent: ${String(createRes.status)}`);
+  if (!createRes.ok) {
+    // Quote the body, not just the status. A bare "400" is what this threw
+    // when the payload was missing `allowed_paths`, and the route had said
+    // "At least one directory must be selected" the whole time — the one
+    // sentence that would have named the fix.
+    throw new Error(
+      `Failed to create KB sweep agent: ${String(createRes.status)} ${await createRes.text()}`
+    );
+  }
   const { id: agentId } = (await createRes.json()) as { id: string };
 
   const patchRes = await pinchyPatch(
     `/api/agents/${agentId}`,
     {
-      allowedTools: KB_ALLOWED_TOOLS,
-      pluginConfig: { "pinchy-files": { allowed_paths: [CORPUS_ROOT] } },
+      allowedTools: KB_SWEEP_ALLOWED_TOOLS,
+      pluginConfig: { "pinchy-files": { allowed_paths: [KB_SWEEP_CORPUS_ROOT] } },
     },
     cookie
   );
   if (!patchRes.ok) {
     throw new Error(
-      `Failed to grant knowledge_search to KB sweep agent: ${String(patchRes.status)}`
+      `Failed to grant knowledge_search to KB sweep agent: ${String(patchRes.status)} ` +
+        (await patchRes.text())
+    );
+  }
+
+  // Verify the measurement premise on THIS agent before measuring anything.
+  // The cited-answer contract the graders enforce arrives through the
+  // template's skill; if the agent did not receive it, every groundedness
+  // number this run produces describes an agent that was never told the rules
+  // — which is exactly how the first sweep published a passRate of 0 (#869).
+  // Fail loudly here rather than 8 minutes later as a scorecard nobody can
+  // interpret.
+  const agentRes = await pinchyGet(`/api/agents/${agentId}`, cookie);
+  if (!agentRes.ok) {
+    throw new Error(
+      `Failed to read back KB sweep agent: ${String(agentRes.status)} ${await agentRes.text()}`
+    );
+  }
+  const agent = (await agentRes.json()) as { skills?: string[] | null };
+  const templateSkills = getTemplate(KB_SWEEP_TEMPLATE_ID)?.defaultSkills ?? [];
+  const missing = missingSweepSkills(templateSkills, agent.skills);
+  if (missing.length > 0) {
+    throw new Error(
+      `KB sweep agent ${agentId} is missing the skill(s) that state the cited-answer ` +
+        `contract: ${missing.join(", ")}. Grading its answers would measure whether the ` +
+        `model invents an unstated contract, not whether it stays grounded.`
     );
   }
 
@@ -398,7 +368,11 @@ test.describe("KB Eval Harness Layer 3: groundedness sweep (real Ollama Cloud)",
         ]);
 
         const retrieved = retrievedSourcesFromAuditEntries(auditEntries);
-        const citedPaths = citedSourcePaths(answer);
+        // The answer cites what the tool SHOWED (a path relative to the data
+        // root); kb_chunks is keyed by the absolute path. Resolving between
+        // them against this run's own retrieved set is what makes the premise
+        // lookup find anything at all — see resolve-cited-paths.ts.
+        const citedPaths = resolveCitedSourcePaths(citedSourcePaths(answer), retrieved);
         const chunkTextsByPath = await fetchChunkTexts(dbUrl, DEFAULT_ORG_ID, citedPaths);
         const citedPassageTexts = citedPaths.flatMap((p) => chunkTextsByPath.get(p) ?? []);
 

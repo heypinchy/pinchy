@@ -39,7 +39,7 @@ import { getTemplate } from "@/lib/agent-templates/registry";
 import { generateAgentsMd } from "@/lib/agent-templates/generate-agents-md";
 import { getSkillBody, isKnownSkill } from "@/lib/skills";
 
-import { KB_SWEEP_TEMPLATE_ID } from "../../../../eval/kb/sweep-agent";
+import { KB_SWEEP_TEMPLATE_ID, missingSweepSkills } from "../../../../eval/kb/sweep-agent";
 
 const CORPUS_ROOT = "/data/kb-eval-corpus";
 const PLUGIN_CONFIG = { "pinchy-files": { allowed_paths: [CORPUS_ROOT] } };
@@ -126,6 +126,19 @@ describe("the Layer-3 sweep agent is instructed to do what the graders grade", (
 
   it("renders the corpus root, so the agent knows where its documents are", () => {
     expect(sweepInstructions()).toContain(CORPUS_ROOT);
+  });
+
+  it("flags a live agent that did not receive the template's skills", () => {
+    // The premise the sweep checks at runtime: the agent it just created
+    // carries the skill that states the contract. Every other link in that
+    // chain is checked against a mock, so nothing observes the agent a given
+    // run actually measures.
+    const templateSkills = getTemplate(KB_SWEEP_TEMPLATE_ID)?.defaultSkills ?? [];
+    expect(templateSkills.length).toBeGreaterThan(0);
+
+    expect(missingSweepSkills(templateSkills, templateSkills)).toEqual([]);
+    expect(missingSweepSkills(templateSkills, [])).toEqual([...templateSkills]);
+    expect(missingSweepSkills(templateSkills, null)).toEqual([...templateSkills]);
   });
 
   it("discriminates: the bare custom template would fail every assertion above", () => {

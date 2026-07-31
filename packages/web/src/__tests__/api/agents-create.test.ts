@@ -193,6 +193,7 @@ import {
   writeIdentityFile,
 } from "@/lib/workspace";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
+import { buildKbSweepAgentPayload } from "../../../eval/kb/sweep-agent";
 
 describe("POST /api/agents", () => {
   beforeEach(() => {
@@ -301,6 +302,24 @@ describe("POST /api/agents", () => {
     expect(ensureWorkspace).toHaveBeenCalledWith("new-agent-id");
     expect(writeWorkspaceFile).toHaveBeenCalledWith("new-agent-id", "SOUL.md", expect.any(String));
     expect(regenerateOpenClawConfig).toHaveBeenCalled();
+  });
+
+  it("accepts the KB Layer-3 sweep's own create payload", async () => {
+    // The sweep builds this body itself; putting it through the real handler
+    // is the only check that does not restate the route's rules in a test
+    // that would then drift from them. It used to create a bare `custom`
+    // agent, whose template carries no `pluginId`, so the "at least one
+    // directory" rule never applied — and switching to the KB template
+    // (#869 item 4) turned the missing `pluginConfig` into a 400 that only a
+    // live sweep could surface, after a full stack boot and a corpus seed.
+    const request = new NextRequest("http://localhost:7777/api/agents", {
+      method: "POST",
+      body: JSON.stringify(buildKbSweepAgentPayload("KB-Sweep-1")),
+    });
+
+    const response = await POST(request, routeContext());
+
+    expect(response.status).toBe(201);
   });
 
   it("should set ownerId to the current user's id", async () => {
