@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 // The retry gate as the user meets it: a question asked when Retry is pressed,
 // not when the run failed (#1013).
 //
