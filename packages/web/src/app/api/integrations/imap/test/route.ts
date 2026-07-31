@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { withAdmin } from "@/lib/api-auth";
 import { parseRequestBody } from "@/lib/api-validation";
 import { imapTestSchema, type ImapTestResult, type ImapTestSuggestion } from "@/lib/schemas/imap";
-import { appendAuditLog, redactEmail } from "@/lib/audit";
+import { appendAuditLog, redactEmail, type AuditLogEntry } from "@/lib/audit";
 import { recordAuditFailure } from "@/lib/audit-deferred";
 import {
   testImapLogin,
@@ -18,6 +18,13 @@ import {
 // every IMAP username is an email address, so this is a heuristic, not a
 // validation rule.
 const EMAIL_LIKE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+// The detail shape this route is contractually allowed to write, taken from the
+// audit union itself so the two cannot drift apart.
+type CredentialsTestedDetail = Extract<
+  AuditLogEntry,
+  { eventType: "integration.credentials_tested" }
+>["detail"];
 
 // Both legs are always run — a firewalled SMTP port is exactly the diagnostic
 // this endpoint exists to surface, so a failed IMAP login must not hide it.
@@ -85,20 +92,35 @@ export const POST = withAdmin(async (request: NextRequest, _ctx, session) => {
     ...(error ? { error } : {}),
   };
 
-  const auditDetail = {
+  // Annotated, not inferred. An inferred local passed to appendAuditLog skips
+  // TypeScript's excess-property check, which is how `imapCode`/`smtpCode` came
+  // to be written while the AuditLogEntry union still advertised a `reason`
+  // nothing wrote. The annotation has to sit HERE rather than on
+  // `auditEntry` below: excess-property checking only applies to an object
+  // LITERAL being assigned, so `detail: auditDetail` re-opens the hole the
+  // moment the detail is built as a variable.
+  const auditDetail: CredentialsTestedDetail = {
     imapHost: input.imapHost,
     smtpHost: input.smtpHost,
-    ...(imap.ok ? {} : { imapCode: imap.code }),
-    ...(smtp.ok ? {} : { smtpCode: smtp.code }),
+    // Direct properties, NOT conditional spreads. A spread is invisible to
+    // excess-property checking (verified with a canary), so `...(imap.ok ? {} :
+    // { imapCode: imap.code })` would keep exactly the hole the annotation
+    // above exists to close. `undefined` disappears on JSON serialization, so
+    // the stored row is byte-identical to the spread version.
+    imapCode: imap.ok ? undefined : imap.code,
+    smtpCode: smtp.ok ? undefined : smtp.code,
+    // Still a spread, and still unchecked — but `identity` is a typed
+    // RedactedEmail, so its shape is pinned by redactEmail()'s return type
+    // rather than by this assignment.
     ...(identity ?? {}),
   };
 
-  const auditEntry = {
-    eventType: "integration.credentials_tested" as const,
-    actorType: "user" as const,
+  const auditEntry: AuditLogEntry = {
+    eventType: "integration.credentials_tested",
+    actorType: "user",
     actorId,
     resource: "integration",
-    outcome: ok ? ("success" as const) : ("failure" as const),
+    outcome: ok ? "success" : "failure",
     ...(ok ? {} : { error: { message: error ?? "Connection test failed" } }),
     detail: auditDetail,
   };

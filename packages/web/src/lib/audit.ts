@@ -3,6 +3,9 @@ import { asc, desc, eq, gt, gte, lte, and, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { auditLog, users, type AuditDetail } from "@/db/schema";
 import { getOrCreateSecret } from "@/lib/encryption";
+// Type-only (erased at build time), so the IMAP probe's runtime dependencies
+// never enter audit.ts's module graph.
+import type { ProbeFailureCode } from "@/lib/integrations/imap-probe";
 
 // Transaction-scoped advisory lock key that serializes audit appends so the
 // prev-hash chain can never fork (two writers must not read the same
@@ -535,7 +538,15 @@ export type AuditLogEntry =
       detail: {
         imapHost: string;
         smtpHost: string;
-        reason?: string;
+        // Per-leg failure classification, present only for the leg that
+        // failed — both legs always run, so a row can carry either, both, or
+        // neither. This is the whole diagnostic value of a failure row: the
+        // human-readable message goes into `error.message`, while these codes
+        // are what an analyst can filter and count on.
+        imapCode?: ProbeFailureCode;
+        smtpCode?: ProbeFailureCode;
+        // Present instead of a plaintext username when it looks like an email
+        // address. See redactEmail() and the note on the sibling member above.
         emailHash?: string;
         emailPreview?: string;
       };

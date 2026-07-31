@@ -1,5 +1,6 @@
 import { describe, it, expectTypeOf } from "vitest";
 import type { AuditLogEntry, AuditEventType } from "@/lib/audit";
+import type { ProbeFailureCode } from "@/lib/integrations/imap-probe";
 
 // Compile-time type tests. They run under `pnpm -C packages/web typecheck`
 // (which type-checks test files); vitest does NOT type-check `expectTypeOf`
@@ -101,6 +102,27 @@ describe("AuditLogEntry knowledge.source_downloaded (#934)", () => {
     expectTypeOf<
       Extract<AuditLogEntry, { eventType: "knowledge.source_downloaded" }>
     >().not.toBeNever();
+  });
+});
+
+describe("AuditLogEntry integration.credentials_tested", () => {
+  it("types the detail shape the IMAP test route actually writes", () => {
+    // POST /api/integrations/imap/test writes the per-leg failure CODES, not a
+    // prose `reason` — a failed probe is only useful in the log if it says
+    // which leg failed and how. The route's own annotation now catches a field
+    // the type doesn't declare; this assertion covers the other direction, a
+    // field the TYPE declares that nothing writes (which is what `reason` was).
+    expectTypeOf<
+      Extract<AuditLogEntry, { eventType: "integration.credentials_tested" }>["detail"]
+    >().toEqualTypeOf<{
+      imapHost: string;
+      smtpHost: string;
+      imapCode?: ProbeFailureCode;
+      smtpCode?: ProbeFailureCode;
+      emailHash?: string;
+      emailPreview?: string;
+    }>();
+    expectTypeOf<"integration.credentials_tested">().toExtend<AuditEventType>();
   });
 });
 
