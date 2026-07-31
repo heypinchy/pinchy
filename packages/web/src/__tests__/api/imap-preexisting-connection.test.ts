@@ -254,6 +254,20 @@ describe("Pre-existing IMAP connection — cross-route invariant (listed ⟹ rea
           }),
         },
       }));
+      // The (agent, connection) grant check the route runs before it decrypts
+      // anything (#987). It is stubbed here on purpose: this section's subject
+      // is whether a row an OLDER deploy wrote is still DECRYPTABLE by the
+      // current reader, and the `@/db` stub above answers exactly one query
+      // shape. The grant rule has its own migration coverage against real
+      // Postgres — see `lib/integrations/authorize-agent-connection.integration
+      // .test.ts`, including a grant row carrying the model/operation pair an
+      // older deploy wrote, which must still authorize.
+      vi.doMock("@/lib/integrations/authorize-agent-connection", () => ({
+        authorizeAgentConnection: vi.fn().mockResolvedValue({
+          allowed: true,
+          agent: { id: PRE_EXISTING_AGENT_ID, name: "Inbox Agent", allowedTools: [] },
+        }),
+      }));
       vi.doMock("@/lib/integrations/google-oauth", () => ({
         refreshAccessToken: vi.fn(),
       }));
@@ -266,8 +280,11 @@ describe("Pre-existing IMAP connection — cross-route invariant (listed ⟹ rea
     });
 
     function makeRequest(connectionId: string) {
+      // `agentId` is how the plugin identifies itself since #987 — the agent
+      // here is the one the pre-existing permission row grants.
       return new NextRequest(
-        `http://localhost/api/internal/integrations/${connectionId}/credentials`,
+        `http://localhost/api/internal/integrations/${connectionId}/credentials` +
+          `?agentId=${PRE_EXISTING_AGENT_ID}`,
         { method: "GET", headers: { Authorization: "Bearer test-gateway-token" } }
       );
     }

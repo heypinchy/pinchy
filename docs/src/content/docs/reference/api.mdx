@@ -1300,7 +1300,23 @@ Summary counts of integration connection health (active, `auth_failed`, and conn
 
 **Internal** — authenticated with the shared OpenClaw gateway token (Pattern C in `AGENTS.md`), not a user session. Called by Pinchy plugins at runtime, never by the browser.
 
-Returns the decrypted credentials for a connection, auto-refreshing an expired OAuth access token first (Google and Microsoft rotate refresh tokens differently — see the plugin cache/refetch behavior in the Secret Handling section of `AGENTS.md`). Called by `pinchy-email` and `pinchy-odoo` with the gateway token as Bearer auth; the plugin caches the response, typically with a 5-minute TTL, and invalidates on `401`.
+Returns the decrypted credentials for a connection, auto-refreshing an expired OAuth access token first (Google and Microsoft rotate refresh tokens differently — see the plugin cache/refetch behavior in the Secret Handling section of `AGENTS.md`). Called by `pinchy-email`, `pinchy-odoo` and `pinchy-web` with the gateway token as Bearer auth; the plugin caches the response, typically with a 5-minute TTL, and invalidates on `401`.
+
+**The calling plugin must name its agent**: `?agentId=<id>` is required, and the request is refused unless that agent was actually granted the connection. The gateway token is one shared secret written into every plugin's config block, so on its own it identifies the container, not the caller — without this check any plugin could name any `connectionId` and receive a decrypted password. Odoo and mailbox connections are checked against the agent's integration grants; the instance-wide web-search connection is checked against the agent's `pinchy_web_search` / `pinchy_web_fetch` tool grant, because it is deliberately shared by every agent and has no per-agent grant rows.
+
+| Query parameter | Required | Description                                |
+| --------------- | -------- | ------------------------------------------ |
+| `agentId`       | yes      | The agent the calling plugin is acting for |
+
+| Status | Meaning                                                                   |
+| ------ | ------------------------------------------------------------------------- |
+| `200`  | Credentials returned                                                      |
+| `400`  | `agentId` missing                                                         |
+| `401`  | Gateway token missing or wrong                                            |
+| `403`  | The agent is not granted this connection, or the connection is not active |
+| `404`  | The connection no longer exists                                           |
+
+A refusal writes an `integration.credentials_denied` audit row naming the agent and the connection — see [Audit Trail](/concepts/audit-trail/). A successful fetch is not audited: plugins re-fetch on every cache miss, so a row per success would be volume without signal.
 
 ### `POST /api/internal/integrations/:connectionId/report-auth-failure`
 

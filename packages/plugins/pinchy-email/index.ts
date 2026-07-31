@@ -627,10 +627,15 @@ class CredentialsFetchError extends Error {
 async function fetchCredentials(
   apiBaseUrl: string,
   gatewayToken: string,
-  connectionId: string
+  connectionId: string,
+  agentId: string
 ): Promise<{ type: string; credentials: EmailCredentials }> {
+  // `agentId` is required by the credentials route (#987): the gateway token
+  // is shared by every plugin, so it proves the caller is inside the OpenClaw
+  // container and nothing about which mailbox this agent may open.
   const response = await fetch(
-    `${apiBaseUrl}/api/internal/integrations/${connectionId}/credentials`,
+    `${apiBaseUrl}/api/internal/integrations/${connectionId}/credentials` +
+      `?agentId=${encodeURIComponent(agentId)}`,
     { headers: { Authorization: `Bearer ${gatewayToken}` } }
   );
 
@@ -747,7 +752,8 @@ const plugin = {
       const { type, credentials: creds } = await fetchCredentials(
         apiBaseUrl,
         gatewayToken,
-        config.connectionId
+        config.connectionId,
+        agentId
       );
       // google/microsoft are oauth-shaped; imap carries its own
       // host/port/username/password shape (ImapEmailCredentials).

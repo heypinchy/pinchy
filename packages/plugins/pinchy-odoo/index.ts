@@ -190,10 +190,15 @@ function assertCredentialsShape(creds: unknown): asserts creds is OdooCredential
 async function fetchCredentials(
   apiBaseUrl: string,
   gatewayToken: string,
-  connectionId: string
+  connectionId: string,
+  agentId: string
 ): Promise<OdooCredentials> {
+  // `agentId` is required by the credentials route (#987): the gateway token
+  // is shared by every plugin, so it proves the caller is inside the OpenClaw
+  // container and nothing about which connections this agent may read.
   const response = await fetch(
-    `${apiBaseUrl}/api/internal/integrations/${connectionId}/credentials`,
+    `${apiBaseUrl}/api/internal/integrations/${connectionId}/credentials` +
+      `?agentId=${encodeURIComponent(agentId)}`,
     { headers: { Authorization: `Bearer ${gatewayToken}` } }
   );
   if (!response.ok) {
@@ -2414,7 +2419,7 @@ const plugin = {
     ): Promise<OdooClient> {
       const hit = cache.get(agentId);
       if (hit && hit.expiresAt > Date.now()) return hit.client;
-      const creds = await fetchCredentials(apiBaseUrl, gatewayToken, config.connectionId);
+      const creds = await fetchCredentials(apiBaseUrl, gatewayToken, config.connectionId, agentId);
       const client = createClient(creds);
       cache.set(agentId, {
         client,

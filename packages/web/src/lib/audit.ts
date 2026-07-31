@@ -116,6 +116,7 @@ export type AuditEventType =
   | "integration.auth_recovered"
   | "integration.credentials_tested"
   | "integration.credentials_updated"
+  | "integration.credentials_denied"
   | "email_workflow.created"
   | "email_workflow.updated"
   | "email_workflow.deleted"
@@ -525,6 +526,21 @@ export type AuditLogEntry =
         // into this HMAC-signed, append-only log.
         emailHash?: string;
         emailPreview?: string;
+      };
+    })
+  | (AuditLogBase & {
+      // An agent asked the internal credentials endpoint for a connection it
+      // was never granted (#987). The actor is the AGENT, not a user — the
+      // request comes from inside the OpenClaw container — so `actorId`
+      // carries the agent id and there is no email or user id to redact.
+      // `connection` deliberately carries the id alone: the name of a mailbox
+      // connection is itself an address, and this row is written on a path
+      // where the caller has already failed authorization.
+      eventType: "integration.credentials_denied";
+      detail: {
+        agent: EntityRef;
+        connection: { id: string };
+        reason: "agent-unknown" | "not-granted";
       };
     })
   | (AuditLogBase & {

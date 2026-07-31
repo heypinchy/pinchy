@@ -394,9 +394,24 @@ describe("credential fetching", () => {
 
     expect(mockFetch).toHaveBeenCalledTimes(1);
     expect(mockFetch).toHaveBeenCalledWith(
-      "http://pinchy:7777/api/internal/integrations/conn-1/credentials",
+      `http://pinchy:7777/api/internal/integrations/conn-1/credentials?agentId=${agentId}`,
       { headers: { Authorization: "Bearer test-gateway-token" } }
     );
+  });
+
+  it("names the calling agent, so the server can check the grant (#987)", async () => {
+    // The gateway token is one shared secret inlined into every plugin's
+    // config, so it cannot answer "may THIS agent open THIS mailbox". The
+    // server checks `agent_connection_permissions` — and can only do that if
+    // the plugin says which agent it is acting for.
+    mockCredentialResponse();
+    mockList.mockResolvedValue([]);
+
+    const tools = createApi();
+    await findTool(tools, "email_list", agentId)!.execute("call-1", {});
+
+    const url = mockFetch.mock.calls[0][0] as string;
+    expect(new URL(url).searchParams.get("agentId")).toBe(agentId);
   });
 
   it("refetches credentials after the TTL window expires", async () => {

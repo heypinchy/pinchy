@@ -228,6 +228,26 @@ describe("pinchy-web plugin", () => {
       expect(JSON.parse(result.content[0].text)).toEqual(mockResults);
     });
 
+    it("names the calling agent when fetching the Brave key (#987)", async () => {
+      // The web-search connection is instance-wide — every agent's plugin
+      // config carries the same connectionId — so the server authorizes on the
+      // agent's tool list instead of a permission row. It can only do that if
+      // the plugin says which agent it is acting for.
+      braveSearchMock.mockResolvedValue({ results: [] });
+      const fetchMock = stubCredentialsFetch("brave-key-123");
+
+      const factories = collectFactories(
+        credentialsPluginConfig({ "agent-1": { tools: ["pinchy_web_search"] } })
+      );
+      await factories.pinchy_web_search({ agentId: "agent-1" })!.execute("call-1", {
+        query: "test query",
+      });
+
+      const url = new URL(String(fetchMock.mock.calls[0][0]));
+      expect(url.pathname).toContain("conn-1");
+      expect(url.searchParams.get("agentId")).toBe("agent-1");
+    });
+
     it("passes excludedDomains from agent config", async () => {
       braveSearchMock.mockResolvedValue({ results: [] });
       stubCredentialsFetch("brave-key-123");

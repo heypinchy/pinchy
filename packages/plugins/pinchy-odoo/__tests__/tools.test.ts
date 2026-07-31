@@ -3235,6 +3235,24 @@ describe("client caching (#209 layer 2: credentials fetched lazily, cached)", ()
     expect(urls.some((u) => u.includes("conn-test-2"))).toBe(true);
   });
 
+  it("names the calling agent, so the server can check the grant (#987)", async () => {
+    // Until #987 the request carried the connectionId and a gateway token —
+    // one shared secret every plugin holds. The server could therefore not
+    // tell whether the agent behind the call had been granted that Odoo
+    // connection at all, and answered with a decrypted password either way.
+    mockSearchRead.mockResolvedValue({ records: [], total: 0, limit: 100, offset: 0 });
+
+    const tools = createApi({ [agentId]: agentConfig });
+    await findTool(tools, "odoo_read", agentId)!.execute("call-1", {
+      model: "sale.order",
+      filters: [],
+    });
+
+    const url = new URL(String(fetchMock.mock.calls[0][0]));
+    expect(url.pathname).toContain("conn-test-1");
+    expect(url.searchParams.get("agentId")).toBe(agentId);
+  });
+
   it("fails fast with a clear error if the credentials API returns the SecretRef object shape (#209 regression)", async () => {
     fetchMock.mockResolvedValueOnce({
       ok: true,

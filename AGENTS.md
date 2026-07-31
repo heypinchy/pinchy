@@ -500,7 +500,7 @@ Do not put third-party credentials, or even a SecretRef pointer, into arbitrary 
 Instead:
 
 - `regenerateOpenClawConfig()` writes only `apiBaseUrl`, `gatewayToken`, and an opaque `connectionId` into plugin config.
-- The plugin lazily fetches credentials from `GET /api/internal/integrations/:connectionId/credentials` using the gateway token as Bearer auth.
+- The plugin lazily fetches credentials from `GET /api/internal/integrations/:connectionId/credentials?agentId=<id>` using the gateway token as Bearer auth. **The `agentId` is required**: the gateway token is one shared secret inlined into every plugin's config, so it proves the caller is inside the OpenClaw container and nothing about which connections it may read. Pinchy checks the named agent's grant (`agent_connection_permissions`, or the tool grant for the instance-wide web-search connection) before decrypting, and a refusal writes an `integration.credentials_denied` audit row (#987). A new plugin that fetches credentials must pass its `ctx.agentId` through — omitting it is a `400`, deliberately, because a lenient fallback would be a one-parameter route back to token-only authorization.
 - Cache credentials in the plugin, usually with a 5-minute TTL, and invalidate on 401 for rotation.
 - Validate credential shapes at the plugin edge with clear type errors.
 - Test web config emission, plugin cache/refetch behavior, plugin integration against mocks, and manual staging behavior when relevant.
