@@ -82,12 +82,20 @@ async function screenshot(page: Page, name: string, target?: string | Locator) {
     content: '[data-testid$="banner"]{display:none !important}',
   });
   // Then check it took. This one rule is all that stands between a marketing
-  // screenshot and an orange security warning across the top, and until now
-  // nothing verified it — rename a testid and every published shot silently
-  // regains the stripe. A security warning in an advertising screenshot is
-  // worse than no screenshot, so this fails the capture instead.
+  // screenshot and a warning stripe across the top, and until now nothing
+  // verified it at all.
+  //
+  // What this catches, stated honestly: a banner that renders and is NOT
+  // hidden — a specificity fight, an inline `display`, a rule that failed to
+  // inject. What it does NOT catch is a testid renamed OUT of the `*banner`
+  // convention: the selector then matches nothing, the loop body never runs,
+  // and the assertion passes while the banner sits in the shot. Closing that
+  // would need a registry of "banners that must be hidden", which is the
+  // hard-coded pair this suffix rule replaced. The convention is the contract;
+  // this is the check that it is being honoured, not a proof that it exists.
   const banners = page.locator('[data-testid$="banner"]');
-  for (let i = 0; i < (await banners.count()); i++) {
+  const bannerCount = await banners.count();
+  for (let i = 0; i < bannerCount; i++) {
     await expect(
       banners.nth(i),
       `a banner is visible in ${name} — check the testid convention`,
@@ -401,11 +409,15 @@ test.describe("Feature screenshots", () => {
   // `?tab=` rather than clicking, which survives the sidebar/tab-bar rework.
   test("provider settings grid", async ({ page }) => {
     await page.goto(`${BASE_URL}/settings?tab=provider`);
+    // The tab, not a heading: "AI Provider" is a <CardTitle>, which renders a
+    // plain <div> (ui/card.tsx) — `getByRole("heading")` matches nothing on
+    // this page but the <h1>Settings</h1>. Asserting the trigger is *selected*
+    // proves the deep link landed on the right tab, which is the thing that
+    // would silently drift; openai-compatible.spec.ts pins the same route the
+    // same way.
     await expect(
-      page.getByRole("heading", { name: "AI Provider" }),
-    ).toBeVisible({
-      timeout: 15000,
-    });
+      page.getByRole("tab", { name: /AI Provider/ }),
+    ).toHaveAttribute("aria-selected", "true", { timeout: 15000 });
     // The tile grid, not the old five-button row: assert a real tile and the
     // default-marker the 0.9.0 redesign introduced.
     await expect(
@@ -457,16 +469,35 @@ test.describe("Feature screenshots", () => {
   // rather than an env var, so a plain `docker compose up` + seed still
   // produces the other sixteen shots instead of failing the whole run.
   test("knowledge base answer with citations", async ({ page }) => {
+    // The config-wide 60s budget is a cap, not a floor: it silently truncates
+    // the waits below, so the 120s this case asks for could never be spent.
+    // It pays a cold OpenClaw handshake (30s was already too little on the
+    // v0.5.2 run — see "02 chat interface") AND a full round trip through a
+    // real knowledge_search, which no other case here does.
+    test.setTimeout(240000);
+
     const agentId = await getAgentId(page, "Frink");
     expect(agentId, "seed.sh must create the Frink agent").toBeTruthy();
 
     const agent = await (
       await page.request.get(`${BASE_URL}/api/agents/${agentId}`)
     ).json();
-    test.skip(
-      !String(agent?.model ?? "").startsWith("ollama/"),
-      "no deterministic model — run with docker-compose.screenshots.yml",
-    );
+    const deterministic = String(agent?.model ?? "").startsWith("ollama/");
+    if (process.env.CI) {
+      // CI always layers the overlay, so a non-ollama model there means the
+      // seed failed — and skipping would ship a release without its headline
+      // screenshot on a green run. Locally the skip is the point: a plain
+      // `docker compose up` still produces the other seventeen shots.
+      expect(
+        deterministic,
+        "seed.sh must point Frink at fake-ollama — see its step 4b and the reindex block",
+      ).toBe(true);
+    } else {
+      test.skip(
+        !deterministic,
+        "no deterministic model — run with docker-compose.screenshots.yml",
+      );
+    }
 
     await page.goto(`${BASE_URL}/chat/${agentId}`);
     await page
