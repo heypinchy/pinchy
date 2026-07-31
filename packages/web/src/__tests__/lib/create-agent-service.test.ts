@@ -78,13 +78,17 @@ vi.mock("@/lib/provider-models", () => ({
   getOllamaLocalModels: vi.fn().mockReturnValue([]),
 }));
 
-const { mockResolveModelForTemplate } = vi.hoisted(() => ({
-  mockResolveModelForTemplate: vi.fn(),
+const { mockResolveAvailableModelForTemplate } = vi.hoisted(() => ({
+  mockResolveAvailableModelForTemplate: vi.fn(),
 }));
-vi.mock("@/lib/model-resolver", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@/lib/model-resolver")>();
-  return { ...actual, resolveModelForTemplate: mockResolveModelForTemplate };
-});
+// The service resolves through the live-catalog-aware resolver (#880 route
+// parity — a retired template pick is substituted for a live default), which
+// reaches the provider catalog. Mock that module so these unit tests don't.
+// `TemplateCapabilityUnavailableError` (imported below) stays the real class,
+// so the 422 path's `instanceof` check matches.
+vi.mock("@/lib/model-resolver/resolve-available", () => ({
+  resolveAvailableModelForTemplate: mockResolveAvailableModelForTemplate,
+}));
 
 vi.mock("@/lib/personality-presets", () => ({
   getPersonalityPreset: vi.fn(() => ({ greetingMessage: null, soulMd: "# SOUL.md" })),
@@ -112,6 +116,12 @@ import { TemplateCapabilityUnavailableError } from "@/lib/model-resolver";
 describe("createAgent() service", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // Default the live-catalog resolver to a happy pick; modelHint templates
+    // consult it, and individual tests override with mockResolved/RejectedOnce.
+    mockResolveAvailableModelForTemplate.mockResolvedValue({
+      model: "anthropic/claude-haiku-4-5-20251001",
+      reason: "template-hint (balanced)",
+    });
   });
 
   // ── The onCreated timing contract ───────────────────────────────────────
@@ -145,14 +155,20 @@ describe("createAgent() service", () => {
       throw new Error("openclaw unreachable");
     });
 
-    await expect(
-      createAgent({ name: "Test Agent", templateId: "custom" }, "user-1", { onCreated })
-    ).rejects.toThrow("openclaw unreachable");
+    // #880: the failing regen is caught, so createAgent resolves (the agent is
+    // committed) and reports the failure via runtimeWarning rather than throwing.
+    const result = await createAgent({ name: "Test Agent", templateId: "custom" }, "user-1", {
+      onCreated,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected success");
+    expect(result.runtimeWarning).toEqual(expect.any(String));
 
-    // The agent row was inserted and is committed — nothing here rolls it
-    // back. So the callback MUST already have fired: this is the exact case
-    // where waiting for createAgent to return loses the record of an agent
-    // that genuinely exists.
+    // onCreated fired the moment the row committed — BEFORE the regen. That
+    // ordering is the contract: the create is recorded even when the tail fails.
+    // (#880 catches the regen throw, so createAgent resolves with a
+    // runtimeWarning; the ordering guarantee is unchanged, and a tail step that
+    // is NOT caught — a workspace write — would still leave the record here.)
     expect(insertValuesMock).toHaveBeenCalled();
     expect(calls).toEqual(["onCreated", "regen"]);
   });
@@ -170,7 +186,7 @@ describe("createAgent() service", () => {
     const onPermissionsConfigured = vi.fn(() => void calls.push("permissions"));
     // email-assistant carries a modelHint, unlike `custom`, so the resolver is
     // actually consulted on this path.
-    mockResolveModelForTemplate.mockResolvedValueOnce({
+    mockResolveAvailableModelForTemplate.mockResolvedValueOnce({
       model: "anthropic/claude-haiku-4-5-20251001",
       reason: "template-hint (balanced)",
     });
@@ -179,19 +195,23 @@ describe("createAgent() service", () => {
       throw new Error("openclaw unreachable");
     });
 
-    await expect(
-      createAgent(
-        // email-assistant carries email_read/email_draft and requires a
-        // connection — the shortest real path to a permission grant.
-        { name: "Mail Bot", templateId: "email-assistant", connectionId: "conn-1" },
-        "user-1",
-        { onPermissionsConfigured }
-      )
-    ).rejects.toThrow("openclaw unreachable");
+    // #880: the failing regen is caught — createAgent resolves (the grants are
+    // committed) and reports the failure via runtimeWarning.
+    const result = await createAgent(
+      // email-assistant carries email_read/email_draft and requires a
+      // connection — the shortest real path to a permission grant.
+      { name: "Mail Bot", templateId: "email-assistant", connectionId: "conn-1" },
+      "user-1",
+      { onPermissionsConfigured }
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected success");
+    expect(result.runtimeWarning).toEqual(expect.any(String));
 
     // The grants are committed and nothing rolls them back, so the callback
-    // MUST already have fired. If it hasn't, an agent is walking around with
-    // read+draft access to a mailbox and no record of who gave it that.
+    // MUST already have fired, before the regen. If it hadn't, an agent would be
+    // walking around with read+draft access to a mailbox and no record of who
+    // gave it that.
     expect(onPermissionsConfigured).toHaveBeenCalledTimes(1);
     expect(onPermissionsConfigured).toHaveBeenCalledWith(
       expect.objectContaining({ id: "new-agent-id" }),
@@ -260,7 +280,7 @@ describe("createAgent() service", () => {
   });
 
   it("returns { ok: false, error: { status: 422, capabilityFailure } } without writing audit", async () => {
-    mockResolveModelForTemplate.mockRejectedValueOnce(
+    mockResolveAvailableModelForTemplate.mockRejectedValueOnce(
       new TemplateCapabilityUnavailableError(
         ["vision"],
         "ollama-local",

@@ -109,11 +109,33 @@ export const POST = withApiKey(["agents:write"], async (req, _ctx, key) => {
     return NextResponse.json(result.error.body, { status: result.error.status });
   }
 
-  const { agent } = result;
+  const { agent, runtimeWarning, runtimeApplyError } = result;
+
+  // The agent row is committed (audited success above) but never reached the
+  // runtime (#880). Record a distinct failure event so the trail shows "created
+  // but not applied" instead of implying a clean create — the key API owes the
+  // same audit trail as the session route, with the KEY as actor. deferAuditLog:
+  // the create already happened and must not be rolled back if this write fails.
+  if (runtimeWarning) {
+    deferAuditLog({
+      actorType: "api_key",
+      actorId: key.keyId,
+      eventType: "config.changed",
+      resource: `agent:${agent.id}`,
+      detail: {
+        action: "runtime_apply_failed",
+        agentId: agent.id,
+        name: agent.name,
+        error: runtimeApplyError,
+        apiKey: { id: key.keyId, name: key.name },
+      },
+      outcome: "failure",
+    });
+  }
 
   // A key-created agent must appear in the admin UI immediately, same as a
   // session-created one.
   revalidatePath("/", "layout");
 
-  return NextResponse.json(agent, { status: 201 });
+  return NextResponse.json({ ...agent, warning: runtimeWarning }, { status: 201 });
 });

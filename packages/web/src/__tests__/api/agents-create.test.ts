@@ -1323,10 +1323,16 @@ describe("POST /api/agents", () => {
   //
   // This route's permission grants had NO test at all — which is how they came
   // to be read off createAgent's return value, a value that does not exist
-  // when the tail throws. The grant commits, the request 500s, and nothing
-  // records who gave an agent access to the mailbox. Both halves are asserted
-  // here: that the entry is written, and that it survives the throw.
-  it("STILL audits config.changed when the OpenClaw regen throws after the grants exist", async () => {
+  // when the tail throws. The grant commits, and nothing records who gave an
+  // agent access to the mailbox. The entry is written the moment the grant
+  // commits (onPermissionsConfigured) — the route has no other mechanism, the
+  // return-value loop is gone — so it survives whatever the tail does next.
+  //
+  // #880 reconciled: a failed OpenClaw regen no longer 500s. The agent row is
+  // committed, so the route catches the failure and returns 201 with a warning.
+  // The grant audit still has to be there — it was written before the regen even
+  // ran.
+  it("STILL audits config.changed when the OpenClaw regen fails after the grants exist", async () => {
     const { appendAuditLog } = await import("@/lib/audit");
     const { regenerateOpenClawConfig } = await import("@/lib/openclaw-config");
     const spy = vi.mocked(appendAuditLog);
@@ -1344,10 +1350,19 @@ describe("POST /api/agents", () => {
       }),
     });
 
-    await expect(POST(request, routeContext())).rejects.toThrow("openclaw unreachable");
+    const response = await POST(request, routeContext());
+    expect(response.status).toBe(201);
+    // The regen failure surfaces as a non-blocking warning, not a 500.
+    expect((await response.json()).warning).toEqual(expect.any(String));
 
+    // Two config.changed rows now exist (the grant, and the #880
+    // runtime_apply_failed) — assert on the grant one specifically.
     const call = spy.mock.calls.find(
-      ([arg]) => (arg as { eventType: string }).eventType === "config.changed"
+      ([arg]) =>
+        (arg as { eventType: string; detail?: { action?: string } }).eventType ===
+          "config.changed" &&
+        (arg as { detail?: { action?: string } }).detail?.action ===
+          "agent_integration_permissions_auto_configured"
     );
     expect(call).toBeDefined();
     expect(call![0]).toMatchObject({

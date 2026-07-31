@@ -216,6 +216,59 @@ describe("POST /api/v1/agents", () => {
     });
   });
 
+  // ── Runtime-apply failure is audited on the key path too (#880) ─────────
+
+  it("returns 201 with a warning and audits runtime_apply_failed when the runtime apply fails", async () => {
+    // Symmetry with the session route: createAgent commits the row, then does a
+    // best-effort OpenClaw apply. On failure it returns `runtimeWarning` instead
+    // of throwing, and the key API owes the same "created but not applied" audit
+    // trail — with the KEY as actor — that the session route writes.
+    mockVerifyApiKey.mockResolvedValue(verifiedKey());
+    createAgentSucceeds({
+      ...successResult,
+      runtimeWarning: "Agent created. Applying it to the runtime failed — check the server logs.",
+      runtimeApplyError: "EACCES: permission denied, open '/config/openclaw.json'",
+    });
+
+    const response = await POST(postRequest(validBody), routeContext());
+    expect(response.status).toBe(201);
+    const body = await response.json();
+    // The persisted agent is still returned so a client can use it immediately.
+    expect(body.id).toBe("new-agent-id");
+    expect(typeof body.warning).toBe("string");
+    expect(body.warning.length).toBeGreaterThan(0);
+
+    expect(deferAuditLog).toHaveBeenCalledWith({
+      actorType: "api_key",
+      actorId: "key-1",
+      eventType: "config.changed",
+      resource: "agent:new-agent-id",
+      detail: {
+        action: "runtime_apply_failed",
+        agentId: "new-agent-id",
+        name: "Provisioned Agent",
+        error: "EACCES: permission denied, open '/config/openclaw.json'",
+        apiKey: { id: "key-1", name: "Provisioning Key" },
+      },
+      outcome: "failure",
+    });
+  });
+
+  it("includes no warning and no runtime_apply_failed audit when the runtime apply succeeds", async () => {
+    mockVerifyApiKey.mockResolvedValue(verifiedKey());
+    createAgentSucceeds();
+
+    const response = await POST(postRequest(validBody), routeContext());
+    expect(response.status).toBe(201);
+    const body = await response.json();
+    expect(body.warning).toBeUndefined();
+    expect(deferAuditLog).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        detail: expect.objectContaining({ action: "runtime_apply_failed" }),
+      })
+    );
+  });
+
   // ── The audit-timing contract (see createAgent's onCreated docblock) ────
 
   it("STILL audits the creation when createAgent throws after the row exists", async () => {
