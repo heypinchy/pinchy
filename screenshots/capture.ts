@@ -4,7 +4,7 @@
  * Expects Pinchy running at BASE_URL (default: http://localhost:7777).
  * Run seed.sh first to populate demo data.
  */
-import { test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 import * as fs from "fs";
 import * as path from "path";
 
@@ -51,8 +51,11 @@ async function login(page: Page) {
  * marketing site, which shrinks images hard (especially on 375px mobile). Both
  * variants are produced additively from the same loaded page — never replace
  * the full shots, other consumers depend on them.
+ *
+ * `target` also accepts an already-resolved Locator, for a subject that no
+ * CSS selector pins down on its own (a `<section>` identified by its heading).
  */
-async function screenshot(page: Page, name: string, target?: string) {
+async function screenshot(page: Page, name: string, target?: string | Locator) {
   const dir = path.dirname(path.join(OUTPUT_DIR, name));
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   // Hide the warning/promo banners so marketing screenshots show the app the
@@ -74,10 +77,8 @@ async function screenshot(page: Page, name: string, target?: string) {
     // .first() guards against nested matches; animations:"disabled" freezes
     // CSS/Web animations so the element's box settles (element screenshots
     // wait for a stable bounding box, unlike page.screenshot).
-    await page
-      .locator(target)
-      .first()
-      .screenshot({ path: out, animations: "disabled" });
+    const locator = typeof target === "string" ? page.locator(target) : target;
+    await locator.first().screenshot({ path: out, animations: "disabled" });
   } else {
     await page.screenshot({ path: out, fullPage: false });
   }
@@ -366,5 +367,63 @@ test.describe("Feature screenshots", () => {
       }
     }
     await screenshot(page, "integrations-google-wizard.png");
+  });
+
+  // The three cases below are deliberately strict where the ones above are
+  // forgiving. Every older case wraps its navigation in `.catch(() => false)`
+  // and screenshots whatever is on screen either way, so a moved control
+  // yields a plausible-looking picture of the wrong thing and the run stays
+  // green — which is how `provider-settings.png` sat on heypinchy.com for two
+  // releases showing a settings tab bar that no longer exists. These assert
+  // that the subject is actually visible before the shutter fires, so drift
+  // fails the capture job instead of publishing a lie. They also navigate by
+  // `?tab=` rather than clicking, which survives the sidebar/tab-bar rework.
+  test("provider settings grid", async ({ page }) => {
+    await page.goto(`${BASE_URL}/settings?tab=provider`);
+    await expect(
+      page.getByRole("heading", { name: "AI Provider" }),
+    ).toBeVisible({
+      timeout: 15000,
+    });
+    // The tile grid, not the old five-button row: assert a real tile and the
+    // default-marker the 0.9.0 redesign introduced.
+    await expect(
+      page.getByRole("button", { name: /anthropic/i }).first(),
+    ).toBeVisible();
+    await expect(
+      page.locator('[data-testid="tile-default"]').first(),
+    ).toBeVisible();
+    await screenshot(page, "provider-settings.png");
+    await screenshot(page, "focus/provider-settings.png", "main");
+  });
+
+  test("integrations imap wizard", async ({ page }) => {
+    await page.goto(`${BASE_URL}/settings?tab=integrations`);
+    const addButton = page.getByRole("button", { name: /add integration/i });
+    await expect(addButton).toBeVisible({ timeout: 15000 });
+    await addButton.click();
+    await page.getByRole("button", { name: /imap \/ other email/i }).click();
+    // The connect step, not the picker it was launched from.
+    await expect(
+      page.getByRole("heading", { name: /connect imap/i }),
+    ).toBeVisible({
+      timeout: 10000,
+    });
+    await screenshot(page, "integrations-imap-wizard.png");
+  });
+
+  test("agent settings - knowledge base", async ({ page }) => {
+    const agentId = await getAgentId(page, "Frink");
+    expect(agentId, "seed.sh must create the Frink agent").toBeTruthy();
+    await page.goto(`${BASE_URL}/chat/${agentId}/settings?tab=permissions`);
+    const kb = page
+      .locator("section")
+      .filter({ has: page.getByRole("heading", { name: "Knowledge Base" }) })
+      .first();
+    await expect(kb).toBeVisible({ timeout: 15000 });
+    // Frink is seeded with 3 of 6 directories granted — the scoping this
+    // section exists to show. An empty picker means the seed regressed.
+    await expect(kb.getByText("/data/Reactor Operations")).toBeVisible();
+    await screenshot(page, "focus/agent-settings-knowledge-base.png", kb);
   });
 });
