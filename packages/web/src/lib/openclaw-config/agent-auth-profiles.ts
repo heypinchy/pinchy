@@ -26,12 +26,12 @@ export type WriteAgentAuthProfilesParams = {
  * EACCES, and that EACCES used to take the whole config regenerate down with it
  * (#934).
  *
- * 5 × 100 ms is the same budget `readExistingConfig` uses against the same
- * tick — deliberately, since the tick's 50 ms cadence was chosen to fit inside
- * it. If the retries are exhausted, the directory is not merely mid-repair: it
- * is genuinely not ours, and the caller has to hear about it.
+ * 5 attempts × 100 ms is the same budget `readExistingConfig` uses against the
+ * same tick — deliberately, since the tick's 50 ms cadence was chosen to fit
+ * inside it. If the attempts are exhausted, the directory is not merely
+ * mid-repair: it is genuinely not ours, and the caller has to hear about it.
  */
-const EACCES_RETRIES = 5;
+const EACCES_ATTEMPTS = 5;
 const EACCES_RETRY_DELAY_MS = 100;
 
 function isPermissionError(err: unknown): boolean {
@@ -44,7 +44,7 @@ async function withPermissionRetry<T>(fn: () => T): Promise<T> {
     try {
       return fn();
     } catch (err) {
-      if (attempt >= EACCES_RETRIES || !isPermissionError(err)) throw err;
+      if (attempt >= EACCES_ATTEMPTS || !isPermissionError(err)) throw err;
       await new Promise((resolve) => setTimeout(resolve, EACCES_RETRY_DELAY_MS));
     }
   }
@@ -56,10 +56,21 @@ export async function writeAgentAuthProfiles(params: WriteAgentAuthProfilesParam
 
   if (params.providers.length === 0) {
     // No profiles → remove the file so OpenClaw doesn't enter strict auth mode.
+    //
+    // Only ENOENT means "nothing to remove". A blanket catch here used to also
+    // swallow the EACCES this whole file exists to surface — and that is the
+    // common case, not an edge one: unlink inside a root-owned 0700 directory
+    // returns EACCES, and an empty provider list is the state EVERY agent is in
+    // before a provider is configured (Smithers is created before the wizard's
+    // provider step, which is precisely when OpenClaw wins the race for
+    // agents/<id>/agent). So the very moment the directory broke, the agent was
+    // reported as clean: nothing reached `authProfileFailures`, no warning
+    // toast, no `runtimeApplied: false` — invisible until someone saved a
+    // provider key.
     try {
-      fs.unlinkSync(target);
-    } catch {
-      // File doesn't exist — that's fine.
+      await withPermissionRetry(() => fs.unlinkSync(target));
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException | null)?.code !== "ENOENT") throw err;
     }
     return;
   }
