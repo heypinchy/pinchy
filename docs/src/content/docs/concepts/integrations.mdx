@@ -91,7 +91,7 @@ OAuth access tokens expire after about one hour. Pinchy refreshes them in the ba
 - Client ID and Client Secret are encrypted with AES-256-GCM before storage
 - Access and refresh tokens are encrypted per-connection
 - Tokens are decrypted on-demand when the agent makes an API call — they never end up in the OpenClaw config file
-- The `pinchy-email` plugin fetches tokens via Pinchy's internal API, authenticated by the shared gateway token
+- The `pinchy-email` plugin fetches tokens via Pinchy's internal API, authenticated by the shared gateway token — and it must name the agent it is acting for, which Pinchy checks against that agent's mailbox permissions before decrypting anything. An agent cannot reach a mailbox it was not given, even though every plugin holds the same gateway token
 - IMAP connections follow the same pattern: the username and password are encrypted with AES-256-GCM before storage and fetched by the plugin on-demand, never written to the OpenClaw config file
 
 For the full setup walkthrough, see [Connect Email](/guides/connect-email/).
