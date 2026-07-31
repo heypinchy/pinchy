@@ -51,6 +51,11 @@ const PINCHY_GATEWAY_TOKEN = "test-gateway-token-integration";
 // this to simulate broken/missing/rotated credentials.
 const credentialsByConnectionId = new Map<string, unknown>();
 
+// Every agentId the mock-pinchy saw on a credentials request, in order — the
+// evidence that the plugin identifies itself (#987) on the real wire rather
+// than only in a unit test's fetch stub.
+const receivedAgentIds: string[] = [];
+
 beforeAll(async () => {
   process.env.PINCHY_REF_TOKEN_KEY = "a".repeat(64);
   // Mock Odoo on an OS-picked port (no collision with the docker-compose service)
@@ -76,12 +81,28 @@ beforeAll(async () => {
       res.end(JSON.stringify({ error: "Unauthorized" }));
       return;
     }
-    const match = req.url?.match(/^\/api\/internal\/integrations\/([^/]+)\/credentials$/);
+    const url = new URL(req.url ?? "/", "http://mock-pinchy");
+    const match = url.pathname.match(/^\/api\/internal\/integrations\/([^/]+)\/credentials$/);
     if (!match) {
       res.writeHead(404);
       res.end();
       return;
     }
+    // The real route rejects a request that does not name its agent (#987) —
+    // the gateway token alone cannot answer whether this agent was granted
+    // this connection. Mirror that here, or this test would keep passing
+    // against a contract production no longer offers.
+    const agentIdParam = url.searchParams.get("agentId");
+    if (!agentIdParam) {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(
+        JSON.stringify({
+          error: "agentId is required — the calling plugin must identify its agent",
+        })
+      );
+      return;
+    }
+    receivedAgentIds.push(agentIdParam);
     const connectionId = match[1];
     const credentials = credentialsByConnectionId.get(connectionId);
     if (credentials === undefined) {
@@ -175,6 +196,23 @@ describe("pinchy-odoo against real mock-odoo + mock-pinchy (#209 layer 2)", () =
     expect(data.name).toBe("Sales Order");
     expect(data._meta.returned).toBeGreaterThan(0);
     expect(Object.keys(data.fields)).toContain("name");
+  });
+
+  it("identifies its agent to the credentials endpoint (#987)", async () => {
+    // The unit tests assert this against a stubbed `fetch`; this one asserts
+    // it against a server that would have answered 400 if the plugin had left
+    // the agent out. That is the difference that matters: the shared gateway
+    // token is what the plugin used to send, and it names no agent at all.
+    receivedAgentIds.length = 0;
+
+    const tools = createApi({ [agentId]: agentConfig });
+    const result = await findTool(tools, "odoo_count", agentId).execute("call-1", {
+      model: "sale.order",
+      filters: [],
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(receivedAgentIds).toContain(agentId);
   });
 
   it("odoo_count returns { count: number } for an empty filter", async () => {

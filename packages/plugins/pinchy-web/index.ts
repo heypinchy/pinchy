@@ -71,10 +71,14 @@ function assertBraveCredentialsShape(creds: unknown): asserts creds is BraveCred
 async function fetchBraveCredentials(
   apiBaseUrl: string,
   gatewayToken: string,
-  connectionId: string
+  connectionId: string,
+  agentId: string
 ): Promise<BraveCredentials> {
+  // `agentId` is required by the credentials route (#987): the gateway token
+  // says "some plugin in this container", not "this agent may read this key".
   const response = await fetch(
-    `${apiBaseUrl}/api/internal/integrations/${connectionId}/credentials`,
+    `${apiBaseUrl}/api/internal/integrations/${connectionId}/credentials` +
+      `?agentId=${encodeURIComponent(agentId)}`,
     { headers: { Authorization: `Bearer ${gatewayToken}` } }
   );
   if (!response.ok) {
@@ -147,14 +151,19 @@ const plugin = {
     const CREDENTIALS_TTL_MS = 5 * 60 * 1000;
     let cached: { apiKey: string; expiresAt: number } | null = null;
 
-    async function getBraveApiKey(): Promise<string> {
+    // The Brave key is instance-wide, so one cache entry serves every agent —
+    // and that is safe here because an agent without `pinchy_web_search` /
+    // `pinchy_web_fetch` never gets the tool registered at all (see the
+    // factories below), so it never reaches this function to read the cache.
+    // The `agentId` is what the server authorizes on the fetch itself.
+    async function getBraveApiKey(agentId: string): Promise<string> {
       if (cached && cached.expiresAt > Date.now()) return cached.apiKey;
       if (!connectionId || !apiBaseUrl || !gatewayToken) {
         throw new Error(
           "pinchy-web: missing connectionId/apiBaseUrl/gatewayToken in plugin config"
         );
       }
-      const creds = await fetchBraveCredentials(apiBaseUrl, gatewayToken, connectionId);
+      const creds = await fetchBraveCredentials(apiBaseUrl, gatewayToken, connectionId, agentId);
       cached = { apiKey: creds.apiKey, expiresAt: Date.now() + CREDENTIALS_TTL_MS };
       return creds.apiKey;
     }
@@ -163,8 +172,11 @@ const plugin = {
       cached = null;
     }
 
-    async function withAuthRetry<T>(fn: (apiKey: string) => Promise<T>): Promise<T> {
-      const apiKey = await getBraveApiKey();
+    async function withAuthRetry<T>(
+      agentId: string,
+      fn: (apiKey: string) => Promise<T>
+    ): Promise<T> {
+      const apiKey = await getBraveApiKey(agentId);
       try {
         return await fn(apiKey);
       } catch (err) {
@@ -173,7 +185,7 @@ const plugin = {
           throw err;
         }
         invalidateCache();
-        const fresh = await getBraveApiKey();
+        const fresh = await getBraveApiKey(agentId);
         try {
           return await fn(fresh);
         } catch (retryErr) {
@@ -219,7 +231,7 @@ const plugin = {
               };
             }
             try {
-              const result = await withAuthRetry((apiKey) => {
+              const result = await withAuthRetry(agentId, (apiKey) => {
                 const searchConfig: BraveSearchConfig = {
                   apiKey,
                   allowedDomains: agentConfig.allowedDomains,
