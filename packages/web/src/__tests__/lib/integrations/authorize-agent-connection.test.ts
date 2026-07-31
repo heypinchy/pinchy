@@ -110,7 +110,13 @@ describe("decideConnectionAccess", () => {
       });
     });
 
-    it("checks the connection before the agent, so a bad agent id cannot probe connection existence", () => {
+    it("reports connection-unknown even when the agent is unknown too, so the 404 survives a stale agent id", () => {
+      // Note what this does NOT claim. Checking the connection first does not
+      // hide connection existence — 404-vs-403 answers that without a valid
+      // agent id, and `decideConnectionAccess` says why that is accepted. What
+      // the order buys is the admin-facing case: an integration that was
+      // removed took its grants with it, so the agent id in the plugin's call
+      // is stale too, and the answer still has to be the actionable 404.
       expect(decideConnectionAccess(null, null, 0)).toEqual({
         allowed: false,
         reason: "connection-unknown",

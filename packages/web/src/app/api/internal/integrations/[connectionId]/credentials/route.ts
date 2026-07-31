@@ -45,6 +45,15 @@ export async function GET(
   // `connection-unknown` falls through on purpose: the resolver below answers
   // it with the actionable "no longer connected" 404 an admin can act on.
   if (!access.allowed && access.reason !== "connection-unknown") {
+    // Deferred, not awaited — and deliberately against the letter of
+    // `deferAuditLog`'s own docstring, which reserves it for side effects that
+    // cannot be rolled back. A denial has no side effect at all; the reason is
+    // the other direction. Awaiting would let a failing audit write turn a
+    // correct 403 into a 500, and a 500 is the one answer worse than the
+    // denial: the plugin retries it, and an admin reads it as Pinchy being
+    // broken rather than as a permission it has to grant. The write is not
+    // silent when it fails — `recordAuditFailure` bumps the process-wide
+    // counter and emits an `audit_log_write_failed` line.
     deferAuditLog({
       actorType: "agent",
       actorId: agentId,
