@@ -5,6 +5,19 @@ vi.mock("@/lib/gateway-auth", () => ({
   validateGatewayToken: vi.fn().mockReturnValue(true),
 }));
 
+// The (agent, connection) grant rule is exercised for real in
+// `lib/integrations/authorize-agent-connection.test.ts` (pure branches) and
+// its `.integration.test.ts` sibling (the queries). Here it is mocked, so
+// these cases stay about the HTTP contract the plugins see: which status,
+// which body, and whether a denial leaves an audit row.
+vi.mock("@/lib/integrations/authorize-agent-connection", () => ({
+  authorizeAgentConnection: vi.fn(),
+}));
+
+vi.mock("@/lib/audit-deferred", () => ({
+  deferAuditLog: vi.fn(),
+}));
+
 vi.mock("@/db", () => ({
   db: {
     select: vi.fn().mockReturnValue({
@@ -73,10 +86,16 @@ import { refreshAccessToken } from "@/lib/integrations/google-oauth";
 import { refreshAccessToken as refreshMsAccessToken } from "@/lib/integrations/microsoft-oauth";
 import { isTokenExpired } from "@/lib/integrations/oauth-token";
 import { getOAuthSettings } from "@/lib/integrations/oauth-settings";
+import { authorizeAgentConnection } from "@/lib/integrations/authorize-agent-connection";
+import { deferAuditLog } from "@/lib/audit-deferred";
 import { GET } from "@/app/api/internal/integrations/[connectionId]/credentials/route";
 
-function makeRequest(connectionId: string) {
-  return new NextRequest(`http://localhost/api/internal/integrations/${connectionId}/credentials`, {
+const CALLING_AGENT = { id: "agent-1", name: "Bookkeeper", allowedTools: [] as string[] };
+
+function makeRequest(connectionId: string, agentId: string | null = CALLING_AGENT.id) {
+  const url = new URL(`http://localhost/api/internal/integrations/${connectionId}/credentials`);
+  if (agentId !== null) url.searchParams.set("agentId", agentId);
+  return new NextRequest(url, {
     method: "GET",
     headers: {
       Authorization: "Bearer test-token",
@@ -102,6 +121,10 @@ describe("GET /api/internal/integrations/:connectionId/credentials", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(validateGatewayToken).mockReturnValue(true);
+    vi.mocked(authorizeAgentConnection).mockResolvedValue({
+      allowed: true,
+      agent: CALLING_AGENT,
+    });
     vi.mocked(decrypt).mockReturnValue(
       '{"accessToken":"test-token","refreshToken":"test-refresh"}'
     );
@@ -122,6 +145,118 @@ describe("GET /api/internal/integrations/:connectionId/credentials", () => {
     expect(res.status).toBe(401);
     const data = await res.json();
     expect(data.error).toBe("Unauthorized");
+  });
+
+  describe("agent scoping (#987)", () => {
+    // Before this, the gateway token alone was the whole authorization. It is
+    // one shared secret written into every plugin's config, so any code in the
+    // OpenClaw container could name any connectionId and get back a decrypted
+    // Odoo password or mailbox token for an agent it had nothing to do with.
+
+    it("refuses to serve credentials when no agent identifies itself", async () => {
+      const res = await GET(makeRequest("conn-1", null), makeParams("conn-1"));
+
+      expect(res.status).toBe(400);
+      const data = await res.json();
+      expect(data.error).toMatch(/agentId/);
+      // The authorization question was never even asked, so nothing was
+      // decrypted: an omitted agent id must not be a way back to the old
+      // token-only behaviour.
+      expect(authorizeAgentConnection).not.toHaveBeenCalled();
+      expect(decrypt).not.toHaveBeenCalled();
+    });
+
+    it("denies an agent that was never granted the connection, and leaks nothing", async () => {
+      vi.mocked(authorizeAgentConnection).mockResolvedValue({
+        allowed: false,
+        reason: "not-granted",
+        agent: CALLING_AGENT,
+      });
+
+      const res = await GET(makeRequest("conn-1", "agent-other"), makeParams("conn-1"));
+
+      expect(res.status).toBe(403);
+      const data = await res.json();
+      expect(data.credentials).toBeUndefined();
+      expect(JSON.stringify(data)).not.toContain("test-token");
+      // Decryption must not happen at all — not "happen and get discarded".
+      // An expired OAuth bundle would otherwise be refreshed and re-persisted
+      // on behalf of a caller with no claim to it.
+      expect(decrypt).not.toHaveBeenCalled();
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it("denies an agent id that does not resolve to a live agent", async () => {
+      vi.mocked(authorizeAgentConnection).mockResolvedValue({
+        allowed: false,
+        reason: "agent-unknown",
+        agent: null,
+      });
+
+      const res = await GET(makeRequest("conn-1", "agent-deleted"), makeParams("conn-1"));
+
+      expect(res.status).toBe(403);
+      expect(decrypt).not.toHaveBeenCalled();
+    });
+
+    it("writes an audit row naming the agent and the connection it was refused", async () => {
+      vi.mocked(authorizeAgentConnection).mockResolvedValue({
+        allowed: false,
+        reason: "not-granted",
+        agent: CALLING_AGENT,
+      });
+
+      await GET(makeRequest("conn-1", CALLING_AGENT.id), makeParams("conn-1"));
+
+      expect(deferAuditLog).toHaveBeenCalledTimes(1);
+      const entry = vi.mocked(deferAuditLog).mock.calls[0][0];
+      expect(entry).toMatchObject({
+        actorType: "agent",
+        actorId: CALLING_AGENT.id,
+        eventType: "integration.credentials_denied",
+        outcome: "failure",
+      });
+      // The whole point of the row is that an analyst can tell WHICH agent
+      // reached for WHICH connection, and why it was refused. A row saying
+      // only "a denial happened" would not have surfaced this bug either.
+      expect(entry.detail).toMatchObject({
+        agent: { id: CALLING_AGENT.id, name: CALLING_AGENT.name },
+        connection: { id: "conn-1" },
+        reason: "not-granted",
+      });
+    });
+
+    it("does not audit — or 403 — a connection that simply no longer exists", async () => {
+      // `connection-unknown` belongs to the actionable 404 below, not to the
+      // security trail: a removed integration is an admin's problem, and
+      // filling the audit log with it would bury the denials that matter.
+      vi.mocked(authorizeAgentConnection).mockResolvedValue({
+        allowed: false,
+        reason: "connection-unknown",
+        agent: CALLING_AGENT,
+      });
+      mockDbSelectResult([]);
+
+      const res = await GET(makeRequest("gone", CALLING_AGENT.id), makeParams("gone"));
+
+      expect(res.status).toBe(404);
+      expect(deferAuditLog).not.toHaveBeenCalled();
+    });
+
+    it("passes the agent id from the query string through to the check", async () => {
+      await GET(makeRequest("conn-1", "agent-42"), makeParams("conn-1"));
+
+      expect(authorizeAgentConnection).toHaveBeenCalledWith("agent-42", "conn-1");
+    });
+
+    it("still rejects on a bad gateway token before it looks at the agent", async () => {
+      vi.mocked(validateGatewayToken).mockReturnValue(false);
+
+      const res = await GET(makeRequest("conn-1"), makeParams("conn-1"));
+
+      expect(res.status).toBe(401);
+      expect(authorizeAgentConnection).not.toHaveBeenCalled();
+    });
   });
 
   it("returns an actionable 404 message when the connection no longer exists", async () => {

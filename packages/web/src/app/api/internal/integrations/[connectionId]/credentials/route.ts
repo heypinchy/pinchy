@@ -1,6 +1,11 @@
-// audit-exempt: internal endpoint called by OpenClaw plugin, not a user-facing action
+// audit-exempt: internal endpoint called by OpenClaw plugin, not a user-facing
+// action. A successful fetch is deliberately not audited — plugins re-fetch on
+// every cache miss, so a row per success would be pure volume. A DENIED fetch
+// is audited (#987): that one is a security event, and it is rare.
 import { NextRequest, NextResponse } from "next/server";
 import { validateGatewayToken } from "@/lib/gateway-auth";
+import { authorizeAgentConnection } from "@/lib/integrations/authorize-agent-connection";
+import { deferAuditLog } from "@/lib/audit-deferred";
 import {
   resolveConnectionCredentials,
   ConnectionNotFoundError,
@@ -18,6 +23,45 @@ export async function GET(
   }
 
   const { connectionId } = await params;
+
+  // Who is asking. The gateway token proves only that the caller runs inside
+  // the OpenClaw container — it is one shared secret handed to every plugin,
+  // so on its own it authorized any plugin to fetch any connection's
+  // decrypted credentials (#987). Every caller now names its agent, and the
+  // grant is checked against `agent_connection_permissions` (or, for the
+  // instance-wide web-search connection, the agent's tool list).
+  //
+  // Missing id is a hard 400 rather than a lenient fallback: a fallback is a
+  // one-parameter route back to the behaviour this closes.
+  const agentId = request.nextUrl.searchParams.get("agentId");
+  if (!agentId) {
+    return NextResponse.json(
+      { error: "agentId is required — the calling plugin must identify its agent" },
+      { status: 400 }
+    );
+  }
+
+  const access = await authorizeAgentConnection(agentId, connectionId);
+  // `connection-unknown` falls through on purpose: the resolver below answers
+  // it with the actionable "no longer connected" 404 an admin can act on.
+  if (!access.allowed && access.reason !== "connection-unknown") {
+    deferAuditLog({
+      actorType: "agent",
+      actorId: agentId,
+      eventType: "integration.credentials_denied",
+      resource: `integration:${connectionId}`,
+      outcome: "failure",
+      detail: {
+        agent: { id: agentId, name: access.agent?.name ?? agentId },
+        connection: { id: connectionId },
+        reason: access.reason,
+      },
+    });
+    return NextResponse.json(
+      { error: "This agent is not granted access to this integration" },
+      { status: 403 }
+    );
+  }
 
   // The credential-resolution logic (decrypt + OAuth auto-refresh + re-encrypt)
   // is shared with the Inbox Agent's mailbox port via resolveConnectionCredentials;
