@@ -329,9 +329,11 @@ Turning vitest's own knobs down was measured and does **not** help — do not re
 There is no meaningful saving _inside_ a run. The saving is in not overlapping runs, and in not doing a full run at all when you don't need one:
 
 - **`pnpm test` takes a machine-wide lock** (`scripts/with-test-lock.mjs`, decision logic and measurements in `scripts/lib/test-lock.mjs`). A second run queues instead of piling on. The lock **fails open, and never spins**: an unreadable lock, a lock nobody owns, a holder whose process died, a clock that jumped, or a wait beyond 20 minutes all end with the suite running. It also bypasses itself under `CI` (one job per runner) and under `PINCHY_TEST_LOCK_HELD` (so a suite that shells out to another test command cannot deadlock against its own parent). The worst thing it may do is make a run slow; it must never make one impossible.
-- **`pnpm test:related` needs no arguments.** It takes your change set from git — this branch's commits as well as the working tree — translates it for the vitest root, and runs only the tests that import it: 127 files in 19s where the full suite is 717 in 55s. This is the inner loop. It takes no lock.
+- **`pnpm test:related` needs no arguments.** It takes your change set from git — this branch's commits as well as the working tree — translates it for the vitest root, and runs only the tests that import it: 127 files in 19s where the full suite is 717 in 55s. This is the inner loop. It takes no lock. Naming files explicitly still works — `pnpm test:related packages/web/src/lib/audit.ts` or the web-relative `src/lib/audit.ts`, both accepted, because the translation to the vitest root is the script's job rather than yours.
 
 `test:related` is **not** a verification gate. It cannot see a test that reaches your change through a mock, a string-keyed lookup, or a drift guard that reads the file from disk. Run the full suite before you push.
+
+How much it saves depends entirely on how widely the file is imported, so read the file count it prints rather than assuming. A leaf module pulls in a handful; `src/lib/openclaw-secrets.ts` pulls in 60 of 716 and still costs about a third of a full run, because vitest crawls and transforms the graph either way.
 
 Two properties are load-bearing enough to have cost a rewrite each, and both are guarded by execution probes in `scripts/lib/test-lock.test.mjs` and `test-related.test.mjs` rather than by wiring assertions:
 
@@ -395,7 +397,6 @@ Useful web package commands:
 pnpm -C packages/web lint
 pnpm -C packages/web db:generate
 pnpm -C packages/web test
-pnpm -C packages/web test:related
 pnpm -C packages/web test:db
 pnpm -C packages/web test:e2e
 pnpm -C packages/web test:e2e:telegram
@@ -413,16 +414,6 @@ cd docs && pnpm build
 ```
 
 `scripts/lib/agents-md-commands.test.mjs` (run by `pnpm test:scripts`) keeps these blocks honest: it walks every `pnpm` command in this file, resolves each to the package it runs in — handling `-C`/`--dir`/`--filter`, `cd x && pnpm y` chains, `pnpm run <script>`, and pnpm builtins like `install` — and fails if the script isn't declared there. That drift is how `pnpm lint`, `pnpm format` and `pnpm db:generate` sat here for months as root commands that never existed. Nothing else in CI reads this file.
-
-While iterating on a change, `test:related` runs only the test files that (transitively) import the sources you touched, instead of the whole ~10k-test suite:
-
-```bash
-pnpm -C packages/web test:related src/lib/audit.ts src/lib/audit-deferred.ts
-```
-
-It is a fast inner loop, **not** a verification gate: it cannot see a test that reaches your change through a mock, a string-keyed lookup, or a drift guard that reads the file from disk. Run the full `pnpm test` before pushing.
-
-How much it saves depends entirely on how widely the file is imported, so check the file count it prints rather than assuming. A leaf module pulls in a handful of files; `src/lib/openclaw-secrets.ts` pulls in 60 of 716 and still cost about a third of a full run, because vitest crawls and transforms the graph either way.
 
 Important: do not run the app with plain `pnpm dev` as the primary development path unless a task explicitly requires it. Direct local app startup can miss Docker-managed infrastructure and migrations.
 
