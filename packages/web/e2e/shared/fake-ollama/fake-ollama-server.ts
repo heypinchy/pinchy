@@ -398,6 +398,36 @@ const KB_RUNON_FORMAT_RESPONSE =
   "The employee handbook requires an annual policy review [1].\n\n" +
   "**Sources:** [1] /data/handbook-2012/policy.md — p. 1";
 
+// ── Marketing-screenshot trigger (screenshots/capture.ts) ──────────────────
+// The Knowledge Base is 0.9.0's headline feature and had no picture anywhere,
+// because the capture stack has no model that answers — the chat shot only
+// types into the composer. This is that model.
+//
+// The trigger is a natural question rather than an E2E_* token on purpose:
+// it is typed into the composer and therefore *visible in the screenshot*.
+// A "E2E_KB_SCREENSHOT" bubble above the answer would advertise the harness.
+//
+// Only the prose is scripted. The `knowledge_search` call is real, it runs
+// against a real index built from the two fixture PDFs seed.sh copies into
+// /data, and both cited paths resolve to documents that exist and say what
+// the answer claims they say. A marketing image of an answer that never
+// happened is exactly the kind of thing the rest of this file exists to
+// prevent. Keep the numbers in sync with screenshots/fixtures/*.pdf.
+//
+// Cited paths are relative to the data root and the locator reads "p. 1" —
+// see toCitationPath() and formatLocator(); both fixtures are one page.
+const KB_SCREENSHOT_TRIGGER = "At what coolant temperature do we have to scram the reactor?";
+const KB_SCREENSHOT_RESPONSE =
+  "A manual scram is required as soon as primary coolant reaches **315 °C** [1]. " +
+  "The shift supervisor cannot defer it once that threshold is reached, whatever " +
+  "the excursion is expected to do next [1].\n\n" +
+  "For context: normal full-load range is 270–290 °C, and the control-room alarm " +
+  "at 300 °C is advisory — it exists to give the crew time to find the cause, and " +
+  "does not itself require a shutdown [2].\n\n" +
+  "**Sources:**\n\n" +
+  "- [1] Safety Protocols/emergency-shutdown-procedure.pdf — p. 1\n" +
+  "- [2] Reactor Operations/coolant-system-overview.pdf — p. 1";
+
 // ── Eval-v1 Hetzner-scenario self-test triggers (pinchy#669) ────────────────
 // A deterministic (no paid API) stand-in for the real 4-tool Hetzner-invoice
 // chain: email_list -> email_read -> email_get_attachment -> odoo_create ->
@@ -883,6 +913,15 @@ const TOOL_TRIGGERS: TriggerConfig[] = [
     response: KNOWLEDGE_SEARCH_RESPONSE,
     toolName: "knowledge_search",
     arguments: { query: "E2E coverage probe" },
+  },
+  // Marketing screenshot — a real search over the seeded fixture PDFs, with
+  // only the prose scripted. The query is the operator's actual wording, not
+  // a token, because the search really has to find those two documents.
+  {
+    trigger: KB_SCREENSHOT_TRIGGER,
+    response: KB_SCREENSHOT_RESPONSE,
+    toolName: "knowledge_search",
+    arguments: { query: "coolant temperature scram threshold" },
   },
   // KB Eval Harness attribution self-test triggers (Task 2.2) — see the
   // docblock above KB_WELL_FORMED_TRIGGER for the full trigger→defect→paths
@@ -2229,6 +2268,11 @@ export const FAKE_OLLAMA_PDF_ATTACHMENT_READ_TOOL_TRIGGER = PDF_ATTACHMENT_READ_
 export const FAKE_OLLAMA_PDF_ATTACHMENT_READ_TOOL_RESPONSE = PDF_ATTACHMENT_READ_RESPONSE;
 export const FAKE_OLLAMA_KNOWLEDGE_SEARCH_TOOL_TRIGGER = KNOWLEDGE_SEARCH_TRIGGER;
 export const FAKE_OLLAMA_KNOWLEDGE_SEARCH_TOOL_RESPONSE = KNOWLEDGE_SEARCH_RESPONSE;
+// Marketing-screenshot trigger. `screenshots/capture.ts` types the trigger
+// verbatim into the composer, so the question a reader sees in the image is
+// the same string that drives the model.
+export const FAKE_OLLAMA_KB_SCREENSHOT_TRIGGER = KB_SCREENSHOT_TRIGGER;
+export const FAKE_OLLAMA_KB_SCREENSHOT_RESPONSE = KB_SCREENSHOT_RESPONSE;
 // KB Eval Harness attribution self-test triggers (Task 2.2) — one well-formed
 // answer plus one per `KbFailureTag` defect (see the docblock above
 // KB_WELL_FORMED_TRIGGER for the trigger→defect→paths mapping). Consumed by

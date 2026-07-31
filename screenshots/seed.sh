@@ -59,14 +59,17 @@ echo "✅ Admin account created ($ADMIN_NAME)"
 # 3. Configure provider (unencrypted for demo)
 # =====================================================
 echo "🔌 Configuring demo provider..."
+# The Anthropic key exists only so the provider grid has a second, configured
+# tile to show. Deliberately NOT default_provider: /api/setup/provider treats
+# `default_provider IS NULL` as "first provider" and only then sets the default
+# and repoints the seeded agent, so writing a default here would silently stop
+# the real provider (fake-ollama, step 3b) from becoming the one agents use —
+# and every chat would fail at request time with no visible cause.
 docker compose exec -T db psql -U pinchy -d pinchy -c "
-  INSERT INTO settings (key, value, encrypted)
-  VALUES ('default_provider', 'anthropic', false)
-  ON CONFLICT (key) DO UPDATE SET value = 'anthropic';
   INSERT INTO settings (key, value, encrypted)
   VALUES ('anthropic_api_key', 'sk-ant-demo-key-for-screenshots', false)
   ON CONFLICT (key) DO UPDATE SET value = 'sk-ant-demo-key-for-screenshots', encrypted = false;
-" > /dev/null 2>&1 && echo "  ✅ Provider configured (Anthropic)" || echo "  ⚠️  Provider config failed"
+" > /dev/null 2>&1 && echo "  ✅ Anthropic key seeded (configured tile)" || echo "  ⚠️  Provider config failed"
 
 # =====================================================
 # 4. Login
@@ -86,6 +89,27 @@ fi
 echo "✅ Logged in as $ADMIN_EMAIL"
 
 ADMIN_ID=$(docker compose exec -T db psql -U pinchy -d pinchy -t -A -c "SELECT id FROM \"user\" WHERE email = '$ADMIN_EMAIL';")
+
+# =====================================================
+# 4b. Point the stack at a model that actually answers
+# =====================================================
+# Only present when docker-compose.screenshots.yml is layered on, so the
+# capture run can screenshot a real agent answer instead of an empty composer.
+# Saved through the API rather than psql on purpose: the route regenerates
+# openclaw.json, which is what carries the base URL to the runtime. A direct
+# settings INSERT would leave OpenClaw with no provider and fail at chat time.
+if curl -sf --max-time 3 "http://fake-ollama.local:11435/api/tags" > /dev/null 2>&1 \
+   || docker compose exec -T pinchy sh -c 'curl -sf --max-time 3 http://fake-ollama.local:11435/api/tags' > /dev/null 2>&1; then
+  echo "🤖 Wiring the deterministic model..."
+  api -X POST "$BASE_URL/api/setup/provider" \
+    -d '{"provider":"ollama-local","url":"http://fake-ollama.local:11435"}' > /dev/null 2>&1 \
+    && echo "  ✅ fake-ollama is the default provider" \
+    || echo "  ⚠️  fake-ollama could not be configured"
+  HAS_FAKE_OLLAMA=1
+else
+  echo "ℹ️  No fake-ollama reachable — skipping the answer-bearing screenshots."
+  HAS_FAKE_OLLAMA=0
+fi
 
 # =====================================================
 # 5. Enterprise key (if available)
@@ -156,6 +180,18 @@ docker compose exec -T openclaw sh -c '
   mkdir -p "/data/Reactor Operations" "/data/Safety Protocols" "/data/Employee Handbook" \
            "/data/NRC Inspections" "/data/Executive Memos" "/data/Budget Reports"
 '
+
+# Two real documents for the Knowledge Base shot. PDFs because ingest's
+# extension allowlist is PDF + Office-converted-to-PDF; a .md here would be
+# walked straight past and the index would come out empty. Their contents are
+# the ground truth the scripted answer in fake-ollama-server.ts cites — change
+# one and the other stops being true.
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+docker compose cp "$SCRIPT_DIR/fixtures/emergency-shutdown-procedure.pdf" \
+  "openclaw:/data/Safety Protocols/emergency-shutdown-procedure.pdf" > /dev/null 2>&1
+docker compose cp "$SCRIPT_DIR/fixtures/coolant-system-overview.pdf" \
+  "openclaw:/data/Reactor Operations/coolant-system-overview.pdf" > /dev/null 2>&1
+echo "  ✅ Knowledge Base fixtures placed"
 # Trigger rescan so data-directories.json picks them up
 docker compose exec -T openclaw sh -c '
   ls -d /data/*/ 2>/dev/null | sed "s|/$||" | \
@@ -181,7 +217,7 @@ api -X POST "$BASE_URL/api/integrations" -d '{
 # Frink: files (3/6 directories) + web search with mixed domain restrictions
 if [ -n "$FRINK_ID" ]; then
   api -X PATCH "$BASE_URL/api/agents/$FRINK_ID" -d '{
-    "allowedTools": ["pinchy_ls", "pinchy_read", "pinchy_web_search", "pinchy_web_fetch"],
+    "allowedTools": ["knowledge_search", "pinchy_ls", "pinchy_read", "pinchy_web_search", "pinchy_web_fetch"],
     "pluginConfig": {
       "pinchy-files": { "allowed_paths": ["/data/Reactor Operations", "/data/Safety Protocols", "/data/Employee Handbook"] },
       "pinchy-web": {
@@ -193,6 +229,33 @@ if [ -n "$FRINK_ID" ]; then
       }
     }
   }' > /dev/null 2>&1 && echo "  ✅ Frink: files + web search with domain restrictions" || echo "  ⚠️  Frink config failed"
+fi
+
+# Index Frink's documents so the Knowledge Base shot has something to cite.
+# Two one-page PDFs, embedded in-process by the bundled embeddinggemma — a
+# handful of chunks, seconds of CPU, not the hours a real corpus takes.
+if [ "${HAS_FAKE_OLLAMA:-0}" = "1" ] && [ -n "$FRINK_ID" ]; then
+  echo "📚 Indexing the knowledge base..."
+  api -X PATCH "$BASE_URL/api/agents/$FRINK_ID" -d '{"model":"ollama/llama3.2"}' > /dev/null 2>&1
+  api -X POST "$BASE_URL/api/agents/$FRINK_ID/knowledge/reindex" > /dev/null 2>&1
+
+  # Poll rather than sleep: a fixed wait is either too short on a loaded
+  # runner or wasted time on a fast one, and a half-built index produces a
+  # screenshot of an agent saying it couldn't find anything.
+  KB_STATUS=""
+  for _ in $(seq 1 60); do
+    KB_STATUS=$(api "$BASE_URL/api/agents/$FRINK_ID/knowledge/reindex" 2>/dev/null \
+      | python3 -c "import sys,json; print(json.load(sys.stdin).get('job',{}).get('status',''))" 2>/dev/null || echo "")
+    case "$KB_STATUS" in
+      completed|failed) break ;;
+    esac
+    sleep 2
+  done
+  if [ "$KB_STATUS" = "completed" ]; then
+    echo "  ✅ Knowledge base indexed"
+  else
+    echo "  ⚠️  Reindex ended as '${KB_STATUS:-unknown}' — the KB screenshot will fail loudly"
+  fi
 fi
 
 # Tibor: safe + powerful tools

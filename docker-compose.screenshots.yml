@@ -1,0 +1,55 @@
+# docker-compose.screenshots.yml
+# Overlay: gives the screenshot stack a model that answers.
+#
+# Until now the capture run had no LLM at all — `seed.sh` wrote an Anthropic
+# key that no request ever used, and the chat shot only *types* into the
+# composer without sending. That was fine while every screenshot was a settings
+# panel, and it is why 0.9.0's headline feature shipped without a picture: a
+# Knowledge Base answer, with inline citations and a Sources list, cannot be
+# faked by filling an input field.
+#
+# So: the same fake-ollama the integration and setup-wizard suites already use
+# (packages/web/e2e/shared/fake-ollama), pointed at by `seed.sh` as the default
+# provider. Deterministic prose, but a real `knowledge_search` round trip
+# against a real index — see the KB_SCREENSHOT_TRIGGER docblock.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.screenshots.yml up -d
+
+services:
+  # Aliased to a *.local hostname because Pinchy refuses a non-local Ollama
+  # URL outright (validateProviderUrl → isLocalBaseUrl: localhost / *.local /
+  # RFC1918). A plain service name would be rejected at save time with
+  # "not an allowed local Ollama host", so the seed could never configure it.
+  fake-ollama:
+    build:
+      context: packages/web/e2e/shared/fake-ollama
+    expose:
+      - "11435"
+    networks:
+      default:
+        aliases:
+          - fake-ollama.local
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://localhost:11435/api/tags').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  pinchy:
+    depends_on:
+      fake-ollama:
+        condition: service_healthy
+
+  openclaw:
+    # The base URL reaches OpenClaw through openclaw.json, which Pinchy
+    # regenerates when the seed saves the provider — no env override needed.
+    depends_on:
+      fake-ollama:
+        condition: service_healthy

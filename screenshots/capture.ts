@@ -7,6 +7,12 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import * as fs from "fs";
 import * as path from "path";
+// Imported, not copy-pasted: the question below is typed into the composer and
+// has to be byte-identical to the string the fake model matches on, or the
+// agent answers something generic and the shot is worthless. Importing the
+// module is side-effect free — it only defines; `startFakeOllama()` is what
+// binds a port.
+import { FAKE_OLLAMA_KB_SCREENSHOT_TRIGGER } from "../packages/web/e2e/shared/fake-ollama/fake-ollama-server";
 
 const BASE_URL = process.env.BASE_URL ?? "http://localhost:7777";
 const ADMIN_EMAIL = "monty@snpp.com";
@@ -440,5 +446,50 @@ test.describe("Feature screenshots", () => {
     // section exists to show. An empty picker means the seed regressed.
     await expect(kb.getByText("/data/Reactor Operations")).toBeVisible();
     await screenshot(page, "focus/agent-settings-knowledge-base.png", kb);
+  });
+
+  // The Knowledge Base answer — 0.9.0's headline feature, and the one shot
+  // that shows what it actually does: an answer synthesised from two documents
+  // with inline citations and a resolvable Sources list.
+  //
+  // Needs docker-compose.screenshots.yml (a model that answers) plus the
+  // fixtures and index seed.sh builds under it. Detected by Frink's model
+  // rather than an env var, so a plain `docker compose up` + seed still
+  // produces the other sixteen shots instead of failing the whole run.
+  test("knowledge base answer with citations", async ({ page }) => {
+    const agentId = await getAgentId(page, "Frink");
+    expect(agentId, "seed.sh must create the Frink agent").toBeTruthy();
+
+    const agent = await (
+      await page.request.get(`${BASE_URL}/api/agents/${agentId}`)
+    ).json();
+    test.skip(
+      !String(agent?.model ?? "").startsWith("ollama/"),
+      "no deterministic model — run with docker-compose.screenshots.yml",
+    );
+
+    await page.goto(`${BASE_URL}/chat/${agentId}`);
+    await page
+      .getByRole("button", { name: "Connected" })
+      .waitFor({ timeout: 90000 });
+
+    const composer = page
+      .locator('textarea, input[placeholder*="message" i], [contenteditable]')
+      .first();
+    await composer.fill(FAKE_OLLAMA_KB_SCREENSHOT_TRIGGER);
+    await composer.press("Enter");
+
+    // Wait for the Sources list, not merely for an assistant bubble: the
+    // bubble appears the moment the first token streams, and a shot taken
+    // then shows half a sentence. The list is the last thing written.
+    const answer = page.locator('[data-role="assistant"]').last();
+    await expect(answer).toContainText("Sources", { timeout: 120000 });
+    // Both citations resolved, so the picture is of a working feature rather
+    // than a model that cited one document and invented the other.
+    await expect(answer).toContainText("emergency-shutdown-procedure.pdf");
+    await expect(answer).toContainText("coolant-system-overview.pdf");
+
+    await screenshot(page, "knowledge-base-answer.png");
+    await screenshot(page, "focus/knowledge-base-answer.png", "main");
   });
 });
