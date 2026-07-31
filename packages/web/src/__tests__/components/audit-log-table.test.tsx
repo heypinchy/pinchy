@@ -666,9 +666,10 @@ describe("AuditLogTable", () => {
   it("surfaces a toast.error when copying the JSON detail fails", async () => {
     const originalExec = document.execCommand;
     document.execCommand = vi.fn().mockReturnValue(false);
-    // Captured inside the try, right before the property is redefined, so the
-    // restore below runs only if the redefinition actually happened.
-    let clipboardDescriptor: PropertyDescriptor | undefined;
+    // Assigned inside the try, immediately before the property is redefined, so
+    // the `finally` restores only if the redefinition actually happened — a
+    // throw earlier in the try must not touch a clipboard this test never took.
+    let restoreClipboard: (() => void) | undefined;
 
     try {
       renderWithEntriesLoaded();
@@ -684,7 +685,17 @@ describe("AuditLogTable", () => {
       // redefinition in place shadows the stub user-event tracks, which makes
       // its per-test `resetClipboardStubOnView` a silent no-op and leaks an
       // undefined clipboard into every later test in the file.
-      clipboardDescriptor = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+      //
+      // Both restore branches are spelled out rather than guarded with an `if`:
+      // "no descriptor" is not a reason to skip the restore, it is a different
+      // restore — skipping it would leave `clipboard: undefined` behind, which
+      // is the very leak this whole change removes.
+      const previousClipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+      restoreClipboard = previousClipboard
+        ? () => Object.defineProperty(navigator, "clipboard", previousClipboard)
+        : () => {
+            delete (navigator as { clipboard?: unknown }).clipboard;
+          };
       Object.defineProperty(navigator, "clipboard", {
         value: undefined,
         writable: true,
@@ -698,9 +709,7 @@ describe("AuditLogTable", () => {
       });
     } finally {
       document.execCommand = originalExec;
-      if (clipboardDescriptor) {
-        Object.defineProperty(navigator, "clipboard", clipboardDescriptor);
-      }
+      restoreClipboard?.();
     }
   });
 

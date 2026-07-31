@@ -410,7 +410,9 @@ describe("UserDetailSheet", () => {
     // `resetClipboardStubOnView` then silently does nothing between tests —
     // leaving this test's mock in place for every later test in the file.
     // A spy leaves that descriptor intact and `mockRestore` hands it back.
-    // Same pattern as add-integration-google-wizard.test.tsx.
+    // add-integration-google-wizard.test.tsx spies for the same reason, but
+    // installs it describe-wide in beforeEach/afterEach; only this one test in
+    // this file needs a clipboard, so the spy is scoped to the test instead.
     const writeText = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue(undefined);
 
     try {
