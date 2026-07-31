@@ -176,49 +176,61 @@ describe("Add Integration Dialog — Google flow", () => {
   });
 
   describe("Copy redirect URI button", () => {
-    let clipboardWriteTextSpy: ReturnType<typeof vi.spyOn>;
-
     beforeEach(() => {
       vi.stubGlobal("location", { ...window.location, protocol: "https:" });
       vi.mocked(apiGet).mockResolvedValue({ configured: false, clientId: "" });
-
-      // Mock clipboard API
-      clipboardWriteTextSpy = vi
-        .spyOn(navigator.clipboard, "writeText")
-        .mockResolvedValue(undefined);
     });
 
     afterEach(() => {
       vi.unstubAllGlobals();
-      clipboardWriteTextSpy.mockRestore();
     });
 
     it("shows success feedback when copy button is clicked", async () => {
       const user = userEvent.setup();
-      renderDialog();
-      await selectGoogle(user);
+      // Spy AFTER setup(), not describe-wide in beforeEach. jsdom has no
+      // `navigator.clipboard` of its own — `userEvent.setup()` is what defines
+      // the property (Clipboard.js: `attachClipboardStubToView`), and it stays
+      // attached for the rest of the file. A beforeEach spy therefore found an
+      // object only because some *earlier, unrelated* test in this file had
+      // already called setup(): run this block alone (`vitest -t`, `.only`, or
+      // any reordering) and it died with "The vi.spyOn() function could not
+      // find an object to spy upon", plus a second failure from the afterEach
+      // dereferencing the spy that was never assigned. Two red tests that look
+      // like a clipboard bug and are an ordering dependency.
+      const clipboardWriteTextSpy = vi
+        .spyOn(navigator.clipboard, "writeText")
+        .mockResolvedValue(undefined);
 
-      await waitFor(() => {
-        expect(screen.getByText(/Set up Google OAuth/i)).toBeInTheDocument();
-      });
+      try {
+        renderDialog();
+        await selectGoogle(user);
 
-      const codeElement = screen.getByText(/\/api\/integrations\/oauth\/callback/);
-      const copyButton = codeElement.parentElement?.querySelector("button");
-      expect(copyButton).toBeInTheDocument();
+        await waitFor(() => {
+          expect(screen.getByText(/Set up Google OAuth/i)).toBeInTheDocument();
+        });
 
-      // Click to copy
-      await user.click(copyButton!);
+        const codeElement = screen.getByText(/\/api\/integrations\/oauth\/callback/);
+        const copyButton = codeElement.parentElement?.querySelector("button");
+        expect(copyButton).toBeInTheDocument();
 
-      // Verify clipboard.writeText was called
-      await waitFor(() => {
-        expect(clipboardWriteTextSpy).toHaveBeenCalledWith(
-          expect.stringContaining("/api/integrations/oauth/callback")
-        );
-      });
+        // Click to copy
+        await user.click(copyButton!);
 
-      // After click, button should show checkmark icon
-      const checkIcon = copyButton?.querySelector("svg");
-      expect(checkIcon?.closest("svg")).toBeInTheDocument();
+        // Verify clipboard.writeText was called
+        await waitFor(() => {
+          expect(clipboardWriteTextSpy).toHaveBeenCalledWith(
+            expect.stringContaining("/api/integrations/oauth/callback")
+          );
+        });
+
+        // After click, button should show checkmark icon
+        const checkIcon = copyButton?.querySelector("svg");
+        expect(checkIcon?.closest("svg")).toBeInTheDocument();
+      } finally {
+        // In a `finally` so a failing assertion above still restores the spy —
+        // otherwise one red test leaves it in place for the rest of the file.
+        clipboardWriteTextSpy.mockRestore();
+      }
     });
   });
 });
