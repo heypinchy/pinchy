@@ -95,10 +95,10 @@ export const POST = withAdmin(async (request: NextRequest, _ctx, session) => {
   // Annotated, not inferred. An inferred local passed to appendAuditLog skips
   // TypeScript's excess-property check, which is how `imapCode`/`smtpCode` came
   // to be written while the AuditLogEntry union still advertised a `reason`
-  // nothing wrote. The annotation has to sit HERE rather than on
-  // `auditEntry` below: excess-property checking only applies to an object
-  // LITERAL being assigned, so `detail: auditDetail` re-opens the hole the
-  // moment the detail is built as a variable.
+  // nothing wrote. `auditEntry` below carries its own annotation and covers the
+  // entry's top level, but it cannot cover THIS object: excess-property
+  // checking only applies to an object LITERAL being assigned, and
+  // `detail: auditDetail` hands over a variable. Both annotations are needed.
   const auditDetail: CredentialsTestedDetail = {
     imapHost: input.imapHost,
     smtpHost: input.smtpHost,

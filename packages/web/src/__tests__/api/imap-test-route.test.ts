@@ -228,6 +228,13 @@ describe("POST /api/integrations/imap/test", () => {
       expect(serializedEntry).not.toContain(validBody.password);
       // The username is email-shaped, so it must reach the log redacted.
       expect(serializedEntry).not.toContain("mailbox@example.com");
+      // The route sets both codes unconditionally (`imap.ok ? undefined :
+      // imap.code`) so that excess-property checking can see them. That is only
+      // equivalent to omitting them because JSON.stringify drops an undefined
+      // value — and `detail` is stored as jsonb, so this IS the stored row.
+      // Without this assertion the equivalence is a claim in a comment.
+      expect(serializedEntry).not.toContain("imapCode");
+      expect(serializedEntry).not.toContain("smtpCode");
     });
 
     it("returns 200 { ok: false, imap } and writes a failure audit entry when the IMAP login fails", async () => {
@@ -274,6 +281,10 @@ describe("POST /api/integrations/imap/test", () => {
       expect(serializedEntry).not.toContain(validBody.password);
       expect(serializedEntry).not.toMatch(/at\s+Object/); // no raw stack trace
       expect(serializedEntry).not.toContain("mailbox@example.com"); // no raw error text with PII
+      // Counterpart to the success case's `not.toContain("imapCode")`: the key
+      // IS findable in the serialized row when the leg actually failed, so that
+      // assertion discriminates rather than being vacuously true.
+      expect(serializedEntry).toContain("imapCode");
     });
 
     it("returns 200 { ok: false, smtp } and writes a failure audit entry when the SMTP verify fails", async () => {
