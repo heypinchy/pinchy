@@ -107,10 +107,21 @@ if docker compose exec -T pinchy node -e "
     .catch(() => process.exit(1))
 " > /dev/null 2>&1; then
   echo "🤖 Wiring the deterministic model..."
-  api -X POST "$BASE_URL/api/setup/provider" \
-    -d '{"provider":"ollama-local","url":"http://fake-ollama.local:11435"}' > /dev/null 2>&1 \
-    && echo "  ✅ fake-ollama is the default provider" \
-    || echo "  ⚠️  fake-ollama could not be configured"
+  # Read the status code instead of trusting the exit code: `api` is `curl -s`
+  # WITHOUT `-f`, so a 422 from validateProviderUrl or a 502 from the model
+  # probe still exits 0. Every other call here lives with that; this one must
+  # not, because its failure is invisible downstream — the agent keeps a
+  # non-ollama model, and the capture's own guard would then have nothing to
+  # distinguish "no overlay" from "overlay, broken seed".
+  PROVIDER_HTTP=$(api -o /dev/null -w '%{http_code}' -X POST "$BASE_URL/api/setup/provider" \
+    -d '{"provider":"ollama-local","url":"http://fake-ollama.local:11435"}' 2>/dev/null || echo "000")
+  if [ "$PROVIDER_HTTP" = "200" ]; then
+    echo "  ✅ fake-ollama is the default provider"
+  else
+    echo "❌ /api/setup/provider answered $PROVIDER_HTTP — fake-ollama is reachable but" >&2
+    echo "   could not be made the default provider, so no answer can be photographed." >&2
+    exit 1
+  fi
   HAS_FAKE_OLLAMA=1
 else
   echo "ℹ️  No fake-ollama reachable — skipping the answer-bearing screenshots."
@@ -192,11 +203,16 @@ docker compose exec -T openclaw sh -c '
 # walked straight past and the index would come out empty. Their contents are
 # the ground truth the scripted answer in fake-ollama-server.ts cites — change
 # one and the other stops being true.
+#
+# stdout is discarded but NOT stderr: `set -e` aborts the seed if a copy fails,
+# and an abort whose reason went to /dev/null is a stack trace with the message
+# cut off. The echo below is what says these two files are in place, so it must
+# not be reachable when they are not.
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 docker compose cp "$SCRIPT_DIR/fixtures/emergency-shutdown-procedure.pdf" \
-  "openclaw:/data/Safety Protocols/emergency-shutdown-procedure.pdf" > /dev/null 2>&1
+  "openclaw:/data/Safety Protocols/emergency-shutdown-procedure.pdf" > /dev/null
 docker compose cp "$SCRIPT_DIR/fixtures/coolant-system-overview.pdf" \
-  "openclaw:/data/Reactor Operations/coolant-system-overview.pdf" > /dev/null 2>&1
+  "openclaw:/data/Reactor Operations/coolant-system-overview.pdf" > /dev/null
 echo "  ✅ Knowledge Base fixtures placed"
 # Trigger rescan so data-directories.json picks them up
 docker compose exec -T openclaw sh -c '
@@ -242,7 +258,18 @@ fi
 # handful of chunks, seconds of CPU, not the hours a real corpus takes.
 if [ "${HAS_FAKE_OLLAMA:-0}" = "1" ] && [ -n "$FRINK_ID" ]; then
   echo "📚 Indexing the knowledge base..."
-  api -X PATCH "$BASE_URL/api/agents/$FRINK_ID" -d '{"model":"ollama/llama3.2"}' > /dev/null 2>&1
+  # Status-checked for the same reason as the provider save above, and this one
+  # is the switch the capture reads: validateAgentModel rejects a model whose
+  # provider isn't configured, and a swallowed 400 would leave Frink on its
+  # seeded model — which is exactly what the capture uses to decide whether a
+  # deterministic model is present at all.
+  MODEL_HTTP=$(api -o /dev/null -w '%{http_code}' -X PATCH "$BASE_URL/api/agents/$FRINK_ID" \
+    -d '{"model":"ollama/llama3.2"}' 2>/dev/null || echo "000")
+  if [ "$MODEL_HTTP" != "200" ]; then
+    echo "❌ Pointing Frink at ollama/llama3.2 answered $MODEL_HTTP — the Knowledge Base" >&2
+    echo "   screenshot has no model to answer with." >&2
+    exit 1
+  fi
   # `-d '{}'` is required, not decoration: the route runs parseRequestBody, and
   # a POST with a JSON content-type but no body fails validation with a 400.
   # Printed rather than discarded, because the first version of this swallowed
