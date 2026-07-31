@@ -12,20 +12,24 @@
  * `quality` job already builds the docs, `quality` is ungated (it is a required
  * check), and the same two commands an author runs locally fail the same way.
  *
- * The same three things must hold for `check:rendered`
+ * The same conditions must hold for `check:rendered`
  * (`check-rendered-tables.mjs`), which catches the other way a built page lies:
  * v0.9.0 shipped every `.mdx` table as a paragraph of `|` characters, because
  * astro@6 deprecated `markdown.gfm` and @astrojs/mdx read the now-undefined
  * option. The build was green, the anchors were fine, and 41 of 69 live pages
  * were unreadable.
  *
- * All of which holds only as long as three things stay true per check, and each
+ * All of which holds only as long as four things stay true per check, and each
  * of them can be undone while every check stays green:
  *   1. docs/package.json keeps declaring the script,
  *   2. that script keeps running the checker it is named for,
  *   3. CI's `quality` job keeps running BOTH `pnpm build` and the check, in
  *      that order — the checkers read the build's output, so a check that runs
- *      first reads a stale (or missing) dist/.
+ *      first reads a stale (or missing) dist/,
+ *   4. CI keeps running the checkers' OWN unit tests. A checker rewritten to
+ *      find nothing passes happily against a healthy dist/ — its tests are the
+ *      only thing that would notice, and until #1007 they ran nowhere but on a
+ *      developer's laptop.
  *
  * Same shape as the format-gate / web-typecheck / plugin-typecheck guards (see
  * AGENTS.md): make a silent narrowing of the gate a loud, deliberate act.
@@ -38,6 +42,16 @@ const BUILT_OUTPUT_CHECKS = [
 ];
 const BUILD_COMMAND = "cd docs && pnpm build";
 const checkCommand = (script) => `cd docs && pnpm ${script}`;
+
+/**
+ * The checkers' unit tests. The glob is pinned rather than the file list: a
+ * narrowed glob (`scripts/check-anchors.test.mjs`) would silently drop the
+ * other checkers' tests while the script name survives — the same narrowing
+ * this whole guard exists to make loud.
+ */
+const TEST_SCRIPT = "test";
+const TEST_GLOB = "scripts/*.test.mjs";
+const TEST_COMMAND = `cd docs && pnpm ${TEST_SCRIPT}`;
 
 /**
  * @param {unknown} pkg parsed docs/package.json
@@ -59,6 +73,19 @@ export function validateDocsPackage(pkg) {
       problems.push(`"${name}" must run scripts/${file} (got "${script}")`);
     }
   }
+
+  const testScript = scripts[TEST_SCRIPT];
+  if (typeof testScript !== "string") {
+    problems.push(`docs/package.json needs a "${TEST_SCRIPT}" script`);
+  } else if (
+    !testScript.includes("--test") ||
+    !testScript.includes(TEST_GLOB)
+  ) {
+    problems.push(
+      `"${TEST_SCRIPT}" must run \`node --test ${TEST_GLOB}\` (got "${testScript}")`,
+    );
+  }
+
   return problems;
 }
 
@@ -103,5 +130,11 @@ export function validateCiWiring(qualityJobBody) {
       );
     }
   }
+
+  // No ordering constraint: these tests read their own fixtures, not dist/.
+  if (code.indexOf(TEST_COMMAND) === -1) {
+    problems.push(`CI's \`quality\` job must run \`${TEST_COMMAND}\``);
+  }
+
   return problems;
 }

@@ -569,7 +569,11 @@ It lives in `quality` because `quality` already builds the docs and is ungated (
 
 `docs/scripts/check-rendered-tables.mjs` (`pnpm -C docs check:rendered`, in `quality` after the build) is the guard, and it checks the **symptom**, not the config: a built page containing a line that both starts and ends with `|`. The next way to lose gfm will not look like this one, but it will look like this in `dist/`. `scripts/lib/docs-link-gate.mjs` pins both built-site checks — script, checker, and the ordering.
 
+The same guard also pins `pnpm -C docs test`, which runs **before** the build (it reads its own fixtures, not `dist/`). Both checkers are ordinary code, and a checker rewritten to find nothing passes cheerfully against a healthy `dist/` — their unit tests are the only thing that would notice. Until #1007 those tests ran nowhere but on a developer's laptop, which is the same shape as the gate that reports on what it looks at rather than what it should.
+
 The general rule is the one the X-Frame-Options gate follows: assert what a built page contains, not what a source file asked for. Neither check covers `<img src>`, and external links out of `docs/` stay unchecked.
+
+`check:rendered` errs loud rather than silent, deliberately: **inline** code is not stripped, so a page that documents table syntax in an inline `` `| a | b |` `` on a line of its own would be flagged. Nothing in the 69 pages does that today. If one ever needs to, rewrite it as a fenced block — do not teach the checker to skip `<code>`, because a real unrendered row containing inline code (``| `foo` | bar |``) lives in exactly that markup.
 
 ### A Hand-Maintained List That Mirrors Code Will Be Wrong
 
@@ -655,7 +659,7 @@ Do not "fix" this by deploying docs from `main` instead. Pinning the docs to the
 
 `docs.yml`'s manual dispatch takes a required `pinchy_version` input for the same reason: without it, `inject-version.sh` falls back to `packages/web/package.json`, which on `main` still carries the _previous_ release — so an "urgent typo fix" dispatched from `main` would publish install instructions pinned to an older image than the one users can run.
 
-**Verify a change to this gate with a canary, never by reading the code.** Add a link to a heading that does not exist, build, confirm the check fails on that exact link, remove it. That step is what caught the plugin being a no-op; nothing cheaper would have.
+**Verify a change to either gate with a canary, never by reading the code.** For anchors: add a link to a heading that does not exist, build, confirm the check fails on that exact link, remove it. For tables: set `gfm: false` in `docs/astro.config.mjs`, build, confirm `check:rendered` fails and names an affected route, set it back. The anchor canary is what caught `starlight-links-validator` being a no-op; nothing cheaper would have, and a passing unit suite would not have — these checkers are only ever proved by a real broken page.
 
 Unrelated to the anchors but found while building them: `pnpm -C docs build` now runs `scripts/with-restore.sh astro build` rather than `astro build && restore`. The old `&&` chain short-circuited, so a failed or interrupted build left `vX.Y.Z` injected into the six committed source files `inject-version.sh` touches — and stayed that way, because the next run found no placeholders to inject and therefore registered nothing to restore. The wrapper restores either way and forwards the exit code.
 

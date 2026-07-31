@@ -18,9 +18,13 @@ const WIRED_JOB = [
   "",
   "      - name: Docs rendered-table check (built output)",
   "        run: cd docs && pnpm check:rendered",
+  "",
+  "      - name: Docs script tests",
+  "        run: cd docs && pnpm test",
 ].join("\n");
 
 const WIRED_SCRIPTS = {
+  test: "node --test scripts/*.test.mjs",
   "check:anchors": "node scripts/check-anchors.mjs",
   "check:rendered": "node scripts/check-rendered-tables.mjs",
 };
@@ -67,6 +71,15 @@ test("validateDocsPackage flags the rendered-table script pointed elsewhere", ()
   assert.ok(problems.some((p) => /check-rendered-tables\.mjs/.test(p)));
 });
 
+test("validateDocsPackage flags a missing test script", () => {
+  // The checkers' own unit tests are the only thing pinning their logic. A
+  // checker rewritten to return nothing passes against a healthy dist/ — the
+  // tests are what notice, so the script that runs them is part of the gate.
+  const { test: _dropped, ...withoutTests } = WIRED_SCRIPTS;
+  const problems = validateDocsPackage({ scripts: withoutTests });
+  assert.ok(problems.some((p) => /"test"/.test(p)));
+});
+
 test("validateDocsPackage reports a problem (not a throw) on a non-object", () => {
   assert.ok(validateDocsPackage(null).length > 0);
   assert.ok(validateDocsPackage("oops").length > 0);
@@ -104,6 +117,18 @@ test("validateCiWiring flags a quality job that never runs the rendered-table ch
   );
 });
 
+test("validateCiWiring flags a quality job that never runs the docs script tests", () => {
+  // Both checkers ship with unit tests that CI ignored until #1007. A gate
+  // whose own logic is unverified reports on what it happens to do, not on
+  // what it is supposed to do.
+  const checksOnly = [
+    "      - run: cd docs && pnpm build",
+    "      - run: cd docs && pnpm check:anchors",
+    "      - run: cd docs && pnpm check:rendered",
+  ].join("\n");
+  assert.ok(validateCiWiring(checksOnly).some((p) => /pnpm test/.test(p)));
+});
+
 test("validateCiWiring flags the check running BEFORE the build", () => {
   // The checker reads docs/dist/. Ahead of the build it either exits 1 on a
   // missing dist or — on a warm runner — passes against yesterday's HTML.
@@ -123,7 +148,7 @@ test("validateCiWiring flags steps that are only present as comments", () => {
     .join("\n");
   assert.equal(
     validateCiWiring(commented).length,
-    3,
+    4,
     "a commented-out step must not satisfy the guard",
   );
 });
@@ -134,7 +159,8 @@ test("validateCiWiring does not treat a '#' inside a command as a comment", () =
   const withHash =
     '      - run: echo "#docs" && cd docs && pnpm build\n' +
     "      - run: cd docs && pnpm check:anchors\n" +
-    "      - run: cd docs && pnpm check:rendered\n";
+    "      - run: cd docs && pnpm check:rendered\n" +
+    "      - run: cd docs && pnpm test\n";
   assert.deepEqual(validateCiWiring(withHash), []);
 });
 

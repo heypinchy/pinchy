@@ -290,6 +290,14 @@ jobs:
       - name: Docs lint (no indented tables)
         run: cd docs && pnpm install --frozen-lockfile && pnpm check:tables
 
+      - name: Docs script tests
+        # The two dist/ checkers below are only as good as their own logic, and
+        # a checker rewritten to find nothing passes against a healthy dist/.
+        # These unit tests are what would notice — and they ran nowhere but on a
+        # developer's laptop until #1007. They read their own fixtures, so they
+        # need no build; keeping them ahead of it fails fast.
+        run: cd docs && pnpm test
+
       - name: Docs build
         run: cd docs && pnpm build
 
