@@ -1247,6 +1247,35 @@ Try the settings without saving them. Both halves are exercised: an IMAP login a
 | `username`, `password` | string | Yes      | Mailbox credentials          |
 | `security`             | string | Yes      | `tls`, `starttls`, or `none` |
 
+**Response:** `200 OK` whether the probe passed or failed — a rejected login is a result, not a request error. Read `ok`, not the status code.
+
+```json
+{
+  "ok": false,
+  "imap": { "ok": true },
+  "smtp": {
+    "ok": false,
+    "code": "refused",
+    "message": "Connection refused — check the host and port"
+  },
+  "smtpPortProbe": [
+    { "port": 465, "reachable": false },
+    { "port": 587, "reachable": true },
+    { "port": 25, "reachable": false }
+  ],
+  "suggestion": {
+    "kind": "switch_smtp_port",
+    "port": 587,
+    "security": "starttls"
+  },
+  "error": "Connection refused — check the host and port"
+}
+```
+
+Both legs always run, so a failing IMAP login never hides a firewalled SMTP port. A failing leg carries a `code` — one of `timeout`, `refused`, `dns`, `auth`, `tls`, `unknown`, or `blocked` when the host resolves to an address we refuse to probe (see [Mail servers on your own network](/guides/connect-email-imap/#mail-servers-on-your-own-network)) — plus a message that is safe to show a user. Those same codes land in the audit trail as `imapCode` / `smtpCode`, so what you see in the form is what an auditor can filter on later. See [Audit Trail](/concepts/audit-trail/).
+
+`smtpPortProbe` and `suggestion` appear only when SMTP failed at the connection level (`timeout` or `refused`). Pinchy then checks 465, 587 and 25 for raw reachability and offers the one that answers. `{ "kind": "all_smtp_blocked" }` means neither 465 nor 587 did, which usually points at an outbound firewall rather than at your settings; `"suggestion": null` means there is nothing useful to offer — the port you're already on is the only one reachable. `error` is the banner text for the leg that failed, IMAP first: a broken login blocks reading mail entirely, which matters more than a send-side problem.
+
 ### `POST /api/integrations/imap`
 
 Create an IMAP email connection. Same body as `/imap/test`, plus an optional `name` (defaults to the mailbox address) and an optional `senderName` for the From header of agent-sent mail. Line breaks in `senderName` are rejected — the first of two header-injection barriers.
