@@ -46,10 +46,28 @@ const paths = toVitestPaths(candidates, {
 });
 
 if (paths.length === 0) {
+  // The two ways of running no tests are not the same result, and the exit code
+  // is the only place that difference reaches a shell.
+  //
+  // No arguments: the change set holds nothing this runner covers — a docs-only
+  // branch. Nothing ran and nothing should have, so this is a pass.
+  //
+  // Arguments: the caller ASSERTED those files, and none of them survived. A
+  // typo, a path that is gone, a shape the translation drops — all of them mean
+  // the request went unanswered, and reporting success for it is exactly the
+  // silent miss this tool exists to prevent (see lib/test-related.mjs). Name
+  // the paths, too: "none of those" leaves a typo indistinguishable from a file
+  // that genuinely has no tests here.
+  if (explicit.length > 0) {
+    console.error(
+      `test:related: no tests to run for ${explicit.join(", ")}.\n` +
+        `  A path is dropped when it does not exist, is not a module vitest can trace,\n` +
+        `  or lives outside the web runner (docs/, root scripts/, .github/).`,
+    );
+    process.exit(1);
+  }
   console.error(
-    explicit.length > 0
-      ? "test:related: none of those paths have tests in the web runner (docs, root scripts and CI config have none)."
-      : "test:related: nothing changed that the web runner covers. Name files explicitly, or run `pnpm test` for the full suite.",
+    "test:related: nothing changed that the web runner covers. Name files explicitly, or run `pnpm test` for the full suite.",
   );
   process.exit(0);
 }

@@ -1,11 +1,18 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { toVitestPaths, collectChangedFiles } from "./test-related.mjs";
+
+const RUNNER = join(
+  dirname(fileURLToPath(import.meta.url)),
+  "..",
+  "test-related.mjs",
+);
 
 /**
  * `vitest related` resolves its arguments against the vitest root, which is
@@ -240,5 +247,56 @@ describe("deciding which files count as changed", () => {
     assert.deepEqual(files.sort(), ["committed.ts", "dirty.ts"]);
     // The base commit's own file is not part of this branch's change set.
     assert.ok(!files.includes("base.ts"));
+  });
+});
+
+/**
+ * The two "nothing to run" outcomes are not the same outcome, and the exit code
+ * is the only place that difference reaches a shell.
+ *
+ * With no arguments, an empty result means the change set holds nothing this
+ * runner covers — a docs-only branch. Nothing ran and nothing should have: 0.
+ *
+ * With arguments, the caller ASSERTED those files. An empty result means the
+ * assertion did not hold — a typo, a deleted path, a shape the translation
+ * drops — and exiting 0 there is precisely the failure this module's header
+ * calls worse than an error, because it looks exactly like a pass. It is
+ * reachable from a documented command (`pnpm test:related <file>`) and it
+ * survives `&&`.
+ *
+ * Probed by running the real script: the exit code is the behaviour under test,
+ * and a unit test of the translation cannot see it.
+ */
+describe("what the runner reports when it runs no tests", () => {
+  /** Never resolves to a file, so the run ends before vitest is spawned. */
+  const NO_SUCH_FILE = "packages/web/src/does-not-exist-probe.ts";
+
+  function runRunner(args) {
+    return spawnSync(process.execPath, [RUNNER, ...args], {
+      encoding: "utf8",
+    });
+  }
+
+  test("fails when the files you named match nothing", () => {
+    const { status, stderr } = runRunner([NO_SUCH_FILE]);
+    assert.equal(
+      status,
+      1,
+      `naming files that match nothing must not read as a pass:\n${stderr}`,
+    );
+  });
+
+  test("says why nothing matched, including the path that did not exist", () => {
+    const { stderr } = runRunner([NO_SUCH_FILE]);
+    // The message has to carry the offending path: "none of those paths" alone
+    // leaves a typo indistinguishable from a file that genuinely has no tests.
+    assert.match(stderr, /does-not-exist-probe\.ts/);
+  });
+
+  // A path this runner legitimately does not cover is still a request that ran
+  // no tests. Same rule: the caller asked, and nothing happened.
+  test("fails for a named path the web runner does not cover", () => {
+    const { status } = runRunner(["scripts/lib/ci-path-filter.mjs"]);
+    assert.equal(status, 1);
   });
 });
