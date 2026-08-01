@@ -299,6 +299,10 @@ A shared agent's `MEMORY.md` — what it learned in one-to-one conversations —
 
 Inbound channel media (Telegram photos, documents) is now copied into the agent workspace on arrival, and the runtime's internal media cache is swept after 48 hours instead of growing forever. Attachments received **before** this upgrade were never copied, so ones older than 48 hours are removed by the first sweep and may no longer open from old conversations. Export anything you still need from pre-upgrade chats before upgrading.
 
+#### Deleting a user keeps their invite history
+
+Invites are audit-relevant history — who was invited, by whom, and when the invite was claimed. Deleting a user who had **claimed** an invite now keeps that invite record and simply clears the claimer reference, instead of the previous behaviour where the foreign key blocked the deletion. Every other reference to a user still cascades; only this one is retained on purpose. Nothing to configure.
+
 #### Workspace terminals stay disabled
 
 The OpenClaw runtime this release ships (2026.7.1) adds an interactive terminal into agent workspaces. Pinchy pins it off: a shell would bypass agent permission allow-lists and the audit trail. It will return as an RBAC-scoped, audited feature.
@@ -392,20 +396,15 @@ A round of fixes from this cycle that need no action on your part:
 
 Telegram conversations that predate Pinchy's own transcript store now render through an OpenClaw history fallback, so upgrading no longer leaves older chats blank. The Telegram channel also shows as a titled icon in the chat list.
 
-#### Deleting a user keeps their invite history
-
-Invites are audit-relevant history — who was invited, by whom, and when the invite was claimed. Deleting a user who had **claimed** an invite now keeps that invite record and simply clears the claimer reference, instead of the previous behaviour where the foreign key blocked the deletion. Every other reference to a user still cascades; only this one is retained on purpose. Nothing to configure.
-
 #### Dependencies
 
 - **OpenClaw 2026.6.11** (was 2026.6.8) — picked up via `Dockerfile.openclaw`, surfaced in `GET /api/version`. Same protocol train; backward-compatible patch bump.
 
 ### Database migrations
 
-These migrations run automatically on startup — no manual steps:
+One additive migration runs automatically on startup — no manual steps:
 
 - `0043` — adds the nullable `prev_hmac` column to `audit_log`, backing the tamper-evident audit hash-chain.
-- `0044` — schema hardening: makes four timestamp columns `NOT NULL`, adds foreign-key and hot-path composite indexes, enforces the enum-like text columns (roles, agent visibility, invite/connection types and statuses) with `CHECK` constraints, and switches the `invites.claimed_by_user_id` foreign key to `ON DELETE SET NULL` (see the note below). Existing rows already satisfy every new constraint, so the migration applies without data changes.
 
 ## Upgrading from v0.6.0 to v0.7.0
 
