@@ -13,9 +13,11 @@
  *      every production upgrade, so that blank wall was also what an operator
  *      got when an upgrade aborted.
  *
- * The failure is provoked the way a real botched upgrade does it: the table
- * 0058 creates already exists. That also pins the ATTRIBUTION — the report has
- * to name 0058, not the first pending migration.
+ * The failure is provoked the way a real botched upgrade does it: the table the
+ * last migration creates already exists. That also pins the ATTRIBUTION — the
+ * report has to name that migration, not the first pending one. On this branch
+ * the anchor is 0056_openai_compatible_providers; main uses 0058, whose table
+ * belongs to a feature the 0.9 line does not carry.
  *
  * Runs under `pnpm -C packages/web test:db` against the dev-stack Postgres on
  * :5434 (or VITEST_INTEGRATION_DB_URL). Uses its own throwaway database.
@@ -116,11 +118,17 @@ describe("db:migrate runner", () => {
   it("reports the migration, the statement and the PostgresError when one fails", async () => {
     const url = withDbName(baseUrl, FAIL_DB);
 
-    // Squat on the table 0058_sudden_jubilee creates. Migrations 0000-0057
-    // then apply and 0058 aborts — the shape of a real half-upgraded database.
+    // Squat on the table the LAST migration creates. Everything before it
+    // applies and that one aborts — the shape of a real half-upgraded database.
+    //
+    // This branch anchors on 0056_openai_compatible_providers, not on main's
+    // 0058_sudden_jubilee: `agent_delivered_files` belongs to #703, which is
+    // not in the 0.9 line at all. The assertion that matters is "the report
+    // names the migration that actually threw, not the first pending one",
+    // and any late migration proves it — so the anchor tracks the branch.
     const client = postgres(url, { max: 1 });
     try {
-      await client.unsafe(`CREATE TABLE "agent_delivered_files" ("id" text PRIMARY KEY)`);
+      await client.unsafe(`CREATE TABLE "openai_compatible_providers" ("id" text PRIMARY KEY)`);
     } finally {
       await client.end();
     }
@@ -129,12 +137,12 @@ describe("db:migrate runner", () => {
 
     expect(run.status, run.output).toBe(1);
     // The migration that actually threw, not the first pending one.
-    expect(run.output).toContain("0058_sudden_jubilee");
+    expect(run.output).toContain("0056_openai_compatible_providers");
     expect(run.output).not.toContain("0000_cold_young_avengers");
     // The statement.
-    expect(run.output).toContain('CREATE TABLE "agent_delivered_files"');
+    expect(run.output).toContain('CREATE TABLE "openai_compatible_providers"');
     // The PostgresError, with the server's own code.
-    expect(run.output).toContain('relation "agent_delivered_files" already exists');
+    expect(run.output).toContain('relation "openai_compatible_providers" already exists');
     expect(run.output).toContain("42P07");
 
     // WHICH database it reached — the clue that would have ended this bug's

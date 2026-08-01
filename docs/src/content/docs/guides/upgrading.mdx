@@ -188,7 +188,13 @@ If you need to roll back after an upgrade:
 
 ### Breaking changes
 
-None. This is a bugfix release: no schema migration, no compose change, no configuration you have to touch. Pull the new images and restart.
+None. This is a bugfix release: no schema migration, no compose change, no configuration you have to touch. The standard flow is the whole upgrade:
+
+```bash
+cd /opt/pinchy
+sed -i 's/^PINCHY_VERSION=.*/PINCHY_VERSION=%%PINCHY_VERSION%%/' .env
+docker compose pull && docker compose up -d && docker image prune -f
+```
 
 ### Upgrade notes
 
