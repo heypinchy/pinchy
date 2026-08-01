@@ -71,6 +71,7 @@ describe("AuditEventType is a subset of AuditLogEntry['eventType']", () => {
     expectTypeOf<AuditEventType>().toExtend<AuditLogEntry["eventType"]>();
   });
 });
+
 describe("AuditLogEntry integration.credentials_tested", () => {
   it("types the detail shape the IMAP test route actually writes", () => {
     // POST /api/integrations/imap/test writes the per-leg failure CODES, not a
