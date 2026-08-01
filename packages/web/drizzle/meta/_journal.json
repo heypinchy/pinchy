@@ -456,6 +456,13 @@
       "when": 1785529569209,
       "tag": "0064_wide_captain_stacy",
       "breakpoints": true
+    },
+    {
+      "idx": 65,
+      "version": "7",
+      "when": 1785563057639,
+      "tag": "0065_tranquil_captain_midlands",
+      "breakpoints": true
     }
   ]
 }

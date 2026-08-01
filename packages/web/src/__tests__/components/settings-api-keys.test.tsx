@@ -1,9 +1,14 @@
 // @vitest-environment jsdom
 //
-// Declared per file rather than inherited from vitest.config.ts's global
-// `environment: "jsdom"`. This file was handed the NODE environment twice in
-// CI — never locally, and with a different predecessor file each time — and
-// the way that surfaces hides its own cause:
+// Required: vitest.config.ts runs tests in node and jsdom is opt-in per file
+// (AGENTS.md § "Tests Run In Node; jsdom Is Opt-In Per File"). This file
+// renders React, so it needs a DOM.
+//
+// Worth one note beyond that, because this file is a case where forgetting the
+// docblock does NOT fail loudly. `@testing-library/user-event` registers a
+// module-level `afterAll(() => detachClipboardStubFromView(globalThis.window))`
+// at import time; with no jsdom that reads `.navigator` off undefined and
+// throws at SUITE level, which takes the whole file down:
 //
 //   Failed Suites 1
 //     TypeError: Cannot read properties of undefined (reading 'navigator')
@@ -11,16 +16,10 @@
 //   Failed Tests 16
 //     ReferenceError: document is not defined
 //
-// user-event registers a module-level `afterAll(() =>
-// detachClipboardStubFromView(globalThis.window))` at import time. With no
-// jsdom there is no `globalThis.window`, so that hook reads `.navigator` off
-// undefined and throws at SUITE level — which takes the file's environment
-// with it, so all 16 tests report the downstream `document is not defined`
-// rather than anything pointing at the environment. Reproduced exactly with
-// `vitest run --environment node <this file>`: same two errors, same counts.
-//
-// A per-file docblock wins over both the config and the CLI, so the file now
-// states what it needs instead of depending on what it happens to be given.
+// So all 16 tests report the downstream symptom and the suite error blames the
+// clipboard — nothing in that output names the environment. Reproduce with
+// `vitest run --environment node <this file>`; that command is also how the
+// docblock was verified, since a per-file declaration wins over the CLI flag.
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -256,19 +255,11 @@ describe("SettingsApiKeys", () => {
       name: "New Key",
       scopes: ["agents:read"],
     });
-    // Spy on the clipboard user-event installed, rather than replacing
-    // `navigator.clipboard` wholesale with Object.defineProperty. `setup()`
-    // above defines the property itself (Clipboard.js: `attachClipboardStubToView`),
-    // so redefining it shadows the stub user-event will later look for, and
-    // `resetClipboardStubOnView` then silently does nothing between tests.
-    // A spy leaves that descriptor intact and `mockRestore` hands it back.
-    // Same pattern as add-integration-google-wizard.test.tsx.
-    //
-    // NOTE: this is hygiene, not the fix for the CI failure this file had —
-    // that was the missing jsdom environment, see the docblock at the top.
-    // The spy was tried as a fix first, on a wrong reading of the stack trace,
-    // and CI failed again identically. Kept because it is the better pattern,
-    // not because it repaired anything.
+    // Spy on user-event's own clipboard stub rather than redefining the
+    // property: `setup()` above defines `navigator.clipboard` itself
+    // (Clipboard.js `attachClipboardStubToView`), so redefining it shadows the
+    // stub `resetClipboardStubOnView` looks for, which then silently does
+    // nothing between tests. Same reason as settings-users.test.tsx.
     const writeText = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue(undefined);
 
     try {
