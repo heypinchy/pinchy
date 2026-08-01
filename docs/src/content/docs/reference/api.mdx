@@ -1657,6 +1657,93 @@ Without an active license this endpoint still **removes** memberships, and only 
 - `403` — not an admin, or adding memberships without an active license
 - `404` — user not found
 
+## Tool Confirmations
+
+The human-in-the-loop checkpoint an admin can put in front of a tool — see [Require Confirmation Before a Tool Runs](/guides/tool-confirmation/). Which tools are gated is per-agent configuration, stored under `pinchy-approvals.confirmTools` in the agent's `pluginConfig` and written through `PATCH /api/agents/:agentId`.
+
+### `GET /api/approvals`
+
+Your own pending confirmations, newest first — the source for the in-app confirmation cards. Returns only requests where you are the requester and that have not expired; a confirmation is personal and never appears in a teammate's list, even on a shared agent.
+
+**Response:**
+
+```json
+{
+  "approvals": [
+    {
+      "id": "b1f4…",
+      "agentId": "agt_…",
+      "agentName": "Smithers",
+      "toolName": "email_send",
+      "argsSummary": { "to": "ada@example.com", "subject": "Q3 numbers" },
+      "sessionKey": "agent:agt_…:direct:usr_…",
+      "createdAt": "2026-08-01T09:12:44.000Z",
+      "expiresAt": "2026-08-01T09:27:44.000Z"
+    }
+  ]
+}
+```
+
+`argsSummary` is a compact, redacted rendering of the tool's arguments so you can decide in context: secret-looking keys are replaced with `[redacted]` and long values truncated, while the recipient or record stays visible — hiding it would defeat the point of an informed confirmation.
+
+### `POST /api/approvals/:id/decision`
+
+Approve or deny one of your own pending confirmations. On approve the request becomes consumable exactly once: the agent re-issues the call and the gate spends it. Ask the agent to proceed after approving.
+
+**Request body:**
+
+| Field      | Type   | Required | Description                                           |
+| ---------- | ------ | -------- | ----------------------------------------------------- |
+| `decision` | string | Yes      | `approve` or `deny`                                   |
+| `reason`   | string | No       | Why, up to 500 characters — recorded in the audit row |
+
+**Response:**
+
+```json
+{
+  "ok": true,
+  "status": "approved"
+}
+```
+
+**Errors:**
+
+- `403` — you are not the requester. Only the person who triggered the action can confirm it (four-eyes approval by a different admin is a planned extension, [#124](https://github.com/heypinchy/pinchy/issues/124))
+- `404` — no such request
+- `409` — the request is no longer pending: already decided, already consumed, or expired
+
+### `POST /api/internal/approvals/gate-check`
+
+**Internal** — authenticated with the shared OpenClaw gateway token (Pattern C in `AGENTS.md`), not a user session. Called by the `pinchy-approvals` plugin's `before_tool_call` hook, never by the browser.
+
+This is the server-side security boundary for the whole feature. The plugin asks it about every tool call; the route loads the agent's policy, allows anything ungated without recording a thing, and otherwise either spends an approved single-use grant (`allow`) or records a pending confirmation and blocks (`block`). Keeping the policy here rather than in plugin config is what makes a permission change take effect on the next call instead of after a cache expires.
+
+**Request body:**
+
+| Field        | Type   | Required | Description                                                        |
+| ------------ | ------ | -------- | ------------------------------------------------------------------ |
+| `agentId`    | string | Yes      | The agent making the call                                          |
+| `sessionKey` | string | Yes      | The OpenClaw session key, which identifies the acting person       |
+| `toolName`   | string | Yes      | The tool the agent wants to run                                    |
+| `params`     | object | No       | The tool's arguments; hashed into the grant's digest, never stored |
+| `senderId`   | string | No       | The channel-side sender, when one is known                         |
+
+**Response:**
+
+```json
+{
+  "decision": "block",
+  "requestId": "b1f4…",
+  "reason": "Confirmation required: approve running \"email_send\" in the chat to proceed (request b1f4…)."
+}
+```
+
+A grant is bound to the agent, the person, the session, the tool **and** a sha256 of the exact arguments, and is spent on first use — so a changed recipient or a different tool asks again. The route fails closed: if the acting person cannot be resolved to a Pinchy user, the call is blocked rather than allowed, because only a real user can confirm it. The plugin applies the same rule to this endpoint being unreachable.
+
+**Errors:**
+
+- `401` — gateway token missing or wrong
+
 ## Audit Trail (admin only)
 
 ### `GET /api/audit`
