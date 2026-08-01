@@ -220,9 +220,17 @@ The boot migration reported a guess at which file had broken, derived from a cou
 
 The verify sweep could skip rows written while it was running, and its checkpoint could stall when the concurrency probe failed. Both are fixed. If you have been running periodic verification, earlier "clean" results covered slightly less than they claimed — re-run a full verification once after upgrading if you rely on those reports.
 
-#### OpenClaw config directories keep their owner
+#### A provider key that can't reach the runtime now says so
 
-On the shared config volume, per-agent directories could end up owned by the wrong uid, leaving Pinchy unable to write agent auth profiles. The OpenClaw container now repairs ownership on start and on each tick. This runs automatically; there is nothing to configure.
+Pinchy and the agent runtime share one config volume under two different users, and each agent has a directory in it that both of them write to. If the runtime got there first, the directory came out owned by the wrong user and Pinchy could no longer store that agent's credentials — which stopped the whole config from reaching the runtime. The agent then simply stopped answering, with the real reason only in `docker compose logs pinchy`.
+
+The runtime now hands that directory back on start and on every tick, so the case should not arise. If it ever does, saving a provider key tells you plainly that it saved but couldn't be applied, and the affected agent says it has no API key instead of going quiet. Nothing to configure.
+
+#### Knowledge-base agents created before this upgrade need one edit
+
+Knowledge-base agents were set up with an instruction to list and read their files before answering. That instruction outranked the template's own "search first", so the agent walked the folder tree instead of searching — and answers assembled from whole files carry no citation numbers, because those come from retrieval, not from reading a file.
+
+New agents no longer get that instruction. **Existing ones keep it**: their operating instructions were written once, at creation, and an upgrade does not rewrite them. If a knowledge-base agent has been answering without citations, open **Agent → Settings → Instructions** and delete the `## File Access` block — the numbered "Always start with `pinchy_ls`" workflow. Nothing else needs to change; the tools describe themselves, and `knowledge_search` states its own priority.
 
 ## Upgrading from v0.8.0 to v0.9.0
 
@@ -290,12 +298,6 @@ A shared agent's `MEMORY.md` — what it learned in one-to-one conversations —
 #### Old channel attachments are cleaned up after 48 hours
 
 Inbound channel media (Telegram photos, documents) is now copied into the agent workspace on arrival, and the runtime's internal media cache is swept after 48 hours instead of growing forever. Attachments received **before** this upgrade were never copied, so ones older than 48 hours are removed by the first sweep and may no longer open from old conversations. Export anything you still need from pre-upgrade chats before upgrading.
-
-#### A provider key that can't reach the runtime now says so
-
-Pinchy and the agent runtime share one config volume under two different users, and each agent has a directory in it that both of them write to. If the runtime got there first, the directory came out owned by the wrong user and Pinchy could no longer store that agent's credentials — which stopped the whole config from reaching the runtime. The agent then simply stopped answering, with the real reason only in `docker compose logs pinchy`.
-
-The runtime now hands that directory back on every tick, so the case should not arise. If it ever does, saving a provider key tells you plainly that it saved but couldn't be applied, and the affected agent says it has no API key instead of going quiet. Nothing to do on upgrade.
 
 #### Workspace terminals stay disabled
 
