@@ -530,12 +530,50 @@ ${heading}
     });
   });
 
+  it("recognizes `**Sources**` with no colon at all — the shape 22 of 33 sweep answers used", () => {
+    // The dominant finding of the first real Layer-3 sweep (#869). The colon
+    // was required so that prose like "according to our sources:" could not be
+    // read as a heading — a good reason that says nothing about a BOLD line
+    // carrying the single word. Every model wrote it: kimi-k2.6 in 10 of 12
+    // answers, gpt-oss:120b in 10 of 12. Each one lost its whole Sources list,
+    // and each one was then charged with `citation-unresolved` AND
+    // `ungrounded-claim` on an answer quoting the retrieved passage verbatim.
+    //
+    // A colon renders no differently from no colon. The requirement measured
+    // the parser, not the model.
+    expect(gradeAttribution(wellFormed("**Sources**"))).toEqual<KbGraderResult>({
+      passed: true,
+      tags: [],
+      notes: [],
+    });
+  });
+
   it("still does NOT treat a mid-prose `Sources:` as a heading after the widening", () => {
     const input: AttributionInput = {
       answer: "See Sources: the internal wiki and the handbook for details [1].",
       retrieved: [src(1, "/data/a.md")],
     };
     expect(gradeAttribution(input).tags).not.toContain("sources-format");
+  });
+
+  it("still does NOT treat an unemphasised mid-prose `Sources` as a heading", () => {
+    // The widening accepts a bold or hash heading without a colon, never a
+    // bare word: "Sources of funding" opens an ordinary sentence, and reading
+    // it as a heading would swallow the rest of the answer into `sourcesText`.
+    const input: AttributionInput = {
+      answer: `Sources of funding are listed in the handbook [1].
+
+**Sources:**
+
+- [1] /data/a.md — p. 1`,
+      retrieved: [src(1, "/data/a.md")],
+    };
+
+    expect(gradeAttribution(input)).toEqual<KbGraderResult>({
+      passed: true,
+      tags: [],
+      notes: [],
+    });
   });
 });
 
