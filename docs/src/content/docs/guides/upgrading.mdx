@@ -198,6 +198,12 @@ docker compose pull && docker compose up -d && docker image prune -f
 
 ### Upgrade notes
 
+#### The internal credentials endpoint now checks which agent is asking
+
+Worth upgrading for on a multi-agent instance. `GET /api/internal/integrations/:connectionId/credentials` authorized on the gateway token alone. That token is a single shared secret inlined into every plugin's config, so it proved that _something inside the OpenClaw container_ was asking — and nothing about whether the caller had a claim to the connection it named. A plugin could name any connection id and receive decrypted credentials belonging to a different agent.
+
+Callers now identify their agent and the grant is verified **before** anything is decrypted. Nothing to configure; the plugins in this release pass the identity themselves. A refused request is audited as `integration.credentials_denied`, carrying the agent, the connection id, and whether the agent was unknown or simply not granted — worth a look after upgrading if you run agents with different connection scopes.
+
 #### Chat now survives a backgrounded tab
 
 If you use Pinchy on a phone, as an installed PWA, or just leave a tab in the background, the chat connection could come back in a state where the thread was missing recent messages until you reloaded. The websocket now pauses its reconnect loop while the tab is hidden, closes cleanly after a grace period, resumes the moment the tab is visible again, and reconciles the thread history over the connection it already has. A request for that history is bounded by a deadline, so a stall surfaces as an error instead of an empty thread that looks like a lost conversation.
