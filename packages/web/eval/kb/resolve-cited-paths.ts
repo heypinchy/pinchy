@@ -21,18 +21,58 @@
 /**
  * Every path suffix of `sourcePath` at segment boundaries, longest last:
  * `/data/handbook-2012/policy.md` → `policy.md`, `handbook-2012/policy.md`,
- * `data/handbook-2012/policy.md`, …
+ * `data/handbook-2012/policy.md`, `/data/handbook-2012/policy.md`.
+ *
+ * The leading-slash form is a candidate in its own right, not a cosmetic
+ * duplicate: an entry that spells the path out absolutely must be able to win
+ * with the WHOLE path, because a win is rejected below when more path precedes
+ * it. Without this candidate the longest match would be `data/…`, preceded by
+ * the `/` the entry does have, and a correctly-cited absolute path would be
+ * thrown out as over-qualified.
  */
 function pathSuffixes(sourcePath: string): string[] {
   const segments = sourcePath.split("/").filter(Boolean);
-  return segments.map((_, i) => segments.slice(segments.length - 1 - i).join("/"));
+  const suffixes = segments.map((_, i) => segments.slice(segments.length - 1 - i).join("/"));
+  if (sourcePath.startsWith("/")) suffixes.push(`/${segments.join("/")}`);
+  return suffixes;
 }
 
-/** The longest suffix of `sourcePath` that appears in `entry`, or "" for none. */
+/**
+ * What may NOT flank a suffix occurrence for it to count as naming the
+ * document. Both directions rule out a fabrication picking up real passages:
+ *
+ *   - to the left, any character that continues a segment (`my-policy.md`)
+ *     AND `/` itself, because a preceding separator means the entry names a
+ *     parent the document does not have. That is the whole distinction between
+ *     `handbook-2012/policy.md` and `old-handbook-2012/policy.md`: the shorter
+ *     suffix `policy.md` sits at a real boundary in both, and only the
+ *     separator to its left says the second one is a different document.
+ *   - to the right, a segment character (`policy.mdx`). `.` is deliberately
+ *     absent here so an entry ending its sentence with "…in policy.md." still
+ *     resolves; it IS present on the left, where `my.policy.md` needs it.
+ */
+const SEGMENT_CHAR_BEFORE = /[A-Za-z0-9._/-]/;
+const SEGMENT_CHAR_AFTER = /[A-Za-z0-9_-]/;
+
+/** Whether `suffix` occurs in `entry` as a whole path segment, not mid-name. */
+function mentionsSuffix(entry: string, suffix: string): boolean {
+  // Every occurrence, not just the first: an entry may name the document twice
+  // and only the second one sit at a boundary.
+  let at = entry.indexOf(suffix);
+  while (at !== -1) {
+    const before = at === 0 ? "" : entry[at - 1];
+    const after = entry[at + suffix.length] ?? "";
+    if (!SEGMENT_CHAR_BEFORE.test(before) && !SEGMENT_CHAR_AFTER.test(after)) return true;
+    at = entry.indexOf(suffix, at + 1);
+  }
+  return false;
+}
+
+/** The longest suffix of `sourcePath` that `entry` names, or "" for none. */
 function longestSuffixIn(entry: string, sourcePath: string): string {
   let best = "";
   for (const suffix of pathSuffixes(sourcePath)) {
-    if (entry.includes(suffix) && suffix.length > best.length) best = suffix;
+    if (suffix.length > best.length && mentionsSuffix(entry, suffix)) best = suffix;
   }
   return best;
 }

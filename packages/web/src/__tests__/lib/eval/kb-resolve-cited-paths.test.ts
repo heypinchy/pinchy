@@ -94,6 +94,35 @@ describe("resolveCitedSourcePaths", () => {
     expect(resolveCitedSourcePaths(["invented-policy.md"], RETRIEVED)).toEqual([]);
   });
 
+  it("refuses a fabricated name that merely ENDS with a retrieved filename", () => {
+    // The refusal above only holds if the match respects segment boundaries.
+    // A plain substring test reads `my-policy.md` as containing `policy.md`
+    // and hands the fabrication the real document's passages — the exact
+    // failure the module's first stated property rules out. Same one level up:
+    // `old-handbook-2012/` must not answer for `handbook-2012/`.
+    expect(
+      resolveCitedSourcePaths(["`my-policy.md`"], [{ sourcePath: "/data/policy.md" }])
+    ).toEqual([]);
+    expect(
+      resolveCitedSourcePaths(
+        ["old-handbook-2012/policy.md"],
+        [{ sourcePath: "/data/handbook-2012/policy.md" }]
+      )
+    ).toEqual([]);
+  });
+
+  it("still resolves a filename that begins right after a path separator", () => {
+    // The boundary rule must not cost the ordinary case: an entry naming the
+    // absolute path contains `policy.md` preceded by `/`, which is a boundary,
+    // not a fabrication.
+    expect(
+      resolveCitedSourcePaths(
+        ["see /data/deep/policy.md"],
+        [{ sourcePath: "/data/deep/policy.md" }]
+      )
+    ).toEqual(["/data/deep/policy.md"]);
+  });
+
   it("resolves each cited path once, preserving citation order", () => {
     const resolved = resolveCitedSourcePaths(
       ["handbook-2012/policy.md", "it-equipment-policy.md", "handbook-2012/policy.md"],
