@@ -548,6 +548,19 @@ ${heading}
     });
   });
 
+  it("recognizes `### Sources` with no colon — the one shape the bold widening still missed", () => {
+    // Measured, not guessed. Replaying the sweep's 33 stored answers through
+    // the bold widening leaves 6 unrecognized: 5 wrote no Sources heading at
+    // all (they abstained or answered without a list), and exactly 1 wrote
+    // `### Sources`. A `###` prefix cannot open a sentence, so it carries the
+    // colon's whole job — the argument for the bold line, only stronger.
+    expect(gradeAttribution(wellFormed("### Sources"))).toEqual<KbGraderResult>({
+      passed: true,
+      tags: [],
+      notes: [],
+    });
+  });
+
   it("still does NOT treat a mid-prose `Sources:` as a heading after the widening", () => {
     const input: AttributionInput = {
       answer: "See Sources: the internal wiki and the handbook for details [1].",

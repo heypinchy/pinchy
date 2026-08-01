@@ -109,27 +109,30 @@ interface SourcesEntry {
  *     model makes; without this alternation the heading went unrecognized and
  *     every inline `[N]` became a spurious `citation-unresolved`)
  *   - `### Sources:` (hash heading)
- *   - `**Sources**` — bold, NO colon, nothing else on the line
  * The `(?::[ \t]*\*{0,2}|\*{0,2}[ \t]*:)` alternation is the colon-inside vs.
  * colon-outside split; a leading `\*{0,2}` supplies the opening bold for both.
  *
- * The third alternative (`\*{2}[ \t]*$`) is the colon-less bold heading, and it
- * is not a guess: it was the single largest distortion in the first real
- * Layer-3 sweep (#869). 22 of 33 graded answers wrote `**Sources**`, including
- * 10 of kimi-k2.6's 12 and 10 of gpt-oss:120b's 12. Each lost its entire
- * Sources list, and each was then charged with `citation-unresolved` and
- * `ungrounded-claim` — the latter on answers quoting the retrieved passage
- * word for word.
+ * Two colon-LESS shapes are accepted as well, and neither is a guess — they
+ * are the two the first real Layer-3 sweep (#869) actually produced:
+ *   - `**Sources**` — bold on both sides, nothing else on the line. 22 of 33
+ *     graded answers wrote this, including 10 of kimi-k2.6's 12 and 10 of
+ *     gpt-oss:120b's 12. Each lost its entire Sources list, and each was then
+ *     charged with `citation-unresolved` AND `ungrounded-claim` — the latter
+ *     on answers quoting the retrieved passage word for word.
+ *   - `### Sources` — hash-prefixed, nothing else on the line. Replaying those
+ *     33 answers through the bold widening alone leaves 6 unrecognized: 5 wrote
+ *     no Sources heading at all, and exactly 1 wrote this.
  *
  * The colon requirement had a real reason: prose like "according to our
- * sources:" must not read as a heading. That reason covers a BARE word, not a
- * bold line carrying nothing else, and the two are easy to tell apart —
- * requiring the closing `**` at end-of-line does it. A colon also renders no
- * differently from no colon, so the rule was measuring the parser rather than
- * the model. Same widening, same argument, as the `**Sources**:` case above.
+ * sources:" must not read as a heading. That reason covers a BARE word, and
+ * neither of these is bare — a line delimited by `**` on both sides, or opened
+ * by `#`, cannot be the start of a sentence. Requiring the line to END there
+ * (`$`) is what tells them apart from "Sources of funding are listed below".
+ * A colon also renders no differently from no colon, so the rule was measuring
+ * the parser rather than the model.
  */
 const SOURCES_HEADING =
-  /^[ \t]*#{0,3}[ \t]*\*{0,2}[ \t]*Sources[ \t]*(?::[ \t]*\*{0,2}|\*{0,2}[ \t]*:|\*{2}[ \t]*$)/gm;
+  /^[ \t]*(?:#{0,3}[ \t]*\*{0,2}[ \t]*Sources[ \t]*(?::[ \t]*\*{0,2}|\*{0,2}[ \t]*:)|\*{2}[ \t]*Sources[ \t]*\*{2}[ \t]*$|#{1,3}[ \t]*Sources[ \t]*$)/gm;
 
 /** Any `[N]` marker, inline citation or Sources-bullet citation number alike. */
 const INLINE_CITATION = /\[(\d+)\]/g;
