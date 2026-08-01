@@ -40,8 +40,11 @@ full sweep has run, run the full sweep.
 ## Step 1 — Sweep
 
 ```bash
-node scripts/triage-sweep.mjs > docs/plans/triage-$(date +%F).md
+mkdir -p docs/plans && node scripts/triage-sweep.mjs > docs/plans/triage-$(date +%F).md
 ```
+
+`docs/plans/` is gitignored, so it does not exist in a fresh checkout and the
+redirect alone would fail before the sweep ever ran.
 
 One GraphQL pass, a few seconds, no writes to GitHub. It sorts every open issue
 into a bucket by evidence and prints markdown. It borrows credentials from
@@ -50,8 +53,8 @@ into a bucket by evidence and prints markdown. It borrows credentials from
 **Write it to a file and keep the verdicts there as you go.** A full sweep is
 54 candidates times three checks; that outlives a context window, and
 re-verifying from scratch after a compaction is the difference between a pass
-that finishes and one that gets abandoned half-done. `docs/plans/` is
-gitignored, so the working file never lands in a commit.
+that finishes and one that gets abandoned half-done. The working file never
+lands in a commit.
 
 **The sweep never reaches a verdict.** It reports that #465 has a merged PR in
 its timeline; it does not report that #465 is done. Of the 54 in

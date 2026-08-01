@@ -1,19 +1,19 @@
 /**
  * Sorts every open issue into one bucket of evidence, so a triage pass reads
- * the tracker once instead of opening 149 tabs.
+ * the tracker once instead of opening 148 tabs.
  *
  * The split that matters is between this file and the skill that drives it:
  * **this file collects facts, it never reaches a verdict.** It will say that
  * #465 has a merged pull request in its timeline; it will not say that #465 is
- * done. That distinction is not pedantry — a sweep on 2026-08-01 found 39 of
- * the 100 oldest issues carrying a merged cross-reference, and #543 and #669
- * were among them while being perfectly legitimate open tracking issues. The
+ * done. That distinction is not pedantry — a sweep on 2026-08-01 found 54 of
+ * 148 open issues carrying a merged cross-reference, and #543 and #669 were
+ * among them while being perfectly legitimate open tracking issues. The
  * heuristic produces candidates. Deciding costs a human-or-agent read of the
  * PR and a grep against `origin/main`, and that lives in the skill.
  *
  * Staleness is deliberately absent. The obvious design — close what nobody
  * touched in 90 days — was measured against this tracker and found 16 issues
- * out of 149. The backlog here is not abandoned, it is unresolved, and a
+ * out of 148. The backlog here is not abandoned, it is unresolved, and a
  * signal that weak would spend the trust the sweep needs.
  */
 
@@ -125,7 +125,21 @@ export function classifyIssues(issues) {
 function requireComplete(issueNumber, what, connection) {
   const fetched = connection?.nodes?.length ?? 0;
   const total = connection?.totalCount;
-  if (typeof total === "number" && fetched < total) {
+
+  // The guard's own silent-green path, and the reason this is a hard
+  // requirement rather than a `typeof total === "number" &&` guard: without
+  // the count, `fetched < undefined` is false for every issue, so a query that
+  // stopped selecting `totalCount` for one connection would switch that list's
+  // truncation check off and change nothing visible. Requiring it fails on the
+  // first real sweep, one line into the output.
+  if (typeof total !== "number") {
+    throw new Error(
+      `issue #${issueNumber}: the query must select totalCount for ${what} — ` +
+        `without it a truncated list is indistinguishable from a complete one`,
+    );
+  }
+
+  if (fetched < total) {
     throw new Error(
       `issue #${issueNumber}: read ${fetched} of ${total} ${what} — raise the page size in SWEEP_QUERY, ` +
         `a truncated list would classify this issue on partial evidence`,
@@ -159,10 +173,13 @@ export function parseSweepResponse(response) {
   return nodes.map((node) => {
     // A clipped nested list is this parser's subtlest wrong answer, and it
     // never looks like an error: 51 comments with the maintainer's reply at
-    // #51 turns an answered report into "external, unanswered", and a clipped
+    // #51 turns an answered report into "external, unanswered", a clipped
     // timeline drops the merge evidence that decides the whole closed-by-pr
-    // bucket. Both are one number in SWEEP_QUERY, so failing loudly costs a
-    // one-word edit and buying silence costs a wrong triage pass.
+    // bucket, and a clipped label list drops the `enhancement` that separates
+    // an untriaged issue from a triaged one. All three are one number in
+    // SWEEP_QUERY, so failing loudly costs a one-word edit and buying silence
+    // costs a wrong triage pass.
+    requireComplete(node.number, "labels", node.labels);
     requireComplete(node.number, "comments", node.comments);
     requireComplete(node.number, "cross-references", node.timelineItems);
 
@@ -217,7 +234,7 @@ query($owner: String!, $name: String!, $cursor: String) {
       nodes {
         number title url createdAt authorAssociation
         author { login }
-        labels(first: 20) { nodes { name } }
+        labels(first: 20) { totalCount nodes { name } }
         comments(first: 100) { totalCount nodes { authorAssociation author { login } } }
         timelineItems(first: 100, itemTypes: [CROSS_REFERENCED_EVENT]) {
           totalCount
@@ -236,6 +253,20 @@ query($owner: String!, $name: String!, $cursor: String) {
   }
 }`;
 
+/**
+ * Flattens a title onto one line.
+ *
+ * Titles are text somebody outside the team wrote, and this report is read by
+ * an agent that then closes issues on its say-so. A newline would forge report
+ * structure — an extra list item, or a whole fake bucket heading — so the
+ * title has to stay inside the line it was given. `escapeCell` in
+ * issue-triage.mjs guards the same data for the same reason; it escapes `|`
+ * because it builds a table, which a list item does not need.
+ */
+function oneLine(text) {
+  return String(text).replace(/\s+/g, " ").trim();
+}
+
 function line(entry) {
   const facts = [];
   if (entry.evidence.mergedPrs.length) {
@@ -250,7 +281,7 @@ function line(entry) {
   }
   const flag = entry.externalWaiting ? " ⚠ external, unanswered" : "";
   const detail = facts.length ? ` — ${facts.join("; ")}` : "";
-  return `- #${entry.number} ${entry.title}${detail}${flag}`;
+  return `- #${entry.number} ${oneLine(entry.title)}${detail}${flag}`;
 }
 
 /**
