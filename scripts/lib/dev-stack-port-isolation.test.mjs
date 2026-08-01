@@ -31,7 +31,7 @@ import { fileURLToPath } from "node:url";
 
 import { unreservedBandConflicts } from "./worktree-ports.mjs";
 import { MANAGED_KEYS } from "./env-file.mjs";
-import { trackedRootFiles } from "./tracked-files.mjs";
+import { trackedFilesIn } from "./tracked-files.mjs";
 
 const ROOT = fileURLToPath(new URL("../..", import.meta.url));
 const WEB = join(ROOT, "packages", "web");
@@ -39,21 +39,23 @@ const DEV_OVERLAY = "docker-compose.dev.yml";
 
 const read = (...parts) => readFileSync(join(ROOT, ...parts), "utf8");
 
-// git, NOT readdir. An untracked `docker-compose.local.yml` is a developer's
-// own business: guard 2 below asserts about ports "hard-coded in the repo", and
-// a gitignored file is not in the repo. Reading it produced a red that could
-// only be cleared by committing one worktree's local port into the shared
-// RESERVED_PORTS list — and it was red locally while staying green in CI, where
-// the file does not exist. See lib/tracked-files.mjs.
+// git, NOT readdir — for BOTH corpora below. An untracked
+// `docker-compose.local.yml`, or a `playwright.local.config.ts` pointed at some
+// other stack, is a developer's own business: guard 2 asserts about ports
+// "hard-coded in the repo", and a file git does not track is not in the repo.
+// Reading one produced a red that could only be cleared by committing one
+// worktree's local port into the shared RESERVED_PORTS list — and it was red
+// locally while staying green in CI, where the file does not exist. See
+// lib/tracked-files.mjs.
 //
-// Falls back to the directory listing when git cannot answer: a guard may check
-// too much, never too little.
-const composeFiles = (trackedRootFiles(ROOT) ?? readdirSync(ROOT)).filter(
+// Both fall back to the directory listing when git cannot answer: a guard may
+// check too much, never too little.
+const composeFiles = (trackedFilesIn(ROOT) ?? readdirSync(ROOT)).filter(
   (f) => f.startsWith("docker-compose") && f.endsWith(".yml"),
 );
 
 const playwrightConfigs = [
-  ...readdirSync(WEB)
+  ...(trackedFilesIn(WEB) ?? readdirSync(WEB))
     .filter((f) => f.startsWith("playwright") && f.endsWith(".config.ts"))
     .map((f) => join("packages", "web", f)),
   join("packages", "web", "eval", "playwright.eval.config.ts"),
