@@ -98,37 +98,13 @@ if (dbPasswordPolicy.action === "warn") {
 const startup = app.prepare().then(async () => {
   // Import request-handling modules before the server starts — these don't
   // depend on bootInits having run (domain cache starts empty and fills lazily).
-  const { isHostAllowed } = await import("./src/server/host-check");
-  const { getCachedDomain } = await import("./src/lib/domain-cache");
+  const { applyDomainLockGate } = await import("./src/server/host-check");
   const { applyCsrfGate } = await import("./src/server/csrf-check");
 
   const server = createServer(async (req, res) => {
-    const { pathname } = parse(req.url!, true);
-    const host = (req.headers["x-forwarded-host"] as string) || req.headers.host;
-    if (!isHostAllowed(host, pathname)) {
-      const accept = req.headers.accept || "";
-      if (accept.includes("text/html")) {
-        const domain = getCachedDomain();
-        res.writeHead(403, { "Content-Type": "text/html; charset=utf-8" });
-        res.end(`<!DOCTYPE html>
-<html lang="en">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Access Denied — Pinchy</title>
-<style>body{font-family:system-ui,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;background:#0a0a0a;color:#e5e5e5}
-.card{max-width:420px;padding:2rem;text-align:center}.icon{font-size:2rem;margin-bottom:1rem}h1{font-size:1.25rem;margin:0 0 .75rem}
-p{color:#a3a3a3;font-size:.875rem;line-height:1.5;margin:0 0 1rem}a{color:#f59e0b;text-decoration:none}a:hover{text-decoration:underline}</style></head>
-<body><div class="card"><div class="icon">🔒</div><h1>Access Denied</h1>
-<p>This Pinchy instance is locked to a specific domain. You're accessing it from an address that isn't allowed.</p>
-${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
-</div></body></html>`);
-      } else {
-        res.writeHead(403, { "Content-Type": "application/json" });
-        res.end(
-          JSON.stringify({ error: "Forbidden: request host does not match the configured domain" })
-        );
-      }
-      return;
-    }
-
+    // Destination first (is this the locked domain?), then source (did the
+    // request come from it?). Both gates return true when they answered.
+    if (await applyDomainLockGate(req, res)) return;
     if (await applyCsrfGate(req, res)) return;
 
     handle(req, res, parse(req.url!, true));

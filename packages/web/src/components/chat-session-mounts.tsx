@@ -142,7 +142,7 @@ function ChatSessionInstance({
     ) {
       // Turn completed while user is on a different page — fire telemetry.
       const durationMs = Date.now() - turnStartedAt.current;
-      void apiPost("/api/internal/audit/background-run", { agentId, durationMs }).catch(() => {
+      void apiPost("/api/audit/background-run", { agentId, durationMs }).catch(() => {
         // Swallow errors — this is non-critical telemetry.
       });
     }

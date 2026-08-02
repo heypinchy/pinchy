@@ -348,7 +348,7 @@ describe("ChatSessionMounts", () => {
       });
 
       expect(fetchMock).toHaveBeenCalledWith(
-        "/api/internal/audit/background-run",
+        "/api/audit/background-run",
         expect.objectContaining({ method: "POST" })
       );
     });

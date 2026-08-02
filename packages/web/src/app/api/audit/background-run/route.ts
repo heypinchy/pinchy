@@ -5,6 +5,15 @@ import { appendAuditLog } from "@/lib/audit";
 import { parseRequestBody } from "@/lib/api-validation";
 import { getAgentWithAccess } from "@/lib/agent-access";
 
+// Browser telemetry, session-authed: the chat UI reports how long a run kept
+// going after the tab lost focus. It lived under `/api/internal/` until #599,
+// which was a mislabel with teeth — that prefix means "bearer-token traffic
+// from an OpenClaw plugin" to both the domain-lock host check and the CSRF
+// gate, so this route inherited two exemptions it has no claim to (the CSRF one
+// let a cross-site POST forge a `chat.background_run_completed` row using the
+// visitor's session). Keep session-authed routes out of `/api/internal/`;
+// src/__tests__/security/internal-routes-gateway-auth.test.ts enforces it.
+
 // Cap at 10 minutes — `durationMs` is client-supplied telemetry, so a
 // sanity bound prevents a misbehaving (or malicious) client from skewing
 // metrics with absurd values. A turn longer than 10 minutes is itself a
