@@ -91,6 +91,7 @@ import { DEFAULT_ORG_ID } from "../../src/lib/knowledge/constants";
 import { fetchChunkTexts } from "./chunk-texts";
 import { seedSyntheticCorpus } from "./seed-corpus";
 import { resolveCitedSourcePaths } from "./resolve-cited-paths";
+import { withTransportRetry } from "../transport-retry";
 import { DEFAULT_KB_CANDIDATES } from "../candidates";
 import {
   KB_SWEEP_ALLOWED_TOOLS,
@@ -355,17 +356,30 @@ test.describe("KB Eval Harness Layer 3: groundedness sweep (real Ollama Cloud)",
       }
 
       const runStart = Date.now();
-      const chatId = randomUUID();
       try {
-        await loginViaUI(page, getAdminEmail(), getAdminPassword());
-
-        const since = new Date().toISOString();
-        await dispatchAndScrape(page, agentId, gold.query, { chatId, idleTimeoutMs: 120_000 });
-
-        const [answer, auditEntries] = await Promise.all([
-          getRawAssistantMessage(page, agentId, chatId),
-          collectKnowledgeSearchAuditEntries(cookie, agentId, since),
-        ]);
+        // Dispatch and grading retry SEPARATELY, and only across a transport
+        // fault. The uplink can drop at either end of this block and the two
+        // cost very different things: re-dispatching after a judge blip throws
+        // away a good answer and a minute of model time, while resuming a
+        // half-dispatched chat would grade a conversation the model already
+        // started answering. So each attempt mints its own chatId, and the
+        // judge retries on its own. `isTransportError` keeps a real defect —
+        // no assistant text, a grader disagreement — out of the retry entirely
+        // (#869: 15 of 48 runs lost to one offline stretch).
+        const { answer, auditEntries } = await withTransportRetry(
+          async () => {
+            await loginViaUI(page, getAdminEmail(), getAdminPassword());
+            const chatId = randomUUID();
+            const since = new Date().toISOString();
+            await dispatchAndScrape(page, agentId, gold.query, { chatId, idleTimeoutMs: 120_000 });
+            const [answer, auditEntries] = await Promise.all([
+              getRawAssistantMessage(page, agentId, chatId),
+              collectKnowledgeSearchAuditEntries(cookie, agentId, since),
+            ]);
+            return { answer, auditEntries };
+          },
+          { what: `dispatch ${model}/${goldId}` }
+        );
 
         const retrieved = retrievedSourcesFromAuditEntries(auditEntries);
         // The answer cites what the tool SHOWED (a path relative to the data
@@ -385,7 +399,13 @@ test.describe("KB Eval Harness Layer 3: groundedness sweep (real Ollama Cloud)",
           latencyMs: Date.now() - runStart,
         };
 
-        const result = await gradeKbRun(trajectory, gold, { nli, relevance });
+        // The judge is an Ollama Cloud call, so it fails exactly when the
+        // dispatch above does — but by this point the answer is already in
+        // hand and re-dispatching to recover it would be pure waste.
+        const result = await withTransportRetry(
+          () => gradeKbRun(trajectory, gold, { nli, relevance }),
+          { what: `judge ${model}/${goldId}` }
+        );
         const stampedResult: KbRunResult = { ...result, scenario: goldId };
         allRuns.push(stampedResult);
         await appendRunResult(RESULT_LABEL, stampedResult);

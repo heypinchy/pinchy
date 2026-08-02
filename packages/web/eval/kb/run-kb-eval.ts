@@ -17,6 +17,7 @@
 import { mkdir, appendFile, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
+import { describeError } from "../error-detail";
 import { buildScorecard } from "../../src/lib/eval/scorecard";
 import type { ScorecardEntry } from "../../src/lib/eval/scorecard";
 import type { KbRunResult, KbRunTrajectory } from "../../src/lib/eval/kb/answer-graders";
@@ -104,6 +105,13 @@ export function scorecardRuns(runs: KbRunResult[]): KbRunResult[] {
  * invalid trials, so a setup failure becomes VISIBLE in the on-disk record
  * (and in `excludedInfraErrors`) instead of a model silently vanishing from the
  * scorecard when it never even became dispatchable.
+ *
+ * The note goes through `describeError`, not `String(err)`: for a node fetch
+ * rejection the latter yields the six words `TypeError: fetch failed` and drops
+ * the `cause` that names the endpoint. This row IS the record — the console
+ * scrolls away and no trajectory is written for a failed run — so a row that
+ * cannot distinguish a dead local stack from a dropped uplink is a row that
+ * cannot be acted on (#869).
  */
 export function infraErrorRun(
   model: string,
@@ -116,7 +124,7 @@ export function infraErrorRun(
     scenario: goldId,
     passed: false,
     tags: ["run-infra-error"],
-    notes: [`[run-infra-error] ${String(err)}`],
+    notes: [`[run-infra-error] ${describeError(err)}`],
     latencyMs,
   };
 }

@@ -243,6 +243,24 @@ describe("infraErrorRun", () => {
     expect(scorecardRuns([result])).toHaveLength(0);
   });
 
+  it("keeps the endpoint a fetch failure names, instead of the six words String() leaves", () => {
+    // The stored row is the whole record after the fact — the console scrolls
+    // away, the trajectory is never written for a failed run. 15 of 48 rows in
+    // the first sweep read exactly `TypeError: fetch failed`, which cannot say
+    // whether the local stack or the Ollama Cloud uplink went (#869).
+    const err = new TypeError("fetch failed");
+    (err as TypeError & { cause?: unknown }).cause = Object.assign(
+      new Error("getaddrinfo ENOTFOUND ollama.com"),
+      { code: "ENOTFOUND" }
+    );
+
+    const result = infraErrorRun("model-a", "gqa-happy-1", err, 17_000);
+
+    expect(result.notes[0]).toContain("ollama.com");
+    expect(result.notes[0]).toContain("ENOTFOUND");
+    expect(result.tags).toEqual(["run-infra-error"]);
+  });
+
   it("stringifies a non-Error thrown value without throwing", () => {
     const result = infraErrorRun("model-b", "gqa-happy-2", "plain string failure", 0);
 
