@@ -3622,7 +3622,7 @@ describe("regenerateOpenClawConfig", () => {
 
     it("still reports the failure to the caller, naming the agent and what did land", async () => {
       // Silence is the other half of the bug: the wizard turns this rejection
-      // into a warning toast and records runtimeApplied:false in the audit
+      // into a warning toast and records configRegenerated: false in the audit
       // trail. Swallowing it would trade a loud failure for a silent one.
       //
       // But the message has to say what actually happened now — the raw EACCES

@@ -312,7 +312,7 @@ describe("audit: POST /api/setup/provider", () => {
         provider: { id: "anthropic", name: "Anthropic" },
         authType: "api-key",
         // Records whether the setting also reached the OpenClaw runtime (#880).
-        runtimeApplied: true,
+        configRegenerated: true,
       },
     });
   });

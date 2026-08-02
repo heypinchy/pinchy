@@ -211,7 +211,7 @@ describe("writeAgentAuthProfiles", () => {
     // (Smithers exists before the wizard's provider step). And `unlink` inside a
     // root-owned 0700 directory returns EACCES, not ENOENT. A bare catch here
     // therefore reports the broken directory as a clean removal: nothing lands
-    // in `authProfileFailures`, no warning toast, no `runtimeApplied: false` —
+    // in `authProfileFailures`, no warning toast, no `configRegenerated: false` —
     // the permission problem stays invisible until a provider is saved, which is
     // the very silence the rest of this fix exists to remove.
     it("retries a denied removal and succeeds once the tick lands", async () => {

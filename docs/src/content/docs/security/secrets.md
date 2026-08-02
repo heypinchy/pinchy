@@ -44,6 +44,9 @@ At startup — and every time you change a provider or integration — Pinchy ca
 1. Reads all relevant rows from PostgreSQL
 2. Decrypts each value in memory
 3. Writes the decrypted keys to `/openclaw-secrets/secrets.json`
+4. Tells OpenClaw to re-read that file whenever its contents changed
+
+Step 4 is what makes rotation immediate. OpenClaw resolves each pointer once and holds the value for the life of the process, and `openclaw.json` is unchanged by a rotation — it carries the pointer, not the key. So a new key would otherwise sit in the file unread until the container restarted, with every agent still presenting the old one.
 
 That path is a Docker `tmpfs` mount. tmpfs is RAM-based storage — it's never written to disk, never included in Docker volume exports, and disappears on container restart.
 
@@ -81,7 +84,7 @@ These are infrastructure-level threats. Protect against them at the host level: 
 
 Different consumers reach their secrets through different paths. Knowing which pattern applies is useful when something looks wrong in `openclaw.json`.
 
-**Pattern A — OpenClaw resolves SecretRef pointers.** Used for `models.providers.<name>.apiKey` and any `env.<VAR>` template. The flow above describes this pattern in full: ciphertext lives in PostgreSQL, plaintext lands in the tmpfs `secrets.json`, OpenClaw walks the pointer at call time. Provider API keys (Anthropic, OpenAI, Google, etc.) all use this path.
+**Pattern A — OpenClaw resolves SecretRef pointers.** Used for `models.providers.<name>.apiKey` and any `env.<VAR>` template. The flow above describes this pattern in full: ciphertext lives in PostgreSQL, plaintext lands in the tmpfs `secrets.json`, and OpenClaw walks the pointer when it loads its runtime — then keeps the resolved value until Pinchy tells it the file moved. Provider API keys (Anthropic, OpenAI, Google, etc.) all use this path.
 
 **Pattern B — Pinchy plugins fetch credentials at call time.** Used by every Pinchy-built plugin that talks to a third-party SaaS: `pinchy-odoo`, `pinchy-email`, `pinchy-web`. `openclaw.json` only carries the plugin's `apiBaseUrl`, the gateway auth token, and an opaque `connectionId`. The plugin calls `GET /api/internal/integrations/:connectionId/credentials?agentId=<id>` with the gateway token as Bearer auth when it actually needs the credential, caches it in-process with a 5-minute TTL, and invalidates the cache on a 401 so credential rotation works without restarts. The credential itself never appears in `openclaw.json`.
 
@@ -93,7 +96,7 @@ The defense-in-depth scan that runs at config-write time recognises known provid
 
 ## Key rotation
 
-If you suspect an API key has been exposed, rotate it at the provider and update it in Pinchy via **Settings → AI Provider**. Pinchy will write the new encrypted value to PostgreSQL and regenerate the secrets file immediately.
+If you suspect an API key has been exposed, rotate it at the provider and update it in Pinchy via **Settings → AI Provider**. Pinchy writes the new encrypted value to PostgreSQL, regenerates the secrets file, and tells OpenClaw to re-resolve it — so your agents stop presenting the exposed key within seconds, without a restart. See [Rotate an API key](/guides/llm-providers/#rotate-an-api-key) for the operator's view.
 
 ## Reporting a vulnerability
 

@@ -38,7 +38,7 @@ import { recordAuditFailure } from "@/lib/audit-deferred";
 // Generic "OpenAI-compatible" provider write/read routes (#894). Mirrors the
 // built-in provider route's conventions verbatim: admin guard via `withAdmin`,
 // `parseRequestBody` for structured 400s, best-effort `regenerateOpenClawConfig`
-// that derives a `runtimeApplied` flag rather than 500-ing an already-persisted
+// that derives a `configRegenerated` flag rather than 500-ing an already-persisted
 // save (see setup/provider/route.ts + #880), `resetCache()`, and a
 // `config.changed` audit whose detail snapshots `{ id, name }` and NEVER carries
 // the API key or the full base URL (host only).
@@ -201,14 +201,16 @@ export const POST = withAdmin(async (request, _ctx, session) => {
   }
 
   // Best-effort runtime apply: the row is already committed, so a failed
-  // regenerate must NOT 500 (mirrors setup/provider/route.ts, #880). Record
-  // whether it reached the runtime so the audit distinguishes saved vs applied.
-  let runtimeApplied = true;
+  // regenerate must NOT 500 (mirrors setup/provider/route.ts, #880). The
+  // audited flag asserts only that the regenerate did not throw — the push
+  // itself is fire-and-forget, so it is deliberately NOT named
+  // `runtimeApplied` (see setup/provider, #943).
+  let configRegenerated = true;
   try {
     await regenerateOpenClawConfig();
   } catch (err) {
     console.error("Failed to apply OpenAI-compatible provider config to the runtime:", err);
-    runtimeApplied = false;
+    configRegenerated = false;
   }
   resetCache();
 
@@ -227,7 +229,7 @@ export const POST = withAdmin(async (request, _ctx, session) => {
         authType: "openai-compatible",
         baseUrlHost,
         modelCount: row.models.length,
-        runtimeApplied,
+        configRegenerated,
         // Only present when an edit actually repointed agents off removed models.
         ...(migratedAgents.length > 0
           ? {
@@ -262,7 +264,7 @@ export const GET = withAdmin(async () => {
  * built-ins-first remaining-candidate ordering (Task 8), the shared
  * migration/reassignment/audit-diff helper, and a `settings.deleted` audit that
  * snapshots `{ id, name }`, caps the migrated-agent diff, and NEVER carries the
- * API key. Runtime apply is best-effort (`runtimeApplied`) — the row is already
+ * API key. Runtime apply is best-effort (`configRegenerated`) — the row is already
  * gone, so a failed regenerate must not 500 (mirrors POST + #880).
  */
 export const DELETE = withAdmin(async (request, _ctx, session) => {
@@ -340,12 +342,12 @@ export const DELETE = withAdmin(async (request, _ctx, session) => {
 
   // Best-effort runtime apply: the row is already gone, so a failed regenerate
   // must NOT 500 (mirrors POST + #880). Record whether it reached the runtime.
-  let runtimeApplied = true;
+  let configRegenerated = true;
   try {
     await regenerateOpenClawConfig();
   } catch (err) {
     console.error("Failed to apply OpenAI-compatible provider deletion to the runtime:", err);
-    runtimeApplied = false;
+    configRegenerated = false;
   }
   resetCache();
 
@@ -368,7 +370,7 @@ export const DELETE = withAdmin(async (request, _ctx, session) => {
         agentCount: migratedAgents.length,
         migratedAgents: inlineMigrated,
         ...(truncated ? { migratedAgentsTruncated: true } : {}),
-        runtimeApplied,
+        configRegenerated,
       },
     })
   );

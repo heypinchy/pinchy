@@ -71,7 +71,7 @@ interface ConfigChangedDetail {
   authType?: string;
   baseUrlHost?: string;
   modelCount?: number;
-  runtimeApplied?: boolean;
+  configRegenerated?: boolean;
   provider?: { id?: string; name?: string };
   previousDefault?: string | null;
   newDefault?: string;

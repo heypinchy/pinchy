@@ -82,6 +82,25 @@ describe("writeSecretsFile", () => {
     expect(content.providers.openai.apiKey).toBe("sk-different");
   });
 
+  // The return value is the only signal a caller has that the running OpenClaw
+  // now holds a stale credential. A rotation on an ALREADY-configured provider
+  // changes nothing but this file — the emitted openclaw.json carries a
+  // SecretRef, not the value — so every config-level change detector reports
+  // "nothing happened" and the new key never reaches the runtime (#943).
+  it("reports a change when it creates the file", () => {
+    expect(writeSecretsFile(bundle)).toBe(true);
+  });
+
+  it("reports a change when the key is rotated", () => {
+    writeSecretsFile(bundle);
+    expect(writeSecretsFile({ providers: { anthropic: { apiKey: "sk-ant-rotated" } } })).toBe(true);
+  });
+
+  it("reports no change when the bundle is identical", () => {
+    writeSecretsFile(bundle);
+    expect(writeSecretsFile(bundle)).toBe(false);
+  });
+
   it("throws an actionable error when the secrets directory cannot be created (missing volume mount)", () => {
     // Reproduce the #878 failure shape: the `openclaw-secrets` volume is not
     // mounted, so the directory Pinchy expects to write into cannot be created.

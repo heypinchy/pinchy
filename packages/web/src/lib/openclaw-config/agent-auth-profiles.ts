@@ -65,7 +65,7 @@ export async function writeAgentAuthProfiles(params: WriteAgentAuthProfilesParam
     // provider step, which is precisely when OpenClaw wins the race for
     // agents/<id>/agent). So the very moment the directory broke, the agent was
     // reported as clean: nothing reached `authProfileFailures`, no warning
-    // toast, no `runtimeApplied: false` — invisible until someone saved a
+    // toast, no `configRegenerated: false` — invisible until someone saved a
     // provider key.
     try {
       await withPermissionRetry(() => fs.unlinkSync(target));

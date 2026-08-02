@@ -150,7 +150,7 @@ describe("PATCH /api/settings/providers/default", () => {
       provider: { id: "anthropic", name: "Anthropic" },
       previousDefault: "openai",
       newDefault: "anthropic",
-      runtimeApplied: true,
+      configRegenerated: true,
     });
   });
 
@@ -190,7 +190,7 @@ describe("PATCH /api/settings/providers/default", () => {
     expect(setSetting).toHaveBeenCalledWith("default_provider", "anthropic", false);
     expect(resetCache).toHaveBeenCalled();
     const entry = vi.mocked(appendAuditLog).mock.calls[0][0];
-    expect(entry.detail).toMatchObject({ runtimeApplied: false });
+    expect(entry.detail).toMatchObject({ configRegenerated: false });
   });
 
   it("never writes an audit entry on a rejected request", async () => {

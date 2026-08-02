@@ -254,9 +254,14 @@ export async function POST(request: NextRequest) {
   const detail: Record<string, unknown> = {
     provider: { id: provider, name: PROVIDERS[provider].name },
     authType: config.authType,
-    // The setting is committed regardless; record whether it also reached the
-    // OpenClaw runtime so the trail distinguishes "saved" from "saved+applied".
-    runtimeApplied: !runtimeWarning,
+    // What this asserts, precisely: `regenerateOpenClawConfig()` returned
+    // without throwing. It is NOT a confirmation that OpenClaw's runtime now
+    // holds the value — the push is fire-and-forget by design (see
+    // pushConfigInBackground). It was called `runtimeApplied` until #943, where
+    // a rotated key was audited as applied while every agent kept 401-ing; an
+    // audit row claiming success for a change that did not take effect is worse
+    // than no row at all.
+    configRegenerated: !runtimeWarning,
   };
   if (config.authType === "url" && body.url) {
     try {

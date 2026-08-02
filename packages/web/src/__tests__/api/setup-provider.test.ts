@@ -297,7 +297,7 @@ describe("POST /api/setup/provider", () => {
       string,
       unknown
     >;
-    expect(auditDetail.runtimeApplied).toBe(false);
+    expect(auditDetail.configRegenerated).toBe(false);
   });
 
   it("should not include a warning when config regeneration succeeds", async () => {
@@ -676,7 +676,7 @@ describe("POST /api/setup/provider", () => {
       provider: { id: "anthropic", name: "Anthropic" },
       authType: "api-key",
       // On the happy path the setting also reached the runtime (#880).
-      runtimeApplied: true,
+      configRegenerated: true,
     });
   });
 

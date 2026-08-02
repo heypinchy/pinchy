@@ -83,7 +83,18 @@ export function checkSecretsVolumeWritable(): { ok: true } | { ok: false; messag
   }
 }
 
-export function writeSecretsFile(bundle: SecretsBundle): void {
+/**
+ * Writes the secrets bundle and reports whether it actually changed anything.
+ *
+ * The return value is load-bearing, not a convenience: a rotation on an
+ * already-configured provider changes THIS FILE AND NOTHING ELSE. The emitted
+ * `openclaw.json` carries a SecretRef, not the value, so it stays byte-identical
+ * and every config-level change detector correctly concludes "no change" — after
+ * which nothing tells the running OpenClaw that the credential it resolved at
+ * process start is now stale (#943). Callers use this flag to push a
+ * `secrets.reload` that no config diff would ever trigger.
+ */
+export function writeSecretsFile(bundle: SecretsBundle): boolean {
   const path = process.env.OPENCLAW_SECRETS_PATH || DEFAULT_SECRETS_PATH;
   const newContent = JSON.stringify(bundle, null, 2);
 
@@ -91,7 +102,7 @@ export function writeSecretsFile(bundle: SecretsBundle): void {
   // that would trigger OpenClaw's secrets-file watcher unnecessarily.
   if (existsSync(path)) {
     try {
-      if (readFileSync(path, "utf-8") === newContent) return;
+      if (readFileSync(path, "utf-8") === newContent) return false;
     } catch {
       // Fall through and write — if read failed for any reason, a write attempt
       // is the safer recovery path than silently leaving stale content.
@@ -109,6 +120,7 @@ export function writeSecretsFile(bundle: SecretsBundle): void {
     writeFileSync(tmp, newContent, { mode: 0o600 });
     chmodSync(tmp, 0o600); // enforce regardless of umask
     renameSync(tmp, path);
+    return true;
   } catch (err) {
     // Replace the bare EACCES/ENOTDIR with an actionable message. This is the
     // single choke point every regenerateOpenClawConfig() flows through, so both

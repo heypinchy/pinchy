@@ -60,14 +60,16 @@ export const PATCH = withAdmin(async (request, _ctx, session) => {
 
   // Best-effort runtime apply (#880 pattern, mirrored across every provider
   // write route): the setting is already committed, so a failed regenerate
-  // must not turn a successful save into a 500.
-  let runtimeApplied = true;
+  // must not turn a successful save into a 500. The audited flag asserts only
+  // that the regenerate did not throw — the push itself is fire-and-forget, so
+  // it is deliberately NOT named `runtimeApplied` (see setup/provider, #943).
+  let configRegenerated = true;
   let warning: string | undefined;
   try {
     await regenerateOpenClawConfig();
   } catch (err) {
     console.error("Failed to apply the new default provider to the runtime:", err);
-    runtimeApplied = false;
+    configRegenerated = false;
     warning =
       "Saved. Applying it to the agent runtime failed — check the server logs; it will retry on the next restart or config change.";
   }
@@ -83,7 +85,7 @@ export const PATCH = withAdmin(async (request, _ctx, session) => {
         provider: { id: provider, name: targetName },
         previousDefault,
         newDefault: provider,
-        runtimeApplied,
+        configRegenerated,
       },
     })
   );

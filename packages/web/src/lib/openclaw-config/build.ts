@@ -43,6 +43,7 @@ import { resolveBootstrapCaps } from "./bootstrap-caps";
 import { CONFIG_PATH } from "./paths";
 import { configsAreEquivalentUpToOpenClawMetadata } from "./normalize";
 import { readExistingConfig, pushConfigInBackground } from "./write";
+import { reloadSecretsInBackground } from "./secrets-reload";
 import {
   buildSecretsBundle,
   collectPluginSecrets,
@@ -1706,7 +1707,17 @@ export async function regenerateOpenClawConfig() {
     );
   }
 
-  writeSecretsFile(secretsBundle);
+  // A secrets-only change is invisible to EVERY guard below: `openclaw.json`
+  // carries a SecretRef, not the value, so a rotated provider key leaves the
+  // emitted config byte-identical, the equivalence check returns right here, and
+  // the running OpenClaw keeps serving the credential it resolved at process
+  // start — 401 on every agent until someone restarts the container (#943).
+  // `secrets.reload` is the RPC that closes that gap, and it is fired BEFORE the
+  // early returns for exactly that reason. It costs no `config.apply` rate-limit
+  // slot, so the no-op guard keeps doing the job it exists for.
+  if (writeSecretsFile(secretsBundle)) {
+    reloadSecretsInBackground();
+  }
 
   // Only write if content actually changed — prevents unnecessary OpenClaw restarts.
   // Format must match what OpenClaw's writeConfigFile produces (trimEnd + "\n")
@@ -1849,7 +1860,7 @@ export async function regenerateOpenClawConfig() {
 
   // Report AFTER the push, never instead of it. The caller has to hear about
   // this — the setup wizard turns the rejection into a warning toast and records
-  // `runtimeApplied: false` in the audit trail, which is the only reason this
+  // `configRegenerated: false` in the audit trail, which is the only reason this
   // failure is visible outside the container logs at all. But the message must
   // describe what actually happened: the config DID reach OpenClaw, these agents
   // just have no credentials, so they answer "No API key found" rather than

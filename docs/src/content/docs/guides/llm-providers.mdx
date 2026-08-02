@@ -37,6 +37,21 @@ Pinchy validates the credentials immediately by making a test call to the provid
 
 API keys are encrypted at rest with AES-256-GCM. They never appear in logs, audit events, or error messages.
 
+## Rotate an API key
+
+Keys expire, and sometimes one has to be replaced in a hurry. Rotating is the same three clicks as adding:
+
+1. Go to **Settings → AI Provider**
+2. Click the provider's tile and paste the new key
+3. Click **Save**
+
+Pinchy validates the new key, stores it, and hands it straight to the agent runtime — your agents pick it up within seconds. There is nothing to restart.
+
+<Aside type="note">
+  For security, Pinchy never shows a saved key back to you. A blank field means
+  "keep the current key", so an empty save is not an accidental rotation.
+</Aside>
+
 ## Change an agent's model
 
 Each agent uses one model at a time. To change it:

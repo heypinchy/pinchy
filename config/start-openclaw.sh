@@ -295,8 +295,17 @@ openclaw gateway --port 18789 &
 mark_bootstrap_when_ready
 
 # Keep the container alive. Health-check restarts gateway if it crashes.
-# Provider API keys are resolved live from secrets.json via SecretRef —
-# no env-export or gateway restart needed on key rotation.
+#
+# Provider API keys need no env-export and no gateway restart on rotation —
+# but NOT because they are resolved live. They are not: OpenClaw resolves
+# SecretRefs eagerly into an in-memory snapshot at activation time, never on
+# the request path (openclaw docs, gateway/secrets.md "Runtime model"). This
+# comment used to claim otherwise, which is exactly why #943 stayed invisible:
+# a rotated key sat in secrets.json unread, every agent kept presenting the
+# revoked one, and the bootstrap marker above deliberately suppresses the
+# restart for anything past the first write. Pinchy closes that gap from its
+# side by calling the `secrets.reload` RPC whenever the bundle changes (see
+# packages/web/src/lib/openclaw-config/secrets-reload.ts).
 while true; do
     sleep 30
 

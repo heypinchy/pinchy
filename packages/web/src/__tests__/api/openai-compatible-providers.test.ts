@@ -399,7 +399,7 @@ describe("POST /api/settings/providers/openai-compatible", () => {
       authType: "openai-compatible",
       baseUrlHost: "acme.example.com",
       modelCount: 1,
-      runtimeApplied: true,
+      configRegenerated: true,
     });
   });
 
@@ -421,7 +421,7 @@ describe("POST /api/settings/providers/openai-compatible", () => {
     expect(serialized).toContain("acme.example.com");
   });
 
-  it("records runtimeApplied: false when regenerate throws (best-effort)", async () => {
+  it("records configRegenerated: false when regenerate throws (best-effort)", async () => {
     vi.mocked(regenerateOpenClawConfig).mockRejectedValueOnce(new Error("EACCES"));
 
     const res = await POST(
@@ -437,7 +437,7 @@ describe("POST /api/settings/providers/openai-compatible", () => {
     expect(res.status).toBe(200);
     expect(resetCache).toHaveBeenCalled();
     const entry = vi.mocked(appendAuditLog).mock.calls[0][0];
-    expect(entry.detail).toMatchObject({ runtimeApplied: false });
+    expect(entry.detail).toMatchObject({ configRegenerated: false });
   });
 
   it("updates an existing provider without an api key and still succeeds, discovering with the STORED key", async () => {
@@ -968,7 +968,7 @@ describe("DELETE /api/settings/providers/openai-compatible", () => {
           toModel: "anthropic/claude-haiku-4-5-20251001",
         },
       ],
-      runtimeApplied: true,
+      configRegenerated: true,
     });
     // The deleted provider's display name survives for post-deletion analysis,
     // and nothing key- or PII-shaped leaks into the detail.
@@ -1094,7 +1094,7 @@ describe("DELETE /api/settings/providers/openai-compatible", () => {
     });
   });
 
-  it("still succeeds with runtimeApplied:false when regenerate throws (best-effort)", async () => {
+  it("still succeeds with configRegenerated:false when regenerate throws (best-effort)", async () => {
     vi.mocked(regenerateOpenClawConfig).mockRejectedValueOnce(new Error("EACCES"));
 
     const res = await DELETE(deleteRequest({ id: PROVIDER_ID }), routeCtx);
@@ -1102,6 +1102,6 @@ describe("DELETE /api/settings/providers/openai-compatible", () => {
     expect(res.status).toBe(200);
     expect(resetCache).toHaveBeenCalled();
     const entry = vi.mocked(appendAuditLog).mock.calls[0][0];
-    expect(entry.detail).toMatchObject({ runtimeApplied: false });
+    expect(entry.detail).toMatchObject({ configRegenerated: false });
   });
 });
