@@ -185,6 +185,67 @@ If you need to roll back after an upgrade:
   backup step matters.
 </Aside>
 
+## Upgrading from v0.9.0 to %%PINCHY_VERSION%%
+
+### Breaking changes
+
+#### Knowledge Base agents need one reindex after upgrading
+
+The knowledge base no longer embeds through Ollama. The embedding model now runs inside Pinchy itself — the same offline `embeddinggemma` model that already powers agent memory — so there is nothing to pull, nothing to configure, and no Ollama endpoint involved. Indexing and search work on a fully offline install.
+
+The two models produce vectors that cannot be compared, and Postgres cannot change a vector column's width in place, so the old embeddings can be neither kept nor converted. Migration `0056` clears `kb_documents` and `kb_chunks` and recreates the index column at the new width. **Your documents are not touched** — those tables are derived entirely from the files on disk, and the files stay where they are.
+
+So after upgrading, a Knowledge Base agent finds nothing until you reindex it: open the agent's **Permissions** tab, and in the **Knowledge Base** section click **Reindex now**. The run reports its progress inline. If you never set up a Knowledge Base agent, there is nothing to do — the tables were already empty.
+
+The `ollama pull bge-m3` step from the v0.9.0 notes no longer applies. If nothing else on your machine uses that model, you can remove it.
+
+### Upgrade notes
+
+The standard flow applies:
+
+```bash
+cd /opt/pinchy
+sed -i 's/^PINCHY_VERSION=.*/PINCHY_VERSION=%%PINCHY_VERSION%%/' .env
+docker compose pull && docker compose up -d && docker image prune -f
+```
+
+#### A provider key that can't reach the runtime now says so
+
+Pinchy and the agent runtime share one config volume under two different users, and each agent has a directory in it that both of them write to. If the runtime got there first, the directory came out owned by the wrong user and Pinchy could no longer store that agent's credentials — which stopped the whole config from reaching the runtime. The agent then simply stopped answering, with the real reason only in `docker compose logs pinchy`.
+
+The runtime now hands that directory back on start and on every tick, so the case should not arise. If it ever does, saving a provider key tells you plainly that it saved but couldn't be applied, and the affected agent says it has no API key instead of going quiet. Nothing to configure.
+
+#### Ollama Cloud catalog: one model removed, two gain vision
+
+Re-verified against the live API. `nemotron-3-nano:30b` is **no longer offered**: it now skips the tool call outright in most attempts, which for an agent looks like deciding not to act rather than failing. Any agent pinned to it needs a new model — the fast tier's general pick (`deepseek-v4-flash`) is the closest equivalent.
+
+`kimi-k2.7-code` and `qwen3.5:397b` can now **accept images**. Both previously could not — `qwen3.5:397b` was the model an [earlier release note](#ollama-cloud-model-catalog-refreshed-against-the-live-api) marked text-only for hallucinating image contents — and both read test images correctly now. They become selectable for image work; the default image model is unchanged, so nothing re-routes on its own.
+
+#### Documents in archive folders drop out of everyday answers
+
+A knowledge-base document now counts as archived if any **folder** on its path is called `old`, `archive`, `archived` or `archiv` — matched whole and case-insensitively, so `OLD/` counts and `Goldakte/` does not. The rule reads directories only: a file named `archive.pdf` is not archived. Archived documents are still fully indexed, and the agent can still reach them when a question asks it to; they are simply left out of an ordinary answer. Year and quarter folders (`2013/`, `Q3/`) are never archives. See [Current documents first](/guides/create-knowledge-base-agent/#current-documents-first). If you keep superseded files in a folder named something else, rename it to one of those four to get the same treatment.
+
+#### Agents can hand you a file in chat
+
+An agent with **Write files** permission can now turn tabular data it already holds into a CSV, XLSX or PDF and deliver it in the conversation, via the new `pinchy_generate_file` tool. It rides on the existing permission — no new grant to make, and agents without write access can't reach it. See [Generating files](/guides/file-uploads/#generating-files).
+
+#### Automations move into the agent
+
+Email workflows now have their own **Automations** tab in an agent's settings, where you can review, create, enable, disable and delete them. It is visible to admins on any agent, and to the owner of a personal agent. Existing workflows are listed as-is; nothing changes on upgrade until you edit one.
+
+### Database migrations
+
+Nine migrations (`0056`–`0064`) run automatically on startup — no manual steps. Only `0056` is destructive, and only for the Knowledge Base tables (see the breaking change above); the rest are additive.
+
+- `0056` — recreates `kb_chunks.embedding` at 768 dimensions for the bundled in-process `embeddinggemma` embedder and clears the two Knowledge Base tables.
+- `0057` — backfills `kb_documents.status` so documents ingested before the archive rule existed are classified by it too.
+- `0058` — `agent_delivered_files`, the record behind files an agent hands you in chat.
+- `0059` — the OpenAI-compatible provider table. A v0.9.0 database already has it (the release branch shipped the same change as its own `0056`), so this one applies `IF NOT EXISTS` and does nothing there.
+- `0060` — a partial index over failed audit-integrity checks, so the verification report stays fast as the log grows.
+- `0061`, `0062` — a Knowledge Base chunk is anchored by a **locator** (slide, sheet and row range, heading path) instead of a page number, since only PDFs have pages; `0062` drops the old `page` column once `0061` has carried every anchor across.
+- `0063` — byte-level progress on index jobs (`total_bytes`, `processed_bytes`) backing the reindex progress bar and its estimate.
+- `0064` — `run_started_at` and `show_banner` on `chat_session_errors`, so a run failure's banner can be dismissed and re-armed per run.
+
 ## Upgrading from v0.8.0 to v0.9.0
 
 ### Breaking changes
@@ -240,7 +301,7 @@ The compose file now caps each service (pinchy 1 GB, openclaw 2 GB, db 1 GB memo
 
 #### Knowledge Base agents (new, opt-in)
 
-Agents can now answer from your own documents with cited sources, backed by a search index in Pinchy's Postgres. Nothing is indexed until you set it up: mount document directories, create an agent from the new Knowledge Base template, and trigger indexing. The embedding model ships inside the image (the same offline `embeddinggemma` model that powers agent memory), so there is nothing to pull or configure and no Ollama endpoint is involved — indexing and search work fully offline. See [Create a Knowledge Base agent](/guides/create-knowledge-base-agent/). If you don't use it, nothing changes for you.
+Agents can now answer from your own documents with cited sources, backed by a search index in Pinchy's Postgres. Nothing is indexed until you set it up: mount document directories, pull the embedding model on your local Ollama (`ollama pull bge-m3`), create an agent from the new Knowledge Base template, and trigger indexing. See [Create a Knowledge Base agent](/guides/create-knowledge-base-agent/). If you don't use it, nothing changes for you.
 
 #### Agent memory recall now works offline
 
@@ -254,25 +315,13 @@ A shared agent's `MEMORY.md` — what it learned in one-to-one conversations —
 
 Inbound channel media (Telegram photos, documents) is now copied into the agent workspace on arrival, and the runtime's internal media cache is swept after 48 hours instead of growing forever. Attachments received **before** this upgrade were never copied, so ones older than 48 hours are removed by the first sweep and may no longer open from old conversations. Export anything you still need from pre-upgrade chats before upgrading.
 
-#### A provider key that can't reach the runtime now says so
-
-Pinchy and the agent runtime share one config volume under two different users, and each agent has a directory in it that both of them write to. If the runtime got there first, the directory came out owned by the wrong user and Pinchy could no longer store that agent's credentials — which stopped the whole config from reaching the runtime. The agent then simply stopped answering, with the real reason only in `docker compose logs pinchy`.
-
-The runtime now hands that directory back on every tick, so the case should not arise. If it ever does, saving a provider key tells you plainly that it saved but couldn't be applied, and the affected agent says it has no API key instead of going quiet. Nothing to do on upgrade.
-
 #### Workspace terminals stay disabled
 
 The OpenClaw runtime this release ships (2026.7.1) adds an interactive terminal into agent workspaces. Pinchy pins it off: a shell would bypass agent permission allow-lists and the audit trail. It will return as an RBAC-scoped, audited feature.
 
-#### Ollama Cloud catalog: one model removed, two gain vision
-
-Re-verified against the live API. `nemotron-3-nano:30b` is **no longer offered**: it now skips the tool call outright in most attempts, which for an agent looks like deciding not to act rather than failing. Any agent pinned to it needs a new model — the fast tier's general pick (`deepseek-v4-flash`) is the closest equivalent.
-
-`kimi-k2.7-code` and `qwen3.5:397b` can now **accept images**. Both previously could not — `qwen3.5:397b` was the model an [earlier release note](#ollama-cloud-model-catalog-refreshed-against-the-live-api) marked text-only for hallucinating image contents — and both read test images correctly now. They become selectable for image work; the default image model is unchanged, so nothing re-routes on its own.
-
 ### Database migrations
 
-Thirteen migrations (`0044`–`0056`) run automatically on startup — no manual steps. No existing data is dropped: every one is additive except `0056`, which recreates a Knowledge Base index column introduced earlier in this same release (see below), so the tables it rewrites are empty on upgrade.
+Twelve additive migrations (`0044`–`0055`) run automatically on startup — no manual steps. No data is dropped or destructively rewritten; existing rows already satisfy every new constraint.
 
 - `0044` — schema hardening: four timestamp columns to `NOT NULL`, foreign-key and hot-path composite indexes, `CHECK` constraints on the enum-like text columns (roles, agent visibility, invite/connection types and statuses), and the `invites.claimed_by_user_id` foreign key switched to `ON DELETE SET NULL`.
 - `0045` — per-agent starter prompts (`agents.starter_prompts`, defaults to empty).
@@ -283,7 +332,6 @@ Thirteen migrations (`0044`–`0056`) run automatically on startup — no manual
 - `0053` — per-turn context-window usage tracking (`usage_records.context_tokens`).
 - `0054` — Knowledge Base tables (`kb_documents`, `kb_chunks`) with the pgvector index; enables the `vector` extension (see the breaking change above).
 - `0055` — the Knowledge Base async index-job queue (`kb_index_jobs`) backing the background reindex.
-- `0056` — recreates `kb_chunks.embedding` at 768 dimensions for the bundled in-process `embeddinggemma` embedder (replacing the earlier plan to embed over Ollama) and clears the two KB tables. Both were introduced in `0054` above and are empty on any real upgrade, so nothing is lost — the first reindex populates them.
 
 ## Upgrading from v0.7.0 to v0.8.0
 
