@@ -327,13 +327,55 @@ function line(entry) {
 }
 
 /**
+ * Renders the open pull requests as a roster the reader checks by eye.
+ *
+ * This exists because the `in-flight` bucket has a hole it cannot close from
+ * the issue side. PR #163 implements #128 and names no issue number anywhere,
+ * so GitHub records no cross-referenced event and #128's timeline is genuinely
+ * empty — the first sweep closed it as "nobody is going to build this" while
+ * the implementation sat in review. Nothing read off the issue finds that.
+ * Recognising "OpenAI ChatGPT subscription (Device Code Flow)" as "Provider
+ * OAuth auth (OpenAI first)" does, and only a reader does that.
+ *
+ * A title-similarity heuristic was the obvious alternative and is deliberately
+ * not here: it would have to fire on a pair sharing one word ("OAuth") to
+ * catch this, which buries the roster in noise. Fourteen titles read once,
+ * against a close-list, is cheaper and does not pretend to be a rule.
+ */
+function rosterSection(openPrs) {
+  if (!openPrs) {
+    // Never silently omit it. An absent roster and an empty one look identical
+    // in the output, and "no open PRs" is exactly the wrong thing to conclude
+    // right before block-closing 32 issues.
+    return [
+      "## Open PRs — roster not fetched",
+      "",
+      "Could not read the open pull requests. **Do not block-close anything**",
+      "until you have run `gh pr list --state open` and checked your close list",
+      "against it by topic — see the skill.",
+      "",
+    ];
+  }
+
+  return [
+    `## Open PRs (${openPrs.length}) — check every close candidate against this`,
+    "",
+    "An open PR need not mention its issue, and when it does not, no bucket",
+    "here can see it. Read these titles against anything you plan to close.",
+    "",
+    ...openPrs.map((pr) => `- #${pr.number} ${oneLine(pr.title)}`),
+    "",
+  ];
+}
+
+/**
  * Renders the sweep as markdown for the skill to read.
  *
  * Protected issues get their own section at the top rather than only an inline
  * marker: the rule they carry is a prohibition, and a prohibition buried on
  * line 90 of a 149-line report is one nobody applies.
  */
-export function formatSweepReport(entries) {
+export function formatSweepReport(entries, { openPrs } = {}) {
   const out = [`# Triage sweep — ${entries.length} open issues`, ""];
 
   const protectedEntries = entries.filter((e) => e.externalWaiting);
@@ -350,6 +392,8 @@ export function formatSweepReport(entries) {
       "",
     );
   }
+
+  out.push(...rosterSection(openPrs));
 
   for (const bucket of BUCKET_ORDER) {
     const inBucket = entries.filter((e) => e.bucket === bucket);

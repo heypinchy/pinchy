@@ -134,6 +134,33 @@ test("the report names the open PR that keeps an issue alive", () => {
   assert.match(report, /#77.*open PR #959/);
 });
 
+// The half the in-flight bucket structurally cannot cover. PR #163 implements
+// #128 and mentions no issue number at all, so GitHub records no
+// cross-referenced event and the issue's timeline is genuinely empty. Nothing
+// read off that issue can find it; only recognising "OpenAI OAuth Device Code
+// Flow" as "Provider OAuth auth (OpenAI first)" does — a semantic match no
+// query makes. So the report carries the open-PR roster and the reader makes
+// it, in the one place where they are already deciding what to close.
+test("the report carries the open-PR roster for the matches no query makes", () => {
+  const report = formatSweepReport(classifyIssues([issue({ number: 5 })]), {
+    openPrs: [
+      { number: 163, title: "feat(oauth): OpenAI ChatGPT subscription" },
+      { number: 959, title: "docs: codify the NFC rule" },
+    ],
+  });
+
+  assert.match(report, /#163 feat\(oauth\): OpenAI ChatGPT subscription/);
+  assert.match(report, /#959 docs: codify the NFC rule/);
+});
+
+// A missing roster must not read as "no open PRs" — that is the same silent
+// green as an empty bucket looking like a clean tracker.
+test("an unavailable roster says so rather than showing nothing", () => {
+  const report = formatSweepReport(classifyIssues([issue({ number: 5 })]));
+
+  assert.match(report, /roster (was )?not (fetched|available)/i);
+});
+
 // external-waiting is a flag, not a bucket, and that is deliberate. Making it
 // exclusive would hide the merge evidence on exactly the issues where an
 // outside reporter is owed an answer — the ones we most need to get right.

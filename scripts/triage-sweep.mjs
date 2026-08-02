@@ -70,5 +70,40 @@ do {
   cursor = hasNextPage ? endCursor : null;
 } while (cursor && issues.length < limit);
 
-process.stdout.write(formatSweepReport(classifyIssues(issues.slice(0, limit))));
+/**
+ * The open pull requests, for the roster the report prints above the buckets.
+ *
+ * Read through `gh` rather than the GraphQL client on purpose: the roster is a
+ * reading aid, and a token that can list issues but chokes here must not take
+ * the whole sweep down with it. `undefined` makes the report say the roster is
+ * missing — which is the honest output, and louder than an empty list.
+ */
+function openPullRequests() {
+  try {
+    return JSON.parse(
+      execFileSync(
+        "gh",
+        [
+          "pr",
+          "list",
+          "--state",
+          "open",
+          "--limit",
+          "100",
+          "--json",
+          "number,title",
+        ],
+        { encoding: "utf8" },
+      ),
+    );
+  } catch {
+    return undefined;
+  }
+}
+
+process.stdout.write(
+  formatSweepReport(classifyIssues(issues.slice(0, limit)), {
+    openPrs: openPullRequests(),
+  }),
+);
 process.stdout.write("\n");

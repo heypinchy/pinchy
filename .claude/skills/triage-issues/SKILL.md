@@ -37,9 +37,19 @@ the count, and is why Step 2 exists in the shape it does:
 **The sweep's worst wrong answer came from what it did not look at.** It read
 merged pull requests only, so it closed #128, #333 and #829 as "nobody is going
 to build this" while an **open** PR sat against each one. An open PR has
-already answered the question the 37signals rule asks. There is now an
-`in-flight` bucket, ranked above everything else, and it can only be got wrong
-in the safe direction — see the asymmetry note in Step 2.
+already answered the question the 37signals rule asks.
+
+Two things came out of that, and **you need both — the bucket alone would have
+caught two of the three**:
+
+1. An `in-flight` bucket, ranked above everything else. It can only be got
+   wrong in the safe direction (see Step 2).
+2. **The open-PR roster at the top of the report, which you must read against
+   your close list.** #128's implementation, PR #163, names no issue number
+   anywhere — so GitHub records no cross-reference and #128's timeline is
+   genuinely empty. No bucket can see it. It was found by recognising "OpenAI
+   ChatGPT subscription (Device Code Flow)" as "Provider OAuth auth (OpenAI
+   first)", which is a semantic match only a reader makes.
 
 **A merge cross-reference is weak evidence — it was right 30% of the time.**
 Three that would have been closed by anything that trusts the link: #164
@@ -172,6 +182,14 @@ moved. The flag exists so the question gets asked once, in the pass that is
 already looking.
 
 ## Step 3 — Act, by evidence class
+
+**Before you propose a single closure, read the open-PR roster at the top of
+the report against your close list, by topic.** Not by issue number — the case
+this exists for is precisely the PR that names no number. Fifteen titles, once,
+and it is the only thing standing between a block-close and deleting work
+somebody currently has in review. If the report says `roster not fetched`, run
+`gh pr list --state open` yourself and do it anyway; a missing roster is not an
+empty one.
 
 Approval is **per class, never per issue** — 148 individual confirmations is
 not a review, it is a rubber stamp. Present the user with grouped decisions:
