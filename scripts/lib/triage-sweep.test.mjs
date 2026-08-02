@@ -20,6 +20,7 @@ function issue(overrides = {}) {
     authorAssociation: "OWNER",
     labels: ["enhancement"],
     comments: [{ authorLogin: "clemenshelm", authorAssociation: "OWNER" }],
+    openPrs: [],
     mergedPrs: [],
     trackedBy: [],
     ...overrides,
@@ -87,6 +88,50 @@ test("merge evidence outranks every weaker signal", () => {
   );
 
   assert.equal(entry.bucket, "closed-by-pr");
+});
+
+// The sweep's worst wrong answer, found by making it: the first full pass
+// closed #128, #333 and #829 as "nobody is going to build this" while an open
+// PR sat against each one. It read merged PRs only, so work in flight was
+// invisible — and an open PR has already answered the question the 37signals
+// rule asks. This outranks even merge evidence: a merged PR plus an open one
+// means the follow-up is live, which is the opposite of a closable issue.
+test("an open pull request outranks every other signal", () => {
+  const entry = classifyIssue(
+    issue({
+      labels: [],
+      comments: [],
+      openPrs: [399],
+      mergedPrs: [42],
+      trackedBy: [543],
+    }),
+  );
+
+  assert.equal(entry.bucket, "in-flight");
+  assert.deepEqual(entry.evidence.openPrs, [399]);
+});
+
+test("parseSweepResponse tells an open pull request from a merged one", () => {
+  const issues = parseSweepResponse(
+    responseWithTimeline([
+      { __typename: "PullRequest", number: 8, merged: false, state: "OPEN" },
+      { __typename: "PullRequest", number: 9, merged: true, state: "MERGED" },
+      { __typename: "PullRequest", number: 10, merged: false, state: "CLOSED" },
+    ]),
+  );
+
+  // A PR closed without merging is evidence of nothing, and must not be
+  // mistaken for work in flight any more than for a completed fix.
+  assert.deepEqual(issues[0].openPrs, [8]);
+  assert.deepEqual(issues[0].mergedPrs, [9]);
+});
+
+test("the report names the open PR that keeps an issue alive", () => {
+  const report = formatSweepReport(
+    classifyIssues([issue({ number: 77, openPrs: [959] })]),
+  );
+
+  assert.match(report, /#77.*open PR #959/);
 });
 
 // external-waiting is a flag, not a bucket, and that is deliberate. Making it

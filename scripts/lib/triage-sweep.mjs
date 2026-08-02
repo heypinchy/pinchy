@@ -27,6 +27,7 @@ import { isExternalIssue, hasMaintainerReply } from "./issue-triage.mjs";
  * unlabeled would bury the one fact that decides its fate.
  */
 export const BUCKET_ORDER = [
+  "in-flight",
   "closed-by-pr",
   "subsumed",
   "untriaged",
@@ -35,6 +36,7 @@ export const BUCKET_ORDER = [
 ];
 
 export const BUCKET_DESCRIPTIONS = {
+  "in-flight": "an OPEN PR is against this issue — somebody is building it now",
   "closed-by-pr": "a merged PR references this issue — verify, then close",
   subsumed: "an open tracking issue covers this — verify, then fold in",
   untriaged: "nobody has categorised this yet",
@@ -67,6 +69,13 @@ const TRACKING_TITLE = /\btracking\b|\brfc\b|consolidat/i;
 function bucketFor(issue) {
   const categoryLabels = issue.labels.filter((l) => !PROCESS_LABELS.has(l));
 
+  // Ranked above merge evidence, and that ordering was paid for. The first
+  // full sweep closed #128, #333 and #829 under the no-standing-backlog rule
+  // while an open PR sat against each one — invisible, because the sweep read
+  // merged pull requests only. An open PR is the strongest possible answer to
+  // "is anyone going to build this", and an issue that has BOTH a merged and
+  // an open PR is a live follow-up, not a completed one.
+  if (issue.openPrs.length > 0) return "in-flight";
   if (issue.mergedPrs.length > 0) return "closed-by-pr";
   if (issue.trackedBy.length > 0) return "subsumed";
   if (categoryLabels.length === 0) return "untriaged";
@@ -106,6 +115,7 @@ export function classifyIssue(issue) {
     externalWaiting: isExternalIssue(issue) && !hasMaintainerReply(issue),
     neverDiscussed: issue.comments.length === 0,
     evidence: {
+      openPrs: issue.openPrs,
       mergedPrs: issue.mergedPrs,
       trackedBy: issue.trackedBy,
       labels: issue.labels,
@@ -211,6 +221,13 @@ export function parseSweepResponse(response) {
         authorLogin: comment.author?.login ?? null,
         authorAssociation: comment.authorAssociation,
       })),
+      // Work in flight. `state === "OPEN"` rather than `!merged`: a pull
+      // request CLOSED without merging is abandoned, and reading it as
+      // in-flight would keep an issue alive on the strength of work somebody
+      // already gave up on — the mirror of the merged-vs-closed mistake below.
+      openPrs: sources
+        .filter((s) => s.__typename === "PullRequest" && s.state === "OPEN")
+        .map((s) => s.number),
       // `merged` rather than "there was a PR": a pull request closed without
       // merging is evidence of nothing, and counting it would recommend
       // closing an issue whose fix was abandoned.
@@ -254,7 +271,7 @@ query($owner: String!, $name: String!, $cursor: String) {
             ... on CrossReferencedEvent {
               source {
                 __typename
-                ... on PullRequest { number merged }
+                ... on PullRequest { number merged state }
                 ... on Issue { number title state }
               }
             }
@@ -281,6 +298,11 @@ function oneLine(text) {
 
 function line(entry) {
   const facts = [];
+  if (entry.evidence.openPrs.length) {
+    facts.push(
+      `open PR ${entry.evidence.openPrs.map((n) => `#${n}`).join(", ")}`,
+    );
+  }
   if (entry.evidence.mergedPrs.length) {
     facts.push(
       `merged: ${entry.evidence.mergedPrs.map((n) => `#${n}`).join(", ")}`,

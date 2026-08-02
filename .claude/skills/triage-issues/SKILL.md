@@ -34,6 +34,13 @@ the count, and is why Step 2 exists in the shape it does:
 | `subsumed`      | 6          | **0**            |
 | `no-discussion` | 40         | 34               |
 
+**The sweep's worst wrong answer came from what it did not look at.** It read
+merged pull requests only, so it closed #128, #333 and #829 as "nobody is going
+to build this" while an **open** PR sat against each one. An open PR has
+already answered the question the 37signals rule asks. There is now an
+`in-flight` bucket, ranked above everything else, and it can only be got wrong
+in the safe direction — see the asymmetry note in Step 2.
+
 **A merge cross-reference is weak evidence — it was right 30% of the time.**
 Three that would have been closed by anything that trusts the link: #164
 (pairing race) pointed at a Brave-Search PR; #602 (build a governed browser
@@ -121,6 +128,15 @@ check settles it:
 Watch for the **inverted** PR — one that _restricts_ what the issue asked to
 build. #603 denied access to the browser tool #602 wanted governed. A title
 match on the topic is not a match on the direction.
+
+**`in-flight` is exempt from all of this, and that asymmetry is deliberate.**
+It carries the same weakness as `closed-by-pr` — GitHub records a
+cross-reference for a mere mention, so a PR that merely quotes an issue number
+lands it in the bucket (this skill's own PR did that to #465, #543 and #669).
+The difference is which way a wrong answer falls. A false `closed-by-pr`
+deletes live work; a false `in-flight` costs one extra look next sweep. So do
+not verify this bucket down — leave every entry alone, and let the PR merging
+or closing move it on its own.
 
 Three verdicts, and **"partly" is a real one** — 5 of 54 were, and #755 is the
 instructive one: the workspace-retrofit half shipped while the reported core
