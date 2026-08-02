@@ -230,7 +230,15 @@ The runtime now hands that directory back on start and on every tick, so the cas
 
 Knowledge-base agents were set up with an instruction to list and read their files before answering. That instruction outranked the template's own "search first", so the agent walked the folder tree instead of searching — and answers assembled from whole files carry no citation numbers, because those come from retrieval, not from reading a file.
 
-New agents no longer get that instruction. **Existing ones keep it**: their operating instructions were written once, at creation, and an upgrade does not rewrite them. If a knowledge-base agent has been answering without citations, open **Agent → Settings → Instructions** and delete the `## File Access` block — the numbered "Always start with `pinchy_ls`" workflow. Nothing else needs to change; the tools describe themselves, and `knowledge_search` states its own priority.
+New agents no longer get that instruction. **Existing ones keep it**: their operating instructions were written once, at creation, and an upgrade does not rewrite them. If a knowledge-base agent has been answering without citations, open **Agent → Settings → Instructions** and shorten its `## File Access` block to what a new agent gets:
+
+```markdown
+## Document Access
+Your documents are in:
+- `/data/handbook`
+```
+
+Keep whichever paths the old block listed — the agent still needs to know where its documents live. What goes is the numbered "Always start with `pinchy_ls`" workflow below them. Nothing else needs to change; the tools describe themselves, and `knowledge_search` states its own priority.
 
 ## Upgrading from v0.8.0 to v0.9.0
 
