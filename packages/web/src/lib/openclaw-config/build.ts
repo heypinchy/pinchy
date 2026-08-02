@@ -1715,6 +1715,11 @@ export async function regenerateOpenClawConfig() {
   // `secrets.reload` is the RPC that closes that gap, and it is fired BEFORE the
   // early returns for exactly that reason. It costs no `config.apply` rate-limit
   // slot, so the no-op guard keeps doing the job it exists for.
+  //
+  // The flag is "a value was added or rotated", NOT "the file changed": a pure
+  // removal must stay silent here, because OpenClaw would re-resolve the config
+  // it is still running — which points at the key this regenerate just took
+  // away. See writeSecretsFile.
   if (writeSecretsFile(secretsBundle)) {
     reloadSecretsInBackground();
   }

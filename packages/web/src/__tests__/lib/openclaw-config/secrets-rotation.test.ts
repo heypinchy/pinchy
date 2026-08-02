@@ -188,6 +188,11 @@ describe("provider key rotation reaches the OpenClaw runtime (#943)", () => {
     // Nothing changed at all — not the config, not the secrets. Firing the RPC
     // here would put an unnecessary round trip (and a channel restart check) on
     // every boot and every unrelated settings save.
+    //
+    // This is also the deletion path: `writeSecretsFile` deliberately reports
+    // `false` for a write that only REMOVES values, because a reload would then
+    // fail on the pointer still present in OpenClaw's running config. Which
+    // write reports what is pinned in openclaw-secrets.test.ts.
     const onDisk = await settleOnDiskConfig();
 
     vi.clearAllMocks();

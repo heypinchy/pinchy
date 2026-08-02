@@ -87,18 +87,51 @@ describe("writeSecretsFile", () => {
   // changes nothing but this file — the emitted openclaw.json carries a
   // SecretRef, not the value — so every config-level change detector reports
   // "nothing happened" and the new key never reaches the runtime (#943).
-  it("reports a change when it creates the file", () => {
+  it("reports a stale runtime when it creates the file", () => {
     expect(writeSecretsFile(bundle)).toBe(true);
   });
 
-  it("reports a change when the key is rotated", () => {
+  it("reports a stale runtime when the key is rotated", () => {
     writeSecretsFile(bundle);
     expect(writeSecretsFile({ providers: { anthropic: { apiKey: "sk-ant-rotated" } } })).toBe(true);
   });
 
-  it("reports no change when the bundle is identical", () => {
+  it("reports nothing to do when the bundle is identical", () => {
     writeSecretsFile(bundle);
     expect(writeSecretsFile(bundle)).toBe(false);
+  });
+
+  // A removal is the one secrets change that must NOT report a stale runtime.
+  // OpenClaw re-resolves the config it is CURRENTLY running, and that config
+  // still points at the key we just took away — so the reload fails on the
+  // dangling pointer, OpenClaw marks its secrets runtime degraded, and the
+  // operator is told to restart a gateway that the config apply from this very
+  // regenerate is already about to repair. The removal travels with that config
+  // change; it needs no reload of its own.
+  it("reports nothing to do when a provider is only removed", () => {
+    writeSecretsFile({ providers: { anthropic: { apiKey: "a" }, openai: { apiKey: "b" } } });
+    expect(writeSecretsFile({ providers: { anthropic: { apiKey: "a" } } })).toBe(false);
+  });
+
+  it("still writes the removal to disk even though it reports nothing to do", () => {
+    writeSecretsFile({ providers: { anthropic: { apiKey: "a" }, openai: { apiKey: "b" } } });
+    writeSecretsFile({ providers: { anthropic: { apiKey: "a" } } });
+    const content = JSON.parse(readFileSync(process.env.OPENCLAW_SECRETS_PATH!, "utf-8"));
+    expect(content.providers.openai).toBeUndefined();
+  });
+
+  it("reports a stale runtime when one key rotates while another is removed", () => {
+    // Mixed change: the rotation still has to reach the runtime, so the
+    // removal-only exemption must not swallow it.
+    writeSecretsFile({ providers: { anthropic: { apiKey: "a" }, openai: { apiKey: "b" } } });
+    expect(writeSecretsFile({ providers: { anthropic: { apiKey: "rotated" } } })).toBe(true);
+  });
+
+  it("reports a stale runtime for a nested plugin secret, not just providers", () => {
+    // The bundle is nested (gateway / providers / integrations / telegram /
+    // plugins), so the comparison has to walk it rather than eyeball one branch.
+    writeSecretsFile({ plugins: { "pinchy-odoo": { refTokenKey: "k1" } } });
+    expect(writeSecretsFile({ plugins: { "pinchy-odoo": { refTokenKey: "k2" } } })).toBe(true);
   });
 
   it("throws an actionable error when the secrets directory cannot be created (missing volume mount)", () => {

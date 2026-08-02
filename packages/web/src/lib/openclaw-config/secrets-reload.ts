@@ -27,7 +27,7 @@ const SECRETS_RELOAD_METHOD = "secrets.reload";
  * rolls back on failure. Forcing the apply would also spend a rate-limit slot
  * the no-op guard exists to protect.
  *
- * Fire-and-forget, like {@link pushConfigInBackground}: interactive save flows
+ * Fire-and-forget, like `pushConfigInBackground`: interactive save flows
  * must not block on an OpenClaw round trip. A failure here is loud but benign —
  * the new value is already on disk, so any later OpenClaw start reads it.
  * There is deliberately no retry: the only realistic reason the WS is down
@@ -43,9 +43,15 @@ export function reloadSecretsInBackground(): void {
       client = undefined;
     }
     if (!client) {
+      // Deliberately worded for BOTH cases this branch really sees. The common
+      // one is a cold start: `/openclaw-secrets` is a tmpfs, so every container
+      // restart writes the bundle afresh while the WS is still coming up — and
+      // there "agents are stuck on the old key" would simply be untrue. The
+      // other is a rotation while OpenClaw is down, where the wait is real.
       console.warn(
-        "[openclaw-config] secrets changed but no WS client is connected — OpenClaw will pick " +
-          "them up on its next start; agents keep using the previous credentials until then."
+        "[openclaw-config] secrets changed but no WS client is connected. The values are on " +
+          "disk and OpenClaw resolves them when it starts; a gateway that is already running " +
+          "keeps the credentials it resolved at ITS start until then."
       );
       return;
     }

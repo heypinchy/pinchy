@@ -84,7 +84,55 @@ export function checkSecretsVolumeWritable(): { ok: true } | { ok: false; messag
 }
 
 /**
- * Writes the secrets bundle and reports whether it actually changed anything.
+ * Every secret value in a bundle, keyed by its path through the nested shape
+ * (`providers/anthropic/apiKey`, `plugins/pinchy-odoo/refTokenKey`, …). Walking
+ * the tree rather than naming branches keeps this correct when the bundle grows
+ * a section — a missed branch would silently stop reporting rotations in it.
+ */
+function flattenSecretValues(
+  value: unknown,
+  prefix = "",
+  out = new Map<string, string>()
+): Map<string, string> {
+  if (typeof value === "string") {
+    out.set(prefix, value);
+    return out;
+  }
+  if (value !== null && typeof value === "object") {
+    for (const [key, child] of Object.entries(value)) {
+      flattenSecretValues(child, prefix ? `${prefix}/${key}` : key, out);
+    }
+  }
+  return out;
+}
+
+/**
+ * True when `next` holds a value the previous bundle did not have under the
+ * same path — added or rotated. Deliberately false when the only difference is
+ * that values DISAPPEARED: see the removal note on {@link writeSecretsFile}.
+ */
+function hasNewOrRotatedValue(previousContent: string | undefined, next: SecretsBundle): boolean {
+  let previousBundle: unknown = {};
+  if (previousContent !== undefined) {
+    try {
+      previousBundle = JSON.parse(previousContent);
+    } catch {
+      // Unreadable/corrupt previous state — treat every value as new, which is
+      // the safe side: an unnecessary reload costs a round trip, a missed one
+      // costs every agent a 401.
+      previousBundle = {};
+    }
+  }
+  const before = flattenSecretValues(previousBundle);
+  for (const [path, value] of flattenSecretValues(next)) {
+    if (before.get(path) !== value) return true;
+  }
+  return false;
+}
+
+/**
+ * Writes the secrets bundle and reports whether the running OpenClaw is now
+ * holding a stale credential.
  *
  * The return value is load-bearing, not a convenience: a rotation on an
  * already-configured provider changes THIS FILE AND NOTHING ELSE. The emitted
@@ -93,6 +141,13 @@ export function checkSecretsVolumeWritable(): { ok: true } | { ok: false; messag
  * which nothing tells the running OpenClaw that the credential it resolved at
  * process start is now stale (#943). Callers use this flag to push a
  * `secrets.reload` that no config diff would ever trigger.
+ *
+ * A pure REMOVAL returns false even though the file did change. OpenClaw
+ * re-resolves the config it is currently running, and that config still points
+ * at the key just taken away — so a reload there fails on the dangling pointer,
+ * degrades OpenClaw's secrets runtime, and prints "restart the gateway" for a
+ * deletion that the config apply from this same regenerate already repairs. The
+ * removal travels with that config change and needs no reload of its own.
  */
 export function writeSecretsFile(bundle: SecretsBundle): boolean {
   const path = process.env.OPENCLAW_SECRETS_PATH || DEFAULT_SECRETS_PATH;
@@ -100,14 +155,18 @@ export function writeSecretsFile(bundle: SecretsBundle): boolean {
 
   // Skip the write when content is unchanged to avoid a spurious inotify event
   // that would trigger OpenClaw's secrets-file watcher unnecessarily.
+  let previousContent: string | undefined;
   if (existsSync(path)) {
     try {
-      if (readFileSync(path, "utf-8") === newContent) return false;
+      previousContent = readFileSync(path, "utf-8");
+      if (previousContent === newContent) return false;
     } catch {
       // Fall through and write — if read failed for any reason, a write attempt
       // is the safer recovery path than silently leaving stale content.
+      previousContent = undefined;
     }
   }
+  const runtimeIsStale = hasNewOrRotatedValue(previousContent, bundle);
 
   const dir = dirname(path);
   try {
@@ -120,7 +179,7 @@ export function writeSecretsFile(bundle: SecretsBundle): boolean {
     writeFileSync(tmp, newContent, { mode: 0o600 });
     chmodSync(tmp, 0o600); // enforce regardless of umask
     renameSync(tmp, path);
-    return true;
+    return runtimeIsStale;
   } catch (err) {
     // Replace the bare EACCES/ENOTDIR with an actionable message. This is the
     // single choke point every regenerateOpenClawConfig() flows through, so both
