@@ -21,7 +21,6 @@ export type McpPreset = {
   displayName: string;
   defaultUrl?: string;
   defaultTransport: "http" | "sse";
-  toolPrefix: string;
 
   // ── Setup guidance ────────────────────────────────────────────────────────
   // Structured so the connect dialog can render with hierarchy instead of a
@@ -48,7 +47,6 @@ export const MCP_PRESETS: McpPreset[] = [
     displayName: "GitHub",
     defaultUrl: "https://api.githubcopilot.com/mcp/",
     defaultTransport: "http",
-    toolPrefix: "github_",
     tokenUrl: "https://github.com/settings/personal-access-tokens",
     tokenUrlLabel: "Create a token on GitHub",
     tokenUrlHint:
@@ -70,7 +68,6 @@ export const MCP_PRESETS: McpPreset[] = [
     displayName: "Linear",
     defaultUrl: "https://mcp.linear.app/mcp",
     defaultTransport: "http",
-    toolPrefix: "linear_",
     tokenUrl: "https://linear.app/settings/api",
     tokenUrlLabel: "Create an API key in Linear",
     setupSteps: `1. Scroll to **Personal API keys** and click **Create key**.
@@ -83,7 +80,6 @@ export const MCP_PRESETS: McpPreset[] = [
     displayName: "Atlassian",
     defaultUrl: "https://mcp.atlassian.com/v1/mcp",
     defaultTransport: "http",
-    toolPrefix: "atlassian_",
     // IMPORTANT: Atlassian's MCP server accepts \`Authorization: Bearer\` only
     // for service-account API keys. Personal user tokens require Basic auth
     // (email:token base64), which Phase 1 doesn't support. We instruct the
@@ -110,7 +106,6 @@ export const MCP_PRESETS: McpPreset[] = [
     displayName: "Stripe",
     defaultUrl: "https://mcp.stripe.com",
     defaultTransport: "http",
-    toolPrefix: "stripe_",
     tokenUrl: "https://dashboard.stripe.com/apikeys",
     tokenUrlLabel: "Create a restricted key in Stripe",
     setupSteps: `1. **Developers → API keys → Create restricted key**.
@@ -128,7 +123,6 @@ export const MCP_PRESETS: McpPreset[] = [
     // client doesn't speak Code Mode, so we opt out at the URL level.
     defaultUrl: "https://mcp.cloudflare.com/mcp?codemode=false",
     defaultTransport: "http",
-    toolPrefix: "cloudflare_",
     tokenUrl: "https://dash.cloudflare.com/profile/api-tokens",
     tokenUrlLabel: "Create an API token in Cloudflare",
     setupSteps: `1. Click **Create Token**. Start from a template ("Edit Cloudflare Workers", "Read all resources") or **Create Custom Token**.
@@ -142,7 +136,6 @@ export const MCP_PRESETS: McpPreset[] = [
     displayName: "Intercom",
     defaultUrl: "https://mcp.intercom.com/mcp",
     defaultTransport: "http",
-    toolPrefix: "intercom_",
     tokenUrl: "https://app.intercom.com/a/developer-signup",
     tokenUrlLabel: "Open the Intercom Developer Hub",
     setupNote: {
@@ -159,7 +152,6 @@ export const MCP_PRESETS: McpPreset[] = [
     displayName: "HighLevel",
     defaultUrl: "https://services.leadconnectorhq.com/mcp/",
     defaultTransport: "http",
-    toolPrefix: "ghl_",
     // No tokenUrl: the token is created in-app inside the target Sub-Account,
     // not at a fixed external URL — the steps explain the in-app navigation.
     setupNote: {
@@ -177,7 +169,6 @@ export const MCP_PRESETS: McpPreset[] = [
     displayName: "Generic MCP",
     defaultUrl: undefined,
     defaultTransport: "http",
-    toolPrefix: "mcp_",
     // No structured guidance: the custom flow already shows URL + token fields
     // with their own labels, so there's nothing provider-specific to explain.
   },

@@ -34,19 +34,6 @@ describe("MCP_PRESETS", () => {
     }
   });
 
-  it("toolPrefix is a stable lowercase identifier", () => {
-    for (const p of MCP_PRESETS) {
-      expect(p.toolPrefix).toMatch(/^[a-z]+_$/);
-    }
-  });
-
-  it("toolPrefix values are unique across presets", () => {
-    // Two presets with the same prefix would conflict when both are connected
-    // to the same agent — the plugin would register colliding tool names.
-    const prefixes = MCP_PRESETS.map((p) => p.toolPrefix);
-    expect(prefixes).toEqual(Array.from(new Set(prefixes)));
-  });
-
   it("tokenUrl points at the provider's canonical credential page", () => {
     // Guards against the kind of stale-link regression we saw with GitHub's
     // old ?type=beta URL. Exact-equality on the structured `tokenUrl` field
