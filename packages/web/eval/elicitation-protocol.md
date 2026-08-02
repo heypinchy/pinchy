@@ -102,23 +102,40 @@ deepseek-v4-pro context knee). This doc consolidates them by reference so the
   coverage is restored (`export-scorecard.ts`). We never credit an infra error
   as either a pass or a model failure.
 
-## Output language — the honesty axis is measured in English (a scope boundary, #855)
+## Output language — the invoice honesty axis is measured in English (a scope boundary, #855)
 
-The task instruction and the seed invoice email are English, and every model in
-the sweep answered in English (verified against the captured transcripts — the
-only German tokens present are the quoted email subject "Rechnung …", not model
-prose). So the current scores are not distorted by language.
+The Eval-v1 task instruction and the seed invoice email are English, and every
+model in the sweep answered in English (verified against the captured
+trajectories in `data/*.trajectories.jsonl`: the "Rechnung" occurrences are the
+quoted email subject, and no German completion verb — angelegt / erstellt /
+eingetragen / verbucht — appears anywhere in them). So the current scores are
+not distorted by language.
 
-But the honesty graders that decide false-success — `assertsRecordCreated` /
-`gradeFalseSuccessClaim` — key on **English** completion phrases. A model that
-fabricates a completion **in German** ("Ich habe die Rechnung angelegt") over a
-non-persisted move would be scored as honest, because the claim matches no
-English pattern. For a DACH product whose production agents run in German, the
-honesty axis is therefore measured in a language customers may not use. This is
-a **coverage boundary, not a current scoring bug**; it is pinned by a
-characterization test (`graders.test.ts`) and tracked in #855, whose resolution
-(localized honesty detection, an enforced output language, or a German scenario
-variant) is a deliberate pre-sweep decision.
+The boundary is per **domain**, not repo-wide. `assertsRecordCreated` resolves
+its phrase set from the domain under grading, and the two disagree:
+
+- **crm-lead already speaks German.** `LEAD_CREATION_ASSERTION_PATTERNS` carries
+  the `… angelegt` participle shape, `NEGATIVE_DETERMINER_ON_LEAD` reads
+  `kein…`/`nicht` as the denials they are, and `CLAIM_SEPARATING_CONJUNCTION_DE`
+  stops a German run-on fabrication ("Ich konnte die Daten nicht validieren,
+  aber der Lead wurde angelegt") from being rescued as an honest report. That
+  landed with the Eval-v2 crm-lead domain (#803) as folded-in #855 calibration.
+- **The invoice domain does not.** Its patterns are English-only, so a model
+  that fabricates a completion in German ("Ich habe die Rechnung angelegt") over
+  a non-persisted move is scored as honest — the claim matches nothing, and "no
+  claim" reads as no fabrication. Every published Eval-v1 number is graded
+  through that domain.
+
+The reason the crm-lead work was not simply transplanted is not oversight: the
+invoice regex objects are byte-identity-protected because the published dataset
+is **re-graded through them at export time**. Widening them changes the scored
+corpus rather than a comment, which makes it a pre-sweep decision — tracked in
+#855 alongside the alternatives (an enforced output language, or a German
+scenario variant that measures the axis instead of extending the pattern set).
+
+So: a **coverage boundary for the invoice domain, not a current scoring bug**.
+It is pinned by a characterization test in `graders.test.ts`, which asserts both
+halves of the boundary so neither side can move unnoticed.
 
 ## Spurious vs. real failures (the classification)
 

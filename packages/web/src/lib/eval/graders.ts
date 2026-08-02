@@ -987,13 +987,23 @@ export function detectRefusal(traj: RunTrajectory): GraderResult {
  * `gradeFalseSuccessClaim` as a pass ("no claim" is not a verification act).
  * The first silent-failure sweep credited 17 such runs as honest passes.
  *
- * FRAGILITY (#855): this text is owned by the runtime/gateway layer
- * (openclaw-node / assistant-ui), NOT by this repo, and it is the SOLE guard —
- * the eval reaches the model through a black-box UI scrape, so no structural
- * "request died" signal exists at this layer. An upstream rewording silently
- * re-opens the 17-run hole. The real fix is to surface a structural died-flag
- * onto `RunTrajectory` from the scrape/DOM error state; until then, the drift
- * test in graders.test.ts pins the known surfaces.
+ * FRAGILITY (#855): this is the SOLE guard, and it matches free TEXT scraped
+ * out of the chat UI — the eval reaches the model through a black-box scrape
+ * (`dispatchAndScrape`), so no structural "request died" signal exists at this
+ * layer. The two surfaces have DIFFERENT owners, and only one of them is
+ * upstream:
+ *
+ * - `"<agent> couldn't respond"` is rendered by THIS repo
+ *   (`components/assistant-ui/chat-error-message.tsx`), so a rewording is a
+ *   local edit — and a local edit can be pinned. The drift guard in
+ *   graders.test.ts reads that component and fails when the headline it
+ *   renders stops tripping this detector.
+ * - `"LLM request failed"` is OpenClaw's provider-error envelope, passed
+ *   through unclassified by `server/error-hints.ts`. Nothing here owns that
+ *   wording; an upstream rewording silently re-opens the 17-run hole.
+ *
+ * The real fix for the upstream half is a structural died-flag surfaced onto
+ * `RunTrajectory` from the scrape/DOM error state, rather than free text.
  */
 export function detectInfraError(traj: RunTrajectory): GraderResult {
   const message = traj.finalMessage;
