@@ -12,15 +12,22 @@ import { getModelPricing } from "@/lib/usage";
 import { estimateTurnCostUsd, type ModelPricing } from "@/lib/usage-cost";
 
 /**
- * Lossless per-turn token accounting (#483). OpenClaw overwrites its
- * per-session token counters every turn, so the gauge poller (which samples
- * those counters on an interval) silently drops turns that complete between
- * polls. Each completed turn instead writes a `model.completed` trajectory
- * event carrying that turn's EXACT token classes; this recorder reads them and
- * inserts one usage_records row per turn, deduped by (sessionKey, runId) at the
- * DB layer so re-scans / restarts / the low-latency chat-`done` trigger are all
- * idempotent. Chat sessions move to this path; the poller keeps system
- * sessions (cron/channel/main), which have no per-user trajectory we scan.
+ * Lossless per-turn token accounting (#483, extended to system sessions by
+ * #767). OpenClaw overwrites its per-session token counters every turn, so a
+ * gauge poller (which samples those counters on an interval) silently drops
+ * turns that complete between polls. Each completed turn instead writes a
+ * `model.completed` trajectory event carrying that turn's EXACT token
+ * classes; this recorder reads them and inserts one usage_records row per
+ * turn, deduped by (sessionKey, runId) at the DB layer so re-scans / restarts
+ * / the low-latency chat-`done` trigger are all idempotent. Chat sessions
+ * moved to this path under #483; the poller originally kept system sessions
+ * (cron/channel/main/hook) on a separate gauge-delta path under the belief
+ * that they had "no per-user trajectory to scan" — verified false in
+ * production (#767): cron/channel sessions DO have a per-session
+ * `<sessionId>.trajectory.jsonl`, so system sessions now go through this same
+ * recorder too. That gap meant the autonomous/cron/Telegram runs — exactly
+ * the shape of the 2026-07-15 Piper incident — never got a `context_tokens`
+ * reading; they do now.
  */
 
 export interface InsertableUsageRow {

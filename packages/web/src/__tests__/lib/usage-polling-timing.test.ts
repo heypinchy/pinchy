@@ -184,11 +184,19 @@ describe("polling timing scenarios", () => {
     _resetUsageWatermarksForTest();
   });
 
-  it("captures tokens added after 'done' event on next poll cycle", async () => {
+  it("captures tokens added after an initial recordUsage call on a later recordUsage call", async () => {
     // Scenario from the design doc: OpenClaw fires "done" when assistant
     // text streaming finishes, but background tool calls (e.g. vision API,
-    // subagent spawn) can add tokens afterwards. Those tokens would be
-    // lost without the poller — this test proves the poller captures them.
+    // subagent spawn) can add tokens afterwards. Those tokens would be lost
+    // without a later re-read — this test proves a later recordUsage call
+    // captures them.
+    //
+    // #767: this used to route the second call through `pollAllSessions`,
+    // which forwarded a fresh gauge snapshot to `recordUsage` for system
+    // sessions. The poller no longer calls `recordUsage` at all — system
+    // sessions now go through the per-turn trajectory recorder instead (see
+    // usage-poller.test.ts). `recordUsage`'s own watermark/delta logic is
+    // otherwise unchanged, so the second call is made directly here.
 
     const sessionRef = {
       current: {
@@ -200,7 +208,7 @@ describe("polling timing scenarios", () => {
     };
     const client = makeClient(sessionRef);
 
-    // Step 1: "done" event fires, recordUsage inserts the initial snapshot.
+    // Step 1: initial recordUsage call inserts the first snapshot.
     await recordUsage({ openclawClient: client, ...baseParams });
     expect(mockValues).toHaveBeenCalledTimes(1);
     expect(mockValues).toHaveBeenNthCalledWith(
@@ -210,16 +218,17 @@ describe("polling timing scenarios", () => {
     expect(dbState.inputSum).toBe(100);
     expect(dbState.outputSum).toBe(50);
 
-    // Step 2: Background work bumps session tokens in OpenClaw — no event
-    // fires, nothing gets recorded yet.
+    // Step 2: Background work bumps session tokens in OpenClaw — no call
+    // happens yet, nothing gets recorded.
     sessionRef.current = {
       ...sessionRef.current,
       inputTokens: 250,
       outputTokens: 80,
     };
 
-    // Step 3: Poller runs. It sees the grown session and inserts the delta.
-    await pollAllSessions(client);
+    // Step 3: A later recordUsage call sees the grown session and inserts
+    // the delta.
+    await recordUsage({ openclawClient: client, ...baseParams });
 
     expect(mockValues).toHaveBeenCalledTimes(2);
     expect(mockValues).toHaveBeenNthCalledWith(
@@ -231,9 +240,12 @@ describe("polling timing scenarios", () => {
     expect(dbState.outputSum).toBe(80);
   });
 
-  it("accumulates deltas correctly across multiple poll cycles", async () => {
-    // Simulate a long-running chat: tokens grow monotonically over 3 polls.
+  it("accumulates deltas correctly across multiple recordUsage calls", async () => {
+    // Simulate a long-running chat: tokens grow monotonically over 3 calls.
     // The sum of all recorded deltas must equal the final OpenClaw total.
+    //
+    // #767: repointed from `pollAllSessions` to direct `recordUsage` calls —
+    // see the comment on the previous test for why.
 
     const sessionRef = {
       current: {
@@ -245,22 +257,22 @@ describe("polling timing scenarios", () => {
     };
     const client = makeClient(sessionRef);
 
-    // Tick 1: 100 input tokens → delta 100
-    await pollAllSessions(client);
+    // Call 1: 100 input tokens → delta 100
+    await recordUsage({ openclawClient: client, ...baseParams });
     expect(mockValues).toHaveBeenLastCalledWith(
       expect.objectContaining({ inputTokens: 100, outputTokens: 0 })
     );
 
-    // Tick 2: 200 input tokens (delta 100)
+    // Call 2: 200 input tokens (delta 100)
     sessionRef.current = { ...sessionRef.current, inputTokens: 200 };
-    await pollAllSessions(client);
+    await recordUsage({ openclawClient: client, ...baseParams });
     expect(mockValues).toHaveBeenLastCalledWith(
       expect.objectContaining({ inputTokens: 100, outputTokens: 0 })
     );
 
-    // Tick 3: 350 input tokens (delta 150)
+    // Call 3: 350 input tokens (delta 150)
     sessionRef.current = { ...sessionRef.current, inputTokens: 350 };
-    await pollAllSessions(client);
+    await recordUsage({ openclawClient: client, ...baseParams });
     expect(mockValues).toHaveBeenLastCalledWith(
       expect.objectContaining({ inputTokens: 150, outputTokens: 0 })
     );
@@ -377,12 +389,17 @@ describe("polling timing scenarios", () => {
     expect(_getPendingSessionsCountForTest()).toBe(0);
   });
 
-  it("poller avoids duplicate sessions.list calls on recordUsage", async () => {
-    // The poller already fetches sessions.list() to discover which sessions
-    // have tokens to record. recordUsage should consume the snapshot passed
-    // by the poller instead of making a second round-trip — otherwise every
-    // poll tick doubles the OpenClaw sessions.list traffic (and per-session
-    // that cost scales linearly with the number of active chat sessions).
+  it("poller calls sessions.list() exactly once per tick, regardless of session routing", async () => {
+    // #767: the poller used to forward its already-fetched snapshot into
+    // `recordUsage` for system sessions, avoiding a second sessions.list()
+    // round-trip. `recordUsage` is no longer reachable from the poller at
+    // all — system sessions now route through the per-turn trajectory
+    // recorder (`recordSessionTurnsUsage`), which never calls
+    // `sessions.list()` in the first place (it reads the trajectory file
+    // instead). This guards the surviving invariant: exactly one
+    // sessions.list() round-trip per tick, however many sessions get
+    // scanned and however they're routed. The direct recordUsage
+    // snapshot-forwarding behavior itself is unit-tested in usage.test.ts.
     const sessionRef = {
       current: {
         key: SESSION_KEY,
@@ -397,8 +414,11 @@ describe("polling timing scenarios", () => {
 
     await pollAllSessions(client);
 
-    expect(mockValues).toHaveBeenCalledTimes(1);
     expect(listSpy).toHaveBeenCalledTimes(1);
+    // No trajectory file exists for this session in the test environment, so
+    // the trajectory recorder finds nothing to record (the correct, silent
+    // "no completed turn yet" case) — recordUsage is never reached.
+    expect(mockValues).not.toHaveBeenCalled();
   });
 
   it("recovers from OpenClaw counter reset (compaction)", async () => {

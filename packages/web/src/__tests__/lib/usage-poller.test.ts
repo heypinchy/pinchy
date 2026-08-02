@@ -21,7 +21,8 @@ vi.mock("@/lib/usage", () => ({
   recordUsage: (...args: unknown[]) => mockRecordUsage(...args),
 }));
 
-// #483: chat sessions are recorded per-turn from the trajectory, not the gauge.
+// #483 (chat) / #767 (system): every session is recorded per-turn from the
+// trajectory, not the gauge.
 vi.mock("@/lib/usage-per-turn", () => ({
   recordSessionTurnsUsage: (...args: unknown[]) => mockRecordSessionTurns(...args),
 }));
@@ -186,26 +187,60 @@ describe("pollAllSessions", () => {
     expect(mockRecordUsage).not.toHaveBeenCalled();
   });
 
-  it("system sessions use the gauge delta path, not the per-turn recorder", async () => {
+  it("routes system sessions to the per-turn trajectory recorder too, not the gauge (#767)", async () => {
+    // Verified in production: cron/channel sessions DO have a
+    // <sessionId>.trajectory.jsonl with promptCache.lastCallUsage, and
+    // sessions.json maps every sessionKey (system included) to its
+    // sessionId, so resolveSessionId already works for system keys. Routing
+    // them through the trajectory recorder gives them context_tokens too —
+    // the exact observability gap behind the 2026-07-15 Piper incident.
     const client = makeOpenClawClient([
       { key: "agent:agent-1:cron:job-1", inputTokens: 100, outputTokens: 50, model: "claude" },
     ]);
     await pollAllSessions(client);
-    expect(mockRecordSessionTurns).not.toHaveBeenCalled();
-    expect(mockRecordUsage).toHaveBeenCalledWith(
+    expect(mockRecordUsage).not.toHaveBeenCalled();
+    expect(mockRecordSessionTurns).toHaveBeenCalledWith({
+      openclawClient: client,
+      agentId: "agent-1",
+      userId: "system",
+      agentName: "Smithers",
+      sessionKey: "agent:agent-1:cron:job-1",
+    });
+  });
+
+  it("routes a channel-style system session to the trajectory recorder too (#767)", async () => {
+    // main/cron/hook/channel all parse to type "system" (see parseSessionKey)
+    // and must all take the same trajectory path — not just cron.
+    const client = makeOpenClawClient([
+      { key: "agent:agent-1:telegram:chat-42", inputTokens: 40, outputTokens: 12, model: "claude" },
+    ]);
+    await pollAllSessions(client);
+    expect(mockRecordUsage).not.toHaveBeenCalled();
+    expect(mockRecordSessionTurns).toHaveBeenCalledWith(
       expect.objectContaining({
-        userId: "system",
         agentId: "agent-1",
-        sessionKey: "agent:agent-1:cron:job-1",
+        userId: "system",
+        sessionKey: "agent:agent-1:telegram:chat-42",
       })
     );
   });
 
-  it("maps OpenClaw's cacheRead/cacheWrite session fields into the gauge snapshot (system sessions)", async () => {
-    // The #482 cache-field-name fix: OpenClaw's session store names the
-    // counters `cacheRead`/`cacheWrite` (verified live, OC 2026.5.28), NOT the
-    // `*Tokens` spellings. Still applies to the gauge path (system sessions).
-    const client = makeOpenClawClient([
+  it("still resolves OpenClaw's cacheRead/cacheWrite spelling into the change-detection signature (system sessions)", async () => {
+    // The #482 cache-field-name fix (cacheRead/cacheWrite, not
+    // cacheReadTokens/cacheWriteTokens) used to feed the gauge snapshot; now
+    // that system sessions route through the trajectory recorder, it instead
+    // feeds gaugeSignature() so a cache-only change still triggers a rescan.
+    const first = makeOpenClawClient([
+      {
+        key: "agent:agent-1:cron:job-1",
+        inputTokens: 3,
+        outputTokens: 80,
+        cacheRead: 0,
+        cacheWrite: 0,
+        model: "claude-sonnet-4-6",
+      },
+    ]);
+    const second = makeOpenClawClient([
       {
         key: "agent:agent-1:cron:job-1",
         inputTokens: 3,
@@ -216,20 +251,25 @@ describe("pollAllSessions", () => {
       },
     ]);
 
-    await pollAllSessions(client);
+    await pollAllSessions(first);
+    await pollAllSessions(second);
 
-    expect(mockRecordUsage).toHaveBeenCalledWith(
-      expect.objectContaining({
-        sessionSnapshot: expect.objectContaining({
-          cacheReadTokens: 14404,
-          cacheWriteTokens: 21135,
-        }),
-      })
-    );
+    expect(mockRecordSessionTurns).toHaveBeenCalledTimes(2);
+    expect(mockRecordUsage).not.toHaveBeenCalled();
   });
 
-  it("still accepts the cacheReadTokens/cacheWriteTokens spelling as fallback (gauge)", async () => {
-    const client = makeOpenClawClient([
+  it("still accepts the cacheReadTokens/cacheWriteTokens spelling as a fallback in the change-detection signature", async () => {
+    const first = makeOpenClawClient([
+      {
+        key: "agent:agent-1:cron:job-1",
+        inputTokens: 10,
+        outputTokens: 5,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        model: "claude-sonnet-4-6",
+      },
+    ]);
+    const second = makeOpenClawClient([
       {
         key: "agent:agent-1:cron:job-1",
         inputTokens: 10,
@@ -240,20 +280,17 @@ describe("pollAllSessions", () => {
       },
     ]);
 
-    await pollAllSessions(client);
+    await pollAllSessions(first);
+    await pollAllSessions(second);
 
-    expect(mockRecordUsage).toHaveBeenCalledWith(
-      expect.objectContaining({
-        sessionSnapshot: expect.objectContaining({
-          cacheReadTokens: 111,
-          cacheWriteTokens: 222,
-        }),
-      })
-    );
+    expect(mockRecordSessionTurns).toHaveBeenCalledTimes(2);
   });
 
-  it("does not skip a system session whose only activity is cache traffic (gauge)", async () => {
+  it("scans a system session whose only activity is cache traffic, same as a chat session (#767)", async () => {
     // Last-turn gauges can show input=0/output=0 while cache counters moved.
+    // System sessions are scanned exactly like chat sessions now — the
+    // trajectory recorder (not a gauge hasTokens gate) decides whether
+    // there's anything to record.
     const client = makeOpenClawClient([
       {
         key: "agent:agent-1:cron:job-1",
@@ -267,40 +304,16 @@ describe("pollAllSessions", () => {
 
     await pollAllSessions(client);
 
-    expect(mockRecordUsage).toHaveBeenCalledTimes(1);
+    expect(mockRecordSessionTurns).toHaveBeenCalledTimes(1);
+    expect(mockRecordUsage).not.toHaveBeenCalled();
   });
 
-  it("records gauge usage for a system session with the forwarded snapshot", async () => {
-    mockFrom._agentResult = [{ id: "agent-1", name: "Smithers" }];
-    const client = makeOpenClawClient([
-      { key: "agent:agent-1:cron:job-1", inputTokens: 100, outputTokens: 50, model: "claude" },
-    ]);
-
-    await pollAllSessions(client);
-
-    // The poller MUST pass sessionSnapshot so recordUsage does not issue a
-    // second sessions.list() round-trip per session.
-    expect(mockRecordUsage).toHaveBeenCalledWith({
-      openclawClient: client,
-      userId: "system",
-      agentId: "agent-1",
-      agentName: "Smithers",
-      sessionKey: "agent:agent-1:cron:job-1",
-      sessionSnapshot: {
-        inputTokens: 100,
-        outputTokens: 50,
-        cacheReadTokens: undefined,
-        cacheWriteTokens: undefined,
-        model: "claude",
-      },
-    });
-  });
-
-  it("skips system sessions with zero tokens", async () => {
+  it("scans a system session with zero gauge tokens via the trajectory recorder — the trajectory decides, not the gauge (#767)", async () => {
     const client = makeOpenClawClient([
       { key: "agent:agent-1:main", inputTokens: 0, outputTokens: 0 },
     ]);
     await pollAllSessions(client);
+    expect(mockRecordSessionTurns).toHaveBeenCalledTimes(1);
     expect(mockRecordUsage).not.toHaveBeenCalled();
   });
 
@@ -313,18 +326,19 @@ describe("pollAllSessions", () => {
     expect(mockRecordSessionTurns).not.toHaveBeenCalled();
   });
 
-  it("records system sessions with userId='system'", async () => {
+  it("routes system sessions to the trajectory recorder with userId='system'", async () => {
     const client = makeOpenClawClient([
       { key: "agent:agent-1:main", inputTokens: 100, outputTokens: 50 },
     ]);
     await pollAllSessions(client);
-    expect(mockRecordUsage).toHaveBeenCalledWith(
+    expect(mockRecordSessionTurns).toHaveBeenCalledWith(
       expect.objectContaining({
         userId: "system",
         agentId: "agent-1",
         sessionKey: "agent:agent-1:main",
       })
     );
+    expect(mockRecordUsage).not.toHaveBeenCalled();
   });
 
   it("falls back to agentId when agent name is not in DB (path-agnostic)", async () => {
@@ -389,29 +403,31 @@ describe("pollAllSessions", () => {
 
     await pollAllSessions(client);
 
-    expect(mockRecordUsage).toHaveBeenCalledWith(
+    expect(mockRecordSessionTurns).toHaveBeenCalledWith(
       expect.objectContaining({
         userId: "system",
       })
     );
   });
 
-  it("does not throw when a single gauge recordUsage call rejects", async () => {
+  it("does not throw when a single system-session recordSessionTurns call rejects", async () => {
     mockFrom._agentResult = [
       { id: "agent-1", name: "A1" },
       { id: "agent-2", name: "A2" },
     ];
-    mockRecordUsage.mockRejectedValueOnce(new Error("db error")).mockResolvedValueOnce(undefined);
+    mockRecordSessionTurns
+      .mockRejectedValueOnce(new Error("trajectory read error"))
+      .mockResolvedValueOnce(0);
 
-    // System sessions use the gauge path; a rejecting recordUsage must not
-    // abort the whole poll.
+    // System sessions now use the per-turn trajectory recorder; a rejecting
+    // call must not abort the whole poll.
     const client = makeOpenClawClient([
       { key: "agent:agent-1:cron:j1", inputTokens: 10, outputTokens: 5 },
       { key: "agent:agent-2:cron:j2", inputTokens: 20, outputTokens: 8 },
     ]);
 
     await expect(pollAllSessions(client)).resolves.toBeUndefined();
-    expect(mockRecordUsage).toHaveBeenCalled();
+    expect(mockRecordSessionTurns).toHaveBeenCalled();
   });
 });
 
@@ -436,7 +452,7 @@ describe("pollAllSessions adaptive backoff (#261)", () => {
     expect(mockRecordSessionTurns).toHaveBeenCalledTimes(1);
   });
 
-  it("skips the gauge-delta recordUsage for a system session whose gauge is unchanged", async () => {
+  it("skips the per-turn scan for a system session whose gauge is unchanged since the last poll", async () => {
     const client = makeOpenClawClient([
       { key: "agent:agent-1:cron:job-1", inputTokens: 100, outputTokens: 50 },
     ]);
@@ -444,7 +460,7 @@ describe("pollAllSessions adaptive backoff (#261)", () => {
     await pollAllSessions(client);
     await pollAllSessions(client); // identical gauge → idle → skip
 
-    expect(mockRecordUsage).toHaveBeenCalledTimes(1);
+    expect(mockRecordSessionTurns).toHaveBeenCalledTimes(1);
   });
 
   it("re-processes when the gauge changes (a new turn happened)", async () => {
@@ -519,8 +535,8 @@ describe("pollAllSessions adaptive backoff (#261)", () => {
   // for up to IDLE_RESCAN_MS (5 min), even though the record never happened.
   // Pre-adaptive-backoff behavior retried every tick (60s); this restores
   // that retry behavior for failed record calls specifically.
-  it("retries a system session every tick after a transient recordUsage failure, instead of treating it as processed", async () => {
-    mockRecordUsage.mockRejectedValueOnce(new Error("db blip"));
+  it("retries a system session every tick after a transient recordSessionTurns failure, instead of treating it as processed", async () => {
+    mockRecordSessionTurns.mockRejectedValueOnce(new Error("db blip"));
     const client = makeOpenClawClient([
       { key: "agent:agent-1:cron:job-1", inputTokens: 100, outputTokens: 50 },
     ]);
@@ -528,7 +544,7 @@ describe("pollAllSessions adaptive backoff (#261)", () => {
     await pollAllSessions(client); // fails — must not mark the session as processed
     await pollAllSessions(client); // identical gauge — should still retry, not skip
 
-    expect(mockRecordUsage).toHaveBeenCalledTimes(2);
+    expect(mockRecordSessionTurns).toHaveBeenCalledTimes(2);
   });
 
   it("retries a chat session every tick after a transient recordSessionTurns failure, instead of treating it as processed", async () => {

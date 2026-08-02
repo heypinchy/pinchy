@@ -202,6 +202,46 @@ describe("recordUsage", () => {
     );
   });
 
+  it("uses the caller-supplied sessionSnapshot instead of calling sessions.list() again", async () => {
+    // Relocated from usage-poller.test.ts (#767): the poller used to be the
+    // only caller that forwarded a pre-fetched snapshot (avoiding a second
+    // sessions.list() round-trip per session) — now that system sessions
+    // route through the per-turn trajectory recorder instead of recordUsage,
+    // that forwarding behavior lives here as a direct test of recordUsage
+    // itself. Uses both OC cache-field spellings' RESOLVED values (the
+    // cacheRead/cacheWrite vs. cacheReadTokens/cacheWriteTokens fallback
+    // itself is resolved by the caller — recordUsage just consumes the
+    // snapshot's cacheReadTokens/cacheWriteTokens directly).
+    const client = makeOpenClawClient(); // no sessions in sessions.list()
+
+    await recordUsage({
+      openclawClient: client,
+      ...baseParams,
+      sessionSnapshot: {
+        inputTokens: 100,
+        outputTokens: 50,
+        cacheReadTokens: 14404,
+        cacheWriteTokens: 21135,
+        model: "claude-sonnet-4-6",
+      },
+    });
+
+    expect(client.sessions.list).not.toHaveBeenCalled();
+    expect(mockInsert).toHaveBeenCalledWith(usageRecords);
+    expect(mockValues).toHaveBeenCalledWith({
+      userId: "user-1",
+      agentId: "agent-1",
+      agentName: "Smithers",
+      sessionKey: "agent:agent-1:user-user-1",
+      model: "claude-sonnet-4-6",
+      inputTokens: 100,
+      outputTokens: 50,
+      cacheReadTokens: 14404,
+      cacheWriteTokens: 21135,
+      estimatedCostUsd: null,
+    });
+  });
+
   it("does not throw when sessions.list() fails", async () => {
     const client = {
       sessions: {

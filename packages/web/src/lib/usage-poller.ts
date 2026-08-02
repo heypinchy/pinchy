@@ -1,6 +1,5 @@
 import type { OpenClawClient } from "openclaw-node";
 import { isNull } from "drizzle-orm";
-import { recordUsage } from "@/lib/usage";
 import { recordSessionTurnsUsage } from "@/lib/usage-per-turn";
 import { db } from "@/db";
 import { agents, users } from "@/db/schema";
@@ -79,15 +78,15 @@ interface SessionListEntry {
   model?: string;
 }
 
-// Adaptive backoff (#261 D): the per-turn trajectory scan (chat sessions) runs
-// on every tick regardless of the gauge, and the gauge-delta recordUsage
-// (system sessions) re-reads the DB watermark every tick. Both are no-ops when
-// nothing changed, so re-running them every 60 s for idle sessions is wasted
-// DB/CPU at scale (50 agents × 50 sessions ≈ 2 500 scans/min). We fingerprint
-// each session's gauge counters and skip the expensive processing while the
-// fingerprint is unchanged, with a periodic catch-up scan every IDLE_RESCAN_MS
-// as a backstop (covers the narrow case where two turns carry identical gauge
-// counts AND the lower-latency chat `done` path also missed one).
+// Adaptive backoff (#261 D): the per-turn trajectory scan runs on every tick
+// regardless of the gauge, for both chat AND system sessions (#767 moved
+// system sessions onto this same path). It's a no-op when nothing changed, so
+// re-running it every 60 s for idle sessions is wasted DB/CPU at scale (50
+// agents × 50 sessions ≈ 2 500 scans/min). We fingerprint each session's gauge
+// counters and skip the expensive processing while the fingerprint is
+// unchanged, with a periodic catch-up scan every IDLE_RESCAN_MS as a backstop
+// (covers the narrow case where two turns carry identical gauge counts AND
+// the lower-latency chat `done` path also missed one).
 const IDLE_RESCAN_MS = 5 * 60_000;
 
 interface SessionActivity {
@@ -104,8 +103,9 @@ export function _resetSessionActivity(): void {
 /**
  * Resolves a session's cache counters from either OC spelling
  * (`cacheRead`/`cacheWrite` vs. `cacheReadTokens`/`cacheWriteTokens` — see the
- * SessionListEntry comment). Left as `undefined`, not defaulted to 0, because
- * callers differ on how they need the "no cache data" case represented.
+ * SessionListEntry comment). Left as `undefined`, not defaulted to 0, so
+ * `gaugeSignature` (the only caller) can distinguish "no cache data" from a
+ * genuine zero when building its change-detection fingerprint.
  */
 function resolveCacheCounters(s: SessionListEntry): {
   cacheReadTokens: number | undefined;
@@ -129,10 +129,10 @@ function gaugeSignature(s: SessionListEntry): string {
 }
 
 /**
- * Polls all OpenClaw sessions once and records usage deltas for each
- * session that has tokens. Unknown agent IDs fall back to the ID itself
- * as the agent name. Failures are logged but never thrown — a failed poll
- * just means we try again next tick.
+ * Polls all OpenClaw sessions once and records per-turn usage for chat AND
+ * system sessions from each session's trajectory (#483, #767). Unknown agent
+ * IDs fall back to the ID itself as the agent name. Failures are logged but
+ * never thrown — a failed poll just means we try again next tick.
  */
 export async function pollAllSessions(openclawClient: OpenClawClient): Promise<void> {
   try {
@@ -183,59 +183,39 @@ export async function pollAllSessions(openclawClient: OpenClawClient): Promise<v
 
       const agentName = agentNameMap.get(parsed.agentId) ?? parsed.agentId;
 
-      if (parsed.type === "chat") {
-        // Lossless per-turn accounting (#483): chat usage is recorded from the
-        // trajectory's exact per-turn `model.completed` events, NOT the gauge
-        // counters (which OpenClaw overwrites each turn, so sampling drops
-        // turns). This poll is a backstop scan; the chat `done` path scans with
-        // lower latency. DB dedup by (sessionKey, runId) makes re-scans no-ops.
-        const userId = userIdMap.get(parsed.userId.toLowerCase()) ?? parsed.userId;
-        await recordSessionTurnsUsage({
-          openclawClient,
-          agentId: parsed.agentId,
-          userId,
-          agentName,
-          sessionKey: session.key,
-        });
-        // Mark as processed only after the record call succeeds — if it threw,
-        // the catch below aborts the loop, and the fingerprint must stay
-        // unset so the next tick retries this session instead of treating a
-        // failed record as done and skipping it until the catch-up rescan.
-        sessionActivity.set(session.key, { signature, lastProcessedAt: now });
-        continue;
-      }
-
-      // System sessions (main/cron/hook/channel) have no per-user trajectory we
-      // scan, so they stay on the gauge delta path.
-      const { cacheReadTokens, cacheWriteTokens } = resolveCacheCounters(session);
-      const hasTokens =
-        (session.inputTokens ?? 0) > 0 ||
-        (session.outputTokens ?? 0) > 0 ||
-        (cacheReadTokens ?? 0) > 0 ||
-        (cacheWriteTokens ?? 0) > 0;
-      if (!hasTokens) {
-        // Nothing to record — this isn't a failure, so it's safe to mark the
-        // session processed and let it ride the idle backoff.
-        sessionActivity.set(session.key, { signature, lastProcessedAt: now });
-        continue;
-      }
-
-      await recordUsage({
+      // Lossless per-turn accounting (#483 for chat, extended to system
+      // sessions by #767): usage is recorded from the trajectory's exact
+      // per-turn `model.completed` events, NOT the gauge counters (which
+      // OpenClaw overwrites each turn, so sampling drops turns). This used to
+      // gate on `parsed.type === "chat"` — the comment here claimed system
+      // sessions (main/cron/hook/channel) have "no per-user trajectory we
+      // scan", which was never re-verified after #483 shipped. Verified live
+      // in production: cron/channel sessions DO have a
+      // <sessionId>.trajectory.jsonl with promptCache.lastCallUsage, and
+      // sessions.json maps every sessionKey — system included — to its
+      // sessionId, so resolveSessionId() already works for system keys.
+      // Leaving system sessions on the gauge meant the autonomous/cron/
+      // Telegram runs (exactly the shape of the 2026-07-15 Piper incident)
+      // never got a context_tokens reading. A session with no trajectory yet
+      // just records nothing (recordSessionTurnsUsage returns 0) — correct,
+      // there's no completed turn to count. This poll is a backstop scan; the
+      // chat `done` path scans with lower latency. DB dedup by
+      // (sessionKey, runId) makes re-scans no-ops.
+      const userId =
+        parsed.type === "chat"
+          ? (userIdMap.get(parsed.userId.toLowerCase()) ?? parsed.userId)
+          : parsed.userId; // "system" — no per-user lookup needed
+      await recordSessionTurnsUsage({
         openclawClient,
-        userId: parsed.userId, // "system"
         agentId: parsed.agentId,
+        userId,
         agentName,
         sessionKey: session.key,
-        sessionSnapshot: {
-          inputTokens: session.inputTokens,
-          outputTokens: session.outputTokens,
-          cacheReadTokens,
-          cacheWriteTokens,
-          model: session.model,
-        },
       });
-      // Mark as processed only after the record call succeeds (see comment
-      // on the chat-session path above for why ordering matters here).
+      // Mark as processed only after the record call succeeds — if it threw,
+      // the catch below aborts the loop, and the fingerprint must stay unset
+      // so the next tick retries this session instead of treating a failed
+      // record as done and skipping it until the catch-up rescan.
       sessionActivity.set(session.key, { signature, lastProcessedAt: now });
     }
 
