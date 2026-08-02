@@ -119,6 +119,36 @@ test("an outside report a maintainer already answered is not waiting", () => {
   assert.equal(entry.externalWaiting, false);
 });
 
+// Found by running the first full sweep, not by reading the code — the same way
+// the process-label bug was found.
+//
+// `untriaged` outranks `no-discussion`, so an unlabeled enhancement nobody ever
+// commented on shows up in exactly one bucket: untriaged. Labelling it — which
+// is what the pass does to satisfy the invariant — silently moves it into
+// no-discussion, where the NEXT report presents it as a fresh default-close
+// candidate. The 2026-08-01 sweep did this to 19 issues in one afternoon.
+//
+// Same remedy as externalWaiting: an orthogonal flag, so the bucket keeps the
+// strongest signal while the fact stays visible on the issues it applies to.
+test("a comment-less issue is flagged whatever bucket it lands in", () => {
+  const untriaged = classifyIssue(issue({ labels: [], comments: [] }));
+
+  assert.equal(untriaged.bucket, "untriaged");
+  assert.equal(untriaged.neverDiscussed, true);
+
+  const discussed = classifyIssue(issue({ labels: [] }));
+  assert.equal(discussed.bucket, "untriaged");
+  assert.equal(discussed.neverDiscussed, false);
+});
+
+test("the report marks comment-less issues so a pass can ask about them", () => {
+  const report = formatSweepReport(
+    classifyIssues([issue({ number: 61, labels: [], comments: [] })]),
+  );
+
+  assert.match(report, /#61.*never discussed/i);
+});
+
 test("classifyIssues returns entries ordered by bucket priority", () => {
   const entries = classifyIssues([
     issue({ number: 3, labels: ["bug"] }),

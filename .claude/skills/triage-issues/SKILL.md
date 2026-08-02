@@ -23,6 +23,25 @@ find 16 of 148 and be wrong about most of them. The backlog is not abandoned,
 it is unresolved — the real mass is work that is _done_ but still open, because
 a PR titled `… (#796)` does not close anything without `Closes #796`.
 
+The first full sweep ran on 2026-08-01 and took the backlog from **148 to 97**:
+18 closed against verified evidence, 32 closed as out-of-scope, 5 rewritten to
+their remainder. What it measured about its own heuristics matters more than
+the count, and is why Step 2 exists in the shape it does:
+
+| Bucket          | Candidates | Actually settled |
+| --------------- | ---------- | ---------------- |
+| `closed-by-pr`  | 54         | **16**           |
+| `subsumed`      | 6          | **0**            |
+| `no-discussion` | 40         | 34               |
+
+**A merge cross-reference is weak evidence — it was right 30% of the time.**
+Three that would have been closed by anything that trusts the link: #164
+(pairing race) pointed at a Brave-Search PR; #602 (build a governed browser
+tool) pointed at PR #603, _"**deny** OpenClaw group:ui so the native browser
+tool isn't silently reachable"_ — the opposite act; and #849, an outside bug
+report, pointed at _"Never let an outside bug report wait unseen"_, the process
+fix that report caused rather than the fix it asked for.
+
 ## The two modes
 
 Same method, different scope. The full sweep establishes the state the weekly
@@ -50,6 +69,14 @@ One GraphQL pass, a few seconds, no writes to GitHub. It sorts every open issue
 into a bucket by evidence and prints markdown. It borrows credentials from
 `gh`, so `gh auth login` must have happened.
 
+Each line can carry two flags in brackets, and both cut across the buckets
+rather than replacing them:
+
+- `⚠ external, unanswered` — an outside reporter is owed a reply. See the
+  prohibition below; this one governs what you may not do.
+- `never discussed` — nobody has ever commented. Not a verdict either, but it
+  is the question the pass must ask before labelling anything.
+
 **Write it to a file and keep the verdicts there as you go.** A full sweep is
 54 candidates times three checks; that outlives a context window, and
 re-verifying from scratch after a compaction is the difference between a pass
@@ -65,11 +92,24 @@ alive. Treat the bucket as a candidate list.
 ## Step 2 — Verify, per candidate
 
 This is the actual work, and it is the reason this is a skill and not a cron
-job. For each `closed-by-pr` candidate, three checks — in this order, stopping
-as soon as one settles it:
+job.
 
-1. **Read the PR.** `gh pr view <n>` — does it claim to do what the issue asks,
-   or does it merely mention the number in passing?
+**Gather in bulk first, then judge.** 54 candidates checked one at a time will
+not survive a context window. Two loops — issue titles/bodies/labels, then the
+titles of every referenced PR — turn the whole bucket into two files you can
+read straight through. Do that before opening anything individually.
+
+Then, per `closed-by-pr` candidate, in this order, stopping as soon as one
+check settles it:
+
+1. **Read the PR's title.** The cheapest decisive signal by a wide margin, and
+   you already have all of them from the bulk pass. Two shapes settle
+   immediately:
+   - **A title carrying the issue's own number** is strong evidence _for_
+     completion — "strip MEMORY.md from group-session bootstrap (#369)" and
+     "make the Layer-3 groundedness sweep actually run (#869)" were both real.
+   - **A title about something else entirely** is the passing mention, and it
+     is the common case. Move on; do not open the diff.
 2. **Grep `main` for the thing the issue names.** The symbol, the file, the
    flag. `git grep -n <symbol> origin/main -- <path>`. An issue asking for a
    function that now exists is done; an issue asking for behaviour is not
@@ -78,22 +118,42 @@ as soon as one settles it:
    issue number _and_ by keyword. Finished-but-never-pushed branches sit
    around here regularly. That is not "done", it is "started".
 
-Three verdicts, and **"partly" is a real one** — #799 was exactly that, half
-shipped and half open. A partly-done issue gets rewritten to the remainder,
-not closed.
+Watch for the **inverted** PR — one that _restricts_ what the issue asked to
+build. #603 denied access to the browser tool #602 wanted governed. A title
+match on the topic is not a match on the direction.
+
+Three verdicts, and **"partly" is a real one** — 5 of 54 were, and #755 is the
+instructive one: the workspace-retrofit half shipped while the reported core
+(memory gated on a grant no template hands out) stood untouched. A partly-done
+issue gets rewritten to the remainder, not closed.
 
 For `subsumed` candidates: open the tracking issue and confirm it genuinely
-covers this one. If it does, close with a pointer; if it merely mentions it,
-it is not subsumed.
+covers this one. **All 6 failed this test on the first sweep, so expect to
+close none of them.** The distinction that matters: #556 says outright _"this
+is the umbrella so the individual findings stay connected — pick work off the
+table below."_ An umbrella that **indexes** work does not **replace** it, and
+closing its rows deletes the only place the work is written down. Subsumption
+means the tracking issue's own body carries the scope — as #543's title does,
+naming exactly which three RFCs it consolidated.
 
-For `no-discussion` — the 40 enhancements nobody ever commented on — read each
-one briefly and ask **the only question that matters: is anyone going to build
+For `no-discussion` — enhancements nobody ever commented on — read each one
+briefly and ask **the only question that matters: is anyone going to build
 this?** The house rule is 37signals: no standing backlog of someday-ideas,
 because what matters comes back on its own when it hurts. So default to
 closing, and lift out the few that carry real substance — a concrete defect, a
 decision already made, a contract that needs the number. Do not deep-verify
 this bucket; that is the expensive mistake. Skim, lift out the keepers, close
 the rest as a block.
+
+**Ask that same question of every `[never discussed]` entry, in whatever bucket
+it appears — not just this one.** The buckets are exclusive and `untriaged`
+outranks `no-discussion`, so an unlabeled enhancement nobody commented on shows
+up only as untriaged. Label it to satisfy the invariant below and it silently
+becomes a `no-discussion` entry — which next week's report offers up as a
+fresh default-close candidate that nobody has actually read. The first sweep
+did this to 19 issues in an afternoon, and only noticed because the counts
+moved. The flag exists so the question gets asked once, in the pass that is
+already looking.
 
 ## Step 3 — Act, by evidence class
 
@@ -109,6 +169,12 @@ because that list is short.
 
 Closing comments name the evidence: the PR that did it, or the tracking issue
 that covers it. A closure nobody can audit later is a deletion.
+
+**Comment on the keepers too, saying why.** Same reason, one level up: an issue
+kept against the 37signals default has had a decision made about it, and a
+decision with no trace gets re-litigated from scratch next sweep — or worse,
+goes the other way. The comment is also what moves it out of the comment-less
+set, so the record and the classifier agree instead of drifting.
 
 ## The one prohibition
 

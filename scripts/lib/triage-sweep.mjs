@@ -77,14 +77,25 @@ function bucketFor(issue) {
 }
 
 /**
- * Classifies one issue into a bucket plus an orthogonal `externalWaiting` flag.
+ * Classifies one issue into a bucket plus two orthogonal flags.
  *
- * The flag is not a bucket, and that is the load-bearing choice here. Making
- * it exclusive would hide the merge evidence on precisely the issues where an
- * outside reporter is owed an answer. `unanswered-sweep` goes red until a
- * maintainer comments, and only a maintainer comment clears it — so the
- * triage pass must be able to see "this is solved" and "do not comment here"
- * at the same time. See the skill for what the flag forbids.
+ * Neither is a bucket, and that is the load-bearing choice here.
+ *
+ * `externalWaiting`: making it exclusive would hide the merge evidence on
+ * precisely the issues where an outside reporter is owed an answer.
+ * `unanswered-sweep` goes red until a maintainer comments, and only a
+ * maintainer comment clears it — so the triage pass must be able to see "this
+ * is solved" and "do not comment here" at the same time.
+ *
+ * `neverDiscussed`: the buckets are exclusive, and `untriaged` outranks
+ * `no-discussion`, so an unlabeled enhancement nobody ever commented on is
+ * only ever reported as untriaged. Labelling it — which is exactly what a pass
+ * does to satisfy the invariant — moves it into `no-discussion`, where the
+ * next report offers it up as a fresh default-close candidate. The first full
+ * sweep did that to 19 issues in one afternoon. The flag makes the fact
+ * visible in the bucket where it can still be acted on.
+ *
+ * See the skill for what these two mean for the pass.
  */
 export function classifyIssue(issue) {
   return {
@@ -93,6 +104,7 @@ export function classifyIssue(issue) {
     url: issue.url,
     bucket: bucketFor(issue),
     externalWaiting: isExternalIssue(issue) && !hasMaintainerReply(issue),
+    neverDiscussed: issue.comments.length === 0,
     evidence: {
       mergedPrs: issue.mergedPrs,
       trackedBy: issue.trackedBy,
@@ -279,8 +291,16 @@ function line(entry) {
       `tracked by ${entry.evidence.trackedBy.map((n) => `#${n}`).join(", ")}`,
     );
   }
-  const flag = entry.externalWaiting ? " ⚠ external, unanswered" : "";
+  const flags = [];
+  if (entry.externalWaiting) flags.push("⚠ external, unanswered");
+  // Only worth printing where the bucket does not already say it: the whole
+  // no-discussion bucket is comment-less by definition, and repeating it on
+  // every line there would train the reader to skip the marker.
+  if (entry.neverDiscussed && entry.bucket !== "no-discussion") {
+    flags.push("never discussed");
+  }
   const detail = facts.length ? ` — ${facts.join("; ")}` : "";
+  const flag = flags.length ? ` [${flags.join("; ")}]` : "";
   return `- #${entry.number} ${oneLine(entry.title)}${detail}${flag}`;
 }
 
