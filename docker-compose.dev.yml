@@ -63,6 +63,7 @@ services:
       - ./packages/plugins/pinchy-email:/root/.openclaw/extensions/pinchy-email
       - ./packages/plugins/pinchy-docs:/root/.openclaw/extensions/pinchy-docs
       - ./packages/plugins/pinchy-knowledge:/root/.openclaw/extensions/pinchy-knowledge
+      - ./packages/plugins/pinchy-approvals:/root/.openclaw/extensions/pinchy-approvals
       - ./sample-data:/data/sample-docs
       # Shadow volumes: mounted ON TOP of the node_modules path of the four
       # plugins that have baked /opt/<plugin>-deps bundles (pinchy-files,
