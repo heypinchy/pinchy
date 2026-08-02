@@ -223,16 +223,18 @@ Pinchy uses [Semantic Versioning](https://semver.org/). Releases are cut from a 
 
 ### Testing a release candidate
 
-Before cutting a tag, the maintainer runs the pre-release build on a dedicated staging instance. Pushes to `main` automatically publish two tags:
+Before cutting a tag, the maintainer runs the pre-release build on a dedicated staging instance. Every push that `pre-release.yml` builds publishes two tags:
 
-- `ghcr.io/heypinchy/pinchy:next` — mutable, always HEAD of `main`
+- a **mutable** moving tag for the branch — `ghcr.io/heypinchy/pinchy:next` for `main`, `:rc-X.Y` for `release/X.Y` (e.g. `release/0.9` → `:rc-0.9`)
 - `ghcr.io/heypinchy/pinchy:sha-<12-chars>` — immutable per commit
 
 Same for `pinchy-openclaw`.
 
-The staging instance is set up once (see [Staging instance setup](#staging-instance-setup) below for the one-time bootstrap) and pins `PINCHY_VERSION=next`.
+**Pin staging to the branch you are cutting from.** `:next` tracks `main`, so for a candidate on `release/X.Y` it is the wrong image by however far `main` has moved since the branch point — you would verify something other than what you are about to tag. `pnpm release:preflight <version>` prints the correct pin for the current branch; use `:rc-X.Y` for the latest on the branch or `:sha-<short12>` to nail an exact ref. Each release branch gets its own moving tag so two concurrent ones never clobber each other's candidate.
 
-**Before each release**, refresh staging to pick up the latest `:next` build, then click through the key flows: Smithers chat, one live integration, one custom agent with chat history.
+The staging instance is set up once (see [Staging instance setup](#staging-instance-setup) below for the one-time bootstrap) and pins `PINCHY_VERSION=next` by default; change that line to the release branch's tag while verifying a release-branch candidate.
+
+**Before each release**, set `PINCHY_VERSION` to the candidate image for the branch you are cutting from, refresh staging to pick it up, then click through the key flows: Smithers chat, one live integration, one custom agent with chat history.
 
 ```bash
 ssh root@<staging-host> "cd /opt/pinchy && docker compose pull && docker compose up -d && docker image prune -f"
@@ -270,7 +272,7 @@ The release script and CI enforce image builds, GHCR visibility, end-user instal
 
 **Staging**
 
-- [ ] Staging instance on `:next` ran an **active test-and-fix pass** today (not just a click-through): drive the archetypes through real flows — default agent (Smithers), each live integration (email, Odoo, …), an analytics/data agent, and a knowledge-base agent — hunting for problems, and verify each against **ground truth** (audit log `tool.*` rows, OpenClaw container logs, the regenerated `openclaw.json`), not the chat UI. Any bug found is a release blocker: TDD-fix it, redeploy `:next`, re-verify. See the `cut-pinchy-release` skill § "The staging pass is an active test-and-fix loop" for the full loop, and [Staging instance setup](#staging-instance-setup) for the one-time setup and the refresh command (`docker compose pull && up -d && docker image prune -f`).
+- [ ] Staging instance, pinned to the candidate image for the branch being cut (`:next` from `main`, `:rc-X.Y` from `release/X.Y` — `pnpm release:preflight` prints which), ran an **active test-and-fix pass** today (not just a click-through): drive the archetypes through real flows — default agent (Smithers), each live integration (email, Odoo, …), an analytics/data agent, and a knowledge-base agent — hunting for problems, and verify each against **ground truth** (audit log `tool.*` rows, OpenClaw container logs, the regenerated `openclaw.json`), not the chat UI. Any bug found is a release blocker: TDD-fix it, redeploy the refreshed candidate image, re-verify. See the `cut-pinchy-release` skill § "The staging pass is an active test-and-fix loop" for the full loop, and [Staging instance setup](#staging-instance-setup) for the one-time setup and the refresh command (`docker compose pull && up -d && docker image prune -f`).
 - [ ] PWA install check:
       Open the staging URL in Chrome Desktop — confirm an install icon appears in the address bar and clicking it produces a standalone window.
       Open the same URL in iOS Safari — confirm **Share → Add to Home Screen** produces a launcher icon that opens Pinchy full-screen with a branded splash.

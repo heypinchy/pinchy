@@ -17,6 +17,7 @@ import {
   isReleasableBranch,
   findSkippedReleases,
   movingTagForRef,
+  stagingImageTagForBranch,
 } from "./release-logic.mjs";
 
 // parseAndValidateVersion
@@ -813,6 +814,42 @@ test("movingTagForRef gives each release branch its own rc-X.Y moving tag", () =
 
 test("movingTagForRef collapses any remaining slash so the tag stays valid", () => {
   assert.equal(movingTagForRef("release/0.9/hotfix"), "rc-0.9-hotfix");
+});
+
+// stagingImageTagForBranch — what the preflight tells the operator to pin
+// staging to. `:next` tracks main, so hardcoding it sent a release-branch cut
+// to verify an image hundreds of commits away from what it was about to tag.
+
+test("stagingImageTagForBranch pins main to the :next channel", () => {
+  assert.equal(stagingImageTagForBranch("main"), "next");
+});
+
+test("stagingImageTagForBranch pins a release branch to its own rc-X.Y", () => {
+  assert.equal(stagingImageTagForBranch("release/0.9"), "rc-0.9");
+  assert.equal(stagingImageTagForBranch("release/1.10"), "rc-1.10");
+});
+
+// A branch nothing publishes an image for gets no tag at all, rather than a
+// plausible-looking one: pre-release.yml builds only `main` and `release/**`,
+// so naming e.g. `rc-feature-foo` would send the operator to verify an image
+// that does not exist. The preflight already flags the branch as unreleasable;
+// null lets it stay silent about a pin instead of inventing one.
+test("stagingImageTagForBranch returns null for a branch that publishes no image", () => {
+  assert.equal(stagingImageTagForBranch("feature/foo"), null);
+  assert.equal(stagingImageTagForBranch("release/0.9/hotfix"), null);
+  assert.equal(stagingImageTagForBranch(""), null); // detached HEAD
+});
+
+// The pin the operator verifies must be the tag pre-release.yml actually
+// pushed. Two derivations would drift; this asserts there is only one.
+test("stagingImageTagForBranch agrees with movingTagForRef wherever it answers", () => {
+  for (const branch of ["main", "release/0.9", "release/1.10"]) {
+    assert.equal(
+      stagingImageTagForBranch(branch),
+      movingTagForRef(branch),
+      `staging pin and published moving tag disagree for ${branch}`,
+    );
+  }
 });
 
 // findSkippedReleases — the guard against the v0.9.0-on-a-release-branch trap:

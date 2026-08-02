@@ -10,7 +10,10 @@
  *      CI status) — the same hard gates `pnpm release` enforces, surfaced early.
  *   2. The MANUAL gates that the release script CANNOT enforce — and that get
  *      silently skipped if they live only as prose. Each is printed as an
- *      unchecked `[ ]` item to be verified on staging (:next) before releasing:
+ *      unchecked `[ ]` item to be verified, before releasing, on staging pinned
+ *      to THIS branch's candidate image — `:next` for `main`, `:rc-X.Y` for a
+ *      `release/X.Y` branch (`:next` tracks main, so it is the wrong image by
+ *      hundreds of commits for a release-branch cut):
  *        - a release-specific checklist DERIVED FROM THIS RELEASE'S UPGRADE NOTES
  *          (the bespoke part — different every release),
  *        - the standard regression smoke,
@@ -36,6 +39,7 @@ import {
   checkReleaseVerification,
   findSkippedReleases,
   isReleasableBranch,
+  stagingImageTagForBranch,
 } from "./lib/release-logic.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -110,6 +114,7 @@ out(
 const branch = tryExec("git branch --show-current");
 const status = tryExec("git status --porcelain");
 const tags = tryExec("git tag --list");
+const head = tryExec("git rev-parse HEAD");
 
 let upgradeNotesOk = false;
 let upgradeNotesMsg = "";
@@ -181,10 +186,27 @@ out(
 
 // ─── Manual gates — verify on staging, then check each off ────────────────────
 
+// Which image staging must run to make this verification mean anything. `:next`
+// tracks main, so printing it unconditionally sent a release-branch cut off to
+// verify a build hundreds of commits from the one it was about to tag.
+const stagingTag = stagingImageTagForBranch(branch.out);
+
 out("");
 out(
-  "Manual gates — verify on staging (:next) and CHECK EACH OFF before `pnpm release`:",
+  `Manual gates — verify on staging${stagingTag ? ` (:${stagingTag})` : ""} and CHECK EACH OFF before \`pnpm release\`:`,
 );
+if (stagingTag === null) {
+  out(
+    `(no candidate image is published for ${branch.out || "a detached HEAD"} — pre-release.yml builds only main and release/X.Y)`,
+  );
+} else if (stagingTag !== "next") {
+  // rc-X.Y is a moving tag: it is whatever was pushed to the branch last, which
+  // is not necessarily the commit being attested below.
+  const exact = head.ok ? `:sha-${head.out.slice(0, 12)}` : ":sha-<short12>";
+  out(
+    `(:${stagingTag} moves with every push to ${branch.out} — pin ${exact} to nail this exact ref. Never :next; it tracks main.)`,
+  );
+}
 out(
   "(the skill turns each `[ ]` into a blocking task that `pnpm release` waits on)",
 );
@@ -229,7 +251,6 @@ out(
 // ─── Attestation echo ─────────────────────────────────────────────────────────
 
 out("");
-const head = tryExec("git rev-parse HEAD");
 if (verifiedArg !== undefined) {
   const v = checkReleaseVerification({
     verifiedSha: verifiedArg,

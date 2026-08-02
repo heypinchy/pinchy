@@ -409,8 +409,11 @@ export function deriveStagingChecklist(mdx, prevVersion, targetVersion) {
  *
  * The release-specific staging verification can't be made fraud-proof, but it
  * can be anchored to the exact code: the operator passes the SHA they verified
- * on staging (`:next` builds the tip of main), and it must match HEAD — the
- * commit about to be tagged. A short SHA that prefixes HEAD is accepted
+ * on staging (which runs this branch's candidate image — `:next` for main,
+ * `:rc-X.Y` for a release branch, see `stagingImageTagForBranch`), and it must
+ * match HEAD — the commit about to be tagged. Note that both of those are
+ * MOVING tags, which is why the attestation is a SHA and not a tag name: only
+ * `:sha-<short>` names an exact ref. A short SHA that prefixes HEAD is accepted
  * (`git rev-parse --short`). Returns a result rather than throwing so callers
  * decide whether to warn or hard-fail.
  *
@@ -515,6 +518,36 @@ export function movingTagForRef(refName) {
   if (refName === "main") return "next";
   const rc = refName.replace(/^release\//, "").replaceAll("/", "-");
   return `rc-${rc}`;
+}
+
+/**
+ * The image tag staging must be pinned to in order to verify a cut from this
+ * branch — `next` for `main`, `rc-X.Y` for `release/X.Y`.
+ *
+ * The preflight used to print `:next` unconditionally. `:next` tracks `main`,
+ * so for a release-branch candidate that names an image hundreds of commits
+ * away from the one about to be tagged: you verify something else entirely and
+ * the gate reports nothing. Observed while preparing v0.9.1, the first patch
+ * cut from a release branch.
+ *
+ * Delegates to `movingTagForRef` rather than re-deriving, so the pin the
+ * operator verifies is by construction the tag pre-release.yml pushed.
+ *
+ * Returns `null` for anything else — a feature branch, a detached HEAD, an
+ * odd `release/…` shape. pre-release.yml publishes only from `main` and
+ * `release/**`, so there is no image to pin, and `movingTagForRef`'s tolerant
+ * fallback (`feature/foo` → `rc-feature-foo`) would name one that does not
+ * exist. That tolerance is right for a workflow that must never fail on a tag
+ * name, and wrong for an instruction a human is about to follow. The preflight
+ * flags such a branch as unreleasable anyway; `null` lets it say nothing about
+ * a pin instead of inventing one.
+ *
+ * @param {string} branch - current branch name (`git branch --show-current`)
+ * @returns {string|null} e.g. "next", "rc-0.9", or null if nothing is published
+ */
+export function stagingImageTagForBranch(branch) {
+  if (!isReleasableBranch(branch)) return null;
+  return movingTagForRef(branch);
 }
 
 /**
