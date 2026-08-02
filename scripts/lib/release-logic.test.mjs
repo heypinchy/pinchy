@@ -17,6 +17,7 @@ import {
   bumpReadmeComposePin,
   isReleasableBranch,
   findSkippedReleases,
+  openNextUpgradeSection,
   movingTagForRef,
   stagingImageTagForBranch,
   stagingPinAdvice,
@@ -987,4 +988,123 @@ test("findSkippedReleases ignores tags that are not releases", () => {
     ]),
     [],
   );
+});
+
+// openNextUpgradeSection — opens the NEXT cycle's section in the same release
+// run, so the first upgrade note after a release has somewhere to land other
+// than the section of the release that already shipped.
+
+const OPEN_FIXTURE = [
+  "## Standard upgrade",
+  "",
+  "Bump to PINCHY_VERSION=%%PINCHY_VERSION%% (build-time display).",
+  "",
+  "## Upgrading from v0.8.0 to v0.9.0",
+  "",
+  "### Breaking changes",
+  "",
+  "None.",
+  "",
+  "### Upgrade notes",
+  "",
+  "Frozen notes.",
+  "",
+  "## Upgrading from v0.7.0 to v0.8.0",
+  "",
+  "Older notes.",
+  "",
+].join("\n");
+
+test("openNextUpgradeSection adds a placeholder section for the next cycle", () => {
+  const out = openNextUpgradeSection(OPEN_FIXTURE, "0.8.0", "0.9.0");
+  assert.match(out, /^## Upgrading from v0\.9\.0 to %%PINCHY_VERSION%%$/m);
+});
+
+test("openNextUpgradeSection puts the new section ABOVE the one just frozen", () => {
+  const out = openNextUpgradeSection(OPEN_FIXTURE, "0.8.0", "0.9.0");
+  assert.ok(
+    out.indexOf("## Upgrading from v0.9.0 to %%PINCHY_VERSION%%") <
+      out.indexOf("## Upgrading from v0.8.0 to v0.9.0"),
+    "sections are listed newest-first",
+  );
+});
+
+test("openNextUpgradeSection leaves everything before the anchor byte-identical", () => {
+  const out = openNextUpgradeSection(OPEN_FIXTURE, "0.8.0", "0.9.0");
+  const anchor = "## Upgrading from v0.9.0 to %%PINCHY_VERSION%%";
+  assert.equal(
+    out.slice(0, out.indexOf(anchor)),
+    OPEN_FIXTURE.slice(0, OPEN_FIXTURE.indexOf("## Upgrading from v0.8.0")),
+  );
+});
+
+test("openNextUpgradeSection keeps the frozen section and its successors intact", () => {
+  const out = openNextUpgradeSection(OPEN_FIXTURE, "0.8.0", "0.9.0");
+  const frozenOnwards = out.slice(
+    out.indexOf("## Upgrading from v0.8.0 to v0.9.0"),
+  );
+  assert.equal(
+    frozenOnwards,
+    OPEN_FIXTURE.slice(
+      OPEN_FIXTURE.indexOf("## Upgrading from v0.8.0 to v0.9.0"),
+    ),
+  );
+});
+
+test("openNextUpgradeSection's skeleton carries both required subsections", () => {
+  const out = openNextUpgradeSection(OPEN_FIXTURE, "0.8.0", "0.9.0");
+  // The next release's own gate (assertUpgradingSectionExists) demands both.
+  assert.doesNotThrow(() =>
+    assertUpgradingSectionExists(out, "0.9.0", "0.10.0"),
+  );
+});
+
+test("openNextUpgradeSection's skeleton carries the standard-flow prune step (#370)", () => {
+  // The #370 guard slices the FIRST `## Upgrading from …` section and requires
+  // `docker image prune` in it. A headings-only skeleton would turn main red on
+  // every release.
+  const out = openNextUpgradeSection(OPEN_FIXTURE, "0.8.0", "0.9.0");
+  const newest = out.slice(
+    out.indexOf("## Upgrading from v0.9.0"),
+    out.indexOf("## Upgrading from v0.8.0"),
+  );
+  assert.match(
+    newest,
+    /docker compose pull && docker compose up -d && docker image prune -f/,
+  );
+  // Dangling-only prune, never the aggressive `-a` form the #370 guard rejects
+  // inside a fenced block.
+  assert.doesNotMatch(newest, /docker image prune -a/);
+});
+
+test("openNextUpgradeSection's skeleton satisfies the freshness guard after the bump", () => {
+  // In the release run package.json has already been bumped to the target, so
+  // the skeleton's `from v<target>` is exactly what assertNoStaleUpgradeSections
+  // demands of the single placeholder section.
+  const out = openNextUpgradeSection(OPEN_FIXTURE, "0.8.0", "0.9.0");
+  assert.doesNotThrow(() => assertNoStaleUpgradeSections(out, "0.9.0"));
+});
+
+test("openNextUpgradeSection leaves the body placeholder for the NEXT release to freeze", () => {
+  const out = openNextUpgradeSection(OPEN_FIXTURE, "0.8.0", "0.9.0");
+  const newest = out.slice(
+    out.indexOf("## Upgrading from v0.9.0"),
+    out.indexOf("## Upgrading from v0.8.0"),
+  );
+  assert.match(newest, /PINCHY_VERSION=v0\.9\.0/);
+  assert.match(newest, /PINCHY_VERSION=%%PINCHY_VERSION%%/);
+  // …and the next cut freezes exactly those.
+  const frozen = finalizeUpgradeSection(out, "0.9.0", "0.10.0");
+  assert.match(frozen, /^## Upgrading from v0\.9\.0 to v0\.10\.0$/m);
+  assert.match(frozen, /PINCHY_VERSION=v0\.10\.0/);
+});
+
+test("openNextUpgradeSection is a no-op when the next section already exists", () => {
+  const already = openNextUpgradeSection(OPEN_FIXTURE, "0.8.0", "0.9.0");
+  assert.equal(openNextUpgradeSection(already, "0.8.0", "0.9.0"), already);
+});
+
+test("openNextUpgradeSection is a no-op when the frozen anchor section is missing", () => {
+  const mdx = "## Upgrading from v0.5.6 to v0.5.7\n\nUnrelated.\n";
+  assert.equal(openNextUpgradeSection(mdx, "0.8.0", "0.9.0"), mdx);
 });

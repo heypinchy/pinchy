@@ -13,7 +13,8 @@
  *      - clean working tree, on main or a release/* branch, CI green, tag not taken
  *      - pnpm audit --audit-level=high --prod passes (or --skip-audit)
  *   3. Bumps version in root package.json, packages/web/package.json, and .env.example
- *   4. Commits, tags, and pushes
+ *   4. Commits, tags, opens the next cycle's upgrade-notes section in a
+ *      follow-up commit, and pushes both
  *
  * What to do manually first (see CONTRIBUTING.md):
  *   - Update docs/src/content/docs/guides/upgrading.mdx (enforced)
@@ -35,6 +36,7 @@ import {
   buildCommitMessage,
   assertUpgradingSectionExists,
   finalizeUpgradeSection,
+  openNextUpgradeSection,
   bumpReadmeComposePin,
   isReleasableBranch,
 } from "./lib/release-logic.mjs";
@@ -265,6 +267,36 @@ log(`  ✔ Committed`);
 log("Creating tag...");
 exec(`git tag ${tag}`);
 log(`  ✔ Tagged ${tag}`);
+
+// Open the NEXT cycle's section — AFTER the tag, deliberately.
+//
+// Freezing closed a section and nothing opened the next one, so the first
+// upgrade note after a release landed at the end of the file: inside the frozen
+// section of the release that already shipped. Seven released sections on main
+// had drifted that way. Opening it here removes the cause; the
+// upgrading-released-sections guard is the tripwire for what slips past.
+//
+// It is a SEPARATE commit, created after `git tag`, because the tagged tree is
+// what the docs deploy builds and inject-version.sh resolves every
+// `%%PINCHY_VERSION%%` to the build version — so a skeleton inside the release
+// commit would publish an empty "Upgrading from v<target> to v<target>" section
+// at the top of the live upgrade guide. The branch gets the open section; the
+// tag does not.
+const openedMdx = openNextUpgradeSection(
+  readFileSync(upgradingMdxPath, "utf8"),
+  prevVersion,
+  version,
+);
+if (openedMdx !== readFileSync(upgradingMdxPath, "utf8")) {
+  writeFileSync(upgradingMdxPath, openedMdx);
+  exec(`git add "${upgradingMdxPath}"`);
+  exec(
+    `git commit -m "docs(upgrading): open the v${version} → next upgrade section"`,
+  );
+  log(`  ✔ upgrading.mdx → opened v${version}→%%PINCHY_VERSION%% section`);
+} else {
+  log(`  ✔ upgrading.mdx → next section already open (nothing to add)`);
+}
 
 log("Pushing...");
 exec("git push origin HEAD");

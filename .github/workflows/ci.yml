@@ -238,6 +238,15 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
+        with:
+          # The released-upgrade-section guard
+          # (scripts/lib/upgrading-released-sections.test.mjs, run by
+          # `pnpm test:scripts`) compares every frozen section of upgrading.mdx
+          # against `git show v<tag>:…`. Without the tags it can compare nothing
+          # and skips every section with a ::warning:: — green, guarding nothing.
+          # Depth 1 stays: a tag fetched shallow still carries its own tree,
+          # which is all `git show <tag>:<path>` reads.
+          fetch-tags: true
 
       - uses: ./.github/actions/setup-pnpm
 
@@ -398,7 +407,19 @@ jobs:
         run: pnpm test
 
       - name: Test (root scripts)
-        run: pnpm test:scripts
+        env:
+          # The `allow-upgrade-note-edit` PR label is the visible override for a
+          # genuine correction to an already-released upgrade-notes section.
+          ALLOW_UPGRADE_NOTE_EDIT: ${{ contains(github.event.pull_request.labels.*.name, 'allow-upgrade-note-edit') }}
+          # …and the trailer is the other route. actions/checkout leaves HEAD as
+          # a shallow merge commit whose feature-side parent is a graft, so the
+          # trailer is only reachable through the PR head sha's own history.
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [ -n "$PR_HEAD_SHA" ]; then
+            git fetch --no-tags --depth=200 origin "$PR_HEAD_SHA" || true
+          fi
+          pnpm test:scripts
 
       - name: Test (plugins)
         # The plugin test FILES already run inside `pnpm test` via the

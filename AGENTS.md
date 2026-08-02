@@ -81,6 +81,27 @@ Known limitations (it's a tripwire, not a precise metric):
 - It counts test-case calls with a regex, so it does **not** catch a test that is _commented out_ rather than deleted, and it counts `it(`/`test(` that appear inside string literals (including the guard's own fixtures). Review still owns these cases.
 - In CI it diffs against the merge-base; if a shallow clone has no merge-base it falls back to a tip-to-tip diff and logs a `::warning::`. A branch far behind the base can then report false removals — rebase on the base (or use the override) if that happens.
 
+## A Released Upgrade Section Is Immutable
+
+`docs/src/content/docs/guides/upgrading.mdx` is cumulative: one `## Upgrading from vA to vB` section per release, newest first. Once vB ships, that section describes vB and nothing else.
+
+It kept not staying that way, and the reason was structural rather than careless. `pnpm release` **froze** the current `%%PINCHY_VERSION%%` section and opened nothing in its place, so the next commit to write an upgrade note appended it to the end of the file — which is the frozen section of the release that already shipped. The note then claims behaviour that release does not have, and re-renders on docs.heypinchy.com under the wrong version. Measured on `main` on 2026-08-01 against `git show <tag>:…`, **seven** released sections had drifted since their tag, four of them by gaining a whole `####` note (#1028).
+
+Nothing saw any of it. The two existing guards cover the neighbouring questions only: `upgrading-mdx-freshness.test.mjs` catches a stale `%%PINCHY_VERSION%%` placeholder, and `upgrade-prune-step.test.ts` (#370) checks the newest section shows `docker image prune`. Neither reads a frozen section's content.
+
+Both halves are now closed:
+
+- **The cause.** `openNextUpgradeSection` (`scripts/lib/release-logic.mjs`) opens the next cycle's section in the release run itself, so the first note after a release always has somewhere correct to land. The skeleton carries `### Breaking changes`, `### Upgrade notes` and the standard-flow bash block — not just headings, because the #370 guard reads the newest section and an empty skeleton would turn the branch red on every release.
+- **The tripwire.** `scripts/lib/upgrading-released-sections.mjs` (+ its test, `pnpm test:scripts`) compares every section whose `to` is a real tag against that section at the tag, and prints which `####` notes were added or removed.
+
+**The skeleton commit lands _after_ `git tag`, deliberately.** The tagged tree is what the docs deploy builds, and `inject-version.sh` resolves every `%%PINCHY_VERSION%%` to the build version — so a skeleton inside the `chore: release vX.Y.Z` commit would publish an empty "Upgrading from vX.Y.Z to vX.Y.Z" section at the top of the live upgrade guide. The branch gets the open section; the tag does not.
+
+Three details worth knowing before editing the guard:
+
+- **A missing tag warns, it never fails.** CI checkouts are shallow, and a guard that hard-fails on a missing tag fails on infrastructure instead of on content. The cost is that it then silently covers less, so `ci.yml`'s `quality` checkout sets `fetch-tags: true` (depth 1 is enough — a shallow-fetched tag still carries its own tree, which is all `git show <tag>:<path>` reads) and `validateCiWiring` fails if that, or the label passthrough, is removed.
+- **Authorizing an edit is the same contract as a test deletion.** A genuine correction to a released section — the v0.5.0 compose snippet that did not work as documented (#281) is the real example — needs an `Allow-upgrade-note-edit: #NNN` commit trailer or the `allow-upgrade-note-edit` PR label. A bare reason is not enough. Deleting a stale `KNOWN_PRE_GUARD_DRIFT` entry is **not** authorizable that way: a verdict must not outlive its evidence.
+- **`KNOWN_PRE_GUARD_DRIFT` pins a body, not a section.** The eight pre-guard drifts are accepted by sha256 of the exact accepted text, so those sections are not left open — the next edit to one of them fails like any other, and the failure prints the new fingerprint. Entries are classified: `retro-correction` (a legitimate fix that predates the trailer, e.g. the `git checkout` → `docker compose pull` rewrite across v0.2.0–v0.4.0) or `misplaced-note` (the bug itself, still to be moved — those must cite a tracking issue).
+
 ## No Untracked Sleeps In E2E
 
 Every Playwright config here pins `retries: 0, workers: 1` on purpose: a flake is a signal, not something a rerun hides. A fixed sleep quietly trades that away. It is green on a fast host and red on a loaded runner, and when it does fail it says "timeout" instead of naming what was slow.

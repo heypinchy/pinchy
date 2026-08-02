@@ -269,6 +269,73 @@ export function finalizeUpgradeSection(mdx, prevVersion, targetVersion) {
 }
 
 /**
+ * Opens the NEXT cycle's upgrade-notes section, directly above the one the
+ * release just froze.
+ *
+ * `finalizeUpgradeSection` above closes a section; nothing used to open the
+ * next one. The runbook asked the first upgrade-affecting change after a
+ * release to add it by hand, and nobody did — so the next commit that wrote an
+ * upgrade note appended it to the end of the file, which is the FROZEN section
+ * of the release that already shipped. Measured on main on 2026-08-01, seven
+ * released sections had drifted from their tag that way, three of them by
+ * gaining a whole `####` note describing behaviour that release does not have.
+ * See AGENTS.md § "A Released Upgrade Section Is Immutable".
+ *
+ * The skeleton is not headings-only, deliberately. Two existing guards read the
+ * newest section: the #370 prune guard requires `docker image prune` in it, and
+ * the next release's own `assertUpgradingSectionExists` requires both `###`
+ * subsections. An empty skeleton would turn the branch red on every release.
+ * Its body keeps `%%PINCHY_VERSION%%` where the next version belongs, which is
+ * exactly what `finalizeUpgradeSection` freezes at the next cut.
+ *
+ * Everything outside the inserted block is byte-identical, and the call is
+ * idempotent: a section already headed `from v<target> to %%PINCHY_VERSION%%`
+ * means the author opened it by hand, so this is a no-op.
+ *
+ * @param {string} mdx - contents AFTER finalizeUpgradeSection has run
+ * @param {string} prevVersion - the "from" of the section just frozen, no 'v'
+ * @param {string} targetVersion - the version just released, no 'v'
+ * @returns {string} mdx with the next section opened; unchanged if it already
+ *   exists or if the frozen anchor section cannot be found.
+ */
+export function openNextUpgradeSection(mdx, prevVersion, targetVersion) {
+  const alreadyOpen = new RegExp(
+    `^##\\s+Upgrading\\s+from\\s+v${escapeRegex(targetVersion)}\\s+to\\s+%%PINCHY_VERSION%%\\s*$`,
+    "m",
+  );
+  if (alreadyOpen.test(mdx)) return mdx;
+
+  const anchor = new RegExp(
+    `^##\\s+Upgrading\\s+from\\s+v${escapeRegex(prevVersion)}\\s+to\\s+v${escapeRegex(targetVersion)}\\s*$`,
+    "m",
+  );
+  const match = anchor.exec(mdx);
+  if (!match) return mdx;
+
+  const skeleton = [
+    `## Upgrading from v${targetVersion} to %%PINCHY_VERSION%%`,
+    "",
+    "### Breaking changes",
+    "",
+    "None so far.",
+    "",
+    "### Upgrade notes",
+    "",
+    "The standard flow applies:",
+    "",
+    "```bash",
+    "cd /opt/pinchy",
+    `sed -i 's/PINCHY_VERSION=v${targetVersion}/PINCHY_VERSION=%%PINCHY_VERSION%%/' .env`,
+    "docker compose pull && docker compose up -d && docker image prune -f",
+    "```",
+    "",
+    "",
+  ].join("\n");
+
+  return mdx.slice(0, match.index) + skeleton + mdx.slice(match.index);
+}
+
+/**
  * Asserts upgrading.mdx carries no stale `%%PINCHY_VERSION%%` in a released
  * version's section. CI guard (run from scripts/lib/upgrading-mdx-freshness.test.mjs)
  * against the exact drift that shipped in v0.5.8.
