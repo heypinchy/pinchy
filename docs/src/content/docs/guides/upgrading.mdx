@@ -321,7 +321,7 @@ The OpenClaw runtime this release ships (2026.7.1) adds an interactive terminal 
 
 ### Database migrations
 
-Twelve additive migrations (`0044`–`0055`) run automatically on startup — no manual steps. No data is dropped or destructively rewritten; existing rows already satisfy every new constraint.
+Thirteen additive migrations (`0044`–`0056`) run automatically on startup — no manual steps. No data is dropped or destructively rewritten; existing rows already satisfy every new constraint.
 
 - `0044` — schema hardening: four timestamp columns to `NOT NULL`, foreign-key and hot-path composite indexes, `CHECK` constraints on the enum-like text columns (roles, agent visibility, invite/connection types and statuses), and the `invites.claimed_by_user_id` foreign key switched to `ON DELETE SET NULL`.
 - `0045` — per-agent starter prompts (`agents.starter_prompts`, defaults to empty).
@@ -332,6 +332,7 @@ Twelve additive migrations (`0044`–`0055`) run automatically on startup — no
 - `0053` — per-turn context-window usage tracking (`usage_records.context_tokens`).
 - `0054` — Knowledge Base tables (`kb_documents`, `kb_chunks`) with the pgvector index; enables the `vector` extension (see the breaking change above).
 - `0055` — the Knowledge Base async index-job queue (`kb_index_jobs`) backing the background reindex.
+- `0056` — the `openai_compatible_providers` table, behind connecting an OpenAI-compatible endpoint. This number belongs to the v0.9.x line only: the same table reaches later releases as `0059`, which is why that one creates it `IF NOT EXISTS`.
 
 ## Upgrading from v0.7.0 to v0.8.0
 
