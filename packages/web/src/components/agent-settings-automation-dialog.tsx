@@ -3,9 +3,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
-import { apiGet, apiPost, errorMessage } from "@/lib/api-client";
+import { apiGet, apiPost, apiPut, errorMessage } from "@/lib/api-client";
 import { AUTOMATION_MAX_SWEEP_WINDOW_DAYS } from "@/lib/schemas/automations";
-import type { AutomationConnectionOption, CreateAutomationInput } from "@/lib/schemas/automations";
+import type {
+  AutomationConnectionOption,
+  AutomationListItem,
+  CreateAutomationInput,
+  EditAutomationInput,
+} from "@/lib/schemas/automations";
 import type { EmailWorkflowFilter } from "@/lib/email-workflows/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -35,30 +40,60 @@ function parseList(value: string): string[] {
 }
 
 /**
- * The create dialog for an Inbox Agent email workflow (#139) — the first UI path
- * to author one. It resolves the same object POST /api/automations writes, so it
- * shares the {@link CreateAutomationInput} contract with the route and the future
- * conversational tool (#705).
+ * The form's field state seeded from an existing workflow (edit mode) or blank
+ * (create mode). List filters become comma-joined strings — the inverse of
+ * {@link parseList} — so what the form parses on submit round-trips what it
+ * rendered. One function feeds both the initial state and the reset-on-reopen.
+ */
+function fieldsFromWorkflow(workflow?: AutomationListItem) {
+  const filter = workflow?.filter ?? {};
+  return {
+    name: workflow?.name ?? "",
+    action: workflow?.action ?? "",
+    from: (filter.from ?? []).join(", "),
+    toDomain: (filter.toDomain ?? []).join(", "),
+    subjectContains: (filter.subjectContains ?? []).join(", "),
+    hasAttachment: filter.hasAttachment ?? false,
+    attachmentType: filter.attachmentType ?? "",
+    folder: filter.folder ?? "",
+    sweepWindowDays: String(workflow?.sweepWindowDays ?? DEFAULT_SWEEP_WINDOW_DAYS),
+    selectedConnectionIds: workflow?.connectionIds ?? [],
+  };
+}
+
+/**
+ * The create/edit dialog for an Inbox Agent email workflow (#139). With no
+ * `workflow` it authors a new one (POST /api/automations); given a `workflow` it
+ * edits that one in place (PUT /api/automations/[id]). One form, because both
+ * write the identical structured object — the edit path just starts pre-filled.
+ * It shares the {@link CreateAutomationInput}/{@link EditAutomationInput}
+ * contracts with the routes and the future conversational tool (#705).
  *
  * The mailbox picker is populated from GET /api/automations/connections, which
- * resolves choices through the same email-read permission gate the create route
- * enforces — so the form can only offer mailboxes the server will accept.
+ * resolves choices through the same email-read permission gate the write routes
+ * enforce — so the form can only offer mailboxes the server will accept.
  *
- * Propose, don't self-activate: the route always writes the workflow
- * pending + disabled, so there is no "enable now" control here — activation is
- * the reviewer's separate step in the tab.
+ * Propose, don't self-activate: neither path touches `enabled`/`status`. A new
+ * workflow is written pending + disabled; an edit leaves activation exactly as it
+ * was. There is no "enable now" control here — activation is the reviewer's
+ * separate toggle in the tab.
  */
-export function AgentSettingsAutomationCreateDialog({
+export function AgentSettingsAutomationDialog({
   agentId,
   open,
   onOpenChange,
-  onCreated,
+  onSaved,
+  workflow,
 }: {
   agentId: string;
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onCreated: () => void;
+  onSaved: () => void;
+  /** When set, the dialog edits this workflow instead of creating a new one. */
+  workflow?: AutomationListItem;
 }) {
+  const isEdit = workflow != null;
+
   const [connections, setConnections] = useState<AutomationConnectionOption[]>([]);
   const [loadingConnections, setLoadingConnections] = useState(true);
   const [connectionsError, setConnectionsError] = useState<string | null>(null);
@@ -68,34 +103,43 @@ export function AgentSettingsAutomationCreateDialog({
   // never clobber the picker a reopen just refreshed.
   const loadSeqRef = useRef(0);
 
-  const [name, setName] = useState("");
-  const [action, setAction] = useState("");
-  const [from, setFrom] = useState("");
-  const [toDomain, setToDomain] = useState("");
-  const [subjectContains, setSubjectContains] = useState("");
-  const [hasAttachment, setHasAttachment] = useState(false);
-  const [attachmentType, setAttachmentType] = useState("");
-  const [folder, setFolder] = useState("");
-  const [sweepWindowDays, setSweepWindowDays] = useState(String(DEFAULT_SWEEP_WINDOW_DAYS));
-  const [selectedConnectionIds, setSelectedConnectionIds] = useState<string[]>([]);
+  // Seed initial state from the workflow (edit) or blanks (create). Lazy so it
+  // reads the workflow once, on mount — the mount-open case (open=true from the
+  // first render) never fires the reset-on-open branch below, so the initial
+  // state is what pre-fills an edit dialog opened directly.
+  const [initial] = useState(() => fieldsFromWorkflow(workflow));
+  const [name, setName] = useState(initial.name);
+  const [action, setAction] = useState(initial.action);
+  const [from, setFrom] = useState(initial.from);
+  const [toDomain, setToDomain] = useState(initial.toDomain);
+  const [subjectContains, setSubjectContains] = useState(initial.subjectContains);
+  const [hasAttachment, setHasAttachment] = useState(initial.hasAttachment);
+  const [attachmentType, setAttachmentType] = useState(initial.attachmentType);
+  const [folder, setFolder] = useState(initial.folder);
+  const [sweepWindowDays, setSweepWindowDays] = useState(initial.sweepWindowDays);
+  const [selectedConnectionIds, setSelectedConnectionIds] = useState<string[]>(
+    initial.selectedConnectionIds
+  );
 
   // Fresh form on each open (React-recommended "adjust state during render"
-  // instead of an effect). Also clears the picker and re-arms the loading state
-  // so a reopen re-fetches rather than showing a stale mailbox list.
+  // instead of an effect) — re-seeded from the current workflow so a reopened
+  // edit dialog shows the stored values again. Also clears the picker and
+  // re-arms loading so a reopen re-fetches rather than showing a stale list.
   const [prevOpen, setPrevOpen] = useState(open);
   if (prevOpen !== open) {
     setPrevOpen(open);
     if (open) {
-      setName("");
-      setAction("");
-      setFrom("");
-      setToDomain("");
-      setSubjectContains("");
-      setHasAttachment(false);
-      setAttachmentType("");
-      setFolder("");
-      setSweepWindowDays(String(DEFAULT_SWEEP_WINDOW_DAYS));
-      setSelectedConnectionIds([]);
+      const seed = fieldsFromWorkflow(workflow);
+      setName(seed.name);
+      setAction(seed.action);
+      setFrom(seed.from);
+      setToDomain(seed.toDomain);
+      setSubjectContains(seed.subjectContains);
+      setHasAttachment(seed.hasAttachment);
+      setAttachmentType(seed.attachmentType);
+      setFolder(seed.folder);
+      setSweepWindowDays(seed.sweepWindowDays);
+      setSelectedConnectionIds(seed.selectedConnectionIds);
       setConnections([]);
       setConnectionsError(null);
       setLoadingConnections(true);
@@ -176,22 +220,39 @@ export function AgentSettingsAutomationCreateDialog({
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!canSubmit) return;
-    const payload: CreateAutomationInput = {
-      agentId,
-      name: name.trim(),
-      action: action.trim(),
-      filter: buildFilter(),
-      connectionIds: selectedConnectionIds,
-      sweepWindowDays: parsedSweepDays,
-    };
     setSubmitting(true);
     try {
-      await apiPost("/api/automations", payload);
-      toast.success("Automation created — review and enable it below.");
-      onCreated();
+      if (workflow) {
+        // Edit: replace the workflow's editable representation. No agentId — a
+        // workflow never changes agents; no enabled — activation stays the tab's
+        // toggle.
+        const payload: EditAutomationInput = {
+          name: name.trim(),
+          action: action.trim(),
+          filter: buildFilter(),
+          connectionIds: selectedConnectionIds,
+          sweepWindowDays: parsedSweepDays,
+        };
+        await apiPut(`/api/automations/${workflow.id}`, payload);
+        toast.success("Automation updated.");
+      } else {
+        const payload: CreateAutomationInput = {
+          agentId,
+          name: name.trim(),
+          action: action.trim(),
+          filter: buildFilter(),
+          connectionIds: selectedConnectionIds,
+          sweepWindowDays: parsedSweepDays,
+        };
+        await apiPost("/api/automations", payload);
+        toast.success("Automation created — review and enable it below.");
+      }
+      onSaved();
       onOpenChange(false);
     } catch (e) {
-      toast.error(errorMessage(e, "Failed to create automation"));
+      toast.error(
+        errorMessage(e, isEdit ? "Failed to update automation" : "Failed to create automation")
+      );
     } finally {
       setSubmitting(false);
     }
@@ -201,10 +262,11 @@ export function AgentSettingsAutomationCreateDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-lg">
         <DialogHeader>
-          <DialogTitle>New automation</DialogTitle>
+          <DialogTitle>{isEdit ? "Edit automation" : "New automation"}</DialogTitle>
           <DialogDescription>
-            Describe which mail this agent should act on and what to do. It&apos;s created paused —
-            you review and enable it afterwards.
+            {isEdit
+              ? "Change which mail this agent acts on and what it does. Saving doesn't change whether it's enabled — use the toggle in the list for that."
+              : "Describe which mail this agent should act on and what to do. It's created paused — you review and enable it afterwards."}
           </DialogDescription>
         </DialogHeader>
 
@@ -364,7 +426,7 @@ export function AgentSettingsAutomationCreateDialog({
               Cancel
             </Button>
             <Button type="submit" disabled={!canSubmit}>
-              Create automation
+              {isEdit ? "Save changes" : "Create automation"}
             </Button>
           </DialogFooter>
         </form>

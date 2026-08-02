@@ -1,19 +1,20 @@
 // @vitest-environment jsdom
-// Component tests for the Automations create dialog — the form that finally
-// gives a human a way to author an email workflow in the UI (#139). Until this,
-// the only create path was the raw POST API; the tab could review/enable/delete
-// but never create. Both this form and the conversational tool (#705) write the
-// SAME object through POST /api/automations ("same object, one system").
+// Component tests for the Automations create/edit dialog — the one form a human
+// uses to author OR change an email workflow in the UI (#139). With no workflow
+// it POSTs a CreateAutomationInput to /api/automations; given a workflow it
+// pre-fills and PUTs an EditAutomationInput to /api/automations/[id]. Both write
+// the SAME structured object ("same object, one system"; the conversational tool
+// #705 will too).
 //
-// The dialog GETs the agent's email-readable mailboxes (the picker options) and
-// POSTs a CreateAutomationInput. We mock global.fetch (the api-client helpers
-// read the body via text()+JSON.parse), so each Response exposes json() + text().
+// The dialog GETs the agent's email-readable mailboxes (the picker options). We
+// mock global.fetch (the api-client helpers read the body via text()+JSON.parse),
+// so each Response exposes json() + text().
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
 import { toast } from "sonner";
-import { AgentSettingsAutomationCreateDialog } from "@/components/agent-settings-automation-create-dialog";
+import { AgentSettingsAutomationDialog } from "@/components/agent-settings-automation-dialog";
 
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
@@ -23,7 +24,7 @@ const CONNECTIONS = [
   { id: "conn-b", name: "Newsletters" },
 ];
 
-describe("AgentSettingsAutomationCreateDialog", () => {
+describe("AgentSettingsAutomationDialog", () => {
   let fetchSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
@@ -68,14 +69,50 @@ describe("AgentSettingsAutomationCreateDialog", () => {
     );
   }
 
+  function findPut(url: string) {
+    return fetchSpy.mock.calls.find(
+      (c: unknown[]) => String(c[0]) === url && (c[1] as RequestInit)?.method === "PUT"
+    );
+  }
+
+  /** An existing workflow to seed the dialog's edit mode. Its connection is one
+   *  of CONNECTIONS so the picker can pre-check it. */
+  const EXISTING_WORKFLOW = {
+    id: "wf-7",
+    name: "File supplier invoices",
+    filter: { from: ["ap@acme.com"], subjectContains: ["invoice"], hasAttachment: true },
+    action: "Draft a supplier bill in Odoo.",
+    enabled: false,
+    status: "pending" as const,
+    sweepWindowDays: 30,
+    createdBy: "user-1",
+    createdAt: "2026-01-01T00:00:00.000Z",
+    connectionIds: ["conn-a"],
+  };
+
+  /** GET connections → options; PUT edit → 200. */
+  function mockEditHappyPath(connections: unknown[] = CONNECTIONS) {
+    vi.mocked(global.fetch).mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.startsWith("/api/automations/connections")) return jsonResponse(connections);
+      if (
+        url === `/api/automations/${EXISTING_WORKFLOW.id}` &&
+        (init as RequestInit)?.method === "PUT"
+      ) {
+        return jsonResponse({ id: EXISTING_WORKFLOW.id, name: "x" });
+      }
+      return jsonResponse({});
+    });
+  }
+
   it("loads the agent's mailboxes scoped to the agent and offers them as options", async () => {
     mockHappyPath();
     render(
-      <AgentSettingsAutomationCreateDialog
+      <AgentSettingsAutomationDialog
         agentId={AGENT_ID}
         open={true}
         onOpenChange={vi.fn()}
-        onCreated={vi.fn()}
+        onSaved={vi.fn()}
       />
     );
 
@@ -90,15 +127,15 @@ describe("AgentSettingsAutomationCreateDialog", () => {
 
   it("POSTs a well-formed create payload and then reports success", async () => {
     mockHappyPath();
-    const onCreated = vi.fn();
+    const onSaved = vi.fn();
     const onOpenChange = vi.fn();
     const user = userEvent.setup();
     render(
-      <AgentSettingsAutomationCreateDialog
+      <AgentSettingsAutomationDialog
         agentId={AGENT_ID}
         open={true}
         onOpenChange={onOpenChange}
-        onCreated={onCreated}
+        onSaved={onSaved}
       />
     );
 
@@ -130,7 +167,7 @@ describe("AgentSettingsAutomationCreateDialog", () => {
       sweepWindowDays: 14,
     });
 
-    await waitFor(() => expect(onCreated).toHaveBeenCalled());
+    await waitFor(() => expect(onSaved).toHaveBeenCalled());
     expect(onOpenChange).toHaveBeenCalledWith(false);
     expect(toast.success).toHaveBeenCalled();
   });
@@ -139,11 +176,11 @@ describe("AgentSettingsAutomationCreateDialog", () => {
     mockHappyPath();
     const user = userEvent.setup();
     render(
-      <AgentSettingsAutomationCreateDialog
+      <AgentSettingsAutomationDialog
         agentId={AGENT_ID}
         open={true}
         onOpenChange={vi.fn()}
-        onCreated={vi.fn()}
+        onSaved={vi.fn()}
       />
     );
     await waitFor(() =>
@@ -165,11 +202,11 @@ describe("AgentSettingsAutomationCreateDialog", () => {
     mockHappyPath();
     const user = userEvent.setup();
     render(
-      <AgentSettingsAutomationCreateDialog
+      <AgentSettingsAutomationDialog
         agentId={AGENT_ID}
         open={true}
         onOpenChange={vi.fn()}
-        onCreated={vi.fn()}
+        onSaved={vi.fn()}
       />
     );
     await waitFor(() =>
@@ -198,15 +235,15 @@ describe("AgentSettingsAutomationCreateDialog", () => {
       }
       return jsonResponse({});
     });
-    const onCreated = vi.fn();
+    const onSaved = vi.fn();
     const onOpenChange = vi.fn();
     const user = userEvent.setup();
     render(
-      <AgentSettingsAutomationCreateDialog
+      <AgentSettingsAutomationDialog
         agentId={AGENT_ID}
         open={true}
         onOpenChange={onOpenChange}
-        onCreated={onCreated}
+        onSaved={onSaved}
       />
     );
     await waitFor(() =>
@@ -219,7 +256,7 @@ describe("AgentSettingsAutomationCreateDialog", () => {
     await user.click(screen.getByRole("button", { name: /create automation/i }));
 
     await waitFor(() => expect(toast.error).toHaveBeenCalledWith("The agent has no email access"));
-    expect(onCreated).not.toHaveBeenCalled();
+    expect(onSaved).not.toHaveBeenCalled();
     // The dialog is never asked to close on failure — the user can fix and retry.
     expect(onOpenChange).not.toHaveBeenCalledWith(false);
   });
@@ -228,11 +265,11 @@ describe("AgentSettingsAutomationCreateDialog", () => {
     mockHappyPath();
     const user = userEvent.setup();
     render(
-      <AgentSettingsAutomationCreateDialog
+      <AgentSettingsAutomationDialog
         agentId={AGENT_ID}
         open={true}
         onOpenChange={vi.fn()}
-        onCreated={vi.fn()}
+        onSaved={vi.fn()}
       />
     );
     await waitFor(() =>
@@ -264,11 +301,11 @@ describe("AgentSettingsAutomationCreateDialog", () => {
     mockHappyPath();
     const user = userEvent.setup();
     render(
-      <AgentSettingsAutomationCreateDialog
+      <AgentSettingsAutomationDialog
         agentId={AGENT_ID}
         open={true}
         onOpenChange={vi.fn()}
-        onCreated={vi.fn()}
+        onSaved={vi.fn()}
       />
     );
     await waitFor(() =>
@@ -301,11 +338,11 @@ describe("AgentSettingsAutomationCreateDialog", () => {
     });
     const user = userEvent.setup();
     render(
-      <AgentSettingsAutomationCreateDialog
+      <AgentSettingsAutomationDialog
         agentId={AGENT_ID}
         open={true}
         onOpenChange={vi.fn()}
-        onCreated={vi.fn()}
+        onSaved={vi.fn()}
       />
     );
 
@@ -332,15 +369,15 @@ describe("AgentSettingsAutomationCreateDialog", () => {
       }
       return jsonResponse({});
     });
-    const props = { agentId: AGENT_ID, onOpenChange: vi.fn(), onCreated: vi.fn() };
-    const { rerender } = render(<AgentSettingsAutomationCreateDialog {...props} open={true} />);
+    const props = { agentId: AGENT_ID, onOpenChange: vi.fn(), onSaved: vi.fn() };
+    const { rerender } = render(<AgentSettingsAutomationDialog {...props} open={true} />);
     // Make sure the first open's request is actually in flight before closing —
     // the load is deferred to a microtask, so closing too early would cancel it.
     await waitFor(() => expect(connectionCalls).toBe(1));
 
     // Close and reopen while the first request is still in flight.
-    rerender(<AgentSettingsAutomationCreateDialog {...props} open={false} />);
-    rerender(<AgentSettingsAutomationCreateDialog {...props} open={true} />);
+    rerender(<AgentSettingsAutomationDialog {...props} open={false} />);
+    rerender(<AgentSettingsAutomationDialog {...props} open={true} />);
     await waitFor(() =>
       expect(screen.getByRole("checkbox", { name: /Fresh mailbox/i })).toBeInTheDocument()
     );
@@ -350,5 +387,121 @@ describe("AgentSettingsAutomationCreateDialog", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(screen.queryByText(/Stale mailbox/i)).not.toBeInTheDocument();
     expect(screen.getByRole("checkbox", { name: /Fresh mailbox/i })).toBeInTheDocument();
+  });
+
+  // --- Edit mode: the SAME dialog, seeded with an existing workflow, PUTs the
+  //     edited representation instead of POSTing a new one. Same object, one form.
+  describe("edit mode", () => {
+    it("prefills the form from the workflow and checks its current mailbox", async () => {
+      mockEditHappyPath();
+      render(
+        <AgentSettingsAutomationDialog
+          agentId={AGENT_ID}
+          open={true}
+          onOpenChange={vi.fn()}
+          onSaved={vi.fn()}
+          workflow={EXISTING_WORKFLOW}
+        />
+      );
+
+      await waitFor(() =>
+        expect(screen.getByRole("checkbox", { name: /Invoices mailbox/i })).toBeInTheDocument()
+      );
+      // Scalar + list filter fields come back pre-filled from the stored workflow.
+      expect(screen.getByLabelText(/^Name/i)).toHaveValue("File supplier invoices");
+      expect(screen.getByLabelText(/Instruction/i)).toHaveValue("Draft a supplier bill in Odoo.");
+      expect(screen.getByLabelText(/^From/i)).toHaveValue("ap@acme.com");
+      expect(screen.getByLabelText(/Subject contains/i)).toHaveValue("invoice");
+      expect(screen.getByRole("checkbox", { name: /has an attachment/i })).toBeChecked();
+      expect(screen.getByLabelText(/Look back/i)).toHaveValue(30);
+      // The workflow's own mailbox is pre-selected; the other is not.
+      expect(screen.getByRole("checkbox", { name: /Invoices mailbox/i })).toBeChecked();
+      expect(screen.getByRole("checkbox", { name: /Newsletters/i })).not.toBeChecked();
+      // Edit affordances, not create ones.
+      expect(screen.getByRole("button", { name: /save changes/i })).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /create automation/i })).not.toBeInTheDocument();
+    });
+
+    it("PUTs the edited representation to /api/automations/[id] and reports success", async () => {
+      mockEditHappyPath();
+      const onSaved = vi.fn();
+      const onOpenChange = vi.fn();
+      const user = userEvent.setup();
+      render(
+        <AgentSettingsAutomationDialog
+          agentId={AGENT_ID}
+          open={true}
+          onOpenChange={onOpenChange}
+          onSaved={onSaved}
+          workflow={EXISTING_WORKFLOW}
+        />
+      );
+      await waitFor(() =>
+        expect(screen.getByRole("checkbox", { name: /Invoices mailbox/i })).toBeInTheDocument()
+      );
+
+      // Rename, and add the second mailbox to the set.
+      const nameInput = screen.getByLabelText(/^Name/i);
+      await user.clear(nameInput);
+      await user.type(nameInput, "File and pay invoices");
+      await user.click(screen.getByRole("checkbox", { name: /Newsletters/i }));
+      await user.click(screen.getByRole("button", { name: /save changes/i }));
+
+      const url = `/api/automations/${EXISTING_WORKFLOW.id}`;
+      await waitFor(() => expect(findPut(url)).toBeTruthy());
+      const body = JSON.parse((findPut(url)![1] as RequestInit).body as string);
+      // No agentId in the edit payload — a workflow never changes agents.
+      expect(body).toEqual({
+        name: "File and pay invoices",
+        action: "Draft a supplier bill in Odoo.",
+        filter: { from: ["ap@acme.com"], subjectContains: ["invoice"], hasAttachment: true },
+        connectionIds: ["conn-a", "conn-b"],
+        sweepWindowDays: 30,
+      });
+
+      await waitFor(() => expect(onSaved).toHaveBeenCalled());
+      expect(onOpenChange).toHaveBeenCalledWith(false);
+      expect(toast.success).toHaveBeenCalled();
+    });
+
+    it("surfaces the API error and stays open when the edit fails", async () => {
+      vi.mocked(global.fetch).mockImplementation(async (input, init) => {
+        const url = String(input);
+        if (url.startsWith("/api/automations/connections")) return jsonResponse(CONNECTIONS);
+        if (
+          url === `/api/automations/${EXISTING_WORKFLOW.id}` &&
+          (init as RequestInit)?.method === "PUT"
+        ) {
+          return jsonResponse(
+            { error: "The agent has no email access" },
+            { ok: false, status: 400 }
+          );
+        }
+        return jsonResponse({});
+      });
+      const onSaved = vi.fn();
+      const onOpenChange = vi.fn();
+      const user = userEvent.setup();
+      render(
+        <AgentSettingsAutomationDialog
+          agentId={AGENT_ID}
+          open={true}
+          onOpenChange={onOpenChange}
+          onSaved={onSaved}
+          workflow={EXISTING_WORKFLOW}
+        />
+      );
+      await waitFor(() =>
+        expect(screen.getByRole("checkbox", { name: /Invoices mailbox/i })).toBeInTheDocument()
+      );
+
+      await user.click(screen.getByRole("button", { name: /save changes/i }));
+
+      await waitFor(() =>
+        expect(toast.error).toHaveBeenCalledWith("The agent has no email access")
+      );
+      expect(onSaved).not.toHaveBeenCalled();
+      expect(onOpenChange).not.toHaveBeenCalledWith(false);
+    });
   });
 });
