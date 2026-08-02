@@ -198,6 +198,18 @@ docker compose pull && docker compose up -d && docker image prune -f
 
 ### Upgrade notes
 
+#### The domain lock no longer turns away Pinchy's own plugins
+
+The one to upgrade for if you have locked your domain — which the [hardening guide](/guides/hardening/) tells you to do. The host check waved internal plugin routes through by naming them one at a time, and the list had fallen behind the code. Three routes were missing from it, so on a domain-locked instance each was answered `403 Forbidden: request host does not match the configured domain`:
+
+- `/api/internal/knowledge/search` — **the knowledge base did not work at all.** Every `knowledge_search` failed, and a knowledge-base agent could only tell you it couldn't reach its documents.
+- `/api/internal/channel-messages` — Telegram conversations were not captured into Pinchy's own store, so a chat could be listed and then open empty.
+- `/api/internal/integrations/:id/report-auth-failure` — an integration whose credentials had expired could not say so.
+
+None of this was visible: the plugins reach Pinchy on a Docker-internal hostname that by construction never matches your public domain, and a rejected request left no trace on the Pinchy side. Both are fixed. The whole `/api/internal/` prefix is now exempt by rule rather than by list, so a future plugin route cannot go missing the same way, and a blocked `/api/` request writes an `auth.host_blocked` audit row.
+
+Nothing to configure. **If you run with a domain lock, re-index your knowledge-base agents after upgrading** — indexing itself was never blocked, but if you tried and gave up, this is why.
+
 #### The internal credentials endpoint now checks which agent is asking
 
 Worth upgrading for on a multi-agent instance. `GET /api/internal/integrations/:connectionId/credentials` authorized on the gateway token alone. That token is a single shared secret inlined into every plugin's config, so it proved that _something inside the OpenClaw container_ was asking — and nothing about whether the caller had a claim to the connection it named. A plugin could name any connection id and receive decrypted credentials belonging to a different agent.
@@ -234,7 +246,9 @@ New agents no longer get that instruction. **Existing ones keep it**: their oper
 
 ```markdown
 ## Document Access
+
 Your documents are in:
+
 - `/data/handbook`
 ```
 
