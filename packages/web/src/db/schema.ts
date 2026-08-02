@@ -762,8 +762,9 @@ export const usageRecords = pgTable(
     }),
     // Per-turn accounting (#483): the OpenClaw run id of the `model.completed`
     // turn this row records, plus the trajectory `seq` watermark. Both nullable
-    // so the gauge poller (system sessions) and the /api/internal/usage/record
-    // sink (plugin vision tokens) keep inserting without a run id.
+    // so the /api/internal/usage/record sink (plugin vision tokens) keeps
+    // inserting without a run id — and so the gauge-poller rows written before
+    // #767 moved system sessions onto the per-turn path stay readable.
     runId: text("run_id"),
     seq: integer("seq"),
     // How full the model's context window got on this turn — the size of the
@@ -776,9 +777,10 @@ export const usageRecords = pgTable(
     // which the usage payload shows to be disjoint — since all three are tokens
     // the model read, differing only in how they are billed.
     //
-    // Nullable: only the per-turn trajectory path can know it. The gauge poller
-    // and the /api/internal/usage/record sink leave it NULL, as do events with
-    // no usable promptCache — NULL means "unknown", never "empty".
+    // Nullable: only the per-turn trajectory path can know it. The
+    // /api/internal/usage/record sink leaves it NULL, as do events with no
+    // usable promptCache and every row the gauge poller wrote before #767 —
+    // NULL means "unknown", never "empty".
     //
     // This is the read-side of the 2026-07-15 "Piper" incident: the agent ran at
     // ~170k context with compaction never firing (its window was configured at
@@ -801,8 +803,9 @@ export const usageRecords = pgTable(
     index("idx_usage_agent_timestamp").on(table.agentId, table.timestamp),
     // Idempotent per-turn inserts: one row per (session, run). A plain unique
     // index suffices — Postgres treats NULLs as distinct (default NULLS
-    // DISTINCT), so per-turn rows (run_id NOT NULL) dedup while the gauge poller
-    // and the /api/internal/usage/record sink (run_id NULL) insert freely.
+    // DISTINCT), so per-turn rows (run_id NOT NULL) dedup while the
+    // /api/internal/usage/record sink (run_id NULL) inserts freely — and the
+    // pre-#767 gauge rows (also run_id NULL) never collide with a real run id.
     // onConflictDoNothing(target [sessionKey, runId]) relies on this index.
     uniqueIndex("uq_usage_session_run").on(table.sessionKey, table.runId),
   ]

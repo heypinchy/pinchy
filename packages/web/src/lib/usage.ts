@@ -5,11 +5,11 @@ import { eq, sum } from "drizzle-orm";
 import type { OpenClawClient } from "openclaw-node";
 
 /**
- * OpenClaw session token snapshot passed from callers that already have
- * one in hand (notably the poller, which fetches sessions.list() once per
- * tick and fans out to recordUsage for each session). If omitted, the
- * implementation does its own sessions.list() round-trip — useful for
- * one-off callers like the "done" event path from the chat route.
+ * OpenClaw session token snapshot passed from callers that already have one in
+ * hand, so `recordUsage` skips its own sessions.list() round-trip. The usage
+ * poller used to be that caller; since #767 it records every session — chat
+ * and system alike — through the per-turn trajectory recorder, so `recordUsage`
+ * has no production caller left at all (see the note on `recordUsage` itself).
  */
 export interface SessionTokenSnapshot {
   inputTokens?: number;
@@ -120,6 +120,18 @@ export async function getModelPricing(
   return pricingMap.get(modelId) ?? null;
 }
 
+/**
+ * Gauge-delta usage recording: read OpenClaw's cumulative per-session counters,
+ * subtract the watermark, insert the difference.
+ *
+ * NO PRODUCTION CALLER since #767. Chat sessions moved to the per-turn
+ * trajectory recorder in #483 and system sessions followed in #767; the
+ * `/api/internal/usage/record` sink writes its own `db.insert` rather than
+ * going through here. Only tests reach it. It is kept for one release so the
+ * routing change can be reverted on its own, and is slated for removal — do
+ * not wire new callers to it: it drops turns that complete between polls,
+ * which is the whole reason both paths left it.
+ */
 export async function recordUsage(params: RecordUsageParams): Promise<void> {
   const { sessionKey } = params;
   // Normalize to lowercase to match OpenClaw's key format

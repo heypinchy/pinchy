@@ -1,7 +1,7 @@
 /**
  * Pure USD cost estimate for a set of token classes — the single source of
- * truth shared by the gauge poller (system sessions) and the per-turn recorder
- * (#483 chat sessions). OpenClaw's model config carries only input/output
+ * truth for the per-turn recorder, which prices every session's turns (#483
+ * chat, #767 system). OpenClaw's model config carries only input/output
  * prices, so cache classes use Anthropic-style ratios: a cache READ is 10% of
  * the input price, a cache WRITE is 125%.
  */
