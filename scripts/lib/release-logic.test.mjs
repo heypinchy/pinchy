@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   parseAndValidateVersion,
+  compareVersions,
   bumpPackageJson,
   buildTagName,
   buildCommitMessage,
@@ -544,6 +545,14 @@ test("finalizeUpgradeSection is a no-op when no matching section exists", () => 
   assert.equal(finalizeUpgradeSection(mdx, "0.5.8", "0.6.0"), mdx);
 });
 
+test("compareVersions orders numerically, not lexically", () => {
+  // The trap this exists for: "0.10.0" < "0.9.0" as strings.
+  assert.ok(compareVersions("0.9.0", "0.10.0") < 0);
+  assert.ok(compareVersions("0.10.0", "0.9.0") > 0);
+  assert.equal(compareVersions("0.9.0", "0.9.0"), 0);
+  assert.ok(compareVersions("0.9.1", "0.9.0") > 0);
+});
+
 // assertNoStaleUpgradeSections — CI guard against unfrozen / drifted sections.
 
 test("assertNoStaleUpgradeSections passes when the single placeholder section matches latest", () => {
@@ -570,6 +579,40 @@ test("assertNoStaleUpgradeSections passes with zero placeholder sections (post-r
     "Older.",
   ].join("\n");
   assert.doesNotThrow(() => assertNoStaleUpgradeSections(mdx, "0.6.0"));
+});
+
+// The release-branch workflow: v0.9.0 was cut on release/0.9, so only that
+// branch took the version bump. main stays on 0.8.0 until its own next cut,
+// while its newest frozen section already reads v0.9.0. Reading package.json
+// alone made `from v0.9.0` unopenable on main — which is how d7ea428d's upgrade
+// note ended up inside the frozen v0.9.0 section.
+test("assertNoStaleUpgradeSections accepts a 'from' the file says is released but package.json has not caught up to", () => {
+  const mdx = [
+    "## Upgrading from v0.9.0 to %%PINCHY_VERSION%%",
+    "",
+    "Current, on main.",
+    "",
+    "## Upgrading from v0.8.0 to v0.9.0",
+    "",
+    "Frozen — cut on release/0.9, so main never bumped package.json.",
+  ].join("\n");
+  assert.doesNotThrow(() => assertNoStaleUpgradeSections(mdx, "0.8.0"));
+});
+
+test("assertNoStaleUpgradeSections still throws on a 'from' newer than anything released", () => {
+  const mdx = [
+    "## Upgrading from v1.0.0 to %%PINCHY_VERSION%%",
+    "",
+    "Invented a release that never happened.",
+    "",
+    "## Upgrading from v0.8.0 to v0.9.0",
+    "",
+    "Frozen.",
+  ].join("\n");
+  assert.throws(
+    () => assertNoStaleUpgradeSections(mdx, "0.8.0"),
+    /stale upgrade-notes section/i,
+  );
 });
 
 test("assertNoStaleUpgradeSections throws when the placeholder section's 'from' lags the latest tag (the v0.5.8 miss)", () => {

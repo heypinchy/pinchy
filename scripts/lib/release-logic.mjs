@@ -20,6 +20,19 @@ export function parseAndValidateVersion(input) {
 }
 
 /**
+ * Orders two versions (no leading 'v'). Negative / zero / positive, like a
+ * comparator: `compareVersions("0.9.0", "0.10.0") < 0`.
+ * @param {string} a
+ * @param {string} b
+ * @returns {number}
+ */
+export function compareVersions(a, b) {
+  const [x, y] = [a.split(".").map(Number), b.split(".").map(Number)];
+  for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return x[i] - y[i];
+  return 0;
+}
+
+/**
  * Returns the contents of a package.json file with the version field updated.
  * Preserves formatting and trailing newline.
  * @param {string} content - raw file contents
@@ -263,11 +276,22 @@ export function finalizeUpgradeSection(mdx, prevVersion, targetVersion) {
  * Invariant enforced:
  *  - At most ONE `## Upgrading from vX to %%PINCHY_VERSION%%` section may exist
  *    (the current/in-progress one). Two means a prior release never froze.
- *  - If one exists, its `from` version must equal the latest released version
- *    (root package.json#version). A lagging `from` means the previous release
- *    forgot to freeze its notes.
+ *  - If one exists, its `from` version must equal the latest released version.
+ *    A lagging `from` means the previous release forgot to freeze its notes.
  *  - A frozen (concrete-headed `to vY`) section must not keep `%%PINCHY_VERSION%%`
  *    anywhere in its body.
+ *
+ * "Latest released version" is the NEWER of `latestReleasedVersion` (root
+ * package.json#version) and the newest frozen `to vY` heading in the file — NOT
+ * package.json alone. Since releases are cut on a `release/X.Y` branch, only
+ * that branch gets the version bump; `main` deliberately stays on the previous
+ * number until its own next cut. So after v0.9.0 shipped, main's package.json
+ * still said 0.8.0 while its newest frozen section already said v0.9.0, and
+ * reading package.json alone made the correct next section — `from v0.9.0` —
+ * impossible to open. That is not hypothetical: it is why nobody opened one,
+ * and why d7ea428d's upgrade note landed inside the frozen v0.9.0 section.
+ * Taking the newer of the two keeps the v0.5.8 miss caught (there the lagging
+ * side is the FILE, so package.json wins) and works on both branches.
  *
  * Scope: only `## Upgrading from vX to …` sections are inspected. The preamble
  * and the "Standard upgrade" section legitimately render `%%PINCHY_VERSION%%` as
@@ -278,7 +302,7 @@ export function finalizeUpgradeSection(mdx, prevVersion, targetVersion) {
  * @throws {Error} on a stale, lagging, or duplicated placeholder section
  */
 export function assertNoStaleUpgradeSections(mdx, latestReleasedVersion) {
-  const latest = parseAndValidateVersion(latestReleasedVersion);
+  const pkgLatest = parseAndValidateVersion(latestReleasedVersion);
   const headingRe =
     /^##\s+Upgrading\s+from\s+v(\d+\.\d+\.\d+)\s+to\s+(v\d+\.\d+\.\d+|%%PINCHY_VERSION%%)\s*$/gm;
 
@@ -292,6 +316,15 @@ export function assertNoStaleUpgradeSections(mdx, latestReleasedVersion) {
       headingLen: m[0].length,
     });
   }
+
+  // The newest version this file already records as released. On a branch that
+  // did not take the release bump, this is ahead of package.json.
+  const frozenTos = matches
+    .filter((s) => s.to !== "%%PINCHY_VERSION%%")
+    .map((s) => s.to.slice(1));
+  const latest = [pkgLatest, ...frozenTos].reduce((a, b) =>
+    compareVersions(a, b) >= 0 ? a : b,
+  );
 
   const placeholderSections = [];
   for (const s of matches) {
@@ -545,12 +578,7 @@ export function movingTagForRef(refName) {
  * @returns {string[]} skipped release tags, oldest first (empty = ok)
  */
 export function findSkippedReleases(prevVersion, targetVersion, allTags) {
-  const key = (v) => v.split(".").map(Number);
-  const cmp = (a, b) => {
-    const [x, y] = [key(a), key(b)];
-    for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return x[i] - y[i];
-    return 0;
-  };
+  const cmp = compareVersions;
   return allTags
     .map((t) => t.trim())
     .filter((t) => /^v\d+\.\d+\.\d+$/.test(t))
