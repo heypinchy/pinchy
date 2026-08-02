@@ -143,13 +143,15 @@ export function fingerprintSectionBody(normalizedBody) {
  */
 export const KNOWN_PRE_GUARD_DRIFT = {
   "v0.9.0": {
-    kind: "misplaced-note",
+    kind: "retro-correction",
     summary:
-      "gained `A provider key that can't reach the runtime now says so` (ad4cdb3b) and " +
-      "`Ollama Cloud catalog: one model removed, two gain vision` (beadd844); both " +
-      "describe changes made after v0.9.0 shipped — #1028",
+      "the two misplaced notes were moved out again (819616e2), leaving two corrections " +
+      "to what v0.9.0 actually ships: the mount-your-data Aside now links the " +
+      "docker-compose.override.yml route instead of merely mentioning it, and the " +
+      "migration count was corrected from eleven (`0044`–`0054`) to thirteen " +
+      "(`0044`–`0056`) — v0.9.0 backports its own `0056` (2a113b25)",
     fingerprint:
-      "c8b82f35206654f0703b03107b936c758a6a090c03101b225ea55dd3f8984413",
+      "29062f1f34ef3eab61f6cefe4042b79ff138c35b25f064b55072ac0ddb91b401",
   },
   "v0.8.0": {
     kind: "misplaced-note",
@@ -428,7 +430,10 @@ export function formatProblems(problems) {
     `  • add a commit trailer referencing the issue:\n` +
     `        Allow-upgrade-note-edit: #<issue-number>\n` +
     `    (amend the commit, or add an empty commit with the trailer), OR\n` +
-    `  • apply the "allow-upgrade-note-edit" label to the PR.\n` +
+    `  • apply the "allow-upgrade-note-edit" label to the PR — but note that a\n` +
+    `    merge_group run carries no PR labels, so a label-only authorization passes\n` +
+    `    PR CI and is then rejected by the merge queue. Use the trailer for anything\n` +
+    `    that has to merge.\n` +
     `A [stale-allowlist] problem is never authorized this way — delete the entry.\n` +
     `See AGENTS.md § "A Released Upgrade Section Is Immutable".`
   );
