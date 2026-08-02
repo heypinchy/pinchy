@@ -450,6 +450,44 @@ describe("postChannelMessage", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  // #599: the drop line said "capture rejected (403)" and nothing else, while
+  // the response body named the cause outright ("request host does not match
+  // the configured domain"). Reading it turns an afternoon of guessing into a
+  // log line that says what to fix.
+  it("quotes the rejection body in the drop warning", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 403,
+      text: async () => '{"error":"Forbidden: request host does not match the configured domain"}',
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const logger = { warn: vi.fn() };
+
+    await postChannelMessage(cfg, logger, payload);
+
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+    const line = logger.warn.mock.calls[0][0] as string;
+    expect(line).toContain("403");
+    expect(line).toContain("request host does not match the configured domain");
+  });
+
+  it("still warns when the rejection body cannot be read", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 403,
+      text: async () => {
+        throw new Error("stream already consumed");
+      },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const logger = { warn: vi.fn() };
+
+    await postChannelMessage(cfg, logger, payload);
+
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+    expect(logger.warn.mock.calls[0][0]).toContain("403");
+  });
+
   it("retries a 5xx and throws after exhausting retries", async () => {
     const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 503 });
     vi.stubGlobal("fetch", fetchMock);

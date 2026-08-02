@@ -396,6 +396,36 @@ function surrogateId(direction: string, content: string, sentAt: number): string
 
 const MAX_RETRIES = 2;
 
+// Keep the log line readable: the useful part of a Pinchy error body is the
+// `error` string, and anything longer than this is a stack trace or an HTML
+// error page, neither of which belongs in a one-line warning.
+const MAX_REASON_CHARS = 200;
+
+/**
+ * Best-effort read of a rejection body, for the log line only. Returns an empty
+ * string if the body is unreadable — diagnosing a drop must never cause one.
+ */
+async function readErrorBody(res: { text?: () => Promise<string> }): Promise<string> {
+  try {
+    const body = (await res.text?.()) ?? "";
+    const trimmed = body.trim();
+    if (!trimmed) return "";
+    // Pinchy's API errors are `{"error":"…"}`; unwrap so the reason reads as a
+    // sentence rather than as JSON.
+    try {
+      const parsed = JSON.parse(trimmed) as { error?: unknown };
+      if (typeof parsed?.error === "string" && parsed.error) {
+        return parsed.error.slice(0, MAX_REASON_CHARS);
+      }
+    } catch {
+      // Not JSON (a proxy's HTML error page, say) — fall through to the raw text.
+    }
+    return trimmed.slice(0, MAX_REASON_CHARS);
+  } catch {
+    return "";
+  }
+}
+
 async function postChannelMessage(
   cfg: PluginConfig,
   logger: PluginLogger | undefined,
@@ -418,8 +448,13 @@ async function postChannelMessage(
       // request the server will keep rejecting. 5xx = transient; retry.
       if (res.ok) return;
       if (res.status < 500) {
+        // Quote the body: a 403 alone reads as "auth is broken somewhere" and
+        // sent a debugging session hunting the gateway token, while the body
+        // said outright that the domain lock had rejected the Host header
+        // (#599). Never let reading it turn a drop into a throw.
+        const reason = await readErrorBody(res);
         logger?.warn?.(
-          `[pinchy-transcript] capture rejected (${res.status}) for ${payload.direction} ${payload.channel} message; dropping`
+          `[pinchy-transcript] capture rejected (${res.status}${reason ? `: ${reason}` : ""}) for ${payload.direction} ${payload.channel} message; dropping`
         );
         return;
       }

@@ -21,6 +21,15 @@ const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 // - /api/internal/*   — bearer-token-authed (Authorization header) calls from
 //                       OpenClaw plugins; not browser-driven, so not CSRF-able.
 //                       Browsers cannot forge Authorization headers cross-origin.
+//                       That premise is a claim about every route under the
+//                       prefix, and it was false once: a session-authed browser
+//                       route (POST /api/internal/audit/background-run) sat
+//                       there and inherited this exemption, so a cross-site
+//                       POST could forge an audit row with the visitor's
+//                       session. src/__tests__/security/internal-routes-gateway-auth.test.ts
+//                       now fails on any internal route that isn't gateway-token
+//                       authed. The domain-lock host check exempts the same
+//                       prefix on the same grounds.
 const EXEMPT_PREFIXES = ["/api/auth/", "/api/internal/"];
 
 function parseOriginUrl(value: string): { protocol: string; host: string } | null {

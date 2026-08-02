@@ -58,8 +58,6 @@ export const API_DOC_EXEMPTIONS = {
     "gateway↔web handshake on the container network; no client outside OpenClaw may call it",
   "/api/internal/audit/tool-use":
     "gateway-only audit ingress, authed by the bootstrap gateway token",
-  "/api/internal/audit/background-run":
-    "gateway-only audit ingress for non-request agent runs",
   "/api/internal/usage/record":
     "gateway-only usage ingress, mirrors internal/audit/*",
   "/api/internal/channel-messages": "gateway-only channel-capture ingress",

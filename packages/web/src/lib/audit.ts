@@ -70,6 +70,9 @@ export type AuditEventType =
   | "auth.failed"
   | "auth.logout"
   | "auth.csrf_blocked"
+  // A request was rejected by the domain lock because its Host header didn't
+  // match the configured domain (server.ts / host-check.ts). API paths only.
+  | "auth.host_blocked"
   | "auth.password_reset_completed"
   | "auth.password_changed"
   // Written by withApiKey (lib/api-auth.ts) when a verified key reaches past

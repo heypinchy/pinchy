@@ -313,7 +313,7 @@ For each state-changing request:
 Two route prefixes are exempt:
 
 - `/api/auth/*` — Better Auth enforces its own `trustedOrigins` allow-list here.
-- `/api/internal/*` — OpenClaw plugins call these routes with `Authorization: Bearer <gateway-token>`. Bearer-token routes are not CSRF-able (browsers can't forge `Authorization` headers cross-origin), and the plugins are non-browser clients that don't send `Origin`/`Referer`.
+- `/api/internal/*` — OpenClaw plugins call these routes with `Authorization: Bearer <gateway-token>`. Bearer-token routes are not CSRF-able (browsers can't forge `Authorization` headers cross-origin), and the plugins are non-browser clients that don't send `Origin`/`Referer`. The same prefix is exempt from the domain-lock host check, for the same reason — plugins reach Pinchy on a Docker-internal hostname. A CI guard fails the build if any route under the prefix stops authenticating with the gateway token, so the exemption cannot outgrow its justification.
 
 ### Reverse proxy configuration
 
@@ -342,7 +342,7 @@ Blocked requests appear in the audit log as `auth.csrf_blocked` with `outcome: f
 
 The CSRF gate is layered with two other request-source defenses:
 
-- **Domain lock** (`Settings → Security → Domain lock`) — rejects any request whose `Host` header doesn't match the configured domain. Closes off requests that come in via direct IP, an unconfigured hostname, or a host header injection.
+- **Domain lock** (`Settings → Security → Domain lock`) — rejects any request whose `Host` header doesn't match the configured domain. Closes off requests that come in via direct IP, an unconfigured hostname, or a host header injection. A rejected `/api/` request is audited as `auth.host_blocked`.
 - **`SameSite=Lax` session cookie** — Better Auth's default. Prevents cookies from being attached to most third-party requests, but is not sufficient on its own (top-level form posts under Lax can still attach cookies in some browsers).
 
 Together they enforce: the request hit the right destination (domain lock), came from a legitimate source (CSRF gate), and the session cookie is unforgeable (Better Auth + SameSite).
@@ -569,6 +569,7 @@ For production, forward logs to a centralized logging system (e.g., Loki, Elasti
 
 - Authentication failures (`auth.failed` audit events)
 - CSRF-blocked write attempts (`auth.csrf_blocked` audit events)
+- Domain-lock rejections on API paths (`auth.host_blocked` audit events — a steady stream from one internal host usually means a component of your own deployment is being turned away, not an attack)
 - Password resets (`auth.password_reset_completed` — a successful reset revokes the target user's existing sessions)
 - Denied tool executions (`tool.denied` audit events)
 - Chat-runtime errors (`chat.agent_error` — umbrella event for every failure shape, group by `detail->>'errorClass'` to see what's degrading)

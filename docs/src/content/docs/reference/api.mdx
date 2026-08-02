@@ -1798,6 +1798,19 @@ List the distinct event types present in the current audit log. Useful for popul
 
 The response only contains event types that actually appear in the audit log — it's distinct values from the table, not the full enumerated set. See [Audit Trail](/concepts/audit-trail/) for the complete schema and detail shapes.
 
+### `POST /api/audit/background-run`
+
+Report that a chat run finished while the user was away from the chat page. Called by the chat UI, not by agents — it writes one `chat.background_run_completed` audit entry for the named agent.
+
+**Request body:**
+
+| Field        | Type   | Required | Description                                                     |
+| ------------ | ------ | -------- | --------------------------------------------------------------- |
+| `agentId`    | string | Yes      | Agent the run belongs to. The caller must have access to it.    |
+| `durationMs` | number | Yes      | Wall-clock run duration, in milliseconds. Capped at 10 minutes. |
+
+**Response:** `204 No Content`. Returns `400` if `durationMs` is negative or above the cap, `404` if the agent doesn't exist, and `403` if the caller has no access to it.
+
 ### `GET /api/audit/export`
 
 Export the audit log as a CSV file. Supports the same filters as `GET /api/audit`. **Admin only.**

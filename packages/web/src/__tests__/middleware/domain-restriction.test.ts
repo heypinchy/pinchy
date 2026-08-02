@@ -67,6 +67,25 @@ describe("domain restriction host check", () => {
     ).toBe(true);
   });
 
+  // #599: pinchy-transcript's capture POST was 403'd in production for eleven
+  // weeks — `channel_messages` stayed empty — because the exemption was a
+  // hand-maintained path list and this route was never added to it. The list is
+  // gone; every internal route is exempt by prefix. These three were all
+  // missing from it, and are here as the named regression.
+  it("allows internal plugin routes that the old hand-maintained list forgot", () => {
+    vi.mocked(getCachedDomain).mockReturnValue("pinchy.example.com");
+    expect(isHostAllowed("pinchy:7777", "/api/internal/channel-messages")).toBe(true);
+    expect(isHostAllowed("pinchy:7777", "/api/internal/knowledge/search")).toBe(true);
+    expect(
+      isHostAllowed("pinchy:7777", "/api/internal/integrations/connection-123/report-auth-failure")
+    ).toBe(true);
+  });
+
+  it("exempts an internal route nobody has written yet", () => {
+    vi.mocked(getCachedDomain).mockReturnValue("pinchy.example.com");
+    expect(isHostAllowed("pinchy:7777", "/api/internal/some/future/plugin/route")).toBe(true);
+  });
+
   it("allows unauthenticated internal readiness only for loopback healthchecks", () => {
     vi.mocked(getCachedDomain).mockReturnValue("pinchy.example.com");
     expect(isHostAllowed("localhost:7777", "/api/internal/openclaw-config-ready")).toBe(true);

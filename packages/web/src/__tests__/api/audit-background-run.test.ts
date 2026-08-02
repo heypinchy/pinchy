@@ -31,18 +31,18 @@ vi.mock("@/lib/agent-access", () => ({
 
 import { getSession } from "@/lib/auth";
 import { appendAuditLog } from "@/lib/audit";
-import { POST } from "@/app/api/internal/audit/background-run/route";
+import { POST } from "@/app/api/audit/background-run/route";
 import { routeContext } from "@/test-helpers/route";
 
 function makeRequest(body: Record<string, unknown>) {
-  return new NextRequest("http://localhost/api/internal/audit/background-run", {
+  return new NextRequest("http://localhost/api/audit/background-run", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
 }
 
-describe("POST /api/internal/audit/background-run", () => {
+describe("POST /api/audit/background-run", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(getSession).mockResolvedValue({

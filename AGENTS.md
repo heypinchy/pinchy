@@ -171,6 +171,23 @@ The guard derives the expected `source` from the route's file path and prints th
 
 **The general lesson: assert the value a concrete URL resolves to, not the value a handler asked for.** The two are different questions, and only one of them is what the user's browser gets.
 
+## `/api/internal/` Is A Security Claim, Not A Folder Name
+
+Two gates in `packages/web/server.ts` wave the whole prefix through: the domain-lock host check (`src/server/host-check.ts`) and the CSRF gate (`src/server/csrf-check.ts`). Both do it for the same reason — a route under `/api/internal/` is bearer-token traffic from an OpenClaw plugin, arriving on a Docker-internal hostname (`pinchy:7777`) that can never match the locked public domain, with no browser anywhere in the picture.
+
+The host check used to spell that out as a hand-written list of individual paths, and it drifted exactly the way § "A Hand-Maintained List That Mirrors Code Will Be Wrong" predicts. `/api/internal/channel-messages` was never added, so on any domain-locked install every capture POST from `pinchy-transcript` was answered `403 Forbidden: request host does not match the configured domain`. Pinchy's owned transcript — the whole point of the feature — stayed **empty in production for eleven weeks** (#599), and forensics for an unrelated incident had to fall back to `audit_log`, which stores tool params and no results. `knowledge/search` and `report-auth-failure` were missing from the list too, and would have failed the same way the moment anyone used them under a lock.
+
+Nothing was red. The E2E stacks configure no domain, so `getCachedDomain()` returns null and the entire host check is inert — a gate that is switched off in every test cannot fail in one.
+
+So the list is gone; the prefix itself is the rule. What that buys is worth stating plainly: a new internal plugin route is exempt the moment it exists, and there is no second place to remember. What it costs is that the prefix now has to mean what it says, which is what `packages/web/src/__tests__/security/internal-routes-gateway-auth.test.ts` enforces — every route under `app/api/internal/` calls `validateGatewayToken`, or is named in host-check's `LOOPBACK_ONLY_EXEMPT_PATHS` (today: the unauthenticated OpenClaw readiness probe, exempt for same-container loopback only).
+
+That guard is not decoration: `POST /api/internal/audit/background-run` was a **session-authed browser** route sitting under the prefix, silently inheriting both exemptions — the CSRF one let a cross-site POST forge a `chat.background_run_completed` audit row using the visitor's own session. It moved to `/api/audit/background-run`. Put a session-authed route anywhere but here.
+
+Two smaller rules that fall out of the same incident:
+
+- **A rejected request must leave a trace on the Pinchy side.** The 403 was invisible to everyone but whoever read the OpenClaw container's stdout. A blocked `/api/` request now writes an `auth.host_blocked` audit row (`logHostBlocked`), mirroring the CSRF gate's `auth.csrf_blocked`. Page requests are deliberately **not** audited — a locked instance answers every crawler that finds its IP, and those rows would bury the one that matters.
+- **When a client gives up on a response, it must say why.** The plugin logged `capture rejected (403)` and dropped the message, while the body it already held said the domain lock had refused the Host header. Quote the body.
+
 ## Web Test Files Are Type-Checked
 
 `packages/web` test files (`*.test.ts(x)`, `*.integration.test.ts`, `*.test-d.ts`) are type-checked in CI by the `quality` job's "Typecheck web (incl. tests)" step: `pnpm -C packages/web typecheck` → `tsc --noEmit -p packages/web/tsconfig.typecheck.json`.

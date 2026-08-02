@@ -91,6 +91,10 @@ Once HTTPS is working, the next step is locking Pinchy to that domain. Domain Lo
 
 You don't have to configure any of these individually — locking the domain flips them all on.
 
+Two kinds of request are deliberately let through on any host: the unauthenticated health and status endpoints (`/api/health`, `/api/setup/status`, `/api/version`), which monitoring needs to reach before a domain even exists, and everything under `/api/internal/`. The latter is how the OpenClaw container talks to Pinchy — over the Docker network as `pinchy:7777`, a hostname that can never match your public domain — and every one of those routes authenticates with the gateway token instead.
+
+A rejected API request is recorded as an `auth.host_blocked` audit event with the offending `Host`, so a component that has been turned away shows up in the [audit trail](/concepts/audit-trail/) rather than only in a container log. Rejected page requests are not audited: a locked instance answers every crawler that finds its IP address, and those rows would bury the ones worth reading.
+
 ## Lock the domain
 
 <Steps>
