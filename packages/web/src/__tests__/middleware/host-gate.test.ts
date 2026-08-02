@@ -11,7 +11,7 @@ vi.mock("@/lib/domain-cache", async (importOriginal) => {
   return { ...actual, getCachedDomain: vi.fn() };
 });
 
-import { applyDomainLockGate } from "@/server/host-check";
+import { applyDomainLockGate, resetHostBlockWindow } from "@/server/host-check";
 import { appendAuditLog } from "@/lib/audit";
 import { getCachedDomain } from "@/lib/domain-cache";
 
@@ -61,6 +61,10 @@ describe("applyDomainLockGate", () => {
   beforeEach(() => {
     vi.mocked(appendAuditLog).mockClear();
     vi.mocked(getCachedDomain).mockReturnValue("pinchy.example.com");
+    // The block audit is throttled to one row per minute process-wide, so a
+    // suite that blocks in more than one test must reopen the window or the
+    // later ones assert against a row the throttle correctly withheld.
+    resetHostBlockWindow();
   });
 
   it("lets a request on the locked domain through", async () => {
@@ -139,6 +143,24 @@ describe("applyDomainLockGate", () => {
     const res = makeRes();
 
     expect(await applyDomainLockGate(req, res)).toBe(false);
+  });
+
+  it("accepts a multi-hop x-forwarded-host on its public first hop", async () => {
+    // A CDN in front of Caddy appends its own hop, so the header arrives as
+    // "pinchy.example.com, internal:7777". Compared whole it matches no locked
+    // domain, and the lock answers 403 to the operator's own traffic — the
+    // #599 failure shape one layer further in. The CSRF gate already folded
+    // this correctly; both now read the header through the same module.
+    const req = makeReq({
+      method: "GET",
+      url: "/dashboard",
+      host: "internal:7777",
+      forwardedHost: "pinchy.example.com, internal:7777",
+    });
+    const res = makeRes();
+
+    expect(await applyDomainLockGate(req, res)).toBe(false);
+    expect(res._statusCode).toBeUndefined();
   });
 
   it("answers before the audit write settles", async () => {

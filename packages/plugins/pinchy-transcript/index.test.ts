@@ -471,6 +471,26 @@ describe("postChannelMessage", () => {
     expect(line).toContain("request host does not match the configured domain");
   });
 
+  it("keeps the warning on one line when the body is an HTML error page", async () => {
+    // A proxy answers with a multi-line document. Sliced but not collapsed, it
+    // turns one warning into a dozen orphaned log lines, and whatever ships
+    // these logs onward indexes the fragments as separate entries.
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 413,
+      text: async () =>
+        "<!DOCTYPE html>\n<html>\n<head><title>413 Request Entity Too Large</title>",
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const logger = { warn: vi.fn() };
+
+    await postChannelMessage(cfg, logger, payload);
+
+    const line = logger.warn.mock.calls[0][0] as string;
+    expect(line).not.toContain("\n");
+    expect(line).toContain("413 Request Entity Too Large");
+  });
+
   it("still warns when the rejection body cannot be read", async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: false,

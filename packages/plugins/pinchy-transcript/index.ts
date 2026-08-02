@@ -407,8 +407,10 @@ const MAX_REASON_CHARS = 200;
  */
 async function readErrorBody(res: { text?: () => Promise<string> }): Promise<string> {
   try {
-    const body = (await res.text?.()) ?? "";
-    const trimmed = body.trim();
+    // Collapse first: a proxy answers with a multi-line HTML document, and a
+    // warning that spans lines stops being one log entry — whatever ships
+    // these logs onward indexes the fragments separately.
+    const trimmed = ((await res.text?.()) ?? "").replace(/\s+/g, " ").trim();
     if (!trimmed) return "";
     // Pinchy's API errors are `{"error":"…"}`; unwrap so the reason reads as a
     // sentence rather than as JSON.

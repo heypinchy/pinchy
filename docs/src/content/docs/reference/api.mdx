@@ -789,7 +789,7 @@ Get the current domain lock status, together with the hostname and scheme this r
 
 ### `POST /api/settings/domain`
 
-Lock Pinchy to a domain. **Takes no request body.** The domain is the hostname the request itself arrived on (`X-Forwarded-Host`, falling back to `Host`), and that is deliberate: you can only lock Pinchy to an address you have just proven reachable, so a typo can't lock you out of your own instance. See [Lock Pinchy to a Domain](/guides/domain-lock/) for the full flow and safety guarantees.
+Lock Pinchy to a domain. **Takes no request body.** The domain is the hostname the request itself arrived on (the outermost hop of `X-Forwarded-Host`, falling back to `Host`), and that is deliberate: you can only lock Pinchy to an address you have just proven reachable, so a typo can't lock you out of your own instance. See [Lock Pinchy to a Domain](/guides/domain-lock/) for the full flow and safety guarantees.
 
 The request must arrive over HTTPS (`X-Forwarded-Proto: https`).
 

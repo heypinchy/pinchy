@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from "http";
 import { parse } from "url";
 import { getCachedDomain, normalizeHost } from "@/lib/domain-cache";
 import { appendAuditLog, safeAuditPath } from "@/lib/audit";
+import { publicHopOf, readRequestHost } from "@/server/forwarded-host";
 
 // Paths that bypass the domain-lock host check. Health/status endpoints must
 // remain accessible for monitoring/setup.
@@ -59,7 +60,12 @@ export function isHostAllowed(host: string | undefined, pathname: string | null)
 
   if (!host) return false;
 
-  return normalizeHost(host) === normalizeHost(lockedDomain);
+  // Both sides folded to their public hop. The request side matters because a
+  // proxy chain arrives as "public.example.com, internal:7777"; the stored side
+  // matters because an instance locked by an older version has that whole chain
+  // saved as its domain, and nothing rewrites the row on upgrade. Folding only
+  // one side would lock those installs out.
+  return normalizeHost(publicHopOf(host)) === normalizeHost(publicHopOf(lockedDomain));
 }
 
 /**
@@ -102,9 +108,7 @@ export async function applyDomainLockGate(
   res: ServerResponse
 ): Promise<boolean> {
   const { pathname } = parse(req.url ?? "/", false);
-  const forwardedHost = req.headers["x-forwarded-host"];
-  const host =
-    (Array.isArray(forwardedHost) ? forwardedHost[0] : forwardedHost) || req.headers.host;
+  const host = readRequestHost(req.headers);
 
   if (isHostAllowed(host, pathname)) return false;
 
@@ -133,13 +137,58 @@ export async function applyDomainLockGate(
 }
 
 /**
+ * One `auth.host_blocked` row per minute, with the rejections it stood in for
+ * counted on the next row rather than dropped.
+ *
+ * Recording a block is worth doing; recording every block is bounded by
+ * nothing. This is the one audit event an *unauthenticated* caller can trigger
+ * at will — a domain-locked instance is by definition reachable at an address
+ * that isn't its domain, and `GET http://<raw-ip>/api/x` in a loop needs no
+ * credential, no cookie and no state-changing method. Every row takes
+ * `pg_advisory_xact_lock` on a single constant key (lib/audit.ts), so an
+ * unbounded stream doesn't just grow an immutable table: it serializes every
+ * genuine audit write in the process behind itself. And it buries exactly what
+ * the event exists to surface — one of Pinchy's own components being turned
+ * away.
+ *
+ * The window is global, not keyed. Every dimension available to key on — host,
+ * path, remote address — is supplied by the caller, so a map keyed on one of
+ * them grows per request and the throttle stops throttling. (`scopeDenialWindows`
+ * in lib/api-auth.ts can key by API key precisely because an admin must mint
+ * one first.) The cost is real and accepted: within a minute, a flood can mask
+ * a different component's block. The row that does get written still names its
+ * own host and path, and `suppressedSinceLastEntry` reports the scale.
+ *
+ * Per-process state; a restart just reopens the window, which costs one row.
+ */
+const HOST_BLOCK_WINDOW_MS = 60_000;
+let hostBlockWindow: { openedAt: number; suppressed: number } | null = null;
+
+/** Test seam — the window is process-global, so suites must start from zero. */
+export function resetHostBlockWindow(): void {
+  hostBlockWindow = null;
+}
+
+function claimHostBlockSlot(now: number): { write: boolean; suppressed: number } {
+  if (hostBlockWindow && now - hostBlockWindow.openedAt < HOST_BLOCK_WINDOW_MS) {
+    hostBlockWindow.suppressed++;
+    return { write: false, suppressed: hostBlockWindow.suppressed };
+  }
+  const suppressed = hostBlockWindow?.suppressed ?? 0;
+  hostBlockWindow = { openedAt: now, suppressed: 0 };
+  return { write: true, suppressed };
+}
+
+/**
  * Record a domain-lock rejection in the audit trail.
  *
  * The signal this exists to provide (#599): a rejected API call left no trace
  * on the Pinchy side at all. The only evidence that pinchy-transcript's capture
  * POST was being turned away sat in the OpenClaw container's stdout, so a
  * shipped feature was dead in production for eleven weeks with every check
- * green. Mirrors `logCsrfBlocked` — same actor, same best-effort contract.
+ * green. Mirrors `logCsrfBlocked` — same actor, same best-effort contract —
+ * plus the window above, which the CSRF gate does not need as urgently: it
+ * blocks only state-changing methods, so it cannot be driven by a plain GET.
  */
 export async function logHostBlocked(input: {
   method: string;
@@ -148,6 +197,9 @@ export async function logHostBlocked(input: {
   lockedDomain: string | null;
   remoteAddress: string | undefined;
 }): Promise<void> {
+  const slot = claimHostBlockSlot(Date.now());
+  if (!slot.write) return;
+
   try {
     await appendAuditLog({
       actorType: "system",
@@ -166,6 +218,7 @@ export async function logHostBlocked(input: {
         host: input.host ? safeAuditPath(input.host) : null,
         lockedDomain: input.lockedDomain,
         remoteAddress: input.remoteAddress ?? null,
+        ...(slot.suppressed > 0 ? { suppressedSinceLastEntry: slot.suppressed } : {}),
       },
     });
   } catch (err) {

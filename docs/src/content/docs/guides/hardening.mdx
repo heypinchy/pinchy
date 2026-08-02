@@ -332,7 +332,7 @@ pinchy.example.com {
 }
 ```
 
-If your deployment chains multiple reverse proxies, `X-Forwarded-Host` may arrive as a comma-separated list (`public.example.com, internal:7777`). The gate compares `Origin` against the **first** (outermost) hop — the public name the browser actually saw. Each proxy in the chain should append, not overwrite, the existing header.
+If your deployment chains multiple reverse proxies, `X-Forwarded-Host` may arrive as a comma-separated list (`public.example.com, internal:7777`). Both request gates read the **first** (outermost) hop — the public name the browser actually saw: the CSRF gate compares `Origin` against it, and the domain lock matches it against your configured domain. Each proxy in the chain should append, not overwrite, the existing header.
 
 ### Auditing CSRF probes
 
@@ -569,7 +569,7 @@ For production, forward logs to a centralized logging system (e.g., Loki, Elasti
 
 - Authentication failures (`auth.failed` audit events)
 - CSRF-blocked write attempts (`auth.csrf_blocked` audit events)
-- Domain-lock rejections on API paths (`auth.host_blocked` audit events — a steady stream from one internal host usually means a component of your own deployment is being turned away, not an attack)
+- Domain-lock rejections on API paths (`auth.host_blocked` audit events — recurring rows naming one internal host usually mean a component of your own deployment is being turned away, not an attack. Throttled to one row per minute, so read `suppressedSinceLastEntry` for the actual volume)
 - Password resets (`auth.password_reset_completed` — a successful reset revokes the target user's existing sessions)
 - Denied tool executions (`tool.denied` audit events)
 - Chat-runtime errors (`chat.agent_error` — umbrella event for every failure shape, group by `detail->>'errorClass'` to see what's degrading)

@@ -251,4 +251,56 @@ describe("GET /api/settings/domain", () => {
     expect(data.currentHost).toBe("localhost:7777");
     expect(data.isHttps).toBe(false);
   });
+
+  it("reports the public hop as the current host behind a proxy chain", async () => {
+    mockGetSetting.mockResolvedValueOnce("pinchy.example.com");
+
+    const response = await GET(
+      makeRequest("GET", {
+        "x-forwarded-host": "pinchy.example.com, internal:7777",
+        "x-forwarded-proto": "https",
+      })
+    );
+
+    // The settings UI compares this against the locked domain to tell the
+    // admin whether they are currently on it. The raw header never equals a
+    // locked domain, so it would always read "you are somewhere else".
+    const data = await response.json();
+    expect(data.currentHost).toBe("pinchy.example.com");
+  });
+});
+
+// The domain lock has one safety guarantee: you can only lock Pinchy to an
+// address you have just proven reachable, so it cannot lock you out. Storing
+// the header verbatim breaks that behind two proxies — `X-Forwarded-Host`
+// arrives as "public.example.com, internal:7777", and a domain nobody can ever
+// send as a Host header is exactly a lockout.
+describe("domain lock stores a host that can actually match", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockRequireAdmin.mockResolvedValue(adminSession);
+    mockGetSetting.mockResolvedValue(null);
+  });
+
+  it("stores the public hop of a multi-hop x-forwarded-host", async () => {
+    await POST(
+      makeRequest("POST", {
+        "x-forwarded-host": "pinchy.example.com, internal:7777",
+        "x-forwarded-proto": "https",
+      })
+    );
+
+    expect(mockSetDomainAndRefreshCache).toHaveBeenCalledWith("pinchy.example.com");
+  });
+
+  it("stores a single-hop host unchanged", async () => {
+    await POST(
+      makeRequest("POST", {
+        "x-forwarded-host": "pinchy.example.com",
+        "x-forwarded-proto": "https",
+      })
+    );
+
+    expect(mockSetDomainAndRefreshCache).toHaveBeenCalledWith("pinchy.example.com");
+  });
 });
