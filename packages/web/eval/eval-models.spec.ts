@@ -59,6 +59,7 @@ import {
   governedScorecardLabel,
 } from "./run-eval";
 import { DEFAULT_INVOICE_CANDIDATES } from "./candidates";
+import { describeError } from "./error-detail";
 import { captureRunFingerprint } from "./fingerprint";
 import { makeTokenCollector } from "./token-usage";
 import { setupHetznerAgent } from "./eval-shared";
@@ -332,13 +333,13 @@ test.describe("Eval-v1: model sweep (real Ollama Cloud)", () => {
                 // run-timeout failure and keep going.
                 const latencyMs = Date.now() - runStart;
                 console.warn(
-                  `[eval] run ${String(i + 1)}/${String(target)} [${variant}] for ${model} / ${label} recorded as run-timeout: ${String(err)}`
+                  `[eval] run ${String(i + 1)}/${String(target)} [${variant}] for ${model} / ${label} recorded as run-timeout: ${describeError(err)}`
                 );
                 const timeoutResult: RunResult = {
                   model,
                   passed: false,
                   tags: ["run-timeout"],
-                  notes: [String(err)],
+                  notes: [describeError(err)],
                   latencyMs,
                   scenario: label,
                   // Stamp the DISPATCHED variant so a timed-out variant run

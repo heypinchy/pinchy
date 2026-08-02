@@ -129,6 +129,30 @@ export function infraErrorRun(
   };
 }
 
+/**
+ * Consecutive run-infra-errors that mean the endpoint is gone, not the run.
+ *
+ * More than one, because a single flaky pair must never end a sweep — that a
+ * failure does not abort the run is the whole reason infra-error rows exist.
+ * Small, because with transport faults now retried each burnt pair costs the
+ * full backoff (~9 min) before its row is written.
+ */
+export const MAX_CONSECUTIVE_INFRA_ERRORS = 3;
+
+/**
+ * Whether the sweep should stop rather than grind through what is left.
+ *
+ * Grinding is not merely slow. `countRunsForPair` counts an infra-error row
+ * like any other, so `pendingPairs` treats a burnt pair as answered and a
+ * resumed sweep never revisits it — pushing on against a dead endpoint spends
+ * hours writing rows that permanently replace the measurements they stand in
+ * for. Stopping leaves the remaining pairs UNSTARTED, which is the one state
+ * resume handles perfectly.
+ */
+export function sweepShouldAbort(consecutiveInfraErrors: number): boolean {
+  return consecutiveInfraErrors >= MAX_CONSECUTIVE_INFRA_ERRORS;
+}
+
 export async function writeScorecard(
   label: string,
   runs: KbRunResult[]

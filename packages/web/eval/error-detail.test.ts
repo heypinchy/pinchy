@@ -123,6 +123,38 @@ describe("isTransportError", () => {
     expect(isTransportError(new Error("socket hang up"))).toBe(true);
   });
 
+  // Three of the four calls in the retried dispatch block go through
+  // Playwright, not node fetch: loginViaUI and dispatchAndScrape navigate
+  // (`page.goto`), and getRawAssistantMessage reads the diagnostics export
+  // through `page.request`. Playwright puts EVERYTHING in the message —
+  // measured against @playwright/test, the thrown error's own keys are
+  // ["log", "name"], `code` is undefined and there is no `cause` at all. A
+  // check that reads only `err.code` therefore calls the local stack going
+  // away "the measurement" and never retries it.
+  it.each([
+    "apiRequestContext.get: connect ECONNREFUSED 127.0.0.1:7781",
+    "apiRequestContext.post: getaddrinfo ENOTFOUND ollama.com",
+    "apiRequestContext.get: connect ETIMEDOUT 10.0.0.5:443",
+    "page.goto: net::ERR_CONNECTION_REFUSED at http://localhost:7781/chat/a/b",
+    "page.goto: net::ERR_NAME_NOT_RESOLVED at http://localhost:7781/",
+    "page.goto: net::ERR_INTERNET_DISCONNECTED at http://localhost:7781/",
+  ])("recognizes a code-less Playwright transport fault: %s", (message) => {
+    expect(isTransportError(new Error(message))).toBe(true);
+  });
+
+  it.each([
+    // How this repo's X-Frame-Options defect presents (AGENTS.md) — a product
+    // bug, and retrying it four times is exactly how one disappears behind a
+    // note blaming the uplink.
+    "page.goto: net::ERR_BLOCKED_BY_RESPONSE at http://localhost:7781/api/files/x.pdf",
+    // A navigation the page itself cancelled, not a connection that failed.
+    "page.goto: net::ERR_ABORTED at http://localhost:7781/chat/a/b",
+    // Configuration, not weather: a retry cannot fix a certificate.
+    "page.goto: net::ERR_CERT_AUTHORITY_INVALID at https://localhost:7781/",
+  ])("does NOT treat %s as a transport fault", (message) => {
+    expect(isTransportError(new Error(message))).toBe(false);
+  });
+
   it("does NOT claim an assertion failure is a network problem", () => {
     // The dividing line this whole module exists to draw. Retrying a real
     // defect four times turns one wrong answer into four, and hides it behind

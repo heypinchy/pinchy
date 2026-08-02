@@ -43,12 +43,67 @@ const TRANSPORT_CODES = new Set([
 ]);
 
 /**
+ * Chromium's network-layer error names, as Playwright surfaces them:
+ * `page.goto: net::ERR_CONNECTION_REFUSED at http://localhost:7781/…`.
+ *
+ * Curated, never a blanket `net::ERR_` prefix match. `ERR_BLOCKED_BY_RESPONSE`
+ * is how this repo's X-Frame-Options defect presents (see AGENTS.md),
+ * `ERR_ABORTED` is a navigation the page itself cancelled, and `ERR_CERT_*` is
+ * a configuration fault a retry cannot fix. Retrying any of those is exactly
+ * how a product bug disappears behind a note blaming the uplink.
+ */
+const CHROMIUM_NETWORK_ERRORS = [
+  "ERR_CONNECTION_REFUSED",
+  "ERR_CONNECTION_RESET",
+  "ERR_CONNECTION_CLOSED",
+  "ERR_CONNECTION_FAILED",
+  "ERR_CONNECTION_TIMED_OUT",
+  "ERR_NAME_NOT_RESOLVED",
+  "ERR_NAME_RESOLUTION_FAILED",
+  "ERR_INTERNET_DISCONNECTED",
+  "ERR_NETWORK_CHANGED",
+  "ERR_ADDRESS_UNREACHABLE",
+  "ERR_SOCKET_NOT_CONNECTED",
+  "ERR_PROXY_CONNECTION_FAILED",
+  "ERR_EMPTY_RESPONSE",
+  "ERR_TIMED_OUT",
+];
+
+/**
+ * Every code that may also arrive as bare message text rather than as `code`.
+ *
+ * Playwright is the reason this exists. Three of the four calls in the KB
+ * sweep's retried dispatch block go through it — `loginViaUI` and
+ * `dispatchAndScrape` navigate, `getRawAssistantMessage` reads the diagnostics
+ * export via `page.request` — and a Playwright error carries the whole fault in
+ * its message: measured against @playwright/test, its own keys are
+ * ["log", "name"], `code` is `undefined` and there is no `cause`. A check that
+ * reads only `err.code` sees node fetch and nothing else, so the local stack
+ * going away would be classified as the measurement and never retried.
+ */
+const TRANSPORT_TOKENS = new Set([...TRANSPORT_CODES, ...CHROMIUM_NETWORK_ERRORS]);
+
+/**
  * Message fragments that identify a transport fault carrying no `code`.
  * Kept to shapes that cannot also describe a product failure: "timeout" alone
  * is excluded on purpose, because a Playwright wait and an unstoppable model
  * both produce one and neither is the network.
  */
 const TRANSPORT_MESSAGES = ["fetch failed", "socket hang up", "network error", "other side closed"];
+
+/**
+ * Whether the message names a transport code as a WHOLE token.
+ *
+ * Tokenising rather than substring-matching is what keeps `ETIMEDOUT` from
+ * firing on Playwright's `Timeout 30000ms exceeded`, which is a wait and not
+ * the network — the one distinction this module cannot afford to lose.
+ */
+function hasTransportToken(message: string): boolean {
+  for (const token of message.split(/[^A-Za-z0-9_]+/)) {
+    if (TRANSPORT_TOKENS.has(token)) return true;
+  }
+  return false;
+}
 
 function isErrorLike(value: unknown): value is ErrorLike {
   return typeof value === "object" && value !== null;
@@ -108,7 +163,9 @@ export function describeError(err: unknown): string {
 export function isTransportError(err: unknown): boolean {
   return errorChain(err).some((link) => {
     if (typeof link.code === "string" && TRANSPORT_CODES.has(link.code)) return true;
-    const message = typeof link.message === "string" ? link.message.toLowerCase() : "";
+    if (typeof link.message !== "string") return false;
+    if (hasTransportToken(link.message)) return true;
+    const message = link.message.toLowerCase();
     return TRANSPORT_MESSAGES.some((fragment) => message.includes(fragment));
   });
 }

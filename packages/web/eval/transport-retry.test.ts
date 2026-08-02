@@ -64,6 +64,30 @@ describe("withTransportRetry", () => {
     expect(fn).toHaveBeenCalledTimes(2);
   });
 
+  it("returns what the SUCCEEDING attempt produced, not anything a failed one left", async () => {
+    // The KB sweep leans on this for more than the answer: it stamps each
+    // attempt's own start time inside the callback and reads latency off that,
+    // because a `runStart` taken OUTSIDE this call would charge the model for
+    // every failed attempt plus the whole backoff — up to nine minutes of
+    // waiting out a dead uplink, landing in `medianLatencyMs`. At the sweep's
+    // default of one run per model that single number IS the cell. Booking the
+    // network as a model result is the exact thing this module exists to stop.
+    const { sleep } = recordingSleep();
+    const fn = vi.fn().mockImplementation((attempt: number) =>
+      attempt < 3
+        ? Promise.reject(fetchFailure())
+        : Promise.resolve({
+            startedAt: attempt * 1000,
+            answer: `from attempt ${String(attempt)}`,
+          })
+    );
+
+    await expect(withTransportRetry(fn, { what: "dispatch", sleep })).resolves.toEqual({
+      startedAt: 3000,
+      answer: "from attempt 3",
+    });
+  });
+
   it("does NOT retry a failure that is the measurement", async () => {
     // The load-bearing half. A grader disagreement, a missing assistant
     // message, a schema violation — all of them are the result, and retrying

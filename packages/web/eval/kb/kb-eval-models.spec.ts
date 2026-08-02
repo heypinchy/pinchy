@@ -75,6 +75,7 @@ import {
   noackCorpusDir,
   retrievedSourcesFromAuditEntries,
   infraErrorRun,
+  sweepShouldAbort,
 } from "./run-kb-eval";
 import type { KnowledgeSearchAuditEntry } from "./run-kb-eval";
 import { getRawAssistantMessage } from "./getRawAssistantMessage";
@@ -92,6 +93,7 @@ import { fetchChunkTexts } from "./chunk-texts";
 import { seedSyntheticCorpus } from "./seed-corpus";
 import { resolveCitedSourcePaths } from "./resolve-cited-paths";
 import { withTransportRetry } from "../transport-retry";
+import { describeError } from "../error-detail";
 import { DEFAULT_KB_CANDIDATES } from "../candidates";
 import {
   KB_SWEEP_ALLOWED_TOOLS,
@@ -319,6 +321,13 @@ test.describe("KB Eval Harness Layer 3: groundedness sweep (real Ollama Cloud)",
     const allRuns: KbRunResult[] = [...existingRuns];
 
     let pinnedModel: string | null = null;
+    // A dead endpoint is not 48 bad runs, it is one bad endpoint. Now that a
+    // transport fault is retried, each pair costs the full ~9-minute backoff
+    // before it gives up — roughly seven hours across a whole sweep, and every
+    // pair comes out with an infra-error row that `pendingPairs` counts as
+    // done, so a later resume never revisits it. Stopping leaves the rest
+    // UNSTARTED, which resume handles perfectly. Reset on any completed run.
+    let consecutiveInfraErrors = 0;
     for (const { model, goldId } of pendingPairs(existingRuns, candidates, goldIds, n)) {
       const gold = GOLD_QA.find((g) => g.id === goldId);
       if (!gold) throw new Error(`Unknown gold id in pendingPairs: ${goldId}`);
@@ -346,11 +355,13 @@ test.describe("KB Eval Harness Layer 3: groundedness sweep (real Ollama Cloud)",
           // infra-error row per pair (each pair re-enters this block, since
           // `pinnedModel` was never advanced to it).
           console.warn(
-            `[kb-eval] setup failed for ${model}/${goldId} after retries, recording run-infra-error: ${String(err)}`
+            `[kb-eval] setup failed for ${model}/${goldId} after retries, recording run-infra-error: ${describeError(err)}`
           );
           const setupErrorRun = infraErrorRun(model, goldId, err, Date.now() - setupStart);
           allRuns.push(setupErrorRun);
           await appendRunResult(RESULT_LABEL, setupErrorRun);
+          consecutiveInfraErrors++;
+          if (sweepShouldAbort(consecutiveInfraErrors)) break;
           continue;
         }
       }
@@ -366,8 +377,18 @@ test.describe("KB Eval Harness Layer 3: groundedness sweep (real Ollama Cloud)",
         // judge retries on its own. `isTransportError` keeps a real defect —
         // no assistant text, a grader disagreement — out of the retry entirely
         // (#869: 15 of 48 runs lost to one offline stretch).
-        const { answer, auditEntries } = await withTransportRetry(
+        const { answer, auditEntries, attemptStart } = await withTransportRetry(
           async () => {
+            // Stamped INSIDE the attempt, not at `runStart` above. The
+            // trajectory's latency is a model measurement, and a start taken
+            // outside this call would charge the model for every failed
+            // attempt plus the whole backoff — up to nine minutes of waiting
+            // out a dead uplink, landing in `medianLatencyMs`. At the sweep's
+            // default of one run per model, that single number IS the cell:
+            // the network would be booked as a model result, which is the one
+            // thing this retry exists to prevent. `runStart` still bounds the
+            // infra-error row below, where the whole ordeal IS the story.
+            const attemptStart = Date.now();
             await loginViaUI(page, getAdminEmail(), getAdminPassword());
             const chatId = randomUUID();
             const since = new Date().toISOString();
@@ -376,7 +397,7 @@ test.describe("KB Eval Harness Layer 3: groundedness sweep (real Ollama Cloud)",
               getRawAssistantMessage(page, agentId, chatId),
               collectKnowledgeSearchAuditEntries(cookie, agentId, since),
             ]);
-            return { answer, auditEntries };
+            return { answer, auditEntries, attemptStart };
           },
           { what: `dispatch ${model}/${goldId}` }
         );
@@ -396,7 +417,7 @@ test.describe("KB Eval Harness Layer 3: groundedness sweep (real Ollama Cloud)",
           answer,
           retrieved,
           citedPassageTexts,
-          latencyMs: Date.now() - runStart,
+          latencyMs: Date.now() - attemptStart,
         };
 
         // The judge is an Ollama Cloud call, so it fails exactly when the
@@ -409,6 +430,9 @@ test.describe("KB Eval Harness Layer 3: groundedness sweep (real Ollama Cloud)",
         const stampedResult: KbRunResult = { ...result, scenario: goldId };
         allRuns.push(stampedResult);
         await appendRunResult(RESULT_LABEL, stampedResult);
+        // A completed run — graded pass OR fail — proves the endpoints are
+        // reachable, so the breaker's streak starts over.
+        consecutiveInfraErrors = 0;
         await appendTrajectory(RESULT_LABEL, goldId, trajectory, result.passed, result.tags).catch(
           (err) =>
             console.warn(`[kb-eval] trajectory dump failed for ${model}/${goldId}: ${String(err)}`)
@@ -426,11 +450,21 @@ test.describe("KB Eval Harness Layer 3: groundedness sweep (real Ollama Cloud)",
         // passRate and would zero passCaretK, conflating harness flakiness
         // with model quality.
         console.warn(
-          `[kb-eval] run for ${model}/${goldId} recorded as run-infra-error: ${String(err)}`
+          `[kb-eval] run for ${model}/${goldId} recorded as run-infra-error: ${describeError(err)}`
         );
         const infraErrorResult = infraErrorRun(model, goldId, err, Date.now() - runStart);
         allRuns.push(infraErrorResult);
         await appendRunResult(RESULT_LABEL, infraErrorResult);
+        consecutiveInfraErrors++;
+        if (sweepShouldAbort(consecutiveInfraErrors)) {
+          console.error(
+            `[kb-eval] ABORTING SWEEP: ${String(consecutiveInfraErrors)} consecutive ` +
+              `run-infra-errors — the endpoint is gone, not the run. The scorecard below ` +
+              `covers what was measured; every pair not yet attempted stays pending and ` +
+              `is picked up by the next run. Last failure: ${describeError(err)}`
+          );
+          break;
+        }
       }
     }
 

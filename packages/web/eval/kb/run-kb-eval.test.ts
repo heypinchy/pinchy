@@ -9,6 +9,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  MAX_CONSECUTIVE_INFRA_ERRORS,
   corpusFromEnv,
   countRunsForPair,
   infraErrorRun,
@@ -16,6 +17,7 @@ import {
   pendingPairs,
   retrievedSourcesFromAuditEntries,
   scorecardRuns,
+  sweepShouldAbort,
 } from "./run-kb-eval";
 import type { KbRunResult } from "../../src/lib/eval/kb/answer-graders";
 import type { KnowledgeSearchAuditEntry } from "./run-kb-eval";
@@ -98,6 +100,43 @@ describe("pendingPairs (resume filter)", () => {
     const pending = pendingPairs(existing, ["model-a"], ["gqa-1"], 1);
 
     expect(pending).toEqual([{ model: "model-a", goldId: "gqa-1", alreadyDone: 0 }]);
+  });
+
+  it("counts an infra-error row as done, so a burnt pair is never re-asked on resume", () => {
+    // This is WHY the sweep stops instead of grinding when the endpoint is
+    // gone (see sweepShouldAbort). An infra-error row is a row, so resume
+    // treats the pair as answered and never revisits it — grinding through 48
+    // pairs against a dead stack does not merely waste the backoff, it burns
+    // every remaining pair into a row a later run will skip. A pair left
+    // UNSTARTED stays pending and is simply picked up next time.
+    const burnt: KbRunResult[] = [infraErrorRun("model-a", "gqa-1", new Error("stack gone"), 0)];
+
+    expect(pendingPairs(burnt, ["model-a"], ["gqa-1", "gqa-2"], 1)).toEqual([
+      { model: "model-a", goldId: "gqa-2", alreadyDone: 0 },
+    ]);
+  });
+});
+
+describe("sweepShouldAbort", () => {
+  it("keeps going while failures are isolated", () => {
+    // One bad pair is a bad pair. The sweep's whole value is that a single
+    // failure never aborts it — that contract must survive the breaker.
+    expect(sweepShouldAbort(0)).toBe(false);
+    expect(sweepShouldAbort(MAX_CONSECUTIVE_INFRA_ERRORS - 1)).toBe(false);
+  });
+
+  it("stops once consecutive failures say the endpoint is gone, not the run", () => {
+    // With transport faults now retried, a dead endpoint costs the FULL
+    // backoff per pair — about nine minutes — before its row is written. Over
+    // a 48-pair sweep that is some seven hours of sleeping, and every one of
+    // those pairs comes out burnt (see the resume test above). Consecutive
+    // infra errors are the signal that the fault is not this run's.
+    expect(sweepShouldAbort(MAX_CONSECUTIVE_INFRA_ERRORS)).toBe(true);
+    expect(sweepShouldAbort(MAX_CONSECUTIVE_INFRA_ERRORS + 5)).toBe(true);
+  });
+
+  it("needs more than one failure, or a single flaky pair would end the sweep", () => {
+    expect(MAX_CONSECUTIVE_INFRA_ERRORS).toBeGreaterThan(1);
   });
 });
 
