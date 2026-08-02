@@ -265,17 +265,24 @@ describe("recordSessionTurnsUsage with no trajectory file", () => {
     consoleError.mockRestore();
   });
 
-  it("still logs an error for a real IO failure, so genuine breakage stays visible", async () => {
+  it("reports a real IO failure as null and logs it, so genuine breakage stays visible and retryable", async () => {
     // EACCES is the transient case `readFileResilient` already retries against
     // OpenClaw's chmod window — reaching the recorder means those retries are
     // exhausted, so this is real breakage and must NOT join the silent branch.
+    //
+    // It returns `null`, not `0`: the poller marks a session processed on a
+    // successful scan, and 0 is a perfectly successful scan ("no new turn").
+    // Reporting a failure as 0 made the poller skip the session until its
+    // 5-minute catch-up, and made the #261 retry it documents unreachable —
+    // the only tests that exercised it had to fake a rejection this function
+    // never produces.
     const ioError = Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
     mockReadTrajectoryJsonl.mockRejectedValue(ioError);
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
 
     const recorded = await recordSessionTurnsUsage(params());
 
-    expect(recorded).toBe(0);
+    expect(recorded).toBeNull();
     expect(consoleError).toHaveBeenCalledTimes(1);
     // The original error must reach the log, not a rewrapped stand-in — the
     // `code`/stack is what an operator diagnoses the volume mount from.

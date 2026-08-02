@@ -126,11 +126,25 @@ export interface RecordSessionTurnsParams {
 }
 
 /**
- * Scan one chat session's trajectory and record any not-yet-recorded turns.
- * Safe to call repeatedly (DB dedup) — from the interval poller and from the
- * chat `done` path. Returns the number of newly recorded turns.
+ * Scan one session's trajectory (chat or system) and record any
+ * not-yet-recorded turns. Safe to call repeatedly (DB dedup) — from the
+ * interval poller and from the chat `done` path.
+ *
+ * Returns the number of newly recorded turns, or `null` when the scan FAILED
+ * and should be retried. The two are deliberately distinct: `0` is a
+ * successful scan that found nothing new (the common idle case, and the one
+ * the poller's backoff must be allowed to skip), while `null` says nothing is
+ * known about this session's turns yet. Collapsing both into `0` let a
+ * transient DB/IO error read as "processed" and pushed the retry out to the
+ * poller's 5-minute catch-up scan — and left the retry the poller documents
+ * (#261) unreachable, since this function never rejects for the poller's
+ * `catch` to see.
+ *
+ * It still never THROWS — the chat `done` path calls it fire-and-forget.
  */
-export async function recordSessionTurnsUsage(params: RecordSessionTurnsParams): Promise<number> {
+export async function recordSessionTurnsUsage(
+  params: RecordSessionTurnsParams
+): Promise<number | null> {
   const { openclawClient, agentId, userId, agentName, sessionKey } = params;
   try {
     const sessionId = params.sessionId ?? (await resolveSessionId(agentId, sessionKey));
@@ -171,9 +185,10 @@ export async function recordSessionTurnsUsage(params: RecordSessionTurnsParams):
     // quiet; a trajectory that appears later is picked up by the next scan.
     if (error instanceof TrajectoryFileNotFoundError) return 0;
     // Everything else (unreadable file, DB hiccup) is real breakage worth
-    // surfacing — but still never thrown into the poller or chat path. The
-    // next scan retries; dedup keeps it safe.
+    // surfacing — but still never thrown into the poller or chat path. `null`
+    // (not 0) tells the poller the scan did not happen, so it retries on the
+    // next tick instead of riding the idle backoff; dedup keeps that safe.
     console.error("[usage-per-turn] Failed to record session turns:", error);
-    return 0;
+    return null;
   }
 }

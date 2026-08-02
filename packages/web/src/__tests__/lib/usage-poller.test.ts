@@ -558,6 +558,56 @@ describe("pollAllSessions adaptive backoff (#261)", () => {
 
     expect(mockRecordSessionTurns).toHaveBeenCalledTimes(2);
   });
+
+  // The two tests above drive the failure by REJECTING — which neither
+  // recorder ever does. `recordSessionTurnsUsage` catches everything and
+  // returns; `recordUsage` ends its chain in `.catch(() => {})`. So the #261
+  // retry described right above has never once been reachable in production,
+  // on either path: both tests pass against a rejection the code cannot
+  // produce, which is a green check for an impossible path rather than proof
+  // the retry works. They are kept — a recorder that starts throwing must
+  // still not abort the poll — but the retry itself needs a signal that
+  // actually arrives. The recorder now reports a failed scan as `null`
+  // (distinct from `0` = "scan ran, nothing new"), and these three pin it.
+  it("retries a system session every tick when the recorder REPORTS a failure (null), the signal production really emits", async () => {
+    mockRecordSessionTurns.mockResolvedValueOnce(null);
+    const client = makeOpenClawClient([
+      { key: "agent:agent-1:cron:job-1", inputTokens: 100, outputTokens: 50 },
+    ]);
+
+    await pollAllSessions(client); // reported failure — must not mark as processed
+    await pollAllSessions(client); // identical gauge — should still retry, not skip
+
+    expect(mockRecordSessionTurns).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries a chat session every tick when the recorder REPORTS a failure (null)", async () => {
+    mockRecordSessionTurns.mockResolvedValueOnce(null);
+    const client = makeOpenClawClient([
+      { key: "agent:agent-1:direct:user-1", inputTokens: 100, outputTokens: 50 },
+    ]);
+
+    await pollAllSessions(client);
+    await pollAllSessions(client);
+
+    expect(mockRecordSessionTurns).toHaveBeenCalledTimes(2);
+  });
+
+  it("treats a scan that found nothing to record (0) as processed, not as a failure", async () => {
+    // The distinction that makes `null` worth having: a system session whose
+    // trajectory has no new completed turn returns 0 every tick. Retrying THAT
+    // every 60s would defeat the whole backoff (#261) and re-read the
+    // trajectory file for every idle cron session forever.
+    mockRecordSessionTurns.mockResolvedValue(0);
+    const client = makeOpenClawClient([
+      { key: "agent:agent-1:cron:job-1", inputTokens: 100, outputTokens: 50 },
+    ]);
+
+    await pollAllSessions(client);
+    await pollAllSessions(client); // identical gauge → idle → skip
+
+    expect(mockRecordSessionTurns).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("getPollIntervalMs", () => {

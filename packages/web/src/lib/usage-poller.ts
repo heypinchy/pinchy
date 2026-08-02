@@ -205,17 +205,20 @@ export async function pollAllSessions(openclawClient: OpenClawClient): Promise<v
         parsed.type === "chat"
           ? (userIdMap.get(parsed.userId.toLowerCase()) ?? parsed.userId)
           : parsed.userId; // "system" — no per-user lookup needed
-      await recordSessionTurnsUsage({
+      const recorded = await recordSessionTurnsUsage({
         openclawClient,
         agentId: parsed.agentId,
         userId,
         agentName,
         sessionKey: session.key,
       });
-      // Mark as processed only after the record call succeeds — if it threw,
-      // the catch below aborts the loop, and the fingerprint must stay unset
-      // so the next tick retries this session instead of treating a failed
-      // record as done and skipping it until the catch-up rescan.
+      // Mark as processed only after the scan actually succeeded, so a failed
+      // one is retried on the next tick rather than skipped until the 5-minute
+      // catch-up rescan. `null` is the recorder's failure report; `0` means the
+      // scan ran and found nothing new, which IS processed. The recorder never
+      // throws (the chat `done` path calls it fire-and-forget), so this
+      // explicit signal — not the catch below — is what keeps the retry real.
+      if (recorded === null) continue;
       sessionActivity.set(session.key, { signature, lastProcessedAt: now });
     }
 
