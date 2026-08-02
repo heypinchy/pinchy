@@ -18,6 +18,8 @@ import {
   isReleasableBranch,
   findSkippedReleases,
   openNextUpgradeSection,
+  buildNextUpgradeSkeleton,
+  assertUpgradeNotesWritten,
   movingTagForRef,
   stagingImageTagForBranch,
   stagingPinAdvice,
@@ -1107,4 +1109,69 @@ test("openNextUpgradeSection is a no-op when the next section already exists", (
 test("openNextUpgradeSection is a no-op when the frozen anchor section is missing", () => {
   const mdx = "## Upgrading from v0.5.6 to v0.5.7\n\nUnrelated.\n";
   assert.equal(openNextUpgradeSection(mdx, "0.8.0", "0.9.0"), mdx);
+});
+
+// assertUpgradeNotesWritten — the net that openNextUpgradeSection would
+// otherwise have removed. A release used to fail when nobody wrote notes,
+// because no section existed at all; now one always does, and it satisfies
+// assertUpgradingSectionExists by construction.
+
+test("assertUpgradeNotesWritten refuses to release an untouched skeleton", () => {
+  const opened = openNextUpgradeSection(OPEN_FIXTURE, "0.8.0", "0.9.0");
+  // Exactly the state the release run leaves behind, one cycle later.
+  assert.doesNotThrow(() =>
+    assertUpgradingSectionExists(opened, "0.9.0", "0.10.0"),
+  );
+  assert.throws(
+    () => assertUpgradeNotesWritten(opened, "0.9.0", "0.10.0"),
+    /still the skeleton/,
+  );
+});
+
+test("assertUpgradeNotesWritten accepts any real edit, including a deliberate None.", () => {
+  const opened = openNextUpgradeSection(OPEN_FIXTURE, "0.8.0", "0.9.0");
+  const decided = opened.replace("None so far.", "None.");
+  assert.doesNotThrow(() =>
+    assertUpgradeNotesWritten(decided, "0.9.0", "0.10.0"),
+  );
+
+  const withNote = opened.replace(
+    "Upgrade with the standard flow:",
+    "#### Telegram chats now read from channel_messages\n\nUpgrade with the standard flow:",
+  );
+  assert.doesNotThrow(() =>
+    assertUpgradeNotesWritten(withNote, "0.9.0", "0.10.0"),
+  );
+});
+
+test("assertUpgradeNotesWritten leaves a missing section to assertUpgradingSectionExists", () => {
+  // Two failures for one cause would print two different remedies for it.
+  assert.doesNotThrow(() =>
+    assertUpgradeNotesWritten("## Something else\n\nnope\n", "0.9.0", "0.10.0"),
+  );
+});
+
+test("assertUpgradeNotesWritten does not fire on a hand-written section that predates skeletons", () => {
+  const handWritten = [
+    "## Upgrading from v0.9.0 to %%PINCHY_VERSION%%",
+    "",
+    "### Breaking changes",
+    "",
+    "None.",
+    "",
+    "### Upgrade notes",
+    "",
+    "Maintenance release.",
+    "",
+  ].join("\n");
+  assert.doesNotThrow(() =>
+    assertUpgradeNotesWritten(handWritten, "0.9.0", "0.10.0"),
+  );
+});
+
+test("buildNextUpgradeSkeleton is the single source both callers read", () => {
+  // If these two drift apart, the release gate stops recognising its own
+  // template and silently never fires again.
+  const opened = openNextUpgradeSection(OPEN_FIXTURE, "0.8.0", "0.9.0");
+  assert.ok(opened.includes(buildNextUpgradeSkeleton("0.9.0")));
 });

@@ -13,6 +13,7 @@ import {
   diffNoteHeadings,
   fingerprintSectionBody,
   checkReleasedSections,
+  emptyCorpusError,
   parseOverride,
   formatProblems,
   validateCiWiring,
@@ -219,6 +220,51 @@ test("checkReleasedSections WARNS, never fails, when a tag is unavailable", () =
   assert.deepEqual(problems, []);
   assert.equal(warnings.length, 2);
   assert.match(warnings[0], /tag not available locally/);
+});
+
+// ─── the corpus floor ────────────────────────────────────────────────────────
+
+test("checkReleasedSections reports how many sections it actually compared", () => {
+  const readable = checkReleasedSections({
+    mdx: AT_TAG,
+    readTaggedMdx: readerFor(AT_TAG),
+    knownDrift: {},
+  });
+  assert.deepEqual(
+    { released: readable.released, checked: readable.checked },
+    { released: 2, checked: 2 },
+  );
+
+  const halfReadable = checkReleasedSections({
+    mdx: AT_TAG,
+    readTaggedMdx: (tag) => (tag === "v0.9.0" ? AT_TAG : null),
+    knownDrift: {},
+  });
+  assert.deepEqual(
+    { released: halfReadable.released, checked: halfReadable.checked },
+    { released: 2, checked: 1 },
+  );
+});
+
+test("emptyCorpusError fires when no tag resolved at all — the silent-green hole", () => {
+  // The failure `validateCiWiring` structurally cannot see: the YAML still says
+  // `fetch-tags: true`, `git show` answers nothing, every section warns, and the
+  // guard passes having compared zero sections.
+  const message = emptyCorpusError({ released: 20, checked: 0 }, true);
+  assert.match(message, /0 checked/);
+  assert.match(message, /fetch-tags: true/);
+});
+
+test("emptyCorpusError stays quiet where a shallow clone is legitimate", () => {
+  // Not strict (no CI): a contributor working from a `--depth=1 --no-tags`
+  // clone gets the warnings, not a red suite. The hard failure belongs where
+  // the green is load-bearing.
+  assert.equal(emptyCorpusError({ released: 20, checked: 0 }, false), null);
+  // Partial coverage is the documented soft path, strict or not.
+  assert.equal(emptyCorpusError({ released: 20, checked: 1 }, true), null);
+  // A file with no released sections yet has nothing to compare, and that is
+  // not a broken checkout.
+  assert.equal(emptyCorpusError({ released: 0, checked: 0 }, true), null);
 });
 
 // ─── the allowlist ───────────────────────────────────────────────────────────
@@ -514,10 +560,11 @@ function gitSafe(args) {
 }
 
 test("no already-released section of upgrading.mdx has drifted from its tag", () => {
-  const { problems, warnings, accepted } = checkReleasedSections({
-    mdx: readFileSync(join(ROOT, UPGRADING_MDX_PATH), "utf8"),
-    readTaggedMdx: (tag) => gitSafe(["show", `${tag}:${UPGRADING_MDX_PATH}`]),
-  });
+  const { problems, warnings, accepted, released, checked } =
+    checkReleasedSections({
+      mdx: readFileSync(join(ROOT, UPGRADING_MDX_PATH), "utf8"),
+      readTaggedMdx: (tag) => gitSafe(["show", `${tag}:${UPGRADING_MDX_PATH}`]),
+    });
 
   for (const warning of warnings) {
     // `::warning::` so a CI run that could not read its tags says so in the
@@ -529,6 +576,15 @@ test("no already-released section of upgrading.mdx has drifted from its tag", ()
       `[upgrading-released-sections] known pre-guard drift — ${note}`,
     );
   }
+
+  // Before judging the content: did this run read anything? An annotation
+  // nobody opens is not a gate, and in CI a zero-comparison pass is the guard
+  // reporting on its own silence.
+  const empty = emptyCorpusError(
+    { released, checked },
+    Boolean(process.env.CI),
+  );
+  assert.ok(empty === null, empty ?? "");
 
   if (problems.length === 0) return;
 

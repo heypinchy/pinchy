@@ -35,6 +35,7 @@ import {
   buildTagName,
   buildCommitMessage,
   assertUpgradingSectionExists,
+  assertUpgradeNotesWritten,
   finalizeUpgradeSection,
   openNextUpgradeSection,
   bumpReadmeComposePin,
@@ -109,6 +110,10 @@ const upgradingMdxPath = resolve(
 const upgradingMdx = readFileSync(upgradingMdxPath, "utf8");
 try {
   assertUpgradingSectionExists(upgradingMdx, prevVersion, version);
+  // …and it must say something. The previous release opened this section from a
+  // template that already satisfies the check above, so "does it exist" stopped
+  // being the same question as "did anyone write it".
+  assertUpgradeNotesWritten(upgradingMdx, prevVersion, version);
 } catch (e) {
   fail(e.message);
 }
@@ -282,12 +287,9 @@ log(`  ✔ Tagged ${tag}`);
 // commit would publish an empty "Upgrading from v<target> to v<target>" section
 // at the top of the live upgrade guide. The branch gets the open section; the
 // tag does not.
-const openedMdx = openNextUpgradeSection(
-  readFileSync(upgradingMdxPath, "utf8"),
-  prevVersion,
-  version,
-);
-if (openedMdx !== readFileSync(upgradingMdxPath, "utf8")) {
+const frozenMdx = readFileSync(upgradingMdxPath, "utf8");
+const openedMdx = openNextUpgradeSection(frozenMdx, prevVersion, version);
+if (openedMdx !== frozenMdx) {
   writeFileSync(upgradingMdxPath, openedMdx);
   exec(`git add "${upgradingMdxPath}"`);
   exec(

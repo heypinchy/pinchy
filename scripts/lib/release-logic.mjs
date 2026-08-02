@@ -292,6 +292,11 @@ export function finalizeUpgradeSection(mdx, prevVersion, targetVersion) {
  * idempotent: a section already headed `from v<target> to %%PINCHY_VERSION%%`
  * means the author opened it by hand, so this is a no-op.
  *
+ * Because the skeleton satisfies `assertUpgradingSectionExists` by
+ * construction, `assertUpgradeNotesWritten` below refuses to release it
+ * unedited — otherwise this function would have quietly removed the gate that
+ * used to make somebody write the notes.
+ *
  * @param {string} mdx - contents AFTER finalizeUpgradeSection has run
  * @param {string} prevVersion - the "from" of the section just frozen, no 'v'
  * @param {string} targetVersion - the version just released, no 'v'
@@ -312,8 +317,27 @@ export function openNextUpgradeSection(mdx, prevVersion, targetVersion) {
   const match = anchor.exec(mdx);
   if (!match) return mdx;
 
-  const skeleton = [
-    `## Upgrading from v${targetVersion} to %%PINCHY_VERSION%%`,
+  return (
+    mdx.slice(0, match.index) +
+    buildNextUpgradeSkeleton(targetVersion) +
+    "\n\n" +
+    mdx.slice(match.index)
+  );
+}
+
+/**
+ * The skeleton `openNextUpgradeSection` inserts, as one string.
+ *
+ * Exported because two callers must agree on it byte-for-byte: the release run
+ * that writes it, and `assertUpgradeNotesWritten` below, which refuses to
+ * release a section still carrying it verbatim.
+ *
+ * @param {string} openedAfterVersion - the version just released, no 'v'
+ * @returns {string} heading + body, no trailing newline
+ */
+export function buildNextUpgradeSkeleton(openedAfterVersion) {
+  return [
+    `## Upgrading from v${openedAfterVersion} to %%PINCHY_VERSION%%`,
     "",
     "### Breaking changes",
     "",
@@ -321,18 +345,64 @@ export function openNextUpgradeSection(mdx, prevVersion, targetVersion) {
     "",
     "### Upgrade notes",
     "",
-    "The standard flow applies:",
+    "Upgrade with the standard flow:",
     "",
     "```bash",
     "cd /opt/pinchy",
-    `sed -i 's/PINCHY_VERSION=v${targetVersion}/PINCHY_VERSION=%%PINCHY_VERSION%%/' .env`,
+    `sed -i 's/PINCHY_VERSION=v${openedAfterVersion}/PINCHY_VERSION=%%PINCHY_VERSION%%/' .env`,
     "docker compose pull && docker compose up -d && docker image prune -f",
     "```",
-    "",
-    "",
   ].join("\n");
+}
 
-  return mdx.slice(0, match.index) + skeleton + mdx.slice(match.index);
+/**
+ * Asserts the section about to be released is not still the auto-generated
+ * skeleton.
+ *
+ * This restores a safety net that `openNextUpgradeSection` would otherwise have
+ * removed. Before it, a release where nobody wrote upgrade notes failed at the
+ * gate — there was no `from v<just-released>` section at all, and
+ * `assertUpgradingSectionExists` said so. Now the section always exists, and it
+ * satisfies that check by construction: it has both `###` subsections and a
+ * plausible-looking body. So the release would sail through and publish an
+ * auto-generated page describing nothing.
+ *
+ * The comparison is exact (modulo surrounding blank lines): any edit at all
+ * counts as somebody having looked. Writing "None." under Breaking changes is
+ * a decision; leaving "None so far." is the skeleton's own placeholder.
+ *
+ * @param {string} mdx
+ * @param {string} prevVersion - the "from" of the section being released, no
+ *   'v'. It is also the version the skeleton was opened after, which is what
+ *   makes the regenerated comparison text exact.
+ * @param {string} targetVersion - the version being released, no 'v'
+ * @throws {Error} when the section is byte-identical to the skeleton
+ */
+export function assertUpgradeNotesWritten(mdx, prevVersion, targetVersion) {
+  const heading = new RegExp(
+    `^##\\s+Upgrading\\s+from\\s+v${escapeRegex(prevVersion)}\\s+to\\s+(v${escapeRegex(targetVersion)}|%%PINCHY_VERSION%%)\\s*$`,
+    "m",
+  );
+  const match = heading.exec(mdx);
+  if (!match) return; // assertUpgradingSectionExists owns that failure.
+
+  const remainder = mdx.slice(match.index + match[0].length);
+  const next = /^## /m.exec(remainder);
+  const body = remainder.slice(0, next ? next.index : remainder.length);
+
+  const skeleton = buildNextUpgradeSkeleton(prevVersion);
+  const skeletonBody = skeleton.slice(skeleton.indexOf("\n") + 1);
+  if (body.trim() !== skeletonBody.trim()) return;
+
+  throw new Error(
+    `The v${targetVersion} section of upgrading.mdx is still the skeleton that\n` +
+      `\`pnpm release v${prevVersion}\` generated — nobody has written this release's\n` +
+      `upgrade notes.\n\n` +
+      `Describe what changed for someone running v${prevVersion} today. If this release\n` +
+      `genuinely needs no action beyond the standard flow, say so in the section — a\n` +
+      `deliberate "None." reads differently from an untouched template, and only one\n` +
+      `of the two tells a reader anything.`,
+  );
 }
 
 /**

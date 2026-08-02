@@ -221,12 +221,18 @@ export const KNOWN_PRE_GUARD_DRIFT = {
  * `quality` job so that stays theoretical, and `validateCiWiring` below fails
  * if that wiring is removed.
  *
+ * That soft path has one edge the caller must close: if NO tag resolves, every
+ * section warns and this returns zero problems — green, having compared
+ * nothing. `validateCiWiring` cannot see that, because it reads what the YAML
+ * says rather than what `git show` answers. So the counts come back too, and
+ * the repo check fails in CI when `checked` is 0 while `released` is not.
+ *
  * @param {object} args
  * @param {string} args.mdx - current upgrading.mdx
  * @param {(tag: string) => string|null} args.readTaggedMdx - file contents at a
  *   tag, or null when the tag/blob is not available locally
  * @param {Record<string, {summary: string, kind: string, fingerprint: string}>} [args.knownDrift]
- * @returns {{problems: Array<{kind: "drift"|"stale-allowlist", tag: string, message: string}>, warnings: string[], accepted: string[]}}
+ * @returns {{problems: Array<{kind: "drift"|"stale-allowlist", tag: string, message: string}>, warnings: string[], accepted: string[], released: number, checked: number}}
  */
 export function checkReleasedSections({
   mdx,
@@ -237,11 +243,14 @@ export function checkReleasedSections({
   const warnings = [];
   const accepted = [];
   const seenTags = new Set();
+  let released = 0;
+  let checked = 0;
 
   for (const section of parseUpgradeSections(mdx)) {
     if (section.to === "%%PINCHY_VERSION%%") continue;
     const tag = section.to;
     seenTags.add(tag);
+    released += 1;
 
     const tagged = readTaggedMdx(tag);
     if (tagged == null) {
@@ -251,6 +260,7 @@ export function checkReleasedSections({
       );
       continue;
     }
+    checked += 1;
 
     // Match on `from` alone: at its own tag the section may still be
     // placeholder-headed (releases before auto-finalize existed).
@@ -338,7 +348,33 @@ export function checkReleasedSections({
     }
   }
 
-  return { problems, warnings, accepted };
+  return { problems, warnings, accepted, released, checked };
+}
+
+/**
+ * The corpus floor: did this run compare anything at all?
+ *
+ * Kept separate from `checkReleasedSections` so the soft path stays soft where
+ * it should be. One unreadable tag is a shallow clone and must not fail a
+ * build. EVERY tag unreadable is not a content verdict at all — it is the guard
+ * reporting green on an empty comparison, which is exactly how a coverage gate
+ * becomes decoration. The caller passes `strict` for the environment where
+ * silence is dangerous (CI), and leaves it off where a shallow local clone is a
+ * legitimate way to work.
+ *
+ * @param {{released: number, checked: number}} counts
+ * @param {boolean} strict
+ * @returns {string|null} an error message, or null when the run is usable
+ */
+export function emptyCorpusError({ released, checked }, strict) {
+  if (!strict || released === 0 || checked > 0) return null;
+  return (
+    `${UPGRADING_MDX_PATH}: ${released} released section(s), 0 checked — not a single ` +
+    `release tag could be read, so this guard compared nothing and would have passed ` +
+    `on any drift.\n` +
+    `In CI: the checkout must set \`fetch-tags: true\` (see the \`quality\` job).\n` +
+    `Locally: \`git fetch --tags\`.`
+  );
 }
 
 // An edit to a released section is authorized the same way a test deletion is:

@@ -58,6 +58,7 @@ Three mechanisms now make this impossible:
 
 - You only write the **new** `## Upgrading from v<prev> to %%PINCHY_VERSION%%` section (with `%%PINCHY_VERSION%%` placeholders is fine and preferred). The script freezes it for you at release time.
 - The next cycle's section is opened for you by the release run, so notes written after a release land in it rather than in the section that just shipped. If it is somehow missing — a hand-cut release, a forward-port that dropped it — the next release's gate still fails loudly at the start (no `from v<just-released>` section), which is the safety net, not a surprise.
+- **You still have to write the notes.** Because the opened section already has both `###` subsections, "the section exists" stopped being the same question as "somebody wrote it" — so `assertUpgradeNotesWritten` fails the release while the section is still byte-identical to the generated template. Any real edit clears it, including a deliberate `None.`; leaving the template's own `None so far.` does not.
 
 ## Release branches (GitLab-Flow-style)
 
