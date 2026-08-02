@@ -18,6 +18,7 @@ import {
   findSkippedReleases,
   movingTagForRef,
   stagingImageTagForBranch,
+  stagingPinAdvice,
 } from "./release-logic.mjs";
 
 // parseAndValidateVersion
@@ -829,12 +830,12 @@ test("stagingImageTagForBranch pins a release branch to its own rc-X.Y", () => {
   assert.equal(stagingImageTagForBranch("release/1.10"), "rc-1.10");
 });
 
-// A branch nothing publishes an image for gets no tag at all, rather than a
-// plausible-looking one: pre-release.yml builds only `main` and `release/**`,
-// so naming e.g. `rc-feature-foo` would send the operator to verify an image
-// that does not exist. The preflight already flags the branch as unreleasable;
-// null lets it stay silent about a pin instead of inventing one.
-test("stagingImageTagForBranch returns null for a branch that publishes no image", () => {
+// A branch no release can be cut from gets no tag at all, rather than a
+// plausible-looking one. `feature/foo` has no image (pre-release.yml never
+// builds it, so `movingTagForRef`'s `rc-feature-foo` names nothing);
+// `release/0.9/hotfix` does have one (the trigger is `release/**`) but
+// `isReleasableBranch` refuses the cut, so the pin is moot either way.
+test("stagingImageTagForBranch returns null for a branch no release can be cut from", () => {
   assert.equal(stagingImageTagForBranch("feature/foo"), null);
   assert.equal(stagingImageTagForBranch("release/0.9/hotfix"), null);
   assert.equal(stagingImageTagForBranch(""), null); // detached HEAD
@@ -850,6 +851,63 @@ test("stagingImageTagForBranch agrees with movingTagForRef wherever it answers",
       `staging pin and published moving tag disagree for ${branch}`,
     );
   }
+});
+
+// stagingPinAdvice — the line the operator actually reads. The hardcoded
+// `:next` string was the whole bug, so the string is asserted here rather than
+// left to a script nothing checks.
+
+test("stagingPinAdvice names the branch's own candidate image", () => {
+  assert.equal(stagingPinAdvice("main", "a".repeat(40)).tag, "next");
+  assert.equal(stagingPinAdvice("release/0.9", "a".repeat(40)).tag, "rc-0.9");
+});
+
+// Staging is set up to track `:next` continuously, so on main the exact-ref
+// pin would argue against the working setup. The note is for the case the
+// default pin gets wrong.
+test("stagingPinAdvice adds no note on main", () => {
+  assert.equal(stagingPinAdvice("main", "a".repeat(40)).note, null);
+});
+
+test("stagingPinAdvice offers the exact :sha ref on a release branch", () => {
+  const { note } = stagingPinAdvice(
+    "release/0.9",
+    "0123456789abcdef".repeat(2),
+  );
+  assert.match(note, /:rc-0\.9 moves with every push to release\/0\.9/);
+  assert.match(note, /:sha-0123456789ab\b/); // 12 chars, not the full sha
+  assert.match(note, /Never :next/);
+});
+
+test("stagingPinAdvice degrades to a placeholder when git cannot answer", () => {
+  const { note } = stagingPinAdvice("release/0.9", null);
+  assert.match(note, /:sha-<short12>/);
+});
+
+// The reason must be "no release can be cut here", never "no image exists":
+// pre-release.yml triggers on `release/**`, so release/0.9/hotfix DOES publish
+// :rc-0.9-hotfix. Printing that it doesn't would be a false claim about the
+// workflow, in the one place an operator is being told what to trust.
+test("stagingPinAdvice explains an unreleasable branch by the cut, not by a missing image", () => {
+  for (const branch of ["feature/foo", "release/0.9/hotfix"]) {
+    const { tag, note } = stagingPinAdvice(branch, "a".repeat(40));
+    assert.equal(tag, null);
+    assert.match(note, /no release can be cut from/);
+    assert.ok(
+      note.includes(branch),
+      `the note should name the branch it refuses (${branch})`,
+    );
+    assert.doesNotMatch(
+      note,
+      /no candidate image is published|builds only/,
+      "release/**` really does publish an image — do not claim otherwise",
+    );
+  }
+});
+
+test("stagingPinAdvice describes a detached HEAD instead of an empty branch name", () => {
+  const { note } = stagingPinAdvice("", "a".repeat(40));
+  assert.match(note, /a detached HEAD/);
 });
 
 // findSkippedReleases — the guard against the v0.9.0-on-a-release-branch trap:

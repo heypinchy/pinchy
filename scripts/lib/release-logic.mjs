@@ -533,21 +533,66 @@ export function movingTagForRef(refName) {
  * Delegates to `movingTagForRef` rather than re-deriving, so the pin the
  * operator verifies is by construction the tag pre-release.yml pushed.
  *
- * Returns `null` for anything else — a feature branch, a detached HEAD, an
- * odd `release/…` shape. pre-release.yml publishes only from `main` and
- * `release/**`, so there is no image to pin, and `movingTagForRef`'s tolerant
- * fallback (`feature/foo` → `rc-feature-foo`) would name one that does not
- * exist. That tolerance is right for a workflow that must never fail on a tag
- * name, and wrong for an instruction a human is about to follow. The preflight
- * flags such a branch as unreleasable anyway; `null` lets it say nothing about
- * a pin instead of inventing one.
+ * Returns `null` for anything else — a feature branch, a detached HEAD, an odd
+ * `release/…` shape. Two different reasons converge on that answer, and it is
+ * worth not conflating them: for `feature/foo` pre-release.yml publishes
+ * nothing, so `movingTagForRef`'s tolerant fallback (`rc-feature-foo`) would
+ * name an image that does not exist; for `release/0.9/hotfix` an image really
+ * is published — the trigger is `release/**`, not `release/X.Y` — but
+ * `isReleasableBranch` refuses to cut a tag from that branch at all, so the
+ * pin is moot. That tolerance is right for a workflow which must never fail on
+ * a tag name, and wrong for an instruction a human is about to follow. `null`
+ * lets the preflight stay silent about a pin rather than name one.
  *
  * @param {string} branch - current branch name (`git branch --show-current`)
- * @returns {string|null} e.g. "next", "rc-0.9", or null if nothing is published
+ * @returns {string|null} e.g. "next", "rc-0.9", or null if no release can be cut here
  */
 export function stagingImageTagForBranch(branch) {
   if (!isReleasableBranch(branch)) return null;
   return movingTagForRef(branch);
+}
+
+/**
+ * The preflight's staging-pin line, as data: which tag to verify on, plus the
+ * parenthetical that makes it actionable.
+ *
+ * Lives here rather than inline in `release-preflight.mjs` because the string
+ * IS the bug this fixes — a hardcoded `:next` sent a release-branch cut to
+ * verify `main`. A hardcoded sentence in a script is asserted by nothing; the
+ * script keeps only the printing.
+ *
+ * `main` deliberately gets no exact-ref note even though `:next` moves just as
+ * much: staging is *designed* to track `:next` continuously (see CONTRIBUTING
+ * § "Testing a release candidate"), so telling the operator to pin a SHA there
+ * would argue against the setup that works. The note exists for the case the
+ * default pin gets wrong — a release branch, whose candidate image staging
+ * does not follow.
+ *
+ * @param {string} branch - current branch name (`git branch --show-current`)
+ * @param {string|null} headSha - full HEAD sha, or null if git could not answer
+ * @returns {{tag: string|null, note: string|null}}
+ */
+export function stagingPinAdvice(branch, headSha) {
+  const tag = stagingImageTagForBranch(branch);
+
+  if (tag === null) {
+    // Not "no image exists" — `release/0.9/hotfix` has one. The honest reason
+    // is that no release may be cut from here, so there is nothing to pin for.
+    return {
+      tag: null,
+      note: `(no release can be cut from ${branch || "a detached HEAD"} — releases come off main or release/X.Y, so there is no candidate to pin)`,
+    };
+  }
+
+  if (tag === movingTagForRef("main")) return { tag, note: null };
+
+  // rc-X.Y is a moving tag: it is whatever was pushed to the branch last, which
+  // is not necessarily the commit being attested.
+  const exact = headSha ? `:sha-${headSha.slice(0, 12)}` : ":sha-<short12>";
+  return {
+    tag,
+    note: `(:${tag} moves with every push to ${branch} — pin ${exact} to nail this exact ref. Never :next; it tracks main.)`,
+  };
 }
 
 /**

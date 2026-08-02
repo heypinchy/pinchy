@@ -39,7 +39,7 @@ import {
   checkReleaseVerification,
   findSkippedReleases,
   isReleasableBranch,
-  stagingImageTagForBranch,
+  stagingPinAdvice,
 } from "./lib/release-logic.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -189,24 +189,13 @@ out(
 // Which image staging must run to make this verification mean anything. `:next`
 // tracks main, so printing it unconditionally sent a release-branch cut off to
 // verify a build hundreds of commits from the one it was about to tag.
-const stagingTag = stagingImageTagForBranch(branch.out);
+const pin = stagingPinAdvice(branch.out, head.ok ? head.out : null);
 
 out("");
 out(
-  `Manual gates — verify on staging${stagingTag ? ` (:${stagingTag})` : ""} and CHECK EACH OFF before \`pnpm release\`:`,
+  `Manual gates — verify on staging${pin.tag ? ` (:${pin.tag})` : ""} and CHECK EACH OFF before \`pnpm release\`:`,
 );
-if (stagingTag === null) {
-  out(
-    `(no candidate image is published for ${branch.out || "a detached HEAD"} — pre-release.yml builds only main and release/X.Y)`,
-  );
-} else if (stagingTag !== "next") {
-  // rc-X.Y is a moving tag: it is whatever was pushed to the branch last, which
-  // is not necessarily the commit being attested below.
-  const exact = head.ok ? `:sha-${head.out.slice(0, 12)}` : ":sha-<short12>";
-  out(
-    `(:${stagingTag} moves with every push to ${branch.out} — pin ${exact} to nail this exact ref. Never :next; it tracks main.)`,
-  );
-}
+if (pin.note) out(pin.note);
 out(
   "(the skill turns each `[ ]` into a blocking task that `pnpm release` waits on)",
 );
