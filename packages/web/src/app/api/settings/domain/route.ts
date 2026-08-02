@@ -3,6 +3,7 @@ import { requireAdmin } from "@/lib/api-auth";
 import { getSetting } from "@/lib/settings";
 import { setDomainAndRefreshCache, deleteDomainAndRefreshCache } from "@/lib/domain";
 import { appendAuditLog } from "@/lib/audit";
+import { readRequestHostFromHeaders } from "@/server/forwarded-host";
 
 export async function POST(req: Request) {
   const session = await requireAdmin();
@@ -16,7 +17,11 @@ export async function POST(req: Request) {
     );
   }
 
-  const domain = req.headers.get("x-forwarded-host") || req.headers.get("host");
+  // Public hop only: behind chained proxies `X-Forwarded-Host` arrives as
+  // "public.example.com, internal:7777", and storing that verbatim locks the
+  // instance to a name no browser can send — the exact lockout this flow
+  // exists to make impossible.
+  const domain = readRequestHostFromHeaders(req.headers);
 
   if (!domain) {
     return NextResponse.json(
@@ -92,7 +97,7 @@ export async function GET(req: Request) {
   if (session instanceof NextResponse) return session;
 
   const domain = await getSetting("domain");
-  const currentHost = req.headers.get("x-forwarded-host") || req.headers.get("host");
+  const currentHost = readRequestHostFromHeaders(req.headers) ?? null;
   const isHttps = req.headers.get("x-forwarded-proto") === "https";
 
   return NextResponse.json({ domain, currentHost, isHttps });

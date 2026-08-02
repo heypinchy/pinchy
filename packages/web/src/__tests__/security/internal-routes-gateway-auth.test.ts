@@ -21,6 +21,12 @@
 // both exemptions silently. `POST /api/internal/audit/background-run` was
 // exactly that route, and moved to `/api/audit/background-run` with this guard.
 //
+// Known limitation, stated plainly: this greps the route's source text. A file
+// that merely mentions `validateGatewayToken` — in a comment explaining why it
+// doesn't call one, say — satisfies it. It is a tripwire against a route that
+// forgets to authenticate, not a proof that authentication is reached on every
+// code path; review owns the deliberate case.
+//
 // See AGENTS.md § "A Hand-Maintained List That Mirrors Code Will Be Wrong".
 import { describe, it, expect } from "vitest";
 import { readFileSync, readdirSync, statSync } from "node:fs";

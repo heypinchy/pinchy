@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // Partial mock: only the write is stubbed. `safeAuditPath` stays real, so the
 // capping assertion below tests the actual truncation rather than a stub.
@@ -7,7 +7,7 @@ vi.mock("@/lib/audit", async (importOriginal) => ({
   appendAuditLog: vi.fn().mockResolvedValue(undefined),
 }));
 
-import { logHostBlocked, shouldAuditHostBlock } from "@/server/host-check";
+import { logHostBlocked, shouldAuditHostBlock, resetHostBlockWindow } from "@/server/host-check";
 import { appendAuditLog } from "@/lib/audit";
 
 describe("shouldAuditHostBlock", () => {
@@ -33,6 +33,7 @@ describe("shouldAuditHostBlock", () => {
 describe("logHostBlocked", () => {
   beforeEach(() => {
     vi.mocked(appendAuditLog).mockClear();
+    resetHostBlockWindow();
   });
 
   it("appends an auth.host_blocked audit entry with the request context", async () => {
@@ -103,5 +104,75 @@ describe("logHostBlocked", () => {
         remoteAddress: "172.18.0.4",
       })
     ).resolves.toBeUndefined();
+  });
+});
+
+// Every audit row takes `pg_advisory_xact_lock` on one constant key, so audit
+// writes are serialized instance-wide (lib/audit.ts). Without a bound, an
+// anonymous `GET http://<raw-ip>/api/x` loop against a domain-locked install
+// both grows the immutable table and stalls every genuine audit write behind
+// the flood — and buries the one row this event exists to surface.
+describe("logHostBlocked throttling", () => {
+  const block = (host: string) =>
+    logHostBlocked({
+      method: "GET",
+      pathname: "/api/anything",
+      host,
+      lockedDomain: "pinchy.example.com",
+      remoteAddress: "203.0.113.42",
+    });
+
+  beforeEach(() => {
+    vi.mocked(appendAuditLog).mockClear();
+    resetHostBlockWindow();
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-02T10:00:00Z"));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("writes one row per window no matter how many requests are blocked", async () => {
+    for (let i = 0; i < 500; i++) await block("evil.example.com");
+
+    expect(appendAuditLog).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports the volume it collapsed on the next window's row", async () => {
+    // The count is the whole point: a bounded row that silently drops the
+    // scale of what it stood in for is worse than no row, because it reads
+    // like a single stray request.
+    await block("evil.example.com");
+    for (let i = 0; i < 9; i++) await block("evil.example.com");
+
+    vi.advanceTimersByTime(60_000);
+    await block("evil.example.com");
+
+    expect(appendAuditLog).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(appendAuditLog).mock.calls[1][0].detail).toMatchObject({
+      suppressedSinceLastEntry: 9,
+    });
+  });
+
+  it("omits the count when nothing was suppressed", async () => {
+    await block("evil.example.com");
+
+    expect(vi.mocked(appendAuditLog).mock.calls[0][0].detail).not.toHaveProperty(
+      "suppressedSinceLastEntry"
+    );
+  });
+
+  it("keeps the window global rather than keyed by anything the caller sends", async () => {
+    // A window keyed by host, path or remote address makes the key map itself
+    // the flood target — attacker-supplied dimensions are unbounded, so the
+    // Map grows per request and the throttle stops throttling. (`scopeDenialWindows`
+    // in lib/api-auth.ts can key by API key only because an admin must mint one.)
+    // The cost is deliberate: within a minute, one blocked component can mask
+    // another. The first row still names a host and a path, and the count says
+    // how much more there was.
+    for (let i = 0; i < 100; i++) await block(`host-${i}.example.com`);
+
+    expect(appendAuditLog).toHaveBeenCalledTimes(1);
   });
 });

@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from "http";
 import { parse } from "url";
 import { normalizeHost } from "@/lib/domain-cache";
 import { appendAuditLog } from "@/lib/audit";
+import { firstHeaderValue, publicHopOf, readRequestHost } from "@/server/forwarded-host";
 
 export type CsrfCheckInput = {
   method: string;
@@ -40,13 +41,6 @@ function parseOriginUrl(value: string): { protocol: string; host: string } | nul
   } catch {
     return null;
   }
-}
-
-// RFC 7239 multi-hop: x-forwarded-host may be "public.example.com, internal:7777".
-// The first hop is the public name the browser saw, which is what Origin matches.
-function publicHopOf(host: string): string {
-  const comma = host.indexOf(",");
-  return (comma === -1 ? host : host.slice(0, comma)).trim();
 }
 
 function matchesRequestHost(
@@ -92,11 +86,6 @@ export function isCsrfRequestAllowed(input: CsrfCheckInput): CsrfCheckResult {
   return { allowed: false, reason: "missing-origin-and-referer" };
 }
 
-function firstHeaderValue(value: string | string[] | undefined): string | undefined {
-  if (Array.isArray(value)) return value[0];
-  return value;
-}
-
 /**
  * Origin/Referer-based CSRF gate for state-changing API routes.
  *
@@ -112,8 +101,7 @@ export async function applyCsrfGate(req: IncomingMessage, res: ServerResponse): 
   const method = (req.method ?? "GET").toUpperCase();
   const { pathname } = parse(req.url ?? "/", false);
 
-  const host =
-    firstHeaderValue(req.headers["x-forwarded-host"]) ?? firstHeaderValue(req.headers.host);
+  const host = readRequestHost(req.headers);
   const forwardedProto = firstHeaderValue(req.headers["x-forwarded-proto"]);
   const origin = firstHeaderValue(req.headers.origin);
   const referer = firstHeaderValue(req.headers.referer);
