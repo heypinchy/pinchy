@@ -37,6 +37,8 @@
  */
 import { toCitationPath } from "@/lib/knowledge/citation-path";
 
+import { matchRetrievedDocument } from "./cited-path-match";
+
 import type { KbFailureTag, KbGraderResult } from "./types";
 
 /** A source `knowledge_search` returned for the query this answer responds to. */
@@ -320,38 +322,56 @@ export function gradeCitationResolution(input: AttributionInput): KbGraderResult
 }
 
 /**
- * `path-not-cited`: a Sources entry must reproduce the full path
- * `knowledge_search` gave the model, exactly. Flags either failure mode:
- * - a bare filename (no `/`) — unfindable in a deep corpus and ambiguous
- *   across same-named files in different folders;
- * - a path that does not match any `retrieved[].sourcePath` — a fabricated
- *   or mangled path the model didn't actually get from the tool.
+ * `path-not-cited`: a Sources entry must name, in full, a document
+ * `knowledge_search` actually returned. Three failure modes, one tag:
+ * - the entry names no returned document — a fabricated or mangled path;
+ * - it names two of them equally well (`policy.md` when both `handbook-2011/`
+ *   and `handbook-2012/` came back) — the reader cannot tell which;
+ * - it names only part of the path the document has — a bare filename where
+ *   the corpus has folders, unfindable and ambiguous with same-named siblings.
+ *
+ * The rule is "as much path as the document HAS", not "contains a slash". The
+ * first real Layer-3 sweep (#869) charged 19 of 43 runs here, and not one of
+ * them named an unretrieved document: 12 of that corpus's 15 documents sit at
+ * the data root, so their full citation path IS the bare filename, and the
+ * slash test failed four correct citations in five. A citation-integrity axis
+ * reading zero precisely when citation integrity is fine is worse than no axis.
+ *
+ * Matching is delegated to `cited-path-match.ts`, shared with the groundedness
+ * premise lookup so the two cannot answer "which document is this?"
+ * differently. It matches at segment boundaries, which is also what makes the
+ * trailing annotations models really write — a quoted passage, a prose gloss,
+ * a surrounding code span — irrelevant instead of fatal. `PAGE_SUFFIX` splits
+ * off `— p. N` and nothing else, so every other annotation used to stay glued
+ * to the path and turn an exact match into a mismatch.
  */
 export function gradePathCitation(input: AttributionInput): KbGraderResult {
   const { entries } = parseAnswer(input.answer);
-  // Compared in CITATION form on both sides. `retrieved` is built from the
-  // audit row, which records the absolute sourcePath because that is a
-  // document's identity; the answer reproduces what `knowledge_search` printed,
-  // which is data-root-relative (#933). `toCitationPath` is a no-op on a path
-  // that is already relative, so an answer echoing either form still resolves
-  // to the same document instead of reading as a fabrication.
-  const retrievedPaths = new Set(
-    input.retrieved.map((source) => toCitationPath(source.sourcePath))
-  );
 
   const notes: string[] = [];
   for (const entry of entries) {
-    if (!entry.path.includes("/")) {
+    const match = matchRetrievedDocument(entry.path, input.retrieved);
+    if (match === null) {
       notes.push(
-        `Sources entry [${entry.n}] cites the bare filename "${entry.path}" instead of the full path knowledge_search returned.`
+        `Sources entry [${entry.n}] cites path "${entry.path}", which does not match exactly one path in the returned sources.`
       );
       continue;
     }
-    if (!retrievedPaths.has(toCitationPath(entry.path))) {
-      notes.push(
-        `Sources entry [${entry.n}] cites path "${entry.path}", which does not match any path in the returned sources.`
-      );
-    }
+    // Compared in CITATION form on both sides. `retrieved` is built from the
+    // audit row, which records the absolute sourcePath because that is a
+    // document's identity; the answer reproduces what `knowledge_search`
+    // printed, which is data-root-relative (#933). `toCitationPath` is a no-op
+    // on a path that is already relative, so an answer echoing either form
+    // still counts as naming the whole path.
+    const full = toCitationPath(match.sourcePath);
+    const named = toCitationPath(match.named);
+    if (named === full) continue;
+
+    notes.push(
+      named.includes("/")
+        ? `Sources entry [${entry.n}] cites the partial path "${named}" instead of the full path "${full}" knowledge_search returned.`
+        : `Sources entry [${entry.n}] cites the bare filename "${named}" instead of the full path "${full}" knowledge_search returned.`
+    );
   }
 
   if (notes.length === 0) return passKb();

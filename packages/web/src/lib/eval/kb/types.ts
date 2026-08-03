@@ -96,7 +96,7 @@ export interface GoldQA extends GoldQuery {
 export type KbFailureTag =
   | "recall-miss" // an expected chunk was not retrieved
   | "dedup-inflation" // near-duplicate chunks counted as independent sources
-  | "path-not-cited" // citation used a bare filename, not the full path
+  | "path-not-cited" // citation does not name exactly one retrieved document, in full
   | "citation-unresolved" // an inline [N] has no Sources entry (cited-but-unlisted)
   | "source-uncited" // a Sources entry was never cited inline (listed-but-uncited)
   | "sources-format" // Sources list not rendered as markdown bullets

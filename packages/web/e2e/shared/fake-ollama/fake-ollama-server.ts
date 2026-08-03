@@ -333,9 +333,9 @@ const KNOWLEDGE_SEARCH_RESPONSE = "Knowledge base searched: coverage probe compl
 //   KB_UNLISTED_CITATION_TRIGGER     | citation-unresolved   | /data/vacation-policy-en.md
 //   KB_UNCITED_SOURCE_TRIGGER        | source-uncited        | /data/vacation-policy-en.md,
 //                                     |                       | /data/quality-file.md
-//   KB_BARE_FILENAME_TRIGGER         | path-not-cited        | product-insert.md (bare filename;
+//   KB_BARE_FILENAME_TRIGGER         | path-not-cited        | policy.md (bare basename;
 //                                     |                       | full path would be
-//                                     |                       | /data/product-insert.md)
+//                                     |                       | /data/handbook-2012/policy.md)
 //   KB_RUNON_FORMAT_TRIGGER          | sources-format (+     | /data/handbook-2012/policy.md
 //                                     | citation-unresolved,  |
 //                                     | see note below)       |
@@ -353,9 +353,17 @@ const KNOWLEDGE_SEARCH_RESPONSE = "Knowledge base searched: coverage probe compl
 //     /data/vacation-policy-en.md — the one path the response's Sources list
 //     actually cites — so `gradePathCitation` passes and only
 //     `citation-unresolved` fires.
-//   - KB_BARE_FILENAME: `gradePathCitation` fires on the bare filename
-//     regardless of what `retrieved` contains (no `/` in the cited entry is
-//     sufficient on its own).
+//   - KB_BARE_FILENAME: the cited entry is the BARE BASENAME of a document
+//     that lives in a FOLDER (`policy.md` for /data/handbook-2012/policy.md),
+//     and that pairing is the whole fixture. `gradePathCitation` asks whether
+//     the entry names as much path as the document HAS, not whether it
+//     contains a `/` — the slash test charged every correctly-cited root-level
+//     document as a defect and was replaced (#869). A root-level fixture
+//     (`product-insert.md`, which this response used to cite) would now
+//     legitimately PASS and silently stop testing anything.
+//     The tag still fires regardless of what `retrieved` contains, for three
+//     different reasons: handbook-2012 alone → a partial path; both handbooks
+//     → an unresolvable tie on the shared basename; neither → no match.
 //   - KB_RUNON_FORMAT: `retrieved` should contain
 //     /data/handbook-2012/policy.md, but note this does NOT isolate a single
 //     tag. Verified against the real `gradeAttribution` (not assumed): a
@@ -389,9 +397,9 @@ const KB_UNCITED_SOURCE_RESPONSE =
 
 const KB_BARE_FILENAME_TRIGGER = "E2E_KB_BARE_FILENAME";
 const KB_BARE_FILENAME_RESPONSE =
-  "The filter cartridge should be replaced every six months [1].\n\n" +
+  "The employee handbook requires an annual policy review [1].\n\n" +
   "**Sources:**\n\n" +
-  "- [1] product-insert.md — p. 2";
+  "- [1] policy.md — p. 1";
 
 const KB_RUNON_FORMAT_TRIGGER = "E2E_KB_RUNON_FORMAT";
 const KB_RUNON_FORMAT_RESPONSE =

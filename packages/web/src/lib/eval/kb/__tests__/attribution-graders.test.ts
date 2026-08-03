@@ -229,6 +229,118 @@ describe("gradePathCitation", () => {
   });
 });
 
+/**
+ * The first real Layer-3 sweep (#869) charged 19 of 43 runs with
+ * `path-not-cited`, and reading the 19 answers showed that NOT ONE of them
+ * named a document retrieval had not returned. Two rules were wrong, and both
+ * were wrong in the direction that makes a citation-integrity metric read zero
+ * exactly when citation integrity is fine.
+ */
+describe("gradePathCitation against the shapes the first real sweep produced", () => {
+  // 12 of this corpus's 15 documents sit at the data root, so their FULL
+  // citation path is the bare filename. "contains a slash" therefore charged
+  // the correct citation of four documents out of five as a defect.
+  it("passes a document that lives at the data root, whose full path IS its filename", () => {
+    const input: AttributionInput = {
+      answer: `X [1].
+
+**Sources:**
+
+- [1] quality-file.md`,
+      retrieved: [src(1, "/data/quality-file.md")],
+    };
+
+    expect(gradePathCitation(input)).toEqual<KbGraderResult>({ passed: true, tags: [], notes: [] });
+  });
+
+  // The entry still has to name as much path as the document HAS: the
+  // ambiguity a bare filename creates is real wherever the corpus has folders,
+  // and that is the Block-A regression this axis was built for.
+  it("still flags the bare filename of a document that lives in a folder", () => {
+    const input: AttributionInput = {
+      answer: `X [1].
+
+**Sources:**
+
+- [1] afnor-certificate-2024.md`,
+      retrieved: [src(1, "/data/quality/afnor-certificate-2024.md")],
+    };
+
+    const result = gradePathCitation(input);
+
+    expect(result.passed).toBe(false);
+    expect(result.tags).toEqual(["path-not-cited"]);
+    expect(result.notes[0]).toMatch(/bare filename/);
+  });
+
+  // `PAGE_SUFFIX` only splits a trailing "— p. N". Every other trailing
+  // annotation a model writes stayed glued to the path and turned an exact
+  // match into a mismatch. All three shapes below are verbatim from the sweep.
+  it.each([
+    [
+      "a quoted passage after an em dash",
+      'handbook-2012/policy.md — "the daily meal per diem was increased from $45 to $60."',
+    ],
+    [
+      "a prose gloss after an em dash",
+      "quality-file.md — manufacturing and field-performance notes for the Aqua-Filter 200 line",
+    ],
+    [
+      "a code span with a quoted passage",
+      '`handbook-2012/policy.md` (undefined): "Effective the 2012 revision, ..."',
+    ],
+  ])("passes an entry whose path carries %s", (_label, entry) => {
+    const input: AttributionInput = {
+      answer: `X [1].
+
+**Sources:**
+
+- [1] ${entry}`,
+      retrieved: [
+        src(
+          1,
+          entry.includes("handbook") ? "/data/handbook-2012/policy.md" : "/data/quality-file.md"
+        ),
+      ],
+    };
+
+    expect(gradePathCitation(input)).toEqual<KbGraderResult>({ passed: true, tags: [], notes: [] });
+  });
+
+  // The annotation must not become a way to pass, either: a fabricated path is
+  // still fabricated when a real passage is quoted beside it.
+  it("still flags a fabricated path that quotes a real passage beside it", () => {
+    const input: AttributionInput = {
+      answer: `X [1].
+
+**Sources:**
+
+- [1] old-handbook-2012/policy.md — "the daily meal per diem was increased from $45 to $60."`,
+      retrieved: [src(1, "/data/handbook-2012/policy.md")],
+    };
+
+    const result = gradePathCitation(input);
+
+    expect(result.passed).toBe(false);
+    expect(result.tags).toEqual(["path-not-cited"]);
+  });
+
+  // A basename two retrieved documents share names neither of them. This is
+  // the ambiguity the axis exists to catch, and it must survive both fixes.
+  it("flags a filename that two retrieved documents share", () => {
+    const input: AttributionInput = {
+      answer: `X [1].
+
+**Sources:**
+
+- [1] policy.md`,
+      retrieved: [src(1, "/data/handbook-2011/policy.md"), src(2, "/data/handbook-2012/policy.md")],
+    };
+
+    expect(gradePathCitation(input).tags).toEqual(["path-not-cited"]);
+  });
+});
+
 describe("gradeSourcesFormat", () => {
   it("flags a run-on (non-bullet) Sources list", () => {
     const input: AttributionInput = {
