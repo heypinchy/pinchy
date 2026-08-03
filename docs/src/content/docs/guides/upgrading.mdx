@@ -184,7 +184,7 @@ If you need to roll back after an upgrade:
   backup step matters.
 </Aside>
 
-## Upgrading from v0.9.0 to %%PINCHY_VERSION%%
+## Upgrading from v0.9.0 to v0.9.1
 
 ### Breaking changes
 
@@ -192,7 +192,7 @@ None. This is a bugfix release: no schema migration, no compose change, no confi
 
 ```bash
 cd /opt/pinchy
-sed -i 's/^PINCHY_VERSION=.*/PINCHY_VERSION=%%PINCHY_VERSION%%/' .env
+sed -i 's/^PINCHY_VERSION=.*/PINCHY_VERSION=v0.9.1/' .env
 docker compose pull && docker compose up -d && docker image prune -f
 ```
 
