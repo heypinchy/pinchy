@@ -72,8 +72,12 @@ const RETRIEVED_FIXTURES: Record<string, RetrievedSource[]> = {
     { n: 1, sourcePath: "/data/vacation-policy-en.md", page: 1 },
     { n: 2, sourcePath: "/data/quality-file.md", page: 2 },
   ],
+  // A document in a FOLDER, cited by its bare basename. The pairing is the
+  // fixture: `gradePathCitation` asks whether the entry names as much path as
+  // the document HAS, so a root-level document (which this used to be) would
+  // now legitimately pass and quietly stop testing anything (#869).
   [FAKE_OLLAMA_KB_BARE_FILENAME_TRIGGER]: [
-    { n: 1, sourcePath: "/data/product-insert.md", page: 2 },
+    { n: 1, sourcePath: "/data/handbook-2012/policy.md", page: 1 },
   ],
   [FAKE_OLLAMA_KB_RUNON_FORMAT_TRIGGER]: [
     { n: 1, sourcePath: "/data/handbook-2012/policy.md", page: 1 },
@@ -93,7 +97,7 @@ const SANITY_SUBSTRING: Record<string, string> = {
   [FAKE_OLLAMA_KB_UNLISTED_CITATION_TRIGGER]: "Employees accrue 2.5 days per month",
   [FAKE_OLLAMA_KB_UNCITED_SOURCE_TRIGGER]: "Employees accrue 2.5 days of leave per month",
   [FAKE_OLLAMA_KB_BARE_FILENAME_TRIGGER]:
-    "The filter cartridge should be replaced every six months",
+    "The 2012 handbook revision raised the daily meal per diem",
   [FAKE_OLLAMA_KB_RUNON_FORMAT_TRIGGER]: "The employee handbook requires an annual policy review",
 };
 
@@ -181,6 +185,14 @@ test.describe.serial("KB Eval Harness — Layer-2 attribution self-test", () => 
   for (const kase of CASES) {
     test(kase.name, async ({ page }, testInfo) => {
       testInfo.setTimeout(180_000);
+
+      // Before spending a stack round trip: the sanity substring is hand-picked
+      // (it must survive markdown rendering, so it cannot be derived), which
+      // means editing a RESPONSE constant silently invalidates it. Asserting it
+      // against the constant first turns that drift into an instant, named
+      // failure instead of a seven-minute "the chat did not contain X".
+      expect(kase.response).toContain(SANITY_SUBSTRING[kase.trigger]);
+
       await login(page);
 
       const { finalMessage } = await dispatchAndScrape(

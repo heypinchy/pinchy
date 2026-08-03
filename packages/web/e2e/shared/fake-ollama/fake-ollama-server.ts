@@ -397,7 +397,7 @@ const KB_UNCITED_SOURCE_RESPONSE =
 
 const KB_BARE_FILENAME_TRIGGER = "E2E_KB_BARE_FILENAME";
 const KB_BARE_FILENAME_RESPONSE =
-  "The employee handbook requires an annual policy review [1].\n\n" +
+  "The 2012 handbook revision raised the daily meal per diem [1].\n\n" +
   "**Sources:**\n\n" +
   "- [1] policy.md — p. 1";
 
