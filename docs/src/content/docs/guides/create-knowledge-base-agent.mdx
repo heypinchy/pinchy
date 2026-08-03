@@ -9,20 +9,25 @@ This guide walks you through creating a Knowledge Base agent — an agent that s
 
 - Pinchy is running (see [Quick Start](/getting-started/))
 - You have mounted at least one data directory (see [Mount Data Directories](/guides/mount-data-directories/))
-- Local Ollama is connected under **Settings → AI Provider → Ollama (Local)** (see [Set Up Local Ollama](/guides/ollama-setup/)) — the knowledge base uses a fixed local embedding model, independent of whichever chat model the agent uses
+- Local Ollama is connected under **Settings → AI Provider → Ollama (Local)** (see [Set Up Local Ollama](/guides/ollama-setup/)) — the knowledge base embeds your documents with a fixed local model served by that endpoint
 - You are logged in as an admin
+
+Your agents can chat on any provider you like — the knowledge base always embeds locally. But the local Ollama endpoint itself has to carry **two** models: the embedding model the knowledge base uses, and one tool-capable chat model. Connecting Ollama (Local) validates that a chat model is there, and refuses an endpoint that only has the embedding model with `No models found. Pull a compatible model first`. So pull both before you connect, even if none of your agents will ever chat on this endpoint.
 
 ## 1. Mount your data directories
 
 Before creating a Knowledge Base agent, make sure the documents you want the agent to access are mounted under `/data/` in the Pinchy container. See the [Mount Data Directories](/guides/mount-data-directories/) guide for detailed instructions.
 
-## 2. Pull the embedding model
+## 2. Pull the models
 
-The knowledge base turns your documents into searchable passages using a fixed embedding model, `bge-m3`, served by the same local Ollama endpoint you configured above. Pull it once:
+The knowledge base turns your documents into searchable passages using a fixed embedding model, `bge-m3`, served by the same local Ollama endpoint you configured above. Pull it once — together with a tool-capable chat model, which the Ollama (Local) connection requires:
 
 ```bash
 ollama pull bge-m3
+ollama pull qwen2.5:7b
 ```
+
+Any tool-capable chat model satisfies the connection check; `qwen2.5:7b` is the one Pinchy suggests. Pull both **before** you connect the endpoint: with only `bge-m3` present, saving the Ollama URL is refused and the knowledge base has no embedder to reach.
 
 If `bge-m3` isn't available when you trigger indexing (see below), the reindex request fails until it's pulled.
 
