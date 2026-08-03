@@ -5,7 +5,6 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 type AgentRow = { id: string; name: string };
 type UserRow = { id: string };
 
-const mockRecordUsage = vi.fn();
 const mockRecordSessionTurns = vi.fn();
 const mockSelect = vi.fn();
 // `_agentResult`/`_userResult` are real, typed properties on the mock (via
@@ -16,10 +15,6 @@ const mockFrom = Object.assign(vi.fn(), {
   _agentResult: [] as AgentRow[],
   _userResult: [] as UserRow[],
 });
-
-vi.mock("@/lib/usage", () => ({
-  recordUsage: (...args: unknown[]) => mockRecordUsage(...args),
-}));
 
 // #483 (chat) / #767 (system): every session is recorded per-turn from the
 // trajectory, not the gauge.
@@ -135,7 +130,6 @@ describe("pollAllSessions", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     _resetSessionActivity();
-    mockRecordUsage.mockResolvedValue(undefined);
     mockFrom._agentResult = [{ id: "agent-1", name: "Smithers" }];
     mockFrom._userResult = [{ id: "user-1" }, { id: "user-2" }];
   });
@@ -158,7 +152,7 @@ describe("pollAllSessions", () => {
   it("handles empty sessions list gracefully", async () => {
     const client = makeOpenClawClient([]);
     await pollAllSessions(client);
-    expect(mockRecordUsage).not.toHaveBeenCalled();
+    expect(mockRecordSessionTurns).not.toHaveBeenCalled();
   });
 
   it("routes chat sessions to the per-turn trajectory recorder, not the gauge (#483)", async () => {
@@ -166,7 +160,6 @@ describe("pollAllSessions", () => {
       { key: "agent:agent-1:direct:user-1", inputTokens: 100, outputTokens: 50, model: "claude" },
     ]);
     await pollAllSessions(client);
-    expect(mockRecordUsage).not.toHaveBeenCalled();
     expect(mockRecordSessionTurns).toHaveBeenCalledWith({
       openclawClient: client,
       agentId: "agent-1",
@@ -184,7 +177,6 @@ describe("pollAllSessions", () => {
     ]);
     await pollAllSessions(client);
     expect(mockRecordSessionTurns).toHaveBeenCalledTimes(1);
-    expect(mockRecordUsage).not.toHaveBeenCalled();
   });
 
   it("routes system sessions to the per-turn trajectory recorder too, not the gauge (#767)", async () => {
@@ -198,7 +190,6 @@ describe("pollAllSessions", () => {
       { key: "agent:agent-1:cron:job-1", inputTokens: 100, outputTokens: 50, model: "claude" },
     ]);
     await pollAllSessions(client);
-    expect(mockRecordUsage).not.toHaveBeenCalled();
     expect(mockRecordSessionTurns).toHaveBeenCalledWith({
       openclawClient: client,
       agentId: "agent-1",
@@ -215,7 +206,6 @@ describe("pollAllSessions", () => {
       { key: "agent:agent-1:telegram:chat-42", inputTokens: 40, outputTokens: 12, model: "claude" },
     ]);
     await pollAllSessions(client);
-    expect(mockRecordUsage).not.toHaveBeenCalled();
     expect(mockRecordSessionTurns).toHaveBeenCalledWith(
       expect.objectContaining({
         agentId: "agent-1",
@@ -255,7 +245,6 @@ describe("pollAllSessions", () => {
     await pollAllSessions(second);
 
     expect(mockRecordSessionTurns).toHaveBeenCalledTimes(2);
-    expect(mockRecordUsage).not.toHaveBeenCalled();
   });
 
   it("still accepts the cacheReadTokens/cacheWriteTokens spelling as a fallback in the change-detection signature", async () => {
@@ -305,7 +294,6 @@ describe("pollAllSessions", () => {
     await pollAllSessions(client);
 
     expect(mockRecordSessionTurns).toHaveBeenCalledTimes(1);
-    expect(mockRecordUsage).not.toHaveBeenCalled();
   });
 
   it("scans a system session with zero gauge tokens via the trajectory recorder — the trajectory decides, not the gauge (#767)", async () => {
@@ -314,7 +302,6 @@ describe("pollAllSessions", () => {
     ]);
     await pollAllSessions(client);
     expect(mockRecordSessionTurns).toHaveBeenCalledTimes(1);
-    expect(mockRecordUsage).not.toHaveBeenCalled();
   });
 
   it("skips sessions with unparseable keys", async () => {
@@ -322,7 +309,6 @@ describe("pollAllSessions", () => {
       { key: "something-else-entirely", inputTokens: 100, outputTokens: 50 },
     ]);
     await pollAllSessions(client);
-    expect(mockRecordUsage).not.toHaveBeenCalled();
     expect(mockRecordSessionTurns).not.toHaveBeenCalled();
   });
 
@@ -338,7 +324,6 @@ describe("pollAllSessions", () => {
         sessionKey: "agent:agent-1:main",
       })
     );
-    expect(mockRecordUsage).not.toHaveBeenCalled();
   });
 
   it("falls back to agentId when agent name is not in DB (path-agnostic)", async () => {
@@ -365,7 +350,6 @@ describe("pollAllSessions", () => {
     } as unknown as Parameters<typeof pollAllSessions>[0];
 
     await expect(pollAllSessions(client)).resolves.toBeUndefined();
-    expect(mockRecordUsage).not.toHaveBeenCalled();
   });
 
   it("resolves lowercased userId from session key to original-case DB id", async () => {
@@ -436,7 +420,6 @@ describe("pollAllSessions adaptive backoff (#261)", () => {
     vi.clearAllMocks();
     _resetSessionActivity();
     mockRecordSessionTurns.mockResolvedValue(undefined);
-    mockRecordUsage.mockResolvedValue(undefined);
     mockFrom._agentResult = [{ id: "agent-1", name: "Smithers" }];
     mockFrom._userResult = [{ id: "user-1" }];
   });
@@ -530,7 +513,7 @@ describe("pollAllSessions adaptive backoff (#261)", () => {
 
   // Review finding: the fingerprint must NOT be recorded until the record call
   // actually succeeds. Recording it eagerly (before the await) means a
-  // transient recordUsage/recordSessionTurns failure still "poisons" the
+  // transient recordSessionTurns failure still "poisons" the
   // session as processed — the next tick sees an unchanged gauge and skips it
   // for up to IDLE_RESCAN_MS (5 min), even though the record never happened.
   // Pre-adaptive-backoff behavior retried every tick (60s); this restores
@@ -559,16 +542,15 @@ describe("pollAllSessions adaptive backoff (#261)", () => {
     expect(mockRecordSessionTurns).toHaveBeenCalledTimes(2);
   });
 
-  // The two tests above drive the failure by REJECTING — which neither
-  // recorder ever does. `recordSessionTurnsUsage` catches everything and
-  // returns; `recordUsage` ends its chain in `.catch(() => {})`. So the #261
-  // retry described right above has never once been reachable in production,
-  // on either path: both tests pass against a rejection the code cannot
-  // produce, which is a green check for an impossible path rather than proof
-  // the retry works. They are kept — a recorder that starts throwing must
-  // still not abort the poll — but the retry itself needs a signal that
-  // actually arrives. The recorder now reports a failed scan as `null`
-  // (distinct from `0` = "scan ran, nothing new"), and these three pin it.
+  // The two tests above drive the failure by REJECTING — which the recorder
+  // never does. `recordSessionTurnsUsage` catches everything and returns. So
+  // the #261 retry described right above has never once been reachable in
+  // production: both tests pass against a rejection the code cannot produce,
+  // which is a green check for an impossible path rather than proof the retry
+  // works. They are kept — a recorder that starts throwing must still not
+  // abort the poll — but the retry itself needs a signal that actually
+  // arrives. The recorder now reports a failed scan as `null` (distinct from
+  // `0` = "scan ran, nothing new"), and these three pin it.
   it("retries a system session every tick when the recorder REPORTS a failure (null), the signal production really emits", async () => {
     mockRecordSessionTurns.mockResolvedValueOnce(null);
     const client = makeOpenClawClient([
@@ -654,7 +636,6 @@ describe("startUsagePoller honors the configured interval", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     _resetSessionActivity();
-    mockRecordUsage.mockResolvedValue(undefined);
     mockFrom._agentResult = [{ id: "agent-1", name: "Smithers" }];
     mockFrom._userResult = [{ id: "user-1" }];
     stopUsagePoller();
