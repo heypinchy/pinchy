@@ -418,7 +418,9 @@ export class ChannelHealthMonitor {
         // append-only HMAC-signed row. The classifier is channel-agnostic, so a
         // future email/Slack channel's lastError could carry an address — and
         // GDPR erasure on a signed audit row is impossible by design. The live
-        // snapshot/UI keeps the full text (ephemeral, admin-only).
+        // snapshot the monitor hands out is unscrubbed; `/api/health/openclaw`
+        // applies the same `safeProviderError` on its way out, behind an admin
+        // gate, so the badge and the audit row read alike.
         lastError: h.lastError ? safeProviderError(h.lastError) : null,
         reconnectAttempts: h.reconnectAttempts,
         consecutiveDegradedChecks,
