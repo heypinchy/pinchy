@@ -5,9 +5,17 @@
 // lives, so the load-bearing `ownerId === actor.id` term can't silently drop
 // out. In particular a member acting on *someone else's* personal agent — the
 // branch the route suites don't cover — must be forbidden.
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 
-import { canManageAgentWorkflows } from "@/lib/email-workflows/authz";
+vi.mock("@/db", () => {
+  const where = vi.fn();
+  const from = vi.fn().mockReturnValue({ where });
+  const select = vi.fn().mockReturnValue({ from });
+  return { db: { select } };
+});
+
+import { db } from "@/db";
+import { canManageAgentWorkflows, requireManageableAgent } from "@/lib/email-workflows/authz";
 
 const OWNER = "user-owner";
 const OTHER = "user-other";
@@ -54,5 +62,80 @@ describe("canManageAgentWorkflows", () => {
     expect(
       canManageAgentWorkflows({ isPersonal: true, ownerId: OWNER }, { id: OWNER, role: undefined })
     ).toBe(true);
+  });
+});
+
+// requireManageableAgent is the load-then-gate helper the automations routes
+// (list, create, connections picker) now share instead of each re-implementing
+// the "fetch agent → 404 if missing → 403 if not manageable" sequence inline —
+// a drifted copy of that sequence is exactly the latent authz bug this
+// consolidation exists to prevent.
+describe("requireManageableAgent", () => {
+  function mockAgentRow(row: unknown) {
+    const where = vi.fn().mockResolvedValue(row ? [row] : []);
+    const from = vi.fn().mockReturnValue({ where });
+    vi.mocked(db.select).mockReturnValue({ from } as never);
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("returns ok:true with the loaded agent when the actor may manage it", async () => {
+    mockAgentRow({ id: "agent-1", name: "Smithers", isPersonal: true, ownerId: OWNER });
+
+    const result = await requireManageableAgent("agent-1", { id: OWNER, role: "member" });
+
+    expect(result).toEqual({
+      ok: true,
+      agent: { id: "agent-1", name: "Smithers", isPersonal: true, ownerId: OWNER },
+    });
+  });
+
+  it("returns a 404 response when no agent matches the id", async () => {
+    mockAgentRow(undefined);
+
+    const result = await requireManageableAgent("ghost", { id: OWNER, role: "member" });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.response.status).toBe(404);
+    expect(await result.response.json()).toEqual({ error: "Agent not found" });
+  });
+
+  it("returns a 403 response with the default message when the actor may not manage the agent", async () => {
+    mockAgentRow({ id: "agent-1", name: "Smithers", isPersonal: false, ownerId: null });
+
+    const result = await requireManageableAgent("agent-1", { id: OTHER, role: "member" });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.response.status).toBe(403);
+    expect(await result.response.json()).toEqual({ error: "You do not have access to this agent" });
+  });
+
+  it("uses the caller-supplied denied message instead of the default", async () => {
+    mockAgentRow({ id: "agent-1", name: "Smithers", isPersonal: false, ownerId: null });
+
+    const result = await requireManageableAgent(
+      "agent-1",
+      { id: OTHER, role: "member" },
+      "You do not have permission to create a workflow on this agent"
+    );
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.response.status).toBe(403);
+    expect(await result.response.json()).toEqual({
+      error: "You do not have permission to create a workflow on this agent",
+    });
+  });
+
+  it("allows an admin to manage a shared agent", async () => {
+    mockAgentRow({ id: "agent-1", name: "Ops Bot", isPersonal: false, ownerId: null });
+
+    const result = await requireManageableAgent("agent-1", { id: "user-admin", role: "admin" });
+
+    expect(result.ok).toBe(true);
   });
 });

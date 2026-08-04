@@ -19,15 +19,8 @@ import {
 import { toast } from "sonner";
 import { apiDelete, ApiError } from "@/lib/api-client";
 import type { LicenseInfo } from "@/lib/enterprise";
+import { formatLicenseDate as formatDate } from "@/lib/format-license-date";
 import { PRICING_URL, PORTAL_URL, conversionLink } from "@/lib/conversion-links";
-
-function formatDate(iso: string): string {
-  return new Date(iso).toLocaleDateString("en-US", {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-  });
-}
 
 interface SettingsLicenseProps {
   onEnterpriseActivated?: () => void;

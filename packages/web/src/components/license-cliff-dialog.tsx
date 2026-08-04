@@ -10,6 +10,7 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import type { LicenseState } from "@/lib/license-state";
+import { formatLicenseDate as formatDate } from "@/lib/format-license-date";
 import {
   PRICING_URL,
   PRICING_TRIAL_URL,
@@ -29,14 +30,6 @@ interface LicenseCliffDialogProps {
   licenseState: LicenseState;
   /** ISO date the license period ended (paidUntil, or exp as fallback). */
   periodEnd: string | null;
-}
-
-function formatDate(iso: string): string {
-  return new Date(iso).toLocaleDateString("en-US", {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-  });
 }
 
 /**

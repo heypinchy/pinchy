@@ -257,6 +257,29 @@ describe("EditCredentialsDialog", () => {
         });
       });
     });
+
+    it("shows a generic fallback message (not the raw error) when apiPatch rejects with a non-ApiError", async () => {
+      const user = userEvent.setup();
+      vi.mocked(apiPatch).mockRejectedValue(new Error("ECONNRESET"));
+
+      render(
+        <EditCredentialsDialog
+          connection={webSearchConnection}
+          open={true}
+          onOpenChange={vi.fn()}
+          onSuccess={vi.fn()}
+        />
+      );
+
+      await user.type(screen.getByLabelText("API Key"), "new-brave-key");
+      await user.click(screen.getByRole("button", { name: "Save" }));
+
+      await waitFor(() => {
+        expect(screen.getByText("Something went wrong. Please try again.")).toBeInTheDocument();
+      });
+      expect(screen.queryByText("ECONNRESET")).not.toBeInTheDocument();
+      expect(toast.success).not.toHaveBeenCalled();
+    });
   });
 
   describe("Google integration", () => {
@@ -307,6 +330,27 @@ describe("EditCredentialsDialog", () => {
       await waitFor(() => {
         expect(assignMock).toHaveBeenCalledWith("https://accounts.google.com/oauth?code=xxx");
       });
+    });
+
+    it("shows a generic fallback message when apiPost rejects with a non-ApiError", async () => {
+      const user = userEvent.setup();
+      vi.mocked(apiPost).mockRejectedValue(new Error("ECONNRESET"));
+
+      render(
+        <EditCredentialsDialog
+          connection={googleConnection}
+          open={true}
+          onOpenChange={vi.fn()}
+          onSuccess={vi.fn()}
+        />
+      );
+
+      await user.click(screen.getByRole("button", { name: "Reconnect via Google" }));
+
+      await waitFor(() => {
+        expect(screen.getByText("Something went wrong. Please try again.")).toBeInTheDocument();
+      });
+      expect(screen.queryByText("ECONNRESET")).not.toBeInTheDocument();
     });
   });
 

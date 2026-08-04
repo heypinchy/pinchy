@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { senderNameSchema } from "@/lib/schemas/sender-name";
 
 // All fields optional — empty string means "leave current value unchanged".
 // The submit handler filters out empty strings before sending the PATCH body.
@@ -29,15 +30,8 @@ export const imapEditSchema = z
     username: z.string().min(1).optional(),
     password: z.string().min(1).optional(),
     security: z.enum(["tls", "starttls", "none"]).optional(),
-    // From-header display name. Same CR/LF header-injection guard as
-    // imapCreateSchema (packages/web/src/lib/schemas/imap.ts).
-    senderName: z
-      .string()
-      .min(1)
-      .max(200)
-      .refine((v) => !/[\r\n]/.test(v), {
-        message: "Sender name must not contain line breaks",
-      })
-      .optional(),
+    // From-header display name — same senderNameSchema imapCreateSchema uses
+    // (packages/web/src/lib/schemas/imap.ts).
+    senderName: senderNameSchema.optional(),
   })
   .strict();

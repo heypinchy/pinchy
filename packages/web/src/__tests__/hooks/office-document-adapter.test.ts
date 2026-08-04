@@ -93,6 +93,24 @@ describe("OfficeDocumentAttachmentAdapter.add", () => {
     });
     await expect(adapter.add({ file })).rejects.toThrow(/huge\.docx/);
   });
+
+  it("uses the shared oversizeAttachmentError wording (issue #1087 dedup sweep)", async () => {
+    // Previously this adapter re-implemented its own size check with
+    // different copy ("File \"x\" is too large (N MB). The limit is M MB.")
+    // than every other attachment path (oversizeAttachmentError's
+    // "\"x\" is too large (N MB). The maximum is M MB."). Pin the shared
+    // wording so the two can't silently diverge again.
+    const adapter = new OfficeDocumentAttachmentAdapter();
+    const file = fakeDocxFile({
+      size: CLIENT_MAX_ATTACHMENT_SIZE_BYTES + 1024 * 1024,
+      name: "huge.docx",
+    });
+    const limitMb = Math.round(CLIENT_MAX_ATTACHMENT_SIZE_BYTES / 1024 / 1024);
+    const fileMb = Math.round((CLIENT_MAX_ATTACHMENT_SIZE_BYTES + 1024 * 1024) / 1024 / 1024);
+    await expect(adapter.add({ file })).rejects.toThrow(
+      `"huge.docx" is too large (${fileMb} MB). The maximum is ${limitMb} MB.`
+    );
+  });
 });
 
 describe("OfficeDocumentAttachmentAdapter.send", () => {
