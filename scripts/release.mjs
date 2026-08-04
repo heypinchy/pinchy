@@ -2,15 +2,21 @@
 /**
  * Pinchy release script
  *
- * Usage: pnpm release <version> [--skip-audit]
- *   e.g. pnpm release 0.5.0
- *        pnpm release 0.5.0 --skip-audit   # only after documenting the CVE acceptance
+ * Usage: pnpm release <version> --verified=<sha> [--skip-audit]
+ *   e.g. pnpm release 0.5.0 --verified=$(git rev-parse HEAD)
+ *        pnpm release 0.5.0 --verified=… --skip-audit   # only after documenting the CVE acceptance
+ *
+ * `--verified` is the staging attestation: the SHA you verified on staging, and
+ * it must equal HEAD. Run `pnpm release:preflight <version>` first — it prints
+ * the manual gates to clear and then the exact command to run.
  *
  * What it does:
  *   1. Validates the version (semver)
  *   2. Gates:
  *      - upgrading.mdx has a section for the target version
- *      - clean working tree, on main or a release/* branch, CI green, tag not taken
+ *      - clean working tree, on main or a release/* branch, tag not taken
+ *      - CI green *for HEAD's own run* — not merely green somewhere on the branch
+ *      - the --verified staging attestation matches HEAD
  *      - pnpm audit --audit-level=high --prod passes (or --skip-audit)
  *   3. Bumps version in root package.json, packages/web/package.json, and .env.example
  *   4. Commits, tags, opens the next cycle's upgrade-notes section in a
@@ -40,6 +46,9 @@ import {
   openNextUpgradeSection,
   bumpReadmeQuickstartPins,
   isReleasableBranch,
+  checkCiGreenForHead,
+  checkReleaseVerification,
+  parseVerifiedSha,
 } from "./lib/release-logic.mjs";
 import {
   bumpMarketplaceVersion,
@@ -77,8 +86,11 @@ function fail(msg) {
 
 const input = process.argv[2];
 const skipAudit = process.argv.includes("--skip-audit");
+const verifiedSha = parseVerifiedSha(process.argv);
 if (!input) {
-  fail("Usage: pnpm release <version>  (e.g. pnpm release 0.3.0)");
+  fail(
+    "Usage: pnpm release <version> --verified=<sha>  (e.g. pnpm release 0.3.0 --verified=$(git rev-parse HEAD))",
+  );
 }
 
 let version;
@@ -139,28 +151,60 @@ if (!isReleasableBranch(branch)) {
 }
 log(`  ✔ On ${branch} branch`);
 
-log(`Checking CI status on ${branch}...`);
-const ciRun = execFile("gh", [
-  "run",
-  "list",
-  "--branch",
-  branch,
-  "--workflow",
-  "CI",
-  "--limit",
-  "1",
-  "--json",
-  "conclusion,headBranch",
-  "--jq",
-  ".[0]",
-]);
-const ci = JSON.parse(ciRun);
-if (ci.conclusion !== "success") {
+// CI's verdict has to be about the commit being tagged. Asking only for the
+// newest run's conclusion answered "green" for a run that never saw this code
+// — including on a clean tree whose HEAD was never pushed (#1085). So fetch a
+// window of runs with their headSha and find HEAD's own.
+log(`Checking CI status for HEAD on ${branch}...`);
+const headSha = exec("git rev-parse HEAD");
+let ciRuns = null;
+try {
+  ciRuns = JSON.parse(
+    execFile("gh", [
+      "run",
+      "list",
+      "--branch",
+      branch,
+      "--workflow",
+      "CI",
+      "--limit",
+      "30",
+      "--json",
+      "conclusion,status,headSha,url",
+    ]),
+  );
+} catch (e) {
+  fail(`Could not read CI runs from gh: ${e.message}`);
+}
+const ciCheck = checkCiGreenForHead({ runs: ciRuns, headSha, branch });
+if (!ciCheck.ok) {
+  fail(ciCheck.message);
+}
+log(`  ✔ ${ciCheck.message}`);
+
+// ─── Staging attestation ──────────────────────────────────────────────────────
+//
+// The manual staging gates are the ones that actually catch what CI cannot, and
+// they were held only by prose in the cut-release skill — which is how v0.6.0
+// shipped with the click-through never done. The preflight already printed
+// `--verified=$(git rev-parse HEAD)`, but this script parsed only argv[2] and
+// --skip-audit, so the flag was accepted and discarded: an operator who
+// attested got exactly the same result as one who did not (#1085).
+//
+// Like the docs-review hook, this is not a fraud boundary — anyone can type the
+// SHA without opening staging. It makes *forgetting* impossible, which is the
+// failure mode that actually happens, and it ties the attestation to the exact
+// commit rather than to the act of releasing.
+log("Checking staging attestation...");
+const attestation = checkReleaseVerification({ verifiedSha, headSha });
+if (!attestation.ok) {
   fail(
-    `CI is not green on ${branch} (conclusion: ${ci.conclusion}). Fix CI before releasing.`,
+    `${attestation.message}\n` +
+      `Run \`pnpm release:preflight ${version}\` and verify each [ ] on staging first, then:\n` +
+      `  pnpm release ${version} --verified=$(git rev-parse HEAD)`,
   );
 }
-log("  ✔ CI green");
+log(`  ✔ ${attestation.message}`);
 
 log("Checking tag does not already exist...");
 const existingTags = exec("git tag --list");

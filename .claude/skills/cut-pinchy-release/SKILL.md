@@ -11,12 +11,14 @@ Pinchy releases are **tag-driven**. One script does everything from a clean `mai
 
 ```bash
 git checkout main && git pull --ff-only origin main
-pnpm release X.Y.Z       # e.g. pnpm release 0.6.0  (a leading "v" is accepted too — the script normalizes it)
+pnpm release X.Y.Z --verified=$(git rev-parse HEAD)   # a leading "v" is accepted too — the script normalizes it
 ```
 
 That is the only state-changing command. It bumps the version, makes a `chore: release vX.Y.Z` commit, tags, and pushes — and the **tag push** is what triggers `.github/workflows/release.yml` to build images and create the GitHub Release.
 
-> **The Iron Rule: cut every release with `pnpm release X.Y.Z`. NEVER `gh release create`. NEVER a manual `git tag` + push.**
+`--verified` is **required**: it is your attestation that you verified _this exact commit_ on staging, and the script aborts unless it equals HEAD (§ "Before you run `pnpm release`", step 4). Do not paste it from muscle memory — run the preflight and clear its `[ ]` items first, or you are attesting to something you did not check.
+
+> **The Iron Rule: cut every release with `pnpm release X.Y.Z --verified=<HEAD sha>`. NEVER `gh release create`. NEVER a manual `git tag` + push.**
 
 ## When to use
 
@@ -66,7 +68,7 @@ Three mechanisms now make this impossible:
 
 - **Upstream first — the load-bearing rule.** A fix lands on `main` **first**, then is cherry-picked to `release/X.Y`. This makes "main never loses a fix" structural rather than a remember-to-back-merge chore. Back-merge (release branch → main) is only for a fix that is genuinely branch-specific — main has already refactored the affected code away and the fix doesn't apply there.
 - **Testing the candidate on staging.** Staging's `:next` tag tracks `main`, so it is the wrong pin for a release-branch candidate. `.github/workflows/pre-release.yml` builds `release/X.Y` pushes to a **branch-scoped moving tag** `rc-X.Y` (e.g. `release/0.9` → `rc-0.9`) instead of `next` — this keeps two concurrent release branches from clobbering each other's candidate image. Pin staging to either `:sha-<short12>` (an exact ref) or `:rc-X.Y` (latest on the branch), never `:next`, while verifying a release-branch candidate.
-- **Releasing.** Run `pnpm release X.Y.Z` **from `release/X.Y`** — same Iron Rule, same script, just a different branch checked out. The tag push still triggers `release.yml` (tag-triggered, branch-agnostic — nothing changes there). A patch release is more upstream-first fixes cherry-picked onto `release/X.Y`, then `pnpm release X.Y.(Z+1)` from that branch.
+- **Releasing.** Run `pnpm release X.Y.Z --verified=$(git rev-parse HEAD)` **from `release/X.Y`** — same Iron Rule, same script, just a different branch checked out. The attestation matters more here, not less: `:next` is the wrong image for a release-branch candidate, so verify on `:rc-X.Y` and attest to the branch's HEAD. The tag push still triggers `release.yml` (tag-triggered, branch-agnostic — nothing changes there). A patch release is more upstream-first fixes cherry-picked onto `release/X.Y`, then `pnpm release X.Y.(Z+1)` from that branch.
 - **Forward-port `upgrading.mdx` after release.** `pnpm release` freezes the current section's `%%PINCHY_VERSION%%` placeholders in the `chore: release` commit, and opens the next cycle's section in the follow-up commit — **both on the release branch**. Both must also reach `main`, or main's upgrade notes keep stale placeholders, lose the frozen section, and have no open section for the next note to land in. Cherry-pick both `upgrading.mdx` commits (or just those hunks) to `main` as an explicit post-release step. **Caveat while #1028 is open:** `main`'s `package.json` is not bumped by a release-branch cut, so forward-porting the _open_ section alone turns the freshness guard red on `main` (it requires the placeholder section's `from` to equal `package.json#version`). Bump `main`'s version in the same forward-port, or resolve #1028 first. Version bumps (`package.json`, `.env.example`, marketplace pins) stay on the release branch — `main` re-bumps at its own next cut.
 
 ## Before you run `pnpm release`
@@ -78,7 +80,7 @@ So, mechanically:
 1. Run `pnpm release:preflight <version>`.
 2. For **each `[ ]`** it prints, create a task (TodoWrite/Task), and make the `pnpm release` task **`blockedBy`** all of them. Do not start the release task while any remain open.
 3. Verify each on the **real staging instance** (`staging.heypinchy.com`), pinned to the candidate image the preflight names — `:next` when you are cutting from `main`, `:rc-X.Y` (or `:sha-<short12>`) from a `release/X.Y` branch, see § "Release branches". Staging carries the upgrade path + real agents/data; the ephemeral CI E2E stacks don't. The release-specific items are different every release, which is why they're generated from the notes rather than hardcoded.
-4. The preflight then prints the exact `pnpm release <version> --verified=$(git rev-parse HEAD)` command. The `--verified` SHA ties your attestation to the commit you actually tested on staging. (A hard `--verified` gate in `release.mjs` is planned once it can be verified end-to-end against a real staging release; today it's enforced by this task discipline + the preflight echo.)
+4. The preflight then prints the exact `pnpm release <version> --verified=$(git rev-parse HEAD)` command. The `--verified` SHA ties your attestation to the commit you actually tested on staging, and `release.mjs` **hard-fails without it** — a missing, short, or non-HEAD SHA aborts the release (#1085; until then the flag was parsed by nothing and silently discarded, so attesting and not attesting produced identical runs). Like the docs-review hook, it is not a fraud boundary: you can type the SHA without opening staging, exactly as you can `git push --no-verify`. It makes _forgetting_ impossible, which is the failure mode that actually happens — and it anchors the attestation to one commit, so landing another commit invalidates it.
 
 ### Build the test plan from the FULL changelog, then split it agent vs human
 

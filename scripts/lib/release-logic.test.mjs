@@ -1,5 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   parseAndValidateVersion,
   compareVersions,
@@ -14,6 +17,8 @@ import {
   assertNoStaleUpgradeSections,
   deriveStagingChecklist,
   checkReleaseVerification,
+  checkCiGreenForHead,
+  parseVerifiedSha,
   bumpReadmeQuickstartPins,
   isReleasableBranch,
   findSkippedReleases,
@@ -856,6 +861,234 @@ test("checkReleaseVerification rejects a too-short verified SHA", () => {
     headSha: "abc1234def567",
   });
   assert.equal(r.ok, false);
+});
+
+// parseVerifiedSha — reads the attestation flag off argv.
+
+test("parseVerifiedSha reads --verified=<sha>", () => {
+  assert.equal(
+    parseVerifiedSha(["node", "release.mjs", "0.9.0", "--verified=abc1234def"]),
+    "abc1234def",
+  );
+});
+
+test("parseVerifiedSha reads the space-separated --verified <sha> form", () => {
+  // A plausible typo. Returning undefined here would report "no attestation
+  // provided" at somebody who provided one — the exact confusion this gate
+  // exists to remove.
+  assert.equal(
+    parseVerifiedSha(["node", "release.mjs", "0.9.0", "--verified", "abc1234"]),
+    "abc1234",
+  );
+});
+
+test("parseVerifiedSha returns undefined when the flag is absent", () => {
+  assert.equal(
+    parseVerifiedSha(["node", "release.mjs", "0.9.0", "--skip-audit"]),
+    undefined,
+  );
+});
+
+test("parseVerifiedSha returns empty string for --verified= with no value", () => {
+  assert.equal(
+    parseVerifiedSha(["node", "release.mjs", "0.9.0", "--verified="]),
+    "",
+  );
+});
+
+test("parseVerifiedSha does not swallow the next flag as a value", () => {
+  assert.equal(
+    parseVerifiedSha([
+      "node",
+      "release.mjs",
+      "0.9.0",
+      "--verified",
+      "--skip-audit",
+    ]),
+    "",
+  );
+});
+
+// checkCiGreenForHead — the green run must be HEAD's own run.
+
+const RUN_HEAD = "a".repeat(40);
+const RUN_OLDER = "b".repeat(40);
+
+test("checkCiGreenForHead ok when the newest run for HEAD succeeded", () => {
+  const r = checkCiGreenForHead({
+    runs: [{ conclusion: "success", headSha: RUN_HEAD }],
+    headSha: RUN_HEAD,
+    branch: "main",
+  });
+  assert.equal(r.ok, true);
+});
+
+test("checkCiGreenForHead fails when the green run belongs to an older commit", () => {
+  // The core bug: `gh run list --limit 1` answered "green" for a run that never
+  // saw HEAD's code, so the tag could contain code CI never built.
+  const r = checkCiGreenForHead({
+    runs: [{ conclusion: "success", headSha: RUN_OLDER }],
+    headSha: RUN_HEAD,
+    branch: "main",
+  });
+  assert.equal(r.ok, false);
+  assert.match(r.message, /no ci run/i);
+  assert.match(r.message, new RegExp(RUN_HEAD.slice(0, 12)));
+});
+
+test("checkCiGreenForHead finds HEAD's run behind a newer run for another commit", () => {
+  // A workflow_dispatch or a push that landed after the commit being released
+  // must not hide HEAD's own green run.
+  const r = checkCiGreenForHead({
+    runs: [
+      { conclusion: "failure", headSha: RUN_OLDER },
+      { conclusion: "success", headSha: RUN_HEAD },
+    ],
+    headSha: RUN_HEAD,
+    branch: "main",
+  });
+  assert.equal(r.ok, true);
+});
+
+test("checkCiGreenForHead takes the newest run when HEAD has several", () => {
+  // Runs arrive newest-first. A re-run that went red after a green one is the
+  // verdict that counts.
+  const r = checkCiGreenForHead({
+    runs: [
+      { conclusion: "failure", headSha: RUN_HEAD },
+      { conclusion: "success", headSha: RUN_HEAD },
+    ],
+    headSha: RUN_HEAD,
+    branch: "main",
+  });
+  assert.equal(r.ok, false);
+  assert.match(r.message, /failure/i);
+});
+
+test("checkCiGreenForHead fails while HEAD's run is still in progress", () => {
+  const r = checkCiGreenForHead({
+    runs: [{ conclusion: null, status: "in_progress", headSha: RUN_HEAD }],
+    headSha: RUN_HEAD,
+    branch: "main",
+  });
+  assert.equal(r.ok, false);
+  assert.match(r.message, /still running|in progress|not finished/i);
+});
+
+test("checkCiGreenForHead reports an unfinished run as running, not as failed", () => {
+  // Verified against real `gh run list --json conclusion,status,headSha` on
+  // 2026-08-04: an unfinished run reports conclusion as the EMPTY STRING, not
+  // null. Treating that as a conclusion tells the operator to "fix CI" when the
+  // only thing to do is wait — a gate that names the wrong cause.
+  for (const status of ["pending", "queued", "in_progress"]) {
+    const r = checkCiGreenForHead({
+      runs: [{ conclusion: "", status, headSha: RUN_HEAD }],
+      headSha: RUN_HEAD,
+      branch: "main",
+    });
+    assert.equal(r.ok, false);
+    assert.match(r.message, /still running|not finished/i);
+    assert.match(r.message, new RegExp(status));
+    assert.doesNotMatch(r.message, /fix ci/i);
+  }
+});
+
+test("checkCiGreenForHead fails on an empty run list rather than crashing", () => {
+  // `gh run list --jq .[0]` on a branch with no runs yields `null`, which the
+  // old code dereferenced — a TypeError stack trace instead of a gate verdict.
+  const r = checkCiGreenForHead({
+    runs: [],
+    headSha: RUN_HEAD,
+    branch: "main",
+  });
+  assert.equal(r.ok, false);
+  assert.match(r.message, /no ci run/i);
+});
+
+test("checkCiGreenForHead fails when the run list could not be read", () => {
+  const r = checkCiGreenForHead({
+    runs: null,
+    headSha: RUN_HEAD,
+    branch: "main",
+  });
+  assert.equal(r.ok, false);
+});
+
+test("checkCiGreenForHead fails when HEAD is unknown", () => {
+  // Never let an empty HEAD prefix-match its way to green.
+  const r = checkCiGreenForHead({
+    runs: [{ conclusion: "success", headSha: RUN_HEAD }],
+    headSha: "",
+    branch: "main",
+  });
+  assert.equal(r.ok, false);
+});
+
+test("checkCiGreenForHead names the branch and the commit it wanted", () => {
+  const r = checkCiGreenForHead({
+    runs: [],
+    headSha: RUN_HEAD,
+    branch: "release/0.9",
+  });
+  assert.match(r.message, /release\/0\.9/);
+  assert.match(r.message, /push/i);
+});
+
+// Wiring — the gates above must actually run in release.mjs.
+//
+// This is the load-bearing half. `checkReleaseVerification` shipped fully unit
+// tested and entirely unreachable: release.mjs never imported it and parsed no
+// `--verified`, so the preflight printed a command whose flag was silently
+// swallowed (#1085). A unit test cannot see that; only a wiring assertion can.
+
+const RELEASE_MJS_SRC = readFileSync(
+  resolve(dirname(fileURLToPath(import.meta.url)), "../release.mjs"),
+  "utf8",
+);
+
+test("release.mjs enforces the staging attestation", () => {
+  assert.match(
+    RELEASE_MJS_SRC,
+    /checkReleaseVerification/,
+    "release.mjs must call checkReleaseVerification, or --verified is a no-op",
+  );
+  assert.match(
+    RELEASE_MJS_SRC,
+    /parseVerifiedSha/,
+    "release.mjs must parse --verified off argv",
+  );
+});
+
+test("release.mjs checks CI against HEAD's own run", () => {
+  assert.match(
+    RELEASE_MJS_SRC,
+    /checkCiGreenForHead/,
+    "release.mjs must verify the green CI run belongs to HEAD",
+  );
+  assert.match(
+    RELEASE_MJS_SRC,
+    /headSha/,
+    "release.mjs must ask gh for each run's headSha",
+  );
+});
+
+test("release.mjs fails the release when a gate returns not-ok", () => {
+  // A gate whose verdict is only logged is not a gate.
+  for (const call of ["checkCiGreenForHead", "checkReleaseVerification"]) {
+    const idx = RELEASE_MJS_SRC.indexOf(call + "(");
+    assert.ok(idx > 0, `${call} is not called in release.mjs`);
+    const window = RELEASE_MJS_SRC.slice(idx, idx + 500);
+    assert.match(
+      window,
+      /\.ok\b/,
+      `${call}'s result must be branched on, not just logged`,
+    );
+    assert.match(
+      window,
+      /fail\(/,
+      `${call} must fail() the release when not ok`,
+    );
+  }
 });
 
 // isReleasableBranch

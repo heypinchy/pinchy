@@ -619,6 +619,101 @@ export function checkReleaseVerification({ verifiedSha, headSha }) {
 }
 
 /**
+ * Reads the `--verified` attestation off an argv array.
+ *
+ * Accepts both `--verified=<sha>` and `--verified <sha>`. The second form is a
+ * plausible typo, and answering it with `undefined` would report "no
+ * attestation provided" at somebody who provided one — so it is parsed rather
+ * than ignored. A bare `--verified` followed by another flag (or nothing)
+ * yields `""`, which the verification gate rejects as too short; that is a
+ * refusal with a reason, not a silent skip.
+ *
+ * @param {string[]} argv
+ * @returns {string|undefined} the value, or undefined when the flag is absent
+ */
+export function parseVerifiedSha(argv) {
+  const args = Array.isArray(argv) ? argv : [];
+  const i = args.findIndex(
+    (a) => a === "--verified" || a.startsWith("--verified="),
+  );
+  if (i === -1) return undefined;
+  const arg = args[i];
+  if (arg.startsWith("--verified=")) return arg.slice("--verified=".length);
+  const next = args[i + 1];
+  return next === undefined || next.startsWith("-") ? "" : next;
+}
+
+/**
+ * Checks that CI is green **for the commit being released**, not merely green
+ * somewhere on the branch.
+ *
+ * The old gate read `gh run list --limit 1` and looked only at `conclusion`, so
+ * a green run for an earlier commit passed it — including the case where the
+ * working tree is clean but HEAD was never pushed, meaning the tag could carry
+ * code CI never built (#1085).
+ *
+ * Runs arrive newest-first, so the newest run whose `headSha` is HEAD is the
+ * verdict that counts: a re-run that went red after a green one must lose, and
+ * an unrelated newer run for a different commit must not hide HEAD's own.
+ *
+ * @param {{runs: unknown, headSha: string, branch: string}} args
+ * @returns {{ok: boolean, message: string}}
+ */
+export function checkCiGreenForHead({ runs, headSha, branch }) {
+  const head = (headSha || "").trim().toLowerCase();
+  if (!head) {
+    return {
+      ok: false,
+      message:
+        "Could not resolve HEAD, so CI's verdict cannot be tied to a commit.",
+    };
+  }
+  if (!Array.isArray(runs)) {
+    return {
+      ok: false,
+      message:
+        "Could not read CI runs from `gh run list` — check that gh is authenticated and the workflow name is right.",
+    };
+  }
+
+  const short = head.slice(0, 12);
+  const run = runs.find(
+    (r) =>
+      r &&
+      String(r.headSha || "")
+        .trim()
+        .toLowerCase() === head,
+  );
+  if (!run) {
+    return {
+      ok: false,
+      message:
+        `No CI run found for HEAD ${short} on ${branch}. ` +
+        "Push the commit and let CI finish before releasing — a green run for an " +
+        "older commit does not cover the code you are about to tag.",
+    };
+  }
+  // An unfinished run has NO conclusion, and `gh` spells that as the empty
+  // string rather than null (verified against real output). Reading "" as a
+  // verdict would tell the operator to fix CI when the only thing to do is
+  // wait, so anything falsy means not-finished-yet.
+  const conclusion = String(run.conclusion ?? "").trim();
+  if (!conclusion) {
+    return {
+      ok: false,
+      message: `CI for HEAD ${short} is still running (status: ${run.status || "unknown"}). Wait for it to finish.`,
+    };
+  }
+  if (conclusion !== "success") {
+    return {
+      ok: false,
+      message: `CI for HEAD ${short} on ${branch} concluded "${run.conclusion}". Fix CI before releasing.`,
+    };
+  }
+  return { ok: true, message: `CI green for HEAD ${short}` };
+}
+
+/**
  * Returns README.md contents with BOTH quick-start version pins updated to the
  * release tag.
  *

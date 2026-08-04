@@ -37,6 +37,7 @@ import {
   assertUpgradingSectionExists,
   deriveStagingChecklist,
   checkReleaseVerification,
+  parseVerifiedSha,
   findSkippedReleases,
   isReleasableBranch,
   stagingPinAdvice,
@@ -83,9 +84,9 @@ const mark = (ok) => (ok === true ? "✓" : ok === false ? "✗" : "❓");
 // ─── Argument ────────────────────────────────────────────────────────────────
 
 const input = process.argv[2];
-const verifiedArg = (
-  process.argv.find((a) => a.startsWith("--verified=")) || ""
-).split("=")[1];
+// Same parser the release script uses, so the flag the preflight echoes is
+// read exactly the way the gate that enforces it will read it.
+const verifiedArg = parseVerifiedSha(process.argv);
 if (!input) {
   process.stderr.write(
     "Usage: pnpm release:preflight <version> [--verified=<sha>]\n",
