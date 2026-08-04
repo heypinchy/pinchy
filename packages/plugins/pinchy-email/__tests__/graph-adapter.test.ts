@@ -541,6 +541,64 @@ describe("GraphAdapter.getAttachment", () => {
     });
     await expect(adapter.getAttachment("msg1", "gone")).rejects.toThrow(/Graph 404/);
   });
+
+  it("rejects an oversized attachment response by Content-Length WITHOUT ever calling res.json() — the whole point is to never buffer the body", async () => {
+    const adapter = new GraphAdapter({ accessToken: "tok" });
+    const jsonSpy = vi.fn(async () => {
+      throw new Error("res.json() must not be called for an oversized response");
+    });
+    const cancelSpy = vi.fn();
+    (fetch as Mock).mockResolvedValueOnce({
+      ok: true,
+      headers: { get: (name: string) => (name === "content-length" ? "52428800" : null) }, // 50 MB
+      body: { cancel: cancelSpy },
+      json: jsonSpy,
+    });
+
+    await expect(adapter.getAttachment("msg1", "att-huge")).rejects.toThrow(
+      /too large.*50\.0 MB.*max allowed is 40 MB/is
+    );
+    expect(jsonSpy).not.toHaveBeenCalled();
+    expect(cancelSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not reject a response right at the Content-Length threshold", async () => {
+    const adapter = new GraphAdapter({ accessToken: "tok" });
+    const bytes = Buffer.from("ok");
+    (fetch as Mock).mockResolvedValueOnce({
+      ok: true,
+      headers: { get: (name: string) => (name === "content-length" ? "1000" : null) },
+      json: async () => ({
+        "@odata.type": "#microsoft.graph.fileAttachment",
+        id: "att-small",
+        name: "small.txt",
+        contentType: "text/plain",
+        contentBytes: bytes.toString("base64"),
+      }),
+    });
+
+    const result = await adapter.getAttachment("msg1", "att-small");
+    expect(result.data.equals(bytes)).toBe(true);
+  });
+
+  it("proceeds to res.json() when Content-Length is absent — the post-download length check in index.ts is the fallback guard", async () => {
+    const adapter = new GraphAdapter({ accessToken: "tok" });
+    const bytes = Buffer.from("no content-length header here");
+    (fetch as Mock).mockResolvedValueOnce({
+      ok: true,
+      // No `headers` at all — mirrors a lenient mock/provider that omits it.
+      json: async () => ({
+        "@odata.type": "#microsoft.graph.fileAttachment",
+        id: "att-nolen",
+        name: "nolen.txt",
+        contentType: "text/plain",
+        contentBytes: bytes.toString("base64"),
+      }),
+    });
+
+    const result = await adapter.getAttachment("msg1", "att-nolen");
+    expect(result.data.equals(bytes)).toBe(true);
+  });
 });
 
 describe("GraphAdapter.search", () => {

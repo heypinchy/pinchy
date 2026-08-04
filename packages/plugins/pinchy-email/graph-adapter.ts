@@ -3,6 +3,7 @@ import {
   escapeDoubleQuoted,
   resolveInsecureMockBaseUrl,
   stripHtml,
+  MAX_ATTACHMENT_BYTES,
 } from "./email-adapter.js";
 import type {
   EmailAdapter,
@@ -13,6 +14,21 @@ import type {
   EmailSummary,
   EmailFull,
 } from "./email-adapter.js";
+
+// Graph's attachment-get endpoint wraps the file's base64 payload inside a
+// JSON body — GET /me/messages/{id}/attachments/{id} — so a naive
+// `await res.json()` fully materializes that whole body in memory BEFORE
+// index.ts's post-decode length check on the returned buffer ever runs. A
+// 500 MB attachment (or a provider that misreports its own size) would OOM
+// the process before the 25 MB cap (MAX_ATTACHMENT_BYTES) ever gets a chance
+// to fire.
+//
+// Base64 inflates the decoded byte count by ~4/3 (with padding), so
+// MAX_ATTACHMENT_BYTES worth of file content becomes MAX_ATTACHMENT_BYTES *
+// 4/3 ≈ 33.3 MB of base64 text inside the response; 40 MB leaves headroom for
+// the surrounding JSON envelope (id/name/contentType/... fields) on top of
+// that.
+const MAX_ATTACHMENT_RESPONSE_BYTES = Math.ceil((MAX_ATTACHMENT_BYTES * 4) / 3) + 7 * 1024 * 1024;
 
 const mapFolder = createFolderMapper({
   INBOX: "inbox",
@@ -262,6 +278,28 @@ export class GraphAdapter implements EmailAdapter {
       `/me/messages/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(attachmentId)}`,
       { timeoutMs: ATTACHMENT_TIMEOUT_MS }
     );
+
+    // Precheck against Content-Length BEFORE res.json() buffers the whole
+    // body — see MAX_ATTACHMENT_RESPONSE_BYTES above. Best-effort only: a
+    // missing/absent header (chunked transfer, or a provider that omits it)
+    // falls straight through to res.json(), same as before this check
+    // existed — index.ts's post-decode length check is what protects the
+    // process in that case.
+    const declaredLength = res.headers?.get("content-length");
+    if (declaredLength != null) {
+      const declaredBytes = Number(declaredLength);
+      if (Number.isFinite(declaredBytes) && declaredBytes > MAX_ATTACHMENT_RESPONSE_BYTES) {
+        // Never read the body we just proved is too large — cancel/drain it
+        // instead of letting it sit un-consumed on the connection.
+        await res.body?.cancel?.();
+        const declaredMb = (declaredBytes / 1024 / 1024).toFixed(1);
+        const maxMb = (MAX_ATTACHMENT_RESPONSE_BYTES / 1024 / 1024).toFixed(0);
+        throw new Error(
+          `Attachment response too large: ${declaredMb} MB, max allowed is ${maxMb} MB.`
+        );
+      }
+    }
+
     const a = (await res.json()) as GraphAttachment;
     if (a.contentBytes == null) {
       throw new Error(

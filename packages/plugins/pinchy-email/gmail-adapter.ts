@@ -4,6 +4,7 @@ import {
   escapeDoubleQuoted,
   resolveInsecureMockBaseUrl,
   stripHtml,
+  MAX_ATTACHMENT_BYTES,
 } from "./email-adapter.js";
 import type {
   EmailAdapter,
@@ -155,6 +156,19 @@ export class GmailAdapter implements EmailAdapter {
         `attachment ${attachmentId} not found on message ${messageId}. ` +
           `Gmail attachment ids change between reads — re-read the message to get fresh attachment ids.`
       );
+    }
+
+    // Unlike Graph, Gmail's part-listing already carries the decoded byte
+    // size (part.body.size) BEFORE any download — so reject here rather
+    // than paying for attachments.get only to discard the result. This is
+    // best-effort (Gmail could in principle omit/misreport size), so
+    // index.ts's post-download length check on the real buffer stays the
+    // authoritative guard.
+    const declaredBytes = part.body?.size;
+    if (declaredBytes != null && declaredBytes > MAX_ATTACHMENT_BYTES) {
+      const declaredMb = (declaredBytes / 1024 / 1024).toFixed(1);
+      const maxMb = (MAX_ATTACHMENT_BYTES / 1024 / 1024).toFixed(0);
+      throw new Error(`Attachment too large: ${declaredMb} MB, max allowed is ${maxMb} MB.`);
     }
 
     const response = await this.gmail.users.messages.attachments.get(

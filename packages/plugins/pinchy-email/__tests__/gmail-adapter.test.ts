@@ -669,6 +669,71 @@ describe("GmailAdapter", () => {
       // Must not attempt the bytes fetch when the id can't be resolved.
       expect(mockAttachmentsGet).not.toHaveBeenCalled();
     });
+
+    it("rejects an oversized attachment by the part-listing `size` field WITHOUT ever calling attachments.get — the size is already known before download", async () => {
+      mockGet.mockResolvedValue({
+        data: {
+          id: "msg-huge",
+          snippet: "x",
+          labelIds: [],
+          payload: {
+            mimeType: "multipart/mixed",
+            parts: [
+              {
+                mimeType: "application/zip",
+                filename: "huge.zip",
+                // 50 MB — over the 25 MB MAX_ATTACHMENT_BYTES cap.
+                body: { attachmentId: "att-huge", size: 50 * 1024 * 1024 },
+              },
+            ],
+            headers: [
+              { name: "From", value: "a@b.com" },
+              { name: "To", value: "c@d.com" },
+              { name: "Subject", value: "x" },
+              { name: "Date", value: "Mon, 7 Apr 2026 10:00:00 +0000" },
+            ],
+          },
+        },
+      });
+
+      await expect(adapter.getAttachment("msg-huge", "att-huge")).rejects.toThrow(
+        /too large.*50\.0 MB.*max allowed is 25 MB/is
+      );
+      // The whole point: never download bytes we already know are too big.
+      expect(mockAttachmentsGet).not.toHaveBeenCalled();
+    });
+
+    it("does not reject a size right at the threshold", async () => {
+      mockGet.mockResolvedValue({
+        data: {
+          id: "msg-ok",
+          snippet: "x",
+          labelIds: [],
+          payload: {
+            mimeType: "multipart/mixed",
+            parts: [
+              {
+                mimeType: "text/plain",
+                filename: "small.txt",
+                body: { attachmentId: "att-ok", size: 5 },
+              },
+            ],
+            headers: [
+              { name: "From", value: "a@b.com" },
+              { name: "To", value: "c@d.com" },
+              { name: "Subject", value: "x" },
+              { name: "Date", value: "Mon, 7 Apr 2026 10:00:00 +0000" },
+            ],
+          },
+        },
+      });
+      mockAttachmentsGet.mockResolvedValue({
+        data: { size: 5, data: Buffer.from("hello").toString("base64url") },
+      });
+
+      const result = await adapter.getAttachment("msg-ok", "att-ok");
+      expect(result.data.toString("utf-8")).toBe("hello");
+    });
   });
 
   describe("search", () => {

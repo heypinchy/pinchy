@@ -1311,13 +1311,16 @@ const plugin = {
               const messageId = resolvedMessageId.realId;
               const attachmentId = resolvedAttachmentId.realId;
 
-              // No pre-download size precheck is possible here: the
-              // EmailAdapter#getAttachment contract returns { filename,
-              // mimeType, data } — the provider APIs don't expose a byte
-              // size before the body is fetched, unlike odoo_attach_file's
-              // local-file stat() precheck. We always postcheck data.length
-              // below, which is what actually protects the process (metadata
-              // can lie or be absent; the downloaded buffer cannot).
+              // Each adapter prechecks the size signal its provider offers,
+              // before the bytes are materialized: Graph reads Content-Length
+              // off the attachment response ahead of res.json(), Gmail the
+              // part-listing `size` ahead of attachments.get, IMAP the
+              // message-level RFC822.SIZE ahead of the full fetch
+              // (MAX_MESSAGE_BYTES, see imap-adapter.ts). All three are
+              // best-effort — a provider can omit or misreport its own size —
+              // so the postcheck below on the buffer that actually arrived
+              // stays the authoritative guard: metadata can lie, the
+              // downloaded buffer cannot.
               const attachment = await withAuthRetry(agentId, config, (adapter) =>
                 adapter.getAttachment(messageId, attachmentId)
               );
