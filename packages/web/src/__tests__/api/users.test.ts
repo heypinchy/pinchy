@@ -47,8 +47,8 @@ vi.mock("@/lib/telegram-allow-store", () => ({
   recalculateTelegramAllowStores: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock("@/db", () => ({
-  db: {
+vi.mock("@/db", () => {
+  const db: Record<string, unknown> = {
     query: {
       users: {
         findMany: vi.fn().mockResolvedValue([]),
@@ -71,15 +71,20 @@ vi.mock("@/db", () => ({
         returning: vi.fn().mockResolvedValue([]),
       }),
     }),
-  },
-}));
+  };
+  // Default: run the callback against the SAME db object, so tx.update /
+  // tx.delete are the exact mocks above and existing per-test overrides via
+  // db.update/db.delete.mockReturnValueOnce keep working unchanged.
+  db.transaction = vi.fn((cb: (tx: unknown) => unknown) => cb(db));
+  return { db };
+});
 
 import { auth } from "@/lib/auth";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { deleteWorkspace } from "@/lib/workspace";
 import { appendAuditLog } from "@/lib/audit";
 import { db } from "@/db";
-import { users, sessions } from "@/db/schema";
+import { users, sessions, agents } from "@/db/schema";
 
 // ── GET /api/users ───────────────────────────────────────────────────────
 
@@ -495,13 +500,7 @@ describe("DELETE /api/users/[userId]", () => {
       }),
     } as never);
 
-    // Mock: update for personal agent-1 soft-delete
-    vi.mocked(db.update).mockReturnValueOnce({
-      set: vi.fn().mockReturnThis(),
-      where: vi.fn().mockResolvedValue(undefined),
-    } as never);
-
-    // Mock: update for personal agent-2 soft-delete
+    // Mock: one batched update soft-deletes both personal agents (#…, N+1 fix)
     vi.mocked(db.update).mockReturnValueOnce({
       set: vi.fn().mockReturnThis(),
       where: vi.fn().mockResolvedValue(undefined),
@@ -518,6 +517,142 @@ describe("DELETE /api/users/[userId]", () => {
     expect(deleteWorkspace).toHaveBeenCalledWith("agent-1");
     expect(deleteWorkspace).toHaveBeenCalledWith("agent-2");
     expect(deleteWorkspace).toHaveBeenCalledTimes(2);
+  });
+
+  it("soft-deletes every personal agent in a single batched update, not one per agent", async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
+      user: { id: "admin-1", role: "admin" },
+      expires: "",
+    } as any);
+
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue([{ id: "agent-1" }, { id: "agent-2" }]),
+      }),
+    } as never);
+
+    vi.mocked(db.update).mockReturnValueOnce({
+      set: vi.fn().mockReturnThis(),
+      where: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: "user-1" }]),
+      }),
+    } as never);
+
+    const agentUpdateSet = vi.fn().mockReturnThis();
+    const agentUpdateWhere = vi.fn().mockResolvedValue(undefined);
+    vi.mocked(db.update).mockReturnValueOnce({
+      set: agentUpdateSet,
+      where: agentUpdateWhere,
+    } as never);
+
+    const request = new NextRequest("http://localhost:7777/api/users/user-1", {
+      method: "DELETE",
+    });
+
+    await DELETE(request, {
+      params: Promise.resolve({ userId: "user-1" }),
+    });
+
+    // Ban + one batched agent update — never one db.update per agent.
+    expect(db.update).toHaveBeenCalledTimes(2);
+    expect(db.update).toHaveBeenNthCalledWith(2, agents);
+    expect(agentUpdateSet).toHaveBeenCalledWith(
+      expect.objectContaining({ deletedAt: expect.any(Date) })
+    );
+  });
+
+  it("wraps ban + session revocation + agent soft-delete in a single transaction (atomic deactivation)", async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
+      user: { id: "admin-1", role: "admin" },
+      expires: "",
+    } as any);
+
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue([{ id: "agent-1" }]),
+      }),
+    } as never);
+
+    vi.mocked(db.update).mockReturnValueOnce({
+      set: vi.fn().mockReturnThis(),
+      where: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: "user-1", name: "Test User" }]),
+      }),
+    } as never);
+
+    vi.mocked(db.update).mockReturnValueOnce({
+      set: vi.fn().mockReturnThis(),
+      where: vi.fn().mockResolvedValue(undefined),
+    } as never);
+
+    const request = new NextRequest("http://localhost:7777/api/users/user-1", {
+      method: "DELETE",
+    });
+
+    const response = await DELETE(request, {
+      params: Promise.resolve({ userId: "user-1" }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(db.transaction).toHaveBeenCalledTimes(1);
+    expect(db.update).toHaveBeenCalled();
+    expect(db.delete).toHaveBeenCalledWith(sessions);
+  });
+
+  it("does not ban the user when the session revocation fails inside the transaction (atomicity)", async () => {
+    // Simulates a real transaction's rollback semantics with a stateful fake
+    // store: the ban only takes effect once the whole callback commits.
+    // Pre-fix, the route calls db.update/db.delete directly (never touching
+    // db.transaction), so this test's fake store is never exercised and the
+    // DELETE resolves 200 instead of rejecting — the red state this test
+    // starts from.
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
+      user: { id: "admin-1", role: "admin" },
+      expires: "",
+    } as any);
+
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue([]),
+      }),
+    } as never);
+
+    let bannedCommitted = false;
+    vi.mocked(db.transaction).mockImplementationOnce((async (cb: (tx: unknown) => unknown) => {
+      let pendingBanned = false;
+      const tx = {
+        update: vi.fn().mockReturnValue({
+          set: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockImplementation(async () => {
+                pendingBanned = true;
+                return [{ id: "user-1", name: "Test User" }];
+              }),
+            }),
+          }),
+        }),
+        delete: vi.fn().mockReturnValue({
+          where: vi.fn().mockImplementation(async () => {
+            throw new Error("session delete failed");
+          }),
+        }),
+      };
+      await cb(tx);
+      // Only reached if cb() didn't throw — a real transaction rolls back on
+      // any error inside the callback, so a thrown error must skip this line.
+      bannedCommitted = pendingBanned;
+    }) as never);
+
+    const request = new NextRequest("http://localhost:7777/api/users/user-1", {
+      method: "DELETE",
+    });
+
+    await expect(
+      DELETE(request, { params: Promise.resolve({ userId: "user-1" }) })
+    ).rejects.toThrow("session delete failed");
+
+    expect(bannedCommitted).toBe(false);
+    expect(appendAuditLog).not.toHaveBeenCalled();
   });
 
   it("calls regenerateOpenClawConfig after deletion", async () => {

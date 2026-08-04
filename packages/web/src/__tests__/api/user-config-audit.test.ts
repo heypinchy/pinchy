@@ -99,8 +99,8 @@ vi.mock("@/lib/workspace", () => ({
   deleteWorkspace: vi.fn(),
 }));
 
-vi.mock("@/db", () => ({
-  db: {
+vi.mock("@/db", () => {
+  const db: Record<string, unknown> = {
     select: vi.fn().mockReturnValue({
       from: vi.fn().mockReturnValue({
         where: vi.fn().mockResolvedValue([]),
@@ -125,8 +125,13 @@ vi.mock("@/db", () => ({
         }),
       },
     },
-  },
-}));
+  };
+  // Default: run the callback against the SAME db object, so tx.update /
+  // tx.delete are the exact mocks above and existing per-test overrides via
+  // db.update/db.delete.mockReturnValueOnce keep working unchanged.
+  db.transaction = vi.fn((cb: (tx: unknown) => unknown) => cb(db));
+  return { db };
+});
 
 import { appendAuditLog } from "@/lib/audit";
 import { requireAdmin } from "@/lib/api-auth";

@@ -32,7 +32,7 @@ import { createHash } from "node:crypto";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { basename, join, sep } from "node:path";
 
-import { and, count, eq } from "drizzle-orm";
+import { and, count, eq, inArray } from "drizzle-orm";
 
 import { db } from "@/db";
 import { kbChunks, kbDocuments } from "@/db/schema";
@@ -436,14 +436,18 @@ async function removeVanishedDocuments(
 ): Promise<number> {
   const existingForOrg = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, orgId));
 
-  let removed = 0;
+  const vanishedIds: string[] = [];
   for (const doc of existingForOrg) {
     if (!isUnderRoot(doc.sourcePath, rootDir)) continue;
     if (discovered.has(doc.sourcePath)) continue;
-    await db.delete(kbDocuments).where(eq(kbDocuments.id, doc.id));
-    removed++;
+    vanishedIds.push(doc.id);
   }
-  return removed;
+
+  // Single batched DELETE instead of one per vanished document.
+  if (vanishedIds.length > 0) {
+    await db.delete(kbDocuments).where(inArray(kbDocuments.id, vanishedIds));
+  }
+  return vanishedIds.length;
 }
 
 /**

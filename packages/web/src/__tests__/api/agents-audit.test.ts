@@ -46,8 +46,8 @@ vi.mock("@/lib/openclaw-config", () => ({
   regenerateOpenClawConfig: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock("@/db", () => ({
-  db: {
+vi.mock("@/db", () => {
+  const db: Record<string, unknown> = {
     insert: vi.fn().mockReturnValue({
       values: vi.fn().mockReturnValue({
         returning: vi.fn().mockResolvedValue([
@@ -70,8 +70,13 @@ vi.mock("@/db", () => ({
         where: vi.fn().mockResolvedValue([]),
       }),
     })),
-  },
-}));
+  };
+  // Default: run the callback against the SAME db object, so tx.delete /
+  // tx.insert are the exact mocks above and existing per-test overrides via
+  // db.delete/db.insert.mockReturnValueOnce keep working unchanged.
+  db.transaction = vi.fn((cb: (tx: unknown) => unknown) => cb(db));
+  return { db };
+});
 
 vi.mock("@/db/schema", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/db/schema")>();
@@ -458,6 +463,107 @@ describe("PATCH /api/agents/[agentId] audit logging", () => {
         },
       },
     });
+  });
+
+  it("wraps the group delete+insert in a single transaction (atomic replace)", async () => {
+    // As two standalone statements, an insert failure between them would strip
+    // a restricted agent of every group with none re-added — silent access
+    // loss. Mirrors the same assertion for user-groups and group-members.
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
+      user: { id: "user-1", role: "admin" },
+      expires: "",
+    } as any);
+
+    mockAgent({
+      id: "agent-1",
+      name: "Test Agent",
+      model: "anthropic/claude-sonnet-4-6",
+      isPersonal: false,
+      ownerId: null,
+    });
+
+    vi.mocked(getAgentGroupIds).mockResolvedValueOnce(["group-keep"]);
+    vi.mocked(db.delete).mockReturnValueOnce({
+      where: vi.fn().mockResolvedValue(undefined),
+    } as never);
+    vi.mocked(db.insert).mockReturnValueOnce({
+      values: vi.fn().mockResolvedValue(undefined),
+    } as never);
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue([{ id: "group-keep", name: "Keep" }]),
+      }),
+    } as never);
+
+    const request = new NextRequest("http://localhost:7777/api/agents/agent-1", {
+      method: "PATCH",
+      body: JSON.stringify({ groupIds: ["group-keep"] }),
+      headers: { "Content-Type": "application/json" },
+    });
+
+    const response = await PATCH(request, {
+      params: Promise.resolve({ agentId: "agent-1" }),
+    });
+    expect(response.status).toBe(200);
+
+    expect(db.transaction).toHaveBeenCalledTimes(1);
+    expect(db.delete).toHaveBeenCalled();
+    expect(db.insert).toHaveBeenCalled();
+  });
+
+  it("rolls back the group delete when the insert fails, leaving previous groups intact", async () => {
+    // Simulates a real transaction's rollback semantics with a stateful fake
+    // store: the delete only takes effect once the whole callback commits.
+    // Pre-fix, the route calls db.delete/db.insert directly (never touching
+    // db.transaction), so this test's fake store never rejects and the PATCH
+    // resolves 200 instead of rejecting — the red state this test starts from.
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
+      user: { id: "user-1", role: "admin" },
+      expires: "",
+    } as any);
+
+    mockAgent({
+      id: "agent-1",
+      name: "Test Agent",
+      model: "anthropic/claude-sonnet-4-6",
+      isPersonal: false,
+      ownerId: null,
+    });
+
+    vi.mocked(getAgentGroupIds).mockResolvedValueOnce(["group-keep"]);
+
+    let committedGroupIds = ["group-keep"];
+    vi.mocked(db.transaction).mockImplementationOnce((async (cb: (tx: unknown) => unknown) => {
+      let pendingGroupIds = committedGroupIds;
+      const tx = {
+        delete: vi.fn().mockReturnValue({
+          where: vi.fn().mockImplementation(async () => {
+            pendingGroupIds = [];
+          }),
+        }),
+        insert: vi.fn().mockReturnValue({
+          values: vi.fn().mockImplementation(async () => {
+            throw new Error("insert failed");
+          }),
+        }),
+      };
+      await cb(tx);
+      // Only reached if cb() didn't throw — a real transaction rolls back on
+      // any error inside the callback, so a thrown error must skip this line.
+      committedGroupIds = pendingGroupIds;
+    }) as never);
+
+    const request = new NextRequest("http://localhost:7777/api/agents/agent-1", {
+      method: "PATCH",
+      body: JSON.stringify({ groupIds: ["group-keep", "group-new"] }),
+      headers: { "Content-Type": "application/json" },
+    });
+
+    await expect(
+      PATCH(request, { params: Promise.resolve({ agentId: "agent-1" }) })
+    ).rejects.toThrow("insert failed");
+
+    expect(committedGroupIds).toEqual(["group-keep"]);
   });
 
   it("PATCH with model-only change writes audit entry with before/after snapshot", async () => {

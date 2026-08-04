@@ -6325,6 +6325,53 @@ describe("restart-state integration", () => {
     });
   });
 
+  it("resolves telegram_conflict_disabled markers via a single batched prefix query, not one getSetting per liveAgent", async () => {
+    let callCount = 0;
+    mockedDb.select.mockReturnValue({
+      from: vi.fn().mockImplementation(() => {
+        callCount++;
+        if (callCount === 1) {
+          return Object.assign(
+            Promise.resolve([
+              { id: "agent-1", name: "Smithers", model: "m", allowedTools: [] },
+              { id: "agent-2", name: "Support", model: "m", allowedTools: [] },
+            ]),
+            { innerJoin: mockInnerJoin([]), where: vi.fn().mockResolvedValue([]) }
+          );
+        }
+        return Object.assign(Promise.resolve([]), {
+          innerJoin: mockInnerJoin([]),
+          where: vi.fn().mockResolvedValue([]),
+        });
+      }),
+    } as never);
+
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "telegram_bot_token:agent-1") return "token-1";
+      if (key === "telegram_bot_token:agent-2") return "token-2";
+      // agent-2 is auto-disabled; agent-1 is not.
+      if (key === "telegram_conflict_disabled:agent-2") return JSON.stringify({ reason: "x" });
+      return null;
+    });
+
+    await regenerateOpenClawConfig();
+
+    // Batched: exactly one getSettingsByPrefix("telegram_conflict_disabled:")
+    // call resolves both liveAgents' markers, instead of production code
+    // calling getSetting once per agent.
+    const conflictDisabledPrefixCalls = mockGetSettingsByPrefix.mock.calls.filter(
+      ([prefix]) => prefix === "telegram_conflict_disabled:"
+    );
+    expect(conflictDisabledPrefixCalls).toHaveLength(1);
+
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
+    const config = JSON.parse(written);
+    // agent-2 stays excluded (conflict-disabled); agent-1 is included.
+    expect(config.channels.telegram.accounts).toEqual({
+      "agent-1": { botToken: "token-1" },
+    });
+  });
+
   it("should generate per-user peer bindings for personal agents (Smithers)", async () => {
     // Personal agent (Smithers) with bot token: each linked user should get
     // a peer-specific binding routing to their OWN personal Smithers agent.

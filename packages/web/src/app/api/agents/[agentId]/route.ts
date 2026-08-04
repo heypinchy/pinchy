@@ -212,14 +212,21 @@ export const PATCH = withAuth<RouteContext>(async (request, { params }, session)
       ? await getAgentGroupIds(agentId)
       : [];
 
-  // Update group assignments if provided (zod already validated string[])
+  // Update group assignments if provided (zod already validated string[]).
+  // Atomic replace: the wipe and the re-insert must commit or roll back
+  // together. As two standalone statements, an insert failure (I/O error, a
+  // group deleted in the validation→insert window) would leave a restricted
+  // agent stripped of every group with none re-added — silent access loss.
+  // Mirrors users/[userId]/groups and groups/[groupId]/members.
   if (body.groupIds !== undefined && session.user.role === "admin") {
-    await db.delete(agentGroups).where(eq(agentGroups.agentId, agentId));
-    if (body.groupIds.length > 0) {
-      await db
-        .insert(agentGroups)
-        .values(body.groupIds.map((groupId: string) => ({ agentId, groupId })));
-    }
+    await db.transaction(async (tx) => {
+      await tx.delete(agentGroups).where(eq(agentGroups.agentId, agentId));
+      if (body.groupIds!.length > 0) {
+        await tx
+          .insert(agentGroups)
+          .values(body.groupIds!.map((groupId: string) => ({ agentId, groupId })));
+      }
+    });
   }
 
   if (data.name !== undefined || data.tagline !== undefined) {

@@ -21,7 +21,7 @@ import { listConfiguredBuiltIns } from "@/lib/provider-count";
 import { listOpenAiCompatibleProviders } from "@/lib/openai-compatible-providers";
 import { db } from "@/db";
 import { agents } from "@/db/schema";
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 
 /** A provider an orphaned agent can migrate onto. */
 export interface RemainingCandidate {
@@ -223,7 +223,6 @@ export async function repointAgentsOffRemovedModels(opts: {
   const allAgents = await db.query.agents.findMany();
   for (const agent of allAgents) {
     if (agent.model?.startsWith(prefix) && !kept.has(agent.model)) {
-      await db.update(agents).set({ model: fallback }).where(eq(agents.id, agent.id));
       migrated.push({
         id: agent.id,
         name: agent.name,
@@ -232,6 +231,20 @@ export async function repointAgentsOffRemovedModels(opts: {
       });
     }
   }
+
+  // Single batched UPDATE instead of one per affected agent.
+  if (migrated.length > 0) {
+    await db
+      .update(agents)
+      .set({ model: fallback })
+      .where(
+        inArray(
+          agents.id,
+          migrated.map((a) => a.id)
+        )
+      );
+  }
+
   return migrated;
 }
 

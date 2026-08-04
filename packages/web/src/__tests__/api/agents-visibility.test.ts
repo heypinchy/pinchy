@@ -60,13 +60,16 @@ vi.mock("@/db", () => {
     }),
   });
 
-  return {
-    db: {
-      insert: mockInsert,
-      select: vi.fn().mockImplementation(defaultSelect),
-      delete: mockDelete,
-    },
+  const db: Record<string, unknown> = {
+    insert: mockInsert,
+    select: vi.fn().mockImplementation(defaultSelect),
+    delete: mockDelete,
   };
+  // Runs the callback against the SAME db object, so tx.delete/tx.insert are
+  // the exact mocks above and per-test overrides keep working unchanged.
+  db.transaction = vi.fn((cb: (tx: unknown) => unknown) => cb(db));
+
+  return { db };
 });
 
 vi.mock("@/db/schema", async (importOriginal) => {

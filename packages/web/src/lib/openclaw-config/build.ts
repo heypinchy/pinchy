@@ -1527,6 +1527,9 @@ export async function regenerateOpenClawConfig() {
 
   // Single batched query instead of one getSetting per liveAgent (#261).
   const botTokenByKey = await getSettingsByPrefix("telegram_bot_token:");
+  // Same batching for the conflict-disabled marker — one getSetting per
+  // liveAgent otherwise.
+  const conflictDisabledByKey = await getSettingsByPrefix("telegram_conflict_disabled:");
   for (const agent of liveAgents) {
     const botToken = botTokenByKey.get(`telegram_bot_token:${agent.id}`);
     // #477 layer 2: an account auto-disabled after a sustained getUpdates-409
@@ -1534,7 +1537,7 @@ export async function regenerateOpenClawConfig() {
     // create, etc.) — not just at the moment of the targeted disable write.
     // The bot token is deliberately left in settings (so [Reconnect] can
     // re-enable it later); this guard is what makes the disable durable.
-    const conflictDisabled = await getSetting(`telegram_conflict_disabled:${agent.id}`);
+    const conflictDisabled = conflictDisabledByKey.get(`telegram_conflict_disabled:${agent.id}`);
     if (botToken && !conflictDisabled) {
       accounts[agent.id] = { botToken };
       if (agent.isPersonal) {

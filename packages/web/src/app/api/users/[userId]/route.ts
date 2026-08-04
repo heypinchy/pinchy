@@ -3,7 +3,7 @@ import { z } from "zod";
 import { requireAdmin } from "@/lib/api-auth";
 import { db } from "@/db";
 import { users, agents, sessions } from "@/db/schema";
-import { eq, and, count } from "drizzle-orm";
+import { eq, and, count, inArray } from "drizzle-orm";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { deleteWorkspace } from "@/lib/workspace";
 import { appendAuditLog } from "@/lib/audit";
@@ -93,22 +93,50 @@ export async function DELETE(
     .from(agents)
     .where(and(eq(agents.ownerId, userId), eq(agents.isPersonal, true)));
 
-  const [deactivated] = await db
-    .update(users)
-    .set({ banned: true, banReason: "Deactivated by admin" })
-    .where(eq(users.id, userId))
-    .returning();
+  // Atomic deactivation: the ban, the session revocation, and the personal-
+  // agent soft-delete must commit or roll back together. As standalone
+  // statements, a failure partway through (e.g. the session delete) would
+  // leave the user already banned with sessions and agents untouched, or vice
+  // versa — an inconsistent, partially-deactivated account. The filesystem
+  // workspace cleanup below stays OUTSIDE the transaction on purpose: rmSync
+  // has no place in a DB rollback.
+  const deactivated = await db.transaction(async (tx) => {
+    const [row] = await tx
+      .update(users)
+      .set({ banned: true, banReason: "Deactivated by admin" })
+      .where(eq(users.id, userId))
+      .returning();
+
+    if (!row) return undefined;
+
+    // Revoke the user's active sessions immediately. Better Auth only
+    // enforces the `banned` flag at session-creation time, not on session
+    // reads, so an already-issued cookie would otherwise keep full access
+    // (incl. admin) until natural expiry. This mirrors the official
+    // admin.banUser behavior and the invite/claim reset flow, which both
+    // delete sessions.
+    await tx.delete(sessions).where(eq(sessions.userId, userId));
+
+    // Soft-delete every personal agent in one batched update instead of one
+    // per agent.
+    if (personalAgents.length > 0) {
+      await tx
+        .update(agents)
+        .set({ deletedAt: new Date() })
+        .where(
+          inArray(
+            agents.id,
+            personalAgents.map((a) => a.id)
+          )
+        );
+    }
+
+    return row;
+  });
 
   if (!deactivated) {
     return NextResponse.json({ error: "User not found" }, { status: 404 });
   }
-
-  // Revoke the user's active sessions immediately. Better Auth only enforces
-  // the `banned` flag at session-creation time, not on session reads, so an
-  // already-issued cookie would otherwise keep full access (incl. admin) until
-  // natural expiry. This mirrors the official admin.banUser behavior and the
-  // invite/claim reset flow, which both delete sessions.
-  await db.delete(sessions).where(eq(sessions.userId, userId));
 
   after(() =>
     appendAuditLog({
@@ -124,9 +152,9 @@ export async function DELETE(
     })
   );
 
-  // Soft-delete personal agents + cleanup workspaces
+  // Cleanup workspaces (filesystem, not DB — deliberately outside the
+  // transaction above).
   for (const agent of personalAgents) {
-    await db.update(agents).set({ deletedAt: new Date() }).where(eq(agents.id, agent.id));
     deleteWorkspace(agent.id); // synchronous (uses rmSync)
   }
 

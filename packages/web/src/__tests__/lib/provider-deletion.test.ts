@@ -196,13 +196,34 @@ describe("repointAgentsOffRemovedModels", () => {
       keptModelIds: ["acme-large", "acme-small"],
     });
 
-    // Only the two agents on removed models are repointed, onto acme/acme-large.
-    expect(db.update).toHaveBeenCalledTimes(2);
+    // Only the two agents on removed models are repointed, onto acme/acme-large,
+    // via a single batched UPDATE rather than one per agent.
+    expect(db.update).toHaveBeenCalledTimes(1);
     expect(setSpy).toHaveBeenCalledWith({ model: "acme/acme-large" });
     expect(migrated).toEqual([
       { id: "a1", name: "One", fromModel: "acme/dropped", toModel: "acme/acme-large" },
       { id: "a4", name: "Four", fromModel: "acme/also-dropped", toModel: "acme/acme-large" },
     ]);
+  });
+
+  it("repoints every affected agent in a single batched UPDATE, not one per agent", async () => {
+    vi.mocked(db.query.agents.findMany).mockResolvedValue([
+      { id: "a1", name: "One", model: "acme/dropped" },
+      { id: "a2", name: "Two", model: "acme/also-dropped" },
+      { id: "a3", name: "Three", model: "acme/still-dropped" },
+    ] as any);
+    const whereSpy = vi.fn().mockResolvedValue(undefined);
+    const setSpy = vi.fn().mockReturnValue({ where: whereSpy });
+    vi.mocked(db.update).mockReturnValue({ set: setSpy } as any);
+
+    await repointAgentsOffRemovedModels({
+      slug: "acme",
+      keptModelIds: ["acme-large"],
+    });
+
+    expect(db.update).toHaveBeenCalledTimes(1);
+    expect(setSpy).toHaveBeenCalledWith({ model: "acme/acme-large" });
+    expect(whereSpy).toHaveBeenCalledTimes(1);
   });
 
   it("does not touch an agent whose pinned model is still present", async () => {
