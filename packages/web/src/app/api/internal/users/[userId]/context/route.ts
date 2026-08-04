@@ -1,6 +1,5 @@
 // audit-exempt: internal endpoint called by OpenClaw plugin (Smithers), not a user-facing action
 import { NextRequest, NextResponse } from "next/server";
-import { z } from "zod";
 import { validateGatewayToken } from "@/lib/gateway-auth";
 import { db } from "@/db";
 import { users } from "@/db/schema";
@@ -8,8 +7,7 @@ import { eq } from "drizzle-orm";
 import { syncUserContextToWorkspaces } from "@/lib/context-sync";
 import { getSetting } from "@/lib/settings";
 import { parseRequestBody } from "@/lib/api-validation";
-
-const internalUserContextSchema = z.object({ content: z.string() });
+import { contextContentSchema as internalUserContextSchema } from "@/lib/schemas/context";
 
 export async function PUT(
   request: NextRequest,
