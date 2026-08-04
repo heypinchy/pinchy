@@ -1,11 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/api-auth";
 import { db } from "@/db";
-import { auditLog, users, agents } from "@/db/schema";
-import { desc, eq, and, or, inArray, gte, lte, count, sql } from "drizzle-orm";
-import { alias } from "drizzle-orm/pg-core";
-import { resolveActorIdMatchSet } from "@/lib/audit";
+import { auditLog } from "@/db/schema";
+import { desc, and, count } from "drizzle-orm";
 import { apiKeyActorName } from "@/lib/api-key-identity";
+import { buildAuditFilters, auditSelectWithJoins } from "@/lib/audit-query";
 
 export async function GET(request: NextRequest) {
   const sessionOrError = await requireAdmin();
@@ -18,86 +17,15 @@ export async function GET(request: NextRequest) {
   const page = Number.isNaN(pageRaw) ? 1 : Math.max(1, pageRaw);
   const limitRaw = parseInt(url.searchParams.get("limit") || "50", 10);
   const limit = Number.isNaN(limitRaw) ? 50 : Math.min(100, Math.max(1, limitRaw));
-  const eventType = url.searchParams.get("eventType");
-  const actorId = url.searchParams.get("actorId");
-  const from = url.searchParams.get("from");
-  const to = url.searchParams.get("to");
-  const status = url.searchParams.get("status");
 
-  const conditions = [];
-  if (eventType) conditions.push(eq(auditLog.eventType, eventType));
-  if (actorId) {
-    // appendAuditLog substitutes the user's auditPseudonym for actorId (GDPR
-    // crypto-erasure, see lib/audit.ts). A caller filtering by a known user id
-    // must match BOTH the raw id (rows written before pseudonymization, or
-    // rows for a since-erased user) and the current pseudonym (rows written
-    // after) — matching only the bare id would silently drop half that
-    // user's history from the filtered view.
-    const actorIdMatchSet = await resolveActorIdMatchSet(actorId);
-    conditions.push(inArray(auditLog.actorId, actorIdMatchSet));
-  }
-  if (status === "success" || status === "failure") {
-    // Note: this implicitly excludes v1 (legacy) rows, which have outcome=NULL.
-    // v1 rows predate status tracking — there's no honest "success" for them.
-    conditions.push(eq(auditLog.outcome, status));
-  }
-  // A non-date string (e.g. ?from=notadate) becomes an Invalid Date which
-  // drizzle throws a RangeError on at serialization — an unhandled 500 for a
-  // mistyped filter. Reject it with a structured 400 instead.
-  if (from) {
-    const fromDate = new Date(from);
-    if (Number.isNaN(fromDate.getTime())) {
-      return NextResponse.json({ error: "Invalid 'from' date" }, { status: 400 });
-    }
-    conditions.push(gte(auditLog.timestamp, fromDate));
-  }
-  if (to) {
-    const toDate = new Date(to);
-    if (Number.isNaN(toDate.getTime())) {
-      return NextResponse.json({ error: "Invalid 'to' date" }, { status: 400 });
-    }
-    if (!to.includes("T") && !to.includes(" ")) toDate.setUTCHours(23, 59, 59, 999);
-    conditions.push(lte(auditLog.timestamp, toDate));
-  }
+  const filtersResult = await buildAuditFilters(url.searchParams);
+  if (!filtersResult.ok) return filtersResult.response;
+  const { conditions } = filtersResult;
 
   const where = conditions.length > 0 ? and(...conditions) : undefined;
 
-  const actorUser = alias(users, "actor_user");
-  const resourceAgent = alias(agents, "resource_agent");
-  const resourceUser = alias(users, "resource_user");
-
   const [entries, totalResult] = await Promise.all([
-    db
-      .select({
-        id: auditLog.id,
-        timestamp: auditLog.timestamp,
-        actorType: auditLog.actorType,
-        actorId: auditLog.actorId,
-        eventType: auditLog.eventType,
-        resource: auditLog.resource,
-        detail: auditLog.detail,
-        rowHmac: auditLog.rowHmac,
-        version: auditLog.version,
-        outcome: auditLog.outcome,
-        error: auditLog.error,
-        actorName: actorUser.name,
-        actorBanned: actorUser.banned,
-        resourceAgentName: resourceAgent.name,
-        resourceAgentDeleted: resourceAgent.deletedAt,
-        resourceUserName: resourceUser.name,
-        resourceUserBanned: resourceUser.banned,
-      })
-      .from(auditLog)
-      // Dual-join (alt+neu): actorId may hold either the user's auditPseudonym
-      // (rows written after this feature shipped) or the raw users.id (rows
-      // written before, or before the substitution's own fallback path). A
-      // single-shape join would leave one generation of rows nameless.
-      .leftJoin(
-        actorUser,
-        or(eq(actorUser.auditPseudonym, auditLog.actorId), eq(actorUser.id, auditLog.actorId))
-      )
-      .leftJoin(resourceAgent, sql`${auditLog.resource} = 'agent:' || ${resourceAgent.id}`)
-      .leftJoin(resourceUser, sql`${auditLog.resource} = 'user:' || ${resourceUser.id}`)
+    auditSelectWithJoins()
       .where(where)
       .orderBy(desc(auditLog.timestamp))
       .limit(limit)

@@ -25,6 +25,11 @@ export type AuditPdfOptions = {
     to?: string | null;
     status?: string | null;
   };
+  // Set when the caller capped `rows` below the full matching set (see
+  // MAX_AUDIT_EXPORT_ROWS in lib/audit-query.ts). Deliberately does not carry
+  // the true total: computing it would need a second full-table COUNT(*),
+  // which is exactly the unbounded-query risk this cap exists to avoid.
+  truncated?: boolean;
 };
 
 export function formatActor(row: AuditExportRow): string {
@@ -83,6 +88,18 @@ export function renderAuditPdf(
       .text(`Filters: ${buildFilterSummary(options.filters)}`)
       .text(`Total entries: ${rows.length}`)
       .fillColor("black");
+    if (options.truncated) {
+      doc
+        .font("Helvetica-Bold")
+        .fontSize(9)
+        .fillColor("#b40020")
+        .text(
+          "Export truncated: additional entries match these filters. Narrow the filters " +
+            "(date range, event type, actor) and export again to see the rest."
+        )
+        .fillColor("black")
+        .font("Helvetica");
+    }
     doc.moveDown(0.5);
 
     // ── Table ──────────────────────────────────────────────────────────

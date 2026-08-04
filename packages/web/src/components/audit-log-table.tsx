@@ -259,6 +259,16 @@ export function AuditLogTable() {
     if (dateTo) params.set("to", localDateEnd(dateTo));
     const res = await fetch(`/api/audit/export?${params.toString()}`);
     if (res.ok) {
+      // The export is capped (see MAX_AUDIT_EXPORT_ROWS in lib/audit-query.ts)
+      // so `audit_log` growing unbounded can't OOM the server. A capped file
+      // still looks like a complete, valid CSV/PDF once downloaded, so the
+      // admin needs an explicit signal here — the response header alone is
+      // invisible in a plain file-download flow.
+      if (res.headers?.get("X-Audit-Export-Truncated") === "true") {
+        toast.warning(
+          "Export was truncated: more entries match these filters than fit in one export. Narrow the filters (date range, event type, actor) and export again to see the rest."
+        );
+      }
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");

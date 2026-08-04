@@ -6,7 +6,7 @@ import "@testing-library/jest-dom";
 import { toast } from "sonner";
 import { AuditLogTable } from "@/components/audit-log-table";
 
-vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
+vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn() } }));
 
 // Radix UI Select uses pointer capture and scrollIntoView which jsdom doesn't support
 if (!Element.prototype.hasPointerCapture) {
@@ -176,6 +176,74 @@ describe("AuditLogTable", () => {
       expect(global.fetch).toHaveBeenCalledWith(expect.stringContaining("/api/audit/export"));
     });
     expect(global.fetch).toHaveBeenCalledWith(expect.stringContaining("format=csv"));
+
+    createObjectURLSpy.mockRestore();
+    revokeObjectURLSpy.mockRestore();
+  });
+
+  it("warns when the export response signals truncation (X-Audit-Export-Truncated)", async () => {
+    renderWithEntriesLoaded();
+
+    await waitFor(() => {
+      expect(screen.getAllByText("auth.login").length).toBeGreaterThan(0);
+    });
+
+    const csvContent = "id,timestamp,eventType\n1,2026-02-21,auth.login";
+    vi.mocked(global.fetch).mockResolvedValueOnce({
+      ok: true,
+      blob: async () => new Blob([csvContent], { type: "text/csv" }),
+      headers: new Headers({
+        "content-disposition": 'attachment; filename="audit-log.csv"',
+        "X-Audit-Export-Truncated": "true",
+      }),
+    } as Response);
+
+    const createObjectURLSpy = vi
+      .spyOn(URL, "createObjectURL")
+      .mockReturnValue("blob:http://localhost/fake");
+    const revokeObjectURLSpy = vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: /export/i }));
+    await user.click(screen.getByRole("menuitem", { name: /csv/i }));
+
+    await waitFor(() => {
+      expect(toast.warning).toHaveBeenCalledWith(expect.stringContaining("truncated"));
+    });
+
+    createObjectURLSpy.mockRestore();
+    revokeObjectURLSpy.mockRestore();
+  });
+
+  it("does not warn when the export is not truncated", async () => {
+    renderWithEntriesLoaded();
+
+    await waitFor(() => {
+      expect(screen.getAllByText("auth.login").length).toBeGreaterThan(0);
+    });
+
+    const csvContent = "id,timestamp,eventType\n1,2026-02-21,auth.login";
+    vi.mocked(global.fetch).mockResolvedValueOnce({
+      ok: true,
+      blob: async () => new Blob([csvContent], { type: "text/csv" }),
+      headers: new Headers({
+        "content-disposition": 'attachment; filename="audit-log.csv"',
+      }),
+    } as Response);
+
+    const createObjectURLSpy = vi
+      .spyOn(URL, "createObjectURL")
+      .mockReturnValue("blob:http://localhost/fake");
+    const revokeObjectURLSpy = vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: /export/i }));
+    await user.click(screen.getByRole("menuitem", { name: /csv/i }));
+
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith(expect.stringContaining("/api/audit/export"));
+    });
+    expect(toast.warning).not.toHaveBeenCalled();
 
     createObjectURLSpy.mockRestore();
     revokeObjectURLSpy.mockRestore();

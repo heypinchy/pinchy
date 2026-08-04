@@ -511,7 +511,14 @@ export type AuditLogEntry =
     })
   | (AuditLogBase & {
       eventType: "audit.exported";
-      detail: { format: "csv" | "pdf"; filterSummary: string; rowCount: number };
+      detail: {
+        format: "csv" | "pdf";
+        filterSummary: string;
+        rowCount: number;
+        // Set when the export hit MAX_AUDIT_EXPORT_ROWS (lib/audit-query.ts)
+        // and was capped below the full matching set.
+        truncated: boolean;
+      };
     })
   | (AuditLogBase & {
       // Periodic incremental hash-chain verification (audit-verify-job). One

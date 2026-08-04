@@ -388,6 +388,10 @@ The two formats target different audiences:
 
 If a stakeholder needs the full event payload in a printable format, generate the CSV and let them produce a PDF from there with their preferred tooling — the PDF view in Pinchy is intentionally summary-only.
 
+### Row cap
+
+An export is capped at 100,000 rows. `audit_log` grows without bound, and an unbounded export would read the entire matching set into memory before writing the file — a risk in a resource-constrained container. When more rows match your filters than the cap, the response carries an `X-Audit-Export-Truncated: true` header, the CSV file gets one trailing note line describing the cap, the PDF prints a truncation notice below its header, and the admin UI shows a toast. Narrow the filters (date range, event type, actor) and export again to see the rest.
+
 ### Known limitation: non-Latin characters in PDF
 
 The PDF renderer uses PDFKit's built-in Helvetica font, which covers Latin-1 only. Actor or agent names written in scripts outside Latin-1 (Cyrillic, CJK, Arabic, Devanagari, etc.) will render as boxes or empty space in the PDF output. The CSV export is unaffected — it is UTF-8 throughout. If you need a PDF with non-Latin names, export as CSV and convert on the client side, or [open an issue](https://github.com/heypinchy/pinchy/issues) so we can prioritize bundling a Unicode font.

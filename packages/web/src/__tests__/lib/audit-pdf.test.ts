@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { inflateSync } from "node:zlib";
 import {
   renderAuditPdf,
   buildFilterSummary,
@@ -6,6 +7,42 @@ import {
   formatResource,
   type AuditExportRow,
 } from "@/lib/audit-pdf";
+
+/**
+ * pdfkit compresses page content streams (FlateDecode) by default, so text
+ * drawn via `doc.text(...)` is NOT a substring of the raw PDF bytes — only
+ * the trailer/Info dictionary is uncompressed (see the metadata test below).
+ * Decompress every `stream ... endstream` object, then decode the hex string
+ * literals (`<...>`) that pdfkit's Tj/TJ text-drawing operators emit for the
+ * base-14 fonts this renderer uses (WinAnsi-encoded, so hex bytes ARE the
+ * text's char codes — verified against the footer's known "Pinchy Audit
+ * Trail" string). Kerning numbers between hex groups are dropped; word
+ * fragments from ONE `doc.text()` call stay contiguous, which is all a
+ * substring assertion on rendered content needs.
+ */
+function extractPdfStreamText(buf: Buffer): string {
+  const raw = buf.toString("latin1");
+  const chunks: string[] = [];
+  const streamRe = /stream\r?\n([\s\S]*?)\r?\nendstream/g;
+  let streamMatch: RegExpExecArray | null;
+  while ((streamMatch = streamRe.exec(raw)) !== null) {
+    const streamBytes = Buffer.from(streamMatch[1], "latin1");
+    let inflated: string;
+    try {
+      inflated = inflateSync(streamBytes).toString("latin1");
+    } catch {
+      // Not every stream is FlateDecode (e.g. embedded fonts may use a
+      // different filter, or none) — skip anything that doesn't inflate.
+      continue;
+    }
+    const hexRe = /<([0-9a-fA-F]+)>/g;
+    let hexMatch: RegExpExecArray | null;
+    while ((hexMatch = hexRe.exec(inflated)) !== null) {
+      chunks.push(Buffer.from(hexMatch[1], "hex").toString("latin1"));
+    }
+  }
+  return chunks.join("");
+}
 
 function makeRow(overrides: Partial<AuditExportRow> = {}): AuditExportRow {
   return {
@@ -138,5 +175,17 @@ describe("renderAuditPdf", () => {
     // PDF metadata is stored uncompressed in the trailer/Info dictionary
     const text = buf.toString("latin1");
     expect(text).toContain("Pinchy Audit Trail Report");
+  });
+
+  it("renders a truncation notice when options.truncated is set", async () => {
+    const buf = await renderAuditPdf([makeRow()], { truncated: true });
+    const text = extractPdfStreamText(buf);
+    expect(text).toContain("Export truncated");
+  });
+
+  it("does not render a truncation notice when options.truncated is unset", async () => {
+    const buf = await renderAuditPdf([makeRow()]);
+    const text = extractPdfStreamText(buf);
+    expect(text).not.toContain("Export truncated");
   });
 });

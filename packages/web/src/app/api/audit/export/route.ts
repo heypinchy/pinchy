@@ -1,14 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/api-auth";
-import { db } from "@/db";
-import { auditLog, users, agents } from "@/db/schema";
-import { desc, eq, and, or, inArray, gte, lte, sql } from "drizzle-orm";
-import { alias } from "drizzle-orm/pg-core";
+import { desc, and } from "drizzle-orm";
+import { auditLog } from "@/db/schema";
 import { sanitizeDetail } from "@/lib/audit-sanitize";
-import { appendAuditLog, resolveActorIdMatchSet } from "@/lib/audit";
+import { appendAuditLog } from "@/lib/audit";
 import { apiKeyActorName } from "@/lib/api-key-identity";
 import { csvField } from "@/lib/csv";
 import { renderAuditPdf, buildFilterSummary, type AuditExportRow } from "@/lib/audit-pdf";
+import { buildAuditFilters, auditSelectWithJoins, MAX_AUDIT_EXPORT_ROWS } from "@/lib/audit-query";
 
 function isErrorObject(value: unknown): value is { message: string } {
   return (
@@ -42,95 +41,27 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  // Treat empty-string `status=` the same as an absent param — common
-  // when forms serialize unset selects as `?status=`. Strict-validate
-  // any other unknown value, mirroring the `format=` validation above.
-  const statusRaw = url.searchParams.get("status");
-  const status = statusRaw === "" ? null : statusRaw;
-  if (status !== null && status !== "success" && status !== "failure") {
-    return NextResponse.json(
-      { error: `Unsupported status '${status}'. Use 'success' or 'failure'.` },
-      { status: 400 }
-    );
-  }
-
-  const eventType = url.searchParams.get("eventType");
-  const actorId = url.searchParams.get("actorId");
-  const resource = url.searchParams.get("resource");
-  const from = url.searchParams.get("from");
-  const to = url.searchParams.get("to");
-
-  const conditions = [];
-  if (eventType) conditions.push(eq(auditLog.eventType, eventType));
-  if (actorId) {
-    // Dual match (alt+neu): appendAuditLog substitutes the user's
-    // auditPseudonym for actorId (GDPR crypto-erasure, see lib/audit.ts).
-    // Filtering by a known user id must match both the raw id (pre-feature
-    // rows, or a since-erased user) and the current pseudonym (post-feature
-    // rows) — see the identical comment in /api/audit/route.ts.
-    const actorIdMatchSet = await resolveActorIdMatchSet(actorId);
-    conditions.push(inArray(auditLog.actorId, actorIdMatchSet));
-  }
-  if (resource) conditions.push(eq(auditLog.resource, resource));
-  if (status === "success" || status === "failure") {
-    conditions.push(eq(auditLog.outcome, status));
-  }
-  // A non-date string becomes an Invalid Date that drizzle throws on at
-  // serialization — an unhandled 500 for a mistyped filter. Reject with a 400.
-  if (from) {
-    const fromDate = new Date(from);
-    if (Number.isNaN(fromDate.getTime())) {
-      return NextResponse.json({ error: "Invalid 'from' date" }, { status: 400 });
-    }
-    conditions.push(gte(auditLog.timestamp, fromDate));
-  }
-  if (to) {
-    const toDate = new Date(to);
-    if (Number.isNaN(toDate.getTime())) {
-      return NextResponse.json({ error: "Invalid 'to' date" }, { status: 400 });
-    }
-    if (!to.includes("T") && !to.includes(" ")) toDate.setUTCHours(23, 59, 59, 999);
-    conditions.push(lte(auditLog.timestamp, toDate));
-  }
+  const filtersResult = await buildAuditFilters(url.searchParams, {
+    includeResource: true,
+    strictStatus: true,
+  });
+  if (!filtersResult.ok) return filtersResult.response;
+  const { conditions, filters } = filtersResult;
 
   const where = conditions.length > 0 ? and(...conditions) : undefined;
 
-  const actorUser = alias(users, "actor_user");
-  const resourceAgent = alias(agents, "resource_agent");
-  const resourceUser = alias(users, "resource_user");
-
-  const entries = await db
-    .select({
-      id: auditLog.id,
-      timestamp: auditLog.timestamp,
-      actorType: auditLog.actorType,
-      actorId: auditLog.actorId,
-      eventType: auditLog.eventType,
-      resource: auditLog.resource,
-      detail: auditLog.detail,
-      rowHmac: auditLog.rowHmac,
-      version: auditLog.version,
-      outcome: auditLog.outcome,
-      error: auditLog.error,
-      actorName: actorUser.name,
-      actorBanned: actorUser.banned,
-      resourceAgentName: resourceAgent.name,
-      resourceAgentDeleted: resourceAgent.deletedAt,
-      resourceUserName: resourceUser.name,
-      resourceUserBanned: resourceUser.banned,
-    })
-    .from(auditLog)
-    // Dual-join (alt+neu) — see the identical comment in /api/audit/route.ts.
-    .leftJoin(
-      actorUser,
-      or(eq(actorUser.auditPseudonym, auditLog.actorId), eq(actorUser.id, auditLog.actorId))
-    )
-    .leftJoin(resourceAgent, sql`${auditLog.resource} = 'agent:' || ${resourceAgent.id}`)
-    .leftJoin(resourceUser, sql`${auditLog.resource} = 'user:' || ${resourceUser.id}`)
+  // Fetch one row past the cap: cheaper than a second COUNT(*) query, and all
+  // we need is "did more rows match than we're willing to export" (see
+  // MAX_AUDIT_EXPORT_ROWS in lib/audit-query.ts).
+  const entries = await auditSelectWithJoins()
     .where(where)
-    .orderBy(desc(auditLog.timestamp));
+    .orderBy(desc(auditLog.timestamp))
+    .limit(MAX_AUDIT_EXPORT_ROWS + 1);
 
-  const rows: AuditExportRow[] = entries.map((e) => ({
+  const truncated = entries.length > MAX_AUDIT_EXPORT_ROWS;
+  const cappedEntries = truncated ? entries.slice(0, MAX_AUDIT_EXPORT_ROWS) : entries;
+
+  const rows: AuditExportRow[] = cappedEntries.map((e) => ({
     id: e.id,
     timestamp: e.timestamp,
     actorType: e.actorType,
@@ -154,17 +85,24 @@ export async function GET(request: NextRequest) {
     rowHmac: e.rowHmac,
   }));
 
-  const filters = { eventType, actorId, resource, from, to, status };
   const filterSummary = buildFilterSummary(filters);
   const filenameStem = `audit-log-${exportTimestamp(new Date())}`;
 
+  // Signals a caller/script can read without parsing the body: a truncated
+  // export is still a valid, complete-looking CSV/PDF otherwise, so silence
+  // here would read as "this is the whole audit trail" when it isn't.
+  const truncationHeaders: Record<string, string> = truncated
+    ? { "X-Audit-Export-Truncated": "true" }
+    : {};
+
   let response: Response;
   if (format === "pdf") {
-    const pdfBuffer = await renderAuditPdf(rows, { filters });
+    const pdfBuffer = await renderAuditPdf(rows, { filters, truncated });
     response = new Response(new Uint8Array(pdfBuffer), {
       headers: {
         "Content-Type": "application/pdf",
         "Content-Disposition": `attachment; filename="${filenameStem}.pdf"`,
+        ...truncationHeaders,
       },
     });
   } else {
@@ -194,12 +132,24 @@ export async function GET(request: NextRequest) {
       ].join(",");
     });
 
-    const csv = [header, ...csvRows].join("\n");
+    // Trailing note (not a data row — it has a single field, so a strict
+    // RFC 4180 reader sees a short final row rather than 13 empty columns).
+    // Mirrors the `X-Audit-Export-Truncated` header for spreadsheet users who
+    // never look at response headers.
+    const truncationNote = truncated
+      ? `\n${csvField(
+          `Export truncated at ${MAX_AUDIT_EXPORT_ROWS} rows. Narrow the filters ` +
+            `(date range, event type, actor) and export again to see the rest.`
+        )}`
+      : "";
+
+    const csv = [header, ...csvRows].join("\n") + truncationNote;
 
     response = new Response(csv, {
       headers: {
         "Content-Type": "text/csv",
         "Content-Disposition": `attachment; filename="${filenameStem}.csv"`,
+        ...truncationHeaders,
       },
     });
   }
@@ -218,7 +168,7 @@ export async function GET(request: NextRequest) {
       eventType: "audit.exported",
       resource: null,
       outcome: "success",
-      detail: { format, filterSummary, rowCount: rows.length },
+      detail: { format, filterSummary, rowCount: rows.length, truncated },
     });
   } catch (err) {
     console.error("[audit-export] failed to log audit.exported event", err);
