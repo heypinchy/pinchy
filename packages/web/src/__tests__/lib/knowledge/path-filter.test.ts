@@ -9,92 +9,66 @@
  * prefix-bleed and deny-by-default, but no allowed path containing `_`, `%`,
  * or `\`.
  *
- * `escapeLikePattern` itself is a private, unexported implementation detail
- * of buildPathFilter() — deliberately not exported for this test file, since
- * the brief for this PR is test-only. These tests instead exercise it through
- * buildPathFilter()'s public SQL output, by walking the drizzle-orm `SQL`
- * object's `queryChunks` to read the raw LIKE-pattern parameter that was
- * interpolated into the query. This is exactly the value Postgres receives
- * on the wire, so it is at least as strong a check as calling the private
- * function directly — and it also lets these tests catch a regression where
- * the escaping is dropped entirely, moved to the wrong operand, or applied
- * in the wrong order (see the "order matters" test below).
+ * `escapeLikePattern` is a private, unexported implementation detail of
+ * buildPathFilter(), and stays that way — the question worth asking is not
+ * what that function returns but what Postgres is finally asked to match. So
+ * these tests compile buildPathFilter()'s `SQL` with drizzle's own
+ * `PgDialect.sqlToQuery()` — the public API the driver itself calls on the
+ * way to the wire — and assert the resulting `{ sql, params }`: the
+ * parameterized query text and the exact bytes bound into it.
  *
- * Mutation check performed while writing this file (not committed): with the
- * three `.replace(...)` calls in `escapeLikePattern` removed (or reordered),
- * every test below goes red. See the PR description for the exact diff and
- * failure output.
+ * Reading the compiled query rather than the `SQL` object's internal
+ * `queryChunks` is what lets the ESCAPE-clause test below exist at all: the
+ * clause is query TEXT, not a parameter, so no assertion on the pattern
+ * string can see it.
+ *
+ * Mutation evidence, measured while writing this file (nothing committed —
+ * `git diff` on path-filter.ts is empty):
+ *
+ *   - `escapeLikePattern` reduced to `return value`: 6 of 10 red. Listing the
+ *     four survivors is the honest half of this note — they are the two that
+ *     assert an ABSENCE of escaping (the plain-path case and the `=`-operand
+ *     case), the determinism check, and the compiled-predicate check. None of
+ *     them depends on a metacharacter being rewritten, so "every test goes
+ *     red" would be a claim this file does not support.
+ *   - the `.replace()` calls reordered so `%`/`_` are escaped before `\`:
+ *     5 of 10 red. The one metacharacter case that survives is the
+ *     backslash-only path, which contains no `%` or `_` for the reordering to
+ *     act on — every other metacharacter case comes out with the backslash
+ *     doubled around a now-unescaped wildcard.
+ *   - `ESCAPE '\\'` changed to `ESCAPE '!'` in path-filter.ts: 2 red, and
+ *     both are the tests that read the compiled query TEXT. Every assertion
+ *     on a bound pattern stays green and byte-identical while Postgres reads
+ *     the emitted `\_` as two literal characters and the wildcard is back.
+ *     That mutant is the reason this file compiles the query instead of
+ *     inspecting the escaping in isolation.
  */
-import { sql, type SQL } from "drizzle-orm";
+import { sql } from "drizzle-orm";
+import { PgDialect } from "drizzle-orm/pg-core";
 import { describe, expect, it } from "vitest";
 
 import { buildPathFilter } from "@/lib/knowledge/path-filter";
 
-/**
- * Recursively walks a drizzle-orm SQL object's `queryChunks` (which nest —
- * `buildPathFilter` builds one `SQL` fragment per allowed path and joins them
- * with `sql\` OR \``, so a multi-path call's chunks contain child `SQL`
- * objects rather than one flat array) and collects every raw string
- * parameter that was interpolated immediately after a ` LIKE ` operator
- * chunk, in encounter order. That parameter is exactly what
- * `escapeLikePattern` produced (plus the trailing `%` buildPathFilter
- * appends), i.e. the literal bytes Postgres receives for the LIKE pattern.
- */
-function collectLikePatterns(node: unknown, out: string[] = []): string[] {
-  if (Array.isArray(node)) {
-    for (let i = 0; i < node.length; i++) {
-      const chunk = node[i];
-      if (
-        typeof chunk === "object" &&
-        chunk !== null &&
-        Array.isArray((chunk as { value?: unknown[] }).value) &&
-        (chunk as { value: unknown[] }).value[0] === " LIKE "
-      ) {
-        const next = node[i + 1];
-        if (typeof next === "string") out.push(next);
-      }
-      collectLikePatterns(chunk, out);
-    }
-    return out;
-  }
-  if (typeof node === "object" && node !== null && "queryChunks" in node) {
-    collectLikePatterns((node as { queryChunks: unknown[] }).queryChunks, out);
-  }
-  return out;
-}
-
-/** Same walk, but for the raw parameter following the ` = ` equality operator. */
-function collectEqualsValues(node: unknown, out: string[] = []): string[] {
-  if (Array.isArray(node)) {
-    for (let i = 0; i < node.length; i++) {
-      const chunk = node[i];
-      if (
-        typeof chunk === "object" &&
-        chunk !== null &&
-        Array.isArray((chunk as { value?: unknown[] }).value) &&
-        (chunk as { value: unknown[] }).value[0] === " = "
-      ) {
-        const next = node[i + 1];
-        if (typeof next === "string") out.push(next);
-      }
-      collectEqualsValues(chunk, out);
-    }
-    return out;
-  }
-  if (typeof node === "object" && node !== null && "queryChunks" in node) {
-    collectEqualsValues((node as { queryChunks: unknown[] }).queryChunks, out);
-  }
-  return out;
-}
-
 const COLUMN = sql`c.source_path`;
 
-/** buildPathFilter() for a single allowed path, returning its LIKE pattern. */
+/**
+ * Compiles buildPathFilter()'s fragment the way the pg driver does, yielding
+ * the parameterized SQL text plus the ordered parameter values. Per allowed
+ * path the template binds two, in this order: the `=` operand (the raw
+ * allowed path) and then the LIKE pattern (escaped, with the trailing `%`).
+ */
+function compile(allowedPaths: readonly string[]): { text: string; params: unknown[] } {
+  const { sql: text, params } = new PgDialect().sqlToQuery(buildPathFilter(allowedPaths, COLUMN));
+  return { text, params };
+}
+
+/** The LIKE pattern buildPathFilter() binds for a single allowed path. */
 function likePatternFor(allowedPath: string): string {
-  const condition = buildPathFilter([allowedPath], COLUMN);
-  const patterns = collectLikePatterns(condition);
-  expect(patterns).toHaveLength(1);
-  return patterns[0];
+  const { params } = compile([allowedPath]);
+  expect(params).toHaveLength(2);
+  const pattern = params[1];
+  expect(typeof pattern).toBe("string");
+  return pattern as string;
 }
 
 describe("buildPathFilter — LIKE pattern escaping (escapeLikePattern boundary)", () => {
@@ -147,10 +121,38 @@ describe("buildPathFilter — LIKE pattern escaping (escapeLikePattern boundary)
     expect(second).toBe(first);
   });
 
+  it("compiles to an equality-or-prefix predicate that declares backslash as the LIKE ESCAPE character", () => {
+    // Two things no assertion on a bound parameter can reach.
+    //
+    // The ESCAPE character: it is what makes the emitted `\_` an escaped
+    // literal underscore rather than two characters. Change it to anything
+    // else and every pattern assertion in this file is still byte-identical
+    // and still green, while Postgres reads the `_` as a wildcard again.
+    // (Backslash also happens to be Postgres's default, so DROPPING the
+    // clause is harmless — replacing it is not, and that is the mutant.)
+    //
+    // The parameter order: the tests above read params[1] as the LIKE
+    // pattern and params[0] as the `=` operand. This is where that reading
+    // is pinned, so a restructured predicate fails here by name instead of
+    // making the others quietly compare the wrong operand.
+    expect(compile(["/data/my_folder"]).text).toBe(
+      "(c.source_path = $1 OR c.source_path LIKE $2 ESCAPE '\\')"
+    );
+  });
+
   it("escapes each allowed path independently when buildPathFilter is given several", () => {
-    const condition = buildPathFilter(["/data/my_folder", "/data/50%off"], COLUMN);
-    const patterns = collectLikePatterns(condition);
-    expect(patterns).toEqual(["/data/my\\_folder/%", "/data/50\\%off/%"]);
+    const { text, params } = compile(["/data/my_folder", "/data/50%off"]);
+
+    expect(text).toBe(
+      "(c.source_path = $1 OR c.source_path LIKE $2 ESCAPE '\\') OR " +
+        "(c.source_path = $3 OR c.source_path LIKE $4 ESCAPE '\\')"
+    );
+    expect(params).toEqual([
+      "/data/my_folder",
+      "/data/my\\_folder/%",
+      "/data/50%off",
+      "/data/50\\%off/%",
+    ]);
   });
 
   it("does NOT escape the exact-match (=) operand — escaping is scoped to the LIKE pattern only", () => {
@@ -159,8 +161,6 @@ describe("buildPathFilter — LIKE pattern escaping (escapeLikePattern boundary)
     // that escaped everywhere (not just the prefix pattern) would break an
     // agent whose allowedPaths entry is an exact file path containing `_`
     // or `%` — it would stop matching itself.
-    const condition = buildPathFilter(["/data/my_folder"], COLUMN);
-    const equalsValues = collectEqualsValues(condition);
-    expect(equalsValues).toEqual(["/data/my_folder"]);
+    expect(compile(["/data/my_folder"]).params[0]).toBe("/data/my_folder");
   });
 });
