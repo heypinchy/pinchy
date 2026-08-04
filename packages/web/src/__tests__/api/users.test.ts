@@ -655,6 +655,76 @@ describe("DELETE /api/users/[userId]", () => {
     expect(appendAuditLog).not.toHaveBeenCalled();
   });
 
+  // Regression for the event-loop-blocking finding: deleteWorkspace used to be
+  // a synchronous rmSync call made directly in the request handler, so a large
+  // (GB-sized knowledge-base) workspace froze the whole process — every other
+  // chat and WS heartbeat — until it finished. It must now be scheduled via
+  // after() (already used elsewhere in this file for the audit write) so it
+  // runs once the response is on its way, not inline in the request path.
+  it("schedules workspace deletion via after() rather than calling it synchronously in the request path", async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
+      user: { id: "admin-1", role: "admin" },
+      expires: "",
+    } as any);
+
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue([{ id: "agent-1" }]),
+      }),
+    } as never);
+
+    vi.mocked(db.update).mockReturnValueOnce({
+      set: vi.fn().mockReturnThis(),
+      where: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: "user-1" }]),
+      }),
+    } as never);
+
+    vi.mocked(db.update).mockReturnValueOnce({
+      set: vi.fn().mockReturnThis(),
+      where: vi.fn().mockResolvedValue(undefined),
+    } as never);
+
+    // test-setup.ts mocks next/server's after() to run its callback
+    // immediately, so existing tests can assert deferred side effects without
+    // a real request lifecycle. That default would make this test unable to
+    // tell "called via after()" apart from "called synchronously in the
+    // handler body" — so for THIS test only, capture the callbacks instead of
+    // auto-running them, and restore the shared default afterwards.
+    const { after } = await import("next/server");
+    const runImmediately = vi.mocked(after).getMockImplementation();
+    const capturedCallbacks: Array<() => void | Promise<void>> = [];
+    vi.mocked(after).mockImplementation((task: Parameters<typeof after>[0]) => {
+      capturedCallbacks.push(task as () => void | Promise<void>);
+    });
+
+    const request = new NextRequest("http://localhost:7777/api/users/user-1", {
+      method: "DELETE",
+    });
+
+    let response: Awaited<ReturnType<typeof DELETE>>;
+    try {
+      response = await DELETE(request, {
+        params: Promise.resolve({ userId: "user-1" }),
+      });
+
+      // The response resolved without deleteWorkspace having run at all — it
+      // only exists inside a captured (not-yet-run) after() callback.
+      expect(deleteWorkspace).not.toHaveBeenCalled();
+
+      // Running the captured callbacks is what next/server does once the
+      // response has actually been sent — this is what triggers cleanup.
+      for (const cb of capturedCallbacks) {
+        await cb();
+      }
+    } finally {
+      if (runImmediately) vi.mocked(after).mockImplementation(runImmediately);
+    }
+
+    expect(response.status).toBe(200);
+    expect(deleteWorkspace).toHaveBeenCalledWith("agent-1");
+  });
+
   it("calls regenerateOpenClawConfig after deletion", async () => {
     vi.mocked(auth.api.getSession).mockResolvedValueOnce({
       user: { id: "admin-1", role: "admin" },

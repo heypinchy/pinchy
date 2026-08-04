@@ -301,4 +301,44 @@ describe("GET /api/agents/[agentId]/chats", () => {
       expect(legacy.title).toBeNull();
     });
   });
+
+  // ── Fix: bound the title-derivation RPC fan-out ───────────────────────────
+  //
+  // Every unlabeled web chat triggers a `sessions.history` RPC against
+  // OpenClaw. Before this fix, `Promise.all` fired all of them at once — 100
+  // unlabeled chats meant 100 simultaneous RPCs on a single dropdown open.
+  describe("bounded concurrency for the title-derivation history fan-out", () => {
+    it("never has more than 5 sessions.history calls in flight at once", async () => {
+      const N = 20;
+      mockList.mockResolvedValue({
+        sessions: Array.from({ length: N }, (_, i) => ({
+          key: `agent:agent-1:direct:user-1:chat-${i}`,
+          sessionId: `s-${i}`,
+          // no label → every one of these triggers deriveWebChatTitle
+          lastInteractionAt: i,
+        })),
+      });
+
+      let active = 0;
+      let maxActive = 0;
+      mockHistory.mockImplementation(async () => {
+        active++;
+        maxActive = Math.max(maxActive, active);
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        active--;
+        return { messages: [] };
+      });
+
+      const res = await GET(makeRequest(), ctx as never);
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.chats).toHaveLength(N);
+
+      expect(mockHistory).toHaveBeenCalledTimes(N);
+      // Proves the fan-out is actually bounded...
+      expect(maxActive).toBeLessThanOrEqual(5);
+      // ...and not accidentally serialized down to one-at-a-time.
+      expect(maxActive).toBeGreaterThan(1);
+    });
+  });
 });

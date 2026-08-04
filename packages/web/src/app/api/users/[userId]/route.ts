@@ -98,7 +98,7 @@ export async function DELETE(
   // statements, a failure partway through (e.g. the session delete) would
   // leave the user already banned with sessions and agents untouched, or vice
   // versa — an inconsistent, partially-deactivated account. The filesystem
-  // workspace cleanup below stays OUTSIDE the transaction on purpose: rmSync
+  // workspace cleanup below stays OUTSIDE the transaction on purpose: an rm()
   // has no place in a DB rollback.
   const deactivated = await db.transaction(async (tx) => {
     const [row] = await tx
@@ -154,9 +154,19 @@ export async function DELETE(
 
   // Cleanup workspaces (filesystem, not DB — deliberately outside the
   // transaction above).
-  for (const agent of personalAgents) {
-    deleteWorkspace(agent.id); // synchronous (uses rmSync)
-  }
+  //
+  // A personal agent's workspace (KB corpora especially) can be GB-sized.
+  // deleteWorkspace() itself now uses fs.promises.rm rather than rmSync, so it
+  // no longer blocks the Node event loop while it walks the directory — but
+  // awaiting it here would still hold this response open for however long
+  // that takes. The ban and soft-delete above already committed, so the
+  // user's deactivation is complete and auditable regardless of how long
+  // cleanup takes. deleteWorkspace() is idempotent (rm with force: true) and
+  // logs its own failures rather than throwing, so scheduling it via after()
+  // and not waiting on the result is safe.
+  after(() => {
+    void Promise.all(personalAgents.map((agent) => deleteWorkspace(agent.id)));
+  });
 
   await regenerateOpenClawConfig();
   await recalculateTelegramAllowStores();

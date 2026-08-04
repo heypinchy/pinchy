@@ -136,7 +136,10 @@ export async function deleteAgent(id: string, onDeleted?: OnAgentDeleted) {
   if (updated) {
     // Committed, and everything below can throw. Record it now.
     onDeleted?.(updated);
-    deleteWorkspace(id);
+    // deleteWorkspace() is async (fs.promises.rm, not rmSync) so this await
+    // yields to the event loop rather than blocking it, but the ordering
+    // relative to the rest of this cleanup tail is unchanged.
+    await deleteWorkspace(id);
     // Remove the agent's integration grants at the DB level so they can't be
     // re-emitted into the runtime config (the Odoo/email permission loops key
     // off agentConnectionPermissions, not agents.deletedAt).

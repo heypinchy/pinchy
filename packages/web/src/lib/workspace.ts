@@ -1,4 +1,5 @@
 import { writeFileSync, readFileSync, existsSync, mkdirSync, rmSync, renameSync } from "fs";
+import { rm } from "fs/promises";
 import { join, dirname, basename } from "path";
 
 // =============================================================================
@@ -203,13 +204,33 @@ export function ensureWorkspace(agentId: string): void {
   }
 }
 
-export function deleteWorkspace(agentId: string): void {
+/**
+ * Recursively removes an agent's workspace. Uses `fs.promises.rm` rather than
+ * `rmSync` — a knowledge-base agent's workspace can be GB-sized, and the sync
+ * form blocks the whole Node event loop (every other request, every WS
+ * heartbeat) for as long as the recursive delete takes. The promise form
+ * still runs the actual directory walk off the JS thread via libuv's thread
+ * pool, but callers that need the response to go out before cleanup finishes
+ * should schedule this rather than await it (see the `after()` use in
+ * DELETE /api/users/[userId]).
+ */
+export async function deleteWorkspace(agentId: string): Promise<void> {
   assertValidAgentId(agentId);
   const workspacePath = getWorkspacePath(agentId);
   try {
-    rmSync(workspacePath, { recursive: true, force: true });
-  } catch {
-    // Workspace may not exist, that's fine
+    await rm(workspacePath, { recursive: true, force: true });
+  } catch (err) {
+    // `force: true` already no-ops a missing workspace, so reaching this
+    // catch means something else went wrong (permissions, disk error) —
+    // worth a structured log rather than a silent swallow.
+    console.error(
+      JSON.stringify({
+        level: "error",
+        event: "workspace_delete_failed",
+        agentId,
+        error: { message: err instanceof Error ? err.message : String(err) },
+      })
+    );
   }
 }
 
