@@ -13,11 +13,7 @@ import {
   channelLinks,
 } from "@/db/schema";
 import { getSetting, getSettingsByPrefix } from "@/lib/settings";
-import {
-  computeAllowedTools,
-  getEmailToolsForOperations,
-  EMAIL_OPERATION_DISPLAY_ORDER,
-} from "@/lib/tool-registry";
+import { computeAllowedTools, EMAIL_OPERATION_DISPLAY_ORDER } from "@/lib/tool-registry";
 import type { AgentPluginConfig } from "@/db/schema";
 import {
   TOOL_CAPABLE_OLLAMA_CLOUD_MODELS,
@@ -65,7 +61,7 @@ import { resolveDefaultVisionModelChain } from "./default-media-models";
 import { resolveChatModelFallbackChain } from "./chat-model-fallback";
 import { deepMerge } from "./deep-merge";
 import { buildGatewayBlock } from "./gateway";
-import { EMAIL_CONNECTION_TYPES } from "@/lib/integrations/oauth-providers";
+import { aggregateEmailPermissionsByAgent, buildEmailAgentConfigs } from "./email-agent-config";
 
 /**
  * Public docs URL configuration for the bundled `pinchy-docs` plugin.
@@ -317,76 +313,12 @@ export async function regenerateOpenClawConfig() {
   // fan-out fix, v0.9.0 release verification).
   const allPermissions = await loadAgentConnectionPermissions(db);
 
-  // Aggregate email permissions per agent. LATENT FIRST-WINS BEHAVIOR: the
-  // pinchy-email plugin config supports exactly ONE connectionId per agent
-  // (additionalProperties: false in its manifest) and the UI offers a single
-  // Select, so `connectionId`/`connection` stick to the FIRST email-type
-  // connection seen while `ops` merge across ALL of them. `connectionIds`
-  // exists purely to detect and warn about the multi-connection case.
-  const EMAIL_PROVIDER_TYPES = new Set<string>(EMAIL_CONNECTION_TYPES);
-  const emailPermsByAgent = new Map<
-    string,
-    {
-      connectionId: string;
-      connection: typeof integrationConnections.$inferSelect;
-      connectionIds: Set<string>;
-      ops: Map<string, string[]>;
-    }
-  >();
-
-  for (const row of allPermissions) {
-    const perm = row.agent_connection_permissions;
-    const conn = row.integration_connections;
-
-    if (!EMAIL_PROVIDER_TYPES.has(conn.type)) continue;
-
-    if (!emailPermsByAgent.has(perm.agentId)) {
-      emailPermsByAgent.set(perm.agentId, {
-        connectionId: perm.connectionId,
-        connection: conn,
-        connectionIds: new Set(),
-        ops: new Map(),
-      });
-    }
-    const agentPerms = emailPermsByAgent.get(perm.agentId)!;
-    agentPerms.connectionIds.add(perm.connectionId);
-
-    if (!agentPerms.ops.has(perm.model)) {
-      agentPerms.ops.set(perm.model, []);
-    }
-    agentPerms.ops.get(perm.model)!.push(perm.operation);
-  }
-
-  // Per-agent pinchy-email plugin config (emitted into plugins.entries further
-  // down). Unlike Odoo, email config does NOT include decrypted credentials —
-  // only connectionId + permissions. The plugin fetches credentials at runtime
-  // via the internal API (API-callback pattern).
-  const emailAgentConfigs: Record<
-    string,
-    { connectionId: string; permissions: Record<string, string[]>; tools: string[] }
-  > = {};
-  for (const [agentId, data] of emailPermsByAgent) {
-    const permissions: Record<string, string[]> = {};
-    for (const [model, ops] of data.ops) {
-      permissions[model] = ops;
-    }
-    // Derive tool names from granted email operations. OpenClaw uses this
-    // array to know which plugin-registered tool factories to call for this
-    // agent — without it, no factory is called and no tools are available.
-    // Delegated to tool-registry's getEmailToolsForOperations — the same
-    // ops→tools mapping the permission UI uses, where "read" includes
-    // email_search (matching the plugin's own gate: email_search checks the
-    // "read" permission). A hand-rolled mapping here previously required a
-    // separate "search" operation the UI never writes, silently stripping
-    // email_search from every UI-configured agent.
-    const emailOps = data.ops.get("email") ?? [];
-    const tools = getEmailToolsForOperations(emailOps);
-    emailAgentConfigs[agentId] = {
-      connectionId: data.connectionId,
-      permissions,
-      tools,
-    };
-  }
+  // Aggregate email permissions per agent, then derive the per-agent
+  // pinchy-email plugin config (emitted into plugins.entries further down).
+  // See email-agent-config.ts for the LATENT FIRST-WINS BEHAVIOR rationale
+  // and why email config carries no decrypted credentials.
+  const emailPermsByAgent = aggregateEmailPermissionsByAgent(allPermissions);
+  const emailAgentConfigs = buildEmailAgentConfigs(emailPermsByAgent);
 
   // Materialize each agent's TOOLS.md mailbox context from the SAME
   // aggregation that feeds the pinchy-email plugin config above, so the
