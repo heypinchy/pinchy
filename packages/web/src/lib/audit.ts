@@ -115,6 +115,12 @@ export type AuditEventType =
   // limited, invalid/expired code, or a channel_links unique-constraint
   // conflict). Listed here for the same reason as auth.scope_denied above.
   | "auth.telegram_pairing_denied"
+  // Written by withApiKey (lib/api-auth.ts) when a caller is THROTTLED, not
+  // merely denied: a verified key past its own request budget, or an IP
+  // past its invalid-key-attempt budget (#1086). `detail.reason` names
+  // which limiter fired. Bounded the same way as auth.scope_denied — one
+  // row per identity per window.
+  | "auth.rate_limited"
   | "agent.created"
   | "agent.updated"
   | "agent.deleted"

@@ -258,10 +258,10 @@ export const auth = betterAuth({
       enableMetadata: true,
       // The plugin's built-in per-key limiter defaults to 10 requests / 24h,
       // which would throttle a legitimately busy API client, so it's off.
-      // NOTE: there is no Pinchy-side replacement — an authenticated key is
-      // currently unthrottled on /api/v1/*. Fine for the trusted-automation
-      // threat model these keys are for (an admin issued it deliberately),
-      // but it is a gap, not a delegation.
+      // The replacement is Pinchy-side, not delegated: `withApiKey`
+      // (lib/api-auth.ts, backed by lib/api-key-rate-limiter.ts) applies its
+      // own per-key request cap and a per-IP invalid-attempt cap to every
+      // /api/v1/* request (#1086).
       rateLimit: { enabled: false },
     }),
   ],

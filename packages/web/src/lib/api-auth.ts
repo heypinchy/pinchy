@@ -3,6 +3,14 @@ import { headers } from "next/headers";
 import { getSession, auth, type Session } from "@/lib/auth";
 import { extractScopes, type ApiKeyScope } from "@/lib/api-key-scopes";
 import { appendAuditLog, safeAuditPath } from "@/lib/audit";
+import {
+  tryAcquireApiKeySlot,
+  claimApiKeyRateLimitAuditSlot,
+  API_KEY_RATE_LIMIT_WINDOW_MS,
+  tryAcquireInvalidApiKeyIpSlot,
+  claimInvalidApiKeyRateLimitAuditSlot,
+  INVALID_API_KEY_RATE_LIMIT_WINDOW_MS,
+} from "@/lib/api-key-rate-limiter";
 
 /**
  * Standardized API auth error responses. Use these instead of inline
@@ -10,6 +18,11 @@ import { appendAuditLog, safeAuditPath } from "@/lib/audit";
  */
 const unauthorized = () => NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 const forbidden = () => NextResponse.json({ error: "Forbidden" }, { status: 403 });
+const tooManyRequests = (retryAfterSeconds: number) =>
+  NextResponse.json(
+    { error: "Too many requests" },
+    { status: 429, headers: { "Retry-After": String(retryAfterSeconds) } }
+  );
 
 /**
  * Check auth + admin role for API routes.
@@ -120,6 +133,43 @@ function readApiKey(req: NextRequest): string | null {
   return req.headers.get("x-api-key");
 }
 
+/** Bucket key for a caller with no usable `x-forwarded-for` value at all. */
+const UNKNOWN_CLIENT_IP = "unknown";
+
+/**
+ * Best-effort client IP, used ONLY to bucket the invalid-key-attempt limiter
+ * below (`tryAcquireInvalidApiKeyIpSlot`) — never for anything that needs
+ * strong identity. `NextRequest` carries no `.ip` (removed after Next
+ * 13.4), so this reads `x-forwarded-for`, which Caddy sets on every
+ * deployment path (`Caddyfile.dev`, the marketplace `Caddyfile`).
+ *
+ * Deliberately the LAST hop, not the first: Caddy's `reverse_proxy`
+ * *appends* the peer address it directly observed to any inbound value
+ * rather than replacing it, so a request can arrive with an
+ * attacker-supplied prefix already present. Only the tail is something
+ * Caddy itself vouches for. This is a different question from
+ * `publicHopOf` in `@/server/forwarded-host`, which reads the FIRST hop of
+ * `x-forwarded-host` — that header answers "what did the browser address",
+ * this one answers "who do we trust to bucket on", and the trustworthy hop
+ * sits at the opposite end for each.
+ *
+ * A caller with no `x-forwarded-for` at all (direct connection in dev, or a
+ * deployment with no reverse proxy in front) buckets into one fixed key
+ * rather than being unlimited — see the doc comment on
+ * `tryAcquireInvalidApiKeyIpSlot` for why that's an acceptable trade rather
+ * than a real weakening: the alternative is no limiter at all for that
+ * shape of deployment.
+ */
+function readClientIp(req: NextRequest): string {
+  const header = req.headers.get("x-forwarded-for");
+  if (!header) return UNKNOWN_CLIENT_IP;
+  const hops = header
+    .split(",")
+    .map((hop) => hop.trim())
+    .filter(Boolean);
+  return hops.length > 0 ? hops[hops.length - 1] : UNKNOWN_CLIENT_IP;
+}
+
 /**
  * One `auth.scope_denied` row per key per minute, with the attempts it stood
  * in for counted on the next row rather than dropped.
@@ -166,17 +216,104 @@ function claimScopeDenialSlot(keyId: string, now: number): { write: boolean; sup
 }
 
 /**
+ * Denies an unauthenticated attempt — no key header, or a key that failed
+ * verification (unknown, expired, disabled, revoked). Ordinarily 401
+ * (unchanged), UNLESS the caller's IP has exhausted its invalid-attempt
+ * budget (#1086 — `@/lib/api-key-rate-limiter`), in which case it's 429
+ * instead: brute-force / key-guessing protection, since the apiKey plugin's
+ * own limiter is off (`@/lib/auth`) and Better Auth's general limiter never
+ * applies here (verifyApiKey bypasses its router).
+ *
+ * A plain invalid attempt stays unaudited, same as always: anyone on the
+ * internet can present a garbage key, so auditing every one would hand an
+ * unauthenticated attacker an unbounded write into the audit table. Once
+ * the IP is actually THROTTLED, the write is no longer unbounded — one row
+ * per IP per window, the same shape `claimScopeDenialSlot` uses above — so
+ * recording *that* is safe.
+ */
+async function denyInvalidApiKeyAttempt(req: NextRequest): Promise<NextResponse> {
+  const ip = readClientIp(req);
+  const now = Date.now();
+  if (tryAcquireInvalidApiKeyIpSlot(ip, now)) {
+    return unauthorized();
+  }
+
+  const slot = claimInvalidApiKeyRateLimitAuditSlot(ip, now);
+  if (slot.write) {
+    try {
+      await appendAuditLog({
+        actorType: "system",
+        actorId: "system",
+        eventType: "auth.rate_limited",
+        outcome: "failure",
+        detail: {
+          reason: "invalid_api_key",
+          remoteAddress: ip,
+          path: safeAuditPath(new URL(req.url).pathname),
+          ...(slot.suppressed > 0 ? { suppressedSinceLastEntry: slot.suppressed } : {}),
+        },
+      });
+    } catch {
+      // Don't let a broken audit DB turn a clean 429 into a 500.
+    }
+  }
+  return tooManyRequests(INVALID_API_KEY_RATE_LIMIT_WINDOW_MS / 1000);
+}
+
+/**
+ * Denies a verified key that has exhausted its own request budget (#1086)
+ * — the Pinchy-side replacement for the apiKey plugin's own limiter, off
+ * because its 10-req/24h default would throttle a legitimately busy CI
+ * pipeline or provisioning script (see `@/lib/auth`). 429, with the same
+ * bounded-audit shape as the scope-denial slot: one row per key per window.
+ */
+async function denyApiKeyRateLimited(
+  req: NextRequest,
+  key: { id: string; name?: string | null }
+): Promise<NextResponse> {
+  const now = Date.now();
+  const slot = claimApiKeyRateLimitAuditSlot(key.id, now);
+  if (slot.write) {
+    try {
+      await appendAuditLog({
+        actorType: "api_key",
+        actorId: key.id,
+        eventType: "auth.rate_limited",
+        outcome: "failure",
+        detail: {
+          apiKey: { id: key.id, name: key.name ?? "" },
+          reason: "api_key",
+          path: safeAuditPath(new URL(req.url).pathname),
+          ...(slot.suppressed > 0 ? { suppressedSinceLastEntry: slot.suppressed } : {}),
+        },
+      });
+    } catch {
+      // Don't let a broken audit DB turn a clean 429 into a 500.
+    }
+  }
+  return tooManyRequests(API_KEY_RATE_LIMIT_WINDOW_MS / 1000);
+}
+
+/**
  * Wraps a route handler behind API-key authentication + scope authorization.
  * Programmatic clients (Agent Provisioning API, #572) present a `pinchy_`
  * key instead of a session cookie.
  *
  * Fail-closed on every path — the handler runs only for a verified key that
  * holds *all* `required` scopes:
- *   - no key header                     → 401 Unauthorized
+ *   - no key header                     → 401 Unauthorized (429 if the
+ *     caller's IP has exhausted its invalid-attempt budget, #1086)
  *   - key fails verification / no key   → 401 Unauthorized (covers a revoked,
- *     expired or disabled key: the plugin reports those as `valid: false`)
+ *     expired or disabled key: the plugin reports those as `valid: false`;
+ *     same 429 fallback as above)
  *   - `verifyApiKey` unexpectedly throws → 401 Unauthorized (never open)
+ *   - key has exhausted its own request budget → 429 Too Many Requests,
+ *     bounded-audited (#1086)
  *   - missing a required scope          → 403 Forbidden, audited
+ *
+ * A 429 from either limiter carries a `Retry-After` header naming the
+ * window in seconds. See `@/lib/api-key-rate-limiter` for the limits
+ * themselves and why they're two independent limiters.
  *
  * On success the handler is called with an `ApiKeyContext` describing the
  * caller. Scope authorization only; routes still audit their own actions.
@@ -192,14 +329,20 @@ export function withApiKey<C = unknown>(
 ) {
   return async (req: NextRequest, ctx: C): Promise<NextResponse> => {
     const key = readApiKey(req);
-    if (!key) return unauthorized();
+    if (!key) return denyInvalidApiKeyAttempt(req);
 
     // Fail closed: `verifyApiKey` catches internally today, but a malformed
     // input or a future plugin version must never fall through as
     // authenticated. `.catch(() => null)` collapses any throw to a denial.
     const res = await auth.api.verifyApiKey({ body: { key } }).catch(() => null);
-    // Deliberately NOT audited — see the scope denial below for why.
-    if (!res?.valid || !res.key) return unauthorized();
+    if (!res?.valid || !res.key) return denyInvalidApiKeyAttempt(req);
+
+    // Per-key volume cap (#1086), checked before scope authorization so a
+    // busy or compromised key's blast radius is bounded regardless of what
+    // it's scoped for.
+    if (!tryAcquireApiKeySlot(res.key.id, Date.now())) {
+      return denyApiKeyRateLimited(req, res.key);
+    }
 
     const scopes = extractScopes(res.key.permissions);
     if (!required.every((s) => scopes.includes(s))) {

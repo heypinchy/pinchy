@@ -49,6 +49,13 @@ vi.mock("@/lib/audit", async (importOriginal) => {
 import { withApiKey, resetScopeDenialWindows, type ApiKeyContext } from "@/lib/api-auth";
 import { extractScopes } from "@/lib/api-key-scopes";
 import { appendAuditLog } from "@/lib/audit";
+import {
+  resetApiKeyRateLimitersForTest,
+  API_KEY_RATE_LIMIT_MAX_REQUESTS,
+  API_KEY_RATE_LIMIT_WINDOW_MS,
+  INVALID_API_KEY_RATE_LIMIT_MAX_ATTEMPTS,
+  INVALID_API_KEY_RATE_LIMIT_WINDOW_MS,
+} from "@/lib/api-key-rate-limiter";
 
 // ── Helpers ─────────────────────────────────────────────────────────────
 
@@ -79,6 +86,11 @@ describe("withApiKey", () => {
     // The scope-denial windows are process-global, so a previous test's key
     // would otherwise still hold an open window and swallow this one's row.
     resetScopeDenialWindows();
+    // Same reason: the rate limiters and their audit windows are process-
+    // global Maps too, keyed by key id / IP — without this, an earlier
+    // test's "unknown" IP bucket (no x-forwarded-for header) would carry
+    // over and eventually cross INVALID_API_KEY_RATE_LIMIT_MAX_ATTEMPTS.
+    resetApiKeyRateLimitersForTest();
     vi.useFakeTimers({ shouldAdvanceTime: true });
   });
 
@@ -517,6 +529,267 @@ describe("withApiKey", () => {
     // gate nor turn a clean 403 into an unhandled 500.
     expect(res.status).toBe(403);
     expect(handler).not.toHaveBeenCalled();
+  });
+
+  // ── Rate limiting (#1086) ────────────────────────────────────────────────
+  // `lib/auth.ts` turns the apiKey plugin's own limiter off, and Better
+  // Auth's general limiter never applies to /api/v1/* (verifyApiKey bypasses
+  // the router). These tests are the replacement.
+
+  describe("per-key rate limit (valid keys)", () => {
+    it("allows up to API_KEY_RATE_LIMIT_MAX_REQUESTS requests for one key within the window", async () => {
+      mockVerifyApiKey.mockResolvedValue(verified({ id: "key-busy" }));
+      const handler = vi.fn(OK);
+      const probe = () =>
+        withApiKey(["agents:read"], handler)(reqWith({ Authorization: "Bearer pinchy_x" }), {});
+
+      for (let i = 0; i < API_KEY_RATE_LIMIT_MAX_REQUESTS; i++) {
+        expect((await probe()).status).toBe(200);
+      }
+      expect(handler).toHaveBeenCalledTimes(API_KEY_RATE_LIMIT_MAX_REQUESTS);
+    });
+
+    it("throttles a verified key once its window is exhausted, with a 429 and Retry-After", async () => {
+      mockVerifyApiKey.mockResolvedValue(verified({ id: "key-busy" }));
+      const handler = vi.fn(OK);
+      const probe = () =>
+        withApiKey(["agents:read"], handler)(reqWith({ Authorization: "Bearer pinchy_x" }), {});
+
+      for (let i = 0; i < API_KEY_RATE_LIMIT_MAX_REQUESTS; i++) {
+        await probe();
+      }
+      const res = await probe();
+
+      expect(res.status).toBe(429);
+      expect(res.headers.get("Retry-After")).toBe(String(API_KEY_RATE_LIMIT_WINDOW_MS / 1000));
+      // Throttling must deny before the scope check / handler ever run.
+      expect(handler).toHaveBeenCalledTimes(API_KEY_RATE_LIMIT_MAX_REQUESTS);
+    });
+
+    it("tracks each key's window independently — a busy key can't throttle another", async () => {
+      mockVerifyApiKey.mockResolvedValue(verified({ id: "key-busy" }));
+      const handler = vi.fn(OK);
+      for (let i = 0; i < API_KEY_RATE_LIMIT_MAX_REQUESTS; i++) {
+        await withApiKey(["agents:read"], handler)(
+          reqWith({ Authorization: "Bearer pinchy_busy" }),
+          {}
+        );
+      }
+      expect(
+        (
+          await withApiKey(["agents:read"], handler)(
+            reqWith({ Authorization: "Bearer pinchy_busy" }),
+            {}
+          )
+        ).status
+      ).toBe(429);
+
+      mockVerifyApiKey.mockResolvedValue(verified({ id: "key-fresh" }));
+      const res = await withApiKey(["agents:read"], handler)(
+        reqWith({ Authorization: "Bearer pinchy_fresh" }),
+        {}
+      );
+      expect(res.status).toBe(200);
+    });
+
+    it("writes ONE auth.rate_limited row per key per window, bounded like scope denials", async () => {
+      mockVerifyApiKey.mockResolvedValue(verified({ id: "key-busy", name: "Busy Bot" }));
+      const handler = vi.fn(OK);
+      const probe = () =>
+        withApiKey(["agents:read"], handler)(reqWith({ Authorization: "Bearer pinchy_x" }), {});
+
+      for (let i = 0; i < API_KEY_RATE_LIMIT_MAX_REQUESTS; i++) {
+        await probe();
+      }
+      // 10 further requests, all throttled.
+      for (let i = 0; i < 10; i++) {
+        expect((await probe()).status).toBe(429);
+      }
+
+      // All 10 throttled requests land inside the SAME window opened by the
+      // first one, so only that first throttled request writes a row — the
+      // other 9 are suppressed without ever calling appendAuditLog again.
+      expect(appendAuditLog).toHaveBeenCalledTimes(1);
+      expect(appendAuditLog).toHaveBeenCalledWith({
+        actorType: "api_key",
+        actorId: "key-busy",
+        eventType: "auth.rate_limited",
+        outcome: "failure",
+        detail: expect.objectContaining({
+          apiKey: { id: "key-busy", name: "Busy Bot" },
+          reason: "api_key",
+        }),
+      });
+    });
+
+    it("opens a fresh audit window and reports the suppressed count once the rate window elapses", async () => {
+      mockVerifyApiKey.mockResolvedValue(verified({ id: "key-busy" }));
+      const handler = vi.fn(OK);
+      const probe = () =>
+        withApiKey(["agents:read"], handler)(reqWith({ Authorization: "Bearer pinchy_x" }), {});
+
+      for (let i = 0; i < API_KEY_RATE_LIMIT_MAX_REQUESTS; i++) {
+        await probe();
+      }
+      await probe(); // writes row 1
+      await probe(); // suppressed
+
+      vi.advanceTimersByTime(API_KEY_RATE_LIMIT_WINDOW_MS + 1_000);
+      // A fresh window means fresh requests are allowed again, so exhaust it
+      // before the next throttled probe writes row 2.
+      for (let i = 0; i < API_KEY_RATE_LIMIT_MAX_REQUESTS; i++) {
+        await probe();
+      }
+      await probe(); // writes row 2
+
+      expect(appendAuditLog).toHaveBeenCalledTimes(2);
+      const [, second] = vi.mocked(appendAuditLog).mock.calls;
+      expect((second[0] as { detail: Record<string, unknown> }).detail).toMatchObject({
+        suppressedSinceLastEntry: 1,
+      });
+    });
+  });
+
+  describe("per-IP rate limit (invalid-key attempts)", () => {
+    it("allows up to INVALID_API_KEY_RATE_LIMIT_MAX_ATTEMPTS invalid attempts from one IP", async () => {
+      mockVerifyApiKey.mockResolvedValue({ valid: false, error: null, key: null });
+      const handler = vi.fn(OK);
+      const probe = () =>
+        withApiKey(["agents:read"], handler)(
+          reqWith({ Authorization: "Bearer pinchy_bad", "x-forwarded-for": "9.9.9.9" }),
+          {}
+        );
+
+      for (let i = 0; i < INVALID_API_KEY_RATE_LIMIT_MAX_ATTEMPTS; i++) {
+        expect((await probe()).status).toBe(401);
+      }
+      expect(handler).not.toHaveBeenCalled();
+    });
+
+    it("throttles an IP once its invalid-attempt budget is exhausted, with a 429 and Retry-After", async () => {
+      mockVerifyApiKey.mockResolvedValue({ valid: false, error: null, key: null });
+      const handler = vi.fn(OK);
+      const probe = () =>
+        withApiKey(["agents:read"], handler)(
+          reqWith({ Authorization: "Bearer pinchy_bad", "x-forwarded-for": "9.9.9.9" }),
+          {}
+        );
+
+      for (let i = 0; i < INVALID_API_KEY_RATE_LIMIT_MAX_ATTEMPTS; i++) {
+        await probe();
+      }
+      const res = await probe();
+
+      expect(res.status).toBe(429);
+      expect(res.headers.get("Retry-After")).toBe(
+        String(INVALID_API_KEY_RATE_LIMIT_WINDOW_MS / 1000)
+      );
+      expect(handler).not.toHaveBeenCalled();
+    });
+
+    it("throttles a missing-key attempt the same as an invalid key, without ever calling verifyApiKey", async () => {
+      const handler = vi.fn(OK);
+      const probe = () =>
+        withApiKey(["agents:read"], handler)(reqWith({ "x-forwarded-for": "9.9.9.9" }), {});
+
+      for (let i = 0; i < INVALID_API_KEY_RATE_LIMIT_MAX_ATTEMPTS; i++) {
+        await probe();
+      }
+      const res = await probe();
+
+      expect(res.status).toBe(429);
+      expect(mockVerifyApiKey).not.toHaveBeenCalled();
+    });
+
+    it("tracks each IP independently — one noisy IP can't lock out another", async () => {
+      mockVerifyApiKey.mockResolvedValue({ valid: false, error: null, key: null });
+      const handler = vi.fn(OK);
+      for (let i = 0; i < INVALID_API_KEY_RATE_LIMIT_MAX_ATTEMPTS; i++) {
+        await withApiKey(["agents:read"], handler)(
+          reqWith({ Authorization: "Bearer pinchy_bad", "x-forwarded-for": "9.9.9.9" }),
+          {}
+        );
+      }
+      expect(
+        (
+          await withApiKey(["agents:read"], handler)(
+            reqWith({ Authorization: "Bearer pinchy_bad", "x-forwarded-for": "9.9.9.9" }),
+            {}
+          )
+        ).status
+      ).toBe(429);
+
+      const res = await withApiKey(["agents:read"], handler)(
+        reqWith({ Authorization: "Bearer pinchy_bad", "x-forwarded-for": "1.1.1.1" }),
+        {}
+      );
+      expect(res.status).toBe(401);
+    });
+
+    it("keys the bucket on the LAST hop of x-forwarded-for — the one the reverse proxy itself appended", async () => {
+      // Caddy's reverse_proxy APPENDS the peer address it directly observed to
+      // any inbound value rather than replacing it, so a client can prefix the
+      // header with an attacker-chosen value. Only the tail is trustworthy;
+      // reading the head would let an attacker evade the limiter by rotating a
+      // fake leading hop on every request while their real (trailing) address
+      // never changes.
+      mockVerifyApiKey.mockResolvedValue({ valid: false, error: null, key: null });
+      const handler = vi.fn(OK);
+      const probe = (spoofedPrefix: string) =>
+        withApiKey(["agents:read"], handler)(
+          reqWith({
+            Authorization: "Bearer pinchy_bad",
+            "x-forwarded-for": `${spoofedPrefix}, 9.9.9.9`,
+          }),
+          {}
+        );
+
+      for (let i = 0; i < INVALID_API_KEY_RATE_LIMIT_MAX_ATTEMPTS; i++) {
+        // A different forged leading hop on every request.
+        await probe(`10.0.0.${i}`);
+      }
+      const res = await probe("10.0.0.999");
+
+      // Still throttled: every request resolved to the same real (trailing) IP.
+      expect(res.status).toBe(429);
+    });
+
+    it("writes ONE auth.rate_limited row per IP per window, and none before the throttle fires", async () => {
+      mockVerifyApiKey.mockResolvedValue({ valid: false, error: null, key: null });
+      const handler = vi.fn(OK);
+      const probe = () =>
+        withApiKey(["agents:read"], handler)(
+          reqWith({ Authorization: "Bearer pinchy_bad", "x-forwarded-for": "9.9.9.9" }),
+          {}
+        );
+
+      for (let i = 0; i < INVALID_API_KEY_RATE_LIMIT_MAX_ATTEMPTS; i++) {
+        await probe();
+      }
+      // Ordinary invalid attempts under budget must stay unaudited — same
+      // reasoning as the plain-401 test above: an unbounded write here would
+      // hand an unauthenticated caller a flood into the audit table.
+      expect(appendAuditLog).not.toHaveBeenCalled();
+
+      // 5 further requests, all throttled.
+      for (let i = 0; i < 5; i++) {
+        expect((await probe()).status).toBe(429);
+      }
+
+      // Same shape as the per-key case: all 5 throttled attempts land inside
+      // the window the first one opened, so only that first attempt writes.
+      expect(appendAuditLog).toHaveBeenCalledTimes(1);
+      expect(appendAuditLog).toHaveBeenCalledWith({
+        actorType: "system",
+        actorId: "system",
+        eventType: "auth.rate_limited",
+        outcome: "failure",
+        detail: expect.objectContaining({
+          reason: "invalid_api_key",
+          remoteAddress: "9.9.9.9",
+        }),
+      });
+    });
   });
 });
 

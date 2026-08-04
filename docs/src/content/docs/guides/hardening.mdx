@@ -298,6 +298,8 @@ The `/sign-in/*` and `/sign-up/*` wildcard entries cover any future sub-path (OA
 
 The values are intentional defaults. If your CISO requires stricter limits (e.g. 3 sign-ins per minute), edit `getAuthRateLimitConfig` in `packages/web/src/lib/auth.ts` and rebuild your image. The `auth-config-consistency.test.ts` and `auth.test.ts` test suites pin the expected values so accidental loosening will fail CI.
 
+This section covers Better Auth's own session-based rate limiting only. The key-authenticated `/api/v1/*` surface never passes through Better Auth's router — see [Agent Provisioning API › Rate limiting](/reference/agent-provisioning-api/#rate-limiting) for its separate, Pinchy-side limiter.
+
 ## Cross-Site Request Forgery (CSRF) protection
 
 Pinchy enforces an Origin/Referer check on every state-changing API request (POST/PUT/PATCH/DELETE under `/api/`). This prevents an attacker from triggering admin actions through a logged-in admin's browser by hosting a malicious page that auto-submits a cross-site form to your Pinchy instance.
