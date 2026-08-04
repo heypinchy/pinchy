@@ -16,6 +16,15 @@ permissions:
   pages: write
   id-token: write
 
+# Two tags pushed in quick succession (or a tag push racing a
+# workflow_dispatch republish) must not run their Docker pushes
+# concurrently — they can overtake each other on `:latest`/the version tag.
+# Never cancel: a release in progress must run to completion; the second
+# waits instead.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   docker:
     name: Build & Push Docker Images

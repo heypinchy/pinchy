@@ -8,6 +8,13 @@ permissions:
   contents: read
   packages: write
 
+# Two pushes to the same branch in quick succession must not push the moving
+# tag (:next / rc-X.Y) concurrently — they can overtake each other. Never
+# cancel: a build in progress must run to completion; the second waits.
+concurrency:
+  group: pre-release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   build:
     name: Build & push moving tag and :sha-<short>
