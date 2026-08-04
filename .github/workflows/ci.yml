@@ -562,6 +562,28 @@ jobs:
         env:
           CI: true
 
+      # Unlike the suite-specific E2E jobs below (odoo-e2e, web-e2e, etc.),
+      # this job runs Playwright's own `webServer` (`node --import tsx
+      # server.ts`) directly against the bare `postgres` service container
+      # above — there is no docker-compose stack, no separate pinchy/openclaw
+      # containers, and no mock service. The docker-compose-oriented
+      # `capture-e2e-diagnostics` composite action has nothing to capture
+      # here, so upload Playwright's own `test-results/` (traces from
+      # `trace: retain-on-failure` and screenshots from
+      # `screenshot: only-on-failure` in playwright.config.ts) directly
+      # instead of forcing it through that action.
+      - name: Upload Playwright diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          # Include run_attempt so a re-run uploads a fresh artifact instead
+          # of colliding with the previous attempt's bundle (same convention
+          # as capture-e2e-diagnostics's artifact-name).
+          name: e2e-failure-${{ github.run_id }}-${{ github.run_attempt }}
+          path: packages/web/test-results/
+          if-no-files-found: ignore
+          retention-days: 14
+
   docker-smoke:
     name: Docker smoke test
     needs: [changes, build-image]
