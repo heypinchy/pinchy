@@ -1,0 +1,76 @@
+---
+title: Set Up Email Automations
+description: Give an agent a standing rule to act on incoming mail on its own — propose, review, and enable an email workflow.
+---
+
+An automation is a standing rule that lets an agent act on incoming mail without anyone opening a chat. You describe a trigger (which mail it fires on) and an instruction (what to do with each match); Pinchy checks the connected mailboxes on a short, fixed schedule and runs the instruction once per new matching message.
+
+This guide walks through creating, reviewing, and enabling one. For the full field-by-field reference, see [Agent Settings → Automations](/concepts/agent-settings/#automations-tab).
+
+## Prerequisites
+
+- A mailbox connected via [Connect Email](/guides/connect-email/) — Gmail, Microsoft 365, or IMAP.
+- The agent you're automating needs **Read messages** access to that mailbox, granted in **Agent Settings → Permissions**. See [Agent Permissions → Email tools](/concepts/agent-permissions/#email-tools).
+- You can manage automations on a **personal agent you own**. Automations on a **shared agent** are admin-only.
+
+## Step 1: Open the Automations tab
+
+Open the agent's chat, click the gear icon, and select the **Automations** tab.
+
+## Step 2: Describe the trigger and the task
+
+Click **New automation** and fill in the form:
+
+- **Name** — a short label, e.g. "File supplier invoices."
+- **Instruction** — what the agent should do with each matching mail, in plain words, e.g. "Draft a supplier bill in Odoo from the attached invoice." It runs with this agent's own permissions and tools — it can only do what the agent is already allowed to do, nothing more.
+- **Trigger** — narrow which mail fires the workflow: sender addresses (**From**), recipient domain (**To domain**), words in the subject (**Subject contains**), whether it has an attachment and of what type, and a **Folder**. Every filled-in field must match — leave them all blank to watch the entire mailbox.
+- **Mailboxes** — which connected mailboxes to watch. Only mailboxes this agent is permitted to read appear here.
+- **Look back (days)** — how far back each pass re-checks for mail it may have missed. Default 14, and it can go up to 365.
+
+A workflow watches only mail that arrives **after** it's created — attaching it to an old, busy mailbox never retroactively processes years of history.
+
+## Step 3: Review before enabling
+
+Click **Create automation**. It appears in the tab's list as **Pending** — proposed, but not yet running.
+
+This is deliberate: Pinchy never activates a workflow on its own. Before flipping it on, read the trigger and instruction the way the tab renders them — in plain words, not raw filters — and ask whether you'd trust this agent to act on every message that matches, unsupervised. A trigger that's too loose (no filters at all) hands the agent every message in the mailbox; an instruction with a real side effect (drafting a bill, moving money, replying to a customer) deserves a second read before you turn it on.
+
+## Step 4: Enable it
+
+Click **Enable**. The workflow starts running on Pinchy's next check of the connected mailboxes — usually within about a minute. Its status flips from **Pending** to **Active** once a clean pass completes, or to **Error** if the last run hit a problem (bad credentials, an unreachable mailbox).
+
+**Disable** pauses a workflow without deleting it — flip it back on whenever you want. **Delete** removes it for good.
+
+## Step 5: Check what it did
+
+A workflow's run happens in an isolated context per email — it never shows up in your normal chat with the agent, so you won't see it appear in the conversation history. To see what an automation actually did:
+
+- Open [Audit Trail](/concepts/audit-trail/) and filter by the agent. Every tool call a run makes — drafting an email, creating an Odoo record, whatever the instruction asked for — is logged the same way a manual chat action would be, as a `tool.<toolName>` entry.
+- Check the **Status** badge in the Automations tab. **Error** means the last pass failed outright (credentials, connectivity) rather than the agent simply finding nothing to do — "no new matching mail" still reports **Active**.
+
+Each pass tracks exactly which messages it has already handled, so a message is never processed twice — and this tracking never relies on the read/unread state you see in your own inbox, so marking something read (or unread) doesn't affect it either way.
+
+## A worked example: filing supplier invoices
+
+Putting it together, a common first automation:
+
+- **Name**: File supplier invoices
+- **Instruction**: Draft a supplier bill in Odoo from the attached invoice.
+- **Trigger**: Has an attachment, attachment type `application/pdf`, folder `Inbox`
+- **Mailboxes**: your accounts-payable inbox
+- **Look back (days)**: 14 (the default)
+
+This needs the agent to also have Odoo write access — see [Connect Odoo](/guides/connect-odoo/) if that's not set up yet.
+
+## Limits worth knowing
+
+- Up to 50 mailboxes per workflow — in practice, as many mailboxes as the agent can read.
+- Look-back window is capped at 365 days.
+- Each agent works with exactly one mailbox per email connection; if a team needs several mailboxes watched independently, that's one agent (and one set of automations) per mailbox. See [Connect Email](/guides/connect-email/#the-app-and-the-mailboxes-are-two-different-things).
+
+## See also
+
+- [Agent Settings → Automations](/concepts/agent-settings/#automations-tab) — the full tab and field reference.
+- [Connect Email](/guides/connect-email/) — connecting a mailbox in the first place.
+- [Agent Permissions](/concepts/agent-permissions/#email-tools) — what Read/Draft/Send each grant.
+- [Audit Trail](/concepts/audit-trail/) — reading and exporting what an agent (or an automation) did.

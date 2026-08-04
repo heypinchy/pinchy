@@ -1,0 +1,76 @@
+---
+title: Environment Variables
+description: Every environment variable Pinchy's Docker Compose stack reads — secrets, ports, resource limits, and licensing — in one place.
+---
+
+import { Aside } from "@astrojs/starlight/components";
+
+Pinchy needs almost none of this to start. A fresh install only sets `PINCHY_VERSION`; everything below is optional, and Pinchy fills in a safe default or auto-generates a secret when a variable is left unset. This page collects every variable the shipped `docker-compose.yml` reads, in one place, since the guides that explain _why_ you'd set one are otherwise spread across [Installation](/installation/), [Customizing Your Deployment](/guides/customizing-deployment/), [Hardening](/guides/hardening/), and [Enterprise Setup](/guides/enterprise-setup/).
+
+Set any of these in a `.env` file next to your `docker-compose.yml` — Docker Compose reads it automatically on every `docker compose up`.
+
+<Aside type="note">
+  Docker Compose only forwards a variable into a container if it's listed in
+  that service's `environment:` block in `docker-compose.yml`. Setting a name in
+  `.env` that isn't referenced there has no effect — see the [known
+  gaps](#known-gaps) section below for two variables where this currently
+  matters.
+</Aside>
+
+## Required
+
+| Variable         | Default                                    | What it does                                                                                       |
+| ---------------- | ------------------------------------------ | -------------------------------------------------------------------------------------------------- |
+| `PINCHY_VERSION` | none — Compose refuses to start without it | Pins the image tag for the `pinchy` and `openclaw` services. See [Quick Start](/getting-started/). |
+
+## Secrets
+
+These four are auto-generated on first start and persisted in the `pinchy-secrets` Docker volume if you don't set them. Pin them explicitly for production so a lost volume doesn't strand encrypted data — see [Hardening](/guides/hardening/) and [VPS Deployment → Pin your secrets](/guides/vps-deployment/#deploy-pinchy). Generate a value with `openssl rand -hex 32`.
+
+| Variable             | Default                              | What it does                                                                                                                                                                                                                                                                               |
+| -------------------- | ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `DB_PASSWORD`        | auto-generated (`pinchy_dev` in dev) | PostgreSQL password for the `pinchy` database user.                                                                                                                                                                                                                                        |
+| `BETTER_AUTH_SECRET` | auto-generated                       | Signs user sessions (Better Auth).                                                                                                                                                                                                                                                         |
+| `ENCRYPTION_KEY`     | auto-generated                       | Encrypts stored LLM provider API keys at rest (AES-256-GCM). Losing it makes every stored key permanently unreadable.                                                                                                                                                                      |
+| `AUDIT_HMAC_SECRET`  | auto-generated                       | Signs every audit trail entry with HMAC-SHA256. See [Audit Trail → Multi-instance deployments](/concepts/audit-trail/#multi-instance-deployments). **Currently not forwarded by the shipped `docker-compose.yml`** — see [known gaps](#known-gaps) below before relying on this in `.env`. |
+
+## Networking
+
+| Variable      | Default          | What it does                                                                                                                                                                                                        |
+| ------------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PINCHY_PORT` | `127.0.0.1:7777` | The host interface/port the `pinchy` container binds to. Accepts `HOST_PORT` or `HOST_IP:HOST_PORT` — never include the container port. See [Installation → Port configuration](/installation/#port-configuration). |
+
+## Licensing
+
+| Variable                | Default                        | What it does                                                                                                                                                               |
+| ----------------------- | ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PINCHY_ENTERPRISE_KEY` | unset (no enterprise features) | License key for Groups, agent access control, and basic RBAC. Can also be entered via **Settings → License** in the UI. See [Enterprise Setup](/guides/enterprise-setup/). |
+
+## Resource limits
+
+All six are overridable so you never need to edit `docker-compose.yml` itself. Defaults add up to roughly 4 GB of memory ceiling across the three containers. See [Customizing Your Deployment → Resource limits and health checks](/guides/customizing-deployment/#resource-limits-and-health-checks) for sizing guidance, including the memory a knowledge-base reindex of Office documents needs.
+
+| Variable             | Default | Caps                                                               |
+| -------------------- | ------- | ------------------------------------------------------------------ |
+| `PINCHY_MEM_LIMIT`   | `1g`    | Memory for the `pinchy` container (web UI, API, WebSocket bridge). |
+| `PINCHY_CPUS`        | `1.5`   | CPU cores for `pinchy`.                                            |
+| `OPENCLAW_MEM_LIMIT` | `2g`    | Memory for the `openclaw` container (agent runtime, model calls).  |
+| `OPENCLAW_CPUS`      | `2`     | CPU cores for `openclaw`.                                          |
+| `DB_MEM_LIMIT`       | `1g`    | Memory for the `db` container (PostgreSQL 17).                     |
+| `DB_CPUS`            | `1`     | CPU cores for `db`.                                                |
+
+## Known gaps
+
+Two variables listed (commented out) in `.env.example` don't currently do what their name suggests. Both are tracked in [#1113](https://github.com/heypinchy/pinchy/issues/1113) rather than fixed silently, since resolving either is a code change, not a docs change:
+
+- **`AUDIT_HMAC_SECRET`** — the application does read this from its process environment, but the shipped `docker-compose.yml` doesn't list it in the `pinchy` service's `environment:` block, so a value set in `.env` alone never reaches the container. If you need a pinned audit HMAC secret today, add it via a `docker-compose.override.yml` instead (see [Customizing Your Deployment → Recipe 1](/guides/customizing-deployment/#recipe-1-extra-environment-variables)):
+
+  ```yaml
+  # docker-compose.override.yml
+  services:
+    pinchy:
+      environment:
+        - AUDIT_HMAC_SECRET=your-generated-hex-string
+  ```
+
+- **`PINCHY_ADMIN_EMAIL`** / **`PINCHY_ADMIN_PASSWORD`** — not read by the running application. The supported way to recover a lost admin password is the `pnpm reset-admin` CLI command — see [User Management → Emergency admin password reset](/guides/user-management/#emergency-admin-password-reset-cli).

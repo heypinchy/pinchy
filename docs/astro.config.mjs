@@ -157,6 +157,10 @@ export default defineConfig({
           label: "Guides",
           items: [
             {
+              label: "Your First Governed Agent",
+              slug: "guides/first-governed-agent",
+            },
+            {
               label: "Create a Knowledge Base Agent",
               slug: "guides/create-knowledge-base-agent",
             },
@@ -211,6 +215,10 @@ export default defineConfig({
                   slug: "guides/connect-email-imap",
                 },
               ],
+            },
+            {
+              label: "Set Up Email Automations",
+              slug: "guides/email-automations",
             },
             { label: "Connect Odoo", slug: "guides/connect-odoo" },
             { label: "Upload Files in Chat", slug: "guides/file-uploads" },
@@ -303,6 +311,10 @@ export default defineConfig({
           label: "Reference",
           items: [
             { label: "API Reference", slug: "reference/api" },
+            {
+              label: "Environment Variables",
+              slug: "reference/environment-variables",
+            },
             {
               label: "Agent Provisioning API",
               slug: "reference/agent-provisioning-api",

@@ -1,0 +1,99 @@
+---
+title: Your First Governed Agent
+description: A hands-on tutorial — create a shared agent, scope its permissions, invite a teammate, and read what happened in the audit trail.
+---
+
+import { Badge } from "@astrojs/starlight/components";
+
+Anyone can wire an LLM to a chat window. Pinchy's job starts after that: deciding exactly what an agent may do, letting more than one person work with it safely, and keeping a record that survives an argument about who did what.
+
+This tutorial builds all three, in order, on a Pinchy instance you already have running. By the end you'll have created a shared agent, watched its permission allow-list change its behavior in real time, generated an invite for a teammate, and read the resulting trail in the audit log.
+
+## Prerequisites
+
+- Pinchy is running and you've completed the [Quick Start](/getting-started/) — you're signed in as the first admin, and a provider is configured.
+- About 10 minutes.
+
+Nothing here needs Odoo, email, or any other integration. Everything runs with what Pinchy ships out of the box.
+
+## Step 1: Create a shared agent
+
+Personal agents (your own Smithers) are private and have no Permissions tab — there's nothing to share, so nothing to scope. To see governance in action you need a **shared** agent.
+
+1. Click **New Agent** in the sidebar.
+2. Pick the **Custom Agent** template — it starts with the fewest defaults, which makes the next step easier to see.
+3. Name it something you'll recognize, e.g. **Filing Clerk**.
+4. Click **Create**.
+
+Pinchy creates the agent and restarts the OpenClaw runtime to activate it — this takes a few seconds, and any other active chats reconnect automatically.
+
+## Step 2: Look at what it can do
+
+Open the new agent's chat and click the **gear icon** to open **Agent Settings**, then select the **Permissions** tab.
+
+![Agent Permissions — tool allow-list with directory scoping](/screenshots/agent-settings-permissions.png)
+
+Pinchy uses an **allow-list**: a new agent has no tools until you grant them. The only exceptions are reading its own workspace (always on, so it can see what you upload) and **Write files** (`pinchy_write`), which every new agent gets by default so it can save notes and exports right away.
+
+That's it — no shell access, no arbitrary file access, no web access. If you don't see a Web Search or Odoo section here, that's not a bug: those sections only appear once a matching connection exists in **Settings → Integrations**. An agent can't be granted a capability nothing has been connected for.
+
+## Step 3: Watch it use the one thing it's allowed to do
+
+Go back to the chat and ask:
+
+```
+Save a short note to your workbench with today's date.
+```
+
+The agent uses `pinchy_write` — the tool the Permissions tab showed as already on — to save the file into its own workspace and tells you it did. This is the only kind of side effect this agent can currently have on your Pinchy instance.
+
+## Step 4: Narrow it further
+
+Now take that capability away and watch the behavior change immediately — no code, no restart of Pinchy itself, just a permission flip.
+
+1. Open **Agent Settings → Permissions** again.
+2. Uncheck **Write files**.
+3. Click **Save & Restart**. A confirmation dialog lists the pending change and warns that active chats briefly disconnect while the OpenClaw runtime picks up the new allow-list.
+
+Ask the agent to save another note. Without `pinchy_write` in its allow-list, it can no longer write to its workspace — either it tells you directly that it doesn't have that capability, or the attempt is rejected before anything is written. Either way, nothing gets saved. That's the allow-list working exactly as designed: **nothing is permitted until it's explicitly granted**, and taking a grant away takes effect immediately.
+
+Turn **Write files** back on and **Save & Restart** if you want the agent to stay useful for later — the point was watching the flip, not leaving it disabled.
+
+## Step 5: Invite a teammate
+
+Governance matters most once more than one person is involved. Generate an invite the same way you would for a real teammate:
+
+1. Go to **Settings → Users**.
+2. Click **Invite User**.
+3. Leave the email blank (so nobody has to actually claim it for this tutorial) or fill in a real address, choose the **Member** role, and click **Create Invite**.
+4. Copy the generated link.
+
+![User management showing active users and pending invites](/screenshots/user-management.png)
+
+You don't need to actually claim the invite to continue — the point of this step is what happens next. When someone does claim it, they get their own personal Smithers, complete a short onboarding interview, and can see any shared agent you've made available to them — including the Filing Clerk you just built, restricted to exactly the tools you gave it.
+
+## Step 6: Read the audit trail
+
+Every action from the last five steps left a trace. As an admin, open **Audit Trail** from the sidebar.
+
+![Audit trail showing diverse events from users and agents](/screenshots/audit-trail.png)
+
+You should see, newest first:
+
+- `user.invited` — the invite you just created, with your admin identity as the actor.
+- `agent.updated` — twice, once for each permission flip in Step 4, each entry recording the old and new tool list.
+- `tool.pinchy_write` — from Step 3, with the tool name, its parameters, and its result.
+- `agent.created` — from Step 1, when the Filing Clerk was born.
+
+Use the **Event Type** filter to isolate `agent.updated` and confirm both permission changes are there with a full before/after diff — not just "something changed." Click any row to see its full detail, including the cryptographic signature Pinchy checks to detect tampering: every entry is HMAC-signed and the table is append-only, so this trail can't be quietly edited later, by an agent or anyone else.
+
+## What you've built
+
+A shared agent whose capabilities you explicitly control, a teammate you can bring into that scope, and a signed record of every step — the three pieces that make "an AI agent with real permissions" something you can actually run a business on, not just a demo.
+
+## Next steps
+
+- [Agent Permissions](/concepts/agent-permissions/) — the full tool catalogue, including integration tools once you connect one.
+- [Audit Trail](/concepts/audit-trail/) — every event type Pinchy logs, plus exporting and verifying the trail.
+- [User Management](/guides/user-management/) — roles, deactivation, and the rest of the invite lifecycle.
+- [Groups](/concepts/groups/) <Badge text="Enterprise" variant="note" /> — restrict which users can even see a given agent, on top of what it's allowed to do.

@@ -69,7 +69,7 @@ Pinchy wraps OpenClaw into something enterprises can trust:
 | Odoo ERP integration                     |       ❌       |              ❌               |      connectors      |      **✅**       |
 | Open source                              |       ✅       |              ❌               |      fair-code       | **✅ (AGPL-3.0)** |
 
-Honest caveats: Pinchy is young, the integration list is short (Odoo, email — Gmail & Microsoft 365, Telegram, web search, documents), there is no compliance certification yet, and granular RBAC is on the roadmap.
+Honest caveats: Pinchy is young, the integration list is short (Odoo, email — Gmail, Microsoft 365 & IMAP, Telegram, web search, documents), there is no compliance certification yet, and granular RBAC is on the roadmap.
 
 ## Quick Start
 
@@ -85,7 +85,7 @@ That is the whole thing: no build step, pre-built images on GHCR. Pair it with a
 
 ## Status
 
-> Pinchy is in early development. The core is working — setup, auth, multi-user, agent chat, permissions, knowledge base agents, and audit trail. We're building the enterprise features (granular RBAC, plugin marketplace, cross-channel workflows) next.
+> Pinchy is in early development. The core is working — setup, auth, multi-user, agent chat, permissions, knowledge base agents, Telegram, Odoo, web search, email automations, usage dashboard, and audit trail. We're building granular RBAC, a plugin marketplace, and more channel integrations next.
 
 ### What works today
 
@@ -97,19 +97,25 @@ That is the whole thing: no build step, pre-built images on GHCR. Pair it with a
 - **Agent settings** — Configure name, model, system prompt, and tool permissions per agent
 - **Knowledge Base agents** — Create agents with scoped read-only access to specific directories
 - **Context management** — Per-user personal context and organization-wide context, editable in Settings
-- **Email integration** — Connect Gmail or Microsoft 365 mailboxes via OAuth; agents can read, search, draft, and send email with per-agent permissions
+- **Email integration** — Connect Gmail, Microsoft 365, or IMAP mailboxes; agents can read, search, draft, and send email with per-agent permissions
+- **Email automations** — Standing workflows that let an agent act on matching incoming mail on its own, proposed disabled and enabled only by a human review
+- **Odoo integration** — Scoped, permission-aware access to a connected Odoo ERP, with 20+ pre-built agent templates
+- **Web Search** — Give agents live web access via the Brave Search API, with per-agent domain allow/deny lists
+- **Telegram channel** — Chat with agents from Telegram; one bot per agent, accounts linked via a pairing code, same permissions and audit trail as the web UI
+- **Usage & Costs Dashboard** — Track token usage, estimated costs, and cache savings per agent and user
+- **Groups & agent access control** — Restrict which users can see a given agent by group membership (Enterprise)
+- **HTTPS & Domain Lock** — Reject requests whose `Host` header doesn't match the configured domain
 - **Smithers onboarding** — New users get an onboarding interview where Smithers learns about them through conversation
-- **Provider management** — Configure API keys for Anthropic, OpenAI, and Google
+- **Provider management** — Configure API keys for Anthropic, OpenAI, Google, or any OpenAI-compatible/local Ollama endpoint
 - **Docker Compose deployment** — Single command to run the full stack
-- **Audit trail** — Cryptographic audit logging with HMAC-signed entries, integrity verification, and CSV export
+- **Audit trail** — Cryptographic audit logging with HMAC-signed entries, integrity verification, and CSV/PDF export
 - **CI pipeline** — Automated linting, testing, and security auditing
 
 ### What's coming
 
-- Full RBAC with team-scoped permissions
+- Granular RBAC with custom, team-scoped roles (today's Enterprise tier ships Groups and agent access control, not custom roles)
 - Plugin marketplace for agent tools
-- Cross-channel workflows (email, Slack)
-- Admin dashboard with usage analytics
+- More channel integrations (e.g. Slack)
 
 Follow our progress on [the blog](https://heypinchy.com/blog/building-pinchy-in-public) and [LinkedIn](https://linkedin.com/in/clemenshelm).
 
