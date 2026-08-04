@@ -20,6 +20,8 @@ The diagnostics export is a single JSON file that captures:
 
 Secrets are filtered out before the file is generated. API keys, Bearer tokens, and any values under sensitive keys (`password`, `apikey`, `authorization`, and friends) are automatically redacted, and the OpenClaw `sessionKey` is hashed with SHA-256 so it can't be replayed. Your agent's instructions are never written into the file — only a hash of them, so we can spot when they've changed without reading your custom prompt.
 
+The filter reads ten levels into a structure. If you spot a `[TRUNCATED]` marker in the file, that's a sub-object nested deeper than the filter could check — we collapse it rather than ship a value we haven't looked at. Everything else at that depth is still there, redacted as usual.
+
 ## Choosing which chat to export
 
 If you have more than one conversation with an agent, you can pick which one to export. The selector lists all of your own chats with that agent — including named chats and read-only Telegram conversations linked to your account. You can only export your own chats.

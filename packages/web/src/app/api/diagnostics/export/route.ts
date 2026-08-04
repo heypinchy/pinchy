@@ -193,11 +193,13 @@ export const POST = withAuth(async (request, _ctx, session) => {
     userDescription,
   });
   // Pipeline-order invariant: sanitize BEFORE enforceSizeCap.
-  // `sanitizeDetail` only substitutes (`[REDACTED]` is shorter than every
-  // secret-shaped string it matches), so it never grows the bundle. Running
-  // it first means enforceSizeCap's byte measurement reflects exactly what
-  // ships to the user. Swapping the order would mean we could overshoot the
-  // cap by however much sanitization shrinks the payload.
+  // Sanitizing moves the byte count in BOTH directions — `[REDACTED]` is
+  // shorter than the secret-shaped strings it matches but longer than a short
+  // value under a sensitive key, and `[TRUNCATED]` collapses a whole subtree
+  // past the depth cap. So the cap has to be measured on the sanitized bundle:
+  // enforceSizeCap's byte count then reflects exactly what ships to the user.
+  // Swapping the order would let the shipped bundle drift from the measured
+  // one — undershooting the cap in one direction, overshooting it in the other.
   const sanitized = sanitizeBundle(bundle);
   const { bundle: capped, dropped, truncated } = enforceSizeCap(sanitized);
 

@@ -469,6 +469,59 @@ describe("pinchy-audit plugin", () => {
       expect(level).toBe("[TRUNCATED]");
     });
 
+    it("truncates only the containers it could not inspect, keeping leaves at the cap (SYNC with web)", async () => {
+      const { default: plugin } = await import("./index");
+      plugin.register?.(
+        createMockApi({
+          apiBaseUrl: "http://pinchy:7777",
+          gatewayToken: "gw-token",
+        }) as any
+      );
+
+      const afterHook = mockOn.mock.calls.find((c) => c[0] === "after_tool_call")?.[1];
+
+      // A container past the cap is replaced because we never get to look
+      // inside it. A leaf has no inside: its key was checked by the object one
+      // level up, and pattern redaction is depth-independent — so it is exactly
+      // as sanitized at depth 10 as at depth 1, and keeping it is what leaves a
+      // diagnostics bundle's deepest tool arguments readable.
+      let nested: any = {
+        opcode: 6,
+        password: "boundary-secret",
+        note: "the model echoed sk-abcdefghijklmnopqrstuvwx back",
+        child: { deep: "unreachable" },
+      };
+      // 9 wrappers put this object at depth 9, so its own values land on the
+      // depth-10 boundary the cap governs.
+      for (let i = 0; i < 9; i++) {
+        nested = { nested };
+      }
+
+      await afterHook(
+        {
+          toolName: "odoo_write",
+          params: nested,
+          result: "ok",
+          durationMs: 5,
+        },
+        {
+          agentId: "agent-1",
+          sessionKey: "agent:agent-1:user-user-1",
+          toolName: "odoo_write",
+        }
+      );
+
+      const body = JSON.parse((fetch as any).mock.calls[0][1].body);
+      let level = body.params;
+      for (let i = 0; i < 9; i++) {
+        level = level.nested;
+      }
+      expect(level.opcode).toBe(6);
+      expect(level.password).toBe("[REDACTED]");
+      expect(level.note).toBe("the model echoed [REDACTED] back");
+      expect(level.child).toBe("[TRUNCATED]");
+    });
+
     it("also sanitizes params in before_tool_call events", async () => {
       const { default: plugin } = await import("./index");
       plugin.register?.(

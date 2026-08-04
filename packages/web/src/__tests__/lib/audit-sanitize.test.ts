@@ -207,6 +207,36 @@ describe("sanitizeDetail", () => {
       expect(level).toBe("[TRUNCATED]");
       expect(JSON.stringify(result)).not.toContain("deep-secret");
     });
+
+    it("truncates only the containers it could not inspect, keeping leaves at the cap", () => {
+      // A container past the cap is replaced because we never get to look
+      // inside it. A leaf has no inside: its key was checked by the object one
+      // level up, and pattern redaction is depth-independent — so it is exactly
+      // as sanitized at depth 10 as at depth 1, and keeping it is what leaves a
+      // diagnostics bundle's deepest tool arguments readable.
+      let obj: any = {
+        opcode: 6,
+        password: "boundary-secret",
+        note: "the model echoed sk-abcdefghijklmnopqrstuvwx back",
+        child: { deep: "unreachable" },
+      };
+      // 9 wrappers put this object at depth 9, so its own values land on the
+      // depth-10 boundary the cap governs.
+      for (let i = 0; i < 9; i++) {
+        obj = { nested: obj };
+      }
+
+      const result = sanitizeDetail(obj) as any;
+
+      let level = result;
+      for (let i = 0; i < 9; i++) {
+        level = level.nested;
+      }
+      expect(level.opcode).toBe(6);
+      expect(level.password).toBe("[REDACTED]");
+      expect(level.note).toBe("the model echoed [REDACTED] back");
+      expect(level.child).toBe("[TRUNCATED]");
+    });
   });
 
   describe("pattern redaction", () => {

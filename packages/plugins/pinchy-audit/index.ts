@@ -135,11 +135,20 @@ function sanitizeValue(value: unknown, depth: number): unknown {
   if (value === null || value === undefined) return value;
   // The depth cap exists to stop unbounded recursion (a cyclic or
   // pathologically deep structure), not to grant an escape hatch from
-  // redaction. Returning `value` here would forward it UNREDACTED into an
-  // append-only, HMAC-chained audit row that can never be rewritten — a real
-  // Odoo command tuple nests to depth ~6, well within reach of a secret this
-  // cap would otherwise pass through verbatim.
-  if (depth >= MAX_DEPTH) return TRUNCATED;
+  // redaction. Returning the container here would forward every key inside it
+  // UNREDACTED into an append-only, HMAC-chained audit row that can never be
+  // rewritten — a real Odoo command tuple nests to depth ~6, well within reach
+  // of a secret this cap would otherwise pass through verbatim.
+  //
+  // Only containers are truncated, because only containers are what the cap
+  // stops us from inspecting. A leaf at this depth was handed down by an object
+  // at depth < MAX_DEPTH, which already applied the sensitive-key check to it,
+  // and pattern redaction below is depth-independent — so a deep scalar is
+  // exactly as sanitized as a shallow one. Replacing it too would cost
+  // diagnostics bundles their deepest tool arguments for no gain.
+  if (depth >= MAX_DEPTH && typeof value === "object" && !(value instanceof Date)) {
+    return TRUNCATED;
+  }
   if (Array.isArray(value)) return value.map((item) => sanitizeValue(item, depth + 1));
   // Dates have no own enumerable properties — the generic object branch below
   // would strip them to {}. Serialize like JSON.stringify would.

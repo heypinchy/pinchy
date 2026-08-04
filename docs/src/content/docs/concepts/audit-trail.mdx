@@ -245,6 +245,7 @@ Tool parameters and results are automatically sanitized before being stored in t
 - **Sensitive field names** — Any JSON field whose name contains `password`, `secret`, `token`, `apiKey`, `credential`, or similar terms has its value replaced with `[REDACTED]`.
 - **Known secret patterns** — String values matching known formats (OpenAI keys `sk-…`, GitHub tokens `ghp_…`, Slack tokens `xoxb-…`, Bearer tokens, Telegram bot tokens, Meta access tokens, and others) are replaced with `[REDACTED]`.
 - **Environment file content** — When a tool reads a file containing lines like `SECRET_KEY=value`, the value portion is redacted while the key name is preserved.
+- **Anything nested too deep to check** — Sanitization walks a value ten levels down. A tool payload that nests deeper than that is replaced with `[TRUNCATED]` at that point, because a row is append-only: we can't inspect what's below, and we'd rather lose the detail than write an unchecked secret we could never take back. Individual values at that boundary are still redacted normally — only whole sub-objects are collapsed.
 
 ### Defense in Depth
 
