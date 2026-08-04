@@ -30,9 +30,11 @@ const DELIVERY_GID = 999;
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 
 // Bounds every call to Pinchy's own internal API against a hung container /
-// network blackhole. The mailbox provider calls (Gmail/Graph/IMAP)
-// bound themselves separately (see graph-adapter.ts, gmail-adapter.ts,
-// imap-adapter.ts).
+// network blackhole. The mailbox providers reach three different transports
+// and each bounds itself where that transport allows it: Graph via
+// AbortSignal.timeout on fetch (graph-adapter.ts), Gmail via googleapis'
+// `timeout` option — gaxios has none by default (gmail-adapter.ts), IMAP via
+// connectionTimeout/socketTimeout (imap-adapter.ts).
 const FETCH_TIMEOUT_MS = 10_000;
 
 const EXT_BY_MIME = new Map<string, string>([

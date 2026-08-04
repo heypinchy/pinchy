@@ -57,6 +57,22 @@ function buildGmailQuery(opts: SearchOptions): string {
   return parts.join(" ");
 }
 
+// Gmail is the one mailbox provider that never touches `fetch`, so none of the
+// AbortSignal.timeout() bounds elsewhere in this plugin reach it. It talks
+// through googleapis, and that transport (gaxios) documents its `timeout`
+// option as "No timeout by default" — so an unset value is not a sane default,
+// it is the unbounded-I/O hole: a hung Gmail endpoint (or a network blackhole
+// that never sends an RST) would block the tool call forever. Set on the
+// client so all seven call sites inherit it and none can be forgotten.
+const REQUEST_TIMEOUT_MS = 30_000;
+
+// The attachment download carries the whole file as base64 inside the JSON
+// body — up to the 25 MB the tools layer accepts, ~33 MB on the wire. The
+// bound that is generous for a metadata call is tight for that, so this path
+// gets its own; a working-but-slow link must not be aborted mid-download.
+// Per-method options win over the client-level ones in googleapis-common.
+const ATTACHMENT_TIMEOUT_MS = 120_000;
+
 export class GmailAdapter implements EmailAdapter {
   private gmail: ReturnType<typeof google.gmail>;
 
@@ -69,6 +85,7 @@ export class GmailAdapter implements EmailAdapter {
     this.gmail = google.gmail({
       version: "v1",
       auth,
+      timeout: REQUEST_TIMEOUT_MS,
       ...(rootUrl ? { rootUrl } : {}),
     });
   }
@@ -133,11 +150,14 @@ export class GmailAdapter implements EmailAdapter {
       );
     }
 
-    const response = await this.gmail.users.messages.attachments.get({
-      userId: "me",
-      messageId,
-      id: attachmentId,
-    });
+    const response = await this.gmail.users.messages.attachments.get(
+      {
+        userId: "me",
+        messageId,
+        id: attachmentId,
+      },
+      { timeout: ATTACHMENT_TIMEOUT_MS }
+    );
     const encoded = response.data.data ?? "";
     // Gmail returns base64url (URL-safe alphabet); decode explicitly with that
     // alphabet rather than Node's lenient "base64" decoder.

@@ -14,8 +14,7 @@ const WORKSPACE_ROOT = "/root/.openclaw/workspaces";
 
 // Bounds every call to Pinchy's own internal API against a hung container /
 // network blackhole. These are Pinchy-internal, same-Docker-network calls
-// (credentials fetch, auth-failure report), never the Odoo call itself
-//.
+// (credentials fetch, auth-failure report), never the Odoo call itself.
 const FETCH_TIMEOUT_MS = 10_000;
 
 // 25 MB matches Odoo's default `web.max_file_upload_size` setting. Keeps the

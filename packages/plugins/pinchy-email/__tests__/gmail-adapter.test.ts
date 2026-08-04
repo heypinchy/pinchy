@@ -584,11 +584,14 @@ describe("GmailAdapter", () => {
       expect(Buffer.isBuffer(result.data)).toBe(true);
       expect(result.data.toString("utf-8")).toBe("%PDF-");
 
-      expect(mockAttachmentsGet).toHaveBeenCalledWith({
-        userId: "me",
-        messageId: "msg-dl",
-        id: "att-dl",
-      });
+      expect(mockAttachmentsGet).toHaveBeenCalledWith(
+        {
+          userId: "me",
+          messageId: "msg-dl",
+          id: "att-dl",
+        },
+        { timeout: 120_000 }
+      );
     });
 
     it("decodes attachment bytes faithfully, including high-bit bytes", async () => {
@@ -1011,6 +1014,55 @@ describe("GmailAdapter", () => {
       const result = await adapter.read("msg-special");
 
       expect(result.body).toBe(originalText);
+    });
+  });
+
+  describe("request timeouts", () => {
+    // Gmail is the one mailbox provider that does NOT go through `fetch`, so
+    // no AbortSignal.timeout() reaches it. It talks through googleapis, whose
+    // transport (gaxios) documents `timeout` as "No timeout by default" — so
+    // without an explicit value every Gmail call is exactly the unbounded I/O
+    // the timeouts elsewhere in this plugin exist to close.
+    it("bounds every Gmail API call by configuring a client-level timeout", async () => {
+      const { google } = await import("googleapis");
+
+      new GmailAdapter({ accessToken: "test-token" });
+
+      expect(google.gmail).toHaveBeenCalledWith(
+        expect.objectContaining({ version: "v1", timeout: 30_000 })
+      );
+    });
+
+    it("gives the attachment download a longer bound than an ordinary call", async () => {
+      // attachments.get carries the whole file as base64 inside the JSON body
+      // (up to the 25 MB the tools layer accepts, ~33 MB on the wire). The
+      // bound that is generous for a metadata call is tight for that, so the
+      // download overrides it — a working-but-slow link must not be aborted.
+      mockGet.mockResolvedValue({
+        data: {
+          id: "msg-dl",
+          payload: {
+            mimeType: "multipart/mixed",
+            headers: [],
+            parts: [
+              {
+                filename: "invoice.pdf",
+                mimeType: "application/pdf",
+                body: { attachmentId: "att-dl", size: 5 },
+              },
+            ],
+          },
+        },
+      });
+      mockAttachmentsGet.mockResolvedValue({
+        data: { size: 5, data: Buffer.from("%PDF-").toString("base64url") },
+      });
+
+      await adapter.getAttachment("msg-dl", "att-dl");
+
+      const [, options] = mockAttachmentsGet.mock.calls[0];
+      expect(options.timeout).toBe(120_000);
+      expect(options.timeout).toBeGreaterThan(30_000);
     });
   });
 });

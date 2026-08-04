@@ -9,29 +9,57 @@ const PROMPT =
 
 const MAX_RETRIES = 3;
 
-// External LLM vision API call — bounds a hung provider endpoint / network
-// blackhole.
-const FETCH_TIMEOUT_MS = 30_000;
+// Bounds a hung provider endpoint / network blackhole. The point of these is
+// to make a blackhole terminate, NOT to enforce a latency budget — so they sit
+// well above the legitimate worst case, because the cost of being wrong is
+// asymmetric: too long merely delays an error, too short turns working page
+// reads into failures nobody can distinguish from a broken PDF.
+//
+// A hosted vision call on a dense scanned page routinely runs tens of seconds
+// (4096 max_tokens of extracted text at typical decode rates), so a 30s bound
+// would abort real work.
+const CLOUD_VISION_TIMEOUT_MS = 120_000;
+
+// Ollama is the offline/self-hosted path and it is the slow one by design: the
+// first request after a cold start pays the model load before any decoding
+// begins, and CPU-only inference on a full page is minutes, not seconds.
+// Sharing the hosted bound here would break exactly the deployments Pinchy
+// promises to support.
+const LOCAL_VISION_TIMEOUT_MS = 300_000;
 
 // A malicious or misbehaving provider can send an arbitrarily large
 // Retry-After (e.g. 86400 = 24h), which would otherwise put this PDF read to
-// sleep for a day. Clamp to a sane upper bound instead of trusting the header
-// verbatim.
+// sleep for a day. Clamp to a sane range instead of trusting the header
+// verbatim — at BOTH ends: a negative value is finite too, and `Math.min`
+// alone passes it straight through.
 const MAX_RETRY_AFTER_SECONDS = 30;
 
-/** Fetch with automatic retry on 429 (rate limit). Respects Retry-After header. */
-async function fetchWithRetry(url: string, init: RequestInit): Promise<Response> {
+/**
+ * Fetch with automatic retry on 429 (rate limit). Respects Retry-After header.
+ *
+ * `signal` is deliberately not accepted in `init`: the earlier shape did
+ * `init.signal ?? AbortSignal.timeout(...)`, so the first caller to pass a
+ * cancellation signal would have silently lost the timeout. A caller that
+ * needs a different bound passes `timeoutMs`.
+ */
+async function fetchWithRetry(
+  url: string,
+  init: Omit<RequestInit, "signal">,
+  timeoutMs: number = CLOUD_VISION_TIMEOUT_MS
+): Promise<Response> {
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    // Inside the loop on purpose: every attempt gets its own fresh bound,
+    // rather than all attempts sharing one deadline that the first one spent.
     const response = await fetch(url, {
       ...init,
-      signal: init.signal ?? AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      signal: AbortSignal.timeout(timeoutMs),
     });
     if (response.status !== 429 || attempt === MAX_RETRIES) {
       return response;
     }
     const retryAfter = Number(response.headers.get("retry-after") || "1");
     const clampedSeconds = Math.min(
-      Number.isFinite(retryAfter) ? retryAfter : 1,
+      Math.max(Number.isFinite(retryAfter) ? retryAfter : 1, 0),
       MAX_RETRY_AFTER_SECONDS
     );
     const waitMs = clampedSeconds * 1000;
@@ -310,25 +338,29 @@ async function describeViaOllama(
 
   const url = `${config.ollamaBaseUrl.replace(/\/$/, "")}/v1/chat/completions`;
 
-  const response = await fetchWithRetry(url, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      model: modelId,
-      messages: [
-        {
-          role: "user",
-          content: [
-            {
-              type: "image_url",
-              image_url: { url: `data:image/png;base64,${imageBase64}` },
-            },
-            { type: "text", text: PROMPT },
-          ],
-        },
-      ],
-    }),
-  });
+  const response = await fetchWithRetry(
+    url,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: modelId,
+        messages: [
+          {
+            role: "user",
+            content: [
+              {
+                type: "image_url",
+                image_url: { url: `data:image/png;base64,${imageBase64}` },
+              },
+              { type: "text", text: PROMPT },
+            ],
+          },
+        ],
+      }),
+    },
+    LOCAL_VISION_TIMEOUT_MS
+  );
 
   if (!response.ok) {
     const error = await response.text().catch(() => "unknown error");

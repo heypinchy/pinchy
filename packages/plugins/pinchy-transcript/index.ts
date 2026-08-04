@@ -397,8 +397,7 @@ function surrogateId(direction: string, content: string, sentAt: number): string
 const MAX_RETRIES = 2;
 
 // Bounds every capture POST against a hung Pinchy container / network
-// blackhole so a stuck deploy can't stall channel-message capture forever
-//.
+// blackhole so a stuck deploy can't stall channel-message capture forever.
 const FETCH_TIMEOUT_MS = 10_000;
 
 // Keep the log line readable: the useful part of a Pinchy error body is the

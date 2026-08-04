@@ -81,6 +81,13 @@ const FILE_ATTACHMENT_TYPE = "#microsoft.graph.fileAttachment";
 // blackhole.
 const FETCH_TIMEOUT_MS = 30_000;
 
+// The attachment download carries the whole file as base64 inside the JSON
+// body — up to the 25 MB the tools layer accepts, ~33 MB on the wire. An
+// AbortSignal covers the body read too, not just the response headers, so the
+// bound that is generous for a metadata call would abort a working-but-slow
+// download well before it finishes. Give that one path its own.
+const ATTACHMENT_TIMEOUT_MS = 120_000;
+
 // Microsoft Graph v1.0 message-listing endpoints require every property named
 // in $orderby to also appear in $filter, in the same order, ahead of any other
 // filter properties — violating this returns HTTP 400 InefficientFilter ("The
@@ -118,15 +125,24 @@ export class GraphAdapter implements EmailAdapter {
     return process.env.GRAPH_API_BASE_URL ?? "https://graph.microsoft.com";
   }
 
-  private async req(path: string, init?: RequestInit): Promise<Response> {
+  // `signal` is deliberately not accepted. The earlier shape took one and did
+  // `init.signal ?? AbortSignal.timeout(...)`, which reads like a harmless
+  // escape hatch and is a trap: the first caller to pass a cancellation signal
+  // would silently lose the timeout, with no test able to see it. A caller
+  // that needs a different bound asks for one by name instead.
+  private async req(
+    path: string,
+    init?: Omit<RequestInit, "signal"> & { timeoutMs?: number }
+  ): Promise<Response> {
+    const { timeoutMs = FETCH_TIMEOUT_MS, ...rest } = init ?? {};
     const res = await fetch(`${this.graphBase()}/v1.0${path}`, {
-      ...init,
+      ...rest,
       headers: {
         Authorization: `Bearer ${this.opts.accessToken}`,
         "Content-Type": "application/json",
         ...(init?.headers ?? {}),
       },
-      signal: init?.signal ?? AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      signal: AbortSignal.timeout(timeoutMs),
     });
     if (!res.ok) {
       const txt = await res.text().catch(() => "");
@@ -198,7 +214,8 @@ export class GraphAdapter implements EmailAdapter {
     attachmentId: string
   ): Promise<{ filename: string; mimeType: string; data: Buffer }> {
     const res = await this.req(
-      `/me/messages/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(attachmentId)}`
+      `/me/messages/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(attachmentId)}`,
+      { timeoutMs: ATTACHMENT_TIMEOUT_MS }
     );
     const a = (await res.json()) as GraphAttachment;
     if (a.contentBytes == null) {

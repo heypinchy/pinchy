@@ -880,3 +880,50 @@ describe("GraphAdapter.send", () => {
     expect(result.messageId).toBe("reply42");
   });
 });
+
+describe("GraphAdapter request bounds", () => {
+  beforeEach(() => {
+    vi.stubGlobal("fetch", vi.fn());
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("gives the attachment download a longer bound than an ordinary call", async () => {
+    // An AbortSignal covers the body read, not just the response headers, and
+    // getAttachment pulls the whole file as base64 inside the JSON body (up to
+    // the 25 MB the tools layer accepts, ~33 MB on the wire). The bound that is
+    // generous for a metadata call would abort a working-but-slow download, so
+    // this path must ask for its own.
+    const timeoutSpy = vi.spyOn(AbortSignal, "timeout");
+    const adapter = new GraphAdapter({ accessToken: "tok" });
+    (fetch as Mock).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        name: "invoice.pdf",
+        contentType: "application/pdf",
+        contentBytes: Buffer.from("%PDF-").toString("base64"),
+      }),
+    });
+
+    await adapter.getAttachment("msg-1", "att-1");
+
+    expect(timeoutSpy).toHaveBeenCalledWith(120_000);
+    expect(timeoutSpy).not.toHaveBeenCalledWith(30_000);
+  });
+
+  it("still bounds an ordinary call at the default", async () => {
+    const timeoutSpy = vi.spyOn(AbortSignal, "timeout");
+    const adapter = new GraphAdapter({ accessToken: "tok" });
+    (fetch as Mock).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ value: [] }),
+    });
+
+    await adapter.list({ folder: "INBOX" });
+
+    expect(timeoutSpy).toHaveBeenCalledWith(30_000);
+  });
+});

@@ -206,7 +206,9 @@ const MAX_RETRIES = 2;
 
 // Bounds every attempt against a hung Pinchy container / network blackhole.
 // This hook runs before EVERY tool call of EVERY agent, so an unbounded fetch
-// here blocks all tool dispatch indefinitely (#pinchy-fetch-timeouts).
+// here blocks all tool dispatch indefinitely. Note the worst case is this
+// times MAX_RETRIES + 1 — there is no backoff between attempts, so an
+// unreachable Pinchy costs ~30s per tool call before the hook fails closed.
 const FETCH_TIMEOUT_MS = 10_000;
 
 async function postToolAuditEvent(

@@ -1,3 +1,7 @@
+// External API call — bounds a hung Brave endpoint / network blackhole.
+// Matches web-fetch.ts's external-call timeout.
+const FETCH_TIMEOUT_MS = 30_000;
+
 export interface BraveSearchConfig {
   apiKey: string;
   allowedDomains?: string[];
@@ -60,9 +64,7 @@ export async function braveSearch(
       "X-Subscription-Token": config.apiKey,
       Accept: "application/json",
     },
-    // External API call — bounds a hung Brave endpoint / network blackhole
-    //. Matches web-fetch.ts's external-call timeout.
-    signal: AbortSignal.timeout(30_000),
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
   });
 
   if (!res.ok) {

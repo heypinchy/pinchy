@@ -144,7 +144,89 @@ describe("describePageImage", () => {
     setTimeoutSpy.mockRestore();
   });
 
-  it("aborts a hung vision API call via AbortSignal.timeout(30_000) instead of blocking forever", async () => {
+  it("clamps a negative Retry-After to zero instead of passing it through", async () => {
+    // `Math.min(x, 30)` alone lets a negative header past — -3600 is finite, so
+    // the "clamp" hands setTimeout -3_600_000. Harmless in effect today (the
+    // timer floors at 0), but then the constant does not bound what it claims
+    // to bound, and the next reader has to rediscover that.
+    const mockFetch = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 429,
+        headers: new Headers({ "retry-after": "-3600" }),
+        text: async () => "Rate limited",
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          content: [{ type: "text", text: "Extracted after retry" }],
+        }),
+      });
+    globalThis.fetch = mockFetch;
+
+    const waits: number[] = [];
+    const setTimeoutSpy = vi
+      .spyOn(globalThis, "setTimeout")
+      .mockImplementation((cb: (...args: unknown[]) => void, ms?: number) => {
+        waits.push(ms ?? 0);
+        cb();
+        return 0 as unknown as NodeJS.Timeout;
+      });
+
+    const result = await describePageImage("base64data", {
+      model: "anthropic/claude-haiku-4-5-20251001",
+      resolveApiKey: async () => "test-key",
+    });
+
+    expect(result?.text).toBe("Extracted after retry");
+    expect(waits).toEqual([0]);
+    setTimeoutSpy.mockRestore();
+  });
+
+  it("gives a local Ollama vision call a longer bound than a hosted one", async () => {
+    // Ollama is the offline/self-hosted path: a cold start pays the model load
+    // before decoding starts, and CPU-only inference on a full page runs into
+    // minutes. Sharing the hosted bound here would abort exactly the
+    // deployments the offline-first promise covers.
+    const timeoutSpy = vi.spyOn(AbortSignal, "timeout");
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ choices: [{ message: { content: "Local text" } }] }),
+    });
+
+    const result = await describePageImage("base64data", {
+      model: "ollama/llama3.2-vision",
+      resolveApiKey: async () => "unused",
+      ollamaBaseUrl: "http://ollama:11434",
+    });
+
+    expect(result?.text).toBe("Local text");
+    expect(timeoutSpy).toHaveBeenCalledWith(300_000);
+    timeoutSpy.mockRestore();
+  });
+
+  it("bounds a hosted vision call well above a dense page's real decode time", async () => {
+    // The bound exists to make a blackhole terminate, not to enforce a latency
+    // budget. 4096 max_tokens of extracted text at typical decode rates is tens
+    // of seconds, so a bound anywhere near that turns working page reads into
+    // failures indistinguishable from a broken PDF.
+    const timeoutSpy = vi.spyOn(AbortSignal, "timeout");
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ content: [{ type: "text", text: "Extracted" }] }),
+    });
+
+    await describePageImage("base64data", {
+      model: "anthropic/claude-haiku-4-5-20251001",
+      resolveApiKey: async () => "test-key",
+    });
+
+    expect(timeoutSpy).toHaveBeenCalledWith(120_000);
+    timeoutSpy.mockRestore();
+  });
+
+  it("aborts a hung vision API call via AbortSignal.timeout instead of blocking forever", async () => {
     // Simulates a vision provider that never answers and never resets the
     // connection (network blackhole) — the mock only ever settles via the
     // AbortSignal fetchWithRetry passes in, exactly like a real hung `fetch`
@@ -173,7 +255,7 @@ describe("describePageImage", () => {
       })
     ).rejects.toThrow();
 
-    expect(timeoutSpy).toHaveBeenCalledWith(30_000);
+    expect(timeoutSpy).toHaveBeenCalledWith(120_000);
     timeoutSpy.mockRestore();
   });
 

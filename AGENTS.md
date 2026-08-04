@@ -584,6 +584,18 @@ The drift guard `scripts/lib/plugin-typecheck.test.mjs` (pure logic in `scripts/
 
 Every plugin package must ship vitest unit tests and declare `"test": "vitest run"` in its package.json. The test files run twice in the CI quality job, deliberately: once inside `pnpm test` via the `../plugins/pinchy-*` include in `packages/web/vitest.config.ts` (web config), and once per package via `pnpm test:plugins` (each plugin's own config and dependencies, as run locally). Two drift guards in `packages/web/src/__tests__/lib/plugin-test-coverage.test.ts` enforce this: every plugin test file must match the include globs, and every plugin package must declare a `test` script (pnpm recursive runs silently skip packages without one).
 
+### Every plugin `fetch()` passes a signal
+
+An unbounded `fetch` has no failure mode that looks like a bug — the call simply never returns. A Pinchy container mid-deploy, or a blackhole that swallows packets without an RST, leaves the plugin waiting forever, and in `pinchy-audit`'s `before_tool_call` hook that stalls every tool call of every agent with nothing in any log naming the cause.
+
+`packages/web/src/__tests__/lib/plugin-fetch-timeout-coverage.test.ts` requires a `signal` on every `fetch()` in plugin production code. It exists because the change that added the 15 original timeouts also wrote, in a comment, that the mailbox providers "bound themselves separately (see graph-adapter.ts, gmail-adapter.ts, imap-adapter.ts)" — and `gmail-adapter.ts` did not: it reaches Gmail through googleapis, whose transport documents `timeout` as "No timeout by default". Prose asserted coverage the code lacked, and nothing could contradict it. Same argument as § "A Hand-Maintained List That Mirrors Code Will Be Wrong".
+
+Three things to know before editing it:
+
+- **Pick the bound from the call's legitimate worst case, not from a latency budget.** Too long merely delays an error; too short turns working calls into failures that read as product bugs. That asymmetry is why the vision API sits at 120s hosted / **300s for Ollama** — the offline path pays a model load before decoding starts, and a shared 30s bound would break exactly the self-hosted deployments Pinchy promises to support. Pinchy-internal, same-Docker-network calls use 10s; external APIs 30s; anything that streams a file body gets its own larger bound (`ATTACHMENT_TIMEOUT_MS`), because an AbortSignal covers the body read, not just the response headers.
+- **Never write `init.signal ?? AbortSignal.timeout(...)`.** It reads as a harmless escape hatch and is a trap: the first caller to pass a cancellation signal silently loses the timeout, and no test can see it. Both wrappers here (`GraphAdapter.req`, `fetchWithRetry`) type `signal` out of their options and take a `timeoutMs` instead. Create the signal **inside** a retry loop, too, so each attempt gets a fresh bound rather than all attempts sharing one deadline the first one spent.
+- **It sees `fetch` and nothing else.** A plugin reaching the network through another transport is invisible to it — today `gmail-adapter.ts` (googleapis/gaxios, bounded by its `timeout` option) and `imap-adapter.ts` (imapflow, `connectionTimeout`/`socketTimeout`). It also checks only that a signal is passed, never that the value is sane. Both limits are covered by per-call unit tests instead. Verify a change to the guard with a canary — delete a `signal:` from a plugin, watch it name that exact file and line, put it back.
+
 ### Tool dispatch coverage
 
 Every plugin tool must be covered at three layers:
