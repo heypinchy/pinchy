@@ -74,13 +74,14 @@ Honest caveats: Pinchy is young, the integration list is short (Odoo, email — 
 ## Quick Start
 
 ```bash
+mkdir -p pinchy && cd pinchy
 curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/v0.9.1/docker-compose.yml -o docker-compose.yml
 echo "PINCHY_VERSION=v0.9.1" > .env
 docker compose up -d
 # Open http://localhost:7777 — the setup wizard creates your admin account
 ```
 
-That is the whole thing: one command, no build step, pre-built images on GHCR. Pair it with a local model via [Ollama](https://docs.heypinchy.com/guides/ollama-setup/) and nothing ever leaves your network. Full setup, configuration, and development instructions: **[Installation Guide](https://docs.heypinchy.com/installation/)**.
+That is the whole thing: no build step, pre-built images on GHCR. Pair it with a local model via [Ollama](https://docs.heypinchy.com/guides/ollama-setup/) and nothing ever leaves your network. Full setup, configuration, and development instructions: **[Installation Guide](https://docs.heypinchy.com/installation/)**.
 
 ## Status
 

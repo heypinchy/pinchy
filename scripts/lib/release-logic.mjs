@@ -619,33 +619,55 @@ export function checkReleaseVerification({ verifiedSha, headSha }) {
 }
 
 /**
- * Returns README.md contents with the quick-start curl pin updated to the
+ * Returns README.md contents with BOTH quick-start version pins updated to the
  * release tag.
  *
- * The README's one-command install pins a concrete
- * `raw.githubusercontent.com/heypinchy/pinchy/v<X.Y.Z>/docker-compose.yml` URL
- * so a fresh install is reproducible. Without bumping it here the pin drifts
- * behind every release — it sat on v0.5.7 through both the v0.5.8 and v0.6.0
- * releases, so new users pulled a stale compose file. The release tag is created
- * later in the same release run, so the bumped URL resolves once pushed (same
- * pattern as the marketplace template pins).
+ * The README's quick-start install carries two pins, and they only work as a
+ * pair:
+ *
+ *   1. the `raw.githubusercontent.com/heypinchy/pinchy/v<X.Y.Z>/docker-compose.yml`
+ *      URL the reader curls, and
+ *   2. the `PINCHY_VERSION=v<X.Y.Z>` line written into `.env`, which is what
+ *      that compose file resolves its image tags from (it refuses to start
+ *      without it: `PINCHY_VERSION:?set PINCHY_VERSION in .env`).
+ *
+ * Bumping only the URL is worse than bumping neither. A stale URL at least
+ * yields a self-consistent older install; a fresh compose file pinned to an
+ * older image tag starts happily and silently runs the *previous* release
+ * against the new release's topology. So a missing pin is an error rather than
+ * a no-op — the pin that is not there is the one that drifts. Without bumping
+ * here the URL sat on v0.5.7 through both the v0.5.8 and v0.6.0 releases, so
+ * new users pulled a stale compose file.
+ *
+ * The release tag is created later in the same release run, so the bumped URL
+ * resolves once pushed (same pattern as the marketplace template pins).
  *
  * @param {string} content - raw README.md contents
  * @param {string} version - release version, no 'v' prefix (e.g. "0.6.0")
  * @returns {string}
- * @throws {Error} if the pinned docker-compose URL is missing
+ * @throws {Error} if either pin is missing
  */
-export function bumpReadmeComposePin(content, version) {
-  const pattern =
+export function bumpReadmeQuickstartPins(content, version) {
+  const composeUrlPin =
     /(raw\.githubusercontent\.com\/heypinchy\/pinchy\/)v\d+\.\d+\.\d+(\/docker-compose\.yml)/g;
-  if (!pattern.test(content)) {
+  if (!composeUrlPin.test(content)) {
     throw new Error(
       "No pinned docker-compose URL in README.md " +
         "(raw.githubusercontent.com/heypinchy/pinchy/v<version>/docker-compose.yml). " +
-        "The quick-start install pin moved or was removed — update bumpReadmeComposePin.",
+        "The quick-start install pin moved or was removed — update bumpReadmeQuickstartPins.",
     );
   }
-  return content.replace(pattern, `$1v${version}$2`);
+  const envVersionPin = /(PINCHY_VERSION=)v\d+\.\d+\.\d+/g;
+  if (!envVersionPin.test(content)) {
+    throw new Error(
+      "No PINCHY_VERSION=v<version> pin in README.md. The quick-start writes it " +
+        "into .env and docker-compose.yml refuses to start without it, so the " +
+        "quick-start cannot be correct without this line — update bumpReadmeQuickstartPins.",
+    );
+  }
+  return content
+    .replace(composeUrlPin, `$1v${version}$2`)
+    .replace(envVersionPin, `$1v${version}`);
 }
 
 /** Matches a release branch: `release/X.Y` with numeric major/minor (e.g. `release/0.9`). */

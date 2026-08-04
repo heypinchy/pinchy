@@ -14,7 +14,7 @@ import {
   assertNoStaleUpgradeSections,
   deriveStagingChecklist,
   checkReleaseVerification,
-  bumpReadmeComposePin,
+  bumpReadmeQuickstartPins,
   isReleasableBranch,
   findSkippedReleases,
   openNextUpgradeSection,
@@ -427,15 +427,18 @@ BAZ=qux
   assert.equal(matches.length, 1);
 });
 
-// bumpReadmeComposePin — keeps the README quick-start curl pin on the released
-// tag so a fresh one-command install is reproducible. Orphaned before this:
-// the pin sat on v0.5.7 through the v0.5.8 and v0.6.0 releases.
+// bumpReadmeQuickstartPins — keeps BOTH README quick-start pins on the released
+// tag so a fresh install is reproducible: the curl'd compose URL and the
+// PINCHY_VERSION= line that compose file resolves its image tags from.
+// Orphaned before this: the curl pin sat on v0.5.7 through the v0.5.8 and
+// v0.6.0 releases.
 
-test("bumpReadmeComposePin updates the pinned docker-compose tag, preserves the rest", () => {
+test("bumpReadmeQuickstartPins updates both quick-start pins, preserves the rest", () => {
   const input = `## Quick Start
 
 \`\`\`bash
 curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/v0.5.7/docker-compose.yml -o docker-compose.yml
+echo "PINCHY_VERSION=v0.5.7" > .env
 docker compose up -d
 \`\`\`
 `;
@@ -443,26 +446,60 @@ docker compose up -d
 
 \`\`\`bash
 curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/v0.6.0/docker-compose.yml -o docker-compose.yml
+echo "PINCHY_VERSION=v0.6.0" > .env
 docker compose up -d
 \`\`\`
 `;
-  assert.equal(bumpReadmeComposePin(input, "0.6.0"), expected);
+  assert.equal(bumpReadmeQuickstartPins(input, "0.6.0"), expected);
 });
 
-test("bumpReadmeComposePin throws when the pinned docker-compose URL is missing", () => {
+// The regression this pairing exists for: bumping the compose URL alone leaves
+// the reader curling the new release's compose file while pinning the previous
+// release's images. That starts cleanly — no error anywhere — and silently runs
+// the wrong software, which is worse than the stale-but-consistent pin.
+test("bumpReadmeQuickstartPins leaves no pin behind on the previous version", () => {
+  const input = [
+    "curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/v0.9.1/docker-compose.yml -o docker-compose.yml",
+    'echo "PINCHY_VERSION=v0.9.1" > .env',
+    "docker compose up -d",
+  ].join("\n");
+  const bumped = bumpReadmeQuickstartPins(input, "0.10.0");
+  assert.doesNotMatch(
+    bumped,
+    /v0\.9\.1/,
+    `a v0.9.1 pin survived the bump: ${bumped}`,
+  );
+  assert.match(bumped, /pinchy\/v0\.10\.0\/docker-compose\.yml/);
+  assert.match(bumped, /PINCHY_VERSION=v0\.10\.0/);
+});
+
+test("bumpReadmeQuickstartPins throws when the pinned docker-compose URL is missing", () => {
   const input = `## Quick Start\n\nNo pinned compose URL here.\n`;
   assert.throws(
-    () => bumpReadmeComposePin(input, "0.6.0"),
+    () => bumpReadmeQuickstartPins(input, "0.6.0"),
     /No pinned docker-compose URL in README\.md/,
   );
 });
 
-test("bumpReadmeComposePin replaces any prior version, not just a specific one", () => {
+// A missing PINCHY_VERSION pin is an error, not a no-op: silently skipping it
+// is exactly how one half of the pair drifts behind the other.
+test("bumpReadmeQuickstartPins throws when the PINCHY_VERSION pin is missing", () => {
   const input =
     "curl https://raw.githubusercontent.com/heypinchy/pinchy/v0.4.12/docker-compose.yml -o docker-compose.yml\n";
+  assert.throws(
+    () => bumpReadmeQuickstartPins(input, "0.6.0"),
+    /No PINCHY_VERSION=v<version> pin in README\.md/,
+  );
+});
+
+test("bumpReadmeQuickstartPins replaces any prior version, not just a specific one", () => {
+  const input =
+    "curl https://raw.githubusercontent.com/heypinchy/pinchy/v0.4.12/docker-compose.yml -o docker-compose.yml\n" +
+    'echo "PINCHY_VERSION=v0.4.12" > .env\n';
   assert.equal(
-    bumpReadmeComposePin(input, "0.6.0"),
-    "curl https://raw.githubusercontent.com/heypinchy/pinchy/v0.6.0/docker-compose.yml -o docker-compose.yml\n",
+    bumpReadmeQuickstartPins(input, "0.6.0"),
+    "curl https://raw.githubusercontent.com/heypinchy/pinchy/v0.6.0/docker-compose.yml -o docker-compose.yml\n" +
+      'echo "PINCHY_VERSION=v0.6.0" > .env\n',
   );
 });
 

@@ -38,7 +38,7 @@ import {
   assertUpgradeNotesWritten,
   finalizeUpgradeSection,
   openNextUpgradeSection,
-  bumpReadmeComposePin,
+  bumpReadmeQuickstartPins,
   isReleasableBranch,
 } from "./lib/release-logic.mjs";
 import {
@@ -219,14 +219,17 @@ writeFileSync(
 );
 log(`  ✔ .env.example → v${version}`);
 
-// Keep the README quick-start curl pin on the released tag so the
-// one-command install is reproducible and never drifts behind (it sat on
-// v0.5.7 through the v0.5.8 and v0.6.0 releases before this).
+// Keep BOTH README quick-start pins on the released tag — the curl'd
+// docker-compose.yml URL and the PINCHY_VERSION= line that compose file
+// resolves its image tags from. They only work as a pair: bumping the URL
+// alone starts cleanly and silently runs the previous release's images.
+// (The curl pin sat on v0.5.7 through the v0.5.8 and v0.6.0 releases before
+// this step existed.)
 writeFileSync(
   readmePath,
-  bumpReadmeComposePin(readFileSync(readmePath, "utf8"), version),
+  bumpReadmeQuickstartPins(readFileSync(readmePath, "utf8"), version),
 );
-log(`  ✔ README.md quick-start pin → v${version}`);
+log(`  ✔ README.md quick-start pins → v${version}`);
 
 // Keep the marketplace listing templates pinned to the released version, so a
 // fresh DigitalOcean install starts on the current release rather than drifting
