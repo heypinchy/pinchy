@@ -40,6 +40,9 @@ const REF_BASED_ODOO_TOOLS = [
   "odoo_set_approval",
   "odoo_reconcile",
   "odoo_attach_file",
+  // pinchy#1078: odoo_delete joined the ref-based tools when its raw
+  // `ids: number[]` became `targets: _pinchy_ref[]`.
+  "odoo_delete",
 ] as const;
 
 // Ref-based odoo tools that do NOT yet have an E2E dispatch test, each with a
@@ -64,7 +67,7 @@ const PENDING_E2E: Record<string, string> = {};
  * Two shapes carry a `_pinchy_ref` input:
  *   1. `recordActionFactory({ ... name: "odoo_x" ... })` — the shared factory
  *      for record-action tools (confirm_order, validate_picking, …).
- *   2. An inline schema property named target / targetRef / invoice /
+ *   2. An inline schema property named target / targets / targetRef / invoice /
  *      counterpart, whose owning tool is the nearest following `name: "odoo_x"`.
  */
 function detectRefToolNames(source: string): Set<string> {
@@ -74,7 +77,11 @@ function detectRefToolNames(source: string): Set<string> {
     names.add(m[1]);
   }
 
-  const refProp = /\b(?:target|targetRef|invoice|counterpart):\s*\{/g;
+  // `targets` (plural, pinchy#1078's odoo_delete) is listed explicitly: the
+  // alternation is ordered, and while JS backtracking would reach it anyway,
+  // spelling it out is what tells the next reader that a multi-ref parameter
+  // counts here too.
+  const refProp = /\b(?:targets|target|targetRef|invoice|counterpart):\s*\{/g;
   for (const m of source.matchAll(refProp)) {
     const after = source.slice(m.index ?? 0);
     const nameMatch = after.match(/name:\s*"(odoo_[a-z_]+)"/);

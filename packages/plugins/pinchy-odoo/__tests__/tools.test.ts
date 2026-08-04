@@ -57,6 +57,9 @@ import plugin, {
   ODOO_AGGREGATE_TRUNCATION_HINT,
   ODOO_READ_DEFAULT_LIMIT,
   ODOO_READ_LIMIT_CAP,
+  ODOO_DELETE_DETAIL_LABEL_CAP,
+  ODOO_DELETE_DETAIL_BUDGET_BYTES,
+  buildDeleteAuditDetail,
 } from "../index";
 
 const MOVE_FIELDS: OdooField[] = [
@@ -3361,47 +3364,295 @@ describe("odoo_write", () => {
   });
 });
 
-describe("odoo_delete", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
+describe("buildDeleteAuditDetail (pinchy#1078)", () => {
+  const entries = (n: number, label: (i: number) => string) =>
+    Array.from({ length: n }, (_, i) => ({ id: i + 1, label: label(i + 1) }));
+
+  const bytes = (detail: unknown) => Buffer.byteLength(JSON.stringify(detail), "utf8");
+
+  it("lists every record when they fit", () => {
+    const detail = buildDeleteAuditDetail(
+      "res.partner",
+      entries(3, (i) => `Partner ${i}`)
+    );
+
+    expect(detail).toEqual({
+      model: "res.partner",
+      count: 3,
+      deleted: [
+        { id: 1, label: "Partner 1" },
+        { id: 2, label: "Partner 2" },
+        { id: 3, label: "Partner 3" },
+      ],
+    });
   });
 
-  it("deletes records on a permitted model", async () => {
-    mockUnlink.mockResolvedValue(true);
+  it("caps the list for readability and says how many it left out", () => {
+    const detail = buildDeleteAuditDetail(
+      "res.partner",
+      entries(40, (i) => `Partner ${i}`)
+    );
 
-    // Add delete permission for this test
-    const configWithDelete = {
-      ...agentConfig,
-      permissions: {
-        ...testPermissions,
-        "res.partner": ["read", "write", "create", "delete"],
-      },
-    };
-    const tools = createApi({ [agentId]: configWithDelete });
-    const tool = findTool(tools, "odoo_delete", agentId)!;
+    expect(detail.count).toBe(40);
+    expect(detail.deleted).toHaveLength(ODOO_DELETE_DETAIL_LABEL_CAP);
+    expect(detail.deletedTruncated).toBe(40 - ODOO_DELETE_DETAIL_LABEL_CAP);
+  });
 
-    const result = await tool.execute("call-1", {
+  // The count cap alone does NOT bound the byte size: an Odoo display_name has
+  // no length limit, so twenty long ones would pass a count check and blow
+  // AGENTS.md's 2048-byte detail budget.
+  it("stays inside the byte budget even when every display name is long", () => {
+    const long = "INV/2026/00042 — Müller Maschinenbau GmbH & Co. KG [Helmcraft GmbH]".repeat(6);
+    const detail = buildDeleteAuditDetail(
+      "account.move",
+      entries(40, () => long)
+    );
+
+    expect(bytes(detail)).toBeLessThanOrEqual(ODOO_DELETE_DETAIL_BUDGET_BYTES);
+    expect(bytes(detail)).toBeLessThan(2048);
+    // Whatever it had to drop is still accounted for.
+    expect((detail.deleted as unknown[]).length + (detail.deletedTruncated as number)).toBe(40);
+  });
+
+  it("clips a single pathological name instead of dropping the record", () => {
+    const detail = buildDeleteAuditDetail("account.move", [{ id: 1, label: "x".repeat(5000) }]);
+
+    const deleted = detail.deleted as Array<{ id: number; label: string }>;
+    expect(deleted).toHaveLength(1);
+    expect(deleted[0].id).toBe(1);
+    expect(deleted[0].label.length).toBeLessThan(200);
+    expect(deleted[0].label.endsWith("…")).toBe(true);
+    expect(detail.deletedTruncated).toBeUndefined();
+  });
+});
+
+// pinchy#1078: odoo_delete is the most destructive tool in the plugin and was
+// the ONE writing tool that took raw `ids: number[]` — no ref, no shape check,
+// no read-back. A hallucinated `ids: [40]` deleted a record the model had never
+// read. It now speaks the same opaque-ref language as every other governed
+// tool: `targets: _pinchy_ref[]`, so a delete is only reachable for a record
+// the model has demonstrably read, on this connection, of this model.
+describe("odoo_delete", () => {
+  const deleteConfig = {
+    ...agentConfig,
+    permissions: {
+      ...testPermissions,
+      "res.partner": ["read", "write", "create", "delete"],
+    },
+  };
+
+  function partnerRef(id: number, label: string, connectionId = "conn-test-1") {
+    return encodeRef({
+      integrationType: "odoo",
+      connectionId,
       model: "res.partner",
-      ids: [5, 6],
+      id,
+      label,
+    });
+  }
+
+  function deleteTool(config: AgentOdooConfig = deleteConfig) {
+    return findTool(createApi({ [agentId]: config }), "odoo_delete", agentId)!;
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubEnv("PINCHY_REF_TOKEN_KEY", "a".repeat(64));
+    mockUnlink.mockResolvedValue(true);
+    mockSearchRead.mockResolvedValue([]);
+  });
+
+  it("deletes the records its targets decode to", async () => {
+    mockSearchRead.mockResolvedValue([
+      { id: 5, display_name: "Müller GmbH" },
+      { id: 6, display_name: "Huber KG" },
+    ]);
+
+    const result = await deleteTool().execute("call-1", {
+      model: "res.partner",
+      targets: [partnerRef(5, "Müller GmbH"), partnerRef(6, "Huber KG")],
     });
 
     const data = JSON.parse(result.content[0].text);
     expect(data.success).toBe(true);
+    expect(data.deleted).toEqual([
+      { id: 5, label: "Müller GmbH" },
+      { id: 6, label: "Huber KG" },
+    ]);
     expect(mockUnlink).toHaveBeenCalledWith("res.partner", [5, 6]);
   });
 
-  it("denies delete on model without delete permission", async () => {
-    const tools = createApi({ [agentId]: agentConfig });
-    const tool = findTool(tools, "odoo_delete", agentId)!;
+  // AGENTS.md: "Include resource names in delete-event details because deleted
+  // rows may no longer be queryable." The audit route merges result.details into
+  // the audit row, so the names have to be read BEFORE the unlink — afterwards
+  // there is nothing left to read.
+  it("carries model, ids and names into the audit details", async () => {
+    mockSearchRead.mockResolvedValue([{ id: 5, display_name: "Müller GmbH" }]);
 
-    const result = await tool.execute("call-2", {
+    const result = await deleteTool().execute("call-2", {
       model: "res.partner",
-      ids: [1],
+      targets: [partnerRef(5, "Müller GmbH")],
+    });
+
+    expect(result.details).toEqual({
+      model: "res.partner",
+      count: 1,
+      deleted: [{ id: 5, label: "Müller GmbH" }],
+    });
+    // The name read has to happen while the record still exists.
+    expect(mockSearchRead.mock.invocationCallOrder[0]).toBeLessThan(
+      mockUnlink.mock.invocationCallOrder[0]
+    );
+  });
+
+  it("falls back to the ref's own signed label when the name read fails", async () => {
+    mockSearchRead.mockRejectedValue(new Error("AccessError: permission denied"));
+
+    const result = await deleteTool().execute("call-3", {
+      model: "res.partner",
+      targets: [partnerRef(5, "Müller GmbH")],
+    });
+
+    // A failed label lookup must not block the delete the user asked for — the
+    // ref itself carries a signed label from the read that minted it.
+    expect(mockUnlink).toHaveBeenCalledWith("res.partner", [5]);
+    expect(result.details).toEqual({
+      model: "res.partner",
+      count: 1,
+      deleted: [{ id: 5, label: "Müller GmbH" }],
+    });
+  });
+
+  it("refuses raw numeric ids and names the ref parameter to use instead", async () => {
+    const result = await deleteTool().execute("call-4", {
+      model: "res.partner",
+      ids: [40],
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("Raw numeric IDs are not accepted");
+    expect(result.content[0].text).toContain("targets");
+    expect(mockUnlink).not.toHaveBeenCalled();
+  });
+
+  it("refuses a ref minted for another Odoo connection", async () => {
+    const result = await deleteTool().execute("call-5", {
+      model: "res.partner",
+      targets: [partnerRef(5, "Müller GmbH", "conn-other")],
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("does not belong to this Odoo connection");
+    expect(mockUnlink).not.toHaveBeenCalled();
+  });
+
+  // The permission check reads `model`; a ref pointing somewhere else would
+  // unlink on a model the agent was never granted delete on.
+  it("refuses a target whose ref points at a different model", async () => {
+    const otherModelRef = encodeRef({
+      integrationType: "odoo",
+      connectionId: "conn-test-1",
+      model: "sale.order",
+      id: 5,
+      label: "S00005",
+    });
+
+    const result = await deleteTool().execute("call-6", {
+      model: "res.partner",
+      targets: [otherModelRef],
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("sale.order");
+    expect(mockUnlink).not.toHaveBeenCalled();
+  });
+
+  it("refuses a corrupted ref with a re-fetch instruction", async () => {
+    const result = await deleteTool().execute("call-7", {
+      model: "res.partner",
+      targets: ["pinchy_ref:v1:not-a-real-token"],
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/could not be decoded/);
+    expect(mockUnlink).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["a missing targets list", {}],
+    ["a bare string instead of a list", { targets: "pinchy_ref:v1:abc" }],
+    ["an empty list", { targets: [] }],
+    ["a list holding a number", { targets: [5] }],
+  ])("refuses %s", async (_label, extra) => {
+    const result = await deleteTool().execute("call-8", { model: "res.partner", ...extra });
+
+    expect(result.isError).toBe(true);
+    expect(mockUnlink).not.toHaveBeenCalled();
+  });
+
+  it("rejects the {item: …} array-serialization artifact", async () => {
+    const result = await deleteTool().execute("call-9", {
+      model: "res.partner",
+      targets: { item: partnerRef(5, "Müller GmbH") },
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('{"item": …}');
+    expect(mockUnlink).not.toHaveBeenCalled();
+  });
+
+  it("deduplicates repeated targets so the audit detail counts records, not calls", async () => {
+    mockSearchRead.mockResolvedValue([{ id: 5, display_name: "Müller GmbH" }]);
+    const ref = partnerRef(5, "Müller GmbH");
+
+    const result = await deleteTool().execute("call-10", {
+      model: "res.partner",
+      targets: [ref, ref],
+    });
+
+    expect(mockUnlink).toHaveBeenCalledWith("res.partner", [5]);
+    expect(result.details).toMatchObject({ count: 1 });
+  });
+
+  // AGENTS.md: "Keep audit detail under 2048 bytes. Summarize bulk operations."
+  it("summarizes a bulk delete instead of listing every name", async () => {
+    const ids = Array.from({ length: 40 }, (_, i) => i + 1);
+    mockSearchRead.mockResolvedValue(ids.map((id) => ({ id, display_name: `Partner ${id}` })));
+
+    const result = await deleteTool().execute("call-11", {
+      model: "res.partner",
+      targets: ids.map((id) => partnerRef(id, `Partner ${id}`)),
+    });
+
+    const details = result.details as Record<string, unknown>;
+    expect(mockUnlink).toHaveBeenCalledWith("res.partner", ids);
+    expect(details.count).toBe(40);
+    expect(details.deleted).toHaveLength(ODOO_DELETE_DETAIL_LABEL_CAP);
+    expect(details.deletedTruncated).toBe(40 - ODOO_DELETE_DETAIL_LABEL_CAP);
+    expect(JSON.stringify(details).length).toBeLessThan(2048);
+  });
+
+  it("denies delete on a model without delete permission before decoding anything", async () => {
+    const result = await deleteTool(agentConfig).execute("call-12", {
+      model: "res.partner",
+      targets: [partnerRef(1, "Müller GmbH")],
     });
 
     expect(result.content[0].text).toContain("Permission denied");
     expect(result.isError).toBe(true);
     expect(mockUnlink).not.toHaveBeenCalled();
+    expect(mockSearchRead).not.toHaveBeenCalled();
+  });
+
+  it("tells the model in its description that only refs are accepted", () => {
+    const tool = deleteTool();
+    const schema = tool.parameters as {
+      properties: Record<string, unknown>;
+      required: string[];
+    };
+    expect(tool.description).toMatch(/_pinchy_ref/);
+    expect(schema.properties.ids).toBeUndefined();
+    expect(schema.required).toEqual(["model", "targets"]);
   });
 });
 

@@ -6,6 +6,7 @@ import {
   waitForOdooMock,
   resetOdooMock,
   seedOdooRecords,
+  getOdooRecords,
   login,
   createOdooConnection,
   setAgentPermissions,
@@ -30,6 +31,8 @@ import {
   FAKE_OLLAMA_ODOO_RECONCILE_REF_TRIGGER,
   FAKE_OLLAMA_ODOO_ATTACH_FILE_REF_TRIGGER,
   FAKE_OLLAMA_ODOO_ATTACH_FILE_REF_FILENAME,
+  FAKE_OLLAMA_ODOO_DELETE_REF_TRIGGER,
+  FAKE_OLLAMA_ODOO_DELETE_REF_MODEL,
   FAKE_OLLAMA_ODOO_DUP_BILL_REF,
   FAKE_OLLAMA_ODOO_CREATE_DUP_BLOCK_TRIGGER,
   FAKE_OLLAMA_ODOO_CREATE_DUP_OVERRIDE_TRIGGER,
@@ -383,6 +386,15 @@ test.describe("Odoo dispatch probe (pinchy-odoo plugin coverage)", () => {
       { id: 9401, name: "MO/E2E-0001", state: "confirmed" },
     ]);
     await seedOdooRecords("purchase.order", [{ id: 9501, name: "P0E2E-01", state: "draft" }]);
+    // pinchy#1078 (odoo_delete): its own model, touched by no other probe — a
+    // delete probe sharing a model would remove the row another probe reads,
+    // making the suite order-dependent. TWO rows: odoo_read returns the first,
+    // so the probe deletes 9901 and 9902 proves the unlink was scoped to the
+    // ref it was given rather than to the whole model.
+    await seedOdooRecords(FAKE_OLLAMA_ODOO_DELETE_REF_MODEL, [
+      { id: 9901, name: "E2E Tag (delete target)" },
+      { id: 9902, name: "E2E Tag (must survive)" },
+    ]);
     // Reconcile (payment counterpart): a POSTED bill with one open payable line,
     // plus a payment whose journal entry has a matching open line on the SAME
     // account. js_assign_outstanding_line (the mock handler added for this)
@@ -478,6 +490,8 @@ test.describe("Odoo dispatch probe (pinchy-odoo plugin coverage)", () => {
       { model: "account.move.line", operation: "write" },
       { model: "account.payment", operation: "read" },
       { model: "ir.attachment", operation: "create" },
+      { model: FAKE_OLLAMA_ODOO_DELETE_REF_MODEL, operation: "read" },
+      { model: FAKE_OLLAMA_ODOO_DELETE_REF_MODEL, operation: "delete" },
     ]);
 
     // 7. Allow odoo_list_models (happy-path probe), odoo_read (failure probe +
@@ -499,6 +513,7 @@ test.describe("Odoo dispatch probe (pinchy-odoo plugin coverage)", () => {
           "odoo_set_approval",
           "odoo_reconcile",
           "odoo_attach_file",
+          "odoo_delete",
           "odoo_create",
         ],
       },
@@ -826,6 +841,23 @@ test.describe("Odoo dispatch probe (pinchy-odoo plugin coverage)", () => {
         await expect(readyChip).toBeVisible({ timeout: 20_000 });
       },
     });
+  });
+
+  test("odoo_delete dispatches on a runtime-minted _pinchy_ref", async ({ page }, testInfo) => {
+    // pinchy#1078. Round 1 reads res.partner.category (target ref), round 2
+    // deletes on that ref alone — the tool no longer accepts raw ids, so this
+    // chain is the ONLY way a delete can reach Odoo at all.
+    await runRefDispatchProbe(page, testInfo, {
+      trigger: FAKE_OLLAMA_ODOO_DELETE_REF_TRIGGER,
+      eventType: "tool.odoo_delete",
+      message: "delete the tag",
+    });
+
+    // outcome=success only proves the plugin was happy. Read the mock back: the
+    // targeted row is gone and its neighbour is not, which is what "scoped to
+    // the ref it was given" means.
+    const remaining = await getOdooRecords(FAKE_OLLAMA_ODOO_DELETE_REF_MODEL);
+    expect(remaining.map((r) => r.id)).toEqual([9902]);
   });
 
   // ── Deterministic vendor-bill duplicate guard (pinchy#721) ────────────────

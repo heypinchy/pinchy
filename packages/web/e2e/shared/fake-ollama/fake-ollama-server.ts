@@ -1295,6 +1295,13 @@ const ODOO_RECONCILE_REF_TRIGGER = "E2E_ODOO_RECONCILE_REF";
 const ODOO_RECONCILE_REF_RESPONSE = "Reconciled via ref: coverage probe complete.";
 const ODOO_ATTACH_FILE_REF_TRIGGER = "E2E_ODOO_ATTACH_FILE_REF";
 const ODOO_ATTACH_FILE_REF_RESPONSE = "File attached via ref: coverage probe complete.";
+// pinchy#1078: odoo_delete no longer takes raw ids, so its dispatch is now a
+// ref chain like every other governed write — read the record, reuse the
+// `_pinchy_ref` it returns. The model it deletes on (res.partner.category) is
+// touched by no other probe, so the row it removes cannot starve one.
+const ODOO_DELETE_REF_TRIGGER = "E2E_ODOO_DELETE_REF";
+const ODOO_DELETE_REF_RESPONSE = "Record deleted via ref: coverage probe complete.";
+const ODOO_DELETE_REF_MODEL = "res.partner.category";
 
 // The filename the odoo_attach_file probe attaches. The E2E spec uploads this
 // exact fixture via the composer (landing it in the agent's uploads/ dir) before
@@ -1380,6 +1387,13 @@ const REF_DISPATCH_PROBES: RefDispatchProbe[] = [
     toolName: "odoo_attach_file",
     buildArgs: (refs) => ({ targetRef: refs[0], filename: ODOO_ATTACH_FILE_REF_FILENAME }),
     response: ODOO_ATTACH_FILE_REF_RESPONSE,
+  },
+  {
+    trigger: ODOO_DELETE_REF_TRIGGER,
+    reads: [ODOO_DELETE_REF_MODEL],
+    toolName: "odoo_delete",
+    buildArgs: (refs) => ({ model: ODOO_DELETE_REF_MODEL, targets: [refs[0]] }),
+    response: ODOO_DELETE_REF_RESPONSE,
   },
 ];
 
@@ -2248,6 +2262,8 @@ export const FAKE_OLLAMA_ODOO_SET_APPROVAL_REF_TRIGGER = ODOO_SET_APPROVAL_REF_T
 export const FAKE_OLLAMA_ODOO_RECONCILE_REF_TRIGGER = ODOO_RECONCILE_REF_TRIGGER;
 export const FAKE_OLLAMA_ODOO_ATTACH_FILE_REF_TRIGGER = ODOO_ATTACH_FILE_REF_TRIGGER;
 export const FAKE_OLLAMA_ODOO_ATTACH_FILE_REF_FILENAME = ODOO_ATTACH_FILE_REF_FILENAME;
+export const FAKE_OLLAMA_ODOO_DELETE_REF_TRIGGER = ODOO_DELETE_REF_TRIGGER;
+export const FAKE_OLLAMA_ODOO_DELETE_REF_MODEL = ODOO_DELETE_REF_MODEL;
 export const FAKE_OLLAMA_ODOO_CREATE_NESTED_LINES_TRIGGER = ODOO_CREATE_NESTED_LINES_TRIGGER;
 export const FAKE_OLLAMA_ODOO_CREATE_NESTED_LINES_RESPONSE = ODOO_CREATE_NESTED_LINES_RESPONSE;
 export const FAKE_OLLAMA_ODOO_DUP_BILL_REF = ODOO_DUP_BILL_REF;

@@ -199,6 +199,14 @@ So after upgrading, a Knowledge Base agent finds nothing until you reindex it: o
 
 The `ollama pull bge-m3` step from the v0.9.0 notes no longer applies. If nothing else on your machine uses that model, you can remove it.
 
+#### Deleting in Odoo now requires reading the record first
+
+`odoo_delete` no longer takes record IDs. It takes the opaque references (`_pinchy_ref`) that `odoo_read` and `odoo_create` hand back, so an agent can only delete a record it actually retrieved — from this connection, on the model it says it is deleting. Every other Odoo write tool already worked this way; delete, the one that cannot be undone, was the exception.
+
+Nothing to configure, and agents pick this up on their own from the tool description. Two things are worth checking if you granted **Full** Odoo access to an agent: it needs **read** on any model it deletes from, since that is where a reference comes from (the only other source is the `odoo_create` that made the record), and if you wrote your own instructions telling an agent to call `odoo_delete` with `ids`, update them to read the records first and pass `targets`.
+
+Delete entries in the audit trail now carry the model, the record IDs and the display names, read from Odoo immediately before the delete. See [Agent Permissions → Odoo tools](/concepts/agent-permissions/#odoo-tools).
+
 ### Upgrade notes
 
 The standard flow applies:

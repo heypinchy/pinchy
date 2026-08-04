@@ -2173,6 +2173,73 @@ function clampOptionalLimit(limit: unknown): number | undefined {
  */
 export const ODOO_READ_RESULT_BUDGET_CHARS = 30000;
 
+/**
+ * How many `{id, label}` pairs a delete lists in its audit detail. A reader
+ * drilling into a bulk delete wants to recognize what went, not to scroll a
+ * hundred names — the exact set is `count` plus the tool params.
+ */
+export const ODOO_DELETE_DETAIL_LABEL_CAP = 20;
+
+/**
+ * Byte ceiling for that detail. AGENTS.md caps an audit `detail` at 2048
+ * bytes; the tool-use audit route merges its own fields (toolName, success,
+ * toolCallId, durationMs) on top of ours, so ours has to fit with room left.
+ *
+ * This is the real bound, and {@link ODOO_DELETE_DETAIL_LABEL_CAP} is not:
+ * a cap on how many labels we list says nothing about how long an Odoo
+ * `display_name` is. An invoice's runs to "INV/2026/00042 — Müller
+ * Maschinenbau GmbH & Co. KG [Helmcraft GmbH]" and there is no upper bound in
+ * the schema, so twenty of them can pass a count check and still blow the byte
+ * budget. Counting is the readability rule; this is the one that holds.
+ */
+export const ODOO_DELETE_DETAIL_BUDGET_BYTES = 1400;
+
+/** Per-label clip, so one pathological display_name cannot crowd out the rest. */
+const DELETE_LABEL_MAX_CHARS = 120;
+
+function deleteDetailShape(
+  model: string,
+  count: number,
+  shown: Array<{ id: number; label: string }>
+): Record<string, unknown> {
+  const truncated = count - shown.length;
+  return {
+    model,
+    count,
+    deleted: shown,
+    ...(truncated > 0 ? { deletedTruncated: truncated } : {}),
+  };
+}
+
+/**
+ * Build the audit detail for a delete: the model, how many records went, and
+ * as many `{id, label}` pairs as fit both caps above.
+ *
+ * `deletedTruncated` is not decoration. A list shortened in silence reads as
+ * "that was all of them", which is the one claim an append-only audit row must
+ * never make on its own.
+ */
+export function buildDeleteAuditDetail(
+  model: string,
+  deleted: Array<{ id: number; label: string }>
+): Record<string, unknown> {
+  const shown: Array<{ id: number; label: string }> = [];
+  for (const entry of deleted.slice(0, ODOO_DELETE_DETAIL_LABEL_CAP)) {
+    const label =
+      entry.label.length > DELETE_LABEL_MAX_CHARS
+        ? `${entry.label.slice(0, DELETE_LABEL_MAX_CHARS - 1)}…`
+        : entry.label;
+    const candidate = [...shown, { id: entry.id, label }];
+    const size = Buffer.byteLength(
+      JSON.stringify(deleteDetailShape(model, deleted.length, candidate)),
+      "utf8"
+    );
+    if (size > ODOO_DELETE_DETAIL_BUDGET_BYTES) break;
+    shown.push(candidate[candidate.length - 1]);
+  }
+  return deleteDetailShape(model, deleted.length, shown);
+}
+
 export const ODOO_READ_TRUNCATION_HINT =
   "Result truncated to fit the model's context budget: the first `returned` of " +
   "`total` matching records (in order) are included. To make the result smaller, " +
@@ -2755,6 +2822,43 @@ const plugin = {
         }
       }
       return { ok: true, verified: true };
+    }
+
+    /**
+     * pinchy#1078: read the display names of the records a delete is about to
+     * remove — BEFORE the unlink, because afterwards there is nothing left to
+     * read and AGENTS.md requires a delete's audit detail to name what it
+     * deleted ("deleted rows may no longer be queryable").
+     *
+     * Best-effort on purpose. The caller already holds a signed label per
+     * target (every `_pinchy_ref` carries the display name of the read that
+     * minted it), so a missing entry degrades to that instead of to nothing.
+     * Turning a failed name lookup into a failed delete would invent a new way
+     * for the user's actual request to fail, and would do it over a forensic
+     * nicety — so an agent granted delete but not read still deletes, with the
+     * ref's label in the audit row.
+     */
+    async function readDeleteLabels(
+      agentId: string,
+      config: AgentOdooConfig,
+      model: string,
+      ids: number[]
+    ): Promise<Map<number, string>> {
+      const labels = new Map<number, string>();
+      if (!checkPermission(config.permissions, model, "read")) return labels;
+      try {
+        const res = await withAuthRetry(agentId, config, (client) =>
+          client.searchRead(model, [["id", "in", ids]], { fields: ["id", "display_name"] })
+        );
+        for (const record of getSearchReadRecords(res)) {
+          const id = recordId(record);
+          const label = recordText(record, "display_name");
+          if (id !== null && label !== null && label.length > 0) labels.set(id, label);
+        }
+      } catch {
+        return labels;
+      }
+      return labels;
     }
 
     // Shared implementation of the list-models tool body. Reused by the
@@ -4654,37 +4758,129 @@ const plugin = {
         return {
           name: "odoo_delete",
           label: "Odoo Delete",
-          description: "Delete records from Odoo.",
+          description:
+            "Permanently delete records from Odoo. Pass the `_pinchy_ref` of every record to delete in `targets` (from `odoo_read` or `odoo_create`) — raw numeric IDs are NOT accepted, so you can only delete records you have actually looked up. Deleting cannot be undone: read the records first, show the user what you are about to remove, and delete only after they confirm.",
           parameters: {
             type: "object",
             properties: {
-              model: { type: "string", description: "Odoo model name" },
-              ids: {
+              model: {
+                type: "string",
+                description:
+                  "Odoo model name. Every ref in `targets` must point at a record of this model.",
+              },
+              targets: {
                 type: "array",
-                items: { type: "number" },
-                description: "IDs of records to delete",
+                items: { type: "string" },
+                description:
+                  'Opaque `_pinchy_ref` values of the records to delete, from `odoo_read` or `odoo_create`. Each is a token starting with `pinchy_ref:v1:` — do NOT construct strings like `"<model>,<id>"` and do NOT pass raw numeric IDs.',
               },
             },
-            required: ["model", "ids"],
+            required: ["model", "targets"],
           },
           async execute(_toolCallId: string, params: Record<string, unknown>) {
             try {
-              const model = params.model as string;
+              const model = params.model;
+              if (typeof model !== "string" || model.trim().length === 0) {
+                return errorResult(
+                  new Error(
+                    "`model` is required: pass the Odoo model name of the records to delete."
+                  )
+                );
+              }
               if (!checkPermission(config.permissions, model, "delete")) {
                 return permissionDenied("delete", model);
               }
 
+              // pinchy#1078: raw ids were how a hallucinated delete reached
+              // Odoo. `ids: [40]` needs no prior read, so nothing tied a delete
+              // to a record the model had actually seen — while every other
+              // governed write tool already spoke refs. Refusing loudly (rather
+              // than quietly accepting ids alongside targets) is the whole
+              // point: a silent fallback is a one-parameter route back to the
+              // hole this closes.
+              if (params.ids !== undefined) {
+                return errorResult(
+                  new Error(
+                    "Raw numeric IDs are not accepted for odoo_delete. Read the records with " +
+                      "`odoo_read` first and pass the `_pinchy_ref` each one carries in `targets` — " +
+                      "that is what keeps a delete to records that were actually looked up."
+                  )
+                );
+              }
+              // The `{item: …}` array-serialization artifact reaches `targets`
+              // exactly as it reaches `values` elsewhere (see hasItemWrappedArray);
+              // caught here so the model gets the actionable shape error rather
+              // than a decode failure per element.
+              if (hasItemWrappedArray(params.targets)) {
+                throw itemWrappedError("targets");
+              }
+
+              const targets = params.targets;
+              if (
+                !Array.isArray(targets) ||
+                targets.length === 0 ||
+                !targets.every((t) => typeof t === "string" && t.length > 0)
+              ) {
+                return errorResult(
+                  new Error(
+                    "`targets` is required: pass a non-empty array of `_pinchy_ref` strings " +
+                      "(from `odoo_read` or `odoo_create`), one per record to delete."
+                  )
+                );
+              }
+
+              // Decode everything before touching Odoo, so a mixed batch with
+              // one bad ref deletes nothing at all. The map also dedupes: the
+              // same ref twice is one record, and the audit detail should count
+              // records rather than mentions.
+              const labelByRef = new Map<number, string>();
+              for (const target of targets as string[]) {
+                const decoded = decodeTargetRef(config.connectionId, target, "targets");
+                // The permission check above read `model`; a ref pointing
+                // elsewhere would unlink on a model this agent may never delete.
+                if (decoded.model !== model) {
+                  return errorResult(
+                    new Error(
+                      `\`targets\` must all be ${model} refs — one of them points at ` +
+                        `${decoded.model}. Re-read the records you mean with \`odoo_read\` on ` +
+                        `${model} and pass those refs.`
+                    )
+                  );
+                }
+                if (!labelByRef.has(decoded.id)) labelByRef.set(decoded.id, decoded.label);
+              }
+              const ids = [...labelByRef.keys()];
+
+              // Names first — after the unlink there is nothing left to read.
+              const freshLabels = await readDeleteLabels(agentId, config, model, ids);
+
               const success = await withAuthRetry(agentId, config, (client) =>
-                client.unlink(model, params.ids as number[])
+                client.unlink(model, ids)
               );
 
+              const deleted = ids.map((id) => ({
+                id,
+                label: freshLabels.get(id) ?? labelByRef.get(id) ?? `${model}#${id}`,
+              }));
+              const details = buildDeleteAuditDetail(model, deleted);
+
               return {
-                content: [{ type: "text", text: JSON.stringify({ success }) }],
+                content: [
+                  {
+                    type: "text",
+                    text: JSON.stringify({
+                      success,
+                      count: deleted.length,
+                      deleted: details.deleted,
+                    }),
+                  },
+                ],
+                details,
               };
             } catch (error) {
               return errorResult(error, {
                 operation: "delete",
-                model: params.model as string,
+                model: typeof params.model === "string" ? params.model : undefined,
               });
             }
           },

@@ -24,6 +24,8 @@ Pinchy logs event types across several categories:
 
 Each tool execution produces **one audit entry** — logged when the tool call completes (end phase only). The detail includes the tool name, parameters, and result. Start events are received but not persisted.
 
+Some tools curate that detail instead of logging their raw parameters, because the parameters are either sensitive or meaningless on their own: `pinchy_write` records the path and a content hash rather than the file body, and `odoo_delete` records the model plus the IDs and display names of what it removed rather than the opaque references it was handed. Deletes get this treatment because their evidence is perishable — once the row is gone, nothing can resolve an ID back to a name.
+
 ## Event Status
 
 Every entry in the audit log — not just tool calls — carries a status that

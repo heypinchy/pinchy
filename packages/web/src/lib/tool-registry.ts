@@ -174,7 +174,7 @@ export const TOOL_REGISTRY: readonly ToolDefinition[] = [
   {
     id: "odoo_delete",
     label: "Odoo: Delete records",
-    description: "Delete records from Odoo",
+    description: "Delete records the agent has read from Odoo — cannot be undone",
     category: "powerful",
     integration: "odoo",
   },

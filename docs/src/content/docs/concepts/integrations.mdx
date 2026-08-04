@@ -148,7 +148,7 @@ When granting an agent access to an Odoo connection, you choose an access level:
 | **Full**         | read & write set + delete                           | Full CRUD — use with caution |
 | **Custom**       | You pick individual tools                           | Fine-grained control         |
 
-Each level maps directly to the Odoo tools that get enabled for the agent. See [Agent Permissions](/concepts/agent-permissions/#odoo-tools) for the full tool list, including the per-tool IDs and the cross-company write protection that applies to all Odoo agents regardless of level.
+Each level maps directly to the Odoo tools that get enabled for the agent. See [Agent Permissions](/concepts/agent-permissions/#odoo-tools) for the full tool list, including the per-tool IDs, the cross-company write protection that applies to all Odoo agents regardless of level, and why **Full** still confines a delete to records the agent has actually read.
 
 ### What happens when Odoo permissions change
 

@@ -127,9 +127,15 @@ When you connect Odoo and grant an agent access to it, Pinchy automatically enab
 | **Reconcile payment**     | `odoo_reconcile`           | Match a posted bill/invoice against a bank transaction or payment, and verify the result on the document       | Read & Write          |
 | **Update records**        | `odoo_write`               | Modify existing records                                                                                        | Read & Write          |
 | **Attach file**           | `odoo_attach_file`         | Attach an uploaded file to an existing record as `ir.attachment`                                               | Read & Write          |
-| **Delete records**        | `odoo_delete`              | Delete records                                                                                                 | Full                  |
+| **Delete records**        | `odoo_delete`              | Delete records the agent has read — it takes the references `odoo_read` returns, never raw record IDs          | Full                  |
 
 For example, setting an agent to "Read-only" enables the five read-shaped tools. "Read & Write" adds create, the three activity tools (schedule / complete / reschedule), the governed action tools (confirm order, apply inventory, validate picking, mark MO done, set approval), write, and attach-file. "Full" adds delete.
+
+:::caution[Delete only reaches records the agent looked up]
+Deleting is the one thing in Odoo we cannot undo for you, so `odoo_delete` does not accept record IDs. It takes the opaque reference (`_pinchy_ref`) that `odoo_read` and `odoo_create` hand back — which an agent can only hold for a record it actually retrieved, on this connection, of this model. A number the model invented on its own is refused before it reaches Odoo, and so is a reference belonging to a different model than the one being deleted.
+
+The audit entry names what went: the model, how many records, and their IDs with display names — read from Odoo in the moment before the delete, because afterwards nothing can look them up again. A bulk delete lists the first 20 and says how many more it stands for, so the row stays inside the audit size budget without ever implying it listed everything.
+:::
 
 :::note[Cross-company write protection]
 For multi-company Odoo databases, the `pinchy-odoo` plugin refuses to write a record whose embedded `_pinchy_ref` company tag disagrees with the company implied by the relation chain (top-level field only). This prevents a class of silent cross-company mistakes — for example, applying a Company A fiscal position to a partner that lives under Company B. See [Connect Odoo → Multi-company databases](/guides/connect-odoo/#multi-company-databases) for the full story.

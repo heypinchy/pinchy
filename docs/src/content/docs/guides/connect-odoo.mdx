@@ -77,6 +77,8 @@ A connection alone doesn't give any agent access. You need to explicitly grant i
 
 Each level maps directly to the Odoo tools that get enabled for the agent. See [Agent Permissions](/concepts/agent-permissions/) for the full tool list.
 
+Granting **Full** does not mean the agent can delete anything it can name: `odoo_delete` only accepts the references a read hands back, so a delete is confined to records the agent actually looked up. See [Delete only reaches records the agent looked up](/concepts/agent-permissions/#odoo-tools).
+
 ## 5. Test it
 
 Open the agent's chat and try a few queries:
