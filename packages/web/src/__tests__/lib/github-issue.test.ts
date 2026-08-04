@@ -233,8 +233,9 @@ describe("buildIssueBody", () => {
   });
 
   // The distinction the marker exists for: no marker means the logs are
-  // simply not there (anonymous setup-wizard caller, or diagnostics that
-  // never answered), and whoever sees that does hold the host shell.
+  // simply not there (an anonymous caller, or diagnostics that never
+  // answered), so the host command stays. It must NOT read as the withheld
+  // case, which drops that command entirely.
   it("should keep the host command when diagnostics carry no logs and no withheld marker", () => {
     const body = buildIssueBody({
       error: "Setup failed",
@@ -247,7 +248,26 @@ describe("buildIssueBody", () => {
       },
     });
     expect(body).toContain("docker compose logs pinchy");
-    expect(body).not.toMatch(/administrator/i);
+    expect(body).not.toMatch(/only admins can read server logs/i);
+  });
+
+  // An anonymous caller is not necessarily the installer: `app/error.tsx` is
+  // the app's only error boundary, so it renders the reporter on `/login` and
+  // `/invite/[token]` as well, where the caller is a member with no host
+  // account. The server cannot tell the two apart from a missing session, so
+  // the copy carries a second route for whoever has no shell.
+  it("should offer the administrator as a fallback when no marker says who the reporter is", () => {
+    const body = buildIssueBody({
+      error: "Invite could not be claimed",
+      page: "/invite/abc123",
+      diagnostics: {
+        database: "connected",
+        openclaw: "connected",
+        version: "0.1.0",
+        nodeEnv: "production",
+      },
+    });
+    expect(body).toMatch(/ask your Pinchy administrator/i);
   });
 
   it("should handle special characters in error messages", () => {

@@ -122,9 +122,16 @@ export function buildIssueBody(context: IssueContext): string {
       "```"
     );
   } else {
+    // No marker means the server did not say why the logs are missing —
+    // either there was no session to withhold for, or diagnostics never
+    // answered. That is not the same as "this reporter holds the host
+    // shell": `app/error.tsx` is the only error boundary in the app, so it
+    // renders this link on `/login` and `/invite/[token]` too, where the
+    // anonymous caller is a member and not the installer. The copy names
+    // both routes rather than guessing which one is reading it.
     sections.push(
       "",
-      "**Logs:** (run `docker compose logs pinchy --tail 200` and paste below)",
+      "**Logs:** (run `docker compose logs pinchy --tail 200` on the server and paste below — if you have no shell there, ask your Pinchy administrator)",
       "```",
       "",
       "```"

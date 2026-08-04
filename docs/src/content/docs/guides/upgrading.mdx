@@ -243,7 +243,7 @@ Repeated wrong guesses at the current password are also throttled now — five a
 
 A bug report filed from inside Pinchy used to carry the server's recent log lines for anyone signed in. That buffer is process-global — it holds error output from everyone's sessions, not only the reporter's — so it now goes to admins alone, and email addresses and secret-shaped strings are stripped out of it on the way in.
 
-Nothing to configure. A member's bug report now says the logs were left out and asks them to forward it to you rather than to run anything on the host. When one reaches you, `docker compose logs pinchy --tail 200` gives you the same output, unredacted.
+Nothing to configure. A member's bug report now says the logs were left out and asks them to forward it to you rather than to run anything on the host. When one reaches you, `docker compose logs pinchy --tail 200` gives you the same lines — unredacted, so read them there before deciding what goes into a public issue.
 
 ### Database migrations
 
