@@ -18,11 +18,26 @@ permissions:
 
 # Two tags pushed in quick succession (or a tag push racing a
 # workflow_dispatch republish) must not run their Docker pushes
-# concurrently — they can overtake each other on `:latest`/the version tag.
-# Never cancel: a release in progress must run to completion; the second
-# waits instead.
+# concurrently — they can overtake each other on `:latest`/the version tag,
+# and the loser silently leaves the tag pointing at the older image.
+#
+# The group is a CONSTANT, and that is the whole point. `:latest` is one
+# resource for the entire repository, so every release run competes with
+# every other one. `release-${{ github.ref }}` would look like this fix and
+# serialize almost nothing: a tag push carries `refs/tags/vX.Y.Z`, so two
+# tags land in two different groups and race exactly as before — and a
+# workflow_dispatch republish names its tag in `inputs.tag` (see the checkout
+# step) while running from a branch ref, so it would never share a group with
+# any tag push, not even a republish of the tag still building.
+#
+# Never cancel: a release in progress must run to completion; the next one
+# waits. The cost is that GitHub keeps only ONE run pending per group, so a
+# third release starting while one runs and one waits cancels the waiting
+# one. That needs three tags inside a single ~20-minute build, and it is
+# loud when it happens (no GitHub Release is created for the cancelled run),
+# whereas a `:latest` that points at the wrong image is silent and permanent.
 concurrency:
-  group: release-${{ github.ref }}
+  group: release
   cancel-in-progress: false
 
 jobs:

@@ -9,8 +9,20 @@ permissions:
   packages: write
 
 # Two pushes to the same branch in quick succession must not push the moving
-# tag (:next / rc-X.Y) concurrently — they can overtake each other. Never
-# cancel: a build in progress must run to completion; the second waits.
+# tag (:next / rc-X.Y) concurrently — they can overtake each other.
+#
+# Keyed on the ref, unlike release.yml's constant group: the moving tag is
+# derived per branch (`movingTagForRef`: main → next, release/X.Y → rc-X.Y),
+# so the branch IS the contended resource. Two release branches can never
+# collide and must not queue behind each other. `:sha-<short>` is immutable
+# and unique per commit, so it never collides either.
+#
+# Never cancel a build in flight. The cost: GitHub keeps only one run pending
+# per group, so three pushes to one branch inside a single build — a
+# merge-queue batch can do that — cancel the middle one, and that commit's
+# `:sha-<short>` image is never published. The moving tag stays correct
+# regardless (the newest push supersedes it); re-run the workflow if you need
+# to pin that exact commit.
 concurrency:
   group: pre-release-${{ github.ref }}
   cancel-in-progress: false
