@@ -26,7 +26,11 @@ interface ToolFactory {
       toolCallId: string,
       params: Record<string, unknown>,
       signal?: AbortSignal
-    ) => Promise<{ content: { type: string; text: string }[]; isError?: boolean }>;
+    ) => Promise<{
+      content: { type: string; text: string }[];
+      isError?: boolean;
+      details?: unknown;
+    }>;
   } | null;
 }
 
@@ -289,7 +293,7 @@ describe("pinchy-web plugin", () => {
       // #404 audit contract: OpenClaw strips isError before forwarding the
       // tool result to /api/internal/audit/tool-use, so details.error is the
       // audit route's only remaining failure signal.
-      expect((result as any).details).toEqual({ error: result.content[0].text });
+      expect(result.details).toEqual({ error: result.content[0].text });
     });
 
     it("returns isError when braveSearch throws", async () => {
@@ -308,7 +312,7 @@ describe("pinchy-web plugin", () => {
       expect(result.isError).toBe(true);
       expect(result.content[0].text).toContain("Search failed");
       expect(result.content[0].text).toContain("API rate limit");
-      expect((result as any).details).toEqual({ error: result.content[0].text });
+      expect(result.details).toEqual({ error: result.content[0].text });
     });
 
     it("surfaces the actionable credentials-endpoint message when the connection was deleted (404)", async () => {
@@ -588,7 +592,7 @@ describe("pinchy-web plugin", () => {
       // #404 audit contract: OpenClaw strips isError before forwarding the
       // tool result to /api/internal/audit/tool-use, so details.error is the
       // audit route's only remaining failure signal.
-      expect((result as any).details).toEqual({ error: "Domain blocked for this agent." });
+      expect(result.details).toEqual({ error: "Domain blocked for this agent." });
     });
 
     it("returns isError when webFetch throws", async () => {
@@ -607,7 +611,7 @@ describe("pinchy-web plugin", () => {
       expect(result.isError).toBe(true);
       expect(result.content[0].text).toContain("Fetch failed");
       expect(result.content[0].text).toContain("Network timeout");
-      expect((result as any).details).toEqual({ error: result.content[0].text });
+      expect(result.details).toEqual({ error: result.content[0].text });
     });
 
     it("handles non-Error throws from webFetch", async () => {

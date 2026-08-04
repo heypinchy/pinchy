@@ -341,7 +341,7 @@ describe("pinchy-knowledge plugin", () => {
     // audit route's only remaining failure signal. The two HTTP/network
     // failure paths above already set details.error (see "curated details"
     // below); this covers the third — the local, pre-fetch validation path.
-    expect((result as any).details).toEqual({ error: "A search query is required." });
+    expect(result.details).toEqual({ error: "A search query is required." });
   });
 
   it("exports plugin definition with id, name, and configSchema", async () => {

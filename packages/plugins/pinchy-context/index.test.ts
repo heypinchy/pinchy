@@ -157,6 +157,11 @@ describe("pinchy-context plugin", () => {
     expect(result.content[0].text).toContain("the limit is 16,000 characters");
   });
 
+  // OpenClaw strips the MCP `isError` flag before forwarding the tool result
+  // to /api/internal/audit/tool-use, so details.error is the audit route's
+  // only remaining failure signal (#404). Without it a failed save is
+  // silently audited as outcome: success — hence the details assertion here
+  // and on the save_org_context sibling below.
   it("save_user_context marks thrown errors with isError=true", async () => {
     const api = createMockApi(defaultConfig);
     const { default: plugin } = await import("./index");
@@ -172,6 +177,7 @@ describe("pinchy-context plugin", () => {
     const result = await tool.execute("call-1", { content: "..." });
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toBe("Network down");
+    expect(result.details).toEqual({ error: "Network down" });
   });
 
   it("aborts a hung save_user_context POST via AbortSignal.timeout(10_000) instead of blocking forever", async () => {
@@ -245,43 +251,6 @@ describe("pinchy-context plugin", () => {
     const result = await tool.execute("call-1", { content: "..." });
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toBe("Timeout");
-  });
-
-  it("save_user_context error path sets details.error (#404 audit contract)", async () => {
-    // OpenClaw strips the MCP `isError` flag before forwarding the tool
-    // result to /api/internal/audit/tool-use; details.error is the audit
-    // route's only remaining failure signal. Without it a failed
-    // pinchy_save_user_context call is silently audited as outcome: success.
-    const api = createMockApi(defaultConfig);
-    const { default: plugin } = await import("./index");
-    plugin.register!(api as any);
-
-    const factory = mockRegisterTool.mock.calls.find(
-      (call: any[]) => call[1]?.name === "pinchy_save_user_context"
-    )?.[0];
-    const tool = factory({ agentId: "agent-1" });
-
-    global.fetch = vi.fn().mockRejectedValueOnce(new Error("Network down"));
-
-    const result = await tool.execute("call-1", { content: "..." });
-    expect(result.isError).toBe(true);
-    expect(result.details).toEqual({ error: "Network down" });
-  });
-
-  it("save_org_context error path sets details.error (#404 audit contract)", async () => {
-    const api = createMockApi(defaultConfig);
-    const { default: plugin } = await import("./index");
-    plugin.register!(api as any);
-
-    const factory = mockRegisterTool.mock.calls.find(
-      (call: any[]) => call[1]?.name === "pinchy_save_org_context"
-    )?.[0];
-    const tool = factory({ agentId: "agent-2" });
-
-    global.fetch = vi.fn().mockRejectedValueOnce(new Error("Timeout"));
-
-    const result = await tool.execute("call-1", { content: "..." });
-    expect(result.isError).toBe(true);
     expect(result.details).toEqual({ error: "Timeout" });
   });
 
