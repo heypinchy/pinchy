@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { open } from "fs/promises";
+import { constants as fsConstants } from "fs";
 import { extname } from "path";
 import { fileTypeFromBuffer } from "file-type";
 import { ALLOWED_ATTACHMENT_MIMES, ALLOWED_TEXT_MIMES } from "@/lib/upload-validation";
@@ -24,6 +25,24 @@ import { EXTENSION_TO_MIME } from "@/lib/attachment-mime";
 const DELIVERY_ONLY_BINARY_MIMES = new Set<string>([
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 ]);
+
+/**
+ * Read-only, and refuse to follow a symlink at the final component.
+ *
+ * Every caller has already resolved symlinks and checked containment on the
+ * RESULT (`resolveAllowedFile`, `realpathWithinDir`), so a path arriving here
+ * is never legitimately a link — a realpath's output cannot be one. That makes
+ * `O_NOFOLLOW` free for correct callers and load-bearing for two wrong ones:
+ * a future caller that passes the REQUESTED path instead of the resolved one
+ * (the containment check would then be read once and the link followed again
+ * here, buying nothing), and the window between a caller's check and this
+ * open, in which a link could be swapped in. Both surface as ELOOP → 404
+ * rather than as bytes from outside the workspace.
+ *
+ * `?? 0` because Windows has no `O_NOFOLLOW`: there the flag degrades to a
+ * plain read rather than poisoning the mask with `undefined` (`NaN`).
+ */
+const READ_NO_SYMLINK = fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0);
 
 /**
  * The MIME types this serving route can actually stream — the union of the
@@ -53,7 +72,10 @@ export const SERVABLE_DELIVERED_MIMES: ReadonlySet<string> = new Set<string>([
  *
  * The caller MUST have already sanitized the filename and verified `fullPath`
  * is contained within the intended workspace zone — this helper does not
- * re-validate the path.
+ * re-validate the path. Pass the SYMLINK-RESOLVED path (what
+ * `resolveAllowedFile` and `realpathWithinDir` return), not the requested one:
+ * the open below follows symlinks, so handing it an unresolved path would
+ * re-follow a link the caller's containment check has already read once.
  *
  * Returns 404 if the file is missing/not a regular file, 415 if its content-type
  * is outside the upload allowlist, 200 with the bytes otherwise.
@@ -66,10 +88,12 @@ export async function streamWorkspaceFile(
   // check-then-open on the path is a TOCTOU race (js/file-system-race). A
   // missing/permission-denied file surfaces as the open throwing → 404. The
   // handle's own stat is authoritative for the bytes we're about to read.
+  // O_NOFOLLOW (see READ_NO_SYMLINK) makes "the caller passed the resolved
+  // path" a check rather than a comment: a link here is ELOOP → 404.
   let fh;
   try {
     // eslint-disable-next-line security/detect-non-literal-fs-filename -- caller sanitized + containment-checked the path
-    fh = await open(fullPath, "r");
+    fh = await open(fullPath, READ_NO_SYMLINK);
   } catch {
     return new NextResponse("Not found", { status: 404 });
   }

@@ -78,6 +78,12 @@ function isContained(path: string, root: string): boolean {
  * escape) — callers here don't distinguish 403 from 404 the way
  * `resolveAllowedFile`'s callers do, they already reduce every failure to a
  * uniform 404 (or, for `artifacts`, to trying the next zone).
+ *
+ * Callers MUST open the RETURNED path, never the `fullPath` they passed in.
+ * This is a check that precedes an open, so opening the input would follow the
+ * symlink a second time — against whatever it points at by then — and the
+ * check would buy nothing. Opening the returned path leaves only the much
+ * narrower window of the resolved file itself being replaced in between.
  */
 export async function realpathWithinDir(fullPath: string, dir: string): Promise<string | null> {
   let realDir: string;

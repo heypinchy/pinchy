@@ -22,7 +22,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, rmSync, realpathSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { resolveAllowedFile, FILE_SERVE_ROOTS } from "@/lib/agent-file-access";
+import { resolveAllowedFile, realpathWithinDir, FILE_SERVE_ROOTS } from "@/lib/agent-file-access";
 
 let tmpRoot: string;
 let serveRoot: string;
@@ -102,6 +102,60 @@ describe("resolveAllowedFile — absolute serve-root ceiling", () => {
   it("keeps denying an empty allowlist", async () => {
     const res = await resolveAllowedFile(insideFile, [], [serveRoot]);
     expect(res).toEqual({ ok: false, status: 403 });
+  });
+});
+
+/**
+ * `realpathWithinDir` is the single-directory sibling used by the two routes
+ * that serve one fixed workspace subdirectory (`uploads/`, `artifacts/`).
+ * Those routes cover it end to end, but only through the one shape they
+ * produce — a filename that already passed `sanitizeFilename` — so the edge
+ * cases below (unreadable dir, prefix-sibling directory, the returned value's
+ * own contract) have no other home.
+ */
+describe("realpathWithinDir — single-directory real-path containment", () => {
+  it("returns the resolved path for a plain file inside the directory", async () => {
+    expect(await realpathWithinDir(insideFile, serveRoot)).toBe(insideFile);
+  });
+
+  it("returns the symlink's TARGET when the target stays inside the directory", async () => {
+    // The return value is the contract: callers must open THIS path rather
+    // than the one they passed in, or the symlink is followed a second time
+    // at open() and the check buys nothing.
+    const target = join(serveRoot, "real.pdf");
+    writeFileSync(target, "%PDF-1.4\n");
+    const link = join(serveRoot, "link.pdf");
+    symlinkSync(target, link);
+
+    expect(await realpathWithinDir(link, serveRoot)).toBe(target);
+  });
+
+  it("returns null for a symlink inside the directory pointing outside it", async () => {
+    const trap = join(serveRoot, "looks-innocent.pdf");
+    symlinkSync(outsideFile, trap);
+    expect(await realpathWithinDir(trap, serveRoot)).toBeNull();
+  });
+
+  it("returns null for a path that does not exist", async () => {
+    expect(await realpathWithinDir(join(serveRoot, "nope.pdf"), serveRoot)).toBeNull();
+  });
+
+  it("returns null when the directory itself does not exist", async () => {
+    // Fails closed rather than throwing: a workspace whose zone was never
+    // created is a 404 for the caller, not a 500.
+    const missingDir = join(tmpRoot, "no-such-zone");
+    expect(await realpathWithinDir(join(missingDir, "invoice.pdf"), missingDir)).toBeNull();
+  });
+
+  it("returns null for a sibling directory that merely shares a name prefix", async () => {
+    // `/…/data-evil` must not count as inside `/…/data`. The separator-bounded
+    // comparison is what makes that true; a raw startsWith would serve it.
+    const prefixSibling = join(tmpRoot, "data-evil");
+    mkdirSync(prefixSibling, { recursive: true });
+    const leak = join(prefixSibling, "leak.pdf");
+    writeFileSync(leak, "%PDF-1.4\n");
+
+    expect(await realpathWithinDir(leak, serveRoot)).toBeNull();
   });
 });
 

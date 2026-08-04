@@ -51,6 +51,18 @@ afterEach(() => {
 
 const PDF_BYTES = Buffer.from("%PDF-1.4\n" + "\x00".repeat(128));
 
+// The bytes a symlink escape must never deliver. Shaped so the route WOULD
+// serve them without the containment check: real PDF magic bytes, so
+// `file-type` sniffs `application/pdf` and the MIME allowlist waves them
+// through. Content with no magic bytes is the weaker fixture — `.pdf` is
+// absent from EXTENSION_TO_MIME, so the unfixed route answers 415 and the
+// test then passes on a MIME rejection rather than on the leak (a check that
+// only ever turned 415 into 404 would satisfy it). Verified by reproduction:
+// reverted to the pre-fix routes, this payload is answered 200 with the
+// secret in the body.
+const SECRET_MARKER = "SECRET-CONTENTS-NOT-AN-UPLOAD";
+const SECRET_PDF_BYTES = Buffer.from("%PDF-1.4\n" + SECRET_MARKER + "\n" + "\x00".repeat(128));
+
 function writeUpload(agentId: string, filename: string, bytes: Buffer) {
   const dir = join(tmpRoot, agentId, "uploads");
   mkdirSync(dir, { recursive: true });
@@ -193,18 +205,37 @@ describe("GET /api/agents/[agentId]/uploads/[filename]", () => {
   it("returns 404 when a symlink inside uploads/ resolves outside the workspace", async () => {
     const outsideDir = mkdtempSync(join(tmpdir(), "pinchy-uploads-escape-target-"));
     const secretPath = join(outsideDir, "secret.pdf");
-    writeFileSync(secretPath, "SECRET CONTENTS, NOT AN UPLOAD");
+    writeFileSync(secretPath, SECRET_PDF_BYTES);
 
     const uploadsDir = join(tmpRoot, "agent-1", "uploads");
     mkdirSync(uploadsDir, { recursive: true });
     symlinkSync(secretPath, join(uploadsDir, "escape.pdf"));
-    mockOwnershipLookup.mockResolvedValue([{ id: "file-1" }]);
 
     try {
       const res = await callGET("agent-1", "escape.pdf");
+      // Both assertions, deliberately: the status alone would still pass if a
+      // future change served the bytes under some other code, and the body
+      // alone would pass on a 403 that hands an attacker an existence oracle.
       expect(res.status).toBe(404);
+      const body = Buffer.from(await res.arrayBuffer());
+      expect(body.includes(SECRET_MARKER)).toBe(false);
     } finally {
       rmSync(outsideDir, { recursive: true, force: true });
     }
+  });
+
+  // The counterpart the escape test cannot give: what is enforced is
+  // CONTAINMENT, not "no symlinks". Without this, rejecting every symlink
+  // outright would satisfy the test above while silently breaking any
+  // workspace that uses one.
+  it("still serves a symlink inside uploads/ whose target stays inside uploads/", async () => {
+    writeUpload("agent-1", "invoice.pdf", PDF_BYTES);
+    const uploadsDir = join(tmpRoot, "agent-1", "uploads");
+    symlinkSync(join(uploadsDir, "invoice.pdf"), join(uploadsDir, "link.pdf"));
+
+    const res = await callGET("agent-1", "link.pdf");
+    expect(res.status).toBe(200);
+    const body = Buffer.from(await res.arrayBuffer());
+    expect(body.equals(PDF_BYTES)).toBe(true);
   });
 });

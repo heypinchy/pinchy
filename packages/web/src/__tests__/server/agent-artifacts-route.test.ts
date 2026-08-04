@@ -52,6 +52,17 @@ afterEach(() => {
 
 const PDF_BYTES = Buffer.from("%PDF-1.4\n" + "\x00".repeat(128));
 
+// The bytes a symlink escape must never deliver. Shaped so the route WOULD
+// serve them without the containment check: real PDF magic bytes, so
+// `file-type` sniffs `application/pdf` and the MIME allowlist waves them
+// through. Content with no magic bytes is the weaker fixture — `.pdf` is
+// absent from EXTENSION_TO_MIME, so the unfixed route answers 415 and the
+// test then passes on a MIME rejection rather than on the leak. Verified by
+// reproduction: reverted to the pre-fix routes, this payload is answered 200
+// with the secret in the body.
+const SECRET_MARKER = "SECRET-CONTENTS-NOT-A-DELIVERY";
+const SECRET_PDF_BYTES = Buffer.from("%PDF-1.4\n" + SECRET_MARKER + "\n" + "\x00".repeat(128));
+
 function writeArtifact(agentId: string, zone: string, filename: string, bytes: Buffer) {
   const dir = join(tmpRoot, agentId, zone);
   mkdirSync(dir, { recursive: true });
@@ -162,16 +173,45 @@ describe("GET /api/agents/[agentId]/artifacts/[filename]", () => {
   it("returns 404 when a symlink inside a delivery zone resolves outside the workspace", async () => {
     const outsideDir = mkdtempSync(join(tmpdir(), "pinchy-artifacts-escape-target-"));
     const secretPath = join(outsideDir, "secret.pdf");
-    writeFileSync(secretPath, "SECRET CONTENTS, NOT A DELIVERY");
+    writeFileSync(secretPath, SECRET_PDF_BYTES);
 
     const workbenchDir = join(tmpRoot, "agent-1", "workbench");
     mkdirSync(workbenchDir, { recursive: true });
     symlinkSync(secretPath, join(workbenchDir, "escape.pdf"));
-    mockGrantLookup.mockResolvedValue([{ id: "grant-1" }]);
 
     try {
       const res = await callGET("agent-1", "escape.pdf");
+      // Both assertions, deliberately: the status alone would still pass if a
+      // future change served the bytes under some other code, and the body
+      // alone would pass on a 403 that hands an attacker an existence oracle.
       expect(res.status).toBe(404);
+      const body = Buffer.from(await res.arrayBuffer());
+      expect(body.includes(SECRET_MARKER)).toBe(false);
+    } finally {
+      rmSync(outsideDir, { recursive: true, force: true });
+    }
+  });
+
+  // The branch the escape test above cannot reach: a failed containment check
+  // must `continue` to the next zone, not short-circuit the whole search. So
+  // an escaping symlink in `workbench` must neither be served NOR shadow the
+  // legitimate file of the same name in `uploads`. Pre-fix this test is red in
+  // the worst way — 200 carrying the secret.
+  it("skips an escaping symlink in workbench and still serves the real file from uploads", async () => {
+    const outsideDir = mkdtempSync(join(tmpdir(), "pinchy-artifacts-escape-target-"));
+    const secretPath = join(outsideDir, "secret.pdf");
+    writeFileSync(secretPath, SECRET_PDF_BYTES);
+
+    const workbenchDir = join(tmpRoot, "agent-1", "workbench");
+    mkdirSync(workbenchDir, { recursive: true });
+    symlinkSync(secretPath, join(workbenchDir, "report.pdf"));
+    writeArtifact("agent-1", "uploads", "report.pdf", PDF_BYTES);
+
+    try {
+      const res = await callGET("agent-1", "report.pdf");
+      expect(res.status).toBe(200);
+      const body = Buffer.from(await res.arrayBuffer());
+      expect(body.equals(PDF_BYTES)).toBe(true);
     } finally {
       rmSync(outsideDir, { recursive: true, force: true });
     }

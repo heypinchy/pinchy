@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "fs";
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, symlinkSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { streamWorkspaceFile } from "@/lib/serve-workspace-file";
@@ -58,5 +58,25 @@ describe("streamWorkspaceFile xlsx support (#788)", () => {
     const res = await streamWorkspaceFile(path, "report.docx");
 
     expect(res.status).toBe(415);
+  });
+});
+
+describe("streamWorkspaceFile refuses to follow a symlink", () => {
+  // The helper's contract is that the caller has already resolved symlinks and
+  // checked containment on the RESULT. A doc comment saying so protects
+  // nothing; O_NOFOLLOW makes it a check. A caller that passes the requested
+  // path instead of the resolved one would otherwise re-follow the link here,
+  // against whatever it points at by then — which is the whole defect the
+  // containment check in the uploads/artifacts routes exists to close.
+  it("returns 404 for a symlink even when its target is perfectly servable", async () => {
+    const target = join(tmpRoot, "real.pdf");
+    writeFileSync(target, Buffer.from("%PDF-1.4\n" + "\x00".repeat(128)));
+    const link = join(tmpRoot, "link.pdf");
+    symlinkSync(target, link);
+
+    // The target itself serves fine — so a 404 for the link is the flag doing
+    // its job, not an unservable fixture.
+    expect((await streamWorkspaceFile(target, "real.pdf")).status).toBe(200);
+    expect((await streamWorkspaceFile(link, "link.pdf")).status).toBe(404);
   });
 });

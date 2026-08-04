@@ -64,10 +64,9 @@ export const GET = withAuth<Params>(async (_req, { params }, session) => {
   // The grant authorizes the file but no longer says which zone it lives in.
   // Try each known zone in order; for each, re-resolve the final path and verify
   // it stays inside <workspace>/<zone> (defence in depth, even though
-  // sanitizeFilename already rejects "/" and ".."). streamWorkspaceFile opens
-  // the path directly and returns 404 when it doesn't exist — so we serve the
-  // first zone that yields a non-404 (no check-then-open TOCTOU). Found in
-  // none => 404.
+  // sanitizeFilename already rejects "/" and ".."). streamWorkspaceFile returns
+  // 404 when the file isn't there, so we serve the first zone that yields a
+  // non-404. Found in none => 404.
   const workspace = getWorkspacePath(agentId);
   for (const zone of DELIVERY_ZONES) {
     const zoneDir = join(workspace, zone);
@@ -79,7 +78,17 @@ export const GET = withAuth<Params>(async (_req, { params }, session) => {
     // symlinks on both sides and re-check containment — see
     // agent-file-access.ts's realpathWithinDir. A symlink resolving outside
     // this zone is treated the same as "not in this zone" (continue to the
-    // next), matching the lexical-miss branch above.
+    // next), matching the lexical-miss branch above. Note this is per ZONE,
+    // not per workspace: a symlink in workbench pointing into uploads is
+    // refused here and then found on the uploads pass, or not at all.
+    //
+    // This is a check before an open, which is why what gets opened is the
+    // RESOLVED path and never `fullPath` again: re-pointing the symlink after
+    // this line changes nothing, because nothing reads that path a second
+    // time. The window that does remain — replacing the resolved, in-zone
+    // file itself between these two lines — needs the same write access the
+    // symlink did and is strictly narrower than the unchecked read this
+    // replaces.
     const realPath = await realpathWithinDir(fullPath, zoneDir);
     if (!realPath) continue;
 
