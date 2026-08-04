@@ -8,21 +8,87 @@ export function escapeDoubleQuoted(v: string): string {
   return v.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 }
 
-// Very small HTML-to-text fallback. IMAP relies on mailparser's bundled
-// html-to-text for the common case and only reaches this when a message
-// genuinely has no text/plain part; Graph has no equivalent library in the
-// loop at all, since Graph's own `body.content` is returned verbatim in
-// whatever `body.contentType` the message was stored in. Shared here (rather
-// than duplicated per adapter) so both providers reduce HTML the same way.
-// Kept intentionally simple rather than pulling in another HTML-parsing
-// dependency for a fallback/normalization path.
+// Block-level tags mark a line break in the rendered message. Collapsing them
+// to a space along with everything else turns a whole email into one endless
+// line, which is exactly what the model then has to reason over.
+const HTML_BLOCK_BOUNDARY_RE =
+  /<\/?(?:p|div|br|tr|li|ul|ol|h[1-6]|table|thead|tbody|blockquote|section|article|pre|hr)\b[^>]*>/gi;
+
+const HTML_ENTITIES: Record<string, string> = {
+  nbsp: " ",
+  amp: "&",
+  lt: "<",
+  gt: ">",
+  quot: '"',
+  apos: "'",
+  "#39": "'",
+};
+
+// Reduce an HTML body to readable plain text.
+//
+// This is a *fallback* for IMAP — mailparser's bundled html-to-text already
+// derives `ParsedMail.text` from the html in the common case, so IMAP only
+// reaches this when a message genuinely has no text/plain part. For Graph it
+// is the *primary* path (Graph hands back `body.content` verbatim in whatever
+// `body.contentType` the message was stored in, and most Outlook mail is
+// stored as html), and it is the html-only path for Gmail. So "good enough
+// for a rare fallback" is not the bar any more: block-level tags become line
+// breaks so paragraph and list structure survives, and the handful of
+// entities that actually appear in mail bodies are decoded.
+//
+// Still deliberately dependency-free. A real HTML parser buys correctness on
+// markup this never sees — the output is read by a model, not rendered.
 export function stripHtml(html: string): string {
-  return html
-    .replace(/<(script|style)[^>]*>[\s\S]*?<\/\1>/gi, " ")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/&nbsp;/gi, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+  return (
+    html
+      .replace(/<(script|style)[^>]*>[\s\S]*?<\/\1>/gi, " ")
+      // Outlook's conditional comments (`<!--[if mso]> … <![endif]-->`) are
+      // markup, not content; without this their bodies survive tag-stripping
+      // and read as duplicated text.
+      .replace(/<!--[\s\S]*?-->/g, " ")
+      .replace(HTML_BLOCK_BOUNDARY_RE, "\n")
+      .replace(/<[^>]+>/g, " ")
+      // Decoded AFTER tag removal, so a `&lt;script&gt;` in the source can
+      // never become a tag this function then fails to strip.
+      .replace(/&(nbsp|amp|lt|gt|quot|apos|#39);/gi, (m, name: string) => {
+        return HTML_ENTITIES[name.toLowerCase()] ?? m;
+      })
+      // Horizontal whitespace only — `\s+` would eat the line breaks above.
+      .replace(/[^\S\n]+/g, " ")
+      .replace(/ ?\n ?/g, "\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim()
+  );
+}
+
+/**
+ * Ceiling for an email body handed to the model, in characters.
+ *
+ * OpenClaw's runtime caps every tool result at 64000 chars and replaces the
+ * overflow with a literal truncation marker spliced MID-JSON, so the model
+ * receives corrupt JSON and loops on it — the production failure documented on
+ * `ODOO_READ_RESULT_BUDGET_CHARS` in pinchy-odoo/index.ts. An email body is
+ * the one unbounded field in `email_read`'s payload: a real HTML marketing
+ * mail runs to hundreds of KB, and even stripped to text a newsletter clears
+ * 64000 easily. Bounding well under the cap keeps our JSON intact and leaves
+ * room for several reads inside OpenClaw's 256000-char aggregate budget.
+ */
+export const EMAIL_BODY_MAX_CHARS = 30000;
+
+/**
+ * Bound a body to {@link EMAIL_BODY_MAX_CHARS}. A body that already fits is
+ * returned unchanged (same string, no marker). An oversized one keeps its
+ * leading `EMAIL_BODY_MAX_CHARS` characters and says so in words the model can
+ * act on — a bare `[truncated]` reads as part of the message and leaves the
+ * model free to report the cut text as the whole email.
+ */
+export function truncateEmailBody(body: string, max: number = EMAIL_BODY_MAX_CHARS): string {
+  if (body.length <= max) return body;
+  return (
+    `${body.slice(0, max)}\n\n[Body truncated: this is the first ${max} of ${body.length} ` +
+    `characters. The rest was not read — say the message is longer rather than ` +
+    `treating this as its full text.]`
+  );
 }
 
 // Shared by every adapter: the canonical-name validation and error message are

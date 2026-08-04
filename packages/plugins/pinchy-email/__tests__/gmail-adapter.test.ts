@@ -280,7 +280,11 @@ describe("GmailAdapter", () => {
 
       const result = await adapter.read("msg3");
 
-      expect(result.body).toBe("<b>HTML only</b>");
+      // The fallback used to return raw markup — the same defect the Graph
+      // adapter had, and for the same reason: an html-only message is common
+      // for anything machine-generated, and its tags are noise the model has
+      // to read past.
+      expect(result.body).toBe("HTML only");
     });
 
     it("handles nested multipart/mixed with multipart/alternative", async () => {

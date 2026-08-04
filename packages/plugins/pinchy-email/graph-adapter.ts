@@ -96,27 +96,19 @@ function buildOrderedFilter(filters: string[]): string | undefined {
 }
 
 // Microsoft Graph returns `body.content` verbatim in whatever
-// `body.contentType` ("text" or "html") the message was stored in — unlike
-// IMAP/Gmail, which prefer the text/plain MIME part and only fall back to
-// raw (stripped) HTML when no plain-text part exists. Left unbounded, a
-// large HTML marketing email easily runs to hundreds of KB, and OpenClaw's
-// runtime caps every tool result at 64000 chars, replacing the overflow with
-// a literal truncation marker spliced MID-JSON — the model then receives
-// corrupt JSON and loops on it, the same production failure mode documented
-// on ODOO_READ_RESULT_BUDGET_CHARS in pinchy-odoo/index.ts. We strip HTML to
-// text (via the shared `stripHtml`) and bound the result well under 64000 so
-// email_read's output is never cut mid-structure.
-export const GRAPH_BODY_MAX_CHARS = 30000;
-
-function truncateBody(text: string): string {
-  if (text.length <= GRAPH_BODY_MAX_CHARS) return text;
-  return `${text.slice(0, GRAPH_BODY_MAX_CHARS)}\n[truncated]`;
-}
-
+// `body.contentType` ("text" or "html") the message was stored in, and most
+// Outlook mail is stored as html — so without this the model reads raw markup
+// where IMAP hands it text. The size ceiling that keeps `email_read` out of
+// OpenClaw's blind mid-JSON truncation is NOT here: it is applied once at the
+// tool boundary (`truncateEmailBody`, see index.ts) because every adapter's
+// body is equally unbounded, and a per-adapter cap is a list that goes stale
+// the first time a fourth provider lands.
 function extractBody(body: { contentType?: string; content?: string } | undefined): string {
   const raw = body?.content ?? "";
-  const plain = body?.contentType === "html" ? stripHtml(raw) : raw;
-  return truncateBody(plain);
+  // Graph documents the enum as lowercase `text`/`html`, but a case-sensitive
+  // compare is one unexpected payload away from handing the model a body of
+  // pure markup — cheap to not depend on.
+  return body?.contentType?.toLowerCase() === "html" ? stripHtml(raw) : raw;
 }
 
 function toSummary(m: GraphMessage): EmailSummary {

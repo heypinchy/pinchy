@@ -67,6 +67,7 @@ import { GraphAdapter } from "../graph-adapter";
 import { ImapAdapter } from "../imap-adapter";
 import plugin from "../index";
 import { MAX_ENTRIES_PER_AGENT, MSG_PREFIX, resolveHandle } from "../id-handle-store";
+import { EMAIL_BODY_MAX_CHARS } from "../email-adapter";
 
 interface AgentTool {
   name: string;
@@ -1007,6 +1008,92 @@ describe("email_read", () => {
     expect(guidance).not.toContain("msg-1");
     expect(guidance).not.toContain("att-1");
     expect(guidance).not.toContain("att-2");
+  });
+});
+
+// OpenClaw's runtime caps every tool result at 64000 chars and replaces the
+// overflow with a literal marker spliced MID-JSON, so the model gets corrupt
+// JSON and loops on it (the odoo_read incident, ODOO_READ_RESULT_BUDGET_CHARS
+// in pinchy-odoo/index.ts). The body is email_read's one unbounded field, and
+// it is unbounded for EVERY adapter — Graph's stored html, Gmail's decoded
+// part, IMAP's mailparser text. These assert the bound where all three meet,
+// so a fourth provider inherits it instead of having to remember it.
+describe("email_read body budget", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockCredentialResponse();
+  });
+
+  it("bounds an oversized body so the serialized result stays far under OpenClaw's 64000-char cap", async () => {
+    mockRead.mockResolvedValue({
+      id: "msg-1",
+      from: "marketing@test.com",
+      subject: "Newsletter",
+      body: "x".repeat(EMAIL_BODY_MAX_CHARS * 3),
+    });
+
+    const tools = createApi();
+    const tool = findTool(tools, "email_read", agentId)!;
+
+    const result = await tool.execute("call-1", { id: "msg-1" });
+
+    // The payload is pretty-printed (JSON.stringify(..., null, 2)), so assert
+    // the shipped text, not the body in isolation.
+    expect(result.content[0].text.length).toBeLessThan(64000);
+    const data = JSON.parse(result.content[0].text);
+    expect(data.body.length).toBeLessThan(EMAIL_BODY_MAX_CHARS + 500);
+  });
+
+  // A bare "[truncated]" reads as part of the message. The marker has to say
+  // enough that the model reports a long email as long instead of treating
+  // the cut text as the whole thing.
+  it("names what was cut, in terms the model can act on", async () => {
+    const full = "y".repeat(EMAIL_BODY_MAX_CHARS * 2);
+    mockRead.mockResolvedValue({
+      id: "msg-1",
+      from: "marketing@test.com",
+      subject: "Newsletter",
+      body: full,
+    });
+
+    const tools = createApi();
+    const tool = findTool(tools, "email_read", agentId)!;
+
+    const data = JSON.parse((await tool.execute("call-1", { id: "msg-1" })).content[0].text);
+
+    expect(data.body).toContain("truncated");
+    expect(data.body).toContain(String(EMAIL_BODY_MAX_CHARS));
+    expect(data.body).toContain(String(full.length));
+  });
+
+  it("leaves a body that already fits completely unchanged, with no marker", async () => {
+    mockRead.mockResolvedValue({
+      id: "msg-1",
+      from: "a@test.com",
+      subject: "Short",
+      body: "A short body.\n\nWith a second paragraph.",
+    });
+
+    const tools = createApi();
+    const tool = findTool(tools, "email_read", agentId)!;
+
+    const data = JSON.parse((await tool.execute("call-1", { id: "msg-1" })).content[0].text);
+
+    expect(data.body).toBe("A short body.\n\nWith a second paragraph.");
+    expect(data.body).not.toContain("truncated");
+  });
+
+  // An adapter that returns no body at all must not gain an invented `body: ""`
+  // key on the way through — the cap normalizes size, not shape.
+  it("does not invent a body key when the adapter returned none", async () => {
+    mockRead.mockResolvedValue({ id: "msg-1", from: "a@test.com", subject: "No body" });
+
+    const tools = createApi();
+    const tool = findTool(tools, "email_read", agentId)!;
+
+    const data = JSON.parse((await tool.execute("call-1", { id: "msg-1" })).content[0].text);
+
+    expect(data).not.toHaveProperty("body");
   });
 });
 

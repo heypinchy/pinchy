@@ -1,5 +1,5 @@
 import { google } from "googleapis";
-import { createFolderMapper, escapeDoubleQuoted } from "./email-adapter.js";
+import { createFolderMapper, escapeDoubleQuoted, stripHtml } from "./email-adapter.js";
 import type {
   EmailAdapter,
   EmailAttachment,
@@ -275,7 +275,8 @@ function findAttachmentPart(part: MimePart, attachmentId: string): MimePart | nu
 function extractBody(payload: MimePart): string {
   // Single-part message
   if (!payload.parts && payload.body?.data) {
-    return decodeBase64url(payload.body.data);
+    const decoded = decodeBase64url(payload.body.data);
+    return payload.mimeType === "text/html" ? stripHtml(decoded) : decoded;
   }
 
   // Multipart: recursively search for text/plain, fallback to text/html
@@ -284,9 +285,13 @@ function extractBody(payload: MimePart): string {
     return decodeBase64url(plain.body.data);
   }
 
+  // The html fallback used to be returned as raw markup. That is the same
+  // defect the Graph adapter had: an html-only message (common for anything
+  // machine-generated) reached the model as a wall of tags, and a marketing
+  // mail's markup is mostly styling the model then has to read past.
   const html = findPart(payload, "text/html");
   if (html?.body?.data) {
-    return decodeBase64url(html.body.data);
+    return stripHtml(decodeBase64url(html.body.data));
   }
 
   return "";

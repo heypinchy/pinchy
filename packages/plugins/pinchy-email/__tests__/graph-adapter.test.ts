@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from "vitest";
-import { GraphAdapter, GRAPH_BODY_MAX_CHARS } from "../graph-adapter.js";
+import { GraphAdapter } from "../graph-adapter.js";
 
 describe("GraphAdapter.list", () => {
   beforeEach(() => {
@@ -119,11 +119,12 @@ describe("GraphAdapter.read", () => {
     expect(result.unread).toBe(true);
   });
 
-  // Unlike IMAP/Gmail (which prefer text/plain and only fall back to raw HTML
-  // when no plain-text part exists), Graph's `body.content` was serialized
-  // verbatim regardless of contentType, with no cap — a real HTML marketing
-  // email (~500 KB) hits OpenClaw's blind 64000-char mid-JSON truncation, the
-  // same production failure mode as the odoo_read/odoo_aggregate incidents.
+  // Graph returns `body.content` verbatim in whatever `body.contentType` the
+  // message was stored in, and most Outlook mail is stored as html — so this
+  // was handing the model raw markup where IMAP hands it text. The SIZE
+  // ceiling that keeps email_read out of OpenClaw's blind mid-JSON truncation
+  // is asserted at the tool boundary instead (see tools.test.ts), because it
+  // applies to every adapter's body and not just this one's.
   it("strips HTML from the body when body.contentType is html", async () => {
     const adapter = new GraphAdapter({ accessToken: "tok" });
     (fetch as Mock).mockResolvedValueOnce({
@@ -142,34 +143,42 @@ describe("GraphAdapter.read", () => {
     const result = await adapter.read("msg1");
     expect(result.body).not.toContain("<p>");
     expect(result.body).not.toContain("<b>");
-    // Same tag-to-space collapsing as IMAP's shared stripHtml — a space is
-    // left where </b> was, ahead of the comma.
+    // Inline tags collapse to a space, so one is left where </b> was, ahead of
+    // the comma.
     expect(result.body).toContain("Hello Bob , see attached.");
   });
 
-  it("truncates an oversized body to GRAPH_BODY_MAX_CHARS with a [truncated] marker", async () => {
+  // Graph documents the enum as lowercase, but a case-sensitive compare would
+  // silently take the "already plain text" branch on anything else and hand
+  // the model a body of pure markup — the exact defect above, one payload
+  // variation away.
+  it("strips HTML when contentType arrives in a different case", async () => {
     const adapter = new GraphAdapter({ accessToken: "tok" });
-    const hugeHtml = `<p>${"x".repeat(GRAPH_BODY_MAX_CHARS * 2)}</p>`;
     (fetch as Mock).mockResolvedValueOnce({
       ok: true,
       json: async () => ({
         id: "msg1",
-        subject: "Newsletter",
-        bodyPreview: "…",
+        subject: "Hello",
+        bodyPreview: "Hi",
         receivedDateTime: "2024-01-01T10:00:00Z",
-        from: { emailAddress: { address: "marketing@example.com" } },
+        from: { emailAddress: { address: "alice@example.com" } },
         toRecipients: [],
         isRead: true,
-        body: { contentType: "html", content: hugeHtml },
+        body: { contentType: "HTML", content: "<p>Hello <b>Bob</b>.</p>" },
       }),
     });
     const result = await adapter.read("msg1");
-    expect(result.body.length).toBeLessThanOrEqual(GRAPH_BODY_MAX_CHARS + "\n[truncated]".length);
-    expect(result.body).toContain("[truncated]");
+    expect(result.body).not.toContain("<b>");
+    expect(result.body).toContain("Hello Bob");
   });
 
-  it("does not truncate or mark a body that already fits under the budget", async () => {
+  // The control that proves the html branch is a branch: a plain-text body
+  // must reach the model byte-for-byte. It carries a literal "<" and real line
+  // breaks precisely because stripHtml would eat both — an all-prose control
+  // would pass even if stripHtml were applied unconditionally.
+  it("leaves a plain-text body byte-for-byte intact, including line breaks and a literal <", async () => {
     const adapter = new GraphAdapter({ accessToken: "tok" });
+    const plain = "Line one\n\nLine two: 3 < 4 and a  double space.";
     (fetch as Mock).mockResolvedValueOnce({
       ok: true,
       json: async () => ({
@@ -180,12 +189,11 @@ describe("GraphAdapter.read", () => {
         from: { emailAddress: { address: "alice@example.com" } },
         toRecipients: [],
         isRead: true,
-        body: { contentType: "text", content: "A short plain-text body." },
+        body: { contentType: "text", content: plain },
       }),
     });
     const result = await adapter.read("msg1");
-    expect(result.body).toBe("A short plain-text body.");
-    expect(result.body).not.toContain("[truncated]");
+    expect(result.body).toBe(plain);
   });
 
   it("non-ok response throws a descriptive error", async () => {

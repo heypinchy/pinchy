@@ -2078,6 +2078,21 @@ export const ODOO_READ_TRUNCATION_HINT =
   "`returned`.";
 
 /**
+ * The aggregate hint is its own text, not a reuse of the read one. Truncation
+ * guidance is what the model acts on, and every lever the read hint names is
+ * either wrong or a no-op for `odoo_aggregate`: dropping a `field` removes an
+ * aggregation rather than a heavy column, and the rows are groups, not
+ * records. Wrong recovery advice on a truncated result is how the original
+ * incident's loop started.
+ */
+export const ODOO_AGGREGATE_TRUNCATION_HINT =
+  "Result truncated to fit the model's context budget: the first `returned` of " +
+  "`total` groups (in order) are included. To make the result smaller, set a " +
+  "`limit`, group by fewer or coarser fields (e.g. `date_order:month` instead of " +
+  "`date_order:day`), or narrow `filters`. To get the next page, re-run with " +
+  "`offset` set to this request's `offset` plus `returned`.";
+
+/**
  * Bound an `odoo_read` (or, via the `key` param, `odoo_aggregate`) result to
  * {@link ODOO_READ_RESULT_BUDGET_CHARS} so it can never trip OpenClaw's blind
  * mid-JSON truncation. A result that already fits is returned verbatim (same
@@ -2092,12 +2107,14 @@ export const ODOO_READ_TRUNCATION_HINT =
  *
  * `key` defaults to `"records"` (the `odoo_read`/`searchRead` shape).
  * `odoo_aggregate`'s `readGroup` result nests its rows under `groups` instead,
- * so it passes `key: "groups"`.
+ * so it passes `key: "groups"` — and its own `hint`, since the read hint's
+ * advice does not apply to an aggregation.
  */
 export function enforceReadResultBudget(
   result: unknown,
   budget: number = ODOO_READ_RESULT_BUDGET_CHARS,
-  key: string = "records"
+  key: string = "records",
+  hint: string = ODOO_READ_TRUNCATION_HINT
 ): unknown {
   const records = getSearchReadRecords(result, key);
   if (records.length === 0) return result;
@@ -2119,7 +2136,7 @@ export function enforceReadResultBudget(
     total,
     returned: kept.length,
     truncated: true,
-    hint: ODOO_READ_TRUNCATION_HINT,
+    hint,
   });
 
   // Grow the kept set while the *actual* serialized length stays within budget
@@ -3049,7 +3066,12 @@ const plugin = {
                   {
                     type: "text",
                     text: JSON.stringify(
-                      enforceReadResultBudget(result, ODOO_READ_RESULT_BUDGET_CHARS, "groups")
+                      enforceReadResultBudget(
+                        result,
+                        ODOO_READ_RESULT_BUDGET_CHARS,
+                        "groups",
+                        ODOO_AGGREGATE_TRUNCATION_HINT
+                      )
                     ),
                   },
                 ],

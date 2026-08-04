@@ -54,6 +54,7 @@ import plugin, {
   enforceReadResultBudget,
   ODOO_READ_RESULT_BUDGET_CHARS,
   ODOO_READ_TRUNCATION_HINT,
+  ODOO_AGGREGATE_TRUNCATION_HINT,
 } from "../index";
 
 const MOVE_FIELDS: OdooField[] = [
@@ -1345,7 +1346,12 @@ describe("enforceReadResultBudget", () => {
   // is exactly the gap this closes.
   it("supports a custom key so it can also bound odoo_aggregate's `groups` result", () => {
     const result = { groups: bigRecords(200) };
-    const out = enforceReadResultBudget(result, ODOO_READ_RESULT_BUDGET_CHARS, "groups") as {
+    const out = enforceReadResultBudget(
+      result,
+      ODOO_READ_RESULT_BUDGET_CHARS,
+      "groups",
+      ODOO_AGGREGATE_TRUNCATION_HINT
+    ) as {
       groups: unknown[];
       total: number;
       returned: number;
@@ -1356,8 +1362,32 @@ describe("enforceReadResultBudget", () => {
     expect(out.groups.length).toBeLessThan(200);
     expect(out.groups.length).toBeGreaterThan(0);
     expect(out.returned).toBe(out.groups.length);
-    expect(out.hint).toBe(ODOO_READ_TRUNCATION_HINT);
+    expect(out.hint).toBe(ODOO_AGGREGATE_TRUNCATION_HINT);
     expect(JSON.stringify(out).length).toBeLessThanOrEqual(ODOO_READ_RESULT_BUDGET_CHARS);
+  });
+
+  it("still uses the read hint when no hint is passed, so odoo_read is unchanged", () => {
+    const out = enforceReadResultBudget({ records: bigRecords(200) }) as { hint: string };
+    expect(out.hint).toBe(ODOO_READ_TRUNCATION_HINT);
+  });
+});
+
+// The hint is the only thing the model has to recover from a cut result, so
+// its advice has to be executable for the tool that emitted it. Reusing the
+// read hint here told the model to "request fewer `fields` (drop heavy ones
+// like `description`)" — on an aggregation a field IS the aggregation, so
+// following that advice removes the answer rather than shrinking the result.
+describe("ODOO_AGGREGATE_TRUNCATION_HINT", () => {
+  it("names levers odoo_aggregate actually has", () => {
+    expect(ODOO_AGGREGATE_TRUNCATION_HINT).toContain("limit");
+    expect(ODOO_AGGREGATE_TRUNCATION_HINT).toContain("group by");
+    expect(ODOO_AGGREGATE_TRUNCATION_HINT).toContain("filters");
+    expect(ODOO_AGGREGATE_TRUNCATION_HINT).toContain("offset");
+  });
+
+  it("does not repeat the read hint's inapplicable advice", () => {
+    expect(ODOO_AGGREGATE_TRUNCATION_HINT).not.toContain("description");
+    expect(ODOO_AGGREGATE_TRUNCATION_HINT).not.toContain("records");
   });
 });
 
@@ -2224,6 +2254,9 @@ describe("odoo_aggregate", () => {
     expect(data.truncated).toBe(true);
     expect(data.groups.length).toBeGreaterThan(0);
     expect(data.groups.length).toBeLessThan(500);
+    // The recovery advice the model receives has to be the aggregate one —
+    // the read hint's "drop heavy `fields`" removes the aggregation itself.
+    expect(data.hint).toBe(ODOO_AGGREGATE_TRUNCATION_HINT);
   });
 });
 

@@ -1,6 +1,7 @@
 import { mkdir, writeFile, access, chown } from "node:fs/promises";
 import { basename } from "node:path";
 import type { EmailAdapter, EmailSummary, Folder } from "./email-adapter.js";
+import { truncateEmailBody } from "./email-adapter.js";
 import { checkPermission, type Permissions } from "./permissions.js";
 import {
   putHandle,
@@ -985,9 +986,17 @@ const plugin = {
                 ...a,
                 id: putAttachmentHandle(agentId, a.id),
               }));
+              // The body is the one unbounded field in this payload, and every
+              // adapter's is unbounded in its own way (Graph's stored html,
+              // Gmail's decoded part, IMAP's mailparser text). Bounding it here
+              // rather than in each adapter means a future provider is covered
+              // the moment it exists, instead of the moment someone remembers.
+              const body =
+                typeof result.body === "string" ? truncateEmailBody(result.body) : result.body;
               const handleizedResult = {
                 ...result,
                 id: msgHandle,
+                body,
                 attachments: handleizedAttachments,
               };
 
