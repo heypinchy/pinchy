@@ -607,7 +607,12 @@ export const emailWorkflows = pgTable(
     enabled: boolean("enabled").notNull().default(false),
     status: text("status").$type<EmailWorkflowStatus>().notNull().default("pending"),
     openclawJobId: text("openclaw_job_id"),
-    createdBy: text("created_by").references(() => users.id),
+    // `set null` (not cascade): deleting the user who created a workflow must
+    // not take the workflow (and its mailbox connections) down with them —
+    // `loadDispatchableWorkflows` already treats a null `createdBy` as "no
+    // creator recipient" and drops the workflow from the shared-agent fan-out
+    // rather than crashing on it.
+    createdBy: text("created_by").references(() => users.id, { onDelete: "set null" }),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at").notNull().defaultNow(),
   },
@@ -737,6 +742,11 @@ export const notificationRecipients = pgTable(
   (table) => [
     primaryKey({ columns: [table.userId, table.notificationId] }),
     index("notification_recipients_user_unread_idx").on(table.userId, table.readAt),
+    // Deleting a notification cascades here; the PK leads with userId, so that
+    // delete would otherwise fall back to a full-table scan for the matching
+    // notificationId rows. Leading with notificationId gives the cascade a
+    // usable index.
+    index("notification_recipients_notification_idx").on(table.notificationId),
   ]
 );
 
@@ -891,6 +901,10 @@ export const uploadedFiles = pgTable(
   (t) => [
     index("idx_uploaded_files_gc").on(t.status, t.expiresAt),
     index("idx_uploaded_files_user_agent_draft").on(t.userId, t.agentId, t.draftId),
+    // The serving route's authorization lookup: (agentId, filename, userId) —
+    // mirrors idx_agent_delivered_files_lookup below. Leading with agentId also
+    // gives the agent-delete cascade a usable index.
+    index("idx_uploaded_files_lookup").on(t.agentId, t.filename, t.userId),
   ]
 );
 
@@ -938,6 +952,9 @@ export const agentDeliveredFiles = pgTable(
     index("idx_agent_delivered_files_lookup").on(t.agentId, t.filename, t.userId),
     // History re-attachment reads all grants for one session.
     index("idx_agent_delivered_files_session").on(t.sessionKey),
+    // Neither index above leads with userId, so deleting a user would fall
+    // back to a full-table scan to find their grants for the cascade.
+    index("idx_agent_delivered_files_user").on(t.userId),
   ]
 );
 

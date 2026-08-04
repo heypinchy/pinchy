@@ -463,6 +463,13 @@
       "when": 1785563057639,
       "tag": "0065_tranquil_captain_midlands",
       "breakpoints": true
+    },
+    {
+      "idx": 66,
+      "version": "7",
+      "when": 1785866261513,
+      "tag": "0066_dashing_vampiro",
+      "breakpoints": true
     }
   ]
 }
