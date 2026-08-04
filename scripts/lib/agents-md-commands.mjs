@@ -20,6 +20,16 @@
  * on to `@pinchy/web`, renaming the web script would break the proxy without
  * tripping this guard. CI runs the web scripts directly, so that drift surfaces
  * there instead.
+ *
+ * Scope, the other half: only ```bash blocks are read, never a command written
+ * inline in prose — and that is a deliberate limit rather than an oversight.
+ * Both files quote commands they do not mean as instructions: history (`pnpm
+ * --filter @pinchy/web format:check`, the format gate as it stood until 2026-07)
+ * and placeholders (`pnpm test:e2e:<suffix>`). A guard that flagged those would
+ * be argued with, then switched off. So a fenced command is this guard's, an
+ * inline one is review's — CONTRIBUTING.md's `pnpm lint` was fixed by hand for
+ * exactly that reason, and two inline `pnpm test:db` mentions survived the first
+ * pass at this because the guard cannot see them.
  */
 
 import { readFileSync, readdirSync } from "node:fs";
@@ -229,7 +239,7 @@ export function createWorkspaceResolver(repoRoot) {
 }
 
 /**
- * @param {string} markdown contents of AGENTS.md
+ * @param {string} markdown contents of a documentation file (AGENTS.md, CONTRIBUTING.md)
  * @param {(target: { type: "dir" | "filter", value: string }) => string[] | null} resolveScripts
  *   the script names declared by the targeted package, or null if no such package
  * @returns {string[]} problems (empty = ok)

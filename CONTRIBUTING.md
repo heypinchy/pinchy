@@ -91,7 +91,7 @@ All new features require tests. We practice TDD — write the failing test first
 
 **Don't silently remove tests.** Two CI guards enforce this: `no-untracked-skips` blocks `.skip`/`.todo` without a tracking issue, and a test-removal guard fails any PR that deletes test cases on net (deleted files or removed `it()`/`test()` blocks). If a removal is genuinely intentional (dead code, a deduplicated test, a removed feature), authorize it explicitly — add a commit trailer `Allow-test-deletion: #<issue>` or apply the `allow-test-deletion` label. Never weaken or delete a test just to make changed code pass; a test that fails after a refactor signals lost coverage. See AGENTS.md § "No Untracked Test Removal".
 
-`pnpm test:db` provisions a `pinchy_test_vitest` database against the dev-stack Postgres on `localhost:5434`. Start it once with:
+`pnpm -C packages/web test:db` provisions a `pinchy_test_vitest` database against the dev-stack Postgres on `localhost:5434`. Start it once with:
 
 ```bash
 PINCHY_VERSION=dev docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d db
@@ -109,7 +109,7 @@ We're moving away from `vi.mock("@/db", ...)` in route-level tests (see [#229](h
 | Route handlers, lib code whose primary job is to talk to the DB                  | Yes — write `*.integration.test.ts` against the real schema       |
 | External network calls (OpenClaw gateway, Telegram, Anthropic, FS-heavy helpers) | Mock those at the module boundary even inside an integration test |
 
-Convention: any file matching `**/*.integration.test.ts` runs in `pnpm test:db` and is excluded from `pnpm test`. Setup files live in [`packages/web/src/test-helpers/integration/`](packages/web/src/test-helpers/integration/).
+Convention: any file matching `**/*.integration.test.ts` runs in `pnpm -C packages/web test:db` and is excluded from `pnpm test`. Setup files live in [`packages/web/src/test-helpers/integration/`](packages/web/src/test-helpers/integration/).
 
 ## Code Style
 

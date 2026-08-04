@@ -136,7 +136,7 @@ Concretely:
 
 The Eval-v1 dataset (`packages/web/eval/data`) is committed evidence, and evidence nobody reads protects nobody. The 2026-07-11 sweep measured `minimax-m3` at 0/12 on the line-items scenario — the only one that needs nested-array tool arguments. Four days later a production agent failed to book invoices on that model, for that defect (#766). The number was in the repo the whole time; nothing wired it to `model-resolver/blocklist.ts`.
 
-`packages/web/eval/__tests__/scorecard-triage-guard.test.ts` is the wire. It runs in vitest against the checked-in dataset (~2s, no docker stack, no API keys — `pnpm eval:models` needs both, and CI runs only `eval:selftest`), so it gates every PR, including the one that commits a fresh sweep. It judges the **published** numbers, via `buildPublishedScenarios()` from `eval/export-scorecard.ts` — not the stored `data/<scenario>.json` scorecards, which three re-graded scenarios have since diverged from.
+`packages/web/eval/__tests__/scorecard-triage-guard.test.ts` is the wire. It runs in vitest against the checked-in dataset (~2s, no docker stack, no API keys — `pnpm -C packages/web eval:models` needs both, and CI runs only `eval:selftest`), so it gates every PR, including the one that commits a fresh sweep. It judges the **published** numbers, via `buildPublishedScenarios()` from `eval/export-scorecard.ts` — not the stored `data/<scenario>.json` scorecards, which three re-graded scenarios have since diverged from.
 
 It flags a cell where a **capable** model passed **zero** of at least 8 valid runs — capable meaning a median pass rate ≥ 0.5 across the _other_ capability scenarios. That anchor is load-bearing: a weak model's zero is not information (weak models even _pass_ some failure scenarios by incapacity, see `eval/data/README.md`), and flagging them would bury the signal. Every flagged cell needs a committed verdict in `packages/web/eval/triage-ledger.ts`:
 
@@ -410,7 +410,7 @@ Two worktrees cannot both run the dev stack on the default ports. Allocate a fre
 pnpm worktree:env
 ```
 
-It writes `COMPOSE_PROJECT_NAME`, `DEV_PINCHY_PORT`, `DEV_DB_PORT` and `DEV_CADDY_PORT` into a gitignored `.env`, which Compose reads automatically. Allocation happens **once** and is not re-derived on later runs — a worktree's address should stay bookmarkable — so pass `--force` if you need a new block. `pnpm test:db` follows the allocation on its own.
+It writes `COMPOSE_PROJECT_NAME`, `DEV_PINCHY_PORT`, `DEV_DB_PORT` and `DEV_CADDY_PORT` into a gitignored `.env`, which Compose reads automatically. Allocation happens **once** and is not re-derived on later runs — a worktree's address should stay bookmarkable — so pass `--force` if you need a new block. `pnpm -C packages/web test:db` follows the allocation on its own.
 
 Do not hand-write a `docker-compose.local.yml` with `ports: !override` for this any more. That was the old workaround and it is easy to get wrong: a bare `ports:` **appends** instead of replacing, so the conflict survives the override that was meant to fix it.
 
@@ -456,6 +456,8 @@ cd docs && pnpm build
 ```
 
 `scripts/lib/agents-md-commands.test.mjs` (run by `pnpm test:scripts`) keeps these blocks honest: it walks every `pnpm` command in this file, resolves each to the package it runs in — handling `-C`/`--dir`/`--filter`, `cd x && pnpm y` chains, `pnpm run <script>`, and pnpm builtins like `install` — and fails if the script isn't declared there. That drift is how `pnpm lint`, `pnpm format` and `pnpm db:generate` sat here for months as root commands that never existed. Nothing else in CI reads this file.
+
+The same guard reads CONTRIBUTING.md, which drifted the same way (`pnpm db:migrate` and `pnpm test:db` documented as root scripts). It reads fenced `bash` blocks **only**, in both files: a command written inline in prose is not checked, because both files also quote commands historically (`pnpm --filter @pinchy/web format:check`, the gate as it was until 2026-07) and with placeholders (`pnpm test:e2e:<suffix>`), and a guard that flagged those would be switched off within a week. So an inline `pnpm …` is review's job — a fenced one is the guard's.
 
 Important: do not run the app with plain `pnpm dev` as the primary development path unless a task explicitly requires it. Direct local app startup can miss Docker-managed infrastructure and migrations.
 
