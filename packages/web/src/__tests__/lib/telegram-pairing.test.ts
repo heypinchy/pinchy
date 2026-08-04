@@ -159,14 +159,18 @@ describe("resolvePairingCode", () => {
     const CREATED_AT = "2026-04-29T16:52:07.768Z";
     const CREATED_AT_MS = Date.parse(CREATED_AT);
 
-    beforeEach(() => {
-      mockedExistsSync.mockReturnValue(true);
+    function writePairingFile(request: Record<string, unknown>) {
       mockedReadFileSync.mockReturnValue(
         JSON.stringify({
           version: 1,
-          requests: [{ id: "8754697762", code: "VVN2THRM", createdAt: CREATED_AT }],
+          requests: [{ id: "8754697762", code: "VVN2THRM", ...request }],
         })
       );
+    }
+
+    beforeEach(() => {
+      mockedExistsSync.mockReturnValue(true);
+      writePairingFile({ createdAt: CREATED_AT });
     });
 
     it("accepts a code redeemed just under the 10-minute expiry", () => {
@@ -187,13 +191,53 @@ describe("resolvePairingCode", () => {
       expect(result).toEqual({ found: false });
     });
 
+    // The recovery path the route's own error message promises ("Send a new
+    // message to the bot and try again"). OpenClaw's pairing store hands back
+    // the SAME code with the ORIGINAL createdAt for a request that is still
+    // pending — only lastSeenAt moves. Measured from createdAt, messaging the
+    // bot would therefore change nothing and the user would stay locked out
+    // of a self-service flow until OpenClaw's own one-hour TTL expired.
+    it("accepts a stale-by-createdAt code the peer has just messaged about again", () => {
+      const halfAnHourLater = CREATED_AT_MS + 30 * 60_000;
+      writePairingFile({
+        createdAt: CREATED_AT,
+        lastSeenAt: new Date(halfAnHourLater).toISOString(),
+      });
+
+      const result = resolvePairingCode("VVN2THRM", halfAnHourLater + 1_000);
+      expect(result).toEqual({ found: true, telegramUserId: "8754697762" });
+    });
+
+    it("rejects once 10 minutes have passed since the last contact too", () => {
+      const lastSeenMs = CREATED_AT_MS + 30 * 60_000;
+      writePairingFile({
+        createdAt: CREATED_AT,
+        lastSeenAt: new Date(lastSeenMs).toISOString(),
+      });
+
+      const result = resolvePairingCode("VVN2THRM", lastSeenMs + 10 * 60_000);
+      expect(result).toEqual({ found: false });
+    });
+
+    it("falls back to createdAt when lastSeenAt is absent or unreadable", () => {
+      // Pre-lastSeenAt files, and files where the field is present but junk.
+      for (const request of [
+        { createdAt: CREATED_AT },
+        { createdAt: CREATED_AT, lastSeenAt: "not-a-date" },
+      ]) {
+        writePairingFile(request);
+        expect(resolvePairingCode("VVN2THRM", CREATED_AT_MS + 1_000)).toEqual({
+          found: true,
+          telegramUserId: "8754697762",
+        });
+        expect(resolvePairingCode("VVN2THRM", CREATED_AT_MS + 20 * 60_000)).toEqual({
+          found: false,
+        });
+      }
+    });
+
     it("rejects a code with an unparseable createdAt (fail closed, not open)", () => {
-      mockedReadFileSync.mockReturnValue(
-        JSON.stringify({
-          version: 1,
-          requests: [{ id: "8754697762", code: "VVN2THRM", createdAt: "not-a-date" }],
-        })
-      );
+      writePairingFile({ createdAt: "not-a-date" });
 
       const result = resolvePairingCode("VVN2THRM", CREATED_AT_MS);
       expect(result).toEqual({ found: false });

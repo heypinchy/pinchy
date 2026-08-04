@@ -46,6 +46,8 @@ After an admin connects a bot, each team member links their own Telegram account
 
 You're now linked. Messages you send to the bot are answered by the agent.
 
+A pairing code stays valid for 10 minutes after your last message to the bot — long enough to copy it across, short enough that nobody can sit and guess at it. If Pinchy tells you the code has expired, send the bot another message and paste the code from its reply. Pinchy also limits how often one account may try a code, so five failed attempts in a row means waiting a few minutes before the next one.
+
 ## Sending Files and Photos
 
 Send a photo or a file to the bot, and Pinchy mirrors it into the agent's workspace automatically — no upload step needed. The agent can then read it, or hand it to a tool like `odoo_attach_file`, the same way it would a chat attachment or an email attachment. See [Attachments](/concepts/attachments/) for how this fits into the rest of the upload system.

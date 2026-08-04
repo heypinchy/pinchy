@@ -4,13 +4,27 @@ const PAIRING_FILE_PATH =
   process.env.OPENCLAW_PAIRING_PATH || "/openclaw-config/credentials/telegram-pairing.json";
 
 /**
- * Pairing codes are short, human-typed strings OpenClaw writes to the shared
- * pairing file and never expires or removes on its own — an unredeemed
- * request just accumulates. Without a cutoff here, a code stays guessable
- * forever, widening the brute-force window on `POST /api/settings/telegram`
- * without limit. 10 minutes matches that route's own rate-limit window
- * (`telegram-pairing-security.ts`), so a code that survives the attempt
- * budget also survives its own expiry, and vice versa.
+ * How long a pairing code stays redeemable — measured from the peer's last
+ * contact with the bot (`lastSeenAt`), NOT from `createdAt`.
+ *
+ * Pairing codes are short, human-typed strings. OpenClaw drops a pending
+ * request only after its own one-hour TTL (`PAIRING_PENDING_TTL_MS` in
+ * openclaw's `pairing-store`), and keeps up to three pending requests per bot
+ * account, so without a cutoff here a code stays guessable for a full hour —
+ * far longer than the attempt budget `telegram-pairing-security.ts` is sized
+ * against.
+ *
+ * The choice of `lastSeenAt` over `createdAt` is forced by that same store.
+ * `upsertChannelPairingRequest` keeps the ORIGINAL `createdAt` (and hands back
+ * the SAME code) for every further message from a peer whose request is still
+ * pending; only `lastSeenAt` moves. So a `createdAt`-based cutoff would turn
+ * this route's own advice — "Send a new message to the bot and try again" —
+ * into a dead end: the new message returns the same, still-expired code, and
+ * the user stays locked out of a self-service flow until OpenClaw's hour is
+ * up. Keyed on `lastSeenAt` the advice works, while the window a guesser gets
+ * stays bounded by the victim's own last contact with the bot and by
+ * OpenClaw's one-hour TTL on top. 10 minutes matches the per-user attempt
+ * budget in `telegram-pairing-security.ts`.
  */
 const PAIRING_CODE_MAX_AGE_MS = 10 * 60_000;
 
@@ -18,6 +32,13 @@ interface PairingRequest {
   id: string;
   code: string;
   createdAt: string;
+  /**
+   * Bumped by OpenClaw on every message from that peer while the request is
+   * pending. Optional here because a file written by an older OpenClaw may
+   * predate the field — `createdAt` is the documented fallback (openclaw's
+   * own `resolveLastSeenAt` does the same).
+   */
+  lastSeenAt?: string;
 }
 
 interface PairingFile {
@@ -26,6 +47,20 @@ interface PairingFile {
 }
 
 type PairingResult = { found: true; telegramUserId: string } | { found: false };
+
+function parseTimestamp(value: string | undefined): number | null {
+  if (!value) return null;
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? null : parsed;
+}
+
+/**
+ * When the peer last contacted the bot, in epoch ms — `null` when neither
+ * timestamp can be read.
+ */
+function resolveLastContactMs(request: PairingRequest): number | null {
+  return parseTimestamp(request.lastSeenAt) ?? parseTimestamp(request.createdAt);
+}
 
 /**
  * Resolve a pairing code to a Telegram user ID by reading OpenClaw's
@@ -47,11 +82,11 @@ export function resolvePairingCode(code: string, now: number = Date.now()): Pair
 
     if (!match) return { found: false };
 
-    // Fail closed on a missing/unparseable createdAt: expiry is a security
-    // control, so an entry we can't date is treated as already expired
-    // rather than as unexpiring.
-    const createdAtMs = Date.parse(match.createdAt);
-    if (Number.isNaN(createdAtMs) || now - createdAtMs >= PAIRING_CODE_MAX_AGE_MS) {
+    // Fail closed on an entry with no readable timestamp at all: expiry is a
+    // security control, so an entry we can't date is treated as already
+    // expired rather than as unexpiring.
+    const lastContactMs = resolveLastContactMs(match);
+    if (lastContactMs === null || now - lastContactMs >= PAIRING_CODE_MAX_AGE_MS) {
       return { found: false };
     }
 
