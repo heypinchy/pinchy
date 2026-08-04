@@ -42,11 +42,12 @@ Hetzner Cloud is an excellent choice for running Pinchy. Their servers run in EU
     Under **Shared Resources**, select **Cost-Optimized**, then pick **x86 (Intel/AMD)** as the architecture — not **Arm64**.
 
     <Aside type="caution">
-      Hetzner's cheapest Shared vCPU line, **CAX**, runs on Arm64 CPUs. Pinchy's
-      Docker images are built for x86 (amd64) only
-      ([#1081](https://github.com/heypinchy/pinchy/issues/1081)), so a CAX
-      server can't run them — the containers fail to start with `exec format
-      error`. Double-check **x86 (Intel/AMD)** is selected before you continue.
+      Hetzner's **CAX** servers run on Arm64 CPUs, and Pinchy's Docker images
+      are built for x86 (amd64) only
+      ([#1081](https://github.com/heypinchy/pinchy/issues/1081)). On a CAX
+      server the stack never starts: pulling the images fails with a "no
+      matching manifest for linux/arm64/v8" error. Double-check **x86
+      (Intel/AMD)** is selected before you continue.
     </Aside>
 
     Scroll down to the server sizes and select the smallest option with **at least 4 GB RAM** and **2 vCPUs**. This is the minimum for Pinchy.
