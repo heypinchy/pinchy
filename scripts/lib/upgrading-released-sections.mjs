@@ -177,14 +177,18 @@ export function fingerprintSectionBody(normalizedBody) {
  *    `Allow-upgrade-note-edit:` trailer exists to authorize. These predate the
  *    trailer.
  *
- *  - **Misplaced notes — the bug itself.** The v0.5.4, v0.8.0 and v0.9.0
- *    entries each gained a `####` note describing a change that shipped in the
- *    NEXT release. They are listed here only so the guard is green on arrival;
- *    the fix is to move each note into the section of the release it actually
- *    shipped in, and then to delete the entry — which the stale-entry check
- *    below enforces rather than trusts. Tracked in #1028, which also carries
- *    the reason it is not a one-line move: `main` has no open
- *    `%%PINCHY_VERSION%%` section to move the v0.9.0 notes INTO.
+ *  - **Misplaced notes — the bug itself.** A section that gained a `####` note
+ *    describing a change which shipped in a LATER release. There are none left:
+ *    the last two were moved into their real release under #1028, and both
+ *    entries went with them, because the stale-entry check below enforces that
+ *    rather than trusting it. A NEW entry of this kind is the cause coming back,
+ *    not bookkeeping — fix `openNextUpgradeSection`, do not file the note here.
+ *
+ * Moving a note is itself an edit to a released section, so it leaves a
+ * retro-correction behind in the section it moved INTO (v0.9.0 and v0.5.7
+ * below). That is the honest accounting: those sections genuinely no longer
+ * match their tag, and an exception that said otherwise would be a claim the
+ * guard cannot verify.
  *
  * @type {Record<string, {summary: string, kind: "retro-correction"|"misplaced-note", fingerprint: string}>}
  */
@@ -196,24 +200,22 @@ export const KNOWN_PRE_GUARD_DRIFT = {
       "to what v0.9.0 actually ships: the mount-your-data Aside now links the " +
       "docker-compose.override.yml route instead of merely mentioning it, and the " +
       "migration count was corrected from eleven (`0044`–`0054`) to thirteen " +
-      "(`0044`–`0056`) — v0.9.0 backports its own `0056` (2a113b25)",
+      "(`0044`–`0056`) — v0.9.0 backports its own `0056` (2a113b25). Plus, under " +
+      "#1028, `Deleting a user keeps their invite history` moved IN from v0.8.0's " +
+      "section: migration `0044` is what makes that foreign key `ON DELETE SET " +
+      "NULL`, and `0044` does not exist at v0.8.0 — that tree stops at `0043`",
     fingerprint:
-      "29062f1f34ef3eab61f6cefe4042b79ff138c35b25f064b55072ac0ddb91b401",
+      "92ab76c5d27281beebda57324972488c2eac53a630a1a17b7ee3075918205566",
   },
-  "v0.8.0": {
-    kind: "misplaced-note",
+  "v0.5.7": {
+    kind: "retro-correction",
     summary:
-      "gained `Deleting a user keeps their invite history` (d40bb678), which shipped " +
-      "in v0.9.0 — #1028",
+      "gained `Integration audit event names`, moved IN from v0.5.4's section under " +
+      "#1028. The rename ships here: `integration.created` first appears in the tree " +
+      "at v0.5.7 (a4b51463), and v0.5.4 through v0.5.6 do not contain it — the issue " +
+      "named v0.5.5 without checking",
     fingerprint:
-      "a9a3431ed33b974b688c8e0b5651177c4cb9f7643d59464bc373b27bad46c17f",
-  },
-  "v0.5.4": {
-    kind: "misplaced-note",
-    summary:
-      "gained `Integration audit event names` (a4b51463), which shipped in v0.5.5 — #1028",
-    fingerprint:
-      "96fb6b11691d64fe02e77d18d0d60e81acbdfe158ce6697e6867a981aec3b71e",
+      "6c88ebfa7a12f756a14c422fda4d386f2af3c88b4f711138a1a9c7592e78c2c9",
   },
   "v0.5.0": {
     kind: "retro-correction",
