@@ -18,9 +18,9 @@ services:
       # override both rely on this so no user provisioning step is needed.
       - GREENMAIL_OPTS=-Dgreenmail.setup.test.all -Dgreenmail.hostname=0.0.0.0 -Dgreenmail.auth.disabled
     ports:
-      - "3025:3025"
-      - "3143:3143"
-      - "8080:8080"
+      - "127.0.0.1:3025:3025"
+      - "127.0.0.1:3143:3143"
+      - "127.0.0.1:8080:8080"
     healthcheck:
       # Both listeners must be bound before dependents start: SMTP (3025) for
       # seeding and IMAP (3143) for listing/purging. Plain start-order isn't
@@ -46,7 +46,7 @@ services:
       - GREENMAIL_SMTP_PORT=3025
       - GREENMAIL_IMAP_PORT=3143
     ports:
-      - "9006:9006"
+      - "127.0.0.1:9006:9006"
     healthcheck:
       test:
         [

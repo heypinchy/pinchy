@@ -88,13 +88,15 @@ services:
     environment:
       - POSTGRES_PASSWORD=pinchy_dev
     ports:
-      # Overridable so two worktrees can run a dev stack at once.
-      # `pnpm worktree:env` writes a free block into .env.
-      - "${DEV_DB_PORT:-5434}:5432"
+      # Overridable so two worktrees can run a dev stack at once. Host IP is
+      # hard-coded (not part of the variable) because DEV_DB_PORT is written
+      # as a bare number by `pnpm worktree:env` (scripts/worktree-env.mjs);
+      # binding all interfaces would expose the dev DB on the network.
+      - "127.0.0.1:${DEV_DB_PORT:-5434}:5432"
   caddy:
     image: caddy:2
     ports:
-      - "${DEV_CADDY_PORT:-8443}:443"
+      - "127.0.0.1:${DEV_CADDY_PORT:-8443}:443"
     volumes:
       - ./Caddyfile.dev:/etc/caddy/Caddyfile:ro
       - caddy_data_dev:/data

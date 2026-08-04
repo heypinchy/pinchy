@@ -9,7 +9,7 @@ services:
     build:
       context: config/telegram-mock
     ports:
-      - "9001:9001"
+      - "127.0.0.1:9001:9001"
     networks:
       default:
         ipv4_address: 172.28.0.10

@@ -6,8 +6,8 @@ services:
     build:
       context: config/odoo-mock
     ports:
-      - "9002:9002"
-      - "8069:8069"
+      - "127.0.0.1:9002:9002"
+      - "127.0.0.1:8069:8069"
     healthcheck:
       test:
         [
@@ -43,4 +43,4 @@ services:
   db:
     # Same reason as pinchy above: pin the port the specs seed through.
     ports: !override
-      - "5434:5432"
+      - "127.0.0.1:5434:5432"

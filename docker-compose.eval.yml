@@ -28,9 +28,9 @@ services:
   pinchy:
     # Override the default :7777 mapping so the eval stack (port 7781)
     # doesn't conflict with the integration suite (7779) or other E2E jobs
-    # (7777/7778).
+    # (7777/7778). Loopback-only: the harness reaches it via localhost.
     ports: !override
-      - "7781:7777"
+      - "127.0.0.1:7781:7777"
     environment:
       - AUDIT_HMAC_SECRET=deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef
       # Fixed test-only secrets (throwaway eval stack, mock data only — same
@@ -93,7 +93,7 @@ services:
   db:
     ports:
       !override # Playwright/setup helpers read/seed the DB directly from the host.
-      - "5437:5432"
+      - "127.0.0.1:5437:5432"
     tmpfs:
       - /var/lib/postgresql/data
     volumes: !reset []
@@ -102,8 +102,8 @@ services:
     build:
       context: config/odoo-mock
     ports:
-      - "9502:9002"
-      - "8169:8069"
+      - "127.0.0.1:9502:9002"
+      - "127.0.0.1:8169:8069"
     healthcheck:
       test:
         [
@@ -120,7 +120,7 @@ services:
     build:
       context: config/graph-mock
     ports:
-      - "9505:9005"
+      - "127.0.0.1:9505:9005"
     healthcheck:
       test:
         [

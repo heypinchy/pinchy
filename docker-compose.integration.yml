@@ -21,9 +21,10 @@
 services:
   pinchy:
     # Override the default :7777 mapping so the integration suite (port 7779)
-    # doesn't conflict with other E2E jobs that bind 7778/7777.
+    # doesn't conflict with other E2E jobs that bind 7778/7777. Loopback-only:
+    # the CI runner and Playwright reach it via localhost.
     ports: !override
-      - "7779:7777"
+      - "127.0.0.1:7779:7777"
     environment:
       # Exercises Pinchy's audit HMAC code path. Bare-bones non-empty 64-byte hex.
       - AUDIT_HMAC_SECRET=deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef
@@ -71,8 +72,8 @@ services:
     ports: !override
       # Playwright tests read/seed the DB directly from the host (see
       # global-setup.ts settings INSERT). Production compose keeps the DB
-      # network-internal; tests need a back door.
-      - "5435:5432"
+      # network-internal; tests need a back door. Loopback-only.
+      - "127.0.0.1:5435:5432"
     # Overrides docker-compose.yml's `pgdata` named volume with an in-memory
     # tmpfs — integration tests start from a fresh DB each run, no persistence
     # required and tmpfs is faster.

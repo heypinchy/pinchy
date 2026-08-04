@@ -8,7 +8,7 @@ services:
     build:
       context: config/brave-mock
     ports:
-      - "9003:9003"
+      - "127.0.0.1:9003:9003"
     healthcheck:
       test:
         [
