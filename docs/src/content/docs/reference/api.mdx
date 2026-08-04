@@ -1920,4 +1920,6 @@ Change your own password.
 **Errors:**
 
 - `400` — missing fields or new password too short
-- `401` — not authenticated or current password incorrect
+- `401` — not authenticated
+- `403` — current password incorrect
+- `429` — too many attempts (5 per 10 minutes per user); wait for the window to reset
