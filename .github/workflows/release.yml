@@ -44,6 +44,7 @@ jobs:
   docker:
     name: Build & Push Docker Images
     runs-on: ubuntu-latest
+    timeout-minutes: 25
 
     steps:
       - uses: actions/checkout@v7
@@ -148,6 +149,7 @@ jobs:
   end-user-install-published:
     name: End-user install (published images)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     needs: docker
 
     steps:
@@ -269,6 +271,7 @@ jobs:
     # must not re-create a release that already exists.
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     needs: [docker, end-user-install-published]
 
     steps:
@@ -322,6 +325,7 @@ jobs:
     # screenshots in lockstep with the released UI.
     uses: ./.github/workflows/screenshots.yml
     secrets: inherit
+    timeout-minutes: 40
     permissions:
       contents: write
       pages: write

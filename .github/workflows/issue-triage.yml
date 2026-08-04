@@ -40,6 +40,7 @@ jobs:
     name: Label external reports
     if: github.event_name == 'issues'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
       issues: write
@@ -59,6 +60,7 @@ jobs:
     name: External issues awaiting a reply
     if: github.event_name != 'issues'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
       issues: read

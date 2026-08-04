@@ -48,6 +48,7 @@ jobs:
   changes:
     name: Detect changed paths
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
       code: ${{ steps.filter.outputs.code }}
     steps:
@@ -117,6 +118,7 @@ jobs:
     name: Build ${{ matrix.name }} image
     needs: changes
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: read
       packages: write
@@ -210,6 +212,7 @@ jobs:
       needs.changes.outputs.code == 'true' &&
       (github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork != true)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
       pinchy-image: ${{ steps.tags.outputs.pinchy }}
       openclaw-image: ${{ steps.tags.outputs.openclaw }}
@@ -235,6 +238,7 @@ jobs:
   quality:
     name: Lint, Test & Build
     runs-on: ubuntu-latest
+    timeout-minutes: 35
 
     steps:
       - uses: actions/checkout@v7
@@ -451,6 +455,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
 
@@ -481,6 +486,7 @@ jobs:
   vitest-integration:
     name: Vitest Integration Tests (real DB)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     # Real-DB unit-style tests (#229). Distinct from `e2e` (full Playwright
     # browser stack) and `integration` (OpenClaw + fake Ollama via
@@ -521,6 +527,7 @@ jobs:
   e2e:
     name: E2E Tests
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     services:
       postgres:
@@ -605,6 +612,7 @@ jobs:
       (needs.build-image.result == 'success' ||
        needs.build-image.result == 'skipped')
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     permissions:
       contents: read
       packages: read
@@ -1129,6 +1137,7 @@ jobs:
 
   end-user-install:
     name: End-user install simulation
+    timeout-minutes: 15
     needs: [changes, build-image]
     # See docker-smoke: build-image is skipped both on fork PRs (fall back to a
     # local build) and on docs-only PRs (build nothing) — only the changes gate
@@ -1279,6 +1288,7 @@ jobs:
 
   end-user-upgrade:
     name: End-user upgrade simulation
+    timeout-minutes: 15
     needs: [changes, build-image]
     # See docker-smoke: build-image is skipped both on fork PRs (fall back to a
     # local build) and on docs-only PRs (build nothing) — only the changes gate
@@ -1523,6 +1533,7 @@ jobs:
   odoo-e2e:
     name: Odoo E2E Tests
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     needs: [changes, build-image]
     # See docker-smoke on why the changes gate is explicit rather than inferred
     # from build-image being skipped.
@@ -1658,6 +1669,7 @@ jobs:
   web-e2e:
     name: Web Search E2E Tests
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     needs: [changes, build-image]
     # See docker-smoke on why the changes gate is explicit rather than inferred
     # from build-image being skipped.
@@ -1784,6 +1796,7 @@ jobs:
     # email-microsoft.spec.ts against gmail-mock + graph-mock.
     name: Email E2E Tests
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     needs: [changes, build-image]
     # See docker-smoke on why the changes gate is explicit rather than inferred
     # from build-image being skipped.
@@ -1915,6 +1928,7 @@ jobs:
     # against a real GreenMail server fronted by the imap-mock control sidecar.
     name: IMAP E2E Tests
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     needs: [changes, build-image]
     # See docker-smoke on why the changes gate is explicit rather than inferred
     # from build-image being skipped.
@@ -2060,6 +2074,7 @@ jobs:
   setup-wizard-e2e:
     name: Setup Wizard E2E Tests (${{ matrix.shard }}/2)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     needs: [changes, build-image]
     # See docker-smoke on why the changes gate is explicit rather than inferred
     # from build-image being skipped.
@@ -2199,6 +2214,7 @@ jobs:
   telegram-e2e:
     name: Telegram E2E Tests
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     needs: [changes, build-image]
     # See docker-smoke on why the changes gate is explicit rather than inferred
     # from build-image being skipped.
@@ -2392,6 +2408,7 @@ jobs:
   integration:
     name: Integration Tests (OpenClaw + Fake Ollama) (${{ matrix.shard }}/2)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     needs: [changes, build-image]
     # See docker-smoke on why the changes gate is explicit rather than inferred
     # from build-image being skipped.
@@ -2569,6 +2586,7 @@ jobs:
     # (stochastic + paid); see #669 for the on-demand/scheduled follow-ups.
     name: Eval Harness Self-Test
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     needs: [changes, build-image]
     # See docker-smoke on why the changes gate is explicit rather than inferred
     # from build-image being skipped.
@@ -2703,6 +2721,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
       - uses: actions/checkout@v7
@@ -2753,6 +2772,7 @@ jobs:
   links:
     name: Check links
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
       - uses: actions/checkout@v7
@@ -2795,6 +2815,7 @@ jobs:
     name: Security audit
     needs: changes
     if: needs.changes.outputs.code == 'true'
+    timeout-minutes: 10
     uses: "google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@v2.3.8"
     with:
       scan-args: |-
@@ -2811,6 +2832,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
       - uses: actions/checkout@v7

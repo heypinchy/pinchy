@@ -15,6 +15,7 @@ jobs:
   freshness:
     name: Forward-looking claims whose issue has closed
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
 

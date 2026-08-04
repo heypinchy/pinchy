@@ -17,6 +17,7 @@ jobs:
   capture:
     name: Capture screenshots
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     # docker-compose.yml requires PINCHY_VERSION since
     # 0a1e4ebd2 (feat(compose): pin image versions via PINCHY_VERSION env
     # var). The job builds production images locally with tag :latest, so
@@ -128,6 +129,7 @@ jobs:
     # publish are separate concerns; this splits them.
     if: github.event_name != 'workflow_dispatch'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
