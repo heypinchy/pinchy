@@ -4,6 +4,8 @@ import { openClawConnectionState } from "@/server/openclaw-connection-state";
 import { getOpenClawClient } from "@/server/openclaw-client";
 import { getChannelHealthMonitor } from "@/server/channel-health-singleton";
 import { getPendingConfigPushCount } from "@/lib/openclaw-config/push-state";
+import { requireAdmin } from "@/lib/api-auth";
+import { safeProviderError } from "@/lib/audit";
 
 /**
  * GET `/api/health/openclaw[?agentId=<uuid>]`
@@ -27,6 +29,11 @@ import { getPendingConfigPushCount } from "@/lib/openclaw-config/push-state";
  *
  * Safe to expose publicly: only checks for presence of the id in
  * `agents.list`, returns no agent metadata.
+ *
+ * With `?channelHealth=1`: admin-only. The snapshot carries `accountId`
+ * (a Pinchy agent id for Telegram) and `lastError` (raw worker error text) —
+ * see the doc comment below. Everything else in this route stays
+ * unauthenticated on purpose; only this branch requires an admin session.
  */
 export async function GET(request: NextRequest) {
   if (restartState.isRestarting) {
@@ -53,8 +60,19 @@ export async function GET(request: NextRequest) {
   // the watchdog's debounced episode state (rather than a fresh classify)
   // avoids the badge flickering on a single-tick blip between OpenClaw's
   // auto-restart attempts. Empty (`[]`) until the watchdog has run a probe.
+  //
+  // Admin-only: the entries carry `accountId` (a Pinchy agent id for
+  // Telegram) and `lastError` (worker error text). `lastError` is also
+  // routed through `safeProviderError` here — defense in depth alongside the
+  // admin gate, matching the scrub already applied on the audit-log path in
+  // channel-health-watchdog.ts.
   if (request.nextUrl.searchParams.get("channelHealth")) {
-    const channelHealth = getChannelHealthMonitor()?.snapshot() ?? [];
+    const admin = await requireAdmin();
+    if (admin instanceof NextResponse) return admin;
+    const channelHealth = (getChannelHealthMonitor()?.snapshot() ?? []).map((entry) => ({
+      ...entry,
+      lastError: entry.lastError ? safeProviderError(entry.lastError) : null,
+    }));
     return NextResponse.json({ ...base, channelHealth });
   }
 

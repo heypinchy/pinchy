@@ -1,10 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { NextRequest } from "next/server";
+import { NextResponse } from "next/server";
 
 const mockRestartState = { isRestarting: false, triggeredAt: null as number | null };
 const mockConnectionState = { connected: false };
 const mockConfigGet = vi.fn();
 const mockGetOpenClawClient = vi.fn();
+const mockRequireAdmin = vi.fn();
+const mockSnapshot = vi.fn();
+const mockGetChannelHealthMonitor = vi.fn();
 
 vi.mock("@/server/restart-state", () => ({
   restartState: mockRestartState,
@@ -17,6 +21,16 @@ vi.mock("@/server/openclaw-connection-state", () => ({
 vi.mock("@/server/openclaw-client", () => ({
   getOpenClawClient: () => mockGetOpenClawClient(),
 }));
+
+vi.mock("@/lib/api-auth", () => ({
+  requireAdmin: () => mockRequireAdmin(),
+}));
+
+vi.mock("@/server/channel-health-singleton", () => ({
+  getChannelHealthMonitor: () => mockGetChannelHealthMonitor(),
+}));
+
+import { mockSession } from "@/test-helpers/auth";
 
 function fakeRequest(url = "http://localhost/api/health/openclaw"): NextRequest {
   // Only `nextUrl.searchParams` is consumed by the route — minimal shim.
@@ -34,6 +48,9 @@ describe("GET /api/health/openclaw", () => {
     mockRestartState.triggeredAt = null;
     mockConnectionState.connected = false;
     mockGetOpenClawClient.mockReturnValue({ config: { get: mockConfigGet } });
+    mockRequireAdmin.mockResolvedValue(mockSession());
+    mockSnapshot.mockReturnValue([]);
+    mockGetChannelHealthMonitor.mockReturnValue({ snapshot: mockSnapshot });
     // The push-state tracker is globalThis-backed (NOT mocked here): the route
     // must read the same counter `pushConfigInBackground` writes, across the
     // Next-route vs custom-server module-graph split.
@@ -79,6 +96,91 @@ describe("GET /api/health/openclaw", () => {
     pushState.trackConfigPushSettled();
     const after = await (await GET(fakeRequest())).json();
     expect(after.configPushesPending).toBe(0);
+  });
+
+  describe("with ?channelHealth=1 (admin-only snapshot)", () => {
+    it("returns 401 for an unauthenticated caller and does NOT read the snapshot", async () => {
+      mockRequireAdmin.mockResolvedValue(
+        NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+      );
+
+      const response = await GET(
+        fakeRequest("http://localhost/api/health/openclaw?channelHealth=1")
+      );
+
+      expect(response.status).toBe(401);
+      expect(mockSnapshot).not.toHaveBeenCalled();
+    });
+
+    it("returns 403 for a non-admin member and does NOT read the snapshot", async () => {
+      mockRequireAdmin.mockResolvedValue(
+        NextResponse.json({ error: "Forbidden" }, { status: 403 })
+      );
+
+      const response = await GET(
+        fakeRequest("http://localhost/api/health/openclaw?channelHealth=1")
+      );
+
+      expect(response.status).toBe(403);
+      expect(mockSnapshot).not.toHaveBeenCalled();
+    });
+
+    it("returns the snapshot for an admin", async () => {
+      mockRequireAdmin.mockResolvedValue(mockSession());
+      mockSnapshot.mockReturnValue([
+        {
+          channel: "telegram",
+          accountId: "agent-1",
+          state: "degraded",
+          connected: false,
+          running: false,
+          lastError: "getUpdates conflict",
+          reconnectAttempts: 3,
+          restartPending: false,
+          degradedSince: 1700000000000,
+        },
+      ]);
+
+      const response = await GET(
+        fakeRequest("http://localhost/api/health/openclaw?channelHealth=1")
+      );
+      const body = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(body.channelHealth).toEqual([
+        expect.objectContaining({ accountId: "agent-1", lastError: "getUpdates conflict" }),
+      ]);
+    });
+
+    it("scrubs lastError through safeProviderError before returning it", async () => {
+      mockRequireAdmin.mockResolvedValue(mockSession());
+      mockSnapshot.mockReturnValue([
+        {
+          channel: "telegram",
+          accountId: "agent-1",
+          state: "degraded",
+          connected: false,
+          running: false,
+          lastError: "conflict for user someone@example.com",
+          reconnectAttempts: 1,
+          restartPending: false,
+          degradedSince: 1700000000000,
+        },
+      ]);
+
+      const response = await GET(
+        fakeRequest("http://localhost/api/health/openclaw?channelHealth=1")
+      );
+      const body = await response.json();
+
+      expect(body.channelHealth[0].lastError).not.toContain("someone@example.com");
+    });
+
+    it("does NOT call requireAdmin for the default health check (stays public)", async () => {
+      await GET(fakeRequest());
+
+      expect(mockRequireAdmin).not.toHaveBeenCalled();
+    });
   });
 
   it("returns restarting with connected: false when restarting", async () => {

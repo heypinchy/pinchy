@@ -74,6 +74,8 @@ Useful for monitoring the WebSocket gateway separately from the web process.
 
 `configPushesPending` is the number of configuration updates Pinchy has accepted but not yet confirmed inside the OpenClaw runtime (for example while OpenClaw's config-apply rate limit defers an update). A value of `0` means the runtime reflects every change you've made — useful for automation that needs to act right after a settings or permission change. While the gateway restarts, the response is `{ "status": "restarting", "connected": false, "since": <timestamp> }` instead.
 
+With `?channelHealth=1`, the response additionally includes a `channelHealth` array — the channel-health watchdog's per-account snapshot (used by the admin Telegram settings UI to show a "degraded" badge). **This mode requires an admin session** and returns `401`/`403` otherwise: entries carry `accountId` (a Pinchy agent id) and `lastError` (worker error text, passed through the same scrubbing used for the audit trail). The rest of this endpoint — the default `{ status, connected }` check and `?agentId=` — stays public.
+
 ## Setup (public)
 
 Setup endpoints handle the initial installation and first-admin account. They are accessible **only before setup has completed** — once an admin exists, they return `409 Conflict`.
