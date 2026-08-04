@@ -5,6 +5,9 @@ vi.mock("fs", async (importOriginal) => {
   const existsSyncMock = vi.fn(() => false);
   const readFileSyncMock = vi.fn();
   const writeFileSyncMock = vi.fn();
+  // The file-secret cache invalidates on mtime — default to a fixed value so
+  // every existing test (one getOrCreateSecret call each) is unaffected.
+  const statSyncMock = vi.fn(() => ({ mtimeMs: 1 }));
   return {
     ...actual,
     default: {
@@ -12,18 +15,21 @@ vi.mock("fs", async (importOriginal) => {
       existsSync: existsSyncMock,
       readFileSync: readFileSyncMock,
       writeFileSync: writeFileSyncMock,
+      statSync: statSyncMock,
     },
     existsSync: existsSyncMock,
     readFileSync: readFileSyncMock,
     writeFileSync: writeFileSyncMock,
+    statSync: statSyncMock,
   };
 });
 
-import { existsSync, readFileSync, writeFileSync } from "fs";
+import { existsSync, readFileSync, writeFileSync, statSync } from "fs";
 
 const mockedExistsSync = vi.mocked(existsSync);
 const mockedReadFileSync = vi.mocked(readFileSync);
 const mockedWriteFileSync = vi.mocked(writeFileSync);
+const mockedStatSync = vi.mocked(statSync);
 
 describe("encryption", () => {
   const TEST_KEY = "a".repeat(64); // 32 bytes in hex
@@ -34,6 +40,8 @@ describe("encryption", () => {
     mockedExistsSync.mockReturnValue(false);
     mockedReadFileSync.mockReset();
     mockedWriteFileSync.mockReset();
+    mockedStatSync.mockReset();
+    mockedStatSync.mockReturnValue({ mtimeMs: 1 } as ReturnType<typeof statSync>);
   });
 
   afterEach(() => {
@@ -177,6 +185,68 @@ describe("encryption", () => {
       const mod = await import("@/lib/encryption");
       mod.getOrCreateSecret(SECRET_NAME);
       expect(mockedReadFileSync).toHaveBeenCalledWith(`/app/secrets/${FILE_NAME}`, "utf-8");
+    });
+
+    // ── File-secret cache (mtime-invalidated) ─────────────────────────────
+    //
+    // appendAuditLog calls getOrCreateSecret("audit_hmac_secret") on every
+    // audit row, which previously meant a synchronous readFileSync on every
+    // append. Caching the parsed Buffer keyed on the file's mtime removes
+    // that read from the hot path while still picking up a rotated secret
+    // without a restart.
+
+    describe("file-secret cache", () => {
+      it("caches the parsed secret across calls and does not re-read the file", async () => {
+        const validHex = "f".repeat(64);
+        mockedExistsSync.mockImplementation((path) => String(path).endsWith(FILE_NAME));
+        mockedReadFileSync.mockReturnValue(validHex);
+        mockedStatSync.mockReturnValue({ mtimeMs: 1000 } as ReturnType<typeof statSync>);
+
+        const mod = await import("@/lib/encryption");
+        const first = mod.getOrCreateSecret(SECRET_NAME);
+        const second = mod.getOrCreateSecret(SECRET_NAME);
+
+        expect(first).toEqual(Buffer.from(validHex, "hex"));
+        expect(second).toEqual(Buffer.from(validHex, "hex"));
+        expect(mockedReadFileSync).toHaveBeenCalledTimes(1);
+        // statSync is the cheap check that runs every time — the whole point
+        // is trading a read for a stat.
+        expect(mockedStatSync).toHaveBeenCalledTimes(2);
+      });
+
+      it("re-reads the file when its mtime changes (rotation without a restart)", async () => {
+        mockedExistsSync.mockImplementation((path) => String(path).endsWith(FILE_NAME));
+        mockedReadFileSync.mockReturnValueOnce("1".repeat(64));
+        mockedStatSync.mockReturnValueOnce({ mtimeMs: 1000 } as ReturnType<typeof statSync>);
+
+        const mod = await import("@/lib/encryption");
+        const before = mod.getOrCreateSecret(SECRET_NAME);
+        expect(before).toEqual(Buffer.from("1".repeat(64), "hex"));
+
+        // Secret rotated on disk: new content, new mtime.
+        mockedReadFileSync.mockReturnValueOnce("2".repeat(64));
+        mockedStatSync.mockReturnValueOnce({ mtimeMs: 2000 } as ReturnType<typeof statSync>);
+
+        const after = mod.getOrCreateSecret(SECRET_NAME);
+        expect(after).toEqual(Buffer.from("2".repeat(64), "hex"));
+        expect(mockedReadFileSync).toHaveBeenCalledTimes(2);
+      });
+
+      it("keeps separate cache entries for different secret names (different files)", async () => {
+        mockedExistsSync.mockReturnValue(true);
+        mockedReadFileSync.mockImplementation((path) =>
+          String(path).includes("audit_hmac_secret") ? "a".repeat(64) : "b".repeat(64)
+        );
+        mockedStatSync.mockReturnValue({ mtimeMs: 1 } as ReturnType<typeof statSync>);
+
+        const mod = await import("@/lib/encryption");
+        const audit = mod.getOrCreateSecret("audit_hmac_secret");
+        const encryption = mod.getOrCreateSecret("encryption_key");
+
+        expect(audit).toEqual(Buffer.from("a".repeat(64), "hex"));
+        expect(encryption).toEqual(Buffer.from("b".repeat(64), "hex"));
+        expect(mockedReadFileSync).toHaveBeenCalledTimes(2);
+      });
     });
   });
 

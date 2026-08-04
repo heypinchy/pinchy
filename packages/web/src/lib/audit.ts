@@ -12,6 +12,35 @@ import type { ProbeFailureCode } from "@/lib/integrations/imap-probe";
 // predecessor). Arbitrary fixed constant, unique to the audit chain.
 const AUDIT_CHAIN_LOCK_KEY = 738291002;
 
+// A slow lock acquisition (checkpoint, autovacuum, a stuck writer) previously
+// stalled every appendAuditLog caller with nothing pointing at the lock as
+// the cause. Warn once a wait crosses this threshold — high enough that a
+// normal acquisition never trips it, low enough to catch a stall while it's
+// happening rather than after routes have already started timing out.
+const LOCK_WAIT_WARN_THRESHOLD_MS = 1000;
+// Rate-limited like claimScopeDenialSlot (api-auth.ts) and the host-blocked
+// throttle: if the lock is chronically slow, many concurrent appends could
+// all cross the threshold at once, and one warning per append would spam the
+// log exactly when it's least useful. One warning per window; the window
+// reports how many were suppressed since the last one.
+const LOCK_WAIT_WARN_WINDOW_MS = 60_000;
+let lockWaitWarnWindow: { openedAt: number; suppressed: number } | null = null;
+
+/** Test seam — the window is process-global. */
+export function resetLockWaitWarnWindow(): void {
+  lockWaitWarnWindow = null;
+}
+
+function claimLockWaitWarnSlot(now: number): { write: boolean; suppressed: number } {
+  if (lockWaitWarnWindow && now - lockWaitWarnWindow.openedAt < LOCK_WAIT_WARN_WINDOW_MS) {
+    lockWaitWarnWindow.suppressed++;
+    return { write: false, suppressed: lockWaitWarnWindow.suppressed };
+  }
+  const suppressed = lockWaitWarnWindow?.suppressed ?? 0;
+  lockWaitWarnWindow = { openedAt: now, suppressed: 0 };
+  return { write: true, suppressed };
+}
+
 // ── Audit Detail Base Types ─────────────────────────────────────────────
 
 export type EntityRef = { id: string; name: string };
@@ -957,7 +986,21 @@ export async function appendAuditLog(
   // predecessor and fork the chain, which verifyIntegrity would (correctly) then
   // flag as tampering.
   return db.transaction(async (tx) => {
+    const lockAcquireStart = Date.now();
     await tx.execute(sql`SELECT pg_advisory_xact_lock(${AUDIT_CHAIN_LOCK_KEY})`);
+    const lockAcquiredAt = Date.now();
+    const lockWaitMs = lockAcquiredAt - lockAcquireStart;
+    if (lockWaitMs >= LOCK_WAIT_WARN_THRESHOLD_MS) {
+      const slot = claimLockWaitWarnSlot(lockAcquiredAt);
+      if (slot.write) {
+        console.warn(
+          `[audit] appendAuditLog waited ${lockWaitMs}ms to acquire the audit chain lock` +
+            (slot.suppressed > 0
+              ? ` (${slot.suppressed} similar warning${slot.suppressed === 1 ? "" : "s"} suppressed since the last one)`
+              : "")
+        );
+      }
+    }
 
     const [prev] = await tx
       .select({ rowHmac: auditLog.rowHmac })

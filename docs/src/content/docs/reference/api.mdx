@@ -1703,6 +1703,10 @@ Retrieve a paginated, filterable audit log. **Admin only.**
 
 `outcome` is one of `"success"` or `"failure"`. `error` is `null` for successes and a short error message for failures (e.g. `"seat_cap"` on a blocked invite). Both fields are part of the HMAC-signed v2 row shape.
 
+`total` is only present in the response for `page=1`. A request for `page > 1` omits the field entirely rather than recomputing it — the audit log is append-only and can grow unbounded, so counting it on every page view is wasteful once a client already has the number from its page-1 fetch. Callers that page through results should keep the `total` from their first response and not expect it on later pages.
+
+On an unfiltered `page=1` request, `total` is an **estimate** read from Postgres's own planner statistics (`pg_class.reltuples`) rather than an exact `count(*)`, so it may lag slightly behind the true row count (bounded below by the number of entries the same response returns). Any filtered request (`eventType`, `actorId`, `from`, `to`, or `status`) still gets an exact count.
+
 **Errors:**
 
 - `401` — not authenticated

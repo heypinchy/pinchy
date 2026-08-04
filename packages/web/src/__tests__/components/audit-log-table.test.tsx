@@ -441,6 +441,46 @@ describe("AuditLogTable", () => {
     });
   });
 
+  it("keeps the page-1 total when a later page's response omits it", async () => {
+    // The server only (re)computes `total` on page 1 (see app/api/audit's
+    // rawTotalForPage1) — a page > 1 response has no `total` key at all.
+    // The component must keep showing the total from the page-1 fetch
+    // instead of losing it (e.g. falling back to 0 → "Page 1 of 1").
+    mockEventTypesThenEntries(undefined, {
+      entries: mockEntries,
+      total: 120,
+      page: 1,
+      limit: 50,
+    });
+
+    render(<AuditLogTable />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Page 1 of 3")).toBeInTheDocument();
+    });
+
+    const nextButton = screen.getByRole("button", { name: "Next" });
+
+    vi.mocked(global.fetch).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        entries: mockEntries,
+        // No `total` field — the page > 1 contract.
+        page: 2,
+        limit: 50,
+      }),
+    } as Response);
+
+    const user = userEvent.setup();
+    await user.click(nextButton);
+
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith(expect.stringContaining("page=2"));
+    });
+    // Still "of 3" — the total from page 1 was retained, not reset.
+    expect(screen.getByText("Page 2 of 3")).toBeInTheDocument();
+  });
+
   it("should have an event type filter with combobox role", async () => {
     renderWithEntriesLoaded();
 

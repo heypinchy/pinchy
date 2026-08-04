@@ -77,7 +77,10 @@ function StatusCell({ outcome }: { outcome: "success" | "failure" | null }) {
 
 interface AuditResponse {
   entries: AuditEntry[];
-  total: number;
+  // Only present on page 1 — the server never recomputes it for a later page
+  // (see app/api/audit/route.ts), so a page > 1 response omits the field and
+  // the total already in state (from the page-1 fetch) is kept as-is.
+  total?: number;
   page: number;
   limit: number;
 }
@@ -238,7 +241,12 @@ export function AuditLogTable() {
           const data: AuditResponse = await res.json();
           if (!cancelled) {
             setEntries(data.entries);
-            setTotal(data.total);
+            // Deep pages (page > 1) omit `total` entirely (see AuditResponse)
+            // — keep whatever the page-1 fetch already put in state instead
+            // of clobbering it with undefined.
+            if (data.total !== undefined) {
+              setTotal(data.total);
+            }
           }
         }
       } finally {

@@ -2,9 +2,47 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/api-auth";
 import { db } from "@/db";
 import { auditLog } from "@/db/schema";
-import { desc, and, count } from "drizzle-orm";
+import { desc, and, count, sql, type SQL } from "drizzle-orm";
 import { apiKeyActorName } from "@/lib/api-key-identity";
 import { buildAuditFilters, auditSelectWithJoins } from "@/lib/audit-query";
+
+/**
+ * Total is only ever (re)computed on page 1 — deep-page navigation (Previous
+ * / Next) would otherwise pay for a count/estimate query on every click even
+ * though the number can't have changed since the page-1 fetch that started
+ * the session. The client (`audit-log-table.tsx`) keeps the page-1 total in
+ * state and doesn't overwrite it when a later response omits the field.
+ *
+ * Returns the RAW total/estimate, without the entries.length floor applied
+ * below — that keeps this query independent of the entries query so both can
+ * still run concurrently via Promise.all.
+ */
+async function rawTotalForPage1(where: SQL | undefined): Promise<number> {
+  if (where) {
+    // Filtered: an exact count is the honest answer, and filters typically
+    // narrow the row set enough that the scan is cheap.
+    const result = await db.select({ count: count() }).from(auditLog).where(where);
+    return result[0]?.count ?? 0;
+  }
+
+  // Unfiltered: audit_log is append-only and can grow unbounded, so an exact
+  // count(*) here means a full-table scan on every page-1 view. Read
+  // Postgres's own planner statistic instead — a single index lookup
+  // regardless of table size.
+  //
+  // This is an ESTIMATE, not an exact count: pg_class.reltuples is only
+  // refreshed by ANALYZE/VACUUM, so a table that has never been analyzed yet
+  // (a brand-new install, before autovacuum's first pass) reports 0, and a
+  // recent burst of inserts can leave the number stale for up to one
+  // autovacuum cycle. The caller floors this against the page's own entry
+  // count, so the total can never read as less than what the admin is
+  // already looking at.
+  const estimateRows = await db.execute<{ estimate: string | number | null }>(
+    sql`SELECT reltuples::bigint AS estimate FROM pg_class WHERE oid = 'audit_log'::regclass`
+  );
+  const raw = estimateRows[0]?.estimate;
+  return raw === null || raw === undefined ? 0 : Number(raw);
+}
 
 export async function GET(request: NextRequest) {
   const sessionOrError = await requireAdmin();
@@ -24,14 +62,20 @@ export async function GET(request: NextRequest) {
 
   const where = conditions.length > 0 ? and(...conditions) : undefined;
 
-  const [entries, totalResult] = await Promise.all([
+  const [entries, rawTotal] = await Promise.all([
     auditSelectWithJoins()
       .where(where)
       .orderBy(desc(auditLog.timestamp))
       .limit(limit)
       .offset((page - 1) * limit),
-    db.select({ count: count() }).from(auditLog).where(where),
+    // Only computed on page 1 — see rawTotalForPage1's own comment.
+    page === 1 ? rawTotalForPage1(where) : Promise.resolve(undefined),
   ]);
+
+  // Floored against entries.length here (rather than inside rawTotalForPage1)
+  // so the count/estimate query above can still run concurrently with the
+  // entries query instead of waiting on it.
+  const responseTotal = rawTotal === undefined ? undefined : Math.max(rawTotal, entries.length);
 
   const processedEntries = entries.map((e) => ({
     id: e.id,
@@ -54,7 +98,10 @@ export async function GET(request: NextRequest) {
   return NextResponse.json(
     {
       entries: processedEntries,
-      total: totalResult[0]?.count ?? 0,
+      // Omitted (not null/0) on page > 1 — see rawTotalForPage1's comment.
+      // JSON.stringify drops an `undefined` property entirely, so the client
+      // sees no `total` key at all rather than a misleading value.
+      ...(responseTotal === undefined ? {} : { total: responseTotal }),
       page,
       limit,
     },

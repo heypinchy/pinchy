@@ -57,6 +57,7 @@ import {
   computeRowHmacV2,
   computeRowHmacV3,
   resetAuditPseudonymCache,
+  resetLockWaitWarnWindow,
   type AuditLogEntry,
 } from "@/lib/audit";
 import { auditLog } from "@/db/schema";
@@ -75,6 +76,7 @@ describe("appendAuditLog", () => {
     mockPrevRow.mockResolvedValue([]); // genesis: no previous row
     mockPseudonymRow.mockResolvedValue([]); // no matching user by default
     resetAuditPseudonymCache();
+    resetLockWaitWarnWindow();
   });
 
   it("should insert a row into the audit_log table", async () => {
@@ -631,6 +633,93 @@ describe("appendAuditLog", () => {
       } finally {
         delete process.env.AUDIT_PSEUDONYM_CACHE_MAX;
       }
+    });
+  });
+
+  // ── Lock-wait warning ────────────────────────────────────────────────────
+  //
+  // appendAuditLog holds pg_advisory_xact_lock across the whole transaction,
+  // so every state-changing route and every tool call queues behind whoever
+  // holds it. A slow acquisition (checkpoint, autovacuum, a stuck writer) was
+  // previously invisible — nothing pointed at the lock as the cause. A
+  // one-shot, rate-limited console.warn makes that stall diagnosable without
+  // spamming the log if many concurrent appends are all slow at once.
+  //
+  // appendAuditLog calls Date.now() exactly twice per invocation — once
+  // before tx.execute(pg_advisory_xact_lock) and once right after — so a
+  // spy queues two return values per append below. `new Date()` (used for
+  // the row's own timestamp) does not go through the Date.now() spy.
+  describe("lock-wait warning", () => {
+    it("warns once when acquiring the lock takes at least 1s", async () => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const nowSpy = vi.spyOn(Date, "now").mockReturnValueOnce(1_000).mockReturnValueOnce(2_500); // 1500ms
+
+      await appendAuditLog({
+        actorType: "system",
+        actorId: "system",
+        eventType: "config.changed",
+        detail: {},
+        outcome: "success",
+      });
+
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      expect(warnSpy.mock.calls[0][0]).toContain("1500ms");
+
+      warnSpy.mockRestore();
+      nowSpy.mockRestore();
+    });
+
+    it("does not warn when acquiring the lock is fast", async () => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const nowSpy = vi.spyOn(Date, "now").mockReturnValueOnce(1_000).mockReturnValueOnce(1_500); // 500ms
+
+      await appendAuditLog({
+        actorType: "system",
+        actorId: "system",
+        eventType: "config.changed",
+        detail: {},
+        outcome: "success",
+      });
+
+      expect(warnSpy).not.toHaveBeenCalled();
+
+      warnSpy.mockRestore();
+      nowSpy.mockRestore();
+    });
+
+    it("suppresses repeated warnings within the window and reports the suppressed count on the next one", async () => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const nowSpy = vi.spyOn(Date, "now");
+      const append = () =>
+        appendAuditLog({
+          actorType: "system",
+          actorId: "system",
+          eventType: "config.changed",
+          detail: {},
+          outcome: "success",
+        });
+
+      // Call 1: 2000ms wait, at t=0..2000 — opens the window and warns.
+      nowSpy.mockReturnValueOnce(0).mockReturnValueOnce(2_000);
+      await append();
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      expect(warnSpy.mock.calls[0][0]).not.toContain("suppressed");
+
+      // Call 2: 2000ms wait, at t=3000..5000 — still inside the 60s window
+      // opened by call 1 → suppressed, no warn.
+      nowSpy.mockReturnValueOnce(3_000).mockReturnValueOnce(5_000);
+      await append();
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+
+      // Call 3: 2000ms wait, at t=100000..102000 — well past the window →
+      // warns again, and reports the one suppressed in between.
+      nowSpy.mockReturnValueOnce(100_000).mockReturnValueOnce(102_000);
+      await append();
+      expect(warnSpy).toHaveBeenCalledTimes(2);
+      expect(warnSpy.mock.calls[1][0]).toContain("1 similar warning");
+
+      warnSpy.mockRestore();
+      nowSpy.mockRestore();
     });
   });
 });
