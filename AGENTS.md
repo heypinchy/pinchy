@@ -107,6 +107,13 @@ Three details worth knowing before editing the guard:
 
 Every Playwright config here pins `retries: 0, workers: 1` on purpose: a flake is a signal, not something a rerun hides. A fixed sleep quietly trades that away. It is green on a fast host and red on a loaded runner, and when it does fail it says "timeout" instead of naming what was slow.
 
+That pin is itself guarded now, by `scripts/lib/playwright-config-pins.mjs` (`pnpm test:scripts`). It reads all nine `playwright*.config.ts` files under `packages/web` and requires `retries: 0`, `workers: 1`, and no `fullyParallel: true` — the third because `workers: 1` alone still lets tests _within one file_ race, against a stack that `resetStack()` specs assume is exclusively theirs. `retries` and `fullyParallel` are checked at every nesting depth: Playwright honours a per-project override, so `projects: [{ retries: 3 }]` defeats the top-level pin while leaving it visibly intact.
+
+Two things it does deliberately, both for reasons AGENTS.md keeps re-learning elsewhere:
+
+- **It tokenizes rather than greps.** A first-match regex reads `// retries: 0 — see AGENTS.md` sitting above a real `retries: 2` as compliance, and reads a comment left behind after the pin was _deleted_ as the pin. That is the "reports on the presence of a string" failure again, and the guard's own error messages are what prompt a developer to write that comment. Skipping string literals is not optional either — `baseURL: "http://localhost:7778"` would otherwise start a comment.
+- **The walk is recursive, and the corpus check is a cross-reference, not a floor.** A package-root `readdir` — the obvious implementation — misses `packages/web/eval/playwright.eval.config.ts`, a ninth config that CI really runs. So `configsReferencedByScripts` parses `packages/web/package.json` and fails if any config a script invokes was not discovered. A floor of 8 would have stayed green through exactly that gap.
+
 The ESLint rule `pinchy/no-untracked-sleeps` bans `page.waitForTimeout(...)` across `e2e/**` (unit tests in `src/__tests__/eslint/no-untracked-sleeps.test.ts`). Wait on a real signal instead — a web-first assertion, `expect.poll(...)`, `page.waitForURL(...)`, `page.waitForResponse(...)`, or the shared `pollAuditForEvent` / `pollAuditForTool` helpers in `e2e/shared/dispatch-probe.ts`. When you replace a sleep in a retry loop, **the poll's exit condition must be the same condition the final assertion checks** — a weaker "something arrived" exit races the assertion and reintroduces the flake it was meant to remove.
 
 The exemption is the same contract as the skip policy: a comment carrying `#NNN` (or the issue URL). Two differences worth knowing:
