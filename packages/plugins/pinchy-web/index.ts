@@ -251,9 +251,18 @@ const plugin = {
                 };
                 return braveSearch(params.query as string, searchConfig);
               });
-              const filterNote = result.filteredCount
-                ? `\n\n(${result.filteredCount} result${result.filteredCount === 1 ? "" : "s"} outside the allowed domains were filtered out.)`
-                : "";
+              // Name the *restriction*, not the allow-list: a result is also
+              // dropped when it lands on an excluded domain, or when its URL
+              // can't be parsed at all, and "outside the allowed domains" is
+              // plainly false in both of those cases — an agent configured
+              // with only an exclude list has no allowed domains to be
+              // outside of.
+              const filterNote =
+                result.filteredCount === 1
+                  ? "\n\n(1 result was filtered out by this agent's domain restrictions.)"
+                  : result.filteredCount
+                    ? `\n\n(${result.filteredCount} results were filtered out by this agent's domain restrictions.)`
+                    : "";
               return {
                 content: [
                   {

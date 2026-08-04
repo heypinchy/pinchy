@@ -1,4 +1,4 @@
-import { checkDomainAllowed } from "./web-fetch.js";
+import { domainDenialReason } from "./web-fetch.js";
 
 // External API call — bounds a hung Brave endpoint / network blackhole.
 // Matches web-fetch.ts's external-call timeout.
@@ -97,15 +97,23 @@ export async function braveSearch(
 
   let filteredCount = 0;
   const results = rawResults.filter((r) => {
-    let hostname: string;
+    let parsed: URL;
     try {
-      hostname = new URL(r.url).hostname;
+      parsed = new URL(r.url);
     } catch {
       // Unparseable URL — can't verify it's in scope, so drop it.
       filteredCount++;
       return false;
     }
-    if (checkDomainAllowed(hostname, config)) {
+    // pinchy_web_fetch gates on the scheme before it gates on the hostname,
+    // and a non-HTTP URL carries an empty hostname that no exclude list can
+    // ever match — so an exclude-only config would wave `data:`/`javascript:`
+    // through here while web_fetch refuses it. Ask the same question in both.
+    if (!["http:", "https:"].includes(parsed.protocol)) {
+      filteredCount++;
+      return false;
+    }
+    if (domainDenialReason(parsed.hostname, config)) {
       filteredCount++;
       return false;
     }

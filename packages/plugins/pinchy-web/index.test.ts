@@ -445,8 +445,55 @@ describe("pinchy-web plugin", () => {
 
       expect(result.isError).toBeUndefined();
       expect(result.content[0].text).toContain(
-        "2 results outside the allowed domains were filtered"
+        "(2 results were filtered out by this agent's domain restrictions.)"
       );
+    });
+
+    it("uses singular agreement in the note when exactly one result was filtered", async () => {
+      // The note is prose the model reads back to the user. "1 result … were
+      // filtered out" is the shape a `${n === 1 ? "" : "s"}` suffix leaves
+      // behind when the verb is not pluralised alongside the noun.
+      braveSearchMock.mockResolvedValue({
+        results: [{ title: "Result 1", url: "https://github.com/1", description: "Desc 1" }],
+        filteredCount: 1,
+      });
+      stubCredentialsFetch("brave-key-123");
+
+      const factories = collectFactories(
+        credentialsPluginConfig({
+          "agent-1": { tools: ["pinchy_web_search"], allowedDomains: ["github.com"] },
+        })
+      );
+
+      const tool = factories.pinchy_web_search({ agentId: "agent-1" })!;
+      const result = await tool.execute("call-1", { query: "test query" });
+
+      expect(result.content[0].text).toContain(
+        "(1 result was filtered out by this agent's domain restrictions.)"
+      );
+    });
+
+    it("names the restriction rather than the allow-list, so an exclude-only agent reads true prose", async () => {
+      // An agent configured with only an exclude list has no allowed domains
+      // to be "outside" of — the earlier wording asserted a config that does
+      // not exist.
+      braveSearchMock.mockResolvedValue({
+        results: [{ title: "Result 1", url: "https://example.com/1", description: "Desc 1" }],
+        filteredCount: 3,
+      });
+      stubCredentialsFetch("brave-key-123");
+
+      const factories = collectFactories(
+        credentialsPluginConfig({
+          "agent-1": { tools: ["pinchy_web_search"], excludedDomains: ["reddit.com"] },
+        })
+      );
+
+      const tool = factories.pinchy_web_search({ agentId: "agent-1" })!;
+      const result = await tool.execute("call-1", { query: "test query" });
+
+      expect(result.content[0].text).not.toContain("allowed domains");
+      expect(result.content[0].text).toContain("domain restrictions");
     });
 
     it("does not append a filtering note when nothing was filtered", async () => {

@@ -167,11 +167,17 @@ function normalizeHostname(hostname: string): string {
   return hostname.toLowerCase().replace(/\.$/, "");
 }
 
-// Exported for reuse by brave-search.ts, which post-filters search results by
-// hostname against the same allowedDomains/excludedDomains config (the
-// `site:` operator concatenated into the search query is only a best-effort
-// hint to Brave, not enforcement — see the comment in braveSearch()).
-export function checkDomainAllowed(
+// Returns a human-readable reason when `hostname` is NOT allowed, and null when
+// it is — so the truthy branch is the *denial* branch, the opposite of how a
+// name like `checkDomainAllowed` reads. Named for what it returns now that
+// brave-search.ts shares it: an inverted read of a security gate is the
+// expensive kind of typo, and a second call site doubles the chance of one.
+//
+// brave-search.ts post-filters search results by hostname against the same
+// allowedDomains/excludedDomains config, because the `site:` operator
+// concatenated into the search query is only a best-effort hint to Brave, not
+// enforcement — see the comment in braveSearch().
+export function domainDenialReason(
   hostname: string,
   config: Pick<WebFetchConfig, "allowedDomains" | "excludedDomains">
 ): string | null {
@@ -340,7 +346,7 @@ export async function webFetch(
 
   // Domain filtering
   const hostname = parsed.hostname;
-  const domainError = checkDomainAllowed(hostname, config);
+  const domainError = domainDenialReason(hostname, config);
   if (domainError) {
     return { content: domainError, isError: true };
   }
@@ -392,7 +398,7 @@ export async function webFetch(
       }
 
       // Domain filtering on redirect target
-      const redirectDomainError = checkDomainAllowed(redirectUrl.hostname, config);
+      const redirectDomainError = domainDenialReason(redirectUrl.hostname, config);
       if (redirectDomainError) {
         return { content: redirectDomainError, isError: true };
       }

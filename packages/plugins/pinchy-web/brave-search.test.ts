@@ -256,6 +256,41 @@ describe("braveSearch", () => {
       expect(results.map((r) => r.url)).toEqual(["https://docs.github.com/foo"]);
     });
 
+    it("drops a result whose URL cannot be parsed", async () => {
+      mockSuccessResponse([
+        { title: "Good", url: "https://github.com/foo", description: "d1" },
+        { title: "Broken", url: "not a url", description: "d2" },
+      ]);
+
+      const { results, filteredCount } = await braveSearch("query", {
+        apiKey: "key",
+        allowedDomains: ["github.com"],
+      });
+
+      // An unverifiable URL is dropped rather than waved through — we cannot
+      // say it is in scope, and "unknown" must not read as "allowed".
+      expect(results.map((r) => r.url)).toEqual(["https://github.com/foo"]);
+      expect(filteredCount).toBe(1);
+    });
+
+    it("drops a non-HTTP result URL that no exclude list could ever match", async () => {
+      // `new URL("data:...").hostname` is the empty string, so an exclude-only
+      // config matches nothing and would keep it — while pinchy_web_fetch
+      // refuses the same URL on its scheme check. Both tools answer alike.
+      mockSuccessResponse([
+        { title: "Inline", url: "data:text/html,<h1>hi</h1>", description: "d1" },
+        { title: "Fine", url: "https://example.com/ok", description: "d2" },
+      ]);
+
+      const { results, filteredCount } = await braveSearch("query", {
+        apiKey: "key",
+        excludedDomains: ["reddit.com"],
+      });
+
+      expect(results.map((r) => r.url)).toEqual(["https://example.com/ok"]);
+      expect(filteredCount).toBe(1);
+    });
+
     it("reports how many results were filtered out", async () => {
       mockSuccessResponse([
         { title: "Good", url: "https://github.com/foo", description: "d1" },
