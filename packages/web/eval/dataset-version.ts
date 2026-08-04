@@ -10,7 +10,7 @@
  * MINOR: additive — new models, new scenarios, new fields.
  * PATCH: corrections that don't move a published number (docs, metadata).
  */
-export const DATASET_VERSION = "1.1.0";
+export const DATASET_VERSION = "1.2.0";
 
 /**
  * SHA-256 of every number this version publishes — the part that makes the rule
@@ -31,4 +31,4 @@ export const DATASET_VERSION = "1.1.0";
  * the digest is the last line of the commit, not the first.
  */
 export const DATASET_FINGERPRINT =
-  "b8d2f224cfdaa080d16180a44c7656fd7fb0764f914c6b82679f7d8c7ba7eeba";
+  "115cf806500715057a81f4f5223d2a90f97d9e8f2ca47401498bec4acda13513";

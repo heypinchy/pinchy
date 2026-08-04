@@ -203,9 +203,21 @@ file fewer duplicates and stop narrating silent no-ops as success?
   bumps (MINOR) with a keep-or-revert entry per guard in
   `../governed-comparison-decision.md`.
 
-**Status: not yet run** — the `-governed` sweep is pending, so
-`governedComparison` currently exports nothing. The four entries surface as
-`status: "not-yet-run"`, exactly like the crm-lead scenarios above.
+**Status: complete (2026-08-04).** The `-governed` sweep ran for all 11
+models still runnable at the time (`glm-4.7` and `deepseek-v3.2` retired,
+`minimax-m3` blocklisted per #766 — none has a governed counterpart, so the
+comparison pairs the 11 models shared by both arms), 4 scenarios × 12 runs
+each = 528 governed runs, published as `<scenario>-governed.{jsonl,
+trajectories.jsonl,json}` alongside the frozen baselines above.
+`governedComparison` now exports numbers for all four scenarios. Headline:
+silent-failure's `false-success` count collapses from 79 to 1 across the 11
+shared models (governed 125/130 vs. ungoverned 47/132); duplicate-guard
+improves 41/132 → from a same-grader-re-graded 31/132 baseline (the frozen
+scorecard's own number looks close because it predates a grader fix — see
+the decision doc). Both guards are **KEEP**; happy-path is near-flat and
+line-items shows a real, bounded decline that does not offset the target
+gains. Full per-model numbers and the keep-or-revert reasoning:
+`../governed-comparison-decision.md`.
 
 ## Completeness manifest (as of harness `255678c25`)
 
@@ -261,6 +273,19 @@ their discards land short-to-mid (minimax-m3 3–21 s, gpt-oss:120b 18–63 s,
 gemma4:31b 31 s), never in the long tail. The alternative — publishing a cell at
 n=6 — would have been worse and
 less honest, not more.
+
+### Governed-comparison manifest (#723, as of 2026-08-04)
+
+Target per scenario: 11 runnable models × 12 runs = 132 (`glm-4.7`,
+`deepseek-v3.2`, `minimax-m3` have no governed counterpart — see
+"Governed-tools comparison" above).
+
+| Scenario (`-governed`) | RunResults | Models | Trajectories | Status                                                                  |
+| ---------------------- | ---------: | -----: | -----------: | ----------------------------------------------------------------------- |
+| silent-failure         |    132/132 |     11 |      132/132 | complete, every run a valid trial (one model at n=10: 2 excluded infra) |
+| duplicate              |    132/132 |     11 |      132/132 | complete                                                                |
+| happy-path             |    132/132 |     11 |      131/132 | complete; 1 missing trajectory (run-timeout, counted as a fail)         |
+| lineitems              |    132/132 |     11 |      127/132 | complete; 5 missing trajectories (run-timeouts, counted as fails)       |
 
 ## Reproduce
 

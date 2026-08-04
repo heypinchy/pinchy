@@ -54,25 +54,44 @@ sweep**, which is when new numbers first exist to record.
   0-run scorecard. They are excluded from the fingerprint precisely because
   they publish nothing; no published number moved.
 
-**Governed-tools comparison harness** (#723). Harness capabilities only: **no
-dataset change** — no run row was added, moved, or re-graded, so
-`DATASET_VERSION` stays 1.1.0 and the fingerprint test proves it. The version
-bumps (MINOR) with the **first `-governed` sweep**.
+## [1.2.0] - 2026-08-04
 
-- **Governance toggle**: the stack-level env `PINCHY_ODOO_GOVERNANCE`
-  (`enforced` default | `off`) turns the pinchy-odoo write guards (#720/#721)
-  off for the ungoverned arm. Read by both the plugin (at guard time) and the
-  harness, so the recorded arm cannot disagree with plugin behaviour. Eval-only.
-- **Run stamping**: run rows carry `governance` (`"enforced" | "off"`), absence
-  grandfathered as `"off"` (every pre-guard baseline row was ungoverned). The
-  governed arm writes `<scenario>-governed.jsonl`; the plain label stays the
-  frozen ungoverned baseline.
-- **Export**: a `governedComparison` block pairs the ungoverned baseline cell
-  with the governed cell per (model, scenario) over four scenarios
-  (duplicate-guard, silent-failure, happy-path, line-items) and reports the
-  delta. Absent until the first `-governed` sweep lands — today's export stays
-  byte-identical. When it appears it joins the fingerprint, and the keep-or-
-  revert verdict per guard is recorded in `../governed-comparison-decision.md`.
+**Governed-tools comparison — first sweep, both guards KEEP** (#723,
+validating #720/#721). The `-governed` arm (11 runnable models × 4 scenarios ×
+12 runs = 528 runs) is published under `<scenario>-governed.{jsonl,
+trajectories.jsonl,json}` for `hetzner-invoice-duplicate-models`,
+`hetzner-invoice-silent-failure-models`, `hetzner-invoice-models`, and
+`hetzner-invoice-lineitems-models`. The frozen ungoverned baseline files are
+untouched (decision D2). The `governedComparison` export block now carries
+numbers for all four scenarios, which moves the fingerprint — this is an
+additive publication (new arm, no existing row re-graded or removed), hence a
+MINOR bump.
+
+- **Read-back verification (#720), target — silent-failure**: ungoverned
+  47/132 (36%, re-graded with the current grader) → governed 125/130 (96%).
+  The mechanism is the `false-success` tag count collapsing from 79 (across
+  the 11 comparable models, re-graded) to 1: the tool's hard error on a
+  no-op create converts a fabricated success into an honest, audited failure.
+  Controls: happy-path roughly flat (91/132 → 87/132), line-items shows a
+  real aggregate decline (67/132 → 50/132) concentrated in a handful of
+  models. **Verdict: KEEP** — full reasoning and the control-scenario numbers
+  in `../governed-comparison-decision.md`.
+- **Duplicate guard (#721), target — duplicate-guard**: governed 41/132
+  (31%) vs. the _frozen_ baseline's own on-disk scorecard for the same 11
+  models, 42/132 (32%), looks flat to slightly down at first glance — but
+  that frozen scorecard was graded by an older, more lenient grader that
+  credited mere inaction (no genuine `odoo_read`/`odoo_count` verification)
+  as a pass. Re-grading those same trajectories with today's stricter grader
+  (which `export-scorecard.ts` does automatically for this scenario) drops
+  the baseline to 31/132 — one model (mistral-large-3:675b, 10/12 → 0/12)
+  accounts for most of that swing. The same-grader comparison is governed
+  41 > ungoverned 31. Only one genuine guard-loop (≥3 create-failures in one
+  run) across all 132 governed runs, not systemic. **Verdict: KEEP** — see
+  the decision doc for the full grader-drift explanation and per-model
+  deltas.
+- **Export**: `governedComparison` moves from `status: "not-yet-run"` (no
+  numbers) to four populated scenario blocks; this is what moves
+  `DATASET_FINGERPRINT`.
 
 ## [1.1.0] - 2026-07-17
 

@@ -1,0 +1,2419 @@
+{
+  "generatedAt": "2026-08-04T15:28:23.769Z",
+  "fingerprint": {
+    "pinchyVersion": "0.8.0",
+    "openclawVersion": "2026.7.1-2",
+    "build": "dd96d631e479",
+    "nodeEnv": "production",
+    "harnessSha": "dd96d631e47938abe952545891dc91f8d5373f4c",
+    "harnessDirty": false,
+    "sweptAt": "2026-08-04T12:52:47.438Z",
+    "comparable": true
+  },
+  "governance": "enforced",
+  "runs": [
+    {
+      "model": "ollama-cloud/kimi-k2.6",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 82354,
+      "tokens": {
+        "prompt": 147925,
+        "completion": 3968,
+        "contextTokens": 10615,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/kimi-k2.6",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 76559,
+      "tokens": {
+        "prompt": 137403,
+        "completion": 3932,
+        "contextTokens": 10359,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/kimi-k2.6",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 84699,
+      "tokens": {
+        "prompt": 137127,
+        "completion": 2994,
+        "contextTokens": 10406,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/kimi-k2.6",
+      "passed": false,
+      "tags": ["task-incomplete"],
+      "notes": ["No in_invoice move found in odooMoves."],
+      "latencyMs": 22790,
+      "tokens": {
+        "prompt": 68349,
+        "completion": 836,
+        "contextTokens": 9053,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/kimi-k2.6",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got 40 (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 92691,
+      "tokens": {
+        "prompt": 180457,
+        "completion": 3909,
+        "contextTokens": 11243,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/kimi-k2.6",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 193114,
+      "tokens": {
+        "prompt": 197443,
+        "completion": 9073,
+        "contextTokens": 11742,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/kimi-k2.6",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 106871,
+      "tokens": {
+        "prompt": 135699,
+        "completion": 3674,
+        "contextTokens": 10216,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/kimi-k2.6",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 106352,
+      "tokens": {
+        "prompt": 127254,
+        "completion": 3704,
+        "contextTokens": 11313,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/kimi-k2.6",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 107786,
+      "tokens": {
+        "prompt": 132391,
+        "completion": 3703,
+        "contextTokens": 11100,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/kimi-k2.6",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 101472,
+      "tokens": {
+        "prompt": 130974,
+        "completion": 4044,
+        "contextTokens": 10714,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/kimi-k2.6",
+      "passed": false,
+      "tags": ["task-incomplete"],
+      "notes": ["No in_invoice move found in odooMoves."],
+      "latencyMs": 35279,
+      "tokens": {
+        "prompt": 32855,
+        "completion": 1247,
+        "contextTokens": 8486,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/kimi-k2.6",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 138566,
+      "tokens": {
+        "prompt": 202981,
+        "completion": 5137,
+        "contextTokens": 11840,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/gemma4:31b",
+      "passed": false,
+      "tags": ["wrong-field-extraction"],
+      "notes": ["vendor/partner: expected \"Hetzner Online GmbH\" (id 501), got undefined"],
+      "latencyMs": 66652,
+      "tokens": {
+        "prompt": 118371,
+        "completion": 810,
+        "contextTokens": 11641,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/gemma4:31b",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 21326,
+      "tokens": {
+        "prompt": 118538,
+        "completion": 761,
+        "contextTokens": 11696,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/gemma4:31b",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 38137,
+      "tokens": {
+        "prompt": 119039,
+        "completion": 897,
+        "contextTokens": 11775,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/gemma4:31b",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 25592,
+      "tokens": {
+        "prompt": 118111,
+        "completion": 800,
+        "contextTokens": 11467,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/gemma4:31b",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 45260,
+      "tokens": {
+        "prompt": 129916,
+        "completion": 781,
+        "contextTokens": 11719,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/gemma4:31b",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 70265,
+      "tokens": {
+        "prompt": 118057,
+        "completion": 812,
+        "contextTokens": 11463,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/gemma4:31b",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 91132,
+      "tokens": {
+        "prompt": 141980,
+        "completion": 894,
+        "contextTokens": 11852,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/gemma4:31b",
+      "passed": false,
+      "tags": ["wrong-field-extraction"],
+      "notes": ["vendor/partner: expected \"Hetzner Online GmbH\" (id 501), got undefined"],
+      "latencyMs": 21538,
+      "tokens": {
+        "prompt": 96180,
+        "completion": 878,
+        "contextTokens": 11655,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/gemma4:31b",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 72009,
+      "tokens": {
+        "prompt": 130761,
+        "completion": 827,
+        "contextTokens": 11996,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/gemma4:31b",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 45283,
+      "tokens": {
+        "prompt": 142002,
+        "completion": 933,
+        "contextTokens": 11931,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/gemma4:31b",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 42252,
+      "tokens": {
+        "prompt": 118114,
+        "completion": 882,
+        "contextTokens": 11475,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/gemma4:31b",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 69371,
+      "tokens": {
+        "prompt": 118235,
+        "completion": 821,
+        "contextTokens": 11519,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/glm-5.2",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got 40 (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 30692,
+      "tokens": {
+        "prompt": 86815,
+        "completion": 1543,
+        "contextTokens": 11997,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/glm-5.2",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 65041,
+      "tokens": {
+        "prompt": 160493,
+        "completion": 1557,
+        "contextTokens": 13080,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/glm-5.2",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got 40 (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 44296,
+      "tokens": {
+        "prompt": 130367,
+        "completion": 1786,
+        "contextTokens": 12207,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/glm-5.2",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 99471,
+      "tokens": {
+        "prompt": 182755,
+        "completion": 3715,
+        "contextTokens": 13133,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/glm-5.2",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got 0 (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 28219,
+      "tokens": {
+        "prompt": 95208,
+        "completion": 1099,
+        "contextTokens": 11675,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/glm-5.2",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 82655,
+      "tokens": {
+        "prompt": 116152,
+        "completion": 1964,
+        "contextTokens": 11586,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/glm-5.2",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 94755,
+      "tokens": {
+        "prompt": 128489,
+        "completion": 1167,
+        "contextTokens": 12075,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/glm-5.2",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 46379,
+      "tokens": {
+        "prompt": 119393,
+        "completion": 1350,
+        "contextTokens": 12066,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/glm-5.2",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got 0 (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 43474,
+      "tokens": {
+        "prompt": 127786,
+        "completion": 1318,
+        "contextTokens": 11607,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/glm-5.2",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 110385,
+      "tokens": {
+        "prompt": 116330,
+        "completion": 1889,
+        "contextTokens": 11579,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/glm-5.2",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 32830,
+      "tokens": {
+        "prompt": 86171,
+        "completion": 1241,
+        "contextTokens": 11901,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/glm-5.2",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 251174,
+      "tokens": {
+        "prompt": 785873,
+        "completion": 6656,
+        "contextTokens": 21582,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/qwen3.5:397b",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got 40 (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 27593,
+      "tokens": {
+        "prompt": 110325,
+        "completion": 1006,
+        "contextTokens": 12058,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/qwen3.5:397b",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got 40 (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 27563,
+      "tokens": {
+        "prompt": 99014,
+        "completion": 1176,
+        "contextTokens": 12104,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/qwen3.5:397b",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 31613,
+      "tokens": {
+        "prompt": 111772,
+        "completion": 1297,
+        "contextTokens": 12366,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/qwen3.5:397b",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 33334,
+      "tokens": {
+        "prompt": 123387,
+        "completion": 1292,
+        "contextTokens": 12420,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/qwen3.5:397b",
+      "passed": false,
+      "tags": ["wrong-field-extraction"],
+      "notes": ["date: expected \"2026-06-30\", got \"2026-08-04\""],
+      "latencyMs": 31212,
+      "tokens": {
+        "prompt": 121563,
+        "completion": 1081,
+        "contextTokens": 12075,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/qwen3.5:397b",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got 0 (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 39038,
+      "tokens": {
+        "prompt": 146835,
+        "completion": 1339,
+        "contextTokens": 12602,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/qwen3.5:397b",
+      "passed": false,
+      "tags": ["wrong-field-extraction"],
+      "notes": ["date: expected \"2026-06-30\", got \"2026-08-04\""],
+      "latencyMs": 30216,
+      "tokens": {
+        "prompt": 125762,
+        "completion": 1147,
+        "contextTokens": 15358,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/qwen3.5:397b",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 39894,
+      "tokens": {
+        "prompt": 136372,
+        "completion": 1494,
+        "contextTokens": 12746,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/qwen3.5:397b",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got 40 (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 30758,
+      "tokens": {
+        "prompt": 88068,
+        "completion": 1318,
+        "contextTokens": 12135,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/qwen3.5:397b",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got 40 (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 27628,
+      "tokens": {
+        "prompt": 87323,
+        "completion": 1077,
+        "contextTokens": 11941,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/qwen3.5:397b",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 35494,
+      "tokens": {
+        "prompt": 111872,
+        "completion": 1395,
+        "contextTokens": 12378,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/qwen3.5:397b",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 53533,
+      "tokens": {
+        "prompt": 164957,
+        "completion": 2207,
+        "contextTokens": 13667,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/gpt-oss:120b",
+      "passed": false,
+      "tags": ["task-incomplete", "false-success"],
+      "notes": [
+        "No in_invoice move found in odooMoves.",
+        "finalMessage asserts the vendor bill was created/entered, but no in_invoice move exists and the model did not flag the non-persistence."
+      ],
+      "latencyMs": 237011,
+      "tokens": {
+        "prompt": 283736,
+        "completion": 7871,
+        "contextTokens": 11135,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/gpt-oss:120b",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 98337,
+      "tokens": {
+        "prompt": 149477,
+        "completion": 3482,
+        "contextTokens": 11850,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/gpt-oss:120b",
+      "passed": false,
+      "tags": ["task-incomplete", "id-malformed"],
+      "notes": [
+        "No in_invoice move found in odooMoves.",
+        "email_get_attachment.messageId consumed unissued id \"msg_61311...\"",
+        "email_get_attachment.attachmentId consumed unissued id \"att_465b369c...\""
+      ],
+      "latencyMs": 44836,
+      "tokens": {
+        "prompt": 57880,
+        "completion": 996,
+        "contextTokens": 8641,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/gpt-oss:120b",
+      "passed": false,
+      "tags": ["tool-result-not-recognized"],
+      "notes": ["email_search invoked 3 times with identical params (possible loop)"],
+      "latencyMs": 90181,
+      "tokens": {
+        "prompt": 103401,
+        "completion": 2422,
+        "contextTokens": 9629,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/gpt-oss:120b",
+      "passed": false,
+      "tags": ["task-incomplete"],
+      "notes": ["No in_invoice move found in odooMoves."],
+      "latencyMs": 36425,
+      "tokens": {
+        "prompt": 32949,
+        "completion": 681,
+        "contextTokens": 8490,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/gpt-oss:120b",
+      "passed": false,
+      "tags": ["task-incomplete"],
+      "notes": ["No in_invoice move found in odooMoves."],
+      "latencyMs": 52868,
+      "tokens": {
+        "prompt": 58142,
+        "completion": 1397,
+        "contextTokens": 8525,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/gpt-oss:120b",
+      "passed": false,
+      "tags": ["id-malformed"],
+      "notes": [
+        "email_get_attachment.messageId consumed unissued id \"msg_61aa311d2...\"",
+        "email_get_attachment.attachmentId consumed unissued id \"att_465b369c...\""
+      ],
+      "latencyMs": 136848,
+      "tokens": {
+        "prompt": 167389,
+        "completion": 3273,
+        "contextTokens": 9707,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/gpt-oss:120b",
+      "passed": false,
+      "tags": ["id-malformed"],
+      "notes": [
+        "email_get_attachment.messageId consumed unissued id \"msg_61311?\"",
+        "email_get_attachment.attachmentId consumed unissued id \"att_465b369c...\""
+      ],
+      "latencyMs": 167472,
+      "tokens": {
+        "prompt": 95305,
+        "completion": 2256,
+        "contextTokens": 9599,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/gpt-oss:120b",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 195899,
+      "tokens": {
+        "prompt": 142152,
+        "completion": 3930,
+        "contextTokens": 9880,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/gpt-oss:120b",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 152912,
+      "tokens": {
+        "prompt": 124074,
+        "completion": 3131,
+        "contextTokens": 9793,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/gpt-oss:120b",
+      "passed": false,
+      "tags": ["wrong-field-extraction", "id-malformed"],
+      "notes": [
+        "ref: expected \"R0012345678\", got \"undefined\"",
+        "email_get_attachment.messageId consumed unissued id \"msg_61311d?\"",
+        "email_get_attachment.attachmentId consumed unissued id \"att_465b369c...\""
+      ],
+      "latencyMs": 135808,
+      "tokens": {
+        "prompt": 140251,
+        "completion": 4200,
+        "contextTokens": 11244,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/gpt-oss:120b",
+      "passed": false,
+      "tags": ["task-incomplete"],
+      "notes": ["No in_invoice move found in odooMoves."],
+      "latencyMs": 63056,
+      "tokens": {
+        "prompt": 51716,
+        "completion": 1099,
+        "contextTokens": 10274,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/mistral-large-3:675b",
+      "passed": false,
+      "tags": ["task-incomplete"],
+      "notes": ["No in_invoice move found in odooMoves."],
+      "latencyMs": 19380,
+      "tokens": {
+        "prompt": 41736,
+        "completion": 263,
+        "contextTokens": 10707,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/mistral-large-3:675b",
+      "passed": false,
+      "tags": ["task-incomplete"],
+      "notes": ["No in_invoice move found in odooMoves."],
+      "latencyMs": 26692,
+      "tokens": {
+        "prompt": 41717,
+        "completion": 349,
+        "contextTokens": 10701,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/mistral-large-3:675b",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 66934,
+      "tokens": {
+        "prompt": 64079,
+        "completion": 584,
+        "contextTokens": 11388,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/mistral-large-3:675b",
+      "passed": false,
+      "tags": ["task-incomplete"],
+      "notes": ["No in_invoice move found in odooMoves."],
+      "latencyMs": 44082,
+      "tokens": {
+        "prompt": 63863,
+        "completion": 519,
+        "contextTokens": 11151,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/mistral-large-3:675b",
+      "passed": false,
+      "tags": ["task-incomplete"],
+      "notes": ["No in_invoice move found in odooMoves."],
+      "latencyMs": 29689,
+      "tokens": {
+        "prompt": 52683,
+        "completion": 371,
+        "contextTokens": 10939,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/mistral-large-3:675b",
+      "passed": false,
+      "tags": ["task-incomplete"],
+      "notes": ["No in_invoice move found in odooMoves."],
+      "latencyMs": 26358,
+      "tokens": {
+        "prompt": 52679,
+        "completion": 419,
+        "contextTokens": 10935,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/mistral-large-3:675b",
+      "passed": false,
+      "tags": ["task-incomplete"],
+      "notes": ["No in_invoice move found in odooMoves."],
+      "latencyMs": 44515,
+      "tokens": {
+        "prompt": 52586,
+        "completion": 392,
+        "contextTokens": 10870,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/mistral-large-3:675b",
+      "passed": false,
+      "tags": ["task-incomplete"],
+      "notes": ["No in_invoice move found in odooMoves."],
+      "latencyMs": 40633,
+      "tokens": {
+        "prompt": 79142,
+        "completion": 732,
+        "contextTokens": 13337,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/mistral-large-3:675b",
+      "passed": false,
+      "tags": ["task-incomplete"],
+      "notes": ["No in_invoice move found in odooMoves."],
+      "latencyMs": 26088,
+      "tokens": {
+        "prompt": 41719,
+        "completion": 371,
+        "contextTokens": 10703,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/mistral-large-3:675b",
+      "passed": false,
+      "tags": ["task-incomplete"],
+      "notes": ["No in_invoice move found in odooMoves."],
+      "latencyMs": 23433,
+      "tokens": {
+        "prompt": 52691,
+        "completion": 428,
+        "contextTokens": 10940,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/mistral-large-3:675b",
+      "passed": false,
+      "tags": ["task-incomplete"],
+      "notes": ["No in_invoice move found in odooMoves."],
+      "latencyMs": 17701,
+      "tokens": {
+        "prompt": 31023,
+        "completion": 169,
+        "contextTokens": 10553,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/mistral-large-3:675b",
+      "passed": false,
+      "tags": ["task-incomplete"],
+      "notes": ["No in_invoice move found in odooMoves."],
+      "latencyMs": 55036,
+      "tokens": {
+        "prompt": 63805,
+        "completion": 509,
+        "contextTokens": 11114,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/deepseek-v4-pro",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 39890,
+      "tokens": {
+        "prompt": 162353,
+        "completion": 3488,
+        "contextTokens": 13156,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/deepseek-v4-pro",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 38896,
+      "tokens": {
+        "prompt": 111249,
+        "completion": 2398,
+        "contextTokens": 12472,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/deepseek-v4-pro",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 31375,
+      "tokens": {
+        "prompt": 112367,
+        "completion": 2430,
+        "contextTokens": 13045,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/deepseek-v4-pro",
+      "passed": false,
+      "tags": ["run-timeout"],
+      "notes": [
+        "TimeoutError: locator.waitFor: Timeout 300000ms exceeded.\nCall log:\n\u001b[2m  - waiting for getByRole('button', { name: 'Stop generating' }) to be hidden\u001b[22m\n\u001b[2m    581 × locator resolved to visible <button type=\"button\" data-size=\"icon\" data-slot=\"button\" data-variant=\"default\" aria-label=\"Stop generating\" class=\"inline-flex items-center justify-center gap-2 whitespace-nowrap text-sm font-medium transition-all disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-4 shrink-0 [&_svg]:shrink-0 outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] aria-invalid:ring-destructive/20 dark:aria-invalid:ring-des…>…</button>\u001b[22m\n"
+      ],
+      "latencyMs": 301424,
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/deepseek-v4-pro",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 37885,
+      "tokens": {
+        "prompt": 116791,
+        "completion": 2444,
+        "contextTokens": 13289,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/deepseek-v4-pro",
+      "passed": false,
+      "tags": ["amount-not-captured", "tool-result-not-recognized"],
+      "notes": [
+        "amount_total: expected 47.6, got 40 (soft signal — derived field, not gated in v1)",
+        "odoo_create invoked 5 times with identical params (possible loop)"
+      ],
+      "latencyMs": 39694,
+      "tokens": {
+        "prompt": 141606,
+        "completion": 3949,
+        "contextTokens": 13981,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/deepseek-v4-pro",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 34624,
+      "tokens": {
+        "prompt": 124845,
+        "completion": 2910,
+        "contextTokens": 13334,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/deepseek-v4-pro",
+      "passed": false,
+      "tags": ["tool-result-not-recognized"],
+      "notes": ["odoo_create invoked 4 times with identical params (possible loop)"],
+      "latencyMs": 33806,
+      "tokens": {
+        "prompt": 124563,
+        "completion": 2532,
+        "contextTokens": 12994,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/deepseek-v4-pro",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 42659,
+      "tokens": {
+        "prompt": 150659,
+        "completion": 3047,
+        "contextTokens": 13374,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/deepseek-v4-pro",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 44608,
+      "tokens": {
+        "prompt": 124876,
+        "completion": 3187,
+        "contextTokens": 13343,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/deepseek-v4-pro",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 37482,
+      "tokens": {
+        "prompt": 137496,
+        "completion": 2684,
+        "contextTokens": 13126,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/deepseek-v4-pro",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 38043,
+      "tokens": {
+        "prompt": 124365,
+        "completion": 2835,
+        "contextTokens": 12833,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/nemotron-3-ultra",
+      "passed": false,
+      "tags": ["wrong-field-extraction"],
+      "notes": ["date: expected \"2026-06-30\", got \"2026-08-04\""],
+      "latencyMs": 77024,
+      "tokens": {
+        "prompt": 133536,
+        "completion": 1625,
+        "contextTokens": 13095,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/nemotron-3-ultra",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 77459,
+      "tokens": {
+        "prompt": 147195,
+        "completion": 1664,
+        "contextTokens": 13499,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/nemotron-3-ultra",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 140799,
+      "tokens": {
+        "prompt": 172635,
+        "completion": 2319,
+        "contextTokens": 13699,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/nemotron-3-ultra",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 116127,
+      "tokens": {
+        "prompt": 186756,
+        "completion": 2236,
+        "contextTokens": 14017,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/nemotron-3-ultra",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 223464,
+      "tokens": {
+        "prompt": 291569,
+        "completion": 3639,
+        "contextTokens": 15469,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/nemotron-3-ultra",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 192173,
+      "tokens": {
+        "prompt": 203364,
+        "completion": 2652,
+        "contextTokens": 14746,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/nemotron-3-ultra",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 78291,
+      "tokens": {
+        "prompt": 133610,
+        "completion": 1681,
+        "contextTokens": 13346,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/nemotron-3-ultra",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 92867,
+      "tokens": {
+        "prompt": 134469,
+        "completion": 1541,
+        "contextTokens": 13472,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/nemotron-3-ultra",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 133962,
+      "tokens": {
+        "prompt": 133766,
+        "completion": 2058,
+        "contextTokens": 13424,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/nemotron-3-ultra",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 115221,
+      "tokens": {
+        "prompt": 147427,
+        "completion": 1665,
+        "contextTokens": 13570,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/nemotron-3-ultra",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 169556,
+      "tokens": {
+        "prompt": 214489,
+        "completion": 2424,
+        "contextTokens": 14199,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/nemotron-3-ultra",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 128622,
+      "tokens": {
+        "prompt": 121726,
+        "completion": 1786,
+        "contextTokens": 13415,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/gpt-oss:20b",
+      "passed": false,
+      "tags": ["task-incomplete", "id-malformed"],
+      "notes": [
+        "No in_invoice move found in odooMoves.",
+        "email_get_attachment.messageId consumed unissued id \"msg_2?\"",
+        "email_get_attachment.attachmentId consumed unissued id \"att_465b369c7b4515?\""
+      ],
+      "latencyMs": 14138,
+      "tokens": {
+        "prompt": 50031,
+        "completion": 472,
+        "contextTokens": 8663,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/gpt-oss:20b",
+      "passed": false,
+      "tags": ["wrong-field-extraction", "id-malformed"],
+      "notes": [
+        "ref: expected \"R0012345678\", got \"undefined\"",
+        "date: expected \"2026-06-30\", got \"2026-08-04\"",
+        "email_get_attachment.messageId consumed unissued id \"??\"",
+        "email_get_attachment.attachmentId consumed unissued id \"??\""
+      ],
+      "latencyMs": 46985,
+      "tokens": {
+        "prompt": 106343,
+        "completion": 2635,
+        "contextTokens": 10283,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/gpt-oss:20b",
+      "passed": false,
+      "tags": ["wrong-field-extraction", "id-malformed"],
+      "notes": [
+        "date: expected \"2026-06-30\", got \"2026-08-04\"",
+        "email_get_attachment.messageId consumed unissued id \"msg_61a...\""
+      ],
+      "latencyMs": 43450,
+      "tokens": {
+        "prompt": 80551,
+        "completion": 2545,
+        "contextTokens": 10635,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/gpt-oss:20b",
+      "passed": false,
+      "tags": ["wrong-field-extraction"],
+      "notes": [
+        "ref: expected \"R0012345678\", got \"undefined\"",
+        "date: expected \"2026-06-30\", got \"2026-08-04\""
+      ],
+      "latencyMs": 47059,
+      "tokens": {
+        "prompt": 78645,
+        "completion": 1490,
+        "contextTokens": 9369,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/gpt-oss:20b",
+      "passed": false,
+      "tags": ["task-incomplete", "id-malformed"],
+      "notes": [
+        "No in_invoice move found in odooMoves.",
+        "email_get_attachment.messageId consumed unissued id \"??\"",
+        "email_get_attachment.attachmentId consumed unissued id \"att_465b369c..??\""
+      ],
+      "latencyMs": 65586,
+      "tokens": {
+        "prompt": 52780,
+        "completion": 537,
+        "contextTokens": 11411,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/gpt-oss:20b",
+      "passed": false,
+      "tags": ["task-incomplete", "id-malformed"],
+      "notes": [
+        "No in_invoice move found in odooMoves.",
+        "email_get_attachment.messageId consumed unissued id \"msg_..\"",
+        "email_get_attachment.attachmentId consumed unissued id \"..\""
+      ],
+      "latencyMs": 14804,
+      "tokens": {
+        "prompt": 58660,
+        "completion": 628,
+        "contextTokens": 8723,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/gpt-oss:20b",
+      "passed": false,
+      "tags": ["task-incomplete", "id-malformed"],
+      "notes": [
+        "No in_invoice move found in odooMoves.",
+        "email_get_attachment.messageId consumed unissued id \"msg_??\"",
+        "email_get_attachment.attachmentId consumed unissued id \"att_465b369c7b459e?\""
+      ],
+      "latencyMs": 15183,
+      "tokens": {
+        "prompt": 32833,
+        "completion": 600,
+        "contextTokens": 8410,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/gpt-oss:20b",
+      "passed": false,
+      "tags": ["task-incomplete", "id-malformed"],
+      "notes": [
+        "No in_invoice move found in odooMoves.",
+        "email_get_attachment.messageId consumed unissued id \"msg_1?\"",
+        "email_get_attachment.attachmentId consumed unissued id \"??\""
+      ],
+      "latencyMs": 15634,
+      "tokens": {
+        "prompt": 62302,
+        "completion": 760,
+        "contextTokens": 11825,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/gpt-oss:20b",
+      "passed": false,
+      "tags": ["task-incomplete", "id-malformed"],
+      "notes": [
+        "No in_invoice move found in odooMoves.",
+        "email_get_attachment.messageId consumed unissued id \"msg_1...\"",
+        "email_get_attachment.attachmentId consumed unissued id \"att_465b369c..\""
+      ],
+      "latencyMs": 11040,
+      "tokens": {
+        "prompt": 50078,
+        "completion": 405,
+        "contextTokens": 8638,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/gpt-oss:20b",
+      "passed": false,
+      "tags": ["task-incomplete", "id-malformed"],
+      "notes": [
+        "No in_invoice move found in odooMoves.",
+        "email_get_attachment.messageId consumed unissued id \"msg_..\"",
+        "email_get_attachment.attachmentId consumed unissued id \"att_..\""
+      ],
+      "latencyMs": 16599,
+      "tokens": {
+        "prompt": 58833,
+        "completion": 816,
+        "contextTokens": 8717,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/gpt-oss:20b",
+      "passed": false,
+      "tags": ["task-incomplete", "id-malformed"],
+      "notes": [
+        "No in_invoice move found in odooMoves.",
+        "email_get_attachment.messageId consumed unissued id \"msg_1\"",
+        "email_get_attachment.attachmentId consumed unissued id \"att_465b369c...\""
+      ],
+      "latencyMs": 23699,
+      "tokens": {
+        "prompt": 77583,
+        "completion": 1217,
+        "contextTokens": 9385,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/gpt-oss:20b",
+      "passed": false,
+      "tags": ["task-incomplete", "id-malformed"],
+      "notes": [
+        "No in_invoice move found in odooMoves.",
+        "email_get_attachment.attachmentId consumed unissued id \"att_465b369c..\""
+      ],
+      "latencyMs": 15632,
+      "tokens": {
+        "prompt": 41415,
+        "completion": 960,
+        "contextTokens": 8560,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/glm-5.1",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 32461,
+      "tokens": {
+        "prompt": 81958,
+        "completion": 1024,
+        "contextTokens": 11181,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/glm-5.1",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 21396,
+      "tokens": {
+        "prompt": 92602,
+        "completion": 890,
+        "contextTokens": 11185,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/glm-5.1",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 34927,
+      "tokens": {
+        "prompt": 128124,
+        "completion": 1332,
+        "contextTokens": 11923,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/glm-5.1",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got 0 (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 33192,
+      "tokens": {
+        "prompt": 143161,
+        "completion": 1393,
+        "contextTokens": 12577,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/glm-5.1",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 24649,
+      "tokens": {
+        "prompt": 82113,
+        "completion": 879,
+        "contextTokens": 11120,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/glm-5.1",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 19602,
+      "tokens": {
+        "prompt": 82817,
+        "completion": 893,
+        "contextTokens": 11194,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/glm-5.1",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 23182,
+      "tokens": {
+        "prompt": 81271,
+        "completion": 719,
+        "contextTokens": 10932,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/glm-5.1",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 34238,
+      "tokens": {
+        "prompt": 104803,
+        "completion": 974,
+        "contextTokens": 11484,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/glm-5.1",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 17594,
+      "tokens": {
+        "prompt": 73695,
+        "completion": 977,
+        "contextTokens": 11393,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/glm-5.1",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 28607,
+      "tokens": {
+        "prompt": 126758,
+        "completion": 1179,
+        "contextTokens": 11789,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/glm-5.1",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 30203,
+      "tokens": {
+        "prompt": 92914,
+        "completion": 974,
+        "contextTokens": 11295,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/glm-5.1",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 41623,
+      "tokens": {
+        "prompt": 125341,
+        "completion": 1071,
+        "contextTokens": 11450,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/minimax-m2.7",
+      "passed": false,
+      "tags": ["task-incomplete"],
+      "notes": ["No in_invoice move found in odooMoves."],
+      "latencyMs": 33815,
+      "tokens": {
+        "prompt": 81538,
+        "completion": 1213,
+        "contextTokens": 10707,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/minimax-m2.7",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got 0 (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 128848,
+      "tokens": {
+        "prompt": 286408,
+        "completion": 6126,
+        "contextTokens": 13952,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/minimax-m2.7",
+      "passed": false,
+      "tags": ["task-incomplete"],
+      "notes": ["No in_invoice move found in odooMoves."],
+      "latencyMs": 174822,
+      "tokens": {
+        "prompt": 452983,
+        "completion": 8454,
+        "contextTokens": 18397,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/minimax-m2.7",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 57628,
+      "tokens": {
+        "prompt": 210852,
+        "completion": 2296,
+        "contextTokens": 15646,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/minimax-m2.7",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 41597,
+      "tokens": {
+        "prompt": 104468,
+        "completion": 1775,
+        "contextTokens": 11451,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/minimax-m2.7",
+      "passed": false,
+      "tags": ["task-incomplete"],
+      "notes": ["No in_invoice move found in odooMoves."],
+      "latencyMs": 30180,
+      "tokens": {
+        "prompt": 70741,
+        "completion": 959,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/minimax-m2.7",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got 0 (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 53459,
+      "tokens": {
+        "prompt": 161077,
+        "completion": 2186,
+        "contextTokens": 12121,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/minimax-m2.7",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 47854,
+      "tokens": {
+        "prompt": 126018,
+        "completion": 1833,
+        "contextTokens": 11538,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/minimax-m2.7",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 79390,
+      "tokens": {
+        "prompt": 197372,
+        "completion": 3245,
+        "contextTokens": 12422,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/minimax-m2.7",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 58930,
+      "tokens": {
+        "prompt": 150348,
+        "completion": 2465,
+        "contextTokens": 12092,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/minimax-m2.7",
+      "passed": true,
+      "tags": [],
+      "notes": [],
+      "latencyMs": 50359,
+      "tokens": {
+        "prompt": 117237,
+        "completion": 2355,
+        "contextTokens": 12014,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    },
+    {
+      "model": "ollama-cloud/minimax-m2.7",
+      "passed": true,
+      "tags": ["amount-not-captured"],
+      "notes": [
+        "amount_total: expected 47.6, got undefined (soft signal — derived field, not gated in v1)"
+      ],
+      "latencyMs": 60612,
+      "tokens": {
+        "prompt": 165584,
+        "completion": 2579,
+        "contextTokens": 12420,
+        "costUsd": 0
+      },
+      "scenario": "hetzner-invoice-models-governed",
+      "promptVariant": "primary",
+      "governance": "enforced"
+    }
+  ],
+  "scorecard": [
+    {
+      "model": "ollama-cloud/glm-5.2",
+      "n": 12,
+      "passes": 12,
+      "passRate": 1,
+      "wilson95": [0.7574992425007574, 0.9999999999999998],
+      "passCaretK": 1,
+      "tagHistogram": {
+        "amount-not-captured": 6
+      },
+      "medianLatencyMs": 55710,
+      "medianTokens": 124923.5,
+      "medianTokensPerCompletedTask": 124923.5
+    },
+    {
+      "model": "ollama-cloud/glm-5.1",
+      "n": 12,
+      "passes": 12,
+      "passRate": 1,
+      "wilson95": [0.7574992425007574, 0.9999999999999998],
+      "passCaretK": 1,
+      "tagHistogram": {
+        "amount-not-captured": 1
+      },
+      "medianLatencyMs": 29405,
+      "medianTokens": 93690,
+      "medianTokensPerCompletedTask": 93690
+    },
+    {
+      "model": "ollama-cloud/nemotron-3-ultra",
+      "n": 12,
+      "passes": 11,
+      "passRate": 0.9166666666666666,
+      "wilson95": [0.6461140782014047, 0.9851352905492264],
+      "passCaretK": 0,
+      "tagHistogram": {
+        "wrong-field-extraction": 1,
+        "amount-not-captured": 3
+      },
+      "medianLatencyMs": 122374.5,
+      "medianTokens": 148975.5,
+      "medianTokensPerCompletedTask": 149092
+    },
+    {
+      "model": "ollama-cloud/kimi-k2.6",
+      "n": 12,
+      "passes": 10,
+      "passRate": 0.8333333333333334,
+      "wilson95": [0.5519636426153274, 0.9530358523851776],
+      "passCaretK": 0,
+      "tagHistogram": {
+        "task-incomplete": 2,
+        "amount-not-captured": 3
+      },
+      "medianLatencyMs": 97081.5,
+      "medianTokens": 139747,
+      "medianTokensPerCompletedTask": 140728
+    },
+    {
+      "model": "ollama-cloud/gemma4:31b",
+      "n": 12,
+      "passes": 10,
+      "passRate": 0.8333333333333334,
+      "wilson95": [0.5519636426153274, 0.9530358523851776],
+      "passCaretK": 0,
+      "tagHistogram": {
+        "wrong-field-extraction": 2,
+        "amount-not-captured": 9
+      },
+      "medianLatencyMs": 45271.5,
+      "medianTokens": 119240,
+      "medianTokensPerCompletedTask": 119617.5
+    },
+    {
+      "model": "ollama-cloud/qwen3.5:397b",
+      "n": 12,
+      "passes": 10,
+      "passRate": 0.8333333333333334,
+      "wilson95": [0.5519636426153274, 0.9530358523851776],
+      "passCaretK": 0,
+      "tagHistogram": {
+        "amount-not-captured": 5,
+        "wrong-field-extraction": 2
+      },
+      "medianLatencyMs": 31412.5,
+      "medianTokens": 117955.5,
+      "medianTokensPerCompletedTask": 113168
+    },
+    {
+      "model": "ollama-cloud/deepseek-v4-pro",
+      "n": 12,
+      "passes": 9,
+      "passRate": 0.75,
+      "wilson95": [0.4676896608793401, 0.9110599603710388],
+      "passCaretK": 0,
+      "tagHistogram": {
+        "run-timeout": 1,
+        "amount-not-captured": 1,
+        "tool-result-not-recognized": 2
+      },
+      "medianLatencyMs": 38469.5,
+      "medianTokens": 127755,
+      "medianTokensPerCompletedTask": 127755
+    },
+    {
+      "model": "ollama-cloud/minimax-m2.7",
+      "n": 12,
+      "passes": 9,
+      "passRate": 0.75,
+      "wilson95": [0.4676896608793401, 0.9110599603710388],
+      "passCaretK": 0,
+      "tagHistogram": {
+        "task-incomplete": 3,
+        "amount-not-captured": 4
+      },
+      "medianLatencyMs": 55543.5,
+      "medianTokens": 158038,
+      "medianTokensPerCompletedTask": 163263
+    },
+    {
+      "model": "ollama-cloud/gpt-oss:120b",
+      "n": 12,
+      "passes": 3,
+      "passRate": 0.25,
+      "wilson95": [0.08894003962896137, 0.53231033912066],
+      "passCaretK": 0,
+      "tagHistogram": {
+        "task-incomplete": 5,
+        "false-success": 1,
+        "id-malformed": 4,
+        "tool-result-not-recognized": 1,
+        "wrong-field-extraction": 1
+      },
+      "medianLatencyMs": 117072.5,
+      "medianTokens": 116514,
+      "medianTokensPerCompletedTask": 146082
+    },
+    {
+      "model": "ollama-cloud/mistral-large-3:675b",
+      "n": 12,
+      "passes": 1,
+      "passRate": 0.08333333333333333,
+      "wilson95": [0.014864709450773488, 0.35388592179859524],
+      "passCaretK": 0,
+      "tagHistogram": {
+        "task-incomplete": 11
+      },
+      "medianLatencyMs": 28190.5,
+      "medianTokens": 53076,
+      "medianTokensPerCompletedTask": 64663
+    },
+    {
+      "model": "ollama-cloud/gpt-oss:20b",
+      "n": 12,
+      "passes": 0,
+      "passRate": 0,
+      "wilson95": [0, 0.2425007574992425],
+      "passCaretK": 0,
+      "tagHistogram": {
+        "task-incomplete": 9,
+        "id-malformed": 11,
+        "wrong-field-extraction": 3
+      },
+      "medianLatencyMs": 16116.5,
+      "medianTokens": 59468.5
+    }
+  ]
+}

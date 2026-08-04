@@ -25,23 +25,33 @@ let nextLatency = 5000;
 const row = (model: string, passed: boolean): string =>
   JSON.stringify({ model, passed, tags: [], notes: [], latencyMs: nextLatency++ });
 
-describe("buildGovernedComparison against the committed dataset (no -governed data yet)", () => {
+describe("buildGovernedComparison against the committed dataset (2026-08-04 governed sweep, #723)", () => {
   it("covers exactly the four designated comparison scenarios, in order", async () => {
     const comparison = await buildGovernedComparison();
     expect(comparison.map((s) => s.slug)).toEqual([...GOVERNED_COMPARISON_SLUGS]);
   });
 
-  it("marks every scenario not-yet-run until its -governed sweep lands", async () => {
+  it("publishes all four scenarios now that every -governed sweep has landed", async () => {
     const comparison = await buildGovernedComparison();
     for (const s of comparison) {
-      expect(s.status, s.slug).toBe("not-yet-run");
-      expect(s.models, s.slug).toEqual([]);
+      expect(s.status, s.slug).toBeUndefined();
+      // Union of both arms' models: the 11 runnable models measured in both,
+      // plus glm-4.7/deepseek-v3.2/minimax-m3 (ungoverned-only, no governed
+      // counterpart — see data/README.md), so governed is non-null for at
+      // least 11 of them.
+      const withGoverned = s.models.filter((m) => m.governed !== null);
+      expect(withGoverned.length, s.slug).toBeGreaterThanOrEqual(11);
+      expect(
+        withGoverned.every((m) => m.delta !== null),
+        s.slug
+      ).toBe(true);
     }
   });
 
-  it("buildExport OMITS governedComparison entirely while no governed data exists (no fingerprint move)", async () => {
+  it("buildExport INCLUDES governedComparison now that governed data exists (this is what moved the fingerprint)", async () => {
     const exported = await buildExport();
-    expect("governedComparison" in exported).toBe(false);
+    expect("governedComparison" in exported).toBe(true);
+    expect(exported.governedComparison!.map((s) => s.slug)).toEqual([...GOVERNED_COMPARISON_SLUGS]);
   });
 });
 
