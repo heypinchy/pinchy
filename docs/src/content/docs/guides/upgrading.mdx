@@ -215,6 +215,14 @@ Pinchy and the agent runtime share one config volume under two different users, 
 
 The runtime now hands that directory back on start and on every tick, so the case should not arise. If it ever does, saving a provider key tells you plainly that it saved but couldn't be applied, and the affected agent says it has no API key instead of going quiet. Nothing to configure.
 
+#### An agent that couldn't save, or couldn't see its mailbox, can again
+
+The same shared-volume mix-up as above reached the agent's workspace, where the files that brief an agent live. If the runtime created one of them first, it came out owned by the wrong user, and from then on Pinchy couldn't write it — which stopped the whole config from reaching the runtime.
+
+Two symptoms, one cause, and they didn't look related. Saving an agent's settings failed with "Failed to save some settings" and nothing more. And an agent with a connected mailbox insisted it had no email access at all — truthfully, because its email tools never reached the runtime either, while the **Permissions** tab showed the connection saved.
+
+The runtime now hands those files back on start and on every tick, so an affected install repairs itself on upgrade — no manual step. Saving also tells you what actually happened now: if a change is stored but can't reach the runtime, it says so and names the reason, instead of reporting a flat failure.
+
 #### Ollama Cloud catalog: one model removed, two gain vision
 
 Re-verified against the live API. `nemotron-3-nano:30b` is **no longer offered**: it now skips the tool call outright in most attempts, which for an agent looks like deciding not to act rather than failing. Any agent pinned to it needs a new model — the fast tier's general pick (`deepseek-v4-flash`) is the closest equivalent.

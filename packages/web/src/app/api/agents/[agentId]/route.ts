@@ -166,7 +166,28 @@ export const PATCH = withAuth<RouteContext>(async (request, { params }, session)
   if (body.personalityPresetId !== undefined) data.personalityPresetId = body.personalityPresetId;
   if (body.visibility !== undefined) data.visibility = body.visibility;
 
-  const agent = Object.keys(data).length > 0 ? await updateAgent(agentId, data) : existingAgent;
+  // updateAgent writes the row and THEN calls regenerateOpenClawConfig(); the
+  // two are not in a transaction, so a regeneration failure leaves the change
+  // persisted while the runtime keeps the old value. Letting the throw escape
+  // hands Next.js a 500 whose body carries no `error` field, and the client can
+  // only say "Failed to save some settings" — which is wrong in both
+  // directions and is exactly how #1095 stayed invisible for two days: the
+  // cause (EACCES on a root-owned TOOLS.md) lived solely in the container log.
+  //
+  // Answer both questions instead: what persisted, and why the rest did not.
+  let agent;
+  try {
+    agent = Object.keys(data).length > 0 ? await updateAgent(agentId, data) : existingAgent;
+  } catch (err) {
+    const cause = err instanceof Error ? err.message : String(err);
+    console.error(`[agents] config regeneration failed for agent ${agentId}:`, err);
+    return NextResponse.json(
+      {
+        error: `Settings were saved, but the agent runtime was not updated: ${cause}`,
+      },
+      { status: 500 }
+    );
+  }
 
   // Build from/to changes diff
   const changes: Record<string, { from: unknown; to: unknown }> = {};

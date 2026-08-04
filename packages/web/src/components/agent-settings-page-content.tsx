@@ -113,6 +113,33 @@ function DirtyDot() {
   );
 }
 
+/**
+ * Turns a failed save response into a message that says WHY.
+ *
+ * This used to be the constant "Failed to save some settings" — the same
+ * sentence for a validation refusal, a permission refusal and a server fault,
+ * with the server's own explanation read and discarded. #1095 is the bill:
+ * production rejected every agent save for two days over a root-owned
+ * TOOLS.md, the 500 named the EACCES, and the only place that text survived
+ * was `docker compose logs`.
+ *
+ * The body is the primary source; status is the fallback, because a proxy 502
+ * or a crashed process answers with HTML or nothing at all. Never returns
+ * empty — the caller renders this as the sole feedback for a failed save.
+ */
+async function describeSaveFailure(response: Response): Promise<string> {
+  try {
+    const body: unknown = await response.json();
+    if (body && typeof body === "object" && "error" in body) {
+      const { error } = body as { error?: unknown };
+      if (typeof error === "string" && error.trim()) return error;
+    }
+  } catch {
+    // No JSON body (HTML error page, empty response, connection cut).
+  }
+  return `Failed to save settings (HTTP ${String(response.status)})`;
+}
+
 export function AgentSettingsPageContent({ initialTab }: { initialTab?: string }) {
   const params = useParams();
   const router = useRouter();
@@ -371,8 +398,9 @@ export function AgentSettingsPageContent({ initialTab }: { initialTab?: string }
       const otherResults = await Promise.all(otherPromises);
       const results = [...integrationResults, ...otherResults];
 
-      if (results.some((r) => !r.ok)) {
-        toast.error("Failed to save some settings");
+      const failed = results.find((r) => !r.ok);
+      if (failed) {
+        toast.error(await describeSaveFailure(failed));
         return;
       }
 
