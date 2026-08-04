@@ -1,7 +1,14 @@
 /**
  * Pure functions for the Pinchy release script.
  * No side effects — all I/O happens in release.mjs.
+ *
+ * Every function below that reads a section of upgrading.mdx cuts it at the
+ * next `## ` — and must therefore go through `maskFencedBlocks`, because a
+ * quoted `## ` inside a code fence is a sample, not a heading. See
+ * mdx-fences.mjs for what each caller loses when it does not.
  */
+
+import { maskFencedBlocks, sliceSectionBody } from "./mdx-fences.mjs";
 
 const SEMVER_RE = /^\d+\.\d+\.\d+$/;
 
@@ -153,7 +160,8 @@ export function assertUpgradingSectionExists(mdx, prevVersion, targetVersion) {
     `^##\\s+Upgrading\\s+from\\s+v${escapeRegex(prevVersion)}\\s+to\\s+(v${escapeRegex(targetVersion)}|%%PINCHY_VERSION%%)\\s*$`,
     "m",
   );
-  const headingMatch = headingPattern.exec(mdx);
+  const mask = maskFencedBlocks(mdx);
+  const headingMatch = headingPattern.exec(mask);
   if (!headingMatch) {
     throw new Error(
       `No upgrade-notes section for v${targetVersion} in upgrading.mdx.\n` +
@@ -163,14 +171,11 @@ export function assertUpgradingSectionExists(mdx, prevVersion, targetVersion) {
   }
 
   // Slice from the matched heading to the next `## ` heading (or EOF) so
-  // subsection checks scan only THIS version entry, not later ones.
+  // subsection checks scan only THIS version entry, not later ones. The MASKED
+  // body is what gets scanned: a `### Upgrade notes` quoted inside a fence is a
+  // sample and must not satisfy the gate.
   const sectionStart = headingMatch.index + headingMatch[0].length;
-  const remainder = mdx.slice(sectionStart);
-  const nextHeading = /^## /m.exec(remainder);
-  const sectionBody = remainder.slice(
-    0,
-    nextHeading ? nextHeading.index : remainder.length,
-  );
+  const sectionBody = sliceSectionBody(mask, sectionStart, mask).body;
 
   for (const required of ["Breaking changes", "Upgrade notes"]) {
     const subPattern = new RegExp(`^###\\s+${escapeRegex(required)}\\s*$`, "m");
@@ -203,15 +208,15 @@ export function extractUpgradeNotes(mdx, prevVersion, targetVersion) {
     `^##\\s+Upgrading\\s+from\\s+v${escapeRegex(prevVersion)}\\s+to\\s+(v${escapeRegex(targetVersion)}|%%PINCHY_VERSION%%)\\s*$`,
     "m",
   );
-  const match = heading.exec(mdx);
+  const mask = maskFencedBlocks(mdx);
+  const match = heading.exec(mask);
   if (!match) return "";
 
-  const remainder = mdx.slice(match.index + match[0].length);
-  const nextHeading = /^## /m.exec(remainder);
-  const body = remainder.slice(
-    0,
-    nextHeading ? nextHeading.index : remainder.length,
-  );
+  // Boundary from the mask, bytes from the original. Cutting on an unmasked
+  // `^## ` is how v0.9.1's published release body came to end at a dangling
+  // ```` ```markdown ````, with the remediation the note exists to give
+  // missing entirely.
+  const { body } = sliceSectionBody(mdx, match.index + match[0].length, mask);
 
   return body.trim().replace(/%%PINCHY_VERSION%%/g, `v${targetVersion}`);
 }
@@ -248,16 +253,17 @@ export function finalizeUpgradeSection(mdx, prevVersion, targetVersion) {
     `^##\\s+Upgrading\\s+from\\s+v${escapeRegex(prevVersion)}\\s+to\\s+%%PINCHY_VERSION%%\\s*$`,
     "m",
   );
-  const match = headingPattern.exec(mdx);
+  const mask = maskFencedBlocks(mdx);
+  const match = headingPattern.exec(mask);
   if (!match) return mdx;
 
   const sectionStart = match.index;
   const afterHeading = sectionStart + match[0].length;
-  const remainder = mdx.slice(afterHeading);
-  const nextHeading = /^## /m.exec(remainder);
-  const sectionEnd = nextHeading
-    ? afterHeading + nextHeading.index
-    : mdx.length;
+  // A `## ` inside a fence used to end the section here, leaving every
+  // `%%PINCHY_VERSION%%` after it unfrozen in a section that has shipped —
+  // which `assertNoStaleUpgradeSections` then could not see, for the same
+  // reason. Both read the mask now.
+  const { end: sectionEnd } = sliceSectionBody(mdx, afterHeading, mask);
 
   const before = mdx.slice(0, sectionStart);
   const section = mdx.slice(sectionStart, sectionEnd);
@@ -308,13 +314,14 @@ export function openNextUpgradeSection(mdx, prevVersion, targetVersion) {
     `^##\\s+Upgrading\\s+from\\s+v${escapeRegex(targetVersion)}\\s+to\\s+%%PINCHY_VERSION%%\\s*$`,
     "m",
   );
-  if (alreadyOpen.test(mdx)) return mdx;
+  const mask = maskFencedBlocks(mdx);
+  if (alreadyOpen.test(mask)) return mdx;
 
   const anchor = new RegExp(
     `^##\\s+Upgrading\\s+from\\s+v${escapeRegex(prevVersion)}\\s+to\\s+v${escapeRegex(targetVersion)}\\s*$`,
     "m",
   );
-  const match = anchor.exec(mdx);
+  const match = anchor.exec(mask);
   if (!match) return mdx;
 
   return (
@@ -383,12 +390,11 @@ export function assertUpgradeNotesWritten(mdx, prevVersion, targetVersion) {
     `^##\\s+Upgrading\\s+from\\s+v${escapeRegex(prevVersion)}\\s+to\\s+(v${escapeRegex(targetVersion)}|%%PINCHY_VERSION%%)\\s*$`,
     "m",
   );
-  const match = heading.exec(mdx);
+  const mask = maskFencedBlocks(mdx);
+  const match = heading.exec(mask);
   if (!match) return; // assertUpgradingSectionExists owns that failure.
 
-  const remainder = mdx.slice(match.index + match[0].length);
-  const next = /^## /m.exec(remainder);
-  const body = remainder.slice(0, next ? next.index : remainder.length);
+  const { body } = sliceSectionBody(mdx, match.index + match[0].length, mask);
 
   const skeleton = buildNextUpgradeSkeleton(prevVersion);
   const skeletonBody = skeleton.slice(skeleton.indexOf("\n") + 1);
@@ -443,9 +449,10 @@ export function assertNoStaleUpgradeSections(mdx, latestReleasedVersion) {
   const headingRe =
     /^##\s+Upgrading\s+from\s+v(\d+\.\d+\.\d+)\s+to\s+(v\d+\.\d+\.\d+|%%PINCHY_VERSION%%)\s*$/gm;
 
+  const mask = maskFencedBlocks(mdx);
   const matches = [];
   let m;
-  while ((m = headingRe.exec(mdx)) !== null) {
+  while ((m = headingRe.exec(mask)) !== null) {
     matches.push({
       from: m[1],
       to: m[2],
@@ -465,13 +472,10 @@ export function assertNoStaleUpgradeSections(mdx, latestReleasedVersion) {
 
   const placeholderSections = [];
   for (const s of matches) {
-    const afterHeading = s.index + s.headingLen;
-    const remainder = mdx.slice(afterHeading);
-    const nextHeading = /^## /m.exec(remainder);
-    const body = remainder.slice(
-      0,
-      nextHeading ? nextHeading.index : remainder.length,
-    );
+    // The real body, not the masked one: the placeholder this looks for can
+    // legitimately sit after a fenced sample, and reading a truncated body is
+    // exactly how the v0.5.8 miss this guard exists for came back.
+    const { body } = sliceSectionBody(mdx, s.index + s.headingLen, mask);
 
     if (s.to === "%%PINCHY_VERSION%%") {
       placeholderSections.push(s);
@@ -532,15 +536,14 @@ export function deriveStagingChecklist(mdx, prevVersion, targetVersion) {
     `^##\\s+Upgrading\\s+from\\s+v${escapeRegex(prevVersion)}\\s+to\\s+(v${escapeRegex(targetVersion)}|%%PINCHY_VERSION%%)\\s*$`,
     "m",
   );
-  const m = heading.exec(mdx);
+  const mask = maskFencedBlocks(mdx);
+  const m = heading.exec(mask);
   if (!m) return [];
 
-  const remainder = mdx.slice(m.index + m[0].length);
-  const nextH2 = /^## /m.exec(remainder);
-  const sectionBody = remainder.slice(
-    0,
-    nextH2 ? nextH2.index : remainder.length,
-  );
+  // Scanned on the mask throughout: a `####` quoted inside a fence is a sample,
+  // and a checklist item nobody can verify is worse than one fewer item. Real
+  // headings are byte-identical in the mask, so the titles are unaffected.
+  const sectionBody = sliceSectionBody(mask, m.index + m[0].length, mask).body;
 
   const subRe = /^###\s+(.+?)\s*$/gm;
   const subs = [];

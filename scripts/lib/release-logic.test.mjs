@@ -1528,3 +1528,112 @@ test("buildNextUpgradeSkeleton is the single source both callers read", () => {
   const opened = openNextUpgradeSection(OPEN_FIXTURE, "0.8.0", "0.9.0");
   assert.ok(opened.includes(buildNextUpgradeSkeleton("0.9.0")));
 });
+
+// ─── A `## ` inside a code fence is not a section boundary ───────────────────
+//
+// One fixture, every function that cuts upgrading.mdx at a `## `. The defect
+// was fixed once, in the guard's own parser, while six functions here kept the
+// unmasked `^## ` — and one of them writes the GitHub Release body: v0.9.1
+// published with its notes ending at a dangling ```markdown, the remediation
+// the note exists to give missing. Adding a reader without masking must fail
+// here, not in a release.
+
+const FENCED_FIXTURE = [
+  "## Upgrading from v1.0.0 to %%PINCHY_VERSION%%",
+  "",
+  "### Breaking changes",
+  "",
+  "None.",
+  "",
+  "### Upgrade notes",
+  "",
+  "#### Before the fence",
+  "",
+  "Shorten the block to what a new agent gets:",
+  "",
+  "```markdown",
+  "## Document Access",
+  "",
+  "#### Not a note, a sample",
+  "```",
+  "",
+  "#### After the fence",
+  "",
+  "Starting with %%PINCHY_VERSION%% this is on by default.",
+  "",
+  "## Upgrading from v0.9.0 to v1.0.0",
+  "",
+  "Older, and must stay out of every slice above.",
+  "",
+].join("\n");
+
+test("extractUpgradeNotes carries the whole section past a fenced `## `", () => {
+  const body = extractUpgradeNotes(FENCED_FIXTURE, "1.0.0", "1.1.0");
+  assert.match(body, /## Document Access/, "the sample must survive verbatim");
+  assert.match(
+    body,
+    /#### After the fence/,
+    "this is what v0.9.1 published without",
+  );
+  assert.doesNotMatch(body, /Older, and must stay out/);
+});
+
+test("finalizeUpgradeSection freezes a placeholder that sits after a fenced `## `", () => {
+  const frozen = finalizeUpgradeSection(FENCED_FIXTURE, "1.0.0", "1.1.0");
+  const section = frozen.slice(
+    frozen.indexOf("## Upgrading from v1.0.0"),
+    frozen.indexOf("## Upgrading from v0.9.0"),
+  );
+  assert.doesNotMatch(section, /%%PINCHY_VERSION%%/);
+  assert.match(section, /Starting with v1\.1\.0 this is on by default/);
+});
+
+test("assertNoStaleUpgradeSections sees a stale placeholder after a fenced `## `", () => {
+  // The pair above is the one that has to hold together: finalize leaves the
+  // leftover, and this guard is the only thing that would notice. Reading the
+  // truncated body on both sides is symmetric blindness — it reads exactly
+  // like agreement, which is how the v0.5.8 miss shipped in the first place.
+  const frozen = FENCED_FIXTURE.replace(
+    "## Upgrading from v1.0.0 to %%PINCHY_VERSION%%",
+    "## Upgrading from v1.0.0 to v1.1.0",
+  );
+  assert.throws(
+    () => assertNoStaleUpgradeSections(frozen, "1.1.0"),
+    /Stale %%PINCHY_VERSION%% in the frozen/,
+  );
+});
+
+test("deriveStagingChecklist lists the note after a fence and not the fenced sample", () => {
+  const items = deriveStagingChecklist(FENCED_FIXTURE, "1.0.0", "1.1.0").map(
+    (i) => i.title,
+  );
+  assert.deepEqual(items, ["Before the fence", "After the fence"]);
+});
+
+test("assertUpgradingSectionExists is not satisfied by a `###` quoted in a fence", () => {
+  const quotedOnly = [
+    "## Upgrading from v1.0.0 to %%PINCHY_VERSION%%",
+    "",
+    "### Breaking changes",
+    "",
+    "None.",
+    "",
+    "```markdown",
+    "### Upgrade notes",
+    "```",
+    "",
+  ].join("\n");
+  assert.throws(
+    () => assertUpgradingSectionExists(quotedOnly, "1.0.0", "1.1.0"),
+    /Missing 'Upgrade notes' subsection/,
+  );
+  assert.doesNotThrow(() =>
+    assertUpgradingSectionExists(FENCED_FIXTURE, "1.0.0", "1.1.0"),
+  );
+});
+
+test("assertUpgradeNotesWritten reads the full body past a fenced `## `", () => {
+  assert.doesNotThrow(() =>
+    assertUpgradeNotesWritten(FENCED_FIXTURE, "1.0.0", "1.1.0"),
+  );
+});

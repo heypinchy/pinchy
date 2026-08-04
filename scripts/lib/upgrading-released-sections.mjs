@@ -22,46 +22,17 @@
 
 import { createHash } from "node:crypto";
 
+import { maskFencedBlocks, sliceSectionBody } from "./mdx-fences.mjs";
+
+// Re-exported because this module's own tests exercise the masking through the
+// guard that motivated it. The implementation lives in mdx-fences.mjs so the
+// release script reads the file the same way — see that module's header.
+export { maskFencedBlocks };
+
 export const UPGRADING_MDX_PATH = "docs/src/content/docs/guides/upgrading.mdx";
 
 const SECTION_HEADING_RE =
   /^##\s+Upgrading\s+from\s+v(\d+\.\d+\.\d+)\s+to\s+(v\d+\.\d+\.\d+|%%PINCHY_VERSION%%)\s*$/gm;
-
-/**
- * Blank out fenced code blocks, preserving length and line structure.
- *
- * Section boundaries are found by a line-anchored `^## `, and upgrade notes
- * quote markdown at people — the v0.9.1 note on knowledge-base instructions
- * shows an agent's `## Document Access` block inside a ```` ``` ```` fence. Read
- * literally, that line ends the section, and everything after it in that
- * section stops being compared against the tag. The guard stayed green on it
- * because the same parser truncates BOTH sides at the same point: symmetric
- * blindness, which reads exactly like agreement.
- *
- * Returned same-length so every index computed against the mask still addresses
- * the original string; newlines survive so the `m` flag keeps anchoring.
- *
- * @param {string} mdx
- * @returns {string}
- */
-export function maskFencedBlocks(mdx) {
-  const lines = mdx.split("\n");
-  let fence = null; // the opening run, e.g. "```" or "~~~~"
-  const masked = lines.map((line) => {
-    const open = /^\s*(`{3,}|~{3,})/.exec(line);
-    if (fence === null) {
-      if (open) fence = open[1];
-      return line;
-    }
-    // A closing fence is the same character, at least as long as the opener.
-    if (open && open[1][0] === fence[0] && open[1].length >= fence.length) {
-      fence = null;
-      return line;
-    }
-    return " ".repeat(line.length);
-  });
-  return masked.join("\n");
-}
 
 /**
  * Split upgrading.mdx into its `## Upgrading from vA to vB` sections.
@@ -81,14 +52,10 @@ export function parseUpgradeSections(mdx) {
   SECTION_HEADING_RE.lastIndex = 0;
   while ((m = SECTION_HEADING_RE.exec(mask)) !== null) {
     const afterHeading = m.index + m[0].length;
-    const next = /^## /m.exec(mask.slice(afterHeading));
     out.push({
       from: m[1],
       to: m[2],
-      body: mdx.slice(
-        afterHeading,
-        next ? afterHeading + next.index : mdx.length,
-      ),
+      body: sliceSectionBody(mdx, afterHeading, mask).body,
       index: m.index,
     });
   }
@@ -213,9 +180,11 @@ export const KNOWN_PRE_GUARD_DRIFT = {
       "gained `Integration audit event names`, moved IN from v0.5.4's section under " +
       "#1028. The rename ships here: `integration.created` first appears in the tree " +
       "at v0.5.7 (a4b51463), and v0.5.4 through v0.5.6 do not contain it — the issue " +
-      "named v0.5.5 without checking",
+      "named v0.5.5 without checking. The note's own cutoff moved with it: it said " +
+      "rows from `v0.5.3 and earlier` keep the old names, which was only true beside " +
+      "the wrong heading — the correct boundary is `v0.5.6 and earlier`",
     fingerprint:
-      "6c88ebfa7a12f756a14c422fda4d386f2af3c88b4f711138a1a9c7592e78c2c9",
+      "e55f85552dc624e7c49670452d86d72280fa3dd6e484f116007d9b037f63232f",
   },
   "v0.5.0": {
     kind: "retro-correction",
