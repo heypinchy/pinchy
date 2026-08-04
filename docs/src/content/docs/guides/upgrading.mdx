@@ -385,6 +385,10 @@ Inbound channel media (Telegram photos, documents) is now copied into the agent 
 
 The OpenClaw runtime this release ships (2026.7.1) adds an interactive terminal into agent workspaces. Pinchy pins it off: a shell would bypass agent permission allow-lists and the audit trail. It will return as an RBAC-scoped, audited feature.
 
+#### Deleting a user keeps their invite history
+
+Invites are audit-relevant history — who was invited, by whom, and when the invite was claimed. Deleting a user who had **claimed** an invite now keeps that invite record and simply clears the claimer reference, instead of the previous behaviour where the foreign key blocked the deletion. Every other reference to a user still cascades; only this one is retained on purpose. Nothing to configure.
+
 ### Database migrations
 
 Thirteen additive migrations (`0044`–`0056`) run automatically on startup — no manual steps. No data is dropped or destructively rewritten; existing rows already satisfy every new constraint.
@@ -476,20 +480,15 @@ A round of fixes from this cycle that need no action on your part:
 
 Telegram conversations that predate Pinchy's own transcript store now render through an OpenClaw history fallback, so upgrading no longer leaves older chats blank. The Telegram channel also shows as a titled icon in the chat list.
 
-#### Deleting a user keeps their invite history
-
-Invites are audit-relevant history — who was invited, by whom, and when the invite was claimed. Deleting a user who had **claimed** an invite now keeps that invite record and simply clears the claimer reference, instead of the previous behaviour where the foreign key blocked the deletion. Every other reference to a user still cascades; only this one is retained on purpose. Nothing to configure.
-
 #### Dependencies
 
 - **OpenClaw 2026.6.11** (was 2026.6.8) — picked up via `Dockerfile.openclaw`, surfaced in `GET /api/version`. Same protocol train; backward-compatible patch bump.
 
 ### Database migrations
 
-These migrations run automatically on startup — no manual steps:
+One additive migration runs automatically on startup — no manual steps:
 
 - `0043` — adds the nullable `prev_hmac` column to `audit_log`, backing the tamper-evident audit hash-chain.
-- `0044` — schema hardening: makes four timestamp columns `NOT NULL`, adds foreign-key and hot-path composite indexes, enforces the enum-like text columns (roles, agent visibility, invite/connection types and statuses) with `CHECK` constraints, and switches the `invites.claimed_by_user_id` foreign key to `ON DELETE SET NULL` (see the note below). Existing rows already satisfy every new constraint, so the migration applies without data changes.
 
 ## Upgrading from v0.6.0 to v0.7.0
 
@@ -764,6 +763,22 @@ No action is required for agents created the normal way: their model comes from 
 
 Pinchy now ships a web-app manifest and platform splash screens, so it can be installed as a standalone app. In Chrome on the desktop an install icon appears in the address bar; on iOS Safari, **Share → Add to Home Screen** produces a launcher that opens Pinchy full-screen with a branded splash. See the new [Install as an app](/guides/install-as-app/) guide. Nothing to configure — it is available after the upgrade.
 
+#### Integration audit event names
+
+Integration lifecycle events have moved out of the generic `config.changed` bucket and into their own resource namespace, matching the convention already used for `agent.*`, `group.*`, and `user.*`.
+
+| Before                                                        | After                        |
+| ------------------------------------------------------------- | ---------------------------- |
+| `config.changed` (`detail.action: integration_created`)       | `integration.created`        |
+| `config.changed` (`detail.action: integration_updated`)       | `integration.updated`        |
+| `config.changed` (`detail.action: integration_deleted`)       | `integration.deleted`        |
+| `config.changed` (`detail.action: integration_schema_synced`) | `integration.synced`         |
+| `integration.recovered`                                       | `integration.auth_recovered` |
+
+`integration.auth_failed` and `integration.credentials_updated` are unchanged. Credential changes no longer emit a paired `config.changed` row alongside `integration.credentials_updated` — one mutation now produces one audit row. See [Audit trail → Integration management](/concepts/audit-trail/#integration-management) for the full list and detail-field reference.
+
+Existing audit rows from v0.5.3 and earlier keep their original event names — the log is HMAC-signed and immutable. Any alerting or compliance pipelines that filter on `eventType` need to be updated to match both old and new names during the transition window. A single filter that covers both is `eventType IN ('integration.created', 'integration.updated', 'integration.deleted', 'config.changed') AND resource LIKE 'integration:%'`.
+
 #### Operator notes
 
 - **Usage dashboard now records prompt-cache tokens.** Previously the poller read the wrong field names from OpenClaw and stored every cache counter as 0 — with providers that cache aggressively (Anthropic), the dashboard could show single-digit input for heavy days. After the upgrade, new usage records carry cache reads/writes, the daily chart gains a dashed **Cached Input** series, and cost estimates include cache pricing. Historic rows stay as recorded; expect day totals to jump. Totals remain approximate until per-turn accounting lands ([#483](https://github.com/heypinchy/pinchy/issues/483)).
@@ -925,22 +940,6 @@ A single SQL query grouped by `detail->>'errorClass'` now aggregates every failu
 ### Breaking changes
 
 - **`odoo_schema` tool replaced** — see [Bookkeeper / Odoo schema discovery](#bookkeeper--odoo-schema-discovery-auto-migrated) below. Existing agents are auto-migrated on startup; no manual action is required.
-
-#### Integration audit event names
-
-Integration lifecycle events have moved out of the generic `config.changed` bucket and into their own resource namespace, matching the convention already used for `agent.*`, `group.*`, and `user.*`.
-
-| Before                                                        | After                        |
-| ------------------------------------------------------------- | ---------------------------- |
-| `config.changed` (`detail.action: integration_created`)       | `integration.created`        |
-| `config.changed` (`detail.action: integration_updated`)       | `integration.updated`        |
-| `config.changed` (`detail.action: integration_deleted`)       | `integration.deleted`        |
-| `config.changed` (`detail.action: integration_schema_synced`) | `integration.synced`         |
-| `integration.recovered`                                       | `integration.auth_recovered` |
-
-`integration.auth_failed` and `integration.credentials_updated` are unchanged. Credential changes no longer emit a paired `config.changed` row alongside `integration.credentials_updated` — one mutation now produces one audit row. See [Audit trail → Integration management](/concepts/audit-trail/#integration-management) for the full list and detail-field reference.
-
-Existing audit rows from v0.5.3 and earlier keep their original event names — the log is HMAC-signed and immutable. Any alerting or compliance pipelines that filter on `eventType` need to be updated to match both old and new names during the transition window. A single filter that covers both is `eventType IN ('integration.created', 'integration.updated', 'integration.deleted', 'config.changed') AND resource LIKE 'integration:%'`.
 
 ### Upgrade notes
 
