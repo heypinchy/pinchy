@@ -141,6 +141,55 @@ it("respects the allowedPaths directory boundary without prefix bleed (/data/foo
   expect(ids).not.toContain(outside.chunkId);
 });
 
+it("escapes a literal underscore in allowedPaths so it isn't read as a LIKE single-character wildcard (/data/my_folder must not match /data/myXfolder)", async () => {
+  // path-filter.ts's escapeLikePattern() exists exactly for this: `_` is a
+  // real LIKE metacharacter AND a common real folder-name character (e.g.
+  // "my_folder"). Without escaping, the prefix pattern "/data/my_folder/%"
+  // would also match "/data/myXfolder/..." for any X — silently widening an
+  // agent's allow-listed path into a sibling directory it was never granted.
+  const inside = await seedChunk({
+    sourcePath: "/data/my_folder/manual.pdf",
+    text: "The vacation policy allows unlimited PTO.",
+    embedding: oneHot(0),
+  });
+  const sibling = await seedChunk({
+    sourcePath: "/data/myXfolder/other.pdf",
+    text: "The vacation policy allows unlimited PTO.",
+    embedding: oneHot(0),
+  });
+
+  const { deps } = fakeDeps();
+  const results = await retrieve(ORG_ID, ["/data/my_folder"], "vacation policy", deps);
+
+  const ids = results.map((r) => r.chunkId);
+  expect(ids).toContain(inside.chunkId);
+  expect(ids).not.toContain(sibling.chunkId);
+});
+
+it("escapes a literal percent sign in allowedPaths so it isn't read as a LIKE multi-character wildcard (/data/50%off must not match /data/50XXXoff)", async () => {
+  // Same boundary as the underscore case above, for the OTHER LIKE
+  // metacharacter escapeLikePattern() handles. Without escaping,
+  // "/data/50%off/%" would also match "/data/50XXXoff/..." for any run of
+  // characters in place of the literal `%`.
+  const inside = await seedChunk({
+    sourcePath: "/data/50%off/manual.pdf",
+    text: "The vacation policy allows unlimited PTO.",
+    embedding: oneHot(0),
+  });
+  const sibling = await seedChunk({
+    sourcePath: "/data/50XXXoff/other.pdf",
+    text: "The vacation policy allows unlimited PTO.",
+    embedding: oneHot(0),
+  });
+
+  const { deps } = fakeDeps();
+  const results = await retrieve(ORG_ID, ["/data/50%off"], "vacation policy", deps);
+
+  const ids = results.map((r) => r.chunkId);
+  expect(ids).toContain(inside.chunkId);
+  expect(ids).not.toContain(sibling.chunkId);
+});
+
 it("matches an allowedPaths entry that is an exact file, without matching a sibling whose name is a superstring", async () => {
   const exact = await seedChunk({
     sourcePath: "/data/exact-file.pdf",
