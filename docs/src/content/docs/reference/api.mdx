@@ -54,7 +54,7 @@ This is the endpoint to check after an upgrade: it answers what the container ac
 
 ### `GET /api/diagnostics`
 
-Database and OpenClaw reachability, plus the running version. **Public**, but the session is inspected: authenticated callers additionally get a `logs` field with recent server logs. Anonymous callers get the status only.
+Database and OpenClaw reachability, plus the running version. **Public**, but the session is inspected: authenticated **admins** additionally get a `logs` field with recent server logs (redacted of email addresses and known secret patterns). Anonymous callers and non-admin members get the status only — the log buffer is process-global and can carry detail from other users' sessions.
 
 ### `GET /api/health/openclaw`
 

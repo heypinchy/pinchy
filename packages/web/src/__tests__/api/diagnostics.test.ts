@@ -84,8 +84,8 @@ describe("GET /api/diagnostics", () => {
     expect(data.openclaw).toBe("connected");
   });
 
-  it("should include captured logs when user is authenticated", async () => {
-    mockGetSession.mockResolvedValueOnce({ user: { id: "1" } });
+  it("should include captured logs when user is an admin", async () => {
+    mockGetSession.mockResolvedValueOnce({ user: { id: "1", role: "admin" } });
     mockDb.execute.mockResolvedValueOnce([{ "?column?": 1 }]);
     vi.spyOn(global, "fetch").mockResolvedValueOnce({ ok: true } as Response);
     mockLogCapture.formatAsText.mockReturnValueOnce(
@@ -100,6 +100,20 @@ describe("GET /api/diagnostics", () => {
 
   it("should omit logs when user is not authenticated", async () => {
     mockGetSession.mockResolvedValueOnce(null);
+    mockDb.execute.mockResolvedValueOnce([{ "?column?": 1 }]);
+    vi.spyOn(global, "fetch").mockResolvedValueOnce({ ok: true } as Response);
+    mockLogCapture.formatAsText.mockReturnValueOnce(
+      "2026-03-04T08:00:00Z [ERROR] DB connection failed"
+    );
+
+    const response = await GET();
+    const data = await response.json();
+
+    expect(data).not.toHaveProperty("logs");
+  });
+
+  it("should omit logs when authenticated user is a plain member (not admin)", async () => {
+    mockGetSession.mockResolvedValueOnce({ user: { id: "1", role: "member" } });
     mockDb.execute.mockResolvedValueOnce([{ "?column?": 1 }]);
     vi.spyOn(global, "fetch").mockResolvedValueOnce({ ok: true } as Response);
     mockLogCapture.formatAsText.mockReturnValueOnce(

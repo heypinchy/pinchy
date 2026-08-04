@@ -1,7 +1,8 @@
 // auth-direct: public diagnostics endpoint — the session lookup is OPTIONAL,
-// used only to decide whether to include server logs in the response.
-// withAuth/withAdmin would force a 401 on unauthenticated requests, which
-// would break the public health-check use case.
+// used only to decide whether to include server logs in the response (admin
+// role only — see below). withAuth/withAdmin would force a 401 on
+// unauthenticated requests, which would break the public health-check use
+// case.
 import { NextResponse } from "next/server";
 import { logCapture } from "@/lib/log-capture";
 import { getSession } from "@/lib/auth";
@@ -22,8 +23,11 @@ export async function GET() {
     nodeEnv: process.env.NODE_ENV ?? "unknown",
   };
 
-  // Only include server logs for authenticated users
-  if (session?.user) {
+  // Server logs can contain unredacted provider errors, stack traces, and
+  // other diagnostic detail from OTHER users' sessions (the capture buffer
+  // is process-global, not per-user). Restrict to admins only — a plain
+  // member has no business reading another user's error traces.
+  if (session?.user?.role === "admin") {
     response.logs = logCapture.formatAsText();
   }
 

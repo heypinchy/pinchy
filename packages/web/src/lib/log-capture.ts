@@ -1,3 +1,6 @@
+import { scrubEmails } from "@/lib/audit";
+import { sanitizeDetail } from "@/lib/audit-sanitize";
+
 type LogLevel = "error" | "warn";
 
 interface LogEntry {
@@ -16,7 +19,14 @@ class LogCapture {
     this.entries.push({
       timestamp: new Date().toISOString(),
       level,
-      message,
+      // Even restricted to admins (see the diagnostics route), this buffer
+      // is process-global and can carry provider error text or stack traces
+      // from OTHER users' chat runs — apply the same redaction other
+      // free-text audit fields get before it lands anywhere. scrubEmails
+      // strips email addresses; sanitizeDetail (on a string) strips known
+      // secret patterns (sk-ant-*, ghp_*, Bearer *, …). Order doesn't matter
+      // here since the two patterns don't overlap.
+      message: sanitizeDetail(scrubEmails(message)),
     });
     if (this.entries.length > MAX_ENTRIES) {
       this.entries.shift();
