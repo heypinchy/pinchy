@@ -30,3 +30,24 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: node scripts/check-docs-freshness.mjs
+
+  version-pins:
+    name: main's version pins vs. the latest release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      # Same rationale as the freshness job above — network-dependent,
+      # deliberately not a PR gate. See scripts/lib/main-version-pins.mjs and
+      # AGENTS.md § "Release process" / the cut-pinchy-release skill's "After
+      # the release" section (#1079).
+      - name: Check main's version pins
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/check-main-version-pins.mjs
