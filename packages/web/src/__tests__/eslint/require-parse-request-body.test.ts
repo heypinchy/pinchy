@@ -41,6 +41,35 @@ tester.run("require-parse-request-body", rule, {
       code: `export async function POST({ headers }) { const data = await other.json(); }`,
       filename: "/app/api/groups/route.ts",
     },
+    // Reading an UPSTREAM response inside a route is ordinary work, not a
+    // skipped-validation bug. The callback parameter is a Response, and telling
+    // the author to `parseRequestBody(schema, res)` would be nonsense advice.
+    {
+      code: `export async function POST(request) {
+          const parsed = await parseRequestBody(schema, request);
+          return fetch(url).then((res) => res.json());
+        }`,
+      filename: "/app/api/groups/route.ts",
+    },
+    {
+      code: `export async function POST(request) {
+          const parsed = await parseRequestBody(schema, request);
+          return Promise.all(responses.map((r) => r.json()));
+        }`,
+      filename: "/app/api/groups/route.ts",
+    },
+    // A local helper in the same file is not a route handler, so its first
+    // parameter is not "the request" — even when it is called `response`.
+    {
+      code: `async function readUpstream(response) {
+          return response.json();
+        }
+        export async function POST(request) {
+          const parsed = await parseRequestBody(schema, request);
+          return readUpstream(await fetch(url));
+        }`,
+      filename: "/app/api/groups/route.ts",
+    },
   ],
   invalid: [
     {
@@ -61,7 +90,7 @@ tester.run("require-parse-request-body", rule, {
       errors: [{ messageId: "directJsonCall" }],
     },
     // A renamed first parameter must still be caught — the rule resolves the
-    // name from the enclosing handler's own signature rather than a fixed
+    // request from the ROUTE HANDLER's own signature rather than a fixed
     // whitelist of "request"/"req".
     {
       code: `export async function POST(_req) { const body = await _req.json(); }`,
@@ -78,13 +107,38 @@ tester.run("require-parse-request-body", rule, {
       filename: "/app/api/groups/route.ts",
       errors: [{ messageId: "directJsonCall" }],
     },
-    // A nested closure with no first parameter of its own inherits the name
-    // from the enclosing handler.
+    // The dominant shape in this codebase: the handler is a callback handed to
+    // an auth wrapper, so the request is that callback's first parameter.
+    {
+      code: `export const POST = withAdmin(async (rq, _ctx, session) => { const body = await rq.json(); });`,
+      filename: "/app/api/groups/route.ts",
+      errors: [{ messageId: "directJsonCall" }],
+    },
+    // A nested closure with no first parameter of its own still sees the
+    // handler's request through the closure.
     {
       code: `export async function POST(_req) {
           return withRetry(async () => {
             const body = await _req.json();
           });
+        }`,
+      filename: "/app/api/groups/route.ts",
+      errors: [{ messageId: "directJsonCall" }],
+    },
+    // ...and so does a nested closure that HAS parameters of its own. Resolving
+    // only "the nearest enclosing function with parameters" loses this: the
+    // callback's own parameter shadows nothing, and the real request.json()
+    // slips through — the very call the rule exists to ban.
+    {
+      code: `export async function POST(_req) {
+          return items.map((item) => _req.json());
+        }`,
+      filename: "/app/api/groups/route.ts",
+      errors: [{ messageId: "directJsonCall" }],
+    },
+    {
+      code: `export async function POST(req) {
+          return upstream.then((res) => req.json());
         }`,
       filename: "/app/api/groups/route.ts",
       errors: [{ messageId: "directJsonCall" }],
