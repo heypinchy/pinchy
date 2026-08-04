@@ -2,19 +2,14 @@ import { NextResponse } from "next/server";
 import { and, desc, eq, inArray } from "drizzle-orm";
 
 import { db } from "@/db";
-import {
-  agents,
-  emailWorkflows,
-  emailWorkflowConnections,
-  agentConnectionPermissions,
-} from "@/db/schema";
+import { emailWorkflows, emailWorkflowConnections, agentConnectionPermissions } from "@/db/schema";
 import { withAuth } from "@/lib/api-auth";
 import { parseRequestBody } from "@/lib/api-validation";
 import { createAutomationSchema } from "@/lib/schemas/automations";
 import { scrubEmails } from "@/lib/audit";
 import { deferAuditLog } from "@/lib/audit-deferred";
 import { EMAIL_READ_OPERATIONS } from "@/lib/tool-registry";
-import { canManageAgentWorkflows } from "@/lib/email-workflows/authz";
+import { requireManageableAgent } from "@/lib/email-workflows/authz";
 
 /**
  * GET /api/automations?agentId=<id> — list an agent's email workflows for the
@@ -29,16 +24,11 @@ export const GET = withAuth(async (request, _ctx, session) => {
     return NextResponse.json({ error: "agentId is required" }, { status: 400 });
   }
 
-  const [agent] = await db
-    .select({ isPersonal: agents.isPersonal, ownerId: agents.ownerId })
-    .from(agents)
-    .where(eq(agents.id, agentId));
-  if (!agent) {
-    return NextResponse.json({ error: "Agent not found" }, { status: 404 });
-  }
-  if (!canManageAgentWorkflows(agent, { id: session.user.id!, role: session.user.role })) {
-    return NextResponse.json({ error: "You do not have access to this agent" }, { status: 403 });
-  }
+  const scope = await requireManageableAgent(agentId, {
+    id: session.user.id!,
+    role: session.user.role,
+  });
+  if (!scope.ok) return scope.response;
 
   const workflows = await db
     .select({
@@ -103,25 +93,13 @@ export const POST = withAuth(async (request, _ctx, session) => {
 
   const userId = session.user.id!;
 
-  const [agent] = await db
-    .select({
-      id: agents.id,
-      name: agents.name,
-      isPersonal: agents.isPersonal,
-      ownerId: agents.ownerId,
-    })
-    .from(agents)
-    .where(eq(agents.id, agentId));
-  if (!agent) {
-    return NextResponse.json({ error: "Agent not found" }, { status: 404 });
-  }
-
-  if (!canManageAgentWorkflows(agent, { id: userId, role: session.user.role })) {
-    return NextResponse.json(
-      { error: "You do not have permission to create a workflow on this agent" },
-      { status: 403 }
-    );
-  }
+  const scope = await requireManageableAgent(
+    agentId,
+    { id: userId, role: session.user.role },
+    "You do not have permission to create a workflow on this agent"
+  );
+  if (!scope.ok) return scope.response;
+  const { agent } = scope;
 
   // Every requested mailbox must be one the agent is allowed to READ — a
   // workflow's trigger lists and reads mail, so a draft/send-only grant is not

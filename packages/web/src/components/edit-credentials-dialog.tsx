@@ -67,6 +67,85 @@ type ImapFormValues = {
   senderName: string;
 };
 
+// Shared across every form/reconnect branch below: ApiError carries a
+// server-provided message, anything else is opaque to the client.
+function credentialErrorMessage(err: unknown): string {
+  return err instanceof ApiError ? err.message : "Something went wrong. Please try again.";
+}
+
+// Odoo, Web Search, and IMAP all PATCH the same endpoint with a
+// `{ credentials }` body and react to the result identically: toast + close
+// on success, inline server error on failure, always stop "saving".
+async function saveCredentials({
+  connectionId,
+  credentials,
+  onSuccess,
+  onOpenChange,
+  setServerError,
+  setSaving,
+}: {
+  connectionId: string;
+  credentials: Record<string, unknown>;
+  onSuccess: () => void;
+  onOpenChange: (open: boolean) => void;
+  setServerError: (message: string) => void;
+  setSaving: (saving: boolean) => void;
+}) {
+  try {
+    await apiPatch(`/api/integrations/${connectionId}`, { credentials });
+    toast.success("Credentials updated");
+    onSuccess();
+    onOpenChange(false);
+  } catch (err) {
+    setServerError(credentialErrorMessage(err));
+  } finally {
+    setSaving(false);
+  }
+}
+
+function AuthFailedAlert({ show }: { show: boolean }) {
+  if (!show) return null;
+  return (
+    <Alert variant="destructive">
+      <AlertTriangle className="h-4 w-4" />
+      <AlertDescription>
+        Current credentials failed authentication — please enter new credentials below.
+      </AlertDescription>
+    </Alert>
+  );
+}
+
+function CredentialsFormFooter({
+  serverError,
+  onCancel,
+  saving,
+}: {
+  serverError: string;
+  onCancel: () => void;
+  saving: boolean;
+}) {
+  return (
+    <>
+      {serverError && <p className="text-sm text-destructive">{serverError}</p>}
+      <div className="flex justify-end gap-2">
+        <Button type="button" variant="outline" onClick={onCancel}>
+          Cancel
+        </Button>
+        <Button type="submit" disabled={saving}>
+          {saving ? (
+            <>
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              Saving...
+            </>
+          ) : (
+            "Save"
+          )}
+        </Button>
+      </div>
+    </>
+  );
+}
+
 function OdooForm({
   connection,
   onSuccess,
@@ -103,33 +182,20 @@ function OdooForm({
     if (values.login) credentials.login = values.login;
     if (values.apiKey) credentials.apiKey = values.apiKey;
 
-    try {
-      await apiPatch(`/api/integrations/${connection.id}`, { credentials });
-      toast.success("Credentials updated");
-      onSuccess();
-      onOpenChange(false);
-    } catch (err) {
-      if (err instanceof ApiError) {
-        setServerError(err.message);
-      } else {
-        setServerError("Something went wrong. Please try again.");
-      }
-    } finally {
-      setSaving(false);
-    }
+    await saveCredentials({
+      connectionId: connection.id,
+      credentials,
+      onSuccess,
+      onOpenChange,
+      setServerError,
+      setSaving,
+    });
   }
 
   return (
     <Form {...form}>
       <form onSubmit={form.handleSubmit(onSubmit)} method="post" className="space-y-4">
-        {connection.status === "auth_failed" && (
-          <Alert variant="destructive">
-            <AlertTriangle className="h-4 w-4" />
-            <AlertDescription>
-              Current credentials failed authentication — please enter new credentials below.
-            </AlertDescription>
-          </Alert>
-        )}
+        <AuthFailedAlert show={connection.status === "auth_failed"} />
 
         <FormField
           control={form.control}
@@ -184,23 +250,11 @@ function OdooForm({
           )}
         />
 
-        {serverError && <p className="text-sm text-destructive">{serverError}</p>}
-
-        <div className="flex justify-end gap-2">
-          <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
-            Cancel
-          </Button>
-          <Button type="submit" disabled={saving}>
-            {saving ? (
-              <>
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                Saving...
-              </>
-            ) : (
-              "Save"
-            )}
-          </Button>
-        </div>
+        <CredentialsFormFooter
+          serverError={serverError}
+          onCancel={() => onOpenChange(false)}
+          saving={saving}
+        />
       </form>
     </Form>
   );
@@ -229,33 +283,20 @@ function WebSearchForm({
     const credentials: Record<string, string> = {};
     if (values.apiKey) credentials.apiKey = values.apiKey;
 
-    try {
-      await apiPatch(`/api/integrations/${connection.id}`, { credentials });
-      toast.success("Credentials updated");
-      onSuccess();
-      onOpenChange(false);
-    } catch (err) {
-      if (err instanceof ApiError) {
-        setServerError(err.message);
-      } else {
-        setServerError("Something went wrong. Please try again.");
-      }
-    } finally {
-      setSaving(false);
-    }
+    await saveCredentials({
+      connectionId: connection.id,
+      credentials,
+      onSuccess,
+      onOpenChange,
+      setServerError,
+      setSaving,
+    });
   }
 
   return (
     <Form {...form}>
       <form onSubmit={form.handleSubmit(onSubmit)} method="post" className="space-y-4">
-        {connection.status === "auth_failed" && (
-          <Alert variant="destructive">
-            <AlertTriangle className="h-4 w-4" />
-            <AlertDescription>
-              Current credentials failed authentication — please enter new credentials below.
-            </AlertDescription>
-          </Alert>
-        )}
+        <AuthFailedAlert show={connection.status === "auth_failed"} />
 
         <FormField
           control={form.control}
@@ -271,23 +312,11 @@ function WebSearchForm({
           )}
         />
 
-        {serverError && <p className="text-sm text-destructive">{serverError}</p>}
-
-        <div className="flex justify-end gap-2">
-          <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
-            Cancel
-          </Button>
-          <Button type="submit" disabled={saving}>
-            {saving ? (
-              <>
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                Saving...
-              </>
-            ) : (
-              "Save"
-            )}
-          </Button>
-        </div>
+        <CredentialsFormFooter
+          serverError={serverError}
+          onCancel={() => onOpenChange(false)}
+          saving={saving}
+        />
       </form>
     </Form>
   );
@@ -368,33 +397,20 @@ function ImapForm({
       return;
     }
 
-    try {
-      await apiPatch(`/api/integrations/${connection.id}`, { credentials: parsed.data });
-      toast.success("Credentials updated");
-      onSuccess();
-      onOpenChange(false);
-    } catch (err) {
-      if (err instanceof ApiError) {
-        setServerError(err.message);
-      } else {
-        setServerError("Something went wrong. Please try again.");
-      }
-    } finally {
-      setSaving(false);
-    }
+    await saveCredentials({
+      connectionId: connection.id,
+      credentials: parsed.data,
+      onSuccess,
+      onOpenChange,
+      setServerError,
+      setSaving,
+    });
   }
 
   return (
     <Form {...form}>
       <form onSubmit={form.handleSubmit(onSubmit)} method="post" className="space-y-4">
-        {connection.status === "auth_failed" && (
-          <Alert variant="destructive">
-            <AlertTriangle className="h-4 w-4" />
-            <AlertDescription>
-              Current credentials failed authentication — please enter new credentials below.
-            </AlertDescription>
-          </Alert>
-        )}
+        <AuthFailedAlert show={connection.status === "auth_failed"} />
 
         <FormField
           control={form.control}
@@ -529,23 +545,11 @@ function ImapForm({
           )}
         />
 
-        {serverError && <p className="text-sm text-destructive">{serverError}</p>}
-
-        <div className="flex justify-end gap-2">
-          <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
-            Cancel
-          </Button>
-          <Button type="submit" disabled={saving}>
-            {saving ? (
-              <>
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                Saving...
-              </>
-            ) : (
-              "Save"
-            )}
-          </Button>
-        </div>
+        <CredentialsFormFooter
+          serverError={serverError}
+          onCancel={() => onOpenChange(false)}
+          saving={saving}
+        />
       </form>
     </Form>
   );
@@ -576,11 +580,7 @@ function OAuthReconnect({
       });
       window.location.assign(result.url);
     } catch (err) {
-      if (err instanceof ApiError) {
-        setError(err.message);
-      } else {
-        setError("Something went wrong. Please try again.");
-      }
+      setError(credentialErrorMessage(err));
       setLoading(false);
     }
   }

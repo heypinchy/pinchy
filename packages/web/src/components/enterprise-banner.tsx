@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { X } from "lucide-react";
 import type { LicenseState } from "@/lib/license-state";
+import { formatLicenseDate as formatDate } from "@/lib/format-license-date";
 import { evaluateSeatPressure } from "@/lib/seat-grace";
 import {
   BUY_PRO_URL,
@@ -39,14 +40,6 @@ interface Banner {
   tone: "info" | "warn";
   message: string;
   links: BannerLink[];
-}
-
-function formatDate(iso: string): string {
-  return new Date(iso).toLocaleDateString("en-US", {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-  });
 }
 
 /**

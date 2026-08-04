@@ -34,10 +34,7 @@ import {
   type LivenessState,
   type LivenessEvent,
 } from "./liveness-state";
-import {
-  CLIENT_IMAGE_COMPRESSION_TARGET_BYTES,
-  CLIENT_MAX_ATTACHMENT_SIZE_BYTES,
-} from "@/lib/limits";
+import { CLIENT_IMAGE_COMPRESSION_TARGET_BYTES } from "@/lib/limits";
 import { MAX_ATTACHMENTS_PER_MESSAGE } from "@/lib/schemas/uploads";
 import { compressImageForChat } from "@/lib/image-compression";
 import { parseSlashCommand, type SlashCommand } from "@/lib/slash-commands";
@@ -174,12 +171,8 @@ export class OfficeDocumentAttachmentAdapter {
 
   async add(state: { file: File }) {
     const { file } = state;
-    if (file.size > CLIENT_MAX_ATTACHMENT_SIZE_BYTES) {
-      const limitMb = Math.round(CLIENT_MAX_ATTACHMENT_SIZE_BYTES / 1024 / 1024);
-      throw new Error(
-        `File "${file.name}" is too large (${Math.round(file.size / 1024 / 1024)} MB). The limit is ${limitMb} MB.`
-      );
-    }
+    const sizeError = oversizeAttachmentError(file);
+    if (sizeError) throw new Error(sizeError);
     return {
       id: uuid(),
       type: "document" as const,

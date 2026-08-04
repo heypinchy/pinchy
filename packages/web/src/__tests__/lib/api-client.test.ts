@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { apiPost, apiDelete, apiGet, ApiError } from "@/lib/api-client";
+import { apiPost, apiDelete, apiGet, ApiError, extractFieldErrors } from "@/lib/api-client";
 
 /**
  * Helper to build a Response-shaped mock that matches what `send()` reads.
@@ -114,5 +114,47 @@ describe("apiPost", () => {
       expect((e as ApiError).status).toBe(403);
       expect((e as ApiError).message).toBe("Forbidden");
     }
+  });
+});
+
+// extractFieldErrors used to be copy-pasted verbatim in settings-api-keys.tsx
+// and settings-groups.tsx (issue #1087 dedup sweep); now it lives here next to
+// the ApiError shape it reads.
+describe("extractFieldErrors", () => {
+  it("returns null for a non-ApiError", () => {
+    expect(extractFieldErrors(new Error("plain error"))).toBeNull();
+  });
+
+  it("returns null for an ApiError with no details", () => {
+    expect(extractFieldErrors(new ApiError(400, "Bad request"))).toBeNull();
+  });
+
+  it("returns null when details has no fieldErrors", () => {
+    expect(extractFieldErrors(new ApiError(400, "Bad request", { other: "x" }))).toBeNull();
+  });
+
+  it("returns null when every field's message array is empty", () => {
+    const err = new ApiError(400, "Bad request", { fieldErrors: { name: [] } });
+    expect(extractFieldErrors(err)).toBeNull();
+  });
+
+  it("flattens fieldErrors to the first message per field", () => {
+    const err = new ApiError(400, "Bad request", {
+      fieldErrors: {
+        name: ["Name is required", "Name is too long"],
+        expiresInDays: ["Must be a positive number"],
+      },
+    });
+    expect(extractFieldErrors(err)).toEqual({
+      name: "Name is required",
+      expiresInDays: "Must be a positive number",
+    });
+  });
+
+  it("skips fields whose message array is not a non-empty array", () => {
+    const err = new ApiError(400, "Bad request", {
+      fieldErrors: { name: ["Required"], description: [], scopes: "not-an-array" },
+    });
+    expect(extractFieldErrors(err)).toEqual({ name: "Required" });
   });
 });

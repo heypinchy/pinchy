@@ -34,7 +34,14 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { toast } from "sonner";
-import { apiPost, apiPatch, apiPut, apiDelete, ApiError } from "@/lib/api-client";
+import {
+  apiPost,
+  apiPatch,
+  apiPut,
+  apiDelete,
+  ApiError,
+  extractFieldErrors,
+} from "@/lib/api-client";
 import type { CreateGroupInput } from "@/lib/schemas/groups";
 import type { LicenseState } from "@/lib/license-state";
 
@@ -131,24 +138,6 @@ export function SettingsGroups({ refreshKey, isAdmin = true }: SettingsGroupsPro
     setFormMemberIds([]);
     setFieldErrors({});
     setCreateOpen(true);
-  }
-
-  /**
-   * Pulls Zod's flattened fieldErrors out of an ApiError (if present) and
-   * returns a flat `{ fieldName: message }` map. Returns null when the error
-   * is not a structured field-level validation failure — caller should fall
-   * back to a toast in that case.
-   */
-  function extractFieldErrors(e: unknown): Record<string, string> | null {
-    if (!(e instanceof ApiError) || !e.details) return null;
-    const details = e.details as { fieldErrors?: Record<string, string[]> };
-    const fe = details.fieldErrors;
-    if (!fe || typeof fe !== "object") return null;
-    const flat: Record<string, string> = {};
-    for (const [field, messages] of Object.entries(fe)) {
-      if (Array.isArray(messages) && messages.length > 0) flat[field] = messages[0];
-    }
-    return Object.keys(flat).length > 0 ? flat : null;
   }
 
   async function openEditDialog(group: Group) {
