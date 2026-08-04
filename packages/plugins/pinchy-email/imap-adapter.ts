@@ -4,6 +4,7 @@ import { simpleParser } from "mailparser";
 import type { AddressObject, ParsedMail } from "mailparser";
 import nodemailer from "nodemailer";
 import MailComposer from "nodemailer/lib/mail-composer/index.js";
+import { stripHtml } from "./email-adapter.js";
 import type {
   EmailAdapter,
   EmailAttachment,
@@ -169,20 +170,6 @@ const SNIPPET_LENGTH = 200;
 function addressText(addr: AddressObject | AddressObject[] | undefined): string {
   if (!addr) return "";
   return Array.isArray(addr) ? addr.map((a) => a.text).join(", ") : addr.text;
-}
-
-// Very small HTML-to-text fallback for when a message has no text/plain
-// part. mailparser already derives ParsedMail.text from html in the common
-// case (via its bundled html-to-text), so this only matters for the rare
-// case where text is genuinely absent — kept intentionally simple rather
-// than pulling in another HTML-parsing dependency for a fallback path.
-function stripHtml(html: string): string {
-  return html
-    .replace(/<(script|style)[^>]*>[\s\S]*?<\/\1>/gi, " ")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/&nbsp;/gi, " ")
-    .replace(/\s+/g, " ")
-    .trim();
 }
 
 // First ~200 chars of the body, whitespace-collapsed onto a single line —

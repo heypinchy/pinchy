@@ -1,4 +1,4 @@
-import { createFolderMapper, escapeDoubleQuoted } from "./email-adapter.js";
+import { createFolderMapper, escapeDoubleQuoted, stripHtml } from "./email-adapter.js";
 import type {
   EmailAdapter,
   EmailAttachment,
@@ -95,6 +95,30 @@ function buildOrderedFilter(filters: string[]): string | undefined {
   return ordered.join(" and ");
 }
 
+// Microsoft Graph returns `body.content` verbatim in whatever
+// `body.contentType` ("text" or "html") the message was stored in — unlike
+// IMAP/Gmail, which prefer the text/plain MIME part and only fall back to
+// raw (stripped) HTML when no plain-text part exists. Left unbounded, a
+// large HTML marketing email easily runs to hundreds of KB, and OpenClaw's
+// runtime caps every tool result at 64000 chars, replacing the overflow with
+// a literal truncation marker spliced MID-JSON — the model then receives
+// corrupt JSON and loops on it, the same production failure mode documented
+// on ODOO_READ_RESULT_BUDGET_CHARS in pinchy-odoo/index.ts. We strip HTML to
+// text (via the shared `stripHtml`) and bound the result well under 64000 so
+// email_read's output is never cut mid-structure.
+export const GRAPH_BODY_MAX_CHARS = 30000;
+
+function truncateBody(text: string): string {
+  if (text.length <= GRAPH_BODY_MAX_CHARS) return text;
+  return `${text.slice(0, GRAPH_BODY_MAX_CHARS)}\n[truncated]`;
+}
+
+function extractBody(body: { contentType?: string; content?: string } | undefined): string {
+  const raw = body?.content ?? "";
+  const plain = body?.contentType === "html" ? stripHtml(raw) : raw;
+  return truncateBody(plain);
+}
+
 function toSummary(m: GraphMessage): EmailSummary {
   return {
     id: m.id,
@@ -163,7 +187,7 @@ export class GraphAdapter implements EmailAdapter {
     return {
       ...toSummary(m),
       cc: m.ccRecipients?.map((r) => r.emailAddress?.address ?? "").join(", ") ?? "",
-      body: m.body?.content ?? "",
+      body: extractBody(m.body),
       // Only pay for the second round trip when the message actually has
       // attachments — the common no-attachment case stays a single request.
       attachments: m.hasAttachments ? await this.listAttachments(id) : [],

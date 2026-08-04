@@ -8,6 +8,23 @@ export function escapeDoubleQuoted(v: string): string {
   return v.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 }
 
+// Very small HTML-to-text fallback. IMAP relies on mailparser's bundled
+// html-to-text for the common case and only reaches this when a message
+// genuinely has no text/plain part; Graph has no equivalent library in the
+// loop at all, since Graph's own `body.content` is returned verbatim in
+// whatever `body.contentType` the message was stored in. Shared here (rather
+// than duplicated per adapter) so both providers reduce HTML the same way.
+// Kept intentionally simple rather than pulling in another HTML-parsing
+// dependency for a fallback/normalization path.
+export function stripHtml(html: string): string {
+  return html
+    .replace(/<(script|style)[^>]*>[\s\S]*?<\/\1>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 // Shared by every adapter: the canonical-name validation and error message are
 // identical across providers, only the provider-specific value for each
 // folder differs (Gmail label IDs vs Graph well-known folder names). Sharing

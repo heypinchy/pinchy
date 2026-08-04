@@ -640,10 +640,10 @@ export function prepareAggregateFields(value: unknown, paramName: "fields" | "gr
   return stripped;
 }
 
-function getSearchReadRecords(result: unknown): OdooRecord[] {
+function getSearchReadRecords(result: unknown, key: string = "records"): OdooRecord[] {
   if (Array.isArray(result)) return result.filter(isRecord);
-  if (isRecord(result) && Array.isArray(result.records)) {
-    return result.records.filter(isRecord);
+  if (isRecord(result) && Array.isArray(result[key])) {
+    return (result[key] as unknown[]).filter(isRecord);
   }
   return [];
 }
@@ -2054,7 +2054,8 @@ function wrapReadResult(
 }
 
 /**
- * Serialized-size ceiling for an `odoo_read` result, in characters.
+ * Serialized-size ceiling for an `odoo_read` or `odoo_aggregate` result, in
+ * characters.
  *
  * OpenClaw's runtime caps every tool result at `maxChars=64000` and the whole
  * prompt history at `aggregateBudgetChars=256000`, replacing the overflow with a
@@ -2077,29 +2078,36 @@ export const ODOO_READ_TRUNCATION_HINT =
   "`returned`.";
 
 /**
- * Bound an `odoo_read` result to {@link ODOO_READ_RESULT_BUDGET_CHARS} so it can
- * never trip OpenClaw's blind mid-JSON truncation. A result that already fits is
- * returned verbatim (same reference, no added keys — existing callers/tests see
- * no change). An oversized result keeps the largest prefix of records that fits
+ * Bound an `odoo_read` (or, via the `key` param, `odoo_aggregate`) result to
+ * {@link ODOO_READ_RESULT_BUDGET_CHARS} so it can never trip OpenClaw's blind
+ * mid-JSON truncation. A result that already fits is returned verbatim (same
+ * reference, no added keys — existing callers/tests see no change). An
+ * oversized result keeps the largest prefix of `result[key]` entries that fits
  * and returns a self-describing object: the original `total` (full Odoo match
- * count) is preserved, `returned` gives the included count, `truncated: true`
- * flags the cut, and `hint` tells the model how to get the rest. At least one
- * record is always kept, even if that single record alone exceeds the budget, so
- * the model can still make progress (and see the hint to drop heavy `fields`).
+ * count, when the input carries one) is preserved, `returned` gives the
+ * included count, `truncated: true` flags the cut, and `hint` tells the model
+ * how to get the rest. At least one entry is always kept, even if that single
+ * entry alone exceeds the budget, so the model can still make progress (and
+ * see the hint to drop heavy `fields`).
+ *
+ * `key` defaults to `"records"` (the `odoo_read`/`searchRead` shape).
+ * `odoo_aggregate`'s `readGroup` result nests its rows under `groups` instead,
+ * so it passes `key: "groups"`.
  */
 export function enforceReadResultBudget(
   result: unknown,
-  budget: number = ODOO_READ_RESULT_BUDGET_CHARS
+  budget: number = ODOO_READ_RESULT_BUDGET_CHARS,
+  key: string = "records"
 ): unknown {
-  const records = getSearchReadRecords(result);
+  const records = getSearchReadRecords(result, key);
   if (records.length === 0) return result;
   if (JSON.stringify(result).length <= budget) return result;
 
-  const isObjectShape = isRecord(result) && Array.isArray(result.records);
+  const isObjectShape = isRecord(result) && Array.isArray(result[key]);
   const base: Record<string, unknown> = isObjectShape
     ? { ...(result as Record<string, unknown>) }
     : {};
-  delete base.records;
+  delete base[key];
   const total =
     isObjectShape && typeof (result as Record<string, unknown>).total === "number"
       ? ((result as Record<string, unknown>).total as number)
@@ -2107,7 +2115,7 @@ export function enforceReadResultBudget(
 
   const build = (kept: OdooRecord[]) => ({
     ...base,
-    records: kept,
+    [key]: kept,
     total,
     returned: kept.length,
     truncated: true,
@@ -3037,7 +3045,14 @@ const plugin = {
               );
 
               return {
-                content: [{ type: "text", text: JSON.stringify(result) }],
+                content: [
+                  {
+                    type: "text",
+                    text: JSON.stringify(
+                      enforceReadResultBudget(result, ODOO_READ_RESULT_BUDGET_CHARS, "groups")
+                    ),
+                  },
+                ],
               };
             } catch (error) {
               return errorResult(error, {

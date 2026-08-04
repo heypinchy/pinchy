@@ -1337,6 +1337,28 @@ describe("enforceReadResultBudget", () => {
     expect(out.returned).toBe(out.records.length);
     expect(JSON.stringify(out).length).toBeLessThanOrEqual(ODOO_READ_RESULT_BUDGET_CHARS);
   });
+
+  // odoo_aggregate's readGroup result nests its rows under `groups`, not
+  // `records` — the same shape difference odoo_read never has. A budget
+  // helper that only ever looks for `records` would report `records.length
+  // === 0` for a `{ groups: [...] }` payload and return it unbounded, which
+  // is exactly the gap this closes.
+  it("supports a custom key so it can also bound odoo_aggregate's `groups` result", () => {
+    const result = { groups: bigRecords(200) };
+    const out = enforceReadResultBudget(result, ODOO_READ_RESULT_BUDGET_CHARS, "groups") as {
+      groups: unknown[];
+      total: number;
+      returned: number;
+      truncated: boolean;
+      hint: string;
+    };
+    expect(out.truncated).toBe(true);
+    expect(out.groups.length).toBeLessThan(200);
+    expect(out.groups.length).toBeGreaterThan(0);
+    expect(out.returned).toBe(out.groups.length);
+    expect(out.hint).toBe(ODOO_READ_TRUNCATION_HINT);
+    expect(JSON.stringify(out).length).toBeLessThanOrEqual(ODOO_READ_RESULT_BUDGET_CHARS);
+  });
 });
 
 describe("odoo_read", () => {
@@ -2171,6 +2193,37 @@ describe("odoo_aggregate", () => {
 
     expect(result.content[0].text).toContain("Permission denied");
     expect(result.isError).toBe(true);
+  });
+
+  // Same production incident as odoo_read (see ODOO_READ_RESULT_BUDGET_CHARS):
+  // a wide `groupby` on a large table can return hundreds of groups, and the
+  // readGroup result was serialized verbatim with no budget at all. Without
+  // this, OpenClaw's blind 64000-char mid-JSON truncation corrupts the JSON
+  // and the model loops, exactly as with the original odoo_read incident.
+  it("truncates an oversized readGroup result into valid, self-describing JSON instead of letting OpenClaw cut it mid-JSON", async () => {
+    mockReadGroup.mockResolvedValue({
+      groups: Array.from({ length: 500 }, (_, i) => ({
+        partner_id: [i + 1, `Customer ${i + 1} ${"x".repeat(500)}`],
+        amount_total: 1500,
+        __count: 3,
+      })),
+    });
+
+    const tools = createApi({ [agentId]: agentConfig });
+    const tool = findTool(tools, "odoo_aggregate", agentId)!;
+
+    const result = await tool.execute("call-budget", {
+      model: "sale.order",
+      filters: [],
+      fields: ["partner_id", "amount_total:sum"],
+      groupby: ["partner_id"],
+    });
+
+    expect(result.content[0].text.length).toBeLessThanOrEqual(ODOO_READ_RESULT_BUDGET_CHARS);
+    const data = JSON.parse(result.content[0].text);
+    expect(data.truncated).toBe(true);
+    expect(data.groups.length).toBeGreaterThan(0);
+    expect(data.groups.length).toBeLessThan(500);
   });
 });
 

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from "vitest";
-import { GraphAdapter } from "../graph-adapter.js";
+import { GraphAdapter, GRAPH_BODY_MAX_CHARS } from "../graph-adapter.js";
 
 describe("GraphAdapter.list", () => {
   beforeEach(() => {
@@ -117,6 +117,75 @@ describe("GraphAdapter.read", () => {
     expect(result.body).toBe("Hi there, full body");
     expect(result.cc).toBe("charlie@example.com");
     expect(result.unread).toBe(true);
+  });
+
+  // Unlike IMAP/Gmail (which prefer text/plain and only fall back to raw HTML
+  // when no plain-text part exists), Graph's `body.content` was serialized
+  // verbatim regardless of contentType, with no cap — a real HTML marketing
+  // email (~500 KB) hits OpenClaw's blind 64000-char mid-JSON truncation, the
+  // same production failure mode as the odoo_read/odoo_aggregate incidents.
+  it("strips HTML from the body when body.contentType is html", async () => {
+    const adapter = new GraphAdapter({ accessToken: "tok" });
+    (fetch as Mock).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        id: "msg1",
+        subject: "Hello",
+        bodyPreview: "Hi",
+        receivedDateTime: "2024-01-01T10:00:00Z",
+        from: { emailAddress: { address: "alice@example.com" } },
+        toRecipients: [],
+        isRead: true,
+        body: { contentType: "html", content: "<p>Hello <b>Bob</b>, see attached.</p>" },
+      }),
+    });
+    const result = await adapter.read("msg1");
+    expect(result.body).not.toContain("<p>");
+    expect(result.body).not.toContain("<b>");
+    // Same tag-to-space collapsing as IMAP's shared stripHtml — a space is
+    // left where </b> was, ahead of the comma.
+    expect(result.body).toContain("Hello Bob , see attached.");
+  });
+
+  it("truncates an oversized body to GRAPH_BODY_MAX_CHARS with a [truncated] marker", async () => {
+    const adapter = new GraphAdapter({ accessToken: "tok" });
+    const hugeHtml = `<p>${"x".repeat(GRAPH_BODY_MAX_CHARS * 2)}</p>`;
+    (fetch as Mock).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        id: "msg1",
+        subject: "Newsletter",
+        bodyPreview: "…",
+        receivedDateTime: "2024-01-01T10:00:00Z",
+        from: { emailAddress: { address: "marketing@example.com" } },
+        toRecipients: [],
+        isRead: true,
+        body: { contentType: "html", content: hugeHtml },
+      }),
+    });
+    const result = await adapter.read("msg1");
+    expect(result.body.length).toBeLessThanOrEqual(GRAPH_BODY_MAX_CHARS + "\n[truncated]".length);
+    expect(result.body).toContain("[truncated]");
+  });
+
+  it("does not truncate or mark a body that already fits under the budget", async () => {
+    const adapter = new GraphAdapter({ accessToken: "tok" });
+    (fetch as Mock).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        id: "msg1",
+        subject: "Short",
+        bodyPreview: "short",
+        receivedDateTime: "2024-01-01T10:00:00Z",
+        from: { emailAddress: { address: "alice@example.com" } },
+        toRecipients: [],
+        isRead: true,
+        body: { contentType: "text", content: "A short plain-text body." },
+      }),
+    });
+    const result = await adapter.read("msg1");
+    expect(result.body).toBe("A short plain-text body.");
+    expect(result.body).not.toContain("[truncated]");
   });
 
   it("non-ok response throws a descriptive error", async () => {
