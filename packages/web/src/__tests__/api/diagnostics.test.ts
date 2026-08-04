@@ -143,4 +143,44 @@ describe("GET /api/diagnostics", () => {
 
     expect(data).not.toHaveProperty("logs");
   });
+
+  // A missing `logs` field has two very different causes, and the bug
+  // reporter that consumes this endpoint has to tell them apart: "your role
+  // may not read these" needs different copy from "there are none". Only the
+  // signed-in non-admin gets the marker.
+  it("should mark logs as withheld for role when the user is a signed-in member", async () => {
+    mockGetSession.mockResolvedValueOnce({ user: { id: "1", role: "member" } });
+    mockDb.execute.mockResolvedValueOnce([{ "?column?": 1 }]);
+    vi.spyOn(global, "fetch").mockResolvedValueOnce({ ok: true } as Response);
+
+    const response = await GET();
+    const data = await response.json();
+
+    expect(data.logsWithheld).toBe("admin-only");
+  });
+
+  it("should not mark logs as withheld when the user is an admin", async () => {
+    mockGetSession.mockResolvedValueOnce({ user: { id: "1", role: "admin" } });
+    mockDb.execute.mockResolvedValueOnce([{ "?column?": 1 }]);
+    vi.spyOn(global, "fetch").mockResolvedValueOnce({ ok: true } as Response);
+
+    const response = await GET();
+    const data = await response.json();
+
+    expect(data).not.toHaveProperty("logsWithheld");
+  });
+
+  // The anonymous caller here is the setup wizard's pre-flight check, run by
+  // whoever is installing Pinchy — they hold the host shell. Telling them to
+  // ask an administrator would send them looking for themselves.
+  it("should not mark logs as withheld for an anonymous caller", async () => {
+    mockGetSession.mockResolvedValueOnce(null);
+    mockDb.execute.mockResolvedValueOnce([{ "?column?": 1 }]);
+    vi.spyOn(global, "fetch").mockResolvedValueOnce({ ok: true } as Response);
+
+    const response = await GET();
+    const data = await response.json();
+
+    expect(data).not.toHaveProperty("logsWithheld");
+  });
 });
