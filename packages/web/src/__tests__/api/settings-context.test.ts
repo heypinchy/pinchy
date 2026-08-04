@@ -35,6 +35,7 @@ import { GET, PUT } from "@/app/api/settings/context/route";
 import { NextRequest } from "next/server";
 import { mockSession } from "@/test-helpers/auth";
 import { routeContext } from "@/test-helpers/route";
+import { CONTEXT_CONTENT_MAX_LENGTH } from "@/lib/schemas/context";
 
 function makeGetRequest() {
   return new NextRequest("http://localhost/api/settings/context", { method: "GET" });
@@ -147,5 +148,26 @@ describe("PUT /api/settings/context", () => {
     const data = await response.json();
     expect(data.error).toBe("Validation failed");
     expect(data.details.fieldErrors.content).toBeDefined();
+  });
+
+  it("should return 400 when content exceeds the max length", async () => {
+    const tooLong = "a".repeat(CONTEXT_CONTENT_MAX_LENGTH + 1);
+    const response = await PUT(makePutRequest({ content: tooLong }), routeContext());
+
+    expect(response.status).toBe(400);
+    const data = await response.json();
+    expect(data.error).toBe("Validation failed");
+    expect(data.details.fieldErrors.content).toBeDefined();
+    expect(mockSetSetting).not.toHaveBeenCalled();
+  });
+
+  it("should accept content at exactly the max length", async () => {
+    const maxLength = "a".repeat(CONTEXT_CONTENT_MAX_LENGTH);
+    const response = await PUT(makePutRequest({ content: maxLength }), routeContext());
+
+    expect(response.status).toBe(200);
+    const data = await response.json();
+    expect(data.success).toBe(true);
+    expect(mockSetSetting).toHaveBeenCalledWith("org_context", maxLength);
   });
 });

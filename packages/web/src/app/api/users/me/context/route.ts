@@ -1,16 +1,12 @@
 // audit-exempt: users editing their own context is a self-service action
 import { NextResponse } from "next/server";
-import { z } from "zod";
 import { withAuth } from "@/lib/api-auth";
 import { db } from "@/db";
 import { users } from "@/db/schema";
 import { eq } from "drizzle-orm";
 import { syncUserContextToWorkspaces } from "@/lib/context-sync";
 import { parseRequestBody } from "@/lib/api-validation";
-
-const updateContextSchema = z.object({
-  content: z.string(),
-});
+import { contextContentSchema as updateContextSchema } from "@/lib/schemas/context";
 
 export const GET = withAuth(async (_req, _ctx, session) => {
   const user = await db.query.users.findFirst({

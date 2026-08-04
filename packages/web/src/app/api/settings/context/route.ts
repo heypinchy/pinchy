@@ -1,12 +1,10 @@
 // audit-exempt: org context editing is a content change, not a security-sensitive admin action
 import { NextResponse } from "next/server";
-import { z } from "zod";
 import { withAdmin } from "@/lib/api-auth";
 import { getSetting, setSetting } from "@/lib/settings";
 import { syncOrgContextToWorkspaces } from "@/lib/context-sync";
 import { parseRequestBody } from "@/lib/api-validation";
-
-const updateOrgContextSchema = z.object({ content: z.string() });
+import { contextContentSchema as updateOrgContextSchema } from "@/lib/schemas/context";
 
 export const GET = withAdmin(async () => {
   const content = await getSetting("org_context");
