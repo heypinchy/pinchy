@@ -111,6 +111,8 @@ For the same reason the event is throttled to one row per minute. Reaching a loc
 
 From this point on, only the locked domain can reach the app. Domain Lock is the single source of truth for your public origin — there is no separate URL env var to keep in sync.
 
+Pinchy stores the canonical form of the host your proxy forwarded: lower-cased, and without a `:443` that HTTPS implies anyway. So the domain shown after locking can be slightly shorter than the header your proxy sent, and that is the value the host check compares every later request against. If your proxy forwards something that is not a hostname at all — a header rewritten with a path, a space, or markup in it — Pinchy refuses to lock rather than pinning your instance to a name no browser can ever send back.
+
 ## Remove the lock
 
 If the business needs change (different domain, temporary maintenance URL, etc.):

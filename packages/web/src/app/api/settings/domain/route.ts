@@ -4,7 +4,7 @@ import { getSetting } from "@/lib/settings";
 import { setDomainAndRefreshCache, deleteDomainAndRefreshCache } from "@/lib/domain";
 import { appendAuditLog } from "@/lib/audit";
 import { readRequestHostFromHeaders } from "@/server/forwarded-host";
-import { isValidLockableHost } from "@/lib/domain-validation";
+import { normalizeLockableHost } from "@/lib/domain-validation";
 
 export async function POST(req: Request) {
   const session = await requireAdmin();
@@ -22,9 +22,9 @@ export async function POST(req: Request) {
   // "public.example.com, internal:7777", and storing that verbatim locks the
   // instance to a name no browser can send — the exact lockout this flow
   // exists to make impossible.
-  const domain = readRequestHostFromHeaders(req.headers);
+  const requestedHost = readRequestHostFromHeaders(req.headers);
 
-  if (!domain) {
+  if (!requestedHost) {
     return NextResponse.json(
       { error: "Could not determine hostname from request." },
       { status: 400 }
@@ -32,12 +32,23 @@ export async function POST(req: Request) {
   }
 
   // The resolved host is client-influenced (X-Forwarded-Host, unless a
-  // trusted proxy strips it before we see it) and gets stored verbatim as the
-  // locked domain — then rendered into the Access Denied page every
-  // unauthenticated visitor with a mismatched Host header is served. Reject
-  // anything that isn't a plausible Host value before it is ever persisted.
-  if (!isValidLockableHost(domain)) {
-    return NextResponse.json({ error: `"${domain}" is not a valid domain name.` }, { status: 400 });
+  // trusted proxy strips it before we see it) and gets stored as the locked
+  // domain — then rendered into the Access Denied page every unauthenticated
+  // visitor with a mismatched Host header is served. Reject anything that
+  // isn't a plausible Host value before it is ever persisted, and store the
+  // canonical parse rather than the header as typed, so that what is stored
+  // is what `isHostAllowed` will later compare a request against.
+  const domain = normalizeLockableHost(requestedHost);
+  if (!domain) {
+    // Bounded: `X-Forwarded-Host` is caller-sized, and the whole of it ends up
+    // in a toast. Enough to recognise what was sent, not enough to flood it.
+    const shown = requestedHost.length > 80 ? `${requestedHost.slice(0, 80)}…` : requestedHost;
+    return NextResponse.json(
+      {
+        error: `Cannot lock the domain to "${shown}" — that is not a hostname a browser can send as a Host header.`,
+      },
+      { status: 400 }
+    );
   }
 
   const previousDomain = await getSetting("domain");

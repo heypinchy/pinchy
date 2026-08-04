@@ -308,7 +308,7 @@ describe("domain lock stores a host that can actually match", () => {
 // The resolved host is client-influenced (X-Forwarded-Host is attacker
 // controlled unless a trusted proxy strips it) and, once stored, is rendered
 // unescaped into the Access Denied page every unauthenticated visitor with a
-// mismatched Host header sees. A value that fails isValidLockableHost must
+// mismatched Host header sees. A value that fails normalizeLockableHost must
 // never reach setDomainAndRefreshCache — for injection, and because storing a
 // name no browser can literally send is a lockout too.
 //
@@ -333,6 +333,7 @@ describe("domain lock rejects hostnames that are not valid Host values", () => {
     ["evil.com:1;rm -rf /", "port/shell injection"],
     ["evil.com/path", "path suffix"],
     ["evil.com@attacker.com", "userinfo injection"],
+    ["evil.com@attacker.com:443", "userinfo injection ending in a default port"],
     ["evil.com#frag", "fragment suffix"],
   ])("rejects %s (%s)", async (host) => {
     const response = await POST(
@@ -358,5 +359,40 @@ describe("domain lock rejects hostnames that are not valid Host values", () => {
 
     expect(response.status).toBe(200);
     expect(mockSetDomainAndRefreshCache).toHaveBeenCalledWith("localhost:7779");
+  });
+
+  // What is stored has to be what the gate will later match, and the gate
+  // matches through `normalizeHost` — which folds a default port but does NOT
+  // fold case. Storing the header verbatim therefore has two failure shapes,
+  // and both end as a lockout rather than as a rejection anyone can see:
+  //
+  //   `Host: EXAMPLE.COM`     stored verbatim, never equals the lowercase
+  //                           Host every browser sends afterwards.
+  //   `Host: example.com:443` a proxy configured with `$host:$server_port`
+  //                           sends this; the gate would happily match it,
+  //                           so refusing to store it turns a working
+  //                           deployment into a 400 with no way forward.
+  //
+  // Both are answered by storing the canonical parse rather than the input.
+  it.each([
+    ["EXAMPLE.COM", "example.com", "lower-cases the host the gate compares case-sensitively"],
+    [
+      "pinchy.example.com:443",
+      "pinchy.example.com",
+      "drops the default port the gate folds away anyway",
+    ],
+  ])("stores %s as %s (%s)", async (sent, stored) => {
+    const response = await POST(
+      makeRequest("POST", {
+        "x-forwarded-host": sent,
+        "x-forwarded-proto": "https",
+      })
+    );
+
+    expect(response.status).toBe(200);
+    expect(mockSetDomainAndRefreshCache).toHaveBeenCalledWith(stored);
+    // The response echoes the stored value, so the success toast and the
+    // audit row name the domain that is actually locked.
+    expect((await response.json()).domain).toBe(stored);
   });
 });

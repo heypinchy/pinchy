@@ -793,6 +793,8 @@ Lock Pinchy to a domain. **Takes no request body.** The domain is the hostname t
 
 The request must arrive over HTTPS (`X-Forwarded-Proto: https`).
 
+What gets stored is the canonical form of that hostname — lower-cased, with a default `:443` dropped — because that is the same folding the host check applies when it later matches an incoming request. A proxy sending `Host: EXAMPLE.COM` or `example.com:443` therefore locks to `example.com`, and the response echoes the value that was actually stored. A port that is not the default is kept (`pinchy.example.com:8443`), since it is part of the name a browser sends.
+
 **Response:** `{ "domain": "pinchy.example.com", "restart": true }`
 
 `restart: true` is not advisory. The process exits half a second later so the secure-cookie settings take effect, and your container runtime restarts it — expect a few seconds of downtime and one dropped WebSocket.

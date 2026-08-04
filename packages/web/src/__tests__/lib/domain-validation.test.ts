@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   isValidDomain,
-  isValidLockableHost,
+  normalizeLockableHost,
   validatePinchyWebConfig,
   pluginConfigSchema,
 } from "@/lib/domain-validation";
@@ -28,17 +28,25 @@ describe("isValidDomain", () => {
   });
 });
 
-describe("isValidLockableHost", () => {
+describe("normalizeLockableHost", () => {
+  // These assert the value that gets STORED, not merely that the input was
+  // accepted. Case and a default `:443` are folded here because that is
+  // exactly what `normalizeHost` folds when the gate later matches a request
+  // against the stored value — validating one form while storing another is
+  // how a lock stops matching the browser that created it.
   it.each([
-    "example.com",
-    "pinchy.example.com",
-    "localhost",
-    "localhost:7779",
-    "pinchy.example.com:8443",
-    "EXAMPLE.COM",
-    "xn--bcher-kva.example",
-  ])("accepts %s", (h) => {
-    expect(isValidLockableHost(h)).toBe(true);
+    ["example.com", "example.com"],
+    ["pinchy.example.com", "pinchy.example.com"],
+    ["localhost", "localhost"],
+    ["localhost:7779", "localhost:7779"],
+    ["pinchy.example.com:8443", "pinchy.example.com:8443"],
+    ["[::1]:8443", "[::1]:8443"],
+    ["xn--bcher-kva.example", "xn--bcher-kva.example"],
+    ["EXAMPLE.COM", "example.com"],
+    ["Pinchy.Example.COM:8443", "pinchy.example.com:8443"],
+    ["pinchy.example.com:443", "pinchy.example.com"],
+  ])("normalizes %s to %s", (input, expected) => {
+    expect(normalizeLockableHost(input)).toBe(expected);
   });
 
   it.each([
@@ -50,11 +58,17 @@ describe("isValidLockableHost", () => {
     "evil.com:1;rm -rf /",
     "evil.com/path",
     "evil.com@attacker.com",
+    // Folding a default port must not fold a userinfo split that ends in one:
+    // the parsed host there is `attacker.com`, which is not what arrived.
+    "evil.com@attacker.com:443",
+    "evil.com:443/path",
     "evil.com#frag",
     "evil.com?x=1",
     "evil.com\\attacker.com",
+    "//evil.com",
+    ":443",
   ])("rejects %s", (h) => {
-    expect(isValidLockableHost(h)).toBe(false);
+    expect(normalizeLockableHost(h)).toBeNull();
   });
 });
 
