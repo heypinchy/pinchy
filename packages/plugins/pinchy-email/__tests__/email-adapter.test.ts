@@ -193,7 +193,7 @@ describe("resolveInsecureMockBaseUrl", () => {
     );
   });
 
-  it("warns exactly once per overrideVar when the override is set without the flag", () => {
+  it("warns only once for a repeated read of the same override var", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     vi.stubEnv("GMAIL_API_BASE_URL", "http://gmail-mock:9004");
 
@@ -204,6 +204,36 @@ describe("resolveInsecureMockBaseUrl", () => {
     expect(warn).toHaveBeenCalledTimes(1);
     expect(warn.mock.calls[0][0]).toContain("GMAIL_API_BASE_URL");
     expect(warn.mock.calls[0][0]).toContain("PINCHY_INSECURE_MAIL_MOCK");
+  });
+
+  it("warns separately for each distinct override var", () => {
+    // The dedupe is keyed by override var — that is the whole point of the Set.
+    // Repeating ONE var proves the "once" half and says nothing about the "per
+    // var" half: a plain boolean would pass that test while reporting the Gmail
+    // override and then staying silent about the Graph one for the rest of the
+    // process.
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.stubEnv("GMAIL_API_BASE_URL", "http://gmail-mock:9004");
+    vi.stubEnv("GRAPH_API_BASE_URL", "http://graph-mock:9005");
+
+    resolveInsecureMockBaseUrl("GMAIL_API_BASE_URL", "PINCHY_INSECURE_MAIL_MOCK");
+    resolveInsecureMockBaseUrl("GRAPH_API_BASE_URL", "PINCHY_INSECURE_MAIL_MOCK");
+    resolveInsecureMockBaseUrl("GMAIL_API_BASE_URL", "PINCHY_INSECURE_MAIL_MOCK");
+    resolveInsecureMockBaseUrl("GRAPH_API_BASE_URL", "PINCHY_INSECURE_MAIL_MOCK");
+
+    expect(warn).toHaveBeenCalledTimes(2);
+    const messages = warn.mock.calls.map((c) => c[0]).join("\n");
+    expect(messages).toContain("GMAIL_API_BASE_URL");
+    expect(messages).toContain("GRAPH_API_BASE_URL");
+  });
+
+  it("treats an empty override as unset, and does not warn about it", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.stubEnv("GMAIL_API_BASE_URL", "");
+    expect(resolveInsecureMockBaseUrl("GMAIL_API_BASE_URL", "PINCHY_INSECURE_MAIL_MOCK")).toBe(
+      undefined
+    );
+    expect(warn).not.toHaveBeenCalled();
   });
 
   it("does not warn when the override is not set", () => {

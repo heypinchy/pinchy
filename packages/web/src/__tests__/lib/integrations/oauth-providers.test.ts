@@ -151,10 +151,30 @@ describe("OAUTH_PROVIDERS descriptor", () => {
       );
     });
 
-    it("honours MICROSOFT_OAUTH_BASE_URL env override for the token host", () => {
+    it("honours MICROSOFT_OAUTH_BASE_URL env override for the token host when the insecure flag is set", () => {
       vi.stubEnv("MICROSOFT_OAUTH_BASE_URL", "https://mock-ms-auth.local");
+      vi.stubEnv("PINCHY_INSECURE_MAIL_MOCK", "1");
       expect(OAUTH_PROVIDERS.microsoft.tokenUrl({ tenantId: "t1" })).toBe(
         "https://mock-ms-auth.local/t1/oauth2/v2.0/token"
+      );
+    });
+
+    it("ignores MICROSOFT_OAUTH_BASE_URL when the insecure flag is absent", () => {
+      vi.stubEnv("MICROSOFT_OAUTH_BASE_URL", "https://mock-ms-auth.local");
+      // No PINCHY_INSECURE_MAIL_MOCK. The token endpoint receives the OAuth
+      // client secret and the refresh token, so a stray override left over in
+      // production must not redirect it.
+      expect(OAUTH_PROVIDERS.microsoft.tokenUrl({ tenantId: "t1" })).toBe(
+        "https://login.microsoftonline.com/t1/oauth2/v2.0/token"
+      );
+    });
+
+    it("ignores MICROSOFT_OAUTH_BASE_URL for the authorize host too when the flag is absent", () => {
+      // authorize and token share microsoftHostAndTenant(), so the gate must
+      // cover both — not only the one a test happens to exercise.
+      vi.stubEnv("MICROSOFT_OAUTH_BASE_URL", "https://mock-ms-auth.local");
+      expect(OAUTH_PROVIDERS.microsoft.authorizeUrl({ tenantId: "t1" })).toBe(
+        "https://login.microsoftonline.com/t1/oauth2/v2.0/authorize"
       );
     });
   });
@@ -174,10 +194,18 @@ describe("OAUTH_PROVIDERS descriptor", () => {
       expect(OAUTH_PROVIDERS.microsoft.profileUrl).toBe("https://graph.microsoft.com/v1.0/me");
     });
 
-    it("honours GRAPH_API_BASE_URL env override for the Microsoft profile host", () => {
+    it("honours GRAPH_API_BASE_URL env override for the Microsoft profile host when the insecure flag is set", () => {
       vi.stubEnv("GRAPH_API_BASE_URL", "https://mock-graph.local");
+      vi.stubEnv("PINCHY_INSECURE_MAIL_MOCK", "1");
       // profileUrl must be a getter so env overrides are read lazily.
       expect(OAUTH_PROVIDERS.microsoft.profileUrl).toBe("https://mock-graph.local/v1.0/me");
+    });
+
+    it("ignores GRAPH_API_BASE_URL when the insecure flag is absent", () => {
+      vi.stubEnv("GRAPH_API_BASE_URL", "https://mock-graph.local");
+      // No PINCHY_INSECURE_MAIL_MOCK: this fetch carries the freshly minted
+      // access token.
+      expect(OAUTH_PROVIDERS.microsoft.profileUrl).toBe("https://graph.microsoft.com/v1.0/me");
     });
   });
 

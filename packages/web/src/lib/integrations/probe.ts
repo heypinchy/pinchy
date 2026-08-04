@@ -9,6 +9,7 @@ import {
   classifyProbeError,
 } from "@/lib/integrations/imap-probe";
 import { imapTestSchema } from "@/lib/schemas/imap";
+import { resolveInsecureMockBaseUrl } from "@/lib/integrations/insecure-mock-base-url";
 
 /**
  * Verify that credentials work for the given integration type.
@@ -73,7 +74,10 @@ export async function probeIntegrationCredentials(
     if (typeof accessToken !== "string" || !accessToken) {
       return { success: false, reason: "No access token stored. Please reconnect to Microsoft." };
     }
-    const graphBase = process.env.GRAPH_API_BASE_URL ?? "https://graph.microsoft.com";
+    // Honoured only alongside PINCHY_INSECURE_MAIL_MOCK=1 — this probe sends
+    // the stored access token. See insecure-mock-base-url.ts.
+    const graphBase =
+      resolveInsecureMockBaseUrl("GRAPH_API_BASE_URL") ?? "https://graph.microsoft.com";
     try {
       const res = await fetch(`${graphBase}/v1.0/me`, {
         headers: { Authorization: `Bearer ${accessToken}` },

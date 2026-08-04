@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { resetInsecureMockWarningsForTest } from "@/lib/integrations/insecure-mock-base-url";
 
 const {
   mockGetSession,
@@ -935,8 +936,9 @@ describe("GET /api/integrations/oauth/callback", () => {
       );
     });
 
-    it("uses MICROSOFT_OAUTH_BASE_URL env override for token endpoint", async () => {
+    it("uses MICROSOFT_OAUTH_BASE_URL env override for token endpoint when the insecure flag is set", async () => {
       vi.stubEnv("MICROSOFT_OAUTH_BASE_URL", "https://mock-ms-auth.local");
+      vi.stubEnv("PINCHY_INSECURE_MAIL_MOCK", "1");
       mockFetch
         .mockResolvedValueOnce(mockMsTokenExchange())
         .mockResolvedValueOnce(mockMsProfileFetch());
@@ -951,6 +953,30 @@ describe("GET /api/integrations/oauth/callback", () => {
       const tokenCall = mockFetch.mock.calls[0];
       expect(tokenCall[0]).toBe("https://mock-ms-auth.local/my-tenant/oauth2/v2.0/token");
       vi.unstubAllEnvs();
+    });
+
+    it("ignores MICROSOFT_OAUTH_BASE_URL for the token endpoint when the insecure flag is absent", async () => {
+      // The end-to-end shape of the seam: this exchange POSTs the client secret
+      // and the authorization code, so a stray override reaching the callback
+      // route must not redirect it. Guards the route, not just the descriptor.
+      vi.stubEnv("MICROSOFT_OAUTH_BASE_URL", "https://mock-ms-auth.local");
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+      resetInsecureMockWarningsForTest();
+      mockFetch
+        .mockResolvedValueOnce(mockMsTokenExchange())
+        .mockResolvedValueOnce(mockMsProfileFetch());
+
+      await GET(
+        makeRequest(
+          { code: "ms-auth-code", state: VALID_STATE },
+          `oauth_state=${VALID_STATE}; oauth_pending_id=ms-pending-conn-id`
+        )
+      );
+
+      const tokenCall = mockFetch.mock.calls[0];
+      expect(tokenCall[0]).toBe("https://login.microsoftonline.com/my-tenant/oauth2/v2.0/token");
+      vi.unstubAllEnvs();
+      resetInsecureMockWarningsForTest();
     });
 
     it("defaults to tenantId='organizations' when tenantId is missing", async () => {

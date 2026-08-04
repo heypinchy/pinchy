@@ -52,6 +52,11 @@ services:
       # endpoint.
       - MICROSOFT_OAUTH_BASE_URL=http://graph-mock:9005
       - GRAPH_API_BASE_URL=http://graph-mock:9005
+      # Both overrides above only take effect alongside this explicit flag
+      # (insecure-mock-base-url.ts). Pinchy holds the OAuth client secret and
+      # the refresh tokens, so an unflagged *_OAUTH_BASE_URL left over in
+      # production would redirect strictly more than the plugin side does.
+      - PINCHY_INSECURE_MAIL_MOCK=1
       # Passed through so `models` mode can seed settings.ollama_cloud_api_key
       # without baking a real key into the image or compose file.
       - OLLAMA_CLOUD_API_KEY=${OLLAMA_CLOUD_API_KEY:-}

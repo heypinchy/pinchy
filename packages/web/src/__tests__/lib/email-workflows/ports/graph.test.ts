@@ -7,6 +7,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 import { mapGraphMessage, createGraphPort } from "@/lib/email-workflows/ports/graph";
+import { resetInsecureMockWarningsForTest } from "@/lib/integrations/insecure-mock-base-url";
 
 const credentials = {
   accessToken: "test-access-token",
@@ -143,6 +144,41 @@ describe("Graph port — immutable ids", () => {
     await port.read("m1");
 
     expect(headersOf(0).get("Prefer")).toBe('IdType="ImmutableId"');
+  });
+});
+
+describe("Graph port — mock base-url override", () => {
+  let fetchSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    fetchSpy = vi.spyOn(globalThis, "fetch");
+    fetchSpy.mockResolvedValue(jsonResponse({ value: [] }));
+  });
+
+  afterEach(() => {
+    fetchSpy.mockRestore();
+    vi.unstubAllEnvs();
+    resetInsecureMockWarningsForTest();
+    vi.restoreAllMocks();
+  });
+
+  it("ignores GRAPH_API_BASE_URL and calls the real Graph host when the insecure flag is absent", async () => {
+    vi.stubEnv("GRAPH_API_BASE_URL", "http://graph-mock:9005");
+    // No PINCHY_INSECURE_MAIL_MOCK: the sweep sends the stored access token.
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await createGraphPort(credentials).search({ sinceDays: 14, folder: "inbox", limit: 50 });
+
+    expect(String(fetchSpy.mock.calls[0][0])).toContain("https://graph.microsoft.com/v1.0/");
+  });
+
+  it("uses GRAPH_API_BASE_URL when the insecure flag is set", async () => {
+    vi.stubEnv("GRAPH_API_BASE_URL", "http://graph-mock:9005");
+    vi.stubEnv("PINCHY_INSECURE_MAIL_MOCK", "1");
+
+    await createGraphPort(credentials).search({ sinceDays: 14, folder: "inbox", limit: 50 });
+
+    expect(String(fetchSpy.mock.calls[0][0])).toContain("http://graph-mock:9005/v1.0/");
   });
 });
 

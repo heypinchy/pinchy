@@ -4,6 +4,7 @@ import { refreshAccessToken } from "@/lib/integrations/microsoft-oauth";
 // source module instead of via microsoft-oauth's re-export (see D14 cleanup).
 import { isTokenExpired } from "@/lib/integrations/oauth-token";
 import { MICROSOFT_OAUTH_SCOPES, OAUTH_PROVIDERS } from "@/lib/integrations/oauth-providers";
+import { resetInsecureMockWarningsForTest } from "@/lib/integrations/insecure-mock-base-url";
 
 describe("microsoft-oauth", () => {
   beforeEach(() => {
@@ -13,6 +14,9 @@ describe("microsoft-oauth", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     delete process.env.MICROSOFT_OAUTH_BASE_URL;
+    delete process.env.PINCHY_INSECURE_MAIL_MOCK;
+    resetInsecureMockWarningsForTest();
+    vi.restoreAllMocks();
   });
 
   it("isTokenExpired returns true when within the 5-minute buffer", () => {
@@ -60,8 +64,9 @@ describe("microsoft-oauth", () => {
     );
   });
 
-  it("uses MICROSOFT_OAUTH_BASE_URL when set", async () => {
+  it("uses MICROSOFT_OAUTH_BASE_URL when set together with the insecure flag", async () => {
     process.env.MICROSOFT_OAUTH_BASE_URL = "http://graph-mock:9005";
+    process.env.PINCHY_INSECURE_MAIL_MOCK = "1";
     (fetch as ReturnType<typeof vi.fn>).mockResolvedValue({
       ok: true,
       json: async () => ({ access_token: "a", refresh_token: "r", expires_in: 1 }),
@@ -74,6 +79,28 @@ describe("microsoft-oauth", () => {
     });
     expect(fetch).toHaveBeenCalledWith(
       "http://graph-mock:9005/t/oauth2/v2.0/token",
+      expect.any(Object)
+    );
+  });
+
+  it("ignores MICROSOFT_OAUTH_BASE_URL when the insecure flag is absent", async () => {
+    process.env.MICROSOFT_OAUTH_BASE_URL = "http://graph-mock:9005";
+    // No PINCHY_INSECURE_MAIL_MOCK. This is the request body that carries the
+    // client secret AND the refresh token — the longest-lived credentials
+    // Pinchy holds — so a stray override must not redirect it.
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    (fetch as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ok: true,
+      json: async () => ({ access_token: "a", refresh_token: "r", expires_in: 1 }),
+    });
+    await refreshAccessToken({
+      tenantId: "t",
+      refreshToken: "r",
+      clientId: "c",
+      clientSecret: "s",
+    });
+    expect(fetch).toHaveBeenCalledWith(
+      "https://login.microsoftonline.com/t/oauth2/v2.0/token",
       expect.any(Object)
     );
   });

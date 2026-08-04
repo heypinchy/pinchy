@@ -1,4 +1,5 @@
 import type { EmailListItem, EmailPort, EmailReadResult } from "@/lib/email-workflows/lister";
+import { resolveInsecureMockBaseUrl } from "@/lib/integrations/insecure-mock-base-url";
 
 /**
  * The Gmail mailbox port for the reconciliation sweep.
@@ -41,9 +42,13 @@ const SYSTEM_LABEL_IDS = new Set([
   "CATEGORY_FORUMS",
 ]);
 
-/** Same convention as the pinchy-email plugin's gmail adapter (E2E mock redirect). */
+/**
+ * Same convention as the pinchy-email plugin's gmail adapter (E2E mock
+ * redirect): the override fires only alongside PINCHY_INSECURE_MAIL_MOCK=1, so
+ * a stray var cannot redirect the access token this port sends.
+ */
 function gmailBase(): string {
-  return process.env.GMAIL_API_BASE_URL ?? "https://gmail.googleapis.com";
+  return resolveInsecureMockBaseUrl("GMAIL_API_BASE_URL") ?? "https://gmail.googleapis.com";
 }
 
 interface GmailHeader {

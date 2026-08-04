@@ -38,6 +38,7 @@ vi.mock("@/lib/integrations/imap-probe", async (importActual) => {
 import { fetchOdooSchema } from "@/lib/integrations/odoo-sync";
 import { probeBraveApiKey } from "@/lib/integrations/brave-probe";
 import { probeIntegrationCredentials } from "@/lib/integrations/probe";
+import { resetInsecureMockWarningsForTest } from "@/lib/integrations/insecure-mock-base-url";
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -121,6 +122,34 @@ describe("probeIntegrationCredentials", () => {
           headers: { Authorization: "Bearer valid-access-token" },
         })
       );
+    });
+
+    it("ignores GRAPH_API_BASE_URL and probes the real Graph host when the insecure flag is absent", async () => {
+      vi.stubEnv("GRAPH_API_BASE_URL", "http://graph-mock:9005");
+      // No PINCHY_INSECURE_MAIL_MOCK: this probe sends the stored access token.
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+      resetInsecureMockWarningsForTest();
+      mockFetch.mockResolvedValue({ ok: true, status: 200 });
+
+      await probeIntegrationCredentials("microsoft", validCreds);
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        "https://graph.microsoft.com/v1.0/me",
+        expect.any(Object)
+      );
+      vi.unstubAllEnvs();
+      resetInsecureMockWarningsForTest();
+    });
+
+    it("uses GRAPH_API_BASE_URL when the insecure flag is set", async () => {
+      vi.stubEnv("GRAPH_API_BASE_URL", "http://graph-mock:9005");
+      vi.stubEnv("PINCHY_INSECURE_MAIL_MOCK", "1");
+      mockFetch.mockResolvedValue({ ok: true, status: 200 });
+
+      await probeIntegrationCredentials("microsoft", validCreds);
+
+      expect(mockFetch).toHaveBeenCalledWith("http://graph-mock:9005/v1.0/me", expect.any(Object));
+      vi.unstubAllEnvs();
     });
 
     it("returns failure when Graph /me returns 401", async () => {

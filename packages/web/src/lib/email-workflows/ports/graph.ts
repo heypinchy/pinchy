@@ -1,4 +1,5 @@
 import type { EmailListItem, EmailPort, EmailReadResult } from "@/lib/email-workflows/lister";
+import { resolveInsecureMockBaseUrl } from "@/lib/integrations/insecure-mock-base-url";
 
 /**
  * The Microsoft Graph (Microsoft 365) mailbox port for the reconciliation sweep.
@@ -24,9 +25,13 @@ const DEFAULT_FOLDER = "inbox";
  */
 const IMMUTABLE_ID_HEADER = { Prefer: 'IdType="ImmutableId"' } as const;
 
-/** Same convention as probe.ts and the pinchy-email plugin's graph adapter. */
+/**
+ * Same convention as probe.ts and the pinchy-email plugin's graph adapter: the
+ * override fires only alongside PINCHY_INSECURE_MAIL_MOCK=1, so a stray var
+ * cannot redirect the access token this port sends.
+ */
 function graphBase(): string {
-  return process.env.GRAPH_API_BASE_URL ?? "https://graph.microsoft.com";
+  return resolveInsecureMockBaseUrl("GRAPH_API_BASE_URL") ?? "https://graph.microsoft.com";
 }
 
 interface GraphAddress {

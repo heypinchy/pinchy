@@ -6,6 +6,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 import { mapGmailMessage, createGmailPort } from "@/lib/email-workflows/ports/gmail";
+import { resetInsecureMockWarningsForTest } from "@/lib/integrations/insecure-mock-base-url";
 
 const credentials = {
   accessToken: "test-access-token",
@@ -134,6 +135,41 @@ describe("Gmail port — mapGmailMessage", () => {
     // The inline logo is the HTML body's own image — counting it would fire
     // every workflow's hasAttachment filter on ordinary newsletters.
     expect(mapped.attachments).toEqual([{ mimeType: "application/pdf", filename: "invoice.pdf" }]);
+  });
+});
+
+describe("Gmail port — mock base-url override", () => {
+  let fetchSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    fetchSpy = vi.spyOn(globalThis, "fetch");
+    fetchSpy.mockResolvedValue(jsonResponse({ messages: [] }));
+  });
+
+  afterEach(() => {
+    fetchSpy.mockRestore();
+    vi.unstubAllEnvs();
+    resetInsecureMockWarningsForTest();
+    vi.restoreAllMocks();
+  });
+
+  it("ignores GMAIL_API_BASE_URL and calls the real Gmail host when the insecure flag is absent", async () => {
+    vi.stubEnv("GMAIL_API_BASE_URL", "http://gmail-mock:9004");
+    // No PINCHY_INSECURE_MAIL_MOCK: the sweep sends the stored access token.
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await createGmailPort(credentials).search({ sinceDays: 14, folder: "INBOX", limit: 50 });
+
+    expect(String(fetchSpy.mock.calls[0][0])).toContain("https://gmail.googleapis.com/gmail/");
+  });
+
+  it("uses GMAIL_API_BASE_URL when the insecure flag is set", async () => {
+    vi.stubEnv("GMAIL_API_BASE_URL", "http://gmail-mock:9004");
+    vi.stubEnv("PINCHY_INSECURE_MAIL_MOCK", "1");
+
+    await createGmailPort(credentials).search({ sinceDays: 14, folder: "INBOX", limit: 50 });
+
+    expect(String(fetchSpy.mock.calls[0][0])).toContain("http://gmail-mock:9004/gmail/");
   });
 });
 
