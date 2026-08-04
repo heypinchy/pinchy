@@ -18,11 +18,16 @@ vi.mock("@/lib/telegram-pairing", () => ({
 
 const mockTryAcquireTelegramPairingSlot = vi.fn();
 const mockRecordTelegramPairingFailure = vi.fn().mockResolvedValue(undefined);
-const mockIsChannelUserIdConflictError = vi.fn();
-vi.mock("@/lib/telegram-pairing-security", () => ({
+// Only the two stateful helpers are stubbed. `isChannelUserIdConflictError`
+// deliberately keeps its real implementation: stubbing it made the 409 test
+// assert nothing about error recognition, which is precisely where the bug
+// was — the predicate read `code`/`constraint_name` off the thrown error,
+// while drizzle hands it over wrapped in a `DrizzleQueryError`. The test
+// below now throws the shape the route really catches.
+vi.mock("@/lib/telegram-pairing-security", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/telegram-pairing-security")>()),
   tryAcquireTelegramPairingSlot: (...args: unknown[]) => mockTryAcquireTelegramPairingSlot(...args),
   recordTelegramPairingFailure: (...args: unknown[]) => mockRecordTelegramPairingFailure(...args),
-  isChannelUserIdConflictError: (...args: unknown[]) => mockIsChannelUserIdConflictError(...args),
 }));
 
 // #508: the route no longer writes session.identityLinks (per-task session
@@ -71,6 +76,7 @@ vi.mock("drizzle-orm", async (importOriginal) => {
 // ── Import route handlers ────────────────────────────────────────────────
 
 import { GET, POST, DELETE } from "@/app/api/settings/telegram/route";
+import { DrizzleQueryError } from "drizzle-orm/errors";
 import { NextRequest } from "next/server";
 import { makeNextRequest, routeContext } from "@/test-helpers/route";
 
@@ -79,6 +85,19 @@ import { makeNextRequest, routeContext } from "@/test-helpers/route";
 const userSession = {
   user: { id: "user-1", email: "user@test.com", role: "member" },
 };
+
+/**
+ * A unique violation shaped the way `db.insert(...)` really rejects: the
+ * postgres.js `PostgresError` (the only object carrying `code` /
+ * `constraint_name`) wrapped in drizzle's `DrizzleQueryError`.
+ */
+function makeUniqueViolation(constraintName = "channel_links_channel_user_id_uniq") {
+  const pgError = Object.assign(
+    new Error(`duplicate key value violates unique constraint "${constraintName}"`),
+    { code: "23505", constraint_name: constraintName }
+  );
+  return new DrizzleQueryError("insert into channel_links …", [], pgError);
+}
 
 function makePostRequest(body: object) {
   return new NextRequest("http://localhost/api/settings/telegram", {
@@ -137,7 +156,6 @@ describe("POST /api/settings/telegram", () => {
     });
     mockResolvePairingCode.mockReturnValue({ found: true, telegramUserId: "8734062810" });
     mockTryAcquireTelegramPairingSlot.mockReturnValue(true);
-    mockIsChannelUserIdConflictError.mockReturnValue(false);
   });
 
   it("returns 401 when unauthenticated", async () => {
@@ -215,16 +233,17 @@ describe("POST /api/settings/telegram", () => {
     // onConflictDoUpdate's (userId, channel) target does not cover — a
     // second user redeeming a code for an already-linked Telegram id must
     // raise this, not upsert over the existing owner's link.
-    const conflictError = Object.assign(new Error("duplicate key value"), {
-      code: "23505",
-      constraint_name: "channel_links_channel_user_id_uniq",
-    });
+    //
+    // Thrown WRAPPED, because that is what the route actually catches:
+    // drizzle-orm 0.45 re-throws every driver error as DrizzleQueryError with
+    // the PostgresError on `.cause`. Rejecting with the bare PostgresError
+    // here would let a predicate that ignores the wrapper pass this test and
+    // still 500 in production.
     mockInsert.mockReturnValue({
       values: vi.fn().mockReturnValue({
-        onConflictDoUpdate: vi.fn().mockRejectedValue(conflictError),
+        onConflictDoUpdate: vi.fn().mockRejectedValue(makeUniqueViolation()),
       }),
     });
-    mockIsChannelUserIdConflictError.mockReturnValue(true);
 
     const response = await POST(makePostRequest({ code: "FMSVEN7M" }), routeContext());
     expect(response.status).toBe(409);
@@ -249,11 +268,28 @@ describe("POST /api/settings/telegram", () => {
         onConflictDoUpdate: vi.fn().mockRejectedValue(otherError),
       }),
     });
-    mockIsChannelUserIdConflictError.mockReturnValue(false);
 
     await expect(POST(makePostRequest({ code: "FMSVEN7M" }), routeContext())).rejects.toThrow(
       "connection reset"
     );
+  });
+
+  it("re-throws a unique violation on the OTHER channel_links index", async () => {
+    // (userId, channel) is the onConflictDoUpdate target, so a violation of it
+    // is not a "someone else owns this Telegram account" condition and must
+    // not be dressed up as one.
+    mockInsert.mockReturnValue({
+      values: vi.fn().mockReturnValue({
+        onConflictDoUpdate: vi
+          .fn()
+          .mockRejectedValue(makeUniqueViolation("channel_links_user_channel_uniq")),
+      }),
+    });
+
+    await expect(POST(makePostRequest({ code: "FMSVEN7M" }), routeContext())).rejects.toThrow(
+      /Failed query/
+    );
+    expect(mockRecordTelegramPairingFailure).not.toHaveBeenCalled();
   });
 
   it("still succeeds when OpenClaw client is not connected", async () => {

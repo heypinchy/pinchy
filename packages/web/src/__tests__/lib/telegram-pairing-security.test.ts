@@ -5,6 +5,8 @@ vi.mock("@/lib/audit", async (importOriginal) => ({
   appendAuditLog: vi.fn().mockResolvedValue(undefined),
 }));
 
+import { DrizzleQueryError } from "drizzle-orm/errors";
+
 import { appendAuditLog } from "@/lib/audit";
 import {
   tryAcquireTelegramPairingSlot,
@@ -131,5 +133,42 @@ describe("isChannelUserIdConflictError", () => {
     expect(isChannelUserIdConflictError(undefined)).toBe(false);
     expect(isChannelUserIdConflictError("nope")).toBe(false);
     expect(isChannelUserIdConflictError(new Error("plain error"))).toBe(false);
+  });
+
+  // The shape the route ACTUALLY catches. drizzle-orm 0.45 wraps every driver
+  // error from `db.insert(...)` in DrizzleQueryError and hangs the postgres.js
+  // PostgresError — the only object with `code`/`constraint_name` — off
+  // `.cause`. Constructed from drizzle's own exported class rather than a
+  // look-alike so a change to its wrapping shows up here.
+  it("unwraps drizzle's DrizzleQueryError to reach the PostgresError", () => {
+    const pgError = Object.assign(
+      new Error(
+        'duplicate key value violates unique constraint "channel_links_channel_user_id_uniq"'
+      ),
+      { code: "23505", constraint_name: "channel_links_channel_user_id_uniq" }
+    );
+    const wrapped = new DrizzleQueryError("insert into channel_links …", [], pgError);
+
+    expect(wrapped.cause).toBe(pgError);
+    expect(isChannelUserIdConflictError(wrapped)).toBe(true);
+  });
+
+  it("still rejects a wrapped error whose cause is a different constraint", () => {
+    const pgError = Object.assign(new Error("duplicate key value"), {
+      code: "23505",
+      constraint_name: "channel_links_user_channel_uniq",
+    });
+
+    expect(isChannelUserIdConflictError(new DrizzleQueryError("insert …", [], pgError))).toBe(
+      false
+    );
+  });
+
+  it("terminates on a cyclic cause chain", () => {
+    const a: { cause?: unknown } = {};
+    const b: { cause?: unknown } = { cause: a };
+    a.cause = b;
+
+    expect(isChannelUserIdConflictError(a)).toBe(false);
   });
 });

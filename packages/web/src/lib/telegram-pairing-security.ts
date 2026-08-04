@@ -34,6 +34,16 @@ import { FixedWindowRateLimiter } from "./fixed-window-rate-limiter";
  * everyone else's legitimate pairing attempts. Bounded by the number of
  * distinct users the process has seen, same accepted tradeoff as
  * `scopeDenialWindows` in `lib/api-auth.ts`.
+ *
+ * The budget counts EVERY attempt, a success as much as a wrong guess, and
+ * the margin that leaves is thinner than 5 suggests: `pnpm test:e2e:telegram`
+ * links the same user four times in one process (`telegram-flow` twice,
+ * `chats` and `media` once each) inside a suite that runs well under the
+ * 10-minute window, so a fifth link test would 429 rather than fail on its
+ * own subject. Raising the ceiling is the wrong reflex if that happens —
+ * counting only DENIED attempts costs nothing defensively (a correct guess
+ * ends the attack, and consumes the code with it) and is what the number
+ * already reads as.
  */
 const PAIRING_ATTEMPT_MAX = 5;
 const PAIRING_ATTEMPT_WINDOW_MS = 10 * 60_000;
@@ -126,22 +136,46 @@ export async function recordTelegramPairingFailure(
 
 // ── Unique-constraint conflict ──────────────────────────────────────────
 
+const CHANNEL_USER_ID_UNIQUE_INDEX = "channel_links_channel_user_id_uniq";
+
+/**
+ * How far down the `cause` chain to look. Drizzle adds exactly one link
+ * today; the bound is there so a cyclic or absurdly deep chain cannot spin.
+ */
+const MAX_CAUSE_DEPTH = 8;
+
 /**
  * `channel_links` carries two unique indexes (db/schema.ts): one on
  * `(userId, channel)` — the target `POST`'s `onConflictDoUpdate` handles,
  * for re-linking to a different Telegram account — and one on
  * `(channel, channelUserId)`, guarding the reverse direction: one Telegram
  * account cannot be linked to two Pinchy users. The second index isn't an
- * `onConflictDoUpdate` target, so a collision on it still raises a raw
- * Postgres unique-violation (23505) rather than upserting. Duck-typed
- * rather than an `instanceof postgres.PostgresError` check: `PostgresError`
- * is only exposed on a live `sql` connection instance, not as a static
- * export, so a plain-object check is what route/unit tests can construct
- * without a real DB connection too.
+ * `onConflictDoUpdate` target, so a collision on it still raises a
+ * Postgres unique-violation (23505) rather than upserting.
+ *
+ * **The chain walk is the load-bearing part.** drizzle-orm 0.45 catches every
+ * driver error in `PgPreparedQuery.queryWithCache` and re-throws it as
+ * `DrizzleQueryError("Failed query: …")`, with postgres.js's `PostgresError`
+ * — the only object carrying `code` and `constraint_name` — on `.cause`. A
+ * check that reads those fields off the thrown error itself therefore never
+ * matches, the route re-throws, and the caller gets the raw 500 this whole
+ * branch exists to replace. `__tests__/db/schema-hardening.integration.test.ts`
+ * documents the same wrapping from the other side.
+ *
+ * Duck-typed rather than an `instanceof postgres.PostgresError` check:
+ * `PostgresError` is only exposed on a live `sql` connection instance, not as
+ * a static export. `__tests__/db/channel-links-conflict.integration.test.ts`
+ * pins the predicate against what a real Postgres actually throws, because a
+ * hand-built error object can only ever confirm the shape we already assumed.
  */
 export function isChannelUserIdConflictError(err: unknown): boolean {
-  if (!err || typeof err !== "object") return false;
-  const code = (err as { code?: unknown }).code;
-  const constraintName = (err as { constraint_name?: unknown }).constraint_name;
-  return code === "23505" && constraintName === "channel_links_channel_user_id_uniq";
+  let current: unknown = err;
+  for (let depth = 0; depth < MAX_CAUSE_DEPTH; depth++) {
+    if (!current || typeof current !== "object") return false;
+    const code = (current as { code?: unknown }).code;
+    const constraintName = (current as { constraint_name?: unknown }).constraint_name;
+    if (code === "23505" && constraintName === CHANNEL_USER_ID_UNIQUE_INDEX) return true;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
 }
