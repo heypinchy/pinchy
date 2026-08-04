@@ -32,7 +32,28 @@ interface AgentTool {
     toolCallId: string,
     params: Record<string, unknown>,
     signal?: AbortSignal
-  ) => Promise<{ content: ContentBlock[]; isError?: boolean }>;
+  ) => Promise<{ content: ContentBlock[]; isError?: boolean; details?: unknown }>;
+}
+
+/**
+ * Build an MCP-style error result. Every error result MUST carry
+ * `details.error`, not just the `isError` flag: OpenClaw strips `isError`
+ * before forwarding the result to `/api/internal/audit/tool-use` (OC bug
+ * #404), and the audit endpoint then falls back to `result.details.error` to
+ * record `outcome: failure`. Without it, a failed pinchy-web tool call is
+ * silently audited as success. Route ALL error results through this helper
+ * so that invariant cannot be forgotten at an individual call site.
+ */
+function toolError(text: string): {
+  content: ContentBlock[];
+  isError: true;
+  details: { error: string };
+} {
+  return {
+    isError: true,
+    content: [{ type: "text", text }],
+    details: { error: text },
+  };
 }
 
 interface PluginConfig {
@@ -229,15 +250,9 @@ const plugin = {
           },
           async execute(_toolCallId, params) {
             if (!haveCredentialsConfig) {
-              return {
-                isError: true,
-                content: [
-                  {
-                    type: "text",
-                    text: "Web search is not configured. Ask an admin to add a Brave Search API key in Settings \u2192 Integrations.",
-                  },
-                ],
-              };
+              return toolError(
+                "Web search is not configured. Ask an admin to add a Brave Search API key in Settings \u2192 Integrations."
+              );
             }
             try {
               const result = await withAuthRetry(agentId, (apiKey) => {
@@ -273,10 +288,7 @@ const plugin = {
               };
             } catch (error) {
               const msg = error instanceof Error ? error.message : String(error);
-              return {
-                isError: true,
-                content: [{ type: "text", text: `Search failed: ${msg}` }],
-              };
+              return toolError(`Search failed: ${msg}`);
             }
           },
         };
@@ -311,16 +323,15 @@ const plugin = {
                 excludedDomains: agentConfig.excludedDomains,
               };
               const result = await webFetch(params.url as string, fetchConfig);
+              if (result.isError) {
+                return toolError(result.content);
+              }
               return {
-                isError: result.isError,
                 content: [{ type: "text", text: result.content }],
               };
             } catch (error) {
               const msg = error instanceof Error ? error.message : String(error);
-              return {
-                isError: true,
-                content: [{ type: "text", text: `Fetch failed: ${msg}` }],
-              };
+              return toolError(`Fetch failed: ${msg}`);
             }
           },
         };

@@ -89,6 +89,30 @@ type ContentBlock =
   // bytes from disk, so this block never carries the file content itself.
   | { type: "file"; filename: string; mimeType: string };
 
+/**
+ * Build an MCP-style error result. Every error result MUST carry
+ * `details.error`, not just the `isError` flag: OpenClaw strips `isError`
+ * before forwarding the result to `/api/internal/audit/tool-use` (OC bug
+ * #404), and the audit endpoint then falls back to `result.details.error` to
+ * record `outcome: failure`. Without it, a failed pinchy-files tool call is
+ * silently audited as success. Route ALL error results through this helper
+ * so that invariant cannot be forgotten at an individual call site. (Some
+ * call sites below curate their own richer `details` — e.g. pinchy_write's
+ * error path also snapshots `path`/`overwrite` — and construct the object
+ * literal directly instead of using this helper.)
+ */
+function toolError(text: string): {
+  content: ContentBlock[];
+  isError: true;
+  details: { error: string };
+} {
+  return {
+    isError: true,
+    content: [{ type: "text", text }],
+    details: { error: text },
+  };
+}
+
 // Image extensions pinchy_read returns as image content blocks rather than
 // utf-8 text. Reading the bytes as utf-8 would hand the model binary garbage
 // (issue #420). Keys are lowercase; lookup lowercases the file extension.
@@ -354,10 +378,7 @@ const plugin = {
               };
             } catch (error) {
               const message = error instanceof Error ? error.message : "Unknown error";
-              return {
-                isError: true,
-                content: [{ type: "text", text: message }],
-              };
+              return toolError(message);
             }
           },
         };
@@ -406,15 +427,9 @@ const plugin = {
               if (isPdf) {
                 const stats = statSync(realPath);
                 if (stats.size > MAX_PDF_FILE_SIZE) {
-                  return {
-                    isError: true,
-                    content: [
-                      {
-                        type: "text",
-                        text: `File too large (${stats.size} bytes). Maximum: ${MAX_PDF_FILE_SIZE} bytes.`,
-                      },
-                    ],
-                  };
+                  return toolError(
+                    `File too large (${stats.size} bytes). Maximum: ${MAX_PDF_FILE_SIZE} bytes.`
+                  );
                 }
 
                 // Resolve agent name + model from OpenClaw config in one walk.
@@ -472,15 +487,7 @@ const plugin = {
                 const { size } = await fh.stat();
                 const sizeLimit = isDocx ? MAX_DOCX_FILE_SIZE : MAX_FILE_SIZE;
                 if (size > sizeLimit) {
-                  return {
-                    isError: true,
-                    content: [
-                      {
-                        type: "text",
-                        text: `File too large (${size} bytes). Maximum: ${sizeLimit} bytes.`,
-                      },
-                    ],
-                  };
+                  return toolError(`File too large (${size} bytes). Maximum: ${sizeLimit} bytes.`);
                 }
                 buffer = await fh.readFile();
               } finally {
@@ -515,10 +522,7 @@ const plugin = {
               return { content: [{ type: "text", text: buffer.toString("utf-8") }] };
             } catch (error) {
               const message = error instanceof Error ? error.message : "Unknown error";
-              return {
-                isError: true,
-                content: [{ type: "text", text: message }],
-              };
+              return toolError(message);
             }
           },
         };

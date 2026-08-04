@@ -336,6 +336,12 @@ describe("pinchy-knowledge plugin", () => {
     const result = await tool.execute("call-1", { query: "   " });
     expect(result.isError).toBe(true);
     expect(fetchMock).not.toHaveBeenCalled();
+    // #404 audit contract: OpenClaw strips isError before forwarding the
+    // tool result to /api/internal/audit/tool-use, so details.error is the
+    // audit route's only remaining failure signal. The two HTTP/network
+    // failure paths above already set details.error (see "curated details"
+    // below); this covers the third — the local, pre-fetch validation path.
+    expect((result as any).details).toEqual({ error: "A search query is required." });
   });
 
   it("exports plugin definition with id, name, and configSchema", async () => {

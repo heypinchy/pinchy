@@ -43,6 +43,27 @@ interface DocEntry {
 }
 
 /**
+ * Build an MCP-style error result. Every error result MUST carry
+ * `details.error`, not just the `isError` flag: OpenClaw strips `isError`
+ * before forwarding the result to `/api/internal/audit/tool-use` (OC bug
+ * #404), and the audit endpoint then falls back to `result.details.error` to
+ * record `outcome: failure`. Without it, a failed pinchy-docs tool call is
+ * silently audited as success. Route ALL error results through this helper
+ * so that invariant cannot be forgotten at an individual call site.
+ */
+function toolError(text: string): {
+  content: Array<{ type: string; text: string }>;
+  isError: true;
+  details: { error: string };
+} {
+  return {
+    isError: true,
+    content: [{ type: "text", text }],
+    details: { error: text },
+  };
+}
+
+/**
  * Map a doc-relative `.mdx`/`.md` path to its rendered Astro Starlight URL.
  * Rules mirror Starlight defaults:
  *   - strip extension and trailing `/index`
@@ -247,10 +268,7 @@ const plugin = {
               };
             } catch (error) {
               const message = error instanceof Error ? error.message : "Unknown error";
-              return {
-                isError: true,
-                content: [{ type: "text", text: `Error listing docs: ${message}` }],
-              };
+              return toolError(`Error listing docs: ${message}`);
             }
           },
         };
@@ -283,23 +301,14 @@ const plugin = {
             const relPath = params.path as string;
             const safe = resolveSafe(docsPath, relPath);
             if (!safe) {
-              return {
-                isError: true,
-                content: [
-                  {
-                    type: "text",
-                    text: `Invalid path: ${relPath}. Path must be a relative path inside the docs directory.`,
-                  },
-                ],
-              };
+              return toolError(
+                `Invalid path: ${relPath}. Path must be a relative path inside the docs directory.`
+              );
             }
             try {
               const stat = statSync(safe);
               if (!stat.isFile()) {
-                return {
-                  isError: true,
-                  content: [{ type: "text", text: `Not a file: ${relPath}` }],
-                };
+                return toolError(`Not a file: ${relPath}`);
               }
               const content = readFileSync(safe, "utf-8");
               const body = preprocessMdx(content);
@@ -308,10 +317,7 @@ const plugin = {
               return { content: [{ type: "text", text }] };
             } catch (error) {
               const message = error instanceof Error ? error.message : "Unknown error";
-              return {
-                isError: true,
-                content: [{ type: "text", text: `File not found: ${relPath} (${message})` }],
-              };
+              return toolError(`File not found: ${relPath} (${message})`);
             }
           },
         };

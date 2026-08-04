@@ -254,6 +254,9 @@ const plugin = {
               return {
                 isError: true,
                 content: [{ type: "text", text: "A search query is required." }],
+                // details.error mirrors the two failure paths below — see the
+                // comment there for why this is error-only (no other keys).
+                details: { error: "A search query is required." },
               };
             }
             // Forwarded only when true so the route's audit detail stays

@@ -330,6 +330,10 @@ describe("pinchy-files plugin", () => {
     expect(result.isError).toBe(true);
     expect(result.content[0].type).toBe("text");
     expect(typeof result.content[0].text).toBe("string");
+    // #404 audit contract: OpenClaw strips isError before forwarding the
+    // tool result to /api/internal/audit/tool-use, so details.error is the
+    // audit route's only remaining failure signal.
+    expect((result as any).details).toEqual({ error: result.content[0].text });
   });
 
   it("pinchy_ls filters out system files (Thumbs.db, desktop.ini, .DS_Store)", async () => {
@@ -395,6 +399,10 @@ describe("pinchy_read PDF integration", { timeout: PDF_INTEGRATION_SUITE_TIMEOUT
     expect(result.isError).toBe(true);
     expect(result.content[0].type).toBe("text");
     expect(result.content[0].text).toMatch(/ENOENT|no such file/);
+    // #404 audit contract: OpenClaw strips isError before forwarding the
+    // tool result to /api/internal/audit/tool-use, so details.error is the
+    // audit route's only remaining failure signal.
+    expect((result as any).details).toEqual({ error: result.content[0].text });
   });
 
   it("returns XML-wrapped content for PDF files", async () => {
@@ -928,6 +936,10 @@ describe("pinchy_read image integration", () => {
 
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toMatch(/too large/i);
+    // #404 audit contract: OpenClaw strips isError before forwarding the
+    // tool result to /api/internal/audit/tool-use, so details.error is the
+    // audit route's only remaining failure signal.
+    expect((result as any).details).toEqual({ error: result.content[0].text });
   });
 });
 

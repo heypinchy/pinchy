@@ -84,6 +84,27 @@ function deleteOnboardingFile(agentId: string): void {
   }
 }
 
+/**
+ * Build an MCP-style error result. Every error result MUST carry
+ * `details.error`, not just the `isError` flag: OpenClaw strips `isError`
+ * before forwarding the result to `/api/internal/audit/tool-use` (OC bug
+ * #404), and the audit endpoint then falls back to `result.details.error` to
+ * record `outcome: failure`. Without it, a failed pinchy-context tool call
+ * is silently audited as success. Route ALL error results through this
+ * helper so that invariant cannot be forgotten at an individual call site.
+ */
+function toolError(text: string): {
+  content: Array<{ type: string; text: string }>;
+  isError: true;
+  details: { error: string };
+} {
+  return {
+    isError: true,
+    content: [{ type: "text", text }],
+    details: { error: text },
+  };
+}
+
 const plugin = {
   id: "pinchy-context",
   name: "Pinchy Context",
@@ -154,15 +175,7 @@ const plugin = {
 
               if (!res.ok) {
                 const data = await res.json();
-                return {
-                  isError: true,
-                  content: [
-                    {
-                      type: "text",
-                      text: `Failed to save: ${describeApiError(data)}`,
-                    },
-                  ],
-                };
+                return toolError(`Failed to save: ${describeApiError(data)}`);
               }
 
               const data = await res.json();
@@ -183,10 +196,7 @@ const plugin = {
               };
             } catch (error) {
               const message = error instanceof Error ? error.message : "Unknown error";
-              return {
-                isError: true,
-                content: [{ type: "text", text: message }],
-              };
+              return toolError(message);
             }
           },
         };
@@ -233,15 +243,7 @@ const plugin = {
 
               if (!res.ok) {
                 const data = await res.json();
-                return {
-                  isError: true,
-                  content: [
-                    {
-                      type: "text",
-                      text: `Failed to save: ${describeApiError(data)}`,
-                    },
-                  ],
-                };
+                return toolError(`Failed to save: ${describeApiError(data)}`);
               }
 
               const data = await res.json();
@@ -260,10 +262,7 @@ const plugin = {
               };
             } catch (error) {
               const message = error instanceof Error ? error.message : "Unknown error";
-              return {
-                isError: true,
-                content: [{ type: "text", text: message }],
-              };
+              return toolError(message);
             }
           },
         };

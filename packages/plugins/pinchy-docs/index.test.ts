@@ -234,6 +234,23 @@ describe("pinchy-docs plugin", () => {
     expect(result.isError).toBe(true);
   });
 
+  it("docs_read sets details.error on failure (#404 audit contract)", async () => {
+    // OpenClaw strips the MCP `isError` flag before forwarding the tool
+    // result to /api/internal/audit/tool-use; details.error is the audit
+    // route's only remaining failure signal. Without it a failed docs_read
+    // call is silently audited as outcome: success.
+    const api = createMockApi({ docsPath: docsRoot, agents: { "agent-1": {} } });
+    const { default: plugin } = await import("./index");
+    plugin.register!(api as any);
+
+    const factory = mockRegisterTool.mock.calls.find((c: any[]) => c[1]?.name === "docs_read")?.[0];
+    const tool = factory({ agentId: "agent-1" });
+    const result = await tool.execute("call-1", { path: "nonexistent.mdx" });
+    expect(result.isError).toBe(true);
+    expect(typeof result.details?.error).toBe("string");
+    expect(result.details.error).toBe(result.content[0].text);
+  });
+
   it("docs_read factory returns null for non-allowed agent", async () => {
     const api = createMockApi({ docsPath: docsRoot, agents: { "agent-1": {} } });
     const { default: plugin } = await import("./index");
