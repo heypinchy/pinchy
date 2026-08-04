@@ -25,7 +25,11 @@
 // `eval/` for `import type` (which erases). `run-eval.ts` reaches into `src/`
 // the same way, for the same reason — a Playwright spec loads these files
 // directly.
-import { citedSourcePaths, sourcesListCandidates } from "../../src/lib/eval/kb/attribution-graders";
+import {
+  citedSourcePaths,
+  citesInline,
+  sourcesListCandidates,
+} from "../../src/lib/eval/kb/attribution-graders";
 import { matchRetrievedDocument } from "../../src/lib/eval/kb/cited-path-match";
 
 export function resolveCitedSourcePaths(
@@ -69,14 +73,29 @@ export function resolveCitedSourcePaths(
  * looser second door: a fabricated path and an ambiguous bare basename resolve
  * to nothing on both routes.
  *
- * What bounds the fallback's lower precision, and why it is safe to be less
- * precise here: it runs ONLY when the strict parse found nothing, and an answer
- * whose list does not parse always carries `sources-format` or
- * `citation-unresolved` from `gradeAttribution`. The run therefore fails either
- * way — the fallback can never turn a failing run into a passing one, only stop
- * `ungrounded-claim` from firing on a claim whose source was never in doubt.
- * `kb-resolve-cited-paths.test.ts` asserts that bound against every shape this
- * exists for, rather than leaving it as an argument in a comment.
+ * What bounds the fallback's lower precision: it can never turn a failing run
+ * into a passing one, only stop `ungrounded-claim` from firing on a claim whose
+ * source was never in doubt. That is a proof rather than a hope, and the two
+ * conditions below are exactly what makes it one. Write C for the inline `[N]`
+ * numbers the body carries and E for the bullets `BULLET_LINE` parsed:
+ *
+ *   - C is non-empty (the second guard), and the strict result was empty.
+ *   - If E is empty, every number in C is unresolvable → `citation-unresolved`.
+ *   - If no bullet in E carries a number in C, likewise → `citation-unresolved`.
+ *   - Otherwise some bullet IS cited inline, and the strict result was still
+ *     empty, so that bullet's path names no retrieved document →
+ *     `path-not-cited`.
+ *
+ * So the fallback runs only where `gradeAttribution` already fails. The inline
+ * guard is what closes the one hole in that argument, and it is a real answer
+ * shape rather than a hypothetical: prose that asserts, then appends a Sources
+ * list it never cites into. `gradeSourcesFormat` returns early on zero `[N]`
+ * markers and `gradeCitationResolution` has nothing on either side to compare,
+ * so nothing charges it — the empty premise set was the only thing failing it,
+ * and recovering one would have made it pass. `kb-resolve-cited-paths.test.ts`
+ * asserts the bound as `gradeAttribution(...).passed === false` against every
+ * shape this exists for, and pins the guarded shape separately, rather than
+ * leaving either as an argument in a comment.
  */
 export function premiseSourcePaths(
   answer: string,
@@ -84,6 +103,7 @@ export function premiseSourcePaths(
 ): string[] {
   const strict = resolveCitedSourcePaths(citedSourcePaths(answer), retrieved);
   if (strict.length > 0) return strict;
+  if (!citesInline(answer)) return [];
 
   return resolveCitedSourcePaths(sourcesListCandidates(answer), retrieved);
 }

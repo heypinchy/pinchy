@@ -237,34 +237,50 @@ describe("gradePathCitation and resolveCitedSourcePaths agree on which document 
  * falls back to "every retrieved document the Sources region names", which
  * needs no structure at all.
  *
- * What bounds the fallback's lower precision: it only ever runs when the strict
- * parse found nothing, and an answer whose list does not parse ALWAYS carries
- * `sources-format` or `citation-unresolved` from `gradeAttribution`. So the
- * fallback can never turn a failing run into a passing one — it can only stop
- * `ungrounded-claim` from firing on a claim whose source was never in doubt.
+ * What bounds the fallback's lower precision: it can never turn a failing run
+ * into a passing one — it can only stop `ungrounded-claim` from firing on a
+ * claim whose source was never in doubt. Two conditions make that a proof
+ * rather than a hope, and both are asserted below: the strict parse found
+ * nothing, AND the body carries at least one inline `[N]`. From there every
+ * branch is charged — no bullets, or none of them cited, leaves an inline
+ * number unresolvable (`citation-unresolved`); a bullet that IS cited and
+ * still resolved to nothing names no retrieved document (`path-not-cited`).
+ *
+ * The inline guard is not belt-and-braces. Without it the one shape no
+ * attribution axis charges — prose that asserts, then appends a Sources list it
+ * never cites into — would have started passing on premise material the
+ * fallback handed it.
  */
 describe("premiseSourcePaths", () => {
-  const SWEEP_SHAPES: [string, string][] = [
+  const SWEEP_SHAPES: [string, string, string[]][] = [
     [
       "no list marker at all (kimi-k2.6, gpt-oss:120b)",
       'Laptops are replaced on a 3-year cycle [1].\n\n**Sources**\n[1] `it-equipment-policy.md`: "…replaced on a 3-year refresh cycle…"',
+      ["/data/it-equipment-policy.md"],
     ],
     [
       "an ordered list with the number trailing (glm-5.2)",
       "Coverage expanded in 2012 [1].\n\n### Sources\n\n1. handbook-2012/policy.md — passage [1]",
+      ["/data/handbook-2012/policy.md"],
     ],
     [
       "an ordered list carrying the citation number (qwen3.5:397b)",
       'The per diem rose to $60 [1].\n\n**Sources:**\n1. handbook-2012/policy.md — "…increased from $45 to $60…"',
+      ["/data/handbook-2012/policy.md"],
     ],
     [
       "a run-on paragraph, the shape sources-format was built for",
       "One [1]. Two [2].\n\n**Sources:** [1] handbook-2011/policy.md — p. 1 [2] handbook-2012/policy.md — p. 2",
+      ["/data/handbook-2011/policy.md", "/data/handbook-2012/policy.md"],
     ],
   ];
 
-  it.each(SWEEP_SHAPES)("recovers premise material from %s", (_label, answer) => {
-    expect(premiseSourcePaths(answer, RETRIEVED).length).toBeGreaterThan(0);
+  // The exact set, not merely a non-empty one: recovering premise material from
+  // the WRONG retrieved document would satisfy a length check while grounding
+  // claims against a passage the answer never named — the failure this whole
+  // file exists to keep the two lookups from making.
+  it.each(SWEEP_SHAPES)("recovers premise material from %s", (_label, answer, expected) => {
+    expect(premiseSourcePaths(answer, RETRIEVED)).toEqual(expected);
   });
 
   it("prefers the strict intersection whenever it resolves anything", () => {
@@ -307,14 +323,44 @@ describe("premiseSourcePaths", () => {
     // independently. Assert that rather than trusting the reasoning: if a
     // future parser change made one of these shapes grade clean, the fallback's
     // lower precision would start affecting verdicts and this test says so.
+    //
+    // `passed`, not a chosen tag pair. Which axis charges a shape is an
+    // implementation detail that shifts as the parsers widen; that SOME axis
+    // does is the whole bound. An earlier draft asserted
+    // `sources-format || citation-unresolved` and was already too narrow — a
+    // parsing list the body never cites is charged `source-uncited`, a third
+    // tag the pair would have missed.
+    //
     // `gradeAttribution` grades the full retrieved shape, so the citation
     // number and page the tool reported are supplied here; the premise lookup
     // above needs only the path and is typed accordingly.
     const graded = RETRIEVED.map((source, i) => ({ ...source, n: i + 1, page: 1 }));
 
-    for (const [, answer] of SWEEP_SHAPES) {
-      const tags = gradeAttribution({ answer, retrieved: graded }).tags;
-      expect(tags.some((t) => t === "sources-format" || t === "citation-unresolved")).toBe(true);
+    for (const [label, answer] of SWEEP_SHAPES) {
+      expect(gradeAttribution({ answer, retrieved: graded }).passed, label).toBe(false);
     }
+  });
+
+  it("recovers nothing for an answer that never cites inline, the one shape nothing charges", () => {
+    // Prose that asserts and then appends a Sources list it never cites into.
+    // No attribution axis touches it: `gradeSourcesFormat` returns early on
+    // zero `[N]` markers in the Sources region, and `gradeCitationResolution`
+    // has nothing on either side to compare. So `ungrounded-claim` off an empty
+    // premise set is the ONLY thing failing this run — recover premise material
+    // here and the fallback turns a failing run into a passing one, which is
+    // exactly what it promises it cannot do.
+    const graded = RETRIEVED.map((source, i) => ({ ...source, n: i + 1, page: 1 }));
+    const uncited =
+      "Laptops are replaced on a 3-year cycle.\n\n**Sources**\nit-equipment-policy.md";
+
+    expect(gradeAttribution({ answer: uncited, retrieved: graded }).passed).toBe(true);
+    expect(premiseSourcePaths(uncited, RETRIEVED)).toEqual([]);
+
+    // The document IS named and IS retrieved — nothing about the matcher stops
+    // this. Only the inline guard does, so pin that it is the guard doing the
+    // work: add the citation the shape is missing and the same answer recovers.
+    const cited =
+      "Laptops are replaced on a 3-year cycle [1].\n\n**Sources**\nit-equipment-policy.md";
+    expect(premiseSourcePaths(cited, RETRIEVED)).toEqual(["/data/it-equipment-policy.md"]);
   });
 });

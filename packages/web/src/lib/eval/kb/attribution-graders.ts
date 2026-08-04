@@ -284,14 +284,31 @@ export function citedSourcePaths(answer: string): string[] {
  * The split is on line breaks and BEFORE each `[N]` marker, which is the one
  * token every shape the sweep produced has in common — bulleted, ordered,
  * marker-only, and the single-line run-on that has no line breaks to split on
- * at all. Empty and marker-only fragments fall out; a fragment that names no
- * retrieved document resolves to nothing, so over-splitting costs nothing.
+ * at all. Empty fragments are dropped here; everything else is left to the
+ * matcher, which resolves a fragment naming no retrieved document — a bare
+ * `[1]`, the tail of an entry over-split on a `[2]` inside its own quoted
+ * passage — to nothing. So over-splitting costs nothing.
  */
 export function sourcesListCandidates(answer: string): string[] {
   return parseAnswer(answer)
     .sourcesText.split(/\r?\n|(?=\[\d+\])/)
     .map((candidate) => candidate.trim())
     .filter((candidate) => candidate.length > 0);
+}
+
+/**
+ * Whether the answer BODY carries at least one inline `[N]` citation.
+ *
+ * Exported for the groundedness premise fallback, which is only sound for an
+ * answer that claims a source for its claims at all. An answer that asserts
+ * and then appends a Sources list without ever citing inline is charged by no
+ * attribution axis — `gradeSourcesFormat` returns early on zero markers,
+ * `gradeCitationResolution` has nothing on either side to compare — so it is
+ * the one shape where recovering premise material could turn a failing run
+ * into a passing one. See `premiseSourcePaths`.
+ */
+export function citesInline(answer: string): boolean {
+  return parseAnswer(answer).citedNumbers.size > 0;
 }
 
 function passKb(): KbGraderResult {
