@@ -239,6 +239,12 @@ Until now a password change left every existing session alive — including, in 
 
 Repeated wrong guesses at the current password are also throttled now — five attempts per account per 10 minutes, after which Pinchy answers `429` and says how long to wait. The account-level rule that was supposed to cover this never applied to Pinchy's own change-password route, so in practice there was no limit at all. Nothing to configure either way. See [Changing your password](/guides/user-management/#changing-your-password).
 
+#### Server logs reach admins only
+
+A bug report filed from inside Pinchy used to carry the server's recent log lines for anyone signed in. That buffer is process-global — it holds error output from everyone's sessions, not only the reporter's — so it now goes to admins alone, and email addresses and secret-shaped strings are stripped out of it on the way in.
+
+Nothing to configure. A member's bug report simply asks them to paste the logs by hand instead; if one arrives without them, `docker compose logs pinchy --tail 200` on the host is the same output, unredacted.
+
 ### Database migrations
 
 Nine migrations (`0056`–`0064`) run automatically on startup — no manual steps. Only `0056` is destructive, and only for the Knowledge Base tables (see the breaking change above); the rest are additive.
