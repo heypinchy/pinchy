@@ -319,7 +319,7 @@ Two route prefixes are exempt:
 
 `server.on("upgrade", ...)` handles the WebSocket handshake Pinchy's chat UI uses, and it is a different code path from the `createServer` request handler the domain-lock and CSRF gates above are installed on — a plain HTTP request never reaches it. WebSocket handshakes also aren't subject to CORS/SOP the way `fetch` is, so a browser-level defense against a cross-site connection doesn't exist for free the way it does for a normal API call.
 
-The upgrade handler reapplies both checks itself before validating the session cookie: the same domain-lock host check (`isHostAllowed`), and an Origin check equivalent to the CSRF gate above — if the browser sends an `Origin` header, its host must match the request's own host, or the upgrade is rejected with `403` before any auth work happens. A client that sends no `Origin` header at all (a non-browser caller) is let through this specific check; the session cookie is what actually authorizes the connection. A rejection is audited the same way an HTTP-path rejection is — `auth.host_blocked` for a domain mismatch, `auth.csrf_blocked` for an Origin mismatch.
+The upgrade handler reapplies both checks itself before validating the session cookie: the same domain-lock host check, and the same Origin comparison the CSRF gate runs — literally the same function, scheme included, so an `http://` Origin on an instance your proxy reports as `https` is rejected here exactly as it is on an ordinary API call. A mismatch ends the handshake with `403` before any auth work happens. A client that sends no `Origin` header at all (a non-browser caller) is let through this specific check — a browser cannot suppress `Origin` on a WebSocket handshake, so requiring it would only turn away scripts and internal tools, which the session cookie judges anyway. A rejection is audited the same way an HTTP-path rejection is: `auth.host_blocked` for a domain mismatch, `auth.csrf_blocked` for an Origin mismatch.
 
 ### Reverse proxy configuration
 
@@ -343,6 +343,8 @@ If your deployment chains multiple reverse proxies, `X-Forwarded-Host` may arriv
 ### Auditing CSRF probes
 
 Blocked requests appear in the audit log as `auth.csrf_blocked` with `outcome: failure`. The `detail` payload captures `method`, `pathname`, `origin`, `referer`, and the offending `remoteAddress`, so probes show up in the audit log alongside failed logins. Use the audit dashboard (or `GET /api/audit?eventType=auth.csrf_blocked`) to review them.
+
+Like `auth.host_blocked`, this event is throttled to one row per minute: nobody needs a credential to trigger it, and every audit row is written under a single instance-wide lock, so an unbounded stream would stall genuine audit writes behind it and bury the one rejection worth reading. When a row stands in for others, `suppressedSinceLastEntry` reports how many.
 
 ### Defense in depth
 

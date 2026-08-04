@@ -3,6 +3,7 @@ import { parse } from "url";
 import { normalizeHost } from "@/lib/domain-cache";
 import { appendAuditLog } from "@/lib/audit";
 import { firstHeaderValue, publicHopOf, readRequestHost } from "@/server/forwarded-host";
+import { createAuditFloodWindow } from "@/server/audit-flood-window";
 
 export type CsrfCheckInput = {
   method: string;
@@ -33,12 +34,7 @@ const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 //                       prefix on the same grounds.
 const EXEMPT_PREFIXES = ["/api/auth/", "/api/internal/"];
 
-/**
- * Exported for `ws-upgrade-gate.ts`: the WebSocket upgrade path needs the
- * same Origin-parsing logic (browsers send `Origin` on the upgrade handshake
- * too, even though WS isn't subject to CORS) and must not duplicate it.
- */
-export function parseOriginUrl(value: string): { protocol: string; host: string } | null {
+function parseOriginUrl(value: string): { protocol: string; host: string } | null {
   try {
     const url = new URL(value);
     if (!url.protocol || !url.host) return null;
@@ -48,7 +44,18 @@ export function parseOriginUrl(value: string): { protocol: string; host: string 
   }
 }
 
-function matchesRequestHost(
+/**
+ * Does `candidate` (an `Origin` or `Referer` value) name the same origin the
+ * request itself claims?
+ *
+ * Exported for `ws-upgrade-gate.ts`. The WebSocket upgrade needs the *same*
+ * comparison, not a similar one — browsers send `Origin` on the handshake too,
+ * and #1056 first shipped a host-only reimplementation here, which accepted an
+ * `http://` Origin on an HTTPS instance where this function rejects it. Sharing
+ * the function is what makes "equivalent to the CSRF gate" a fact rather than
+ * a claim in a comment.
+ */
+export function matchesRequestHost(
   candidate: string,
   host: string,
   forwardedProto: string | undefined
@@ -140,6 +147,23 @@ export async function applyCsrfGate(req: IncomingMessage, res: ServerResponse): 
   return true;
 }
 
+/**
+ * One `auth.csrf_blocked` row per minute — see `audit-flood-window.ts`.
+ *
+ * This gate used to be reachable only by a state-changing method, which read
+ * as a bound and was the stated reason it carried none. It never was much of
+ * one — an anonymous `POST /api/x` with a foreign `Origin` needs no credential
+ * either — and #1056 removed even that: the WebSocket upgrade is a `GET`, and
+ * `server.ts` runs this same audit for a rejected handshake.
+ */
+const CSRF_BLOCK_WINDOW_MS = 60_000;
+const csrfBlockWindow = createAuditFloodWindow(CSRF_BLOCK_WINDOW_MS);
+
+/** Test seam — the window is process-global, so suites must start from zero. */
+export function resetCsrfBlockWindow(): void {
+  csrfBlockWindow.reset();
+}
+
 export async function logCsrfBlocked(input: {
   reason: string;
   method: string;
@@ -148,6 +172,9 @@ export async function logCsrfBlocked(input: {
   referer: string | undefined;
   remoteAddress: string | undefined;
 }): Promise<void> {
+  const slot = csrfBlockWindow.claim(Date.now());
+  if (!slot.write) return;
+
   try {
     await appendAuditLog({
       actorType: "system",
@@ -161,6 +188,7 @@ export async function logCsrfBlocked(input: {
         origin: input.origin ?? null,
         referer: input.referer ?? null,
         remoteAddress: input.remoteAddress ?? null,
+        ...(slot.suppressed > 0 ? { suppressedSinceLastEntry: slot.suppressed } : {}),
       },
     });
   } catch (err) {

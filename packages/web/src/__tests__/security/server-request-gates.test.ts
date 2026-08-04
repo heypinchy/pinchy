@@ -55,3 +55,50 @@ describe("server.ts request gates", () => {
     expect(csrf).toBeGreaterThan(lock);
   });
 });
+
+// The upgrade handler is the *second* request-handling entry point, and the
+// gates above never see it: `server.on("upgrade", ...)` is not the
+// `createServer` handler. That gap is not hypothetical — it is the bug #1056
+// fixed, and for the whole life of the domain lock a locked instance still
+// accepted WebSocket upgrades addressed to its raw IP.
+//
+// The fix has the same shape as the one that made the block above necessary:
+// one call to a module that passes its own suite regardless. Deleting
+// `isWsUpgradeAllowed` from server.ts leaves ws-upgrade-gate.test.ts entirely
+// green, so the same tripwire has to cover the same failure here.
+describe("server.ts WebSocket upgrade gate", () => {
+  it("checks the upgrade before any auth work", () => {
+    expect(
+      source.includes("isWsUpgradeAllowed("),
+      "server.ts does not call isWsUpgradeAllowed. The upgrade handler is a separate entry " +
+        "point from the createServer handler — applyDomainLockGate/applyCsrfGate never see a " +
+        "WebSocket handshake, so src/server/ws-upgrade-gate.ts passing its own tests says " +
+        "nothing if nothing calls it."
+    ).toBe(true);
+
+    const gate = source.indexOf("isWsUpgradeAllowed(");
+    const auth = source.indexOf("validateWsSession(");
+
+    expect(auth).toBeGreaterThan(-1);
+    expect(
+      gate < auth,
+      "server.ts validates the session cookie before the upgrade gate runs. A rejected " +
+        "handshake must cost a header comparison, not a session lookup — and the domain " +
+        "lock's guarantee is that a foreign host is answered before anything else happens."
+    ).toBe(true);
+  });
+
+  it("rejects the handshake when the gate says no", () => {
+    expect(
+      /if\s*\(!upgradeCheck\.allowed\)/.test(source),
+      "server.ts calls isWsUpgradeAllowed but does not branch on `!upgradeCheck.allowed`. " +
+        "An unread verdict is the same as no gate at all."
+    ).toBe(true);
+
+    expect(
+      source.includes('socket.write("HTTP/1.1 403 Forbidden\\r\\n\\r\\n")'),
+      "server.ts does not answer a blocked upgrade with 403. Unlike the HTTP gates the " +
+        "upgrade handler owns the raw socket, so it has to write the response itself."
+    ).toBe(true);
+  });
+});

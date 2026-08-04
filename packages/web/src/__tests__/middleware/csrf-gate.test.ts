@@ -5,7 +5,7 @@ vi.mock("@/lib/audit", () => ({
   appendAuditLog: vi.fn().mockResolvedValue(undefined),
 }));
 
-import { applyCsrfGate } from "@/server/csrf-check";
+import { applyCsrfGate, resetCsrfBlockWindow } from "@/server/csrf-check";
 import { appendAuditLog } from "@/lib/audit";
 
 function makeReq(opts: {
@@ -59,6 +59,9 @@ function makeRes(): ServerResponse & {
 describe("applyCsrfGate", () => {
   beforeEach(() => {
     vi.mocked(appendAuditLog).mockClear();
+    // The audit flood window is process-global (audit-flood-window.ts), so
+    // without this the second block-and-assert test in the file finds no row.
+    resetCsrfBlockWindow();
   });
 
   it("allows GET requests through (returns false, no 403)", async () => {

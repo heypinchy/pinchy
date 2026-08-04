@@ -3,6 +3,7 @@ import { parse } from "url";
 import { getCachedDomain, normalizeHost } from "@/lib/domain-cache";
 import { appendAuditLog, safeAuditPath } from "@/lib/audit";
 import { publicHopOf, readRequestHost } from "@/server/forwarded-host";
+import { createAuditFloodWindow } from "@/server/audit-flood-window";
 
 // Paths that bypass the domain-lock host check. Health/status endpoints must
 // remain accessible for monitoring/setup.
@@ -157,46 +158,21 @@ export async function applyDomainLockGate(
 }
 
 /**
- * One `auth.host_blocked` row per minute, with the rejections it stood in for
- * counted on the next row rather than dropped.
+ * One `auth.host_blocked` row per minute — see `audit-flood-window.ts` for why
+ * the bound exists and why it is global rather than keyed.
  *
- * Recording a block is worth doing; recording every block is bounded by
- * nothing. This is the one audit event an *unauthenticated* caller can trigger
- * at will — a domain-locked instance is by definition reachable at an address
- * that isn't its domain, and `GET http://<raw-ip>/api/x` in a loop needs no
- * credential, no cookie and no state-changing method. Every row takes
- * `pg_advisory_xact_lock` on a single constant key (lib/audit.ts), so an
- * unbounded stream doesn't just grow an immutable table: it serializes every
- * genuine audit write in the process behind itself. And it buries exactly what
- * the event exists to surface — one of Pinchy's own components being turned
- * away.
- *
- * The window is global, not keyed. Every dimension available to key on — host,
- * path, remote address — is supplied by the caller, so a map keyed on one of
- * them grows per request and the throttle stops throttling. (`scopeDenialWindows`
- * in lib/api-auth.ts can key by API key precisely because an admin must mint
- * one first.) The cost is real and accepted: within a minute, a flood can mask
- * a different component's block. The row that does get written still names its
- * own host and path, and `suppressedSinceLastEntry` reports the scale.
- *
- * Per-process state; a restart just reopens the window, which costs one row.
+ * This is the event a plain unauthenticated `GET` triggers most cheaply: a
+ * domain-locked instance is by definition reachable at an address that isn't
+ * its domain, so `GET http://<raw-ip>/api/x` in a loop needs no credential, no
+ * cookie and no state-changing method. `auth.csrf_blocked` carries the same
+ * bound for the same reason (csrf-check.ts).
  */
 const HOST_BLOCK_WINDOW_MS = 60_000;
-let hostBlockWindow: { openedAt: number; suppressed: number } | null = null;
+const hostBlockWindow = createAuditFloodWindow(HOST_BLOCK_WINDOW_MS);
 
 /** Test seam — the window is process-global, so suites must start from zero. */
 export function resetHostBlockWindow(): void {
-  hostBlockWindow = null;
-}
-
-function claimHostBlockSlot(now: number): { write: boolean; suppressed: number } {
-  if (hostBlockWindow && now - hostBlockWindow.openedAt < HOST_BLOCK_WINDOW_MS) {
-    hostBlockWindow.suppressed++;
-    return { write: false, suppressed: hostBlockWindow.suppressed };
-  }
-  const suppressed = hostBlockWindow?.suppressed ?? 0;
-  hostBlockWindow = { openedAt: now, suppressed: 0 };
-  return { write: true, suppressed };
+  hostBlockWindow.reset();
 }
 
 /**
@@ -206,9 +182,9 @@ function claimHostBlockSlot(now: number): { write: boolean; suppressed: number }
  * on the Pinchy side at all. The only evidence that pinchy-transcript's capture
  * POST was being turned away sat in the OpenClaw container's stdout, so a
  * shipped feature was dead in production for eleven weeks with every check
- * green. Mirrors `logCsrfBlocked` — same actor, same best-effort contract —
- * plus the window above, which the CSRF gate does not need as urgently: it
- * blocks only state-changing methods, so it cannot be driven by a plain GET.
+ * green. Mirrors `logCsrfBlocked` — same actor, same best-effort contract, and
+ * since #1056 the same flood window: a foreign `Origin` costs an anonymous
+ * caller no more than a foreign `Host` does.
  */
 export async function logHostBlocked(input: {
   method: string;
@@ -217,7 +193,7 @@ export async function logHostBlocked(input: {
   lockedDomain: string | null;
   remoteAddress: string | undefined;
 }): Promise<void> {
-  const slot = claimHostBlockSlot(Date.now());
+  const slot = hostBlockWindow.claim(Date.now());
   if (!slot.write) return;
 
   try {
