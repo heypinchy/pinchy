@@ -420,6 +420,18 @@ The compose defaults are unchanged (`7777`/`5434`/`8443`), so a checkout without
 
 Two guards in `scripts/lib/dev-stack-port-isolation.test.mjs` hold that line: one fails if a generated key is read outside the dev overlay or a dev-layered stack stops pinning, the other fails if a hard-coded host port anywhere in the repo lands inside an allocation band without being listed in `RESERVED_PORTS`. The reserved list matters because a probe only sees what is bound _right now_ while allocation is sticky: a worktree allocated while the integration stack was down would take `7779` and keep it.
 
+### Every published port binds loopback
+
+A `ports:` entry with no host IP — `"5434:5432"` — publishes on `0.0.0.0`. Every test overlay was written that way, so on a shared dev box or a CI runner with a routable address the test Postgres instances, each suite's Pinchy override and all eight mock servers answered the whole network: the odoo mock accepts writes, greenmail hands out mail, and the databases hold seeded credentials. Nothing was red, because reaching them over loopback works identically either way.
+
+The prefix (`"127.0.0.1:5434:5432"`) is one token per line across nine files with no locally visible failure mode — the shape of every drift this repo has already paid for. `scripts/lib/compose-port-bindings.test.mjs` (pure logic in `compose-port-bindings.mjs`, run by `pnpm test:scripts`) is the tripwire. Three things worth knowing before editing it:
+
+- **There is no list of accepted exceptions, deliberately.** A stack that genuinely needs a routable bind writes it the way `docker-compose.yml` does — `"${PINCHY_PORT:-127.0.0.1:7777}:7777"` — so the _default_ is loopback and an operator who wants more says so in their own environment. A checkout binds what its files say; nobody is exposed by omission.
+- **The parser throws on input it cannot read** rather than skipping the line. The long syntax (`- target: 9001` / `published:`) also binds every interface when `host_ip` is omitted, and a guard that silently ignores it reports on the lines it happens to understand instead of on what the stack binds.
+- **`docker-compose.dev.yml` spells the prefix two different ways, three lines apart.** `DEV_PINCHY_PORT` carries `127.0.0.1:` _inside_ the value (`managedValues` in `scripts/lib/env-file.mjs` writes it); `DEV_DB_PORT` and `DEV_CADDY_PORT` are bare numbers whose prefix the compose file supplies. Both halves are needed and neither can be "harmonised": adding the prefix to `DEV_DB_PORT` resolves to `127.0.0.1:127.0.0.1:5444:5432`, and removing it from `DEV_PINCHY_PORT` puts every already-allocated worktree back on `0.0.0.0` — a break that appears only in a worktree that has run `pnpm worktree:env`, never in CI and never in a fresh clone. The guard resolves the dev overlay against the values `managedValues` really writes, so it fails in both directions.
+
+Verify a change to it by reproduction, not by reading: drop a `127.0.0.1:` from any overlay and watch that exact line come back in the failure.
+
 Common host commands from the repository root:
 
 ```bash

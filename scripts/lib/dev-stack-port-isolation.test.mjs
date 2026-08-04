@@ -32,6 +32,7 @@ import { fileURLToPath } from "node:url";
 import { unreservedBandConflicts } from "./worktree-ports.mjs";
 import { MANAGED_KEYS } from "./env-file.mjs";
 import { trackedFilesIn } from "./tracked-files.mjs";
+import { publishedHostPorts } from "./compose-port-bindings.mjs";
 
 const ROOT = fileURLToPath(new URL("../..", import.meta.url));
 const WEB = join(ROOT, "packages", "web");
@@ -61,25 +62,10 @@ const playwrightConfigs = [
   join("packages", "web", "eval", "playwright.eval.config.ts"),
 ];
 
-/**
- * Host ports a compose file publishes. `${VAR:-default}` resolves to its
- * default — that is what a checkout without `.env` actually binds. A
- * single-element entry ("9100") publishes on a random host port and is not a
- * claim on anything.
- */
-function publishedHostPorts(text) {
-  const ports = [];
-  for (const line of text.split("\n")) {
-    const entry = /^\s*-\s*"?([^"#\s]+)"?\s*$/.exec(line);
-    if (!entry) continue;
-    const resolved = entry[1].replace(/\$\{[^:}]+:-([^}]*)\}/g, "$1");
-    const parts = resolved.split(":");
-    if (parts.length < 2) continue;
-    const host = parts.length >= 3 ? parts[1] : parts[0];
-    if (/^\d+$/.test(host)) ports.push(Number(host));
-  }
-  return ports;
-}
+// `publishedHostPorts` is imported rather than defined here: which host port a
+// compose entry claims and which interface it binds are the same reading of the
+// same line, and two copies of it would eventually answer differently. See
+// compose-port-bindings.mjs.
 
 /** Ports a Playwright config or package script expects to talk to. */
 function expectedPorts(text) {

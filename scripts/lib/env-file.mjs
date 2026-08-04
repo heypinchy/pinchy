@@ -16,6 +16,31 @@ export const MANAGED_KEYS = [
 ];
 
 /**
+ * The values `scripts/worktree-env.mjs` writes into the generated block.
+ *
+ * Note the asymmetry, which is load-bearing rather than untidy: DEV_PINCHY_PORT
+ * carries `127.0.0.1:` INSIDE the value, while DEV_DB_PORT and DEV_CADDY_PORT
+ * are bare numbers whose prefix is hard-coded in `docker-compose.dev.yml`.
+ * Every already-generated `.env` has that shape, so "harmonising" either half
+ * breaks the other: give DEV_DB_PORT the prefix too and the overlay resolves to
+ * `127.0.0.1:127.0.0.1:5444:5432`; drop it from DEV_PINCHY_PORT and every
+ * existing worktree publishes its dev stack on 0.0.0.0. The pairing is pinned
+ * by `compose-port-bindings.test.mjs`, which resolves the dev overlay against
+ * exactly these values.
+ *
+ * @param {{slug: string, ports: {pinchyPort: number, dbPort: number, caddyPort: number}}} allocation
+ * @returns {Record<string, string>}
+ */
+export function managedValues({ slug, ports }) {
+  return {
+    COMPOSE_PROJECT_NAME: slug,
+    DEV_PINCHY_PORT: `127.0.0.1:${ports.pinchyPort}`,
+    DEV_DB_PORT: String(ports.dbPort),
+    DEV_CADDY_PORT: String(ports.caddyPort),
+  };
+}
+
+/**
  * Key names the FIRST version of this script wrote. They were renamed because
  * `PINCHY_PORT`, `DB_PORT` and `CADDY_PORT` are read by `docker-compose.yml`
  * itself, so a dev-stack allocation leaked into every E2E stack layered on it

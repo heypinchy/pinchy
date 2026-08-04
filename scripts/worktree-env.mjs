@@ -33,6 +33,7 @@ import {
 } from "./lib/worktree-ports.mjs";
 import {
   MANAGED_KEYS,
+  managedValues,
   parseEnvFile,
   writeManagedBlock,
 } from "./lib/env-file.mjs";
@@ -85,12 +86,7 @@ const ports = allocatePorts(slug, (port) => free.has(port));
 // everything the developer put in .env themselves is preserved in place.
 writeFileSync(
   envPath,
-  writeManagedBlock(existing, {
-    COMPOSE_PROJECT_NAME: slug,
-    DEV_PINCHY_PORT: `127.0.0.1:${ports.pinchyPort}`,
-    DEV_DB_PORT: String(ports.dbPort),
-    DEV_CADDY_PORT: String(ports.caddyPort),
-  }),
+  writeManagedBlock(existing, managedValues({ slug, ports })),
 );
 
 console.log(`Allocated block +${ports.offset} for "${slug}":`);
