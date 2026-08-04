@@ -93,10 +93,14 @@ export const POST = withAdmin(async (request, _ctx, session) => {
  *
  * Read-only: no audit entry, and deliberately NO `audit-exempt:` marker. The
  * require-audit-log rule only asks for one on POST/PUT/PATCH/DELETE — a GET
- * never needed it — and the marker is FILE-scoped: any occurrence makes the
- * rule skip the whole file. So the one placed here for this GET was switching
- * off the guard on the POST above, the one that issues credentials. Verified:
- * with the marker present, stripping appendAuditLog out of POST lints clean.
+ * never needed it. The marker used to be FILE-scoped (any occurrence anywhere
+ * in the file made the rule skip every handler, so the one that used to sit
+ * here for this GET was silently switching off the guard on the POST above,
+ * the one that issues credentials — verified by stripping appendAuditLog out
+ * of POST and watching it lint clean). The rule is now per-handler: a marker
+ * only exempts the export it's directly attached to, or every handler when
+ * placed above the file's imports. This note stays as the reason a marker is
+ * still deliberately absent here, not as a live hazard.
  */
 export const GET = withAdmin(async () => {
   const rows = await db.select().from(apiKeys).orderBy(desc(apiKeys.createdAt));

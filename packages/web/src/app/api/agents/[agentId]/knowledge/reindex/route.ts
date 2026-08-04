@@ -199,7 +199,9 @@ export const POST = withAdmin<RouteContext>(async (request, { params }, session)
  *
  * Admin-only, like the reindex it reports on.
  */
-// audit-exempt: read-only status projection, no state change.
+// Read-only status projection, no state change — GET is outside
+// require-audit-log's scope (it only checks POST/PUT/PATCH/DELETE), so no
+// audit call is needed here.
 export const GET = withAdmin<RouteContext>(async (_request, { params }) => {
   const { agentId } = await params;
 

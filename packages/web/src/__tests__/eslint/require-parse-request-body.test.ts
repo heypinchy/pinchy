@@ -35,6 +35,12 @@ tester.run("require-parse-request-body", rule, {
       code: `export async function POST() { const data = await response.json(); }`,
       filename: "/app/api/groups/route.ts",
     },
+    // A destructured first parameter is unresolvable, but names other than the
+    // conservative fallback ("request"/"req") still don't match.
+    {
+      code: `export async function POST({ headers }) { const data = await other.json(); }`,
+      filename: "/app/api/groups/route.ts",
+    },
   ],
   invalid: [
     {
@@ -52,6 +58,43 @@ tester.run("require-parse-request-body", rule, {
           const { name } = await request.json();
         }`,
       filename: "/app/api/agents/[id]/route.ts",
+      errors: [{ messageId: "directJsonCall" }],
+    },
+    // A renamed first parameter must still be caught — the rule resolves the
+    // name from the enclosing handler's own signature rather than a fixed
+    // whitelist of "request"/"req".
+    {
+      code: `export async function POST(_req) { const body = await _req.json(); }`,
+      filename: "/app/api/groups/route.ts",
+      errors: [{ messageId: "directJsonCall" }],
+    },
+    {
+      code: `export async function POST(r) { const body = await r.json(); }`,
+      filename: "/app/api/groups/route.ts",
+      errors: [{ messageId: "directJsonCall" }],
+    },
+    {
+      code: `export const PUT = async (nextRequest) => { const body = await nextRequest.json(); }`,
+      filename: "/app/api/groups/route.ts",
+      errors: [{ messageId: "directJsonCall" }],
+    },
+    // A nested closure with no first parameter of its own inherits the name
+    // from the enclosing handler.
+    {
+      code: `export async function POST(_req) {
+          return withRetry(async () => {
+            const body = await _req.json();
+          });
+        }`,
+      filename: "/app/api/groups/route.ts",
+      errors: [{ messageId: "directJsonCall" }],
+    },
+    // A destructured first parameter can't be resolved to a name — conservative
+    // fallback still flags the historically-known "request"/"req" names rather
+    // than silently skipping the check.
+    {
+      code: `export async function POST({ headers }) { const body = await request.json(); }`,
+      filename: "/app/api/groups/route.ts",
       errors: [{ messageId: "directJsonCall" }],
     },
   ],

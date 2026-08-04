@@ -250,8 +250,10 @@ export const POST = withAdmin(async (request, _ctx, session) => {
  * `keyHint` (last 4 chars) and NEVER the decrypted key.
  */
 export const GET = withAdmin(async () => {
-  // audit-exempt: read-only list, no state change. Uses the admin accessor so
-  // each row carries a keyHint (the one decrypt path — see the module).
+  // Read-only list, no state change — GET is outside require-audit-log's scope
+  // (it only checks POST/PUT/PATCH/DELETE), so no audit call is needed here.
+  // Uses the admin accessor so each row carries a keyHint (the one decrypt
+  // path — see the module).
   const providers = await listOpenAiCompatibleProvidersForAdmin();
   return NextResponse.json(providers);
 });
