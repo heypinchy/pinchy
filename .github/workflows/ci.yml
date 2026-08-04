@@ -323,6 +323,13 @@ jobs:
         # where a page builds and links fine but ships markdown as text.
         run: cd docs && pnpm check:rendered
 
+      - name: Docs llms.txt check (built output)
+        # llms.txt / llms-full.txt are what AI crawlers read, and the build
+        # generates them from the source pages (#1080). This asserts the
+        # generated index and the built site still describe the same set of
+        # pages — in both directions. Reads docs/dist/, so same ordering rule.
+        run: cd docs && pnpm check:llms
+
       - name: Squawk migration lint (changed files only)
         if: github.event_name == 'pull_request'
         run: |

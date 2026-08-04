@@ -39,9 +39,24 @@
 const BUILT_OUTPUT_CHECKS = [
   { script: "check:anchors", file: "check-anchors.mjs" },
   { script: "check:rendered", file: "check-rendered-tables.mjs" },
+  { script: "check:llms", file: "check-llms-txt.mjs" },
 ];
 const BUILD_COMMAND = "cd docs && pnpm build";
 const checkCommand = (script) => `cd docs && pnpm ${script}`;
+
+/**
+ * `llms.txt` / `llms-full.txt` are GENERATED into dist/ by the build itself
+ * (#1080) — they are the AI-crawler view of the docs, and as committed files
+ * they went months stale describing a Pinchy that no longer existed.
+ *
+ * The generator has to run inside the build for two reasons: dist/ must exist
+ * to write into, and the source tree only carries injected %%PINCHY_VERSION%%
+ * values until the build's restore step. Dropping it from the build script
+ * would leave the published site with no llms.txt at all — which
+ * `check:llms` does catch, but by then the reader is looking at a missing file
+ * rather than at the line that stopped producing it.
+ */
+const GENERATOR_FILE = "generate-llms-txt.mjs";
 
 /**
  * The checkers' unit tests. The glob is pinned rather than the file list: a
@@ -72,6 +87,15 @@ export function validateDocsPackage(pkg) {
     } else if (!script.includes(file)) {
       problems.push(`"${name}" must run scripts/${file} (got "${script}")`);
     }
+  }
+
+  const buildScript = scripts.build;
+  if (typeof buildScript !== "string") {
+    problems.push(`docs/package.json needs a "build" script`);
+  } else if (!buildScript.includes(GENERATOR_FILE)) {
+    problems.push(
+      `"build" must run scripts/${GENERATOR_FILE} — llms.txt is generated, not committed (got "${buildScript}")`,
+    );
   }
 
   const testScript = scripts[TEST_SCRIPT];

@@ -4,11 +4,12 @@
   "private": true,
   "scripts": {
     "dev": "sh scripts/inject-version.sh && astro dev; sh scripts/restore-placeholders.sh",
-    "build": "sh scripts/inject-version.sh && sh scripts/with-restore.sh astro build",
+    "build": "sh scripts/inject-version.sh && sh scripts/with-restore.sh sh -c 'astro build && node scripts/generate-llms-txt.mjs'",
     "preview": "astro preview",
     "check:tables": "node scripts/check-no-tables-in-lists.mjs",
     "check:anchors": "node scripts/check-anchors.mjs",
     "check:rendered": "node scripts/check-rendered-tables.mjs",
+    "check:llms": "node scripts/check-llms-txt.mjs",
     "test": "node --test scripts/*.test.mjs"
   },
   "dependencies": {

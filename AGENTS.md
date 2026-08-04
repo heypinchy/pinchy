@@ -702,6 +702,19 @@ The general rule is the one the X-Frame-Options gate follows: assert what a buil
 
 `check:rendered` errs loud rather than silent, deliberately: **inline** code is not stripped, so a page that documents table syntax in an inline `` `| a | b |` `` on a line of its own would be flagged. Nothing in the 69 pages does that today. If one ever needs to, rewrite it as a fenced block — do not teach the checker to skip `<code>`, because a real unrendered row containing inline code (``| `foo` | bar |``) lives in exactly that markup.
 
+#### `llms.txt` Is Generated, Never Committed
+
+`llms.txt` and `llms-full.txt` are what AI crawlers read instead of the site. Both used to be hand-written files under `docs/public/`, and both rotted precisely the way § "A Hand-Maintained List That Mirrors Code Will Be Wrong" predicts. Measured on 2026-08-04 (#1080): the index listed **12 of 66** pages, the full text carried **9**, and what it carried described April-era Pinchy — `Auth.js` for an app that runs Better Auth, dev database port `5433` for a stack that binds `5434`, and not one mention of IMAP or the knowledge base. Live, on docs.heypinchy.com, for months. Nothing was red, because nothing read them.
+
+`docs/scripts/generate-llms-txt.mjs` writes both into `dist/` from `src/content/docs`, so a new page is in both files on the next build. Four details are load-bearing:
+
+- **It runs INSIDE the build** — `astro build && node scripts/generate-llms-txt.mjs`, wrapped by `with-restore.sh`. `dist/` has to exist to write into, and the source tree only carries injected `%%PINCHY_VERSION%%` values until the restore step. Moved after it, the generator publishes the literal placeholder inside install commands, to every crawler. `findLeakedSource` in the checker is the tripwire for exactly that ordering mistake — verified by reproduction (run the generator standalone after a build: 21 problems, all placeholders).
+- **Sections come from the directory tree, not a label map.** A map would be the hand-maintained list this replaced, one level up.
+- **`check:llms` reads `dist/`, both directions.** Every page the built site serves is in both files, and every entry in them is a page the site serves. A documentation page is defined as one carrying Starlight's `generator` meta — that is what separates the 66 real pages from `public/installing.html` (the 1-click-deploy splash) and astro's redirect stubs, without a list of exceptions.
+- **The generator is also the guard for aside types.** Starlight renders `:::note`, `:::tip`, `:::caution`, `:::danger` and nothing else; remark-directive eats anything else and emits a bare `<div>` — no colour, no icon, no label, no error. Two `:::warning` blocks shipped that way. The generator has to read the directive anyway, so it throws and names the file.
+
+The committed `public/llms*.txt` are gone. Do not re-add them: a file in `public/` wins over nothing and rots in silence, which is the whole bug.
+
 ### A Hand-Maintained List That Mirrors Code Will Be Wrong
 
 The 2026-07-30 post-release docs audit found the same defect in three files: `reference/api.mdx` documented 60 of 96 API routes, `concepts/audit-trail.mdx` listed 47 of 56 audit event types, and `concepts/agent-permissions.mdx` — the canonical "what can an agent do" page — never mentioned `knowledge_search`, the tool behind the release's headline feature. Three whole feature families (Automations, OpenAI-compatible providers, IMAP) had shipped with no reference entry at all.

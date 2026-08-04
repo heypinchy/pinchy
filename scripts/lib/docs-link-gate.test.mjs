@@ -19,14 +19,20 @@ const WIRED_JOB = [
   "      - name: Docs rendered-table check (built output)",
   "        run: cd docs && pnpm check:rendered",
   "",
+  "      - name: Docs llms.txt check (built output)",
+  "        run: cd docs && pnpm check:llms",
+  "",
   "      - name: Docs script tests",
   "        run: cd docs && pnpm test",
 ].join("\n");
 
 const WIRED_SCRIPTS = {
+  build:
+    "sh scripts/with-restore.sh sh -c 'astro build && node scripts/generate-llms-txt.mjs'",
   test: "node --test scripts/*.test.mjs",
   "check:anchors": "node scripts/check-anchors.mjs",
   "check:rendered": "node scripts/check-rendered-tables.mjs",
+  "check:llms": "node scripts/check-llms-txt.mjs",
 };
 
 // ── docs/package.json ─────────────────────────────────────────────────────
@@ -69,6 +75,30 @@ test("validateDocsPackage flags the rendered-table script pointed elsewhere", ()
     },
   });
   assert.ok(problems.some((p) => /check-rendered-tables\.mjs/.test(p)));
+});
+
+test("validateDocsPackage flags a missing llms.txt check", () => {
+  // The AI-crawler view of the docs. Committed by hand it went months stale
+  // (#1080); generated, the only thing proving it still matches the built site
+  // is this check.
+  const { "check:llms": _dropped, ...withoutLlms } = WIRED_SCRIPTS;
+  const problems = validateDocsPackage({ scripts: withoutLlms });
+  assert.ok(problems.some((p) => /check:llms/.test(p)));
+});
+
+test("validateDocsPackage flags a build that stopped generating llms.txt", () => {
+  // Silently narrowing the gate from the other side: the check survives, the
+  // thing it checks is never produced.
+  const problems = validateDocsPackage({
+    scripts: { ...WIRED_SCRIPTS, build: "astro build" },
+  });
+  assert.ok(problems.some((p) => /generate-llms-txt\.mjs/.test(p)));
+});
+
+test("validateDocsPackage flags a missing build script", () => {
+  const { build: _dropped, ...withoutBuild } = WIRED_SCRIPTS;
+  const problems = validateDocsPackage({ scripts: withoutBuild });
+  assert.ok(problems.some((p) => /"build"/.test(p)));
 });
 
 test("validateDocsPackage flags a missing test script", () => {
@@ -148,7 +178,7 @@ test("validateCiWiring flags steps that are only present as comments", () => {
     .join("\n");
   assert.equal(
     validateCiWiring(commented).length,
-    4,
+    5,
     "a commented-out step must not satisfy the guard",
   );
 });
@@ -160,6 +190,7 @@ test("validateCiWiring does not treat a '#' inside a command as a comment", () =
     '      - run: echo "#docs" && cd docs && pnpm build\n' +
     "      - run: cd docs && pnpm check:anchors\n" +
     "      - run: cd docs && pnpm check:rendered\n" +
+    "      - run: cd docs && pnpm check:llms\n" +
     "      - run: cd docs && pnpm test\n";
   assert.deepEqual(validateCiWiring(withHash), []);
 });
