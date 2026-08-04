@@ -75,3 +75,14 @@ test("CLI exits 1 with usage when no tag is given", () => {
   assert.equal(result.status, 1);
   assert.match(result.stderr, /Usage:/);
 });
+
+// `--root` with nothing after it used to reach `resolve("")`, which is the CWD.
+// In CI the CWD is the repo root, so a mistyped flag would have compared the
+// tag against the repo and read as an ordinary pass — a release build gate
+// quietly checking something nobody asked it to check.
+test("CLI refuses --root without a directory rather than falling back to the CWD", () => {
+  const result = runCli(["v1.2.3", "--root"]);
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stderr, /--root needs a directory/);
+  assert.doesNotMatch(result.stdout, /::error::/);
+});

@@ -41,7 +41,7 @@ if [ -z "$TAG" ]; then
     *-dev)
       echo "ERROR: packages/web/package.json declares $VERSION, a development version." >&2
       echo "       %%PINCHY_VERSION%% would render an image tag that does not exist." >&2
-      echo "       Pass the version explicitly: PINCHY_VERSION=v0.9.1 $0" >&2
+      echo "       Pass the version explicitly: PINCHY_VERSION=vX.Y.Z $0" >&2
       exit 1
       ;;
   esac

@@ -179,6 +179,7 @@ What's left is the reading, and it's the part that found the real damage in the 
 3. **If the release was cut from a `release/X.Y` branch, carry the version state back to `main`.** `pnpm release` bumps the branch it runs on; nothing carries that to `main`. Skipping it is how `main` sat at `0.8.0` for three months while v0.9.1 was current — and it was not one stale label but four: `/api/version` on staging (which tracks `:next`) reported 0.8.0 for a build 400+ commits past it, `.env.example` told new installs to pull `v0.8.0`, and **both 1-Click marketplace templates shipped `v0.8.0` on a public marketplace**. On `main`, in one PR:
    - root + `packages/web` `package.json` → `<next>-dev` (e.g. `0.10.0-dev`) — what this tree IS
    - `.env.example` `PINCHY_VERSION` → the tag you just shipped — what a user PULLS
+   - `README.md`'s quick-start `raw.githubusercontent.com/.../v<tag>/docker-compose.yml` → the same tag. Easiest to forget and the most-read of the four: it is the command a visitor runs off the GitHub front page. It was missed by the first pass of #1044 while that pass was listing exactly these files.
    - `marketplace/digitalocean/template.json` + `marketplace/caprover/pinchy.yml` → the same tag
    - the frozen upgrade section from the release branch, plus a fresh `## Upgrading from v<just-released> to %%PINCHY_VERSION%%`
 
