@@ -43,6 +43,30 @@ describe("Auth HTTP/HTTPS configuration", () => {
     });
   });
 
+  describe("defaultCookieAttributes.sameSite", () => {
+    // The WS upgrade path has no application-level CSRF/CORS defense of its
+    // own — see ws-upgrade-gate.ts — so the browser's SameSite cookie default
+    // is part of the actual defense-in-depth against cross-site WebSocket
+    // hijacking. It must be pinned explicitly rather than left to Better
+    // Auth's/the browser's implicit default, so a dependency bump can't
+    // silently change it. "lax" (not "strict") preserves today's behavior —
+    // "strict" would break legitimate top-level-navigation flows (e.g. an
+    // email verification link landing the user on an authenticated page).
+    it("is explicitly 'lax' regardless of secure-cookie mode", async () => {
+      const { shouldUseSecureCookies } = await import("@/lib/secure-cookies");
+      vi.mocked(shouldUseSecureCookies).mockReturnValue(false);
+      const mod = await import("@/lib/auth");
+      expect(mod.auth.options.advanced?.defaultCookieAttributes?.sameSite).toBe("lax");
+    });
+
+    it("stays 'lax' in secure (domain-locked) mode too", async () => {
+      const { shouldUseSecureCookies } = await import("@/lib/secure-cookies");
+      vi.mocked(shouldUseSecureCookies).mockReturnValue(true);
+      const mod = await import("@/lib/auth");
+      expect(mod.auth.options.advanced?.defaultCookieAttributes?.sameSite).toBe("lax");
+    });
+  });
+
   describe("trustedOrigins", () => {
     describe("when no domain is cached (insecure mode)", () => {
       beforeEach(async () => {

@@ -33,7 +33,12 @@ const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 //                       prefix on the same grounds.
 const EXEMPT_PREFIXES = ["/api/auth/", "/api/internal/"];
 
-function parseOriginUrl(value: string): { protocol: string; host: string } | null {
+/**
+ * Exported for `ws-upgrade-gate.ts`: the WebSocket upgrade path needs the
+ * same Origin-parsing logic (browsers send `Origin` on the upgrade handshake
+ * too, even though WS isn't subject to CORS) and must not duplicate it.
+ */
+export function parseOriginUrl(value: string): { protocol: string; host: string } | null {
   try {
     const url = new URL(value);
     if (!url.protocol || !url.host) return null;

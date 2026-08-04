@@ -315,6 +315,12 @@ Two route prefixes are exempt:
 - `/api/auth/*` — Better Auth enforces its own `trustedOrigins` allow-list here.
 - `/api/internal/*` — OpenClaw plugins call these routes with `Authorization: Bearer <gateway-token>`. Bearer-token routes are not CSRF-able (browsers can't forge `Authorization` headers cross-origin), and the plugins are non-browser clients that don't send `Origin`/`Referer`. The same prefix is exempt from the domain-lock host check, for the same reason — plugins reach Pinchy on a Docker-internal hostname. A CI guard fails the build if any route under the prefix stops authenticating with the gateway token, so the exemption cannot outgrow its justification.
 
+### The WebSocket upgrade (`/api/ws`) is a separate entry point
+
+`server.on("upgrade", ...)` handles the WebSocket handshake Pinchy's chat UI uses, and it is a different code path from the `createServer` request handler the domain-lock and CSRF gates above are installed on — a plain HTTP request never reaches it. WebSocket handshakes also aren't subject to CORS/SOP the way `fetch` is, so a browser-level defense against a cross-site connection doesn't exist for free the way it does for a normal API call.
+
+The upgrade handler reapplies both checks itself before validating the session cookie: the same domain-lock host check (`isHostAllowed`), and an Origin check equivalent to the CSRF gate above — if the browser sends an `Origin` header, its host must match the request's own host, or the upgrade is rejected with `403` before any auth work happens. A client that sends no `Origin` header at all (a non-browser caller) is let through this specific check; the session cookie is what actually authorizes the connection. A rejection is audited the same way an HTTP-path rejection is — `auth.host_blocked` for a domain mismatch, `auth.csrf_blocked` for an Origin mismatch.
+
 ### Reverse proxy configuration
 
 The Origin check relies on knowing the public-facing host and scheme. If your reverse proxy strips or rewrites these headers, the check will reject legitimate requests. Set both headers explicitly:
@@ -343,7 +349,7 @@ Blocked requests appear in the audit log as `auth.csrf_blocked` with `outcome: f
 The CSRF gate is layered with two other request-source defenses:
 
 - **Domain lock** (`Settings → Security → Domain lock`) — rejects any request whose `Host` header doesn't match the configured domain. Closes off requests that come in via direct IP, an unconfigured hostname, or a host header injection. A rejected `/api/` request is audited as `auth.host_blocked`.
-- **`SameSite=Lax` session cookie** — Better Auth's default. Prevents cookies from being attached to most third-party requests, but is not sufficient on its own (top-level form posts under Lax can still attach cookies in some browsers).
+- **`SameSite=Lax` session cookie** — configured explicitly in `packages/web/src/lib/auth.ts` (matching Better Auth's own default). Prevents cookies from being attached to most third-party requests, but is not sufficient on its own (top-level form posts under Lax can still attach cookies in some browsers) — which is why the WebSocket upgrade path above carries its own Origin check rather than relying on this alone.
 
 Together they enforce: the request hit the right destination (domain lock), came from a legitimate source (CSRF gate), and the session cookie is unforgeable (Better Auth + SameSite).
 

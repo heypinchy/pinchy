@@ -167,6 +167,17 @@ export const auth = betterAuth({
     // (Without HTTPS the Secure flag/`__Secure-` prefix must be off or browsers
     // reject the cookie — the flag defaults to insecure when absent.)
     useSecureCookies: shouldUseSecureCookies(),
+    // Explicit rather than relying on Better Auth's/the browser's implicit
+    // default. The WS upgrade path (server.ts) has no CORS-equivalent
+    // defense of its own — WebSocket handshakes aren't subject to CORS/SOP —
+    // so the session cookie's SameSite attribute is part of the actual
+    // defense-in-depth against cross-site WebSocket hijacking. "lax" (not
+    // "strict") preserves today's behavior: "strict" would drop the cookie on
+    // legitimate top-level-navigation flows, e.g. an email-verification link
+    // landing the user on an authenticated page.
+    defaultCookieAttributes: {
+      sameSite: "lax",
+    },
   },
   database: drizzleAdapter(db, {
     provider: "pg",

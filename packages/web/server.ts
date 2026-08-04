@@ -6,6 +6,7 @@ import { OpenClawClient } from "openclaw-node";
 import { ClientRouter } from "./src/server/client-router";
 import { SessionCache } from "./src/server/session-cache";
 import { validateWsSession } from "./src/server/ws-auth";
+import { isWsUpgradeAllowed, readWsUpgradeCheckInput } from "./src/server/ws-upgrade-gate";
 import { restartState } from "./src/server/restart-state";
 import { openClawConnectionState } from "./src/server/openclaw-connection-state";
 import { applyKeepAliveTuning } from "./src/server/http-keepalive";
@@ -98,8 +99,9 @@ if (dbPasswordPolicy.action === "warn") {
 const startup = app.prepare().then(async () => {
   // Import request-handling modules before the server starts — these don't
   // depend on bootInits having run (domain cache starts empty and fills lazily).
-  const { applyDomainLockGate } = await import("./src/server/host-check");
-  const { applyCsrfGate } = await import("./src/server/csrf-check");
+  const { applyDomainLockGate, logHostBlocked } = await import("./src/server/host-check");
+  const { applyCsrfGate, logCsrfBlocked } = await import("./src/server/csrf-check");
+  const { getCachedDomain } = await import("./src/lib/domain-cache");
 
   const server = createServer(async (req, res) => {
     // Destination first (is this the locked domain?), then source (did the
@@ -167,6 +169,41 @@ const startup = app.prepare().then(async () => {
       const ip = request.socket.remoteAddress ?? "unknown";
       if (!wsRateLimiter.allowUpgrade(ip)) {
         socket.write("HTTP/1.1 429 Too Many Requests\r\n\r\n");
+        socket.destroy();
+        return;
+      }
+
+      // The upgrade path is a second, separate entry point from the
+      // createServer request handler above — applyDomainLockGate and
+      // applyCsrfGate never see a WebSocket upgrade. isWsUpgradeAllowed
+      // reapplies the same domain-lock host check (destination) plus an
+      // Origin check (source, WS's CORS-equivalent — handshakes aren't
+      // subject to CORS/SOP the way fetch is). See ws-upgrade-gate.ts.
+      const upgradeCheckInput = readWsUpgradeCheckInput(request, pathname);
+      const upgradeCheck = isWsUpgradeAllowed(upgradeCheckInput);
+      if (!upgradeCheck.allowed) {
+        if (upgradeCheck.reason === "domain-lock") {
+          // Not awaited: mirrors applyDomainLockGate — the 403 must not wait
+          // on a DB write, and logHostBlocked swallows its own failures.
+          void logHostBlocked({
+            method: (request.method ?? "GET").toUpperCase(),
+            pathname,
+            host: upgradeCheckInput.host,
+            lockedDomain: getCachedDomain(),
+            remoteAddress: request.socket?.remoteAddress,
+          });
+        } else {
+          // Mirrors applyCsrfGate, which awaits its own audit write.
+          await logCsrfBlocked({
+            reason: upgradeCheck.reason,
+            method: (request.method ?? "GET").toUpperCase(),
+            pathname,
+            origin: upgradeCheckInput.origin,
+            referer: undefined,
+            remoteAddress: request.socket?.remoteAddress,
+          });
+        }
+        socket.write("HTTP/1.1 403 Forbidden\r\n\r\n");
         socket.destroy();
         return;
       }
