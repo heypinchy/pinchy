@@ -16,10 +16,25 @@ const unresolvable: UrlHostResolver = async () => {
   throw new Error("ENOTFOUND");
 };
 
-/** Resolver stub that throws if invoked — proves a code path never reaches DNS. */
-const mustNotBeCalled: UrlHostResolver = async () => {
-  throw new Error("resolver should not have been called");
-};
+/**
+ * Runs `validateExternalUrl` and asserts the resolver was never reached.
+ *
+ * A stub that merely throws does NOT assert this, however it reads: the
+ * function's fail-open catch swallows a resolver throw and answers
+ * `{ valid: true }`, which is exactly what the bypass path returns too. Proven
+ * by canary — with `ALLOW_PRIVATE_URLS` unset, a throwing stub against
+ * `http://odoo-mock:8069` still produced `{ valid: true }`, so the earlier
+ * version of the bypass test would have stayed green with the bypass deleted.
+ * Only a spy can tell "not called" from "called and ignored".
+ */
+async function validateWithoutDns(urlString: string) {
+  const resolver = vi.fn<UrlHostResolver>(async () => {
+    throw new Error("resolver must not be called");
+  });
+  const result = await validateExternalUrl(urlString, resolver);
+  expect(resolver).not.toHaveBeenCalled();
+  return result;
+}
 
 describe("isPrivateUrl", () => {
   it("rejects localhost", () => {
@@ -166,41 +181,78 @@ describe("validateExternalUrl", () => {
   });
 
   it("rejects non-HTTP scheme (ftp)", async () => {
-    const result = await validateExternalUrl("ftp://odoo.example.com", mustNotBeCalled);
+    const result = await validateWithoutDns("ftp://odoo.example.com");
     expect(result).toEqual({ valid: false, error: expect.stringContaining("HTTP") });
   });
 
   it("rejects non-HTTP scheme (file)", async () => {
-    const result = await validateExternalUrl("file:///etc/passwd", mustNotBeCalled);
+    const result = await validateWithoutDns("file:///etc/passwd");
     expect(result).toEqual({ valid: false, error: expect.stringContaining("HTTP") });
   });
 
   it("rejects invalid URL", async () => {
-    const result = await validateExternalUrl("not-a-url", mustNotBeCalled);
+    const result = await validateWithoutDns("not-a-url");
     expect(result).toEqual({ valid: false, error: expect.any(String) });
   });
 
   it("rejects empty string", async () => {
-    const result = await validateExternalUrl("", mustNotBeCalled);
+    const result = await validateWithoutDns("");
     expect(result).toEqual({ valid: false, error: expect.any(String) });
   });
 
   it("rejects localhost (well-known hostname, no DNS needed)", async () => {
-    const result = await validateExternalUrl("http://localhost:8069", mustNotBeCalled);
-    expect(result).toEqual({ valid: false, error: expect.stringContaining("private") });
+    const result = await validateWithoutDns("http://localhost:8069");
+    expect(result).toEqual({ valid: false, error: expect.stringContaining("loopback") });
   });
 
   it("rejects 127.0.0.1 (IP literal, no DNS needed)", async () => {
-    const result = await validateExternalUrl("http://127.0.0.1:8069", mustNotBeCalled);
-    expect(result).toEqual({ valid: false, error: expect.stringContaining("private") });
+    const result = await validateWithoutDns("http://127.0.0.1:8069");
+    expect(result).toEqual({ valid: false, error: expect.stringContaining("loopback") });
   });
 
   it("rejects AWS metadata endpoint (IP literal, no DNS needed)", async () => {
-    const result = await validateExternalUrl(
-      "http://169.254.169.254/latest/meta-data/",
-      mustNotBeCalled
-    );
-    expect(result).toEqual({ valid: false, error: expect.stringContaining("private") });
+    const result = await validateWithoutDns("http://169.254.169.254/latest/meta-data/");
+    expect(result).toEqual({ valid: false, error: expect.stringContaining("link-local") });
+  });
+
+  it("rejects an IPv6 loopback literal without handing '[::1]' to the resolver", async () => {
+    // `URL.hostname` keeps the brackets, and `dns.lookup("[::1]")` throws — so a
+    // literal that reaches the resolver lands in the fail-open catch and is
+    // allowed. That is the bug `provider-url-guard.ts` shipped; this pins that
+    // this module classifies the literal instead of resolving it.
+    const result = await validateWithoutDns("http://[::1]:8069");
+    expect(result).toEqual({ valid: false, error: expect.stringContaining("loopback") });
+  });
+
+  it("rejects an IPv4-mapped IPv6 metadata literal without touching the resolver", async () => {
+    const result = await validateWithoutDns("http://[::ffff:169.254.169.254]/");
+    expect(result).toEqual({ valid: false, error: expect.stringContaining("link-local") });
+  });
+
+  it("accepts a public IPv6 literal without touching the resolver", async () => {
+    // Already fully classified from the string — DNS has nothing to add, and
+    // asking it would only reintroduce the bracket problem above.
+    const result = await validateWithoutDns("https://[2606:4700:4700::1111]");
+    expect(result).toEqual({ valid: true, url: "https://[2606:4700:4700::1111]" });
+  });
+
+  it("accepts a public IPv4 literal without touching the resolver", async () => {
+    const result = await validateWithoutDns("https://203.0.113.10:8069");
+    expect(result).toEqual({ valid: true, url: "https://203.0.113.10:8069" });
+  });
+
+  it("names the ALLOW_PRIVATE_URLS opt-out for an RFC-1918 address, and only there", async () => {
+    // An on-premise Odoo on 10.x is a legitimate deployment, so that refusal
+    // has to say how to allow it. Loopback and cloud metadata never are, so
+    // theirs must not suggest an opt-out that is the wrong answer for them.
+    const onPrem = await validateWithoutDns("http://10.0.0.5:8069");
+    expect(onPrem).toEqual({
+      valid: false,
+      error: expect.stringContaining("ALLOW_PRIVATE_URLS=1"),
+    });
+
+    const metadata = await validateWithoutDns("http://169.254.169.254/");
+    expect(metadata).toEqual({ valid: false, error: expect.not.stringContaining("ALLOW_") });
   });
 
   it("accepts HTTPS public domain (resolves to a public address)", async () => {
@@ -245,11 +297,16 @@ describe("validateExternalUrl", () => {
 
   describe("DNS resolution (the actual SSRF-via-DNS / DNS-rebinding case)", () => {
     it("rejects a hostname that resolves to a private address", async () => {
+      // The one blocked case that is a plausible real deployment, so this is
+      // also the one whose message has to name the way to allow it.
       const result = await validateExternalUrl(
         "https://internal-odoo.attacker.example",
         resolveTo(["10.0.0.5"])
       );
-      expect(result).toEqual({ valid: false, error: expect.stringContaining("private") });
+      expect(result).toEqual({
+        valid: false,
+        error: expect.stringContaining("ALLOW_PRIVATE_URLS=1"),
+      });
     });
 
     it("rejects a hostname that resolves to the cloud-metadata address", async () => {
@@ -257,7 +314,7 @@ describe("validateExternalUrl", () => {
         "https://metadata.attacker.example",
         resolveTo(["169.254.169.254"])
       );
-      expect(result).toEqual({ valid: false, error: expect.stringContaining("private") });
+      expect(result).toEqual({ valid: false, error: expect.stringContaining("link-local") });
     });
 
     it("rejects a hostname that resolves to loopback", async () => {
@@ -265,7 +322,7 @@ describe("validateExternalUrl", () => {
         "https://rebind.attacker.example",
         resolveTo(["127.0.0.1"])
       );
-      expect(result).toEqual({ valid: false, error: expect.stringContaining("private") });
+      expect(result).toEqual({ valid: false, error: expect.stringContaining("loopback") });
     });
 
     it("rejects a hostname where only one of several resolved addresses is private", async () => {
@@ -275,7 +332,7 @@ describe("validateExternalUrl", () => {
         "https://mixed.attacker.example",
         resolveTo(["203.0.113.10", "127.0.0.1"])
       );
-      expect(result).toEqual({ valid: false, error: expect.stringContaining("private") });
+      expect(result).toEqual({ valid: false, error: expect.stringContaining("loopback") });
     });
 
     it("rejects a hostname that resolves to an IPv4-mapped IPv6 metadata address", async () => {
@@ -283,7 +340,7 @@ describe("validateExternalUrl", () => {
         "https://mapped.attacker.example",
         resolveTo(["::ffff:169.254.169.254"])
       );
-      expect(result).toEqual({ valid: false, error: expect.stringContaining("private") });
+      expect(result).toEqual({ valid: false, error: expect.stringContaining("link-local") });
     });
 
     it("allows a hostname that resolves only to public addresses", async () => {
@@ -303,28 +360,30 @@ describe("validateExternalUrl", () => {
   describe("ALLOW_PRIVATE_URLS bypass", () => {
     it("allows private URLs when ALLOW_PRIVATE_URLS=1", async () => {
       vi.stubEnv("ALLOW_PRIVATE_URLS", "1");
-      const result = await validateExternalUrl("http://localhost:8069", mustNotBeCalled);
+      const result = await validateWithoutDns("http://localhost:8069");
       expect(result).toEqual({ valid: true, url: "http://localhost:8069" });
     });
 
     it("allows internal Docker hostnames when ALLOW_PRIVATE_URLS=1, without touching DNS", async () => {
       vi.stubEnv("ALLOW_PRIVATE_URLS", "1");
-      // odoo-e2e / eval stacks set this flag so the wizard can reach
-      // odoo-mock on the Docker-internal network. The resolver must not even
-      // be invoked — the bypass short-circuits before DNS.
-      const result = await validateExternalUrl("http://odoo-mock:8069", mustNotBeCalled);
+      // odoo-e2e / eval stacks set this flag so the wizard can reach odoo-mock
+      // on the Docker-internal network, where there is no resolver answer to
+      // be had. `validateWithoutDns` fails if the bypass ever stops
+      // short-circuiting: a bare name like this one would otherwise be handed
+      // to DNS, and the resulting failure is silently allowed.
+      const result = await validateWithoutDns("http://odoo-mock:8069");
       expect(result).toEqual({ valid: true, url: "http://odoo-mock:8069" });
     });
 
     it("still rejects non-HTTP schemes even with ALLOW_PRIVATE_URLS=1", async () => {
       vi.stubEnv("ALLOW_PRIVATE_URLS", "1");
-      const result = await validateExternalUrl("ftp://localhost:8069", mustNotBeCalled);
+      const result = await validateWithoutDns("ftp://localhost:8069");
       expect(result).toEqual({ valid: false, error: expect.stringContaining("HTTP") });
     });
 
     it("still rejects invalid URLs even with ALLOW_PRIVATE_URLS=1", async () => {
       vi.stubEnv("ALLOW_PRIVATE_URLS", "1");
-      const result = await validateExternalUrl("not-a-url", mustNotBeCalled);
+      const result = await validateWithoutDns("not-a-url");
       expect(result).toEqual({ valid: false, error: expect.any(String) });
     });
   });

@@ -164,8 +164,12 @@ export function classifyIpAddress(address: string): IpAddressClass | null {
  * that resolves to a private IP (DNS rebinding) would pass this check —
  * `validateExternalUrl` below closes that gap for its own callers by also
  * resolving a DNS name and classifying every returned address. A caller that
- * uses `isPrivateUrl` directly (`imap-autodiscover.ts`'s prefill-only guard)
- * still only gets the string-only check.
+ * uses `isPrivateUrl` directly gets the string-only check and nothing more:
+ * today that is `imap-autodiscover.ts`, which compensates by rejecting every
+ * address literal outright and only ever fetching over HTTPS. A name with an
+ * internal A record is still not covered there — narrower than it sounds
+ * (HTTPS only, and the host is derived from the user's own email domain), but
+ * not closed.
  */
 export function isPrivateUrl(urlString: string): boolean {
   let url: URL;
@@ -175,17 +179,31 @@ export function isPrivateUrl(urlString: string): boolean {
     return false; // Can't determine — let validateExternalUrl handle parse errors
   }
 
-  const hostname = url.hostname;
+  const hostClass = classifyHostname(url.hostname);
+  return hostClass !== null && hostClass !== "public";
+}
 
-  // Check well-known private hostnames
-  if (PRIVATE_HOSTNAMES.has(hostname.toLowerCase())) return true;
+/**
+ * Classifies a URL's host from the string alone: the address class for an IP
+ * literal, and null for a genuine DNS name — which no amount of string
+ * inspection can answer for, only a resolver can.
+ *
+ * Both string-only callers go through here so they cannot drift: `isPrivateUrl`
+ * collapses the answer to a boolean, and `validateExternalUrl` keeps the class
+ * so it can phrase the right refusal and decide whether DNS is still needed.
+ */
+function classifyHostname(hostname: string): IpAddressClass | null {
+  // A well-known private name is loopback wherever it resolves at all; naming
+  // the class rather than returning a bare `true` is what lets the caller say
+  // "never a real server" instead of suggesting an opt-out that doesn't apply.
+  if (PRIVATE_HOSTNAMES.has(hostname.toLowerCase())) return "loopback";
 
-  // Everything else is decided by the address ranges. A hostname that is not
-  // an IP literal classifies as null and passes — see the DNS caveat above.
-  // (`URL.hostname` keeps the brackets around an IPv6 literal; classifyIpAddress
-  // strips them.)
-  const addressClass = classifyIpAddress(hostname);
-  return addressClass !== null && addressClass !== "public";
+  // `URL.hostname` keeps the brackets around an IPv6 literal ("[::1]"), which
+  // `classifyIpAddress` strips — and which `dns.lookup` chokes on, so this is
+  // also the step that keeps a literal away from the resolver. Exactly that
+  // step was missing in `provider-url-guard.ts`, whose fail-open catch then
+  // waved every IPv6 literal through.
+  return classifyIpAddress(hostname);
 }
 
 type ValidationResult = { valid: true; url: string } | { valid: false; error: string };
@@ -198,7 +216,25 @@ const defaultUrlHostResolver: UrlHostResolver = async (host) => {
   return results.map((result) => result.address);
 };
 
-const PRIVATE_NETWORK_ERROR = "URLs targeting private or internal networks are not allowed";
+// Two messages, because the two cases deserve different advice. Loopback,
+// link-local (cloud metadata) and the unspecified address are never a real
+// Odoo server, so there is nothing to trade off and nothing to suggest. An
+// RFC-1918 / ULA address, on the other hand, is exactly where an on-premise
+// Odoo legitimately lives — so that one names the way to allow it. Same split
+// as `mail-host-guard.ts`; both strings keep the word "private" so a caller
+// asserting on it stays honest.
+const INTERNAL_NETWORK_ERROR =
+  "Blocked: this URL targets a loopback, link-local or cloud-metadata address, " +
+  "which is never a private Odoo server.";
+
+const PRIVATE_NETWORK_ERROR =
+  "Blocked: this URL targets a private network address. " +
+  "Set ALLOW_PRIVATE_URLS=1 to allow an Odoo server on your own network.";
+
+/** The message to answer with for the address class that caused the block. */
+function blockMessageFor(addressClass: IpAddressClass): string {
+  return addressClass === "private" ? PRIVATE_NETWORK_ERROR : INTERNAL_NETWORK_ERROR;
+}
 
 /**
  * Validates a user-supplied URL for server-side requests.
@@ -211,14 +247,17 @@ const PRIVATE_NETWORK_ERROR = "URLs targeting private or internal networks are n
  * resolution.
  *
  * A hostname that is an IP literal, or one of the well-known private names
- * (`localhost`, …), is classified from the string alone via `isPrivateUrl` —
- * no DNS involved. A hostname that is a genuine DNS name is additionally
- * RESOLVED and every returned address is classified, so a name that points at
- * 169.254.169.254 (cloud metadata) or an RFC-1918 address — including one
- * that only starts resolving there after the URL is saved (DNS rebinding) —
- * can't sneak past a check that only ever read the hostname string. Resolving
- * again at request time is out of scope here; see `probe.ts`'s callers for
- * that caveat, shared with the mail-host guard.
+ * (`localhost`, …), is classified from the string alone via `classifyHostname`
+ * — no DNS involved, and no literal is ever handed to the resolver. A hostname
+ * that is a genuine DNS name is additionally RESOLVED and every returned
+ * address is classified, so a name that points at 169.254.169.254 (cloud
+ * metadata) or an RFC-1918 address can't sneak past a check that only ever
+ * read the hostname string.
+ *
+ * What this does NOT cover is rebinding between the two lookups: the address
+ * is classified here, and the eventual Odoo request resolves the name again.
+ * Closing that would mean pinning the connection to the address we checked,
+ * the same caveat `mail-host-guard.ts` carries for imapflow/nodemailer.
  *
  * Fails open on DNS resolution failure: a name that doesn't resolve can't be
  * classified, and the far more likely cause is a typo — blocking it here
@@ -246,17 +285,20 @@ export async function validateExternalUrl(
 
   const allowPrivate = process.env.ALLOW_PRIVATE_URLS === "1";
   if (!allowPrivate) {
-    // Literal address / well-known private hostname: string-only check, no DNS.
-    if (isPrivateUrl(urlString)) {
-      return { valid: false, error: PRIVATE_NETWORK_ERROR };
-    }
-
-    // A DNS name that passed the literal check above still might resolve to
-    // a private address — resolve it and classify every returned address.
     const hostname = url.hostname;
-    const isLiteralOrWellKnown =
-      classifyIpAddress(hostname) !== null || PRIVATE_HOSTNAMES.has(hostname.toLowerCase());
-    if (!isLiteralOrWellKnown) {
+    // Address literal or well-known private name: decided from the string
+    // alone, no DNS involved.
+    const hostClass = classifyHostname(hostname);
+    if (hostClass !== null) {
+      if (hostClass !== "public") {
+        return { valid: false, error: blockMessageFor(hostClass) };
+      }
+      // A public literal is already fully classified — DNS has nothing to add.
+    } else {
+      // A genuine DNS name. The address it points at is what actually gets
+      // connected to, so resolve it and classify every answer: a name aimed at
+      // 169.254.169.254 (cloud metadata) or an RFC-1918 address must not walk
+      // past a check that only ever read the hostname string.
       let addresses: string[];
       try {
         addresses = await resolver(hostname);
@@ -266,7 +308,7 @@ export async function validateExternalUrl(
       for (const address of addresses) {
         const addressClass = classifyIpAddress(address);
         if (addressClass !== null && addressClass !== "public") {
-          return { valid: false, error: PRIVATE_NETWORK_ERROR };
+          return { valid: false, error: blockMessageFor(addressClass) };
         }
       }
     }

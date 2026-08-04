@@ -45,6 +45,8 @@ The API key inherits the Odoo permissions of the user who created it. If you wan
 
 Pinchy verifies the credentials and probes the available data models. If the connection fails, double-check the URL and API key.
 
+If Pinchy answers that the URL targets a private network, see [Odoo on your own network](#odoo-on-your-own-network) below.
+
 ## 3. Review the sync
 
 After a successful connection, Pinchy shows which data categories are accessible — Sales, Inventory, Contacts, Accounting, and others. This depends on the Odoo modules you have installed and the permissions of the API user.
@@ -190,6 +192,22 @@ model an agent runs. This complements the existing read-back guarantee on
 it done. Verification only runs where it is deterministic; writes that cannot be
 confirmed this way are covered instead by the confirmation-before-write habit the
 read-write finance templates carry.
+
+## Odoo on your own network
+
+Pinchy fetches the URL you enter from its own server, so an admin who can add a connection can point it at anything that server can reach. That's why we only connect to a URL that lands on a public address — and we check the address it actually resolves to, not just how the hostname reads. A name like `erp.yourcompany.com` pointing at `10.0.0.5` is the same request as typing `10.0.0.5` directly.
+
+If your Odoo genuinely lives on your own network — on `10.x`, `172.16–31.x`, `192.168.x`, or an IPv6 unique-local range — set the environment variable on the Pinchy container and restart it:
+
+```bash
+ALLOW_PRIVATE_URLS=1
+```
+
+:::caution
+`ALLOW_PRIVATE_URLS=1` turns the address check off completely, including for loopback and the cloud-metadata address `169.254.169.254`. It is not the two-tier switch that [`ALLOW_PRIVATE_MAIL_HOSTS`](/guides/connect-email-imap/#mail-servers-on-your-own-network) is for mail servers. Set it only on an instance whose admins you'd trust with that reach anyway.
+:::
+
+The same check runs everywhere a URL is accepted, not only on the first connect: adding a connection, editing one, testing credentials, listing databases, previewing a sync, and re-syncing the schema. So a blocked address can't be stored and quietly reconnected to later.
 
 ## Re-syncing when Odoo permissions change
 

@@ -209,6 +209,12 @@ sed -i 's/^PINCHY_VERSION=.*/PINCHY_VERSION=%%PINCHY_VERSION%%/' .env
 docker compose pull && docker compose up -d && docker image prune -f
 ```
 
+#### An Odoo URL is now checked against the address it resolves to
+
+The SSRF guard on the Odoo connection routes only ever read the hostname as a string, so a name pointing at `169.254.169.254` or an internal address passed a check that a bare `10.0.0.5` failed. It now resolves the name and classifies every address it gets back.
+
+That closes the hole, and it also catches a setup that used to work by accident: **an on-premise Odoo reached by a hostname that resolves into your own network** — `erp.internal:8069` on `10.x`, `172.16–31.x`, `192.168.x` or an IPv6 unique-local range. Typing its IP address directly was already refused; the hostname now is too. The refusal says so and names the fix — set `ALLOW_PRIVATE_URLS=1` on the Pinchy container and restart it. Nothing to change if your Odoo is reachable at a public address, which includes every `odoo.com` instance. See [Odoo on your own network](/guides/connect-odoo/#odoo-on-your-own-network).
+
 #### A provider key that can't reach the runtime now says so
 
 Pinchy and the agent runtime share one config volume under two different users, and each agent has a directory in it that both of them write to. If the runtime got there first, the directory came out owned by the wrong user and Pinchy could no longer store that agent's credentials — which stopped the whole config from reaching the runtime. The agent then simply stopped answering, with the real reason only in `docker compose logs pinchy`.
