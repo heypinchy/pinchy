@@ -36,6 +36,8 @@ import { routeContext } from "@/test-helpers/route";
 import {
   resetPasswordChangeRateLimiterForTest,
   PASSWORD_CHANGE_RATE_LIMIT_MAX_ATTEMPTS,
+  PASSWORD_CHANGE_RATE_LIMIT_WINDOW_MS,
+  PASSWORD_CHANGE_RATE_LIMIT_WINDOW_MINUTES,
 } from "@/lib/password-change-rate-limiter";
 
 // `auth.api.changePassword` is called with `returnHeaders: true` so the route
@@ -388,6 +390,51 @@ describe("POST /api/users/me/password", () => {
         .mocked(appendAuditLog)
         .mock.calls.filter(([entry]) => entry.outcome === "failure");
       expect(rateLimitRows).toHaveLength(1);
+    });
+
+    // The blocked user has to be told how long, not "later" — the same
+    // contract the login page honours via @/lib/auth-rate-limit. Asserted
+    // against the window constant so the message can't drift from the rule.
+    it("names the wait in the 429 body and carries it in Retry-After", async () => {
+      for (let i = 0; i < PASSWORD_CHANGE_RATE_LIMIT_MAX_ATTEMPTS; i++) {
+        await POST(
+          makePostRequest({ currentPassword: "oldpass1234567", newPassword: "Br1ghtNova!2" }),
+          routeContext()
+        );
+      }
+
+      const response = await POST(
+        makePostRequest({ currentPassword: "oldpass1234567", newPassword: "Br1ghtNova!2" }),
+        routeContext()
+      );
+      expect(response.status).toBe(429);
+      const data = await response.json();
+      expect(data.error).toContain(`${PASSWORD_CHANGE_RATE_LIMIT_WINDOW_MINUTES} minutes`);
+      expect(response.headers.get("Retry-After")).toBe(
+        String(PASSWORD_CHANGE_RATE_LIMIT_WINDOW_MS / 1000)
+      );
+    });
+
+    // A broken audit DB must not turn a deliberate 429 into a 500 — the same
+    // rule @/lib/api-auth states for its scope-denial row ("logging must never
+    // gate authorization"). It matters more here than it looks: the audit
+    // window is already open by the time the write runs, so a throw that
+    // propagated would also suppress the next window's worth of denials
+    // against a row that was never written.
+    it("still answers 429 when the audit write throws", async () => {
+      for (let i = 0; i < PASSWORD_CHANGE_RATE_LIMIT_MAX_ATTEMPTS; i++) {
+        await POST(
+          makePostRequest({ currentPassword: "oldpass1234567", newPassword: "Br1ghtNova!2" }),
+          routeContext()
+        );
+      }
+      vi.mocked(appendAuditLog).mockRejectedValueOnce(new Error("audit db down"));
+
+      const response = await POST(
+        makePostRequest({ currentPassword: "oldpass1234567", newPassword: "Br1ghtNova!2" }),
+        routeContext()
+      );
+      expect(response.status).toBe(429);
     });
   });
 });

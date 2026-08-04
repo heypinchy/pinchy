@@ -9,6 +9,8 @@ import { appendAuditLog } from "@/lib/audit";
 import {
   tryAcquirePasswordChangeSlot,
   claimPasswordChangeRateLimitAuditSlot,
+  PASSWORD_CHANGE_RATE_LIMIT_WINDOW_MS,
+  PASSWORD_CHANGE_RATE_LIMIT_WINDOW_MINUTES,
 } from "@/lib/password-change-rate-limiter";
 
 // Shape only — length/breach-list policy is enforced post-parse via
@@ -46,19 +48,38 @@ export const POST = withAuth(async (request, _ctx, session) => {
   if (!tryAcquirePasswordChangeSlot(userId)) {
     const slot = claimPasswordChangeRateLimitAuditSlot(userId);
     if (slot.write) {
-      await appendAuditLog({
-        actorType: "user",
-        actorId: userId,
-        eventType: "auth.password_changed",
-        resource: userId,
-        outcome: "failure",
-        error: { message: "Rate limit exceeded" },
-        detail: slot.suppressed > 0 ? { suppressedSinceLastEntry: slot.suppressed } : undefined,
-      });
+      // try/catch for the same reason `@/lib/api-auth` wraps its scope-denial
+      // row: logging must never gate the decision. A throw here would turn a
+      // deliberate 429 into an unhandled 500 (withAuth doesn't catch) — and
+      // worse, the audit window is already open by this point, so the next
+      // PASSWORD_CHANGE_RATE_LIMIT_WINDOW_MS of denials would be suppressed
+      // against a row that was never written.
+      try {
+        await appendAuditLog({
+          actorType: "user",
+          actorId: userId,
+          eventType: "auth.password_changed",
+          resource: userId,
+          outcome: "failure",
+          error: { message: "Rate limit exceeded" },
+          detail: slot.suppressed > 0 ? { suppressedSinceLastEntry: slot.suppressed } : undefined,
+        });
+      } catch {
+        // Don't let a broken audit DB mask the rate limit.
+      }
     }
+    // Name the wait rather than saying "later": the same reasoning as the
+    // login page's message (see @/lib/auth-rate-limit — the window constant
+    // lives in its own module precisely so the user-facing side can quote
+    // it). Retry-After carries it for non-browser callers.
     return NextResponse.json(
-      { error: "Too many attempts. Please try again later." },
-      { status: 429 }
+      {
+        error: `Too many password change attempts. Please wait ${PASSWORD_CHANGE_RATE_LIMIT_WINDOW_MINUTES} minutes and try again.`,
+      },
+      {
+        status: 429,
+        headers: { "Retry-After": String(PASSWORD_CHANGE_RATE_LIMIT_WINDOW_MS / 1000) },
+      }
     );
   }
 

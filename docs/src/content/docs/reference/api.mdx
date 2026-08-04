@@ -1910,16 +1910,18 @@ Change your own password.
 
 **Request body:**
 
-| Field             | Type   | Required | Description                     |
-| ----------------- | ------ | -------- | ------------------------------- |
-| `currentPassword` | string | Yes      | Current password                |
-| `newPassword`     | string | Yes      | New password (min 8 characters) |
+| Field             | Type   | Required | Description                      |
+| ----------------- | ------ | -------- | -------------------------------- |
+| `currentPassword` | string | Yes      | Current password                 |
+| `newPassword`     | string | Yes      | New password (min 12 characters) |
 
 **Response:** `{ "success": true }`
+
+A successful change **revokes every session the user holds** and issues a replacement for the caller, returned as a `Set-Cookie` on this response. A client that discards it will be unauthenticated on its next request.
 
 **Errors:**
 
 - `400` — missing fields or new password too short
 - `401` — not authenticated
 - `403` — current password incorrect
-- `429` — too many attempts (5 per 10 minutes per user); wait for the window to reset
+- `429` — too many attempts (5 per 10 minutes per user); `Retry-After` carries the seconds to wait

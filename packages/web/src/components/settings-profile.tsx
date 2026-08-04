@@ -100,7 +100,13 @@ export function SettingsProfile({ userName, onDirtyChange }: SettingsProfileProp
         }),
       });
       if (res.ok) {
-        toast.success("Password updated");
+        // Say what actually happened: the change revokes every session this
+        // user holds (revokeOtherSessions in the route), so their phone and
+        // second machine are signed out. This tab keeps working — the route
+        // forwards the reissued session cookie — which is exactly why the
+        // sign-out would otherwise go unnoticed until someone else's device
+        // asked for a password.
+        toast.success("Password updated. Your other devices have been signed out.");
         passwordForm.reset();
       } else {
         const data = await res.json();

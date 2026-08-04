@@ -25,6 +25,14 @@ export const PASSWORD_CHANGE_RATE_LIMIT_MAX_ATTEMPTS = 5;
 // 10 minutes — mirrors the (bypassed) Better Auth `/change-password` window
 // in `@/lib/auth`, so the effective policy matches the documented one.
 export const PASSWORD_CHANGE_RATE_LIMIT_WINDOW_MS = 600_000;
+/**
+ * The same window in whole minutes, for the message the blocked user reads.
+ * Derived rather than typed out again, for the reason `@/lib/auth-rate-limit`
+ * states about the sign-in window: the enforcing rule and the sentence that
+ * quotes it must not be two independent copies of the same number.
+ */
+export const PASSWORD_CHANGE_RATE_LIMIT_WINDOW_MINUTES =
+  PASSWORD_CHANGE_RATE_LIMIT_WINDOW_MS / 60_000;
 
 const limiters = new Map<string, FixedWindowRateLimiter>();
 

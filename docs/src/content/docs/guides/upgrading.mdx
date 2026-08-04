@@ -233,6 +233,12 @@ An agent with **Write files** permission can now turn tabular data it already ho
 
 Email workflows now have their own **Automations** tab in an agent's settings, where you can review, create, enable, disable and delete them. It is visible to admins on any agent, and to the owner of a personal agent. Existing workflows are listed as-is; nothing changes on upgrade until you edit one.
 
+#### Changing your password now signs you out on every other device
+
+Until now a password change left every existing session alive — including, in the case this action exists for, the stolen one. It now ends all of them. The browser you change it in keeps working; your phone and any second machine ask for the new password the next time they're used. Tell your users before you upgrade if that would surprise them.
+
+Repeated wrong guesses at the current password are also throttled now — five attempts per account per 10 minutes, after which Pinchy answers `429` and says how long to wait. The account-level rule that was supposed to cover this never applied to Pinchy's own change-password route, so in practice there was no limit at all. Nothing to configure either way. See [Changing your password](/guides/user-management/#changing-your-password).
+
 ### Database migrations
 
 Nine migrations (`0056`–`0064`) run automatically on startup — no manual steps. Only `0056` is destructive, and only for the Knowledge Base tables (see the breaking change above); the rest are additive.

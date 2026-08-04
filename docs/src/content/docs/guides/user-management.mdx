@@ -172,6 +172,10 @@ Every user (not just admins) can manage their own profile at **Settings → Prof
 2. In the Change Password section, enter your **current password**, then your **new password**, and confirm it. Passwords must be at least 12 characters, contain at least one letter and one digit, and must not appear on the breach-list of common passwords.
 3. Click **Change Password**.
 
+A successful change **signs you out everywhere else** — your phone, a second browser, any machine you left logged in. The tab you changed it in stays signed in; everything else asks for the new password. That is the point: changing your password is what you do when you think someone else has your session, and it only helps if their session ends with it.
+
+If you enter the wrong current password repeatedly, Pinchy stops accepting attempts for that account after five tries and tells you how long to wait. The limit is per account, not per browser, so it also holds against someone guessing at your password from a session they should not have.
+
 ### Logging out
 
 Click the **Log out** button in the Session section to end your current session and return to the login page.

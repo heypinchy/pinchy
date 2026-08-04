@@ -144,8 +144,13 @@ describe("SettingsProfile", () => {
     await user.type(screen.getByLabelText("Confirm Password"), "NewSecret789!");
     await user.click(screen.getByRole("button", { name: "Change Password" }));
 
+    // The change revokes every session this user holds, so the confirmation
+    // has to say so — the sign-out is otherwise invisible until the user's
+    // phone asks for a password they don't expect to have changed there.
     await waitFor(() => {
-      expect(toast.success).toHaveBeenCalledWith("Password updated");
+      expect(toast.success).toHaveBeenCalledWith(
+        "Password updated. Your other devices have been signed out."
+      );
     });
   });
 
