@@ -424,6 +424,51 @@ describe("pinchy-audit plugin", () => {
       expect(body.result).toContain("[REDACTED]");
     });
 
+    it("truncates values beyond max depth instead of leaking them unredacted (SYNC with web)", async () => {
+      const { default: plugin } = await import("./index");
+      plugin.register?.(
+        createMockApi({
+          apiBaseUrl: "http://pinchy:7777",
+          gatewayToken: "gw-token",
+        }) as any
+      );
+
+      const afterHook = mockOn.mock.calls.find((c) => c[0] === "after_tool_call")?.[1];
+
+      // Build a 12-level deep object: depth 0 is outermost, secret lives at depth 12.
+      // The depth cap is a cycle/stack-depth guard, not a redaction bypass — a
+      // real Odoo command tuple nests to depth ~6, well within reach of a
+      // secret this cap must not pass through verbatim.
+      let nested: any = { password: "deep-secret" };
+      for (let i = 0; i < 12; i++) {
+        nested = { nested };
+      }
+
+      await afterHook(
+        {
+          toolName: "odoo_write",
+          params: nested,
+          result: "ok",
+          durationMs: 5,
+        },
+        {
+          agentId: "agent-1",
+          sessionKey: "agent:agent-1:user-user-1",
+          toolName: "odoo_write",
+        }
+      );
+
+      const body = JSON.parse((fetch as any).mock.calls[0][1].body);
+      expect(JSON.stringify(body.params)).not.toContain("deep-secret");
+      // The MAX_DEPTH (10) check fires 10 hops in, at the object whose own
+      // subtree still holds the secret two levels further down.
+      let level = body.params;
+      for (let i = 0; i < 10; i++) {
+        level = level.nested;
+      }
+      expect(level).toBe("[TRUNCATED]");
+    });
+
     it("also sanitizes params in before_tool_call events", async () => {
       const { default: plugin } = await import("./index");
       plugin.register?.(

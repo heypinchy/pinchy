@@ -1,4 +1,5 @@
 const REDACTED = "[REDACTED]";
+const TRUNCATED = "[TRUNCATED]";
 const MAX_DEPTH = 10;
 
 // SYNC: This sanitization logic is duplicated in packages/plugins/pinchy-audit/index.ts
@@ -71,7 +72,13 @@ function redactPatterns(value: string): string {
 
 function sanitizeValue(value: unknown, depth: number): unknown {
   if (value === null || value === undefined) return value;
-  if (depth >= MAX_DEPTH) return value;
+  // The depth cap exists to stop unbounded recursion (a cyclic or
+  // pathologically deep structure), not to grant an escape hatch from
+  // redaction. Returning `value` here would forward it UNREDACTED into an
+  // append-only, HMAC-chained audit row that can never be rewritten — a real
+  // Odoo command tuple nests to depth ~6, well within reach of a secret this
+  // cap would otherwise pass through verbatim.
+  if (depth >= MAX_DEPTH) return TRUNCATED;
 
   if (Array.isArray(value)) {
     return value.map((item) => sanitizeValue(item, depth + 1));

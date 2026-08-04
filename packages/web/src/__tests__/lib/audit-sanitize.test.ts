@@ -176,8 +176,21 @@ describe("sanitizeDetail", () => {
       expect(result).toEqual({ count: 42, active: true, password: "[REDACTED]" });
     });
 
-    it("stops recursion at max depth", () => {
+    it("stops recursion at max depth without throwing", () => {
       // Build a 12-level deep object: depth 0 is outermost, password lives at depth 12
+      let obj: any = { password: "deep-secret" };
+      for (let i = 0; i < 12; i++) {
+        obj = { nested: obj };
+      }
+
+      expect(() => sanitizeDetail(obj)).not.toThrow();
+    });
+
+    it("truncates values beyond max depth instead of leaking them unredacted", () => {
+      // The depth cap is a cycle/stack-depth guard, not a redaction bypass.
+      // A real Odoo command tuple nests to depth ~6, well within reach of a
+      // secret this cap must not pass through verbatim into an append-only,
+      // HMAC-chained audit row.
       let obj: any = { password: "deep-secret" };
       for (let i = 0; i < 12; i++) {
         obj = { nested: obj };
@@ -185,13 +198,14 @@ describe("sanitizeDetail", () => {
 
       const result = sanitizeDetail(obj) as any;
 
-      // Should not throw. The password key at depth 12 is beyond the limit
-      // of 10, so it must NOT be redacted.
+      // The MAX_DEPTH (10) check fires 10 hops in, at the object whose own
+      // subtree still holds the secret two levels further down.
       let level = result;
-      for (let i = 0; i < 12; i++) {
+      for (let i = 0; i < 10; i++) {
         level = level.nested;
       }
-      expect(level.password).toBe("deep-secret");
+      expect(level).toBe("[TRUNCATED]");
+      expect(JSON.stringify(result)).not.toContain("deep-secret");
     });
   });
 
