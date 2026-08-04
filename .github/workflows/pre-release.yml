@@ -31,7 +31,11 @@ jobs:
   build:
     name: Build & push moving tag and :sha-<short>
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    # The widest spread of any job here: 10m to 37m across the last 10 green
+    # runs, because a multi-arch build's cost is registry throughput and
+    # buildx cache hits, not work done. Sized above the worst real run — a
+    # cancelled :rc build blocks the backport loop for a fault that isn't one.
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@v7
 

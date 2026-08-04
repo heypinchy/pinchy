@@ -118,7 +118,10 @@ jobs:
     name: Build ${{ matrix.name }} image
     needs: changes
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Max observed 20m (pinchy image, 8 green main runs). Image builds are
+    # dominated by registry and buildx-cache variance rather than by work
+    # done, so this one gets absolute headroom rather than a tight ratio.
+    timeout-minutes: 45
     permissions:
       contents: read
       packages: write
@@ -2074,7 +2077,8 @@ jobs:
   setup-wizard-e2e:
     name: Setup Wizard E2E Tests (${{ matrix.shard }}/2)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Max observed 19m on shard 2 — the slowest job in the suite.
+    timeout-minutes: 40
     needs: [changes, build-image]
     # See docker-smoke on why the changes gate is explicit rather than inferred
     # from build-image being skipped.
@@ -2214,7 +2218,7 @@ jobs:
   telegram-e2e:
     name: Telegram E2E Tests
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 30
     needs: [changes, build-image]
     # See docker-smoke on why the changes gate is explicit rather than inferred
     # from build-image being skipped.
@@ -2811,11 +2815,16 @@ jobs:
   # 410 unconditionally). osv-scanner reads pnpm-lock.yaml directly and
   # queries the OSV database, so we don't need an npm install and don't
   # depend on npm's legacy audit API.
+  # No `timeout-minutes` here, deliberately: a job that calls a reusable
+  # workflow accepts only name/uses/with/secrets/needs/if/permissions, and
+  # GitHub rejects the whole FILE — no job runs, no required check reports —
+  # if it carries one. The timeout has to live on the called workflow's own
+  # jobs, which for a third-party workflow is not ours to set. See
+  # scripts/lib/workflow-timeouts.mjs, which enforces both halves of this.
   vuln-scan:
     name: Security audit
     needs: changes
     if: needs.changes.outputs.code == 'true'
-    timeout-minutes: 10
     uses: "google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@v2.3.8"
     with:
       scan-args: |-

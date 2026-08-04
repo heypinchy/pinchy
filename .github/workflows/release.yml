@@ -44,7 +44,9 @@ jobs:
   docker:
     name: Build & Push Docker Images
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    # Max observed 20m; same registry/cache variance as pre-release.yml, and
+    # a cancelled release build is the most expensive false positive here.
+    timeout-minutes: 45
 
     steps:
       - uses: actions/checkout@v7
@@ -323,9 +325,13 @@ jobs:
     # generates fresh screenshots against the newly released build and
     # then deploys the docs site with those screenshots embedded — keeping
     # screenshots in lockstep with the released UI.
+    #
+    # No `timeout-minutes` here: a reusable-workflow call accepts only
+    # name/uses/with/secrets/needs/if/permissions, and GitHub rejects the
+    # whole file if it carries one. screenshots.yml sets its own per-job
+    # timeouts instead.
     uses: ./.github/workflows/screenshots.yml
     secrets: inherit
-    timeout-minutes: 40
     permissions:
       contents: write
       pages: write
