@@ -470,6 +470,13 @@
       "when": 1785866261513,
       "tag": "0066_dashing_vampiro",
       "breakpoints": true
+    },
+    {
+      "idx": 67,
+      "version": "7",
+      "when": 1785873258121,
+      "tag": "0067_cascade_fk_indexes",
+      "breakpoints": true
     }
   ]
 }

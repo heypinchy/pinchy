@@ -10,6 +10,7 @@
 // truncate between tests, and the loader reads ALL enabled workflows, so every
 // assertion is scoped to the workflow ids the test itself seeded.
 import { describe, it, expect } from "vitest";
+import { eq } from "drizzle-orm";
 
 import { db } from "@/db";
 import {
@@ -194,6 +195,39 @@ describe("email workflow loader — loadDispatchableWorkflows", () => {
     const mine = onlyWorkflow(await loadDispatchableWorkflows(), wf.id);
 
     expect(mine).toHaveLength(0);
+  });
+
+  it("keeps a shared-agent workflow when its creator is deleted, and stops dispatching it (#1097)", async () => {
+    // `email_workflows.created_by` is ON DELETE SET NULL, and this is the test
+    // that pins all three drift directions at once — the same contract as the
+    // `invites.claimedByUserId` test in schema-hardening.integration.test.ts:
+    //
+    //   - flipped to `cascade`  → the workflow row disappears, first assertion fails
+    //   - flipped to `no action`→ the DELETE throws, the test fails there
+    //   - left as `set null`    → the row survives, unlinked, and the loader drops it
+    //
+    // The third line is the one the schema comment claims ("no consumer change
+    // needed"), so assert it rather than trust it: an enabled workflow whose
+    // creator is gone has no recipient, and dispatchEmails rejects an empty
+    // recipient set.
+    const creator = await seedUser();
+    const agent = await seedAgent({ isPersonal: false, ownerId: null });
+    const wf = await seedWorkflow({ agentId: agent.id, enabled: true, createdBy: creator.id });
+    const conn = await seedConnection();
+    await linkConnection(wf.id, conn.id, new Date());
+
+    expect(onlyWorkflow(await loadDispatchableWorkflows(), wf.id)).toHaveLength(1);
+
+    await db.delete(users).where(eq(users.id, creator.id));
+
+    const [survivor] = await db.select().from(emailWorkflows).where(eq(emailWorkflows.id, wf.id));
+    expect(survivor, "the workflow must outlive its creator, not cascade away").toBeDefined();
+    expect(survivor.createdBy).toBeNull();
+    // The rest of the row is untouched — it is still enabled, it just has
+    // nobody to notify.
+    expect(survivor.enabled).toBe(true);
+
+    expect(onlyWorkflow(await loadDispatchableWorkflows(), wf.id)).toHaveLength(0);
   });
 
   it("dispatches an enabled workflow even when its status is 'error' — status is a health signal, not a dispatch gate", async () => {

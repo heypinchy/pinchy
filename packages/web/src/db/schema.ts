@@ -366,7 +366,13 @@ export const inviteGroups = pgTable(
       .notNull()
       .references(() => groups.id, { onDelete: "cascade" }),
   },
-  (table) => [primaryKey({ columns: [table.inviteId, table.groupId] })]
+  (table) => [
+    primaryKey({ columns: [table.inviteId, table.groupId] }),
+    // Deleting a group cascades here, and `gated-config.ts` deletes EVERY group
+    // in one statement when the enterprise gate lapses. The PK leads with
+    // inviteId, so each of those deletes scanned the whole table.
+    index("invite_groups_group_idx").on(table.groupId),
+  ]
 );
 
 // ── Relations ───────────────────────────────────────────────────────────
@@ -624,6 +630,11 @@ export const emailWorkflows = pgTable(
     index("email_workflows_enabled_idx")
       .on(table.enabled)
       .where(sql`${table.enabled}`),
+    // `set null` above still has to FIND these rows when a user row goes away,
+    // exactly as a cascade would — and the partial index right above cannot
+    // serve that scan (it covers only enabled rows). Guarded by
+    // cascade-index-coverage.integration.test.ts.
+    index("email_workflows_created_by_idx").on(table.createdBy),
     check("email_workflows_status_check", sql`${table.status} ${inEnum(EMAIL_WORKFLOW_STATUSES)}`),
   ]
 );
@@ -643,7 +654,13 @@ export const emailWorkflowConnections = pgTable(
     sinceTs: timestamp("since_ts").notNull(),
     addedAt: timestamp("added_at").notNull().defaultNow(),
   },
-  (table) => [primaryKey({ columns: [table.workflowId, table.connectionId] })]
+  (table) => [
+    primaryKey({ columns: [table.workflowId, table.connectionId] }),
+    // Disconnecting an integration hard-deletes the connection row
+    // (`DELETE /api/integrations/:connectionId`), cascading here. The PK leads
+    // with workflowId, so that cascade had no usable index.
+    index("email_workflow_connections_connection_idx").on(table.connectionId),
+  ]
 );
 
 // The ledger is the source of truth for processed-tracking. A claim is an atomic
@@ -1027,6 +1044,9 @@ export const chatSessionErrors = pgTable(
     index("idx_chat_session_errors_session").on(t.sessionKey, t.createdAt),
     // GC sweep: reap resolved (superseded/dismissed) rows by age.
     index("idx_chat_session_errors_gc").on(t.createdAt),
+    // Both FKs cascade, and neither index above leads with either column.
+    index("idx_chat_session_errors_user").on(t.userId),
+    index("idx_chat_session_errors_agent").on(t.agentId),
   ]
 );
 
