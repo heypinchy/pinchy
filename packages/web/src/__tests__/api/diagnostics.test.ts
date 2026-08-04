@@ -125,4 +125,22 @@ describe("GET /api/diagnostics", () => {
 
     expect(data).not.toHaveProperty("logs");
   });
+
+  // A session carrying no `role` at all is the shape this endpoint used to
+  // hand logs to. It must resolve to "not an admin", never to a lenient
+  // fallback — the check has to fail closed on an unexpected session shape,
+  // not on the absence of a known-bad one.
+  it("should omit logs when the session carries no role", async () => {
+    mockGetSession.mockResolvedValueOnce({ user: { id: "1" } });
+    mockDb.execute.mockResolvedValueOnce([{ "?column?": 1 }]);
+    vi.spyOn(global, "fetch").mockResolvedValueOnce({ ok: true } as Response);
+    mockLogCapture.formatAsText.mockReturnValueOnce(
+      "2026-03-04T08:00:00Z [ERROR] DB connection failed"
+    );
+
+    const response = await GET();
+    const data = await response.json();
+
+    expect(data).not.toHaveProperty("logs");
+  });
 });
