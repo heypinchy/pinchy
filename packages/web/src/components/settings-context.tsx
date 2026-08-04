@@ -4,6 +4,42 @@ import { useState, useEffect } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { MarkdownEditor } from "@/components/markdown-editor";
+import { CONTEXT_CONTENT_MAX_LENGTH } from "@/lib/schemas/context";
+
+/**
+ * Below this the counter stays hidden — a limit nobody is near is noise. From
+ * here on it is the only thing that makes the disabled Save button explain
+ * itself, including for a context that was already over the limit when the cap
+ * landed.
+ */
+const COUNTER_VISIBLE_FROM = Math.floor(CONTEXT_CONTENT_MAX_LENGTH * 0.9);
+
+function formatCount(value: number): string {
+  return value.toLocaleString("en-US");
+}
+
+/**
+ * `parseRequestBody` answers a failed validation with `error: "Validation
+ * failed"` and the actionable text in `details.fieldErrors`. Showing `error`
+ * alone leaves the user with nothing to correct, so prefer the field error.
+ */
+function readErrorMessage(data: unknown): string {
+  if (data && typeof data === "object") {
+    const { details, error } = data as {
+      details?: { fieldErrors?: Record<string, string[] | undefined> };
+      error?: unknown;
+    };
+
+    const fieldError = Object.values(details?.fieldErrors ?? {})
+      .flat()
+      .find((message): message is string => typeof message === "string" && message.length > 0);
+    if (fieldError) return fieldError;
+
+    if (typeof error === "string" && error.length > 0) return error;
+  }
+
+  return "Failed to save";
+}
 
 interface SettingsContextProps {
   userContext: string;
@@ -46,6 +82,8 @@ function ContextSection({
     onDirtyChange?.(content !== savedContent);
   }, [content, savedContent, onDirtyChange]);
 
+  const isOverLimit = content.length > CONTEXT_CONTENT_MAX_LENGTH;
+
   async function handleSave() {
     setSaving(true);
     setFeedback(null);
@@ -61,7 +99,7 @@ function ContextSection({
         const data = await res.json();
         setFeedback({
           type: "error",
-          message: data.error || "Failed to save",
+          message: readErrorMessage(data),
         });
         return;
       }
@@ -94,9 +132,20 @@ function ContextSection({
           }}
         />
 
-        <Button onClick={handleSave} disabled={saving}>
-          {saving ? "Saving..." : "Save"}
-        </Button>
+        <div className="flex items-center gap-3">
+          <Button onClick={handleSave} disabled={saving || isOverLimit}>
+            {saving ? "Saving..." : "Save"}
+          </Button>
+
+          {content.length >= COUNTER_VISIBLE_FROM && (
+            <span
+              className={isOverLimit ? "text-sm text-red-600" : "text-sm text-muted-foreground"}
+            >
+              {formatCount(content.length)} / {formatCount(CONTEXT_CONTENT_MAX_LENGTH)} characters
+              {isOverLimit && " — trim it to save."}
+            </span>
+          )}
+        </div>
 
         {feedback && (
           <p

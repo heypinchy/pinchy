@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import "@testing-library/jest-dom";
 import { SettingsContext } from "@/components/settings-context";
+import { CONTEXT_CONTENT_MAX_LENGTH, CONTEXT_TOO_LONG_MESSAGE } from "@/lib/schemas/context";
 
 vi.mock("@/components/markdown-editor", () => ({
   MarkdownEditor: ({
@@ -198,6 +199,64 @@ describe("SettingsContext", () => {
 
     await waitFor(() => {
       expect(screen.getByText(/something went wrong/i)).toBeInTheDocument();
+    });
+  });
+
+  it("surfaces the field-level reason from a structured validation error", async () => {
+    // parseRequestBody's 400 puts the actionable text in details.fieldErrors —
+    // `error` alone is the generic "Validation failed", which tells the user
+    // nothing they can act on.
+    vi.mocked(global.fetch).mockResolvedValueOnce({
+      ok: false,
+      json: async () => ({
+        error: "Validation failed",
+        details: {
+          formErrors: [],
+          fieldErrors: { content: [CONTEXT_TOO_LONG_MESSAGE] },
+        },
+      }),
+    } as Response);
+
+    render(<SettingsContext userContext="Some context" orgContext="" isAdmin={false} />);
+
+    fireEvent.click(screen.getByRole("button", { name: /save/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText(CONTEXT_TOO_LONG_MESSAGE)).toBeInTheDocument();
+    });
+    expect(screen.queryByText("Validation failed")).not.toBeInTheDocument();
+  });
+
+  describe("length limit", () => {
+    it("does not show a character count for ordinary short content", () => {
+      render(<SettingsContext userContext="Short" orgContext="" isAdmin={false} />);
+
+      expect(screen.queryByText(/characters/i)).not.toBeInTheDocument();
+    });
+
+    it("shows the character count as the content approaches the limit", () => {
+      const nearLimit = "a".repeat(CONTEXT_CONTENT_MAX_LENGTH - 100);
+      render(<SettingsContext userContext={nearLimit} orgContext="" isAdmin={false} />);
+
+      expect(screen.getByText(/15,900 \/ 16,000 characters/)).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /save/i })).toBeEnabled();
+    });
+
+    it("disables saving while the content is over the limit", () => {
+      const tooLong = "a".repeat(CONTEXT_CONTENT_MAX_LENGTH + 1);
+      render(<SettingsContext userContext={tooLong} orgContext="" isAdmin={false} />);
+
+      expect(screen.getByText(/16,001 \/ 16,000 characters/)).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /save/i })).toBeDisabled();
+    });
+
+    it("re-enables saving once the content is trimmed back under the limit", () => {
+      const tooLong = "a".repeat(CONTEXT_CONTENT_MAX_LENGTH + 1);
+      render(<SettingsContext userContext={tooLong} orgContext="" isAdmin={false} />);
+
+      fireEvent.change(screen.getByRole("textbox"), { target: { value: "trimmed" } });
+
+      expect(screen.getByRole("button", { name: /save/i })).toBeEnabled();
     });
   });
 });

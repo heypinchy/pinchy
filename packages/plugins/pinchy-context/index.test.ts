@@ -125,6 +125,38 @@ describe("pinchy-context plugin", () => {
     expect(result.content[0].text).toContain("Failed to save");
   });
 
+  it("save_user_context quotes the validation detail so the model can act on it", async () => {
+    const api = createMockApi(defaultConfig);
+    const { default: plugin } = await import("./index");
+    plugin.register!(api as any);
+
+    const factory = mockRegisterTool.mock.calls.find(
+      (call: any[]) => call[1]?.name === "pinchy_save_user_context"
+    )?.[0];
+    const tool = factory({ agentId: "agent-1" });
+
+    // Pinchy's 400 for an over-long context: `error` is the generic
+    // "Validation failed", the reason the model needs is in details.fieldErrors.
+    global.fetch = vi.fn().mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          error: "Validation failed",
+          details: {
+            formErrors: [],
+            fieldErrors: {
+              content: ["Context is too long — the limit is 16,000 characters."],
+            },
+          },
+        }),
+        { status: 400 }
+      )
+    );
+
+    const result = await tool.execute("call-1", { content: "..." });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("the limit is 16,000 characters");
+  });
+
   it("save_user_context marks thrown errors with isError=true", async () => {
     const api = createMockApi(defaultConfig);
     const { default: plugin } = await import("./index");

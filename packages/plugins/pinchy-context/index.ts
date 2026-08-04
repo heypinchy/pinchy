@@ -51,6 +51,30 @@ function getAgentConfig(
   return agents[agentId] ?? null;
 }
 
+/**
+ * Quote the reason the API gave, not just its headline. A rejected save answers
+ * `{ error: "Validation failed", details: { fieldErrors: { content: [...] } } }`
+ * — reporting `error` alone tells the model nothing it can act on (it would
+ * retry the same over-long content), while the field error says what to change.
+ */
+function describeApiError(data: unknown): string {
+  if (data && typeof data === "object") {
+    const { details, error } = data as {
+      details?: { fieldErrors?: Record<string, string[] | undefined> };
+      error?: unknown;
+    };
+
+    const fieldError = Object.values(details?.fieldErrors ?? {})
+      .flat()
+      .find((message): message is string => typeof message === "string" && message.length > 0);
+    if (fieldError) return fieldError;
+
+    if (typeof error === "string" && error.length > 0) return error;
+  }
+
+  return "Unknown error";
+}
+
 function deleteOnboardingFile(agentId: string): void {
   try {
     const workspacePath = `/root/.openclaw/workspaces/${agentId}`;
@@ -135,7 +159,7 @@ const plugin = {
                   content: [
                     {
                       type: "text",
-                      text: `Failed to save: ${data.error || "Unknown error"}`,
+                      text: `Failed to save: ${describeApiError(data)}`,
                     },
                   ],
                 };
@@ -214,7 +238,7 @@ const plugin = {
                   content: [
                     {
                       type: "text",
-                      text: `Failed to save: ${data.error || "Unknown error"}`,
+                      text: `Failed to save: ${describeApiError(data)}`,
                     },
                   ],
                 };

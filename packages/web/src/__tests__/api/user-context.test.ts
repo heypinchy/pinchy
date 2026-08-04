@@ -52,7 +52,7 @@ import { GET, PUT } from "@/app/api/users/me/context/route";
 import { NextRequest } from "next/server";
 import { mockSession } from "@/test-helpers/auth";
 import { routeContext } from "@/test-helpers/route";
-import { CONTEXT_CONTENT_MAX_LENGTH } from "@/lib/schemas/context";
+import { CONTEXT_CONTENT_MAX_LENGTH, CONTEXT_TOO_LONG_MESSAGE } from "@/lib/schemas/context";
 
 function makeGetRequest() {
   return new NextRequest("http://localhost/api/users/me/context", { method: "GET" });
@@ -158,7 +158,11 @@ describe("PUT /api/users/me/context", () => {
     expect(response.status).toBe(400);
     const data = await response.json();
     expect(data.error).toBe("Validation failed");
-    expect(data.details.fieldErrors.content).toBeDefined();
+    // The generic `error` is not actionable — the field error is the only text
+    // that can tell a user (or Smithers) what to change, so it has to name the
+    // limit rather than read "Too big: expected string to have <=16000 …".
+    expect(data.details.fieldErrors.content[0]).toBe(CONTEXT_TOO_LONG_MESSAGE);
+    expect(CONTEXT_TOO_LONG_MESSAGE).toContain("16,000");
     expect(mockSet).not.toHaveBeenCalled();
   });
 
