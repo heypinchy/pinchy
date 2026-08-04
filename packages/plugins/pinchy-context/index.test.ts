@@ -142,6 +142,43 @@ describe("pinchy-context plugin", () => {
     expect(result.content[0].text).toBe("Network down");
   });
 
+  it("aborts a hung save_user_context POST via AbortSignal.timeout(10_000) instead of blocking forever", async () => {
+    const api = createMockApi(defaultConfig);
+    const { default: plugin } = await import("./index");
+    plugin.register!(api as any);
+
+    const factory = mockRegisterTool.mock.calls.find(
+      (call: any[]) => call[1]?.name === "pinchy_save_user_context"
+    )?.[0];
+    const tool = factory({ agentId: "agent-1" });
+
+    // Simulates a Pinchy container that never answers (mid-deploy, network
+    // blackhole) — the mock only ever settles via the AbortSignal the tool
+    // passes to fetch, exactly like a real hung `fetch` would once the
+    // signal fires.
+    const timeoutSpy = vi.spyOn(AbortSignal, "timeout").mockImplementation((_ms: number) => {
+      const controller = new AbortController();
+      setTimeout(
+        () => controller.abort(new DOMException("The operation timed out.", "TimeoutError")),
+        1
+      );
+      return controller.signal;
+    });
+    global.fetch = vi.fn((_url: RequestInfo | URL, init?: RequestInit) => {
+      return new Promise<Response>((_resolve, reject) => {
+        const signal = init?.signal;
+        signal?.addEventListener("abort", () => {
+          reject(signal.reason ?? new Error("The operation was aborted"));
+        });
+      });
+    });
+
+    const result = await tool.execute("call-1", { content: "..." });
+    expect(result.isError).toBe(true);
+    expect(timeoutSpy).toHaveBeenCalledWith(10_000);
+    timeoutSpy.mockRestore();
+  });
+
   it("save_org_context marks HTTP errors with isError=true", async () => {
     const api = createMockApi(defaultConfig);
     const { default: plugin } = await import("./index");

@@ -1,6 +1,10 @@
 import { unlinkSync } from "fs";
 import { join } from "path";
 
+// Bounds every call to Pinchy's own internal API against a hung container /
+// network blackhole.
+const FETCH_TIMEOUT_MS = 10_000;
+
 interface PluginToolContext {
   agentId?: string;
 }
@@ -120,6 +124,7 @@ const plugin = {
                     Authorization: `Bearer ${gatewayToken}`,
                   },
                   body: JSON.stringify({ content }),
+                  signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
                 }
               );
 
@@ -199,6 +204,7 @@ const plugin = {
                   Authorization: `Bearer ${gatewayToken}`,
                 },
                 body: JSON.stringify({ content }),
+                signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
               });
 
               if (!res.ok) {

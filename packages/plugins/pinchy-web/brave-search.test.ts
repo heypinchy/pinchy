@@ -177,4 +177,32 @@ describe("braveSearch", () => {
     await expect(braveSearch("query", { apiKey: "" })).rejects.toThrow(/API key/i);
     expect(fetchMock).not.toHaveBeenCalled();
   });
+
+  it("aborts a hung Brave request via AbortSignal.timeout(30_000) instead of blocking forever", async () => {
+    // Simulates a Brave endpoint that never answers and never resets the
+    // connection (network blackhole) — the mock only ever settles via the
+    // AbortSignal braveSearch passes to fetch, exactly like a real hung
+    // `fetch` would once the signal fires.
+    const timeoutSpy = vi.spyOn(AbortSignal, "timeout").mockImplementation((_ms: number) => {
+      const controller = new AbortController();
+      setTimeout(
+        () => controller.abort(new DOMException("The operation timed out.", "TimeoutError")),
+        1
+      );
+      return controller.signal;
+    });
+    fetchMock.mockImplementation((_url: string | URL, init?: RequestInit) => {
+      return new Promise((_resolve, reject) => {
+        const signal = init?.signal;
+        signal?.addEventListener("abort", () => {
+          reject(signal.reason ?? new Error("The operation was aborted"));
+        });
+      });
+    });
+
+    await expect(braveSearch("query", { apiKey: "key" })).rejects.toThrow();
+
+    expect(timeoutSpy).toHaveBeenCalledWith(30_000);
+    timeoutSpy.mockRestore();
+  });
 });

@@ -92,6 +92,7 @@ describe("pinchy-audit plugin", () => {
         sessionKey: "agent:agent-1:user-user-1",
         sessionId: "session-1",
       }),
+      signal: expect.any(AbortSignal),
     });
   });
 
@@ -145,6 +146,7 @@ describe("pinchy-audit plugin", () => {
         error: "Request failed",
         durationMs: 123,
       }),
+      signal: expect.any(AbortSignal),
     });
   });
 
@@ -190,6 +192,7 @@ describe("pinchy-audit plugin", () => {
         error: undefined,
         durationMs: undefined,
       }),
+      signal: expect.any(AbortSignal),
     });
   });
 
@@ -254,6 +257,7 @@ describe("pinchy-audit plugin", () => {
         error: undefined,
         durationMs: undefined,
       }),
+      signal: expect.any(AbortSignal),
     });
   });
 
@@ -543,6 +547,57 @@ describe("pinchy-audit plugin", () => {
           { toolName: "pinchy_read", agentId: "agent-1" }
         )
       ).rejects.toThrow(/audit endpoint returned 500/);
+    });
+
+    it("aborts a hung audit POST via AbortSignal.timeout(10_000) instead of blocking every tool call forever", async () => {
+      // A server that never responds and never resets the connection — the
+      // "hung endpoint" / "network blackhole" case the fetch timeout exists
+      // to bound. The mock fetch only ever settles via the AbortSignal the
+      // plugin passes in, exactly like real `fetch` does. AbortSignal.timeout
+      // itself is intercepted so the test proves the SAME behavior a real
+      // 10-second hang would produce, without the test taking 10+ seconds:
+      // it still asserts the plugin requests a 10_000ms bound and reacts
+      // correctly when that signal fires.
+      const timeoutSpy = vi.spyOn(AbortSignal, "timeout").mockImplementation((_ms: number) => {
+        const controller = new AbortController();
+        setTimeout(
+          () => controller.abort(new DOMException("The operation timed out.", "TimeoutError")),
+          1
+        );
+        return controller.signal;
+      });
+
+      const fetchMock = vi.fn((_url: string | URL, init?: RequestInit) => {
+        return new Promise((_resolve, reject) => {
+          const signal = init?.signal;
+          signal?.addEventListener("abort", () => {
+            reject(signal.reason ?? new Error("The operation was aborted"));
+          });
+        });
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      const { default: plugin } = await import("./index");
+      plugin.register?.(
+        createMockApi({
+          apiBaseUrl: "http://pinchy:7777",
+          gatewayToken: "gw-token",
+        }) as any
+      );
+
+      const beforeHook = mockOn.mock.calls.find((c) => c[0] === "before_tool_call")?.[1];
+      await expect(
+        beforeHook(
+          { toolName: "pinchy_read", params: {}, runId: "run-1", toolCallId: "tool-1" },
+          { toolName: "pinchy_read" }
+        )
+      ).rejects.toThrow();
+
+      // MAX_RETRIES = 2, so 3 total attempts, each racing its own timeout —
+      // never a single hang that blocks forever.
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+      expect(timeoutSpy).toHaveBeenCalledWith(10_000);
+      timeoutSpy.mockRestore();
     });
   });
 });

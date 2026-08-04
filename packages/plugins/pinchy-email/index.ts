@@ -29,6 +29,12 @@ const DELIVERY_GID = 999;
 // so anything saved here is always small enough to hand off downstream.
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 
+// Bounds every call to Pinchy's own internal API against a hung container /
+// network blackhole. The mailbox provider calls (Gmail/Graph/IMAP)
+// bound themselves separately (see graph-adapter.ts, gmail-adapter.ts,
+// imap-adapter.ts).
+const FETCH_TIMEOUT_MS = 10_000;
+
 const EXT_BY_MIME = new Map<string, string>([
   ["application/pdf", ".pdf"],
   ["image/jpeg", ".jpg"],
@@ -237,6 +243,7 @@ async function reportAuthFailure(
         "X-Plugin-Id": "pinchy-email",
       },
       body: JSON.stringify({ reason: reason.slice(0, 500) }),
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     });
   } catch {
     // best-effort — never mask the original tool error
@@ -636,7 +643,10 @@ async function fetchCredentials(
   const response = await fetch(
     `${apiBaseUrl}/api/internal/integrations/${connectionId}/credentials` +
       `?agentId=${encodeURIComponent(agentId)}`,
-    { headers: { Authorization: `Bearer ${gatewayToken}` } }
+    {
+      headers: { Authorization: `Bearer ${gatewayToken}` },
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    }
   );
 
   if (!response.ok) {

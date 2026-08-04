@@ -77,6 +77,10 @@ interface GraphAttachment {
 
 const FILE_ATTACHMENT_TYPE = "#microsoft.graph.fileAttachment";
 
+// External API call — bounds a hung Microsoft Graph endpoint / network
+// blackhole.
+const FETCH_TIMEOUT_MS = 30_000;
+
 // Microsoft Graph v1.0 message-listing endpoints require every property named
 // in $orderby to also appear in $filter, in the same order, ahead of any other
 // filter properties — violating this returns HTTP 400 InefficientFilter ("The
@@ -122,6 +126,7 @@ export class GraphAdapter implements EmailAdapter {
         "Content-Type": "application/json",
         ...(init?.headers ?? {}),
       },
+      signal: init?.signal ?? AbortSignal.timeout(FETCH_TIMEOUT_MS),
     });
     if (!res.ok) {
       const txt = await res.text().catch(() => "");

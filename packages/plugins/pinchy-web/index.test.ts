@@ -334,6 +334,43 @@ describe("pinchy-web plugin", () => {
       expect(result.content[0].text).toMatch(/no longer connected/i);
     });
 
+    it("aborts a hung credentials fetch via AbortSignal.timeout(10_000) instead of blocking forever", async () => {
+      // Simulates a Pinchy container that never answers Pinchy's own internal
+      // credentials route (mid-deploy, network blackhole) — the mock only
+      // ever settles via the AbortSignal fetchBraveCredentials passes in,
+      // exactly like a real hung `fetch` would once the signal fires.
+      const timeoutSpy = vi.spyOn(AbortSignal, "timeout").mockImplementation((_ms: number) => {
+        const controller = new AbortController();
+        setTimeout(
+          () => controller.abort(new DOMException("The operation timed out.", "TimeoutError")),
+          1
+        );
+        return controller.signal;
+      });
+      const fetchMock = vi.fn((_url: string | URL, init?: RequestInit) => {
+        return new Promise((_resolve, reject) => {
+          const signal = init?.signal;
+          signal?.addEventListener("abort", () => {
+            reject(signal.reason ?? new Error("The operation was aborted"));
+          });
+        });
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      const factories = collectFactories(
+        credentialsPluginConfig({
+          "agent-1": { tools: ["pinchy_web_search"] },
+        })
+      );
+
+      const tool = factories.pinchy_web_search({ agentId: "agent-1" })!;
+      const result = await tool.execute("call-1", { query: "test" });
+
+      expect(result.isError).toBe(true);
+      expect(timeoutSpy).toHaveBeenCalledWith(10_000);
+      timeoutSpy.mockRestore();
+    });
+
     it("POSTs report-auth-failure when retry-once also returns a 401 from Brave", async () => {
       braveSearchMock
         .mockRejectedValueOnce(new Error("401 Unauthorized"))

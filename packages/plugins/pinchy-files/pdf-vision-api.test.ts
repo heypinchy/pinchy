@@ -105,6 +105,78 @@ describe("describePageImage", () => {
     expect((globalThis.fetch as any).mock.calls.length).toBeLessThanOrEqual(4);
   });
 
+  it("clamps an oversized Retry-After header to 30s instead of sleeping for a day", async () => {
+    const mockFetch = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 429,
+        // A malicious/misbehaving provider sending a 24h Retry-After.
+        headers: new Headers({ "retry-after": "86400" }),
+        text: async () => "Rate limited",
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          content: [{ type: "text", text: "Extracted after retry" }],
+        }),
+      });
+    globalThis.fetch = mockFetch;
+
+    const waits: number[] = [];
+    const setTimeoutSpy = vi
+      .spyOn(globalThis, "setTimeout")
+      .mockImplementation((cb: (...args: unknown[]) => void, ms?: number) => {
+        waits.push(ms ?? 0);
+        cb();
+        return 0 as unknown as NodeJS.Timeout;
+      });
+
+    const result = await describePageImage("base64data", {
+      model: "anthropic/claude-haiku-4-5-20251001",
+      resolveApiKey: async () => "test-key",
+    });
+
+    expect(result?.text).toBe("Extracted after retry");
+    // The 86400s (24h) header must be clamped to 30s (30_000ms), not honored
+    // verbatim — which would put this PDF read to sleep for a day.
+    expect(waits).toEqual([30_000]);
+    setTimeoutSpy.mockRestore();
+  });
+
+  it("aborts a hung vision API call via AbortSignal.timeout(30_000) instead of blocking forever", async () => {
+    // Simulates a vision provider that never answers and never resets the
+    // connection (network blackhole) — the mock only ever settles via the
+    // AbortSignal fetchWithRetry passes in, exactly like a real hung `fetch`
+    // would once the signal fires.
+    const timeoutSpy = vi.spyOn(AbortSignal, "timeout").mockImplementation((_ms: number) => {
+      const controller = new AbortController();
+      setTimeout(
+        () => controller.abort(new DOMException("The operation timed out.", "TimeoutError")),
+        1
+      );
+      return controller.signal;
+    });
+    globalThis.fetch = vi.fn((_url: RequestInfo | URL, init?: RequestInit) => {
+      return new Promise<Response>((_resolve, reject) => {
+        const signal = init?.signal;
+        signal?.addEventListener("abort", () => {
+          reject(signal.reason ?? new Error("The operation was aborted"));
+        });
+      });
+    });
+
+    await expect(
+      describePageImage("base64data", {
+        model: "anthropic/claude-haiku-4-5-20251001",
+        resolveApiKey: async () => "test-key",
+      })
+    ).rejects.toThrow();
+
+    expect(timeoutSpy).toHaveBeenCalledWith(30_000);
+    timeoutSpy.mockRestore();
+  });
+
   it("calls OpenAI API with image_url format", async () => {
     globalThis.fetch = vi.fn().mockResolvedValue({
       ok: true,

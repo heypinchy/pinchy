@@ -11,6 +11,10 @@
 
 import { formatLocator, type ChunkLocator } from "./locator";
 
+// Bounds the call to Pinchy's own internal API against a hung container /
+// network blackhole.
+const FETCH_TIMEOUT_MS = 10_000;
+
 interface PluginToolContext {
   agentId?: string;
 }
@@ -268,6 +272,7 @@ const plugin = {
                   agentId,
                   ...(includeArchived ? { includeArchived: true } : {}),
                 }),
+                signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
               });
 
               if (!res.ok) {

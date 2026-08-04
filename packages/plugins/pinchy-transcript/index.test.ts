@@ -514,6 +514,37 @@ describe("postChannelMessage", () => {
     await expect(postChannelMessage(cfg, undefined, payload)).rejects.toThrow();
     expect(fetchMock).toHaveBeenCalledTimes(3); // 1 + MAX_RETRIES(2)
   });
+
+  it("aborts a hung capture POST via AbortSignal.timeout(10_000) instead of blocking message capture forever", async () => {
+    // Simulates a Pinchy container that never answers and never resets the
+    // connection (mid-deploy, network blackhole) — the mock fetch only ever
+    // settles via the AbortSignal the plugin passes in, exactly like a real
+    // hung `fetch` would once the signal fires.
+    const timeoutSpy = vi.spyOn(AbortSignal, "timeout").mockImplementation((_ms: number) => {
+      const controller = new AbortController();
+      setTimeout(
+        () => controller.abort(new DOMException("The operation timed out.", "TimeoutError")),
+        1
+      );
+      return controller.signal;
+    });
+
+    const fetchMock = vi.fn((_url: string | URL, init?: RequestInit) => {
+      return new Promise((_resolve, reject) => {
+        const signal = init?.signal;
+        signal?.addEventListener("abort", () => {
+          reject(signal.reason ?? new Error("The operation was aborted"));
+        });
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(postChannelMessage(cfg, undefined, payload)).rejects.toThrow();
+
+    expect(fetchMock).toHaveBeenCalledTimes(3); // 1 + MAX_RETRIES(2)
+    expect(timeoutSpy).toHaveBeenCalledWith(10_000);
+    timeoutSpy.mockRestore();
+  });
 });
 
 describe("plugin.register", () => {

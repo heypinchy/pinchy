@@ -204,6 +204,11 @@ function toolStartKey(
 
 const MAX_RETRIES = 2;
 
+// Bounds every attempt against a hung Pinchy container / network blackhole.
+// This hook runs before EVERY tool call of EVERY agent, so an unbounded fetch
+// here blocks all tool dispatch indefinitely (#pinchy-fetch-timeouts).
+const FETCH_TIMEOUT_MS = 10_000;
+
 async function postToolAuditEvent(
   cfg: PluginConfig,
   logger: PluginLogger | undefined,
@@ -221,6 +226,7 @@ async function postToolAuditEvent(
           Authorization: `Bearer ${cfg.gatewayToken}`,
         },
         body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
       });
 
       if (res.ok) return;

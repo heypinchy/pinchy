@@ -12,6 +12,12 @@ import {
 
 const WORKSPACE_ROOT = "/root/.openclaw/workspaces";
 
+// Bounds every call to Pinchy's own internal API against a hung container /
+// network blackhole. These are Pinchy-internal, same-Docker-network calls
+// (credentials fetch, auth-failure report), never the Odoo call itself
+//.
+const FETCH_TIMEOUT_MS = 10_000;
+
 // 25 MB matches Odoo's default `web.max_file_upload_size` setting. Keeps the
 // plugin process from OOMing on a single attachment (readFile + base64 string
 // roughly triple the file's footprint in memory).
@@ -199,7 +205,10 @@ async function fetchCredentials(
   const response = await fetch(
     `${apiBaseUrl}/api/internal/integrations/${connectionId}/credentials` +
       `?agentId=${encodeURIComponent(agentId)}`,
-    { headers: { Authorization: `Bearer ${gatewayToken}` } }
+    {
+      headers: { Authorization: `Bearer ${gatewayToken}` },
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    }
   );
   if (!response.ok) {
     // The credentials route puts an actionable message in the JSON body (e.g. a
@@ -2144,6 +2153,7 @@ async function reportAuthFailure(
         "X-Plugin-Id": "pinchy-odoo",
       },
       body: JSON.stringify({ reason: reason.slice(0, 500) }),
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     });
   } catch {
     // best-effort — never mask the original tool error

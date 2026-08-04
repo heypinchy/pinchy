@@ -24,6 +24,10 @@ export interface UsageReportConfig {
   gatewayToken: string;
 }
 
+// Bounds the call to Pinchy's own internal API against a hung container /
+// network blackhole.
+const FETCH_TIMEOUT_MS = 10_000;
+
 export async function reportUsage(report: UsageReport, config: UsageReportConfig): Promise<void> {
   if (report.inputTokens === 0 && report.outputTokens === 0) return;
 
@@ -45,6 +49,7 @@ export async function reportUsage(report: UsageReport, config: UsageReportConfig
         inputTokens: report.inputTokens,
         outputTokens: report.outputTokens,
       }),
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     });
 
     if (!response.ok) {

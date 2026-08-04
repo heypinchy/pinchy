@@ -9,15 +9,32 @@ const PROMPT =
 
 const MAX_RETRIES = 3;
 
+// External LLM vision API call — bounds a hung provider endpoint / network
+// blackhole.
+const FETCH_TIMEOUT_MS = 30_000;
+
+// A malicious or misbehaving provider can send an arbitrarily large
+// Retry-After (e.g. 86400 = 24h), which would otherwise put this PDF read to
+// sleep for a day. Clamp to a sane upper bound instead of trusting the header
+// verbatim.
+const MAX_RETRY_AFTER_SECONDS = 30;
+
 /** Fetch with automatic retry on 429 (rate limit). Respects Retry-After header. */
 async function fetchWithRetry(url: string, init: RequestInit): Promise<Response> {
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-    const response = await fetch(url, init);
+    const response = await fetch(url, {
+      ...init,
+      signal: init.signal ?? AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    });
     if (response.status !== 429 || attempt === MAX_RETRIES) {
       return response;
     }
     const retryAfter = Number(response.headers.get("retry-after") || "1");
-    const waitMs = (Number.isFinite(retryAfter) ? retryAfter : 1) * 1000;
+    const clampedSeconds = Math.min(
+      Number.isFinite(retryAfter) ? retryAfter : 1,
+      MAX_RETRY_AFTER_SECONDS
+    );
+    const waitMs = clampedSeconds * 1000;
     await new Promise((resolve) => setTimeout(resolve, waitMs));
   }
   // unreachable, but TypeScript needs it

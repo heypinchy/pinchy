@@ -396,6 +396,11 @@ function surrogateId(direction: string, content: string, sentAt: number): string
 
 const MAX_RETRIES = 2;
 
+// Bounds every capture POST against a hung Pinchy container / network
+// blackhole so a stuck deploy can't stall channel-message capture forever
+//.
+const FETCH_TIMEOUT_MS = 10_000;
+
 // Keep the log line readable: the useful part of a Pinchy error body is the
 // `error` string, and anything longer than this is a stack trace or an HTML
 // error page, neither of which belongs in a one-line warning.
@@ -445,6 +450,7 @@ async function postChannelMessage(
           Authorization: `Bearer ${cfg.gatewayToken}`,
         },
         body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
       });
       // 2xx = stored (or idempotently skipped). 4xx = our bug; don't retry a
       // request the server will keep rejecting. 5xx = transient; retry.

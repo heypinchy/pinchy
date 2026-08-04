@@ -3359,6 +3359,38 @@ describe("client caching (#209 layer 2: credentials fetched lazily, cached)", ()
     );
     expect(reportCalls).toHaveLength(0);
   });
+
+  it("aborts a hung credentials fetch via AbortSignal.timeout(10_000) instead of blocking the tool call forever", async () => {
+    // Simulates a Pinchy container that never answers Pinchy's own internal
+    // credentials route (mid-deploy, network blackhole) — the mock only ever
+    // settles via the AbortSignal fetchCredentials passes in, exactly like a
+    // real hung `fetch` would once the signal fires.
+    const timeoutSpy = vi.spyOn(AbortSignal, "timeout").mockImplementation((_ms: number) => {
+      const controller = new AbortController();
+      setTimeout(
+        () => controller.abort(new DOMException("The operation timed out.", "TimeoutError")),
+        1
+      );
+      return controller.signal;
+    });
+    fetchMock.mockImplementation((_url: string | URL, init?: RequestInit) => {
+      return new Promise((_resolve, reject) => {
+        const signal = init?.signal;
+        signal?.addEventListener("abort", () => {
+          reject(signal.reason ?? new Error("The operation was aborted"));
+        });
+      });
+    });
+
+    const tools = createApi({ [agentId]: agentConfig });
+    const tool = findTool(tools, "odoo_count", agentId)!;
+
+    const result = await tool.execute("call-1", { model: "sale.order", filters: [] });
+
+    expect(result.isError).toBe(true);
+    expect(timeoutSpy).toHaveBeenCalledWith(10_000);
+    timeoutSpy.mockRestore();
+  });
 });
 
 describe("odoo_attach_file", () => {

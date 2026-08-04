@@ -128,6 +128,49 @@ describe("reportUsage", () => {
     errorSpy.mockRestore();
   });
 
+  it("aborts a hung usage report POST via AbortSignal.timeout(10_000) instead of blocking forever", async () => {
+    // Simulates a Pinchy container that never answers (mid-deploy, network
+    // blackhole) — the mock only ever settles via the AbortSignal reportUsage
+    // passes to fetch, exactly like a real hung `fetch` would once the
+    // signal fires.
+    const timeoutSpy = vi.spyOn(AbortSignal, "timeout").mockImplementation((_ms: number) => {
+      const controller = new AbortController();
+      setTimeout(
+        () => controller.abort(new DOMException("The operation timed out.", "TimeoutError")),
+        1
+      );
+      return controller.signal;
+    });
+    const fetchSpy = vi.fn((_url: RequestInfo | URL, init?: RequestInit) => {
+      return new Promise<Response>((_resolve, reject) => {
+        const signal = init?.signal;
+        signal?.addEventListener("abort", () => {
+          reject(signal.reason ?? new Error("The operation was aborted"));
+        });
+      });
+    });
+    globalThis.fetch = fetchSpy;
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await expect(
+      reportUsage(
+        {
+          agentId: "kb-agent",
+          agentName: "KB Agent",
+          sessionKey: "plugin:pinchy-files",
+          inputTokens: 10,
+          outputTokens: 5,
+        },
+        { apiBaseUrl: "http://pinchy:7777", gatewayToken: "gw-token" }
+      )
+    ).resolves.toBeUndefined();
+
+    expect(errorSpy).toHaveBeenCalled();
+    expect(timeoutSpy).toHaveBeenCalledWith(10_000);
+    errorSpy.mockRestore();
+    timeoutSpy.mockRestore();
+  });
+
   it("swallows fetch errors so PDF reads never fail on telemetry hiccups", async () => {
     globalThis.fetch = vi.fn().mockRejectedValue(new Error("network down"));
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});

@@ -73,6 +73,35 @@ describe("GraphAdapter.list", () => {
     await expect(adapter.list({ folder: "CUSTOM" as never })).rejects.toThrow(/unknown folder/i);
   });
 
+  it("aborts a hung Graph request via AbortSignal.timeout(30_000) instead of blocking forever", async () => {
+    // Simulates a Graph endpoint that never answers and never resets the
+    // connection (network blackhole) — the mock only ever settles via the
+    // AbortSignal req() passes to fetch, exactly like a real hung `fetch`
+    // would once the signal fires.
+    const timeoutSpy = vi.spyOn(AbortSignal, "timeout").mockImplementation((_ms: number) => {
+      const controller = new AbortController();
+      setTimeout(
+        () => controller.abort(new DOMException("The operation timed out.", "TimeoutError")),
+        1
+      );
+      return controller.signal;
+    });
+    (fetch as Mock).mockImplementation((_url: string | URL, init?: RequestInit) => {
+      return new Promise((_resolve, reject) => {
+        const signal = init?.signal;
+        signal?.addEventListener("abort", () => {
+          reject(signal.reason ?? new Error("The operation was aborted"));
+        });
+      });
+    });
+
+    const adapter = new GraphAdapter({ accessToken: "tok" });
+    await expect(adapter.list({})).rejects.toThrow();
+
+    expect(timeoutSpy).toHaveBeenCalledWith(30_000);
+    timeoutSpy.mockRestore();
+  });
+
   it("uses GRAPH_API_BASE_URL when set", async () => {
     process.env.GRAPH_API_BASE_URL = "http://graph-mock:9005";
     const adapter = new GraphAdapter({ accessToken: "tok" });

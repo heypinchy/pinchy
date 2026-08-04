@@ -60,6 +60,9 @@ export async function braveSearch(
       "X-Subscription-Token": config.apiKey,
       Accept: "application/json",
     },
+    // External API call — bounds a hung Brave endpoint / network blackhole
+    //. Matches web-fetch.ts's external-call timeout.
+    signal: AbortSignal.timeout(30_000),
   });
 
   if (!res.ok) {
