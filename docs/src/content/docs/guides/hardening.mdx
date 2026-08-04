@@ -288,6 +288,10 @@ The `/sign-in/*` and `/sign-up/*` wildcard entries cover any future sub-path (OA
 - **Reset-flow abuse.** Tight windows on `/forget-password` and `/send-verification-email` prevent a single IP from spamming a victim's inbox or burning through reset tokens.
 - **Post-auth account takeover.** If a session is stolen, `/change-email` and `/change-password` are throttled hard enough that an attacker cannot quickly pivot to permanent control.
 
+### API keys are limited separately
+
+The thresholds above cover Better Auth's own endpoints. They don't reach `/api/v1/*`, which authenticates with an API key through a direct server-side call rather than through Better Auth's router. That surface has its own limit — 300 requests per minute per key — documented under [Agent Provisioning API › Rate limiting](/reference/agent-provisioning-api/#rate-limiting), along with what it deliberately doesn't cover.
+
 ### Limits of IP-based rate limiting
 
 - **IP rotation defeats per-IP limits.** A residential-proxy pool can sidestep these thresholds. We don't ship per-account lockout yet — a planned brute-force lockout will trigger on N consecutive `auth.failed` audit events for the same email.

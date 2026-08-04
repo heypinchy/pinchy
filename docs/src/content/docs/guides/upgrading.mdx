@@ -239,6 +239,14 @@ Until now a password change left every existing session alive — including, in 
 
 Repeated wrong guesses at the current password are also throttled now — five attempts per account per 10 minutes, after which Pinchy answers `429` and says how long to wait. The account-level rule that was supposed to cover this never applied to Pinchy's own change-password route, so in practice there was no limit at all. Nothing to configure either way. See [Changing your password](/guides/user-management/#changing-your-password).
 
+#### API keys now have a request budget
+
+A key on the [Agent Provisioning API](/reference/agent-provisioning-api/#rate-limiting) gets 300 requests per minute; past it, `/api/v1/*` answers `429 Too Many Requests` with a `Retry-After` header. Until now the surface was unthrottled — a documented gap, since neither of Better Auth's limiters covers it.
+
+The budget is per key, so one client can't spend another's, and it sits far above what provisioning work does — a script creating agents in a loop is orders of magnitude below 5 requests a second. Nothing to configure, and existing clients that already handle HTTP errors need no change; a client that retries in a tight loop should honour `Retry-After` instead. A key that hits the limit writes an `auth.rate_limited` [audit entry](/concepts/audit-trail/), throttled to one row per key per minute.
+
+Requests carrying an **invalid** key are still unthrottled — there's no verified key to charge, and the only other handle is a spoofable source address. A reverse proxy remains the right place for a connection-level limit if you expose the API publicly.
+
 ### Database migrations
 
 Nine migrations (`0056`–`0064`) run automatically on startup — no manual steps. Only `0056` is destructive, and only for the Knowledge Base tables (see the breaking change above); the rest are additive.

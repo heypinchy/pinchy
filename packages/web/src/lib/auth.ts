@@ -247,10 +247,19 @@ export const auth = betterAuth({
       enableMetadata: true,
       // The plugin's built-in per-key limiter defaults to 10 requests / 24h,
       // which would throttle a legitimately busy API client, so it's off.
-      // NOTE: there is no Pinchy-side replacement — an authenticated key is
-      // currently unthrottled on /api/v1/*. Fine for the trusted-automation
-      // threat model these keys are for (an admin issued it deliberately),
-      // but it is a gap, not a delegation.
+      //
+      // The Pinchy-side replacement is `claimApiKeyRequest`
+      // (lib/api-key-rate-limit.ts), charged by `withApiKey` against the
+      // verified key id: 300 requests per minute per key (#1086). It lives
+      // there rather than here because Better Auth's limiters — this one and
+      // the general-purpose `rateLimit` above — both hang off the auth
+      // router's onRequest, and /api/v1/* never enters it: `withApiKey`
+      // reaches `verifyApiKey` through `auth.api.*`. Turning this flag back on
+      // would not throttle /api/v1/* either; it would only re-arm a 10/24h
+      // limit on the plugin's own endpoints.
+      //
+      // Still uncovered, deliberately: a flood of INVALID keys. That path has
+      // no verified id to bill and only a spoofable source address to key on.
       rateLimit: { enabled: false },
     }),
   ],

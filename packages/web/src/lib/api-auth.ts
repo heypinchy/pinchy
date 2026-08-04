@@ -3,6 +3,11 @@ import { headers } from "next/headers";
 import { getSession, auth, type Session } from "@/lib/auth";
 import { extractScopes, type ApiKeyScope } from "@/lib/api-key-scopes";
 import { appendAuditLog, safeAuditPath } from "@/lib/audit";
+import {
+  claimApiKeyRequest,
+  API_KEY_RATE_LIMIT_MAX,
+  API_KEY_RATE_LIMIT_WINDOW_SECONDS,
+} from "@/lib/api-key-rate-limit";
 
 /**
  * Standardized API auth error responses. Use these instead of inline
@@ -10,6 +15,15 @@ import { appendAuditLog, safeAuditPath } from "@/lib/audit";
  */
 const unauthorized = () => NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 const forbidden = () => NextResponse.json({ error: "Forbidden" }, { status: 403 });
+/**
+ * `Retry-After` carries seconds, per RFC 9110 §10.2.3. Sent because a client
+ * that only sees 429 has to guess, and the usual guess is "immediately".
+ */
+const tooManyRequests = (retryAfterSeconds: number) =>
+  NextResponse.json(
+    { error: "Too Many Requests" },
+    { status: 429, headers: { "Retry-After": String(retryAfterSeconds) } }
+  );
 
 /**
  * Check auth + admin role for API routes.
@@ -127,10 +141,14 @@ function readApiKey(req: NextRequest): string | null {
  * A scope denial is worth recording, but recording every one of them isn't
  * bounded by anything: `createApiKeySchema` requires only one scope, so the
  * weakest issuable key — `agents:read` — can loop `DELETE /api/v1/agents/x`
- * and mint an audit row per request. Nothing stops it. The plugin's per-key
- * limiter is off (lib/auth.ts), and Better Auth's own limiter lives in its
- * router's onRequest, which `/api/v1/*` never enters: `withApiKey` reaches
+ * and mint an audit row per request. The plugin's per-key limiter is off
+ * (lib/auth.ts), and Better Auth's own limiter lives in its router's
+ * onRequest, which `/api/v1/*` never enters: `withApiKey` reaches
  * `verifyApiKey` through `auth.api.*`, bypassing the router.
+ *
+ * Since #1086 the per-key budget above does bound the RATE, but not this: at
+ * any rate under the budget a key can still mint a denial per request, all
+ * day. The two throttles are independent and both are load-bearing.
  *
  * That is the same unbounded-write problem the 401 branch below refuses to
  * take on, one authentication step later — and it buries the same thing: the
@@ -200,6 +218,46 @@ export function withApiKey<C = unknown>(
     const res = await auth.api.verifyApiKey({ body: { key } }).catch(() => null);
     // Deliberately NOT audited — see the scope denial below for why.
     if (!res?.valid || !res.key) return unauthorized();
+
+    // Charged BEFORE the scope check, deliberately (#1086). A key probing a
+    // scope it doesn't hold is precisely the caller worth bounding, and
+    // answering it 403 forever would leave the probe itself unbounded — the
+    // denial ROW is throttled below, the requests producing it were not.
+    //
+    // It is also charged only once a key has verified, so an unauthenticated
+    // flood cannot spend a real key's budget: there is no id on a 401 to bill.
+    const budget = claimApiKeyRequest(res.key.id, Date.now());
+    if (!budget.allowed) {
+      if (budget.audit) {
+        // Same shape and the same reasons as the scope denial below: awaited
+        // because `after()` isn't available on every runtime path this wrapper
+        // serves, and try/catch so a broken audit DB turns a clean 429 into a
+        // 429 rather than an unhandled 500.
+        try {
+          await appendAuditLog({
+            actorType: "api_key",
+            actorId: res.key.id,
+            eventType: "auth.rate_limited",
+            outcome: "failure",
+            detail: {
+              apiKey: { id: res.key.id, name: res.key.name ?? "" },
+              // What the caller hit, so the row is readable without going to
+              // look up the constant that produced it.
+              limit: {
+                max: API_KEY_RATE_LIMIT_MAX,
+                windowSeconds: API_KEY_RATE_LIMIT_WINDOW_SECONDS,
+              },
+              // Capped for the same reason as the scope-denial row below.
+              path: safeAuditPath(new URL(req.url).pathname),
+              ...(budget.suppressed > 0 ? { suppressedSinceLastEntry: budget.suppressed } : {}),
+            },
+          });
+        } catch {
+          // Don't break throttling if audit logging fails.
+        }
+      }
+      return tooManyRequests(budget.retryAfterSeconds);
+    }
 
     const scopes = extractScopes(res.key.permissions);
     if (!required.every((s) => scopes.includes(s))) {

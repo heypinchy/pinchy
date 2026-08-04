@@ -81,6 +81,11 @@ export type AuditEventType =
   // types test only asserts this union is a SUBSET of what's writable, so it
   // cannot catch a missing entry in this direction.
   | "auth.scope_denied"
+  // Written by withApiKey (lib/api-auth.ts) when a verified key spends its
+  // per-minute request budget (#1086). Throttled to one row per key per
+  // window, like the scope denial above — a row per throttled request would
+  // make the limiter the log-flooding amplifier it exists to prevent.
+  | "auth.rate_limited"
   // Written by recordTelegramPairingFailure (lib/telegram-pairing-security.ts)
   // when POST /api/settings/telegram denies a pairing-code redemption (rate
   // limited, invalid/expired code, or a channel_links unique-constraint

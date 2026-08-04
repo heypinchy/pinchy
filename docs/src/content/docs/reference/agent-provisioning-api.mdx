@@ -56,6 +56,8 @@ A request whose key is missing a required scope gets **403 Forbidden**:
 { "error": "Forbidden" }
 ```
 
+A verified key that has spent its [request budget](#rate-limiting) gets **429 Too Many Requests** — on any endpoint, and before the scope check, so a key probing for scopes it doesn't hold is bounded too.
+
 ## Agents
 
 ### `GET /api/v1/agents`
@@ -171,6 +173,8 @@ The field is absent on a clean create, so `warning` is the whole check. It matte
   }
   ```
 
+- `429` — the key spent its [request budget](#rate-limiting); `Retry-After` carries the seconds until it reopens
+
 ### `GET /api/v1/agents/:agentId`
 
 Get a single agent by ID. **Requires `agents:read`.**
@@ -212,6 +216,8 @@ curl -X DELETE https://pinchy.example.com/api/v1/agents/<agentId> \
   ```json
   { "error": "Agent not found" }
   ```
+
+- `429` — the key spent its [request budget](#rate-limiting); `Retry-After` carries the seconds until it reopens
 
 ## Managing Keys
 
@@ -260,11 +266,32 @@ Setting an expiry when you create a key puts a ceiling on all of this: an expire
 
 ## Rate limiting
 
-There is no rate limit on `/api/v1/*`. A key that authenticates can call any endpoint it's [scoped](#scopes) for as fast as the client sends requests.
+Each key gets **300 requests per minute**. The budget is per key, so one client's runaway retry loop can't spend another's.
 
-Better Auth's API key plugin ships a per-key limiter, but its default — 10 requests per 24 hours — would throttle a legitimately busy CI pipeline or provisioning script, so Pinchy turns it off. Better Auth's own general-purpose rate limiter doesn't step in either: it guards Better Auth's router, and `/api/v1/*` never passes through it — key verification happens through a direct server-side call instead.
+Past it, the API answers `429 Too Many Requests` with a `Retry-After` header carrying the seconds until the window reopens:
 
-This is a known gap, not a feature. If you expose this API outside a trusted network, put rate limiting in front of it yourself — a reverse proxy is the usual place. The one thing that's bounded regardless is the audit trail itself: a request denied for a missing scope is throttled to one row per key per minute (see [Auditing](#auditing) below), so a client hammering the API can't also turn the audit log into a flood.
+```
+HTTP/1.1 429 Too Many Requests
+Retry-After: 42
+
+{ "error": "Too Many Requests" }
+```
+
+Honour `Retry-After` rather than retrying immediately — the window is fixed, not sliding, so a client that waits the stated seconds finds a full budget, and one that doesn't just burns through another rejection.
+
+The limit is set well above what provisioning work actually does: a script creating agents in a loop, or a CI pipeline resetting a staging instance, sits orders of magnitude below 5 requests a second. It's there to bound a runaway client or a stolen key being drained, not to pace normal use. If you need a different value, it's `API_KEY_RATE_LIMIT_MAX` in `packages/web/src/lib/api-key-rate-limit.ts` — edit it and rebuild your image.
+
+Better Auth's own limiters don't cover this surface, which is why Pinchy carries its own. The API key plugin ships a per-key limiter whose default — 10 requests per 24 hours — would throttle a legitimately busy CI pipeline, so that one is off; and the general-purpose limiter guards Better Auth's router, which `/api/v1/*` never passes through, because key verification happens through a direct server-side call instead.
+
+### What this does not cover
+
+The budget is charged against a **verified** key, so it bounds what an authenticated client can do and nothing else. Requests carrying an invalid, revoked or expired key are still answered `401` as fast as they arrive — that path has no key to bill, and the only other handle on it is the caller's source address, which is a header a client can set to anything.
+
+So if you expose this API to the open internet, a reverse proxy in front of it is still the right place for a connection-level limit. On a trusted network — which is what these keys are for — the per-key budget is the part that matters.
+
+Counters live in the app's memory. They reset when the container restarts and aren't shared between replicas, the same trade-off the [auth rate limits](/guides/hardening/#authentication-rate-limiting) make.
+
+One thing stays bounded regardless of any of this: the audit trail. Both a scope denial and a throttle are written at most once per key per minute (see [Auditing](#auditing) below), so a client hammering the API can't turn the log into a flood.
 
 ## Auditing
 
@@ -276,10 +303,11 @@ Every provisioning action taken with a key is written to the [audit trail](/conc
 | `agent.deleted`     | the API key | `DELETE /api/v1/agents/:agentId` succeeds                                                                                                                                                                                                                                                                                        |
 | `config.changed`    | the API key | `POST /api/v1/agents` auto-configures an integration connection's permissions for the agent (`action: "agent_integration_permissions_auto_configured"`), or the agent was created but couldn't be applied to the runtime (`action: "runtime_apply_failed"`, `outcome: failure` — the same condition the `warning` field reports) |
 | `auth.scope_denied` | the API key | A verified key is missing a required [scope](#scopes) (403) — throttled to one row per key per minute                                                                                                                                                                                                                            |
+| `auth.rate_limited` | the API key | A verified key spent its [request budget](#rate-limiting) (429) — throttled to one row per key per minute                                                                                                                                                                                                                        |
 | `api_key.created`   | the admin   | A key is issued in Settings → API Keys                                                                                                                                                                                                                                                                                           |
 | `api_key.deleted`   | the admin   | A key is revoked in Settings → API Keys                                                                                                                                                                                                                                                                                          |
 
-A denial that lands inside an open one-minute window isn't dropped, either — the next `auth.scope_denied` row that does get written carries a `suppressedSinceLastEntry` count of how many were folded into it, so the trail still shows the volume even though it isn't writing a row per attempt.
+A denial that lands inside an open one-minute window isn't dropped, either — the next `auth.scope_denied` row that does get written carries a `suppressedSinceLastEntry` count of how many were folded into it, so the trail still shows the volume even though it isn't writing a row per attempt. `auth.rate_limited` works the same way, and its `detail` also names the limit that was hit (`limit: { max, windowSeconds }`) so the row reads without going to look up the constant behind it.
 
 Actions taken **with** a key are logged with `actorType: "api_key"` and the key's own id as `actorId` — the key is its own accountable actor, not a stand-in for a person. Each entry's `detail` also carries an `apiKey: { id, name }` snapshot, so the trail still names the key in plain language after the key itself has been revoked and its row is gone.
 

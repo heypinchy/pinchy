@@ -49,6 +49,11 @@ vi.mock("@/lib/audit", async (importOriginal) => {
 import { withApiKey, resetScopeDenialWindows, type ApiKeyContext } from "@/lib/api-auth";
 import { extractScopes } from "@/lib/api-key-scopes";
 import { appendAuditLog } from "@/lib/audit";
+import {
+  claimApiKeyRequest,
+  resetApiKeyRateLimits,
+  API_KEY_RATE_LIMIT_MAX,
+} from "@/lib/api-key-rate-limit";
 
 // ── Helpers ─────────────────────────────────────────────────────────────
 
@@ -79,6 +84,9 @@ describe("withApiKey", () => {
     // The scope-denial windows are process-global, so a previous test's key
     // would otherwise still hold an open window and swallow this one's row.
     resetScopeDenialWindows();
+    // Same for the request budgets: a key left exhausted by a previous test
+    // would 429 here, several assertions before the one that failed.
+    resetApiKeyRateLimits();
     vi.useFakeTimers({ shouldAdvanceTime: true });
   });
 
@@ -379,8 +387,10 @@ describe("withApiKey", () => {
   // The comment this replaces claimed the denial row was "bounded, too — the
   // caller holds a real key, so this can't be spammed by just anyone", then
   // three lines later used the opposite argument to refuse auditing 401s.
-  // Holding a real key bounds nothing: the schema's floor is ONE scope, so an
-  // agents:read key can loop DELETE forever, and nothing throttles /api/v1/*.
+  // Holding a real key bounds nothing on its own: the schema's floor is ONE
+  // scope, so an agents:read key can loop DELETE. Since #1086 the per-key
+  // budget does bound how fast — but the two throttles are independent, and
+  // this one has to hold at any rate below the budget.
 
   it("writes ONE denial row per key per window, however hard the key is probed", async () => {
     mockVerifyApiKey.mockResolvedValue(
@@ -493,13 +503,16 @@ describe("withApiKey", () => {
 
     expect(noKey.status).toBe(401);
     expect(badKey.status).toBe(401);
-    // DELIBERATE asymmetry with the 403 above, and the reason is the
-    // plugin's rate limiter being off (lib/auth.ts) with no Pinchy-side
-    // replacement: anyone on the internet can hit /api/v1/* with a garbage
-    // key, so auditing these would hand an unauthenticated attacker an
-    // unbounded write into the audit table — a log-flooding amplifier that
-    // buries the real 403s above. There's also nothing to attribute: a key
-    // that fails verification has no id. Revisit if a limiter lands.
+    // DELIBERATE asymmetry with the 403 above. Anyone on the internet can hit
+    // /api/v1/* with a garbage key, so auditing these would hand an
+    // unauthenticated attacker an unbounded write into the audit table — a
+    // log-flooding amplifier that buries the real 403s above. There's also
+    // nothing to attribute: a key that fails verification has no id.
+    //
+    // #1086's per-key budget does NOT change this, and it is worth being exact
+    // about why: it is charged against a verified key id, so it bounds what an
+    // authenticated caller can do and touches this path not at all. A flood of
+    // invalid keys still reaches verifyApiKey unthrottled.
     expect(appendAuditLog).not.toHaveBeenCalled();
   });
 
@@ -517,6 +530,237 @@ describe("withApiKey", () => {
     // gate nor turn a clean 403 into an unhandled 500.
     expect(res.status).toBe(403);
     expect(handler).not.toHaveBeenCalled();
+  });
+
+  // ── Per-key request budget (#1086) ──────────────────────────────────────
+  //
+  // The window arithmetic itself is pinned deterministically in
+  // api-key-rate-limit.test.ts, which injects `now`. What these tests own is
+  // the translation: does the wrapper consult the limiter on every request,
+  // and does a rejection become a 429 with a usable Retry-After and a row?
+
+  /** Spends the whole budget for `keyId` without going through the wrapper. */
+  function exhaustBudget(keyId: string): void {
+    for (let i = 0; i < API_KEY_RATE_LIMIT_MAX; i++) claimApiKeyRequest(keyId);
+  }
+
+  it("counts every served request, and answers 429 once the key's budget is spent", async () => {
+    // Driven through the wrapper rather than seeded, deliberately: a wrapper
+    // that consults the limiter but never charges a SUCCESSFUL request would
+    // pass every seeded test below while throttling nothing in production.
+    mockVerifyApiKey.mockResolvedValue(
+      verified({ id: "key-busy", name: "Busy", permissions: { agents: ["read"] } })
+    );
+    const handler = vi.fn(OK);
+    const call = () =>
+      withApiKey(["agents:read"], handler)(reqWith({ Authorization: "Bearer pinchy_busy" }), {});
+
+    for (let i = 0; i < API_KEY_RATE_LIMIT_MAX; i++) {
+      expect((await call()).status).toBe(200);
+    }
+
+    const res = await call();
+
+    expect(res.status).toBe(429);
+    expect(await res.json()).toEqual({ error: "Too Many Requests" });
+    // The handler ran for the budget and not once more — a 429 that still
+    // reaches the handler is a limiter in name only.
+    expect(handler).toHaveBeenCalledTimes(API_KEY_RATE_LIMIT_MAX);
+  });
+
+  it("tells the client when to come back, in seconds", async () => {
+    mockVerifyApiKey.mockResolvedValue(verified({ id: "key-r", name: "R" }));
+    exhaustBudget("key-r");
+
+    const res = await withApiKey(["agents:read"], vi.fn(OK))(
+      reqWith({ Authorization: "Bearer pinchy_r" }),
+      {}
+    );
+
+    // Bounds rather than an exact value: the window opened a few real
+    // milliseconds ago (the timers advance), and the exact arithmetic is
+    // already pinned deterministically in api-key-rate-limit.test.ts. What
+    // must hold here is that the header exists and is usable — a missing or
+    // zero Retry-After sends a well-behaved client straight back into the wall.
+    const retryAfter = Number(res.headers.get("Retry-After"));
+    expect(Number.isInteger(retryAfter)).toBe(true);
+    expect(retryAfter).toBeGreaterThanOrEqual(1);
+    expect(retryAfter).toBeLessThanOrEqual(60);
+  });
+
+  it("budgets per key, so one runaway client cannot lock out another", async () => {
+    exhaustBudget("key-runaway");
+
+    mockVerifyApiKey.mockResolvedValue(verified({ id: "key-runaway", name: "Runaway" }));
+    const throttled = await withApiKey(["agents:read"], vi.fn(OK))(
+      reqWith({ Authorization: "Bearer pinchy_runaway" }),
+      {}
+    );
+
+    mockVerifyApiKey.mockResolvedValue(verified({ id: "key-innocent", name: "Innocent" }));
+    const handler = vi.fn(OK);
+    const unaffected = await withApiKey(["agents:read"], handler)(
+      reqWith({ Authorization: "Bearer pinchy_innocent" }),
+      {}
+    );
+
+    expect(throttled.status).toBe(429);
+    // The reason the bucket is keyed on the VERIFIED key id: a global bucket
+    // would let one client's retry loop take the whole instance's API down,
+    // and a bucket keyed on a caller-supplied header would not bound anything.
+    expect(unaffected.status).toBe(200);
+    expect(handler).toHaveBeenCalledTimes(1);
+  });
+
+  it("throttles ahead of the scope check, so a denied key cannot spin forever", async () => {
+    mockVerifyApiKey.mockResolvedValue(
+      verified({ id: "key-probe", name: "Probe", permissions: { agents: ["read"] } })
+    );
+    exhaustBudget("key-probe");
+    const handler = vi.fn(OK);
+
+    const res = await withApiKey(["agents:delete"], handler)(
+      reqWith({ Authorization: "Bearer pinchy_probe" }),
+      {}
+    );
+
+    // 429, not 403: a key probing a scope it doesn't hold is exactly the
+    // caller this bounds, and answering 403 forever would leave the probe
+    // itself unbounded — the audit row is throttled, the requests were not.
+    expect(res.status).toBe(429);
+    expect(handler).not.toHaveBeenCalled();
+    expect(vi.mocked(appendAuditLog).mock.calls.map(([e]) => e.eventType)).toEqual([
+      "auth.rate_limited",
+    ]);
+  });
+
+  it("audits the throttle with the key as actor and the limit it hit", async () => {
+    mockVerifyApiKey.mockResolvedValue(verified({ id: "key-a", name: "Audited key" }));
+    exhaustBudget("key-a");
+
+    await withApiKey(["agents:read"], vi.fn(OK))(
+      new NextRequest("http://localhost/api/v1/agents", {
+        headers: { Authorization: "Bearer pinchy_a" },
+      }),
+      {}
+    );
+
+    expect(appendAuditLog).toHaveBeenCalledWith({
+      actorType: "api_key",
+      actorId: "key-a",
+      eventType: "auth.rate_limited",
+      outcome: "failure",
+      detail: {
+        // Snapshotted beside the id: the key may be revoked, and its row hard
+        // deleted, long before anyone reads this.
+        apiKey: { id: "key-a", name: "Audited key" },
+        limit: { max: API_KEY_RATE_LIMIT_MAX, windowSeconds: 60 },
+        path: "/api/v1/agents",
+      },
+    });
+  });
+
+  it("writes ONE throttle row per key per window, and reports what it collapsed", async () => {
+    mockVerifyApiKey.mockResolvedValue(verified({ id: "key-flood2", name: "Flood" }));
+    exhaustBudget("key-flood2");
+    const call = () =>
+      withApiKey(["agents:read"], vi.fn(OK))(reqWith({ Authorization: "Bearer pinchy_f" }), {});
+
+    for (let i = 0; i < 20; i++) {
+      expect((await call()).status).toBe(429);
+    }
+
+    // A row per throttled request would turn the limiter into the very
+    // log-flooding amplifier it exists to prevent.
+    expect(appendAuditLog).toHaveBeenCalledTimes(1);
+    expect(
+      (vi.mocked(appendAuditLog).mock.calls[0][0].detail as Record<string, unknown>)
+        .suppressedSinceLastEntry
+    ).toBeUndefined();
+
+    vi.advanceTimersByTime(61_000); // the window elapses
+    for (let i = 0; i < API_KEY_RATE_LIMIT_MAX; i++) await call(); // spend it again
+    await call();
+
+    const [, second] = vi.mocked(appendAuditLog).mock.calls;
+    expect((second[0] as { detail: Record<string, unknown> }).detail).toMatchObject({
+      suppressedSinceLastEntry: 19,
+    });
+  });
+
+  it("caps the caller-controlled path on the throttle row too", async () => {
+    mockVerifyApiKey.mockResolvedValue(verified({ id: "key-lp", name: "Long path" }));
+    exhaustBudget("key-lp");
+
+    await withApiKey(["agents:read"], vi.fn(OK))(
+      new NextRequest(`http://localhost/api/v1/agents/${"A".repeat(4000)}`, {
+        headers: { Authorization: "Bearer pinchy_lp" },
+      }),
+      {}
+    );
+
+    const detail = vi.mocked(appendAuditLog).mock.calls[0][0].detail as Record<string, unknown>;
+    // Same reason as the scope-denial row: truncateDetail replaces the WHOLE
+    // detail object, so an uncapped path would blank the actor snapshot on
+    // exactly the rows that document a key being drained.
+    expect((detail.path as string).length).toBeLessThanOrEqual(256);
+    expect(detail.apiKey).toEqual({ id: "key-lp", name: "Long path" });
+  });
+
+  it("still throttles when the audit write throws — logging must never gate the limit", async () => {
+    vi.mocked(appendAuditLog).mockRejectedValueOnce(new Error("audit db down"));
+    mockVerifyApiKey.mockResolvedValue(verified({ id: "key-ad", name: "Audit down" }));
+    exhaustBudget("key-ad");
+    const handler = vi.fn(OK);
+
+    const res = await withApiKey(["agents:read"], handler)(
+      reqWith({ Authorization: "Bearer pinchy_ad" }),
+      {}
+    );
+
+    // Fail closed in both directions, exactly as the scope denial does: a
+    // broken audit DB must neither open the gate nor turn a clean 429 into an
+    // unhandled 500.
+    expect(res.status).toBe(429);
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it("leaves ordinary traffic alone — no 429, no row, no Retry-After", async () => {
+    mockVerifyApiKey.mockResolvedValue(verified({ id: "key-normal", name: "Normal" }));
+    const handler = vi.fn(OK);
+
+    const res = await withApiKey(["agents:read"], handler)(
+      reqWith({ Authorization: "Bearer pinchy_normal" }),
+      {}
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Retry-After")).toBeNull();
+    expect(appendAuditLog).not.toHaveBeenCalled();
+    expect(handler).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not charge the budget for a request that never authenticated", async () => {
+    // A 401 leaves no key id to bill, so an unauthenticated flood must not be
+    // able to spend a real key's budget. Nothing to assert on the 401 itself —
+    // the proof is that the real key still has its full budget afterwards.
+    mockVerifyApiKey.mockResolvedValue({ valid: false, error: null, key: null });
+    for (let i = 0; i < 10; i++) {
+      await withApiKey(["agents:read"], vi.fn(OK))(
+        reqWith({ Authorization: "Bearer pinchy_garbage" }),
+        {}
+      );
+    }
+
+    mockVerifyApiKey.mockResolvedValue(verified({ id: "key-victim", name: "Victim" }));
+    const handler = vi.fn(OK);
+    const res = await withApiKey(["agents:read"], handler)(
+      reqWith({ Authorization: "Bearer pinchy_victim" }),
+      {}
+    );
+
+    expect(res.status).toBe(200);
+    expect(handler).toHaveBeenCalledTimes(1);
   });
 });
 
