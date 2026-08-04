@@ -58,7 +58,7 @@ Database and OpenClaw reachability, plus the running version. **Public**, but th
 
 ### `GET /api/health/openclaw`
 
-OpenClaw gateway reachability check. **Public — no authentication required.**
+OpenClaw gateway reachability check. **Public — no authentication required**, except the `?channelHealth=1` mode described below, which requires an admin session.
 
 Useful for monitoring the WebSocket gateway separately from the web process.
 
