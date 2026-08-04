@@ -20,23 +20,34 @@ vi.mock("@/lib/integrations/odoo-sync", () => ({
   fetchOdooSchema: (...args: unknown[]) => mockFetchOdooSchema(...args),
 }));
 
-import { NextRequest } from "next/server";
-import { routeContext } from "@/test-helpers/route";
+import { mockSession } from "@/test-helpers/auth";
+import { makeNextRequest, routeContext } from "@/test-helpers/route";
 
-function makeRequest(path: string, options?: ConstructorParameters<typeof NextRequest>[1]) {
-  return new NextRequest(`http://localhost:7777${path}`, options);
+const ROUTE_URL = "http://localhost:7777/api/integrations/sync-preview";
+
+function postSyncPreview(body: unknown) {
+  return makeNextRequest(ROUTE_URL, { method: "POST", body: JSON.stringify(body) });
 }
 
-const adminSession = { user: { id: "user-1", email: "admin@test.com", role: "admin" } };
-const memberSession = { user: { id: "user-2", email: "member@test.com", role: "member" } };
+const adminSession = mockSession();
+const memberSession = mockSession({
+  user: { id: "user-2", email: "member@test.com", name: "Test Member", role: "member" },
+});
 
+// The url deliberately carries a path. `validateExternalUrl` answers with a
+// NORMALIZED origin (scheme + host + port, no path), so a fixture whose input
+// already IS its own origin makes "the route fetched what it validated"
+// indistinguishable from "the route fetched something else" — both assertions
+// would compare the same string. With a path the two differ, and the happy-path
+// test below can tell them apart.
 const validCredentials = {
-  url: "https://odoo.example.com",
+  url: "https://odoo.example.com/erp",
   db: "prod",
   login: "admin",
   apiKey: "secret-key",
   uid: 2,
 };
+const validatedOrigin = "https://odoo.example.com";
 
 const validSyncResult = {
   success: true,
@@ -60,7 +71,7 @@ describe("POST /api/integrations/sync-preview", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockGetSession.mockResolvedValue(adminSession);
-    mockValidateExternalUrl.mockReturnValue({ valid: true, url: "https://odoo.example.com" });
+    mockValidateExternalUrl.mockReturnValue({ valid: true, url: validatedOrigin });
     mockFetchOdooSchema.mockResolvedValue(validSyncResult);
   });
 
@@ -68,13 +79,14 @@ describe("POST /api/integrations/sync-preview", () => {
     mockGetSession.mockResolvedValueOnce(null);
     const { POST } = await import("@/app/api/integrations/sync-preview/route");
 
-    const request = makeRequest("/api/integrations/sync-preview", {
-      method: "POST",
-      body: JSON.stringify({ type: "odoo", credentials: validCredentials }),
-    });
-    const response = await POST(request, routeContext());
+    const response = await POST(
+      postSyncPreview({ type: "odoo", credentials: validCredentials }),
+      routeContext()
+    );
 
     expect(response.status).toBe(401);
+    // The credentials must not leave the process before the caller is known.
+    expect(mockValidateExternalUrl).not.toHaveBeenCalled();
     expect(mockFetchOdooSchema).not.toHaveBeenCalled();
   });
 
@@ -82,58 +94,72 @@ describe("POST /api/integrations/sync-preview", () => {
     mockGetSession.mockResolvedValueOnce(memberSession);
     const { POST } = await import("@/app/api/integrations/sync-preview/route");
 
-    const request = makeRequest("/api/integrations/sync-preview", {
-      method: "POST",
-      body: JSON.stringify({ type: "odoo", credentials: validCredentials }),
-    });
-    const response = await POST(request, routeContext());
+    const response = await POST(
+      postSyncPreview({ type: "odoo", credentials: validCredentials }),
+      routeContext()
+    );
 
     expect(response.status).toBe(403);
+    expect(mockValidateExternalUrl).not.toHaveBeenCalled();
     expect(mockFetchOdooSchema).not.toHaveBeenCalled();
   });
 
   it("should return 400 when required credential fields are missing", async () => {
     const { POST } = await import("@/app/api/integrations/sync-preview/route");
 
-    const request = makeRequest("/api/integrations/sync-preview", {
-      method: "POST",
-      body: JSON.stringify({
-        type: "odoo",
-        credentials: { url: "https://odoo.example.com" },
-      }),
-    });
-    const response = await POST(request, routeContext());
+    const response = await POST(
+      postSyncPreview({ type: "odoo", credentials: { url: validCredentials.url } }),
+      routeContext()
+    );
+    const body = await response.json();
 
     expect(response.status).toBe(400);
+    // Assert WHICH check refused. `parseRequestBody` answers 400 for a failed
+    // schema AND for an unparseable body, so a bare status assertion passes
+    // even when the route rejected for a reason the test never intended.
+    expect(body.error).toBe("Validation failed");
+    expect(body.details.fieldErrors.credentials).toBeDefined();
+    expect(mockValidateExternalUrl).not.toHaveBeenCalled();
     expect(mockFetchOdooSchema).not.toHaveBeenCalled();
   });
 
   it("should return 400 for an invalid url", async () => {
     const { POST } = await import("@/app/api/integrations/sync-preview/route");
 
-    const request = makeRequest("/api/integrations/sync-preview", {
-      method: "POST",
-      body: JSON.stringify({
+    const response = await POST(
+      postSyncPreview({
         type: "odoo",
         credentials: { ...validCredentials, url: "not-a-url" },
       }),
-    });
-    const response = await POST(request, routeContext());
+      routeContext()
+    );
+    const body = await response.json();
 
     expect(response.status).toBe(400);
+    expect(body.error).toBe("Validation failed");
+    // Every other credential field is valid, so the url is the only thing that
+    // can have failed — name it, otherwise this passes on any credential error.
+    expect(body.details.fieldErrors.credentials).toContain("Invalid URL");
+    expect(mockValidateExternalUrl).not.toHaveBeenCalled();
     expect(mockFetchOdooSchema).not.toHaveBeenCalled();
   });
 
   it("should return 400 for a non-odoo type", async () => {
     const { POST } = await import("@/app/api/integrations/sync-preview/route");
 
-    const request = makeRequest("/api/integrations/sync-preview", {
-      method: "POST",
-      body: JSON.stringify({ type: "web-search", credentials: { apiKey: "x" } }),
-    });
-    const response = await POST(request, routeContext());
+    // The credentials are deliberately VALID: with an invalid `credentials`
+    // block alongside, this test goes green even if `type` stops being a
+    // literal, and then pins nothing about the only value the route handles.
+    const response = await POST(
+      postSyncPreview({ type: "web-search", credentials: validCredentials }),
+      routeContext()
+    );
+    const body = await response.json();
 
     expect(response.status).toBe(400);
+    expect(body.error).toBe("Validation failed");
+    expect(body.details.fieldErrors.type).toBeDefined();
+    expect(body.details.fieldErrors.credentials).toBeUndefined();
     expect(mockFetchOdooSchema).not.toHaveBeenCalled();
   });
 
@@ -146,14 +172,13 @@ describe("POST /api/integrations/sync-preview", () => {
     });
     const { POST } = await import("@/app/api/integrations/sync-preview/route");
 
-    const request = makeRequest("/api/integrations/sync-preview", {
-      method: "POST",
-      body: JSON.stringify({
+    const response = await POST(
+      postSyncPreview({
         type: "odoo",
         credentials: { ...validCredentials, url: "http://169.254.169.254/" },
       }),
-    });
-    const response = await POST(request, routeContext());
+      routeContext()
+    );
     const body = await response.json();
 
     expect(mockValidateExternalUrl).toHaveBeenCalledWith("http://169.254.169.254/");
@@ -165,16 +190,23 @@ describe("POST /api/integrations/sync-preview", () => {
   it("returns the schema from fetchOdooSchema when the url passes SSRF validation", async () => {
     const { POST } = await import("@/app/api/integrations/sync-preview/route");
 
-    const request = makeRequest("/api/integrations/sync-preview", {
-      method: "POST",
-      body: JSON.stringify({ type: "odoo", credentials: validCredentials }),
-    });
-    const response = await POST(request, routeContext());
+    const response = await POST(
+      postSyncPreview({ type: "odoo", credentials: validCredentials }),
+      routeContext()
+    );
     const body = await response.json();
 
     expect(mockValidateExternalUrl).toHaveBeenCalledWith(validCredentials.url);
     expect(mockFetchOdooSchema).toHaveBeenCalledWith(validCredentials);
     expect(response.status).toBe(200);
     expect(body).toEqual(validSyncResult);
+
+    // The invariant SSRF actually rests on: the string that was checked is the
+    // string that gets fetched. Asserted as an identity between the two calls
+    // rather than against a literal, so a route that swapped in the normalized
+    // origin (or any other rewrite) between check and fetch fails here.
+    const [validatedUrl] = mockValidateExternalUrl.mock.calls[0] as [string];
+    const [forwarded] = mockFetchOdooSchema.mock.calls[0] as [typeof validCredentials];
+    expect(forwarded.url).toBe(validatedUrl);
   });
 });
