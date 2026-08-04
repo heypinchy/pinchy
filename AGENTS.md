@@ -653,6 +653,22 @@ Three things to know before editing it:
 - **Never write `init.signal ?? AbortSignal.timeout(...)`.** It reads as a harmless escape hatch and is a trap: the first caller to pass a cancellation signal silently loses the timeout, and no test can see it. Both wrappers here (`GraphAdapter.req`, `fetchWithRetry`) type `signal` out of their options and take a `timeoutMs` instead. Create the signal **inside** a retry loop, too, so each attempt gets a fresh bound rather than all attempts sharing one deadline the first one spent.
 - **It sees `fetch` and nothing else.** A plugin reaching the network through another transport is invisible to it — today `gmail-adapter.ts` (googleapis/gaxios, bounded by its `timeout` option) and `imap-adapter.ts` (imapflow, `connectionTimeout`/`socketTimeout`). It also checks only that a signal is passed, never that the value is sane. Both limits are covered by per-call unit tests instead. Verify a change to the guard with a canary — delete a `signal:` from a plugin, watch it name that exact file and line, put it back.
 
+### A Failing Tool Result Needs `details.error`, Not Just `isError`
+
+OpenClaw strips the MCP `isError` flag before forwarding a tool result to `/api/internal/audit/tool-use` (#404), so the audit route's only remaining failure signal is `result.details.error` — see the three-source precedence comment in that route. A tool that fails while setting only `isError: true` is written to the audit trail as **`outcome: success`**. The failure is not merely unlogged; it is logged as its opposite, which is worse than silence for anyone reading the trail afterwards. pinchy-odoo and pinchy-email carried a `toolError()` helper for this; five other plugins did not.
+
+Every plugin now routes error results through its own `toolError(text)` helper, and `packages/web/src/__tests__/lib/plugin-tool-error-details-drift.test.ts` (scan in `plugin-error-details-extraction.ts`) enforces it by AST-walking each `packages/plugins/pinchy-*/index.ts`.
+
+Three details are load-bearing, each because the first draft got it wrong and a canary caught it:
+
+- **The scan unwraps `as const` and parentheses.** An `expr.kind === TrueKeyword` test skips `isError: true as const` entirely — and pinchy-email's session-less tool stub is written exactly that way, so the strict check silently exempted one of the very results it was written to cover.
+- **A computed `isError` is flagged, not waved through.** `isError: result.isError` is how `pinchy_web_fetch` shipped without `details.error` in the first place. A scan that judges only the literal `true` cannot see that shape come back, so it is reported as `dynamic-is-error`: branch on the flag and return `toolError(...)` on the error side.
+- **An unreadable `index.ts` throws.** Every assertion here is an _absence_, so a failed read and a clean file are the same empty list — returning `[]` would turn the guard green for a plugin it never opened. This is the one place it must diverge from `deriveToolsFromSource`, where an empty list turns the manifest comparison red instead. A corpus floor (`checked >= 10`, against 14 present when this landed) covers the same failure one level up.
+
+Verify a change to the scan by reproduction, not by reading it: break one plugin result, watch the guard name that plugin, put it back. The `scanErrorResults` fixtures in the guard's second `describe` pin all four shapes above.
+
+Known limitation: the scan reads `index.ts` only, matching `deriveToolsFromSource`. A plugin that builds an MCP result in a sibling module escapes it. Nothing does today — pinchy-web's `web-fetch.ts` returns an internal `{ content: string; isError }` DTO that `index.ts` translates through `toolError()`.
+
 ### Tool dispatch coverage
 
 Every plugin tool must be covered at three layers:
