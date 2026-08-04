@@ -8,7 +8,8 @@ import { EventEmitter } from "events";
 // plugin tool-output text, so this poll (not an inline marker) is how a delivery
 // is observed. The full path (real plugin → transcript artifact → this glue) is
 // covered by E2E; here we exercise the glue directly via the private-method cast
-// seam.
+// seam — routed through the StreamPipe collaborator ClientRouter delegates
+// stream-piping concerns to (pinchy#1073 step 1; see stream-pipe.ts).
 
 const { mockInsertValues, mockAppendAuditLog, mockRecordAuditFailure, mockGrantSelect } =
   vi.hoisted(() => ({
@@ -86,14 +87,16 @@ function makeRouter(artifacts: Artifact[]) {
 async function deliver(router: ClientRouter, clientWs: unknown) {
   await (
     router as unknown as {
-      deliverRunArtifacts: (
-        sessionKey: string,
-        agent: { id: string; name: string },
-        clientWs: unknown,
-        messageId: string
-      ) => Promise<void>;
+      streamPipe: {
+        deliverRunArtifacts: (
+          sessionKey: string,
+          agent: { id: string; name: string },
+          clientWs: unknown,
+          messageId: string
+        ) => Promise<void>;
+      };
     }
-  ).deliverRunArtifacts(SESSION_KEY, agent, clientWs, "msg-1");
+  ).streamPipe.deliverRunArtifacts(SESSION_KEY, agent, clientWs, "msg-1");
 }
 
 describe("ClientRouter file-delivery glue (artifacts.list poll)", () => {
