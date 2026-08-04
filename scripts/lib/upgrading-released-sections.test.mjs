@@ -8,7 +8,6 @@ import {
   UPGRADING_MDX_PATH,
   KNOWN_PRE_GUARD_DRIFT,
   parseUpgradeSections,
-  maskFencedBlocks,
   normalizeSectionBody,
   noteHeadings,
   diffNoteHeadings,

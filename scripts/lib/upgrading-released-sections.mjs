@@ -22,12 +22,10 @@
 
 import { createHash } from "node:crypto";
 
+// The masking lives in mdx-fences.mjs so the release script cuts this file the
+// same way this guard does — see that module's header for what each caller
+// loses when it does not.
 import { maskFencedBlocks, sliceSectionBody } from "./mdx-fences.mjs";
-
-// Re-exported because this module's own tests exercise the masking through the
-// guard that motivated it. The implementation lives in mdx-fences.mjs so the
-// release script reads the file the same way — see that module's header.
-export { maskFencedBlocks };
 
 export const UPGRADING_MDX_PATH = "docs/src/content/docs/guides/upgrading.mdx";
 
