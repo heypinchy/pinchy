@@ -16,7 +16,23 @@
  */
 export const IMAP_ONLY_SPEC_FILES = ["email-imap.spec.ts", "inbox-sweep.spec.ts"] as const;
 
-/** RegExp form for playwright.imap.config.ts's testMatch, derived from the list above. */
+/**
+ * Escape a literal file name for embedding in a RegExp. A derived pattern must
+ * escape what it derives from: an unescaped `.` matches any character, so a
+ * future `email-imap.v2.spec.ts` would silently widen the allowlist to specs
+ * nobody listed here — and a widened testMatch claims a spec the email config
+ * still runs, so it runs twice rather than nowhere.
+ */
+function escapeForRegExp(literal: string): string {
+  return literal.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * RegExp form for playwright.imap.config.ts's testMatch, derived from the list
+ * above. Playwright tests this against a file path, so the alternation is
+ * anchored to a whole path segment: it matches `<anything>/inbox-sweep.spec.ts`
+ * and nothing that merely contains that name.
+ */
 export const IMAP_ONLY_SPEC_MATCH = new RegExp(
-  `(${IMAP_ONLY_SPEC_FILES.map((f) => f.replace(/\.spec\.ts$/, "")).join("|")})\\.spec\\.ts`
+  `(?:^|/)(?:${IMAP_ONLY_SPEC_FILES.map(escapeForRegExp).join("|")})$`
 );
