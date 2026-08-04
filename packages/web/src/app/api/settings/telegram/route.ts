@@ -4,7 +4,6 @@
 // lib/telegram-pairing-security.ts — because that path is the brute-force
 // surface; the exemption covers success/unlink only.
 import { NextResponse } from "next/server";
-import { z } from "zod";
 import { withAuth } from "@/lib/api-auth";
 import { resolvePairingCode } from "@/lib/telegram-pairing";
 import {
@@ -17,8 +16,7 @@ import { db } from "@/db";
 import { channelLinks } from "@/db/schema";
 import { eq, and } from "drizzle-orm";
 import { parseRequestBody } from "@/lib/api-validation";
-
-const linkTelegramSchema = z.object({ code: z.string().min(1) });
+import { linkTelegramSchema } from "@/lib/schemas/telegram";
 
 export const GET = withAuth(async (_req, _ctx, session) => {
   const link = await db.query.channelLinks.findFirst({

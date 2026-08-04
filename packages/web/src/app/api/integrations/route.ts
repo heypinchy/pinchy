@@ -1,31 +1,14 @@
 import { NextResponse } from "next/server";
-import { z } from "zod";
 import { eq } from "drizzle-orm";
 import { withAdmin } from "@/lib/api-auth";
 import { db } from "@/db";
 import { integrationConnections } from "@/db/schema";
 import { encrypt, decrypt } from "@/lib/encryption";
 import { deferAuditLog } from "@/lib/audit-deferred";
-import { odooCredentialsSchema, odooConnectionDataSchema } from "@/lib/integrations/odoo-schema";
 import { validateExternalUrl } from "@/lib/integrations/url-validation";
 import { maskConnectionCredentials } from "@/lib/integrations/mask-credentials";
 import { parseRequestBody } from "@/lib/api-validation";
-
-const createIntegrationSchema = z.discriminatedUnion("type", [
-  z.object({
-    type: z.literal("odoo"),
-    name: z.string().min(1).max(100),
-    description: z.string().max(500).default(""),
-    credentials: odooCredentialsSchema,
-    data: odooConnectionDataSchema.optional(),
-  }),
-  z.object({
-    type: z.literal("web-search"),
-    name: z.string().min(1).max(100),
-    description: z.string().max(500).default(""),
-    credentials: z.object({ apiKey: z.string().min(1) }),
-  }),
-]);
+import { createIntegrationSchema } from "@/lib/schemas/integrations";
 
 export const GET = withAdmin(async () => {
   const connections = await db.select().from(integrationConnections);

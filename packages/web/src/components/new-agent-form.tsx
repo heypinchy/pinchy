@@ -65,6 +65,8 @@ interface ValidationResult {
 }
 
 import { AGENT_NAME_MAX_LENGTH } from "@/lib/agent-constants";
+import { apiPost, errorMessage } from "@/lib/api-client";
+import type { CreateAgentInput } from "@/lib/schemas/agents";
 
 const agentFormSchema = z.object({
   name: z
@@ -372,6 +374,12 @@ export function NewAgentForm() {
   }, [selectedTemplate]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function onSubmit(values: AgentFormValues) {
+    // The form — and therefore this handler — only renders inside the
+    // "a template is selected" branch. Stated rather than asserted, because
+    // the create payload is typed against the route's schema and templateId is
+    // required there.
+    if (!selectedTemplate) return;
+
     setError(null);
     setSubmitting(true);
 
@@ -379,7 +387,7 @@ export function NewAgentForm() {
       // Enable workspace write by default so new agents can save files out of
       // the box. The API dedups this against the template's own allowedTools;
       // users can toggle it off later in Agent Settings → Permissions.
-      const body: Record<string, unknown> = {
+      const body: CreateAgentInput = {
         name: values.name.trim(),
         tagline: values.tagline?.trim() || null,
         templateId: selectedTemplate,
@@ -394,19 +402,10 @@ export function NewAgentForm() {
         body.connectionId = selectedConnectionId;
       }
 
-      const res = await fetch("/api/agents", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-
-      if (!res.ok) {
-        const data = await res.json();
-        setError(data.error || "Failed to create agent");
-        return;
-      }
-
-      const agent = await res.json();
+      const agent = await apiPost<{ id: string; warning?: string }, CreateAgentInput>(
+        "/api/agents",
+        body
+      );
       // #880 — the route creates the agent even when applying it to the OC
       // runtime fails, returning a non-blocking `warning` instead of a 500.
       // Surface it as a warning toast (sonner persists across the navigation
@@ -417,8 +416,8 @@ export function NewAgentForm() {
       triggerRestart();
       router.push(`/chat/${agent.id}`);
       router.refresh();
-    } catch {
-      setError("Failed to create agent");
+    } catch (e) {
+      setError(errorMessage(e, "Failed to create agent"));
     } finally {
       setSubmitting(false);
     }

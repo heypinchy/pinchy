@@ -32,6 +32,9 @@ import { Separator } from "@/components/ui/separator";
 import { StatusBadge } from "@/components/status-badge";
 import { toast } from "sonner";
 import type { UserListItem, UserGroup } from "@/lib/user-list";
+import type { UserRole } from "@/db/enums";
+import { apiPost, apiPut, apiPatch, apiDelete, ApiError, errorMessage } from "@/lib/api-client";
+import type { UpdateUserInput, UpdateUserGroupsInput } from "@/lib/schemas/users";
 import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
 import { buildInviteUrl } from "@/lib/invite-url";
 
@@ -119,25 +122,33 @@ export function UserDetailSheet({
       // results.every(ok), which reports a total failure on a partial success
       // and leaves the table out of sync with what actually persisted.
       const rolePromise = roleChanged
-        ? fetch(`/api/users/${user.id}`, {
-            method: "PATCH",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ role: selectedRole }),
-          })
+        ? apiPatch<unknown, UpdateUserInput>(`/api/users/${user.id}`, { role: selectedRole })
         : null;
 
       const groupsPromise = groupsChanged
-        ? fetch(`/api/users/${user.id}/groups`, {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ groupIds: [...selectedGroupIds] }),
+        ? apiPut<unknown, UpdateUserGroupsInput>(`/api/users/${user.id}/groups`, {
+            groupIds: [...selectedGroupIds],
           })
         : null;
 
-      const [roleRes, groupsRes] = await Promise.all([rolePromise, groupsPromise]);
+      // allSettled, not all: the two writes are independent, and `all` would
+      // discard the other outcome the moment one rejects — which is exactly
+      // the partial-success case this branch exists to report.
+      const [roleResult, groupsResult] = await Promise.allSettled([
+        rolePromise ?? Promise.resolve(),
+        groupsPromise ?? Promise.resolve(),
+      ]);
 
-      const roleOk = !rolePromise || (roleRes?.ok ?? false);
-      const groupsOk = !groupsPromise || (groupsRes?.ok ?? false);
+      const roleOk = !rolePromise || roleResult.status === "fulfilled";
+      const groupsOk = !groupsPromise || groupsResult.status === "fulfilled";
+      // The route's own wording ("Cannot change your own role", "License
+      // required — Adding users to groups requires an active license.") beats
+      // "Please try again", which tells the admin nothing they can act on.
+      const reason = [roleResult, groupsResult]
+        .map((r) =>
+          r.status === "rejected" && r.reason instanceof ApiError ? r.reason.message : null
+        )
+        .find((m): m is string => m !== null);
 
       if (roleOk && groupsOk) {
         toast("User updated");
@@ -152,49 +163,48 @@ export function UserDetailSheet({
         // re-applies the failed half. Use onRefresh (refetch-only), NOT onSaved
         // — the latter closes the sheet in the parent and would kill the retry.
         onRefresh?.();
-        toast.error(
-          !roleOk
-            ? "Group membership saved, but the role change failed. Please retry."
-            : "Role saved, but group membership could not be updated. Please retry."
-        );
+        const half = !roleOk
+          ? "Group membership saved, but the role change failed."
+          : "Role saved, but group membership could not be updated.";
+        toast.error(reason ? `${half} ${reason}` : `${half} Please retry.`);
         return;
       }
 
       // Total failure: nothing persisted, keep the sheet open.
-      toast.error("Failed to update user. Please try again.");
+      toast.error(reason ?? "Failed to update user. Please try again.");
     } finally {
       setSaving(false);
     }
   }
 
   async function handleResetPassword() {
-    const res = await fetch(`/api/users/${user.id}/reset`, { method: "POST" });
-    if (res.ok) {
-      const data = await res.json();
+    try {
+      const data = await apiPost<{ token: string }>(`/api/users/${user.id}/reset`, undefined);
       setResetLink(buildInviteUrl(window.location.origin, data.token));
-    } else {
-      toast.error("Failed to reset password");
+    } catch (e) {
+      toast.error(errorMessage(e, "Failed to reset password"));
     }
   }
 
   async function handleDeactivate() {
-    const res = await fetch(`/api/users/${user.id}`, { method: "DELETE" });
-    setShowDeactivateConfirm(false);
-    if (res.ok) {
+    try {
+      await apiDelete(`/api/users/${user.id}`);
+      setShowDeactivateConfirm(false);
       onSaved();
       onOpenChange(false);
-    } else {
-      toast.error("Failed to deactivate user");
+    } catch (e) {
+      setShowDeactivateConfirm(false);
+      toast.error(errorMessage(e, "Failed to deactivate user"));
     }
   }
 
   async function handleReactivate() {
-    const res = await fetch(`/api/users/${user.id}/reactivate`, { method: "POST" });
-    if (res.ok) {
+    try {
+      await apiPost(`/api/users/${user.id}/reactivate`, undefined);
       onSaved();
       onOpenChange(false);
-    } else {
-      toast.error("Failed to reactivate user");
+    } catch (e) {
+      toast.error(errorMessage(e, "Failed to reactivate user"));
     }
   }
 
@@ -217,7 +227,9 @@ export function UserDetailSheet({
             <Label htmlFor="role-select">Role</Label>
             <Select
               value={selectedRole}
-              onValueChange={setSelectedRole}
+              // Radix hands back a bare string; the only two values it can
+              // produce are the two SelectItems below, which are the role enum.
+              onValueChange={(v) => setSelectedRole(v as UserRole)}
               disabled={isOwnAccount || isDeactivated}
             >
               <SelectTrigger id="role-select">

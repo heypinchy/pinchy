@@ -1,28 +1,10 @@
 // audit-exempt: read-only credential test, no state changes
 import { NextResponse } from "next/server";
-import { z } from "zod";
 import { OdooClient } from "odoo-node";
 import { withAdmin } from "@/lib/api-auth";
 import { validateExternalUrl } from "@/lib/integrations/url-validation";
 import { parseRequestBody } from "@/lib/api-validation";
-
-const testCredentialsSchema = z.discriminatedUnion("type", [
-  z.object({
-    type: z.literal("odoo"),
-    credentials: z.object({
-      url: z.string().url(),
-      db: z.string().min(1),
-      login: z.string().min(1),
-      apiKey: z.string().min(1),
-    }),
-  }),
-  z.object({
-    type: z.literal("web-search"),
-    credentials: z.object({
-      apiKey: z.string().min(1),
-    }),
-  }),
-]);
+import { testCredentialsSchema } from "@/lib/schemas/integrations";
 
 export const POST = withAdmin(async (request) => {
   const parsed = await parseRequestBody(testCredentialsSchema, request);

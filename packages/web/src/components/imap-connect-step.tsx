@@ -13,7 +13,7 @@ import {
 } from "@/components/ui/select";
 import { Loader2, AlertTriangle, Eye, EyeOff } from "lucide-react";
 import { toast } from "sonner";
-import { apiGet, apiPost, ApiError } from "@/lib/api-client";
+import { apiGet, apiPost, errorMessage } from "@/lib/api-client";
 import type { ImapTestInput, ImapCreateInput, ImapTestResult } from "@/lib/schemas/imap";
 
 interface AutodiscoverResponse {
@@ -247,7 +247,7 @@ export function ImapConnectStep({ onSuccess, onCancel, onBack }: ImapConnectStep
       result = await apiPost<ImapTestResult>("/api/integrations/imap/test", testBody);
     } catch (err) {
       setFlightStatus("failure");
-      setTestError(err instanceof ApiError ? err.message : "Connection test failed");
+      setTestError(errorMessage(err, "Connection test failed"));
       setServerSettingsExpanded(true);
       setUserExpanded(true);
       return;
@@ -280,7 +280,7 @@ export function ImapConnectStep({ onSuccess, onCancel, onBack }: ImapConnectStep
       onSuccess(connection);
     } catch (err) {
       setFlightStatus("failure");
-      setSaveError(err instanceof ApiError ? err.message : "Failed to create the connection");
+      setSaveError(errorMessage(err, "Failed to create the connection"));
     }
   }
 

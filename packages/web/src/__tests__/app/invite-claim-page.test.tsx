@@ -5,6 +5,7 @@ import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
 import { toast } from "sonner";
 import InviteClaimPage from "@/app/invite/[token]/page";
+import { jsonResponse } from "@/test-helpers/fetch";
 
 const pushMock = vi.fn();
 
@@ -66,10 +67,12 @@ describe("Invite Claim Page", () => {
           // widens `getResponse` back to `MockResponse | "pending"` inside
           // the `json` closure below since it's a reassignable outer `let`.
           const response = getResponse;
-          return Promise.resolve({ ok: response.ok, json: async () => response.body });
+          return Promise.resolve(jsonResponse(response.body, { status: response.ok ? 200 : 400 }));
         }
         if (method === "POST" && url === "/api/invite/claim") {
-          return Promise.resolve({ ok: postResponse.ok, json: async () => postResponse.body });
+          return Promise.resolve(
+            jsonResponse(postResponse.body, { status: postResponse.ok ? 200 : 400 })
+          );
         }
         throw new Error(`Unexpected fetch: ${method} ${url}`);
       }

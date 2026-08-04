@@ -4,6 +4,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
 import { SettingsLicense } from "@/components/settings-license";
+import { jsonResponse } from "@/test-helpers/fetch";
 
 const noLicenseStatus = {
   enterprise: false,
@@ -19,11 +20,7 @@ const noLicenseStatus = {
   hasGatedConfig: false,
 };
 
-const statusOkResponse = (data: object) =>
-  ({
-    ok: true,
-    json: async () => data,
-  }) as Response;
+const statusOkResponse = (data: object) => jsonResponse(data);
 
 describe("SettingsLicense", () => {
   let fetchSpy: ReturnType<typeof vi.spyOn>;
@@ -39,9 +36,8 @@ describe("SettingsLicense", () => {
   });
 
   it("shows loading state initially when no initialLicense provided", () => {
-    fetchSpy.mockResolvedValue({
-      ok: true,
-      json: async () => ({
+    fetchSpy.mockResolvedValue(
+      jsonResponse({
         enterprise: false,
         type: null,
         org: null,
@@ -50,8 +46,8 @@ describe("SettingsLicense", () => {
         managedByEnv: false,
         maxUsers: 0,
         seatsUsed: 0,
-      }),
-    } as Response);
+      })
+    );
     render(<SettingsLicense />);
     expect(screen.getByText(/loading/i)).toBeInTheDocument();
   });
@@ -207,10 +203,7 @@ describe("SettingsLicense", () => {
     expect(screen.getByText(/deletes all groups/i)).toBeInTheDocument();
     expect(screen.getByText(/recorded in the audit log/i)).toBeInTheDocument();
 
-    fetchSpy.mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ groupsRemoved: 2, agentsReset: 1 }),
-    } as Response);
+    fetchSpy.mockResolvedValueOnce(jsonResponse({ groupsRemoved: 2, agentsReset: 1 }));
 
     await user.click(screen.getByRole("button", { name: /remove configuration/i }));
     await waitFor(() => {
@@ -409,10 +402,7 @@ describe("SettingsLicense", () => {
   });
 
   it("shows error message when save fails", async () => {
-    fetchSpy.mockResolvedValueOnce({
-      ok: false,
-      json: async () => ({ error: "Invalid license key" }),
-    } as Response);
+    fetchSpy.mockResolvedValueOnce(jsonResponse({ error: "Invalid license key" }, { status: 400 }));
 
     render(<SettingsLicense initialLicense={noLicenseStatus} />);
 
@@ -526,10 +516,7 @@ describe("SettingsLicense", () => {
   });
 
   it("does not dispatch 'license-updated' when save fails", async () => {
-    fetchSpy.mockResolvedValueOnce({
-      ok: false,
-      json: async () => ({ error: "Invalid license key" }),
-    } as Response);
+    fetchSpy.mockResolvedValueOnce(jsonResponse({ error: "Invalid license key" }, { status: 400 }));
     const onLicenseUpdated = vi.fn();
     window.addEventListener("license-updated", onLicenseUpdated);
 

@@ -1,5 +1,4 @@
 import { NextResponse, after } from "next/server";
-import { z } from "zod";
 import { withAuth, withAdmin } from "@/lib/api-auth";
 import { getSetting, deleteSetting } from "@/lib/settings";
 import { PROVIDERS, type ProviderName } from "@/lib/providers";
@@ -14,12 +13,7 @@ import {
   capMigratedAgents,
 } from "@/lib/provider-deletion";
 import { parseRequestBody } from "@/lib/api-validation";
-
-const VALID_PROVIDERS = Object.keys(PROVIDERS) as ProviderName[];
-
-const deleteProviderSchema = z.object({
-  provider: z.enum(VALID_PROVIDERS as [ProviderName, ...ProviderName[]]),
-});
+import { deleteProviderSchema } from "@/lib/schemas/providers";
 
 export const GET = withAuth(async (_req, _ctx, session) => {
   const isAdmin = session.user.role === "admin";

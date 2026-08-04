@@ -5,6 +5,8 @@ import { toast } from "sonner";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
+import { apiPost, errorMessage } from "@/lib/api-client";
+import type { OrgSettingInput } from "@/lib/schemas/settings";
 import {
   Select,
   SelectContent,
@@ -66,19 +68,13 @@ export function TimezoneSettings() {
     setSaving(true);
     setError(null);
     try {
-      const res = await fetch("/api/settings", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ key: "org.timezone", value: timezone }),
+      await apiPost<unknown, OrgSettingInput>("/api/settings", {
+        key: "org.timezone",
+        value: timezone,
       });
-      if (!res.ok) {
-        const data = await res.json();
-        setError(data.error || "Failed to save timezone");
-        return;
-      }
       toast.success("Settings saved");
-    } catch {
-      setError("Failed to save timezone");
+    } catch (e) {
+      setError(errorMessage(e, "Failed to save timezone"));
     } finally {
       setSaving(false);
     }

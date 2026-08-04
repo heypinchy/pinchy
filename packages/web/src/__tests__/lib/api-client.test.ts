@@ -1,5 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { apiPost, apiDelete, apiGet, ApiError, extractFieldErrors } from "@/lib/api-client";
+import {
+  apiPost,
+  apiDelete,
+  apiGet,
+  ApiError,
+  errorMessage,
+  extractFieldErrors,
+} from "@/lib/api-client";
 
 /**
  * Helper to build a Response-shaped mock that matches what `send()` reads.
@@ -99,6 +106,86 @@ describe("apiPost", () => {
     );
   });
 
+  // Several routes answer with BOTH a headline and the actionable sentence:
+  // `{ error: "Seat limit reached", message: "Your license includes 5 seats…" }`
+  // (users/invite, groups/[groupId]/members, users/[userId]/groups). Reading
+  // only `error` threw away the half that tells the user what to do about it.
+  it("joins the server's error headline and its actionable message", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        mockResponse({
+          ok: false,
+          status: 403,
+          body: {
+            error: "Seat limit reached",
+            message: "Remove an existing user or email sales@heypinchy.com.",
+          },
+        })
+      )
+    );
+    await expect(apiPost("/api/users/invite", {})).rejects.toMatchObject({
+      status: 403,
+      message: "Seat limit reached — Remove an existing user or email sales@heypinchy.com.",
+    });
+  });
+
+  it("uses `message` alone when the body carries no `error` headline", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValue(
+          mockResponse({ ok: false, status: 400, body: { message: "Mailbox is unreachable" } })
+        )
+    );
+    await expect(apiPost("/api/x", {})).rejects.toThrow("Mailbox is unreachable");
+  });
+
+  it("does not repeat itself when `error` and `message` say the same thing", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        mockResponse({
+          ok: false,
+          status: 400,
+          body: { error: "Invite not found", message: "Invite not found" },
+        })
+      )
+    );
+    await expect(apiPost("/api/x", {})).rejects.toThrow(/^Invite not found$/);
+  });
+
+  // A non-string `error` must never reach `new Error(...)`, or the user is
+  // shown "[object Object]".
+  it("falls back rather than stringifying a non-string error field", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        mockResponse({
+          ok: false,
+          status: 500,
+          body: { error: { message: "nested" } },
+        })
+      )
+    );
+    await expect(apiPost("/api/x", {})).rejects.toThrow("Something went wrong. Please try again.");
+  });
+
+  it("ignores a non-string message field", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        mockResponse({
+          ok: false,
+          status: 400,
+          body: { error: "Validation failed", message: { nested: true } },
+        })
+      )
+    );
+    await expect(apiPost("/api/x", {})).rejects.toThrow(/^Validation failed$/);
+  });
+
   it("throws an ApiError instance on non-2xx (instanceof check)", async () => {
     vi.stubGlobal(
       "fetch",
@@ -114,6 +201,60 @@ describe("apiPost", () => {
       expect((e as ApiError).status).toBe(403);
       expect((e as ApiError).message).toBe("Forbidden");
     }
+  });
+
+  it("exposes the whole parsed error payload on ApiError.body", async () => {
+    // The escape hatch for routes that answer a field beyond
+    // `{ error, message, details }` — /api/setup/provider sends a `docs` link
+    // with its 400, and provider-key-form reads it back off `body`.
+    const payload = {
+      error: "Invalid API key",
+      docs: { href: "https://docs.heypinchy.com/x", label: "Read the guide" },
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(mockResponse({ ok: false, status: 400, body: payload }))
+    );
+    try {
+      await apiPost("/api/setup/provider", {});
+      expect.fail("should have thrown");
+    } catch (e) {
+      expect((e as ApiError).body).toEqual(payload);
+    }
+  });
+});
+
+/**
+ * `errorMessage` is what every catch block in the app calls, so its contract is
+ * worth pinning directly rather than only through the components that use it.
+ *
+ * The rule it encodes: show the SERVER's wording when there was one, and the
+ * caller's context-specific fallback otherwise. The interesting case is the
+ * third one — an ApiError whose message is api-client's own generic sentence
+ * carries no server wording at all, so the fallback ("Failed to save timezone")
+ * is strictly more useful than passing the generic through.
+ */
+describe("errorMessage", () => {
+  it("prefers the server's own wording over the caller's fallback", () => {
+    const e = new ApiError(404, "Invite not found");
+    expect(errorMessage(e, "Failed to revoke invite. Please try again.")).toBe("Invite not found");
+  });
+
+  it("falls back when the route sent no wording at all", () => {
+    // What `send()` builds for a bare 500 or a proxy's HTML error page.
+    const e = new ApiError(500, "Something went wrong. Please try again.");
+    expect(errorMessage(e, "Failed to save timezone")).toBe("Failed to save timezone");
+  });
+
+  it("falls back for a network failure rather than leaking its internal text", () => {
+    // A fetch rejection is a TypeError whose message is "Failed to fetch" —
+    // never user-facing copy. Showing it on the setup screen is the regression
+    // this helper exists to prevent.
+    expect(errorMessage(new TypeError("Failed to fetch"), "Setup failed")).toBe("Setup failed");
+  });
+
+  it("falls back for a non-Error value", () => {
+    expect(errorMessage("boom", "Failed to create agent")).toBe("Failed to create agent");
   });
 });
 

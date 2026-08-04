@@ -19,12 +19,16 @@ import {
 } from "@/components/ui/form";
 import { authClient } from "@/lib/auth-client";
 import { passwordSchema } from "@/lib/validate-password";
+import { apiPost, apiPatch, errorMessage } from "@/lib/api-client";
+import type { UpdateMeInput, ChangePasswordInput } from "@/lib/schemas/settings";
 
 const nameSchema = z.object({
   name: z.string().min(1, "Name is required"),
 });
 
-const changePasswordSchema = z
+// The FORM's shape, not the route's: `confirmPassword` never leaves the
+// browser. The payload is typed by ChangePasswordInput at the call site.
+const passwordFormSchema = z
   .object({
     currentPassword: z.string().min(1, "Current password is required"),
     newPassword: passwordSchema,
@@ -36,7 +40,7 @@ const changePasswordSchema = z
   });
 
 type NameFormValues = z.infer<typeof nameSchema>;
-type PasswordFormValues = z.infer<typeof changePasswordSchema>;
+type PasswordFormValues = z.infer<typeof passwordFormSchema>;
 
 interface SettingsProfileProps {
   userName: string;
@@ -59,7 +63,7 @@ export function SettingsProfile({ userName, onDirtyChange }: SettingsProfileProp
   }, [userName, nameForm]);
 
   const passwordForm = useForm<PasswordFormValues>({
-    resolver: zodResolver(changePasswordSchema),
+    resolver: zodResolver(passwordFormSchema),
     defaultValues: { currentPassword: "", newPassword: "", confirmPassword: "" },
   });
 
@@ -72,48 +76,34 @@ export function SettingsProfile({ userName, onDirtyChange }: SettingsProfileProp
 
   async function onNameSubmit(values: NameFormValues) {
     try {
-      const res = await fetch("/api/users/me", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: values.name }),
+      await apiPatch<unknown, UpdateMeInput>("/api/users/me", { name: values.name });
+      toast.success("Name updated");
+      nameForm.reset({ name: values.name });
+    } catch (e) {
+      nameForm.setError("root", {
+        message: errorMessage(e, "Failed to update name"),
       });
-      if (res.ok) {
-        toast.success("Name updated");
-        nameForm.reset({ name: values.name });
-      } else {
-        const data = await res.json();
-        nameForm.setError("root", { message: data.error || "Failed to update name" });
-      }
-    } catch {
-      nameForm.setError("root", { message: "Failed to update name" });
     }
   }
 
   async function onPasswordSubmit(values: PasswordFormValues) {
     try {
-      const res = await fetch("/api/users/me/password", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          currentPassword: values.currentPassword,
-          newPassword: values.newPassword,
-        }),
+      await apiPost<unknown, ChangePasswordInput>("/api/users/me/password", {
+        currentPassword: values.currentPassword,
+        newPassword: values.newPassword,
       });
-      if (res.ok) {
-        // Say what actually happened: the change revokes every session this
-        // user holds (revokeOtherSessions in the route), so their phone and
-        // second machine are signed out. This tab keeps working — the route
-        // forwards the reissued session cookie — which is exactly why the
-        // sign-out would otherwise go unnoticed until someone else's device
-        // asked for a password.
-        toast.success("Password updated. Your other devices have been signed out.");
-        passwordForm.reset();
-      } else {
-        const data = await res.json();
-        passwordForm.setError("root", { message: data.error || "Failed to change password" });
-      }
-    } catch {
-      passwordForm.setError("root", { message: "Failed to change password" });
+      // Say what actually happened: the change revokes every session this
+      // user holds (revokeOtherSessions in the route), so their phone and
+      // second machine are signed out. This tab keeps working — the route
+      // forwards the reissued session cookie — which is exactly why the
+      // sign-out would otherwise go unnoticed until someone else's device
+      // asked for a password.
+      toast.success("Password updated. Your other devices have been signed out.");
+      passwordForm.reset();
+    } catch (e) {
+      passwordForm.setError("root", {
+        message: errorMessage(e, "Failed to change password"),
+      });
     }
   }
 

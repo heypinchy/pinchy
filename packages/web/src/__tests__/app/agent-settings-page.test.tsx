@@ -4,6 +4,7 @@ import { render, screen, waitFor, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
 import { AgentSettingsPageContent as AgentSettingsPage } from "@/components/agent-settings-page-content";
+import { jsonResponse } from "@/test-helpers/fetch";
 
 // Capture onChange callbacks from tab components
 let capturedOnChangeGeneral: ((v: unknown, isDirty: boolean) => void) | undefined;
@@ -80,21 +81,21 @@ function mockFetchResponses() {
   return vi.spyOn(global, "fetch").mockImplementation(async (url) => {
     const urlStr = typeof url === "string" ? url : url.toString();
     if (urlStr.includes("/api/agents/agent-1/files/SOUL.md")) {
-      return { ok: true, json: async () => ({ content: "# Soul" }) } as Response;
+      return jsonResponse({ content: "# Soul" });
     }
     if (urlStr.includes("/api/agents/agent-1/files/AGENTS.md")) {
-      return { ok: true, json: async () => ({ content: "# Agents" }) } as Response;
+      return jsonResponse({ content: "# Agents" });
     }
     if (urlStr.includes("/api/agents/agent-1") && !urlStr.includes("/files/")) {
-      return { ok: true, json: async () => agentData } as Response;
+      return jsonResponse(agentData);
     }
     if (urlStr.includes("/api/providers/models")) {
-      return { ok: true, json: async () => ({ providers: [] }) } as Response;
+      return jsonResponse({ providers: [] });
     }
     if (urlStr.includes("/api/data-directories")) {
-      return { ok: true, json: async () => ({ directories: [] }) } as Response;
+      return jsonResponse({ directories: [] });
     }
-    return { ok: true, json: async () => ({}) } as Response;
+    return jsonResponse({});
   });
 }
 
@@ -448,7 +449,7 @@ describe("AgentSettingsPage", () => {
           patchStartedBeforePutResolved = true;
         }
       }
-      return { ok: true, json: async () => ({}) } as Response;
+      return jsonResponse({});
     });
 
     await userEvent.click(screen.getByRole("button", { name: /save & restart/i }));

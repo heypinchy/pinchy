@@ -9,7 +9,7 @@ import {
   chatSessionKey,
   ChatSessionStoreContext,
 } from "@/components/chat-session-provider";
-import { apiPost, ApiError } from "@/lib/api-client";
+import { apiPost, errorMessage } from "@/lib/api-client";
 import { generateChatId } from "@/lib/chats/generate-chat-id";
 import { type SlashCommand } from "@/lib/slash-commands";
 import type { CompactSessionRequest, ResetSessionRequest } from "@/lib/schemas/sessions";
@@ -76,11 +76,7 @@ function ChatSessionInstance({
               );
               toast.success("Conversation compacted. It takes effect on your next message.");
             } catch (e) {
-              toast.error(
-                e instanceof ApiError
-                  ? e.message
-                  : "Couldn't compact the conversation. Please try again."
-              );
+              toast.error(errorMessage(e, "Couldn't compact the conversation. Please try again."));
             }
           })();
           break;
@@ -98,11 +94,7 @@ function ChatSessionInstance({
               onSessionReset();
               toast.success("Conversation reset — context cleared. Use New chat to keep a copy.");
             } catch (e) {
-              toast.error(
-                e instanceof ApiError
-                  ? e.message
-                  : "Couldn't reset the conversation. Please try again."
-              );
+              toast.error(errorMessage(e, "Couldn't reset the conversation. Please try again."));
             }
           })();
           break;

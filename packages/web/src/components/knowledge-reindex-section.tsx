@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { KnowledgeUnsearchableList } from "@/components/knowledge-unsearchable-list";
-import { apiGet, apiPost, ApiError } from "@/lib/api-client";
+import { apiGet, apiPost, errorMessage } from "@/lib/api-client";
 import {
   appendProgressSample,
   estimateRemainingMs,
@@ -176,7 +176,7 @@ export function KnowledgeReindexSection({
     } catch (err) {
       // 409 (already running), 503 (embedder missing) and 500 all arrive here as
       // an ApiError whose message is the route's human-readable `error`.
-      toast.error(err instanceof ApiError ? err.message : "Reindex could not be started.");
+      toast.error(errorMessage(err, "Reindex could not be started."));
     } finally {
       setSubmitting(false);
     }

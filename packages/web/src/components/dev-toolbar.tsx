@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { Shield, ShieldOff } from "lucide-react";
+import { apiPost } from "@/lib/api-client";
 
 export function DevToolbar() {
   const [enterprise, setEnterprise] = useState<boolean | null>(null);
@@ -17,8 +18,7 @@ export function DevToolbar() {
   async function toggle() {
     setToggling(true);
     try {
-      const res = await fetch("/api/dev/enterprise-toggle", { method: "POST" });
-      const data = await res.json();
+      const data = await apiPost<{ enterprise: boolean }>("/api/dev/enterprise-toggle", undefined);
       setEnterprise(data.enterprise);
       // Reload to reflect enterprise state across the app
       window.location.reload();

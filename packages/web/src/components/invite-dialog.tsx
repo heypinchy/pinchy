@@ -3,6 +3,8 @@
 import { useState, useEffect } from "react";
 import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
 import { buildInviteUrl } from "@/lib/invite-url";
+import { apiPost, errorMessage } from "@/lib/api-client";
+import type { InviteUserInput } from "@/lib/schemas/users";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -101,26 +103,16 @@ export function InviteDialog({ open, onOpenChange }: InviteDialogProps) {
     setError(null);
     setCreating(true);
     try {
-      const res = await fetch("/api/users/invite", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          email: values.email,
-          role: values.role,
-          ...(selectedGroupIds.length > 0 ? { groupIds: selectedGroupIds } : {}),
-        }),
+      const data = await apiPost<{ token: string }, InviteUserInput>("/api/users/invite", {
+        email: values.email,
+        role: values.role,
+        ...(selectedGroupIds.length > 0 ? { groupIds: selectedGroupIds } : {}),
       });
-      if (res.ok) {
-        const data = await res.json();
-        setInviteLink(buildInviteUrl(window.location.origin, data.token));
-      } else {
-        const data = await res.json();
-        // Seat-cap 403s carry an actionable message (quote path, § 5) —
-        // prefer it over the terse error code.
-        setError(data.message || data.error || "Failed to create invite");
-      }
-    } catch {
-      setError("Failed to create invite");
+      setInviteLink(buildInviteUrl(window.location.origin, data.token));
+    } catch (e) {
+      // Seat-cap 403s carry an actionable message beside the terse headline
+      // (quote path, § 5); ApiError.message already joins the two.
+      setError(errorMessage(e, "Failed to create invite"));
     } finally {
       setCreating(false);
     }

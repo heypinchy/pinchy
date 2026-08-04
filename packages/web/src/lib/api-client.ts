@@ -2,11 +2,56 @@ export class ApiError extends Error {
   constructor(
     public readonly status: number,
     message: string,
-    public readonly details?: unknown
+    public readonly details?: unknown,
+    /**
+     * The whole parsed error payload. The escape hatch for the routes that
+     * carry a field beyond `{ error, message, details }` — e.g.
+     * `/api/setup/provider` answers a `docs` link with its 400. Without it,
+     * such a caller would have to drop back to a raw `fetch` and hand-roll the
+     * error contract again, which is the drift this module exists to stop.
+     */
+    public readonly body?: unknown
   ) {
     super(message);
     this.name = "ApiError";
   }
+}
+
+const FALLBACK_MESSAGE = "Something went wrong. Please try again.";
+
+function asString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0 ? value : undefined;
+}
+
+/**
+ * The error contract routes actually use is `{ error, message?, details? }`,
+ * where `error` is a short headline and `message` — when present — is the
+ * sentence that tells the user what to do about it ("Your license includes 5
+ * seats… Remove an existing user or email sales@…"). Reading only `error`
+ * dropped that half on the floor, so the toast said "Seat limit reached" and
+ * nothing else. Join them; skip the join when a route sends the same text
+ * twice, so the toast never stutters.
+ */
+export function buildErrorMessage(error?: string, message?: string): string {
+  if (error && message && error !== message) return `${error} — ${message}`;
+  return error ?? message ?? FALLBACK_MESSAGE;
+}
+
+/**
+ * The server's own wording when it sent any, otherwise the caller's
+ * context-specific fallback.
+ *
+ * Prefer this over a bare `e.message` in a catch block. `ApiError.message`
+ * falls back to a deliberately generic sentence when the route sent no `error`
+ * or `message` at all (a bare 500, a proxy's HTML error page), and a component
+ * almost always knows something more useful than "Something went wrong" —
+ * "Failed to save timezone" at least says which action died. A non-ApiError
+ * (a network failure, an aborted request) gets the fallback for the same
+ * reason: its `message` is an internal string, not user-facing copy.
+ */
+export function errorMessage(e: unknown, fallback: string): string {
+  if (e instanceof ApiError && e.message !== FALLBACK_MESSAGE) return e.message;
+  return fallback;
 }
 
 async function send<R>(url: string, method: string, body?: unknown): Promise<R> {
@@ -22,14 +67,23 @@ async function send<R>(url: string, method: string, body?: unknown): Promise<R> 
   const parsedBody = rawBody.length > 0 ? safeParseJson(rawBody) : undefined;
 
   if (!res.ok) {
-    const errBody = (parsedBody ?? {}) as { error?: string; details?: unknown };
-    // The fallback message is surfaced to end users via toast. Keep it
-    // human-readable; the numeric status is still available on ApiError.status
-    // for logging and conditional handling.
+    const errBody = (parsedBody ?? {}) as {
+      error?: unknown;
+      message?: unknown;
+      details?: unknown;
+    };
+    // `asString` is not defensiveness for its own sake: a handful of routes
+    // put an OBJECT under `error` (`{ error: { message } }`), and passing that
+    // to `new Error(...)` shows the user "[object Object]". Fall back instead.
+    // The fallback is surfaced to end users via toast, so keep it a human
+    // sentence; the numeric status stays on ApiError.status for logging.
+    const error = asString(errBody.error);
+    const serverMessage = asString(errBody.message);
     throw new ApiError(
       res.status,
-      errBody.error ?? "Something went wrong. Please try again.",
-      errBody.details
+      buildErrorMessage(error, serverMessage),
+      errBody.details,
+      parsedBody
     );
   }
   return (parsedBody as R) ?? (undefined as R);

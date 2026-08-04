@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
-import { apiGet, apiPost, ApiError } from "@/lib/api-client";
+import { apiGet, apiPost, errorMessage } from "@/lib/api-client";
 import { AUTOMATION_MAX_SWEEP_WINDOW_DAYS } from "@/lib/schemas/automations";
 import type { AutomationConnectionOption, CreateAutomationInput } from "@/lib/schemas/automations";
 import type { EmailWorkflowFilter } from "@/lib/email-workflows/types";
@@ -25,10 +25,6 @@ import {
 /** Default sweep window (days) — mirrors the schema default so the form and the
  * server agree on what "leave it blank" means. */
 const DEFAULT_SWEEP_WINDOW_DAYS = 14;
-
-function errorMessage(e: unknown, fallback: string): string {
-  return e instanceof ApiError ? e.message : fallback;
-}
 
 /** Split a comma-separated input into trimmed, non-empty tokens. */
 function parseList(value: string): string[] {

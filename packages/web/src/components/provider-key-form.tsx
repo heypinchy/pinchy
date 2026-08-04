@@ -32,7 +32,8 @@ import {
   type ProviderListItem,
 } from "@/components/openai-compatible-provider-form";
 import type { ProviderName } from "@/lib/providers";
-import { apiGet, apiPatch, apiDelete, ApiError } from "@/lib/api-client";
+import { apiGet, apiPost, apiPatch, apiDelete, ApiError, errorMessage } from "@/lib/api-client";
+import type { SetupProviderInput, DeleteProviderInput } from "@/lib/schemas/providers";
 import type { DeleteOpenAiCompatibleInput } from "@/lib/schemas/openai-compatible-provider";
 import type { SetDefaultProviderInput } from "@/lib/schemas/provider-default";
 import type { DeletionPreviewResponse } from "@/lib/schemas/provider-deletion";
@@ -193,6 +194,28 @@ function renderStepWithLink(label: string, link: { text: string; url: string }) 
 }
 
 // Providers whose default models are always vision-capable
+/**
+ * `/api/setup/provider` answers a `docs` link alongside its 400. Validate the
+ * shape defensively — a route returning partial/malformed metadata must not
+ * break the inline error, and the href must be a real http(s) URL so a
+ * compromised or buggy route can never coax the client into rendering a
+ * `javascript:` anchor. An empty label would render an icon-only click target,
+ * which is worse than no link — treat it as "no docs".
+ */
+function readErrorDocs(body: unknown): { href: string; label: string } | null {
+  const docs = (body as { docs?: { href?: unknown; label?: unknown } } | null)?.docs;
+  if (
+    docs &&
+    typeof docs.href === "string" &&
+    /^https?:\/\//i.test(docs.href) &&
+    typeof docs.label === "string" &&
+    docs.label.length > 0
+  ) {
+    return { href: docs.href, label: docs.label };
+  }
+  return null;
+}
+
 const VISION_CAPABLE_PROVIDERS: ReadonlySet<ProviderName> = new Set([
   "anthropic",
   "openai",
@@ -291,8 +314,11 @@ function RemovalConsequence({ preview }: { preview: DeletionPreviewResponse | nu
  * the preflight and the DELETE agree by construction, see provider-deletion.ts.
  */
 function removalSummary(
+  // Optional on purpose — the guard below already handles a response that
+  // omitted the count, and the typed client now surfaces that possibility
+  // instead of hiding it behind an untyped `res.json()`.
   providerLabel: string,
-  migratedAgents: number,
+  migratedAgents: number | undefined,
   targetLabel: string | null
 ): string {
   const removed = `${providerLabel} removed.`;
@@ -460,7 +486,7 @@ export function ProviderKeyForm({
       toast.success("Default provider updated.");
       onSuccess();
     } catch (e) {
-      toast.error(e instanceof ApiError ? e.message : "Could not set the default provider.");
+      toast.error(errorMessage(e, "Could not set the default provider."));
     } finally {
       setSettingDefault(false);
     }
@@ -487,7 +513,7 @@ export function ProviderKeyForm({
       void fetchCustomProviders();
       onSuccess();
     } catch (e) {
-      toast.error(e instanceof ApiError ? e.message : "Could not remove the provider.");
+      toast.error(errorMessage(e, "Could not remove the provider."));
     } finally {
       setDeletingCustom(false);
     }
@@ -516,57 +542,16 @@ export function ProviderKeyForm({
         ? { provider, url: values.apiKey }
         : { provider, apiKey: values.apiKey };
 
-      const res = await fetch("/api/setup/provider", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-
-      if (!res.ok) {
-        // Session expired — redirect to login
-        if (res.status === 401) {
-          window.location.href = "/login";
-          return;
-        }
-        let message = "Setup failed";
-        let docs: { href: string; label: string } | null = null;
-        try {
-          const data = await res.json();
-          if (data.error) message = data.error;
-          // Validate the docs shape defensively — a route that returns
-          // partial/malformed metadata shouldn't break the inline error, and
-          // the href must be a real http(s) URL so a compromised/buggy route
-          // can never coax the client into rendering a `javascript:` anchor.
-          // An empty label would render an icon-only click target, which is
-          // worse than no link — treat it as "no docs".
-          if (
-            data.docs &&
-            typeof data.docs.href === "string" &&
-            /^https?:\/\//i.test(data.docs.href) &&
-            typeof data.docs.label === "string" &&
-            data.docs.label.length > 0
-          ) {
-            docs = { href: data.docs.href, label: data.docs.label };
-          }
-        } catch {
-          // response body was not JSON; use default message
-        }
-        setErrorDocs(docs);
-        throw new Error(message);
-      }
+      const data = await apiPost<{ warning?: string }, SetupProviderInput>(
+        "/api/setup/provider",
+        body
+      );
 
       // #880 — the route persists the key even when applying it to the OC
       // runtime fails, and returns a non-blocking `warning` instead of a 500.
       // Surface it as a warning toast so the save still reads as successful.
-      let warning: string | undefined;
-      try {
-        const data = await res.json();
-        if (typeof data?.warning === "string" && data.warning.length > 0) {
-          warning = data.warning;
-        }
-      } catch {
-        // No/!JSON body — treat as a plain success.
-      }
+      const warning =
+        typeof data?.warning === "string" && data.warning.length > 0 ? data.warning : undefined;
 
       setValidationStatus("success");
       form.reset();
@@ -579,9 +564,16 @@ export function ProviderKeyForm({
       onSaved?.(provider, VISION_CAPABLE_PROVIDERS.has(provider));
       onSuccess(provider);
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Setup failed";
+      // Session expired — redirect to login rather than showing an inline error.
+      if (err instanceof ApiError && err.status === 401) {
+        window.location.href = "/login";
+        return;
+      }
+      setErrorDocs(err instanceof ApiError ? readErrorDocs(err.body) : null);
+      // Not `err.message`: this catch now also sees a network TypeError, whose
+      // message ("Failed to fetch") is an internal string, not error copy.
       setValidationStatus("error");
-      setError(message);
+      setError(errorMessage(err, "Setup failed"));
     } finally {
       setLoading(false);
     }
@@ -981,15 +973,10 @@ export function ProviderKeyForm({
                       onClick={async () => {
                         setRemoving(true);
                         try {
-                          const res = await fetch("/api/settings/providers", {
-                            method: "DELETE",
-                            headers: { "Content-Type": "application/json" },
-                            body: JSON.stringify({ provider }),
-                          });
-                          const data = await res.json().catch(() => ({}));
-                          if (!res.ok) {
-                            throw new Error(data.error || "Failed to remove key");
-                          }
+                          const data = await apiDelete<
+                            { migratedAgents?: number },
+                            DeleteProviderInput
+                          >("/api/settings/providers", { provider });
                           toast.success(
                             removalSummary(
                               PROVIDERS[provider].name,

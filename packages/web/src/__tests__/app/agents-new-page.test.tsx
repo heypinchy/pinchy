@@ -33,6 +33,7 @@ vi.mock("@/components/template-selector", () => ({
 
 import { NewAgentForm } from "@/components/new-agent-form";
 import { useRouter } from "next/navigation";
+import { jsonResponse } from "@/test-helpers/fetch";
 
 const TEMPLATES_WITH_DIRS = [
   {
@@ -57,18 +58,12 @@ const DIRECTORIES = [
 function mockFetch(dirs: typeof DIRECTORIES = DIRECTORIES) {
   vi.mocked(global.fetch).mockImplementation(async (url) => {
     if (String(url).includes("/api/templates")) {
-      return {
-        ok: true,
-        json: async () => ({ templates: TEMPLATES_WITH_DIRS }),
-      } as Response;
+      return jsonResponse({ templates: TEMPLATES_WITH_DIRS });
     }
     if (String(url).includes("/api/data-directories")) {
-      return {
-        ok: true,
-        json: async () => ({ directories: dirs }),
-      } as Response;
+      return jsonResponse({ directories: dirs });
     }
-    return { ok: true, json: async () => ({}) } as Response;
+    return jsonResponse({});
   });
 }
 
@@ -196,25 +191,15 @@ describe("NewAgentForm", () => {
 
     vi.mocked(global.fetch).mockImplementation(async (url, opts) => {
       if (String(url).includes("/api/agents") && opts?.method === "POST") {
-        return {
-          ok: true,
-          status: 201,
-          json: async () => ({ id: "new-id", name: "Test KB" }),
-        } as Response;
+        return jsonResponse({ id: "new-id", name: "Test KB" }, { status: 201 });
       }
       if (String(url).includes("/api/templates")) {
-        return {
-          ok: true,
-          json: async () => ({ templates: TEMPLATES_WITH_DIRS }),
-        } as Response;
+        return jsonResponse({ templates: TEMPLATES_WITH_DIRS });
       }
       if (String(url).includes("/api/data-directories")) {
-        return {
-          ok: true,
-          json: async () => ({ directories: DIRECTORIES }),
-        } as Response;
+        return jsonResponse({ directories: DIRECTORIES });
       }
-      return { ok: true, json: async () => ({}) } as Response;
+      return jsonResponse({});
     });
 
     render(<NewAgentForm />);
@@ -282,19 +267,12 @@ describe("NewAgentForm", () => {
 
     vi.mocked(global.fetch).mockImplementation(async (url, opts) => {
       if (String(url).includes("/api/agents") && opts?.method === "POST") {
-        return {
-          ok: true,
-          status: 201,
-          json: async () => ({ id: "new-id", name: "Dev Bot" }),
-        } as Response;
+        return jsonResponse({ id: "new-id", name: "Dev Bot" }, { status: 201 });
       }
       if (String(url).includes("/api/templates")) {
-        return {
-          ok: true,
-          json: async () => ({ templates: TEMPLATES_WITH_DIRS }),
-        } as Response;
+        return jsonResponse({ templates: TEMPLATES_WITH_DIRS });
       }
-      return { ok: true, json: async () => ({}) } as Response;
+      return jsonResponse({});
     });
 
     render(<NewAgentForm />);

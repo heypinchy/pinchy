@@ -4,6 +4,7 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
 import { SettingsUsers } from "@/components/settings-users";
+import { jsonResponse } from "@/test-helpers/fetch";
 
 const mockToast = vi.hoisted(() => ({ error: vi.fn(), success: vi.fn() }));
 vi.mock("sonner", () => ({ toast: mockToast }));
@@ -83,18 +84,18 @@ describe("SettingsUsers", () => {
   ) {
     vi.mocked(global.fetch).mockImplementation(async (url) => {
       if (String(url) === "/api/users") {
-        return { ok: true, json: async () => ({ users }) } as Response;
+        return jsonResponse({ users });
       }
       if (String(url) === "/api/users/invites") {
-        return { ok: true, json: async () => ({ invites }) } as Response;
+        return jsonResponse({ invites });
       }
       if (String(url) === "/api/groups") {
-        return { ok: true, json: async () => [] } as Response;
+        return jsonResponse([]);
       }
       if (String(url) === "/api/enterprise/status") {
-        return { ok: true, json: async () => ({ enterprise, maxUsers, seatsUsed }) } as Response;
+        return jsonResponse({ enterprise, maxUsers, seatsUsed });
       }
-      return { ok: false } as Response;
+      return jsonResponse(undefined, { status: 400 });
     });
   }
 
@@ -270,10 +271,7 @@ describe("SettingsUsers", () => {
       expect(screen.getByLabelText("Role")).toBeInTheDocument();
     });
 
-    vi.mocked(global.fetch).mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ token: "invite-token-abc" }),
-    } as Response);
+    vi.mocked(global.fetch).mockResolvedValueOnce(jsonResponse({ token: "invite-token-abc" }));
 
     await user.click(screen.getByRole("button", { name: "Create Invite" }));
 
@@ -316,10 +314,7 @@ describe("SettingsUsers", () => {
       await user.click(screen.getByRole("button", { name: "Invite User" }));
       await waitFor(() => expect(screen.getByLabelText("Role")).toBeInTheDocument());
 
-      vi.mocked(global.fetch).mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ token: "invite-token-abc" }),
-      } as Response);
+      vi.mocked(global.fetch).mockResolvedValueOnce(jsonResponse({ token: "invite-token-abc" }));
       await user.click(screen.getByRole("button", { name: "Create Invite" }));
 
       await waitFor(() =>
@@ -449,18 +444,18 @@ describe("SettingsUsers", () => {
     // Initial load: enterprise enabled but no groups yet
     vi.mocked(global.fetch).mockImplementation(async (url) => {
       if (String(url) === "/api/users") {
-        return { ok: true, json: async () => ({ users: mockUsers }) } as Response;
+        return jsonResponse({ users: mockUsers });
       }
       if (String(url) === "/api/users/invites") {
-        return { ok: true, json: async () => ({ invites: [] }) } as Response;
+        return jsonResponse({ invites: [] });
       }
       if (String(url) === "/api/groups") {
-        return { ok: true, json: async () => [] } as Response;
+        return jsonResponse([]);
       }
       if (String(url) === "/api/enterprise/status") {
-        return { ok: true, json: async () => ({ enterprise: true }) } as Response;
+        return jsonResponse({ enterprise: true });
       }
-      return { ok: false } as Response;
+      return jsonResponse(undefined, { status: 400 });
     });
 
     render(<SettingsUsers currentUserId="user-1" />);
@@ -472,21 +467,18 @@ describe("SettingsUsers", () => {
     // Now a group was created (e.g. in Groups tab) — update mock to return it
     vi.mocked(global.fetch).mockImplementation(async (url) => {
       if (String(url) === "/api/users") {
-        return { ok: true, json: async () => ({ users: mockUsers }) } as Response;
+        return jsonResponse({ users: mockUsers });
       }
       if (String(url) === "/api/users/invites") {
-        return { ok: true, json: async () => ({ invites: [] }) } as Response;
+        return jsonResponse({ invites: [] });
       }
       if (String(url) === "/api/groups") {
-        return {
-          ok: true,
-          json: async () => [{ id: "g-new", name: "Support" }],
-        } as Response;
+        return jsonResponse([{ id: "g-new", name: "Support" }]);
       }
       if (String(url) === "/api/enterprise/status") {
-        return { ok: true, json: async () => ({ enterprise: true }) } as Response;
+        return jsonResponse({ enterprise: true });
       }
-      return { ok: false } as Response;
+      return jsonResponse(undefined, { status: 400 });
     });
 
     // Click on Bob to open the detail sheet
@@ -605,18 +597,18 @@ describe("SettingsUsers", () => {
           return deletePromise;
         }
         if (String(url) === "/api/users") {
-          return { ok: true, json: async () => ({ users: mockUsers }) } as Response;
+          return jsonResponse({ users: mockUsers });
         }
         if (String(url) === "/api/users/invites") {
-          return { ok: true, json: async () => ({ invites: [] }) } as Response;
+          return jsonResponse({ invites: [] });
         }
         if (String(url) === "/api/groups") {
-          return { ok: true, json: async () => [] } as Response;
+          return jsonResponse([]);
         }
         if (String(url) === "/api/enterprise/status") {
-          return { ok: true, json: async () => ({ enterprise: false }) } as Response;
+          return jsonResponse({ enterprise: false });
         }
-        return { ok: false } as Response;
+        return jsonResponse(undefined, { status: 400 });
       });
 
       const table = screen.getByRole("table");
@@ -630,7 +622,7 @@ describe("SettingsUsers", () => {
       });
 
       // Now let the DELETE resolve so React Testing Library can clean up.
-      releaseDelete({ ok: true, json: async () => ({ success: true }) } as Response);
+      releaseDelete(jsonResponse({ success: true }));
     });
 
     it("should call DELETE /api/users/invites/:id when Revoke is clicked", async () => {
@@ -644,21 +636,21 @@ describe("SettingsUsers", () => {
 
       vi.mocked(global.fetch).mockImplementation(async (url, init) => {
         if (String(url) === "/api/users/invites/inv-1" && init?.method === "DELETE") {
-          return { ok: true, json: async () => ({ success: true }) } as Response;
+          return jsonResponse({ success: true });
         }
         if (String(url) === "/api/users") {
-          return { ok: true, json: async () => ({ users: mockUsers }) } as Response;
+          return jsonResponse({ users: mockUsers });
         }
         if (String(url) === "/api/users/invites") {
-          return { ok: true, json: async () => ({ invites: [] }) } as Response;
+          return jsonResponse({ invites: [] });
         }
         if (String(url) === "/api/groups") {
-          return { ok: true, json: async () => [] } as Response;
+          return jsonResponse([]);
         }
         if (String(url) === "/api/enterprise/status") {
-          return { ok: true, json: async () => ({ enterprise: false }) } as Response;
+          return jsonResponse({ enterprise: false });
         }
-        return { ok: false } as Response;
+        return jsonResponse(undefined, { status: 400 });
       });
 
       const table = screen.getByRole("table");
@@ -683,21 +675,21 @@ describe("SettingsUsers", () => {
 
       vi.mocked(global.fetch).mockImplementation(async (url, init) => {
         if (String(url) === "/api/users/invites/inv-1" && init?.method === "DELETE") {
-          return { ok: false, status: 500 } as Response; // DELETE fails server-side
+          return jsonResponse(undefined, { status: 500 }); // DELETE fails server-side
         }
         if (String(url) === "/api/users") {
-          return { ok: true, json: async () => ({ users: mockUsers }) } as Response;
+          return jsonResponse({ users: mockUsers });
         }
         if (String(url) === "/api/users/invites") {
-          return { ok: true, json: async () => ({ invites: [pendingInvite] }) } as Response;
+          return jsonResponse({ invites: [pendingInvite] });
         }
         if (String(url) === "/api/groups") {
-          return { ok: true, json: async () => [] } as Response;
+          return jsonResponse([]);
         }
         if (String(url) === "/api/enterprise/status") {
-          return { ok: true, json: async () => ({ enterprise: false }) } as Response;
+          return jsonResponse({ enterprise: false });
         }
-        return { ok: false } as Response;
+        return jsonResponse(undefined, { status: 400 });
       });
 
       const table = screen.getByRole("table");
@@ -723,24 +715,24 @@ describe("SettingsUsers", () => {
         const key = `${init?.method || "GET"} ${String(url)}`;
         fetchCalls.push(key);
         if (String(url) === "/api/users/invites/inv-2" && init?.method === "DELETE") {
-          return { ok: true, json: async () => ({ success: true }) } as Response;
+          return jsonResponse({ success: true });
         }
         if (String(url) === "/api/users/invite" && init?.method === "POST") {
-          return { ok: true, json: async () => ({ token: "resend-token-xyz" }) } as Response;
+          return jsonResponse({ token: "resend-token-xyz" });
         }
         if (String(url) === "/api/users") {
-          return { ok: true, json: async () => ({ users: mockUsers }) } as Response;
+          return jsonResponse({ users: mockUsers });
         }
         if (String(url) === "/api/users/invites") {
-          return { ok: true, json: async () => ({ invites: [] }) } as Response;
+          return jsonResponse({ invites: [] });
         }
         if (String(url) === "/api/groups") {
-          return { ok: true, json: async () => [] } as Response;
+          return jsonResponse([]);
         }
         if (String(url) === "/api/enterprise/status") {
-          return { ok: true, json: async () => ({ enterprise: false }) } as Response;
+          return jsonResponse({ enterprise: false });
         }
-        return { ok: false } as Response;
+        return jsonResponse(undefined, { status: 400 });
       });
 
       const table = screen.getByRole("table");
@@ -793,24 +785,24 @@ describe("SettingsUsers", () => {
 
         vi.mocked(global.fetch).mockImplementation(async (url, init) => {
           if (String(url) === "/api/users/invites/inv-2" && init?.method === "DELETE") {
-            return { ok: true, json: async () => ({ success: true }) } as Response;
+            return jsonResponse({ success: true });
           }
           if (String(url) === "/api/users/invite" && init?.method === "POST") {
-            return { ok: true, json: async () => ({ token: "resend-token-xyz" }) } as Response;
+            return jsonResponse({ token: "resend-token-xyz" });
           }
           if (String(url) === "/api/users") {
-            return { ok: true, json: async () => ({ users: mockUsers }) } as Response;
+            return jsonResponse({ users: mockUsers });
           }
           if (String(url) === "/api/users/invites") {
-            return { ok: true, json: async () => ({ invites: [] }) } as Response;
+            return jsonResponse({ invites: [] });
           }
           if (String(url) === "/api/groups") {
-            return { ok: true, json: async () => [] } as Response;
+            return jsonResponse([]);
           }
           if (String(url) === "/api/enterprise/status") {
-            return { ok: true, json: async () => ({ enterprise: false }) } as Response;
+            return jsonResponse({ enterprise: false });
           }
-          return { ok: false } as Response;
+          return jsonResponse(undefined, { status: 400 });
         });
 
         const table = screen.getByRole("table");
@@ -845,19 +837,19 @@ describe("SettingsUsers", () => {
       let postCalled = false;
       vi.mocked(global.fetch).mockImplementation(async (url, init) => {
         if (String(url) === "/api/users/invites/inv-2" && init?.method === "DELETE") {
-          return { ok: false, status: 500 } as Response;
+          return jsonResponse(undefined, { status: 500 });
         }
         if (String(url) === "/api/users/invite" && init?.method === "POST") {
           postCalled = true;
-          return { ok: true, json: async () => ({ token: "x" }) } as Response;
+          return jsonResponse({ token: "x" });
         }
         if (String(url) === "/api/users") {
-          return { ok: true, json: async () => ({ users: mockUsers }) } as Response;
+          return jsonResponse({ users: mockUsers });
         }
         if (String(url) === "/api/users/invites") {
-          return { ok: true, json: async () => ({ invites: [] }) } as Response;
+          return jsonResponse({ invites: [] });
         }
-        return { ok: true, json: async () => [] } as Response;
+        return jsonResponse([]);
       });
 
       const table = screen.getByRole("table");
@@ -881,18 +873,18 @@ describe("SettingsUsers", () => {
 
       vi.mocked(global.fetch).mockImplementation(async (url, init) => {
         if (String(url) === "/api/users/invites/inv-2" && init?.method === "DELETE") {
-          return { ok: true, json: async () => ({ success: true }) } as Response;
+          return jsonResponse({ success: true });
         }
         if (String(url) === "/api/users/invite" && init?.method === "POST") {
-          return { ok: false, status: 500 } as Response;
+          return jsonResponse(undefined, { status: 500 });
         }
         if (String(url) === "/api/users") {
-          return { ok: true, json: async () => ({ users: mockUsers }) } as Response;
+          return jsonResponse({ users: mockUsers });
         }
         if (String(url) === "/api/users/invites") {
-          return { ok: true, json: async () => ({ invites: [] }) } as Response;
+          return jsonResponse({ invites: [] });
         }
-        return { ok: true, json: async () => [] } as Response;
+        return jsonResponse([]);
       });
 
       const table = screen.getByRole("table");

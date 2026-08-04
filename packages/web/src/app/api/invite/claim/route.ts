@@ -4,7 +4,6 @@
 // row below, because a password change is security-sensitive regardless
 // of who triggers it.
 import { NextRequest, NextResponse } from "next/server";
-import { z } from "zod";
 import { hashPassword } from "better-auth/crypto";
 import { auth } from "@/lib/auth";
 import { db } from "@/db";
@@ -17,13 +16,8 @@ import { waitForAgentInRuntime } from "@/lib/wait-for-agent-in-runtime";
 import { getOpenClawClient } from "@/server/openclaw-client";
 import { validatePassword } from "@/lib/validate-password";
 import { parseRequestBody } from "@/lib/api-validation";
+import { claimInviteSchema } from "@/lib/schemas/invite";
 import { appendAuditLog } from "@/lib/audit";
-
-const claimInviteSchema = z.object({
-  token: z.string().min(1),
-  name: z.string().optional(),
-  password: z.string(),
-});
 
 export async function POST(request: NextRequest) {
   const parsed = await parseRequestBody(claimInviteSchema, request);

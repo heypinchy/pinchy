@@ -16,7 +16,7 @@ import {
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 
-import { apiGet, apiPost, ApiError } from "@/lib/api-client";
+import { apiGet, apiPost, errorMessage } from "@/lib/api-client";
 import { chatTitle } from "@/lib/chats/chat-title";
 import { buildBundleFilename, downloadBundle } from "@/lib/diagnostics/download";
 import type { DiagnosticsExportRequest } from "@/lib/schemas/diagnostics";
@@ -175,8 +175,7 @@ export function DiagnosticsExportForm({
       onExported?.();
     } catch (e) {
       updateSubmitting(false);
-      const message =
-        e instanceof ApiError ? e.message : "Failed to generate diagnostics. Please try again.";
+      const message = errorMessage(e, "Failed to generate diagnostics. Please try again.");
       toast.error(message);
     }
   }

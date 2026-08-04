@@ -1,12 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import { z } from "zod";
 import { requireAdmin } from "@/lib/api-auth";
 import { setSetting } from "@/lib/settings";
 import { clearLicenseCache, validateLicenseToken, isKeyFromEnv } from "@/lib/enterprise";
 import { appendAuditLog } from "@/lib/audit";
 import { parseRequestBody } from "@/lib/api-validation";
-
-const setLicenseKeySchema = z.object({ key: z.string().min(1) });
+import { setLicenseKeySchema } from "@/lib/schemas/enterprise";
 
 export async function PUT(req: NextRequest) {
   const sessionOrError = await requireAdmin();

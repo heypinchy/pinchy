@@ -24,3 +24,7 @@ export const CONTEXT_TOO_LONG_MESSAGE = `Context is too long — the limit is ${
 export const contextContentSchema = z.object({
   content: z.string().max(CONTEXT_CONTENT_MAX_LENGTH, { message: CONTEXT_TOO_LONG_MESSAGE }),
 });
+
+/** The PUT body, so `settings-context.tsx` types its payload against the same
+ * shape the routes parse (AGENTS.md § "Shared Schemas And Typed Client"). */
+export type ContextContentInput = z.infer<typeof contextContentSchema>;

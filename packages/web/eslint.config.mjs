@@ -8,6 +8,7 @@ import noDirectSession from "./eslint-rules/no-direct-session.js";
 import noPiiInAuditDetail from "./eslint-rules/no-pii-in-audit-detail.js";
 import noUntrackedSkips from "./eslint-rules/no-untracked-skips.js";
 import noUntrackedSleeps from "./eslint-rules/no-untracked-sleeps.js";
+import noRawFetchMutation from "./eslint-rules/no-raw-fetch-mutation.js";
 
 const pinchyPlugin = {
   rules: {
@@ -17,6 +18,7 @@ const pinchyPlugin = {
     "require-parse-request-body": requireParseRequestBody,
     "no-untracked-skips": noUntrackedSkips,
     "no-untracked-sleeps": noUntrackedSleeps,
+    "no-raw-fetch-mutation": noRawFetchMutation,
   },
 };
 
@@ -124,6 +126,23 @@ const eslintConfig = defineConfig([
     rules: {
       "pinchy/no-direct-session": "error",
       "pinchy/require-parse-request-body": "error",
+    },
+  },
+  // Pinchy custom rules — client components, hooks and client pages:
+  // - no-raw-fetch-mutation: a state-changing call goes through the typed
+  //   helpers in @/lib/api-client (apiPost/apiPut/apiPatch/apiDelete), never
+  //   raw `fetch(url, { method: "POST" })`. AGENTS.md § "Shared Schemas And
+  //   Typed Client" promises that payload drift is a compile-time error rather
+  //   than a runtime 400 — a promise `JSON.stringify(anything)` cannot keep —
+  //   and the helper is also what surfaces the route's own error wording
+  //   instead of a generic toast (#1075). The rule's own scope check lives
+  //   inside the rule so it stays honest under RuleTester; this glob is the
+  //   outer bound. Opt out per statement with `// raw-fetch-exempt: <reason>`.
+  {
+    files: ["src/components/**/*.{ts,tsx}", "src/hooks/**/*.{ts,tsx}", "src/app/**/*.tsx"],
+    plugins: { pinchy: pinchyPlugin },
+    rules: {
+      "pinchy/no-raw-fetch-mutation": "error",
     },
   },
   // Override default ignores of eslint-config-next.

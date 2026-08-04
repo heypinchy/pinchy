@@ -20,6 +20,8 @@ import { CheckCircle2, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { PasswordInput } from "@/components/password-input";
 import { passwordSchema } from "@/lib/validate-password";
+import { apiPost, errorMessage } from "@/lib/api-client";
+import type { ClaimInviteInput } from "@/lib/schemas/invite";
 
 // The /invite/[token] page serves two flows that share the same token table
 // (#436): a brand-new user claiming an invite, and an existing user resetting
@@ -152,31 +154,20 @@ function ClaimForm({ token, type }: { token: string; type: InviteType }) {
   async function onSubmit(values: FormValues) {
     setLoading(true);
 
-    const body = isReset
+    const body: ClaimInviteInput = isReset
       ? { token, password: values.password }
       : { token, name: values.name, password: values.password };
 
     try {
-      const res = await fetch("/api/invite/claim", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-
-      if (!res.ok) {
-        const data = await res.json();
-        // Submit failures (expired link, server error) are system-level, not
-        // field-correctable, so they surface as a toast per the error-display
-        // policy. Field validation stays inline via <FormMessage>.
-        toast.error(
-          data.error || (isReset ? "Failed to reset password" : "Failed to create account")
-        );
-        return;
-      }
-
+      await apiPost<unknown, ClaimInviteInput>("/api/invite/claim", body);
       setSuccess(true);
-    } catch {
-      toast.error("Something went wrong. Please try again.");
+    } catch (e) {
+      // Submit failures (expired link, server error) are system-level, not
+      // field-correctable, so they surface as a toast per the error-display
+      // policy. Field validation stays inline via <FormMessage>.
+      toast.error(
+        errorMessage(e, isReset ? "Failed to reset password" : "Failed to create account")
+      );
     } finally {
       setLoading(false);
     }

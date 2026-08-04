@@ -5,6 +5,7 @@ import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
 import { UserDetailSheet } from "@/components/user-detail-sheet";
 import type { UserListItem } from "@/lib/user-list";
+import { jsonResponse } from "@/test-helpers/fetch";
 
 vi.mock("@/lib/enterprise", () => ({
   // Client component — mock at fetch level instead
@@ -352,12 +353,12 @@ describe("UserDetailSheet", () => {
     // role PATCH lands, groups PUT fails — the classic partial-success case.
     vi.spyOn(global, "fetch").mockImplementation(async (url, init) => {
       if (String(url) === "/api/users/u1" && init?.method === "PATCH") {
-        return { ok: true, json: async () => ({}) } as Response;
+        return jsonResponse({});
       }
       if (String(url) === "/api/users/u1/groups" && init?.method === "PUT") {
-        return { ok: false, status: 500 } as Response;
+        return jsonResponse(undefined, { status: 500 });
       }
-      return { ok: true, json: async () => ({}) } as Response;
+      return jsonResponse({});
     });
 
     render(
@@ -416,10 +417,7 @@ describe("UserDetailSheet", () => {
     const writeText = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue(undefined);
 
     try {
-      vi.spyOn(global, "fetch").mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ token: "reset-token-xyz" }),
-      } as Response);
+      vi.spyOn(global, "fetch").mockResolvedValueOnce(jsonResponse({ token: "reset-token-xyz" }));
 
       render(
         <UserDetailSheet

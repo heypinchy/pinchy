@@ -45,7 +45,35 @@ import {
   type OAuthProviderDescriptor,
   type OAuthProviderId,
 } from "@/lib/integrations/oauth-providers";
-import { apiGet, apiPost, ApiError } from "@/lib/api-client";
+import { apiGet, apiPost, ApiError, errorMessage } from "@/lib/api-client";
+import type {
+  ListDatabasesInput,
+  TestCredentialsInput,
+  SyncPreviewInput,
+  CreateIntegrationInput,
+} from "@/lib/schemas/integrations";
+import type { OdooSyncResult, OdooSyncError } from "@/lib/integrations/odoo-sync";
+import { odooConnectionDataSchema, type OdooConnectionData } from "@/lib/integrations/odoo-schema";
+
+/**
+ * The probe routes answer 200 with `{ success: false, error }` for a credential
+ * failure and reserve non-2xx for a broken request, so both the body's verdict
+ * and a thrown ApiError have to be handled at each call site.
+ */
+type TestCredentialsResult = {
+  success?: boolean;
+  error?: string;
+  uid?: number;
+  version?: string;
+};
+
+/**
+ * `/api/integrations/sync-preview` returns `fetchOdooSchema`'s own result
+ * verbatim, so the client reuses that discriminated union rather than
+ * re-describing it. `import type` is erased at build time, so this does not
+ * drag `odoo-node` into the client bundle.
+ */
+type SyncPreviewResult = OdooSyncResult | OdooSyncError;
 import type { SaveOAuthRequest } from "@/lib/schemas/oauth-settings";
 
 interface OAuthConfigResponse {
@@ -546,7 +574,7 @@ export function AddIntegrationDialog({
     }>;
   } | null>(null);
   const [syncError, setSyncError] = useState<string | null>(null);
-  const [syncData, setSyncData] = useState<unknown>(null);
+  const [syncData, setSyncData] = useState<OdooConnectionData | undefined>(undefined);
 
   // Done step
   const [connectionName, setConnectionName] = useState("");
@@ -581,7 +609,7 @@ export function AddIntegrationDialog({
     setConnecting(false);
     setSyncResult(null);
     setSyncError(null);
-    setSyncData(null);
+    setSyncData(undefined);
     setSaving(false);
     setConnectionName("");
     setDbFetchState("idle");
@@ -629,12 +657,10 @@ export function AddIntegrationDialog({
     setFetchedDatabases([]);
 
     try {
-      const res = await fetch("/api/integrations/list-databases", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url }),
-      });
-      const data = await res.json();
+      const data = await apiPost<{ success?: boolean; databases?: string[] }, ListDatabasesInput>(
+        "/api/integrations/list-databases",
+        { url }
+      );
 
       if (data.success && Array.isArray(data.databases) && data.databases.length > 0) {
         setFetchedDatabases(data.databases);
@@ -661,23 +687,20 @@ export function AddIntegrationDialog({
     setConnecting(true);
 
     try {
-      const testRes = await fetch("/api/integrations/test-credentials", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          type: selectedType,
+      const testData = await apiPost<TestCredentialsResult, TestCredentialsInput>(
+        "/api/integrations/test-credentials",
+        {
+          type: "odoo",
           credentials: {
             url: values.url,
             db: values.db,
             login: values.login,
             apiKey: values.apiKey,
           },
-        }),
-      });
+        }
+      );
 
-      const testData = await testRes.json();
-
-      if (!testRes.ok || !testData.success) {
+      if (!testData.success || testData.uid === undefined) {
         form.setError("root", {
           message: testData.error || "Connection test failed",
         });
@@ -685,13 +708,15 @@ export function AddIntegrationDialog({
         return;
       }
 
-      setConnectionResult({ uid: testData.uid, version: testData.version });
+      setConnectionResult({ uid: testData.uid, version: testData.version ?? "" });
       setConnecting(false);
       setStep("sync");
       // Trigger sync immediately — no useEffect needed
       runSyncPreview(testData.uid);
-    } catch {
-      form.setError("root", { message: "Connection test failed" });
+    } catch (e) {
+      form.setError("root", {
+        message: errorMessage(e, "Connection test failed"),
+      });
       setConnecting(false);
     }
   }
@@ -704,10 +729,9 @@ export function AddIntegrationDialog({
     try {
       const values = form.getValues();
 
-      const res = await fetch("/api/integrations/sync-preview", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+      const data = await apiPost<SyncPreviewResult, SyncPreviewInput>(
+        "/api/integrations/sync-preview",
+        {
           type: "odoo",
           credentials: {
             url: values.url,
@@ -716,20 +740,28 @@ export function AddIntegrationDialog({
             apiKey: values.apiKey,
             uid,
           },
-        }),
-      });
-
-      const data = await res.json();
+        }
+      );
 
       if (data.success) {
-        setSyncResult({ models: data.models, categories: data.categories ?? [] });
-        setSyncData(data.data);
+        // Validate the payload here rather than assert it. `fetchOdooSchema`
+        // types the probed field list as `unknown[]`, and this same blob is
+        // re-validated by POST /api/integrations against the very same schema —
+        // so a shape the parse rejects would have come back as a 400 two steps
+        // later, with nothing pointing at the sync that produced it.
+        const parsedData = odooConnectionDataSchema.safeParse(data.data);
+        if (!parsedData.success) {
+          setSyncError("Odoo returned a schema Pinchy could not read. Please retry the sync.");
+          return;
+        }
+        setSyncResult({ models: data.models, categories: data.categories });
+        setSyncData(parsedData.data);
         // Stay on sync step — user clicks "Continue" to proceed
       } else {
         setSyncError(data.error || "Schema sync failed");
       }
-    } catch {
-      setSyncError("Schema sync failed");
+    } catch (e) {
+      setSyncError(errorMessage(e, "Schema sync failed"));
     }
   }
 
@@ -738,40 +770,39 @@ export function AddIntegrationDialog({
   const [saving, setSaving] = useState(false);
 
   async function handleDone() {
+    // The done step is only reachable once the credential test returned a uid,
+    // so guard rather than default. `?? 0` would satisfy the type and then fail
+    // the route's `uid: z.number().int().positive()` as a 400 that reads like a
+    // credential problem — the whole point of typing the payload was to stop
+    // papering over a value at the boundary.
+    if (!connectionResult) {
+      toast.error("Connection details were lost. Please run the connection test again.");
+      return;
+    }
+
     setSaving(true);
     try {
       const values = form.getValues();
 
-      const res = await fetch("/api/integrations", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          type: selectedType,
-          name: connectionName,
-          description: "",
-          credentials: {
-            url: values.url,
-            db: values.db,
-            login: values.login,
-            apiKey: values.apiKey,
-            uid: connectionResult?.uid,
-          },
-          data: syncData,
-        }),
+      await apiPost<unknown, CreateIntegrationInput>("/api/integrations", {
+        type: "odoo",
+        name: connectionName,
+        description: "",
+        credentials: {
+          url: values.url,
+          db: values.db,
+          login: values.login,
+          apiKey: values.apiKey,
+          uid: connectionResult.uid,
+        },
+        data: syncData,
       });
-
-      if (!res.ok) {
-        const err = await res.json();
-        toast.error(err.error || "Failed to save integration");
-        setSaving(false);
-        return;
-      }
 
       toast.success("Integration ready");
       handleClose(false);
       onSuccess();
-    } catch {
-      toast.error("Failed to save integration");
+    } catch (e) {
+      toast.error(errorMessage(e, "Failed to save integration"));
       setSaving(false);
     }
   }
@@ -784,18 +815,15 @@ export function AddIntegrationDialog({
 
     try {
       // 1. Test the API key
-      const testRes = await fetch("/api/integrations/test-credentials", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+      const testData = await apiPost<TestCredentialsResult, TestCredentialsInput>(
+        "/api/integrations/test-credentials",
+        {
           type: "web-search",
           credentials: { apiKey: values.apiKey },
-        }),
-      });
+        }
+      );
 
-      const testData = await testRes.json();
-
-      if (!testRes.ok || !testData.success) {
+      if (!testData.success) {
         webSearchForm.setError("root", {
           message: testData.error || "API key validation failed",
         });
@@ -804,31 +832,20 @@ export function AddIntegrationDialog({
       }
 
       // 2. Create the integration immediately
-      const createRes = await fetch("/api/integrations", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          type: "web-search",
-          name: "Brave Search",
-          description: "",
-          credentials: { apiKey: values.apiKey },
-        }),
+      await apiPost<unknown, CreateIntegrationInput>("/api/integrations", {
+        type: "web-search",
+        name: "Brave Search",
+        description: "",
+        credentials: { apiKey: values.apiKey },
       });
-
-      if (!createRes.ok) {
-        const err = await createRes.json();
-        webSearchForm.setError("root", {
-          message: err.error || "Failed to save integration",
-        });
-        setConnecting(false);
-        return;
-      }
 
       toast.success("Web Search connected");
       handleClose(false);
       onSuccess();
-    } catch {
-      webSearchForm.setError("root", { message: "Connection failed" });
+    } catch (e) {
+      webSearchForm.setError("root", {
+        message: errorMessage(e, "Connection failed"),
+      });
       setConnecting(false);
     }
   }

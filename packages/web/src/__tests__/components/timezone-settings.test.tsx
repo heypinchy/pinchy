@@ -5,6 +5,7 @@ import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
 import { TimezoneSettings, getSupportedTimezones } from "@/components/timezone-settings";
 import { toast } from "sonner";
+import { jsonResponse } from "@/test-helpers/fetch";
 
 vi.mock("sonner", () => ({
   toast: { success: vi.fn(), error: vi.fn() },
@@ -26,10 +27,9 @@ describe("TimezoneSettings", { timeout: 30_000 }, () => {
   });
 
   it("renders after fetching settings from /api/settings", async () => {
-    vi.mocked(global.fetch).mockResolvedValueOnce({
-      ok: true,
-      json: async () => [{ key: "org.timezone", value: "UTC" }],
-    } as Response);
+    vi.mocked(global.fetch).mockResolvedValueOnce(
+      jsonResponse([{ key: "org.timezone", value: "UTC" }])
+    );
 
     render(<TimezoneSettings />);
 
@@ -41,10 +41,7 @@ describe("TimezoneSettings", { timeout: 30_000 }, () => {
   });
 
   it("renders a Save button", async () => {
-    vi.mocked(global.fetch).mockResolvedValueOnce({
-      ok: true,
-      json: async () => [],
-    } as Response);
+    vi.mocked(global.fetch).mockResolvedValueOnce(jsonResponse([]));
 
     render(<TimezoneSettings />);
 
@@ -54,10 +51,9 @@ describe("TimezoneSettings", { timeout: 30_000 }, () => {
   });
 
   it("shows Europe/Vienna timezone option in the dropdown", async () => {
-    vi.mocked(global.fetch).mockResolvedValueOnce({
-      ok: true,
-      json: async () => [{ key: "org.timezone", value: "UTC" }],
-    } as Response);
+    vi.mocked(global.fetch).mockResolvedValueOnce(
+      jsonResponse([{ key: "org.timezone", value: "UTC" }])
+    );
 
     render(<TimezoneSettings />);
 
@@ -74,10 +70,9 @@ describe("TimezoneSettings", { timeout: 30_000 }, () => {
   });
 
   it("POSTs the saved timezone to /api/settings when Save is clicked", async () => {
-    vi.mocked(global.fetch).mockResolvedValueOnce({
-      ok: true,
-      json: async () => [{ key: "org.timezone", value: "UTC" }],
-    } as Response);
+    vi.mocked(global.fetch).mockResolvedValueOnce(
+      jsonResponse([{ key: "org.timezone", value: "UTC" }])
+    );
 
     render(<TimezoneSettings />);
 
@@ -90,10 +85,7 @@ describe("TimezoneSettings", { timeout: 30_000 }, () => {
     const option = await screen.findByRole("option", { name: "Europe/Vienna" });
     await userEvent.click(option);
 
-    vi.mocked(global.fetch).mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ ok: true }),
-    } as Response);
+    vi.mocked(global.fetch).mockResolvedValueOnce(jsonResponse({ ok: true }));
 
     await userEvent.click(screen.getByRole("button", { name: "Save" }));
 
@@ -109,10 +101,7 @@ describe("TimezoneSettings", { timeout: 30_000 }, () => {
   });
 
   it("POSTs the current timezone (UTC default) to /api/settings when no org.timezone setting exists", async () => {
-    vi.mocked(global.fetch).mockResolvedValueOnce({
-      ok: true,
-      json: async () => [],
-    } as Response);
+    vi.mocked(global.fetch).mockResolvedValueOnce(jsonResponse([]));
 
     render(<TimezoneSettings />);
 
@@ -120,10 +109,7 @@ describe("TimezoneSettings", { timeout: 30_000 }, () => {
       expect(screen.getByRole("button", { name: "Save" })).toBeInTheDocument();
     });
 
-    vi.mocked(global.fetch).mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ ok: true }),
-    } as Response);
+    vi.mocked(global.fetch).mockResolvedValueOnce(jsonResponse({ ok: true }));
 
     await userEvent.click(screen.getByRole("button", { name: "Save" }));
 
@@ -139,10 +125,9 @@ describe("TimezoneSettings", { timeout: 30_000 }, () => {
   });
 
   it("shows success toast after saving", async () => {
-    vi.mocked(global.fetch).mockResolvedValueOnce({
-      ok: true,
-      json: async () => [{ key: "org.timezone", value: "UTC" }],
-    } as Response);
+    vi.mocked(global.fetch).mockResolvedValueOnce(
+      jsonResponse([{ key: "org.timezone", value: "UTC" }])
+    );
 
     render(<TimezoneSettings />);
 
@@ -150,10 +135,7 @@ describe("TimezoneSettings", { timeout: 30_000 }, () => {
       expect(screen.getByRole("button", { name: "Save" })).toBeInTheDocument();
     });
 
-    vi.mocked(global.fetch).mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ ok: true }),
-    } as Response);
+    vi.mocked(global.fetch).mockResolvedValueOnce(jsonResponse({ ok: true }));
 
     await userEvent.click(screen.getByRole("button", { name: "Save" }));
 
@@ -163,10 +145,9 @@ describe("TimezoneSettings", { timeout: 30_000 }, () => {
   });
 
   it("shows inline error when save fails", async () => {
-    vi.mocked(global.fetch).mockResolvedValueOnce({
-      ok: true,
-      json: async () => [{ key: "org.timezone", value: "UTC" }],
-    } as Response);
+    vi.mocked(global.fetch).mockResolvedValueOnce(
+      jsonResponse([{ key: "org.timezone", value: "UTC" }])
+    );
 
     render(<TimezoneSettings />);
 
@@ -174,10 +155,9 @@ describe("TimezoneSettings", { timeout: 30_000 }, () => {
       expect(screen.getByRole("button", { name: "Save" })).toBeInTheDocument();
     });
 
-    vi.mocked(global.fetch).mockResolvedValueOnce({
-      ok: false,
-      json: async () => ({ error: "Invalid timezone" }),
-    } as Response);
+    vi.mocked(global.fetch).mockResolvedValueOnce(
+      jsonResponse({ error: "Invalid timezone" }, { status: 400 })
+    );
 
     await userEvent.click(screen.getByRole("button", { name: "Save" }));
 
@@ -206,10 +186,7 @@ describe("TimezoneSettings", { timeout: 30_000 }, () => {
 
       // The failed preload must leave the component on the sane UTC default,
       // provable through the payload it POSTs on Save.
-      vi.mocked(global.fetch).mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ ok: true }),
-      } as Response);
+      vi.mocked(global.fetch).mockResolvedValueOnce(jsonResponse({ ok: true }));
 
       await userEvent.click(screen.getByRole("button", { name: "Save" }));
 
@@ -234,10 +211,7 @@ describe("TimezoneSettings", { timeout: 30_000 }, () => {
     const onRejection = (reason: unknown) => rejections.push(reason);
     process.on("unhandledRejection", onRejection);
     try {
-      vi.mocked(global.fetch).mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({}),
-      } as Response);
+      vi.mocked(global.fetch).mockResolvedValueOnce(jsonResponse({}));
 
       render(<TimezoneSettings />);
 
@@ -247,10 +221,7 @@ describe("TimezoneSettings", { timeout: 30_000 }, () => {
 
       await new Promise((resolve) => setTimeout(resolve, 0));
 
-      vi.mocked(global.fetch).mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ ok: true }),
-      } as Response);
+      vi.mocked(global.fetch).mockResolvedValueOnce(jsonResponse({ ok: true }));
 
       await userEvent.click(screen.getByRole("button", { name: "Save" }));
 
@@ -283,10 +254,7 @@ describe("TimezoneSettings", { timeout: 30_000 }, () => {
   });
 
   it("shows fallback inline error when save fails without message", async () => {
-    vi.mocked(global.fetch).mockResolvedValueOnce({
-      ok: true,
-      json: async () => [],
-    } as Response);
+    vi.mocked(global.fetch).mockResolvedValueOnce(jsonResponse([]));
 
     render(<TimezoneSettings />);
 
@@ -294,10 +262,7 @@ describe("TimezoneSettings", { timeout: 30_000 }, () => {
       expect(screen.getByRole("button", { name: "Save" })).toBeInTheDocument();
     });
 
-    vi.mocked(global.fetch).mockResolvedValueOnce({
-      ok: false,
-      json: async () => ({}),
-    } as Response);
+    vi.mocked(global.fetch).mockResolvedValueOnce(jsonResponse({}, { status: 400 }));
 
     await userEvent.click(screen.getByRole("button", { name: "Save" }));
 

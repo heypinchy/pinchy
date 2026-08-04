@@ -20,6 +20,8 @@ import { CheckCircle2, Loader2, AlertTriangle } from "lucide-react";
 import { PasswordInput } from "@/components/password-input";
 import { ReportIssueLink } from "@/components/report-issue-link";
 import { passwordSchema } from "@/lib/validate-password";
+import { apiPost, errorMessage } from "@/lib/api-client";
+import type { SetupInput } from "@/lib/schemas/setup";
 
 const setupSchema = z
   .object({
@@ -120,25 +122,20 @@ export function SetupForm() {
     setError("");
 
     try {
-      const res = await fetch("/api/setup", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name: values.name,
-          email: values.email,
-          password: values.password,
-          browserTimezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-        }),
+      await apiPost<unknown, SetupInput>("/api/setup", {
+        name: values.name,
+        email: values.email,
+        password: values.password,
+        browserTimezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
       });
-
-      if (!res.ok) {
-        const data = await res.json();
-        throw new Error(data.error || "Setup failed");
-      }
 
       setSuccess(true);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Setup failed");
+      // Not `err.message`: before the migration this catch only ever saw an
+      // Error this handler threw itself, so its message was curated copy. It
+      // now also sees a network TypeError, whose message is "Failed to fetch" —
+      // and this is the very first screen a new install shows.
+      setError(errorMessage(err, "Setup failed"));
     } finally {
       setLoading(false);
     }

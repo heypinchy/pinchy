@@ -2,6 +2,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
 import { useIntegrationActions } from "../use-integration-actions";
+import { jsonResponse } from "@/test-helpers/fetch";
 
 // Mock sonner
 const mockToastSuccess = vi.fn();
@@ -26,10 +27,7 @@ describe("useIntegrationActions", () => {
 
   describe("testConnection", () => {
     it("sets testing state during the call", async () => {
-      mockFetch.mockResolvedValue({
-        ok: true,
-        json: () => Promise.resolve({ success: true }),
-      });
+      mockFetch.mockResolvedValue(jsonResponse({ success: true }));
 
       const { result } = renderHook(() => useIntegrationActions(mockOnChange));
 
@@ -50,10 +48,7 @@ describe("useIntegrationActions", () => {
     });
 
     it("shows success toast on successful test", async () => {
-      mockFetch.mockResolvedValue({
-        ok: true,
-        json: () => Promise.resolve({ success: true }),
-      });
+      mockFetch.mockResolvedValue(jsonResponse({ success: true }));
 
       const { result } = renderHook(() => useIntegrationActions(mockOnChange));
 
@@ -65,10 +60,7 @@ describe("useIntegrationActions", () => {
     });
 
     it("shows error toast when test fails", async () => {
-      mockFetch.mockResolvedValue({
-        ok: true,
-        json: () => Promise.resolve({ success: false, error: "Auth failed" }),
-      });
+      mockFetch.mockResolvedValue(jsonResponse({ success: false, error: "Auth failed" }));
 
       const { result } = renderHook(() => useIntegrationActions(mockOnChange));
 
@@ -94,10 +86,7 @@ describe("useIntegrationActions", () => {
 
   describe("syncSchema", () => {
     it("sets syncing state during the call", async () => {
-      mockFetch.mockResolvedValue({
-        ok: true,
-        json: () => Promise.resolve({ success: true }),
-      });
+      mockFetch.mockResolvedValue(jsonResponse({ success: true }));
 
       const { result } = renderHook(() => useIntegrationActions(mockOnChange));
 
@@ -116,10 +105,7 @@ describe("useIntegrationActions", () => {
     });
 
     it("calls onChange after successful sync", async () => {
-      mockFetch.mockResolvedValue({
-        ok: true,
-        json: () => Promise.resolve({ success: true }),
-      });
+      mockFetch.mockResolvedValue(jsonResponse({ success: true }));
 
       const { result } = renderHook(() => useIntegrationActions(mockOnChange));
 
@@ -132,10 +118,7 @@ describe("useIntegrationActions", () => {
     });
 
     it("shows error toast when sync fails", async () => {
-      mockFetch.mockResolvedValue({
-        ok: true,
-        json: () => Promise.resolve({ success: false, error: "Permission denied" }),
-      });
+      mockFetch.mockResolvedValue(jsonResponse({ success: false, error: "Permission denied" }));
 
       const { result } = renderHook(() => useIntegrationActions(mockOnChange));
 
@@ -150,7 +133,7 @@ describe("useIntegrationActions", () => {
 
   describe("renameConnection", () => {
     it("calls PATCH with trimmed name", async () => {
-      mockFetch.mockResolvedValue({ ok: true });
+      mockFetch.mockResolvedValue(jsonResponse(undefined, { status: 200 }));
 
       const { result } = renderHook(() => useIntegrationActions(mockOnChange));
 
@@ -178,7 +161,7 @@ describe("useIntegrationActions", () => {
     });
 
     it("shows error toast on failure", async () => {
-      mockFetch.mockResolvedValue({ ok: false });
+      mockFetch.mockResolvedValue(jsonResponse(undefined, { status: 400 }));
 
       const { result } = renderHook(() => useIntegrationActions(mockOnChange));
 
@@ -192,7 +175,7 @@ describe("useIntegrationActions", () => {
 
   describe("deleteConnection", () => {
     it("calls DELETE and triggers onChange", async () => {
-      mockFetch.mockResolvedValue({ ok: true });
+      mockFetch.mockResolvedValue(jsonResponse(undefined, { status: 200 }));
 
       const { result } = renderHook(() => useIntegrationActions(mockOnChange));
 
@@ -206,7 +189,7 @@ describe("useIntegrationActions", () => {
     });
 
     it("shows error toast on failure", async () => {
-      mockFetch.mockResolvedValue({ ok: false });
+      mockFetch.mockResolvedValue(jsonResponse(undefined, { status: 400 }));
 
       const { result } = renderHook(() => useIntegrationActions(mockOnChange));
 

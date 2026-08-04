@@ -4,6 +4,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
 import { InviteDialog } from "@/components/invite-dialog";
+import { jsonResponse } from "@/test-helpers/fetch";
 
 // Mock window.location.origin for invite link generation
 Object.defineProperty(window, "location", {
@@ -16,7 +17,7 @@ function resolveUrl(url: string | URL | Request): string {
 }
 
 function mockFetchForInvite(
-  inviteResponse: { ok: boolean; json: () => Promise<unknown> },
+  inviteResponse: Response,
   options?: {
     enterprise?: boolean;
     groups?: { id: string; name: string }[];
@@ -31,18 +32,12 @@ function mockFetchForInvite(
   return (url: string | URL | Request) => {
     const urlStr = resolveUrl(url);
     if (urlStr.includes("/api/enterprise/status")) {
-      return Promise.resolve({
-        ok: true,
-        json: async () => ({ enterprise, maxUsers, seatsUsed }),
-      } as Response);
+      return Promise.resolve(jsonResponse({ enterprise, maxUsers, seatsUsed }));
     }
     if (urlStr.includes("/api/groups")) {
-      return Promise.resolve({
-        ok: true,
-        json: async () => groups,
-      } as Response);
+      return Promise.resolve(jsonResponse(groups));
     }
-    return Promise.resolve(inviteResponse as Response);
+    return Promise.resolve(inviteResponse);
   };
 }
 
@@ -51,9 +46,7 @@ describe("InviteDialog", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    fetchSpy = vi
-      .spyOn(global, "fetch")
-      .mockImplementation(mockFetchForInvite({ ok: true, json: async () => ({}) }));
+    fetchSpy = vi.spyOn(global, "fetch").mockImplementation(mockFetchForInvite(jsonResponse({})));
   });
 
   afterEach(() => {
@@ -81,9 +74,7 @@ describe("InviteDialog", () => {
   it("should submit form with default values when Create Invite is clicked", async () => {
     const user = userEvent.setup();
 
-    fetchSpy.mockImplementation(
-      mockFetchForInvite({ ok: true, json: async () => ({ token: "test-token" }) })
-    );
+    fetchSpy.mockImplementation(mockFetchForInvite(jsonResponse({ token: "test-token" })));
 
     render(<InviteDialog open={true} onOpenChange={vi.fn()} />);
 
@@ -101,9 +92,7 @@ describe("InviteDialog", () => {
   it("should submit form with entered email", async () => {
     const user = userEvent.setup();
 
-    fetchSpy.mockImplementation(
-      mockFetchForInvite({ ok: true, json: async () => ({ token: "test-token" }) })
-    );
+    fetchSpy.mockImplementation(mockFetchForInvite(jsonResponse({ token: "test-token" })));
 
     render(<InviteDialog open={true} onOpenChange={vi.fn()} />);
 
@@ -122,9 +111,7 @@ describe("InviteDialog", () => {
   it("should show invite link after successful creation", async () => {
     const user = userEvent.setup();
 
-    fetchSpy.mockImplementation(
-      mockFetchForInvite({ ok: true, json: async () => ({ token: "invite-token-abc" }) })
-    );
+    fetchSpy.mockImplementation(mockFetchForInvite(jsonResponse({ token: "invite-token-abc" })));
 
     render(<InviteDialog open={true} onOpenChange={vi.fn()} />);
 
@@ -141,7 +128,7 @@ describe("InviteDialog", () => {
     const user = userEvent.setup();
 
     fetchSpy.mockImplementation(
-      mockFetchForInvite({ ok: false, json: async () => ({ error: "Invite limit reached" }) })
+      mockFetchForInvite(jsonResponse({ error: "Invite limit reached" }, { status: 403 }))
     );
 
     render(<InviteDialog open={true} onOpenChange={vi.fn()} />);
@@ -155,10 +142,7 @@ describe("InviteDialog", () => {
 
   it("shows a factual notice inside the grace window (§ 5)", async () => {
     fetchSpy.mockImplementation(
-      mockFetchForInvite(
-        { ok: true, json: async () => ({}) },
-        { enterprise: true, maxUsers: 10, seatsUsed: 11 }
-      )
+      mockFetchForInvite(jsonResponse({}), { enterprise: true, maxUsers: 10, seatsUsed: 11 })
     );
     render(<InviteDialog open={true} onOpenChange={vi.fn()} />);
     await waitFor(() => {
@@ -173,10 +157,7 @@ describe("InviteDialog", () => {
 
   it("shows no seat notice at or below 100%", async () => {
     fetchSpy.mockImplementation(
-      mockFetchForInvite(
-        { ok: true, json: async () => ({}) },
-        { enterprise: true, maxUsers: 10, seatsUsed: 10 }
-      )
+      mockFetchForInvite(jsonResponse({}), { enterprise: true, maxUsers: 10, seatsUsed: 10 })
     );
     render(<InviteDialog open={true} onOpenChange={vi.fn()} />);
     await waitFor(() => {
@@ -188,17 +169,19 @@ describe("InviteDialog", () => {
   it("prefers the structured message of a seat-cap 403", async () => {
     const user = userEvent.setup();
     fetchSpy.mockImplementation(
-      mockFetchForInvite({
-        ok: false,
-        json: async () => ({
-          error: "Seat limit reached",
-          message:
-            "Your license includes 10 seats with grace up to 12. Remove an existing user or pending invitation, or email sales@heypinchy.com for a quote you can accept online.",
-          seatsUsed: 12,
-          maxUsers: 10,
-          graceCap: 12,
-        }),
-      })
+      mockFetchForInvite(
+        jsonResponse(
+          {
+            error: "Seat limit reached",
+            message:
+              "Your license includes 10 seats with grace up to 12. Remove an existing user or pending invitation, or email sales@heypinchy.com for a quote you can accept online.",
+            seatsUsed: 12,
+            maxUsers: 10,
+            graceCap: 12,
+          },
+          { status: 403 }
+        )
+      )
     );
     render(<InviteDialog open={true} onOpenChange={vi.fn()} />);
     await user.click(screen.getByRole("button", { name: "Create Invite" }));
@@ -213,10 +196,7 @@ describe("InviteDialog", () => {
     fetchSpy.mockImplementation((url: string | URL | Request) => {
       const urlStr = resolveUrl(url);
       if (urlStr.includes("/api/enterprise/status")) {
-        return Promise.resolve({
-          ok: true,
-          json: async () => ({ enterprise: false }),
-        } as Response);
+        return Promise.resolve(jsonResponse({ enterprise: false }));
       }
       return Promise.reject(new Error("Network error"));
     });
@@ -261,9 +241,7 @@ describe("InviteDialog", () => {
       configurable: true,
     });
 
-    fetchSpy.mockImplementation(
-      mockFetchForInvite({ ok: true, json: async () => ({ token: "share-token" }) })
-    );
+    fetchSpy.mockImplementation(mockFetchForInvite(jsonResponse({ token: "share-token" })));
 
     render(<InviteDialog open={true} onOpenChange={vi.fn()} />);
 
@@ -297,9 +275,7 @@ describe("InviteDialog", () => {
     // @ts-expect-error removing for test
     delete navigator.share;
 
-    fetchSpy.mockImplementation(
-      mockFetchForInvite({ ok: true, json: async () => ({ token: "copy-token" }) })
-    );
+    fetchSpy.mockImplementation(mockFetchForInvite(jsonResponse({ token: "copy-token" })));
 
     render(<InviteDialog open={true} onOpenChange={vi.fn()} />);
 
@@ -320,24 +296,17 @@ describe("InviteDialog", () => {
     fetchSpy.mockImplementation((url: string | URL | Request) => {
       const urlStr = typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url;
       if (urlStr.includes("/api/enterprise/status")) {
-        return Promise.resolve({
-          ok: true,
-          json: async () => ({ enterprise: true }),
-        } as Response);
+        return Promise.resolve(jsonResponse({ enterprise: true }));
       }
       if (urlStr.includes("/api/groups")) {
-        return Promise.resolve({
-          ok: true,
-          json: async () => [
+        return Promise.resolve(
+          jsonResponse([
             { id: "g1", name: "HR" },
             { id: "g2", name: "Engineering" },
-          ],
-        } as Response);
+          ])
+        );
       }
-      return Promise.resolve({
-        ok: true,
-        json: async () => ({ token: "test" }),
-      } as Response);
+      return Promise.resolve(jsonResponse({ token: "test" }));
     });
 
     render(<InviteDialog open={true} onOpenChange={vi.fn()} />);
@@ -353,18 +322,12 @@ describe("InviteDialog", () => {
     fetchSpy.mockImplementation((url: string | URL | Request) => {
       const urlStr = resolveUrl(url);
       if (urlStr.includes("/api/enterprise/status")) {
-        return Promise.resolve({
-          ok: true,
-          json: async () => ({ enterprise: true }),
-        } as Response);
+        return Promise.resolve(jsonResponse({ enterprise: true }));
       }
       if (urlStr.includes("/api/groups")) {
         return Promise.reject(new Error("Network error"));
       }
-      return Promise.resolve({
-        ok: true,
-        json: async () => ({ token: "test" }),
-      } as Response);
+      return Promise.resolve(jsonResponse({ token: "test" }));
     });
 
     render(<InviteDialog open={true} onOpenChange={vi.fn()} />);
@@ -381,15 +344,9 @@ describe("InviteDialog", () => {
     fetchSpy.mockImplementation((url: string | URL | Request) => {
       const urlStr = typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url;
       if (urlStr.includes("/api/enterprise/status")) {
-        return Promise.resolve({
-          ok: true,
-          json: async () => ({ enterprise: false }),
-        } as Response);
+        return Promise.resolve(jsonResponse({ enterprise: false }));
       }
-      return Promise.resolve({
-        ok: true,
-        json: async () => ({ token: "test" }),
-      } as Response);
+      return Promise.resolve(jsonResponse({ token: "test" }));
     });
 
     render(<InviteDialog open={true} onOpenChange={vi.fn()} />);
@@ -408,24 +365,17 @@ describe("InviteDialog", () => {
     fetchSpy.mockImplementation((url: string | URL | Request) => {
       const urlStr = typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url;
       if (urlStr.includes("/api/enterprise/status")) {
-        return Promise.resolve({
-          ok: true,
-          json: async () => ({ enterprise: true }),
-        } as Response);
+        return Promise.resolve(jsonResponse({ enterprise: true }));
       }
       if (urlStr.includes("/api/groups")) {
-        return Promise.resolve({
-          ok: true,
-          json: async () => [
+        return Promise.resolve(
+          jsonResponse([
             { id: "g1", name: "HR" },
             { id: "g2", name: "Engineering" },
-          ],
-        } as Response);
+          ])
+        );
       }
-      return Promise.resolve({
-        ok: true,
-        json: async () => ({ token: "test-token" }),
-      } as Response);
+      return Promise.resolve(jsonResponse({ token: "test-token" }));
     });
 
     render(<InviteDialog open={true} onOpenChange={vi.fn()} />);
@@ -459,21 +409,12 @@ describe("InviteDialog", () => {
     fetchSpy.mockImplementation((url: string | URL | Request) => {
       const urlStr = resolveUrl(url);
       if (urlStr.includes("/api/enterprise/status")) {
-        return Promise.resolve({
-          ok: true,
-          json: async () => ({ enterprise: true }),
-        } as Response);
+        return Promise.resolve(jsonResponse({ enterprise: true }));
       }
       if (urlStr.includes("/api/groups")) {
-        return Promise.resolve({
-          ok: true,
-          json: async () => [],
-        } as Response);
+        return Promise.resolve(jsonResponse([]));
       }
-      return Promise.resolve({
-        ok: true,
-        json: async () => ({ token: "test" }),
-      } as Response);
+      return Promise.resolve(jsonResponse({ token: "test" }));
     });
 
     const { rerender } = render(<InviteDialog open={true} onOpenChange={vi.fn()} />);
@@ -491,21 +432,12 @@ describe("InviteDialog", () => {
     fetchSpy.mockImplementation((url: string | URL | Request) => {
       const urlStr = resolveUrl(url);
       if (urlStr.includes("/api/enterprise/status")) {
-        return Promise.resolve({
-          ok: true,
-          json: async () => ({ enterprise: true }),
-        } as Response);
+        return Promise.resolve(jsonResponse({ enterprise: true }));
       }
       if (urlStr.includes("/api/groups")) {
-        return Promise.resolve({
-          ok: true,
-          json: async () => [{ id: "g1", name: "Engineering" }],
-        } as Response);
+        return Promise.resolve(jsonResponse([{ id: "g1", name: "Engineering" }]));
       }
-      return Promise.resolve({
-        ok: true,
-        json: async () => ({ token: "test" }),
-      } as Response);
+      return Promise.resolve(jsonResponse({ token: "test" }));
     });
 
     // Reopen dialog
@@ -522,9 +454,7 @@ describe("InviteDialog", () => {
     const user = userEvent.setup();
     const onOpenChange = vi.fn();
 
-    fetchSpy.mockImplementation(
-      mockFetchForInvite({ ok: true, json: async () => ({ token: "test-token" }) })
-    );
+    fetchSpy.mockImplementation(mockFetchForInvite(jsonResponse({ token: "test-token" })));
 
     const { rerender } = render(<InviteDialog open={true} onOpenChange={onOpenChange} />);
 

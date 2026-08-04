@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse, after } from "next/server";
-import { z } from "zod";
 import { requireAdmin } from "@/lib/api-auth";
 import { db } from "@/db";
 import { users, agents, sessions } from "@/db/schema";
@@ -9,10 +8,7 @@ import { deleteWorkspace } from "@/lib/workspace";
 import { appendAuditLog } from "@/lib/audit";
 import { recalculateTelegramAllowStores } from "@/lib/telegram-allow-store";
 import { parseRequestBody } from "@/lib/api-validation";
-
-const updateUserSchema = z.object({
-  role: z.enum(["admin", "member"]),
-});
+import { updateUserSchema } from "@/lib/schemas/users";
 
 export async function PATCH(
   request: NextRequest,

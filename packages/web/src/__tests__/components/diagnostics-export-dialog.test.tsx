@@ -4,22 +4,20 @@ import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import "@testing-library/jest-dom";
 import { DiagnosticsExportDialog } from "@/components/diagnostics-export-dialog";
 
-vi.mock("@/lib/api-client", () => ({
-  apiPost: vi.fn(async () => ({ schemaVersion: "pinchy.bugreport.v1" })),
-  // The chat picker (#639) fetches the user's chats on open. Default to an
-  // empty list so the legacy tests below export the default chat (no sessionId).
-  apiGet: vi.fn(async () => ({ chats: [] })),
-  ApiError: class ApiError extends Error {
-    constructor(
-      public readonly status: number,
-      message: string,
-      public readonly details?: unknown
-    ) {
-      super(message);
-      this.name = "ApiError";
-    }
-  },
-}));
+// Spread the real module rather than re-declaring its exports: a hand-rolled
+// factory silently drops anything it forgets (a re-declared `ApiError` also
+// breaks `instanceof` against the real one), and the component reads
+// `errorMessage` from here too.
+vi.mock("@/lib/api-client", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/api-client")>();
+  return {
+    ...actual,
+    apiPost: vi.fn(async () => ({ schemaVersion: "pinchy.bugreport.v1" })),
+    // The chat picker (#639) fetches the user's chats on open. Default to an
+    // empty list so the legacy tests below export the default chat (no sessionId).
+    apiGet: vi.fn(async () => ({ chats: [] })),
+  };
+});
 
 vi.mock("@/lib/diagnostics/download", () => ({
   downloadBundle: vi.fn(),

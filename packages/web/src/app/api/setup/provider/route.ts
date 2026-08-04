@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse, after } from "next/server";
-import { z } from "zod";
 import { requireAdmin } from "@/lib/api-auth";
 import {
   validateProviderKey,
@@ -24,15 +23,8 @@ import { agents } from "@/db/schema";
 import { eq } from "drizzle-orm";
 import { appendAuditLog } from "@/lib/audit";
 import { parseRequestBody } from "@/lib/api-validation";
+import { setupProviderSchema } from "@/lib/schemas/providers";
 import { docsUrl } from "@/components/docs-link";
-
-const VALID_PROVIDERS = Object.keys(PROVIDERS) as ProviderName[];
-
-const setupProviderSchema = z.object({
-  provider: z.enum(VALID_PROVIDERS as [ProviderName, ...ProviderName[]]),
-  url: z.string().min(1).optional(),
-  apiKey: z.string().min(1).optional(),
-});
 
 export async function POST(request: NextRequest) {
   const sessionOrError = await requireAdmin();

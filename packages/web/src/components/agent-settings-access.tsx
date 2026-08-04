@@ -12,9 +12,12 @@ import {
 } from "@/components/ui/select";
 import { EnterpriseFeatureCard } from "@/components/enterprise-feature-card";
 import type { LicenseState } from "@/lib/license-state";
+import type { AgentVisibility } from "@/db/enums";
 
 interface AccessValues {
-  visibility: string;
+  // Narrowed to the enum the agents table's CHECK constraint enforces, so the
+  // PATCH body this feeds type-checks against the route's own schema.
+  visibility: AgentVisibility;
   groupIds: string[];
 }
 
@@ -24,7 +27,7 @@ interface Group {
 }
 
 interface AgentSettingsAccessProps {
-  agent: { visibility: string };
+  agent: { visibility: AgentVisibility };
   currentGroupIds: string[];
   onChange: (values: AccessValues, isDirty: boolean) => void;
   isAdmin?: boolean;
@@ -93,7 +96,8 @@ export function AgentSettingsAccess({
   }, [visibility, selectedGroupIds, baselineVisibility, baselineGroupIds, onChange]);
 
   function handleVisibilityChange(value: string) {
-    setVisibility(value);
+    // Radix hands back a bare string; the SelectItems below are the enum.
+    setVisibility(value as AgentVisibility);
     if (value !== "restricted") {
       setSelectedGroupIds([]);
     }

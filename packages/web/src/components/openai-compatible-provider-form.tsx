@@ -6,7 +6,7 @@ import { Lock } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { apiPost, ApiError } from "@/lib/api-client";
+import { apiPost, ApiError, errorMessage } from "@/lib/api-client";
 import type { OpenClawModelDefinition } from "@/lib/openclaw-builtin-models";
 import type { UpsertOpenAiCompatibleProviderInput } from "@/lib/schemas/openai-compatible-provider";
 
@@ -123,7 +123,7 @@ export function OpenAiCompatibleProviderForm({ provider, onSaved, onCancel }: Fo
           }
         }
       }
-      toast.error(e instanceof ApiError ? e.message : "Could not save the provider.");
+      toast.error(errorMessage(e, "Could not save the provider."));
     } finally {
       setSaving(false);
     }

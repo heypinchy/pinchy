@@ -2,6 +2,8 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { toast } from "sonner";
+import { apiPost, apiDelete } from "@/lib/api-client";
+import type { SetBotTokenInput } from "@/lib/schemas/telegram";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -152,24 +154,11 @@ export function AgentTelegramSettings({
     setError("");
 
     try {
-      const res = await fetch(`/api/agents/${agentId}/channels/telegram`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ botToken }),
-      });
+      const data = await apiPost<{ botUsername?: string | null }, SetBotTokenInput>(
+        `/api/agents/${agentId}/channels/telegram`,
+        { botToken }
+      );
 
-      if (!res.ok) {
-        let message = "Failed to connect";
-        try {
-          const data = await res.json();
-          if (data.error) message = data.error;
-        } catch {
-          // response body was not JSON
-        }
-        throw new Error(message);
-      }
-
-      const data = await res.json();
       setConnectedUsername(data.botUsername || null);
       setBotToken("");
       // A successful (re)connect clears the auto-disable marker server-side, so
@@ -194,14 +183,7 @@ export function AgentTelegramSettings({
     setError("");
 
     try {
-      const res = await fetch(`/api/agents/${agentId}/channels/telegram`, {
-        method: "DELETE",
-      });
-
-      if (!res.ok) {
-        const data = await res.json();
-        throw new Error(data.error || "Failed to disconnect");
-      }
+      await apiDelete(`/api/agents/${agentId}/channels/telegram`);
 
       setConnectedUsername(null);
       triggerRestart();

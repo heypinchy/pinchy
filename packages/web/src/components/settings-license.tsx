@@ -17,7 +17,8 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { toast } from "sonner";
-import { apiDelete, ApiError } from "@/lib/api-client";
+import { apiPut, apiDelete, errorMessage } from "@/lib/api-client";
+import type { SetLicenseKeyInput } from "@/lib/schemas/enterprise";
 import type { LicenseInfo } from "@/lib/enterprise";
 import { PRICING_URL, PORTAL_URL, conversionLink } from "@/lib/conversion-links";
 import { formatLicenseDate } from "@/lib/format-date";
@@ -66,7 +67,7 @@ export function SettingsLicense({ onEnterpriseActivated, initialLicense }: Setti
       );
       await fetchStatus();
     } catch (e) {
-      toast.error(e instanceof ApiError ? e.message : "Failed to remove gated configuration");
+      toast.error(errorMessage(e, "Failed to remove gated configuration"));
     } finally {
       setRemovingGated(false);
     }
@@ -76,26 +77,19 @@ export function SettingsLicense({ onEnterpriseActivated, initialLicense }: Setti
     setSaving(true);
     setError(null);
     try {
-      const res = await fetch("/api/enterprise/key", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ key: keyInput.trim() }),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        await fetchStatus();
-        setKeyInput("");
-        setShowInput(false);
-        window.dispatchEvent(new Event("license-updated"));
-        if (data.enterprise) {
-          onEnterpriseActivated?.();
-        }
-      } else {
-        const data = await res.json();
-        setError(data.error ?? "Failed to save license key");
+      const data = await apiPut<{ enterprise?: boolean }, SetLicenseKeyInput>(
+        "/api/enterprise/key",
+        { key: keyInput.trim() }
+      );
+      await fetchStatus();
+      setKeyInput("");
+      setShowInput(false);
+      window.dispatchEvent(new Event("license-updated"));
+      if (data.enterprise) {
+        onEnterpriseActivated?.();
       }
-    } catch {
-      setError("Failed to save license key");
+    } catch (e) {
+      setError(errorMessage(e, "Failed to save license key"));
     } finally {
       setSaving(false);
     }

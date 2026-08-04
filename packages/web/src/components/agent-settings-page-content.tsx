@@ -28,7 +28,11 @@ import { AgentTelegramSettings } from "@/components/agent-telegram-settings";
 import { AgentSettingsAutomations } from "@/components/agent-settings-automations";
 import { useRestart } from "@/components/restart-provider";
 import { normalizeStarterPrompts } from "@/lib/schemas/starter-prompts";
+import { apiPatch, apiPut, apiDelete, ApiError, errorMessage } from "@/lib/api-client";
+import type { UpdateAgentInput, WriteAgentFileInput } from "@/lib/schemas/agents";
+import type { SetAgentIntegrationsInput } from "@/lib/schemas/agent-integrations";
 import type { AgentPluginConfig } from "@/db/schema";
+import type { AgentVisibility } from "@/db/enums";
 
 interface Agent {
   id: string;
@@ -41,7 +45,9 @@ interface Agent {
   starterPrompts: string[];
   avatarSeed: string | null;
   personalityPresetId: string | null;
-  visibility: string;
+  // Narrowed to the enum the agents table's CHECK constraint enforces, so the
+  // unified PATCH body below type-checks against the route's own schema.
+  visibility: AgentVisibility;
   groupIds: string[];
 }
 
@@ -89,7 +95,7 @@ interface PermissionsValues {
 }
 
 interface AccessValues {
-  visibility: string;
+  visibility: AgentVisibility;
   groupIds: string[];
 }
 
@@ -127,18 +133,20 @@ function DirtyDot() {
  * The body is the primary source; status is the fallback, because a proxy 502
  * or a crashed process answers with HTML or nothing at all. Never returns
  * empty — the caller renders this as the sole feedback for a failed save.
+ *
+ * The saves now reject with an `ApiError` rather than resolving to a Response,
+ * so the body has already been read: `ApiError.message` IS the route's `error`
+ * when it sent one. `errorMessage` falls back exactly when it did not, which
+ * is where the status belongs — a bare "Something went wrong" would throw away
+ * the one fact a body-less 502 still carries.
  */
-async function describeSaveFailure(response: Response): Promise<string> {
-  try {
-    const body: unknown = await response.json();
-    if (body && typeof body === "object" && "error" in body) {
-      const { error } = body as { error?: unknown };
-      if (typeof error === "string" && error.trim()) return error;
-    }
-  } catch {
-    // No JSON body (HTML error page, empty response, connection cut).
+function describeSaveFailure(reason: unknown): string {
+  if (reason instanceof ApiError) {
+    return errorMessage(reason, `Failed to save settings (HTTP ${String(reason.status)})`);
   }
-  return `Failed to save settings (HTTP ${String(response.status)})`;
+  // Not an ApiError: a network failure or an abort, whose own message is an
+  // internal string ("Failed to fetch"), never user-facing copy.
+  return "Failed to save settings";
 }
 
 export function AgentSettingsPageContent({ initialTab }: { initialTab?: string }) {
@@ -310,10 +318,12 @@ export function AgentSettingsPageContent({ initialTab }: { initialTab?: string }
       // Integration saves must complete before the agent PATCH: the PATCH triggers
       // regenerateOpenClawConfig() which reads integration permissions from the DB.
       // Saving integrations first ensures the config reflects the latest state.
-      const integrationPromises: Promise<Response>[] = [];
+      const integrationPromises: Promise<unknown>[] = [];
 
-      // Build unified agent PATCH body
-      const agentPatch: Record<string, unknown> = {};
+      // Build unified agent PATCH body. Typed against the route's own schema,
+      // so a renamed field is a compile error here rather than a 400 nobody
+      // sees until the settings page silently stops saving one tab.
+      const agentPatch: UpdateAgentInput = {};
       if (dirtyTabs.has("general") && generalDraft.current) {
         agentPatch.name = generalDraft.current.name;
         agentPatch.tagline = generalDraft.current.tagline;
@@ -340,20 +350,15 @@ export function AgentSettingsPageContent({ initialTab }: { initialTab?: string }
         if (permissionsDraft.current.integrations.length > 0) {
           for (const integration of permissionsDraft.current.integrations) {
             integrationPromises.push(
-              fetch(`/api/agents/${agentId}/integrations`, {
-                method: "PUT",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(integration),
-              })
+              apiPut<unknown, SetAgentIntegrationsInput>(
+                `/api/agents/${agentId}/integrations`,
+                integration
+              )
             );
           }
         } else {
           // Clear all integration permissions when no connections are configured
-          integrationPromises.push(
-            fetch(`/api/agents/${agentId}/integrations`, {
-              method: "DELETE",
-            })
-          );
+          integrationPromises.push(apiDelete(`/api/agents/${agentId}/integrations`));
         }
       }
       if (dirtyTabs.has("access") && accessDraft.current) {
@@ -361,48 +366,43 @@ export function AgentSettingsPageContent({ initialTab }: { initialTab?: string }
         agentPatch.groupIds = accessDraft.current.groupIds;
       }
 
-      // Phase 1: Save integration permissions to DB (no config regen yet)
-      const integrationResults = await Promise.all(integrationPromises);
+      // Phase 1: Save integration permissions to DB (no config regen yet).
+      // allSettled, not all: a failed integration write must NOT skip phase 2 —
+      // that is how it behaved on raw fetch (which never rejects on a 4xx), and
+      // the partial save is reported below rather than silently dropped.
+      const integrationResults = await Promise.allSettled(integrationPromises);
 
       // Phase 2: Agent PATCH + file saves (PATCH triggers single config regen)
-      const otherPromises: Promise<Response>[] = [];
+      const otherPromises: Promise<unknown>[] = [];
 
       if (Object.keys(agentPatch).length > 0) {
         otherPromises.push(
-          fetch(`/api/agents/${agentId}`, {
-            method: "PATCH",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(agentPatch),
-          })
+          apiPatch<unknown, UpdateAgentInput>(`/api/agents/${agentId}`, agentPatch)
         );
       }
 
       if (dirtyTabs.has("personality") && personalityDraft.current) {
         otherPromises.push(
-          fetch(`/api/agents/${agentId}/files/SOUL.md`, {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ content: personalityDraft.current.soulContent }),
+          apiPut<unknown, WriteAgentFileInput>(`/api/agents/${agentId}/files/SOUL.md`, {
+            content: personalityDraft.current.soulContent,
           })
         );
       }
 
       if (dirtyTabs.has("instructions") && instructionsDraft.current !== null) {
         otherPromises.push(
-          fetch(`/api/agents/${agentId}/files/AGENTS.md`, {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ content: instructionsDraft.current }),
+          apiPut<unknown, WriteAgentFileInput>(`/api/agents/${agentId}/files/AGENTS.md`, {
+            content: instructionsDraft.current,
           })
         );
       }
 
-      const otherResults = await Promise.all(otherPromises);
+      const otherResults = await Promise.allSettled(otherPromises);
       const results = [...integrationResults, ...otherResults];
 
-      const failed = results.find((r) => !r.ok);
-      if (failed) {
-        toast.error(await describeSaveFailure(failed));
+      const firstFailure = results.find((r) => r.status === "rejected");
+      if (firstFailure) {
+        toast.error(describeSaveFailure(firstFailure.reason));
         return;
       }
 

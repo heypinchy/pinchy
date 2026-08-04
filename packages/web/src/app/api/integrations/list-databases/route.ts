@@ -1,13 +1,9 @@
 // audit-exempt: read-only database list, no state changes
 import { NextResponse } from "next/server";
-import { z } from "zod";
 import { withAdmin } from "@/lib/api-auth";
 import { validateExternalUrl } from "@/lib/integrations/url-validation";
 import { parseRequestBody } from "@/lib/api-validation";
-
-const listDatabasesSchema = z.object({
-  url: z.string().url(),
-});
+import { listDatabasesSchema } from "@/lib/schemas/integrations";
 
 export const POST = withAdmin(async (request) => {
   const parsed = await parseRequestBody(listDatabasesSchema, request);

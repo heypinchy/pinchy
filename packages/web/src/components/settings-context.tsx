@@ -4,7 +4,8 @@ import { useState, useEffect } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { MarkdownEditor } from "@/components/markdown-editor";
-import { CONTEXT_CONTENT_MAX_LENGTH } from "@/lib/schemas/context";
+import { apiPut, errorMessage, extractFieldErrors } from "@/lib/api-client";
+import { CONTEXT_CONTENT_MAX_LENGTH, type ContextContentInput } from "@/lib/schemas/context";
 
 /**
  * Below this the counter stays hidden — a limit nobody is near is noise. From
@@ -20,25 +21,20 @@ function formatCount(value: number): string {
 
 /**
  * `parseRequestBody` answers a failed validation with `error: "Validation
- * failed"` and the actionable text in `details.fieldErrors`. Showing `error`
- * alone leaves the user with nothing to correct, so prefer the field error.
+ * failed"` and the actionable text in `details.fieldErrors` — here that is the
+ * "Context is too long" message. `ApiError.message` is built from `error` and
+ * `message` only, so `errorMessage()` alone would show "Validation failed" and
+ * leave the user with nothing to correct.
+ *
+ * This form has ONE field, so the field error is the message rather than an
+ * inline annotation — which is why it reads `extractFieldErrors` (the shared
+ * unwrapper #1087 consolidated) instead of growing a third private copy of it.
  */
-function readErrorMessage(data: unknown): string {
-  if (data && typeof data === "object") {
-    const { details, error } = data as {
-      details?: { fieldErrors?: Record<string, string[] | undefined> };
-      error?: unknown;
-    };
-
-    const fieldError = Object.values(details?.fieldErrors ?? {})
-      .flat()
-      .find((message): message is string => typeof message === "string" && message.length > 0);
-    if (fieldError) return fieldError;
-
-    if (typeof error === "string" && error.length > 0) return error;
-  }
-
-  return "Failed to save";
+function readErrorMessage(e: unknown): string {
+  const fieldError = Object.values(extractFieldErrors(e) ?? {}).find(
+    (message) => message.length > 0
+  );
+  return fieldError ?? errorMessage(e, "Failed to save");
 }
 
 interface SettingsContextProps {
@@ -89,28 +85,15 @@ function ContextSection({
     setFeedback(null);
 
     try {
-      const res = await fetch(apiUrl, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ content }),
-      });
-
-      if (!res.ok) {
-        const data = await res.json();
-        setFeedback({
-          type: "error",
-          message: readErrorMessage(data),
-        });
-        return;
-      }
+      await apiPut<unknown, ContextContentInput>(apiUrl, { content });
 
       setSavedContent(content);
       setFeedback({
         type: "success",
         message: "Saved. Changes will apply to your next conversation.",
       });
-    } catch {
-      setFeedback({ type: "error", message: "Failed to save" });
+    } catch (e) {
+      setFeedback({ type: "error", message: readErrorMessage(e) });
     } finally {
       setSaving(false);
     }

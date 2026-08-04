@@ -4,6 +4,7 @@ import "@testing-library/jest-dom";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { AgentTelegramSettings } from "@/components/agent-telegram-settings";
+import { jsonResponse } from "@/test-helpers/fetch";
 
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 vi.mock("@/components/restart-provider", () => ({
@@ -13,9 +14,9 @@ vi.mock("@/components/restart-provider", () => ({
 function mockFetch(response: object) {
   return vi.fn().mockImplementation((url: string) => {
     if (typeof url === "string" && url.includes("/channels/telegram")) {
-      return Promise.resolve({ ok: true, json: () => Promise.resolve(response) });
+      return Promise.resolve(jsonResponse(response));
     }
-    return Promise.resolve({ ok: false });
+    return Promise.resolve(jsonResponse(undefined, { status: 400 }));
   });
 }
 
@@ -201,28 +202,23 @@ describe("AgentTelegramSettings", () => {
       global.fetch = vi.fn().mockImplementation((url: string, init?: RequestInit) => {
         if (typeof url === "string" && url.includes("/channels/telegram")) {
           if (init?.method === "POST") {
-            return Promise.resolve({
-              ok: true,
-              json: () => Promise.resolve({ botUsername: "acme_bot", botId: "123" }),
-            });
+            return Promise.resolve(jsonResponse({ botUsername: "acme_bot", botId: "123" }));
           }
           telegramGetCount++;
           const disabled = telegramGetCount === 1;
-          return Promise.resolve({
-            ok: true,
-            json: () =>
-              Promise.resolve({
-                configured: true,
-                hint: "xY9z",
-                mainBotConfigured: true,
-                conflictDisabled: disabled,
-                ...(disabled
-                  ? { lastError: "Conflict: terminated by other getUpdates request" }
-                  : {}),
-              }),
-          });
+          return Promise.resolve(
+            jsonResponse({
+              configured: true,
+              hint: "xY9z",
+              mainBotConfigured: true,
+              conflictDisabled: disabled,
+              ...(disabled
+                ? { lastError: "Conflict: terminated by other getUpdates request" }
+                : {}),
+            })
+          );
         }
-        return Promise.resolve({ ok: false });
+        return Promise.resolve(jsonResponse(undefined, { status: 400 }));
       });
 
       render(<AgentTelegramSettings agentId="agent-1" />);

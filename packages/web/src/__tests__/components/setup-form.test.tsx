@@ -4,6 +4,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
 import { SetupForm, PREFLIGHT_CONFIG } from "@/components/setup-form";
+import { jsonResponse } from "@/test-helpers/fetch";
 
 const { mockRouterPush } = vi.hoisted(() => ({ mockRouterPush: vi.fn() }));
 vi.mock("next/navigation", () => ({
@@ -27,10 +28,9 @@ describe("SetupForm", () => {
   });
 
   function mockPreflightReady() {
-    fetchSpy.mockResolvedValue({
-      ok: true,
-      json: async () => ({ infrastructure: { database: "connected", openclaw: "connected" } }),
-    } as Response);
+    fetchSpy.mockResolvedValue(
+      jsonResponse({ infrastructure: { database: "connected", openclaw: "connected" } })
+    );
   }
 
   it("shows checking state initially", () => {
@@ -59,12 +59,11 @@ describe("SetupForm", () => {
   });
 
   it("shows infrastructure error when services are unreachable", async () => {
-    fetchSpy.mockResolvedValue({
-      ok: true,
-      json: async () => ({
+    fetchSpy.mockResolvedValue(
+      jsonResponse({
         infrastructure: { database: "unreachable", openclaw: "unreachable" },
-      }),
-    } as Response);
+      })
+    );
     render(<SetupForm />);
     await waitFor(() => expect(screen.getByText(/waiting for services/i)).toBeInTheDocument());
     expect(screen.getByText(/database/i)).toBeInTheDocument();
@@ -109,14 +108,10 @@ describe("SetupForm", () => {
   it("shows success state after successful submit", async () => {
     mockPreflightReady();
     fetchSpy
-      .mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ infrastructure: { database: "connected", openclaw: "connected" } }),
-      } as Response)
-      .mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ success: true }),
-      } as Response);
+      .mockResolvedValueOnce(
+        jsonResponse({ infrastructure: { database: "connected", openclaw: "connected" } })
+      )
+      .mockResolvedValueOnce(jsonResponse({ success: true }));
 
     render(<SetupForm />);
     await waitFor(() => screen.getByRole("button", { name: /create account/i }));
@@ -135,14 +130,10 @@ describe("SetupForm", () => {
   it("navigates to /login when Continue is clicked after success", async () => {
     mockPreflightReady();
     fetchSpy
-      .mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ infrastructure: { database: "connected", openclaw: "connected" } }),
-      } as Response)
-      .mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ success: true }),
-      } as Response);
+      .mockResolvedValueOnce(
+        jsonResponse({ infrastructure: { database: "connected", openclaw: "connected" } })
+      )
+      .mockResolvedValueOnce(jsonResponse({ success: true }));
 
     render(<SetupForm />);
     await waitFor(() => screen.getByRole("button", { name: /create account/i }));
@@ -162,14 +153,10 @@ describe("SetupForm", () => {
   it("shows API error message on failed submit", async () => {
     mockPreflightReady();
     fetchSpy
-      .mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ infrastructure: { database: "connected", openclaw: "connected" } }),
-      } as Response)
-      .mockResolvedValueOnce({
-        ok: false,
-        json: async () => ({ error: "Setup already complete" }),
-      } as Response);
+      .mockResolvedValueOnce(
+        jsonResponse({ infrastructure: { database: "connected", openclaw: "connected" } })
+      )
+      .mockResolvedValueOnce(jsonResponse({ error: "Setup already complete" }, { status: 400 }));
 
     render(<SetupForm />);
     await waitFor(() => screen.getByRole("button", { name: /create account/i }));

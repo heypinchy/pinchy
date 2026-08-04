@@ -23,6 +23,8 @@ import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
 import { buildInviteUrl } from "@/lib/invite-url";
 import { evaluateSeatPressure } from "@/lib/seat-grace";
 import { SALES_MAILTO, CALENDLY_URL } from "@/lib/conversion-links";
+import { apiPost, apiDelete, errorMessage } from "@/lib/api-client";
+import type { InviteUserInput } from "@/lib/schemas/users";
 
 interface SettingsUsersProps {
   currentUserId: string;
@@ -134,11 +136,13 @@ export function SettingsUsers({ currentUserId, refreshKey }: SettingsUsersProps)
   function handleRevoke(inviteId: string) {
     startRevokeTransition(async () => {
       applyOptimistic({ type: "removeInvite", id: inviteId });
-      const res = await fetch(`/api/users/invites/${inviteId}`, { method: "DELETE" });
-      // fetchUsers() re-introduces the optimistically-removed row on failure;
-      // surface why it flickered back instead of failing silently.
-      if (!res.ok) {
-        toast.error("Failed to revoke invite. Please try again.");
+      try {
+        await apiDelete(`/api/users/invites/${inviteId}`);
+      } catch (e) {
+        // fetchUsers() re-introduces the optimistically-removed row on failure;
+        // surface why it flickered back instead of failing silently. The route's
+        // own wording ("Invite not found") tells a stale list from an outage.
+        toast.error(errorMessage(e, "Failed to revoke invite. Please try again."));
       }
       fetchUsers();
     });
@@ -148,22 +152,21 @@ export function SettingsUsers({ currentUserId, refreshKey }: SettingsUsersProps)
     // Resend = revoke the old invite, then create a fresh one. Report which of
     // the two steps failed so the admin knows whether the old invite is still
     // live (revoke failed) or simply no replacement was issued (create failed).
-    const deleteRes = await fetch(`/api/users/invites/${item.id}`, { method: "DELETE" });
-    if (!deleteRes.ok) {
-      toast.error("Failed to revoke the old invite. Please try again.");
+    try {
+      await apiDelete(`/api/users/invites/${item.id}`);
+    } catch (e) {
+      toast.error(errorMessage(e, "Failed to revoke the old invite. Please try again."));
       fetchUsers();
       return;
     }
-    const res = await fetch("/api/users/invite", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email: item.email || undefined, role: item.role }),
-    });
-    if (res.ok) {
-      const data = await res.json();
+    try {
+      const data = await apiPost<{ token: string }, InviteUserInput>("/api/users/invite", {
+        email: item.email || undefined,
+        role: item.role,
+      });
       setResetLink(buildInviteUrl(window.location.origin, data.token));
-    } else {
-      toast.error("Failed to create the new invite. Please try again.");
+    } catch (e) {
+      toast.error(errorMessage(e, "Failed to create the new invite. Please try again."));
     }
     fetchUsers();
   }

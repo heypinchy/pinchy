@@ -6,7 +6,7 @@ import { integrationConnections } from "@/db/schema";
 import { encrypt, decrypt } from "@/lib/encryption";
 import { appendAuditLog, scrubEmails } from "@/lib/audit";
 import { odooCredentialsSchema } from "@/lib/integrations/odoo-schema";
-import { imapEditSchema } from "@/lib/schemas/integration-edit";
+import { imapEditSchema, updateConnectionSchema } from "@/lib/schemas/integration-edit";
 import { validateExternalUrl } from "@/lib/integrations/url-validation";
 import { maskConnectionCredentials } from "@/lib/integrations/mask-credentials";
 import { probeIntegrationCredentials } from "@/lib/integrations/probe";
@@ -14,14 +14,6 @@ import { getOAuthProvider } from "@/lib/integrations/oauth-providers";
 import { clearIntegrationAuthError } from "@/lib/integrations/auth-state";
 import { z } from "zod";
 import { parseRequestBody, formatValidationError } from "@/lib/api-validation";
-
-const updateConnectionSchema = z
-  .object({
-    name: z.string().min(1).max(100).optional(),
-    description: z.string().max(500).optional(),
-    credentials: z.record(z.string(), z.unknown()).optional(),
-  })
-  .passthrough();
 
 const credentialSchemas: Record<string, z.ZodType> = {
   odoo: odooCredentialsSchema.partial(),

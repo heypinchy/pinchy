@@ -40,6 +40,7 @@ import {
   apiPut,
   apiDelete,
   ApiError,
+  errorMessage,
   extractFieldErrors,
 } from "@/lib/api-client";
 import type { CreateGroupInput } from "@/lib/schemas/groups";
@@ -171,7 +172,7 @@ export function SettingsGroups({ refreshKey, isAdmin = true }: SettingsGroupsPro
         setFieldErrors(fe);
         return;
       }
-      toast.error(e instanceof ApiError ? e.message : "Failed to create group");
+      toast.error(errorMessage(e, "Failed to create group"));
       return;
     }
 
@@ -214,7 +215,7 @@ export function SettingsGroups({ refreshKey, isAdmin = true }: SettingsGroupsPro
         setFieldErrors(fe);
         return;
       }
-      toast.error(e instanceof ApiError ? e.message : "Failed to update group");
+      toast.error(errorMessage(e, "Failed to update group"));
       return;
     }
 
@@ -243,7 +244,7 @@ export function SettingsGroups({ refreshKey, isAdmin = true }: SettingsGroupsPro
       setDeleteGroupId(null);
       fetchData();
     } catch (e) {
-      toast.error(e instanceof ApiError ? e.message : "Failed to delete group");
+      toast.error(errorMessage(e, "Failed to delete group"));
     }
   }
 

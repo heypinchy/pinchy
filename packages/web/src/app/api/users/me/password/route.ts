@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
 import { headers } from "next/headers";
-import { z } from "zod";
 import { auth } from "@/lib/auth";
 import { withAuth } from "@/lib/api-auth";
 import { parseRequestBody } from "@/lib/api-validation";
@@ -12,14 +11,7 @@ import {
   PASSWORD_CHANGE_RATE_LIMIT_WINDOW_MS,
   PASSWORD_CHANGE_RATE_LIMIT_WINDOW_MINUTES,
 } from "@/lib/password-change-rate-limiter";
-
-// Shape only — length/breach-list policy is enforced post-parse via
-// validatePassword() so the same rules apply to setup, invite-claim, and
-// password-change without drifting between routes.
-const changePasswordSchema = z.object({
-  currentPassword: z.string().min(1),
-  newPassword: z.string(),
-});
+import { changePasswordSchema } from "@/lib/schemas/settings";
 
 export const POST = withAuth(async (request, _ctx, session) => {
   const parsed = await parseRequestBody(changePasswordSchema, request);

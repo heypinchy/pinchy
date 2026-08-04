@@ -7,6 +7,7 @@ import "@testing-library/jest-dom";
 import { flushPendingRenders } from "@/test-helpers/react";
 import { NewAgentForm } from "@/components/new-agent-form";
 import { toast } from "sonner";
+import { jsonResponse } from "@/test-helpers/fetch";
 
 const { mockPush, mockReplace, mockSearchParams } = vi.hoisted(() => {
   const searchParamsRef = { current: new URLSearchParams() };
@@ -65,12 +66,9 @@ describe("NewAgentForm — name max length", () => {
     mockSearchParams.current = new URLSearchParams();
     fetchSpy = vi.spyOn(global, "fetch").mockImplementation(async (url) => {
       if (String(url) === "/api/templates") {
-        return {
-          ok: true,
-          json: async () => ({ templates: mockTemplates }),
-        } as Response;
+        return jsonResponse({ templates: mockTemplates });
       }
-      return { ok: false, json: async () => ({}) } as Response;
+      return jsonResponse({}, { status: 400 });
     });
   });
 
@@ -103,12 +101,9 @@ describe("NewAgentForm — cancel button", () => {
     mockSearchParams.current = new URLSearchParams();
     fetchSpy = vi.spyOn(global, "fetch").mockImplementation(async (url) => {
       if (String(url) === "/api/templates") {
-        return {
-          ok: true,
-          json: async () => ({ templates: mockTemplates }),
-        } as Response;
+        return jsonResponse({ templates: mockTemplates });
       }
-      return { ok: false, json: async () => ({}) } as Response;
+      return jsonResponse({}, { status: 400 });
     });
   });
 
@@ -157,12 +152,9 @@ describe("NewAgentForm — URL history", () => {
 
     fetchSpy = vi.spyOn(global, "fetch").mockImplementation(async (url) => {
       if (String(url) === "/api/templates") {
-        return {
-          ok: true,
-          json: async () => ({ templates: mockTemplates }),
-        } as Response;
+        return jsonResponse({ templates: mockTemplates });
       }
-      return { ok: false, json: async () => ({}) } as Response;
+      return jsonResponse({}, { status: 400 });
     });
   });
 
@@ -221,18 +213,12 @@ describe("NewAgentForm — tagline field", () => {
     mockSearchParams.current = new URLSearchParams();
     fetchSpy = vi.spyOn(global, "fetch").mockImplementation(async (url) => {
       if (String(url) === "/api/templates") {
-        return {
-          ok: true,
-          json: async () => ({ templates: mockTemplates }),
-        } as Response;
+        return jsonResponse({ templates: mockTemplates });
       }
       if (String(url) === "/api/data-directories") {
-        return {
-          ok: true,
-          json: async () => ({ directories: [] }),
-        } as Response;
+        return jsonResponse({ directories: [] });
       }
-      return { ok: false, json: async () => ({}) } as Response;
+      return jsonResponse({}, { status: 400 });
     });
   });
 
@@ -303,24 +289,15 @@ describe("NewAgentForm — tagline field", () => {
 
     fetchSpy.mockImplementation(async (url, init) => {
       if (String(url) === "/api/templates") {
-        return {
-          ok: true,
-          json: async () => ({ templates: emailTemplates }),
-        } as Response;
+        return jsonResponse({ templates: emailTemplates });
       }
       if (String(url) === "/api/integrations") {
-        return {
-          ok: true,
-          json: async () => [{ id: "email-conn-1", name: "Gmail Work", type: "google" }],
-        } as Response;
+        return jsonResponse([{ id: "email-conn-1", name: "Gmail Work", type: "google" }]);
       }
       if (String(url) === "/api/agents" && init?.method === "POST") {
-        return {
-          ok: true,
-          json: async () => ({ id: "new-agent-id" }),
-        } as Response;
+        return jsonResponse({ id: "new-agent-id" });
       }
-      return { ok: false, json: async () => ({}) } as Response;
+      return jsonResponse({}, { status: 400 });
     });
 
     render(<NewAgentForm />);
@@ -355,18 +332,12 @@ describe("NewAgentForm — tagline field", () => {
   it("includes tagline in POST body on submit", async () => {
     fetchSpy.mockImplementation(async (url, init) => {
       if (String(url) === "/api/templates") {
-        return {
-          ok: true,
-          json: async () => ({ templates: mockTemplates }),
-        } as Response;
+        return jsonResponse({ templates: mockTemplates });
       }
       if (String(url) === "/api/agents" && init?.method === "POST") {
-        return {
-          ok: true,
-          json: async () => ({ id: "new-agent-id" }),
-        } as Response;
+        return jsonResponse({ id: "new-agent-id" });
       }
-      return { ok: false, json: async () => ({}) } as Response;
+      return jsonResponse({}, { status: 400 });
     });
 
     render(<NewAgentForm />);
@@ -403,21 +374,15 @@ describe("NewAgentForm — tagline field", () => {
   it("navigates and shows a warning toast when creation reports a runtime warning (#880)", async () => {
     fetchSpy.mockImplementation(async (url, init) => {
       if (String(url) === "/api/templates") {
-        return {
-          ok: true,
-          json: async () => ({ templates: mockTemplates }),
-        } as Response;
+        return jsonResponse({ templates: mockTemplates });
       }
       if (String(url) === "/api/agents" && init?.method === "POST") {
-        return {
-          ok: true,
-          json: async () => ({
-            id: "new-agent-id",
-            warning: "Agent created. Applying it to the runtime failed.",
-          }),
-        } as Response;
+        return jsonResponse({
+          id: "new-agent-id",
+          warning: "Agent created. Applying it to the runtime failed.",
+        });
       }
-      return { ok: false, json: async () => ({}) } as Response;
+      return jsonResponse({}, { status: 400 });
     });
 
     render(<NewAgentForm />);
@@ -466,24 +431,15 @@ describe("NewAgentForm — email mailbox picker", () => {
   function mockApis(connections: Array<{ id: string; name: string; type: string }>) {
     fetchSpy.mockImplementation(async (url, init) => {
       if (String(url) === "/api/templates") {
-        return {
-          ok: true,
-          json: async () => ({ templates: emailTemplates }),
-        } as Response;
+        return jsonResponse({ templates: emailTemplates });
       }
       if (String(url) === "/api/integrations") {
-        return {
-          ok: true,
-          json: async () => connections,
-        } as Response;
+        return jsonResponse(connections);
       }
       if (String(url) === "/api/agents" && init?.method === "POST") {
-        return {
-          ok: true,
-          json: async () => ({ id: "new-agent-id" }),
-        } as Response;
+        return jsonResponse({ id: "new-agent-id" });
       }
-      return { ok: false, json: async () => ({}) } as Response;
+      return jsonResponse({}, { status: 400 });
     });
   }
 
@@ -595,12 +551,9 @@ describe("NewAgentForm — intro text", () => {
     mockSearchParams.current = new URLSearchParams();
     fetchSpy = vi.spyOn(global, "fetch").mockImplementation(async (url) => {
       if (String(url) === "/api/templates") {
-        return {
-          ok: true,
-          json: async () => ({ templates: mockTemplates }),
-        } as Response;
+        return jsonResponse({ templates: mockTemplates });
       }
-      return { ok: false, json: async () => ({}) } as Response;
+      return jsonResponse({}, { status: 400 });
     });
   });
 
@@ -627,12 +580,9 @@ describe("NewAgentForm — tagline helper", () => {
     mockSearchParams.current = new URLSearchParams();
     fetchSpy = vi.spyOn(global, "fetch").mockImplementation(async (url) => {
       if (String(url) === "/api/templates") {
-        return {
-          ok: true,
-          json: async () => ({ templates: mockTemplates }),
-        } as Response;
+        return jsonResponse({ templates: mockTemplates });
       }
-      return { ok: false, json: async () => ({}) } as Response;
+      return jsonResponse({}, { status: 400 });
     });
   });
 
@@ -678,30 +628,18 @@ describe("NewAgentForm — permission preview", () => {
     mockSearchParams.current = new URLSearchParams();
     fetchSpy = vi.spyOn(global, "fetch").mockImplementation(async (url) => {
       if (String(url) === "/api/templates") {
-        return {
-          ok: true,
-          json: async () => ({ templates: odooTemplates }),
-        } as Response;
+        return jsonResponse({ templates: odooTemplates });
       }
       if (String(url) === "/api/data-directories") {
-        return {
-          ok: true,
-          json: async () => ({ directories: [] }),
-        } as Response;
+        return jsonResponse({ directories: [] });
       }
       if (String(url) === "/api/integrations") {
-        return {
-          ok: true,
-          json: async () => [{ id: "conn-1", name: "My Odoo", type: "odoo", data: {} }],
-        } as Response;
+        return jsonResponse([{ id: "conn-1", name: "My Odoo", type: "odoo", data: {} }]);
       }
       if (String(url) === "/api/agents") {
-        return {
-          ok: true,
-          json: async () => [],
-        } as Response;
+        return jsonResponse([]);
       }
-      return { ok: false, json: async () => ({}) } as Response;
+      return jsonResponse({}, { status: 400 });
     });
   });
 
@@ -795,24 +733,15 @@ describe("NewAgentForm — no connections link", () => {
     mockSearchParams.current = new URLSearchParams();
     fetchSpy = vi.spyOn(global, "fetch").mockImplementation(async (url) => {
       if (String(url) === "/api/templates") {
-        return {
-          ok: true,
-          json: async () => ({ templates: odooTemplates }),
-        } as Response;
+        return jsonResponse({ templates: odooTemplates });
       }
       if (String(url) === "/api/integrations") {
-        return {
-          ok: true,
-          json: async () => [],
-        } as Response;
+        return jsonResponse([]);
       }
       if (String(url) === "/api/agents") {
-        return {
-          ok: true,
-          json: async () => [],
-        } as Response;
+        return jsonResponse([]);
       }
-      return { ok: false, json: async () => ({}) } as Response;
+      return jsonResponse({}, { status: 400 });
     });
   });
 
@@ -849,24 +778,15 @@ describe("NewAgentForm — suggested name", () => {
     mockSearchParams.current = new URLSearchParams();
     fetchSpy = vi.spyOn(global, "fetch").mockImplementation(async (url) => {
       if (String(url) === "/api/templates") {
-        return {
-          ok: true,
-          json: async () => ({ templates: mockTemplates }),
-        } as Response;
+        return jsonResponse({ templates: mockTemplates });
       }
       if (String(url) === "/api/agents") {
-        return {
-          ok: true,
-          json: async () => [{ name: "Ada" }],
-        } as Response;
+        return jsonResponse([{ name: "Ada" }]);
       }
       if (String(url) === "/api/data-directories") {
-        return {
-          ok: true,
-          json: async () => ({ directories: [] }),
-        } as Response;
+        return jsonResponse({ directories: [] });
       }
-      return { ok: false, json: async () => ({}) } as Response;
+      return jsonResponse({}, { status: 400 });
     });
   });
 
@@ -1010,31 +930,25 @@ describe("NewAgentForm — optional Odoo models do not block creation", () => {
     mockSearchParams.current = new URLSearchParams();
     fetchSpy = vi.spyOn(global, "fetch").mockImplementation(async (url) => {
       if (String(url) === "/api/templates") {
-        return {
-          ok: true,
-          json: async () => ({ templates: approvalManagerInList }),
-        } as Response;
+        return jsonResponse({ templates: approvalManagerInList });
       }
       if (String(url) === "/api/data-directories") {
-        return { ok: true, json: async () => ({ directories: [] }) } as Response;
+        return jsonResponse({ directories: [] });
       }
       if (String(url) === "/api/integrations") {
-        return {
-          ok: true,
-          json: async () => [
-            {
-              id: "conn-community",
-              name: "Odoo Community",
-              type: "odoo",
-              data: { models: communityConnectionModels },
-            },
-          ],
-        } as Response;
+        return jsonResponse([
+          {
+            id: "conn-community",
+            name: "Odoo Community",
+            type: "odoo",
+            data: { models: communityConnectionModels },
+          },
+        ]);
       }
       if (String(url) === "/api/agents") {
-        return { ok: true, json: async () => [] } as Response;
+        return jsonResponse([]);
       }
-      return { ok: false, json: async () => ({}) } as Response;
+      return jsonResponse({}, { status: 400 });
     });
   });
 

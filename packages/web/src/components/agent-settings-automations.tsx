@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 
-import { apiGet, apiPatch, apiDelete, ApiError } from "@/lib/api-client";
+import { apiGet, apiPatch, apiDelete, errorMessage } from "@/lib/api-client";
 import type { AutomationListItem } from "@/lib/schemas/automations";
 import type { EmailWorkflowFilter } from "@/lib/email-workflows/types";
 import type { EmailWorkflowStatus } from "@/db/enums";
@@ -56,10 +56,6 @@ const STATUS_VARIANT: Record<EmailWorkflowStatus, "default" | "secondary" | "des
   pending: "secondary",
   error: "destructive",
 };
-
-function errorMessage(e: unknown, fallback: string): string {
-  return e instanceof ApiError ? e.message : fallback;
-}
 
 /**
  * The Automations tab: the review-and-activate surface for an agent's Inbox

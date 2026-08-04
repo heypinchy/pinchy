@@ -102,6 +102,7 @@
     "@types/react-dom": "^19.2.3",
     "@types/turndown": "^5.0.5",
     "@types/ws": "^8.18.1",
+    "@typescript-eslint/parser": "^8.62.1",
     "@vitejs/plugin-react": "^6.0.5",
     "eslint": "^9.39.4",
     "eslint-config-next": "16.2.12",

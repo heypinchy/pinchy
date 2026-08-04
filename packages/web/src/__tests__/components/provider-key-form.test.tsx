@@ -6,6 +6,7 @@ import "@testing-library/jest-dom";
 import { ProviderKeyForm } from "@/components/provider-key-form";
 import { toast } from "sonner";
 import type { DeletionPreviewResponse } from "@/lib/schemas/provider-deletion";
+import { jsonResponse } from "@/test-helpers/fetch";
 
 vi.mock("sonner", () => ({
   toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn() },
@@ -33,12 +34,7 @@ function previewResponse(overrides: Partial<DeletionPreviewResponse> = {}): Resp
     ],
     ...overrides,
   };
-  return {
-    ok: true,
-    status: 200,
-    json: async () => body,
-    text: async () => JSON.stringify(body),
-  } as Response;
+  return jsonResponse(body);
 }
 
 /**
@@ -51,12 +47,7 @@ function deleteFlowResponse(
   previewOverrides: Partial<DeletionPreviewResponse> = {}
 ): Response {
   if (url.includes("deletion-preview")) return previewResponse(previewOverrides);
-  return {
-    ok: true,
-    status: 200,
-    json: async () => deleteBody,
-    text: async () => JSON.stringify(deleteBody),
-  } as Response;
+  return jsonResponse(deleteBody);
 }
 
 describe("ProviderKeyForm", () => {
@@ -115,10 +106,7 @@ describe("ProviderKeyForm", () => {
   });
 
   it("should call onSuccess and show success toast after successful submission", async () => {
-    vi.mocked(global.fetch).mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ success: true }),
-    } as Response);
+    vi.mocked(global.fetch).mockResolvedValueOnce(jsonResponse({ success: true }));
 
     render(<ProviderKeyForm onSuccess={onSuccess} />);
 
@@ -135,13 +123,12 @@ describe("ProviderKeyForm", () => {
   });
 
   it("shows a warning toast (not success) when the save reports a runtime warning (#880)", async () => {
-    vi.mocked(global.fetch).mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({
+    vi.mocked(global.fetch).mockResolvedValueOnce(
+      jsonResponse({
         success: true,
         warning: "Saved. Applying it to the agent runtime failed.",
-      }),
-    } as Response);
+      })
+    );
 
     render(<ProviderKeyForm onSuccess={onSuccess} />);
 
@@ -161,10 +148,9 @@ describe("ProviderKeyForm", () => {
   });
 
   it("should show inline error message on failed validation", async () => {
-    vi.mocked(global.fetch).mockResolvedValueOnce({
-      ok: false,
-      json: async () => ({ error: "Invalid API key. Please check and try again." }),
-    } as Response);
+    vi.mocked(global.fetch).mockResolvedValueOnce(
+      jsonResponse({ error: "Invalid API key. Please check and try again." }, { status: 400 })
+    );
 
     render(<ProviderKeyForm onSuccess={onSuccess} />);
 
@@ -180,10 +166,9 @@ describe("ProviderKeyForm", () => {
   });
 
   it("should show report issue link on failed validation", async () => {
-    vi.mocked(global.fetch).mockResolvedValueOnce({
-      ok: false,
-      json: async () => ({ error: "Invalid API key." }),
-    } as Response);
+    vi.mocked(global.fetch).mockResolvedValueOnce(
+      jsonResponse({ error: "Invalid API key." }, { status: 400 })
+    );
 
     render(<ProviderKeyForm onSuccess={onSuccess} />);
 
@@ -199,10 +184,9 @@ describe("ProviderKeyForm", () => {
   });
 
   it("should show error indicator next to input on failed validation", async () => {
-    vi.mocked(global.fetch).mockResolvedValueOnce({
-      ok: false,
-      json: async () => ({ error: "Invalid API key." }),
-    } as Response);
+    vi.mocked(global.fetch).mockResolvedValueOnce(
+      jsonResponse({ error: "Invalid API key." }, { status: 400 })
+    );
 
     render(<ProviderKeyForm onSuccess={onSuccess} />);
 
@@ -220,16 +204,7 @@ describe("ProviderKeyForm", () => {
   it("should show loading state during submission", async () => {
     vi.mocked(global.fetch).mockImplementation(
       () =>
-        new Promise((resolve) =>
-          setTimeout(
-            () =>
-              resolve({
-                ok: true,
-                json: async () => ({ success: true }),
-              } as Response),
-            100
-          )
-        )
+        new Promise((resolve) => setTimeout(() => resolve(jsonResponse({ success: true })), 100))
     );
 
     render(<ProviderKeyForm onSuccess={onSuccess} />);
@@ -270,10 +245,7 @@ describe("ProviderKeyForm", () => {
     });
 
     it("should call onDirtyChange(false) after successful save", async () => {
-      vi.mocked(global.fetch).mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ success: true }),
-      } as Response);
+      vi.mocked(global.fetch).mockResolvedValueOnce(jsonResponse({ success: true }));
 
       const onDirtyChange = vi.fn();
       render(<ProviderKeyForm onSuccess={onSuccess} onDirtyChange={onDirtyChange} />);
@@ -436,10 +408,9 @@ describe("ProviderKeyForm", () => {
     });
 
     it("should show error indicator instead of configured indicator on failed save", async () => {
-      vi.mocked(global.fetch).mockResolvedValueOnce({
-        ok: false,
-        json: async () => ({ error: "Invalid API key." }),
-      } as Response);
+      vi.mocked(global.fetch).mockResolvedValueOnce(
+        jsonResponse({ error: "Invalid API key." }, { status: 400 })
+      );
 
       render(<ProviderKeyForm onSuccess={onSuccess} configuredProviders={configuredProviders} />);
 
@@ -457,10 +428,7 @@ describe("ProviderKeyForm", () => {
     });
 
     it("should show configured indicator and success toast after successful save", async () => {
-      vi.mocked(global.fetch).mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ success: true }),
-      } as Response);
+      vi.mocked(global.fetch).mockResolvedValueOnce(jsonResponse({ success: true }));
 
       render(<ProviderKeyForm onSuccess={onSuccess} configuredProviders={configuredProviders} />);
 
@@ -552,12 +520,12 @@ describe("ProviderKeyForm", () => {
           return previewResponse();
         }
         void init;
-        return {
-          ok: false,
-          json: async () => ({
+        return jsonResponse(
+          {
             error: "Cannot remove the last configured provider. Add another provider first.",
-          }),
-        } as Response;
+          },
+          { status: 400 }
+        );
       });
 
       render(<ProviderKeyForm onSuccess={onSuccess} configuredProviders={configuredProviders} />);
@@ -588,7 +556,7 @@ describe("ProviderKeyForm", () => {
                   { id: "a3", name: "Reader" },
                 ],
               })
-            : ({ ok: true, json: async () => ({}) } as Response)
+            : jsonResponse({})
         );
 
         render(<ProviderKeyForm onSuccess={onSuccess} configuredProviders={configuredProviders} />);
@@ -613,7 +581,7 @@ describe("ProviderKeyForm", () => {
         vi.mocked(global.fetch).mockImplementation(async (input) =>
           String(input).includes("deletion-preview")
             ? previewResponse({ affectedAgents: [{ id: "a1", name: "Hermes" }] })
-            : ({ ok: true, json: async () => ({}) } as Response)
+            : jsonResponse({})
         );
 
         render(<ProviderKeyForm onSuccess={onSuccess} configuredProviders={configuredProviders} />);
@@ -631,7 +599,7 @@ describe("ProviderKeyForm", () => {
         vi.mocked(global.fetch).mockImplementation(async (input) =>
           String(input).includes("deletion-preview")
             ? previewResponse({ affectedAgents: [] })
-            : ({ ok: true, json: async () => ({}) } as Response)
+            : jsonResponse({})
         );
 
         render(<ProviderKeyForm onSuccess={onSuccess} configuredProviders={configuredProviders} />);
@@ -653,13 +621,8 @@ describe("ProviderKeyForm", () => {
       it("falls back to the generic sentence when the preview fails", async () => {
         vi.mocked(global.fetch).mockImplementation(async (input) =>
           String(input).includes("deletion-preview")
-            ? ({
-                ok: false,
-                status: 500,
-                json: async () => ({ error: "boom" }),
-                text: async () => '{"error":"boom"}',
-              } as Response)
-            : ({ ok: true, json: async () => ({}) } as Response)
+            ? jsonResponse({ error: "boom" }, { status: 500 })
+            : jsonResponse({})
         );
 
         render(<ProviderKeyForm onSuccess={onSuccess} configuredProviders={configuredProviders} />);
@@ -699,7 +662,7 @@ describe("ProviderKeyForm", () => {
               affectedAgents: [{ id: "a1", name: "Hermes" }],
             });
           }
-          return { ok: true, json: async () => ({}) } as Response;
+          return jsonResponse({});
         });
 
         render(<ProviderKeyForm onSuccess={onSuccess} configuredProviders={twoConfigured} />);
@@ -800,16 +763,16 @@ describe("ProviderKeyForm", () => {
   // user to copy a URL from prose text. The prose itself stays plain (no
   // long URL squashed in), and the link opens in a new tab.
   describe("structured docs hint on error (#296)", () => {
-    const unsupportedHostResponse = {
-      ok: false,
-      json: async () => ({
+    const unsupportedHostResponse = jsonResponse(
+      {
         error: 'Host "ollama" is not an allowed local Ollama host. Use localhost, ...',
         docs: {
           href: "https://docs.heypinchy.com/guides/ollama-setup/#b-ollama-as-a-docker-service",
           label: "See the recommended Docker setup",
         },
-      }),
-    } as Response;
+      },
+      { status: 400 }
+    );
 
     async function submitOllamaLocal() {
       fireEvent.click(screen.getByRole("button", { name: /ollama \(local\)/i }));
@@ -847,10 +810,9 @@ describe("ProviderKeyForm", () => {
     });
 
     it("does not render a docs link inside the error region when the response has no docs field", async () => {
-      vi.mocked(global.fetch).mockResolvedValueOnce({
-        ok: false,
-        json: async () => ({ error: "Could not connect to Ollama at this URL." }),
-      } as Response);
+      vi.mocked(global.fetch).mockResolvedValueOnce(
+        jsonResponse({ error: "Could not connect to Ollama at this URL." }, { status: 400 })
+      );
 
       render(<ProviderKeyForm onSuccess={onSuccess} />);
       await submitOllamaLocal();
@@ -892,10 +854,9 @@ describe("ProviderKeyForm", () => {
     it("clears a previously-shown docs link when the next error response has no docs", async () => {
       vi.mocked(global.fetch)
         .mockResolvedValueOnce(unsupportedHostResponse)
-        .mockResolvedValueOnce({
-          ok: false,
-          json: async () => ({ error: "Could not connect to Ollama at this URL." }),
-        } as Response);
+        .mockResolvedValueOnce(
+          jsonResponse({ error: "Could not connect to Ollama at this URL." }, { status: 400 })
+        );
 
       render(<ProviderKeyForm onSuccess={onSuccess} />);
       await submitOllamaLocal();
@@ -916,16 +877,18 @@ describe("ProviderKeyForm", () => {
     // requires the href to start with http(s):// — anything else falls back
     // to the plain error prose with no link.
     it("rejects a docs.href that is not a http(s) URL (e.g. javascript: scheme)", async () => {
-      vi.mocked(global.fetch).mockResolvedValueOnce({
-        ok: false,
-        json: async () => ({
-          error: 'Host "ollama" is not an allowed local Ollama host.',
-          docs: {
-            href: "javascript:alert(1)",
-            label: "See the recommended Docker setup",
+      vi.mocked(global.fetch).mockResolvedValueOnce(
+        jsonResponse(
+          {
+            error: 'Host "ollama" is not an allowed local Ollama host.',
+            docs: {
+              href: "javascript:alert(1)",
+              label: "See the recommended Docker setup",
+            },
           },
-        }),
-      } as Response);
+          { status: 400 }
+        )
+      );
 
       render(<ProviderKeyForm onSuccess={onSuccess} />);
       await submitOllamaLocal();
@@ -941,16 +904,18 @@ describe("ProviderKeyForm", () => {
     // ExternalLink icon — a click target with no visible text. Treat it the
     // same as a missing docs field.
     it("rejects a docs.label that is an empty string", async () => {
-      vi.mocked(global.fetch).mockResolvedValueOnce({
-        ok: false,
-        json: async () => ({
-          error: 'Host "ollama" is not an allowed local Ollama host.',
-          docs: {
-            href: "https://docs.heypinchy.com/guides/ollama-setup/",
-            label: "",
+      vi.mocked(global.fetch).mockResolvedValueOnce(
+        jsonResponse(
+          {
+            error: 'Host "ollama" is not an allowed local Ollama host.',
+            docs: {
+              href: "https://docs.heypinchy.com/guides/ollama-setup/",
+              label: "",
+            },
           },
-        }),
-      } as Response);
+          { status: 400 }
+        )
+      );
 
       render(<ProviderKeyForm onSuccess={onSuccess} />);
       await submitOllamaLocal();
@@ -991,10 +956,7 @@ describe("ProviderKeyForm", () => {
     });
 
     it("should send url field instead of apiKey for URL providers", async () => {
-      vi.mocked(global.fetch).mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ success: true }),
-      } as Response);
+      vi.mocked(global.fetch).mockResolvedValueOnce(jsonResponse({ success: true }));
 
       render(<ProviderKeyForm onSuccess={onSuccess} />);
 
@@ -1017,10 +979,7 @@ describe("ProviderKeyForm", () => {
     });
 
     it("should show success toast with 'URL saved' for URL providers", async () => {
-      vi.mocked(global.fetch).mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ success: true }),
-      } as Response);
+      vi.mocked(global.fetch).mockResolvedValueOnce(jsonResponse({ success: true }));
 
       render(<ProviderKeyForm onSuccess={onSuccess} />);
 

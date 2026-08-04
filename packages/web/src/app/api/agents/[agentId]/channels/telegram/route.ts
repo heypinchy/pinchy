@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from "next/server";
-import { z } from "zod";
 import { requireAdmin, withAuth } from "@/lib/api-auth";
 import {
   validateTelegramBotToken,
@@ -17,10 +16,7 @@ import { db } from "@/db";
 import { agents, channelLinks, settings } from "@/db/schema";
 import { eq, like } from "drizzle-orm";
 import { parseRequestBody } from "@/lib/api-validation";
-
-const setBotTokenSchema = z.object({
-  botToken: z.string().min(1),
-});
+import { setBotTokenSchema } from "@/lib/schemas/telegram";
 
 export async function GET(req: Request, { params }: { params: Promise<{ agentId: string }> }) {
   const admin = await requireAdmin();

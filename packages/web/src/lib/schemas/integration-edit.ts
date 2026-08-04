@@ -2,6 +2,21 @@ import { z } from "zod";
 
 import { senderNameSchema } from "@/lib/schemas/sender-name";
 
+// `PATCH /api/integrations/[connectionId]` — the connection envelope itself
+// (rename/describe/re-credential), as opposed to the per-type credential
+// shapes below. Shared with `use-integration-actions.ts` so a rename payload
+// cannot drift from what the route accepts. `.passthrough()` is deliberate:
+// the route merges unknown keys into the credential blob for types that
+// validate them separately.
+export const updateConnectionSchema = z
+  .object({
+    name: z.string().min(1).max(100).optional(),
+    description: z.string().max(500).optional(),
+    credentials: z.record(z.string(), z.unknown()).optional(),
+  })
+  .passthrough();
+export type UpdateConnectionInput = z.infer<typeof updateConnectionSchema>;
+
 // All fields optional — empty string means "leave current value unchanged".
 // The submit handler filters out empty strings before sending the PATCH body.
 export const odooEditSchema = z.object({

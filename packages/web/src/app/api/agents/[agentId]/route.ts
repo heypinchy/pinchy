@@ -1,13 +1,7 @@
 import { NextResponse, after } from "next/server";
 import { revalidatePath } from "next/cache";
 import { eq, inArray } from "drizzle-orm";
-import { z } from "zod";
-import {
-  updateAgent,
-  deleteAgent,
-  AGENT_NAME_MAX_LENGTH,
-  AgentRuntimeUpdateError,
-} from "@/lib/agents";
+import { updateAgent, deleteAgent, AgentRuntimeUpdateError } from "@/lib/agents";
 import { withAuth, withAdmin } from "@/lib/api-auth";
 import { getAgentWithAccess, requireAgentWriteAccess } from "@/lib/agent-access";
 import { appendAuditLog, safeProviderError } from "@/lib/audit";
@@ -16,33 +10,14 @@ import { isEnterprise } from "@/lib/enterprise";
 import { writeIdentityFile } from "@/lib/workspace";
 import { db } from "@/db";
 import { agentGroups, groups, type AgentPluginConfig } from "@/db/schema";
-import { AGENT_VISIBILITIES, type AgentVisibility } from "@/db/enums";
+import type { AgentVisibility } from "@/db/enums";
 import { getAgentGroupIds } from "@/lib/groups";
 import { recalculateTelegramAllowStores } from "@/lib/telegram-allow-store";
-import { validatePinchyWebConfig, pluginConfigSchema } from "@/lib/domain-validation";
+import { validatePinchyWebConfig } from "@/lib/domain-validation";
 import { parseRequestBody } from "@/lib/api-validation";
 import { validateAgentModel } from "@/lib/agent-model-validation";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
-import { starterPromptsSchema } from "@/lib/schemas/starter-prompts";
-
-const updateAgentSchema = z.object({
-  name: z
-    .string()
-    .min(1)
-    .max(AGENT_NAME_MAX_LENGTH)
-    .refine((v) => v.trim().length > 0, "Name is required")
-    .optional(),
-  model: z.string().optional(),
-  allowedTools: z.array(z.string()).optional(),
-  pluginConfig: pluginConfigSchema.nullable().optional(),
-  greetingMessage: z.string().min(1, "Greeting message cannot be empty").optional(),
-  tagline: z.string().nullable().optional(),
-  starterPrompts: starterPromptsSchema.optional(),
-  avatarSeed: z.string().nullable().optional(),
-  personalityPresetId: z.string().nullable().optional(),
-  visibility: z.enum(AGENT_VISIBILITIES).optional(),
-  groupIds: z.array(z.string()).optional(),
-});
+import { updateAgentSchema } from "@/lib/schemas/agents";
 
 type RouteContext = { params: Promise<{ agentId: string }> };
 

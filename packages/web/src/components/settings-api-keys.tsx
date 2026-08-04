@@ -33,7 +33,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { toast } from "sonner";
-import { apiGet, apiPost, apiDelete, ApiError, extractFieldErrors } from "@/lib/api-client";
+import { apiGet, apiPost, apiDelete, errorMessage, extractFieldErrors } from "@/lib/api-client";
 import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
 import { API_KEY_SCOPES, type ApiKeyScope } from "@/lib/api-key-scopes";
 import type { CreateApiKeyInput } from "@/lib/schemas/api-keys";
@@ -130,7 +130,7 @@ export function SettingsApiKeys() {
       // issues a "replacement" has just added a second live org credential
       // while the first is still valid and unlisted.
       setLoadError(true);
-      toast.error(e instanceof ApiError ? e.message : "Failed to load API keys");
+      toast.error(errorMessage(e, "Failed to load API keys"));
     } finally {
       setLoading(false);
     }
@@ -189,7 +189,7 @@ export function SettingsApiKeys() {
         setFieldErrors(fe);
         return;
       }
-      toast.error(e instanceof ApiError ? e.message : "Failed to create API key");
+      toast.error(errorMessage(e, "Failed to create API key"));
       return;
     }
 
@@ -208,7 +208,7 @@ export function SettingsApiKeys() {
       fetchKeys();
       toast.success("API key revoked.");
     } catch (e) {
-      toast.error(e instanceof ApiError ? e.message : "Failed to revoke API key");
+      toast.error(errorMessage(e, "Failed to revoke API key"));
     }
   }
 

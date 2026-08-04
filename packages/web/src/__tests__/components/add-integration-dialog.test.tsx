@@ -21,6 +21,7 @@ vi.mock("@/lib/api-client", async (importOriginal) => {
 });
 
 import { apiGet } from "@/lib/api-client";
+import { jsonResponse } from "@/test-helpers/fetch";
 
 function resolveUrl(url: string | URL | Request): string {
   return typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url;
@@ -30,12 +31,11 @@ function mockListDatabases(databases: string[], success = true) {
   return vi.spyOn(global, "fetch").mockImplementation((url) => {
     const urlStr = resolveUrl(url);
     if (urlStr.includes("/api/integrations/list-databases")) {
-      return Promise.resolve({
-        ok: true,
-        json: async () => (success ? { success: true, databases } : { success: false }),
-      } as Response);
+      return Promise.resolve(
+        jsonResponse(success ? { success: true, databases } : { success: false })
+      );
     }
-    return Promise.resolve({ ok: true, json: async () => ({}) } as Response);
+    return Promise.resolve(jsonResponse({}));
   });
 }
 
@@ -139,7 +139,7 @@ describe("AddIntegrationDialog", () => {
     it("should not show database field when URL is invalid", async () => {
       const user = userEvent.setup();
       const fetchSpy = vi.spyOn(global, "fetch").mockImplementation(() => {
-        return Promise.resolve({ ok: true, json: async () => ({}) } as Response);
+        return Promise.resolve(jsonResponse({}));
       });
 
       render(<AddIntegrationDialog {...defaultProps} />);
@@ -490,25 +490,13 @@ describe("AddIntegrationDialog", () => {
       const fetchSpy = vi.spyOn(global, "fetch").mockImplementation((input) => {
         const urlStr = resolveUrl(input as string | URL | Request);
         if (urlStr.includes("/api/integrations/imap/test")) {
-          return Promise.resolve({
-            ok: true,
-            text: async () => JSON.stringify({ ok: true }),
-            json: async () => ({ ok: true }),
-          } as Response);
+          return Promise.resolve(jsonResponse({ ok: true }));
         }
         if (urlStr.includes("/api/integrations/imap")) {
           const body = { id: "conn-imap-1", name: "me@example.com" };
-          return Promise.resolve({
-            ok: true,
-            text: async () => JSON.stringify(body),
-            json: async () => body,
-          } as Response);
+          return Promise.resolve(jsonResponse(body));
         }
-        return Promise.resolve({
-          ok: true,
-          text: async () => "{}",
-          json: async () => ({}),
-        } as Response);
+        return Promise.resolve(jsonResponse({}));
       });
 
       await user.click(screen.getByRole("button", { name: /test & save/i }));
@@ -541,26 +529,14 @@ describe("AddIntegrationDialog", () => {
       const fetchSpy = vi.spyOn(global, "fetch").mockImplementation((input, init) => {
         const urlStr = resolveUrl(input as string | URL | Request);
         if (urlStr.includes("/api/integrations/imap/test")) {
-          return Promise.resolve({
-            ok: true,
-            text: async () => JSON.stringify({ ok: true }),
-            json: async () => ({ ok: true }),
-          } as Response);
+          return Promise.resolve(jsonResponse({ ok: true }));
         }
         if (urlStr.includes("/api/integrations/imap")) {
           createBody = JSON.parse((init?.body as string) ?? "{}");
           const body = { id: "conn-imap-1", name: "me@example.com" };
-          return Promise.resolve({
-            ok: true,
-            text: async () => JSON.stringify(body),
-            json: async () => body,
-          } as Response);
+          return Promise.resolve(jsonResponse(body));
         }
-        return Promise.resolve({
-          ok: true,
-          text: async () => "{}",
-          json: async () => ({}),
-        } as Response);
+        return Promise.resolve(jsonResponse({}));
       });
 
       await user.click(screen.getByRole("button", { name: /test & save/i }));

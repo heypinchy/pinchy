@@ -1,3 +1,5 @@
+import type { UserRole, InviteRole } from "@/db/enums";
+
 export interface UserGroup {
   id: string;
   name: string;
@@ -9,7 +11,7 @@ export type UserListItem =
       id: string;
       name: string;
       email: string;
-      role: string;
+      role: UserRole;
       status: "active" | "deactivated";
       groups: UserGroup[];
     }
@@ -17,17 +19,21 @@ export type UserListItem =
       kind: "invite";
       id: string;
       email: string | null;
-      role: string;
+      role: InviteRole;
       status: "pending" | "expired";
       createdAt: string;
       groups: UserGroup[];
     };
 
+// The role columns are constrained by a database CHECK derived from the same
+// consts (db/enums.ts), and schema-hardening.integration.test.ts reads that
+// constraint back from Postgres — so narrowing the response type here is a
+// guarantee the server actually holds, not an assumption.
 interface ApiUser {
   id: string;
   name: string;
   email: string;
-  role: string;
+  role: UserRole;
   banned: boolean;
   groups?: UserGroup[];
 }
@@ -35,7 +41,7 @@ interface ApiUser {
 interface ApiInvite {
   id: string;
   email: string | null;
-  role: string;
+  role: InviteRole;
   type: string;
   createdAt: string;
   expiresAt: string;
