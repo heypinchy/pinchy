@@ -17,8 +17,9 @@ const rule = require("../../../eslint-rules/no-untracked-skips.js");
 // Keep these regex constants in lockstep with packages/web/src/__tests__/lib/no-untracked-skips.test.ts.
 // (Drift-guard's regex is the canonical text-scan; this copy is what we
 // use to simulate the drift-guard's behaviour over a single snippet.)
-const SKIP_RE = /\b(?:test|it|describe)\.(?:skip|todo|fixme)\s*\(/;
+const SKIP_RE = /\b(?:test|it|describe)\.(?:skip|todo|fixme)\s*[.(]/;
 const X_RE = /^\s*(?:xit|xdescribe)\s*\(/;
+const ALIAS_RE = /[=?:]\s*(?:test\.describe|test|it|describe)\.(?:skip|todo|fixme)\b(?!\s*[.(])/;
 const ISSUE_REF_RE = /#\d+|github\.com\/[^/]+\/[^/]+\/issues\/\d+/;
 
 function eslintFlags(code: string): boolean {
@@ -36,7 +37,7 @@ function driftGuardFlags(code: string): boolean {
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     const codeOnly = line.replace(/\/\/.*$/, "").replace(/\/\*[\s\S]*?\*\//g, "");
-    if (!SKIP_RE.test(codeOnly) && !X_RE.test(codeOnly)) continue;
+    if (!SKIP_RE.test(codeOnly) && !X_RE.test(codeOnly) && !ALIAS_RE.test(codeOnly)) continue;
     if (/\b(?:test|it|describe)\.skipIf\s*\(/.test(codeOnly)) continue;
     const start = Math.max(0, i - 40);
     const leading = lines.slice(start, i).join("\n");
@@ -79,6 +80,41 @@ const FIXTURES: Array<{ name: string; code: string; shouldFlag: boolean }> = [
   {
     name: "issue ref one block up",
     code: `// (tracked in #99)\ndescribe("group", () => {\n  test.skip("a", () => {});\n});`,
+    shouldFlag: false,
+  },
+  // ── Aliased skips: referenced instead of called ────────────────────
+  // Both checkers were blind to every one of these until #1071 — which is
+  // why that PR had to rewrite two of them by hand instead of being told.
+  {
+    name: "ternary alias (the form #1071 rewrote)",
+    code: `const d = process.env.X ? describe : describe.skip;\nd("g", () => {});`,
+    shouldFlag: true,
+  },
+  {
+    name: "unconditional alias (a permanent skip in disguise)",
+    code: `const d = describe.skip;\nd("g", () => {});`,
+    shouldFlag: true,
+  },
+  {
+    name: "chained test.describe.skip alias",
+    code: `const d = test.describe.skip;\nd("g", () => {});`,
+    shouldFlag: true,
+  },
+  {
+    name: "skip invoked through .each",
+    code: `test.skip.each([1])("g", () => {});`,
+    shouldFlag: true,
+  },
+  {
+    name: "aliased skip with tracking issue",
+    code: `// tracked in #1071\nconst d = describe.skip;\nd("g", () => {});`,
+    shouldFlag: false,
+  },
+  // Prose and string literals that merely mention a skip must stay silent —
+  // an unanchored text scan reports three such lines in this repo alone.
+  {
+    name: "skip named inside a string literal",
+    code: `const msg = "a probe inside a test.skip does not count";`,
     shouldFlag: false,
   },
   // ── Conditional skipIf is always allowed ───────────────────────────

@@ -54,7 +54,7 @@ Status: early development. The core is working: setup wizard, authentication, pr
 
 ## No Untracked Test Skips
 
-Permanent test skips need a tracking issue. The ESLint rule `pinchy/no-untracked-skips` and the vitest drift-guard `src/__tests__/lib/no-untracked-skips.test.ts` both enforce this — they fire on `test.skip`, `it.skip`, `describe.skip`, `.todo`, `.fixme`, `xit`, `xdescribe` unless the immediately surrounding 40 lines contain a tracking-issue reference (`#NNN` or a github.com/.../issues/NNN URL). A third guard, `no-untracked-skips-parity.test.ts`, pins the two checkers together: if you teach one a new skip syntax and forget the other, the parity fixtures will flag the drift.
+Permanent test skips need a tracking issue. The ESLint rule `pinchy/no-untracked-skips` and the vitest drift-guard `src/__tests__/lib/no-untracked-skips.test.ts` both enforce this — they fire on `test.skip`, `it.skip`, `describe.skip`, `.todo`, `.fixme`, `xit`, `xdescribe` unless the immediately surrounding 40 lines contain a tracking-issue reference (`#NNN` or a github.com/.../issues/NNN URL) — whether the skip is called directly or hidden behind an alias, see below. A third guard, `no-untracked-skips-parity.test.ts`, pins the two checkers together: if you teach one a new skip syntax and forget the other, the parity fixtures will flag the drift.
 
 Two patterns are explicitly allowed:
 
@@ -62,6 +62,26 @@ Two patterns are explicitly allowed:
 - **Any banned form (`.skip`, `.todo`, `.fixme`, `xit`, `xdescribe`) with `#NNN` in the leading comment block** — the issue is the contract. "Tracked separately" / "follow-up" / inline TODO without a number is not enough. `it.todo("…")` is treated exactly like `.skip` — it silently turns green in CI but never runs, which is precisely the failure mode this policy exists to stop.
 
 If a check is in your way and you can't fix it in scope, **file the issue first**, link the number, then skip. Don't ship the skip with a promise to file the issue later — the 2026-05-22 audit found five clusters where exactly that happened, one of them hiding a production password-reset bug.
+
+### A skip must be called, not aliased
+
+Both checkers matched the **call** form only, so putting the skip behind an identifier made it invisible to both:
+
+```ts
+const describeIf = url ? describe : describe.skip; // seen by nothing
+describeIf("getSeatUsage", () => { … });
+```
+
+Two of these sat in the tree and were found by reading, not by a check (#1071). The conditional spelling above is harmless in effect — it is a gate, and the fix is to write it as one — but the same blind spot swallows `const d = describe.skip`, which is a permanent untracked skip with no condition anywhere near it. That is the case worth a guard.
+
+The ESLint rule now reports a skip that is **referenced rather than called** (`aliasedSkip`), and the drift-guard matches the assignment/ternary form. Same escape hatch as any other skip: a `#NNN` nearby. For a conditional gate, don't reach for the escape hatch — write `describe.skipIf(!url)`. The chained `test.skip.each(...)` is a call, not an alias, and is reported as an ordinary untracked skip.
+
+Two limits are documented rather than closed, because both cost more to catch than they are worth:
+
+- **Aliasing the test object instead of the skip** (`const d = describe;` then `d.skip(...)`) needs scope analysis. Neither checker follows it.
+- **The drift-guard's anchor must be on the skip's own line**, so a wrapped `const d =\n  describe.skip;` is missed there. The ESLint rule walks the AST and catches it — the text scan is the weaker of the two by design.
+
+The anchor is not fussiness: an unanchored text match for `test.skip` reports three lines in this repo that are a block comment, a test name and a string literal, one of them untracked — a red CI over prose. Verify a change to either checker by reproduction, not by reading: the fixtures in `no-untracked-skips-parity.test.ts` feed the same snippets through both and fail on any disagreement.
 
 ## No Untracked Test Removal
 

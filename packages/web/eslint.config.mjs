@@ -75,7 +75,9 @@ const eslintConfig = defineConfig([
   //   tracking-issue reference (`#NNN` or a github.com issue URL). The
   //   companion vitest drift-guard in
   //   src/__tests__/lib/no-untracked-skips.test.ts enforces the same
-  //   contract at test time. `.skipIf(...)` is always allowed.
+  //   contract at test time. `.skipIf(...)` is always allowed. A skip that is
+  //   aliased rather than called (`const d = describe.skip`) is reported too —
+  //   that form was invisible to both checkers until #1071.
   {
     files: [
       "src/**/*.{test,spec}.{ts,tsx,js,jsx}",

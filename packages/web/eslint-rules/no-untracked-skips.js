@@ -16,9 +16,22 @@
 // pins them together — it feeds the same fixtures through both and asserts
 // matching verdicts, so if you only update one, CI will tell you.
 //
-// Known false-negative window: the leading-comment scan reaches 40 lines
-// above the skip call. An unrelated `#NNN` inside that window will pass
-// the check. Documented limitation; a code review will catch it.
+// A skip must be CALLED, not aliased. `const d = cond ? describe : describe.skip`
+// and the plain `const d = describe.skip` both put the skip behind an
+// identifier, and every checker here — plus the drift-guard's text scan —
+// matches the call form only. So the alias form was invisible to both, which
+// is how two of them sat in the tree until #1071 rewrote them by hand. The
+// unconditional `const d = describe.skip` is the case that matters: a permanent,
+// untracked skip that no guard could see. Aliases are reported separately
+// (`aliasedSkip`) because the fix differs — a conditional gate wants
+// `describe.skipIf(cond)`, not an issue number.
+//
+// Known false-negative windows, both documented rather than closed:
+//   - The leading-comment scan reaches 40 lines above the skip call. An
+//     unrelated `#NNN` inside that window will pass the check.
+//   - Aliasing the test object instead of the skip (`const d = describe;`
+//     then `d.skip(...)`) needs scope analysis to follow and is not reported.
+// A code review owns both.
 //
 // Background: the 2026-05-22 audit found five separate skip clusters that
 // all followed the same pattern (quick fix → honest "tracked separately"
@@ -41,6 +54,8 @@ module.exports = {
     messages: {
       untrackedSkip:
         '{{call}} needs a tracking issue. Add a comment with `#<issue-number>` (or the issue URL) above the call, or remove the skip. See AGENTS.md § "No untracked test skips".',
+      aliasedSkip:
+        '{{call}} is referenced instead of called, which hides it from both skip guards (they match the call form). For a conditional gate use `{{object}}.skipIf(<condition>)`; for a permanent skip call it directly with a `#<issue-number>` comment. See AGENTS.md § "No untracked test skips".',
     },
     schema: [],
   },
@@ -73,37 +88,51 @@ module.exports = {
       });
     }
 
+    /**
+     * Describe a skip member expression, or return null if the node isn't one.
+     *
+     * Two accepted shapes:
+     *   - `test.skip` / `it.todo` / `describe.fixme`  (object is an Identifier)
+     *   - `test.describe.skip`                        (chained member)
+     *
+     * `describe.skipIf` is deliberately not one of them: `skipIf` isn't in
+     * SKIP_MEMBERS, so a conditional gate never reaches this function.
+     */
+    function skipMember(node) {
+      if (node.type !== "MemberExpression" || node.computed) return null;
+      if (node.property.type !== "Identifier") return null;
+      if (!SKIP_MEMBERS.has(node.property.name)) return null;
+
+      // Shape 1: `describe.skip`
+      if (node.object.type === "Identifier" && TEST_OBJECTS.has(node.object.name)) {
+        return { path: `${node.object.name}.${node.property.name}`, object: node.object.name };
+      }
+
+      // Shape 2: `test.describe.skip`
+      const obj = node.object;
+      if (
+        obj.type === "MemberExpression" &&
+        !obj.computed &&
+        obj.object.type === "Identifier" &&
+        obj.property.type === "Identifier" &&
+        TEST_OBJECTS.has(obj.object.name)
+      ) {
+        const objectPath = `${obj.object.name}.${obj.property.name}`;
+        return { path: `${objectPath}.${node.property.name}`, object: objectPath };
+      }
+
+      return null;
+    }
+
     return {
       CallExpression(node) {
         const callee = node.callee;
 
-        // Pattern 1: `test.skip(...)`, `it.todo(...)`, `describe.fixme(...)`
-        if (
-          callee.type === "MemberExpression" &&
-          !callee.computed &&
-          callee.object.type === "Identifier" &&
-          callee.property.type === "Identifier" &&
-          TEST_OBJECTS.has(callee.object.name) &&
-          SKIP_MEMBERS.has(callee.property.name)
-        ) {
-          report(node, `${callee.object.name}.${callee.property.name}(...)`);
-          return;
-        }
-
-        // Pattern 2: `test.describe.skip(...)` — chained member.
-        if (
-          callee.type === "MemberExpression" &&
-          !callee.computed &&
-          callee.property.type === "Identifier" &&
-          SKIP_MEMBERS.has(callee.property.name) &&
-          callee.object.type === "MemberExpression" &&
-          !callee.object.computed &&
-          callee.object.object.type === "Identifier" &&
-          callee.object.property.type === "Identifier" &&
-          TEST_OBJECTS.has(callee.object.object.name)
-        ) {
-          const desc = `${callee.object.object.name}.${callee.object.property.name}.${callee.property.name}(...)`;
-          report(node, desc);
+        // Patterns 1 & 2: `test.skip(...)`, `it.todo(...)`, `describe.fixme(...)`
+        // and the chained `test.describe.skip(...)`.
+        const member = skipMember(callee);
+        if (member) {
+          report(node, `${member.path}(...)`);
           return;
         }
 
@@ -112,6 +141,38 @@ module.exports = {
           report(node, `${callee.name}(...)`);
           return;
         }
+      },
+
+      // Pattern 4: a skip that is referenced rather than called.
+      //
+      //   const d = cond ? describe : describe.skip;   // conditional gate
+      //   const d = describe.skip;                     // permanent skip, hidden
+      //   test.skip.each([...])("name", fn)            // chained off the skip
+      //
+      // The CallExpression visitor above sees none of these, because in all
+      // three the skip member is not the thing being called.
+      MemberExpression(node) {
+        const member = skipMember(node);
+        if (!member) return;
+
+        const parent = node.parent;
+
+        // `describe.skip(...)` — the CallExpression visitor owns this one.
+        if (parent && parent.type === "CallExpression" && parent.callee === node) return;
+
+        // `test.skip.each([...])(...)` — still a skip being invoked, just
+        // through a chain. Report it as the skip it is, not as an alias.
+        if (parent && parent.type === "MemberExpression" && parent.object === node) {
+          report(node, `${member.path}(...)`);
+          return;
+        }
+
+        if (hasNearbyIssueRef(node)) return;
+        context.report({
+          node,
+          messageId: "aliasedSkip",
+          data: { call: member.path, object: member.object },
+        });
       },
     };
   },

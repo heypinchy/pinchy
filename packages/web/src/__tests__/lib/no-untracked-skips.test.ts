@@ -55,9 +55,25 @@ const SELF_EXCLUSIONS = {
 
 // Permanent-skip patterns we forbid without an issue link. We do NOT match
 // `.skipIf(` here — that's an explicit conditional gate, not a "we'll fix
-// this later" suppression.
-const SKIP_RE = /\b(?:test|it|describe)\.(?:skip|todo|fixme)\s*\(/;
+// this later" suppression. The trailing `[.(]` also covers the chained
+// `test.skip.each(...)`, which is a skip invoked one link down.
+const SKIP_RE = /\b(?:test|it|describe)\.(?:skip|todo|fixme)\s*[.(]/;
 const X_RE = /^\s*(?:xit|xdescribe)\s*\(/;
+// An ALIASED skip: the member is assigned, or handed to a ternary branch,
+// instead of being called — `const d = describe.skip`, or the
+// `cond ? describe : describe.skip` form that #1071 had to rewrite by hand
+// because no checker saw it. The unconditional spelling is a permanent
+// untracked skip wearing a different hat, so it belongs here.
+//
+// Anchored on the `=`/`?`/`:` deliberately: an unanchored `test.skip` text
+// match cannot tell code from prose, and measured against this repo it
+// reports three lines that are a block comment, a test name and a string
+// literal — one of them untracked, i.e. an instantly red CI over nothing.
+//
+// Known limit: the anchor has to be on the skip's own line, so a wrapped
+// `const d =\n  describe.skip;` is missed here. The ESLint rule walks the
+// AST and catches it; this is the weaker of the two checkers by design.
+const ALIAS_RE = /[=?:]\s*(?:test\.describe|test|it|describe)\.(?:skip|todo|fixme)\b(?!\s*[.(])/;
 // Token a passing skip-comment must contain. Either a bare issue number (#42),
 // a fully-qualified GitHub URL, or any of these escape hatches that have a
 // dedicated, separately-tracked policy doc.
@@ -128,7 +144,7 @@ function findUntrackedSkips(file: string): Finding[] {
     // Strip line-comments so we don't match `.skip(` references in
     // documentation about the rule itself.
     const codeOnly = line.replace(/\/\/.*$/, "").replace(/\/\*[\s\S]*?\*\//g, "");
-    if (!SKIP_RE.test(codeOnly) && !X_RE.test(codeOnly)) continue;
+    if (!SKIP_RE.test(codeOnly) && !X_RE.test(codeOnly) && !ALIAS_RE.test(codeOnly)) continue;
 
     // `.skipIf(` is a conditional gate, not a permanent skip — allow.
     if (/\b(?:test|it|describe)\.skipIf\s*\(/.test(codeOnly)) continue;
@@ -173,6 +189,10 @@ describe("no-untracked-skips", () => {
           "leading comment. Either add an issue link or remove the skip:",
           "",
           ...findings.map((f) => `  ${relative(REPO_ROOT, f.file)}:${f.line}  →  ${f.match}`),
+          "",
+          "A skip assigned to a variable (`const d = describe.skip`, or the",
+          "`cond ? describe : describe.skip` form) counts too — aliasing it hides",
+          "it from every checker. Write `describe.skipIf(<condition>)` instead.",
           "",
           'Conditional gates (`.skipIf(...)`) are exempt. See AGENTS.md § "No untracked test skips".',
         ].join("\n")
