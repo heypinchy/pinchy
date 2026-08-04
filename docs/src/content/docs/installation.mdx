@@ -13,6 +13,7 @@ import { Aside } from "@astrojs/starlight/components";
 
 ## System requirements
 
+- A 64-bit x86 (amd64) host — Pinchy's Docker images are built for `linux/amd64` only. Arm64 hosts (Hetzner's CAX line, Raspberry Pi, Apple Silicon servers) are not yet supported and fail to start with `exec format error`; we're tracking Arm64 images in [#1081](https://github.com/heypinchy/pinchy/issues/1081).
 - Docker Engine 20.10+ and Docker Compose v2+
 - 4 GB RAM minimum (for Pinchy + OpenClaw + PostgreSQL)
 - An LLM provider: API key (Anthropic, OpenAI, Google, Ollama Cloud), a [local Ollama instance](/guides/ollama-setup/), or [any OpenAI-compatible endpoint](/guides/llm-providers/#openai-compatible-providers)
