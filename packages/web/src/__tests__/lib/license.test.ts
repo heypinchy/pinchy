@@ -292,12 +292,40 @@ describe("the development subject", () => {
     const token = await createTokenFor(DEV_LICENSE_SUBJECT);
     const status = await validateLicense(token, testPublicKeyPem);
     expect(status.active).toBe(false);
-    expect(status.expired).toBeUndefined();
+    expect(status.features).toEqual([]);
   });
 
-  it("is not reported as expired either, once past exp", async () => {
-    // Otherwise a production install would surface "your license expired" for
-    // the dev subject — an honest-looking hint that the token is recognised.
+  it("is refused without leaking its claims", async () => {
+    // No org, no date. The key did not expire — it was refused — so nothing
+    // may print an expiry for it. The banner's expired copy degrades to the
+    // dateless form, which is exactly what happened.
+    const { validateLicense, DEV_LICENSE_SUBJECT } = await import("@/lib/license");
+    const token = await createTokenFor(DEV_LICENSE_SUBJECT);
+    const status = await validateLicense(token, testPublicKeyPem);
+    expect(status.org).toBeUndefined();
+    expect(status.type).toBeUndefined();
+    expect(status.expiresAt).toBeUndefined();
+    expect(status.maxUsers).toBe(0);
+  });
+
+  it("refuses rather than falling back to community, so access never widens", async () => {
+    // The one that matters. INACTIVE derives the "community" state, and
+    // `effectiveVisibility` widens `restricted` to `all` there — so a refused
+    // key would publish agents somebody deliberately restricted. A license
+    // verdict must never widen access (pricing concept § 5).
+    const { validateLicense, DEV_LICENSE_SUBJECT } = await import("@/lib/license");
+    const { deriveLicenseState } = await import("@/lib/license-state");
+    const { effectiveVisibility } = await import("@/lib/agent-access");
+
+    const token = await createTokenFor(DEV_LICENSE_SUBJECT);
+    const status = await validateLicense(token, testPublicKeyPem);
+    const state = deriveLicenseState(status, new Date());
+
+    expect(state).toBe("expired");
+    expect(effectiveVisibility("restricted", state)).toBe("restricted");
+  });
+
+  it("is refused past its exp too", async () => {
     const { validateLicense, DEV_LICENSE_SUBJECT } = await import("@/lib/license");
     vi.useFakeTimers();
     try {
@@ -305,7 +333,6 @@ describe("the development subject", () => {
       vi.setSystemTime(Date.now() + 1500);
       const status = await validateLicense(token, testPublicKeyPem);
       expect(status.active).toBe(false);
-      expect(status.expired).toBeUndefined();
       expect(status.org).toBeUndefined();
     } finally {
       vi.useRealTimers();

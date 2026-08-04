@@ -250,9 +250,11 @@ describe("the shipped development license", () => {
     const mod = await import("@/lib/enterprise");
     const status = await mod.getLicenseStatus();
     expect(status.active).toBe(false);
-    // Not "expired" either — a production install must not recognise it at all.
-    expect(status.expired).toBeUndefined();
     expect(status.org).toBeUndefined();
+    // The production key never saw this signature, so there is nothing to
+    // refuse: an unknown key is the community case, exactly as it was before
+    // anyone entered one.
+    expect(await mod.getLicenseState()).toBe("community");
   });
 });
 

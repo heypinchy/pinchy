@@ -26,6 +26,23 @@ export interface LicenseStatus {
 
 const INACTIVE: LicenseStatus = { active: false, features: [], ver: 1, maxUsers: 0 };
 
+/**
+ * Authentic signature, refused by policy.
+ *
+ * Distinct from INACTIVE because the difference is load-bearing downstream:
+ * `deriveLicenseState` reads `expired` and answers "expired" rather than
+ * "community", and `effectiveVisibility` widens `restricted` to `all` in the
+ * community state alone. An install that refuses its key must not thereby
+ * publish agents somebody deliberately restricted — a license verdict never
+ * widens access (pricing concept § 5).
+ *
+ * Carries no claims on purpose: the key did not expire, so nothing may print a
+ * date for it. The banner's expired copy degrades to "Your license period
+ * ended. Existing access restrictions remain enforced; management features are
+ * locked." — which is exactly what happened.
+ */
+const REFUSED: LicenseStatus = { active: false, expired: true, features: [], ver: 1, maxUsers: 0 };
+
 const ISSUER = "heypinchy.com";
 
 /**
@@ -85,17 +102,15 @@ function readClaims(payload: jose.JWTPayload): Omit<LicenseStatus, "active" | "e
 }
 
 /**
- * Whether this key may grant anything for these claims at all — checked on the
- * valid and the expired path alike, so an expired dev license cannot leak its
- * subject into the UI as "expired" under the production key either.
+ * Whether this key refuses these claims outright — checked on the valid and
+ * the expired path alike, so a dev license past its exp is refused under the
+ * production key too rather than surfacing its claims.
  */
-function grantable(
+function refused(
   claims: Omit<LicenseStatus, "active" | "expired">,
   options: ValidateLicenseOptions
 ): boolean {
-  if (!claims.features.includes("enterprise")) return false;
-  if (claims.org === DEV_LICENSE_SUBJECT && !options.honourDevSubject) return false;
-  return true;
+  return claims.org === DEV_LICENSE_SUBJECT && !options.honourDevSubject;
 }
 
 /**
@@ -116,7 +131,8 @@ export async function validateLicense(
     });
 
     const claims = readClaims(payload);
-    if (!grantable(claims, options)) return INACTIVE;
+    if (!claims.features.includes("enterprise")) return INACTIVE;
+    if (refused(claims, options)) return REFUSED;
 
     return { active: true, ...claims };
   } catch (err) {
@@ -128,7 +144,8 @@ export async function validateLicense(
       const payload = jose.decodeJwt(token);
       if (payload.iss !== ISSUER) return INACTIVE;
       const claims = readClaims(payload);
-      if (!grantable(claims, options)) return INACTIVE;
+      if (!claims.features.includes("enterprise")) return INACTIVE;
+      if (refused(claims, options)) return REFUSED;
       return { active: false, expired: true, ...claims };
     }
     return INACTIVE;
