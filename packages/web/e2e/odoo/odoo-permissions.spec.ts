@@ -81,10 +81,17 @@ test.describe.serial("Odoo Permission Setup", () => {
     // route (POST /api/integrations/[connectionId]/sync) awaits its DB write
     // of `data.models` before responding, so once the request resolves the
     // models are already committed — there is nothing left to wait for.
-    await fetch(`${PINCHY_URL}/api/integrations/${connectionId}/sync`, {
+    const syncRes = await fetch(`${PINCHY_URL}/api/integrations/${connectionId}/sync`, {
       method: "POST",
       headers: { Cookie: cookie, Origin: PINCHY_URL },
     });
+    // A non-ok sync stays tolerated (the wizard may already have synced), but
+    // it is the one way the "models are committed" claim above does not hold —
+    // so say so instead of letting it surface later as an unexplained empty
+    // model list.
+    if (!syncRes.ok) {
+      console.warn(`[odoo-permissions] explicit sync returned ${String(syncRes.status)}`);
+    }
 
     // Ensure we have a shared (non-personal) agent
     agentId = await ensureSharedAgent(cookie);

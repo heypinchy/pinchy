@@ -1,5 +1,6 @@
 import { createCipheriv, randomBytes, randomUUID } from "crypto";
 import { stackDbUrl } from "../shared/stack-db";
+import { settleOpenClawBestEffort } from "../shared/dispatch-probe";
 
 const PINCHY_URL = process.env.PINCHY_URL || "http://localhost:7777";
 const GMAIL_MOCK_URL = process.env.GMAIL_MOCK_URL || "http://localhost:9004";
@@ -78,7 +79,10 @@ export async function seedSetup(): Promise<void> {
     throw new Error(`Setup failed: ${setupRes.status} ${text}`);
   }
 
-  await new Promise((r) => setTimeout(r, 2000));
+  // No wait needed here: POST /api/setup awaits createAdmin() and
+  // regenerateOpenClawConfig() before responding, so setupRes.ok already
+  // guarantees those writes landed. The settings insert below is an
+  // independent write with nothing async left to wait for.
 
   // Seed provider config (needed for agent creation). Use anthropic with a fake
   // key: the first describe block only checks plugin-load + permissions (no chat),
@@ -97,7 +101,14 @@ export async function seedSetup(): Promise<void> {
   `;
 
   await sql.end();
-  await new Promise((r) => setTimeout(r, 3000));
+
+  // Same reasoning as web/odoo/telegram seedSetup: /api/setup's regenerate
+  // hands the config to a fire-and-forget pushConfigInBackground(), and
+  // OpenClaw stays `connected` for the whole 33–53 s a rate-limited
+  // config.apply can be parked — so `configPushesPending === 0` is the
+  // signal, not `connected`. Best-effort; the email specs re-gate (and
+  // additionally drain the config.apply rate-limit window) before dispatch.
+  await settleOpenClawBestEffort(() => fetch(`${PINCHY_URL}/api/health/openclaw`), "[email-setup]");
   console.log(`[email-setup] Admin created: ${_adminEmail}`);
 }
 

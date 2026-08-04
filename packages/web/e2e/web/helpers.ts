@@ -1,5 +1,6 @@
 const PINCHY_URL = process.env.PINCHY_URL || "http://localhost:7777";
 import { stackDbUrl } from "../shared/stack-db";
+import { settleOpenClawBestEffort } from "../shared/dispatch-probe";
 const BRAVE_MOCK_URL = process.env.BRAVE_MOCK_URL || "http://localhost:9003";
 
 // Admin credentials — set by seedSetup, used by login
@@ -69,16 +70,16 @@ export async function seedSetup(): Promise<void> {
 
   await sql.end();
 
-  // /api/setup's regenerateOpenClawConfig() pushes the new config via a
-  // fire-and-forget pushConfigInBackground() (write.ts), so OpenClaw's
-  // reconnect after the setup-triggered restart can still be in flight once
-  // this function returns. Poll the same public health check web-search.spec
-  // uses downstream, rather than guessing a fixed delay — some seedSetup
-  // callers (e.g. odoo-templates/odoo-wizard/odoo-nested-lines specs) have no
-  // OpenClaw wait of their own after this call. Best-effort: like the sleep
-  // it replaces, a timeout here does not fail seedSetup — later API calls
-  // and their own waits still absorb any remaining latency.
-  await waitForOpenClawConnected("", 60000);
+  // /api/setup's regenerateOpenClawConfig() hands the new config to a
+  // fire-and-forget pushConfigInBackground() (write.ts), so the config change
+  // can still be in flight once /api/setup has already answered 201. Gate on
+  // the settled predicate (`connected` AND `configPushesPending === 0`, held
+  // for a window) rather than on `connected` alone: OpenClaw stays connected
+  // for the whole 33–53 s a rate-limited config.apply can be parked, so a
+  // connection-only poll would return on its first iteration and prove
+  // nothing. Best-effort like the sleep it replaces — web-search.spec.ts, the
+  // only caller, re-gates with waitForOpenClawStable before it dispatches.
+  await settleOpenClawBestEffort(() => fetch(`${PINCHY_URL}/api/health/openclaw`), "[web-setup]");
   console.log(`[web-setup] Admin created: ${_adminEmail}`);
 }
 

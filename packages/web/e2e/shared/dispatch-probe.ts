@@ -131,6 +131,54 @@ export async function waitForOpenClawStable(
 }
 
 /**
+ * Best-effort variant of {@link waitForOpenClawStable} for setup/retry paths
+ * that used to sit on a fixed sleep: returns as soon as OpenClaw is stable,
+ * and on timeout logs and returns `false` instead of throwing.
+ *
+ * Two reasons it exists rather than each helper polling `connected` itself:
+ *
+ *  - **`connected` alone is the wrong predicate here.** The condition these
+ *    call sites are actually waiting on is "the config push that the request
+ *    just fired has landed in OC's runtime", and `pushConfigInBackground` is
+ *    fire-and-forget: OC stays `connected: true` for the entire 33–53 s a
+ *    rate-limited `config.apply` can be parked (see `push-state.ts`). A
+ *    connection-only poll therefore returns on its FIRST iteration and waits
+ *    for nothing — strictly weaker than the sleep it would replace. Only
+ *    `configPushesPending === 0`, held for a contiguous window, is the real
+ *    signal (AGENTS.md § "No Untracked Sleeps In E2E": the poll's exit
+ *    condition must be the condition the assertion depends on).
+ *  - **Timing out must leave a trace.** The sleeps these replace were lenient
+ *    by construction and every caller has its own gate before it dispatches,
+ *    so failing setup here would turn a slow stack red for the wrong reason.
+ *    But a silent 120 s of nothing is how a stability gate becomes decoration
+ *    — hence the `console.warn` rather than a swallowed `catch`.
+ */
+export async function settleOpenClawBestEffort(
+  fetchHealth: Parameters<typeof waitForOpenClawStable>[0],
+  label: string,
+  opts: { deadlineMs?: number; stableForMs?: number } = {}
+): Promise<boolean> {
+  // 5 s stable window (not the 30 s dispatch-probe default): these call sites
+  // gate a setup step, not an imminent tool dispatch, and the pair of sleeps
+  // this replaces totalled 5 s — so the common path costs the same wall clock
+  // it always did, while now proving the condition instead of guessing it.
+  const deadlineMs = opts.deadlineMs ?? 120_000;
+  const stableForMs = opts.stableForMs ?? 5_000;
+  const startedAt = Date.now();
+  try {
+    await waitForOpenClawStable(fetchHealth, { deadlineMs, stableForMs });
+    console.log(`${label} OpenClaw settled after ${String(Date.now() - startedAt)}ms`);
+    return true;
+  } catch (err) {
+    console.warn(
+      `${label} OpenClaw did not settle within ${String(deadlineMs)}ms — continuing anyway ` +
+        `(each suite re-gates before it dispatches): ${String(err)}`
+    );
+    return false;
+  }
+}
+
+/**
  * Poll `GET /api/health/openclaw?agentId=<id>` until the response's
  * `agentDispatchable` flag is true — i.e. OC's runtime `agents.list`
  * currently contains the requested id.

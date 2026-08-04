@@ -10,6 +10,7 @@
 import { execSync } from "child_process";
 import { WebSocket } from "ws";
 import { stackDbUrl } from "../shared/stack-db";
+import { settleOpenClawBestEffort } from "../shared/dispatch-probe";
 
 const PINCHY_URL = process.env.PINCHY_URL || "http://localhost:7777";
 const MOCK_TELEGRAM_URL = process.env.MOCK_TELEGRAM_URL || "http://localhost:9001";
@@ -449,8 +450,10 @@ export async function seedSetup(): Promise<void> {
     throw new Error(`Setup failed: ${setupRes.status} ${text}`);
   }
 
-  // Wait for setup to complete
-  await new Promise((r) => setTimeout(r, 2000));
+  // No wait needed here: POST /api/setup awaits createAdmin() and
+  // regenerateOpenClawConfig() before responding, so setupRes.ok already
+  // guarantees those writes landed. The settings insert below is an
+  // independent write with nothing async left to wait for.
 
   // Seed provider config directly in DB (encrypted=false since key is fake).
   // OpenClaw 2026.3.24 runs model prewarm before starting channels — a fake
@@ -468,7 +471,16 @@ export async function seedSetup(): Promise<void> {
   `;
 
   await sql.end();
-  await new Promise((r) => setTimeout(r, 3000));
+
+  // Same reasoning as web/odoo/email seedSetup: /api/setup's regenerate hands
+  // the config to a fire-and-forget pushConfigInBackground(), and OpenClaw
+  // stays `connected` for the whole 33–53 s a rate-limited config.apply can
+  // be parked — so `configPushesPending === 0` is the signal, not `connected`.
+  // Best-effort; every Telegram spec re-gates before it dispatches.
+  await settleOpenClawBestEffort(
+    () => fetch(`${PINCHY_URL}/api/health/openclaw`),
+    "[telegram-setup]"
+  );
 }
 
 // Admin credentials — set by seedSetup, used by login
@@ -942,27 +954,22 @@ export async function sendWebChatMessage(opts: {
   let created = await attempt();
   if (!created) {
     // Cold-start / reconnect churn (a config.apply from connectBot drops the
-    // openclaw-node bridge). Poll for OpenClaw to report `connected` again
-    // before retrying, instead of a fixed backoff: it returns as soon as the
-    // bridge is back (no wasted wait on a fast host) and can wait longer than
-    // a fixed 5s when reconnect is slow. `attempt()` below still owns the
-    // real pass/fail check (its own `thinking`-frame wait with `timeout`), so
-    // a poll timeout here just means the retry starts against a bridge that
-    // may still be down — the same fallback behavior as the sleep it
-    // replaces, never a weaker assertion.
-    const reconnectDeadline = Date.now() + 15000;
-    while (Date.now() < reconnectDeadline) {
-      try {
-        const res = await fetch(`${PINCHY_URL}/api/health/openclaw`);
-        if (res.ok) {
-          const body = (await res.json()) as { connected?: boolean };
-          if (body.connected) break;
-        }
-      } catch {
-        // not ready yet
-      }
-      await new Promise((r) => setTimeout(r, 500));
-    }
+    // openclaw-node bridge). Wait for OpenClaw to settle before retrying,
+    // instead of a fixed backoff: it returns as soon as the bridge is usable
+    // (no wasted wait on a fast host) and can wait longer than a fixed 5 s
+    // when reconnect is slow. The predicate has to be the settled one, not
+    // bare `connected` — connectBot's config.apply is exactly the parked-push
+    // case where OC reports `connected: true` while the change it just made
+    // is still not in its runtime. `attempt()` below still owns the real
+    // pass/fail check (its own `thinking`-frame wait with `timeout`), so a
+    // timeout here only means the retry starts against a bridge that may
+    // still be down — same fallback as the sleep it replaces, never a weaker
+    // assertion.
+    await settleOpenClawBestEffort(
+      () => fetch(`${PINCHY_URL}/api/health/openclaw`),
+      "[telegram-webchat-retry]",
+      { deadlineMs: 30_000, stableForMs: 2_000 }
+    );
     created = await attempt();
   }
   if (!created) {
