@@ -799,7 +799,7 @@ The request must arrive over HTTPS (`X-Forwarded-Proto: https`).
 
 **Errors:**
 
-- `400` — the request did not arrive over HTTPS, or no hostname could be determined
+- `400` — the request did not arrive over HTTPS, no hostname could be determined, or the hostname is not a value a browser can send as `Host` (rejected before it is stored)
 - `401` — not authenticated
 - `403` — not an admin
 

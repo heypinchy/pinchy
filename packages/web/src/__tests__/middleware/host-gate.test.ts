@@ -163,6 +163,28 @@ describe("applyDomainLockGate", () => {
     expect(res._statusCode).toBeUndefined();
   });
 
+  // Defense in depth: even though the write side now rejects anything that
+  // isn't a valid domain (isValidDomain), a row written before that guard
+  // existed — or edited directly in the database — must not turn into stored
+  // markup on a page served to every unauthenticated visitor with the wrong
+  // Host header.
+  it("escapes an unsafe locked domain in the Access Denied page", async () => {
+    vi.mocked(getCachedDomain).mockReturnValue('a"><script>alert(1)</script>');
+    const req = makeReq({
+      method: "GET",
+      url: "/dashboard",
+      host: "evil.example.com",
+      accept: "text/html,application/xhtml+xml",
+    });
+    const res = makeRes();
+
+    expect(await applyDomainLockGate(req, res)).toBe(true);
+    expect(res._statusCode).toBe(403);
+    expect(res._body).not.toContain("<script>alert(1)</script>");
+    expect(res._body).not.toContain('a">');
+    expect(res._body).toContain("&lt;script&gt;");
+  });
+
   it("answers before the audit write settles", async () => {
     // A blocked caller must not wait on the DB — and an audit failure must not
     // turn the 403 into a hung request or a 500.

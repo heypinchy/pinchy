@@ -4,6 +4,7 @@ import { getSetting } from "@/lib/settings";
 import { setDomainAndRefreshCache, deleteDomainAndRefreshCache } from "@/lib/domain";
 import { appendAuditLog } from "@/lib/audit";
 import { readRequestHostFromHeaders } from "@/server/forwarded-host";
+import { isValidLockableHost } from "@/lib/domain-validation";
 
 export async function POST(req: Request) {
   const session = await requireAdmin();
@@ -28,6 +29,15 @@ export async function POST(req: Request) {
       { error: "Could not determine hostname from request." },
       { status: 400 }
     );
+  }
+
+  // The resolved host is client-influenced (X-Forwarded-Host, unless a
+  // trusted proxy strips it before we see it) and gets stored verbatim as the
+  // locked domain — then rendered into the Access Denied page every
+  // unauthenticated visitor with a mismatched Host header is served. Reject
+  // anything that isn't a plausible Host value before it is ever persisted.
+  if (!isValidLockableHost(domain)) {
+    return NextResponse.json({ error: `"${domain}" is not a valid domain name.` }, { status: 400 });
   }
 
   const previousDomain = await getSetting("domain");

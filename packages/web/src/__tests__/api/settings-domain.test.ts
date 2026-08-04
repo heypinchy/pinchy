@@ -304,3 +304,59 @@ describe("domain lock stores a host that can actually match", () => {
     expect(mockSetDomainAndRefreshCache).toHaveBeenCalledWith("pinchy.example.com");
   });
 });
+
+// The resolved host is client-influenced (X-Forwarded-Host is attacker
+// controlled unless a trusted proxy strips it) and, once stored, is rendered
+// unescaped into the Access Denied page every unauthenticated visitor with a
+// mismatched Host header sees. A value that fails isValidLockableHost must
+// never reach setDomainAndRefreshCache — for injection, and because storing a
+// name no browser can literally send is a lockout too.
+//
+// This is deliberately NOT the stricter `isValidDomain` used for an agent's
+// `pinchy-web` allowed/excludedDomains (which forbids ports and bare
+// single-label hosts like "localhost" — appropriate there because it bounds
+// what an agent may browse). A locked domain is a Host value, and a real Host
+// value legitimately carries a port and can be a bare host: the integration
+// suite locks to "localhost:7779" (its own baseURL) precisely so subsequent
+// browser requests keep matching, and a self-hosted install can sit behind a
+// reverse proxy terminating on a non-default port.
+describe("domain lock rejects hostnames that are not valid Host values", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockRequireAdmin.mockResolvedValue(adminSession);
+    mockGetSetting.mockResolvedValue(null);
+  });
+
+  it.each([
+    ['a"><script>alert(1)</script>', "embedded markup"],
+    ["evil example.com", "embedded space"],
+    ["evil.com:1;rm -rf /", "port/shell injection"],
+    ["evil.com/path", "path suffix"],
+    ["evil.com@attacker.com", "userinfo injection"],
+    ["evil.com#frag", "fragment suffix"],
+  ])("rejects %s (%s)", async (host) => {
+    const response = await POST(
+      makeRequest("POST", {
+        "x-forwarded-host": host,
+        "x-forwarded-proto": "https",
+      })
+    );
+
+    expect(response.status).toBe(400);
+    const data = await response.json();
+    expect(data.error).toMatch(/domain/i);
+    expect(mockSetDomainAndRefreshCache).not.toHaveBeenCalled();
+  });
+
+  it("accepts a bare host with a non-default port, matching what a real reverse-proxy Host header can carry", async () => {
+    const response = await POST(
+      makeRequest("POST", {
+        "x-forwarded-host": "localhost:7779",
+        "x-forwarded-proto": "https",
+      })
+    );
+
+    expect(response.status).toBe(200);
+    expect(mockSetDomainAndRefreshCache).toHaveBeenCalledWith("localhost:7779");
+  });
+});

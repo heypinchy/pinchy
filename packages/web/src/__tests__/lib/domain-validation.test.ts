@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   isValidDomain,
+  isValidLockableHost,
   validatePinchyWebConfig,
   pluginConfigSchema,
 } from "@/lib/domain-validation";
@@ -24,6 +25,36 @@ describe("isValidDomain", () => {
     " example.com",
   ])("rejects %s", (d) => {
     expect(isValidDomain(d)).toBe(false);
+  });
+});
+
+describe("isValidLockableHost", () => {
+  it.each([
+    "example.com",
+    "pinchy.example.com",
+    "localhost",
+    "localhost:7779",
+    "pinchy.example.com:8443",
+    "EXAMPLE.COM",
+    "xn--bcher-kva.example",
+  ])("accepts %s", (h) => {
+    expect(isValidLockableHost(h)).toBe(true);
+  });
+
+  it.each([
+    "",
+    " pinchy.example.com",
+    "pinchy.example.com ",
+    "evil example.com",
+    'a"><script>alert(1)</script>',
+    "evil.com:1;rm -rf /",
+    "evil.com/path",
+    "evil.com@attacker.com",
+    "evil.com#frag",
+    "evil.com?x=1",
+    "evil.com\\attacker.com",
+  ])("rejects %s", (h) => {
+    expect(isValidLockableHost(h)).toBe(false);
   });
 });
 

@@ -11,6 +11,42 @@ export function isValidDomain(domain: string): boolean {
 }
 
 /**
+ * Is `host` safe to store as the domain lock's target?
+ *
+ * Deliberately more permissive than `isValidDomain` above, and for a
+ * different reason: a locked domain is the request's own `Host`/
+ * `X-Forwarded-Host` value, not a public production domain an agent is
+ * allowed to browse. A real Host value legitimately carries a port (a
+ * reverse proxy terminating on a non-default port, or the integration
+ * suite locking to its own "localhost:7779" baseURL so subsequent
+ * requests keep matching) and can be a bare single-label host. Loosening
+ * `isValidDomain` itself to accept those would also loosen the
+ * `pinchy-web` allowedDomains/excludedDomains allow-list, which has a
+ * different, tighter, SSRF-relevant job.
+ *
+ * What still MUST be rejected: anything that isn't a bare `Host` value —
+ * markup, whitespace, a path/userinfo/query/fragment suffix, or any
+ * other character `Host` cannot carry. That combination (injection into
+ * the Access Denied page, plus storing a value the request that "proved"
+ * it can never send verbatim) is exactly the risk this function exists to
+ * close.
+ *
+ * Round-tripping through `URL` is the check: parse `https://<host>` and
+ * require the result's `.host` to equal the input, case-insensitively. A
+ * mismatch means the input carried something `Host` cannot (a path, an
+ * `@`, a `#`, a `?`, or characters the URL parser silently dropped/moved),
+ * which is precisely what must not be persisted verbatim.
+ */
+export function isValidLockableHost(host: string): boolean {
+  if (!host) return false;
+  try {
+    return new URL(`https://${host}`).host === host.toLowerCase();
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Zod schema for an agent's pluginConfig column. Mirrors the AgentPluginConfig
  * type in @/db/schema and is the shape-of-truth for both POST and PATCH agent
  * routes. Domain validity inside `pinchy-web` is layered on top via

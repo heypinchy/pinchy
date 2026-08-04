@@ -81,7 +81,27 @@ export function shouldAuditHostBlock(pathname: string | null): boolean {
   return !!pathname && pathname.startsWith("/api/");
 }
 
+// `domain` is read from `getCachedDomain()`, ultimately client-influenced
+// (the value POST /api/settings/domain stores is the request's own resolved
+// Host). `POST /api/settings/domain` now rejects anything that isn't a valid
+// domain name before it is persisted, but a row written before that guard
+// existed — or edited directly in the database — must not turn into stored
+// markup on a page served to every unauthenticated visitor with a mismatched
+// Host header. Escape it here too, independent of the write-side guard.
+const HTML_ESCAPES: Record<string, string> = {
+  "&": "&amp;",
+  "<": "&lt;",
+  ">": "&gt;",
+  '"': "&quot;",
+  "'": "&#39;",
+};
+
+function escapeHtml(value: string): string {
+  return value.replace(/[&<>"']/g, (char) => HTML_ESCAPES[char]);
+}
+
 function accessDeniedPage(domain: string | null): string {
+  const safeDomain = domain ? escapeHtml(domain) : null;
   return `<!DOCTYPE html>
 <html lang="en">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Access Denied — Pinchy</title>
@@ -90,7 +110,7 @@ function accessDeniedPage(domain: string | null): string {
 p{color:#a3a3a3;font-size:.875rem;line-height:1.5;margin:0 0 1rem}a{color:#f59e0b;text-decoration:none}a:hover{text-decoration:underline}</style></head>
 <body><div class="card"><div class="icon">🔒</div><h1>Access Denied</h1>
 <p>This Pinchy instance is locked to a specific domain. You're accessing it from an address that isn't allowed.</p>
-${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
+${safeDomain ? `<p><a href="https://${safeDomain}">Go to ${safeDomain} →</a></p>` : ""}
 </div></body></html>`;
 }
 
