@@ -1,0 +1,129 @@
+---
+title: Environment Variables
+description: Every variable Pinchy's docker-compose.yml reads — version pin, port binding, secrets, licence key, and resource limits — with its default and what happens if you leave it unset.
+---
+
+Everything Pinchy needs to run lives in one file next to your `docker-compose.yml`: a plain `.env`. This page lists every variable that file can contain, what it does, and what happens when you leave it out.
+
+Only one is mandatory. Pinchy generates its own secrets on first start and persists them in Docker volumes, so a working install is two lines long:
+
+```bash
+# .env
+PINCHY_VERSION=%%PINCHY_VERSION%%
+```
+
+:::note
+This page is checked against the shipped `docker-compose.yml` on every pull request — a variable it expands that isn't listed here, a variable listed here that it doesn't expand, and a default stated wrongly all fail CI. If something below disagrees with your Compose file, the Compose file is right and we have a bug.
+:::
+
+## Required
+
+| Variable         | Default | What it does                                                                                                                                                   |
+| ---------------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PINCHY_VERSION` | none    | The image tag for all Pinchy containers, e.g. `%%PINCHY_VERSION%%`. Compose **refuses to start** without it, so the stack you run today is the one you pinned. |
+
+Pinning is deliberate: an unpinned stack silently changes under you on the next `docker compose pull`. See [Upgrading](/guides/upgrading/) for moving between versions.
+
+## Network
+
+| Variable      | Default          | What it does                                                                                |
+| ------------- | ---------------- | ------------------------------------------------------------------------------------------- |
+| `PINCHY_PORT` | `127.0.0.1:7777` | Where the web UI binds **on the host**. Pinchy always listens on 7777 inside the container. |
+
+Accepted forms are `HOST_PORT` (`3000`) or `HOST_IP:HOST_PORT` (`0.0.0.0:80`). Do not append the container port — Compose does that.
+
+The default binds to localhost only, which means a fresh install is not reachable from the internet even if the host has a public IP. Change it only when something else terminates TLS in front of Pinchy:
+
+```bash
+# Reachable only from this machine (the default)
+PINCHY_PORT=127.0.0.1:7777
+
+# All interfaces — only behind a reverse proxy
+PINCHY_PORT=0.0.0.0:80
+```
+
+For a public deployment, read [VPS Deployment](/guides/vps-deployment/) and [HTTPS & Domain Lock](/guides/domain-lock/) before widening this.
+
+## Secrets
+
+Pinchy generates each of these on first start and persists it in the `pinchy-secrets` volume, so you can ignore all of them and still have a secure install. Set them explicitly when you want to own the credential — for backup, rotation, or restoring an install onto a new host.
+
+| Variable             | Default        | What it does                                                                                                |
+| -------------------- | -------------- | ----------------------------------------------------------------------------------------------------------- |
+| `DB_PASSWORD`        | `pinchy_dev`   | Password for the PostgreSQL `pinchy` user. See the note below — the development default never stays active. |
+| `BETTER_AUTH_SECRET` | auto-generated | Signs login sessions. Generate with `openssl rand -hex 32`.                                                 |
+| `ENCRYPTION_KEY`     | auto-generated | Encrypts provider API keys at rest with AES-256-GCM. 64 hex characters.                                     |
+| `AUDIT_HMAC_SECRET`  | auto-generated | Signs audit-trail entries with HMAC-SHA256. **Not forwarded by the shipped Compose file** — see below.      |
+
+**`DB_PASSWORD`** is the one whose default deserves a second look. `docker-compose.yml` falls back to the literal `pinchy_dev`, which is fine for a laptop and unacceptable in production — so Pinchy does not leave it there. On the first production start the entrypoint generates a real password, applies it to PostgreSQL, and persists it in the `pinchy-secrets` volume. Set the variable yourself and your value wins, applied on the next restart even if the database still runs on an older one.
+
+**`AUDIT_HMAC_SECRET`** is read by the application, but the `docker-compose.yml` we ship does **not** pass it into the container. Putting it in `.env` therefore has no effect on a standard install: Pinchy keeps using the key it generated into the `pinchy-secrets` volume. Forwarding it needs an override file:
+
+```yaml
+# docker-compose.override.yml
+services:
+  pinchy:
+    environment:
+      - AUDIT_HMAC_SECRET=${AUDIT_HMAC_SECRET:-}
+```
+
+Do this only on a **fresh** install. Existing audit rows are signed with the generated key, and swapping the key mid-life breaks the hash chain that [audit trail verification](/concepts/audit-trail-verification/) checks.
+
+:::caution
+Losing `ENCRYPTION_KEY` means losing every stored provider API key — they cannot be recovered, only re-entered. If you back up anything, back up the `pinchy-secrets` volume.
+:::
+
+## Licence
+
+| Variable                | Default | What it does                                                                                                              |
+| ----------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `PINCHY_ENTERPRISE_KEY` | none    | Activates Enterprise features: groups, agent access control, and the usage dashboard's per-user breakdown and CSV export. |
+
+You can enter the same key in **Settings → License** instead — the environment variable exists so an unattended deployment doesn't need a human in the UI. See [Enterprise Setup](/guides/enterprise-setup/).
+
+## Resource limits
+
+Every container carries a memory and CPU cap so one runaway agent cannot take the host down with it. The defaults suit a 4 GB VPS.
+
+| Variable             | Default | What it does                                                      |
+| -------------------- | ------- | ----------------------------------------------------------------- |
+| `PINCHY_MEM_LIMIT`   | `1g`    | Memory for the `pinchy` container (web UI, API, WebSocket bridge) |
+| `PINCHY_CPUS`        | `1.5`   | CPU cores for `pinchy`                                            |
+| `OPENCLAW_MEM_LIMIT` | `2g`    | Memory for the `openclaw` container (agent runtime, model calls)  |
+| `OPENCLAW_CPUS`      | `2`     | CPU cores for `openclaw`                                          |
+| `DB_MEM_LIMIT`       | `1g`    | Memory for the `db` container (PostgreSQL 17 + pgvector)          |
+| `DB_CPUS`            | `1`     | CPU cores for `db`                                                |
+
+Lowering `OPENCLAW_MEM_LIMIT` too far gets the gateway OOM-killed mid-conversation, which looks like a dropped chat rather than an out-of-memory error. [Customizing Your Deployment](/guides/customizing-deployment/) has sizing tables, including what the knowledge base needs while it indexes Office documents.
+
+## Anything else
+
+The list above is everything `docker-compose.yml` reads. Variables the containers use internally — `DATABASE_URL`, `OPENCLAW_WS_URL` — are assembled by Compose and are not meant to be set in `.env`; to change one anyway, use an override file rather than editing the Compose file you downloaded, so an upgrade doesn't discard your change:
+
+```yaml
+# docker-compose.override.yml
+services:
+  pinchy:
+    environment:
+      - SOME_VARIABLE=value
+```
+
+Compose merges `docker-compose.override.yml` automatically. [Customizing Your Deployment](/guides/customizing-deployment/) covers the recipes we support and the ones we don't.
+
+## Where the data lives
+
+Variables configure the stack; volumes hold its state. These survive `docker compose down` and are what a backup must cover.
+
+| Volume                | Purpose                                                                                  |
+| --------------------- | ---------------------------------------------------------------------------------------- |
+| `pgdata`              | PostgreSQL data — users, agents, conversations, the audit log                            |
+| `pinchy-secrets`      | Auto-generated secrets. **Back this up**, or you lose access to encrypted provider keys. |
+| `openclaw-config`     | Shared OpenClaw configuration                                                            |
+| `pinchy-workspaces`   | Agent workspaces (`SOUL.md`, `AGENTS.md`, uploads, workbench)                            |
+| `pinchy-data`         | The knowledge-base corpus, mounted read-only into the web tier                           |
+| `openclaw-extensions` | Pinchy's plugins for OpenClaw                                                            |
+| `pinchy-pdf-cache`    | Cached PDF text extractions — safe to delete, re-derived on demand                       |
+| `pinchy-kb-artifacts` | Converted Office-document PDFs — safe to delete, re-derived on demand                    |
+| `openclaw-secrets`    | **tmpfs**, runtime only. Cleared on restart and rebuilt from the database.               |
+
+[Installation](/installation/) shows the exact mount paths per container.

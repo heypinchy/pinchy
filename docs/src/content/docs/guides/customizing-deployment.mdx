@@ -110,7 +110,7 @@ Your `docker-compose.override.yml` survives upgrades unchanged. However, if a ne
 
 ## Resource limits and health checks
 
-Pinchy's `docker-compose.yml` caps memory and CPU for all three containers, and gives `pinchy` and `db` HTTP/TCP health checks so Docker can tell a wedged container from a healthy one. All six limits are overridable via `.env` — you never need to touch `docker-compose.yml` itself.
+Pinchy's `docker-compose.yml` caps memory and CPU for all three containers, and gives `pinchy` and `db` HTTP/TCP health checks so Docker can tell a wedged container from a healthy one. All six limits are overridable via `.env` — you never need to touch `docker-compose.yml` itself. For every other variable `.env` accepts, see the [Environment Variables reference](/reference/environment-variables/).
 
 | Variable             | Default | Caps                                                              |
 | -------------------- | ------- | ----------------------------------------------------------------- |

@@ -50,6 +50,8 @@ Only port **7777** is exposed to the host. OpenClaw and PostgreSQL are only reac
 
 Almost no configuration is needed to get started: session key, encryption key, HMAC signing key, and the database password are auto-generated on first start and persisted in Docker volumes so they survive restarts. The one value you set yourself is `PINCHY_VERSION` — the Compose file refuses to start without a pinned version. See the [Getting Started](/getting-started/) guide.
 
+For the complete list — every variable, its default, and what happens when you leave it unset — see the [Environment Variables reference](/reference/environment-variables/).
+
 #### Optional: production hardening
 
 For production deployments, extend the `.env` file to pin your own secrets instead of relying on auto-generated ones:
@@ -64,9 +66,6 @@ BETTER_AUTH_SECRET=your-random-secret
 # Encryption key for API keys — 64 hex characters (auto-generated if omitted)
 ENCRYPTION_KEY=
 
-# HMAC secret for audit trail signing (auto-generated if omitted)
-AUDIT_HMAC_SECRET=
-
 # Enterprise license key (optional — enables Groups, agent access control, basic RBAC)
 PINCHY_ENTERPRISE_KEY=
 ```
@@ -77,7 +76,7 @@ PINCHY_ENTERPRISE_KEY=
 
 **`ENCRYPTION_KEY`** — Used to encrypt provider API keys at rest (AES-256-GCM). Auto-generated and persisted in the `pinchy-secrets` volume if omitted. For production, set explicitly with `openssl rand -hex 32`.
 
-**`AUDIT_HMAC_SECRET`** — Used to sign audit trail entries with HMAC-SHA256. Auto-generated and persisted in the `pinchy-secrets` volume if omitted. Set explicitly if you need consistent signatures across deployments.
+**`AUDIT_HMAC_SECRET`** — Used to sign audit trail entries with HMAC-SHA256. Auto-generated and persisted in the `pinchy-secrets` volume. Note that the Compose file above does **not** forward this one, so setting it in `.env` has no effect without an override file — see [Environment Variables](/reference/environment-variables/#secrets).
 
 **`PINCHY_ENTERPRISE_KEY`** — License key for enterprise features (Groups, agent access control, basic RBAC — granular RBAC with custom roles is planned, [#527](https://github.com/heypinchy/pinchy/issues/527)). Optional — can also be entered via **Settings → License** in the UI. See [Enterprise Setup](/guides/enterprise-setup/) for details.
 
@@ -94,6 +93,7 @@ Docker volumes ensure data survives container restarts:
 | `pinchy-secrets`      | `/app/secrets` (Pinchy)                                                         | Auto-generated encryption and HMAC keys                                                          |
 | `openclaw-secrets`    | `/openclaw-secrets` (both)                                                      | **tmpfs** — runtime-only SecretRef bundle. Cleared on container restart and rebuilt from the DB. |
 | `pinchy-pdf-cache`    | `/var/cache/pinchy-files` (Pinchy)                                              | Cached PDF-text extractions so repeated reads of the same upload skip re-parsing                 |
+| `pinchy-kb-artifacts` | `/var/cache/pinchy-kb-artifacts` (Pinchy)                                       | Converted Office-document PDFs. Safe to delete — every artifact is re-derived from its source.   |
 | `openclaw-extensions` | `/openclaw-extensions` (Pinchy), `/root/.openclaw/extensions` (OpenClaw)        | Pinchy plugins for OpenClaw                                                                      |
 
 ### Port configuration

@@ -1,0 +1,99 @@
+---
+title: Set Up Email Automations
+description: Let an agent act on incoming mail on its own — a trigger that decides which mail fires, an instruction that says what to do, and a human-gated switch that turns it on.
+---
+
+An automation is a standing rule: when mail matching a **trigger** arrives, the agent carries out an **instruction** on it, without anyone opening a chat. Pinchy checks the connected mailboxes every 15 minutes and runs the instruction once per new matching message.
+
+This is the point where an agent stops being something you talk to and becomes something that acts while you sleep — so the whole design is built around one rule: **an automation is proposed, never self-activated.** Every new workflow is created switched off. Nothing runs until a person reads it and enables it.
+
+## Before you start
+
+You need three things, in this order:
+
+1. **A connected mailbox.** Gmail, Microsoft 365, or plain IMAP — see [Connect Email](/guides/connect-email/).
+2. **A shared agent** to own the workflow. Create one from the **Email** template, or any agent you want to do the work.
+3. **Email permissions on that agent.** At minimum **Read messages**, in **Agent Settings → Permissions**. Add **Create drafts** or **Send messages** only if the instruction needs them — an automation runs with exactly the agent's permissions and cannot exceed them.
+
+The mailbox picker only offers mailboxes this agent is allowed to read, so a workflow can never point at a mailbox the agent cannot open. If the picker is empty, the agent is missing the email connection or the read permission.
+
+## Create the automation
+
+Open the agent, go to **Agent Settings → Automations**, and click **New automation**.
+
+### Name
+
+A short label for the list — "Supplier invoices to Odoo", not a description of the logic.
+
+### Instruction
+
+What the agent should do with each matching mail, in plain words:
+
+> Draft a supplier bill in Odoo from the attached invoice, then reply to the sender confirming we received it.
+
+Write it as if you were handing the mail to a colleague. The agent runs it with its own tools and permissions, so an instruction that asks for something the agent may not do simply fails — it does not escalate.
+
+### Trigger
+
+Filters that narrow which mail fires the workflow. Every field is optional:
+
+| Field                | Matches                                |
+| -------------------- | -------------------------------------- |
+| Sender addresses     | Mail from any of these addresses       |
+| Recipient domain     | Mail addressed to this domain          |
+| Words in the subject | Subjects containing these words        |
+| Has attachment       | Whether the mail carries an attachment |
+| Attachment type      | Attachments of this type, e.g. PDF     |
+| Folder               | Mail in this folder                    |
+
+Filled-in fields are combined with **AND**: mail must match every one of them. Leave them all blank and the workflow watches the entire mailbox — which is occasionally what you want and usually not.
+
+:::caution[Start narrow]
+A trigger that is too broad is the expensive mistake here, because every match spends a model call. Begin with the tightest filter that still catches your cases — a sender address and an attachment type — and widen it after you have seen what it actually matches.
+:::
+
+### Mailboxes
+
+Which connected mailboxes to watch. One workflow can watch several.
+
+### Look back (days)
+
+How far back each pass re-checks for mail it may have missed, so a mailbox outage or a restart does not silently drop messages. The default is **14** days; the maximum is 365.
+
+Pinchy tracks exactly which messages it has already handled, so a longer window re-examines mail without re-processing it. It deliberately never relies on the read/unread state you see in your own inbox — your reading habits are not a workflow's state.
+
+## Review it, then switch it on
+
+The new workflow appears in the list as **Pending**: proposed, never yet run. Read it once more — the trigger in plain words, the instruction, the mailboxes — and click **Enable**.
+
+That click is the whole governance model of this feature. Pinchy proposes; a person grants standing autonomous authority. This holds even when the workflow was drafted conversationally: ask Smithers to set up an automation and it still lands switched off, waiting for you.
+
+Each workflow shows one of three states:
+
+- **Pending** — proposed but never yet run
+- **Active** — enabled and running on its schedule
+- **Error** — the last run hit a problem
+
+**Disable** pauses a workflow without losing it; **Delete** removes it for good.
+
+## Watch what it did
+
+An automation acts on its own, which is exactly why its actions need to be readable afterwards. Every tool call an automation makes lands in the [audit trail](/concepts/audit-trail/) like any other — same events, same signatures — attributed to the agent that ran it.
+
+Open **Audit Trail** in the sidebar after the first matching mail arrives and confirm the run did what you meant. If a workflow shows **Error**, that is where the reason is.
+
+## Who can manage automations
+
+The same rule as the underlying API:
+
+- **Members** can manage automations on a personal agent they own.
+- **Admins** can manage them on any agent.
+
+In practice automations live on shared agents, because that is where mailboxes can be connected — a personal Smithers has no integrations of its own. See [Integrations](/concepts/integrations/#integrations-are-admin-managed-and-attach-to-shared-agents).
+
+## Related
+
+- [Connect Email](/guides/connect-email/) — connect the mailbox first
+- [Agent Settings](/concepts/agent-settings/#automations-tab) — the tab's full reference
+- [Agent Permissions](/concepts/agent-permissions/) — what the instruction is allowed to do
+- [Audit Trail](/concepts/audit-trail/) — reading back what ran

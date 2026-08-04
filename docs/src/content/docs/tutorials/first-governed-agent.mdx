@@ -1,0 +1,160 @@
+---
+title: Your First Governed Agent
+description: Build a team agent end to end — create it, scope what it may do, invite a colleague to use it, and read back in the audit trail exactly what happened.
+---
+
+import { Aside, Badge, Steps } from "@astrojs/starlight/components";
+
+[Quick Start](/getting-started/) got Pinchy running and you talking to Smithers. This tutorial is the next step, and it is the one that shows what Pinchy is actually for: an agent your **team** uses, that can do exactly what you allowed and nothing else, with a record of everything it did.
+
+By the end you will have:
+
+- a shared agent your whole team can reach,
+- a deliberate allow-list of what it may do,
+- a colleague using it under their own account,
+- and an audit trail showing who asked for what, and which tools ran.
+
+It takes about 20 minutes. Everything here works on a plain install — no licence key, no external API beyond the LLM provider you already configured.
+
+## Before you start
+
+- Pinchy running and your admin account created ([Quick Start](/getting-started/))
+- An LLM provider configured
+- A second browser profile or a private window — you will claim an invite as somebody else
+
+<Aside type="note">
+  Use a real second person if you have one. Watching a colleague use the agent
+  teaches you more about your permission choices than reading them back does.
+</Aside>
+
+## 1. Create a shared agent
+
+Every agent you create is a **shared** agent — the only personal one is the Smithers each user gets automatically. Shared is what we want: personal agents have no Permissions tab, because there is nobody to govern them for.
+
+<Steps>
+
+1. Open **Create New Agent** from the agent sidebar.
+
+2. Choose the **Custom Agent** template. It starts with only **Write files** enabled, which is the honest starting point: an agent with almost nothing, that you grant capabilities to on purpose.
+
+3. Name it `Team Assistant`, add a tagline if you like, and click **Create**.
+
+</Steps>
+
+Pinchy restarts the agent runtime to activate the new agent. When it comes back, the agent is in the sidebar with its own generated avatar.
+
+You now have an agent that can read files you attach in chat and write into its own workbench, and cannot do anything else — no web, no email, no directories on the server. That is not a hardened configuration you had to build; it is where every Pinchy agent starts.
+
+## 2. Scope what it may do
+
+Open the agent's chat, click the gear icon to open **Agent Settings**, and select the **Permissions** tab.
+
+You are looking at an allow-list. Nothing here is on unless you switch it on, and Pinchy deliberately exposes no shell tool and no "read any file" tool at all — those stay unreachable no matter what you check.
+
+For this tutorial, grant exactly one thing beyond the default:
+
+<Steps>
+
+1. Leave **Read workspace** as it is — it is always on. Any text file, PDF, or image a user attaches in chat is readable by the agent.
+
+2. Confirm **Write files** is enabled. This lets the agent save results into its own `workbench/` and hand you generated files in chat.
+
+3. Leave everything else **off**. In particular leave the web tools off — we will come back to why.
+
+4. Click **Save & Restart**. Permission changes need the runtime to restart; the dialog lists what is pending and warns that active chats disconnect briefly.
+
+</Steps>
+
+<Aside type="caution" title="Why the web tools stay off">
+  Pinchy warns you if you ever enable **Fetch web pages** on an agent that can
+  also reach sensitive data. A hostile web page can carry instructions that
+  trick an agent into encoding private data into a URL it fetches. When you do
+  need it, scope it with Include domain restrictions — see [Set Up Web
+  Search](/guides/web-search-setup/).
+</Aside>
+
+Take a moment on what you just did. You did not write a policy document about what the agent should avoid; you removed the capability. The agent cannot be talked out of a tool it does not have.
+
+## 3. Invite a colleague
+
+<Steps>
+
+1. Go to **Settings → Users** and click **Invite User**.
+
+2. Leave the email blank (anyone with the link can claim it) or enter your colleague's address to pre-fill it.
+
+3. Choose the **Member** role. Members can use agents; they cannot change permissions or read the audit trail — which is exactly the separation we are demonstrating.
+
+4. Click **Create Invite** and copy the link. It is valid for 7 days and works once.
+
+</Steps>
+
+Open that link in your second browser profile. The invited user sets a name and password, signs in, and is greeted by their **own** personal Smithers, which runs a short onboarding interview.
+
+They will also see `Team Assistant` in their sidebar. On an install without an Enterprise licence, every member can reach every shared agent; agent-level access control — restricting an agent to specific groups — is what the **Access** tab <Badge text="Enterprise" variant="note" /> adds. See [Groups](/concepts/groups/) if you want to narrow that later.
+
+## 4. Use it as they would
+
+Still signed in as the invited user, open `Team Assistant` and give it something real to do:
+
+<Steps>
+
+1. Attach a document to the chat — a PDF, a spreadsheet, a Markdown file. Anything text-bearing works, and PDFs are extracted for you.
+
+2. Ask for something concrete: _"Summarise this into five bullet points and save it as a file I can download."_
+
+3. Watch it read the attachment, then produce the file.
+
+</Steps>
+
+Then try the boundary. Ask it to look something up online:
+
+> _"Search the web for the latest version of this standard."_
+
+It cannot, and it will say so. Nothing was blocked at runtime by a filter — the tool was never in its allow-list to begin with.
+
+## 5. Read the audit trail
+
+Switch back to your admin account and open **Audit Trail** in the sidebar. This entry only exists for admins; your colleague never saw it.
+
+You are looking at every significant action on the platform, each row signed with HMAC-SHA256 and stored append-only — database triggers reject modification and deletion outright.
+
+Find the work you just watched:
+
+- **`tool.pinchy_read`** — the agent reading the attachment
+- **`tool.pinchy_write`** or **`tool.pinchy_generate_file`** — the file it produced
+- **`user.invited`** — you, creating the invite in step 3
+
+Open a tool row. It records which agent ran the tool, on whose behalf, when, the parameters, and the result — with an `outcome` of success or failure. Filter by the **Status** dropdown to isolate failures.
+
+Two things are deliberately not there, and both are worth knowing now rather than discovering during an audit:
+
+- **Chat messages are not logged.** The audit trail records actions, not conversation content. What was said lives in the conversation history.
+- **Email addresses are not stored in plaintext.** Invite events keep a keyed hash and a short masked preview; deactivation events omit the address entirely.
+
+<Aside type="tip">
+  The trail is verifiable, not just readable — a background job re-checks the
+  hash chain and records the result as `audit.integrity_check`. See [Verifying
+  the audit trail](/concepts/audit-trail-verification/).
+</Aside>
+
+## What you built
+
+A governed agent, in the sense Pinchy means it:
+
+| You did                | Which gave you                                                           |
+| ---------------------- | ------------------------------------------------------------------------ |
+| Created a shared agent | One agent the team reaches, instead of one tool per person               |
+| Scoped its permissions | Capabilities it cannot be argued out of, because they were never granted |
+| Invited a member       | A separate identity, without admin rights, doing real work               |
+| Read the audit trail   | Evidence of what ran — attributable, signed, and append-only             |
+
+None of it required the agent to be trusted. That is the whole idea: the guardrails are structural, so the interesting question stops being "will it behave?" and becomes "what should it be allowed to do?"
+
+## Where to go next
+
+- **[Create a Knowledge Base Agent](/guides/create-knowledge-base-agent/)** — point an agent at real document directories with scoped, read-only access
+- **[Agent Permissions](/concepts/agent-permissions/)** — the full tool catalogue, including integration tools
+- **[Set Up Email Automations](/guides/email-automations/)** — let an agent act on incoming mail on its own
+- **[Groups](/concepts/groups/)** <Badge text="Enterprise" variant="note" /> — restrict an agent to specific teams
+- **[Audit Trail](/concepts/audit-trail/)** — every event type, and how to export
