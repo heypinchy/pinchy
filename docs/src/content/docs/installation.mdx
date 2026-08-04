@@ -50,6 +50,8 @@ Only port **7777** is exposed to the host. OpenClaw and PostgreSQL are only reac
 
 Almost no configuration is needed to get started: session key, encryption key, HMAC signing key, and the database password are auto-generated on first start and persisted in Docker volumes so they survive restarts. The one value you set yourself is `PINCHY_VERSION` — the Compose file refuses to start without a pinned version. See the [Getting Started](/getting-started/) guide.
 
+See [Environment Variables](/reference/environment-variables/) for every variable the stack reads, in one place.
+
 #### Optional: production hardening
 
 For production deployments, extend the `.env` file to pin your own secrets instead of relying on auto-generated ones:
