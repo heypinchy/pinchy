@@ -62,6 +62,46 @@ function isContained(path: string, root: string): boolean {
   return path.startsWith(rootWithSep);
 }
 
+/**
+ * Real-path containment for a single directory the caller has already
+ * lexically verified `fullPath` is inside (see `isContained` above). Used by
+ * routes with a fixed, single serve directory — `uploads/[filename]` and
+ * `artifacts/[filename]` — where the two-list model of `resolveAllowedFile`
+ * (agent grant + serve-root ceiling) doesn't apply; they serve a single
+ * workspace subdirectory per request, not an admin-configured allowlist.
+ *
+ * Resolves symlinks on BOTH `fullPath` and `dir`, then re-checks containment
+ * on the resolved forms — this is what defeats a symlink planted inside the
+ * serve directory that points outside it, exactly as `resolveAllowedFile`'s
+ * stage 2 does. Returns the resolved real path when it stays contained, or
+ * `null` for every other case (missing file, unreadable directory, or an
+ * escape) — callers here don't distinguish 403 from 404 the way
+ * `resolveAllowedFile`'s callers do, they already reduce every failure to a
+ * uniform 404 (or, for `artifacts`, to trying the next zone).
+ */
+export async function realpathWithinDir(fullPath: string, dir: string): Promise<string | null> {
+  let realDir: string;
+  try {
+    // eslint-disable-next-line security/detect-non-literal-fs-filename -- dir is a fixed workspace subdirectory the caller constructed, not request input.
+    realDir = await realpath(resolve(dir));
+  } catch {
+    return null;
+  }
+
+  let realTarget: string;
+  try {
+    // eslint-disable-next-line security/detect-non-literal-fs-filename -- fullPath already passed lexical containment against dir; resolving it is the security boundary itself (defeats symlink escapes), not an unchecked read.
+    realTarget = await realpath(fullPath);
+  } catch {
+    // Covers ENOENT (legitimately missing — the caller's own 404 handles it)
+    // and any other error (permission denied, symlink loop): neither can be
+    // verified safe, so deny either way.
+    return null;
+  }
+
+  return isContained(realTarget, realDir) ? realTarget : null;
+}
+
 export async function resolveAllowedFile(
   requestedPath: string,
   allowedPaths: string[],

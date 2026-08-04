@@ -11,6 +11,7 @@ import { db } from "@/db";
 import { uploadedFiles } from "@/db/schema";
 import { sanitizeFilename } from "@/lib/upload-validation";
 import { streamWorkspaceFile } from "@/lib/serve-workspace-file";
+import { realpathWithinDir } from "@/lib/agent-file-access";
 
 type Params = { params: Promise<{ agentId: string; filename: string }> };
 
@@ -62,8 +63,18 @@ export const GET = withAuth<Params>(async (_req, { params }, session) => {
     return new NextResponse("Not found", { status: 404 });
   }
 
+  // Real-path containment: the lexical check above only sees the requested
+  // path itself, never what a symlink at that path points at. Resolve
+  // symlinks on both sides and re-check containment — see
+  // agent-file-access.ts's realpathWithinDir. Serve the resolved real path
+  // (not fullPath) so nothing re-resolves the symlink again at open() time.
+  const realPath = await realpathWithinDir(fullPath, uploadsDir);
+  if (!realPath) {
+    return new NextResponse("Not found", { status: 404 });
+  }
+
   // Uploads are capped at 15 MB at upload time, so the helper's in-memory read
   // is fine. It also refuses anything outside the MIME allowlist (a sneaked-in
   // .exe must never reach the browser as application/octet-stream).
-  return streamWorkspaceFile(fullPath, safeName);
+  return streamWorkspaceFile(realPath, safeName);
 });

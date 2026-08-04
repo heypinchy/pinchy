@@ -13,6 +13,7 @@ import { db } from "@/db";
 import { agentDeliveredFiles } from "@/db/schema";
 import { sanitizeFilename } from "@/lib/upload-validation";
 import { streamWorkspaceFile } from "@/lib/serve-workspace-file";
+import { realpathWithinDir } from "@/lib/agent-file-access";
 
 type Params = { params: Promise<{ agentId: string; filename: string }> };
 
@@ -72,7 +73,17 @@ export const GET = withAuth<Params>(async (_req, { params }, session) => {
     const zoneDir = join(workspace, zone);
     const fullPath = resolve(zoneDir, safeName);
     if (!fullPath.startsWith(resolve(zoneDir) + sep)) continue;
-    const res = await streamWorkspaceFile(fullPath, safeName);
+
+    // Real-path containment: the lexical check above only sees the requested
+    // path itself, never what a symlink at that path points at. Resolve
+    // symlinks on both sides and re-check containment — see
+    // agent-file-access.ts's realpathWithinDir. A symlink resolving outside
+    // this zone is treated the same as "not in this zone" (continue to the
+    // next), matching the lexical-miss branch above.
+    const realPath = await realpathWithinDir(fullPath, zoneDir);
+    if (!realPath) continue;
+
+    const res = await streamWorkspaceFile(realPath, safeName);
     if (res.status !== 404) return res;
   }
 

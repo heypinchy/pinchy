@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from "fs";
+import { mkdtempSync, writeFileSync, rmSync, mkdirSync, symlinkSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { makeNextRequest, routeContext } from "@/test-helpers/route";
@@ -151,5 +151,29 @@ describe("GET /api/agents/[agentId]/artifacts/[filename]", () => {
     const res = await callGET("agent-1", "report.pdf");
     expect(res.status).toBe(200);
     expect(res.headers.get("x-frame-options")).toBe("SAMEORIGIN");
+  });
+
+  // Defence in depth beyond sanitizeFilename + the lexical startsWith check:
+  // a symlink placed inside a delivery zone (its own filename passes
+  // sanitizeFilename) can point anywhere on disk. The lexical containment
+  // check only sees the symlink's in-scope path, never its target — only a
+  // realpath-based check catches this. 404, not 403 (or 200), matching every
+  // other not-found path in this route.
+  it("returns 404 when a symlink inside a delivery zone resolves outside the workspace", async () => {
+    const outsideDir = mkdtempSync(join(tmpdir(), "pinchy-artifacts-escape-target-"));
+    const secretPath = join(outsideDir, "secret.pdf");
+    writeFileSync(secretPath, "SECRET CONTENTS, NOT A DELIVERY");
+
+    const workbenchDir = join(tmpRoot, "agent-1", "workbench");
+    mkdirSync(workbenchDir, { recursive: true });
+    symlinkSync(secretPath, join(workbenchDir, "escape.pdf"));
+    mockGrantLookup.mockResolvedValue([{ id: "grant-1" }]);
+
+    try {
+      const res = await callGET("agent-1", "escape.pdf");
+      expect(res.status).toBe(404);
+    } finally {
+      rmSync(outsideDir, { recursive: true, force: true });
+    }
   });
 });

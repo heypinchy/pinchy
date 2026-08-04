@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from "fs";
+import { mkdtempSync, writeFileSync, rmSync, mkdirSync, symlinkSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { makeNextRequest, routeContext } from "@/test-helpers/route";
@@ -182,5 +182,29 @@ describe("GET /api/agents/[agentId]/uploads/[filename]", () => {
     writeUpload("agent-1", "Profile (38).pdf", PDF_BYTES);
     const res = await callGET("agent-1", "Profile (38).pdf");
     expect(res.status).toBe(200);
+  });
+
+  // Defence in depth beyond sanitizeFilename + the lexical startsWith check:
+  // a symlink placed inside uploads/ (its filename itself passes
+  // sanitizeFilename) can point anywhere on disk. The lexical containment
+  // check above sees only the symlink's own in-scope path, never its target
+  // — only a realpath-based check catches this. 404, not 403 (or 200), so an
+  // escape attempt looks identical to a missing file.
+  it("returns 404 when a symlink inside uploads/ resolves outside the workspace", async () => {
+    const outsideDir = mkdtempSync(join(tmpdir(), "pinchy-uploads-escape-target-"));
+    const secretPath = join(outsideDir, "secret.pdf");
+    writeFileSync(secretPath, "SECRET CONTENTS, NOT AN UPLOAD");
+
+    const uploadsDir = join(tmpRoot, "agent-1", "uploads");
+    mkdirSync(uploadsDir, { recursive: true });
+    symlinkSync(secretPath, join(uploadsDir, "escape.pdf"));
+    mockOwnershipLookup.mockResolvedValue([{ id: "file-1" }]);
+
+    try {
+      const res = await callGET("agent-1", "escape.pdf");
+      expect(res.status).toBe(404);
+    } finally {
+      rmSync(outsideDir, { recursive: true, force: true });
+    }
   });
 });
