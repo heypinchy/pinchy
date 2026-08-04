@@ -27,14 +27,61 @@ export function parseAndValidateVersion(input) {
 }
 
 /**
- * Orders two versions (no leading 'v'). Negative / zero / positive, like a
- * comparator: `compareVersions("0.9.0", "0.10.0") < 0`.
+ * Splits a DECLARED version — what a package.json says this tree is — into its
+ * released part and whether it is a development tree.
+ *
+ * Distinct from `parseAndValidateVersion`, which validates a release TARGET and
+ * must stay strict: you cannot release `0.10.0-dev`. This one is the reader for
+ * `package.json#version`, which since #1044 carries `<next>-dev` at every moment
+ * that is not a release commit.
+ *
+ * `-dev` is the only accepted suffix. Allowing `-rc.1` or `-alpha` would turn
+ * "is this a development tree?" into a semver-precedence question in every
+ * consumer; it is meant to be a string check.
+ *
+ * @param {string} input - e.g. "0.9.1", "v0.9.1" or "0.10.0-dev"
+ * @returns {{released: string, isDev: boolean}}
+ */
+export function parseDeclaredVersion(input) {
+  if (typeof input !== "string") {
+    throw new Error(`Not a version string: ${JSON.stringify(input)}`);
+  }
+  const value = input.startsWith("v") ? input.slice(1) : input;
+  if (SEMVER_RE.test(value)) return { released: value, isDev: false };
+  if (/^\d+\.\d+\.\d+-dev$/.test(value)) {
+    return { released: value.slice(0, -4), isDev: true };
+  }
+  throw new Error(
+    `Invalid declared version: "${input}". Expected "1.2.3" or "1.2.3-dev".`,
+  );
+}
+
+/**
+ * Orders two RELEASE versions (no leading 'v', no suffix). Negative / zero /
+ * positive, like a comparator: `compareVersions("0.9.0", "0.10.0") < 0`.
+ *
+ * Throws on anything it cannot order. It used to `.split(".").map(Number)` and
+ * fall through to 0, which meant `compareVersions("0.10.0-dev", "0.9.1")`
+ * answered "equal" — `[0, 10, NaN]`, and every NaN comparison is false. A
+ * silent equal from a comparator is worse than a crash: `assertNoStaleUpgrade
+ * Sections` picks the newest release with this, and a wrong "equal" there is a
+ * guard reporting green on a version it never read.
+ *
  * @param {string} a
  * @param {string} b
  * @returns {number}
  */
 export function compareVersions(a, b) {
-  const [x, y] = [a.split(".").map(Number), b.split(".").map(Number)];
+  const parse = (v) => {
+    if (typeof v !== "string" || !SEMVER_RE.test(v)) {
+      throw new Error(
+        `Not an orderable release version: ${JSON.stringify(v)}. ` +
+          `Strip any \`-dev\` suffix with parseDeclaredVersion first.`,
+      );
+    }
+    return v.split(".").map(Number);
+  };
+  const [x, y] = [parse(a), parse(b)];
   for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return x[i] - y[i];
   return 0;
 }
@@ -445,7 +492,13 @@ export function assertUpgradeNotesWritten(mdx, prevVersion, targetVersion) {
  * @throws {Error} on a stale, lagging, or duplicated placeholder section
  */
 export function assertNoStaleUpgradeSections(mdx, latestReleasedVersion) {
-  const pkgLatest = parseAndValidateVersion(latestReleasedVersion);
+  // A `-dev` version is not a released version, so it contributes nothing to
+  // "the newest released version" and the frozen sections answer on their own.
+  // The max() below was the workaround for a package.json that LAGGED the
+  // releases (#1028); since #1044 it LEADS them, and a number that leads must
+  // not be mistaken for a release that shipped.
+  const declared = parseDeclaredVersion(latestReleasedVersion);
+  const pkgLatest = declared.isDev ? [] : [declared.released];
   const headingRe =
     /^##\s+Upgrading\s+from\s+v(\d+\.\d+\.\d+)\s+to\s+(v\d+\.\d+\.\d+|%%PINCHY_VERSION%%)\s*$/gm;
 
@@ -461,12 +514,13 @@ export function assertNoStaleUpgradeSections(mdx, latestReleasedVersion) {
     });
   }
 
-  // The newest version this file already records as released. On a branch that
-  // did not take the release bump, this is ahead of package.json.
+  // The newest version this file already records as released.
   const frozenTos = matches
     .filter((s) => s.to !== "%%PINCHY_VERSION%%")
     .map((s) => s.to.slice(1));
-  const latest = [pkgLatest, ...frozenTos].reduce((a, b) =>
+  const candidates = [...pkgLatest, ...frozenTos];
+  if (candidates.length === 0) return; // nothing released yet — nothing to be stale against
+  const latest = candidates.reduce((a, b) =>
     compareVersions(a, b) >= 0 ? a : b,
   );
 
