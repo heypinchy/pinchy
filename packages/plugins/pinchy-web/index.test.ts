@@ -407,6 +407,55 @@ describe("pinchy-web plugin", () => {
       expect(body.reason).toBeTruthy();
     });
 
+    it("classifies a Brave 401 by its status, not by its body (#1077)", async () => {
+      // Brave's 401 body is `{"code":"SUBSCRIPTION_TOKEN_INVALID"}` — it
+      // carries no auth word at all, so once the bare "401" substring match
+      // was dropped, the status on BraveSearchError is the only thing left
+      // that can recognise a stale key. If this goes red, the narrowed
+      // classifier cost us the real case it exists for.
+      const braveError = Object.assign(
+        new Error('Brave Search API error (401): {"code":"SUBSCRIPTION_TOKEN_INVALID"}'),
+        { status: 401 }
+      );
+      braveSearchMock.mockRejectedValueOnce(braveError).mockRejectedValueOnce(braveError);
+
+      const fetchMock = stubCredentialsFetch("brave-key-123");
+      const factories = collectFactories(
+        credentialsPluginConfig({ "agent-1": { tools: ["pinchy_web_search"] } })
+      );
+
+      await factories.pinchy_web_search({ agentId: "agent-1" })!.execute("call-1", {
+        query: "test",
+      });
+
+      expect(
+        fetchMock.mock.calls.filter((c) => String(c[0]).includes("report-auth-failure"))
+      ).toHaveLength(1);
+    });
+
+    it("does not flag the connection when a non-401 body merely contains 401 (#1077)", async () => {
+      braveSearchMock.mockRejectedValue(
+        Object.assign(
+          new Error('Brave Search API error (429): {"detail":"quota 401 of 500 used"}'),
+          { status: 429 }
+        )
+      );
+
+      const fetchMock = stubCredentialsFetch("brave-key-123");
+      const factories = collectFactories(
+        credentialsPluginConfig({ "agent-1": { tools: ["pinchy_web_search"] } })
+      );
+
+      await factories.pinchy_web_search({ agentId: "agent-1" })!.execute("call-1", {
+        query: "test",
+      });
+
+      expect(braveSearchMock).toHaveBeenCalledTimes(1);
+      expect(
+        fetchMock.mock.calls.filter((c) => String(c[0]).includes("report-auth-failure"))
+      ).toHaveLength(0);
+    });
+
     it("does not POST report-auth-failure on a transient 5xx error from Brave", async () => {
       braveSearchMock.mockRejectedValueOnce(new Error("503 Service Unavailable"));
 

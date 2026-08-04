@@ -3339,6 +3339,74 @@ describe("client caching (#209 layer 2: credentials fetched lazily, cached)", ()
     expect(body.reason).toBeTruthy();
   });
 
+  it("re-fetches when the same agent's config now names a different connection (#1077)", async () => {
+    mockSearchRead.mockResolvedValue({ records: [], total: 0, limit: 100, offset: 0 });
+
+    // The cache used to key on the agentId alone, so the client built from
+    // conn-test-1's credentials kept serving conn-test-2 for a full TTL.
+    const configs: Record<string, AgentOdooConfig> = {
+      [agentId]: { connectionId: "conn-test-1", permissions: testPermissions },
+    };
+    const tools = createApi(configs);
+
+    await findTool(tools, "odoo_read", agentId)!.execute("call-1", {
+      model: "sale.order",
+      filters: [],
+    });
+
+    configs[agentId] = { connectionId: "conn-test-2", permissions: testPermissions };
+    await findTool(tools, "odoo_read", agentId)!.execute("call-2", {
+      model: "sale.order",
+      filters: [],
+    });
+
+    const urls = fetchMock.mock.calls.map((c) => String(c[0]));
+    expect(urls.some((u) => u.includes("conn-test-1"))).toBe(true);
+    expect(urls.some((u) => u.includes("conn-test-2"))).toBe(true);
+    expect(OdooClient).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not read a record id that contains 401 as an auth failure (#1077)", async () => {
+    // Odoo's MissingError names the offending records. The old matcher tested
+    // `msg.includes("401")`, so this error invalidated the cache, spent a
+    // second credentials round trip, re-ran the call — and then POSTed
+    // report-auth-failure, flipping a perfectly healthy connection to
+    // auth_failed in Settings → Integrations.
+    mockSearchRead.mockRejectedValue(
+      new Error("Record does not exist or has been deleted. (Records: sale.order(401,), User: 2)")
+    );
+
+    const tools = createApi({ [agentId]: agentConfig });
+    const result = await findTool(tools, "odoo_read", agentId)!.execute("call-1", {
+      model: "sale.order",
+      filters: [],
+    });
+
+    expect(result.isError).toBe(true);
+    expect(mockSearchRead).toHaveBeenCalledTimes(1);
+    // One credentials fetch, and nothing else: no refetch, no report.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(
+      fetchMock.mock.calls.filter((c) => String(c[0]).includes("report-auth-failure"))
+    ).toHaveLength(0);
+  });
+
+  it("does not repeat a create when the error merely contains 401 (#1077)", async () => {
+    mockFields.mockResolvedValue([{ name: "ref", type: "char", string: "Ref" }]);
+    mockCreate.mockRejectedValue(
+      new Error("A vendor bill with ref INV-401-2026 already exists for this partner")
+    );
+
+    const tools = createApi({ [agentId]: agentConfig });
+    const result = await findTool(tools, "odoo_create", agentId)!.execute("call-1", {
+      model: "res.partner",
+      values: { name: "Acme" },
+    });
+
+    expect(result.isError).toBe(true);
+    expect(mockCreate).toHaveBeenCalledTimes(1);
+  });
+
   it("does not POST report-auth-failure on a transient 5xx error", async () => {
     fetchMock.mockResolvedValue({
       ok: true,

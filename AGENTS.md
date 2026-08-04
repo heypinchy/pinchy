@@ -553,6 +553,26 @@ Defense in depth:
 - `packages/web/src/lib/openclaw-plaintext-scanner.ts` checks generated `openclaw.json` for known provider key prefixes. Add patterns when onboarding providers with recognizable secret prefixes.
 - `packages/web/src/lib/openclaw-config/validate-built-config.ts` validates emitted plugin entries against manifests before writing config.
 
+### Three Digits Are Not A Status
+
+Every Pattern-B plugin needs the same four things: fetch the credentials, cache them, decide whether an error means "these are stale", and retry once. `pinchy-odoo`, `pinchy-email` and `pinchy-web` each grew their own, and by 2026-08 all three had drifted (#1077) — three cache-key conventions, three auth matchers, and in every one of them a test for the bare substring `401`:
+
+```
+odoo   'access denied' | 'invalid api key' | '401' | 'authenticat'
+email  '401' | 'invalid credentials' | 'invalid_grant' | 'token has been expired' | 'unauthorized'
+web    '401' | 'unauthor' | 'invalid api'
+```
+
+Odoo's `MissingError` names the record (`Records: sale.order(401,)`). An unbalanced-entry error names the amount. Graph echoes the recipient, and a mail about a 401(k) plan carries those digits into the error body — as does the GUID request-id Microsoft stamps on every error, in roughly one failure in seventy. The cost is not a wasted retry: the second failure POSTs `report-auth-failure`, which flips the connection to `auth_failed`, shows admins a "reconnect" banner in Settings → Integrations, and writes an `integration.auth_failed` audit row for an auth failure that never happened.
+
+So: **a number classifies only as a structured status; prose classifies only on words.** `isAuthError` in `credential-client.ts` reads `status`/`statusCode`/`response.status`/numeric `code` first and falls back to word patterns — never to digits. That narrowing has a price, and paying it is part of the change: `BraveSearchError` and `GraphRequestError` now carry `status`, because Brave's real 401 body (`{"code":"SUBSCRIPTION_TOKEN_INVALID"}`) contains no auth word at all and would otherwise stop triggering a refresh. A new provider client that throws on a non-ok response must carry its status the same way.
+
+Three more rules fall out of the same incident:
+
+- **The module is duplicated, byte-for-byte, and that is forced rather than sloppy.** Each plugin directory is mounted into the OpenClaw container standalone (`./packages/plugins/<name>:/root/.openclaw/extensions/<name>`), so an import escaping the plugin directory resolves to a path that is not there at runtime — the same bundle-isolation shape as `normalizeTableHtml`, with the same answer. `plugin-credential-client-drift.test.ts` compares the copies byte-for-byte and also fails on a plugin that grows a _second_ classifier in its own `index.ts`, which the byte comparison cannot see. Edit the `pinchy-odoo` copy, then copy it over the other two. The module's unit tests live once (`pinchy-odoo/__tests__/credential-client.test.ts`) and count for all three copies only for as long as that guard passes.
+- **A cache key names every input the cached value was built from.** `credentialCacheKey(agentId, connectionId)` — odoo keyed on the agent alone, so a client built from one connection's credentials could outlive a connection swap by a full TTL. Reachability today depends on OpenClaw re-running `register()` on a config change (which rebuilds the cache anyway); the key is still wrong, and "the other input happens to be constant right now" is a property of today's config, not of the cache.
+- **The retry may repeat the closure only while nothing has been written.** `trackMutations` wraps the client and marks a mutation when a mutating method **resolves** — not when it is called. That distinction is the whole point: a rejected write changed nothing (an Odoo RPC is transactional, a rejected send did not send), so re-running it under a fresh token is exactly what the retry exists for; marking on entry would disable the transparent refresh for every write tool. No closure in the tree performs a step after its mutating call today, so this is a **tripwire**, not a live fix — it fires the moment someone adds one, instead of that edit silently duplicating a record or an email. Wrapping centrally rather than annotating ~30 call sites is what makes it unforgettable.
+
 ## Plugin Integration Contract
 
 Every plugin in `KNOWN_PINCHY_PLUGINS` must be classified as external or internal and have matching test/plumbing coverage.

@@ -159,6 +159,21 @@ describe("GraphAdapter.read", () => {
     await expect(adapter.read("msg1")).rejects.toThrow(/Graph 404/);
   });
 
+  it("carries the HTTP status on the thrown error (#1077)", async () => {
+    // The plugin's auth classifier reads this status instead of hunting for
+    // "401" in a body that also carries a GUID request-id.
+    const adapter = new GraphAdapter({ accessToken: "tok" });
+    (fetch as Mock).mockResolvedValueOnce({
+      ok: false,
+      status: 401,
+      statusText: "Unauthorized",
+      text: async () => '{"error":{"code":"InvalidAuthenticationToken"}}',
+    });
+
+    const err = (await adapter.read("msg1").catch((e: unknown) => e)) as { status?: number };
+    expect(err.status).toBe(401);
+  });
+
   it("URL-encodes the message ID in the path", async () => {
     const adapter = new GraphAdapter({ accessToken: "tok" });
     (fetch as Mock).mockResolvedValueOnce({

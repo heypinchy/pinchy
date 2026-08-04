@@ -10,6 +10,14 @@ import {
   ATT_PREFIX,
   MAX_ENTRIES_PER_AGENT,
 } from "./id-handle-store.js";
+import {
+  CredentialsFetchError,
+  credentialCacheKey,
+  isAuthError,
+  postAuthFailure,
+  requestCredentials,
+  trackMutations,
+} from "./credential-client.js";
 
 // Filesystem convention shared with pinchy-odoo's odoo_attach_file: every
 // agent's uploads land in the same per-agent directory so a downloaded email
@@ -29,13 +37,13 @@ const DELIVERY_GID = 999;
 // so anything saved here is always small enough to hand off downstream.
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 
-// Bounds every call to Pinchy's own internal API against a hung container /
-// network blackhole. The mailbox providers reach three different transports
-// and each bounds itself where that transport allows it: Graph via
-// AbortSignal.timeout on fetch (graph-adapter.ts), Gmail via googleapis'
-// `timeout` option — gaxios has none by default (gmail-adapter.ts), IMAP via
+// The two Pinchy-internal calls this plugin makes (credentials fetch,
+// auth-failure report) are bounded inside credential-client.ts. The mailbox
+// providers reach three different transports and each bounds itself where
+// that transport allows it: Graph via AbortSignal.timeout on fetch
+// (graph-adapter.ts), Gmail via googleapis' `timeout` option — gaxios has
+// none by default (gmail-adapter.ts), IMAP via
 // connectionTimeout/socketTimeout (imap-adapter.ts).
-const FETCH_TIMEOUT_MS = 10_000;
 
 const EXT_BY_MIME = new Map<string, string>([
   ["application/pdf", ".pdf"],
@@ -220,36 +228,6 @@ function getAgentConfig(
   agentId: string
 ): AgentEmailConfig | null {
   return agentConfigs[agentId] ?? null;
-}
-
-/**
- * Best-effort POST to Pinchy's report-auth-failure endpoint when a
- * retry-once cycle fails with a permanent auth error. This lets Pinchy
- * surface a clear "re-authorise" banner to admins rather than requiring
- * them to trawl through agent error messages.
- *
- * Errors are swallowed — never mask the original tool error.
- */
-async function reportAuthFailure(
-  apiBaseUrl: string,
-  connectionId: string,
-  gatewayToken: string,
-  reason: string
-): Promise<void> {
-  try {
-    await fetch(`${apiBaseUrl}/api/internal/integrations/${connectionId}/report-auth-failure`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${gatewayToken}`,
-        "Content-Type": "application/json",
-        "X-Plugin-Id": "pinchy-email",
-      },
-      body: JSON.stringify({ reason: reason.slice(0, 500) }),
-      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-    });
-  } catch {
-    // best-effort — never mask the original tool error
-  }
 }
 
 /**
@@ -617,63 +595,19 @@ export function assertImapCredentialsShape(creds: unknown): asserts creds is Ima
   }
 }
 
-/**
- * Thrown by fetchCredentials when the credentials API responds non-ok.
- * Carries `status` so callers (withAuthRetry) can discriminate the
- * settings-missing 503 case from transient errors without string-matching
- * the message.
- */
-class CredentialsFetchError extends Error {
-  status: number;
-
-  constructor(message: string, status: number) {
-    super(message);
-    this.name = "CredentialsFetchError";
-    this.status = status;
-  }
-}
-
 async function fetchCredentials(
   apiBaseUrl: string,
   gatewayToken: string,
   connectionId: string,
   agentId: string
 ): Promise<{ type: string; credentials: EmailCredentials }> {
-  // `agentId` is required by the credentials route (#987): the gateway token
-  // is shared by every plugin, so it proves the caller is inside the OpenClaw
-  // container and nothing about which mailbox this agent may open.
-  const response = await fetch(
-    `${apiBaseUrl}/api/internal/integrations/${connectionId}/credentials` +
-      `?agentId=${encodeURIComponent(agentId)}`,
-    {
-      headers: { Authorization: `Bearer ${gatewayToken}` },
-      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-    }
-  );
-
-  if (!response.ok) {
-    // The route's error responses (e.g. 503 when OAuth settings are missing —
-    // see OAuthSettingsMissingError in the credentials route) carry an
-    // actionable message in the JSON body. Read it tolerantly: a body that
-    // isn't JSON, or a response shape without .json(), must not mask the
-    // original HTTP status in a secondary error. `.catch()` alone would not
-    // save us from a response object whose .json is missing entirely (that
-    // throws synchronously rather than rejecting), so wrap the call itself.
-    const body = await (async () => {
-      try {
-        return (await response.json()) as { error?: unknown };
-      } catch {
-        return null;
-      }
-    })();
-    const detail = body && typeof body.error === "string" ? `: ${body.error}` : "";
-    throw new CredentialsFetchError(
-      `Failed to fetch credentials: ${response.status} ${response.statusText}${detail}`,
-      response.status
-    );
-  }
-
-  const data = (await response.json()) as {
+  const data = (await requestCredentials({
+    apiBaseUrl,
+    gatewayToken,
+    connectionId,
+    agentId,
+    label: "email",
+  })) as {
     type?: unknown;
     credentials?: unknown;
   };
@@ -747,14 +681,21 @@ const plugin = {
     const cache = new Map<string, { adapter: EmailAdapter; expiresAt: number }>();
 
     function invalidate(agentId: string, connectionId: string) {
-      cache.delete(`${agentId}:${connectionId}`);
+      cache.delete(credentialCacheKey(agentId, connectionId));
     }
+
+    /**
+     * Adapter calls that change server-side state. `trackMutations` uses this
+     * to refuse a retry that would repeat one — re-running `send` would put a
+     * second copy of the message in the recipient's inbox.
+     */
+    const MUTATING_ADAPTER_METHODS = ["send", "draft"] as const;
 
     async function getOrCreateClient(
       agentId: string,
       config: AgentEmailConfig
     ): Promise<EmailAdapter> {
-      const cacheKey = `${agentId}:${config.connectionId}`;
+      const cacheKey = credentialCacheKey(agentId, config.connectionId);
       const hit = cache.get(cacheKey);
       if (hit && hit.expiresAt > Date.now()) return hit.adapter;
       // Read apiBaseUrl and gatewayToken dynamically so they reflect any
@@ -831,7 +772,13 @@ const plugin = {
       // they live on api.pluginConfig, not in this function's scope.
       const apiBaseUrl = api.pluginConfig?.apiBaseUrl ?? "";
       const gatewayToken = api.pluginConfig?.gatewayToken ?? "";
-      await reportAuthFailure(apiBaseUrl, connectionId, gatewayToken, reason);
+      await postAuthFailure({
+        apiBaseUrl,
+        connectionId,
+        gatewayToken,
+        pluginId: "pinchy-email",
+        reason,
+      });
       throw error;
     }
 
@@ -867,17 +814,17 @@ const plugin = {
         }
         throw err;
       }
+      let mutated = false;
+      const markMutated = () => {
+        mutated = true;
+      };
       try {
-        return await fn(adapter);
+        return await fn(trackMutations(adapter, MUTATING_ADAPTER_METHODS, markMutated));
       } catch (err) {
-        const msg = err instanceof Error ? err.message.toLowerCase() : "";
-        const isAuthError =
-          msg.includes("401") ||
-          msg.includes("invalid credentials") ||
-          msg.includes("invalid_grant") ||
-          msg.includes("token has been expired") ||
-          msg.includes("unauthorized");
-        if (!isAuthError) throw err;
+        if (!isAuthError(err)) throw err;
+        // The message already left this process — a retry would send it
+        // twice. Surface the auth error instead.
+        if (mutated) throw err;
         invalidate(agentId, config.connectionId);
         let fresh: EmailAdapter;
         try {
@@ -889,7 +836,7 @@ const plugin = {
           throw refetchErr;
         }
         try {
-          return await fn(fresh);
+          return await fn(trackMutations(fresh, MUTATING_ADAPTER_METHODS, markMutated));
         } catch (retryErr) {
           return reportAndRethrow(config.connectionId, retryErr);
         }

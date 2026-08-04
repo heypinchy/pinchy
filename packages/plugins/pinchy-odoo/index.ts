@@ -9,13 +9,19 @@ import {
   MalformedIntegrationRefError,
   type IntegrationRefPayload,
 } from "./integration-ref";
+import {
+  credentialCacheKey,
+  isAuthError,
+  postAuthFailure,
+  requestCredentials,
+  trackMutations,
+} from "./credential-client";
 
 const WORKSPACE_ROOT = "/root/.openclaw/workspaces";
 
-// Bounds every call to Pinchy's own internal API against a hung container /
-// network blackhole. These are Pinchy-internal, same-Docker-network calls
-// (credentials fetch, auth-failure report), never the Odoo call itself.
-const FETCH_TIMEOUT_MS = 10_000;
+// The two Pinchy-internal calls this plugin makes (credentials fetch,
+// auth-failure report) are bounded inside credential-client.ts. The Odoo
+// calls themselves go through odoo-node, not fetch() here.
 
 // 25 MB matches Odoo's default `web.max_file_upload_size` setting. Keeps the
 // plugin process from OOMing on a single attachment (readFile + base64 string
@@ -198,36 +204,13 @@ async function fetchCredentials(
   connectionId: string,
   agentId: string
 ): Promise<OdooCredentials> {
-  // `agentId` is required by the credentials route (#987): the gateway token
-  // is shared by every plugin, so it proves the caller is inside the OpenClaw
-  // container and nothing about which connections this agent may read.
-  const response = await fetch(
-    `${apiBaseUrl}/api/internal/integrations/${connectionId}/credentials` +
-      `?agentId=${encodeURIComponent(agentId)}`,
-    {
-      headers: { Authorization: `Bearer ${gatewayToken}` },
-      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-    }
-  );
-  if (!response.ok) {
-    // The credentials route puts an actionable message in the JSON body (e.g. a
-    // 404 "This integration is no longer connected …") — surface it so the agent
-    // reports something a user can act on, not a bare HTTP status. Read the body
-    // tolerantly: a non-JSON body must not mask the original status.
-    const body = await (async () => {
-      try {
-        return (await response.json()) as { error?: unknown };
-      } catch {
-        return null;
-      }
-    })();
-    const detail = body && typeof body.error === "string" ? `: ${body.error}` : "";
-    throw new Error(
-      `Failed to fetch Odoo credentials for connection ${connectionId}: ` +
-        `HTTP ${response.status} ${response.statusText}${detail}`
-    );
-  }
-  const data = (await response.json()) as { credentials?: unknown };
+  const data = (await requestCredentials({
+    apiBaseUrl,
+    gatewayToken,
+    connectionId,
+    agentId,
+    label: "Odoo",
+  })) as { credentials?: unknown };
   assertCredentialsShape(data.credentials);
   return data.credentials;
 }
@@ -2137,28 +2120,6 @@ export function enforceReadResultBudget(
   return build(kept);
 }
 
-async function reportAuthFailure(
-  apiBaseUrl: string,
-  connectionId: string,
-  gatewayToken: string,
-  reason: string
-): Promise<void> {
-  try {
-    await fetch(`${apiBaseUrl}/api/internal/integrations/${connectionId}/report-auth-failure`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${gatewayToken}`,
-        "Content-Type": "application/json",
-        "X-Plugin-Id": "pinchy-odoo",
-      },
-      body: JSON.stringify({ reason: reason.slice(0, 500) }),
-      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-    });
-  } catch {
-    // best-effort — never mask the original tool error
-  }
-}
-
 /**
  * Build an MCP-style error result. Every error result MUST carry
  * `details.error`, not just the `isError` flag: OpenClaw strips `isError`
@@ -2445,19 +2406,20 @@ const plugin = {
     const CREDENTIALS_TTL_MS = 5 * 60 * 1000; // 5 minutes
     const cache = new Map<string, { client: OdooClient; expiresAt: number }>();
 
-    function invalidate(agentId: string) {
-      cache.delete(agentId);
+    function invalidate(agentId: string, connectionId: string) {
+      cache.delete(credentialCacheKey(agentId, connectionId));
     }
 
     async function getOrCreateClient(
       agentId: string,
       config: AgentOdooConfig
     ): Promise<OdooClient> {
-      const hit = cache.get(agentId);
+      const key = credentialCacheKey(agentId, config.connectionId);
+      const hit = cache.get(key);
       if (hit && hit.expiresAt > Date.now()) return hit.client;
       const creds = await fetchCredentials(apiBaseUrl, gatewayToken, config.connectionId, agentId);
       const client = createClient(creds);
-      cache.set(agentId, {
+      cache.set(key, {
         client,
         expiresAt: Date.now() + CREDENTIALS_TTL_MS,
       });
@@ -2465,11 +2427,23 @@ const plugin = {
     }
 
     /**
+     * Odoo calls that change server-side state. `trackMutations` uses this to
+     * refuse a retry that would repeat a write that already went through.
+     * `callMethod` is in the list because that is how the record-action and
+     * reconcile tools reach `action_post`, `js_assign_outstanding_line` and
+     * friends — it is a write channel, not a read one.
+     */
+    const MUTATING_CLIENT_METHODS = ["create", "write", "unlink", "callMethod"] as const;
+
+    /**
      * Run an Odoo call with one transparent retry on auth failure.
      * Odoo throws an `AccessDenied` / 401-shaped error when the apiKey is
      * stale (rotated, revoked, expired). We invalidate the cache and
      * fetch fresh credentials once — if it still fails, surface to the
      * user.
+     *
+     * `isAuthError` is the shared classifier (#1077); the client is wrapped
+     * so a closure that already completed a write is never re-run.
      */
     async function withAuthRetry<T>(
       agentId: string,
@@ -2477,23 +2451,35 @@ const plugin = {
       fn: (client: OdooClient) => Promise<T>
     ): Promise<T> {
       const client = await getOrCreateClient(agentId, config);
+      let mutated = false;
+      const tracked = trackMutations(client, MUTATING_CLIENT_METHODS, () => {
+        mutated = true;
+      });
       try {
-        return await fn(client);
+        return await fn(tracked);
       } catch (err) {
-        const msg = err instanceof Error ? err.message.toLowerCase() : "";
-        const isAuthError =
-          msg.includes("access denied") ||
-          msg.includes("invalid api key") ||
-          msg.includes("401") ||
-          msg.includes("authenticat");
-        if (!isAuthError) throw err;
-        invalidate(agentId);
+        if (!isAuthError(err)) throw err;
+        // A write inside this closure already succeeded, so re-running the
+        // closure would repeat it. Surface the auth error instead of
+        // creating a second record.
+        if (mutated) throw err;
+        invalidate(agentId, config.connectionId);
         const fresh = await getOrCreateClient(agentId, config);
         try {
-          return await fn(fresh);
+          return await fn(
+            trackMutations(fresh, MUTATING_CLIENT_METHODS, () => {
+              mutated = true;
+            })
+          );
         } catch (retryErr) {
           const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
-          await reportAuthFailure(apiBaseUrl, config.connectionId, gatewayToken, retryMsg);
+          await postAuthFailure({
+            apiBaseUrl,
+            connectionId: config.connectionId,
+            gatewayToken,
+            pluginId: "pinchy-odoo",
+            reason: retryMsg,
+          });
           throw retryErr;
         }
       }

@@ -1,0 +1,83 @@
+/**
+ * Drift guard: `credential-client.ts` is duplicated, byte-for-byte, into
+ * pinchy-odoo, pinchy-email and pinchy-web.
+ *
+ * The duplication is forced, not sloppy. Each plugin directory is mounted
+ * into the OpenClaw container standalone
+ * (`./packages/plugins/<name>:/root/.openclaw/extensions/<name>`), so an
+ * import that escapes the plugin directory resolves to a path that is not
+ * there at runtime — the same bundle-isolation shape `normalizeTableHtml`
+ * has, and it gets the same answer: duplicate the source, guard the copies.
+ *
+ * Without a guard the copies drift, and we know that because they already
+ * had (#1077): three hand-maintained auth-error matchers, three cache-key
+ * conventions, and a substring test for "401" in all three that read an Odoo
+ * record id, an invoice amount and a 401(k) plan as "the credentials are
+ * stale" — then flipped the connection to auth_failed over it.
+ *
+ * Byte-identical is deliberate rather than "identical modulo comments": there
+ * is no legitimate reason for one plugin's copy to differ, and the comments
+ * carry the reasoning that keeps the next editor from re-narrowing the
+ * classifier. To change the module, edit the pinchy-odoo copy and copy it
+ * over the other two.
+ *
+ * NOTE ON COVERAGE: the module's unit tests live once, in
+ * `packages/plugins/pinchy-odoo/__tests__/credential-client.test.ts`. They
+ * count as coverage for all three copies only for as long as THIS test
+ * passes.
+ */
+import { describe, it, expect } from "vitest";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+
+const PLUGINS_DIR = resolve(import.meta.dirname, "../../../../plugins");
+const REFERENCE_PLUGIN = "pinchy-odoo";
+const COPY_PLUGINS = ["pinchy-email", "pinchy-web"];
+
+function readCopy(plugin: string): string {
+  return readFileSync(resolve(PLUGINS_DIR, plugin, "credential-client.ts"), "utf-8");
+}
+
+describe("credential-client drift guard", () => {
+  const reference = readCopy(REFERENCE_PLUGIN);
+
+  it("the reference copy is not empty and exports the shared surface", () => {
+    // A guard that compares three unreadable files to each other passes on an
+    // empty corpus. Pin what the module is actually expected to contain.
+    for (const symbol of [
+      "export class CredentialsFetchError",
+      "export function credentialCacheKey",
+      "export function authErrorStatus",
+      "export function isAuthError",
+      "export async function requestCredentials",
+      "export async function postAuthFailure",
+      "export function trackMutations",
+    ]) {
+      expect(reference).toContain(symbol);
+    }
+  });
+
+  it.each(COPY_PLUGINS)("%s carries a byte-identical copy", (plugin) => {
+    expect(readCopy(plugin)).toBe(reference);
+  });
+
+  it("no plugin classifies an auth error on its own", () => {
+    // The point of the shared module is that there is ONE classifier. A
+    // plugin that grows a second one in its index.ts is exactly the drift
+    // #1077 reported, and the byte-comparison above cannot see it.
+    //
+    // Two narrow checks rather than one broad one. A regex over auth-ish
+    // words would also flag `isOdooAccessError`, which decides what error
+    // MESSAGE to show the model and never gates a retry — a guard that
+    // reports on an unrelated helper is a guard someone deletes.
+    for (const plugin of [REFERENCE_PLUGIN, ...COPY_PLUGINS]) {
+      const index = readFileSync(resolve(PLUGINS_DIR, plugin, "index.ts"), "utf-8");
+      expect(index, `${plugin}/index.ts must not test for a bare "401"`).not.toMatch(
+        /includes\(\s*["'`]401/
+      );
+      expect(index, `${plugin}/index.ts must not declare a second auth classifier`).not.toMatch(
+        /(function|const)\s+isAuthError\b/
+      );
+    }
+  });
+});

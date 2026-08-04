@@ -118,6 +118,23 @@ function toSummary(m: GraphMessage): EmailSummary {
   };
 }
 
+/**
+ * Carries the HTTP status Graph answered with, so the plugin's auth-error
+ * classifier can read it instead of hunting for digits in the message
+ * (#1077). Graph stamps a GUID request-id into every error body, and roughly
+ * one in seventy of those contains "401" by chance — which the old substring
+ * matcher read as an expired token.
+ */
+export class GraphRequestError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "GraphRequestError";
+    this.status = status;
+  }
+}
+
 export class GraphAdapter implements EmailAdapter {
   constructor(private opts: { accessToken: string }) {}
 
@@ -146,7 +163,7 @@ export class GraphAdapter implements EmailAdapter {
     });
     if (!res.ok) {
       const txt = await res.text().catch(() => "");
-      throw new Error(`Graph ${res.status}: ${txt || res.statusText}`);
+      throw new GraphRequestError(`Graph ${res.status}: ${txt || res.statusText}`, res.status);
     }
     return res;
   }

@@ -1,10 +1,15 @@
 import { braveSearch, type BraveSearchConfig } from "./brave-search.js";
 import { webFetch, type WebFetchConfig } from "./web-fetch.js";
+import {
+  credentialCacheKey,
+  isAuthError,
+  postAuthFailure,
+  requestCredentials,
+} from "./credential-client.js";
 
-// Bounds every call to Pinchy's own internal API against a hung container /
-// network blackhole. webFetch/braveSearch each bound their OWN
-// external calls separately (see web-fetch.ts and brave-search.ts).
-const FETCH_TIMEOUT_MS = 10_000;
+// The two Pinchy-internal calls this plugin makes (credentials fetch,
+// auth-failure report) are bounded inside credential-client.ts. webFetch and
+// braveSearch bound their OWN external calls (web-fetch.ts, brave-search.ts).
 
 interface PluginToolContext {
   agentId?: string;
@@ -79,66 +84,15 @@ async function fetchBraveCredentials(
   connectionId: string,
   agentId: string
 ): Promise<BraveCredentials> {
-  // `agentId` is required by the credentials route (#987): the gateway token
-  // says "some plugin in this container", not "this agent may read this key".
-  const response = await fetch(
-    `${apiBaseUrl}/api/internal/integrations/${connectionId}/credentials` +
-      `?agentId=${encodeURIComponent(agentId)}`,
-    {
-      headers: { Authorization: `Bearer ${gatewayToken}` },
-      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-    }
-  );
-  if (!response.ok) {
-    // The credentials route puts an actionable message in the JSON body (e.g. a
-    // 404 "This integration is no longer connected …") — surface it so the agent
-    // reports something a user can act on, not a bare HTTP status. Read the body
-    // tolerantly: a non-JSON body must not mask the original status.
-    const body = await (async () => {
-      try {
-        return (await response.json()) as { error?: unknown };
-      } catch {
-        return null;
-      }
-    })();
-    const detail = body && typeof body.error === "string" ? `: ${body.error}` : "";
-    throw new Error(
-      `Failed to fetch Brave credentials: HTTP ${response.status} ${response.statusText}${detail}`
-    );
-  }
-  const data = (await response.json()) as { credentials?: unknown };
+  const data = (await requestCredentials({
+    apiBaseUrl,
+    gatewayToken,
+    connectionId,
+    agentId,
+    label: "Brave",
+  })) as { credentials?: unknown };
   assertBraveCredentialsShape(data.credentials);
   return data.credentials;
-}
-
-/**
- * Best-effort POST to Pinchy's report-auth-failure endpoint when a
- * retry-once cycle fails with a permanent auth error. This lets Pinchy
- * surface a clear "re-authorise" banner to admins rather than requiring
- * them to trawl through agent error messages.
- *
- * Errors are swallowed — never mask the original tool error.
- */
-async function reportAuthFailure(
-  apiBaseUrl: string,
-  connectionId: string,
-  gatewayToken: string,
-  reason: string
-): Promise<void> {
-  try {
-    await fetch(`${apiBaseUrl}/api/internal/integrations/${connectionId}/report-auth-failure`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${gatewayToken}`,
-        "Content-Type": "application/json",
-        "X-Plugin-Id": "pinchy-web",
-      },
-      body: JSON.stringify({ reason: reason.slice(0, 500) }),
-      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-    });
-  } catch {
-    // best-effort — never mask the original tool error
-  }
 }
 
 const plugin = {
@@ -158,29 +112,39 @@ const plugin = {
     // without an OpenClaw restart. On a 401 from Brave we invalidate
     // and retry once.
     const CREDENTIALS_TTL_MS = 5 * 60 * 1000;
-    let cached: { apiKey: string; expiresAt: number } | null = null;
+    const cache = new Map<string, { apiKey: string; expiresAt: number }>();
 
-    // The Brave key is instance-wide, so one cache entry serves every agent —
-    // and that is safe here because an agent without `pinchy_web_search` /
-    // `pinchy_web_fetch` never gets the tool registered at all (see the
-    // factories below), so it never reaches this function to read the cache.
-    // The `agentId` is what the server authorizes on the fetch itself.
+    // The Brave key is instance-wide, so an entry could serve every agent —
+    // and that would be safe here, because an agent without
+    // `pinchy_web_search` / `pinchy_web_fetch` never gets the tool registered
+    // at all (see the factories below) and so never reaches this function.
+    // It is still keyed per agent and connection, for the reason pinchy-odoo
+    // was (#1077): a key that omits the connection outlives a connection
+    // swap by a full TTL, and "this one happens to be instance-wide" is a
+    // property of today's config, not of the cache.
     async function getBraveApiKey(agentId: string): Promise<string> {
-      if (cached && cached.expiresAt > Date.now()) return cached.apiKey;
+      const key = credentialCacheKey(agentId, connectionId);
+      const hit = cache.get(key);
+      if (hit && hit.expiresAt > Date.now()) return hit.apiKey;
       if (!connectionId || !apiBaseUrl || !gatewayToken) {
         throw new Error(
           "pinchy-web: missing connectionId/apiBaseUrl/gatewayToken in plugin config"
         );
       }
       const creds = await fetchBraveCredentials(apiBaseUrl, gatewayToken, connectionId, agentId);
-      cached = { apiKey: creds.apiKey, expiresAt: Date.now() + CREDENTIALS_TTL_MS };
+      cache.set(key, { apiKey: creds.apiKey, expiresAt: Date.now() + CREDENTIALS_TTL_MS });
       return creds.apiKey;
     }
 
-    function invalidateCache() {
-      cached = null;
+    function invalidateCache(agentId: string) {
+      cache.delete(credentialCacheKey(agentId, connectionId));
     }
 
+    /**
+     * Both tools that reach this are reads (a Brave search, a page GET), so
+     * there is no mutation to guard against — unlike pinchy-odoo and
+     * pinchy-email, this one does not wrap the closure in `trackMutations`.
+     */
     async function withAuthRetry<T>(
       agentId: string,
       fn: (apiKey: string) => Promise<T>
@@ -189,17 +153,20 @@ const plugin = {
       try {
         return await fn(apiKey);
       } catch (err) {
-        const msg = err instanceof Error ? err.message.toLowerCase() : "";
-        if (!(msg.includes("401") || msg.includes("unauthor") || msg.includes("invalid api"))) {
-          throw err;
-        }
-        invalidateCache();
+        if (!isAuthError(err)) throw err;
+        invalidateCache(agentId);
         const fresh = await getBraveApiKey(agentId);
         try {
           return await fn(fresh);
         } catch (retryErr) {
           const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
-          await reportAuthFailure(apiBaseUrl, connectionId, gatewayToken, retryMsg);
+          await postAuthFailure({
+            apiBaseUrl,
+            connectionId,
+            gatewayToken,
+            pluginId: "pinchy-web",
+            reason: retryMsg,
+          });
           throw retryErr;
         }
       }

@@ -173,6 +173,22 @@ describe("braveSearch", () => {
     );
   });
 
+  it("carries the HTTP status on the thrown error (#1077)", async () => {
+    // The plugin's auth classifier reads this status. Brave's own 401 body
+    // (`{"code":"SUBSCRIPTION_TOKEN_INVALID"}`) contains no auth word, so
+    // without the status a stale key would no longer trigger a refresh.
+    fetchMock.mockResolvedValue({
+      ok: false,
+      status: 401,
+      text: async () => '{"code":"SUBSCRIPTION_TOKEN_INVALID"}',
+    });
+
+    const err = (await braveSearch("query", { apiKey: "key" }).catch((e: unknown) => e)) as {
+      status?: number;
+    };
+    expect(err.status).toBe(401);
+  });
+
   it("throws a descriptive error when API key is missing", async () => {
     await expect(braveSearch("query", { apiKey: "" })).rejects.toThrow(/API key/i);
     expect(fetchMock).not.toHaveBeenCalled();

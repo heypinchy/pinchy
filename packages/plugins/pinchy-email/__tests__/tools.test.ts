@@ -1230,6 +1230,58 @@ describe("email_send", () => {
     mockCredentialResponse();
   });
 
+  const sendConfig: PluginConfig = {
+    ...testConfig,
+    agents: {
+      "agent-1": {
+        connectionId: "conn-1",
+        permissions: { email: ["read", "draft", "send"] },
+      },
+    },
+  };
+
+  it("does not re-send when the provider error merely contains 401 (#1077)", async () => {
+    // Graph echoes the recipient back in its error body, and this one names a
+    // 401(k) plan. The old matcher tested `msg.includes("401")`, so the
+    // rejected send was retried — putting a second copy of the message on its
+    // way — and a second failure then flipped the connection to auth_failed.
+    mockSend.mockRejectedValue(
+      new Error('Graph 400: {"error":{"message":"Recipient not found: 401k-plan@example.com"}}')
+    );
+
+    const tool = findTool(createApi(sendConfig), "email_send", agentId)!;
+    const result = await tool.execute("call-1", {
+      to: "401k-plan@example.com",
+      subject: "Q3 statement",
+      body: "attached",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(mockSend).toHaveBeenCalledTimes(1);
+    expect(
+      mockFetch.mock.calls.filter((c) => String(c[0]).includes("report-auth-failure"))
+    ).toHaveLength(0);
+  });
+
+  it("still refreshes the token when a send is rejected with a real auth error (#1077)", async () => {
+    // The narrowed classifier must not cost the feature its point: a send
+    // that the provider rejected changed nothing, so retrying it under fresh
+    // credentials is exactly right.
+    mockSend
+      .mockRejectedValueOnce(new Error("401 Unauthorized"))
+      .mockResolvedValueOnce({ messageId: "sent-after-refresh" });
+
+    const tool = findTool(createApi(sendConfig), "email_send", agentId)!;
+    const result = await tool.execute("call-1", {
+      to: "recipient@test.com",
+      subject: "s",
+      body: "b",
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(mockSend).toHaveBeenCalledTimes(2);
+  });
+
   it("sends an email when agent has send permission", async () => {
     mockSend.mockResolvedValue({ messageId: "sent-1" });
 

@@ -18,6 +18,23 @@ export interface BraveSearchResult {
   extra_snippets?: string[];
 }
 
+/**
+ * Carries the HTTP status Brave answered with, so the plugin's auth-error
+ * classifier can read it instead of hunting for digits in the message
+ * (#1077). Brave's 401 body is `{"code":"SUBSCRIPTION_TOKEN_INVALID"}` — it
+ * contains no auth *word* at all, so the status is the only honest signal
+ * that the key is stale.
+ */
+export class BraveSearchError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "BraveSearchError";
+    this.status = status;
+  }
+}
+
 export async function braveSearch(
   query: string,
   config: BraveSearchConfig
@@ -69,7 +86,7 @@ export async function braveSearch(
 
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    throw new Error(`Brave Search API error (${res.status}): ${text}`);
+    throw new BraveSearchError(`Brave Search API error (${res.status}): ${text}`, res.status);
   }
 
   const data = await res.json();
