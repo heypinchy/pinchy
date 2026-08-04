@@ -46,24 +46,34 @@ module.exports = {
     const sourceCode = context.sourceCode || context.getSourceCode();
     const MUTATION_METHODS = ["POST", "PUT", "PATCH", "DELETE"];
 
-    // Only a comment whose trimmed text starts with "audit-exempt", followed
-    // immediately by a colon, whitespace, or the end of the comment, counts as
-    // an attempt at the marker. This keeps prose that merely MENTIONS the
-    // phrase mid-sentence (e.g. "deliberately carries NO audit-exempt:
-    // marker") — or a different word that happens to share the prefix (e.g.
-    // "audit-exemptions:") — from being misread as one.
+    // A marker is a comment that OPENS with "audit-exempt", followed
+    // immediately by a colon, whitespace, or the end of the comment. The
+    // anchoring is what has always kept prose that merely mentions the phrase
+    // from counting; the boundary is what stops a different word sharing the
+    // prefix (e.g. "audit-exemptions:") from being misread as one.
     const EXEMPT_ATTEMPT = /^audit-exempt(?::|\s|$)/;
     const EXEMPT_WITH_REASON = /^audit-exempt:\s*\S/;
 
+    // A comment trailing another statement belongs to that statement, not to
+    // whatever follows it: `const X = 1; // audit-exempt: …` reads as the
+    // const's note, and getCommentsBefore would otherwise hand it to the next
+    // handler as if it had been written above it.
+    function isOwnLineComment(comment) {
+      const before = sourceCode.getTokenBefore(comment, { includeComments: true });
+      return !before || before.loc.end.line < comment.loc.start.line;
+    }
+
     function findExemptAttempt(comments) {
-      return comments.find((c) => EXEMPT_ATTEMPT.test(c.value.trim())) ?? null;
+      return (
+        comments.find((c) => EXEMPT_ATTEMPT.test(c.value.trim()) && isOwnLineComment(c)) ?? null
+      );
     }
 
     // Validates format and reports missingExemptReason if malformed. Caches by
-    // comment identity so a comment consulted from more than one code path
-    // (the file-wide check and a per-handler check can resolve to the very
-    // same physical comment, e.g. in a file with no imports whose only
-    // statement is the exempted handler) is only ever reported once.
+    // comment identity so a comment consulted more than once — one
+    // `export const POST = …, DELETE = …` statement is visited per declarator,
+    // and each visit re-reads the same leading comment — is only ever reported
+    // once.
     const exemptValidationCache = new Map();
     function validateExempt(comment) {
       if (exemptValidationCache.has(comment)) {
@@ -77,16 +87,18 @@ module.exports = {
       return valid;
     }
 
-    // A single marker before the file's first import — or, if the file has no
-    // imports, before its first statement — covers every handler in the file.
-    // This is the only place one comment can exempt more than the handler
-    // it's directly attached to.
+    // A single marker in the file's header — above its first import — covers
+    // every handler in the file. This is the only place one comment can exempt
+    // more than the handler it's directly attached to.
+    //
+    // A file with no imports has no header to sit in: "before the first
+    // statement" is just that statement's own leading comment, and reading it
+    // as file-wide would leave the dead switch this rule closed — a marker
+    // above an unrelated `const` silently waiving the handler below it.
     function findFileWideExemptComment(program) {
-      const body = program.body;
-      if (body.length === 0) return null;
-      const firstImport = body.find((n) => n.type === "ImportDeclaration");
-      const boundary = firstImport ?? body[0];
-      return findExemptAttempt(sourceCode.getCommentsBefore(boundary));
+      const firstImport = program.body.find((n) => n.type === "ImportDeclaration");
+      if (!firstImport) return null;
+      return findExemptAttempt(sourceCode.getCommentsBefore(firstImport));
     }
 
     let hasFileWideExemptAttempt = false;

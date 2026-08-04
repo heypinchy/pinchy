@@ -49,6 +49,12 @@ tester.run("require-audit-log", rule, {
       code: `import { NextResponse } from "next/server";\n// audit-exempt: read-only forwarding, no persisted state change\nexport async function PUT(req) { return "ok"; }\nexport async function DELETE(req) { appendAuditLog({ eventType: "test" }); }`,
       filename: "/app/api/groups/route.ts",
     },
+    // A file with no imports has no header region, but a marker sitting
+    // directly above the handler still exempts that handler.
+    {
+      code: `// audit-exempt: dev-only endpoint\nexport async function POST(req) { return "ok"; }`,
+      filename: "/app/api/groups/route.ts",
+    },
   ],
   invalid: [
     {
@@ -121,6 +127,21 @@ tester.run("require-audit-log", rule, {
     // the export, with nothing in between).
     {
       code: `import { NextResponse } from "next/server";\n// audit-exempt: dev-only endpoint\nconst SOME_CONST = 1;\nexport async function POST(req) { return "ok"; }`,
+      filename: "/app/api/groups/route.ts",
+      errors: [{ messageId: "missingAuditLog" }],
+    },
+    // Same shape without imports: "before the file's first statement" is not a
+    // header region, it is just the comment on that statement. Treating it as
+    // file-wide would leave exactly the dead-switch this rule set out to close.
+    {
+      code: `// audit-exempt: dev-only endpoint\nconst SOME_CONST = 1;\nexport async function POST(req) { return "ok"; }`,
+      filename: "/app/api/groups/route.ts",
+      errors: [{ messageId: "missingAuditLog" }],
+    },
+    // A marker trailing another statement belongs to that statement, however
+    // close to the handler it lands.
+    {
+      code: `import { NextResponse } from "next/server";\nconst X = 1; // audit-exempt: reads as the handler's, belongs to the const\nexport async function POST(req) { return "ok"; }`,
       filename: "/app/api/groups/route.ts",
       errors: [{ messageId: "missingAuditLog" }],
     },
