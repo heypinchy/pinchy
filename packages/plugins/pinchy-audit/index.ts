@@ -203,12 +203,77 @@ function toolStartKey(
 }
 
 const MAX_RETRIES = 2;
+// Deliberately short: this hook runs synchronously in the tool-call path, so
+// every millisecond here is a millisecond the agent's tool call is blocked.
+const RETRY_BACKOFF_MS = 250;
+
+// Longest reason string worth putting in a warning/error. Pinchy's own API
+// errors are a short `error` string, and anything longer than this is a
+// stack trace or an HTML error page, neither of which belongs in a one-line
+// message.
+const MAX_REASON_CHARS = 200;
+
+/**
+ * Best-effort read of a rejection body, for the error/log message only.
+ * Returns an empty string if the body is unreadable — diagnosing a failure
+ * must never cause a different one. Mirrors pinchy-transcript's
+ * readErrorBody (#599: a bare status code once sent a debugging session
+ * hunting the wrong layer, when the body already named the real cause), and
+ * pinned to it by read-error-body-drift.test.ts.
+ */
+async function readErrorBody(res: { text?: () => Promise<string> }): Promise<string> {
+  try {
+    // Collapse first: a proxy answers with a multi-line HTML document, and a
+    // warning that spans lines stops being one log entry — whatever ships
+    // these logs onward indexes the fragments separately.
+    const trimmed = ((await res.text?.()) ?? "").replace(/\s+/g, " ").trim();
+    if (!trimmed) return "";
+    // Pinchy's API errors are `{"error":"…"}`; unwrap so the reason reads as a
+    // sentence rather than as JSON.
+    try {
+      const parsed = JSON.parse(trimmed) as { error?: unknown };
+      if (typeof parsed?.error === "string" && parsed.error) {
+        return parsed.error.slice(0, MAX_REASON_CHARS);
+      }
+    } catch {
+      // Not JSON (a proxy's HTML error page, say) — fall through to raw text.
+    }
+    return trimmed.slice(0, MAX_REASON_CHARS);
+  } catch {
+    return "";
+  }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Is this status one the server will answer the same way for an identical
+ * retry? True for most of 4xx — a bad payload stays bad, a revoked token stays
+ * revoked — but NOT for the two statuses whose whole meaning is "try again":
+ *
+ *   408 Request Timeout    the server gave up waiting, not a claim about us
+ *   429 Too Many Requests  load shedding, and by definition temporary
+ *
+ * The carve-out matters more here than in pinchy-transcript, which the 4xx
+ * shortcut is modelled on: transcript drops the message, this hook fails
+ * CLOSED. Calling a 429 definitive would abort the tool call of every agent
+ * for as long as Pinchy is shedding load — turning a self-healing overload
+ * into a platform-wide outage. `/api/internal/usage/record` already answers
+ * 429 from a pre-auth rate limiter, so this is one sibling route away from
+ * being live rather than hypothetical.
+ */
+function isDefinitiveRejection(status: number): boolean {
+  if (status === 408 || status === 429) return false;
+  return status >= 400 && status < 500;
+}
 
 // Bounds every attempt against a hung Pinchy container / network blackhole.
 // This hook runs before EVERY tool call of EVERY agent, so an unbounded fetch
 // here blocks all tool dispatch indefinitely. Note the worst case is this
-// times MAX_RETRIES + 1 — there is no backoff between attempts, so an
-// unreachable Pinchy costs ~30s per tool call before the hook fails closed.
+// times MAX_RETRIES + 1, plus the backoff spent between those attempts — an
+// unreachable Pinchy costs ~30.75s per tool call before the hook fails closed.
 const FETCH_TIMEOUT_MS = 10_000;
 
 async function postToolAuditEvent(
@@ -220,6 +285,8 @@ async function postToolAuditEvent(
   let lastError: Error | undefined;
 
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    let nonRetryable = false;
+
     try {
       const res = await fetch(endpoint, {
         method: "POST",
@@ -233,20 +300,52 @@ async function postToolAuditEvent(
 
       if (res.ok) return;
 
-      lastError = new Error(
-        `[pinchy-audit] audit endpoint returned ${res.status} for ${payload.phase} ${payload.toolName}`
-      );
+      // A definitive 4xx is our own bug (bad payload, revoked token, ...), not
+      // a transient fault — the server will reject an identical retry the same
+      // way, so retrying only spends this hook's tool-call-blocking window
+      // for nothing. Quote the body so the eventual error names the real
+      // reason instead of a bare status code.
+      if (isDefinitiveRejection(res.status)) {
+        const reason = await readErrorBody(res);
+        lastError = new Error(
+          `[pinchy-audit] audit endpoint rejected ${payload.phase} ${payload.toolName} (${res.status}${reason ? `: ${reason}` : ""})`
+        );
+        nonRetryable = true;
+      } else {
+        lastError = new Error(
+          `[pinchy-audit] audit endpoint returned ${res.status} for ${payload.phase} ${payload.toolName}`
+        );
+      }
     } catch (error) {
       lastError = error instanceof Error ? error : new Error(String(error));
     }
+
+    if (nonRetryable) break;
 
     if (attempt < MAX_RETRIES) {
       logger?.warn?.(
         `[pinchy-audit] audit failed (attempt ${attempt + 1}/${MAX_RETRIES + 1}), retrying: ${lastError?.message}`
       );
+      await sleep(RETRY_BACKOFF_MS * (attempt + 1));
     }
   }
 
+  // Every attempt failed (or landed on a definitive rejection above). Throwing
+  // is deliberate, not an oversight: audit is a product feature — see AGENTS.md
+  // § "API Routes And Audit Trail" — not a best-effort side channel, so a
+  // failure to record must surface rather than be swallowed.
+  //
+  // What the throw buys differs per hook, and only one of the two is genuinely
+  // fail-closed. Do not read the stronger guarantee onto both:
+  //
+  //   before_tool_call  the tool has NOT run yet, so raising here is what stops
+  //                     an un-auditable action from happening at all.
+  //   after_tool_call   the tool has ALREADY run. Nothing here can undo it; the
+  //                     throw only reports the missing end-of-call record.
+  //
+  // The tests in index.test.ts assert that this function rejects — they say
+  // nothing about how OpenClaw handles a rejecting hook, which is the runtime's
+  // contract and not ours to claim from here.
   throw lastError;
 }
 

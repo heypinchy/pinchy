@@ -599,5 +599,113 @@ describe("pinchy-audit plugin", () => {
       expect(timeoutSpy).toHaveBeenCalledWith(10_000);
       timeoutSpy.mockRestore();
     });
+
+    it("does not retry a definitive 4xx response and quotes the response body in the thrown error", async () => {
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 400,
+        text: () => Promise.resolve(JSON.stringify({ error: "unknown toolName" })),
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      const { default: plugin } = await import("./index");
+      plugin.register?.(
+        createMockApi({
+          apiBaseUrl: "http://pinchy:7777",
+          gatewayToken: "gw-token",
+        }) as any
+      );
+
+      const beforeHook = mockOn.mock.calls.find((c) => c[0] === "before_tool_call")?.[1];
+      await expect(
+        beforeHook(
+          { toolName: "pinchy_read", params: {}, runId: "run-1", toolCallId: "tool-1" },
+          { toolName: "pinchy_read" }
+        )
+      ).rejects.toThrow(/400.*unknown toolName/);
+
+      // A definitive 4xx is our own bug and retrying it never helps — one
+      // attempt only.
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+      [429, "Too Many Requests"],
+      [408, "Request Timeout"],
+    ])(
+      "retries a %i despite it being a 4xx, because the status means 'try again'",
+      async (status) => {
+        // The 4xx shortcut above must not swallow the two statuses that ask for
+        // a retry by definition. Getting this wrong is worse here than in
+        // pinchy-transcript, which drops the message: this hook fails CLOSED, so
+        // classifying a load-shedding 429 as "our own bug" would abort the tool
+        // call of every agent for as long as the shedding lasts.
+        vi.useFakeTimers();
+        try {
+          const fetchMock = vi
+            .fn()
+            .mockResolvedValueOnce({ ok: false, status })
+            .mockResolvedValueOnce({ ok: true });
+          vi.stubGlobal("fetch", fetchMock);
+
+          const { default: plugin } = await import("./index");
+          plugin.register?.(
+            createMockApi({
+              apiBaseUrl: "http://pinchy:7777",
+              gatewayToken: "gw-token",
+            }) as any
+          );
+
+          const beforeHook = mockOn.mock.calls.find((c) => c[0] === "before_tool_call")?.[1];
+          const resultPromise = beforeHook(
+            { toolName: "pinchy_read", params: {}, runId: "run-1", toolCallId: "tool-1" },
+            { toolName: "pinchy_read" }
+          );
+
+          await vi.advanceTimersByTimeAsync(250);
+          expect(fetchMock).toHaveBeenCalledTimes(2);
+          await expect(resultPromise).resolves.toBeUndefined();
+        } finally {
+          vi.useRealTimers();
+        }
+      }
+    );
+
+    it("retries a 5xx response with backoff between attempts, then succeeds", async () => {
+      vi.useFakeTimers();
+      try {
+        const fetchMock = vi
+          .fn()
+          .mockResolvedValueOnce({ ok: false, status: 503 })
+          .mockResolvedValueOnce({ ok: false, status: 503 })
+          .mockResolvedValueOnce({ ok: true });
+        vi.stubGlobal("fetch", fetchMock);
+
+        const { default: plugin } = await import("./index");
+        plugin.register?.(
+          createMockApi({
+            apiBaseUrl: "http://pinchy:7777",
+            gatewayToken: "gw-token",
+          }) as any
+        );
+
+        const beforeHook = mockOn.mock.calls.find((c) => c[0] === "before_tool_call")?.[1];
+        const resultPromise = beforeHook(
+          { toolName: "pinchy_read", params: {}, runId: "run-1", toolCallId: "tool-1" },
+          { toolName: "pinchy_read" }
+        );
+
+        // First retry waits 250ms * 1, second waits 250ms * 2 before succeeding.
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+        await vi.advanceTimersByTimeAsync(250);
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+        await vi.advanceTimersByTimeAsync(500);
+        expect(fetchMock).toHaveBeenCalledTimes(3);
+
+        await expect(resultPromise).resolves.toBeUndefined();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 });
