@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from "vitest";
-import { GraphAdapter } from "../graph-adapter.js";
+import { GraphAdapter, MAX_ATTACHMENT_RESPONSE_BYTES } from "../graph-adapter.js";
 import { resetInsecureMockWarningsForTest } from "../email-adapter.js";
 
 describe("GraphAdapter.list", () => {
@@ -461,6 +461,25 @@ describe("GraphAdapter.getAttachment", () => {
   beforeEach(() => vi.stubGlobal("fetch", vi.fn()));
   afterEach(() => vi.unstubAllGlobals());
 
+  // A real `fetch` Response ALWAYS carries a Headers object — a response with
+  // no declared Content-Length answers `headers.get("content-length") === null`,
+  // it does not lack `headers`. Mocking the latter would let the adapter get
+  // away with `res.headers?.get(...)`, i.e. an optional chain that exists only
+  // because a test lied about the shape. Every mock in this block goes through
+  // this helper so the header lookup under test is the one production performs.
+  const attachmentResponse = (opts: {
+    contentLength?: string | null;
+    json: () => Promise<unknown>;
+    body?: { cancel: () => Promise<void> };
+  }) => ({
+    ok: true,
+    headers: {
+      get: (name: string) => (name === "content-length" ? (opts.contentLength ?? null) : null),
+    },
+    body: opts.body,
+    json: opts.json,
+  });
+
   it("downloads a fileAttachment and reconstructs its raw bytes", async () => {
     const adapter = new GraphAdapter({ accessToken: "tok" });
     // Include high-bit bytes that encode to '+' and '/' in standard base64
@@ -470,18 +489,20 @@ describe("GraphAdapter.getAttachment", () => {
     // alphabets interchangeably; the adapter's choice of "base64" is a
     // correctness-of-intent signal.)
     const bytes = Buffer.concat([Buffer.from("%PDF-1.7"), Buffer.from([0xfb, 0xff, 0xbf])]);
-    (fetch as Mock).mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({
-        "@odata.type": "#microsoft.graph.fileAttachment",
-        id: "att-1",
-        name: "invoice.pdf",
-        contentType: "application/pdf",
-        size: bytes.length,
-        isInline: false,
-        contentBytes: bytes.toString("base64"),
-      }),
-    });
+    (fetch as Mock).mockResolvedValueOnce(
+      attachmentResponse({
+        contentLength: "512",
+        json: async () => ({
+          "@odata.type": "#microsoft.graph.fileAttachment",
+          id: "att-1",
+          name: "invoice.pdf",
+          contentType: "application/pdf",
+          size: bytes.length,
+          isInline: false,
+          contentBytes: bytes.toString("base64"),
+        }),
+      })
+    );
 
     const result = await adapter.getAttachment("msg1", "att-1");
 
@@ -496,15 +517,17 @@ describe("GraphAdapter.getAttachment", () => {
 
   it("URL-encodes message and attachment ids in the path", async () => {
     const adapter = new GraphAdapter({ accessToken: "tok" });
-    (fetch as Mock).mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({
-        "@odata.type": "#microsoft.graph.fileAttachment",
-        name: "f.bin",
-        contentType: "application/octet-stream",
-        contentBytes: Buffer.from("x").toString("base64"),
-      }),
-    });
+    (fetch as Mock).mockResolvedValueOnce(
+      attachmentResponse({
+        contentLength: "256",
+        json: async () => ({
+          "@odata.type": "#microsoft.graph.fileAttachment",
+          name: "f.bin",
+          contentType: "application/octet-stream",
+          contentBytes: Buffer.from("x").toString("base64"),
+        }),
+      })
+    );
 
     await adapter.getAttachment("msg/a+b", "att/c+d");
 
@@ -515,18 +538,20 @@ describe("GraphAdapter.getAttachment", () => {
 
   it("throws for an itemAttachment that has no downloadable contentBytes", async () => {
     const adapter = new GraphAdapter({ accessToken: "tok" });
-    (fetch as Mock).mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({
-        "@odata.type": "#microsoft.graph.itemAttachment",
-        id: "att-item",
-        name: "Forwarded message",
-        contentType: null,
-        size: 5000,
-        isInline: false,
-        // no contentBytes
-      }),
-    });
+    (fetch as Mock).mockResolvedValueOnce(
+      attachmentResponse({
+        contentLength: "5000",
+        json: async () => ({
+          "@odata.type": "#microsoft.graph.itemAttachment",
+          id: "att-item",
+          name: "Forwarded message",
+          contentType: null,
+          size: 5000,
+          isInline: false,
+          // no contentBytes
+        }),
+      })
+    );
 
     await expect(adapter.getAttachment("msg1", "att-item")).rejects.toThrow(/embedded item/i);
   });
@@ -547,56 +572,120 @@ describe("GraphAdapter.getAttachment", () => {
     const jsonSpy = vi.fn(async () => {
       throw new Error("res.json() must not be called for an oversized response");
     });
-    const cancelSpy = vi.fn();
-    (fetch as Mock).mockResolvedValueOnce({
-      ok: true,
-      headers: { get: (name: string) => (name === "content-length" ? "52428800" : null) }, // 50 MB
-      body: { cancel: cancelSpy },
-      json: jsonSpy,
-    });
+    const cancelSpy = vi.fn(async () => {});
+    (fetch as Mock).mockResolvedValueOnce(
+      attachmentResponse({
+        contentLength: String(50 * 1024 * 1024), // 50 MB
+        body: { cancel: cancelSpy },
+        json: jsonSpy,
+      })
+    );
 
     await expect(adapter.getAttachment("msg1", "att-huge")).rejects.toThrow(
-      /too large.*50\.0 MB.*max allowed is 40 MB/is
+      // The cap quoted back to the caller is the 25 MB ATTACHMENT limit they
+      // can act on, not the ~40 MB wire bound the check compares against.
+      /too large.*50\.0 MB.*max allowed is 25 MB/is
     );
     expect(jsonSpy).not.toHaveBeenCalled();
     expect(cancelSpy).toHaveBeenCalledTimes(1);
   });
 
-  it("does not reject a response right at the Content-Length threshold", async () => {
+  // The pair below is the actual boundary. Asserting "1000 bytes is allowed"
+  // proves nothing about where the cut sits — a `>=` typo would pass it — so
+  // these pin the exact threshold from both sides.
+  it("allows a response whose Content-Length is EXACTLY the threshold", async () => {
     const adapter = new GraphAdapter({ accessToken: "tok" });
     const bytes = Buffer.from("ok");
-    (fetch as Mock).mockResolvedValueOnce({
-      ok: true,
-      headers: { get: (name: string) => (name === "content-length" ? "1000" : null) },
-      json: async () => ({
-        "@odata.type": "#microsoft.graph.fileAttachment",
-        id: "att-small",
-        name: "small.txt",
-        contentType: "text/plain",
-        contentBytes: bytes.toString("base64"),
-      }),
-    });
+    (fetch as Mock).mockResolvedValueOnce(
+      attachmentResponse({
+        contentLength: String(MAX_ATTACHMENT_RESPONSE_BYTES),
+        json: async () => ({
+          "@odata.type": "#microsoft.graph.fileAttachment",
+          id: "att-small",
+          name: "small.txt",
+          contentType: "text/plain",
+          contentBytes: bytes.toString("base64"),
+        }),
+      })
+    );
 
     const result = await adapter.getAttachment("msg1", "att-small");
     expect(result.data.equals(bytes)).toBe(true);
   });
 
+  it("rejects a response ONE byte over the threshold", async () => {
+    const adapter = new GraphAdapter({ accessToken: "tok" });
+    const jsonSpy = vi.fn(async () => ({}));
+    (fetch as Mock).mockResolvedValueOnce(
+      attachmentResponse({
+        contentLength: String(MAX_ATTACHMENT_RESPONSE_BYTES + 1),
+        body: { cancel: vi.fn(async () => {}) },
+        json: jsonSpy,
+      })
+    );
+
+    await expect(adapter.getAttachment("msg1", "att-edge")).rejects.toThrow(/too large/i);
+    expect(jsonSpy).not.toHaveBeenCalled();
+  });
+
+  it("still reports the size when draining the oversized body fails — a stream error must not replace the diagnosis", async () => {
+    const adapter = new GraphAdapter({ accessToken: "tok" });
+    (fetch as Mock).mockResolvedValueOnce(
+      attachmentResponse({
+        contentLength: String(50 * 1024 * 1024),
+        body: {
+          cancel: vi.fn(async () => {
+            throw new Error("stream already errored");
+          }),
+        },
+        json: async () => ({}),
+      })
+    );
+
+    await expect(adapter.getAttachment("msg1", "att-huge")).rejects.toThrow(
+      /too large.*50\.0 MB/is
+    );
+  });
+
   it("proceeds to res.json() when Content-Length is absent — the post-download length check in index.ts is the fallback guard", async () => {
     const adapter = new GraphAdapter({ accessToken: "tok" });
     const bytes = Buffer.from("no content-length header here");
-    (fetch as Mock).mockResolvedValueOnce({
-      ok: true,
-      // No `headers` at all — mirrors a lenient mock/provider that omits it.
-      json: async () => ({
-        "@odata.type": "#microsoft.graph.fileAttachment",
-        id: "att-nolen",
-        name: "nolen.txt",
-        contentType: "text/plain",
-        contentBytes: bytes.toString("base64"),
-      }),
-    });
+    (fetch as Mock).mockResolvedValueOnce(
+      // A chunked-transfer response: `headers` is present, the lookup answers
+      // null. That is what "absent" looks like on the wire.
+      attachmentResponse({
+        contentLength: null,
+        json: async () => ({
+          "@odata.type": "#microsoft.graph.fileAttachment",
+          id: "att-nolen",
+          name: "nolen.txt",
+          contentType: "text/plain",
+          contentBytes: bytes.toString("base64"),
+        }),
+      })
+    );
 
     const result = await adapter.getAttachment("msg1", "att-nolen");
+    expect(result.data.equals(bytes)).toBe(true);
+  });
+
+  it("proceeds to res.json() when Content-Length is present but unparseable — a broken proxy must not become a download failure", async () => {
+    const adapter = new GraphAdapter({ accessToken: "tok" });
+    const bytes = Buffer.from("garbage header, real body");
+    (fetch as Mock).mockResolvedValueOnce(
+      attachmentResponse({
+        contentLength: "not-a-number",
+        json: async () => ({
+          "@odata.type": "#microsoft.graph.fileAttachment",
+          id: "att-nan",
+          name: "nan.txt",
+          contentType: "text/plain",
+          contentBytes: bytes.toString("base64"),
+        }),
+      })
+    );
+
+    const result = await adapter.getAttachment("msg1", "att-nan");
     expect(result.data.equals(bytes)).toBe(true);
   });
 });
@@ -1070,6 +1159,9 @@ describe("GraphAdapter request bounds", () => {
     const adapter = new GraphAdapter({ accessToken: "tok" });
     (fetch as Mock).mockResolvedValueOnce({
       ok: true,
+      // getAttachment reads Content-Length before touching the body; a real
+      // Response always has a Headers object, so the mock must too.
+      headers: { get: () => "512" },
       json: async () => ({
         name: "invoice.pdf",
         contentType: "application/pdf",

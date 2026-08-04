@@ -44,6 +44,7 @@ vi.mock("googleapis", () => {
 
 import { GmailAdapter } from "../gmail-adapter.js";
 import { google } from "googleapis";
+import { MAX_ATTACHMENT_BYTES } from "../email-adapter.js";
 
 // Helper: base64url encode a string
 function base64url(str: string): string {
@@ -703,7 +704,10 @@ describe("GmailAdapter", () => {
       expect(mockAttachmentsGet).not.toHaveBeenCalled();
     });
 
-    it("does not reject a size right at the threshold", async () => {
+    // The pair below is the actual boundary. "size: 5 is allowed" says nothing
+    // about where the cut sits — a `>=` typo would pass it — so these pin the
+    // exact cap from both sides.
+    it("allows a part whose declared size is EXACTLY MAX_ATTACHMENT_BYTES", async () => {
       mockGet.mockResolvedValue({
         data: {
           id: "msg-ok",
@@ -715,7 +719,7 @@ describe("GmailAdapter", () => {
               {
                 mimeType: "text/plain",
                 filename: "small.txt",
-                body: { attachmentId: "att-ok", size: 5 },
+                body: { attachmentId: "att-ok", size: MAX_ATTACHMENT_BYTES },
               },
             ],
             headers: [
@@ -733,6 +737,69 @@ describe("GmailAdapter", () => {
 
       const result = await adapter.getAttachment("msg-ok", "att-ok");
       expect(result.data.toString("utf-8")).toBe("hello");
+    });
+
+    it("rejects a part ONE byte over MAX_ATTACHMENT_BYTES", async () => {
+      mockGet.mockResolvedValue({
+        data: {
+          id: "msg-edge",
+          snippet: "x",
+          labelIds: [],
+          payload: {
+            mimeType: "multipart/mixed",
+            parts: [
+              {
+                mimeType: "text/plain",
+                filename: "edge.txt",
+                body: { attachmentId: "att-edge", size: MAX_ATTACHMENT_BYTES + 1 },
+              },
+            ],
+            headers: [
+              { name: "From", value: "a@b.com" },
+              { name: "To", value: "c@d.com" },
+              { name: "Subject", value: "x" },
+              { name: "Date", value: "Mon, 7 Apr 2026 10:00:00 +0000" },
+            ],
+          },
+        },
+      });
+
+      await expect(adapter.getAttachment("msg-edge", "att-edge")).rejects.toThrow(/too large/i);
+      expect(mockAttachmentsGet).not.toHaveBeenCalled();
+    });
+
+    it("downloads when the part declares no size at all — a missing signal must not block a legal attachment", async () => {
+      mockGet.mockResolvedValue({
+        data: {
+          id: "msg-nosize",
+          snippet: "x",
+          labelIds: [],
+          payload: {
+            mimeType: "multipart/mixed",
+            parts: [
+              {
+                mimeType: "text/plain",
+                filename: "nosize.txt",
+                // No `size` — index.ts's post-download check is the fallback.
+                body: { attachmentId: "att-nosize" },
+              },
+            ],
+            headers: [
+              { name: "From", value: "a@b.com" },
+              { name: "To", value: "c@d.com" },
+              { name: "Subject", value: "x" },
+              { name: "Date", value: "Mon, 7 Apr 2026 10:00:00 +0000" },
+            ],
+          },
+        },
+      });
+      mockAttachmentsGet.mockResolvedValue({
+        data: { size: 5, data: Buffer.from("hello").toString("base64url") },
+      });
+
+      const result = await adapter.getAttachment("msg-nosize", "att-nosize");
+      expect(result.data.toString("utf-8")).toBe("hello");
+      expect(mockAttachmentsGet).toHaveBeenCalledTimes(1);
     });
   });
 

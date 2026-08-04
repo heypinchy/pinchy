@@ -28,7 +28,18 @@ import type {
 // 4/3 ≈ 33.3 MB of base64 text inside the response; 40 MB leaves headroom for
 // the surrounding JSON envelope (id/name/contentType/... fields) on top of
 // that.
-const MAX_ATTACHMENT_RESPONSE_BYTES = Math.ceil((MAX_ATTACHMENT_BYTES * 4) / 3) + 7 * 1024 * 1024;
+//
+// Every source of error here points the same way — the wire size can only be
+// SMALLER than the payload this bound reasons about, never larger — so the
+// check fails open to index.ts's post-decode cap rather than rejecting a legal
+// attachment. Content-Length counts the COMPRESSED bytes when Graph answers
+// `content-encoding: gzip` (undici decompresses transparently, so `res.json()`
+// still sees the full text), and gzip on base64 recovers roughly the original
+// binary size — a 500 MB attachment still declares hundreds of MB and is still
+// caught. Exported so the tests can pin the exact boundary instead of asserting
+// a value far from it.
+export const MAX_ATTACHMENT_RESPONSE_BYTES =
+  Math.ceil((MAX_ATTACHMENT_BYTES * 4) / 3) + 7 * 1024 * 1024;
 
 const mapFolder = createFolderMapper({
   INBOX: "inbox",
@@ -281,21 +292,30 @@ export class GraphAdapter implements EmailAdapter {
 
     // Precheck against Content-Length BEFORE res.json() buffers the whole
     // body — see MAX_ATTACHMENT_RESPONSE_BYTES above. Best-effort only: a
-    // missing/absent header (chunked transfer, or a provider that omits it)
-    // falls straight through to res.json(), same as before this check
-    // existed — index.ts's post-decode length check is what protects the
-    // process in that case.
-    const declaredLength = res.headers?.get("content-length");
+    // missing header (chunked transfer, or a provider that omits it) or an
+    // unparseable one falls straight through to res.json(), same as before
+    // this check existed — index.ts's post-decode length check is what
+    // protects the process in that case.
+    const declaredLength = res.headers.get("content-length");
     if (declaredLength != null) {
       const declaredBytes = Number(declaredLength);
       if (Number.isFinite(declaredBytes) && declaredBytes > MAX_ATTACHMENT_RESPONSE_BYTES) {
         // Never read the body we just proved is too large — cancel/drain it
-        // instead of letting it sit un-consumed on the connection.
-        await res.body?.cancel?.();
+        // instead of letting it sit un-consumed on the connection. Swallow a
+        // cancel failure (an already-errored stream rejects): the caller needs
+        // the size diagnosis below, not a stream error that hides it.
+        await res.body?.cancel().catch(() => {});
+        // Report the cap the CALLER can act on (the 25 MB attachment limit),
+        // not the ~40 MB wire bound this check actually compares against —
+        // MAX_ATTACHMENT_RESPONSE_BYTES is a base64-inflated derivative of it,
+        // and an agent told "max allowed is 40 MB" would reasonably conclude a
+        // 30 MB attachment is fine when index.ts will reject it too.
         const declaredMb = (declaredBytes / 1024 / 1024).toFixed(1);
-        const maxMb = (MAX_ATTACHMENT_RESPONSE_BYTES / 1024 / 1024).toFixed(0);
+        const maxMb = (MAX_ATTACHMENT_BYTES / 1024 / 1024).toFixed(0);
         throw new Error(
-          `Attachment response too large: ${declaredMb} MB, max allowed is ${maxMb} MB.`
+          `Attachment too large: the provider's response declares ${declaredMb} MB on the wire ` +
+            `(base64-encoded), over the ceiling a ${maxMb} MB attachment can occupy. ` +
+            `Max allowed is ${maxMb} MB.`
         );
       }
     }
