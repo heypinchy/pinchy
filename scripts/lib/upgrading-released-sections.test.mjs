@@ -129,20 +129,28 @@ test("noteHeadings ignores a `####` inside a code fence", () => {
   assert.deepEqual(noteHeadings(body), ["A real note"]);
 });
 
-test("maskFencedBlocks closes only on a fence at least as long as the opener", () => {
-  // Prettier writes ````markdown when the sample itself contains ```. A
-  // three-backtick line inside that block must not close it.
-  const masked = maskFencedBlocks(
-    ["````markdown", "```", "## Inside", "````", "## Outside"].join("\n"),
-  );
-  assert.doesNotMatch(masked, /## Inside/);
-  assert.match(masked, /## Outside/);
-  assert.equal(
-    masked.length,
-    ["````markdown", "```", "## Inside", "````", "## Outside"].join("\n")
-      .length,
-    "the mask must preserve length so indices still address the original",
-  );
+// Prettier writes ````markdown when the sample itself contains ```, so the
+// nesting this file's own fixtures reach is real. The masking itself — fence
+// lengths, `~~~`, the unclosed case, length preservation — is unit-tested in
+// mdx-fences.test.mjs, which is also where the release script reads it from.
+test("parseUpgradeSections is not fooled by a ``` nested inside a ```` fence", () => {
+  const mdx = [
+    "## Upgrading from v0.8.0 to v0.9.0",
+    "",
+    "````markdown",
+    "```",
+    "## Inside",
+    "````",
+    "",
+    "Still v0.9.0.",
+    "",
+    "## Upgrading from v0.7.0 to v0.8.0",
+    "",
+    "Older.",
+  ].join("\n");
+  const [section] = parseUpgradeSections(mdx);
+  assert.match(section.body, /Still v0\.9\.0\./);
+  assert.doesNotMatch(section.body, /Older\./);
 });
 
 // ─── normalizeSectionBody ────────────────────────────────────────────────────
