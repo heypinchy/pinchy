@@ -185,7 +185,7 @@ If you need to roll back after an upgrade:
   backup step matters.
 </Aside>
 
-## Upgrading from v0.9.0 to %%PINCHY_VERSION%%
+## Upgrading from v0.9.1 to %%PINCHY_VERSION%%
 
 ### Breaking changes
 
@@ -231,15 +231,9 @@ The SSRF guard on the Odoo connection routes only ever read the hostname as a st
 
 That closes the hole, and it also catches a setup that used to work by accident: **an on-premise Odoo reached by a hostname that resolves into your own network** — `erp.internal:8069` on `10.x`, `172.16–31.x`, `192.168.x` or an IPv6 unique-local range. Typing its IP address directly was already refused; the hostname now is too. The refusal says so and names the fix — set `ALLOW_PRIVATE_URLS=1` on the Pinchy container and restart it. Nothing to change if your Odoo is reachable at a public address, which includes every `odoo.com` instance. See [Odoo on your own network](/guides/connect-odoo/#odoo-on-your-own-network).
 
-#### A provider key that can't reach the runtime now says so
-
-Pinchy and the agent runtime share one config volume under two different users, and each agent has a directory in it that both of them write to. If the runtime got there first, the directory came out owned by the wrong user and Pinchy could no longer store that agent's credentials — which stopped the whole config from reaching the runtime. The agent then simply stopped answering, with the real reason only in `docker compose logs pinchy`.
-
-The runtime now hands that directory back on start and on every tick, so the case should not arise. If it ever does, saving a provider key tells you plainly that it saved but couldn't be applied, and the affected agent says it has no API key instead of going quiet. Nothing to configure.
-
 #### An agent that couldn't save, or couldn't see its mailbox, can again
 
-The same shared-volume mix-up as above reached the agent's workspace, where the files that brief an agent live. If the runtime created one of them first, it came out owned by the wrong user, and from then on Pinchy couldn't write it — which stopped the whole config from reaching the runtime.
+The shared-volume mix-up that [v0.9.1 fixed for provider keys](#a-provider-key-that-cant-reach-the-runtime-now-says-so) also reached the agent's workspace, where the files that brief an agent live. Pinchy and the runtime share one config volume under two different users; if the runtime created one of those files first, it came out owned by the wrong user, and from then on Pinchy couldn't write it — which stopped the whole config from reaching the runtime.
 
 Two symptoms, one cause, and they didn't look related. Saving an agent's settings failed with "Failed to save some settings" and nothing more. And an agent with a connected mailbox insisted it had no email access at all — truthfully, because its email tools never reached the runtime either, while the **Permissions** tab showed the connection saved.
 
@@ -289,6 +283,78 @@ Nine migrations (`0056`–`0064`) run automatically on startup — no manual ste
 - `0061`, `0062` — a Knowledge Base chunk is anchored by a **locator** (slide, sheet and row range, heading path) instead of a page number, since only PDFs have pages; `0062` drops the old `page` column once `0061` has carried every anchor across.
 - `0063` — byte-level progress on index jobs (`total_bytes`, `processed_bytes`) backing the reindex progress bar and its estimate.
 - `0064` — `run_started_at` and `show_banner` on `chat_session_errors`, so a run failure's banner can be dismissed and re-armed per run.
+
+## Upgrading from v0.9.0 to v0.9.1
+
+### Breaking changes
+
+None. This is a bugfix release: no schema migration, no compose change, no configuration you have to touch. The standard flow is the whole upgrade:
+
+```bash
+cd /opt/pinchy
+sed -i 's/^PINCHY_VERSION=.*/PINCHY_VERSION=v0.9.1/' .env
+docker compose pull && docker compose up -d && docker image prune -f
+```
+
+### Upgrade notes
+
+#### The domain lock no longer turns away Pinchy's own plugins
+
+The one to upgrade for if you have locked your domain — which the [hardening guide](/guides/hardening/) tells you to do. The host check waved internal plugin routes through by naming them one at a time, and the list had fallen behind the code. Three routes were missing from it, so on a domain-locked instance each was answered `403 Forbidden: request host does not match the configured domain`:
+
+- `/api/internal/knowledge/search` — **the knowledge base did not work at all.** Every `knowledge_search` failed, and a knowledge-base agent could only tell you it couldn't reach its documents.
+- `/api/internal/channel-messages` — Telegram conversations were not captured into Pinchy's own store, so a chat could be listed and then open empty.
+- `/api/internal/integrations/:id/report-auth-failure` — an integration whose credentials had expired could not say so.
+
+None of this was visible: the plugins reach Pinchy on a Docker-internal hostname that by construction never matches your public domain, and a rejected request left no trace on the Pinchy side. Both are fixed. The whole `/api/internal/` prefix is now exempt by rule rather than by list, so a future plugin route cannot go missing the same way, and a blocked `/api/` request writes an `auth.host_blocked` audit row.
+
+Nothing to configure. **If you run with a domain lock, re-index your knowledge-base agents after upgrading** — indexing itself was never blocked, but if you tried and gave up, this is why.
+
+#### The internal credentials endpoint now checks which agent is asking
+
+Worth upgrading for on a multi-agent instance. `GET /api/internal/integrations/:connectionId/credentials` authorized on the gateway token alone. That token is a single shared secret inlined into every plugin's config, so it proved that _something inside the OpenClaw container_ was asking — and nothing about whether the caller had a claim to the connection it named. A plugin could name any connection id and receive decrypted credentials belonging to a different agent.
+
+Callers now identify their agent and the grant is verified **before** anything is decrypted. Nothing to configure; the plugins in this release pass the identity themselves. A refused request is audited as `integration.credentials_denied`, carrying the agent, the connection id, and whether the agent was unknown or simply not granted — worth a look after upgrading if you run agents with different connection scopes.
+
+#### Chat now survives a backgrounded tab
+
+If you use Pinchy on a phone, as an installed PWA, or just leave a tab in the background, the chat connection could come back in a state where the thread was missing recent messages until you reloaded. The websocket now pauses its reconnect loop while the tab is hidden, closes cleanly after a grace period, resumes the moment the tab is visible again, and reconciles the thread history over the connection it already has. A request for that history is bounded by a deadline, so a stall surfaces as an error instead of an empty thread that looks like a lost conversation.
+
+#### The security banner no longer fires on a local install
+
+Running on `http://localhost` produced a red banner telling you to lock your domain for HTTPS hardening — advice you cannot act on, because there is no domain and the browser already treats `localhost` as a secure context. The banner now reads the request origin rather than the build mode, so it stays silent on loopback and still appears on a production deployment that happens to boot in development mode.
+
+#### A failed migration says what failed
+
+The boot migration reported a guess at which file had broken, derived from a count rather than from the failure itself. It now names the target and reports the actual error. Mechanically, the boot step moved from the `drizzle-kit` CLI, which swallowed failures, to drizzle-orm's own migrator (`scripts/db-migrate.mjs`); nothing changes for you at upgrade time.
+
+#### Audit-chain verification no longer steps over rows
+
+The verify sweep could skip rows written while it was running, and its checkpoint could stall when the concurrency probe failed. Both are fixed. If you have been running periodic verification, earlier "clean" results covered slightly less than they claimed — re-run a full verification once after upgrading if you rely on those reports.
+
+#### A provider key that can't reach the runtime now says so
+
+Pinchy and the agent runtime share one config volume under two different users, and each agent has a directory in it that both of them write to. If the runtime got there first, the directory came out owned by the wrong user and Pinchy could no longer store that agent's credentials — which stopped the whole config from reaching the runtime. The agent then simply stopped answering, with the real reason only in `docker compose logs pinchy`.
+
+The runtime now hands that directory back on start and on every tick, so the case should not arise. If it ever does, saving a provider key tells you plainly that it saved but couldn't be applied, and the affected agent says it has no API key instead of going quiet. Nothing to configure.
+
+#### Knowledge-base agents created before this upgrade need one edit
+
+Knowledge-base agents were set up with an instruction to list and read their files before answering. That instruction outranked the template's own "search first", so the agent walked the folder tree instead of searching — and answers assembled from whole files carry no citation numbers, because those come from retrieval, not from reading a file.
+
+How far it goes depends on the model. A strong one obeys both instructions: it lists the folder first and then searches anyway, so the answer still cites and the only cost is a wasted tool call on every question. A weaker one stops at the file it found. Either way the instruction is pulling against the agent's own job, so it is worth removing even from an agent that looks fine.
+
+New agents no longer get that instruction. **Existing ones keep it**: their operating instructions were written once, at creation, and an upgrade does not rewrite them. To check an agent, ask it something and look at **Audit Trail** — a `tool.pinchy_ls` before its `tool.knowledge_search` is the instruction at work. To fix it, open **Agent → Settings → Instructions** and shorten its `## File Access` block to what a new agent gets:
+
+```markdown
+## Document Access
+
+Your documents are in:
+
+- `/data/handbook`
+```
+
+Keep whichever paths the old block listed — the agent still needs to know where its documents live. What goes is the numbered "Always start with `pinchy_ls`" workflow below them. Nothing else needs to change; the tools describe themselves, and `knowledge_search` states its own priority.
 
 ## Upgrading from v0.8.0 to v0.9.0
 
