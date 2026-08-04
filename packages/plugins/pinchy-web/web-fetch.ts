@@ -167,7 +167,11 @@ function normalizeHostname(hostname: string): string {
   return hostname.toLowerCase().replace(/\.$/, "");
 }
 
-function checkDomainAllowed(
+// Exported for reuse by brave-search.ts, which post-filters search results by
+// hostname against the same allowedDomains/excludedDomains config (the
+// `site:` operator concatenated into the search query is only a best-effort
+// hint to Brave, not enforcement — see the comment in braveSearch()).
+export function checkDomainAllowed(
   hostname: string,
   config: Pick<WebFetchConfig, "allowedDomains" | "excludedDomains">
 ): string | null {

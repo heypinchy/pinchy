@@ -205,4 +205,82 @@ describe("braveSearch", () => {
     expect(timeoutSpy).toHaveBeenCalledWith(30_000);
     timeoutSpy.mockRestore();
   });
+
+  describe("result-side domain post-filtering", () => {
+    // The `site:` operator concatenated into the query above is only a
+    // best-effort hint to Brave. The model controls the free-text part of the
+    // query and can inject its own `site:`/`-site:` operators, whose
+    // interaction with ours under multiple competing site: groups is
+    // unspecified — so a result outside the configured domains can still come
+    // back. These results are filtered by hostname before being handed to the
+    // model, using the same allow/exclude semantics as pinchy_web_fetch.
+
+    it("drops a result outside the allowed domains even though the query used site:", async () => {
+      mockSuccessResponse([
+        { title: "Good", url: "https://github.com/foo", description: "d1" },
+        { title: "Bad", url: "https://evil.com/bar", description: "d2" },
+      ]);
+
+      const { results } = await braveSearch("original query", {
+        apiKey: "key",
+        allowedDomains: ["github.com"],
+      });
+
+      expect(results.map((r) => r.url)).toEqual(["https://github.com/foo"]);
+    });
+
+    it("drops a result from an excluded domain", async () => {
+      mockSuccessResponse([
+        { title: "Reddit", url: "https://reddit.com/r/foo", description: "d1" },
+        { title: "Other", url: "https://example.com/bar", description: "d2" },
+      ]);
+
+      const { results } = await braveSearch("query", {
+        apiKey: "key",
+        excludedDomains: ["reddit.com"],
+      });
+
+      expect(results.map((r) => r.url)).toEqual(["https://example.com/bar"]);
+    });
+
+    it("keeps a result on a subdomain of an allowed domain", async () => {
+      mockSuccessResponse([
+        { title: "Sub", url: "https://docs.github.com/foo", description: "d1" },
+      ]);
+
+      const { results } = await braveSearch("query", {
+        apiKey: "key",
+        allowedDomains: ["github.com"],
+      });
+
+      expect(results.map((r) => r.url)).toEqual(["https://docs.github.com/foo"]);
+    });
+
+    it("reports how many results were filtered out", async () => {
+      mockSuccessResponse([
+        { title: "Good", url: "https://github.com/foo", description: "d1" },
+        { title: "Bad1", url: "https://evil.com/bar", description: "d2" },
+        { title: "Bad2", url: "https://evil2.com/bar", description: "d3" },
+      ]);
+
+      const { filteredCount } = await braveSearch("query", {
+        apiKey: "key",
+        allowedDomains: ["github.com"],
+      });
+
+      expect(filteredCount).toBe(2);
+    });
+
+    it("leaves results and filteredCount untouched when no domain filters are configured", async () => {
+      mockSuccessResponse([
+        { title: "A", url: "https://any.com/1", description: "d1" },
+        { title: "B", url: "https://other.com/2", description: "d2" },
+      ]);
+
+      const { results, filteredCount } = await braveSearch("query", { apiKey: "key" });
+
+      expect(results).toHaveLength(2);
+      expect(filteredCount).toBeUndefined();
+    });
+  });
 });

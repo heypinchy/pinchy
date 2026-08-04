@@ -427,6 +427,48 @@ describe("pinchy-web plugin", () => {
       expect(reportCalls).toHaveLength(0);
     });
 
+    it("appends a note to the tool result when results were filtered by domain", async () => {
+      const mockResults = [
+        { title: "Result 1", url: "https://github.com/1", description: "Desc 1" },
+      ];
+      braveSearchMock.mockResolvedValue({ results: mockResults, filteredCount: 2 });
+      stubCredentialsFetch("brave-key-123");
+
+      const factories = collectFactories(
+        credentialsPluginConfig({
+          "agent-1": { tools: ["pinchy_web_search"], allowedDomains: ["github.com"] },
+        })
+      );
+
+      const tool = factories.pinchy_web_search({ agentId: "agent-1" })!;
+      const result = await tool.execute("call-1", { query: "test query" });
+
+      expect(result.isError).toBeUndefined();
+      expect(result.content[0].text).toContain(
+        "2 results outside the allowed domains were filtered"
+      );
+    });
+
+    it("does not append a filtering note when nothing was filtered", async () => {
+      const mockResults = [
+        { title: "Result 1", url: "https://example.com", description: "Desc 1" },
+      ];
+      braveSearchMock.mockResolvedValue({ results: mockResults });
+      stubCredentialsFetch("brave-key-123");
+
+      const factories = collectFactories(
+        credentialsPluginConfig({
+          "agent-1": { tools: ["pinchy_web_search"] },
+        })
+      );
+
+      const tool = factories.pinchy_web_search({ agentId: "agent-1" })!;
+      const result = await tool.execute("call-1", { query: "test query" });
+
+      expect(result.content[0].text).not.toContain("filtered");
+      expect(JSON.parse(result.content[0].text)).toEqual(mockResults);
+    });
+
     it("handles non-Error throws from braveSearch", async () => {
       braveSearchMock.mockRejectedValue("string error");
       stubCredentialsFetch("brave-key-123");

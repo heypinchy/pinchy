@@ -1,3 +1,5 @@
+import { checkDomainAllowed } from "./web-fetch.js";
+
 // External API call — bounds a hung Brave endpoint / network blackhole.
 // Matches web-fetch.ts's external-call timeout.
 const FETCH_TIMEOUT_MS = 30_000;
@@ -21,7 +23,7 @@ export interface BraveSearchResult {
 export async function braveSearch(
   query: string,
   config: BraveSearchConfig
-): Promise<{ results: BraveSearchResult[] }> {
+): Promise<{ results: BraveSearchResult[]; filteredCount?: number }> {
   if (!config.apiKey) {
     throw new Error(
       "Brave Search API key is required. Configure it in Pinchy integration settings."
@@ -73,12 +75,42 @@ export async function braveSearch(
   }
 
   const data = await res.json();
-  const results = (data.web?.results ?? []).map((r: Record<string, unknown>) => ({
-    title: r.title as string,
-    url: r.url as string,
-    description: r.description as string,
-    extra_snippets: r.extra_snippets as string[] | undefined,
-  }));
+  const rawResults: BraveSearchResult[] = (data.web?.results ?? []).map(
+    (r: Record<string, unknown>) => ({
+      title: r.title as string,
+      url: r.url as string,
+      description: r.description as string,
+      extra_snippets: r.extra_snippets as string[] | undefined,
+    })
+  );
 
-  return { results };
+  // The `site:`/`-site:` operators concatenated into the query above are a
+  // best-effort hint to Brave, not enforcement: the model controls the
+  // free-text part of the query and can append its own site: operators, and
+  // Brave's behavior with multiple competing site: groups in one query is
+  // unspecified. So filter results by hostname here too, using the exact
+  // same allow/exclude + subdomain semantics as pinchy_web_fetch, before
+  // handing anything to the model.
+  if (!config.allowedDomains?.length && !config.excludedDomains?.length) {
+    return { results: rawResults };
+  }
+
+  let filteredCount = 0;
+  const results = rawResults.filter((r) => {
+    let hostname: string;
+    try {
+      hostname = new URL(r.url).hostname;
+    } catch {
+      // Unparseable URL — can't verify it's in scope, so drop it.
+      filteredCount++;
+      return false;
+    }
+    if (checkDomainAllowed(hostname, config)) {
+      filteredCount++;
+      return false;
+    }
+    return true;
+  });
+
+  return { results, filteredCount: filteredCount || undefined };
 }

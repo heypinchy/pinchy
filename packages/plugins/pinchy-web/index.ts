@@ -251,11 +251,14 @@ const plugin = {
                 };
                 return braveSearch(params.query as string, searchConfig);
               });
+              const filterNote = result.filteredCount
+                ? `\n\n(${result.filteredCount} result${result.filteredCount === 1 ? "" : "s"} outside the allowed domains were filtered out.)`
+                : "";
               return {
                 content: [
                   {
                     type: "text",
-                    text: JSON.stringify(result.results, null, 2),
+                    text: JSON.stringify(result.results, null, 2) + filterNote,
                   },
                 ],
               };
