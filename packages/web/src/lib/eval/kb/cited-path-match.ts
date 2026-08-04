@@ -13,6 +13,19 @@
  * model writes is not a path: it arrives wrapped in a code span, followed by a
  * quoted passage, or glossed in prose. None of that changes which document is
  * named; a character that continues a path segment does.
+ *
+ * WHAT THIS DELIBERATELY DOES NOT CATCH, stated rather than left to be
+ * rediscovered: the whole entry is scanned, so an entry whose own path is
+ * fabricated resolves anyway if a real path appears ANYWHERE else in it —
+ * `fabricated.md — "as stated in handbook-2012/policy.md, …"` matches the
+ * handbook. Scanning the whole entry is precisely what makes the shapes the
+ * sweep really produced work (a leading code span, a trailing gloss, a
+ * `(undefined):` between path and quote), and the alternative — read only the
+ * entry's first token — would drop `see /data/deep/policy.md`, which
+ * `kb-resolve-cited-paths.test.ts` pins because groundedness hands this
+ * function whole prose entries. So this is a bounded hole in the FABRICATION
+ * direction, kept on purpose: it needs a model to quote a second, real path
+ * beside its invented one, and nothing in the 43 archived sweep answers does.
  */
 
 /**
@@ -27,7 +40,7 @@
  * the `/` the entry does have, and a correctly-cited absolute path would be
  * thrown out as over-qualified.
  */
-export function pathSuffixes(sourcePath: string): string[] {
+function pathSuffixes(sourcePath: string): string[] {
   const segments = sourcePath.split("/").filter(Boolean);
   const suffixes = segments.map((_, i) => segments.slice(segments.length - 1 - i).join("/"));
   if (sourcePath.startsWith("/")) suffixes.push(`/${segments.join("/")}`);
@@ -52,7 +65,7 @@ const SEGMENT_CHAR_BEFORE = /[A-Za-z0-9._/-]/;
 const SEGMENT_CHAR_AFTER = /[A-Za-z0-9_-]/;
 
 /** Whether `suffix` occurs in `entry` as a whole path segment, not mid-name. */
-export function mentionsSuffix(entry: string, suffix: string): boolean {
+function mentionsSuffix(entry: string, suffix: string): boolean {
   // Every occurrence, not just the first: an entry may name the document twice
   // and only the second one sit at a boundary.
   let at = entry.indexOf(suffix);
@@ -66,7 +79,7 @@ export function mentionsSuffix(entry: string, suffix: string): boolean {
 }
 
 /** The longest suffix of `sourcePath` that `entry` names, or "" for none. */
-export function longestSuffixIn(entry: string, sourcePath: string): string {
+function longestSuffixIn(entry: string, sourcePath: string): string {
   let best = "";
   for (const suffix of pathSuffixes(sourcePath)) {
     if (suffix.length > best.length && mentionsSuffix(entry, suffix)) best = suffix;

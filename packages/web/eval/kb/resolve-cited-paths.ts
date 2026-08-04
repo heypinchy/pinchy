@@ -21,6 +21,10 @@
  * with that axis — see its header for why one implementation rather than two.
  */
 
+// Relative, not `@/`: this is a VALUE import, and the alias is only safe in
+// `eval/` for `import type` (which erases). `run-eval.ts` reaches into `src/`
+// the same way, for the same reason — a Playwright spec loads these files
+// directly.
 import { matchRetrievedDocument } from "../../src/lib/eval/kb/cited-path-match";
 
 export function resolveCitedSourcePaths(

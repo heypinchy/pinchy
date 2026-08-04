@@ -33,6 +33,7 @@
 import { describe, expect, it } from "vitest";
 
 import { resolveCitedSourcePaths } from "../../../../eval/kb/resolve-cited-paths";
+import { citedSourcePaths, gradePathCitation } from "@/lib/eval/kb/attribution-graders";
 
 const RETRIEVED = [
   { sourcePath: "/data/it-equipment-policy.md" },
@@ -138,5 +139,74 @@ describe("resolveCitedSourcePaths", () => {
 
   it("returns nothing when the search returned nothing", () => {
     expect(resolveCitedSourcePaths(["it-equipment-policy.md"], [])).toEqual([]);
+  });
+});
+
+/**
+ * The two readers of `matchRetrievedDocument`, asked the same question.
+ *
+ * Sharing one implementation is the point of `cited-path-match.ts`, and until
+ * this block nothing failed if someone gave either side a local copy back. The
+ * disagreement would not read as a harness bug either — it would be booked
+ * against the MODEL: an answer graded as citing a fabricated path while its
+ * premise material resolved fine, or one whose citation axis reads green while
+ * `citedPassageTexts` comes back empty and the NLI judge's conservative
+ * fallback charges every sentence `ungrounded-claim`. That is exactly the shape
+ * of #869, which cost a whole sweep.
+ *
+ * `citedSourcePaths` is what the real sweep hands the resolver
+ * (`kb-eval-models.spec.ts`), so the two sides here get the same string from
+ * the same parser — the wiring, not a re-statement of it.
+ */
+describe("gradePathCitation and resolveCitedSourcePaths agree on which document an entry names", () => {
+  const answerCiting = (entry: string) => `X [1].\n\n**Sources:**\n\n- [1] ${entry}`;
+
+  const resolvesFor = (entry: string, retrieved: { sourcePath: string }[]) =>
+    resolveCitedSourcePaths(citedSourcePaths(answerCiting(entry)), retrieved);
+
+  const graded = (entry: string, retrieved: { sourcePath: string }[]) =>
+    gradePathCitation({
+      answer: answerCiting(entry),
+      retrieved: retrieved.map((source, i) => ({
+        n: i + 1,
+        sourcePath: source.sourcePath,
+        page: 1,
+      })),
+    });
+
+  it.each([
+    ["the citation path the tool printed", "it-equipment-policy.md"],
+    ["the absolute path", "/data/it-equipment-policy.md"],
+    ["the path from the mount", "data/it-equipment-policy.md"],
+    ["a code span and a quoted passage", '`it-equipment-policy.md`: "…3-year refresh cycle."'],
+    ["a folder-qualified sibling", 'handbook-2012/policy.md — "the per diem was increased"'],
+  ])("a citation graded PASS resolves to one document (%s)", (_label, entry) => {
+    expect(graded(entry, RETRIEVED).passed).toBe(true);
+    expect(resolvesFor(entry, RETRIEVED)).toHaveLength(1);
+  });
+
+  it.each([
+    ["a shared bare basename", "policy.md"],
+    ["a path the search never returned", "invented-policy.md"],
+    ["a name that merely ends with a real one", "`my-it-equipment-policy.md`"],
+    ["an invented parent folder", "old-handbook-2012/policy.md"],
+  ])("a citation that resolves to nothing is graded FAIL (%s)", (_label, entry) => {
+    expect(resolvesFor(entry, RETRIEVED)).toEqual([]);
+    expect(graded(entry, RETRIEVED).tags).toEqual(["path-not-cited"]);
+  });
+
+  it("keeps the one asymmetry the two sides are meant to have", () => {
+    // An unambiguous PARTIAL path: the reader cannot act on `OLD/…` alone, so
+    // the citation axis charges it — but it names one document and nothing
+    // else, so groundedness may check the claim against that document's
+    // passages rather than fall back to "unsupported". Collapsing the two into
+    // one verdict would either excuse an unusable citation or withhold premise
+    // material from a claim whose source is not in doubt.
+    const retrieved = [{ sourcePath: "/data/quality/OLD/afnor-certificate-2013.md" }];
+
+    expect(graded("OLD/afnor-certificate-2013.md", retrieved).tags).toEqual(["path-not-cited"]);
+    expect(resolvesFor("OLD/afnor-certificate-2013.md", retrieved)).toEqual([
+      "/data/quality/OLD/afnor-certificate-2013.md",
+    ]);
   });
 });

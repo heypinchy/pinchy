@@ -94,10 +94,10 @@ export async function gradeAnswerRelevance(
  * model fabricated a citation.
  *
  * REUSE, not reimplementation: this is exactly `gradePathCitation`'s "cited
- * path not in retrieved" half — same Sources-list parsing, same regex, same
- * `path-not-cited` tag (the closest `KbFailureTag`: "citation used a path
- * not actually available"). The two call sites differ only in INTENT and in
- * what `retrieved` they are handed:
+ * path not in retrieved" half — same Sources-list parsing, same document
+ * matching (`cited-path-match.ts`), same `path-not-cited` tag (the closest
+ * `KbFailureTag`: "citation used a path not actually available"). The two call
+ * sites differ only in INTENT and in what `retrieved` they are handed:
  *   - `gradeAttribution`'s `gradePathCitation` is a Layer-2 integrity check,
  *     grading the answer against whatever `retrieved` set a caller supplies
  *     (in unit tests, often a hand-built fixture).

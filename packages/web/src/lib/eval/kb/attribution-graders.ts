@@ -332,9 +332,9 @@ export function gradeCitationResolution(input: AttributionInput): KbGraderResult
  *
  * The rule is "as much path as the document HAS", not "contains a slash". The
  * first real Layer-3 sweep (#869) charged 19 of 43 runs here, and not one of
- * them named an unretrieved document: 12 of that corpus's 15 documents sit at
+ * them named an unretrieved document: 12 of that corpus's 16 documents sit at
  * the data root, so their full citation path IS the bare filename, and the
- * slash test failed four correct citations in five. A citation-integrity axis
+ * slash test failed three correct citations in four. A citation-integrity axis
  * reading zero precisely when citation integrity is fine is worse than no axis.
  *
  * Matching is delegated to `cited-path-match.ts`, shared with the groundedness
@@ -357,20 +357,28 @@ export function gradePathCitation(input: AttributionInput): KbGraderResult {
       );
       continue;
     }
-    // Compared in CITATION form on both sides. `retrieved` is built from the
-    // audit row, which records the absolute sourcePath because that is a
-    // document's identity; the answer reproduces what `knowledge_search`
-    // printed, which is data-root-relative (#933). `toCitationPath` is a no-op
-    // on a path that is already relative, so an answer echoing either form
-    // still counts as naming the whole path.
+    // The bar is the CITATION path: `retrieved` is built from the audit row,
+    // which records the absolute sourcePath because that is a document's
+    // identity, while the answer reproduces what `knowledge_search` printed,
+    // which is data-root-relative (#933).
+    //
+    // Compared by LENGTH, not by equality of two normalized strings. What the
+    // entry named is always one of `sourcePath`'s segment-boundary suffixes,
+    // and those are nested — so "at least as long as the citation path" IS
+    // "contains the whole citation path", for every form of it at once. An
+    // answer echoing the absolute `/data/handbook-2012/policy.md`, or the
+    // mount-relative `data/handbook-2012/policy.md`, named the whole document
+    // and more; normalizing the two sides instead let the first through
+    // (`toCitationPath` strips the `/data/`) and charged the second as a
+    // "partial path" it is the opposite of — the #869 false alarm one shape
+    // narrower, wearing a note that says the reverse of what happened.
     const full = toCitationPath(match.sourcePath);
-    const named = toCitationPath(match.named);
-    if (named === full) continue;
+    if (match.named.length >= full.length) continue;
 
     notes.push(
-      named.includes("/")
-        ? `Sources entry [${entry.n}] cites the partial path "${named}" instead of the full path "${full}" knowledge_search returned.`
-        : `Sources entry [${entry.n}] cites the bare filename "${named}" instead of the full path "${full}" knowledge_search returned.`
+      match.named.includes("/")
+        ? `Sources entry [${entry.n}] cites the partial path "${match.named}" instead of the full path "${full}" knowledge_search returned.`
+        : `Sources entry [${entry.n}] cites the bare filename "${match.named}" instead of the full path "${full}" knowledge_search returned.`
     );
   }
 

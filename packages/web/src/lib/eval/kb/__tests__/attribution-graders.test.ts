@@ -325,6 +325,25 @@ describe("gradePathCitation against the shapes the first real sweep produced", (
     expect(result.tags).toEqual(["path-not-cited"]);
   });
 
+  // The mount-relative form is the third way to spell the same whole path, and
+  // it is the one an equality check between two normalized strings misses:
+  // `toCitationPath` strips a LEADING "/data/", so the absolute form folds onto
+  // the citation path and this one does not. It was charged as a "partial path"
+  // — the exact opposite of what it is, since it names the whole document and
+  // the mount besides.
+  it("passes an entry that spells the path out from the mount, without a leading slash", () => {
+    const input: AttributionInput = {
+      answer: `X [1].
+
+**Sources:**
+
+- [1] data/quality/afnor-certificate-2024.md`,
+      retrieved: [src(1, "/data/quality/afnor-certificate-2024.md")],
+    };
+
+    expect(gradePathCitation(input)).toEqual<KbGraderResult>({ passed: true, tags: [], notes: [] });
+  });
+
   // A basename two retrieved documents share names neither of them. This is
   // the ambiguity the axis exists to catch, and it must survive both fixes.
   it("flags a filename that two retrieved documents share", () => {
