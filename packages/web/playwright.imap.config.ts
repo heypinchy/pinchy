@@ -1,5 +1,7 @@
 import { defineConfig } from "@playwright/test";
 
+import { IMAP_ONLY_SPEC_MATCH } from "./e2e/email/imap-spec-patterns";
+
 /**
  * Playwright config for pinchy-email (IMAP/SMTP) E2E.
  * Assumes the full Docker stack with greenmail + imap-mock is already running:
@@ -7,7 +9,9 @@ import { defineConfig } from "@playwright/test";
  */
 export default defineConfig({
   testDir: "./e2e/email",
-  testMatch: /(email-imap|inbox-sweep)\.spec\.ts/,
+  // See e2e/email/imap-spec-patterns.ts — this must claim exactly the specs
+  // playwright.email.config.ts ignores. Both configs read the same module.
+  testMatch: IMAP_ONLY_SPEC_MATCH,
   fullyParallel: false,
   retries: 0,
   workers: 1,

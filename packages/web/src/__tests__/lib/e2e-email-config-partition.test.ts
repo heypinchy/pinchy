@@ -22,6 +22,7 @@ import { join } from "path";
 
 import { describe, it, expect } from "vitest";
 
+import { IMAP_ONLY_SPEC_FILES, IMAP_ONLY_SPEC_MATCH } from "../../../e2e/email/imap-spec-patterns";
 import emailConfig from "../../../playwright.email.config";
 import imapConfig from "../../../playwright.imap.config";
 
@@ -96,5 +97,16 @@ describe("e2e/email is partitioned between the two Playwright configs", () => {
         `playwright.email.config.ts ignores "${ignored}", but playwright.imap.config.ts does not claim it — no job runs this spec`
       ).toBe(true);
     }
+  });
+
+  it("reads the partition from the shared e2e/email/imap-spec-patterns module, not two hand-maintained lists", () => {
+    // The two checks above prove the configs agree. This one proves *why* they
+    // agree: both derive testIgnore/testMatch from the same constants rather
+    // than two lists that happen to match today. Without this, a revert to a
+    // literal duplicate array would pass the checks above and reintroduce the
+    // mirror AGENTS.md's "A Hand-Maintained List That Mirrors Code Will Be
+    // Wrong" warns about.
+    expect(emailIgnoreList()).toEqual([...IMAP_ONLY_SPEC_FILES]);
+    expect((imapConfig.testMatch as RegExp).source).toBe(IMAP_ONLY_SPEC_MATCH.source);
   });
 });

@@ -1,5 +1,7 @@
 import { defineConfig } from "@playwright/test";
 
+import { IMAP_ONLY_SPEC_FILES } from "./e2e/email/imap-spec-patterns";
+
 /**
  * Playwright config for pinchy-email (Gmail) E2E.
  * Assumes the full Docker stack with gmail-mock is already running:
@@ -8,15 +10,15 @@ import { defineConfig } from "@playwright/test";
 export default defineConfig({
   testDir: "./e2e/email",
   // Run only the OAuth-provider specs here. e2e/email is shared with
-  // playwright.imap.config.ts, which claims exactly the specs listed below:
-  // they need the GreenMail + imap-mock stack (docker-compose.imap-test.yml)
-  // that this job does NOT bring up, so running them here fails with "IMAP
-  // mock not ready".
+  // playwright.imap.config.ts, which claims exactly the specs in
+  // IMAP_ONLY_SPEC_FILES (e2e/email/imap-spec-patterns.ts): they need the
+  // GreenMail + imap-mock stack (docker-compose.imap-test.yml) that this job
+  // does NOT bring up, so running them here fails with "IMAP mock not ready".
   //
-  // This is a denylist, so a NEW spec added to e2e/email runs here by default.
-  // Keep it in sync with playwright.imap.config.ts's testMatch — the two
-  // partition one directory, and a spec must appear in exactly one of them.
-  testIgnore: ["email-imap.spec.ts", "inbox-sweep.spec.ts"],
+  // This is a denylist, so a NEW spec added to e2e/email runs here by
+  // default. Both configs read from imap-spec-patterns.ts — there is nothing
+  // left to keep in sync by hand.
+  testIgnore: [...IMAP_ONLY_SPEC_FILES],
   fullyParallel: false,
   retries: 0,
   workers: 1,
