@@ -309,6 +309,7 @@ describe("AuditLogTable", () => {
         new Blob([new Uint8Array([0x25, 0x50, 0x44, 0x46])], {
           type: "application/pdf",
         }),
+      headers: new Headers(),
     } as Response);
 
     const createObjectURLSpy = vi

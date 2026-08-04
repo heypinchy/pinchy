@@ -949,11 +949,14 @@ describe("GET /api/audit/export", () => {
       },
     ]);
     const { GET } = await import("@/app/api/audit/export/route");
-    await GET(
+    const response = await GET(
       new Request("http://localhost/api/audit/export") as unknown as Parameters<
         typeof import("@/app/api/audit/export/route").GET
       >[0]
     );
+    // The CSV body is streamed, so a row is sanitized when it is written, not
+    // when the handler returns — read the body the way a client does.
+    await response.text();
     expect(sanitizeDetail).toHaveBeenCalled();
   });
 
@@ -1097,5 +1100,62 @@ describe("GET /api/audit/export", () => {
         }),
       })
     );
+  });
+
+  // ── The CSV body must stay STREAMED ──────────────────────────────────────
+  // The row cap alone does not bound memory: measured against this route at
+  // the cap with `detail` at its 2048-byte budget (AGENTS.md), assembling
+  // `rows` + `csvRows` + the joined string and serializing the body peaked at
+  // 1215 MB RSS — past the 1 GB container the cap exists to protect. Streaming
+  // the rows peaks at 576 MB. A refactor back to `rows.map(...).join("\n")`
+  // would be invisible
+  // to every other test in this file (identical bytes, identical headers),
+  // so these two pin the laziness itself rather than the output.
+
+  function makeRowWithDetail(id: number) {
+    return { ...makeMinimalRow(id), detail: { note: `n${id}` } };
+  }
+
+  it("maps no row until the CSV body is read (body is lazy, not pre-assembled)", async () => {
+    vi.mocked(sanitizeDetail).mockClear();
+    mockLimit.mockResolvedValue(Array.from({ length: 600 }, (_, i) => makeRowWithDetail(i)));
+
+    const { GET } = await import("@/app/api/audit/export/route");
+    const response = await GET(
+      new Request("http://localhost/api/audit/export") as unknown as Parameters<
+        typeof import("@/app/api/audit/export/route").GET
+      >[0]
+    );
+
+    // The handler has returned and the audit row is already written — but not
+    // one row has been serialized yet. `.join()`-based assembly cannot do this.
+    expect(sanitizeDetail).not.toHaveBeenCalled();
+
+    await response.text();
+    expect(vi.mocked(sanitizeDetail).mock.calls.length).toBe(600);
+  });
+
+  it("emits the CSV in multiple chunks rather than one buffered body", async () => {
+    mockLimit.mockResolvedValue(Array.from({ length: 600 }, (_, i) => makeRowWithDetail(i)));
+
+    const { GET } = await import("@/app/api/audit/export/route");
+    const response = await GET(
+      new Request("http://localhost/api/audit/export") as unknown as Parameters<
+        typeof import("@/app/api/audit/export/route").GET
+      >[0]
+    );
+
+    const reader = response.body!.getReader();
+    let chunks = 0;
+    let bytes = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks++;
+      bytes += value.length;
+    }
+    // header + ceil(600 / 250) row batches
+    expect(chunks).toBe(4);
+    expect(bytes).toBeGreaterThan(0);
   });
 });

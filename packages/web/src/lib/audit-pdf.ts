@@ -86,7 +86,15 @@ export function renderAuditPdf(
       .fillColor("#555")
       .text(`Generated: ${new Date().toISOString()}`)
       .text(`Filters: ${buildFilterSummary(options.filters)}`)
-      .text(`Total entries: ${rows.length}`)
+      // NOT "Total entries" when capped: `rows.length` is what this file
+      // contains, which is exactly what "total" would misreport as the size of
+      // the matching set. The true total is deliberately unknown here (see
+      // `truncated` above).
+      .text(
+        options.truncated
+          ? `Entries in this export: ${rows.length} (capped)`
+          : `Total entries: ${rows.length}`
+      )
       .fillColor("black");
     if (options.truncated) {
       doc

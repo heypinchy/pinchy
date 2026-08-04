@@ -1663,6 +1663,7 @@ Retrieve a paginated, filterable audit log. **Admin only.**
 | `limit`     | number | 50      | Entries per page                                              |
 | `eventType` | string | —       | Filter by event type (e.g., `auth.login`, `tool.pinchy_read`) |
 | `actorId`   | string | —       | Filter by user ID                                             |
+| `status`    | string | —       | `success` or `failure`; an unrecognized value is ignored      |
 | `from`      | string | —       | Start date (ISO 8601)                                         |
 | `to`        | string | —       | End date (ISO 8601)                                           |
 
@@ -1813,7 +1814,7 @@ Report that a chat run finished while the user was away from the chat page. Call
 
 ### `GET /api/audit/export`
 
-Export the audit log as a CSV or PDF file. Supports the same filters as `GET /api/audit`, plus `resource` and `status`. **Admin only.**
+Export the audit log as a CSV or PDF file. Supports the same filters as `GET /api/audit`, plus `resource`. Unlike the list route, an unrecognized `status` here is a `400` rather than being ignored — the export URL is meant to be scripted, so a typo should be reported instead of silently returning everything. **Admin only.**
 
 **Query parameters:**
 

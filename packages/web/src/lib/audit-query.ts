@@ -172,3 +172,6 @@ export function auditSelectWithJoins() {
       .leftJoin(resourceUser, sql`${auditLog.resource} = 'user:' || ${resourceUser.id}`)
   );
 }
+
+/** One row as `auditSelectWithJoins()` returns it (projection + joined names). */
+export type AuditJoinedRow = Awaited<ReturnType<typeof auditSelectWithJoins>>[number];

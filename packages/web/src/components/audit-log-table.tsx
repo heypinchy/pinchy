@@ -264,7 +264,7 @@ export function AuditLogTable() {
       // still looks like a complete, valid CSV/PDF once downloaded, so the
       // admin needs an explicit signal here — the response header alone is
       // invisible in a plain file-download flow.
-      if (res.headers?.get("X-Audit-Export-Truncated") === "true") {
+      if (res.headers.get("X-Audit-Export-Truncated") === "true") {
         toast.warning(
           "Export was truncated: more entries match these filters than fit in one export. Narrow the filters (date range, event type, actor) and export again to see the rest."
         );
