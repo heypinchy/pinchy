@@ -1,7 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readFileSync, mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -33,11 +35,32 @@ function runCli(args) {
   }
 }
 
-test("CLI exits 0 when the tag matches the repo's package versions", () => {
-  const result = runCli([`v${REPO_VERSION}`]);
+// Against a fixture rather than the repo. Since #1044 the working tree declares
+// `<next>-dev` at every moment that is not a release commit, so the repo can no
+// longer play the part of a release commit.
+test("CLI exits 0 when the tag matches the package versions", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pinchy-version-"));
+  mkdirSync(join(dir, "packages", "web"), { recursive: true });
+  writeFileSync(join(dir, "package.json"), '{ "version": "1.2.3" }\n');
+  writeFileSync(
+    join(dir, "packages", "web", "package.json"),
+    '{ "version": "1.2.3" }\n',
+  );
+
+  const result = runCli(["v1.2.3", "--root", dir]);
   assert.equal(result.status, 0, result.stdout + result.stderr);
   // Plain substring check — no regex, so no escaping of the version is needed.
-  assert.ok(result.stdout.includes(`match v${REPO_VERSION}`), result.stdout);
+  assert.ok(result.stdout.includes("match v1.2.3"), result.stdout);
+});
+
+// And the repo as it actually stands: a development tree must NOT satisfy a
+// release build gate, whatever tag it is handed. That is not a limitation of
+// the test — it is the gate doing its job on the state `main` is in between
+// releases, and it is why the passing case above needs a fixture.
+test("CLI exits 1 on a development tree, whatever tag it is given", () => {
+  const result = runCli([`v${REPO_VERSION.replace("-dev", "")}`]);
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stdout, /::error::/);
 });
 
 test("CLI exits 1 with a ::error:: annotation on version drift", () => {

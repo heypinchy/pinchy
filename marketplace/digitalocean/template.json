@@ -4,7 +4,7 @@
     "image_name": "pinchy-24-04-snapshot-{{timestamp}}",
     "apt_packages": "apt-transport-https ca-certificates curl gnupg jq ufw debian-keyring debian-archive-keyring",
     "application_name": "Pinchy",
-    "application_version": "v0.8.0"
+    "application_version": "v0.9.1"
   },
   "builders": [
     {

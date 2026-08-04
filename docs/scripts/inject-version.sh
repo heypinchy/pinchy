@@ -30,6 +30,21 @@ fi
 # Fall back to package.json
 if [ -z "$TAG" ]; then
   VERSION=$(node -p "require('$REPO_ROOT/packages/web/package.json').version" 2>/dev/null || true)
+  # Since #1044 this file declares `<next>-dev` at every moment that is not a
+  # release commit. %%PINCHY_VERSION%% is rendered into `docker pull` lines and
+  # raw.githubusercontent URLs, so a `-dev` version here publishes install
+  # instructions naming a tag that does not exist. Refuse rather than render it:
+  # both real callers already pass the version (release.yml from the tag,
+  # docs.yml as a required input), so reaching this branch on a dev tree means
+  # somebody built docs by hand and needs to say which version they meant.
+  case "$VERSION" in
+    *-dev)
+      echo "ERROR: packages/web/package.json declares $VERSION, a development version." >&2
+      echo "       %%PINCHY_VERSION%% would render an image tag that does not exist." >&2
+      echo "       Pass the version explicitly: PINCHY_VERSION=v0.9.1 $0" >&2
+      exit 1
+      ;;
+  esac
   if [ -n "$VERSION" ]; then
     TAG="v$VERSION"
   fi
