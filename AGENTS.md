@@ -180,6 +180,22 @@ Two things a shard must get right:
 
 Related: the images are built by a `build-images` **matrix** (two runners, ~2× faster than the old serial job) and fanned back in through `build-image`, whose only job is to preserve the `result` + `outputs` contract the 11 downstream jobs already encode. Its `if:` mirrors the matrix's verbatim, and `!cancelled()` plus its guard step is what keeps a _failed_ build from reading as `skipped` — which downstream would take as "fork PR, build locally" and cheerfully rebuild a Dockerfile CI just proved broken. Because a matrix cannot export per-entry outputs, the fan-in recomputes the tags; `scripts/lib/ci-image-tags.test.mjs` pins the two expressions together.
 
+## A Red Playwright Job Must Leave Something Behind
+
+Nine jobs in `ci.yml` run Playwright. Eight got the `capture-e2e-diagnostics` composite action; the ninth — `e2e`, the **required** check, the one whose flakes actually block merges — was the one nobody came back to, so a red required check gave only the list reporter's terse text (#1061). The suite hardest to diagnose was the suite that most needed diagnosing.
+
+Two claims have to hold, and each is invisible when it stops holding:
+
+- **The job uploads Playwright's output when it goes red.** Either `capture-e2e-diagnostics` (docker-compose stacks — it also collects container logs and a secret-redacted `openclaw.json`) or a plain `actions/upload-artifact` for `packages/web/test-results/`. The `e2e` job takes the second route deliberately: it runs Playwright's own `webServer` against a bare Postgres service container, so a synthetic `compose-files` would upload four log files describing a stack that never started. **The step needs an `if:` that survives failure** — one without it runs only on success, so the artifact never appears for the failures it exists for, and nothing is red.
+- **The config asked Playwright to write that output.** `playwright.integration.config.ts` set `trace` but not `screenshot`, so the composite action advertised a bundle containing "Playwright traces, screenshots, and full container logs" and shipped one with no screenshots for that suite. Uploading the right directory and filling it are separate claims; CI can only ever observe the first.
+
+`scripts/lib/e2e-diagnostics-coverage.mjs` (+ its test, `pnpm test:scripts`) pins both, over the real `ci.yml` and the real configs, with a corpus floor so a broken sweep cannot pass on an empty comparison. A job whose steps it cannot read **throws** rather than reporting "no offenders" — a clean verdict on unreadable input is how a guard stops guarding the moment somebody reindents a job.
+
+Two things worth knowing before editing it:
+
+- **The upload path is one directory for every config, including the nested one.** Playwright's default `outputDir` is `path.join(packageJsonDir, 'test-results')` — the nearest **package.json**'s directory, not the config's. `packages/web/eval/` has no package.json, so `eval/playwright.eval.config.ts` writes to `packages/web/test-results/` like all the others. Verify a change to this by reproduction, not by reading the config: the resolution rule is neither "relative to the config" nor "relative to cwd", and guessing either way gets it wrong.
+- **It is a tripwire, not a proof that a failure is diagnosable.** `trace: "on-first-retry"` is a legitimate value that captures nothing here, because every config pins `retries: 0` on purpose (§ "No Untracked Sleeps In E2E" — a flake is a signal). The guard would not notice. Review still owns that case.
+
 ## Embeddable Serving Routes Need A next.config Entry
 
 A header set by a route handler **loses** to `next.config.ts`'s `headers()`. The global `/(.*)` rule sets `X-Frame-Options: DENY`, so a file-serving route that sets `x-frame-options: SAMEORIGIN` in its own response still gets DENY on the wire: a valid `200 application/pdf` that the browser refuses to render, `net::ERR_BLOCKED_BY_RESPONSE`, blank viewer pane. It shipped twice this way — the KB citation viewer and agent-delivered artifacts (#703 / #788) — and every test was green both times, because route tests assert the header the **handler** declares.
