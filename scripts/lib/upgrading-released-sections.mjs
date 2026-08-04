@@ -28,27 +28,67 @@ const SECTION_HEADING_RE =
   /^##\s+Upgrading\s+from\s+v(\d+\.\d+\.\d+)\s+to\s+(v\d+\.\d+\.\d+|%%PINCHY_VERSION%%)\s*$/gm;
 
 /**
+ * Blank out fenced code blocks, preserving length and line structure.
+ *
+ * Section boundaries are found by a line-anchored `^## `, and upgrade notes
+ * quote markdown at people — the v0.9.1 note on knowledge-base instructions
+ * shows an agent's `## Document Access` block inside a ```` ``` ```` fence. Read
+ * literally, that line ends the section, and everything after it in that
+ * section stops being compared against the tag. The guard stayed green on it
+ * because the same parser truncates BOTH sides at the same point: symmetric
+ * blindness, which reads exactly like agreement.
+ *
+ * Returned same-length so every index computed against the mask still addresses
+ * the original string; newlines survive so the `m` flag keeps anchoring.
+ *
+ * @param {string} mdx
+ * @returns {string}
+ */
+export function maskFencedBlocks(mdx) {
+  const lines = mdx.split("\n");
+  let fence = null; // the opening run, e.g. "```" or "~~~~"
+  const masked = lines.map((line) => {
+    const open = /^\s*(`{3,}|~{3,})/.exec(line);
+    if (fence === null) {
+      if (open) fence = open[1];
+      return line;
+    }
+    // A closing fence is the same character, at least as long as the opener.
+    if (open && open[1][0] === fence[0] && open[1].length >= fence.length) {
+      fence = null;
+      return line;
+    }
+    return " ".repeat(line.length);
+  });
+  return masked.join("\n");
+}
+
+/**
  * Split upgrading.mdx into its `## Upgrading from vA to vB` sections.
  *
  * A section body runs to the next `## ` heading of any kind (not just the next
  * upgrade section), so the trailing prose of the file never gets attributed to
- * the oldest release.
+ * the oldest release. Headings inside fenced code blocks are not headings —
+ * see `maskFencedBlocks`.
  *
  * @param {string} mdx
  * @returns {Array<{from: string, to: string, body: string, index: number}>}
  */
 export function parseUpgradeSections(mdx) {
   const out = [];
+  const mask = maskFencedBlocks(mdx);
   let m;
   SECTION_HEADING_RE.lastIndex = 0;
-  while ((m = SECTION_HEADING_RE.exec(mdx)) !== null) {
+  while ((m = SECTION_HEADING_RE.exec(mask)) !== null) {
     const afterHeading = m.index + m[0].length;
-    const remainder = mdx.slice(afterHeading);
-    const next = /^## /m.exec(remainder);
+    const next = /^## /m.exec(mask.slice(afterHeading));
     out.push({
       from: m[1],
       to: m[2],
-      body: remainder.slice(0, next ? next.index : remainder.length),
+      body: mdx.slice(
+        afterHeading,
+        next ? afterHeading + next.index : mdx.length,
+      ),
       index: m.index,
     });
   }
@@ -77,11 +117,18 @@ export function normalizeSectionBody(body, tag) {
 
 /**
  * The `####` note headings in a section body, in order.
+ *
+ * Fenced blocks are masked for the same reason as in `parseUpgradeSections`: a
+ * `####` inside a quoted markdown sample is a sample, not a note, and counting
+ * it would put a phantom entry in every "gained/lost" diff.
+ *
  * @param {string} body
  * @returns {string[]}
  */
 export function noteHeadings(body) {
-  return [...body.matchAll(/^####\s+(.+?)\s*$/gm)].map((m) => m[1]);
+  return [...maskFencedBlocks(body).matchAll(/^####\s+(.+?)\s*$/gm)].map(
+    (m) => m[1],
+  );
 }
 
 /**

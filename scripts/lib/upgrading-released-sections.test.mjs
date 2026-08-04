@@ -8,6 +8,7 @@ import {
   UPGRADING_MDX_PATH,
   KNOWN_PRE_GUARD_DRIFT,
   parseUpgradeSections,
+  maskFencedBlocks,
   normalizeSectionBody,
   noteHeadings,
   diffNoteHeadings,
@@ -87,6 +88,61 @@ test("parseUpgradeSections stops a body at the next `## ` heading of ANY kind", 
 test("parseUpgradeSections keeps the open placeholder section", () => {
   const mdx = "## Upgrading from v0.9.0 to %%PINCHY_VERSION%%\n\nOpen.\n";
   assert.equal(parseUpgradeSections(mdx)[0].to, "%%PINCHY_VERSION%%");
+});
+
+// The real case: v0.9.1's knowledge-base note quotes an agent's instructions,
+// and that sample contains a line starting `## `. Taken as a heading it ends
+// the section, and the rest of the note stops being compared to the tag — while
+// the guard reports green, because the same parser cuts both sides at the same
+// place. Symmetric blindness reads exactly like agreement.
+test("parseUpgradeSections does not end a section on a `## ` inside a code fence", () => {
+  const mdx = [
+    "## Upgrading from v0.8.0 to v0.9.0",
+    "",
+    "Shorten the block to what a new agent gets:",
+    "",
+    "```markdown",
+    "## Document Access",
+    "",
+    "- `/data/handbook`",
+    "```",
+    "",
+    "Keep whichever paths the old block listed.",
+    "",
+    "## Upgrading from v0.7.0 to v0.8.0",
+    "",
+    "Older.",
+  ].join("\n");
+  const [section] = parseUpgradeSections(mdx);
+  assert.match(section.body, /Keep whichever paths/);
+  assert.doesNotMatch(section.body, /Older\./);
+});
+
+test("noteHeadings ignores a `####` inside a code fence", () => {
+  const body = [
+    "#### A real note",
+    "",
+    "```markdown",
+    "#### Not a note, a sample",
+    "```",
+  ].join("\n");
+  assert.deepEqual(noteHeadings(body), ["A real note"]);
+});
+
+test("maskFencedBlocks closes only on a fence at least as long as the opener", () => {
+  // Prettier writes ````markdown when the sample itself contains ```. A
+  // three-backtick line inside that block must not close it.
+  const masked = maskFencedBlocks(
+    ["````markdown", "```", "## Inside", "````", "## Outside"].join("\n"),
+  );
+  assert.doesNotMatch(masked, /## Inside/);
+  assert.match(masked, /## Outside/);
+  assert.equal(
+    masked.length,
+    ["````markdown", "```", "## Inside", "````", "## Outside"].join("\n")
+      .length,
+    "the mask must preserve length so indices still address the original",
+  );
 });
 
 // ─── normalizeSectionBody ────────────────────────────────────────────────────
