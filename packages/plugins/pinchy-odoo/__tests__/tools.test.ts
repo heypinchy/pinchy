@@ -1477,6 +1477,51 @@ describe("odoo_read", () => {
     });
   });
 
+  // P3: `params.limit` used to reach `client.searchRead` unclamped — a model
+  // requesting `limit: 999999` got exactly that against Odoo, defeating the
+  // whole point of pagination. The tool description already promises a
+  // "default: 100"; this pins an actual cap so a runaway request can't ask
+  // for the entire table in one call.
+  it("clamps an oversized limit to the cap instead of forwarding it verbatim", async () => {
+    mockSearchRead.mockResolvedValue({ records: [], total: 0, limit: 500, offset: 0 });
+
+    const tools = createApi({ [agentId]: agentConfig });
+    const tool = findTool(tools, "odoo_read", agentId)!;
+
+    const result = await tool.execute("call-huge-limit", {
+      model: "sale.order",
+      limit: 999999,
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(mockSearchRead).toHaveBeenCalledWith(
+      "sale.order",
+      [],
+      expect.objectContaining({ limit: 500 })
+    );
+  });
+
+  // Same defect, missing rather than oversized: an omitted `limit` reached
+  // Odoo as `undefined` (no bound at all) despite the tool description
+  // promising "default: 100".
+  it("defaults limit to 100 when omitted, instead of forwarding undefined", async () => {
+    mockSearchRead.mockResolvedValue({ records: [], total: 0, limit: 100, offset: 0 });
+
+    const tools = createApi({ [agentId]: agentConfig });
+    const tool = findTool(tools, "odoo_read", agentId)!;
+
+    const result = await tool.execute("call-default-limit", {
+      model: "sale.order",
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(mockSearchRead).toHaveBeenCalledWith(
+      "sale.order",
+      [],
+      expect.objectContaining({ limit: 100 })
+    );
+  });
+
   // Regression (pinchy production, 2026-07-22): a real crm.lead read produced a
   // ~509,000-char result that OpenClaw cut mid-JSON, so Piper looped on "the
   // results are truncated". odoo_read must bound its own output so the returned
@@ -2118,6 +2163,34 @@ describe("odoo_aggregate", () => {
     );
   });
 
+  // P3, same defect as odoo_read: `params.limit` reached `client.readGroup`
+  // unclamped. Unlike odoo_read the tool never promised a default, so an
+  // omitted limit must stay `undefined` (pinned above) — only an oversized
+  // one gets capped.
+  it("clamps an oversized limit to the cap instead of forwarding it verbatim", async () => {
+    mockReadGroup.mockResolvedValue({ groups: [] });
+
+    const tools = createApi({ [agentId]: agentConfig });
+    const tool = findTool(tools, "odoo_aggregate", agentId)!;
+
+    const result = await tool.execute("call-huge-limit", {
+      model: "sale.order",
+      filters: [],
+      fields: ["partner_id", "amount_total:sum"],
+      groupby: ["partner_id"],
+      limit: 999999,
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(mockReadGroup).toHaveBeenCalledWith(
+      "sale.order",
+      [],
+      ["partner_id", "amount_total:sum"],
+      ["partner_id"],
+      expect.objectContaining({ limit: 500 })
+    );
+  });
+
   // Same trap, two more model-supplied lists — `groupby` additionally
   // accepts the `field:agg` suffix form, which must strip by base name.
   it("strips synthetic `_pinchy_ref` entries from both `fields` and `groupby` before forwarding to Odoo", async () => {
@@ -2595,6 +2668,88 @@ describe("odoo_create", () => {
     expect(result.content[0].text).toContain("Uganda");
     expect(result.content[0].text).toContain("Uzbekistan");
     expect(mockCreate).not.toHaveBeenCalled();
+  });
+
+  // P3: an unresolved country value used to fetch the whole res.country
+  // table (empty domain, limit: 1000) on every call, bypassing
+  // searchRelationByName only because that helper's field list omits `code`.
+  // A code lookup should scope the search read to that one code instead.
+  it("scopes the country search read to the resolved code instead of scanning the whole table", async () => {
+    mockFields.mockResolvedValue([
+      { name: "name", string: "Name", type: "char" },
+      {
+        name: "country_id",
+        string: "Country",
+        type: "many2one",
+        relation: "res.country",
+      },
+    ]);
+    mockSearchRead.mockResolvedValue({
+      records: [{ id: 14, name: "Austria", code: "AT" }],
+      total: 1,
+      limit: 1000,
+      offset: 0,
+    });
+    mockCreate.mockResolvedValue(46);
+
+    const tools = createApi({ [agentId]: agentConfig });
+    const tool = findTool(tools, "odoo_create", agentId)!;
+
+    const result = await tool.execute("call-country-code-domain", {
+      model: "res.partner",
+      values: { name: "Wien Partner", country_id: { lookup: { code: "AT" } } },
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(mockSearchRead).toHaveBeenCalledWith(
+      "res.country",
+      [["code", "=", "AT"]],
+      expect.objectContaining({ fields: expect.arrayContaining(["code"]) })
+    );
+    expect(mockCreate).toHaveBeenCalledWith("res.partner", {
+      name: "Wien Partner",
+      country_id: 14,
+    });
+  });
+
+  // Same defect, name-based path: a country resolved by display name must not
+  // fetch the whole table either — it should send an ilike domain scoped to
+  // the requested name.
+  it("scopes the country search read to an ilike domain instead of scanning the whole table when resolving by name", async () => {
+    mockFields.mockResolvedValue([
+      { name: "name", string: "Name", type: "char" },
+      {
+        name: "country_id",
+        string: "Country",
+        type: "many2one",
+        relation: "res.country",
+      },
+    ]);
+    mockSearchRead.mockResolvedValue({
+      records: [{ id: 14, name: "Austria", code: "AT" }],
+      total: 1,
+      limit: 1000,
+      offset: 0,
+    });
+    mockCreate.mockResolvedValue(47);
+
+    const tools = createApi({ [agentId]: agentConfig });
+    const tool = findTool(tools, "odoo_create", agentId)!;
+
+    const result = await tool.execute("call-country-name-domain", {
+      model: "res.partner",
+      values: { name: "Wien Partner", country_id: "Austria" },
+    });
+
+    expect(result.isError).toBeFalsy();
+    const [, domain] = mockSearchRead.mock.calls.find(([model]) => model === "res.country")!;
+    expect(domain).not.toEqual([]);
+    expect(domain).toEqual(
+      expect.arrayContaining([
+        expect.arrayContaining(["name", "ilike", "Austria"]),
+        expect.arrayContaining(["display_name", "ilike", "Austria"]),
+      ])
+    );
   });
 
   it("denies create on model without create permission", async () => {

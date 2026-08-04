@@ -1264,6 +1264,24 @@ async function searchRelationByName(
   });
 }
 
+/**
+ * Domain for the `res.country` lookup, scoped to the parsed
+ * {@link RelationLookup} instead of matching every row. `res.country` is
+ * excluded from {@link searchRelationByName} only because that helper's
+ * field list omits `code` (it always requests `["id", "name",
+ * "display_name"]`) — but that made every unresolved country value fetch the
+ * *entire* table (empty domain, `limit: 1000`) on every call. A `code` (from
+ * an explicit `{lookup:{code}}` or a recognized alias/ISO input, see
+ * `countryCodeForInput`) narrows to an exact `code` match; otherwise fall
+ * back to an `ilike` match on `name` OR `display_name`, mirroring
+ * `searchRelationByName`'s `name` domain.
+ */
+function countryLookupDomain(lookup: RelationLookup): OdooDomain {
+  if (lookup.code) return [["code", "=", lookup.code]];
+  const name = lookup.name ?? "";
+  return ["|", ["name", "ilike", name], ["display_name", "ilike", name]];
+}
+
 async function resolveRelationValue(
   client: OdooClient,
   connectionId: string,
@@ -1318,7 +1336,7 @@ async function resolveRelationValue(
 
   const result =
     field.relation === "res.country"
-      ? await client.searchRead(field.relation, [], {
+      ? await client.searchRead(field.relation, countryLookupDomain(lookup), {
           fields: ["id", "name", "display_name", "code"],
           limit: 1000,
         })
@@ -2059,6 +2077,31 @@ function wrapReadResult(
     };
   }
   return result;
+}
+
+/**
+ * Row-count bounds for `odoo_read`/`odoo_aggregate`'s `limit` parameter.
+ *
+ * `params.limit` used to reach `client.searchRead`/`client.readGroup`
+ * unclamped: an omitted limit forwarded `undefined` (no bound at all,
+ * despite the `odoo_read` tool description promising "default: 100"), and an
+ * oversized one forwarded verbatim, letting a single call request the whole
+ * table. {@link clampReadLimit} enforces the documented default and a hard
+ * cap; {@link clampOptionalLimit} enforces only the cap, for `odoo_aggregate`
+ * whose `limit` (max groups) has no documented default and must stay
+ * `undefined` when omitted.
+ */
+export const ODOO_READ_DEFAULT_LIMIT = 100;
+export const ODOO_READ_LIMIT_CAP = 500;
+
+function clampReadLimit(limit: unknown): number {
+  const requested = typeof limit === "number" ? limit : ODOO_READ_DEFAULT_LIMIT;
+  return Math.min(requested, ODOO_READ_LIMIT_CAP);
+}
+
+function clampOptionalLimit(limit: unknown): number | undefined {
+  if (typeof limit !== "number") return undefined;
+  return Math.min(limit, ODOO_READ_LIMIT_CAP);
 }
 
 /**
@@ -2883,7 +2926,7 @@ const plugin = {
               },
               limit: {
                 type: "number",
-                description: "Max records (default: 100)",
+                description: "Max records (default: 100, capped at 500)",
               },
               offset: {
                 type: "number",
@@ -2920,7 +2963,7 @@ const plugin = {
                 );
                 const records = await client.searchRead(model, asDomain(params.filters), {
                   fields: effectiveFields,
-                  limit: params.limit as number | undefined,
+                  limit: clampReadLimit(params.limit),
                   offset: params.offset as number | undefined,
                   order: params.order as string | undefined,
                 });
@@ -3037,7 +3080,7 @@ const plugin = {
                 items: { type: "string" },
                 description: "Fields to group by, e.g. ['partner_id'] or ['date_order:month']",
               },
-              limit: { type: "number", description: "Max groups to return" },
+              limit: { type: "number", description: "Max groups to return (capped at 500)" },
               offset: {
                 type: "number",
                 description: "Skip N groups for pagination",
@@ -3064,7 +3107,7 @@ const plugin = {
 
               const result = await withAuthRetry(agentId, config, (client) =>
                 client.readGroup(model, asDomain(params.filters), fields, groupby, {
-                  limit: params.limit as number | undefined,
+                  limit: clampOptionalLimit(params.limit),
                   offset: params.offset as number | undefined,
                   orderby: params.orderby as string | undefined,
                 })
