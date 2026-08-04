@@ -63,3 +63,9 @@ services:
       # The pinchy-email plugin (running inside OpenClaw) calls the provider APIs.
       - GMAIL_API_BASE_URL=http://gmail-mock:9004
       - GRAPH_API_BASE_URL=http://graph-mock:9005
+      # Both *_API_BASE_URL overrides above only take effect alongside this
+      # explicit flag (gmail-adapter.ts / graph-adapter.ts), so a stray
+      # override left over in production can never silently redirect an
+      # OAuth-authenticated API call. Same convention as
+      # docker-compose.imap-test.yml's PINCHY_INSECURE_MAIL_MOCK.
+      - PINCHY_INSECURE_MAIL_MOCK=1

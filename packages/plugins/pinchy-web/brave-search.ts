@@ -4,6 +4,41 @@ import { domainDenialReason } from "./web-fetch.js";
 // Matches web-fetch.ts's external-call timeout.
 const FETCH_TIMEOUT_MS = 30_000;
 
+// Tracks whether we've already warned about a mock-override env var set
+// without its paired insecure-mock flag, so a leftover override doesn't spam
+// the log on every tool call.
+let warnedAboutBraveBaseUrlOverride = false;
+
+// Returns BRAVE_API_BASE_URL, but ONLY when PINCHY_INSECURE_WEB_MOCK is
+// explicitly "1". BRAVE_API_BASE_URL lets E2E tests redirect Brave Search
+// calls to a local mock server instead of https://api.search.brave.com.
+// Without the flag, the override is ignored (the real API host is used) and
+// a one-time warning is logged — same seam and same reasoning as the mail
+// adapters' PINCHY_INSECURE_MAIL_MOCK (see resolveInsecureMockBaseUrl in
+// pinchy-email/email-adapter.ts): a *_API_BASE_URL carried into production
+// by accident must not silently redirect the Brave API key to whatever host
+// it names.
+function resolveBraveBaseUrl(): string {
+  const override = process.env.BRAVE_API_BASE_URL;
+  if (!override) return "https://api.search.brave.com";
+  if (process.env.PINCHY_INSECURE_WEB_MOCK === "1") return override;
+  if (!warnedAboutBraveBaseUrlOverride) {
+    warnedAboutBraveBaseUrlOverride = true;
+    console.warn(
+      '[pinchy-web] BRAVE_API_BASE_URL is set but PINCHY_INSECURE_WEB_MOCK is not "1" — ignoring ' +
+        "it and using the real API host. If this is a test/mock stack, also set " +
+        "PINCHY_INSECURE_WEB_MOCK=1."
+    );
+  }
+  return "https://api.search.brave.com";
+}
+
+// Test-only: clears the warn-once dedupe so a test can assert the warning
+// fires again after resetting env stubs.
+export function resetBraveBaseUrlWarningForTest(): void {
+  warnedAboutBraveBaseUrlOverride = false;
+}
+
 export interface BraveSearchConfig {
   apiKey: string;
   allowedDomains?: string[];
@@ -59,7 +94,7 @@ export async function braveSearch(
   if (config.language) params.set("search_lang", config.language);
   if (config.freshness) params.set("freshness", config.freshness);
 
-  const BRAVE_SEARCH_BASE_URL = process.env.BRAVE_API_BASE_URL ?? "https://api.search.brave.com";
+  const BRAVE_SEARCH_BASE_URL = resolveBraveBaseUrl();
 
   const res = await fetch(`${BRAVE_SEARCH_BASE_URL}/res/v1/web/search?${params}`, {
     headers: {

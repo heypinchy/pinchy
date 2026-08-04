@@ -1,4 +1,9 @@
-import { createFolderMapper, escapeDoubleQuoted, stripHtml } from "./email-adapter.js";
+import {
+  createFolderMapper,
+  escapeDoubleQuoted,
+  resolveInsecureMockBaseUrl,
+  stripHtml,
+} from "./email-adapter.js";
 import type {
   EmailAdapter,
   EmailAttachment,
@@ -137,8 +142,15 @@ function toSummary(m: GraphMessage): EmailSummary {
 export class GraphAdapter implements EmailAdapter {
   constructor(private opts: { accessToken: string }) {}
 
+  // GRAPH_API_BASE_URL allows E2E tests to redirect Graph API calls to a
+  // local mock server instead of https://graph.microsoft.com. Only takes
+  // effect alongside PINCHY_INSECURE_MAIL_MOCK=1 — see
+  // resolveInsecureMockBaseUrl in email-adapter.ts.
   private graphBase(): string {
-    return process.env.GRAPH_API_BASE_URL ?? "https://graph.microsoft.com";
+    return (
+      resolveInsecureMockBaseUrl("GRAPH_API_BASE_URL", "PINCHY_INSECURE_MAIL_MOCK") ??
+      "https://graph.microsoft.com"
+    );
   }
 
   // `signal` is deliberately not accepted. The earlier shape took one and did

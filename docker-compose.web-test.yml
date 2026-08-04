@@ -35,3 +35,8 @@ services:
   openclaw:
     environment:
       - BRAVE_API_BASE_URL=http://brave-mock:9003
+      # BRAVE_API_BASE_URL above only takes effect alongside this explicit
+      # flag (brave-search.ts), so a stray override left over in production
+      # can never silently redirect the Brave API key. Same convention as
+      # docker-compose.imap-test.yml's PINCHY_INSECURE_MAIL_MOCK.
+      - PINCHY_INSECURE_WEB_MOCK=1

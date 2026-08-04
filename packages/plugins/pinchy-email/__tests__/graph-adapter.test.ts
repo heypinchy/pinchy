@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from "vitest";
 import { GraphAdapter } from "../graph-adapter.js";
+import { resetInsecureMockWarningsForTest } from "../email-adapter.js";
 
 describe("GraphAdapter.list", () => {
   beforeEach(() => {
@@ -9,6 +10,8 @@ describe("GraphAdapter.list", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     delete process.env.GRAPH_API_BASE_URL;
+    delete process.env.PINCHY_INSECURE_MAIL_MOCK;
+    resetInsecureMockWarningsForTest();
   });
 
   it("list({folder:'INBOX'}) hits /v1.0/me/mailFolders/inbox/messages", async () => {
@@ -102,8 +105,9 @@ describe("GraphAdapter.list", () => {
     timeoutSpy.mockRestore();
   });
 
-  it("uses GRAPH_API_BASE_URL when set", async () => {
+  it("uses GRAPH_API_BASE_URL when set together with the insecure flag", async () => {
     process.env.GRAPH_API_BASE_URL = "http://graph-mock:9005";
+    process.env.PINCHY_INSECURE_MAIL_MOCK = "1";
     const adapter = new GraphAdapter({ accessToken: "tok" });
     (fetch as Mock).mockResolvedValueOnce({
       ok: true,
@@ -114,7 +118,22 @@ describe("GraphAdapter.list", () => {
       expect.stringContaining("http://graph-mock:9005/v1.0/me/mailFolders/inbox/messages"),
       expect.any(Object)
     );
-    delete process.env.GRAPH_API_BASE_URL;
+  });
+
+  it("ignores GRAPH_API_BASE_URL and uses the real API host when the insecure flag is absent", async () => {
+    process.env.GRAPH_API_BASE_URL = "http://graph-mock:9005";
+    // No PINCHY_INSECURE_MAIL_MOCK: the mock seam must NOT fire, so a stray
+    // override left over in production can't redirect the bearer token.
+    const adapter = new GraphAdapter({ accessToken: "tok" });
+    (fetch as Mock).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ value: [] }),
+    });
+    await adapter.list({});
+    expect(fetch).toHaveBeenCalledWith(
+      expect.stringContaining("https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages"),
+      expect.any(Object)
+    );
   });
 });
 

@@ -1,10 +1,12 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import {
   createFolderMapper,
   escapeDoubleQuoted,
   stripHtml,
   truncateEmailBody,
   EMAIL_BODY_MAX_CHARS,
+  resolveInsecureMockBaseUrl,
+  resetInsecureMockWarningsForTest,
   type Folder,
 } from "../email-adapter.js";
 
@@ -149,5 +151,72 @@ describe("truncateEmailBody", () => {
 
   it("honours an explicit budget", () => {
     expect(truncateEmailBody("abcdefghij", 4).startsWith("abcd")).toBe(true);
+  });
+});
+
+describe("resolveInsecureMockBaseUrl", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    resetInsecureMockWarningsForTest();
+    vi.restoreAllMocks();
+  });
+
+  it("returns undefined when the override var is not set", () => {
+    expect(resolveInsecureMockBaseUrl("GMAIL_API_BASE_URL", "PINCHY_INSECURE_MAIL_MOCK")).toBe(
+      undefined
+    );
+  });
+
+  it("ignores the override and returns undefined when the insecure flag is absent", () => {
+    vi.stubEnv("GMAIL_API_BASE_URL", "http://gmail-mock:9004");
+    // No PINCHY_INSECURE_MAIL_MOCK: a stray override left over in production
+    // must not silently redirect API calls (and the bearer token sent with
+    // them) to whatever host it names.
+    expect(resolveInsecureMockBaseUrl("GMAIL_API_BASE_URL", "PINCHY_INSECURE_MAIL_MOCK")).toBe(
+      undefined
+    );
+  });
+
+  it("returns the override when the insecure flag is also set", () => {
+    vi.stubEnv("GMAIL_API_BASE_URL", "http://gmail-mock:9004");
+    vi.stubEnv("PINCHY_INSECURE_MAIL_MOCK", "1");
+    expect(resolveInsecureMockBaseUrl("GMAIL_API_BASE_URL", "PINCHY_INSECURE_MAIL_MOCK")).toBe(
+      "http://gmail-mock:9004"
+    );
+  });
+
+  it('ignores the override when the insecure flag is set to something other than exactly "1"', () => {
+    vi.stubEnv("GMAIL_API_BASE_URL", "http://gmail-mock:9004");
+    vi.stubEnv("PINCHY_INSECURE_MAIL_MOCK", "true");
+    expect(resolveInsecureMockBaseUrl("GMAIL_API_BASE_URL", "PINCHY_INSECURE_MAIL_MOCK")).toBe(
+      undefined
+    );
+  });
+
+  it("warns exactly once per overrideVar when the override is set without the flag", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.stubEnv("GMAIL_API_BASE_URL", "http://gmail-mock:9004");
+
+    resolveInsecureMockBaseUrl("GMAIL_API_BASE_URL", "PINCHY_INSECURE_MAIL_MOCK");
+    resolveInsecureMockBaseUrl("GMAIL_API_BASE_URL", "PINCHY_INSECURE_MAIL_MOCK");
+    resolveInsecureMockBaseUrl("GMAIL_API_BASE_URL", "PINCHY_INSECURE_MAIL_MOCK");
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0][0]).toContain("GMAIL_API_BASE_URL");
+    expect(warn.mock.calls[0][0]).toContain("PINCHY_INSECURE_MAIL_MOCK");
+  });
+
+  it("does not warn when the override is not set", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    resolveInsecureMockBaseUrl("GMAIL_API_BASE_URL", "PINCHY_INSECURE_MAIL_MOCK");
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("does not warn when the override is set together with the flag", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.stubEnv("GMAIL_API_BASE_URL", "http://gmail-mock:9004");
+    vi.stubEnv("PINCHY_INSECURE_MAIL_MOCK", "1");
+    resolveInsecureMockBaseUrl("GMAIL_API_BASE_URL", "PINCHY_INSECURE_MAIL_MOCK");
+    expect(warn).not.toHaveBeenCalled();
   });
 });

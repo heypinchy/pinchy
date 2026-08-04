@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { braveSearch } from "./brave-search.js";
+import { braveSearch, resetBraveBaseUrlWarningForTest } from "./brave-search.js";
 
 describe("braveSearch", () => {
   let fetchMock: ReturnType<typeof vi.fn>;
@@ -317,5 +317,72 @@ describe("braveSearch", () => {
       expect(results).toHaveLength(2);
       expect(filteredCount).toBeUndefined();
     });
+  });
+});
+
+describe("braveSearch mock env overrides", () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ web: { results: [] } }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+    resetBraveBaseUrlWarningForTest();
+  });
+
+  it("uses the real API host when BRAVE_API_BASE_URL is not set", async () => {
+    await braveSearch("query", { apiKey: "key" });
+    const url = fetchMock.mock.calls[0][0] as string;
+    expect(url).toContain("https://api.search.brave.com/res/v1/web/search");
+  });
+
+  it("ignores BRAVE_API_BASE_URL and uses the real API host when PINCHY_INSECURE_WEB_MOCK is absent", async () => {
+    vi.stubEnv("BRAVE_API_BASE_URL", "http://brave-mock:9003");
+    // No PINCHY_INSECURE_WEB_MOCK: the mock seam must NOT fire, so a stray
+    // override left over in production can't redirect the Brave API key.
+
+    await braveSearch("query", { apiKey: "key" });
+    const url = fetchMock.mock.calls[0][0] as string;
+    expect(url).toContain("https://api.search.brave.com/res/v1/web/search");
+  });
+
+  it("uses BRAVE_API_BASE_URL when PINCHY_INSECURE_WEB_MOCK is also set", async () => {
+    vi.stubEnv("BRAVE_API_BASE_URL", "http://brave-mock:9003");
+    vi.stubEnv("PINCHY_INSECURE_WEB_MOCK", "1");
+
+    await braveSearch("query", { apiKey: "key" });
+    const url = fetchMock.mock.calls[0][0] as string;
+    expect(url).toContain("http://brave-mock:9003/res/v1/web/search");
+  });
+
+  it("warns exactly once when BRAVE_API_BASE_URL is set without the insecure flag", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.stubEnv("BRAVE_API_BASE_URL", "http://brave-mock:9003");
+
+    await braveSearch("query", { apiKey: "key" });
+    await braveSearch("query", { apiKey: "key" });
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0][0]).toContain("BRAVE_API_BASE_URL");
+    expect(warn.mock.calls[0][0]).toContain("PINCHY_INSECURE_WEB_MOCK");
+    warn.mockRestore();
+  });
+
+  it("does not warn when BRAVE_API_BASE_URL is set together with the insecure flag", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.stubEnv("BRAVE_API_BASE_URL", "http://brave-mock:9003");
+    vi.stubEnv("PINCHY_INSECURE_WEB_MOCK", "1");
+
+    await braveSearch("query", { apiKey: "key" });
+
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
   });
 });

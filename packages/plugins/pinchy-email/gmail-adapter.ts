@@ -1,5 +1,10 @@
 import { google } from "googleapis";
-import { createFolderMapper, escapeDoubleQuoted, stripHtml } from "./email-adapter.js";
+import {
+  createFolderMapper,
+  escapeDoubleQuoted,
+  resolveInsecureMockBaseUrl,
+  stripHtml,
+} from "./email-adapter.js";
 import type {
   EmailAdapter,
   EmailAttachment,
@@ -80,8 +85,10 @@ export class GmailAdapter implements EmailAdapter {
     const auth = new google.auth.OAuth2();
     auth.setCredentials({ access_token: opts.accessToken });
     // GMAIL_API_BASE_URL allows E2E tests to redirect gmail API calls to a
-    // local mock server instead of https://gmail.googleapis.com/
-    const rootUrl = process.env.GMAIL_API_BASE_URL;
+    // local mock server instead of https://gmail.googleapis.com/. Only takes
+    // effect alongside PINCHY_INSECURE_MAIL_MOCK=1 — see
+    // resolveInsecureMockBaseUrl in email-adapter.ts.
+    const rootUrl = resolveInsecureMockBaseUrl("GMAIL_API_BASE_URL", "PINCHY_INSECURE_MAIL_MOCK");
     this.gmail = google.gmail({
       version: "v1",
       auth,

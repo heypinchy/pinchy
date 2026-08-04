@@ -1,5 +1,42 @@
 export type Folder = "INBOX" | "SENT" | "DRAFTS" | "TRASH" | "SPAM";
 
+// Tracks which mock-override env vars we've already warned about in this
+// process, so a leftover override doesn't spam the log on every tool call.
+const warnedMockOverrides = new Set<string>();
+
+// Returns `overrideVar`'s value, but ONLY when `flagVar` is explicitly "1".
+// Shared by the Gmail and Graph adapters, which both accept a *_API_BASE_URL
+// override so E2E tests can redirect API calls to a local mock server.
+// Without the paired flag, the override is ignored (the caller falls back to
+// the real API host) and a one-time warning is logged — mirroring the
+// IMAP/SMTP mock seam in imap-adapter.ts, which requires the same
+// PINCHY_INSECURE_MAIL_MOCK flag for the same reason: a *_API_BASE_URL
+// carried into production by accident must not silently redirect
+// OAuth-authenticated API calls (and the bearer token sent with them) to
+// whatever host it names.
+export function resolveInsecureMockBaseUrl(
+  overrideVar: string,
+  flagVar: string
+): string | undefined {
+  const override = process.env[overrideVar];
+  if (!override) return undefined;
+  if (process.env[flagVar] === "1") return override;
+  if (!warnedMockOverrides.has(overrideVar)) {
+    warnedMockOverrides.add(overrideVar);
+    console.warn(
+      `[pinchy-email] ${overrideVar} is set but ${flagVar} is not "1" — ignoring it and using the ` +
+        `real API host. If this is a test/mock stack, also set ${flagVar}=1.`
+    );
+  }
+  return undefined;
+}
+
+// Test-only: clears the warn-once dedupe so a test can assert the warning
+// fires again after resetting env stubs.
+export function resetInsecureMockWarningsForTest(): void {
+  warnedMockOverrides.clear();
+}
+
 // Escape a value for embedding inside a double-quoted query string: backslashes
 // BEFORE quotes so a trailing "\" can't escape the closing quote. Used by both
 // the Gmail query builder and the Graph $search KQL builder; each adapter keeps

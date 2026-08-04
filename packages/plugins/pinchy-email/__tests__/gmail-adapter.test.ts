@@ -1,5 +1,6 @@
 // @vitest-environment node
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { resetInsecureMockWarningsForTest } from "../email-adapter.js";
 
 // Mock googleapis before importing the adapter
 const mockList = vi.fn();
@@ -42,6 +43,7 @@ vi.mock("googleapis", () => {
 });
 
 import { GmailAdapter } from "../gmail-adapter.js";
+import { google } from "googleapis";
 
 // Helper: base64url encode a string
 function base64url(str: string): string {
@@ -1068,5 +1070,47 @@ describe("GmailAdapter", () => {
       expect(options.timeout).toBe(120_000);
       expect(options.timeout).toBeGreaterThan(30_000);
     });
+  });
+});
+
+describe("GmailAdapter mock env overrides", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    resetInsecureMockWarningsForTest();
+  });
+
+  it("does not pass rootUrl when GMAIL_API_BASE_URL is not set", () => {
+    new GmailAdapter({ accessToken: "test-token" });
+
+    expect(google.gmail).toHaveBeenCalledWith(
+      expect.not.objectContaining({ rootUrl: expect.anything() })
+    );
+  });
+
+  it("ignores GMAIL_API_BASE_URL and uses the real API host when the insecure flag is absent", () => {
+    vi.stubEnv("GMAIL_API_BASE_URL", "http://gmail-mock:9004");
+    // No PINCHY_INSECURE_MAIL_MOCK: the mock seam must NOT fire, so a stray
+    // override left over in production can't redirect the OAuth token.
+
+    new GmailAdapter({ accessToken: "test-token" });
+
+    expect(google.gmail).toHaveBeenCalledWith(
+      expect.not.objectContaining({ rootUrl: expect.anything() })
+    );
+  });
+
+  it("passes rootUrl from GMAIL_API_BASE_URL when the insecure flag is also set", () => {
+    vi.stubEnv("GMAIL_API_BASE_URL", "http://gmail-mock:9004");
+    vi.stubEnv("PINCHY_INSECURE_MAIL_MOCK", "1");
+
+    new GmailAdapter({ accessToken: "test-token" });
+
+    expect(google.gmail).toHaveBeenCalledWith(
+      expect.objectContaining({ rootUrl: "http://gmail-mock:9004" })
+    );
   });
 });

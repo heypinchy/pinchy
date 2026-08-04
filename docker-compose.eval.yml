@@ -81,6 +81,11 @@ services:
       # The pinchy-email plugin (running inside OpenClaw) calls the Graph API
       # directly for attachment downloads.
       - GRAPH_API_BASE_URL=http://graph-mock:9005
+      # GRAPH_API_BASE_URL above only takes effect alongside this explicit
+      # flag (graph-adapter.ts), so a stray override left over in production
+      # can never silently redirect an OAuth-authenticated API call. Same
+      # convention as docker-compose.imap-test.yml's PINCHY_INSECURE_MAIL_MOCK.
+      - PINCHY_INSECURE_MAIL_MOCK=1
       # #723 governed-tools comparison sweep: the pinchy-odoo write guards
       # (duplicate guard #721 + read-back #720) are read from this env at guard
       # time. Default "enforced" = governed arm; set PINCHY_ODOO_GOVERNANCE=off
