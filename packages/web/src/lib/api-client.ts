@@ -54,3 +54,28 @@ export const apiPut = <R = unknown, B = unknown>(url: string, body: B): Promise<
 export const apiDelete = <R = void, B = unknown>(url: string, body?: B): Promise<R> =>
   send<R>(url, "DELETE", body);
 export const apiGet = <R = unknown>(url: string): Promise<R> => send<R>(url, "GET");
+
+/**
+ * Unwrap a `parseRequestBody` validation failure into a flat
+ * `{ fieldName: firstMessage }` map for inline form errors.
+ *
+ * Returns null when the error is not a structured field-level validation
+ * failure — the caller should fall back to a toast in that case, which is the
+ * split AGENTS.md "Error And Notification UI" describes: a field the user can
+ * correct gets an inline message, anything else gets a toast.
+ *
+ * Lives beside ApiError because it reads `ApiError.details`, whose shape is
+ * this module's contract with the route layer. It was copied verbatim into two
+ * settings components before (#1087).
+ */
+export function extractFieldErrors(e: unknown): Record<string, string> | null {
+  if (!(e instanceof ApiError) || !e.details) return null;
+  const details = e.details as { fieldErrors?: Record<string, string[]> };
+  const fe = details.fieldErrors;
+  if (!fe || typeof fe !== "object") return null;
+  const flat: Record<string, string> = {};
+  for (const [field, messages] of Object.entries(fe)) {
+    if (Array.isArray(messages) && messages.length > 0) flat[field] = messages[0];
+  }
+  return Object.keys(flat).length > 0 ? flat : null;
+}

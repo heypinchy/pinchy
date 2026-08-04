@@ -174,11 +174,16 @@ export class OfficeDocumentAttachmentAdapter {
 
   async add(state: { file: File }) {
     const { file } = state;
-    if (file.size > CLIENT_MAX_ATTACHMENT_SIZE_BYTES) {
-      const limitMb = Math.round(CLIENT_MAX_ATTACHMENT_SIZE_BYTES / 1024 / 1024);
-      throw new Error(
-        `File "${file.name}" is too large (${Math.round(file.size / 1024 / 1024)} MB). The limit is ${limitMb} MB.`
-      );
+    // Same helper, and therefore the same sentence, the composer's own picker
+    // rejects with (#1087) — this used to re-implement the check with its own
+    // wording, so one user hit two different messages for one rule.
+    //
+    // The helper exempts images; that branch is unreachable here because this
+    // adapter only ever accepts .docx (see `accept` above), and a file that did
+    // arrive claiming image/* would fail in mammoth a moment later regardless.
+    const sizeError = oversizeAttachmentError(file);
+    if (sizeError) {
+      throw new Error(sizeError);
     }
     return {
       id: uuid(),

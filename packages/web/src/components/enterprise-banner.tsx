@@ -12,6 +12,7 @@ import {
   CALENDLY_URL,
   conversionLink,
 } from "@/lib/conversion-links";
+import { formatLicenseDate } from "@/lib/format-date";
 
 const REFETCH_INTERVAL_MS = 15 * 60 * 1000;
 const RENEWAL_WINDOW_MS = 14 * 86400000;
@@ -41,14 +42,6 @@ interface Banner {
   links: BannerLink[];
 }
 
-function formatDate(iso: string): string {
-  return new Date(iso).toLocaleDateString("en-US", {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-  });
-}
-
 /**
  * License-lifecycle banner per the pricing concept's § 6 state table.
  * Factual copy, no countdowns, no guilt — and never red: an expired
@@ -76,7 +69,7 @@ function licenseBanner(license: LicenseInfo, now: Date): Banner | null {
       return {
         key: "license:trial-expired",
         tone: "warn",
-        message: `Your trial ended${expiresAt ? ` on ${formatDate(expiresAt)}` : ""}. Your configuration is preserved.`,
+        message: `Your trial ended${expiresAt ? ` on ${formatLicenseDate(expiresAt)}` : ""}. Your configuration is preserved.`,
         links: [
           { label: "See pricing", href: conversionLink(PRICING_URL, "expired-banner", "pro-10") },
         ],
@@ -91,7 +84,7 @@ function licenseBanner(license: LicenseInfo, now: Date): Banner | null {
       return {
         key: "license:renewal",
         tone: "info",
-        message: `Your license period ends on ${formatDate(periodEnd)}. Your renewal key arrives by email after payment.`,
+        message: `Your license period ends on ${formatLicenseDate(periodEnd)}. Your renewal key arrives by email after payment.`,
         links: [{ label: "Renew", href: conversionLink(PORTAL_URL, "expired-banner", "pro-10") }],
       };
     }
@@ -99,14 +92,14 @@ function licenseBanner(license: LicenseInfo, now: Date): Banner | null {
       return {
         key: "license:grace",
         tone: "warn",
-        message: `License period ended${periodEnd ? ` ${formatDate(periodEnd)}` : ""}.${expiresAt ? ` Grace until ${formatDate(expiresAt)}.` : ""}`,
+        message: `License period ended${periodEnd ? ` ${formatLicenseDate(periodEnd)}` : ""}.${expiresAt ? ` Grace until ${formatLicenseDate(expiresAt)}.` : ""}`,
         links: [{ label: "Renew", href: conversionLink(PORTAL_URL, "expired-banner", "pro-10") }],
       };
     case "expired":
       return {
         key: "license:expired",
         tone: "warn",
-        message: `Your license period ended${periodEnd ? ` on ${formatDate(periodEnd)}` : ""}. Existing access restrictions remain enforced; management features are locked.`,
+        message: `Your license period ended${periodEnd ? ` on ${formatLicenseDate(periodEnd)}` : ""}. Existing access restrictions remain enforced; management features are locked.`,
         links: [{ label: "Renew", href: conversionLink(PORTAL_URL, "expired-banner", "pro-10") }],
       };
     case "community":

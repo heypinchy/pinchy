@@ -1,14 +1,7 @@
 import type { Metadata } from "next";
-import { db } from "@/db";
-import { activeAgents } from "@/db/schema";
-import { eq } from "drizzle-orm";
-import { notFound, redirect } from "next/navigation";
+import { redirect } from "next/navigation";
 import { Chat } from "@/components/chat";
-import { requireAuth } from "@/lib/require-auth";
-import { assertAgentAccess, effectiveVisibility } from "@/lib/agent-access";
-import { getUserGroupIds, getAgentGroupIds } from "@/lib/groups";
-import { getLicenseState } from "@/lib/enterprise";
-import { getAgentAvatarSvg } from "@/lib/avatar";
+import { loadChatAgentName, loadChatPageAgent } from "@/lib/chats/load-chat-agent";
 import { getOpenClawClient } from "@/server/openclaw-client";
 import { classifyUserSessions, type RawSession } from "@/lib/chats/classify-sessions";
 import { selectMostRecentWebChatId } from "@/lib/chats/select-most-recent-chat";
@@ -19,13 +12,7 @@ export async function generateMetadata({
   params: Promise<{ agentId: string }>;
 }): Promise<Metadata> {
   const { agentId } = await params;
-  const agent = await db
-    .select({ name: activeAgents.name })
-    .from(activeAgents)
-    .where(eq(activeAgents.id, agentId))
-    .then((rows) => rows[0]);
-
-  return { title: agent?.name ?? "Chat" };
+  return { title: (await loadChatAgentName(agentId)) ?? "Chat" };
 }
 
 export default async function ChatPage({
@@ -36,32 +23,7 @@ export default async function ChatPage({
   searchParams?: Promise<{ keep?: string }>;
 }) {
   const { agentId } = await params;
-  const session = await requireAuth();
-  const userId = session.user.id!;
-  const userRole = session.user.role;
-
-  const agent = await db
-    .select()
-    .from(activeAgents)
-    .where(eq(activeAgents.id, agentId))
-    .then((rows) => rows[0]);
-
-  if (!agent) notFound();
-
-  const licenseState = await getLicenseState();
-  const effVis = effectiveVisibility(agent.visibility, licenseState);
-  const needsGroups = userRole !== "admin" && effVis === "restricted";
-
-  const [userGroupIds, agentGroupIds] = await Promise.all([
-    needsGroups ? getUserGroupIds(userId) : Promise.resolve([]),
-    needsGroups ? getAgentGroupIds(agentId) : Promise.resolve([]),
-  ]);
-
-  try {
-    assertAgentAccess(agent, userId, userRole, userGroupIds, agentGroupIds, licenseState);
-  } catch {
-    notFound();
-  }
+  const { agent, userId, avatarUrl, canEdit } = await loadChatPageAgent(agentId);
 
   // Where should a bare /chat/<agentId> land? (#508) The user's most-recently-
   // interacted chat — the sidebar links here when this device has no recorded
@@ -87,10 +49,6 @@ export default async function ChatPage({
   }
   // redirect() throws NEXT_REDIRECT, so it must run OUTSIDE the try/catch above.
   if (mostRecentChatId) redirect(`/chat/${agentId}/${mostRecentChatId}`);
-
-  const avatarUrl = getAgentAvatarSvg({ avatarSeed: agent.avatarSeed, name: agent.name });
-  const isAdmin = userRole === "admin";
-  const canEdit = isAdmin || (agent.isPersonal && agent.ownerId === userId);
 
   return (
     <Chat

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { LegResult, SmtpPortProbe } from "@/lib/integrations/imap-probe";
+import { senderNameSchema } from "@/lib/schemas/sender-name";
 
 export const imapTestSchema = z.object({
   imapHost: z.string().min(1),
@@ -17,18 +18,9 @@ export const imapCreateSchema = imapTestSchema.extend({
   // Optional label for the integrations list; the create route defaults it to
   // the mailbox address when omitted (rename is available in the list).
   name: z.string().min(1).optional(),
-  // Optional display name for the From header of agent-sent mail
-  // ("Clemens Helm <clemens@example.com>"). NOT the integration label. CR/LF
-  // is rejected at the schema edge as the first header-injection barrier; the
-  // plugin adapter guards again at send/draft time (defense in depth).
-  senderName: z
-    .string()
-    .min(1)
-    .max(200)
-    .refine((v) => !/[\r\n]/.test(v), {
-      message: "Sender name must not contain line breaks",
-    })
-    .optional(),
+  // Optional display name for the From header of agent-sent mail. Shared with
+  // the edit schema — see schemas/sender-name.ts for the header-injection rule.
+  senderName: senderNameSchema.optional(),
 });
 
 export type ImapCreateInput = z.infer<typeof imapCreateSchema>;

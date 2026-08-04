@@ -20,14 +20,7 @@ import { toast } from "sonner";
 import { apiDelete, ApiError } from "@/lib/api-client";
 import type { LicenseInfo } from "@/lib/enterprise";
 import { PRICING_URL, PORTAL_URL, conversionLink } from "@/lib/conversion-links";
-
-function formatDate(iso: string): string {
-  return new Date(iso).toLocaleDateString("en-US", {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-  });
-}
+import { formatLicenseDate } from "@/lib/format-date";
 
 interface SettingsLicenseProps {
   onEnterpriseActivated?: () => void;
@@ -141,12 +134,14 @@ export function SettingsLicense({ onEnterpriseActivated, initialLicense }: Setti
               // exp is paidUntil plus the 30-day grace window.
               <p className="text-sm">
                 License period {license.state === "grace" ? "ended" : "ends"}{" "}
-                {formatDate(license.paidUntil)}. Grace until {formatDate(license.expiresAt)}.
+                {formatLicenseDate(license.paidUntil)}. Grace until{" "}
+                {formatLicenseDate(license.expiresAt)}.
               </p>
             ) : (
               license.expiresAt && (
                 <p className="text-sm">
-                  Expires: {formatDate(license.expiresAt)} ({license.daysRemaining} days remaining)
+                  Expires: {formatLicenseDate(license.expiresAt)} ({license.daysRemaining} days
+                  remaining)
                 </p>
               )
             )}
@@ -185,14 +180,14 @@ export function SettingsLicense({ onEnterpriseActivated, initialLicense }: Setti
               <p className="text-sm">
                 Your license period ended
                 {(license.paidUntil ?? license.expiresAt) &&
-                  ` on ${formatDate(license.paidUntil ?? license.expiresAt!)}`}
+                  ` on ${formatLicenseDate(license.paidUntil ?? license.expiresAt!)}`}
                 . Existing access restrictions remain enforced; management features are locked.
               </p>
             )}
             {license?.state === "trial-expired" && (
               <p className="text-sm">
-                Your trial ended{license.expiresAt && ` on ${formatDate(license.expiresAt)}`}. Your
-                configuration is preserved.
+                Your trial ended{license.expiresAt && ` on ${formatLicenseDate(license.expiresAt)}`}
+                . Your configuration is preserved.
               </p>
             )}
             <p className="text-sm text-muted-foreground">

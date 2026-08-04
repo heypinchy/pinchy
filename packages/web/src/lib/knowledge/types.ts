@@ -47,22 +47,3 @@ export interface IngestResult {
 export function zeroIngestResult(): IngestResult {
   return { indexed: 0, skipped: 0, removed: 0, unsearchable: 0, failed: 0, archived: 0 };
 }
-
-/**
- * Sums ingest results. Written out field by field on purpose: a counter added
- * to IngestResult fails to compile here until it is summed, so a new counter
- * cannot silently drop out of the numbers an admin sees.
- */
-export function totalCounts(results: readonly IngestResult[]): IngestResult {
-  return results.reduce<IngestResult>(
-    (total, result) => ({
-      indexed: total.indexed + result.indexed,
-      skipped: total.skipped + result.skipped,
-      removed: total.removed + result.removed,
-      unsearchable: total.unsearchable + result.unsearchable,
-      failed: total.failed + result.failed,
-      archived: total.archived + result.archived,
-    }),
-    zeroIngestResult()
-  );
-}

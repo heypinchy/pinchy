@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/api-auth";
-import { parseDays } from "@/lib/usage-params";
+import { parseUsageFilter } from "@/lib/usage-params";
 import { db } from "@/db";
 import { usageRecords, agents } from "@/db/schema";
-import { max, sum, gte, eq, and, sql } from "drizzle-orm";
+import { max, sum, eq, sql } from "drizzle-orm";
 import type { UsageSource } from "@/lib/usage-source";
 
 type SourceBucket = {
@@ -27,22 +27,9 @@ export async function GET(request: NextRequest) {
   if (sessionOrError instanceof NextResponse) return sessionOrError;
 
   const url = new URL(request.url);
-  const daysOrError = parseDays(url.searchParams.get("days"));
-  if (daysOrError instanceof NextResponse) return daysOrError;
-  const days = daysOrError;
-  const agentId = url.searchParams.get("agentId");
-
-  const conditions = [];
-  if (days > 0) {
-    const since = new Date();
-    since.setDate(since.getDate() - days);
-    conditions.push(gte(usageRecords.timestamp, since));
-  }
-  if (agentId) {
-    conditions.push(eq(usageRecords.agentId, agentId));
-  }
-
-  const where = conditions.length > 0 ? and(...conditions) : undefined;
+  const filter = parseUsageFilter(url);
+  if (filter instanceof NextResponse) return filter;
+  const { where } = filter;
 
   // max(agentName) returns the lexicographically greatest name.
   // If an agent is renamed, this may show either old or new name

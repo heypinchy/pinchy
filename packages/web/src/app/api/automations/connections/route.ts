@@ -2,10 +2,10 @@ import { NextResponse } from "next/server";
 import { and, eq, inArray } from "drizzle-orm";
 
 import { db } from "@/db";
-import { agents, agentConnectionPermissions, integrationConnections } from "@/db/schema";
+import { agentConnectionPermissions, integrationConnections } from "@/db/schema";
 import { withAuth } from "@/lib/api-auth";
 import { EMAIL_READ_OPERATIONS } from "@/lib/tool-registry";
-import { canManageAgentWorkflows } from "@/lib/email-workflows/authz";
+import { resolveWorkflowAgentFromQuery } from "@/lib/email-workflows/resolve-agent";
 
 /**
  * GET /api/automations/connections?agentId=<id> — the mailbox choices the
@@ -25,21 +25,12 @@ import { canManageAgentWorkflows } from "@/lib/email-workflows/authz";
  * audit-exempt: read-only; returns nothing state-changing and writes nothing.
  */
 export const GET = withAuth(async (request, _ctx, session) => {
-  const agentId = new URL(request.url).searchParams.get("agentId");
-  if (!agentId) {
-    return NextResponse.json({ error: "agentId is required" }, { status: 400 });
-  }
-
-  const [agent] = await db
-    .select({ isPersonal: agents.isPersonal, ownerId: agents.ownerId })
-    .from(agents)
-    .where(eq(agents.id, agentId));
-  if (!agent) {
-    return NextResponse.json({ error: "Agent not found" }, { status: 404 });
-  }
-  if (!canManageAgentWorkflows(agent, { id: session.user.id!, role: session.user.role })) {
-    return NextResponse.json({ error: "You do not have access to this agent" }, { status: 403 });
-  }
+  const resolved = await resolveWorkflowAgentFromQuery(request, {
+    id: session.user.id!,
+    role: session.user.role,
+  });
+  if ("error" in resolved) return resolved.error;
+  const agentId = resolved.agent.id;
 
   // selectDistinct: an agent can hold several read-operation rows (read, and the
   // legacy "search"/"list" aliases) for one connection — collapse them to one id.
