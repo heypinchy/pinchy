@@ -85,31 +85,52 @@ That is the whole thing: no build step, pre-built images on GHCR. Pair it with a
 
 ## Status
 
-> Pinchy is in early development. The core is working — setup, auth, multi-user, agent chat, permissions, knowledge base agents, and audit trail. We're building the enterprise features (granular RBAC, plugin marketplace, cross-channel workflows) next.
+> Pinchy is in early development. The core is working — setup, auth, multi-user, agent chat, scoped permissions, knowledge base agents, the audit trail, and integrations for email, Telegram, Odoo and web search. Granular RBAC and a plugin marketplace are what we're building next.
 
 ### What works today
 
+**Platform**
+
 - **Setup wizard** — Create your admin account on first run
 - **Authentication** — Credentials-based login with database sessions
-- **Multi-user** — Invite users, admin and user roles, personal and shared agents
+- **Multi-user** — Invite users, admin and member roles, personal and shared agents
+- **Groups** _(Enterprise)_ — Bundle users into groups and scope a shared agent's visibility to them
+- **Context management** — Per-user personal context and organization-wide context, editable in Settings
+- **Provider management** — Configure Anthropic, OpenAI, Google, Ollama (local or cloud), and any number of OpenAI-compatible endpoints
+
+**Agents**
+
 - **Agent chat** — Real-time WebSocket chat with OpenClaw agents, conversation history
 - **Agent permissions** — Allow-list model for agent tools (safe and powerful categories)
-- **Agent settings** — Configure name, model, system prompt, and tool permissions per agent
+- **Agent settings** — Configure name, model, personality, instructions, and tool permissions per agent
 - **Knowledge Base agents** — Create agents with scoped read-only access to specific directories
-- **Context management** — Per-user personal context and organization-wide context, editable in Settings
-- **Email integration** — Connect Gmail or Microsoft 365 mailboxes via OAuth; agents can read, search, draft, and send email with per-agent permissions
 - **Smithers onboarding** — New users get an onboarding interview where Smithers learns about them through conversation
-- **Provider management** — Configure API keys for Anthropic, OpenAI, and Google
-- **Docker Compose deployment** — Single command to run the full stack
+
+**Integrations**
+
+- **Email integration** — Connect Gmail, Microsoft 365, or any IMAP/SMTP mailbox; agents can read, search, draft, and send email with per-agent permissions
+- **Email automations** — Standing workflows that let an agent act on incoming mail on its own, each one created disabled until a person switches it on
+- **Telegram channels** — Chat with your agents from Telegram, one bot per agent, with the same permissions and audit trail
+- **Odoo integration** — Scoped, permission-aware access to your Odoo ERP with 20+ pre-built templates
+- **Web search** — Live web access via the Brave Search API, with per-agent domain allow/deny lists
+
+**Operations**
+
 - **Audit trail** — Cryptographic audit logging with HMAC-signed entries, integrity verification, and CSV export
+- **Usage & costs dashboard** — Token usage, estimated costs, and cache savings per agent (per-user breakdown and CSV export are Enterprise)
+- **Domain lock** — Pin the instance to one hostname and serve it over HTTPS, so a stray IP request is refused and audited
+- **Docker Compose deployment** — Single command to run the full stack
 - **CI pipeline** — Automated linting, testing, and security auditing
 
 ### What's coming
 
-- Full RBAC with team-scoped permissions
+- Granular RBAC with custom roles beyond admin/member ([#527](https://github.com/heypinchy/pinchy/issues/527))
 - Plugin marketplace for agent tools
-- Cross-channel workflows (email, Slack)
-- Admin dashboard with usage analytics
+- Additional chat channels for reaching agents
+
+<!-- Both lists are checked against the code by scripts/lib/readme-status.test.mjs:
+     a shipped feature missing from "What works today", or a promise here that
+     the tree already contains, fails `pnpm test:scripts`. -->
 
 Follow our progress on [the blog](https://heypinchy.com/blog/building-pinchy-in-public) and [LinkedIn](https://linkedin.com/in/clemenshelm).
 
