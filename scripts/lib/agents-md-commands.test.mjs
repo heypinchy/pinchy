@@ -161,3 +161,16 @@ test("every pnpm command in the real AGENTS.md resolves to a real script", () =>
     [],
   );
 });
+
+test("every pnpm command in the real CONTRIBUTING.md resolves to a real script", () => {
+  // CONTRIBUTING.md is the second file this drift class hits: it documented
+  // `pnpm db:migrate`, `pnpm test:db` and `pnpm lint` as root commands when
+  // those scripts only exist in packages/web. checkAgentsMdCommands /
+  // createWorkspaceResolver are markdown-agnostic (they take the text as an
+  // argument), so no new production code is needed to extend coverage here.
+  const markdown = readFileSync(join(REPO_ROOT, "CONTRIBUTING.md"), "utf8");
+  assert.deepEqual(
+    checkAgentsMdCommands(markdown, createWorkspaceResolver(REPO_ROOT)),
+    [],
+  );
+});

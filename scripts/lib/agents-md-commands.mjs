@@ -1,15 +1,17 @@
 /**
- * Drift guard for the commands documented in AGENTS.md.
+ * Drift guard for the pnpm commands documented in AGENTS.md and CONTRIBUTING.md.
  *
  * AGENTS.md is the first file every coding agent reads, so a command that no
  * longer exists costs time in every future session — and nothing else in CI
  * reads it. That is how `pnpm lint`, `pnpm format` and `pnpm db:generate` came
  * to sit in the "Commands" section for months without any of them resolving to
- * a script.
+ * a script. CONTRIBUTING.md documents the same kind of commands for human
+ * contributors and drifted the same way (`pnpm db:migrate`, `pnpm test:db`
+ * documented as root scripts when they only exist in packages/web).
  *
- * This walks every ```bash block in AGENTS.md, works out which package each
- * `pnpm <script>` invocation would run in, and fails if the script isn't
- * declared there. Read-side sibling of the no-untracked-skips /
+ * This walks every ```bash block in a given markdown file, works out which
+ * package each `pnpm <script>` invocation would run in, and fails if the
+ * script isn't declared there. Read-side sibling of the no-untracked-skips /
  * no-test-deletion / plugin-typecheck / web-typecheck guards.
  *
  * Scope: it proves the package a command targets declares the script — e.g.

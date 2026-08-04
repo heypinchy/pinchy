@@ -72,8 +72,8 @@ pnpm install
 # Start database and OpenClaw in Docker
 docker compose -f docker-compose.yml -f docker-compose.dev.yml up db openclaw -d
 
-export DATABASE_URL=postgresql://pinchy:pinchy_dev@localhost:5433/pinchy
-pnpm db:migrate
+export DATABASE_URL=postgresql://pinchy:pinchy_dev@localhost:5434/pinchy
+pnpm -C packages/web db:migrate
 pnpm dev
 ```
 
@@ -84,7 +84,7 @@ pnpm dev
 pnpm test
 
 # DB integration tests (real Postgres, slower — opts you into the DB-backed runner)
-pnpm test:db
+pnpm -C packages/web test:db
 ```
 
 All new features require tests. We practice TDD — write the failing test first, then the implementation.
@@ -115,7 +115,7 @@ Convention: any file matching `**/*.integration.test.ts` runs in `pnpm test:db` 
 
 - TypeScript strict mode
 - Prettier for formatting, ESLint for linting
-- Run `pnpm lint` and `pnpm format` before submitting
+- Run `pnpm -C packages/web lint` and `pnpm format` before submitting
 - Pre-commit hook runs linting automatically via Husky
 
 ## Schema migration policy
@@ -242,7 +242,7 @@ ssh root@<staging-host> "cd /opt/pinchy && docker compose pull && docker compose
 
 The `docker image prune -f` step removes the previous `:next` image that `pull` left dangling. Staging cycles `:next` many times per day, so without it the root volume fills up within a release window (see [#370](https://github.com/heypinchy/pinchy/issues/370)).
 
-Auto-deploy on every push to `main` is tracked in [issue #184](https://github.com/heypinchy/pinchy/issues/184) and lands in v0.7.0.
+Auto-deploy on every push to `main` is tracked in [issue #184](https://github.com/heypinchy/pinchy/issues/184).
 
 **Use synthetic data in staging.** Do not restore prod dumps — unnecessary privacy surface.
 
@@ -344,7 +344,7 @@ Every push to `main` triggers the **Pre-release** workflow, which builds and pub
 ssh root@<staging-ip> "cd /opt/pinchy && docker compose pull && docker compose up -d && docker image prune -f"
 ```
 
-Run this manually before each pre-release click-through. Auto-deploy on every push to `main` is tracked in [issue #184](https://github.com/heypinchy/pinchy/issues/184) and lands in v0.7.0.
+Run this manually before each pre-release click-through. Auto-deploy on every push to `main` is tracked in [issue #184](https://github.com/heypinchy/pinchy/issues/184).
 
 ### Saving cost between releases
 
