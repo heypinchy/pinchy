@@ -55,6 +55,8 @@ import plugin, {
   ODOO_READ_RESULT_BUDGET_CHARS,
   ODOO_READ_TRUNCATION_HINT,
   ODOO_AGGREGATE_TRUNCATION_HINT,
+  ODOO_READ_DEFAULT_LIMIT,
+  ODOO_READ_LIMIT_CAP,
 } from "../index";
 
 const MOVE_FIELDS: OdooField[] = [
@@ -1501,9 +1503,11 @@ describe("odoo_read", () => {
     );
   });
 
-  // Same defect, missing rather than oversized: an omitted `limit` reached
-  // Odoo as `undefined` (no bound at all) despite the tool description
-  // promising "default: 100".
+  // Same parameter, missing rather than oversized. `odoo-node`'s `searchRead`
+  // does already substitute its own `DEFAULT_LIMIT = 100` for an `undefined`
+  // limit, so this was never the unbounded case — but the tool description
+  // promises "default: 100" and that promise should be pinned here rather
+  // than depend on a library constant we don't own.
   it("defaults limit to 100 when omitted, instead of forwarding undefined", async () => {
     mockSearchRead.mockResolvedValue({ records: [], total: 0, limit: 100, offset: 0 });
 
@@ -1520,6 +1524,70 @@ describe("odoo_read", () => {
       [],
       expect.objectContaining({ limit: 100 })
     );
+  });
+
+  // `Math.min` alone is a ONE-SIDED clamp, and the open side is the one that
+  // matters: Odoo reads `limit=0` as *no limit*, and odoo-node forwards it
+  // verbatim (`options?.limit ?? DEFAULT_LIMIT` — `0 ?? 100` is `0`). So a
+  // model writing `limit: 0` got the entire table back through the very cap
+  // that exists to prevent that. Anything that is not a usable row count
+  // falls back to the documented default.
+  it.each([
+    ["zero", 0],
+    ["negative", -1],
+    ["NaN", Number.NaN],
+    ["Infinity", Number.POSITIVE_INFINITY],
+  ])("treats a %s limit as unspecified rather than forwarding it", async (_label, limit) => {
+    mockSearchRead.mockResolvedValue({ records: [], total: 0, limit: 100, offset: 0 });
+
+    const tools = createApi({ [agentId]: agentConfig });
+    const tool = findTool(tools, "odoo_read", agentId)!;
+
+    const result = await tool.execute("call-unusable-limit", {
+      model: "sale.order",
+      limit,
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(mockSearchRead).toHaveBeenCalledWith(
+      "sale.order",
+      [],
+      expect.objectContaining({ limit: ODOO_READ_DEFAULT_LIMIT })
+    );
+  });
+
+  // A fractional limit reaches Postgres as a fractional LIMIT. Floor it to a
+  // row count instead of letting the database decide what 10.7 rows means.
+  it("floors a fractional limit to a whole row count", async () => {
+    mockSearchRead.mockResolvedValue({ records: [], total: 0, limit: 10, offset: 0 });
+
+    const tools = createApi({ [agentId]: agentConfig });
+    const tool = findTool(tools, "odoo_read", agentId)!;
+
+    const result = await tool.execute("call-fractional-limit", {
+      model: "sale.order",
+      limit: 10.7,
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(mockSearchRead).toHaveBeenCalledWith(
+      "sale.order",
+      [],
+      expect.objectContaining({ limit: 10 })
+    );
+  });
+
+  // The numbers in the tool description are what the model plans against, so
+  // a description that drifts from the enforced bound is worse than no
+  // description. Pin them to the same constants the clamp reads.
+  it("documents the default and cap the clamp actually enforces", () => {
+    const tools = createApi({ [agentId]: agentConfig });
+    const tool = findTool(tools, "odoo_read", agentId)!;
+    const limitDescription = (tool.parameters as { properties: { limit: { description: string } } })
+      .properties.limit.description;
+
+    expect(limitDescription).toContain(String(ODOO_READ_DEFAULT_LIMIT));
+    expect(limitDescription).toContain(String(ODOO_READ_LIMIT_CAP));
   });
 
   // Regression (pinchy production, 2026-07-22): a real crm.lead read produced a
@@ -2191,6 +2259,38 @@ describe("odoo_aggregate", () => {
     );
   });
 
+  // Same one-sided-clamp hole as odoo_read: `Math.min(0, 500)` is `0`, which
+  // odoo-node forwards and Odoo reads as *no limit*. `odoo_aggregate` has no
+  // documented default, so an unusable value collapses to `undefined` — the
+  // same state as omitting the parameter, never a forwarded `0`/`-1`/`NaN`.
+  it.each([
+    ["zero", 0],
+    ["negative", -1],
+    ["NaN", Number.NaN],
+  ])("treats a %s limit as unspecified rather than forwarding it", async (_label, limit) => {
+    mockReadGroup.mockResolvedValue({ groups: [] });
+
+    const tools = createApi({ [agentId]: agentConfig });
+    const tool = findTool(tools, "odoo_aggregate", agentId)!;
+
+    const result = await tool.execute("call-unusable-limit", {
+      model: "sale.order",
+      filters: [],
+      fields: ["partner_id", "amount_total:sum"],
+      groupby: ["partner_id"],
+      limit,
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(mockReadGroup).toHaveBeenCalledWith(
+      "sale.order",
+      [],
+      ["partner_id", "amount_total:sum"],
+      ["partner_id"],
+      expect.objectContaining({ limit: undefined })
+    );
+  });
+
   // Same trap, two more model-supplied lists — `groupby` additionally
   // accepts the `field:agg` suffix form, which must strip by base name.
   it("strips synthetic `_pinchy_ref` entries from both `fields` and `groupby` before forwarding to Odoo", async () => {
@@ -2714,7 +2814,10 @@ describe("odoo_create", () => {
 
   // Same defect, name-based path: a country resolved by display name must not
   // fetch the whole table either — it should send an ilike domain scoped to
-  // the requested name.
+  // the requested name. Asserted as the exact domain, not `arrayContaining`:
+  // a domain that merely *contains* the right leaves passes that matcher even
+  // when the `"|"` operator is missing, which is an implicit AND and a
+  // different query.
   it("scopes the country search read to an ilike domain instead of scanning the whole table when resolving by name", async () => {
     mockFields.mockResolvedValue([
       { name: "name", string: "Name", type: "char" },
@@ -2743,13 +2846,82 @@ describe("odoo_create", () => {
 
     expect(result.isError).toBeFalsy();
     const [, domain] = mockSearchRead.mock.calls.find(([model]) => model === "res.country")!;
-    expect(domain).not.toEqual([]);
-    expect(domain).toEqual(
-      expect.arrayContaining([
-        expect.arrayContaining(["name", "ilike", "Austria"]),
-        expect.arrayContaining(["display_name", "ilike", "Austria"]),
-      ])
-    );
+    expect(domain).toEqual([["name", "ilike", "Austria"]]);
+  });
+
+  // A lookup carrying BOTH a code and a name used to resolve by name when the
+  // code matched nothing, because the whole table was in hand and
+  // `resolveReferenceFromRecords` falls through from the code branch to the
+  // exact-name branch. A code-only domain silently removes that fallback: the
+  // records the name branch needs are never fetched. OR the two.
+  it("keeps the name fallback reachable when a lookup carries both a code and a name", async () => {
+    mockFields.mockResolvedValue([
+      { name: "name", string: "Name", type: "char" },
+      {
+        name: "country_id",
+        string: "Country",
+        type: "many2one",
+        relation: "res.country",
+      },
+    ]);
+    // The code matches nothing; only the name does.
+    mockSearchRead.mockResolvedValue({
+      records: [{ id: 14, name: "Austria", code: "AT" }],
+      total: 1,
+      limit: 1000,
+      offset: 0,
+    });
+    mockCreate.mockResolvedValue(48);
+
+    const tools = createApi({ [agentId]: agentConfig });
+    const tool = findTool(tools, "odoo_create", agentId)!;
+
+    const result = await tool.execute("call-country-code-and-name", {
+      model: "res.partner",
+      values: {
+        name: "Wien Partner",
+        country_id: { lookup: { code: "XX", name: "Austria" } },
+      },
+    });
+
+    expect(result.isError).toBeFalsy();
+    const [, domain] = mockSearchRead.mock.calls.find(([model]) => model === "res.country")!;
+    expect(domain).toEqual(["|", ["code", "=", "XX"], ["name", "ilike", "Austria"]]);
+    expect(mockCreate).toHaveBeenCalledWith("res.partner", {
+      name: "Wien Partner",
+      country_id: 14,
+    });
+  });
+
+  // The one input shape carrying NO scoping information at all was the one
+  // that kept the old behaviour: `{lookup: {}}` (or a non-string `name`, which
+  // `parseLookup` drops) produced `["|", ["name","ilike",""], …]`, and
+  // `ilike ""` is `LIKE '%%'` — every row, exactly the full-table scan this
+  // change exists to remove. There is nothing to search for, so don't search:
+  // fail with the same "provide an exact name or ref" error, unqueried.
+  it("does not query res.country at all when the lookup carries neither a code nor a name", async () => {
+    mockFields.mockResolvedValue([
+      { name: "name", string: "Name", type: "char" },
+      {
+        name: "country_id",
+        string: "Country",
+        type: "many2one",
+        relation: "res.country",
+      },
+    ]);
+
+    const tools = createApi({ [agentId]: agentConfig });
+    const tool = findTool(tools, "odoo_create", agentId)!;
+
+    const result = await tool.execute("call-country-empty-lookup", {
+      model: "res.partner",
+      values: { name: "Wien Partner", country_id: { lookup: {} } },
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("Could not resolve country_id");
+    expect(mockSearchRead.mock.calls.filter(([model]) => model === "res.country")).toHaveLength(0);
+    expect(mockCreate).not.toHaveBeenCalled();
   });
 
   it("denies create on model without create permission", async () => {

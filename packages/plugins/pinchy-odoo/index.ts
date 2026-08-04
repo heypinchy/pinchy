@@ -1266,20 +1266,60 @@ async function searchRelationByName(
 
 /**
  * Domain for the `res.country` lookup, scoped to the parsed
- * {@link RelationLookup} instead of matching every row. `res.country` is
- * excluded from {@link searchRelationByName} only because that helper's
- * field list omits `code` (it always requests `["id", "name",
+ * {@link RelationLookup} instead of matching every row — or `null` when the
+ * lookup carries nothing to scope on.
+ *
+ * `res.country` is excluded from {@link searchRelationByName} only because
+ * that helper's field list omits `code` (it always requests `["id", "name",
  * "display_name"]`) — but that made every unresolved country value fetch the
- * *entire* table (empty domain, `limit: 1000`) on every call. A `code` (from
- * an explicit `{lookup:{code}}` or a recognized alias/ISO input, see
- * `countryCodeForInput`) narrows to an exact `code` match; otherwise fall
- * back to an `ilike` match on `name` OR `display_name`, mirroring
- * `searchRelationByName`'s `name` domain.
+ * *entire* table (empty domain, `limit: 1000`) on every call.
+ *
+ * Three shapes, and each one exists because of how
+ * {@link resolveReferenceFromRecords} consumes the result:
+ *
+ * - A `code` (explicit `{lookup:{code}}`, or a recognized alias/ISO input via
+ *   `countryCodeForInput`) narrows to an exact `code` match.
+ * - A `name` narrows to an `ilike` match, mirroring `searchRelationByName`'s
+ *   domain. `name` only, deliberately: no other search domain in this plugin
+ *   touches `display_name`, which is a computed non-stored field whose
+ *   searchability depends on the Odoo version — and for `res.country`
+ *   (`_rec_name` is `name`) it would match nothing `name` doesn't. The
+ *   client-side matcher still compares both.
+ * - BOTH are OR-ed rather than letting `code` win, because
+ *   `resolveReferenceFromRecords` falls through from its code branch to its
+ *   exact-name branch. A code-only domain never fetches the records that
+ *   fallback needs, so a wrong code would make a correct name unresolvable.
+ *
+ * `null` is the neither case (`{lookup: {}}`, or a non-string `name` that
+ * `parseLookup` drops). An `ilike ""` there is `LIKE '%%'`, i.e. every row —
+ * the full-table scan this function exists to remove, reached through the one
+ * input that carries no information to scan for. The caller resolves against
+ * no records instead, which produces the identical error unqueried.
  */
-function countryLookupDomain(lookup: RelationLookup): OdooDomain {
-  if (lookup.code) return [["code", "=", lookup.code]];
-  const name = lookup.name ?? "";
-  return ["|", ["name", "ilike", name], ["display_name", "ilike", name]];
+function countryLookupDomain(lookup: RelationLookup): OdooDomain | null {
+  const byCode: OdooDomain | null = lookup.code ? [["code", "=", lookup.code]] : null;
+  const byName: OdooDomain | null = lookup.name ? [["name", "ilike", lookup.name]] : null;
+  if (byCode && byName) return ["|", ...byCode, ...byName];
+  return byCode ?? byName;
+}
+
+/**
+ * Candidate `res.country` rows for a lookup, or an empty result when
+ * {@link countryLookupDomain} has nothing to search for. The `limit` is a
+ * backstop rather than the bound that matters now that the domain is scoped —
+ * a one-letter `ilike` still matches a good share of the table.
+ */
+async function readCountryCandidates(
+  client: OdooClient,
+  relation: string,
+  lookup: RelationLookup
+): Promise<unknown> {
+  const domain = countryLookupDomain(lookup);
+  if (!domain) return { records: [] };
+  return client.searchRead(relation, domain, {
+    fields: ["id", "name", "display_name", "code"],
+    limit: 1000,
+  });
 }
 
 async function resolveRelationValue(
@@ -1336,10 +1376,7 @@ async function resolveRelationValue(
 
   const result =
     field.relation === "res.country"
-      ? await client.searchRead(field.relation, countryLookupDomain(lookup), {
-          fields: ["id", "name", "display_name", "code"],
-          limit: 1000,
-        })
+      ? await readCountryCandidates(client, field.relation, lookup)
       : await searchRelationByName(client, field, lookup, scopeCompanyId, fieldsCache);
 
   return resolveReferenceFromRecords(field, lookup, getSearchReadRecords(result));
@@ -2082,26 +2119,58 @@ function wrapReadResult(
 /**
  * Row-count bounds for `odoo_read`/`odoo_aggregate`'s `limit` parameter.
  *
- * `params.limit` used to reach `client.searchRead`/`client.readGroup`
- * unclamped: an omitted limit forwarded `undefined` (no bound at all,
- * despite the `odoo_read` tool description promising "default: 100"), and an
- * oversized one forwarded verbatim, letting a single call request the whole
- * table. {@link clampReadLimit} enforces the documented default and a hard
- * cap; {@link clampOptionalLimit} enforces only the cap, for `odoo_aggregate`
- * whose `limit` (max groups) has no documented default and must stay
- * `undefined` when omitted.
+ * `params.limit` reached `client.searchRead`/`client.readGroup` verbatim, so
+ * a model asking for `limit: 999999` got exactly that against Odoo and a
+ * single call could pull the whole table. These are the bounds the tool
+ * descriptions promise — interpolated into those descriptions rather than
+ * restated, so the number the model plans against and the number actually
+ * enforced cannot drift apart.
+ *
+ * `ODOO_READ_DEFAULT_LIMIT` also happens to match `odoo-node`'s own
+ * `DEFAULT_LIMIT`, which its `searchRead` substitutes for an `undefined`
+ * limit — so an omitted limit was never the unbounded case. Pinning it here
+ * makes the documented default ours instead of a library constant we don't
+ * own and would not notice changing.
  */
 export const ODOO_READ_DEFAULT_LIMIT = 100;
 export const ODOO_READ_LIMIT_CAP = 500;
 
-function clampReadLimit(limit: unknown): number {
-  const requested = typeof limit === "number" ? limit : ODOO_READ_DEFAULT_LIMIT;
-  return Math.min(requested, ODOO_READ_LIMIT_CAP);
+/**
+ * Reduce a model-supplied `limit` to a usable row count, or `null` when it
+ * carries no usable bound at all.
+ *
+ * A bare `Math.min` is a ONE-SIDED clamp, and the side it leaves open is the
+ * one that matters. Odoo reads `limit=0` as *no limit*, and `odoo-node`
+ * forwards it verbatim (`options?.limit ?? DEFAULT_LIMIT` — `0 ?? 100` is
+ * `0`), so `limit: 0` walked straight through the cap and returned the entire
+ * table: the exact outcome the cap exists to prevent, one plausible model
+ * output away. The other open cases end the same way or worse — a negative
+ * value reaches Postgres as a negative `LIMIT`, and `NaN`/`Infinity` are
+ * `typeof "number"` but serialize to JSON `null`, i.e. unbounded again.
+ *
+ * So the rule is positive rather than subtractive: a limit is honoured only
+ * if it is a finite row count of at least 1, floored to a whole row and
+ * capped. Anything else is "not specified" and left to the caller's default.
+ */
+function usableLimit(limit: unknown): number | null {
+  if (typeof limit !== "number" || !Number.isFinite(limit)) return null;
+  const rows = Math.floor(limit);
+  if (rows < 1) return null;
+  return Math.min(rows, ODOO_READ_LIMIT_CAP);
 }
 
+/** `odoo_read`: an unusable limit falls back to the documented default. */
+function clampReadLimit(limit: unknown): number {
+  return usableLimit(limit) ?? ODOO_READ_DEFAULT_LIMIT;
+}
+
+/**
+ * `odoo_aggregate`: its `limit` (max groups) has no documented default, so an
+ * unusable value collapses to `undefined` — the same state as omitting the
+ * parameter, never a forwarded `0` that Odoo would read as "all groups".
+ */
 function clampOptionalLimit(limit: unknown): number | undefined {
-  if (typeof limit !== "number") return undefined;
-  return Math.min(limit, ODOO_READ_LIMIT_CAP);
+  return usableLimit(limit) ?? undefined;
 }
 
 /**
@@ -2926,7 +2995,7 @@ const plugin = {
               },
               limit: {
                 type: "number",
-                description: "Max records (default: 100, capped at 500)",
+                description: `Max records (default: ${ODOO_READ_DEFAULT_LIMIT}, capped at ${ODOO_READ_LIMIT_CAP})`,
               },
               offset: {
                 type: "number",
@@ -3080,7 +3149,10 @@ const plugin = {
                 items: { type: "string" },
                 description: "Fields to group by, e.g. ['partner_id'] or ['date_order:month']",
               },
-              limit: { type: "number", description: "Max groups to return (capped at 500)" },
+              limit: {
+                type: "number",
+                description: `Max groups to return (capped at ${ODOO_READ_LIMIT_CAP})`,
+              },
               offset: {
                 type: "number",
                 description: "Skip N groups for pagination",
