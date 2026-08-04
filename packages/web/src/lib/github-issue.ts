@@ -4,6 +4,13 @@ export interface DiagnosticsResult {
   version: string;
   nodeEnv: string;
   logs?: string;
+  /**
+   * Set by `GET /api/diagnostics` when the caller is signed in and the server
+   * deliberately held the logs back for their role — never when the logs are
+   * merely missing. The two need different copy in the report body, and an
+   * absent `logs` field alone cannot tell them apart.
+   */
+  logsWithheld?: "admin-only";
 }
 
 export interface IssueContext {
@@ -102,6 +109,18 @@ export function buildIssueBody(context: IssueContext): string {
 
   if (diagnostics?.logs) {
     sections.push("", "**Logs:**", "```", diagnostics.logs, "```");
+  } else if (diagnostics?.logsWithheld === "admin-only") {
+    // Since logs became admin-only this is what every member sees, so it is
+    // no longer a rare fallback. Pointing them at a host shell they have no
+    // account on produces a report with no logs and an instruction the
+    // reporter cannot follow — their administrator is the workable step.
+    sections.push(
+      "",
+      "**Logs:** Not included — only admins can read server logs. Forward this report to your Pinchy administrator, who can paste them below.",
+      "```",
+      "",
+      "```"
+    );
   } else {
     sections.push(
       "",

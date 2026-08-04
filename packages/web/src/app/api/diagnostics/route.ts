@@ -29,6 +29,15 @@ export async function GET() {
   // member has no business reading another user's error traces.
   if (session?.user?.role === "admin") {
     response.logs = logCapture.formatAsText();
+  } else if (session?.user) {
+    // Signed in, but not an admin. An absent `logs` field on its own cannot
+    // say WHY it is absent, and the in-app bug reporter has to tell the two
+    // causes apart: it can send whoever is holding the host shell to
+    // `docker compose logs`, but a member has no account there and needs
+    // their administrator instead. The anonymous caller is the setup
+    // wizard's pre-flight check — that person IS the host operator, so no
+    // marker for them.
+    response.logsWithheld = "admin-only";
   }
 
   return NextResponse.json(response);

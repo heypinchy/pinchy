@@ -199,6 +199,57 @@ describe("buildIssueBody", () => {
     expect(body).toContain("docker compose logs pinchy");
   });
 
+  // Since logs became admin-only, a member's report reaches this branch every
+  // time — so it may not send them to a host shell they have no account on.
+  // The reporter's one workable next step is their own administrator.
+  it("should ask the reporter to forward the report when logs were withheld for role", () => {
+    const body = buildIssueBody({
+      error: "Setup failed",
+      page: "/setup",
+      diagnostics: {
+        database: "connected",
+        openclaw: "connected",
+        version: "0.1.0",
+        nodeEnv: "production",
+        logsWithheld: "admin-only",
+      },
+    });
+    expect(body).toMatch(/forward this report to your Pinchy administrator/i);
+  });
+
+  it("should not instruct a reporter without log access to run a host command", () => {
+    const body = buildIssueBody({
+      error: "Setup failed",
+      page: "/setup",
+      diagnostics: {
+        database: "connected",
+        openclaw: "connected",
+        version: "0.1.0",
+        nodeEnv: "production",
+        logsWithheld: "admin-only",
+      },
+    });
+    expect(body).not.toContain("docker compose");
+  });
+
+  // The distinction the marker exists for: no marker means the logs are
+  // simply not there (anonymous setup-wizard caller, or diagnostics that
+  // never answered), and whoever sees that does hold the host shell.
+  it("should keep the host command when diagnostics carry no logs and no withheld marker", () => {
+    const body = buildIssueBody({
+      error: "Setup failed",
+      page: "/setup",
+      diagnostics: {
+        database: "unreachable",
+        openclaw: "connected",
+        version: "0.1.0",
+        nodeEnv: "production",
+      },
+    });
+    expect(body).toContain("docker compose logs pinchy");
+    expect(body).not.toMatch(/administrator/i);
+  });
+
   it("should handle special characters in error messages", () => {
     const body = buildIssueBody({
       error: "Failed: key=abc&status=error#hash",
