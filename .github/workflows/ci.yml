@@ -477,19 +477,31 @@ jobs:
         env:
           PINCHY_LICENSE_PRIVATE_KEY: ${{ secrets.PINCHY_LICENSE_PRIVATE_KEY }}
         run: |
+          # Fork PRs get no secrets; a missing key must read as "cannot verify
+          # here", not as a red check on every outside contribution. Runs with
+          # the secret on same-repo PRs, merge queue and main.
+          if [ -z "$PINCHY_LICENSE_PRIVATE_KEY" ]; then
+            echo "::notice::PINCHY_LICENSE_PRIVATE_KEY not available (fork PR or unset secret) — skipping keypair verification."
+            exit 0
+          fi
           npm install jose
           node -e "
             const jose = require('jose');
             const fs = require('fs');
-            const src = fs.readFileSync('packages/web/src/lib/enterprise.ts', 'utf8');
-            const pubMatch = src.match(/-----BEGIN PUBLIC KEY-----[\s\S]+?-----END PUBLIC KEY-----/);
-            if (!pubMatch) { console.error('❌ Public key not found in enterprise.ts'); process.exit(1); }
+            const src = fs.readFileSync('packages/web/src/lib/license-keys.ts', 'utf8');
+            // Anchor on the PRODUCTION const: the file also carries the
+            // development public key, and a first-match regex would happily
+            // verify against the wrong one if the declarations were reordered.
+            const idx = src.indexOf('PRODUCTION_PUBLIC_KEY');
+            if (idx === -1) { console.error('❌ PRODUCTION_PUBLIC_KEY not found in license-keys.ts'); process.exit(1); }
+            const pubMatch = src.slice(idx).match(/-----BEGIN PUBLIC KEY-----[\s\S]+?-----END PUBLIC KEY-----/);
+            if (!pubMatch) { console.error('❌ Public key PEM not found after PRODUCTION_PUBLIC_KEY in license-keys.ts'); process.exit(1); }
             (async () => {
               const priv = await jose.importPKCS8(process.env.PINCHY_LICENSE_PRIVATE_KEY, 'ES256');
               const pub = await jose.importSPKI(pubMatch[0], 'ES256');
               const jwt = await new jose.SignJWT({test: true}).setProtectedHeader({alg: 'ES256'}).sign(priv);
               await jose.jwtVerify(jwt, pub);
-              console.log('✅ Keypair verified: private key matches public key in enterprise.ts');
+              console.log('✅ Keypair verified: private key matches PRODUCTION_PUBLIC_KEY in license-keys.ts');
             })();
           "
 
