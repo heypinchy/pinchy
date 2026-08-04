@@ -1,6 +1,7 @@
 import { getSetting } from "@/lib/settings";
 import { validateLicense, type LicenseStatus } from "@/lib/license";
 import { deriveLicenseState, type LicenseState } from "@/lib/license-state";
+import { DEVELOPMENT_PUBLIC_KEY, PRODUCTION_PUBLIC_KEY } from "@/lib/license-keys";
 
 export type { LicenseStatus, LicenseType } from "@/lib/license";
 export type { LicenseState } from "@/lib/license-state";
@@ -18,13 +19,6 @@ export interface LicenseInfo {
   seatsUsed: number;
   hasGatedConfig: boolean;
 }
-
-// Production public key (ES256 / P-256)
-// Generated with: npx tsx scripts/generate-license.ts --generate-keypair
-const PRODUCTION_PUBLIC_KEY = `-----BEGIN PUBLIC KEY-----
-MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEaPYaiLnn7Z+EUywhGX4vOitboyzJ
-ce3W+NnSsTlbVzMRnXALwqra86Orhk9Sl4UWKEuebwltk+3OIuVy33oTWA==
------END PUBLIC KEY-----`;
 
 const CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
 
@@ -51,6 +45,41 @@ export function isKeyFromEnv(): boolean {
 }
 
 /**
+ * Whether a license signed by the DEVELOPMENT key is honoured.
+ *
+ * False in production, which is the whole point: the development license is
+ * committed to this repository, so anything that honours it is unlocked for
+ * everyone who can read the repository (#1083). A dev stack (`next dev`, the
+ * E2E web server) runs outside production and honours it.
+ *
+ * Read per call rather than captured at module load — NODE_ENV is stubbed per
+ * test, and a module-level constant would freeze whatever the first import saw.
+ */
+function developmentLicensesHonoured(): boolean {
+  return process.env.NODE_ENV !== "production";
+}
+
+/**
+ * Validate against the key ring rather than a single key: the production key
+ * always, the development key only where development licenses are honoured.
+ *
+ * Order matters. The production key is asked first and its verdict wins when
+ * it recognises the token at all (`active` or the authentic-but-`expired`
+ * case), so a real customer license can never be re-read under the dev key.
+ */
+async function validateAgainstKeyRing(
+  token: string,
+  productionKeyPem: string
+): Promise<LicenseStatus> {
+  const status = await validateLicense(token, productionKeyPem);
+  if (status.active || status.expired) return status;
+  if (!developmentLicensesHonoured()) return status;
+
+  const dev = await validateLicense(token, DEVELOPMENT_PUBLIC_KEY, { honourDevSubject: true });
+  return dev.active || dev.expired ? dev : status;
+}
+
+/**
  * Validate a candidate token without storing it or touching the cache.
  *
  * This is the entry point for "would this key work?", which is a different
@@ -64,12 +93,18 @@ export function isKeyFromEnv(): boolean {
  * copy of it. The route decides with this function what the app then reads
  * through that one; a change to how a token is verified must reach both or the
  * route would accept a key the app treats as community.
+ *
+ * That invariant is why the key ring lives HERE and not in `getLicenseStatus`
+ * (#1083). Put it one level down and the two diverge in the other direction:
+ * on a dev stack the route would reject the development license while the app
+ * honours it — the same class of bug, arriving as "your key is invalid" for a
+ * key that demonstrably works.
  */
 export async function validateLicenseToken(
   token: string,
   publicKeyPem: string = PRODUCTION_PUBLIC_KEY
 ): Promise<LicenseStatus> {
-  return validateLicense(token, publicKeyPem);
+  return validateAgainstKeyRing(token, publicKeyPem);
 }
 
 /**

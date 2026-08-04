@@ -207,6 +207,14 @@ Nothing to configure, and agents pick this up on their own from the tool descrip
 
 Delete entries in the audit trail now carry the model, the record IDs and the display names, read from Odoo immediately before the delete. See [Agent Permissions → Odoo tools](/concepts/agent-permissions/#odoo-tools).
 
+#### A license key that didn't come from us stops working
+
+Development builds ship a license key so contributors can exercise enterprise features on their own machine. Until this release that key was signed the same way real customer licenses are, so anyone reading the source could paste it into **Settings → License** and unlock the paid tier on any install.
+
+Development licenses now carry their own signature, which release builds do not accept, and the old key is refused outright. If your install was activated with a key that did not come from us, enterprise features switch off on this upgrade: Groups, agent access control and basic RBAC return to their community behaviour. Nothing is deleted — your groups and permission settings are still there, and they come back the moment a valid key is entered.
+
+Keys we issued are unaffected. Nothing about them changed, and there is nothing to re-enter.
+
 ### Upgrade notes
 
 The standard flow applies:

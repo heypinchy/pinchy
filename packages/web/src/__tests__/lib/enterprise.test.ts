@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { describe, it, expect, vi, beforeEach, beforeAll } from "vitest";
+import { describe, it, expect, vi, afterEach, beforeEach, beforeAll } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import * as jose from "jose";
@@ -218,6 +218,41 @@ describe("validateLicenseToken", () => {
 
       expect(viaValidate).toEqual(viaStatus);
     }
+  });
+});
+
+// #1083. The development license is committed — that is deliberate, and it is
+// only safe because a production build does not trust the key that signed it.
+// These two tests are the pair that makes it safe; drop either and the repo is
+// back to shipping a key that unlocks paid features on any install.
+describe("the shipped development license", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("unlocks enterprise outside production", async () => {
+    const { DEV_LICENSE_TOKEN } = await import("@/lib/license-keys");
+    process.env.PINCHY_ENTERPRISE_KEY = DEV_LICENSE_TOKEN;
+
+    const mod = await import("@/lib/enterprise");
+    // No key argument: the real production key plus the development ring,
+    // exactly as a running app resolves it.
+    const status = await mod.getLicenseStatus();
+    expect(status.active).toBe(true);
+    expect(status.org).toBe("pinchy-dev");
+  });
+
+  it("unlocks nothing in production", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    const { DEV_LICENSE_TOKEN } = await import("@/lib/license-keys");
+    process.env.PINCHY_ENTERPRISE_KEY = DEV_LICENSE_TOKEN;
+
+    const mod = await import("@/lib/enterprise");
+    const status = await mod.getLicenseStatus();
+    expect(status.active).toBe(false);
+    // Not "expired" either — a production install must not recognise it at all.
+    expect(status.expired).toBeUndefined();
+    expect(status.org).toBeUndefined();
   });
 });
 

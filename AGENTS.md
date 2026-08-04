@@ -445,11 +445,18 @@ Development should use Docker Compose because the app depends on PostgreSQL, Ope
 docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
 ```
 
-With a development enterprise key:
+That stack is **already** an enterprise install: `docker-compose.dev.yml` defaults `PINCHY_ENTERPRISE_KEY` to the development license (`DEV_LICENSE_TOKEN`, `packages/web/src/lib/license-keys.ts`). It is signed by a key only a non-production build trusts, so committing it unlocks nothing on anyone's install — which is the point, and the fix for #1083. The production-signed token that used to sit there did unlock every install, and no test could see it, because a valid key makes every test pass.
+
+To see the community experience instead, set the variable to something empty — Compose only substitutes its default when the variable is **unset**, not when it is empty:
 
 ```bash
-PINCHY_ENTERPRISE_KEY=dev-enterprise docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+PINCHY_ENTERPRISE_KEY= docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
 ```
+
+Two rules keep this honest, both guarded by `packages/web/src/__tests__/security/committed-license-tokens.test.ts`:
+
+- **No token in the tracked tree may verify against the production key.** The guard asks jose directly rather than going through `validateLicense`, so it fires even on a token our own policy would reject — the question is whether we signed it, not whether we would grant it.
+- **The development subject is never honoured under the production key** (`DEV_LICENSE_SUBJECT`, `packages/web/src/lib/license.ts`). That rule, not the rotation of any key, is what revokes the token in this repository's history — it is in every clone and every fork and cannot be un-published. Changing the string un-revokes it; a test pins the value for exactly that reason.
 
 Production-style run:
 

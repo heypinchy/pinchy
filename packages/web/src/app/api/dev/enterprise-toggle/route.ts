@@ -1,10 +1,8 @@
 import { NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/api-auth";
 import { clearLicenseCache, isEnterprise } from "@/lib/enterprise";
+import { DEV_LICENSE_TOKEN } from "@/lib/license-keys";
 import { setSetting, deleteSetting } from "@/lib/settings";
-
-const DEV_ENTERPRISE_KEY =
-  "eyJhbGciOiJFUzI1NiJ9.eyJ0eXBlIjoicGFpZCIsImZlYXR1cmVzIjpbImVudGVycHJpc2UiXSwiaXNzIjoiaGV5cGluY2h5LmNvbSIsInN1YiI6InBpbmNoeS1kZXYiLCJpYXQiOjE3NzM0ODUyMzQsImV4cCI6MjA4ODg0NTIzNH0.h6stBWDrHP2LnXBv18RDk9_y71_b8FvFU6IodCBJkldlLoW6uxX6P7Hr_SL8OM-jhaNqUu7BIMaTYvbqW28buA";
 
 // audit-exempt: dev-only endpoint, not available in production
 export async function POST() {
@@ -24,7 +22,7 @@ export async function POST() {
   if (wasEnabled) {
     await deleteSetting("enterprise_key");
   } else {
-    await setSetting("enterprise_key", DEV_ENTERPRISE_KEY, true);
+    await setSetting("enterprise_key", DEV_LICENSE_TOKEN, true);
   }
 
   clearLicenseCache();

@@ -28,6 +28,31 @@ const INACTIVE: LicenseStatus = { active: false, features: [], ver: 1, maxUsers:
 
 const ISSUER = "heypinchy.com";
 
+/**
+ * Subject reserved for the development license this repository ships (in
+ * `docker-compose.dev.yml` and the dev toolbar's toggle route).
+ *
+ * Two rules hang off it, and together they are the fix for #1083:
+ *
+ *   - the development key signs licenses for this subject and no other;
+ *   - the PRODUCTION key never honours it.
+ *
+ * The second rule is what revokes the production-signed dev token this
+ * repository shipped until v0.9. That token cannot be un-published — it is in
+ * the history of every clone and every fork, and it verified against the key
+ * every install trusts — so revoking it has to happen here, in the validator.
+ * Changing this string un-revokes it; a test pins the value for that reason.
+ */
+export const DEV_LICENSE_SUBJECT = "pinchy-dev";
+
+export interface ValidateLicenseOptions {
+  /**
+   * Honour a license issued to `DEV_LICENSE_SUBJECT`. Only the development key
+   * passes this — under the production key such a license is always inactive.
+   */
+  honourDevSubject?: boolean;
+}
+
 function readClaims(payload: jose.JWTPayload): Omit<LicenseStatus, "active" | "expired"> {
   const features = (payload.features as string[]) ?? [];
   const ver = typeof payload.ver === "number" ? payload.ver : 1;
@@ -60,10 +85,28 @@ function readClaims(payload: jose.JWTPayload): Omit<LicenseStatus, "active" | "e
 }
 
 /**
+ * Whether this key may grant anything for these claims at all — checked on the
+ * valid and the expired path alike, so an expired dev license cannot leak its
+ * subject into the UI as "expired" under the production key either.
+ */
+function grantable(
+  claims: Omit<LicenseStatus, "active" | "expired">,
+  options: ValidateLicenseOptions
+): boolean {
+  if (!claims.features.includes("enterprise")) return false;
+  if (claims.org === DEV_LICENSE_SUBJECT && !options.honourDevSubject) return false;
+  return true;
+}
+
+/**
  * Validate a JWT license token against a public key.
  * Pure function — no side effects, no caching.
  */
-export async function validateLicense(token: string, publicKeyPem: string): Promise<LicenseStatus> {
+export async function validateLicense(
+  token: string,
+  publicKeyPem: string,
+  options: ValidateLicenseOptions = {}
+): Promise<LicenseStatus> {
   if (!token) return INACTIVE;
 
   try {
@@ -73,7 +116,7 @@ export async function validateLicense(token: string, publicKeyPem: string): Prom
     });
 
     const claims = readClaims(payload);
-    if (!claims.features.includes("enterprise")) return INACTIVE;
+    if (!grantable(claims, options)) return INACTIVE;
 
     return { active: true, ...claims };
   } catch (err) {
@@ -85,7 +128,7 @@ export async function validateLicense(token: string, publicKeyPem: string): Prom
       const payload = jose.decodeJwt(token);
       if (payload.iss !== ISSUER) return INACTIVE;
       const claims = readClaims(payload);
-      if (!claims.features.includes("enterprise")) return INACTIVE;
+      if (!grantable(claims, options)) return INACTIVE;
       return { active: false, expired: true, ...claims };
     }
     return INACTIVE;

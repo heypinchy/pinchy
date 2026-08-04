@@ -17,7 +17,12 @@ services:
     environment:
       - DATABASE_URL=postgresql://pinchy:pinchy_dev@db:5432/pinchy
       - BETTER_AUTH_SECRET=dev-secret-do-not-use-in-production
-      - PINCHY_ENTERPRISE_KEY=${PINCHY_ENTERPRISE_KEY-eyJhbGciOiJFUzI1NiJ9.eyJ0eXBlIjoicGFpZCIsImZlYXR1cmVzIjpbImVudGVycHJpc2UiXSwiaXNzIjoiaGV5cGluY2h5LmNvbSIsInN1YiI6InBpbmNoeS1kZXYiLCJpYXQiOjE3NzM0ODUyMzQsImV4cCI6MjA4ODg0NTIzNH0.h6stBWDrHP2LnXBv18RDk9_y71_b8FvFU6IodCBJkldlLoW6uxX6P7Hr_SL8OM-jhaNqUu7BIMaTYvbqW28buA}
+      # The development license — signed by the DEVELOPMENT key, which only a
+      # non-production build trusts (see src/lib/license-keys.ts). Committing
+      # it is safe for exactly that reason; the production-signed token that
+      # used to sit here was not (#1083). Kept byte-identical to
+      # `DEV_LICENSE_TOKEN` by committed-license-tokens.test.ts.
+      - PINCHY_ENTERPRISE_KEY=${PINCHY_ENTERPRISE_KEY-eyJhbGciOiJFUzI1NiJ9.eyJ0eXBlIjoicGFpZCIsImZlYXR1cmVzIjpbImVudGVycHJpc2UiXSwiaXNzIjoiaGV5cGluY2h5LmNvbSIsInN1YiI6InBpbmNoeS1kZXYiLCJpYXQiOjE3NzM0ODUyMzQsImV4cCI6NDkyNzA4NTIzNH0.x6YibNzmaMdiWJb4GjksKqfvJ1y-Tu0cv-iSZWdPW5fPQIzzJyed4b8oMlBbdQN_CkRFOisjYe9Q75PC6OEZxA}
     volumes:
       - ./packages/web:/app/packages/web
       - /app/packages/web/node_modules

@@ -262,3 +262,69 @@ describe("validateLicense", () => {
     }
   });
 });
+
+// The revocation half of #1083. `testPrivateKey` stands in for the production
+// key here: the rule under test is "this key signed it, and the subject is the
+// development one" — which is precisely the shape of the token that shipped in
+// this repository's history and cannot be un-published.
+describe("the development subject", () => {
+  // `createTestToken` pins `sub` to "test-org" via .setSubject(), which wins
+  // over a `sub` in the payload — so this suite signs its own.
+  async function createTokenFor(subject: string, expiresIn = "365d") {
+    return new jose.SignJWT({ type: "paid", features: ["enterprise"] })
+      .setProtectedHeader({ alg: "ES256" })
+      .setIssuer("heypinchy.com")
+      .setSubject(subject)
+      .setIssuedAt()
+      .setExpirationTime(expiresIn)
+      .sign(testPrivateKey);
+  }
+
+  it("pins the subject string that revokes the leaked token", async () => {
+    const { DEV_LICENSE_SUBJECT } = await import("@/lib/license");
+    // Not decoration: the token in this repository's history carries exactly
+    // this `sub`. Change the string and that token is honoured again.
+    expect(DEV_LICENSE_SUBJECT).toBe("pinchy-dev");
+  });
+
+  it("is never honoured by default", async () => {
+    const { validateLicense, DEV_LICENSE_SUBJECT } = await import("@/lib/license");
+    const token = await createTokenFor(DEV_LICENSE_SUBJECT);
+    const status = await validateLicense(token, testPublicKeyPem);
+    expect(status.active).toBe(false);
+    expect(status.expired).toBeUndefined();
+  });
+
+  it("is not reported as expired either, once past exp", async () => {
+    // Otherwise a production install would surface "your license expired" for
+    // the dev subject — an honest-looking hint that the token is recognised.
+    const { validateLicense, DEV_LICENSE_SUBJECT } = await import("@/lib/license");
+    vi.useFakeTimers();
+    try {
+      const token = await createTokenFor(DEV_LICENSE_SUBJECT, "1s");
+      vi.setSystemTime(Date.now() + 1500);
+      const status = await validateLicense(token, testPublicKeyPem);
+      expect(status.active).toBe(false);
+      expect(status.expired).toBeUndefined();
+      expect(status.org).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("is honoured when the caller opts in (the development key ring)", async () => {
+    const { validateLicense, DEV_LICENSE_SUBJECT } = await import("@/lib/license");
+    const token = await createTokenFor(DEV_LICENSE_SUBJECT);
+    const status = await validateLicense(token, testPublicKeyPem, { honourDevSubject: true });
+    expect(status.active).toBe(true);
+    expect(status.org).toBe(DEV_LICENSE_SUBJECT);
+  });
+
+  it("does not affect any other subject", async () => {
+    const { validateLicense } = await import("@/lib/license");
+    const token = await createTokenFor("acme-gmbh");
+    const status = await validateLicense(token, testPublicKeyPem);
+    expect(status.active).toBe(true);
+    expect(status.org).toBe("acme-gmbh");
+  });
+});
