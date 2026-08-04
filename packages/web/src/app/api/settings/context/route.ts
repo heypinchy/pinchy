@@ -4,7 +4,7 @@ import { withAdmin } from "@/lib/api-auth";
 import { getSetting, setSetting } from "@/lib/settings";
 import { syncOrgContextToWorkspaces } from "@/lib/context-sync";
 import { parseRequestBody } from "@/lib/api-validation";
-import { contextContentSchema as updateOrgContextSchema } from "@/lib/schemas/context";
+import { contextContentSchema } from "@/lib/schemas/context";
 
 export const GET = withAdmin(async () => {
   const content = await getSetting("org_context");
@@ -12,7 +12,7 @@ export const GET = withAdmin(async () => {
 });
 
 export const PUT = withAdmin(async (request) => {
-  const parsed = await parseRequestBody(updateOrgContextSchema, request);
+  const parsed = await parseRequestBody(contextContentSchema, request);
   if ("error" in parsed) return parsed.error;
   const { content } = parsed.data;
 

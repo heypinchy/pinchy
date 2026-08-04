@@ -7,7 +7,7 @@ import { eq } from "drizzle-orm";
 import { syncUserContextToWorkspaces } from "@/lib/context-sync";
 import { getSetting } from "@/lib/settings";
 import { parseRequestBody } from "@/lib/api-validation";
-import { contextContentSchema as internalUserContextSchema } from "@/lib/schemas/context";
+import { contextContentSchema } from "@/lib/schemas/context";
 
 export async function PUT(
   request: NextRequest,
@@ -18,7 +18,7 @@ export async function PUT(
   }
 
   const { userId } = await params;
-  const parsed = await parseRequestBody(internalUserContextSchema, request);
+  const parsed = await parseRequestBody(contextContentSchema, request);
   if ("error" in parsed) return parsed.error;
   const { content } = parsed.data;
 

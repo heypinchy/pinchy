@@ -62,9 +62,9 @@ export const API_DOC_EXEMPTIONS = {
     "gateway-only usage ingress, mirrors internal/audit/*",
   "/api/internal/channel-messages": "gateway-only channel-capture ingress",
   "/api/internal/settings/context":
-    "gateway-only context read for the pinchy-context plugin",
+    "gateway-only org-context write (PUT) for the pinchy-context plugin",
   "/api/internal/users/{}/context":
-    "gateway-only per-user context read for the pinchy-context plugin",
+    "gateway-only per-user context write (PUT) for the pinchy-context plugin",
 };
 
 /**
