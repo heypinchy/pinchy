@@ -581,7 +581,15 @@ jobs:
           # as capture-e2e-diagnostics's artifact-name).
           name: e2e-failure-${{ github.run_id }}-${{ github.run_attempt }}
           path: packages/web/test-results/
-          if-no-files-found: ignore
+          # `warn`, not the composite action's `ignore`. There, e2e-artifacts/
+          # is always created, so `ignore` only ever suppresses a missing
+          # test-results/. Here test-results/ is the ONLY path: if globalSetup
+          # or the webServer dies before a single test runs, `ignore` makes the
+          # step succeed and upload nothing, with no line in the log saying so
+          # — a maintainer then hunts for an artifact that was never there.
+          # `warn` turns that absence into a stated fact and still doesn't fail
+          # the step (the job is already red; the artifact is not the verdict).
+          if-no-files-found: warn
           retention-days: 14
 
   docker-smoke:
