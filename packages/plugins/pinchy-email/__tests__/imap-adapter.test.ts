@@ -6,6 +6,7 @@ import {
   tlsModeForPort,
   encodeMessageId,
   decodeMessageId,
+  MAX_MESSAGE_BYTES,
   type ImapAdapterOptions,
 } from "../imap-adapter.js";
 
@@ -367,6 +368,107 @@ describe("ImapAdapter#getAttachment", () => {
 
     const adapter = new ImapAdapter(opts);
     await expect(adapter.getAttachment("999", "whatever")).rejects.toThrow("message 999 not found");
+  });
+});
+
+describe("ImapAdapter fetchParsed message-size precheck (#1093)", () => {
+  // IMAP has no cheap way to learn a SINGLE attachment's size before
+  // download (see the note above ImapAdapter#getAttachment), but it CAN
+  // learn the whole message's declared byte count via RFC822.SIZE before
+  // paying for the full `{ source: true }` fetch that materializes every
+  // attachment's bytes. Both read() and getAttachment() share fetchParsed(),
+  // so a message-level precheck protects both call sites.
+  function mockSizedMessage(size: number) {
+    mockClient.fetchOne
+      .mockReset()
+      .mockImplementation(async (_uid: number, query: Record<string, unknown>) => {
+        if (query.size) {
+          return { uid: 42, size, flags: new Set(["\\Seen"]) };
+        }
+        return {
+          source: Buffer.from(buildMultipartFixture()),
+          flags: new Set(["\\Seen"]),
+        };
+      });
+  }
+
+  it("rejects an oversized message by RFC822.SIZE via read(), without ever fetching the source", async () => {
+    mockSizedMessage(50 * 1024 * 1024);
+
+    const adapter = new ImapAdapter(opts);
+    await expect(adapter.read("42")).rejects.toThrow(/too large.*50\.0 MB.*max allowed is 25 MB/is);
+
+    expect(mockClient.fetchOne).toHaveBeenCalledWith(
+      42,
+      { size: true, flags: true },
+      { uid: true }
+    );
+    // The whole point: never download the full message body once its
+    // declared size already exceeds the cap.
+    expect(mockClient.fetchOne).not.toHaveBeenCalledWith(
+      42,
+      expect.objectContaining({ source: true }),
+      { uid: true }
+    );
+  });
+
+  it("rejects an oversized message by RFC822.SIZE via getAttachment(), without ever fetching the source", async () => {
+    mockSizedMessage(50 * 1024 * 1024);
+
+    const adapter = new ImapAdapter(opts);
+    await expect(adapter.getAttachment("42", "whatever")).rejects.toThrow(
+      /too large.*50\.0 MB.*max allowed is 25 MB/is
+    );
+    expect(mockClient.fetchOne).not.toHaveBeenCalledWith(
+      42,
+      expect.objectContaining({ source: true }),
+      { uid: true }
+    );
+  });
+
+  // The pair below is the actual boundary. "a size under the cap is allowed"
+  // says nothing about where the cut sits — a `>=` typo would pass it — so
+  // these pin the exact threshold from both sides, mirroring the Graph/Gmail
+  // boundary tests in PR #1094.
+  it("allows a message whose RFC822.SIZE is EXACTLY MAX_MESSAGE_BYTES", async () => {
+    mockSizedMessage(MAX_MESSAGE_BYTES);
+
+    const adapter = new ImapAdapter(opts);
+    const result = await adapter.read("42");
+    expect(result.subject).toBe("Quarterly report attached");
+  });
+
+  it("rejects a message ONE byte over MAX_MESSAGE_BYTES", async () => {
+    mockSizedMessage(MAX_MESSAGE_BYTES + 1);
+
+    const adapter = new ImapAdapter(opts);
+    await expect(adapter.read("42")).rejects.toThrow(/too large/i);
+  });
+
+  it("falls through to the full fetch when RFC822.SIZE is absent — a missing signal must not block a legal message", async () => {
+    mockClient.fetchOne
+      .mockReset()
+      .mockImplementation(async (_uid: number, query: Record<string, unknown>) => {
+        if (query.size) {
+          // No `size` field at all on the size-check response.
+          return { uid: 42, flags: new Set(["\\Seen"]) };
+        }
+        return {
+          source: Buffer.from(buildMultipartFixture()),
+          flags: new Set(["\\Seen"]),
+        };
+      });
+
+    const adapter = new ImapAdapter(opts);
+    const result = await adapter.read("42");
+    expect(result.subject).toBe("Quarterly report attached");
+  });
+
+  it("falls through to the existing not-found error when the size-check fetchOne itself returns false", async () => {
+    mockClient.fetchOne.mockReset().mockResolvedValue(false);
+
+    const adapter = new ImapAdapter(opts);
+    await expect(adapter.read("999")).rejects.toThrow("message 999 not found");
   });
 });
 

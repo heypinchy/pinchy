@@ -141,6 +141,31 @@ export function resolveFolders(mailboxes: ImapMailbox[]): Partial<Record<Folder,
 const DEFAULT_LIMIT = 20;
 const MS_PER_DAY = 86_400_000;
 
+// 25 MB — matches the MAX_ATTACHMENT_BYTES cap in index.ts (itself matching
+// odoo_attach_file's own limit downstream). Unlike Graph (Content-Length on
+// the attachment response) and Gmail (the part-listing `size` field), IMAP
+// has no cheap way to learn a SINGLE attachment's size before download —
+// see the note above ImapAdapter#getAttachment. It CAN learn the whole
+// message's declared byte count via RFC822.SIZE (client.fetchOne(uid,
+// { size: true })) before paying for the full `{ source: true }` fetch that
+// downloads and parses every attachment's bytes into memory (#1093).
+//
+// This is a coarser, conservative gate than the sibling adapters': it
+// rejects a message whose TOTAL declared size already exceeds the cap, even
+// when the specific attachment being requested would itself fit (e.g. a
+// 30 MB message with a 1 KB attachment among several larger ones). Fixing
+// that would mean matching a BODYSTRUCTURE part to the attachment identity
+// mailparser assigns from `parsed.attachments` — real work with a real risk
+// of mismatching, tracked as a possible follow-up in #1093's own analysis
+// rather than attempted here. This precheck closes the OOM for BOTH read()
+// and getAttachment(), since they share fetchParsed().
+//
+// Best-effort like the sibling adapters' prechecks: a missing/false
+// RFC822.SIZE just falls through to the real fetch — index.ts's own
+// post-download length check on getAttachment's returned buffer remains the
+// authoritative guard for that path.
+export const MAX_MESSAGE_BYTES = 25 * 1024 * 1024;
+
 // Maps the structured SearchOptions DSL to an imapflow SearchObject. Pure and
 // deterministic: `now` is supplied by the caller (never read internally via
 // Date.now()/new Date()) so `sinceDays` resolves to an exact, testable date.
@@ -409,6 +434,24 @@ export class ImapAdapter implements EmailAdapter {
   ): Promise<{ parsed: ParsedMail; unread: boolean }> {
     const decoded = decodeMessageId(id);
     await client.mailboxOpen(decoded.mailboxPath);
+
+    // Precheck RFC822.SIZE before paying for `{ source: true }` below, which
+    // downloads and fully parses the ENTIRE message — every attachment's
+    // bytes included — into memory. See MAX_MESSAGE_BYTES above for why this
+    // is message-level rather than per-attachment, and why it's best-effort.
+    const sizeCheck = await client.fetchOne(
+      decoded.uid,
+      { size: true, flags: true },
+      { uid: true }
+    );
+    if (sizeCheck && sizeCheck.size != null && sizeCheck.size > MAX_MESSAGE_BYTES) {
+      const declaredMb = (sizeCheck.size / 1024 / 1024).toFixed(1);
+      const maxMb = (MAX_MESSAGE_BYTES / 1024 / 1024).toFixed(0);
+      throw new Error(
+        `Message too large to download: ${declaredMb} MB, max allowed is ${maxMb} MB.`
+      );
+    }
+
     const msg = await client.fetchOne(decoded.uid, { source: true, flags: true }, { uid: true });
     if (!msg || !msg.source) {
       throw new Error(`message ${id} not found`);
