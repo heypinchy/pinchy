@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import {
   newestFrozenRelease,
   readEnvExampleVersion,
+  readReadmeComposePins,
   checkVersionIdentity,
 } from "./version-identity.mjs";
 import { parseDeclaredVersion, compareVersions } from "./release-logic.mjs";
@@ -32,11 +33,23 @@ const MDX = [
 
 const ENV = (v) => `# comment\nPINCHY_VERSION=${v}\nOTHER=1\n`;
 
+const README = (v) =>
+  [
+    "## Quick Start",
+    "",
+    "```bash",
+    `curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/${v}/docker-compose.yml -o docker-compose.yml`,
+    "docker compose up -d",
+    "```",
+    "",
+  ].join("\n");
+
 const ok = (over = {}) =>
   checkVersionIdentity({
     rootVersion: "0.10.0-dev",
     webVersion: "0.10.0-dev",
     envExample: ENV("v0.9.1"),
+    readme: README("v0.9.1"),
     mdx: MDX,
     ...over,
   });
@@ -121,6 +134,21 @@ test("readEnvExampleVersion finds the line among others", () => {
   assert.equal(readEnvExampleVersion("NOTHING=1\n"), null);
 });
 
+// ─── readReadmeComposePins ───────────────────────────────────────────────────
+
+test("readReadmeComposePins reads the quick-start install pin", () => {
+  assert.deepEqual(readReadmeComposePins(README("v0.9.1")), ["v0.9.1"]);
+  assert.deepEqual(readReadmeComposePins("no install instructions here"), []);
+});
+
+// Every pin is returned, not just the first: `bumpReadmeComposePin` rewrites
+// them all, so a guard that reads one would pass a README where a second copy
+// of the command drifted.
+test("readReadmeComposePins returns every distinct pin, in order", () => {
+  const two = README("v0.9.1") + README("v0.8.0") + README("v0.9.1");
+  assert.deepEqual(readReadmeComposePins(two), ["v0.9.1", "v0.8.0"]);
+});
+
 // ─── checkVersionIdentity ────────────────────────────────────────────────────
 
 test("a development tree ahead of the newest release is consistent", () => {
@@ -186,6 +214,36 @@ test("a missing PINCHY_VERSION line is flagged", () => {
   assert.match(problems[0], /which image to pull/);
 });
 
+// The README quick-start curl is the most-read install instruction the repo
+// has — it is what a visitor runs off the GitHub front page — and `pnpm release`
+// bumps it (`bumpReadmeComposePin`) for exactly that reason. So it belongs to
+// the same "what should I pull?" set as .env.example and the marketplace
+// templates, and a release cut from a release branch leaves it behind on `main`
+// identically. It really was still on v0.8.0 when this guard was written, two
+// releases after the fact, and `bumpReadmeComposePin`'s own docstring records
+// the same drift one cycle earlier (v0.5.7 through both v0.5.8 and v0.6.0).
+test("a README install pin on a superseded release is flagged", () => {
+  const problems = ok({ readme: README("v0.8.0") });
+  assert.equal(problems.length, 1);
+  assert.match(problems[0], /README/);
+  assert.match(problems[0], /v0\.8\.0/);
+});
+
+test("a README with no install pin at all is flagged", () => {
+  // Not silence: the pin moving or being reworded is precisely how this stops
+  // being checked, and `bumpReadmeComposePin` throws on the same condition.
+  const problems = ok({ readme: "# Pinchy\n\nNo quick start.\n" });
+  assert.equal(problems.length, 1);
+  assert.match(problems[0], /no pinned docker-compose URL/i);
+});
+
+test("every drifted README pin is named, not just the first", () => {
+  const problems = ok({ readme: README("v0.8.0") + README("v0.7.0") });
+  assert.equal(problems.length, 1);
+  assert.match(problems[0], /v0\.8\.0/);
+  assert.match(problems[0], /v0\.7\.0/);
+});
+
 test("an unreadable declared version stops the run rather than guessing", () => {
   const problems = ok({ rootVersion: "not-a-version" });
   assert.equal(problems.length, 1);
@@ -194,12 +252,13 @@ test("an unreadable declared version stops the run rather than guessing", () => 
 
 // ─── the real repo ───────────────────────────────────────────────────────────
 
-test("this repo's three version declarations agree", () => {
+test("this repo's version declarations agree", () => {
   const read = (p) => readFileSync(resolve(ROOT, p), "utf8");
   const problems = checkVersionIdentity({
     rootVersion: JSON.parse(read("package.json")).version,
     webVersion: JSON.parse(read("packages/web/package.json")).version,
     envExample: read(".env.example"),
+    readme: read("README.md"),
     mdx: read("docs/src/content/docs/guides/upgrading.mdx"),
   });
   assert.deepEqual(

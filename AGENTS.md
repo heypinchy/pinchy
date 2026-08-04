@@ -154,16 +154,17 @@ Verify a change to any of it by canary, never by reading: bump `setup-buildx-act
 
 ## Two Version Numbers, And Which Question Each Answers
 
-The repo declares a version in four places, and until #1044 they were one number that `pnpm release` wrote in one commit. That held while every release was cut from `main`. **Release branches ended it**: both 0.9.x releases were cut from `release/0.9`, so `main` never took the bump and sat at `0.8.0` for three months while v0.9.1 was current. Measured 2026-08-04 — and it was not one wrong label, it was four, in ascending order of who it reached:
+The repo declares a version in six places, and until #1044 they were one number that `pnpm release` wrote in one commit. That held while every release was cut from `main`. **Release branches ended it**: both 0.9.x releases were cut from `release/0.9`, so `main` never took the bump and sat at `0.8.0` for three months while v0.9.1 was current. Measured 2026-08-04 — and it was not one wrong label, it was five, in ascending order of who it reached:
 
 - `assertNoStaleUpgradeSections` had been quietly taught `max(package.json, frozen tags)` to survive it. A guard working around a broken premise instead of failing on it.
 - `/api/version` reads `package.json#version` through `NEXT_PUBLIC_PINCHY_VERSION`. **Staging tracks `:next`, so it announced 0.8.0 for a build 400+ commits past it** — the instance you check to see whether your fix landed.
 - `.env.example` said `PINCHY_VERSION=v0.8.0`. That line is not a label, it is the image tag a new install pulls.
 - The 1-Click deploy templates (`marketplace/digitalocean/template.json`, `marketplace/caprover/pinchy.yml`) said `v0.8.0` too, on a **public marketplace**.
+- **`README.md`'s quick start curled `docker-compose.yml` from the `v0.8.0` tag** — the most-read install instruction the repo has, run off the GitHub front page. This one is worth its own note, because it was missed by the first pass of #1044 _while that pass was enumerating exactly this category_, and only surfaced when the guard was pointed at it. A hand-written enumeration of "all the places" is the thing this section exists to stop; the fix is that the guard reads each place, not that the next list is longer.
 
 So the number was split by the question it answers, and the split is the rule:
 
-- **"What should I pull?"** → `.env.example` and both marketplace templates. Always the newest **released** tag. A tag that does not exist is not installable, so these must never carry a development version.
+- **"What should I pull?"** → `.env.example`, `README.md`'s install pin, and both marketplace templates. Always the newest **released** tag. A tag that does not exist is not installable, so these must never carry a development version.
 - **"What is this tree?"** → root and `packages/web` `package.json`. The newest release at a release commit, `<next>-dev` at every other moment. A build 400 commits past v0.9.1 is not v0.9.1 and must not say it is.
 
 `scripts/lib/version-identity.mjs` enforces both, and `version-identity.test.mjs` runs it against the real repo in `pnpm test:scripts`. Details worth knowing before touching it:
@@ -173,8 +174,11 @@ So the number was split by the question it answers, and the split is the rule:
 - **`compareVersions` was hardened in the same change and this is load-bearing.** It used to `.split(".").map(Number)`, so `"0.10.0-dev"` became `[0, 10, NaN]` and every NaN comparison is false — it fell through and returned **0**. Introducing a suffixed version against a comparator with a silent "equal" in it would have made the new guard answer "consistent" for the exact state it exists to catch. It throws now.
 - **A development tree must fail the release build gate.** `assert-package-version.mjs` compares `package.json` against the tag before any image is pushed, and a `-dev` tree can never match. That is correct, not a limitation — it is why that script grew a `--root` flag so its passing case can be tested against a fixture.
 - **`docs/scripts/inject-version.sh` refuses a `-dev` fallback** rather than rendering it. `%%PINCHY_VERSION%%` goes into `docker pull` lines and `raw.githubusercontent` URLs; a dev version there publishes install instructions for a tag nobody can pull. Both real callers pass the version explicitly (`release.yml` from the tag, `docs.yml` as a required input), so reaching that branch means a hand-built docs run that has to say which version it meant.
+- **The marketplace templates are checked one hop away, on purpose.** `marketplace-version.test.mjs` already pins both to `.env.example` against the real files, so `version-identity` checks `.env.example` and inherits them. Re-checking them here would create a second place to keep in sync — the failure this whole section is about. The README pin has no such existing guard, which is why that one is read directly.
 
-**After cutting a release from a release branch, set `main` to `<next>-dev` and pull `.env.example` plus both marketplace templates up to the tag you just shipped.** That is the step whose absence caused all of this; the guard now fails a PR instead of letting it run for three months.
+**After cutting a release from a release branch, set `main` to `<next>-dev` and pull `.env.example`, the README install pin and both marketplace templates up to the tag you just shipped.** That is the step whose absence caused all of this; the guard now fails a PR instead of letting it run for three months.
+
+**Known limitation: a release cut from `main` is not covered.** The guard demands `-dev` only when the declared version is _ahead_ of the newest frozen release. After a main-cut release, `package.json` equals that release and stays there for the whole next cycle, so `order === 0` and the check is silent — the same "staging announces a version it is hundreds of commits past" failure, one release shallower. There is an offline signal that would close it: `openNextUpgradeSection` runs _after_ `git tag`, so an open `%%PINCHY_VERSION%%` section means the tree is past the release commit and must therefore be `-dev`. Turning that on needs `release.mjs` to bump to `<next>-dev` in that same post-tag commit, and it would immediately red every `release/X.Y` branch until each takes the bump — so it is a deliberate follow-up (#1044 covers the branch-cut case, which is the one that actually shipped), not an oversight.
 
 ## No Untracked Sleeps In E2E
 

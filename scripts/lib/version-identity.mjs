@@ -1,7 +1,7 @@
 /**
  * Pure logic for the version-identity guard.
  *
- * The repo carries the version number in three places, and until #1044 they
+ * The repo carries the version number in six places, and until #1044 they
  * were treated as one number that `pnpm release` writes in one commit. That
  * held while every release was cut from `main`. Release branches ended it: both
  * 0.9.x releases were cut from `release/0.9`, so `main` never took the bump and
@@ -20,14 +20,27 @@
  *  - `.env.example` carries `PINCHY_VERSION=`, which is the image tag a user
  *    pulls. On `main` it said **v0.8.0**. That is not a cosmetic number; it is
  *    an install instruction, and it was pointing two releases back.
+ *  - README.md's quick start curls `docker-compose.yml` from a pinned tag URL.
+ *    It said **v0.8.0** too — the most-read install instruction in the repo,
+ *    the one a visitor runs off the GitHub front page, handing them a compose
+ *    file two releases old. It is the reason this guard reads the README: the
+ *    first pass of #1044 corrected `.env.example` and both marketplace
+ *    templates and missed this one, which is what an enumeration written by
+ *    hand does.
  *
  * So the two numbers have to stop being one:
  *
- *  - **`.env.example` answers "what should I pull?"** — always the newest
- *    RELEASED tag, because a tag that does not exist is not installable.
+ *  - **`.env.example`, README.md's install pin and both marketplace templates
+ *    answer "what should I pull?"** — always the newest RELEASED tag, because a
+ *    tag that does not exist is not installable.
  *  - **`package.json` answers "what is this tree?"** — the newest release right
  *    at a release commit, and `<next>-dev` at every other moment, because a
  *    build 400 commits past v0.9.1 is not v0.9.1 and must not claim to be.
+ *
+ * The two marketplace templates are checked one hop away rather than here:
+ * `marketplace-version.test.mjs` already pins both to `.env.example`, against
+ * the real files. Duplicating that would give a second place to keep in sync,
+ * which is the failure this whole section is about.
  *
  * `-dev` is deliberately not just any pre-release identifier: it is the one
  * spelling this guard accepts, so "is this a development tree?" stays a string
@@ -71,12 +84,34 @@ export function readEnvExampleVersion(content) {
 }
 
 /**
+ * Every distinct version the README's quick-start install pins, in order.
+ *
+ * The pin is `raw.githubusercontent.com/heypinchy/pinchy/v<X.Y.Z>/docker-
+ * compose.yml` — the URL a visitor curls off the GitHub front page. It is the
+ * same kind of number as `.env.example`: an instruction, not a label, and
+ * `pnpm release` bumps it (`bumpReadmeComposePin`) for that reason.
+ *
+ * ALL pins are returned rather than the first, because the bumper rewrites all
+ * of them; a reader that stopped at one would pass a README where a second copy
+ * of the command had drifted.
+ *
+ * @param {string} content - raw README.md contents
+ * @returns {string[]} e.g. ["v0.9.1"], empty when the README pins none
+ */
+export function readReadmeComposePins(content) {
+  const re =
+    /raw\.githubusercontent\.com\/heypinchy\/pinchy\/(v\d+\.\d+\.\d+)\/docker-compose\.yml/g;
+  return [...new Set([...content.matchAll(re)].map((m) => m[1]))];
+}
+
+/**
  * The whole contract, in one place.
  *
  * @param {object} args
  * @param {string} args.rootVersion - root package.json#version
  * @param {string} args.webVersion - packages/web/package.json#version
  * @param {string} args.envExample - raw .env.example contents
+ * @param {string} args.readme - raw README.md contents
  * @param {string} args.mdx - raw upgrading.mdx contents
  * @returns {string[]} problems, empty when the tree is consistent
  */
@@ -84,6 +119,7 @@ export function checkVersionIdentity({
   rootVersion,
   webVersion,
   envExample,
+  readme,
   mdx,
 }) {
   const problems = [];
@@ -150,6 +186,28 @@ export function checkVersionIdentity({
         `a tag that exists and is current — never a \`-dev\` version, and never a ` +
         `release that has been superseded.`,
     );
+  }
+
+  // So is the README quick start, and it is the one a visitor actually runs.
+  const readmePins = readReadmeComposePins(readme);
+  if (readmePins.length === 0) {
+    problems.push(
+      "README.md has no pinned docker-compose URL " +
+        "(raw.githubusercontent.com/heypinchy/pinchy/v<version>/docker-compose.yml). " +
+        "The quick-start install pin moved or was removed — this guard and " +
+        "`bumpReadmeComposePin` both read it, so both stop working silently.",
+    );
+  } else {
+    const stale = readmePins.filter((p) => p !== `v${newest}`);
+    if (stale.length > 0) {
+      problems.push(
+        `README.md's quick start installs from ${stale.join(", ")}, but the newest ` +
+          `release is v${newest}. That curl is the most-read install instruction the ` +
+          `repo has — it runs off the GitHub front page — and it drifts exactly like ` +
+          `.env.example does: \`pnpm release\` bumps it on the branch it runs on, so a ` +
+          `release cut from a release branch leaves \`main\` behind.`,
+      );
+    }
   }
 
   return problems;
