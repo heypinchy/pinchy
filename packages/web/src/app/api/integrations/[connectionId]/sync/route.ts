@@ -34,7 +34,7 @@ export const POST = withAdmin<RouteContext>(async (_req, { params }, session) =>
       );
     }
 
-    const urlCheck = validateExternalUrl(parsed.data.url);
+    const urlCheck = await validateExternalUrl(parsed.data.url);
     if (!urlCheck.valid) {
       return NextResponse.json({ success: false, error: urlCheck.error }, { status: 200 });
     }

@@ -3,6 +3,8 @@
  * private/internal networks (AWS metadata, localhost, RFC-1918, etc.).
  */
 
+import { lookup as dnsLookup } from "node:dns/promises";
+
 const PRIVATE_HOSTNAMES = new Set(["localhost", "localhost.", "ip6-localhost", "ip6-loopback"]);
 
 /**
@@ -159,8 +161,11 @@ export function classifyIpAddress(address: string): IpAddressClass | null {
 /**
  * Returns true if the given URL string targets a private/internal address.
  * Note: This checks the hostname string only, not DNS resolution. A hostname
- * that resolves to a private IP (DNS rebinding) would pass this check. For a
- * self-hosted product where admins control the network, this is acceptable.
+ * that resolves to a private IP (DNS rebinding) would pass this check —
+ * `validateExternalUrl` below closes that gap for its own callers by also
+ * resolving a DNS name and classifying every returned address. A caller that
+ * uses `isPrivateUrl` directly (`imap-autodiscover.ts`'s prefill-only guard)
+ * still only gets the string-only check.
  */
 export function isPrivateUrl(urlString: string): boolean {
   let url: URL;
@@ -185,14 +190,45 @@ export function isPrivateUrl(urlString: string): boolean {
 
 type ValidationResult = { valid: true; url: string } | { valid: false; error: string };
 
+/** Resolves a hostname to all of its A/AAAA addresses. Injected in tests. */
+export type UrlHostResolver = (host: string) => Promise<string[]>;
+
+const defaultUrlHostResolver: UrlHostResolver = async (host) => {
+  const results = await dnsLookup(host, { all: true });
+  return results.map((result) => result.address);
+};
+
+const PRIVATE_NETWORK_ERROR = "URLs targeting private or internal networks are not allowed";
+
 /**
  * Validates a user-supplied URL for server-side requests.
  * Returns the normalized origin or an error message.
  *
- * Set env var ALLOW_PRIVATE_URLS=1 to bypass private IP checks
- * (useful for Docker dev environments with internal service hostnames).
+ * Set env var ALLOW_PRIVATE_URLS=1 to bypass private IP checks entirely
+ * (useful for Docker dev/test environments with internal service hostnames,
+ * e.g. the odoo-e2e and eval stacks reaching odoo-mock on the Docker-internal
+ * network). The bypass short-circuits before any check below, including DNS
+ * resolution.
+ *
+ * A hostname that is an IP literal, or one of the well-known private names
+ * (`localhost`, …), is classified from the string alone via `isPrivateUrl` —
+ * no DNS involved. A hostname that is a genuine DNS name is additionally
+ * RESOLVED and every returned address is classified, so a name that points at
+ * 169.254.169.254 (cloud metadata) or an RFC-1918 address — including one
+ * that only starts resolving there after the URL is saved (DNS rebinding) —
+ * can't sneak past a check that only ever read the hostname string. Resolving
+ * again at request time is out of scope here; see `probe.ts`'s callers for
+ * that caveat, shared with the mail-host guard.
+ *
+ * Fails open on DNS resolution failure: a name that doesn't resolve can't be
+ * classified, and the far more likely cause is a typo — blocking it here
+ * would misreport a config mistake as a security error, and the subsequent
+ * fetch fails naturally anyway.
  */
-export function validateExternalUrl(urlString: string): ValidationResult {
+export async function validateExternalUrl(
+  urlString: string,
+  resolver: UrlHostResolver = defaultUrlHostResolver
+): Promise<ValidationResult> {
   let url: URL;
   try {
     url = new URL(urlString);
@@ -208,13 +244,32 @@ export function validateExternalUrl(urlString: string): ValidationResult {
     };
   }
 
-  // Check for private/internal addresses (unless bypassed)
   const allowPrivate = process.env.ALLOW_PRIVATE_URLS === "1";
-  if (!allowPrivate && isPrivateUrl(urlString)) {
-    return {
-      valid: false,
-      error: "URLs targeting private or internal networks are not allowed",
-    };
+  if (!allowPrivate) {
+    // Literal address / well-known private hostname: string-only check, no DNS.
+    if (isPrivateUrl(urlString)) {
+      return { valid: false, error: PRIVATE_NETWORK_ERROR };
+    }
+
+    // A DNS name that passed the literal check above still might resolve to
+    // a private address — resolve it and classify every returned address.
+    const hostname = url.hostname;
+    const isLiteralOrWellKnown =
+      classifyIpAddress(hostname) !== null || PRIVATE_HOSTNAMES.has(hostname.toLowerCase());
+    if (!isLiteralOrWellKnown) {
+      let addresses: string[];
+      try {
+        addresses = await resolver(hostname);
+      } catch {
+        addresses = []; // unresolvable name — fail open, see doc-comment above
+      }
+      for (const address of addresses) {
+        const addressClass = classifyIpAddress(address);
+        if (addressClass !== null && addressClass !== "public") {
+          return { valid: false, error: PRIVATE_NETWORK_ERROR };
+        }
+      }
+    }
   }
 
   // Return normalized origin (scheme + host + port, no path/query)

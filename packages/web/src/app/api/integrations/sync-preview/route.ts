@@ -22,7 +22,7 @@ export const POST = withAdmin(async (request) => {
   if ("error" in parsed) return parsed.error;
   const { credentials } = parsed.data;
 
-  const urlCheck = validateExternalUrl(credentials.url);
+  const urlCheck = await validateExternalUrl(credentials.url);
   if (!urlCheck.valid) {
     return NextResponse.json({ error: urlCheck.error }, { status: 400 });
   }

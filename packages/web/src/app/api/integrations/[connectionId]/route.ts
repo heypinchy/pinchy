@@ -120,7 +120,7 @@ export const PATCH = withAdmin<RouteContext>(async (request, { params }, session
   }
   if (parsedCredentials !== undefined) {
     if (existing.type === "odoo" && "url" in parsedCredentials) {
-      const urlCheck = validateExternalUrl(parsedCredentials.url as string);
+      const urlCheck = await validateExternalUrl(parsedCredentials.url as string);
       if (!urlCheck.valid) {
         return NextResponse.json({ error: urlCheck.error }, { status: 400 });
       }

@@ -1,5 +1,25 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
-import { validateExternalUrl, isPrivateUrl, classifyIpAddress } from "../url-validation";
+import {
+  validateExternalUrl,
+  isPrivateUrl,
+  classifyIpAddress,
+  type UrlHostResolver,
+} from "../url-validation";
+
+/** Resolver stub: returns the given addresses, never touches real DNS. */
+function resolveTo(addresses: string[]): UrlHostResolver {
+  return async () => addresses;
+}
+
+/** Resolver stub that fails, as `dns.lookup` does for an unresolvable name. */
+const unresolvable: UrlHostResolver = async () => {
+  throw new Error("ENOTFOUND");
+};
+
+/** Resolver stub that throws if invoked — proves a code path never reaches DNS. */
+const mustNotBeCalled: UrlHostResolver = async () => {
+  throw new Error("resolver should not have been called");
+};
 
 describe("isPrivateUrl", () => {
   it("rejects localhost", () => {
@@ -145,88 +165,166 @@ describe("validateExternalUrl", () => {
     vi.unstubAllEnvs();
   });
 
-  it("rejects non-HTTP scheme (ftp)", () => {
-    const result = validateExternalUrl("ftp://odoo.example.com");
+  it("rejects non-HTTP scheme (ftp)", async () => {
+    const result = await validateExternalUrl("ftp://odoo.example.com", mustNotBeCalled);
     expect(result).toEqual({ valid: false, error: expect.stringContaining("HTTP") });
   });
 
-  it("rejects non-HTTP scheme (file)", () => {
-    const result = validateExternalUrl("file:///etc/passwd");
+  it("rejects non-HTTP scheme (file)", async () => {
+    const result = await validateExternalUrl("file:///etc/passwd", mustNotBeCalled);
     expect(result).toEqual({ valid: false, error: expect.stringContaining("HTTP") });
   });
 
-  it("rejects invalid URL", () => {
-    const result = validateExternalUrl("not-a-url");
+  it("rejects invalid URL", async () => {
+    const result = await validateExternalUrl("not-a-url", mustNotBeCalled);
     expect(result).toEqual({ valid: false, error: expect.any(String) });
   });
 
-  it("rejects empty string", () => {
-    const result = validateExternalUrl("");
+  it("rejects empty string", async () => {
+    const result = await validateExternalUrl("", mustNotBeCalled);
     expect(result).toEqual({ valid: false, error: expect.any(String) });
   });
 
-  it("rejects localhost", () => {
-    const result = validateExternalUrl("http://localhost:8069");
+  it("rejects localhost (well-known hostname, no DNS needed)", async () => {
+    const result = await validateExternalUrl("http://localhost:8069", mustNotBeCalled);
     expect(result).toEqual({ valid: false, error: expect.stringContaining("private") });
   });
 
-  it("rejects 127.0.0.1", () => {
-    const result = validateExternalUrl("http://127.0.0.1:8069");
+  it("rejects 127.0.0.1 (IP literal, no DNS needed)", async () => {
+    const result = await validateExternalUrl("http://127.0.0.1:8069", mustNotBeCalled);
     expect(result).toEqual({ valid: false, error: expect.stringContaining("private") });
   });
 
-  it("rejects AWS metadata endpoint", () => {
-    const result = validateExternalUrl("http://169.254.169.254/latest/meta-data/");
+  it("rejects AWS metadata endpoint (IP literal, no DNS needed)", async () => {
+    const result = await validateExternalUrl(
+      "http://169.254.169.254/latest/meta-data/",
+      mustNotBeCalled
+    );
     expect(result).toEqual({ valid: false, error: expect.stringContaining("private") });
   });
 
-  it("accepts HTTPS public domain", () => {
-    const result = validateExternalUrl("https://odoo.example.com");
+  it("accepts HTTPS public domain (resolves to a public address)", async () => {
+    const result = await validateExternalUrl(
+      "https://odoo.example.com",
+      resolveTo(["203.0.113.10"])
+    );
     expect(result).toEqual({ valid: true, url: "https://odoo.example.com" });
   });
 
-  it("accepts HTTPS odoo.com subdomain", () => {
-    const result = validateExternalUrl("https://mycompany.odoo.com");
+  it("accepts HTTPS odoo.com subdomain (resolves to a public address)", async () => {
+    const result = await validateExternalUrl(
+      "https://mycompany.odoo.com",
+      resolveTo(["203.0.113.10"])
+    );
     expect(result).toEqual({ valid: true, url: "https://mycompany.odoo.com" });
   });
 
-  it("accepts HTTP for on-prem (public domain)", () => {
-    const result = validateExternalUrl("http://odoo.example.com:8069");
+  it("accepts HTTP for on-prem (resolves to a public address)", async () => {
+    const result = await validateExternalUrl(
+      "http://odoo.example.com:8069",
+      resolveTo(["203.0.113.10"])
+    );
     expect(result).toEqual({ valid: true, url: "http://odoo.example.com:8069" });
   });
 
-  it("normalizes trailing slash", () => {
-    const result = validateExternalUrl("https://odoo.example.com/");
+  it("normalizes trailing slash", async () => {
+    const result = await validateExternalUrl(
+      "https://odoo.example.com/",
+      resolveTo(["203.0.113.10"])
+    );
     expect(result).toEqual({ valid: true, url: "https://odoo.example.com" });
   });
 
-  it("strips path for origin-only output", () => {
-    const result = validateExternalUrl("https://odoo.example.com/web/login");
+  it("strips path for origin-only output", async () => {
+    const result = await validateExternalUrl(
+      "https://odoo.example.com/web/login",
+      resolveTo(["203.0.113.10"])
+    );
     expect(result).toEqual({ valid: true, url: "https://odoo.example.com" });
+  });
+
+  describe("DNS resolution (the actual SSRF-via-DNS / DNS-rebinding case)", () => {
+    it("rejects a hostname that resolves to a private address", async () => {
+      const result = await validateExternalUrl(
+        "https://internal-odoo.attacker.example",
+        resolveTo(["10.0.0.5"])
+      );
+      expect(result).toEqual({ valid: false, error: expect.stringContaining("private") });
+    });
+
+    it("rejects a hostname that resolves to the cloud-metadata address", async () => {
+      const result = await validateExternalUrl(
+        "https://metadata.attacker.example",
+        resolveTo(["169.254.169.254"])
+      );
+      expect(result).toEqual({ valid: false, error: expect.stringContaining("private") });
+    });
+
+    it("rejects a hostname that resolves to loopback", async () => {
+      const result = await validateExternalUrl(
+        "https://rebind.attacker.example",
+        resolveTo(["127.0.0.1"])
+      );
+      expect(result).toEqual({ valid: false, error: expect.stringContaining("private") });
+    });
+
+    it("rejects a hostname where only one of several resolved addresses is private", async () => {
+      // A resolver can legitimately return multiple A/AAAA records; every one
+      // of them must be classified, not just the first.
+      const result = await validateExternalUrl(
+        "https://mixed.attacker.example",
+        resolveTo(["203.0.113.10", "127.0.0.1"])
+      );
+      expect(result).toEqual({ valid: false, error: expect.stringContaining("private") });
+    });
+
+    it("rejects a hostname that resolves to an IPv4-mapped IPv6 metadata address", async () => {
+      const result = await validateExternalUrl(
+        "https://mapped.attacker.example",
+        resolveTo(["::ffff:169.254.169.254"])
+      );
+      expect(result).toEqual({ valid: false, error: expect.stringContaining("private") });
+    });
+
+    it("allows a hostname that resolves only to public addresses", async () => {
+      const result = await validateExternalUrl(
+        "https://real-odoo.example",
+        resolveTo(["203.0.113.10", "2606:4700:4700::1111"])
+      );
+      expect(result).toEqual({ valid: true, url: "https://real-odoo.example" });
+    });
+
+    it("fails open when the hostname does not resolve at all (typo, not an attack)", async () => {
+      const result = await validateExternalUrl("https://typo.example", unresolvable);
+      expect(result).toEqual({ valid: true, url: "https://typo.example" });
+    });
   });
 
   describe("ALLOW_PRIVATE_URLS bypass", () => {
-    it("allows private URLs when ALLOW_PRIVATE_URLS=1", () => {
+    it("allows private URLs when ALLOW_PRIVATE_URLS=1", async () => {
       vi.stubEnv("ALLOW_PRIVATE_URLS", "1");
-      const result = validateExternalUrl("http://localhost:8069");
+      const result = await validateExternalUrl("http://localhost:8069", mustNotBeCalled);
       expect(result).toEqual({ valid: true, url: "http://localhost:8069" });
     });
 
-    it("allows internal Docker hostnames when ALLOW_PRIVATE_URLS=1", () => {
+    it("allows internal Docker hostnames when ALLOW_PRIVATE_URLS=1, without touching DNS", async () => {
       vi.stubEnv("ALLOW_PRIVATE_URLS", "1");
-      const result = validateExternalUrl("http://odoo-mock:8069");
+      // odoo-e2e / eval stacks set this flag so the wizard can reach
+      // odoo-mock on the Docker-internal network. The resolver must not even
+      // be invoked — the bypass short-circuits before DNS.
+      const result = await validateExternalUrl("http://odoo-mock:8069", mustNotBeCalled);
       expect(result).toEqual({ valid: true, url: "http://odoo-mock:8069" });
     });
 
-    it("still rejects non-HTTP schemes even with ALLOW_PRIVATE_URLS=1", () => {
+    it("still rejects non-HTTP schemes even with ALLOW_PRIVATE_URLS=1", async () => {
       vi.stubEnv("ALLOW_PRIVATE_URLS", "1");
-      const result = validateExternalUrl("ftp://localhost:8069");
+      const result = await validateExternalUrl("ftp://localhost:8069", mustNotBeCalled);
       expect(result).toEqual({ valid: false, error: expect.stringContaining("HTTP") });
     });
 
-    it("still rejects invalid URLs even with ALLOW_PRIVATE_URLS=1", () => {
+    it("still rejects invalid URLs even with ALLOW_PRIVATE_URLS=1", async () => {
       vi.stubEnv("ALLOW_PRIVATE_URLS", "1");
-      const result = validateExternalUrl("not-a-url");
+      const result = await validateExternalUrl("not-a-url", mustNotBeCalled);
       expect(result).toEqual({ valid: false, error: expect.any(String) });
     });
   });
