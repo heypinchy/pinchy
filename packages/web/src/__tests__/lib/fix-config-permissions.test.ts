@@ -187,6 +187,123 @@ describe("fix_config_permissions — per-agent directory ownership (#934)", () =
   });
 });
 
+// THE SECOND INVARIANT (#1095):
+//
+//   workspaces/<id>/<bootstrap file> must be OWNED by the pinchy uid.
+//
+// Same cross-uid trap as agents/<id>/agent above, one directory over, and it
+// reached production: on 2026-08-04 `pinchy.heypinchy.com` had two root-owned
+// TOOLS.md files, and every agent save had failed since 2026-08-02 08:25 — the
+// last successful `agent.updated` audit row. The user saw "Failed to save some
+// settings" and nothing else.
+//
+// The mechanism is a race that Pinchy itself opens. writeToolsFile() DELETES
+// TOOLS.md when an agent has no mailbox (rmSync — "no stale mailbox identity
+// survives a permission revocation"). OpenClaw creates the file from its own
+// bootstrap template whenever it is missing, as root, mode 0644. Grant the
+// agent an email connection afterwards and Pinchy's writeFileSync gets EACCES
+// forever — root-owned 0644 denies uid 999 the write, and root ignores mode
+// bits, so no chmod can substitute for ownership here either.
+//
+// The blast radius is the same as #934's and worth spelling out, because the
+// two user-visible symptoms look unrelated: the EACCES aborts
+// regenerateOpenClawConfig() BEFORE it pushes openclaw.json, so
+//   (a) the model the user just saved never reaches the runtime, and
+//   (b) pinchy-email never enters the plugin list, so the agent has no email_*
+//       tools at all and correctly answers "I have no access to a mailbox" —
+//       while the Permissions tab shows the mailbox connected and saved.
+describe("fix_config_permissions — workspace bootstrap file ownership (#1095)", () => {
+  /** Create a workspace the way OpenClaw does: root-owned bootstrap files. */
+  function seedWorkspaceFile(agentId: string, name: string): string {
+    const dir = join(stateDir, "workspaces", agentId);
+    mkdirSync(dir, { recursive: true });
+    const file = join(dir, name);
+    writeFileSync(file, "# placeholder\n");
+    return file;
+  }
+
+  it("chowns workspaces/<id>/TOOLS.md so Pinchy can write the mailbox context", () => {
+    const file = seedWorkspaceFile("025449c8-12b8-4919-a427-86a1ee7a4a77", "TOOLS.md");
+
+    runFix();
+
+    expect(chownedPaths()).toContain(file);
+  });
+
+  it.each(["AGENTS.md", "SOUL.md", "IDENTITY.md", "USER.md", "HEARTBEAT.md"])(
+    "chowns workspaces/<id>/%s — OpenClaw bootstraps all of these, Pinchy writes them too",
+    (name) => {
+      const file = seedWorkspaceFile("agent-a", name);
+
+      runFix();
+
+      expect(chownedPaths()).toContain(file);
+    }
+  );
+
+  it("covers every workspace, not just the first one found", () => {
+    const a = seedWorkspaceFile("agent-a", "TOOLS.md");
+    const b = seedWorkspaceFile("agent-b", "TOOLS.md");
+
+    runFix();
+
+    const chowned = chownedPaths();
+    expect(chowned).toContain(a);
+    expect(chowned).toContain(b);
+  });
+
+  it("chowns the workspace directory itself, so a deleted file can be recreated", () => {
+    // writeToolsFile() removes TOOLS.md for an agent with no mailbox and
+    // recreates it when one is granted. Recreating needs write permission on
+    // the DIRECTORY, which a file-only repair would never grant.
+    seedWorkspaceFile("agent-a", "TOOLS.md");
+
+    runFix();
+
+    expect(chownedPaths()).toContain(join(stateDir, "workspaces", "agent-a"));
+  });
+
+  it("skips workspace files already owned by the pinchy uid", () => {
+    // Same ctime argument as the agents/ gate above: at a 50 ms tick an
+    // ungated chown is ~20 ctime bumps a second, per file, forever.
+    seedWorkspaceFile("agent-a", "TOOLS.md");
+
+    execFileSync("bash", ["-c", `source '${SCRIPT}'; fix_config_permissions`], {
+      env: {
+        ...process.env,
+        PATH: `${binDir}${delimiter}${process.env.PATH ?? ""}`,
+        OPENCLAW_STATE_DIR: stateDir,
+        SECRETS_FILE: secretsFile,
+        PINCHY_UID: String(process.getuid?.() ?? 0),
+        PINCHY_GID: String(process.getgid?.() ?? 0),
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+      encoding: "utf8",
+    });
+
+    expect(chownedPaths()).toEqual([]);
+  });
+
+  it("leaves agent-created content below the bootstrap level alone", () => {
+    // The tick runs every 50 ms. Workspaces hold uploads/ and memory/ with
+    // unbounded file counts, so the repair is scoped to the bootstrap files
+    // Pinchy actually writes — a recursive sweep would re-stat the whole
+    // corpus 20 times a second for no benefit.
+    const dir = join(stateDir, "workspaces", "agent-a", "uploads");
+    mkdirSync(dir, { recursive: true });
+    const upload = join(dir, "invoice.pdf");
+    writeFileSync(upload, "%PDF\n");
+
+    runFix();
+
+    expect(chownedPaths()).not.toContain(upload);
+  });
+
+  it("tolerates a missing workspaces/ directory (pre-first-agent boot)", () => {
+    expect(() => runFix()).not.toThrow();
+  });
+});
+
 describe("fix_config_permissions — behaviour carried over from start-openclaw.sh", () => {
   it("makes openclaw.json writable by Pinchy (mode 666)", () => {
     chmodSync(join(stateDir, "openclaw.json"), 0o600);

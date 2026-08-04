@@ -83,6 +83,43 @@ fix_config_permissions() {
     find "$OPENCLAW_STATE_DIR/agents" -name "auth-profiles.json" -type f -not -perm 0600 \
         -exec chmod 0600 {} \; 2>/dev/null || true
 
+    # The same trap, one directory over: workspaces/<id>/ holds the bootstrap
+    # files (AGENTS.md, SOUL.md, TOOLS.md, IDENTITY.md, USER.md, HEARTBEAT.md)
+    # that BOTH sides write. Pinchy writes them as uid 999 from
+    # regenerateOpenClawConfig(); OpenClaw creates any that are missing from its
+    # own bundled template, as root, when it boots the agent.
+    #
+    # Pinchy opens the race itself. writeToolsFile() DELETES TOOLS.md for an
+    # agent with no mailbox (rmSync — so a revoked permission cannot leave a
+    # stale mailbox identity behind), and the next agent start finds the file
+    # missing and re-creates it root-owned. Grant that agent an email connection
+    # afterwards and Pinchy's writeFileSync gets EACCES forever.
+    #
+    # This reached production (#1095): `pinchy.heypinchy.com` carried two
+    # root-owned TOOLS.md files on 2026-08-04 and had rejected every agent save
+    # since 2026-08-02 08:25, the last successful `agent.updated` audit row. The
+    # two symptoms looked unrelated and were one bug — the EACCES aborts
+    # regenerateOpenClawConfig() before the push, so the model the user saved
+    # never reached the runtime AND pinchy-email never entered the plugin list,
+    # leaving the agent to truthfully answer that it has no mailbox access while
+    # the UI showed the connection saved.
+    #
+    # Ownership again, not mode: the file lands 0644 root-owned, which already
+    # grants uid 999 read — it is the WRITE that is denied, and root ignores any
+    # chmod we make. The directory needs it too, or a deleted TOOLS.md can never
+    # be recreated.
+    #
+    # Scoped to the bootstrap filenames rather than a recursive sweep: this runs
+    # on a 50 ms tick, and workspaces also hold uploads/ and memory/ with
+    # unbounded file counts. Same `! -uid` ctime gate as above.
+    find "$OPENCLAW_STATE_DIR/workspaces" -maxdepth 1 -type d ! -uid "$PINCHY_UID" \
+        -exec chown "$PINCHY_UID:$PINCHY_GID" {} \; 2>/dev/null || true
+    find "$OPENCLAW_STATE_DIR/workspaces" -mindepth 2 -maxdepth 2 -type f \
+        \( -name "AGENTS.md" -o -name "SOUL.md" -o -name "TOOLS.md" \
+        -o -name "IDENTITY.md" -o -name "USER.md" -o -name "HEARTBEAT.md" \) \
+        ! -uid "$PINCHY_UID" \
+        -exec chown "$PINCHY_UID:$PINCHY_GID" {} \; 2>/dev/null || true
+
     # Cross-uid read access for Pinchy's self-service diagnostics export.
     # OpenClaw writes per-agent sessions.json and *.trajectory.jsonl as root
     # under agents/<agentId>/sessions/ — with default umask these emerge
