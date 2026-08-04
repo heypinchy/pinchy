@@ -269,6 +269,31 @@ export function citedSourcePaths(answer: string): string[] {
   return paths;
 }
 
+/**
+ * The Sources region cut into candidate entries WITHOUT requiring a bullet.
+ *
+ * `citedSourcePaths` above reads the list through `BULLET_LINE` because the
+ * gate grades the taught shape (`- [N] <path> — <position>`). This one exists
+ * for the groundedness premise lookup, which needs a different question
+ * answered: not "did the model format its list correctly?" — `sources-format`
+ * owns that — but "which documents does the model say it used?". A model that
+ * writes a perfectly legible ordered list has answered the second question;
+ * charging it as if it answered neither is how one formatting defect became an
+ * `ungrounded-claim` verdict (#869).
+ *
+ * The split is on line breaks and BEFORE each `[N]` marker, which is the one
+ * token every shape the sweep produced has in common — bulleted, ordered,
+ * marker-only, and the single-line run-on that has no line breaks to split on
+ * at all. Empty and marker-only fragments fall out; a fragment that names no
+ * retrieved document resolves to nothing, so over-splitting costs nothing.
+ */
+export function sourcesListCandidates(answer: string): string[] {
+  return parseAnswer(answer)
+    .sourcesText.split(/\r?\n|(?=\[\d+\])/)
+    .map((candidate) => candidate.trim())
+    .filter((candidate) => candidate.length > 0);
+}
+
 function passKb(): KbGraderResult {
   return { passed: true, tags: [], notes: [] };
 }

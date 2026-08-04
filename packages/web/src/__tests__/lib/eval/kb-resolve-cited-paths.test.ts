@@ -32,8 +32,15 @@
 
 import { describe, expect, it } from "vitest";
 
-import { resolveCitedSourcePaths } from "../../../../eval/kb/resolve-cited-paths";
-import { citedSourcePaths, gradePathCitation } from "@/lib/eval/kb/attribution-graders";
+import {
+  premiseSourcePaths,
+  resolveCitedSourcePaths,
+} from "../../../../eval/kb/resolve-cited-paths";
+import {
+  citedSourcePaths,
+  gradeAttribution,
+  gradePathCitation,
+} from "@/lib/eval/kb/attribution-graders";
 
 const RETRIEVED = [
   { sourcePath: "/data/it-equipment-policy.md" },
@@ -208,5 +215,106 @@ describe("gradePathCitation and resolveCitedSourcePaths agree on which document 
     expect(resolvesFor("OLD/afnor-certificate-2013.md", retrieved)).toEqual([
       "/data/quality/OLD/afnor-certificate-2013.md",
     ]);
+  });
+});
+
+/**
+ * The same false alarm, one layer down, and the one that mattered most.
+ *
+ * `citedSourcePaths` resolves the INTERSECTION of what the answer cites inline
+ * and what its Sources list holds — and it reads that list through
+ * `BULLET_LINE`, which requires `- [N] …`. When a model writes the list any
+ * other way the intersection is empty, so the premise set is empty, so
+ * `gradeGroundednessForGold` entailment-scores every sentence against `""` and
+ * charges `ungrounded-claim`. In the 2026-08-03 sweep that was 23 of 29
+ * `ungrounded-claim` verdicts, and 12 of 12 runs for `gpt-oss:120b` — whose
+ * 0/12 therefore measured this parser, not the model.
+ *
+ * The intersection is NOT dropped: where the list parses, a listed-but-uncited
+ * source must still not ground a claim, and that guarantee is free there. It is
+ * simply not computable in the shapes above — glm-5.2 writes
+ * `1. path — passage [1]`, with the number trailing — so an empty strict result
+ * falls back to "every retrieved document the Sources region names", which
+ * needs no structure at all.
+ *
+ * What bounds the fallback's lower precision: it only ever runs when the strict
+ * parse found nothing, and an answer whose list does not parse ALWAYS carries
+ * `sources-format` or `citation-unresolved` from `gradeAttribution`. So the
+ * fallback can never turn a failing run into a passing one — it can only stop
+ * `ungrounded-claim` from firing on a claim whose source was never in doubt.
+ */
+describe("premiseSourcePaths", () => {
+  const SWEEP_SHAPES: [string, string][] = [
+    [
+      "no list marker at all (kimi-k2.6, gpt-oss:120b)",
+      'Laptops are replaced on a 3-year cycle [1].\n\n**Sources**\n[1] `it-equipment-policy.md`: "…replaced on a 3-year refresh cycle…"',
+    ],
+    [
+      "an ordered list with the number trailing (glm-5.2)",
+      "Coverage expanded in 2012 [1].\n\n### Sources\n\n1. handbook-2012/policy.md — passage [1]",
+    ],
+    [
+      "an ordered list carrying the citation number (qwen3.5:397b)",
+      'The per diem rose to $60 [1].\n\n**Sources:**\n1. handbook-2012/policy.md — "…increased from $45 to $60…"',
+    ],
+    [
+      "a run-on paragraph, the shape sources-format was built for",
+      "One [1]. Two [2].\n\n**Sources:** [1] handbook-2011/policy.md — p. 1 [2] handbook-2012/policy.md — p. 2",
+    ],
+  ];
+
+  it.each(SWEEP_SHAPES)("recovers premise material from %s", (_label, answer) => {
+    expect(premiseSourcePaths(answer, RETRIEVED).length).toBeGreaterThan(0);
+  });
+
+  it("prefers the strict intersection whenever it resolves anything", () => {
+    // [2] is listed but never cited inline. The strict path excludes it, and
+    // because the strict path is non-empty the fallback never runs — so the
+    // guarantee that an uncited source cannot ground a claim is untouched.
+    const answer = `Fact one [1].
+
+**Sources:**
+
+- [1] it-equipment-policy.md — p. 1
+- [2] handbook-2012/policy.md — p. 2`;
+
+    expect(premiseSourcePaths(answer, RETRIEVED)).toEqual(["/data/it-equipment-policy.md"]);
+  });
+
+  it("still refuses a fabricated path and an ambiguous basename in the fallback", () => {
+    // No structure to parse, so the fallback runs — and it resolves through the
+    // same matcher, which means it inherits both refusals rather than being a
+    // looser second door into the premise set.
+    const fabricated = "A claim [1].\n\n**Sources**\n[1] invented-policy.md";
+    const ambiguous = "A claim [1].\n\n**Sources**\n[1] policy.md";
+
+    expect(premiseSourcePaths(fabricated, RETRIEVED)).toEqual([]);
+    expect(premiseSourcePaths(ambiguous, RETRIEVED)).toEqual([]);
+  });
+
+  it("returns nothing for an answer with no Sources list at all", () => {
+    // An abstention, or a model that asserted without citing. Nothing was
+    // claimed to be a source, so there is nothing to recover — and
+    // `ungrounded-claim` on an uncited assertion is a fair verdict, not an
+    // artefact.
+    expect(premiseSourcePaths("I couldn't find this in the knowledge base.", RETRIEVED)).toEqual(
+      []
+    );
+  });
+
+  it("cannot turn a failing run into a passing one — the bound the fallback rests on", () => {
+    // Every shape the fallback exists for is charged by gradeAttribution
+    // independently. Assert that rather than trusting the reasoning: if a
+    // future parser change made one of these shapes grade clean, the fallback's
+    // lower precision would start affecting verdicts and this test says so.
+    // `gradeAttribution` grades the full retrieved shape, so the citation
+    // number and page the tool reported are supplied here; the premise lookup
+    // above needs only the path and is typed accordingly.
+    const graded = RETRIEVED.map((source, i) => ({ ...source, n: i + 1, page: 1 }));
+
+    for (const [, answer] of SWEEP_SHAPES) {
+      const tags = gradeAttribution({ answer, retrieved: graded }).tags;
+      expect(tags.some((t) => t === "sources-format" || t === "citation-unresolved")).toBe(true);
+    }
   });
 });

@@ -25,6 +25,7 @@
 // `eval/` for `import type` (which erases). `run-eval.ts` reaches into `src/`
 // the same way, for the same reason — a Playwright spec loads these files
 // directly.
+import { citedSourcePaths, sourcesListCandidates } from "../../src/lib/eval/kb/attribution-graders";
 import { matchRetrievedDocument } from "../../src/lib/eval/kb/cited-path-match";
 
 export function resolveCitedSourcePaths(
@@ -43,4 +44,46 @@ export function resolveCitedSourcePaths(
   }
 
   return resolved;
+}
+
+/**
+ * The documents a claim may be checked against — strictly if the Sources list
+ * parses, and by naming alone if it does not.
+ *
+ * `citedSourcePaths` reads the list through `BULLET_LINE` and returns the
+ * INTERSECTION of inline citations and list entries. That intersection is a
+ * real guarantee — a source listed but never cited must not ground a claim —
+ * and it is kept wherever it can be computed. What it cannot survive is a list
+ * written any other way: the intersection comes back empty, so the premise set
+ * is empty, so `gradeGroundednessForGold` entailment-scores every sentence
+ * against `""` and charges `ungrounded-claim`. The 2026-08-03 sweep spent 23 of
+ * its 29 `ungrounded-claim` verdicts that way, including all 12 runs of
+ * `gpt-oss:120b` — whose 0/12 measured this parser rather than the model.
+ *
+ * The intersection is not computable in those shapes rather than merely
+ * inconvenient: `glm-5.2` writes `1. <path> — passage [1]`, with the number
+ * TRAILING the path, so no split attaches a citation number to a document. So
+ * an empty strict result falls back to what needs no structure at all — which
+ * retrieved documents the Sources region names — resolved through the same
+ * matcher, which means the fallback inherits its refusals rather than being a
+ * looser second door: a fabricated path and an ambiguous bare basename resolve
+ * to nothing on both routes.
+ *
+ * What bounds the fallback's lower precision, and why it is safe to be less
+ * precise here: it runs ONLY when the strict parse found nothing, and an answer
+ * whose list does not parse always carries `sources-format` or
+ * `citation-unresolved` from `gradeAttribution`. The run therefore fails either
+ * way — the fallback can never turn a failing run into a passing one, only stop
+ * `ungrounded-claim` from firing on a claim whose source was never in doubt.
+ * `kb-resolve-cited-paths.test.ts` asserts that bound against every shape this
+ * exists for, rather than leaving it as an argument in a comment.
+ */
+export function premiseSourcePaths(
+  answer: string,
+  retrieved: readonly { sourcePath: string }[]
+): string[] {
+  const strict = resolveCitedSourcePaths(citedSourcePaths(answer), retrieved);
+  if (strict.length > 0) return strict;
+
+  return resolveCitedSourcePaths(sourcesListCandidates(answer), retrieved);
 }

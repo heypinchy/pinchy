@@ -81,7 +81,6 @@ import type { KnowledgeSearchAuditEntry } from "./run-kb-eval";
 import { getRawAssistantMessage } from "./getRawAssistantMessage";
 import { gradeKbRun } from "../../src/lib/eval/kb/answer-graders";
 import type { KbRunTrajectory, KbRunResult } from "../../src/lib/eval/kb/answer-graders";
-import { citedSourcePaths } from "../../src/lib/eval/kb/attribution-graders";
 import {
   DEFAULT_KB_JUDGE_MODEL,
   LlmNliClient,
@@ -91,7 +90,7 @@ import {
 import { DEFAULT_ORG_ID } from "../../src/lib/knowledge/constants";
 import { fetchChunkTexts } from "./chunk-texts";
 import { seedSyntheticCorpus } from "./seed-corpus";
-import { resolveCitedSourcePaths } from "./resolve-cited-paths";
+import { premiseSourcePaths } from "./resolve-cited-paths";
 import { withTransportRetry } from "../transport-retry";
 import { describeError } from "../error-detail";
 import { DEFAULT_KB_CANDIDATES } from "../candidates";
@@ -407,7 +406,7 @@ test.describe("KB Eval Harness Layer 3: groundedness sweep (real Ollama Cloud)",
         // root); kb_chunks is keyed by the absolute path. Resolving between
         // them against this run's own retrieved set is what makes the premise
         // lookup find anything at all — see resolve-cited-paths.ts.
-        const citedPaths = resolveCitedSourcePaths(citedSourcePaths(answer), retrieved);
+        const citedPaths = premiseSourcePaths(answer, retrieved);
         const chunkTextsByPath = await fetchChunkTexts(dbUrl, DEFAULT_ORG_ID, citedPaths);
         const citedPassageTexts = citedPaths.flatMap((p) => chunkTextsByPath.get(p) ?? []);
 
