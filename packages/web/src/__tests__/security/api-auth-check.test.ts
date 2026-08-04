@@ -36,6 +36,11 @@ const PUBLIC_ROUTES = [
   // Token possession is the auth factor, same as the claim route above.
   "api/invite/[token]/route.ts",
   "api/health/route.ts",
+  // Public in its default mode and for the `?agentId=` dispatchability probe
+  // (E2E stability gates poll that one without a cookie). The `?channelHealth=1`
+  // branch is NOT public — it calls `requireAdmin()` — but listing the file here
+  // makes this guard skip it entirely, so the admin gate is pinned by the 401/403
+  // cases in `__tests__/api/health-openclaw.test.ts` instead.
   "api/health/openclaw/route.ts",
   "api/diagnostics/route.ts",
   "api/version/route.ts",

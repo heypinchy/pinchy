@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import type { NextRequest } from "next/server";
-import { NextResponse } from "next/server";
+import { NextResponse, type NextRequest } from "next/server";
+import { mockSession } from "@/test-helpers/auth";
 
 const mockRestartState = { isRestarting: false, triggeredAt: null as number | null };
 const mockConnectionState = { connected: false };
@@ -29,8 +29,6 @@ vi.mock("@/lib/api-auth", () => ({
 vi.mock("@/server/channel-health-singleton", () => ({
   getChannelHealthMonitor: () => mockGetChannelHealthMonitor(),
 }));
-
-import { mockSession } from "@/test-helpers/auth";
 
 function fakeRequest(url = "http://localhost/api/health/openclaw"): NextRequest {
   // Only `nextUrl.searchParams` is consumed by the route — minimal shim.
@@ -173,12 +171,36 @@ describe("GET /api/health/openclaw", () => {
       );
       const body = await response.json();
 
-      expect(body.channelHealth[0].lastError).not.toContain("someone@example.com");
+      // Assert the scrubbed VALUE, not merely the absence of the address: a
+      // `not.toContain` is equally satisfied by `null`, by `undefined`, and by
+      // the field being dropped altogether — so it would stay green if the
+      // mapping regressed to blanking `lastError` and the badge lost its title.
+      expect(body.channelHealth[0].lastError).toBe("conflict for user <email-redacted>");
     });
+  });
 
-    it("does NOT call requireAdmin for the default health check (stays public)", async () => {
+  describe("the unauthenticated modes stay unauthenticated", () => {
+    it("does NOT call requireAdmin for the default health check", async () => {
       await GET(fakeRequest());
 
+      expect(mockRequireAdmin).not.toHaveBeenCalled();
+    });
+
+    // The `?agentId=` probe is what every E2E stability gate polls, several of
+    // them with a bare `fetch` and no cookie (e2e/telegram/media.spec.ts,
+    // chats.spec.ts, agent-create-no-restart.spec.ts). If the admin gate ever
+    // moved above this branch those suites would fail as an opaque poll
+    // timeout, minutes into a Docker run — this pins it one unit test early.
+    it("does NOT call requireAdmin for the ?agentId= dispatchability probe", async () => {
+      mockConfigGet.mockResolvedValue({ config: { agents: { list: [{ id: "agent-1" }] } } });
+
+      const response = await GET(
+        fakeRequest("http://localhost/api/health/openclaw?agentId=agent-1")
+      );
+      const body = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(body.agentDispatchable).toBe(true);
       expect(mockRequireAdmin).not.toHaveBeenCalled();
     });
   });
