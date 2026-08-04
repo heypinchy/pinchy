@@ -56,7 +56,7 @@ This is the endpoint to check after an upgrade: it answers what the container ac
 
 Database and OpenClaw reachability, plus the running version. **Public**, but the session is inspected: authenticated **admins** additionally get a `logs` field with recent server logs (redacted of email addresses and known secret patterns). Nobody else gets that field — the log buffer is process-global and can carry detail from other users' sessions.
 
-A signed-in non-admin also gets `"logsWithheld": "admin-only"`. It lets a client tell "your role may not read these" apart from "there are none": the in-app bug reporter uses it to ask the reporter to forward their report to an administrator, rather than pointing them at a host shell they have no account on. Anonymous callers never get the field — for them the missing `logs` really does mean "go and look", since whoever runs the setup wizard operates the host.
+A signed-in non-admin also gets `"logsWithheld": "admin-only"`. It lets a client tell "your role may not read these" apart from "there are none": the in-app bug reporter uses it to ask the reporter to forward their report to an administrator, rather than pointing them at a host shell they have no account on. Anonymous callers never get the field: with no session there is no role to withhold for, and that caller may be the setup wizard's pre-flight check — run by whoever is installing Pinchy, who does hold the host shell. Nothing in the request separates that person from a signed-out member, so the bug reporter's fallback names the host command and the administrator both.
 
 ### `GET /api/health/openclaw`
 
