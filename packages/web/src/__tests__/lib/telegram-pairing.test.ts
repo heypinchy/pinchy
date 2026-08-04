@@ -125,6 +125,11 @@ describe("resolvePairingCode", () => {
     // the matching code via the UI and got "Invalid or expired pairing code".
     // If this test passes locally, the bug is environmental (path, race,
     // mtime), not in the resolver's matching logic.
+    //
+    // `now` is pinned shortly after `createdAt` (matching the recorded
+    // `lastSeenAt`) rather than left to default to the real clock, because
+    // the pairing-code expiry added below would otherwise reject this
+    // 2026-04-29 fixture as stale against today's date.
     mockedExistsSync.mockReturnValue(true);
     mockedReadFileSync.mockReturnValue(
       JSON.stringify({
@@ -146,7 +151,52 @@ describe("resolvePairingCode", () => {
       })
     );
 
-    const result = resolvePairingCode("VVN2THRM");
+    const result = resolvePairingCode("VVN2THRM", Date.parse("2026-04-29T16:56:10.000Z"));
     expect(result).toEqual({ found: true, telegramUserId: "8754697762" });
+  });
+
+  describe("pairing code expiry", () => {
+    const CREATED_AT = "2026-04-29T16:52:07.768Z";
+    const CREATED_AT_MS = Date.parse(CREATED_AT);
+
+    beforeEach(() => {
+      mockedExistsSync.mockReturnValue(true);
+      mockedReadFileSync.mockReturnValue(
+        JSON.stringify({
+          version: 1,
+          requests: [{ id: "8754697762", code: "VVN2THRM", createdAt: CREATED_AT }],
+        })
+      );
+    });
+
+    it("accepts a code redeemed just under the 10-minute expiry", () => {
+      const justUnderTenMinutes = CREATED_AT_MS + 10 * 60_000 - 1;
+      const result = resolvePairingCode("VVN2THRM", justUnderTenMinutes);
+      expect(result).toEqual({ found: true, telegramUserId: "8754697762" });
+    });
+
+    it("rejects a code redeemed at exactly the 10-minute expiry", () => {
+      const tenMinutesLater = CREATED_AT_MS + 10 * 60_000;
+      const result = resolvePairingCode("VVN2THRM", tenMinutesLater);
+      expect(result).toEqual({ found: false });
+    });
+
+    it("rejects a code redeemed well past the expiry (brute-force window closed)", () => {
+      const oneHourLater = CREATED_AT_MS + 60 * 60_000;
+      const result = resolvePairingCode("VVN2THRM", oneHourLater);
+      expect(result).toEqual({ found: false });
+    });
+
+    it("rejects a code with an unparseable createdAt (fail closed, not open)", () => {
+      mockedReadFileSync.mockReturnValue(
+        JSON.stringify({
+          version: 1,
+          requests: [{ id: "8754697762", code: "VVN2THRM", createdAt: "not-a-date" }],
+        })
+      );
+
+      const result = resolvePairingCode("VVN2THRM", CREATED_AT_MS);
+      expect(result).toEqual({ found: false });
+    });
   });
 });

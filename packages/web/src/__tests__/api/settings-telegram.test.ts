@@ -16,6 +16,15 @@ vi.mock("@/lib/telegram-pairing", () => ({
   resolvePairingCode: (...args: unknown[]) => mockResolvePairingCode(...args),
 }));
 
+const mockTryAcquireTelegramPairingSlot = vi.fn();
+const mockRecordTelegramPairingFailure = vi.fn().mockResolvedValue(undefined);
+const mockIsChannelUserIdConflictError = vi.fn();
+vi.mock("@/lib/telegram-pairing-security", () => ({
+  tryAcquireTelegramPairingSlot: (...args: unknown[]) => mockTryAcquireTelegramPairingSlot(...args),
+  recordTelegramPairingFailure: (...args: unknown[]) => mockRecordTelegramPairingFailure(...args),
+  isChannelUserIdConflictError: (...args: unknown[]) => mockIsChannelUserIdConflictError(...args),
+}));
+
 // #508: the route no longer writes session.identityLinks (per-task session
 // model — each Telegram peer keeps its own per-peer OpenClaw session). It no
 // longer imports anything from @/lib/openclaw-config, so there is nothing to
@@ -127,6 +136,8 @@ describe("POST /api/settings/telegram", () => {
       }),
     });
     mockResolvePairingCode.mockReturnValue({ found: true, telegramUserId: "8734062810" });
+    mockTryAcquireTelegramPairingSlot.mockReturnValue(true);
+    mockIsChannelUserIdConflictError.mockReturnValue(false);
   });
 
   it("returns 401 when unauthenticated", async () => {
@@ -169,6 +180,80 @@ describe("POST /api/settings/telegram", () => {
 
     const data = await response.json();
     expect(data.error).toContain("Invalid or expired");
+  });
+
+  it("records an audit failure when the pairing code is invalid", async () => {
+    mockResolvePairingCode.mockReturnValueOnce({ found: false });
+
+    await POST(makePostRequest({ code: "BADCODE" }), routeContext());
+
+    expect(mockRecordTelegramPairingFailure).toHaveBeenCalledWith(
+      "user-1",
+      "invalid_or_expired_code"
+    );
+  });
+
+  it("returns 429 and does not touch the DB when the per-user rate limit is exceeded", async () => {
+    // Simulates the brute-force scenario: a member looping guesses against a
+    // live victim's pairing code. The 6th attempt within the window must be
+    // rejected before resolvePairingCode (and therefore any DB write) runs.
+    mockTryAcquireTelegramPairingSlot.mockReturnValueOnce(false);
+
+    const response = await POST(makePostRequest({ code: "GUESS1" }), routeContext());
+    expect(response.status).toBe(429);
+
+    const data = await response.json();
+    expect(data.error).toMatch(/too many/i);
+
+    expect(mockResolvePairingCode).not.toHaveBeenCalled();
+    expect(mockInsert).not.toHaveBeenCalled();
+    expect(mockRecordTelegramPairingFailure).toHaveBeenCalledWith("user-1", "rate_limited");
+  });
+
+  it("returns 409 when the Telegram account is already linked to a different user", async () => {
+    // channel_links carries a unique index on (channel, channelUserId) that
+    // onConflictDoUpdate's (userId, channel) target does not cover — a
+    // second user redeeming a code for an already-linked Telegram id must
+    // raise this, not upsert over the existing owner's link.
+    const conflictError = Object.assign(new Error("duplicate key value"), {
+      code: "23505",
+      constraint_name: "channel_links_channel_user_id_uniq",
+    });
+    mockInsert.mockReturnValue({
+      values: vi.fn().mockReturnValue({
+        onConflictDoUpdate: vi.fn().mockRejectedValue(conflictError),
+      }),
+    });
+    mockIsChannelUserIdConflictError.mockReturnValue(true);
+
+    const response = await POST(makePostRequest({ code: "FMSVEN7M" }), routeContext());
+    expect(response.status).toBe(409);
+
+    const data = await response.json();
+    expect(data.error).toContain("already linked");
+
+    expect(mockRecordTelegramPairingFailure).toHaveBeenCalledWith(
+      "user-1",
+      "channel_user_id_conflict"
+    );
+    // Neither the pairing request nor the allow-store recalculation should
+    // run after a rejected write.
+    expect(mockRemovePairingRequest).not.toHaveBeenCalled();
+    expect(mockRecalculateTelegramAllowStores).not.toHaveBeenCalled();
+  });
+
+  it("re-throws a DB error that is not the channel_user_id conflict", async () => {
+    const otherError = Object.assign(new Error("connection reset"), { code: "08006" });
+    mockInsert.mockReturnValue({
+      values: vi.fn().mockReturnValue({
+        onConflictDoUpdate: vi.fn().mockRejectedValue(otherError),
+      }),
+    });
+    mockIsChannelUserIdConflictError.mockReturnValue(false);
+
+    await expect(POST(makePostRequest({ code: "FMSVEN7M" }), routeContext())).rejects.toThrow(
+      "connection reset"
+    );
   });
 
   it("still succeeds when OpenClaw client is not connected", async () => {

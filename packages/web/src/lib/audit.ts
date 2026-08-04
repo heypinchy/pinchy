@@ -81,6 +81,11 @@ export type AuditEventType =
   // types test only asserts this union is a SUBSET of what's writable, so it
   // cannot catch a missing entry in this direction.
   | "auth.scope_denied"
+  // Written by recordTelegramPairingFailure (lib/telegram-pairing-security.ts)
+  // when POST /api/settings/telegram denies a pairing-code redemption (rate
+  // limited, invalid/expired code, or a channel_links unique-constraint
+  // conflict). Listed here for the same reason as auth.scope_denied above.
+  | "auth.telegram_pairing_denied"
   | "agent.created"
   | "agent.updated"
   | "agent.deleted"
