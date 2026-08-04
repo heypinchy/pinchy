@@ -53,12 +53,13 @@ test.describe.serial("Odoo auth_failed flow", () => {
     const conn = await connRes.json();
     connectionId = conn.id;
 
-    // Trigger an initial sync so the card shows "Connected"
+    // Trigger an initial sync so the card shows "Connected". No wait needed
+    // after: the sync route awaits its DB write before responding, so the
+    // status is already committed once the request resolves.
     await fetch(`${PINCHY_URL}/api/integrations/${connectionId}/sync`, {
       method: "POST",
       headers: { Cookie: cookie, Origin: PINCHY_URL },
     });
-    await new Promise((r) => setTimeout(r, 2000));
   });
 
   test.afterAll(async () => {
@@ -130,12 +131,13 @@ test.describe.serial("Odoo auth_failed flow", () => {
     // Dialog closes
     await expect(dialog).not.toBeVisible({ timeout: 5000 });
 
-    // Trigger a sync to clear auth_failed status in DB and on the card
+    // Trigger a sync to clear auth_failed status in DB and on the card. No
+    // wait needed after: the sync route awaits clearIntegrationAuthError()
+    // (and the DB update) before responding.
     await fetch(`${PINCHY_URL}/api/integrations/${connectionId}/sync`, {
       method: "POST",
       headers: { Cookie: cookie, Origin: PINCHY_URL },
     });
-    await new Promise((r) => setTimeout(r, 2000));
 
     // Reload to pick up fresh state
     await page.reload();

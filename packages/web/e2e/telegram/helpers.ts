@@ -942,9 +942,27 @@ export async function sendWebChatMessage(opts: {
   let created = await attempt();
   if (!created) {
     // Cold-start / reconnect churn (a config.apply from connectBot drops the
-    // openclaw-node bridge). Retry once after a short backoff — the exact
-    // transient the rest of the Telegram suite absorbs with generous waits.
-    await new Promise((r) => setTimeout(r, 5000));
+    // openclaw-node bridge). Poll for OpenClaw to report `connected` again
+    // before retrying, instead of a fixed backoff: it returns as soon as the
+    // bridge is back (no wasted wait on a fast host) and can wait longer than
+    // a fixed 5s when reconnect is slow. `attempt()` below still owns the
+    // real pass/fail check (its own `thinking`-frame wait with `timeout`), so
+    // a poll timeout here just means the retry starts against a bridge that
+    // may still be down — the same fallback behavior as the sleep it
+    // replaces, never a weaker assertion.
+    const reconnectDeadline = Date.now() + 15000;
+    while (Date.now() < reconnectDeadline) {
+      try {
+        const res = await fetch(`${PINCHY_URL}/api/health/openclaw`);
+        if (res.ok) {
+          const body = (await res.json()) as { connected?: boolean };
+          if (body.connected) break;
+        }
+      } catch {
+        // not ready yet
+      }
+      await new Promise((r) => setTimeout(r, 500));
+    }
     created = await attempt();
   }
   if (!created) {
@@ -953,7 +971,9 @@ export async function sendWebChatMessage(opts: {
     );
   }
 
-  // Settle: OpenClaw persists the user turn into the session JSONL just after
-  // dispatch; a small wait avoids reading `sessions.list` before it lands.
-  await new Promise((r) => setTimeout(r, 1500));
+  // No settle wait here: the only caller (chats.spec.ts) immediately polls
+  // `waitForChats()` for the session to surface in `sessions.list` — a
+  // genuine condition poll that already absorbs the same persistence lag
+  // this sleep used to paper over, so the sleep added latency without
+  // strengthening any assertion.
 }

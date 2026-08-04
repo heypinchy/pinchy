@@ -75,18 +75,16 @@ test.describe.serial("Odoo Permission Setup", () => {
     const conn = await connRes.json();
     connectionId = conn.id;
 
-    // Wait for the sync to populate models on the connection.
+    // Trigger a sync to populate models on the connection.
     // The wizard flow triggers sync automatically, but API creation may need
-    // the sync endpoint called explicitly.
-    const syncRes = await fetch(`${PINCHY_URL}/api/integrations/${connectionId}/sync`, {
+    // the sync endpoint called explicitly. No wait needed after: the sync
+    // route (POST /api/integrations/[connectionId]/sync) awaits its DB write
+    // of `data.models` before responding, so once the request resolves the
+    // models are already committed — there is nothing left to wait for.
+    await fetch(`${PINCHY_URL}/api/integrations/${connectionId}/sync`, {
       method: "POST",
       headers: { Cookie: cookie, Origin: PINCHY_URL },
     });
-    // Sync may or may not exist — if not, the wizard already synced
-    if (syncRes.ok) {
-      // Give it a moment to complete
-      await new Promise((r) => setTimeout(r, 2000));
-    }
 
     // Ensure we have a shared (non-personal) agent
     agentId = await ensureSharedAgent(cookie);

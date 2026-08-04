@@ -49,7 +49,10 @@ export async function seedSetup(): Promise<void> {
     throw new Error(`Setup failed: ${setupRes.status} ${text}`);
   }
 
-  await new Promise((r) => setTimeout(r, 2000));
+  // No wait needed here: POST /api/setup awaits createAdmin() (including
+  // regenerateOpenClawConfig()) before responding, so setupRes.ok already
+  // guarantees those writes landed. The settings insert below is an
+  // independent, unrelated write with nothing async left to wait for.
 
   // Seed provider config (needed for agent creation)
   const testApiKey = process.env.TEST_ANTHROPIC_API_KEY || "sk-ant-fake-key-for-e2e-testing";
@@ -65,7 +68,17 @@ export async function seedSetup(): Promise<void> {
   `;
 
   await sql.end();
-  await new Promise((r) => setTimeout(r, 3000));
+
+  // /api/setup's regenerateOpenClawConfig() pushes the new config via a
+  // fire-and-forget pushConfigInBackground() (write.ts), so OpenClaw's
+  // reconnect after the setup-triggered restart can still be in flight once
+  // this function returns. Poll the same public health check web-search.spec
+  // uses downstream, rather than guessing a fixed delay — some seedSetup
+  // callers (e.g. odoo-templates/odoo-wizard/odoo-nested-lines specs) have no
+  // OpenClaw wait of their own after this call. Best-effort: like the sleep
+  // it replaces, a timeout here does not fail seedSetup — later API calls
+  // and their own waits still absorb any remaining latency.
+  await waitForOpenClawConnected("", 60000);
   console.log(`[web-setup] Admin created: ${_adminEmail}`);
 }
 

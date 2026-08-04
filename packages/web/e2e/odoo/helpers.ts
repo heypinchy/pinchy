@@ -49,7 +49,10 @@ export async function seedSetup(): Promise<void> {
     throw new Error(`Setup failed: ${setupRes.status} ${text}`);
   }
 
-  await new Promise((r) => setTimeout(r, 2000));
+  // No wait needed here: POST /api/setup awaits createAdmin() (including
+  // regenerateOpenClawConfig()) before responding, so setupRes.ok already
+  // guarantees those writes landed. The settings insert below is an
+  // independent, unrelated write with nothing async left to wait for.
 
   // Seed provider config (needed for agent creation)
   const testApiKey = process.env.TEST_ANTHROPIC_API_KEY || "sk-ant-fake-key-for-e2e-testing";
@@ -65,7 +68,18 @@ export async function seedSetup(): Promise<void> {
   `;
 
   await sql.end();
-  await new Promise((r) => setTimeout(r, 3000));
+
+  // /api/setup's regenerateOpenClawConfig() pushes the new config via a
+  // fire-and-forget pushConfigInBackground() (write.ts), so OpenClaw's
+  // reconnect after the setup-triggered restart can still be in flight once
+  // this function returns. Poll the same public health check
+  // odoo-agent-chat.spec.ts's local pollUntilOpenClawConnected already uses
+  // downstream, rather than guessing a fixed delay — odoo-permissions,
+  // odoo-auth-failed, odoo-templates, odoo-wizard and odoo-nested-lines specs
+  // have no OpenClaw wait of their own after this call. Best-effort: like the
+  // sleep it replaces, a timeout here does not fail seedSetup — later API
+  // calls and their own waits still absorb any remaining latency.
+  await waitForOpenClawConnected("", 60000);
   console.log(`[odoo-setup] Admin created: ${_adminEmail}`);
 }
 
@@ -163,6 +177,28 @@ export async function waitForPinchy(timeout = 30000): Promise<void> {
     await new Promise((r) => setTimeout(r, 500));
   }
   throw new Error(`Pinchy not ready after ${timeout}ms`);
+}
+
+/**
+ * Poll /api/health/openclaw until `connected` is true or the timeout elapses.
+ * Returns true if connected within the timeout, false otherwise. The route
+ * requires no auth, so `cookie` may be an empty string.
+ */
+export async function waitForOpenClawConnected(cookie = "", timeout = 60000): Promise<boolean> {
+  const deadline = Date.now() + timeout;
+  while (Date.now() < deadline) {
+    try {
+      const res = await fetch(`${PINCHY_URL}/api/health/openclaw`, { headers: { Cookie: cookie } });
+      if (res.ok) {
+        const body = (await res.json()) as { connected?: boolean };
+        if (body.connected) return true;
+      }
+    } catch {
+      // not ready yet
+    }
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  return false;
 }
 
 export async function login(email = _adminEmail, password = _adminPassword): Promise<string> {
