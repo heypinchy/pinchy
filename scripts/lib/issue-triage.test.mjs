@@ -450,13 +450,28 @@ test("formatOverdueSummary says so plainly when nothing is waiting", () => {
 
 test("a quiet sweep says how many outside reports it actually found", () => {
   // Otherwise a green run and a broken classifier read identically — which is
-  // the failure this whole fix is about, one level up. "All 2 external issues
-  // have a reply" is checkable; "nothing is waiting" is not.
+  // the failure this whole fix is about, one level up. "2 external issues
+  // found" is checkable; "nothing is waiting" is not.
   assert.match(formatOverdueSummary([], { externalCount: 2 }), /\b2\b/);
   assert.match(
     formatOverdueSummary([], { externalCount: 0 }),
     /no external issues/i,
   );
+});
+
+test("a quiet sweep claims nothing about a reply it never looked for", () => {
+  // An external issue inside the grace period is absent from `overdue`
+  // whether or not anyone answered it — so "all N have had a reply" asserts
+  // something this sweep never computed. That is the same defect as the
+  // classifier bug, one level up: the report stating more than it checked.
+  const fresh = issue({ authorAssociation: "NONE", createdAt: hoursAgo(1) });
+  const overdue = findUnansweredIssues([fresh], { now: NOW, graceHours: 48 });
+  assert.deepEqual(overdue, []);
+
+  const summary = formatOverdueSummary(overdue, { externalCount: 1 });
+  assert.doesNotMatch(summary, /had a reply|answered/i);
+  assert.match(summary, /\b1 external issue found\b/);
+  assert.match(summary, /none overdue/i);
 });
 
 test("formatOverdueSummary keeps a pipe in the title from breaking the table", () => {

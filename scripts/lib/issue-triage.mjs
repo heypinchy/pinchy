@@ -293,11 +293,18 @@ function reporter(authorLogin) {
  * 2026-08-05 fix the sweep went from 99 names to zero in one commit, and the
  * only way to tell a repair from a lobotomy was to go and read the two
  * issues by hand.
+ *
+ * It says "none is overdue" rather than "all have had a reply", and the
+ * difference is not phrasing. An external issue inside the grace period is
+ * absent from `overdue` whether or not anyone answered it, so the stronger
+ * sentence asserts something this sweep never computed — the report claiming
+ * more than it checked, which is the same defect as the classifier bug above
+ * one level up.
  */
 export function formatOverdueSummary(overdue, { externalCount } = {}) {
   if (overdue.length === 0) {
     if (externalCount) {
-      return `✅ All ${externalCount} external issue${externalCount === 1 ? "" : "s"} have had a reply.`;
+      return `✅ ${externalCount} external issue${externalCount === 1 ? "" : "s"} found, none overdue for a first reply.`;
     }
     return "✅ No external issues are waiting for a first reply.";
   }

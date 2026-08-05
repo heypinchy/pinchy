@@ -38,15 +38,16 @@ async function main() {
   }
 
   const repo = currentRepo();
+
+  // The webhook's `author_association` is written from the app's point of
+  // view, which cannot see a private org membership either — so without this
+  // lookup the classifier labels the team's own issues `external`, as it did
+  // to four of them on 2026-08-05.
   const [issue] = await annotateWriteAccess(
     [parseIssueEvent(JSON.parse(readFileSync(eventPath, "utf8")))],
     createWriteAccessResolver(repo),
   );
 
-  // The webhook's `author_association` is written from the app's point of
-  // view, which cannot see a private org membership either — so without the
-  // lookup this labels the team's own issues `external`, as it did to four
-  // of them on 2026-08-05.
   if (!isExternalIssue(issue)) {
     console.log(
       `#${issue.number} was opened by @${issue.authorLogin} (team) — no labels added.`,
