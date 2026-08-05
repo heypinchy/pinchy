@@ -162,22 +162,42 @@ describe("POST /api/agents/[agentId]/uploads", () => {
     expect(body.error).toBe("Unauthorized");
   });
 
-  it("returns 403 when the user does not have access to the agent", async () => {
+  it("answers another user's personal agent exactly as it answers an unknown id", async () => {
     const user = await seedUser({ role: "member" });
     mockGetSession.mockResolvedValue({
       user: { id: user.id, email: user.email, role: "member" },
     });
 
-    // Create a personal agent owned by a different user.
+    // A personal agent owned by somebody else. Nobody can list these — not even
+    // an admin — so a distinguishable error would confirm an existence the
+    // caller has no other way to establish. This route used to answer 403 here
+    // and 404 for an id nobody ever issued, which is exactly that confirmation.
+    // See the docblock on getAgentWithAccess.
     const owner = await seedUser({
       email: "owner@example.com",
     });
     const agent = await seedAgent(owner.id, { isPersonal: true });
 
-    const file = new File([VALID_PDF], "doc.pdf", { type: "application/pdf" });
-    const resp = await POST(makeRequest(agent.id, { file }), makeParams(agent.id));
+    const denied = await POST(
+      makeRequest(agent.id, {
+        file: new File([VALID_PDF], "doc.pdf", { type: "application/pdf" }),
+      }),
+      makeParams(agent.id)
+    );
+    const unknown = await POST(
+      makeRequest("no-such-agent", {
+        file: new File([VALID_PDF], "doc.pdf", { type: "application/pdf" }),
+      }),
+      makeParams("no-such-agent")
+    );
 
-    expect(resp.status).toBe(403);
+    // Asserting the literal AND the equality: the first pins which answer it is,
+    // the second is the actual contract and survives a later change of wording.
+    // The access gate runs before header and form validation, so both requests
+    // short-circuit in the same place.
+    expect(denied.status).toBe(404);
+    expect(denied.status).toBe(unknown.status);
+    expect(await denied.json()).toEqual(await unknown.json());
   });
 
   // ── Form data validation ───────────────────────────────────────────────
