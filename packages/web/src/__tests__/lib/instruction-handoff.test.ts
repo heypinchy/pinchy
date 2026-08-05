@@ -4,7 +4,6 @@ import {
   canOfferInstructionHandoff,
   stashInstructionDraft,
   takeInstructionDraft,
-  clearInstructionDraft,
   appendInstructionDraft,
 } from "@/lib/instruction-handoff";
 
@@ -67,12 +66,11 @@ describe("instruction draft handoff", () => {
     expect(takeInstructionDraft("agent-1")).toBeNull();
   });
 
-  it("clears without consuming into the caller", () => {
-    stashInstructionDraft("agent-1", "abandoned");
-
-    clearInstructionDraft("agent-1");
-
-    expect(takeInstructionDraft("agent-1")).toBeNull();
+  it("refuses to stash without an agent id", () => {
+    // The key would collapse to the bare prefix and every agent would share
+    // one drawer.
+    expect(stashInstructionDraft("", "orphan")).toBe(false);
+    expect(takeInstructionDraft("")).toBeNull();
   });
 
   describe("when the browser refuses storage", () => {
@@ -103,19 +101,26 @@ describe("instruction draft handoff", () => {
 
 describe("canOfferInstructionHandoff", () => {
   it("offers the handoff to someone who may save it", () => {
-    expect(canOfferInstructionHandoff(true, "Score leads by VUE.")).toBe(true);
+    expect(canOfferInstructionHandoff(true, "agent-1", "Score leads by VUE.")).toBe(true);
   });
 
   it("withholds it from a member on a shared agent", () => {
     // `canWriteAgent` is admin-or-personal-owner. Offering the action to
     // everyone and letting the API answer 403 would be the worse UI, and
     // #1145 is the real path for a member's proposal.
-    expect(canOfferInstructionHandoff(false, "Score leads by VUE.")).toBe(false);
+    expect(canOfferInstructionHandoff(false, "agent-1", "Score leads by VUE.")).toBe(false);
   });
 
   it("withholds it from a message with no text to carry", () => {
     // A pure tool-call or image turn has nothing to promote.
-    expect(canOfferInstructionHandoff(true, "")).toBe(false);
-    expect(canOfferInstructionHandoff(true, "  \n\t ")).toBe(false);
+    expect(canOfferInstructionHandoff(true, "agent-1", "")).toBe(false);
+    expect(canOfferInstructionHandoff(true, "agent-1", "  \n\t ")).toBe(false);
+  });
+
+  it("withholds it when there is no agent to carry it to", () => {
+    // `AgentIdContext` falls back to "" in the action bar. Without this the
+    // item would stash under a keyless entry and navigate to `/chat//settings`
+    // — the same defensive guard the model-switch deep link carries.
+    expect(canOfferInstructionHandoff(true, "", "Score leads by VUE.")).toBe(false);
   });
 });

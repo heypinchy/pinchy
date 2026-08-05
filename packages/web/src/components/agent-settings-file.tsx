@@ -43,11 +43,12 @@ export function AgentSettingsFile({
   // draft in here would make the appended text look like it had always been
   // there, and the save would be skipped as a no-op.
   const initialRef = useRef(initialContent);
-  const mountedContentRef = useRef(content);
 
-  // Notify parent on mount — dirty exactly when a draft was carried in.
+  // Notify parent on mount — dirty exactly when a draft was carried in. The
+  // empty dep list closes over the first render's `content`, which is the
+  // state the initialiser above produced.
   useEffect(() => {
-    onChange(mountedContentRef.current, mountedContentRef.current !== initialRef.current);
+    onChange(content, content !== initialRef.current);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

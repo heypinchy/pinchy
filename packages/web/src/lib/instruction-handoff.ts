@@ -49,19 +49,26 @@ function safely<T>(fn: () => T, fallback: T): T {
 /**
  * Whether to offer "Save as instruction" on a message.
  *
- * Two conditions, and the first is the one that matters: the viewer must be
+ * Three conditions, and the first is the one that matters: the viewer must be
  * allowed to save. `canWriteAgent` is resolved server-side and handed down
  * through `CanEditAgentContext` rather than re-derived here — a menu item that
  * leads to a 403 is worse than one that isn't there. The second keeps the item
- * off a message with nothing to carry (a pure tool-call or image turn).
+ * off a message with nothing to carry (a pure tool-call or image turn), and the
+ * third off a message with no agent to carry it to: `AgentIdContext` falls back
+ * to "" in the action bar, and an empty id would key the draft under the bare
+ * prefix and navigate to `/chat//settings`.
  */
-export function canOfferInstructionHandoff(canEditAgent: boolean, messageText: string): boolean {
-  return canEditAgent && messageText.trim().length > 0;
+export function canOfferInstructionHandoff(
+  canEditAgent: boolean,
+  agentId: string,
+  messageText: string
+): boolean {
+  return canEditAgent && agentId.length > 0 && messageText.trim().length > 0;
 }
 
 export function stashInstructionDraft(agentId: string, draft: string): boolean {
   const trimmed = draft.trim();
-  if (!trimmed) return false;
+  if (!trimmed || !agentId) return false;
   return safely(() => {
     window.sessionStorage.setItem(storageKey(agentId), trimmed);
     return true;
@@ -77,13 +84,6 @@ export function takeInstructionDraft(agentId: string): string | null {
     window.sessionStorage.removeItem(key);
     return value.trim() || null;
   }, null);
-}
-
-export function clearInstructionDraft(agentId: string): void {
-  safely(() => {
-    window.sessionStorage.removeItem(storageKey(agentId));
-    return true;
-  }, false);
 }
 
 /**

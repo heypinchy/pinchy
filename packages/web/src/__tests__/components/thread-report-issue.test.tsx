@@ -309,6 +309,28 @@ describe('Per-message "Save as instruction" menu entry', () => {
     expect(window.sessionStorage.getItem("pinchy:instruction-draft:agt_42")).toBe(
       "Score leads by VUE."
     );
-    expect(mockRouterPush).toHaveBeenCalledWith("/agents/agt_42/settings?tab=instructions");
+    // `/chat/<id>/settings` is the agent settings page this app serves. It
+    // shipped as `/agents/<id>/settings` — a route that has never existed —
+    // with this very assertion pinning the 404. `app-route-link-coverage`
+    // now reads the route tree, so the two cannot agree on a fiction again.
+    expect(mockRouterPush).toHaveBeenCalledWith("/chat/agt_42/settings?tab=instructions");
+  });
+
+  it("is absent when no agent id is in context", async () => {
+    // `AgentIdContext` falls back to "" in the action bar. Offering the item
+    // then would stash under a keyless entry and push `/chat//settings` —
+    // the same defensive guard the model-switch deep link carries.
+    const { AssistantMessage } = await import("@/components/assistant-ui/thread");
+    const { AgentNameContext, CanEditAgentContext } = await import("@/components/chat");
+
+    render(
+      <AgentNameContext.Provider value="Smithers">
+        <CanEditAgentContext.Provider value={true}>
+          <AssistantMessage />
+        </CanEditAgentContext.Provider>
+      </AgentNameContext.Provider>
+    );
+
+    expect(screen.queryByText("Save as instruction")).not.toBeInTheDocument();
   });
 });

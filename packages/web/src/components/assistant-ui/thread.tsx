@@ -775,7 +775,7 @@ const AssistantActionBar: FC = () => {
               Export as Markdown
             </ActionBarMorePrimitive.Item>
           </ActionBarPrimitive.ExportMarkdown>
-          {canOfferInstructionHandoff(canEditAgent, messageText) && (
+          {canOfferInstructionHandoff(canEditAgent, agentId, messageText) && (
             <ActionBarMorePrimitive.Item
               onSelect={() => {
                 // Stash first, navigate second: a browser that refuses storage
@@ -784,7 +784,10 @@ const AssistantActionBar: FC = () => {
                   toast.error("Couldn't carry the draft over — copy the message instead.");
                   return;
                 }
-                router.push(`/agents/${agentId}/settings?tab=instructions`);
+                // `/chat/<id>/settings` — the same page the header's gear icon
+                // opens. It shipped as `/agents/<id>/settings`, a route this app
+                // has never served, and every test agreed with the typo.
+                router.push(`/chat/${agentId}/settings?tab=instructions`);
               }}
               data-testid="save-as-instruction-menu-item"
               className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground"
