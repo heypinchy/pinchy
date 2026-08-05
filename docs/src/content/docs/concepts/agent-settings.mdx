@@ -169,7 +169,9 @@ The tab lists every workflow on the agent with its trigger (in plain words, not 
 
 - **Pending** — proposed but never yet run.
 - **Active** — enabled and running on its schedule.
-- **Error** — the last run hit a problem.
+- **Error** — the workflow is switched on, but Pinchy can't run it. Either a mailbox it watches won't open (expired credentials, a wrong host), or there's nobody left to notify — on a shared agent, results go to whoever created the workflow, and that person's account has since been deleted. Pinchy names the workflow and the reason in the server log the moment this happens.
+
+An errored workflow stays switched on and keeps being retried, so there's nothing to re-enable: fix the cause and the next pass moves it back to **Active** by itself. To hand an orphaned workflow to someone else, delete it and create it again as the new owner.
 
 Use **Enable** / **Disable** to turn a workflow on or off, and **Delete** to remove one for good. Enabling is the human-gated step that turns a proposal into a live automation; disabling pauses it without deleting it.
 

@@ -18,6 +18,42 @@ export interface DispatchableWorkflow {
 }
 
 /**
+ * Why an enabled workflow could not be turned into a unit of work. The two
+ * misconfigurations reach the same dead end but need different fixes — hand the
+ * workflow to someone else, or give the agent an owner — so they are reported
+ * apart rather than as one "no recipient".
+ */
+export type UndeliverableReason = "shared-agent-has-no-creator" | "personal-agent-has-no-owner";
+
+/**
+ * An enabled workflow the loader refused to emit because nobody could be
+ * notified of its runs. One entry per *workflow*, not per (workflow ×
+ * connection): the recipient is resolved from workflow and agent columns alone,
+ * so every one of a workflow's rows drops together.
+ */
+export interface UndeliverableWorkflow {
+  workflowId: string;
+  agentId: string;
+  /**
+   * Snapshotted beside the id (AGENTS.md), because this feeds an operator-facing
+   * log line that has to read sensibly for a workflow nobody is going to look up.
+   */
+  name: string;
+  reason: UndeliverableReason;
+}
+
+/**
+ * What one load produced: the dispatchable units, and the enabled workflows that
+ * yielded none. The second half exists because dropping an undeliverable
+ * workflow is correct but dropping it *silently* is not — see
+ * {@link loadDispatchableWorkflows}.
+ */
+export interface DispatchableWorkflows {
+  units: DispatchableWorkflow[];
+  undeliverable: UndeliverableWorkflow[];
+}
+
+/**
  * Load every *enabled* email workflow, fanned out to one unit of work per
  * attached connection with its notification recipients resolved. This is the
  * missing link between the DB and the already-complete `dispatchEmails`: it
@@ -38,8 +74,17 @@ export interface DispatchableWorkflow {
  * recorded creator, or a personal agent with no owner) is dropped rather than
  * emitted — `dispatchEmails` rejects an empty recipient set, so an
  * undeliverable unit of work must never reach it.
+ *
+ * It is **reported** as well as dropped, in `undeliverable`. The row stays
+ * `enabled: true` and the Automations UI keeps showing it that way, so a bare
+ * `continue` here is a workflow that has quietly stopped running with nothing
+ * anywhere saying so. `email_workflows.created_by` is `ON DELETE SET NULL`
+ * (#1097), which makes exactly that state reachable by erasing a user — before
+ * that FK change the DELETE would have failed loudly instead. The sweep turns
+ * this report into the workflow's `error` status, which is what an operator
+ * actually sees.
  */
-export async function loadDispatchableWorkflows(): Promise<DispatchableWorkflow[]> {
+export async function loadDispatchableWorkflows(): Promise<DispatchableWorkflows> {
   const rows = await db
     .select({
       workflowId: emailWorkflows.id,
@@ -59,11 +104,23 @@ export async function loadDispatchableWorkflows(): Promise<DispatchableWorkflow[
     .innerJoin(emailWorkflowConnections, eq(emailWorkflowConnections.workflowId, emailWorkflows.id))
     .where(eq(emailWorkflows.enabled, true));
 
-  const result: DispatchableWorkflow[] = [];
+  const units: DispatchableWorkflow[] = [];
+  // Keyed by workflow id: a workflow drops on every one of its connection rows
+  // (the recipient does not depend on the connection), and the sweep writes one
+  // `status` per workflow — so report it once rather than once per mailbox.
+  const undeliverable = new Map<string, UndeliverableWorkflow>();
   for (const row of rows) {
     const recipientUserIds = resolveRecipients(row);
-    if (recipientUserIds.length === 0) continue;
-    result.push({
+    if (recipientUserIds.length === 0) {
+      undeliverable.set(row.workflowId, {
+        workflowId: row.workflowId,
+        agentId: row.agentId,
+        name: row.name,
+        reason: row.isPersonal ? "personal-agent-has-no-owner" : "shared-agent-has-no-creator",
+      });
+      continue;
+    }
+    units.push({
       workflow: {
         id: row.workflowId,
         agentId: row.agentId,
@@ -77,13 +134,13 @@ export async function loadDispatchableWorkflows(): Promise<DispatchableWorkflow[
       sweepWindowDays: row.sweepWindowDays,
     });
   }
-  return result;
+  return { units, undeliverable: [...undeliverable.values()] };
 }
 
 /**
  * Scope model (design §7): a personal agent's workflow notifies its owner; a
  * shared agent's workflow notifies its creator. Returns `[]` when no recipient
- * can be resolved, which the caller drops.
+ * can be resolved, which the caller drops and reports as undeliverable.
  */
 function resolveRecipients(row: {
   isPersonal: boolean;

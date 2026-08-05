@@ -1,4 +1,4 @@
-import { eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, ne } from "drizzle-orm";
 
 import { db } from "@/db";
 import { emailWorkflows } from "@/db/schema";
@@ -67,7 +67,7 @@ export async function runReconciliationSweep(deps: SweepDeps): Promise<void> {
   const reset = await resetStuckProcessingEmails(deps.graceMs ?? DEFAULT_STUCK_GRACE_MS);
   await auditClaimResets(reset, crypto.randomUUID());
 
-  const units = await loadDispatchableWorkflows();
+  const { units, undeliverable } = await loadDispatchableWorkflows();
 
   // `status` is per workflow, but a unit of work is per (workflow × connection)
   // (D9). Collect each unit's health first and write the column once, so a
@@ -75,6 +75,22 @@ export async function runReconciliationSweep(deps: SweepDeps): Promise<void> {
   // whichever connection the loader happened to return last.
   const failedWorkflowIds = new Set<string>();
   const seenWorkflowIds = new Set<string>();
+
+  // A workflow the loader could resolve no recipient for never becomes a unit of
+  // work at all: nothing runs, nothing throws, and the pass completes cleanly —
+  // while the row stays `enabled: true` and the Automations UI keeps showing it
+  // that way. That is a fault, and this is the only place that can say so:
+  // `enabled` is the user's intent, `status` is what actually happens to it.
+  //
+  // Disjoint from `units` by construction — the recipient is resolved from
+  // workflow and agent columns alone, so a workflow drops on all of its
+  // connections or on none — which is why adding to both sets here cannot
+  // contradict a healthy unit below.
+  const undeliverableById = new Map(undeliverable.map((dropped) => [dropped.workflowId, dropped]));
+  for (const workflowId of undeliverableById.keys()) {
+    seenWorkflowIds.add(workflowId);
+    failedWorkflowIds.add(workflowId);
+  }
 
   for (const unit of units) {
     seenWorkflowIds.add(unit.workflow.id);
@@ -114,7 +130,28 @@ export async function runReconciliationSweep(deps: SweepDeps): Promise<void> {
     // Not a latch: a clean pass clears a previous `error`, otherwise any blip
     // would need manual intervention — and the loader deliberately does not gate
     // on `status`, so the workflow would keep running while displaying `error`.
-    await setWorkflowStatus(workflowId, failedWorkflowIds.has(workflowId) ? "error" : "active");
+    const changed = await setWorkflowStatus(
+      workflowId,
+      failedWorkflowIds.has(workflowId) ? "error" : "active"
+    );
+    const dropped = undeliverableById.get(workflowId);
+    // Only on the transition. This sweep runs every minute and an undeliverable
+    // workflow cannot fix itself, so a line per pass is ~1400 identical lines a
+    // day per broken workflow — volume that gets a logger filtered out rather
+    // than read. The durable trace is the `status` column (and the badge the UI
+    // renders from it); this line only timestamps the moment it changed.
+    //
+    // The cost of keying on the transition: a workflow already sitting at
+    // `error` for a broken mailbox, which then loses its recipient, changes
+    // cause without changing status and so is not re-logged. It still reads
+    // `error`, which is the claim that matters.
+    if (changed && dropped) {
+      console.warn(
+        `reconciliation sweep: workflow ${dropped.workflowId} ("${dropped.name}") on agent ` +
+          `${dropped.agentId} is enabled but has nobody to notify (${dropped.reason}) — it is ` +
+          `marked error and dispatches nothing until it has a recipient again`
+      );
+    }
   }
 }
 
@@ -175,8 +212,26 @@ async function sweepUnit(
   await dispatchEmails({ workflow: unit.workflow, emails: fresh, runAgent: deps.runAgent });
 }
 
-async function setWorkflowStatus(workflowId: string, status: EmailWorkflowStatus): Promise<void> {
-  await db.update(emailWorkflows).set({ status }).where(eq(emailWorkflows.id, workflowId));
+/**
+ * Write the health status, and report whether it actually changed.
+ *
+ * The write is conditional on the value differing, which buys two things. An
+ * unchanged state is not an event — the automations PATCH route already treats
+ * a no-op toggle that way — and this sweep runs every minute, so an
+ * unconditional write would rewrite every workflow row ~1400 times a day to
+ * store the value it already held. The returned flag is what lets a permanent
+ * fault be logged once instead of once per pass.
+ */
+async function setWorkflowStatus(
+  workflowId: string,
+  status: EmailWorkflowStatus
+): Promise<boolean> {
+  const changed = await db
+    .update(emailWorkflows)
+    .set({ status })
+    .where(and(eq(emailWorkflows.id, workflowId), ne(emailWorkflows.status, status)))
+    .returning({ id: emailWorkflows.id });
+  return changed.length > 0;
 }
 
 /**

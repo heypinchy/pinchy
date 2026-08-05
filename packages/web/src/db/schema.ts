@@ -615,9 +615,12 @@ export const emailWorkflows = pgTable(
     openclawJobId: text("openclaw_job_id"),
     // `set null` (not cascade): deleting the user who created a workflow must
     // not take the workflow (and its mailbox connections) down with them —
-    // `loadDispatchableWorkflows` already treats a null `createdBy` as "no
-    // creator recipient" and drops the workflow from the shared-agent fan-out
-    // rather than crashing on it.
+    // `loadDispatchableWorkflows` treats a null `createdBy` as "no creator
+    // recipient" and drops the workflow from the shared-agent fan-out rather
+    // than crashing on it. It also *reports* the drop, and the sweep turns that
+    // into the workflow's `error` status: the row survives still `enabled`, so
+    // without that this FK would have traded a hard failure (the old rejected
+    // DELETE) for a silent one.
     createdBy: text("created_by").references(() => users.id, { onDelete: "set null" }),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at").notNull().defaultNow(),

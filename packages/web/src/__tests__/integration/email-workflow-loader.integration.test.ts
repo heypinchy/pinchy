@@ -81,8 +81,14 @@ async function linkConnection(workflowId: string, connectionId: string, sinceTs:
   await db.insert(emailWorkflowConnections).values({ workflowId, connectionId, sinceTs });
 }
 
-const onlyWorkflow = (rows: Awaited<ReturnType<typeof loadDispatchableWorkflows>>, id: string) =>
-  rows.filter((r) => r.workflow.id === id);
+type LoaderResult = Awaited<ReturnType<typeof loadDispatchableWorkflows>>;
+
+const onlyWorkflow = (result: LoaderResult, id: string) =>
+  result.units.filter((r) => r.workflow.id === id);
+
+/** The undeliverable report, scoped to one test's own workflow. */
+const onlyUndeliverable = (result: LoaderResult, id: string) =>
+  result.undeliverable.filter((r) => r.workflowId === id);
 
 describe("email workflow loader — loadDispatchableWorkflows", () => {
   it("loads an enabled personal-agent workflow with the owner as the recipient", async () => {
@@ -197,6 +203,78 @@ describe("email workflow loader — loadDispatchableWorkflows", () => {
     expect(mine).toHaveLength(0);
   });
 
+  it("reports the shared-agent drop as undeliverable rather than swallowing it", async () => {
+    // Dropping is correct; dropping *silently* is not. The workflow stays
+    // `enabled: true` and the UI keeps showing it as such, so the loader has to
+    // hand the reason to its caller — the sweep turns this into the workflow's
+    // `error` status, which is the only thing an operator ever sees.
+    const agent = await seedAgent({ isPersonal: false, ownerId: null });
+    const wf = await seedWorkflow({ agentId: agent.id, enabled: true, createdBy: null });
+    const conn = await seedConnection();
+    await linkConnection(wf.id, conn.id, new Date());
+
+    const mine = onlyUndeliverable(await loadDispatchableWorkflows(), wf.id);
+
+    expect(mine).toEqual([
+      {
+        workflowId: wf.id,
+        agentId: agent.id,
+        // The name is snapshotted beside the id (AGENTS.md): the log line this
+        // feeds must still read sensibly for a workflow nobody can look up.
+        name: "File invoices",
+        reason: "shared-agent-has-no-creator",
+      },
+    ]);
+  });
+
+  it("distinguishes the personal-agent drop by its own reason", async () => {
+    // Two different misconfigurations reach the same dead end, and they need
+    // different fixes: re-assign the workflow vs. give the agent an owner. A
+    // single "no recipient" verdict would leave the operator guessing.
+    const agent = await seedAgent({ isPersonal: true, ownerId: null });
+    const wf = await seedWorkflow({ agentId: agent.id, enabled: true, createdBy: null });
+    const conn = await seedConnection();
+    await linkConnection(wf.id, conn.id, new Date());
+
+    const mine = onlyUndeliverable(await loadDispatchableWorkflows(), wf.id);
+
+    expect(mine.map((r) => r.reason)).toEqual(["personal-agent-has-no-owner"]);
+  });
+
+  it("reports an undeliverable workflow once, however many mailboxes it watches", async () => {
+    // The loader fans out per (workflow × connection), but a missing recipient
+    // is a property of the workflow alone — every one of its rows drops. The
+    // report is per workflow, matching the per-workflow `status` column the
+    // sweep writes from it; without the dedup a two-mailbox workflow would log
+    // itself twice every pass.
+    const agent = await seedAgent({ isPersonal: false, ownerId: null });
+    const wf = await seedWorkflow({ agentId: agent.id, enabled: true, createdBy: null });
+    const connA = await seedConnection();
+    const connB = await seedConnection();
+    await linkConnection(wf.id, connA.id, new Date());
+    await linkConnection(wf.id, connB.id, new Date());
+
+    const result = await loadDispatchableWorkflows();
+
+    expect(onlyWorkflow(result, wf.id)).toHaveLength(0);
+    expect(onlyUndeliverable(result, wf.id)).toHaveLength(1);
+  });
+
+  it("reports nothing undeliverable for a workflow that is merely disabled", async () => {
+    // A disabled workflow is not dispatched by choice, so it is not a fault —
+    // and it never reaches the recipient resolution at all. Reporting it would
+    // flip every paused workflow in the instance to `error`.
+    const agent = await seedAgent({ isPersonal: false, ownerId: null });
+    const wf = await seedWorkflow({ agentId: agent.id, enabled: false, createdBy: null });
+    const conn = await seedConnection();
+    await linkConnection(wf.id, conn.id, new Date());
+
+    const result = await loadDispatchableWorkflows();
+
+    expect(onlyWorkflow(result, wf.id)).toHaveLength(0);
+    expect(onlyUndeliverable(result, wf.id)).toHaveLength(0);
+  });
+
   it("keeps a shared-agent workflow when its creator is deleted, and stops dispatching it (#1097)", async () => {
     // `email_workflows.created_by` is ON DELETE SET NULL, and this is the test
     // that pins all three drift directions at once — the same contract as the
@@ -227,7 +305,15 @@ describe("email workflow loader — loadDispatchableWorkflows", () => {
     // nobody to notify.
     expect(survivor.enabled).toBe(true);
 
-    expect(onlyWorkflow(await loadDispatchableWorkflows(), wf.id)).toHaveLength(0);
+    const after = await loadDispatchableWorkflows();
+    expect(onlyWorkflow(after, wf.id)).toHaveLength(0);
+    // ...and the drop is reported, not swallowed. Before the FK change this
+    // state was unreachable (the DELETE would have failed), so the change traded
+    // a hard failure for a silent one unless the loader says what it dropped —
+    // the sweep turns this into the workflow's `error` status.
+    expect(onlyUndeliverable(after, wf.id).map((r) => r.reason)).toEqual([
+      "shared-agent-has-no-creator",
+    ]);
   });
 
   it("dispatches an enabled workflow even when its status is 'error' — status is a health signal, not a dispatch gate", async () => {

@@ -576,6 +576,47 @@ async function workflowStatus(workflowId: string) {
   return row.status;
 }
 
+/**
+ * An enabled workflow on a shared agent with no recorded creator: nobody can be
+ * notified of its runs, so the loader emits no unit of work for it at all.
+ *
+ * `email_workflows.created_by` is `ON DELETE SET NULL` (#1097), which is what
+ * makes this state reachable on a live instance — erasing the user who created a
+ * shared agent's workflow leaves the row behind, still `enabled`, with a null
+ * creator. Before that FK change the DELETE would have failed loudly instead.
+ */
+async function seedUndeliverableWorkflow() {
+  const [agent] = await db
+    .insert(agents)
+    .values({
+      name: "Penny",
+      model: "ollama-cloud/gemini-3-flash",
+      greetingMessage: "Hi",
+      isPersonal: false,
+      ownerId: null,
+    })
+    .returning();
+  const [workflow] = await db
+    .insert(emailWorkflows)
+    .values({
+      agentId: agent.id,
+      name: "File invoices",
+      filter: { hasAttachment: true, attachmentType: "application/pdf" },
+      action: "Draft a supplier bill in Odoo from the attached invoice.",
+      enabled: true,
+      createdBy: null,
+    })
+    .returning();
+  const connection = await seedConnection();
+  await db
+    .insert(emailWorkflowConnections)
+    .values({ workflowId: workflow.id, connectionId: connection.id, sinceTs: new Date(0) });
+  return { agent, workflow, connection };
+}
+
+/** A port that hands back an empty mailbox for every connection. */
+const emptyMailbox = portFor("no-connection-owns-this-id", []).createPort;
+
 describe("reconciliation sweep — workflow health status", () => {
   it("marks a workflow active once a pass completes", async () => {
     // `status` is the health signal the loader deliberately does NOT gate on —
@@ -644,6 +685,79 @@ describe("reconciliation sweep — workflow health status", () => {
     expect(await workflowStatus(workflow.id)).toBe("error");
     // The healthy mailbox still delivered — degraded, not dead.
     expect((await ledgerRow(workflow.id, "msg-1")).status).toBe("done");
+  });
+
+  it("marks a workflow error when nobody can be notified of its runs", async () => {
+    // The other error path is a mailbox that throws. This one never throws at
+    // all: the loader resolves no recipient, drops the workflow before it
+    // becomes a unit of work, and the sweep completes cleanly. The row stays
+    // `enabled: true` and the Automations UI keeps showing it that way, so
+    // without this the workflow has silently stopped running with nothing
+    // anywhere saying so — the exact state `created_by ON DELETE SET NULL`
+    // (#1097) made reachable.
+    const { workflow, connection } = await seedUndeliverableWorkflow();
+    const opened: string[] = [];
+    const createPort = async (id: string): Promise<EmailPort> => {
+      opened.push(id);
+      return emptyMailbox(id);
+    };
+
+    await runReconciliationSweep({ createPort, runAgent: doneRun });
+
+    expect(await workflowStatus(workflow.id)).toBe("error");
+    // And it really is not running: its mailbox is never even opened.
+    expect(opened).not.toContain(connection.id);
+  });
+
+  it("recovers an undeliverable workflow once it has a recipient again", async () => {
+    // Same contract as the unreachable-mailbox recovery above: `error` is a
+    // health signal, not a latch. Re-assigning the workflow to a live user is
+    // the fix, and the next pass has to show it worked.
+    const { workflow } = await seedUndeliverableWorkflow();
+
+    await runReconciliationSweep({ createPort: emptyMailbox, runAgent: doneRun });
+    expect(await workflowStatus(workflow.id)).toBe("error");
+
+    const rescuer = await seedUser();
+    await db
+      .update(emailWorkflows)
+      .set({ createdBy: rescuer.id })
+      .where(eq(emailWorkflows.id, workflow.id));
+
+    await runReconciliationSweep({ createPort: emptyMailbox, runAgent: doneRun });
+
+    expect(await workflowStatus(workflow.id)).toBe("active");
+  });
+
+  it("names an undeliverable workflow in the log once, not on every pass", async () => {
+    // The sweep runs every minute and this condition cannot resolve itself, so
+    // a line per pass is ~1400 identical lines a day per broken workflow — the
+    // kind of volume that gets a whole logger filtered out. The durable trace is
+    // the `status` column; the log line only timestamps the moment it changed,
+    // so it is emitted on the transition into `error` and not again.
+    const { workflow } = await seedUndeliverableWorkflow();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    let warned: string[] = [];
+    try {
+      await runReconciliationSweep({ createPort: emptyMailbox, runAgent: doneRun });
+      await runReconciliationSweep({ createPort: emptyMailbox, runAgent: doneRun });
+      // Read the calls BEFORE restoring: mockRestore() also clears mock.calls.
+      warned = warn.mock.calls.map((call) => String(call[0]));
+    } finally {
+      warn.mockRestore();
+    }
+
+    // Scoped to this test's own workflow: the sweep is global, and other suites
+    // seed undeliverable workflows of their own against the same database.
+    const mine = warned.filter((msg) => msg.includes(workflow.id));
+    expect(
+      mine,
+      `expected exactly one warning for the workflow; warnings seen: ${JSON.stringify(warned)}`
+    ).toHaveLength(1);
+    // It has to say what to fix, and read sensibly for a workflow the reader
+    // cannot look up — hence the snapshotted name beside the id.
+    expect(mine[0]).toContain("shared-agent-has-no-creator");
+    expect(mine[0]).toContain("File invoices");
   });
 
   it("isolates a broken workflow — the rest of the sweep still runs", async () => {
