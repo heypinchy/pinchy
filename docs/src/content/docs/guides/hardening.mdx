@@ -292,7 +292,7 @@ The `/sign-in/*` and `/sign-up/*` wildcard entries cover any future sub-path (OA
 
 The thresholds above cover Better Auth's own endpoints. They don't reach `/api/v1/*`, which authenticates with an API key through a direct server-side call rather than through Better Auth's router. That surface has its own limit — 300 requests per minute per key — documented under [Agent Provisioning API › Rate limiting](/reference/agent-provisioning-api/#rate-limiting), along with what it deliberately doesn't cover.
 
-Two things about it differ from everything above, and both matter when you're reading this page to configure a box: the budget is charged per **key** rather than per IP, and it is **not** production-only — it applies in dev and in E2E runs as well. Change it with `PINCHY_API_KEY_RATE_LIMIT_MAX`.
+Two things about it differ from the thresholds above, and both matter when you're reading this page to configure a box: the budget is charged per **key** rather than per IP, and it is **not** production-only — it applies in dev and in E2E runs as well. Change it with `PINCHY_API_KEY_RATE_LIMIT_MAX`.
 
 ### Limits of IP-based rate limiting
 

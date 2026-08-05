@@ -45,6 +45,14 @@
  * the seconds left (for `Retry-After`) and the audit slot, neither of which a
  * boolean carries.
  *
+ * The two callers that do wrap it in a Map — `password-change-rate-limiter.ts`
+ * and `telegram-pairing-security.ts` — show the cost rather than contradict
+ * it: both keep their audit window in a second Map beside the limiter, and
+ * `POST /api/users/me/password` answers `Retry-After: 600`, the whole window,
+ * because a boolean cannot say how much of it is left. That is defensible for
+ * a human retyping a password. It is not for a CI client, which would sleep
+ * ten minutes where one second was owed.
+ *
  * Per-process state, like `audit-deferred`'s failure counter. Pinchy runs a
  * single Node process per container; a restart just reopens every window,
  * which costs a client at most one extra window's budget.
