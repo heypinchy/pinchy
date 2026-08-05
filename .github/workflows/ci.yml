@@ -293,20 +293,26 @@ jobs:
       # into a job holding a GHCR-write token, so an unpinned download would
       # be a supply-chain hole. Bump the two together; a stale checksum fails
       # loudly at the verify step rather than silently skipping the lint.
+      # Nothing proposes that bump — dependabot's github-actions ecosystem
+      # reads `uses:`, not a curl'd tarball — so it is a manual bump, and the
+      # coverage step below is what tells you when one is overdue.
       #
-      # shellcheck integration is OFF (`-shellcheck=`), and that is a design
-      # decision rather than a deferred cleanup — do not "finish the job" by
-      # switching it on without also pinning shellcheck.
+      # `--retry` because this gates every merge: a transient GitHub Releases
+      # blip must not turn a REQUIRED check red with nothing broken.
       #
-      # actionlint is pinned above by version and checksum, so it can only
-      # change its verdict when somebody edits this file. shellcheck is NOT:
-      # actionlint shells out to whatever binary the `ubuntu-latest` image
-      # happens to ship. Wiring that into `quality` — a REQUIRED check —
-      # means a runner-image bump that adds one SC rule turns main red with
-      # no commit behind it. AGENTS.md makes exactly this call for the
-      # docs-freshness sweep ("a check that can go red between two identical
-      # commits does not belong in front of a merge button"), and it applies
-      # with more force here, because this check gates every merge.
+      # BOTH external-linter integrations are off (`-shellcheck=`,
+      # `-pyflakes=`), and that is a design decision rather than a deferred
+      # cleanup — do not "finish the job" by switching either on without also
+      # pinning the tool. actionlint is pinned above, so it can only change
+      # its verdict when somebody edits this file. shellcheck and pyflakes are
+      # NOT: actionlint shells out to whatever the `ubuntu-latest` image
+      # happens to ship, so a runner-image bump that adds one rule turns main
+      # red with no commit behind it. AGENTS.md makes exactly this call for
+      # the docs-freshness sweep ("a check that can go red between two
+      # identical commits does not belong in front of a merge button"), and it
+      # applies with more force here, because this check gates every merge.
+      # (`-pyflakes` is inert today — no workflow uses `shell: python` — which
+      # is precisely why it would have stayed on its default unnoticed.)
       #
       # The cost is real and worth naming: 15 shellcheck findings in `run:`
       # blocks go unreported, most of them deliberate word-splitting, one of
@@ -322,12 +328,36 @@ jobs:
         run: |
           set -euo pipefail
           cd "$RUNNER_TEMP"
-          curl -sSfL -o actionlint.tar.gz \
+          curl -sSfL --retry 3 --retry-delay 2 --retry-all-errors \
+            -o actionlint.tar.gz \
             "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
           echo "${ACTIONLINT_SHA256}  actionlint.tar.gz" | sha256sum --check --strict
           tar -xzf actionlint.tar.gz actionlint
           cd "$GITHUB_WORKSPACE"
-          "$RUNNER_TEMP/actionlint" -color -shellcheck=
+          "$RUNNER_TEMP/actionlint" -color -shellcheck= -pyflakes=
+
+      # The step above only validates a `with:` key for action versions
+      # actionlint has a bundled schema for. For anything else it reports
+      # NOTHING — and silence is indistinguishable from clean. Measured with
+      # the pinned 1.7.12:
+      #
+      #   docker/setup-buildx-action@v4 + `config-inline:` -> exit 1, named
+      #   docker/setup-buildx-action@v5 + `config-inline:` -> exit 0, silent
+      #
+      # `config-inline` is the exact bug the step above was added for, so its
+      # protection would expire at the next major bump of the very action it
+      # protects — and dependabot proposes those weekly, grouped under
+      # `patterns: ["*"]`. A major bump is also when an input gets renamed.
+      # There is no flag for it: actionlint cannot be told to error on an
+      # action it does not know. So coverage gets measured instead of assumed,
+      # and an unchecked action must be accepted with a written reason.
+      #
+      # ACTIONLINT_BIN points at the binary verified above rather than at
+      # PATH, so this reports on the version CI actually runs.
+      - name: Check actionlint input coverage
+        env:
+          ACTIONLINT_BIN: ${{ runner.temp }}/actionlint
+        run: node scripts/check-actionlint-coverage.mjs
 
       - name: Typecheck plugins
         # The pinchy-* plugins run via tsx with no ahead-of-time type checking

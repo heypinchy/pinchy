@@ -103,6 +103,33 @@ Three details worth knowing before editing the guard:
 - **The baseline is a snapshot, so a rebase can re-open it.** The fingerprints pin `main` as of the moment they were taken. Any commit to `upgrading.mdx` that lands first — including a legitimate one — invalidates the entry it touches, and the guard says so with the new fingerprint. That is the correct behaviour and it is a one-time cost: once this guard is on `main`, such a commit needs its own authorization instead.
 - **`KNOWN_PRE_GUARD_DRIFT` pins a body, not a section.** The eight pre-guard drifts are accepted by sha256 of the exact accepted text, so those sections are not left open — the next edit to one of them fails like any other, and the failure prints the new fingerprint. Entries are classified: `retro-correction` (a legitimate fix that predates the trailer, e.g. the `git checkout` → `docker compose pull` rewrite across v0.2.0–v0.4.0) or `misplaced-note` (the bug itself, still to be moved — those must cite a tracking issue).
 
+## The Workflow Files Are Linted, And The Linter's Coverage Is Measured
+
+Nothing in this repo read `.github/workflows/*.yml`, and two bugs went through that gap. PR #1063 landed a `ci.yml` GitHub could not parse — which did not fail, it left the required checks on "Expected — Waiting for status" forever, the same unmergeable-with-nothing-broken shape as a workflow-level `paths-ignore` or a matrix on a required job. And `release.yml` / `pre-release.yml` both passed `config-inline:` to `docker/setup-buildx-action`, an input renamed to `buildkitd-config-inline` in v3: an unknown `with:` key is handed to the action as an `INPUT_*` env var it never reads, so the buildkit registry-mirror config was dead from those workflows' first commit until 2026-08-05. Neither is a YAML error nor a shell error — both are _schema_ errors, and `actionlint` is the only checker here that reads the schema.
+
+It runs in `quality` (ungated, so it reports on every PR — and `.github/**` is not docs, which is exactly the PR that can break a workflow), pinned by version **and** sha256 because the step fetches an executable into a job holding a GHCR-write token.
+
+**Both external-linter integrations are off (`-shellcheck=`, `-pyflakes=`), by design.** actionlint is pinned, so it can only change its verdict when someone edits `ci.yml`. shellcheck and pyflakes are not — actionlint shells out to whatever the `ubuntu-latest` image ships, so a runner-image bump that adds one rule turns main red with no commit behind it. Same call AGENTS.md makes for the docs-freshness sweep, with more force, because this gates every merge. The cost is 15 unreported shellcheck findings in `run:` blocks; plain `actionlint`, run locally, still reports them.
+
+**The load-bearing half is the coverage check, not the lint.** actionlint validates a `with:` key only for action versions in its bundled schema database, and for anything else it reports _nothing_ — a silence indistinguishable from a clean pass, with no flag to turn it into an error. Measured with the pinned 1.7.12:
+
+```
+docker/setup-buildx-action@v4 + `config-inline:`  ->  exit 1, named
+docker/setup-buildx-action@v5 + `config-inline:`  ->  exit 0, silent
+```
+
+`config-inline` is the exact bug the lint was added for, so its protection would expire at the next major bump of the very action it protects — and `.github/dependabot.yml` proposes those weekly, grouped under `patterns: ["*"]`. A major bump is also precisely when an input gets renamed.
+
+So `scripts/check-actionlint-coverage.mjs` measures it: one throwaway workflow per action, each carrying an input that cannot exist, fed to the binary CI just verified (`ACTIONLINT_BIN`). Today 12 of 19 refs are validated. The other 7 need an `ACCEPTED_UNCHECKED` entry in `scripts/lib/actionlint-coverage.mjs` **with a written reason**, and it fails in both directions — an entry for an action actionlint now checks, or one naming a ref no workflow uses, fails like any other drift. Pure logic is unit-tested in `scripts/lib/actionlint-coverage.test.mjs` (`pnpm test:scripts`); the probe itself is not, because it needs the binary.
+
+Three things to know before editing it:
+
+- **When a dependabot action bump turns this red, the fix is a newer actionlint — not an acceptance.** An acceptance there would silence the gate on precisely the change it exists to inspect. Nothing proposes the actionlint bump itself (dependabot's `github-actions` ecosystem reads `uses:`, not a curl'd tarball), so this check is also the only thing that tells you the pin has gone stale.
+- **The probe must match the ref's legal shape.** A remote reusable workflow (`owner/repo/.github/workflows/x.yml@ref`) is used at job level, not as a step; probing it as a step reads "unchecked" because the probe is malformed rather than because actionlint is silent, and the acceptance would then rest on a broken measurement. `isReusableWorkflowRef` is that branch. The osv-scanner entry is genuinely unchecked — verified at job level.
+- **It sees remote refs only.** Local composite actions (`.github/actions/docker-mirror`) get no input validation from actionlint either — verified with a probe — so they are excluded rather than listed as acceptances that assert nothing.
+
+Verify a change to any of it by canary, never by reading: bump `setup-buildx-action` to a major actionlint does not know and watch the coverage check name it; add an acceptance for an action that _is_ checked and watch it fail the other way.
+
 ## No Untracked Sleeps In E2E
 
 Every Playwright config here pins `retries: 0, workers: 1` on purpose: a flake is a signal, not something a rerun hides. A fixed sleep quietly trades that away. It is green on a fast host and red on a loaded runner, and when it does fail it says "timeout" instead of naming what was slow.

@@ -41,8 +41,14 @@ jobs:
       # INPUT_* env var the action never reads. It ran that way from the
       # workflow's first commit until 2026-08-05: green step, dead config,
       # and the only trace was an `##[warning]Unexpected input(s)` line
-      # buried in the step log. The `actionlint` step in ci.yml's `quality`
-      # job is what makes the next such rename fail loudly instead.
+      # buried in the step log.
+      #
+      # The `actionlint` step in ci.yml's `quality` job catches that class —
+      # but only while actionlint's bundled schema DB knows the pinned major.
+      # At a version it does not know it reports nothing, so bumping this
+      # `@v4` is not a routine dependabot merge: the coverage check next to
+      # that step goes red on the bump, and the honest fix is a newer
+      # actionlint rather than an acceptance.
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
         with:
