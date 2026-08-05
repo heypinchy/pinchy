@@ -59,12 +59,13 @@ echo "✅ Admin account created ($ADMIN_NAME)"
 # 3. Configure provider (unencrypted for demo)
 # =====================================================
 echo "🔌 Configuring demo provider..."
-# The Anthropic key exists only so the provider grid has a second, configured
-# tile to show. Deliberately NOT default_provider: /api/setup/provider treats
-# `default_provider IS NULL` as "first provider" and only then sets the default
-# and repoints the seeded agent, so writing a default here would silently stop
-# the real provider (fake-ollama, step 3b) from becoming the one agents use —
-# and every chat would fail at request time with no visible cause.
+# The key, but deliberately NOT `default_provider` — that moves to step 4c,
+# after the fake-ollama save. /api/setup/provider treats `default_provider IS
+# NULL` as "first provider" and only then wires the provider into
+# openclaw.json, so a default written HERE would silently stop the real
+# provider (fake-ollama, step 4b) from ever reaching the runtime, and every
+# chat would fail at request time with no visible cause. Anthropic still ends
+# up the default — three steps later, once that gate has been passed.
 docker compose exec -T db psql -U pinchy -d pinchy -c "
   INSERT INTO settings (key, value, encrypted)
   VALUES ('anthropic_api_key', 'sk-ant-demo-key-for-screenshots', false)
@@ -127,6 +128,38 @@ else
   echo "ℹ️  No fake-ollama reachable — skipping the answer-bearing screenshots."
   HAS_FAKE_OLLAMA=0
 fi
+
+# =====================================================
+# 4c. Anthropic is the default provider
+# =====================================================
+# Set here, after the provider save above, and before any agent is created
+# below. Both halves of that sentence are load-bearing:
+#
+# - After, because /api/setup/provider only wires fake-ollama into openclaw.json
+#   when it sees `default_provider IS NULL` ("first provider", #894). Writing
+#   this earlier is what the old step 3 did, and it would silence the overlay.
+# - Before, because `createAgent` reads `default_provider` to pick a new agent's
+#   model (lib/agents.ts). Frink, Tibor and Mindy are created below, so with
+#   ollama-local left as the default every demo agent — and therefore
+#   `agent-settings-general.png`, which renders a "Model" field — would ship
+#   showing `llama3.2`. fake-ollama is a test double; a docs screenshot of the
+#   agent configuration should show the model this product is sold on.
+#
+# Frink still answers through fake-ollama: it is PATCHed onto ollama/llama3.2
+# explicitly further down, and build.ts emits the ollama-local base URL from
+# `ollama_url` regardless of which provider is the default (and writes NO auth
+# profile for a URL-based provider, so nothing falls through to an Anthropic
+# key check).
+#
+# Without the overlay this is the only thing that configures a default at all —
+# and `provider settings grid` asserts a `tile-default` marker is visible, so
+# omitting it turns a plain `docker compose up` run from "17 shots" into a
+# failing one.
+docker compose exec -T db psql -U pinchy -d pinchy -c "
+  INSERT INTO settings (key, value, encrypted)
+  VALUES ('default_provider', 'anthropic', false)
+  ON CONFLICT (key) DO UPDATE SET value = 'anthropic';
+" > /dev/null 2>&1 && echo "  ✅ Anthropic is the default provider" || echo "  ⚠️  Default provider config failed"
 
 # =====================================================
 # 5. Enterprise key (if available)
@@ -280,10 +313,23 @@ if [ "${HAS_FAKE_OLLAMA:-0}" = "1" ] && [ -n "$FRINK_ID" ]; then
   # Poll rather than sleep: a fixed wait is either too short on a loaded
   # runner or wasted time on a fast one, and a half-built index produces a
   # screenshot of an agent saying it couldn't find anything.
+  # `job` is null until the enqueue lands, and `.get("job", {})` does NOT cover
+  # that — the key is present with a null value, so the chained .get() raises
+  # and the whole probe is swallowed by the `|| echo ""` below. Reading it as
+  # `(... or {})` keeps "no job yet" a normal empty poll instead of an
+  # exception that looks identical to a dead server.
+  #
+  # Both counters, not just the status: an index run over zero documents ALSO
+  # reports "succeeded". A `docker compose cp` into the wrong mount, or fixture
+  # paths outside Frink's allowed_paths, would leave the corpus empty and this
+  # loop entirely happy.
   KB_STATUS=""
+  KB_PROCESSED=""
   for _ in $(seq 1 60); do
-    KB_STATUS=$(api "$BASE_URL/api/agents/$FRINK_ID/knowledge/reindex" 2>/dev/null \
-      | python3 -c "import sys,json; print(json.load(sys.stdin).get('job',{}).get('status',''))" 2>/dev/null || echo "")
+    KB_POLL=$(api "$BASE_URL/api/agents/$FRINK_ID/knowledge/reindex" 2>/dev/null \
+      | python3 -c "import sys,json; j=json.load(sys.stdin).get('job') or {}; print(j.get('status',''), j.get('processed') or 0)" 2>/dev/null || echo "")
+    KB_STATUS=${KB_POLL%% *}
+    KB_PROCESSED=${KB_POLL##* }
     # "succeeded", not "completed" — the terminal value the job actually
     # reports. Guessing it wrong is silent: the loop simply times out and the
     # index is fine, so the only symptom is a misleading warning.
@@ -292,10 +338,19 @@ if [ "${HAS_FAKE_OLLAMA:-0}" = "1" ] && [ -n "$FRINK_ID" ]; then
     esac
     sleep 2
   done
-  if [ "$KB_STATUS" = "succeeded" ]; then
-    echo "  ✅ Knowledge base indexed"
+  # Hard failure, like the two calls above it. The previous warning claimed the
+  # KB screenshot "will fail loudly" on a bad index — it does not: the answer
+  # in the shot is scripted prose from fake-ollama, so it names both PDFs and
+  # renders perfectly against an empty corpus. Nothing downstream can tell the
+  # difference, which makes this the last place a broken index is still
+  # visible.
+  if [ "$KB_STATUS" = "succeeded" ] && [ "${KB_PROCESSED:-0}" -ge 2 ] 2>/dev/null; then
+    echo "  ✅ Knowledge base indexed ($KB_PROCESSED documents)"
   else
-    echo "  ⚠️  Reindex ended as '${KB_STATUS:-unknown}' — the KB screenshot will fail loudly"
+    echo "❌ Reindex ended as '${KB_STATUS:-unknown}' with ${KB_PROCESSED:-0} document(s)" >&2
+    echo "   processed — expected 2. The Knowledge Base screenshot would show an" >&2
+    echo "   answer citing documents that were never indexed." >&2
+    exit 1
   fi
 fi
 

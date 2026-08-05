@@ -515,10 +515,36 @@ test.describe("Feature screenshots", () => {
     // then shows half a sentence. The list is the last thing written.
     const answer = page.locator('[data-role="assistant"]').last();
     await expect(answer).toContainText("Sources", { timeout: 120000 });
-    // Both citations resolved, so the picture is of a working feature rather
-    // than a model that cited one document and invented the other.
+    // The rendered answer names both PDFs — but that proves less than it looks
+    // like it does, and the distinction matters here more than anywhere else in
+    // this file. The prose is scripted in fake-ollama, so these two assertions
+    // hold against a completely empty corpus: they confirm the fake model
+    // returned its own string, not that anything was retrieved. What they DO
+    // catch is the trigger drifting out of sync with the response, which would
+    // otherwise produce a generic answer with no Sources list.
     await expect(answer).toContainText("emergency-shutdown-procedure.pdf");
     await expect(answer).toContainText("coolant-system-overview.pdf");
+
+    // So ask the index directly, before believing the picture. A run over zero
+    // documents also reports "succeeded", which is why the document count is
+    // the assertion and the status is only half of it. This is the check that
+    // makes the shot honest: without it a broken seed still yields a green run
+    // and a published image of an answer citing documents that do not exist —
+    // the exact failure mode the rest of this PR exists to prevent.
+    const job = (
+      await (
+        await page.request.get(
+          `${BASE_URL}/api/agents/${agentId}/knowledge/reindex`,
+        )
+      ).json()
+    )?.job;
+    expect(job?.status, "seed.sh must have finished the reindex").toBe(
+      "succeeded",
+    );
+    expect(
+      job?.processed ?? 0,
+      "both fixture PDFs must be in the index — see seed.sh's reindex block",
+    ).toBeGreaterThanOrEqual(2);
 
     await screenshot(page, "knowledge-base-answer.png");
     await screenshot(page, "focus/knowledge-base-answer.png", "main");
