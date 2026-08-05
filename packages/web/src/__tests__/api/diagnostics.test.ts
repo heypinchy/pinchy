@@ -170,9 +170,12 @@ describe("GET /api/diagnostics", () => {
     expect(data).not.toHaveProperty("logsWithheld");
   });
 
-  // The anonymous caller here is the setup wizard's pre-flight check, run by
-  // whoever is installing Pinchy — they hold the host shell. Telling them to
-  // ask an administrator would send them looking for themselves.
+  // No session means no role to withhold for, so there is nothing to mark.
+  // This is not an assertion that the caller operates the host: it may be the
+  // setup wizard's pre-flight check, or a signed-out member hitting the error
+  // boundary on `/login`. Nothing in the request separates them, which is why
+  // the client's fallback copy names both routes rather than this endpoint
+  // picking one for it.
   it("should not mark logs as withheld for an anonymous caller", async () => {
     mockGetSession.mockResolvedValueOnce(null);
     mockDb.execute.mockResolvedValueOnce([{ "?column?": 1 }]);
