@@ -1,5 +1,9 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { EventEmitter } from "events";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "fs";
+import { createHash } from "crypto";
+import { join } from "path";
+import { tmpdir } from "os";
 
 // Focused coverage of the agent→user file-delivery glue in ClientRouter: once a
 // run's stream closes, the router polls OpenClaw's native `artifacts.list` RPC,
@@ -70,6 +74,23 @@ function createMockOpenClawClient(
 const agent = { id: "agent-1", name: "Smithers" };
 const SESSION_KEY = "agent:agent-1:direct:user-1";
 
+// A grant is pinned to the bytes it was minted from (#903), so the glue now
+// reads the workspace instead of trusting the artifact title. These tests get a
+// real one — mocking the read away would leave the hash unasserted, which is
+// the only part of the change that carries the security property.
+let tmpRoot: string;
+
+const sha256 = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
+
+function writeArtifactFile(zone: "workbench" | "uploads", filename: string, bytes: Buffer) {
+  const dir = join(tmpRoot, agent.id, zone);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, filename), bytes);
+}
+
+/** The bytes every artifact in a test gets unless the test writes its own. */
+const DEFAULT_BYTES = Buffer.from("delivered-bytes");
+
 type Artifact = { type?: string; title?: string; mimeType?: string };
 
 function makeRouter(artifacts: Artifact[]) {
@@ -103,6 +124,19 @@ describe("ClientRouter file-delivery glue (artifacts.list poll)", () => {
     vi.clearAllMocks();
     mockGrantSelect.mockReturnValue([]);
     clientWs = createMockClientWs();
+    tmpRoot = mkdtempSync(join(tmpdir(), "pinchy-delivery-test-"));
+    vi.stubEnv("WORKSPACE_BASE_PATH", tmpRoot);
+    // Every artifact these tests deliver exists in workbench with the same
+    // bytes, which is the ordinary case. Tests about a missing file, or about
+    // the uploads zone, set up their own.
+    for (const name of ["invoice.pdf", "chart.png", "export.csv", "a.pdf", "b.pdf"]) {
+      writeArtifactFile("workbench", name, DEFAULT_BYTES);
+    }
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    rmSync(tmpRoot, { recursive: true, force: true });
   });
 
   function sentFrames() {
@@ -125,8 +159,53 @@ describe("ClientRouter file-delivery glue (artifacts.list poll)", () => {
         mimeType: "application/pdf",
       })
     );
-    // No zone field is written anymore.
-    expect(mockInsertValues.mock.calls[0][0]).not.toHaveProperty("zone");
+  });
+
+  // #903: the grant has to say WHAT was delivered, not only what it was called.
+  // Without these two fields the download serves whatever later occupies that
+  // filename in a workspace every member of a shared agent writes into.
+  it("pins the grant to the zone and the bytes it was minted from", async () => {
+    const { router } = makeRouter([
+      { type: "file", title: "invoice.pdf", mimeType: "application/pdf" },
+    ]);
+    await deliver(router, clientWs);
+
+    expect(mockInsertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        zone: "workbench",
+        contentHash: sha256(DEFAULT_BYTES),
+      })
+    );
+  });
+
+  it("records the uploads zone for a file the agent fetched rather than wrote", async () => {
+    // An email attachment lands in uploads/, and the grant has to say so — the
+    // route serves the zone the grant names and never guesses at the other.
+    const bytes = Buffer.from("attachment-bytes");
+    writeArtifactFile("uploads", "ticket.pdf", bytes);
+    const { router } = makeRouter([
+      { type: "file", title: "ticket.pdf", mimeType: "application/pdf" },
+    ]);
+    await deliver(router, clientWs);
+
+    expect(mockInsertValues).toHaveBeenCalledWith(
+      expect.objectContaining({ zone: "uploads", contentHash: sha256(bytes) })
+    );
+  });
+
+  it("mints no grant for an artifact with no readable file behind it", async () => {
+    // Same call the non-servable MIME case makes, for the same reason: a grant
+    // that cannot be pinned would fall back to pre-#903 semantics forever, so
+    // minting it would re-open the gap for every future delivery instead of
+    // only for the ones that predate the change.
+    const { router } = makeRouter([
+      { type: "file", title: "vanished.pdf", mimeType: "application/pdf" },
+    ]);
+    await deliver(router, clientWs);
+
+    expect(mockInsertValues).not.toHaveBeenCalled();
+    expect(mockAppendAuditLog).not.toHaveBeenCalled();
+    expect(sentFrames().some((f) => f.type === "file")).toBe(false);
   });
 
   it("broadcasts a file frame the client attaches to the current assistant message", async () => {

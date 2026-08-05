@@ -55,6 +55,7 @@ import { db } from "@/db";
 import { agents, users, models, agentDeliveredFiles } from "@/db/schema";
 import { attachDeliveredFilesToHistory } from "@/server/delivered-file-history";
 import { SERVABLE_DELIVERED_MIMES } from "@/lib/serve-workspace-file";
+import { hashFileBytes, locateDeliveredFile } from "@/lib/delivered-file-location";
 import { and, eq } from "drizzle-orm";
 import { isModelVisionCapable } from "@/lib/model-vision";
 import { resolveImageTurnModel, type VisionCandidate } from "@/lib/image-fallback";
@@ -1874,6 +1875,12 @@ export class ClientRouter {
    * outside SERVABLE_DELIVERED_MIMES would 415 on download, so we never mint a
    * grant/chip/success-audit for it (the chip would just fail to open).
    *
+   * Each grant is pinned to the zone the file was found in and the SHA-256 of
+   * its bytes (#903), so the download serves what was delivered rather than
+   * whatever later occupies that filename in a workspace every member of a
+   * shared agent writes into. A file that cannot be located or read yields no
+   * grant, on the same reasoning as the MIME filter above.
+   *
    * `userId` comes from `this.userId` (server-side), never from the artifact — a
    * plugin cannot deliver a file to anyone but the chat's own user.
    *
@@ -1923,6 +1930,24 @@ export class ClientRouter {
       // xlsx IS servable (#788) — see SERVABLE_DELIVERED_MIMES.
       if (!SERVABLE_DELIVERED_MIMES.has(mimeType)) continue;
 
+      // Pin the grant to what was actually delivered — the zone the file came
+      // from and the hash of its bytes (#903). Without both, the grant names a
+      // filename in a workspace every member of a shared agent writes into, and
+      // the download serves whatever sits there when it is clicked.
+      //
+      // No pin, no chip: the same call the non-servable MIME above makes. A
+      // grant we cannot pin is one that would fall back to the old semantics
+      // forever, so minting it would re-open the hole for every future
+      // delivery rather than only for the ones that predate this.
+      const located = await locateDeliveredFile(agent.id, filename);
+      const contentHash = located ? await hashFileBytes(located.realPath) : null;
+      if (!located || !contentHash) {
+        console.error(
+          `[delivery] no readable file behind artifact "${filename}" for agent ${agent.id}; skipping the grant`
+        );
+        continue;
+      }
+
       try {
         await db.insert(agentDeliveredFiles).values({
           userId: this.userId,
@@ -1930,6 +1955,8 @@ export class ClientRouter {
           sessionKey,
           filename,
           mimeType,
+          zone: located.zone,
+          contentHash,
         });
       } catch (err) {
         // The grant is the authorization; without it the serving route 404s.

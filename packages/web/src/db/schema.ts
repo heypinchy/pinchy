@@ -1066,6 +1066,21 @@ export const agentDeliveredFiles = pgTable(
     sessionKey: text("session_key").notNull(),
     filename: text("filename").notNull(),
     mimeType: text("mime_type").notNull(),
+    // What was delivered, as opposed to what it was called (#903). A grant used
+    // to name a file, while the promise it makes is about bytes: "this user may
+    // fetch the file that was handed to them". On a shared agent every member's
+    // chats write into one workspace, so anything that changes the bytes behind
+    // a granted name serves those new bytes under the old grant — including
+    // another user's. Two reachable paths: `pinchy_write(overwrite=true)` inside
+    // `workbench/`, and plain creation of `workbench/x.pdf` shadowing an
+    // `uploads/x.pdf` delivery, since the serving route searched the zones in
+    // order.
+    //
+    // Both are closed by recording where the file was and what it contained.
+    // Nullable because grants written before this existed cannot be pinned
+    // honestly — see the serving route for what they still get.
+    zone: text("zone"),
+    contentHash: text("content_hash"),
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
   (t) => [

@@ -294,6 +294,14 @@ An agent can now remove a file with the new `pinchy_delete` tool, and **deletion
 
 There is no new permission to make. Whoever could put a file into a zone can now take it out of one, so an agent that already has **Write files** or **Memory** gains this the moment you upgrade — which is the point: until now an agent asked to forget a topic could only blank the note, and the emptied file kept turning up in its own recall. See [Powerful Tools](/concepts/agent-permissions/#powerful-tools). If you would rather an agent could not delete anything, remove its write grant; there is no way to keep writing and withhold deleting.
 
+#### A download link now serves the file it was given, not the name
+
+A download chip in chat used to point at a filename. An agent's workspace is shared by everyone who uses that agent, so anything that later wrote to the same name — an agent rewriting a working file, or simply creating one that shadowed an earlier delivery — changed what the chip handed over, including to somebody whose conversation produced it in the first place.
+
+Each delivery now records where the file was and a checksum of its contents, and a download that no longer matches is refused. Nothing to configure, and no action on upgrade.
+
+Two things to know. Links handed out **before** this upgrade cannot be checked — there is no honest way to reconstruct what they were given, and guessing from what is on disk today would certify exactly the swap this prevents — so they keep working the way they did. And a link whose file really is replaced or deleted now stops working instead of serving whatever took its place: ask the agent for the file again and you get a fresh one. That is also what `pinchy_delete` above runs into — an agent retiring a file it wrote ends the download link that file was handed out on.
+
 #### Automations move into the agent
 
 Email workflows now have their own **Automations** tab in an agent's settings, where you can review, create, enable, disable and delete them. It is visible to admins on any shared agent, and to the owner of a personal agent. Existing workflows are listed as-is; nothing changes on upgrade until you edit one.
@@ -344,7 +352,7 @@ Blocked-request entries in the audit trail now carry `clientAddress` beside `rem
 
 ### Database migrations
 
-Nine migrations (`0056`–`0064`) run automatically on startup — no manual steps. Only `0056` is destructive, and only for the Knowledge Base tables (see the breaking change above); the rest are additive.
+Seventeen migrations (`0056`–`0072`) run automatically on startup — no manual steps. Only `0056` is destructive, and only for the Knowledge Base tables (see the breaking change above); the rest are additive.
 
 - `0056` — recreates `kb_chunks.embedding` at 768 dimensions for the bundled in-process `embeddinggemma` embedder and clears the two Knowledge Base tables.
 - `0057` — backfills `kb_documents.status` so documents ingested before the archive rule existed are classified by it too.
@@ -354,6 +362,12 @@ Nine migrations (`0056`–`0064`) run automatically on startup — no manual ste
 - `0061`, `0062` — a Knowledge Base chunk is anchored by a **locator** (slide, sheet and row range, heading path) instead of a page number, since only PDFs have pages; `0062` drops the old `page` column once `0061` has carried every anchor across.
 - `0063` — byte-level progress on index jobs (`total_bytes`, `processed_bytes`) backing the reindex progress bar and its estimate.
 - `0064` — `run_started_at` and `show_banner` on `chat_session_errors`, so a run failure's banner can be dismissed and re-armed per run.
+- `0065` — the `apikey` table behind the [Agent Provisioning API](/reference/agent-provisioning-api/), plus `api_key` as an audit actor type.
+- `0066`, `0067` — foreign-key and lookup indexes across delivered files, chat-session errors and email workflows; `0066` also lets an email workflow outlive the user who created it (`ON DELETE SET NULL`) instead of vanishing with them.
+- `0068` — `tool_approval`, the record behind a tool call an agent has to ask about before running it.
+- `0069` — memory becomes a permission of its own rather than a side effect of file-write access (see the breaking change above).
+- `0070`, `0071` — `tool_call_id` and `openclaw_approval_id` on `tool_approval`, so a pending confirmation is tied to the call it is holding up and to the approval OpenClaw raised for it.
+- `0072` — `zone` and `content_hash` on `agent_delivered_files`, so a download link serves the file it was given rather than the name.
 
 ## Upgrading from v0.9.0 to v0.9.1
 

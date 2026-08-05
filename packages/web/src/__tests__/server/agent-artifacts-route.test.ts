@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mkdtempSync, writeFileSync, rmSync, mkdirSync, symlinkSync } from "fs";
+import { createHash } from "crypto";
 import { join } from "path";
 import { tmpdir } from "os";
 import { makeNextRequest, routeContext } from "@/test-helpers/route";
@@ -32,6 +33,24 @@ vi.mock("next/headers", () => ({
 
 let tmpRoot: string;
 
+const sha256 = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
+
+/**
+ * A grant as #903 writes them: pinned to the zone the file came from and to the
+ * bytes that were handed over. This is the shape the route must enforce.
+ */
+function pinnedGrant(zone: "workbench" | "uploads", bytes: Buffer) {
+  return [{ zone, contentHash: sha256(bytes) }];
+}
+
+/**
+ * A grant written before #903 — no zone, no hash, and unpinnable after the
+ * fact. It keeps the semantics it was created under; the block at the bottom of
+ * this file is what holds that promise (AGENTS.md § "Test Migrations Against
+ * Pre-Existing Data").
+ */
+const LEGACY_GRANT = [{ zone: null, contentHash: null }];
+
 beforeEach(() => {
   vi.clearAllMocks();
   tmpRoot = mkdtempSync(join(tmpdir(), "pinchy-artifacts-route-test-"));
@@ -41,7 +60,7 @@ beforeEach(() => {
     user: { id: "user-1", role: "member" },
   });
   mockGetAgentWithAccess.mockResolvedValue({ id: "agent-1", name: "Smithers" });
-  mockGrantLookup.mockResolvedValue([{ id: "grant-1" }]);
+  mockGrantLookup.mockResolvedValue(pinnedGrant("workbench", PDF_BYTES));
 });
 
 afterEach(() => {
@@ -87,12 +106,54 @@ describe("GET /api/agents/[agentId]/artifacts/[filename]", () => {
     expect(body.equals(PDF_BYTES)).toBe(true);
   });
 
-  it("resolves the file from the uploads zone when it lives there (two-zone search)", async () => {
-    // An agent-delivered email attachment lands in uploads/, not workbench/. The
-    // grant no longer records the zone, so the route searches both and finds it.
+  it("serves from the uploads zone when that is where the grant was minted", async () => {
+    // An agent-delivered email attachment lands in uploads/, not workbench/.
+    mockGrantLookup.mockResolvedValue(pinnedGrant("uploads", PDF_BYTES));
     writeArtifact("agent-1", "uploads", "ticket.pdf", PDF_BYTES);
     const res = await callGET("agent-1", "ticket.pdf");
     expect(res.status).toBe(200);
+  });
+
+  // Gap 1 of #903. `pinchy_write(workbench/report.pdf, overwrite=true)` in one
+  // member's turn used to replace the bytes behind another member's live chip,
+  // and the download served them under the old grant — content from a
+  // conversation the grantee may not even be able to see.
+  it("refuses a file whose bytes changed after it was delivered", async () => {
+    writeArtifact("agent-1", "workbench", "report.pdf", SECRET_PDF_BYTES);
+    const res = await callGET("agent-1", "report.pdf");
+    expect(res.status).toBe(404);
+    const body = Buffer.from(await res.arrayBuffer());
+    expect(body.includes(SECRET_MARKER)).toBe(false);
+  });
+
+  // Gap 2 of #903, and the one that needs no overwrite semantics at all: an
+  // ordinary create of `workbench/invoice.pdf` shadowed an `uploads/invoice.pdf`
+  // delivery, because the route searched the zones in order and took the first
+  // hit. A grant that names its zone never looks in the other one.
+  it("serves the zone the grant names, not a same-named file shadowing it", async () => {
+    mockGrantLookup.mockResolvedValue(pinnedGrant("uploads", PDF_BYTES));
+    writeArtifact("agent-1", "uploads", "invoice.pdf", PDF_BYTES);
+    writeArtifact("agent-1", "workbench", "invoice.pdf", SECRET_PDF_BYTES);
+
+    const res = await callGET("agent-1", "invoice.pdf");
+    expect(res.status).toBe(200);
+    const body = Buffer.from(await res.arrayBuffer());
+    expect(body.equals(PDF_BYTES)).toBe(true);
+  });
+
+  // Two grants for one filename — the same user was handed two different files
+  // that happened to share a name. Each grant may only unlock its own bytes.
+  it("matches the file against the grant it belongs to, not against any grant", async () => {
+    mockGrantLookup.mockResolvedValue([
+      ...pinnedGrant("uploads", SECRET_PDF_BYTES),
+      ...pinnedGrant("workbench", PDF_BYTES),
+    ]);
+    writeArtifact("agent-1", "uploads", "note.pdf", PDF_BYTES);
+
+    // The uploads copy carries the workbench grant's bytes. Neither grant
+    // authorizes that pairing, so nothing is served.
+    const res = await callGET("agent-1", "note.pdf");
+    expect(res.status).toBe(404);
   });
 
   it("sets Cache-Control: private (delivered files are user-scoped, never public)", async () => {
@@ -147,12 +208,9 @@ describe("GET /api/agents/[agentId]/artifacts/[filename]", () => {
   });
 
   it("returns 415 when the on-disk file's content-type is not in the allowlist", async () => {
-    writeArtifact(
-      "agent-1",
-      "workbench",
-      "weird.bin",
-      Buffer.from("\xfe\xed\xfa\xce" + "x".repeat(64))
-    );
+    const weird = Buffer.from("\xfe\xed\xfa\xce" + "x".repeat(64));
+    mockGrantLookup.mockResolvedValue(pinnedGrant("workbench", weird));
+    writeArtifact("agent-1", "workbench", "weird.bin", weird);
     const res = await callGET("agent-1", "weird.bin");
     expect(res.status).toBe(415);
   });
@@ -180,6 +238,11 @@ describe("GET /api/agents/[agentId]/artifacts/[filename]", () => {
     const secretPath = join(outsideDir, "secret.pdf");
     writeFileSync(secretPath, SECRET_PDF_BYTES);
 
+    // The grant is pinned to the SECRET bytes on purpose: containment has to be
+    // what refuses this, not the hash check. Pin it to anything else and the
+    // test would still be green with the symlink resolution removed.
+    mockGrantLookup.mockResolvedValue(pinnedGrant("workbench", SECRET_PDF_BYTES));
+
     const workbenchDir = join(tmpRoot, "agent-1", "workbench");
     mkdirSync(workbenchDir, { recursive: true });
     symlinkSync(secretPath, join(workbenchDir, "escape.pdf"));
@@ -203,6 +266,10 @@ describe("GET /api/agents/[agentId]/artifacts/[filename]", () => {
   // legitimate file of the same name in `uploads`. Pre-fix this test is red in
   // the worst way — 200 carrying the secret.
   it("skips an escaping symlink in workbench and still serves the real file from uploads", async () => {
+    // The two-zone search is a legacy-grant behaviour since #903 — a pinned
+    // grant never looks in the other zone — so this branch is exercised with
+    // the grant shape that still reaches it.
+    mockGrantLookup.mockResolvedValue(LEGACY_GRANT);
     const outsideDir = mkdtempSync(join(tmpdir(), "pinchy-artifacts-escape-target-"));
     const secretPath = join(outsideDir, "secret.pdf");
     writeFileSync(secretPath, SECRET_PDF_BYTES);
@@ -220,5 +287,39 @@ describe("GET /api/agents/[agentId]/artifacts/[filename]", () => {
     } finally {
       rmSync(outsideDir, { recursive: true, force: true });
     }
+  });
+
+  // AGENTS.md § "Test Migrations Against Pre-Existing Data". The pinning above
+  // is a change to WHERE this route reads its authorization from, and every
+  // other test in this file starts from a database written by the new code.
+  // A real upgrade does not: `agent_delivered_files` already holds rows with
+  // `zone` and `content_hash` NULL, and no honest value can be backfilled into
+  // them — hashing what is on disk today would notarize exactly the swap the
+  // change exists to catch. So they keep the semantics they were written
+  // under, and that has to be asserted rather than assumed.
+  describe("grants written before the zone/hash pin existed", () => {
+    beforeEach(() => {
+      mockGrantLookup.mockResolvedValue(LEGACY_GRANT);
+    });
+
+    it("still serves a delivery from either zone", async () => {
+      writeArtifact("agent-1", "uploads", "ticket.pdf", PDF_BYTES);
+      const res = await callGET("agent-1", "ticket.pdf");
+      expect(res.status).toBe(200);
+    });
+
+    it("does not check bytes it was never told about", async () => {
+      // The accepted cost of not backfilling, stated as a test so nobody reads
+      // the pin as protecting deliveries that predate it.
+      writeArtifact("agent-1", "workbench", "report.pdf", SECRET_PDF_BYTES);
+      const res = await callGET("agent-1", "report.pdf");
+      expect(res.status).toBe(200);
+    });
+
+    it("keeps the IDOR guard — a missing grant is still a 404", async () => {
+      mockGrantLookup.mockResolvedValue([]);
+      writeArtifact("agent-1", "workbench", "salary.pdf", PDF_BYTES);
+      expect((await callGET("agent-1", "salary.pdf")).status).toBe(404);
+    });
   });
 });
