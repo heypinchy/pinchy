@@ -29,6 +29,28 @@ A useful mental model: Instructions are the job description you hand a new hire 
 
 If you're still not sure: ask yourself whether a brand-new conversation tomorrow would need this. If yes, persist it. If only this conversation needs it, don't.
 
+## Promoting something you worked out together
+
+The most common way knowledge lands in the wrong store isn't carelessness — it's success. You and the agent spend a conversation developing a good way of working: a scoring framework for leads, a checklist for closing a month, the order in which to reconcile things. It works, you want to keep it, and the agent files it in Memory. That's the only store the agent can write, and it will keep choosing it.
+
+A **way of working** belongs in Instructions instead. Three reasons, in order of how much they'll cost you:
+
+1. **Scheduled and background runs don't load Memory.** Cron jobs and delegated subagent runs start from a reduced set of files that excludes `MEMORY.md`. A rule kept in Memory quietly stops applying the moment the same work runs on a schedule — and the agent won't tell you, because from its side nothing failed.
+2. **A rule deserves review.** Instructions are something a person wrote and can diff, correct, and roll back. Memory is prose the agent wrote about itself.
+3. **On a shared agent, Memory is mixed and partly withheld.** It accumulates from every member's conversations and is deliberately held back in group chats, so a team's working method is the last thing that should live there.
+
+The agent can't edit its own Instructions — that boundary is the point. So the handover is a two-step, and the agent will usually offer it:
+
+1. Ask it to draft the rule: _"Write that up as an instruction I can paste."_ It knows the working method in detail and turns it into a rule better than a summary from memory would.
+2. Paste the draft into **Settings → Instructions** for that agent and save.
+
+From the next conversation on, the rule is there before the first word — no lookup, no reminder, and it reaches automations too.
+
+<Aside type="note" title="Keep it in Memory until it's pasted">
+  Until the rule is in Instructions, Memory is the only place it survives. Don't
+  have the agent clear it out first.
+</Aside>
+
 ## Why the distinction matters
 
 Memory and Instructions have different lifetimes and load rules:
@@ -66,7 +88,7 @@ Memory and Instructions have different lifetimes and load rules:
 ## Editing each store
 
 - **Instructions** — open the agent's settings, then the [Personality](/concepts/agent-settings/#personality-tab) or [Instructions](/concepts/agent-settings/#instructions-tab) tab.
-- **Memory** — talk to the agent. Say "remember this: …" to add an entry, or "forget …" to remove one. Auto-memory does most of the work without you having to ask.
+- **Memory** — talk to the agent. Say "remember this: …" to add an entry, or "forget …" to have the agent rewrite the file without it. An agent can rewrite its memory files but cannot delete one, so a topic note it no longer needs stays on disk as an empty placeholder.
 
 For more on how memory is scoped between personal and shared agents (and what that means for privacy), see [Understanding Agent Memory](/explanation/agent-memory/).
 

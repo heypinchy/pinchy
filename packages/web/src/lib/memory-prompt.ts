@@ -36,6 +36,30 @@
  * `pinchy_write` is still the tool named in the text below, and still correct:
  * pinchy-files registers it off the presence of write_paths, so a memory-only
  * agent has it, scoped to its memory and nothing else.
+ *
+ * Why the text says WHERE to write, not just how. Two shapes of the same failure
+ * were reported in production, and both were caused by this block rather than by
+ * the runtime:
+ *
+ *   1. It used to say "keep [MEMORY.md] as an index that points to your topic
+ *      notes". `MEMORY.md` is the ONLY memory file OpenClaw injects at session
+ *      start (`loadWorkspaceBootstrapFiles`; the notes under `memory/` are
+ *      indexed for search, never injected), so that instruction put every
+ *      durable fact one tool call behind the answer. An agent then opened a
+ *      fresh session knowing the NAME of the note it needed and answered without
+ *      reading it. Hence: content in `MEMORY.md`, pointers only for the tail,
+ *      and an explicit "before you answer" rather than a passive "you can read".
+ *
+ *   2. A working rule the user and agent developed together — a scoring
+ *      framework, a standard procedure — landed in memory because that is the
+ *      only store the agent can write. It is the wrong store twice over: it is a
+ *      decision rather than a recollection, so it wants review and versioning,
+ *      and `filterBootstrapFilesForSession` narrows cron and subagent sessions to
+ *      MINIMAL_BOOTSTRAP_ALLOWLIST (AGENTS/TOOLS/SOUL/IDENTITY/USER — no
+ *      MEMORY.md), so it silently stops applying as soon as the same work runs on
+ *      a schedule. The agent cannot write Instructions itself and should not be
+ *      able to; drafting the wording and handing it over is the whole of what it
+ *      can do, so the block tells it to do exactly that.
  */
 export function buildMemoryPromptBlock(allowedTools: string[]): string | null {
   if (!allowedTools.includes("pinchy_memory")) return null;
@@ -43,24 +67,37 @@ export function buildMemoryPromptBlock(allowedTools: string[]): string | null {
   return [
     "## Memory",
     "You have persistent memory that survives across conversations:",
-    "- **Long-term** — `MEMORY.md` holds curated, durable knowledge worth " +
-      "keeping. Keep it as an index that points to your topic notes.",
-    "- **Daily notes** — append raw observations to `memory/YYYY-MM-DD.md`.",
+    "- **Long-term** — `MEMORY.md` holds your durable knowledge. It is the only " +
+      "memory file loaded automatically at the start of a conversation, so put " +
+      "the knowledge itself here, not just pointers to it.",
+    "- **Topic notes** — `memory/<topic>.md` for anything too long for " +
+      "`MEMORY.md`, and `memory/YYYY-MM-DD.md` for raw daily observations. These " +
+      "are NOT loaded automatically; keep a one-line pointer in `MEMORY.md` for " +
+      "each one so you know it exists.",
     "",
     "Write to these with your `pinchy_write` tool. When the user asks you to " +
       "remember something, actually write it; don't just say you will.",
     "",
-    "To recall what you stored, read your memory files with `pinchy_read` — " +
-      "`MEMORY.md` and the notes under `memory/`. Use `pinchy_ls` on `memory/` " +
-      "to find topic notes when you don't know the filename. Your memory is also " +
-      "indexed for faster `memory_search` / `memory_get`, but that index may be " +
-      "unavailable; if a search returns nothing or reports it is unavailable, " +
-      "fall back to reading the files. If you still can't find it, say you " +
-      'checked — never invent a reason like "the index changed" and never ask ' +
-      "the user to repeat something you already saved.",
+    "**Before you answer** a question your memory covers, read the note that " +
+      "covers it — don't answer first and check afterwards. Read with " +
+      "`pinchy_read`; use `pinchy_ls` on `memory/` to find a topic note when you " +
+      "don't know the filename. Your memory is also indexed for faster " +
+      "`memory_search` / `memory_get`, but that index may be unavailable; if a " +
+      "search returns nothing or reports it is unavailable, fall back to reading " +
+      "the files. If you still can't find it, say you checked — never invent a " +
+      'reason like "the index changed" and never ask the user to repeat ' +
+      "something you already saved.",
     "",
     "Your identity and instructions (`SOUL.md`, `AGENTS.md`) are " +
       "platform-managed and not writable — don't try to change who you are by " +
       "editing them; use your memory instead.",
+    "",
+    "One exception matters: when you and the user settle on a durable way of " +
+      "**working** — a rule, a scoring method, a standard procedure — that " +
+      "belongs in the agent's Instructions, not in your memory. Memory is not " +
+      "loaded in scheduled or background runs, so a working rule kept there " +
+      "silently stops applying the moment the same work happens on a schedule. " +
+      "Say so, offer to draft the exact wording, and let the user paste it into " +
+      "Settings → Instructions. Keep it in memory as well until they have.",
   ].join("\n");
 }

@@ -69,6 +69,39 @@ describe("buildMemoryPromptBlock", () => {
     expect(block!).toContain("pinchy_ls");
   });
 
+  it("tells the agent to consult memory BEFORE answering, not after being challenged", () => {
+    // The production symptom: a fresh session where MEMORY.md was injected and the
+    // agent still answered from nothing, then corrected itself once the user asked
+    // "you do know how we prioritise, right?". Naming the tools is not enough —
+    // the block has to say WHEN to reach for them.
+    const block = buildMemoryPromptBlock(["pinchy_memory"]);
+    expect(block!).toMatch(/before you answer/i);
+  });
+
+  it("does not tell the agent to keep MEMORY.md as a pointer-only index", () => {
+    // MEMORY.md is the only memory file OpenClaw injects at session start; the
+    // notes under memory/ are not. Instructing the agent to keep the injected file
+    // as pointers put every durable fact one tool call away from the answer — and
+    // a model answers first and looks second. Regression guard on the old wording
+    // ("Keep it as an index that points to your topic notes").
+    const block = buildMemoryPromptBlock(["pinchy_memory"]);
+    expect(block!).not.toMatch(/index that points/i);
+  });
+
+  it("routes a durable way of working to Instructions and offers to draft it", () => {
+    // A scoring framework or standard procedure the user and agent settle on is a
+    // rule, not a recollection. It belongs in AGENTS.md: reviewable, versioned, and
+    // — decisively — present in scheduled and background runs, which OpenClaw
+    // serves from a bootstrap set that excludes MEMORY.md
+    // (filterBootstrapFilesForSession → MINIMAL_BOOTSTRAP_ALLOWLIST). The agent
+    // cannot write Instructions itself, so the only path it has is to say so and
+    // draft the wording for the user.
+    const block = buildMemoryPromptBlock(["pinchy_memory"]);
+    expect(block!).toContain("Instructions");
+    expect(block!).toMatch(/offer to draft/i);
+    expect(block!).toMatch(/scheduled|background/i);
+  });
+
   it("frames memory_search as possibly unavailable so failure triggers the file fallback", () => {
     // The behavioural fix for the reported symptom: a memory_search that returns
     // 'unavailable' must route the agent to its files, not to a fabricated excuse.
