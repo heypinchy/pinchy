@@ -10,6 +10,9 @@
 import { describe, expect, it } from "vitest";
 import { aggregateKbResults } from "./export-kb-scorecard";
 import type { KbRunResultRow } from "./export-kb-scorecard";
+import { infraErrorRun } from "./run-kb-eval";
+import { GOLD_QA } from "./corpus/gold-qa";
+import { KB_EVAL_AXES } from "../../src/lib/eval/kb/types";
 
 function row(overrides: Partial<KbRunResultRow> = {}): KbRunResultRow {
   return {
@@ -129,5 +132,43 @@ describe("aggregateKbResults", () => {
     expect(happy.totalRuns).toBe(0);
     expect(happy.excludedInfraErrors).toBe(2);
     expect(happy.models).toEqual([]);
+  });
+});
+
+/**
+ * The runner writes these rows; this file reads them. Until #869 nothing held
+ * the two together, and they had in fact drifted: the sweep stamped `scenario`
+ * (the gold id) and no `axis`, while `aggregateKbResults` groups by `axis`.
+ * Every axis cell would have come back empty from a dataset that was complete
+ * — the failure mode this whole harness keeps producing, an output that reads
+ * as "nothing here" when the truth is "read wrong".
+ *
+ * So these drive the ACTUAL producers rather than restating their shape.
+ */
+describe("what the sweep writes is what the exporter reads", () => {
+  it("groups a row the runner produced into that row's axis cell", () => {
+    // `infraErrorRun` is the one row the sweep builds in code rather than by
+    // spreading a grader result, so it is the producer a drift would hit first
+    // — and it is also the row most easily forgotten, being excluded from n.
+    const written = infraErrorRun("model-a", "gqa-pathcite-1", "path-citation", new Error("x"), 0);
+
+    const cells = aggregateKbResults([written]);
+    const cell = cells.find((c) => c.axis === "path-citation");
+
+    expect(cell).toBeDefined();
+    // Excluded from n as an invalid trial, but PRESENT — an axis whose runs all
+    // failed on infrastructure must read as unmeasured, not as untested.
+    expect(cell?.excludedInfraErrors).toBe(1);
+  });
+
+  it("puts every axis the gold set exercises on the map", () => {
+    // A gold item whose axis the exporter does not know would vanish from the
+    // report entirely. `KB_EVAL_AXES` is the exporter's cell list, `GOLD_QA` is
+    // what the sweep actually runs — a new gold axis must appear in both.
+    const goldAxes = new Set(GOLD_QA.map((g) => g.axis));
+
+    for (const axis of goldAxes) {
+      expect(KB_EVAL_AXES).toContain(axis);
+    }
   });
 });

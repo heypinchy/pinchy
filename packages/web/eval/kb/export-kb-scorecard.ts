@@ -38,15 +38,15 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { buildScorecard, type ScorecardEntry } from "../../src/lib/eval/scorecard";
 import { KB_EVAL_AXES } from "../../src/lib/eval/kb/types";
-import type { KbEvalAxis, KbFailureTag } from "../../src/lib/eval/kb/types";
+import type { KbEvalAxis, KbFailureTag, KbRunResultRow } from "../../src/lib/eval/kb/types";
 import type { KbRunResult } from "../../src/lib/eval/kb/answer-graders";
 
 const DATA_DIR = path.join(__dirname, "data");
 
-/** One curated KB run result row: a `KbRunResult` plus the axis its gold query exercises. */
-export interface KbRunResultRow extends KbRunResult {
-  axis: KbEvalAxis;
-}
+// Re-exported, not redeclared: the runner writes this shape and this file
+// reads it, so both import one definition from `types.ts`. See its doc comment
+// for what silently went wrong when they were two.
+export type { KbRunResultRow };
 
 export interface KbAxisCell {
   axis: KbEvalAxis;
