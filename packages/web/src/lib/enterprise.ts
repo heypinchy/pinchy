@@ -51,6 +51,28 @@ export function isKeyFromEnv(): boolean {
 }
 
 /**
+ * Validate a candidate token without storing it or touching the cache.
+ *
+ * This is the entry point for "would this key work?", which is a different
+ * question from "what is this install licensed for?" and must be answerable
+ * without changing the answer to the second one. `PUT /api/enterprise/key`
+ * used to conflate them: it wrote the submitted key, asked `getLicenseStatus`,
+ * and deleted the setting when the verdict came back inactive — so a typo cost
+ * an admin the working license that had been there.
+ *
+ * It is deliberately the same code path `getLicenseStatus` takes, not a second
+ * copy of it. The route decides with this function what the app then reads
+ * through that one; a change to how a token is verified must reach both or the
+ * route would accept a key the app treats as community.
+ */
+export async function validateLicenseToken(
+  token: string,
+  publicKeyPem: string = PRODUCTION_PUBLIC_KEY
+): Promise<LicenseStatus> {
+  return validateLicense(token, publicKeyPem);
+}
+
+/**
  * Get the full license status. Cached for 1 hour.
  * Pass publicKeyPem only in tests — production uses the hardcoded key.
  */
@@ -63,7 +85,7 @@ export async function getLicenseStatus(
   }
 
   const token = await loadToken();
-  cachedStatus = await validateLicense(token, publicKeyPem);
+  cachedStatus = await validateLicenseToken(token, publicKeyPem);
   cacheTimestamp = now;
   return cachedStatus;
 }

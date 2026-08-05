@@ -1501,13 +1501,26 @@ Save or update the enterprise license key. **Admin only.** Not available when th
 | ----- | ------ | -------- | --------------------- |
 | `key` | string | Yes      | The JWT license token |
 
-**Response:** `{ "success": true }` — the new license status takes effect immediately without a restart.
+The key is verified **before** it is stored. A key Pinchy refuses is never written, so a rejected attempt — a typo, an expired token, a key from another install — leaves the license you already had in place and active. There is nothing to restore and no window in which the instance drops to community.
+
+**Response:** the status of the key that was just accepted, which takes effect immediately without a restart. These five fields carry the same meaning as in `GET /api/enterprise/status`, which returns the fuller picture (`state`, `seatsUsed`, `managedByEnv`, …):
+
+```json
+{
+  "enterprise": true,
+  "type": "paid",
+  "org": "acme-gmbh",
+  "expiresAt": "2027-01-01T00:00:00.000Z",
+  "daysRemaining": 300
+}
+```
 
 **Errors:**
 
-- `400` — key is missing or the JWT signature is invalid
+- `400` — key is missing, or its signature is invalid or expired (nothing is stored; the previous key stays active)
 - `401` — not authenticated
-- `403` — not an admin, or key is managed by env var
+- `403` — not an admin
+- `409` — the key is managed by the `PINCHY_ENTERPRISE_KEY` environment variable and cannot be changed here
 
 ### `DELETE /api/enterprise/gated-config`
 

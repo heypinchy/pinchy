@@ -1,6 +1,10 @@
 // @vitest-environment node
 import { describe, it, expect, vi, beforeEach, beforeAll } from "vitest";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import * as jose from "jose";
+
+const ENTERPRISE_SOURCE = resolve(__dirname, "../../lib/enterprise.ts");
 
 let testPublicKeyPem: string;
 let testPrivateKey: CryptoKey;
@@ -113,6 +117,90 @@ describe("getLicenseStatus", () => {
     const status2 = await mod.getLicenseStatus(testPublicKeyPem);
     expect(status1).not.toBe(status2);
     expect(status2.active).toBe(true);
+  });
+});
+
+describe("validateLicenseToken", () => {
+  it("validates a token without reading or writing settings", async () => {
+    const token = await createTestToken({ type: "paid" }, "365d");
+
+    const mod = await import("@/lib/enterprise");
+    const status = await mod.validateLicenseToken(token, testPublicKeyPem);
+
+    expect(status.active).toBe(true);
+    expect(status.type).toBe("paid");
+    expect(getSetting).not.toHaveBeenCalled();
+  });
+
+  it("returns inactive for a token this build does not trust", async () => {
+    const { privateKey } = await jose.generateKeyPair("ES256", { extractable: true });
+    const foreign = await new jose.SignJWT({ type: "paid", features: ["enterprise"] })
+      .setProtectedHeader({ alg: "ES256" })
+      .setIssuer("heypinchy.com")
+      .setSubject("other-org")
+      .setIssuedAt()
+      .setExpirationTime("365d")
+      .sign(privateKey);
+
+    const mod = await import("@/lib/enterprise");
+    expect((await mod.validateLicenseToken(foreign, testPublicKeyPem)).active).toBe(false);
+  });
+
+  it("leaves the cached status untouched", async () => {
+    const stored = await createTestToken({ type: "trial" });
+    process.env.PINCHY_ENTERPRISE_KEY = stored;
+
+    const mod = await import("@/lib/enterprise");
+    const before = await mod.getLicenseStatus(testPublicKeyPem);
+    await mod.validateLicenseToken("not-a-token", testPublicKeyPem);
+    const after = await mod.getLicenseStatus(testPublicKeyPem);
+
+    // Same object reference — validating a candidate is not a config change,
+    // so it must not evict the verdict every gate is reading.
+    expect(after).toBe(before);
+    expect(after.active).toBe(true);
+  });
+
+  // Structural drift pin, and it has to be structural.
+  //
+  // `PUT /api/enterprise/key` decides with validateLicenseToken what the app
+  // then reads through getLicenseStatus. Split those two and the route accepts
+  // a key the app treats as community, or refuses one it would honour — and
+  // the behavioural test below cannot see it, because it can only feed tokens
+  // signed by the one key it generates. A verdict that differs per *key* (a
+  // second trusted key, a refused subject — exactly what #1083 adds) is
+  // invisible to any fixture written before that key exists.
+  //
+  // So assert the shape instead: there is one validation path and
+  // getLicenseStatus takes it. Verified by canary — point getLicenseStatus at
+  // validateLicense directly and this goes red.
+  it("has getLicenseStatus validate through validateLicenseToken", () => {
+    const source = readFileSync(ENTERPRISE_SOURCE, "utf8");
+    const body = source.slice(source.indexOf("export async function getLicenseStatus"));
+    const fn = body.slice(0, body.indexOf("\n}"));
+
+    expect(fn).toContain("validateLicenseToken(");
+    expect(fn).not.toContain("validateLicense(");
+  });
+
+  // Drift pin: getLicenseStatus and validateLicenseToken must agree, because
+  // the license route decides with the second what the app then reads through
+  // the first.
+  it("agrees with getLicenseStatus on the stored token", async () => {
+    for (const token of [
+      await createTestToken({ type: "paid" }, "365d"),
+      "not-a-token",
+      "",
+    ] as const) {
+      vi.resetModules();
+      vi.mocked(getSetting).mockResolvedValue(token);
+
+      const mod = await import("@/lib/enterprise");
+      const viaStatus = await mod.getLicenseStatus(testPublicKeyPem);
+      const viaValidate = await mod.validateLicenseToken(token, testPublicKeyPem);
+
+      expect(viaValidate).toEqual(viaStatus);
+    }
   });
 });
 

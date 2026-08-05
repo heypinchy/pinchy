@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { requireAdmin } from "@/lib/api-auth";
-import { setSetting, deleteSetting } from "@/lib/settings";
-import { clearLicenseCache, getLicenseStatus, isKeyFromEnv } from "@/lib/enterprise";
+import { setSetting } from "@/lib/settings";
+import { clearLicenseCache, validateLicenseToken, isKeyFromEnv } from "@/lib/enterprise";
 import { appendAuditLog } from "@/lib/audit";
 import { parseRequestBody } from "@/lib/api-validation";
 
@@ -26,15 +26,14 @@ export async function PUT(req: NextRequest) {
   if ("error" in parsed) return parsed.error;
   const { key } = parsed.data;
 
-  // Save the key encrypted, clear cache, then validate via production key path
-  await setSetting("enterprise_key", key, true);
-  clearLicenseCache();
-
-  const status = await getLicenseStatus();
+  // Validate BEFORE writing anything. Storing first and rolling back on a bad
+  // verdict looks equivalent and is not: the rollback deleted the setting
+  // rather than restoring it, so an admin who pasted a typo lost the working
+  // license that had been there and dropped to the community state. Nothing
+  // here reads the stored key, so a rejected attempt leaves the install
+  // exactly as it found it — no write, no cache eviction.
+  const status = await validateLicenseToken(key);
   if (!status.active) {
-    // Invalid key — roll back
-    await deleteSetting("enterprise_key");
-    clearLicenseCache();
     // A rejected license-activation attempt is a governance-relevant security
     // action; audit the failure (never log the key value itself).
     await appendAuditLog({
@@ -47,6 +46,11 @@ export async function PUT(req: NextRequest) {
     });
     return NextResponse.json({ error: "Invalid or expired license key" }, { status: 400 });
   }
+
+  // Accepted — store it encrypted and evict the cached verdict so every gate
+  // re-derives against the new key.
+  await setSetting("enterprise_key", key, true);
+  clearLicenseCache();
 
   // Audit log (don't log the key value itself)
   await appendAuditLog({
