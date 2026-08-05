@@ -43,7 +43,7 @@ For PDFs, Pinchy automatically picks the best vision-capable model available in 
 
 For Microsoft Word `.docx` files, Pinchy converts the document to Markdown at upload time — headings, lists, and GitHub-flavored tables all survive — and ships it directly to the agent as text. No vision model required. Embedded images are replaced with a `[image]` placeholder until a future release adds vision-based descriptions.
 
-Workspaces are isolated per agent: file-reading tools only see files in that agent's own workspace, never another agent's files or the host system. The user-attached file lives in `uploads/`; if the agent has Write Files permission and produces a deliverable (an export, a draft, a generated report), it writes to the sibling `workbench/` directory instead — that separation keeps "what the user gave me" and "what I made" easy to tell apart. See [Agent Workspaces](/concepts/workspaces/) for the full picture.
+Workspaces are isolated per agent: file-reading tools only see files in that agent's own workspace, never another agent's files or the host system. The user-attached file lives in `uploads/`; if the agent has **Create files** permission and produces a deliverable (an export, a draft, a generated report), it writes to the sibling `workbench/` directory instead — that separation keeps "what the user gave me" and "what I made" easy to tell apart. See [Agent Workspaces](/concepts/workspaces/) for the full picture.
 
 Chat isn't the only door into `uploads/`. An agent with email Read access can pull attachments out of a connected mailbox with `email_get_attachment`, and they land in this same `uploads/` folder — readable with the same tools described above. This is how an "invoice email → Odoo" workflow chains together: `email_get_attachment` downloads the invoice PDF into `uploads/`, the agent reads it the same way it would a chat-uploaded PDF, and `odoo_attach_file` attaches it to the matching Odoo record. See [Attachments from email](/concepts/attachments/#attachments-from-email) and [Connect Email](/guides/connect-email/) for the full flow.
 
@@ -70,7 +70,7 @@ Delivered files are scoped to the chat they were delivered in: only you can down
 
 ## Generating files
 
-An agent with Write Files permission can turn tabular data it already holds — records it looked up, numbers it calculated, a list it assembled — into a downloadable file, without you needing any special syntax. Just ask: "export these as a CSV," "make me a PDF report of this," "put the ledger in a spreadsheet."
+An agent with **Create files** permission can turn tabular data it already holds — records it looked up, numbers it calculated, a list it assembled — into a downloadable file, without you needing any special syntax. Just ask: "export these as a CSV," "make me a PDF report of this," "put the ledger in a spreadsheet."
 
 Three formats are supported:
 

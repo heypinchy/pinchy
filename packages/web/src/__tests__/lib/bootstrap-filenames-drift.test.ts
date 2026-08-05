@@ -70,7 +70,13 @@ function escapeIdent(identifier: string): string {
   if (!IDENT_ONLY.test(identifier)) {
     throw new Error(`parsed \`${identifier}\` where a JS identifier was expected`);
   }
-  return identifier.replace(/\$/g, "\\$");
+  // The class covers the backslash as well, though IDENT_ONLY has already made
+  // one impossible. An escaper that handles some metacharacters but not the
+  // escape character itself is a PARTIAL escape — `js/incomplete-sanitization`
+  // reports exactly that shape, and it cannot see the guard above. Escaping
+  // both makes the function complete on its own terms rather than complete
+  // only in the presence of a caller-side check.
+  return identifier.replace(/[\\$]/g, "\\$&");
 }
 
 function assertChunkName(chunk: string): string {

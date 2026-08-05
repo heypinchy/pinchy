@@ -316,11 +316,14 @@ test.describe.serial("Odoo Permission Setup", () => {
     await page.goto(`/chat/${agentId}/settings?tab=permissions`);
     await expect(page.getByRole("heading", { name: "Odoo" })).toBeVisible({ timeout: 10000 });
 
-    // Toggle a KB tool — its change crosses one of the snapshots that the
-    // child component used to freeze at mount. Use "Write files" (pinchy_write):
-    // it's the only KB toggle still rendered after pinchy_ls/pinchy_read became
-    // implicit always-on tools (#384).
-    await page.getByLabel("Write files").click();
+    // Toggle a workspace tool — its change crosses one of the snapshots that
+    // the child component used to freeze at mount. Use "Create files"
+    // (pinchy_write): the Knowledge Base section has no toggle left of its own
+    // since pinchy_ls/pinchy_read became implicit always-on tools (#384), and
+    // this checkbox moved into its own Workspace section when memory became a
+    // separate grant. What the test needs is any non-Odoo checkbox whose change
+    // propagates through the same onChange — not a Knowledge Base one.
+    await page.getByLabel("Create files").click();
     await expect(page.getByText("Unsaved changes")).toBeVisible({ timeout: 10000 });
 
     // Remove enterprise badge overlay if present (blocks button clicks).
