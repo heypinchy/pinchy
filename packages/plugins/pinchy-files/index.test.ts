@@ -14,6 +14,7 @@ import { join } from "path";
 import { tmpdir } from "os";
 import Database from "better-sqlite3";
 import { MAX_DOCX_FILE_SIZE } from "./validate";
+import manifest from "./openclaw.plugin.json";
 
 const FIXTURES = join(import.meta.dirname, "test-fixtures");
 
@@ -108,12 +109,18 @@ describe("pinchy-files plugin", () => {
     vi.clearAllMocks();
   });
 
-  it("registers pinchy_ls, pinchy_read, pinchy_write, and pinchy_generate_file as tool factories", async () => {
+  it("registers exactly the tools the manifest declares", async () => {
+    // Was a bare `toHaveBeenCalledTimes(4)`, which a wrong set of the right
+    // size satisfies. The names are what OpenClaw 5.3+ matches against
+    // `contracts.tools` — a registerTool call it does not find there is
+    // silently ignored — so assert the names, and read them from the manifest
+    // rather than re-typing them into a second list that can drift.
     const api = createMockApi({ "test-agent": { allowed_paths: ["/data/test-docs/"] } });
     const { default: plugin } = await import("./index");
     plugin.register!(api as any);
 
-    expect(mockRegisterTool).toHaveBeenCalledTimes(4);
+    const registered = mockRegisterTool.mock.calls.map((call: any[]) => call[1]?.name).sort();
+    expect(registered).toEqual([...manifest.contracts.tools].sort());
   });
 
   it("registers tool factories (functions), not static tools", async () => {
@@ -1695,5 +1702,172 @@ describe("pinchy_generate_file tool", () => {
     // message the model can act on (and that leaks no on-disk path).
     expect(result.details.error).toMatch(/filename is too long/);
     expect(readdirSync(workbench)).toEqual([]);
+  });
+});
+
+// #1144 follow-up: an agent could overwrite a memory file but never remove one,
+// so a topic note it no longer needs stayed on disk as a tombstone — still
+// indexed, and (because non-dated files under memory/ are never temporally
+// decayed by OpenClaw) at permanently full weight in recall. The prompt in
+// #1136 now tells an agent to prune its memory copy after a rule moves into
+// Instructions, which it could only ever half-do.
+describe("pinchy_delete tool", () => {
+  let tmpDir: string;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    tmpDir = mkdtempSync(join(tmpdir(), "pinchy-delete-test-"));
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  function getDeleteFactory() {
+    return mockRegisterTool.mock.calls.find(
+      (call: any[]) => call[1]?.name === "pinchy_delete"
+    )?.[0];
+  }
+
+  it("is not registered for an agent with no write_paths", async () => {
+    // Deletion rides on the SAME zone grant as writing, deliberately: whoever
+    // may put a file in a zone may take it out again. A separate "may delete"
+    // checkbox would cut by operation, which is the axis this permission model
+    // rejected (plans/2026-08-05-agent-permissions-by-zone-design.md).
+    const api = createMockApi({ "agent-1": { allowed_paths: ["/data/docs/"] } });
+    const { default: plugin } = await import("./index");
+    plugin.register!(api as any);
+
+    expect(getDeleteFactory()({ agentId: "agent-1" })).toBeNull();
+  });
+
+  it("is registered once the agent has a writable zone", async () => {
+    const api = createMockApi({
+      "agent-1": { allowed_paths: [tmpDir], write_paths: [tmpDir] },
+    });
+    const { default: plugin } = await import("./index");
+    plugin.register!(api as any);
+
+    const tool = getDeleteFactory()({ agentId: "agent-1" });
+    expect(tool).not.toBeNull();
+    expect(tool.name).toBe("pinchy_delete");
+  });
+
+  it("removes a file inside the writable zone", async () => {
+    const target = join(tmpDir, "key-contacts.md");
+    writeFileSync(target, "stale");
+    const api = createMockApi({
+      "agent-1": { allowed_paths: [tmpDir], write_paths: [tmpDir] },
+    });
+    const { default: plugin } = await import("./index");
+    plugin.register!(api as any);
+
+    const result = await getDeleteFactory()({ agentId: "agent-1" }).execute("call-1", {
+      path: target,
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(existsSync(target)).toBe(false);
+  });
+
+  it("refuses a path outside the writable zone even when it is readable", async () => {
+    // The knowledge base is mounted read-only and lives in allowed_paths, never
+    // in write_paths. Deleting through a read grant would be the one way an
+    // agent could destroy an organisation's documents.
+    const readable = join(tmpDir, "kb");
+    const writable = join(tmpDir, "workbench");
+    mkdirSync(readable);
+    mkdirSync(writable);
+    const victim = join(readable, "policy.md");
+    writeFileSync(victim, "important");
+
+    const api = createMockApi({
+      "agent-1": { allowed_paths: [readable, writable], write_paths: [writable] },
+    });
+    const { default: plugin } = await import("./index");
+    plugin.register!(api as any);
+
+    const result = await getDeleteFactory()({ agentId: "agent-1" }).execute("call-1", {
+      path: victim,
+    });
+
+    expect(result.isError).toBe(true);
+    expect(existsSync(victim)).toBe(true);
+  });
+
+  it("refuses a directory, so one call cannot take out a whole zone", async () => {
+    const dir = join(tmpDir, "memory");
+    mkdirSync(dir);
+    writeFileSync(join(dir, "note.md"), "keep");
+
+    const api = createMockApi({
+      "agent-1": { allowed_paths: [tmpDir], write_paths: [tmpDir] },
+    });
+    const { default: plugin } = await import("./index");
+    plugin.register!(api as any);
+
+    const result = await getDeleteFactory()({ agentId: "agent-1" }).execute("call-1", {
+      path: dir,
+    });
+
+    expect(result.isError).toBe(true);
+    expect(existsSync(join(dir, "note.md"))).toBe(true);
+  });
+
+  it("reports a missing file as an error rather than a silent success", async () => {
+    // A delete that says "done" for a path that was never there teaches the
+    // agent its memory is tidier than it is, and writes an audit row for a
+    // change that did not happen.
+    const api = createMockApi({
+      "agent-1": { allowed_paths: [tmpDir], write_paths: [tmpDir] },
+    });
+    const { default: plugin } = await import("./index");
+    plugin.register!(api as any);
+
+    const result = await getDeleteFactory()({ agentId: "agent-1" }).execute("call-1", {
+      path: join(tmpDir, "never-existed.md"),
+    });
+
+    expect(result.isError).toBe(true);
+  });
+
+  it("rejects a delete whose ancestor symlink escapes the sandbox", async () => {
+    const sandbox = join(tmpDir, "sandbox");
+    const outside = join(tmpDir, "outside");
+    mkdirSync(sandbox);
+    mkdirSync(outside);
+    symlinkSync(outside, join(sandbox, "link"));
+    const victim = join(outside, "secret.txt");
+    writeFileSync(victim, "x");
+
+    const api = createMockApi({
+      "agent-1": { allowed_paths: [sandbox], write_paths: [sandbox] },
+    });
+    const { default: plugin } = await import("./index");
+    plugin.register!(api as any);
+
+    const result = await getDeleteFactory()({ agentId: "agent-1" }).execute("call-1", {
+      path: join(sandbox, "link", "secret.txt"),
+    });
+
+    expect(result.isError).toBe(true);
+    expect(existsSync(victim)).toBe(true);
+  });
+
+  it("carries details.error on the failure path so the audit row is not a false success", async () => {
+    // OpenClaw strips isError before forwarding a tool result to the audit
+    // route, so details.error is the only remaining failure signal
+    // (AGENTS.md § "A Failing Tool Result Needs details.error").
+    const api = createMockApi({
+      "agent-1": { allowed_paths: [tmpDir], write_paths: [tmpDir] },
+    });
+    const { default: plugin } = await import("./index");
+    plugin.register!(api as any);
+
+    const result = await getDeleteFactory()({ agentId: "agent-1" }).execute("call-1", {
+      path: join(tmpDir, "never-existed.md"),
+    });
+
+    expect(result.details?.error).toBeTruthy();
   });
 });

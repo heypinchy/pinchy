@@ -23,6 +23,7 @@ import {
   FAKE_OLLAMA_WORKSPACE_LS_TOOL_TRIGGER,
   FAKE_OLLAMA_WORKSPACE_READ_TOOL_TRIGGER,
   FAKE_OLLAMA_WORKSPACE_WRITE_TOOL_TRIGGER,
+  FAKE_OLLAMA_WORKSPACE_DELETE_TOOL_TRIGGER,
   FAKE_OLLAMA_PORT,
   startFakeOllama,
   stopFakeOllama,
@@ -234,6 +235,60 @@ test.describe.skip("Workspace filesystem dispatch probe (pinchy-files plugin cov
           expect(typeof entry.detail.sizeBytes).toBe("number");
           // SHA-256 hex digest is always 64 characters
           expect(entry.detail.contentHash).toMatch(/^[0-9a-f]{64}$/);
+          detailVerified = true;
+          break;
+        }
+      }
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    expect(detailVerified).toBe(true);
+  });
+
+  // Runs after the write probe above, deliberately: pinchy_delete reports a
+  // missing path as an error, so a probe against a seeded-but-unknown file
+  // would prove the refusal rather than the dispatch. Playwright runs a file's
+  // tests in order with workers: 1, so the file this deletes is the one the
+  // previous test wrote.
+  test("pinchy_delete dispatches via fake-LLM and audits the file it removed", async ({ page }) => {
+    await loginViaUI(page, ADMIN_USER.email, ADMIN_USER.password);
+
+    await page.goto(`/chat/${agentId}`);
+    await expect(page).toHaveURL(`/chat/${agentId}`, { timeout: 10_000 });
+
+    const input = page.getByPlaceholder(/send a message/i);
+    await expect(input).toBeVisible({ timeout: 10_000 });
+    await input.fill(`${FAKE_OLLAMA_WORKSPACE_DELETE_TOOL_TRIGGER}: drop the result file`);
+    await input.press("Enter");
+
+    const found = await pollAuditForTool(page, { toolName: "pinchy_delete", agentId });
+    expect(found).toBe(true);
+
+    // The audited detail is what separates a real removal from a refusal: the
+    // error path carries `error` and the caller-supplied path, the success path
+    // carries the RESOLVED path and the size of what was removed.
+    const deadline = Date.now() + 30_000;
+    let detailVerified = false;
+    while (Date.now() < deadline) {
+      const auditRes = await page.request.get("/api/audit?eventType=tool.pinchy_delete&limit=10");
+      if (auditRes.status() === 200) {
+        const audit = (await auditRes.json()) as {
+          entries: Array<{
+            resource: string | null;
+            detail: {
+              toolName?: string;
+              path?: string;
+              sizeBytes?: number;
+              error?: string;
+            } | null;
+          }>;
+        };
+        const entry = audit.entries.find(
+          (e) => e.resource === `agent:${agentId}` && e.detail?.toolName === "pinchy_delete"
+        );
+        if (entry?.detail) {
+          expect(entry.detail.error).toBeUndefined();
+          expect(entry.detail.path).toContain("workbench/");
+          expect(typeof entry.detail.sizeBytes).toBe("number");
           detailVerified = true;
           break;
         }

@@ -102,6 +102,15 @@ describe("buildMemoryPromptBlock", () => {
     expect(block!).toMatch(/scheduled|background/i);
   });
 
+  it("tells the agent it can retire a note, not only overwrite it", () => {
+    // Without a delete the only way to retire a topic note was a tombstone,
+    // which stays indexed — and because non-dated files under memory/ are never
+    // temporally decayed by OpenClaw, at permanently full weight in recall. The
+    // block has to name the tool, or the agent keeps writing tombstones.
+    const block = buildMemoryPromptBlock(["pinchy_memory"]);
+    expect(block!).toContain("pinchy_delete");
+  });
+
   it("frames memory_search as possibly unavailable so failure triggers the file fallback", () => {
     // The behavioural fix for the reported symptom: a memory_search that returns
     // 'unavailable' must route the agent to its files, not to a fabricated excuse.

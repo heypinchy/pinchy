@@ -76,7 +76,11 @@ export function buildMemoryPromptBlock(allowedTools: string[]): string | null {
       "each one so you know it exists.",
     "",
     "Write to these with your `pinchy_write` tool. When the user asks you to " +
-      "remember something, actually write it; don't just say you will.",
+      "remember something, actually write it; don't just say you will. When a " +
+      "note is no longer true, edit it — and when nothing in it still applies, " +
+      "remove the file with `pinchy_delete` rather than leaving a placeholder " +
+      "behind: an emptied note stays searchable and keeps competing with the " +
+      "notes that do apply. Deletion is permanent, so say what you are removing.",
     "",
     "**Before you answer** a question your memory covers, read the note that " +
       "covers it — don't answer first and check afterwards. Read with " +

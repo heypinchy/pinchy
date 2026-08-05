@@ -305,6 +305,13 @@ const WORKSPACE_READ_TRIGGER = "E2E_WORKSPACE_READ_TOOL";
 const WORKSPACE_READ_RESPONSE = "File read: coverage probe complete.";
 const WORKSPACE_WRITE_TRIGGER = "E2E_WORKSPACE_WRITE_TOOL";
 const WORKSPACE_WRITE_RESPONSE = "File written: coverage probe complete.";
+// pinchy_delete: retiring a file the agent wrote. It exists because OpenClaw
+// memory is plain files the agent maintains itself, and without a delete the
+// only way to retire a topic note is a tombstone that stays indexed forever.
+// The probe deletes what the write probe just created, so the two run in order
+// within one spec and the delete has a real target rather than a seeded one.
+const WORKSPACE_DELETE_TRIGGER = "E2E_WORKSPACE_DELETE_TOOL";
+const WORKSPACE_DELETE_RESPONSE = "File deleted: coverage probe complete.";
 // pinchy_generate_file (#788): renders tabular data into a CSV/XLSX/PDF file
 // under the agent's workbench and hands it back to the user as a download via
 // the #703 delivery path. The probe args below render a 1-row CSV.
@@ -902,6 +909,15 @@ const TOOL_TRIGGERS: TriggerConfig[] = [
     // aimed at a denied path proves the rejection instead. The spec asserts the
     // audited `path` back, so the target is the assertion.
     arguments: { path: "workbench/result.csv", content: "id,value\n1,E2E probe\n" },
+  },
+  {
+    trigger: WORKSPACE_DELETE_TRIGGER,
+    response: WORKSPACE_DELETE_RESPONSE,
+    toolName: "pinchy_delete",
+    // The file the write probe above creates. Deleting a path that was never
+    // there is an error by design, so the spec must run the write first — which
+    // also makes this probe prove the round trip rather than the refusal.
+    arguments: { path: "workbench/result.csv" },
   },
   {
     trigger: GENERATE_FILE_TRIGGER,
@@ -2290,6 +2306,7 @@ export const FAKE_OLLAMA_WORKSPACE_LS_TOOL_RESPONSE = WORKSPACE_LS_RESPONSE;
 export const FAKE_OLLAMA_WORKSPACE_READ_TOOL_TRIGGER = WORKSPACE_READ_TRIGGER;
 export const FAKE_OLLAMA_WORKSPACE_READ_TOOL_RESPONSE = WORKSPACE_READ_RESPONSE;
 export const FAKE_OLLAMA_WORKSPACE_WRITE_TOOL_TRIGGER = WORKSPACE_WRITE_TRIGGER;
+export const FAKE_OLLAMA_WORKSPACE_DELETE_TOOL_TRIGGER = WORKSPACE_DELETE_TRIGGER;
 export const FAKE_OLLAMA_WORKSPACE_WRITE_TOOL_RESPONSE = WORKSPACE_WRITE_RESPONSE;
 export const FAKE_OLLAMA_GENERATE_FILE_TOOL_TRIGGER = GENERATE_FILE_TRIGGER;
 export const FAKE_OLLAMA_GENERATE_FILE_TOOL_RESPONSE = GENERATE_FILE_RESPONSE;

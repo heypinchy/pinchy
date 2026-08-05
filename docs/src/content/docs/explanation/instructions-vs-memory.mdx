@@ -88,7 +88,7 @@ Memory and Instructions have different lifetimes and load rules:
 ## Editing each store
 
 - **Instructions** — open the agent's settings, then the [Personality](/concepts/agent-settings/#personality-tab) or [Instructions](/concepts/agent-settings/#instructions-tab) tab.
-- **Memory** — talk to the agent. Say "remember this: …" to add an entry, or "forget …" to have the agent rewrite the file without it. An agent can rewrite its memory files but cannot delete one, so a topic note it no longer needs stays on disk as an empty placeholder.
+- **Memory** — talk to the agent. Say "remember this: …" to add an entry, or "forget …" to have it drop the entry — rewriting the note, or removing the whole file when nothing in it still applies. Removal is permanent and there is no undo, so an agent asked to forget something will normally say what it is about to remove.
 
 For more on how memory is scoped between personal and shared agents (and what that means for privacy), see [Understanding Agent Memory](/explanation/agent-memory/).
 

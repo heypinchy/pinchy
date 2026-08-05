@@ -1,5 +1,5 @@
 import { readdirSync, statSync, realpathSync, existsSync } from "fs";
-import { readFile, open, writeFile, mkdir, chown } from "fs/promises";
+import { readFile, open, writeFile, mkdir, chown, unlink } from "fs/promises";
 import { createHash } from "crypto";
 import { join, extname, basename, dirname } from "path";
 import {
@@ -702,6 +702,131 @@ const plugin = {
         };
       },
       { name: "pinchy_write" }
+    );
+
+    /**
+     * Removing a file from a zone the agent may write.
+     *
+     * Gated on `write_paths` — the SAME zone grant as pinchy_write, and not a
+     * grant of its own. Deletion is an operation, and this permission model cuts
+     * by zone rather than by operation: whoever may put a file into a zone may
+     * take it out again (plans/2026-08-05-agent-permissions-by-zone-design.md).
+     * That is what makes it safe by construction — `uploads/` is the user's zone
+     * and left write_paths in #1136, the knowledge base is read-only and never
+     * appears in write_paths at all, and SOUL.md / AGENTS.md / IDENTITY.md are
+     * platform-managed and were never in it.
+     *
+     * Why an agent needs this at all: OpenClaw's memory is plain files the agent
+     * maintains itself, and a native agent prunes them with `apply_patch`'s
+     * `*** Delete File:` or with exec — both of which Pinchy denies. Without a
+     * delete the agent's only way to retire a topic note is to overwrite it with
+     * a tombstone, which stays indexed and, because non-dated files under
+     * `memory/` are never temporally decayed, keeps full weight in recall
+     * forever. memory-core's watcher already listens for `unlink`, so a real
+     * removal is reflected in the search index.
+     */
+    api.registerTool(
+      (ctx: PluginToolContext) => {
+        const agentId = ctx.agentId;
+        if (!agentId) return null;
+
+        const config = agentConfigs[agentId];
+        if (!config) return null;
+
+        const writePaths = config.write_paths;
+        if (!writePaths || writePaths.length === 0) return null;
+
+        const pathList = writePaths.join(", ");
+
+        return {
+          name: "pinchy_delete",
+          label: "Delete File",
+          description:
+            `Delete a file you no longer need. Only files you can write can be deleted: ${pathList}. ` +
+            "Deletion is permanent — there is no undo.",
+          parameters: {
+            type: "object",
+            properties: {
+              path: {
+                type: "string",
+                description: `Full path of the file to delete. Must be under: ${pathList}`,
+              },
+            },
+            required: ["path"],
+          },
+          async execute(_toolCallId: string, params: Record<string, unknown>) {
+            try {
+              if (typeof params.path !== "string") {
+                throw new Error("path must be a string");
+              }
+              const requestedPath = params.path;
+
+              const resolved = validateAccess(
+                { allowed_paths: config.allowed_paths, write_paths: writePaths },
+                requestedPath,
+                "write"
+              );
+
+              // The same NFC/NFD reconciliation the write path does: the form
+              // the model emits and the form on disk can differ on a
+              // normalization-sensitive filesystem, and deleting the wrong
+              // spelling would silently do nothing.
+              const onDisk = resolveOnDiskPath(resolved);
+
+              // Defence in depth, exactly as on the write path: the lexical
+              // check above cannot see a symlink inside an allowed dir pointing
+              // out of it.
+              assertNoSymlinkEscape(onDisk, writePaths);
+
+              // Refuse directories. `unlink` would fail on one anyway, but the
+              // point is to be explicit: no single call may take out a whole
+              // zone, and an agent asking to delete `memory/` has misunderstood
+              // rather than found a feature.
+              let stats;
+              try {
+                stats = statSync(onDisk);
+              } catch (err) {
+                if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+                  // Deliberately an error, not a quiet success. A delete that
+                  // reports "done" for a path that was never there teaches the
+                  // agent its memory is tidier than it is, and mints an audit
+                  // row for a change that did not happen.
+                  return toolError(`No file at ${requestedPath}.`);
+                }
+                throw err;
+              }
+              if (stats.isDirectory()) {
+                return toolError(
+                  `${requestedPath} is a directory. This tool deletes one file at a time.`
+                );
+              }
+
+              const sizeBytes = stats.size;
+              await unlink(onDisk);
+
+              return {
+                content: [{ type: "text", text: `Deleted ${requestedPath}.` }],
+                details: {
+                  path: relativizeWritePath(onDisk, writePaths),
+                  sizeBytes,
+                },
+              };
+            } catch (error) {
+              const message = error instanceof Error ? error.message : "Unknown error";
+              const safePath = typeof params.path === "string" ? params.path : undefined;
+              return {
+                isError: true,
+                content: [{ type: "text", text: message }],
+                details: {
+                  ...(safePath !== undefined ? { path: safePath } : {}),
+                  error: message,
+                },
+              };
+            }
+          },
+        };
+      },
+      { name: "pinchy_delete" }
     );
 
     api.registerTool(
