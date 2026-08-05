@@ -157,12 +157,16 @@ export function requireAgentWriteAccess(
  * - **Timing.** The denial path runs a license lookup and, for a restricted
  *   agent, two group queries that the `!agent` path never reaches. Equalising
  *   that costs a query on every miss and buys little against a UUID keyspace.
- * - **Routes that do not use this helper.** `GET`/`POST /api/automations` still
- *   answer 403 for an agent the caller may not manage, and the admin-only
+ * - **Routes that do not use this helper.** The admin-only
  *   `/api/agents/:id/knowledge/*` and `/integrations` endpoints apply no
- *   visibility rule at all. Both are separate verdicts, not oversights of this
- *   one; `reference/api.mdx` describes what each endpoint really does rather
- *   than claiming the prefix as a whole.
+ *   visibility rule at all — a separate verdict, not an oversight of this one;
+ *   `reference/api.mdx` describes what each endpoint really does rather than
+ *   claiming the prefix as a whole.
+ *
+ * The Automations routes were the third item here and are now closed (#880).
+ * `resolveWorkflowAgent` shows the layering this docblock asks for: read gate
+ * first, so an agent the caller cannot see is a 404, and only then the
+ * manage-scope 403 for one they can.
  */
 export async function getAgentWithAccess(agentId: string, userId: string, userRole: string) {
   const rows = await db.select().from(activeAgents).where(eq(activeAgents.id, agentId));

@@ -20,10 +20,12 @@ import {
   integrationConnections,
 } from "@/db/schema";
 import { makeNextRequest, routeContext } from "@/test-helpers/route";
+import type { AgentVisibility } from "@/db/enums";
 
-const { getSessionMock, deferAuditLogMock } = vi.hoisted(() => ({
+const { getSessionMock, deferAuditLogMock, licenseStateMock } = vi.hoisted(() => ({
   getSessionMock: vi.fn(),
   deferAuditLogMock: vi.fn(),
+  licenseStateMock: vi.fn(),
 }));
 
 vi.mock("next/headers", () => ({
@@ -35,6 +37,16 @@ vi.mock("@/lib/auth", () => ({
 }));
 vi.mock("@/lib/audit-deferred", () => ({
   deferAuditLog: (...args: unknown[]) => deferAuditLogMock(...args),
+}));
+
+// Only the license STATE is replaced. The visibility half of the access gate is
+// live only on a LICENSED instance — a community instance maps "restricted" to
+// "all" (agent-access.effectiveVisibility) — so a suite that inherited the state
+// could not tell a visibility denial from a scope denial, and would stay green
+// whichever one the route produced. This suite was in exactly that position.
+vi.mock("@/lib/enterprise", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/enterprise")>()),
+  getLicenseState: licenseStateMock,
 }));
 
 const { GET } = await import("@/app/api/automations/route");
@@ -54,7 +66,15 @@ function asAdmin(id: string) {
 async function seedUser(id: string, role: "member" | "admin" = "member") {
   await db.insert(users).values({ id, name: id, email: `${id}@test.com`, role });
 }
-async function seedAgent(opts: { isPersonal: boolean; ownerId: string | null }) {
+// `visibility` is spelled out by every case whose answer depends on it, rather
+// than inherited from the column default — the default IS "restricted", and a
+// test whose meaning turns on that is a test that reads as the opposite of what
+// it pins.
+async function seedAgent(opts: {
+  isPersonal: boolean;
+  ownerId: string | null;
+  visibility?: AgentVisibility;
+}) {
   const [row] = await db
     .insert(agents)
     .values({
@@ -63,6 +83,7 @@ async function seedAgent(opts: { isPersonal: boolean; ownerId: string | null }) 
       greetingMessage: "Hi",
       isPersonal: opts.isPersonal,
       ownerId: opts.ownerId,
+      ...(opts.visibility ? { visibility: opts.visibility } : {}),
     })
     .returning();
   return row;
@@ -111,6 +132,7 @@ async function loadWorkflow(id: string) {
 describe("Automations management API", () => {
   beforeEach(async () => {
     vi.clearAllMocks();
+    licenseStateMock.mockResolvedValue("paid");
     await seedUser(OWNER);
     await seedUser(OTHER);
     await seedUser(ADMIN, "admin");
@@ -140,9 +162,13 @@ describe("Automations management API", () => {
       });
     });
 
-    it("forbids a member from listing a shared agent's workflows", async () => {
+    it("forbids a member from listing the workflows of a shared agent they CAN see", async () => {
+      // visibility "all" on purpose: the member can see this agent, so the 403
+      // pins the SCOPE rule and nothing else. Left restricted, the very same 403
+      // would also be produced by a route that had no scope gate at all — which
+      // is the shape this suite was in before the license state was pinned.
       asMember(OWNER);
-      const agent = await seedAgent({ isPersonal: false, ownerId: null });
+      const agent = await seedAgent({ isPersonal: false, ownerId: null, visibility: "all" });
       const res = await GET(
         req(`http://localhost/api/automations?agentId=${agent.id}`),
         routeContext()
@@ -151,6 +177,46 @@ describe("Automations management API", () => {
       // The read-side wording, which the shared gate supplies as its default
       // (#1087) — the create route deliberately overrides it.
       expect(await res.json()).toEqual({ error: "You do not have access to this agent" });
+    });
+
+    it("answers 404 for someone else's personal agent — never confirms it exists", async () => {
+      // Nobody can enumerate another user's personal agents (getVisibleAgents
+      // withholds them from admins too), so a 403 would disclose the one thing
+      // the rest of the product refuses to (#880).
+      asMember(OTHER);
+      const agent = await seedAgent({ isPersonal: true, ownerId: OWNER });
+      const res = await GET(
+        req(`http://localhost/api/automations?agentId=${agent.id}`),
+        routeContext()
+      );
+      expect(res.status).toBe(404);
+    });
+
+    it("answers 404 for a restricted shared agent outside the member's groups", async () => {
+      asMember(OWNER);
+      const agent = await seedAgent({ isPersonal: false, ownerId: null, visibility: "restricted" });
+      const res = await GET(
+        req(`http://localhost/api/automations?agentId=${agent.id}`),
+        routeContext()
+      );
+      expect(res.status).toBe(404);
+    });
+
+    it("answers an agent it may not see byte-identically to one that does not exist", async () => {
+      asMember(OTHER);
+      const agent = await seedAgent({ isPersonal: true, ownerId: OWNER });
+
+      const denied = await GET(
+        req(`http://localhost/api/automations?agentId=${agent.id}`),
+        routeContext()
+      );
+      const missing = await GET(
+        req(`http://localhost/api/automations?agentId=ghost`),
+        routeContext()
+      );
+
+      expect(denied.status).toBe(missing.status);
+      expect(await denied.json()).toEqual(await missing.json());
     });
 
     it("requires an agentId query parameter", async () => {

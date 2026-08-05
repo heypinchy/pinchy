@@ -15,6 +15,12 @@
 //   - @/lib/audit-deferred.deferAuditLog — a thin next/after wrapper whose
 //     callback does not run under a direct handler call; we assert the payload
 //     it was handed instead of round-tripping through `after()`.
+//   - @/lib/enterprise.getLicenseState — the visibility half of the access gate
+//     is only LIVE on a licensed instance: a community instance maps
+//     "restricted" to "all" (agent-access.effectiveVisibility), so a suite that
+//     left this unmocked could not tell a visibility denial from a scope denial
+//     and would stay green whichever one the route produced. "paid" is the state
+//     a paying customer runs in, and the one where these answers matter.
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { eq } from "drizzle-orm";
 
@@ -28,10 +34,12 @@ import {
   integrationConnections,
 } from "@/db/schema";
 import { makeNextRequest, routeContext } from "@/test-helpers/route";
+import type { AgentVisibility } from "@/db/enums";
 
-const { getSessionMock, deferAuditLogMock } = vi.hoisted(() => ({
+const { getSessionMock, deferAuditLogMock, licenseStateMock } = vi.hoisted(() => ({
   getSessionMock: vi.fn(),
   deferAuditLogMock: vi.fn(),
+  licenseStateMock: vi.fn(),
 }));
 
 vi.mock("next/headers", () => ({
@@ -45,6 +53,13 @@ vi.mock("@/lib/auth", () => ({
 
 vi.mock("@/lib/audit-deferred", () => ({
   deferAuditLog: (...args: unknown[]) => deferAuditLogMock(...args),
+}));
+
+// Only the license STATE is replaced; the rest of the module stays real so
+// nothing else in the route's graph silently loses behavior.
+vi.mock("@/lib/enterprise", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/enterprise")>()),
+  getLicenseState: licenseStateMock,
 }));
 
 // Imported after the mocks are registered.
@@ -65,7 +80,15 @@ async function seedUser(id: string, role: "member" | "admin" = "member") {
   await db.insert(users).values({ id, name: id, email: `${id}@test.com`, role });
 }
 
-async function seedAgent(opts: { isPersonal: boolean; ownerId: string | null }) {
+// `visibility` is spelled out by every case whose answer depends on it, rather
+// than inherited from the column default — the default IS "restricted", and a
+// test whose meaning turns on that is a test that reads as the opposite of what
+// it pins.
+async function seedAgent(opts: {
+  isPersonal: boolean;
+  ownerId: string | null;
+  visibility?: AgentVisibility;
+}) {
   const [row] = await db
     .insert(agents)
     .values({
@@ -74,6 +97,7 @@ async function seedAgent(opts: { isPersonal: boolean; ownerId: string | null }) 
       greetingMessage: "Hi",
       isPersonal: opts.isPersonal,
       ownerId: opts.ownerId,
+      ...(opts.visibility ? { visibility: opts.visibility } : {}),
     })
     .returning();
   return row;
@@ -117,6 +141,7 @@ async function loadWorkflows(agentId: string) {
 describe("POST /api/automations — create email workflow", () => {
   beforeEach(async () => {
     vi.clearAllMocks();
+    licenseStateMock.mockResolvedValue("paid");
     // agents.owner_id and email_workflows.created_by both FK to user.id, so the
     // actors must exist before any agent/workflow references them.
     await seedUser(OWNER);
@@ -177,9 +202,12 @@ describe("POST /api/automations — create email workflow", () => {
     });
   });
 
-  it("forbids a member from creating a workflow on a shared agent (admin-only scope)", async () => {
+  it("forbids a member from creating a workflow on a shared agent they CAN see (admin-only scope)", async () => {
+    // visibility "all" on purpose: the member can see this agent, so the 403
+    // pins the SCOPE rule and nothing else. Left restricted, the very same 403
+    // would also be produced by a route that had no scope gate at all.
     asMember(OWNER);
-    const agent = await seedAgent({ isPersonal: false, ownerId: null });
+    const agent = await seedAgent({ isPersonal: false, ownerId: null, visibility: "all" });
     await seedConnection("conn-shared");
     await grantEmailPermission(agent.id, "conn-shared");
 
@@ -196,15 +224,47 @@ describe("POST /api/automations — create email workflow", () => {
     expect(deferAuditLogMock).not.toHaveBeenCalled();
   });
 
-  it("forbids a member from creating a workflow on someone else's personal agent", async () => {
+  it("answers 404 for someone else's personal agent — never confirms it exists", async () => {
+    // Nobody can enumerate another user's personal agents — getVisibleAgents
+    // withholds them from every caller, admins included — so a 403 here would
+    // disclose the one thing the rest of the product refuses to: that this id is
+    // a real agent.
     asMember(OTHER);
     const agent = await seedAgent({ isPersonal: true, ownerId: OWNER });
     await seedConnection("conn-x");
     await grantEmailPermission(agent.id, "conn-x");
 
     const res = await POST(postBody(validBody(agent.id, "conn-x")), routeContext());
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
     expect(await loadWorkflows(agent.id)).toHaveLength(0);
+    expect(deferAuditLogMock).not.toHaveBeenCalled();
+  });
+
+  it("answers 404 for a restricted shared agent outside the member's groups", async () => {
+    // The other half of "cannot see". Only live on a LICENSED instance: a
+    // community instance maps "restricted" to "all", which is why this suite
+    // pins the license state rather than inheriting it.
+    asMember(OWNER);
+    const agent = await seedAgent({ isPersonal: false, ownerId: null, visibility: "restricted" });
+    await seedConnection("conn-restricted");
+    await grantEmailPermission(agent.id, "conn-restricted");
+
+    const res = await POST(postBody(validBody(agent.id, "conn-restricted")), routeContext());
+    expect(res.status).toBe(404);
+    expect(await loadWorkflows(agent.id)).toHaveLength(0);
+  });
+
+  it("answers an agent it may not see byte-identically to one that does not exist", async () => {
+    // The oracle is closed by the two answers being the SAME, not by both merely
+    // being 404 — a divergent body re-opens what an equal status closed.
+    asMember(OTHER);
+    const agent = await seedAgent({ isPersonal: true, ownerId: OWNER });
+
+    const denied = await POST(postBody(validBody(agent.id, "conn-any")), routeContext());
+    const missing = await POST(postBody(validBody("no-such-agent", "conn-any")), routeContext());
+
+    expect(denied.status).toBe(missing.status);
+    expect(await denied.json()).toEqual(await missing.json());
   });
 
   it("lets an admin create a workflow on a shared agent", async () => {

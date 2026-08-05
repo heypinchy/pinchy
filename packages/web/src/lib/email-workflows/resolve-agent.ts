@@ -1,8 +1,6 @@
 import { NextResponse } from "next/server";
-import { eq } from "drizzle-orm";
 
-import { db } from "@/db";
-import { agents } from "@/db/schema";
+import { getAgentWithAccess } from "@/lib/agent-access";
 import { canManageAgentWorkflows } from "./authz";
 
 /**
@@ -20,8 +18,8 @@ export type WorkflowAgentResult = { agent: WorkflowAgent } | { error: NextRespon
 
 /**
  * Resolve an agentId to an agent the actor may manage workflows on — the
- * load → 404 → scope-gate → 403 preamble that every agent-scoped Automations
- * route opens with (list, create, connection picker).
+ * read-gate → scope-gate preamble that every agent-scoped Automations route
+ * opens with (list, create, connection picker).
  *
  * Single-sourced deliberately: `canManageAgentWorkflows` was already shared,
  * but the lookup and the two HTTP answers around it were copied per route
@@ -34,31 +32,34 @@ export type WorkflowAgentResult = { agent: WorkflowAgent } | { error: NextRespon
  * differs per route ("access to this agent" when reading, "permission to create a
  * workflow" when writing). Sharing the gate must not silently rewrite either.
  *
- * **A refusal answers 403, and that deliberately differs from `loadChatPageAgent`,
- * which answers 404** ("a member who cannot see an agent should not learn that it
- * exists"). The two are not the same question. That one is a *visibility* gate
- * (`assertAgentAccess`): whoever fails it cannot reach the agent anywhere, so the
- * only thing a 403 would tell them is that it exists. This is a *manage-scope*
- * gate (`canManageAgentWorkflows`), and its ordinary refusal is a shared agent the
- * member sees in their sidebar and chats with daily. "Agent not found" about an
- * agent on their screen is simply false, and it sends them checking the id instead
- * of asking an admin.
+ * **Two gates, in this order: can you SEE this agent, and only then may you
+ * manage its workflows.** The order is the whole point, and it is what closes
+ * the existence oracle these routes used to carry (#880).
  *
- * The other leg — someone else's personal agent, or a restricted one outside the
- * actor's groups — is refused by both gates, so there 403-vs-404 really does
- * confirm existence. It stays 403 knowingly, for two reasons:
+ * The read gate is `getAgentWithAccess`, which answers 404 — byte-identical to
+ * an agent that does not exist — for an agent the caller may not see. Its
+ * docblock carries the criterion: a distinguishable error is fine when the
+ * caller can already enumerate the resource, and an oracle when they cannot.
+ * Nobody can enumerate someone else's personal agent (`getVisibleAgents`
+ * withholds them from every caller, admins included), so answering 403 here
+ * disclosed exactly what the rest of the product refuses to. Any logged-in
+ * member could hand these two routes an id and learn whether it was real.
  *
- * - There is nothing to enumerate. `agents.id` is `crypto.randomUUID()`, so the
- *   answer only ever speaks about an id the caller already holds; it reveals none
- *   they don't. Holding a foreign agent's id is itself the leak worth chasing, and
- *   this function is not where that happened.
- * - 404 here would close nothing. `getAgentWithAccess` answers 403 for exactly
- *   that invisible agent on every `/api/agents/[agentId]/*` route a plain member
- *   can reach, so an Automations-only 404 would trade a worse error message for a
- *   property the instance does not actually have. Closing the oracle means
- *   changing `getAgentWithAccess` (and the ~10 routes built on it), not this.
+ * The scope gate stays 403, and that is preserved rather than swept away: its
+ * ORDINARY refusal is a shared agent the member sees in their sidebar and chats
+ * with daily. "Agent not found" about an agent on their screen is simply false,
+ * and it sends them checking the id instead of asking an admin. Having passed
+ * the read gate, they already know it exists, so 403 discloses nothing.
  *
- * Both legs are pinned in resolve-agent.test.ts against `assertAgentAccess`
+ * The refusal from the read gate is passed through **untouched**. Rebuilding it
+ * here would let this file re-open the oracle while `agent-access` stayed
+ * correct — the response, not merely the status, is the thing being shared.
+ *
+ * One consequence worth naming: the read gate reads `active_agents`, so a
+ * soft-deleted agent now answers 404 instead of accepting workflow calls. That
+ * is the right answer and was not previously true.
+ *
+ * The legs are pinned in resolve-agent.test.ts against `assertAgentAccess`
  * itself, so the visibility facts this rests on cannot rot unnoticed.
  */
 export async function resolveWorkflowAgent(
@@ -66,23 +67,13 @@ export async function resolveWorkflowAgent(
   actor: { id: string; role: string | null | undefined },
   forbiddenMessage = "You do not have access to this agent"
 ): Promise<WorkflowAgentResult> {
-  const [agent] = await db
-    .select({
-      id: agents.id,
-      name: agents.name,
-      isPersonal: agents.isPersonal,
-      ownerId: agents.ownerId,
-    })
-    .from(agents)
-    .where(eq(agents.id, agentId));
+  const gated = await getAgentWithAccess(agentId, actor.id, actor.role ?? "");
+  if (gated instanceof NextResponse) return { error: gated };
 
-  if (!agent) {
-    return { error: NextResponse.json({ error: "Agent not found" }, { status: 404 }) };
-  }
-  if (!canManageAgentWorkflows(agent, actor)) {
+  if (!canManageAgentWorkflows(gated, actor)) {
     return { error: NextResponse.json({ error: forbiddenMessage }, { status: 403 }) };
   }
-  return { agent };
+  return { agent: gated };
 }
 
 /**

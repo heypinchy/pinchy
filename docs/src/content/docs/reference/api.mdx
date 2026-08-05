@@ -216,7 +216,7 @@ Get a single agent by ID.
 
 An agent you may not see answers `404` as well, with the same body — someone else's personal agent, or a restricted agent outside your groups, is deliberately indistinguishable from an ID that was never issued. This holds for admins too: nobody can list another user's personal agents, so nobody gets to confirm one exists.
 
-Every endpoint below that gates on **your access to the agent** answers the same way, over the WebSocket chat bridge as well as over HTTP. Two groups under this prefix do not, and it is worth knowing which: the admin-only management endpoints (`knowledge/*`, `integrations`, and connecting a Telegram bot) apply no visibility rule at all — they are restricted to admins and return `404` only when no agent has the ID. And `GET`/`POST /api/automations`, which is keyed by `agentId`, still answers `403` for an agent you may not manage.
+Every endpoint that gates on **your access to the agent** answers the same way, over the WebSocket chat bridge as well as over HTTP, and including the `agentId`-keyed [Automations endpoints](#automations). One group under this prefix does not, and it is worth knowing which: the admin-only management endpoints (`knowledge/*`, `integrations`, and connecting a Telegram bot) apply no visibility rule at all — they are restricted to admins and return `404` only when no agent has the ID.
 
 ### `PATCH /api/agents/:id`
 
@@ -556,7 +556,7 @@ Scoped to the folders that agent is granted, exactly like search itself, so the 
 
 Standing email workflows an agent runs on its own — see [the Automations tab](/concepts/agent-settings/#automations-tab). You can manage automations on a personal agent you own; admins can manage them on any agent.
 
-Every endpoint here answers `403` when what you asked for is outside your scope, and that deliberately differs from how a chat page answers. Opening an agent you may not see gives you a plain "not found", because a refusal there would tell you the agent exists. Automations refuse a scope you lack on an agent you can normally see and use, so they say so instead of pretending it is missing.
+Every endpoint here asks two questions in order, and answers differently depending on which one you fail. Can you **see** the agent at all? If not — someone else's personal agent, or a restricted one outside your groups — you get a plain `404`, identical to an ID that was never issued, because any other answer would confirm the agent exists. If you can see it but may not **manage** its automations — the everyday case of a shared agent you chat with daily — you get `403`, which tells you nothing you did not already know and points you at an admin instead of at a typo.
 
 ### `GET /api/automations?agentId=<agentId>`
 
@@ -566,8 +566,8 @@ List the agent's email workflows.
 
 - `400` — `agentId` is missing from the query string
 - `401` — not authenticated
-- `403` — the agent exists, but its automations are outside your scope: a shared agent is admin-only, and a personal agent's automations belong to its owner
-- `404` — no agent has that id
+- `403` — you can see the agent, but its automations are outside your scope: a shared agent is admin-only, and a personal agent's automations belong to its owner
+- `404` — no agent has that id, **or** you may not see the one that does
 
 ### `POST /api/automations`
 
@@ -592,8 +592,8 @@ Create a workflow. It is always created **disabled** and `pending`, whatever the
 
 - `400` — the body fails validation, or a requested connection is one the agent has no email **read** access to. The response names those connection ids; an id that doesn't exist lands here too, since it has no permission row either
 - `401` — not authenticated
-- `403` — you may not create a workflow on this agent (same scope rule as the list)
-- `404` — no agent has that id
+- `403` — you can see the agent but may not create a workflow on it (same scope rule as the list)
+- `404` — no agent has that id, **or** you may not see the one that does
 
 ### `PATCH /api/automations/:id`
 
