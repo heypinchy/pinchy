@@ -24,9 +24,27 @@
  *    `readClientIp` in `@/lib/api-auth`).
  *
  * Same shape as `@/lib/password-change-rate-limiter` and the scope-denial
- * windows in `@/lib/api-auth`: process-global `Map`s, bounded by the number
- * of distinct keys/IPs the process has seen rather than by request volume.
- * A container restart just re-opens every window.
+ * windows in `@/lib/api-auth`: process-global state, and a container restart
+ * just re-opens every window.
+ *
+ * The two halves are NOT symmetric, and the asymmetry is the point. Those
+ * precedents key their `Map` on a user id or an API key id — an identity an
+ * admin has to mint first, so "bounded by the distinct identities the
+ * process has seen" is a real bound. A client address is not that: an
+ * unauthenticated caller picks it, IPv6 hands one host a /64 to rotate
+ * through, and behind no proxy it is a header the caller writes itself. So
+ * for the invalid-key half:
+ *
+ *  - the LIMITER map is still keyed per address (one noisy source must not
+ *    lock out everyone else), but it evicts elapsed buckets and fails closed
+ *    at a hard cap instead of growing per request;
+ *  - the AUDIT window is GLOBAL, not keyed at all — AGENTS.md
+ *    § "`/api/internal/` Is A Security Claim, Not A Folder Name" states the
+ *    rule and `claimHostBlockSlot` (`@/server/host-check`) is the precedent:
+ *    every `appendAuditLog` takes `pg_advisory_xact_lock` on one constant
+ *    key, so an audit window keyed on a caller-supplied value doesn't just
+ *    grow a table — it serializes every genuine audit write in the process
+ *    behind the flood.
  */
 
 import { FixedWindowRateLimiter } from "./fixed-window-rate-limiter";
@@ -91,12 +109,48 @@ export function claimApiKeyRateLimitAuditSlot(
 export const INVALID_API_KEY_RATE_LIMIT_MAX_ATTEMPTS = 20;
 export const INVALID_API_KEY_RATE_LIMIT_WINDOW_MS = 60_000;
 
+/**
+ * Ceiling on how many addresses are tracked at once. Unlike the per-key map,
+ * this one's key space belongs to the caller, so "one entry per distinct
+ * address" is not a bound — a single host with an IPv6 /64 can mint them
+ * faster than the sweep below reclaims them.
+ *
+ * At the cap a NEW address gets no bucket and is denied. That direction is
+ * not arbitrary: handing back `true` because the process is out of room
+ * would turn memory pressure into "you are allowed", which is exactly the
+ * bypass the cap exists to prevent. An address already tracked keeps its own
+ * budget, so a flood cannot use the cap to un-throttle itself either.
+ */
+export const INVALID_API_KEY_IP_MAX_TRACKED = 50_000;
+
 const invalidApiKeyIpLimiters = new Map<string, FixedWindowRateLimiter>();
+
+/**
+ * Elapsed buckets are dead weight: a limiter past its window enforces
+ * nothing, since the next `tryAcquire` opens a fresh one either way (hence
+ * `isExpired` being the same predicate — see `@/lib/fixed-window-rate-limiter`).
+ *
+ * Swept at most once per window rather than on every insert. A sweep is O(n)
+ * over the map, and running it per request above some size threshold would
+ * hand the flood a CPU cost to drive instead of a memory one.
+ */
+let nextInvalidApiKeyIpSweepAt = 0;
+
+function sweepInvalidApiKeyIpBuckets(now: number): void {
+  if (now < nextInvalidApiKeyIpSweepAt) return;
+  nextInvalidApiKeyIpSweepAt = now + INVALID_API_KEY_RATE_LIMIT_WINDOW_MS;
+  for (const [ip, limiter] of invalidApiKeyIpLimiters) {
+    if (limiter.isExpired(now)) invalidApiKeyIpLimiters.delete(ip);
+  }
+}
 
 /** Returns `true` if the attempt is allowed, `false` if the IP's window is full. */
 export function tryAcquireInvalidApiKeyIpSlot(ip: string, now: number = Date.now()): boolean {
+  sweepInvalidApiKeyIpBuckets(now);
+
   let limiter = invalidApiKeyIpLimiters.get(ip);
   if (!limiter) {
+    if (invalidApiKeyIpLimiters.size >= INVALID_API_KEY_IP_MAX_TRACKED) return false;
     limiter = new FixedWindowRateLimiter({
       max: INVALID_API_KEY_RATE_LIMIT_MAX_ATTEMPTS,
       windowMs: INVALID_API_KEY_RATE_LIMIT_WINDOW_MS,
@@ -106,37 +160,55 @@ export function tryAcquireInvalidApiKeyIpSlot(ip: string, now: number = Date.now
   return limiter.tryAcquire(now);
 }
 
-/**
- * One `auth.rate_limited` row per IP per window. Bounding this is what
- * makes it safe to audit an invalid-key attempt at all: an ordinary garbage
- * credential is still NOT audited (see `@/lib/api-auth`'s 401 branch — an
- * unauthenticated caller must not get a write into the audit table for
- * free), but once an IP has been throttled that ceases to be an
- * unbounded write — it's one row per window, exactly like the per-key case
- * above.
- */
-const invalidApiKeyRateLimitAuditWindows = new Map<
-  string,
-  { openedAt: number; suppressed: number }
->();
+/** Test seam — the map is process-global, so suites must start from zero. */
+export function trackedInvalidApiKeyIpCountForTest(): number {
+  return invalidApiKeyIpLimiters.size;
+}
 
-export function claimInvalidApiKeyRateLimitAuditSlot(
-  ip: string,
-  now: number = Date.now()
-): { write: boolean; suppressed: number } {
-  const open = invalidApiKeyRateLimitAuditWindows.get(ip);
+/**
+ * One `auth.rate_limited` row per window for the invalid-key path — GLOBAL,
+ * not keyed by address, and that is the load-bearing difference from
+ * `claimApiKeyRateLimitAuditSlot` above.
+ *
+ * Bounding this is what makes it safe to audit an unauthenticated caller at
+ * all: an ordinary garbage credential is still NOT audited (see
+ * `@/lib/api-auth`'s 401 branch — an unauthenticated caller must not get a
+ * write into the audit table for free). Keying the window on the address
+ * would reinstate exactly that: one row per source, and a distributed
+ * key-guessing sweep mints as many sources as it likes. AGENTS.md
+ * § "`/api/internal/` Is A Security Claim, Not A Folder Name" writes the rule
+ * down after `auth.host_blocked` hit it — a window keyed on a caller-supplied
+ * value "grows per request and the throttle stops throttling" — and
+ * `claimHostBlockSlot` (`@/server/host-check`) is the shape to copy. The
+ * per-key window above may stay keyed for the reason stated there: an admin
+ * has to mint an API key first.
+ *
+ * The cost is real and accepted, same as for `auth.host_blocked`: inside one
+ * minute a flood from one source can mask a throttle from another. The row
+ * that does get written still names its own `remoteAddress`, and
+ * `suppressedSinceLastEntry` reports the scale.
+ */
+let invalidApiKeyRateLimitAuditWindow: { openedAt: number; suppressed: number } | null = null;
+
+export function claimInvalidApiKeyRateLimitAuditSlot(now: number = Date.now()): {
+  write: boolean;
+  suppressed: number;
+} {
+  const open = invalidApiKeyRateLimitAuditWindow;
   if (open && now - open.openedAt < INVALID_API_KEY_RATE_LIMIT_WINDOW_MS) {
     open.suppressed++;
     return { write: false, suppressed: open.suppressed };
   }
-  invalidApiKeyRateLimitAuditWindows.set(ip, { openedAt: now, suppressed: 0 });
-  return { write: true, suppressed: open?.suppressed ?? 0 };
+  const suppressed = open?.suppressed ?? 0;
+  invalidApiKeyRateLimitAuditWindow = { openedAt: now, suppressed: 0 };
+  return { write: true, suppressed };
 }
 
-/** Test seam — every map here is process-global, so suites must start from zero. */
+/** Test seam — every window here is process-global, so suites must start from zero. */
 export function resetApiKeyRateLimitersForTest(): void {
   apiKeyLimiters.clear();
   apiKeyRateLimitAuditWindows.clear();
   invalidApiKeyIpLimiters.clear();
-  invalidApiKeyRateLimitAuditWindows.clear();
+  nextInvalidApiKeyIpSweepAt = 0;
+  invalidApiKeyRateLimitAuditWindow = null;
 }

@@ -153,12 +153,16 @@ const UNKNOWN_CLIENT_IP = "unknown";
  * this one answers "who do we trust to bucket on", and the trustworthy hop
  * sits at the opposite end for each.
  *
- * A caller with no `x-forwarded-for` at all (direct connection in dev, or a
- * deployment with no reverse proxy in front) buckets into one fixed key
- * rather than being unlimited — see the doc comment on
- * `tryAcquireInvalidApiKeyIpSlot` for why that's an acceptable trade rather
- * than a real weakening: the alternative is no limiter at all for that
- * shape of deployment.
+ * A caller with no `x-forwarded-for` at all buckets into one fixed key
+ * rather than going unlimited — but be precise about what that buys. It
+ * bounds a MISCONFIGURED deployment, not an adversarial one: every path
+ * Pinchy ships puts Caddy in front, and where it doesn't, the header is
+ * caller-supplied end to end, so an attacker sends one and picks a fresh
+ * bucket per request instead of falling into this branch at all. Two things
+ * still bind there, by design rather than by luck: the tracked-bucket cap in
+ * `tryAcquireInvalidApiKeyIpSlot`, which fails closed rather than growing,
+ * and the `auth.rate_limited` audit window, which is global for exactly this
+ * reason. Nothing here is a substitute for a limiter in the proxy.
  */
 function readClientIp(req: NextRequest): string {
   const header = req.headers.get("x-forwarded-for");
@@ -227,9 +231,11 @@ function claimScopeDenialSlot(keyId: string, now: number): { write: boolean; sup
  * A plain invalid attempt stays unaudited, same as always: anyone on the
  * internet can present a garbage key, so auditing every one would hand an
  * unauthenticated attacker an unbounded write into the audit table. Once
- * the IP is actually THROTTLED, the write is no longer unbounded — one row
- * per IP per window, the same shape `claimScopeDenialSlot` uses above — so
- * recording *that* is safe.
+ * the caller is actually THROTTLED, the write is no longer unbounded — one
+ * row per window across the whole path, the shape `claimHostBlockSlot`
+ * (`@/server/host-check`) uses for the same reason. Not one row per IP:
+ * that window would be keyed on a value the caller supplies, which is how
+ * a throttle stops throttling.
  */
 async function denyInvalidApiKeyAttempt(req: NextRequest): Promise<NextResponse> {
   const ip = readClientIp(req);
@@ -238,7 +244,7 @@ async function denyInvalidApiKeyAttempt(req: NextRequest): Promise<NextResponse>
     return unauthorized();
   }
 
-  const slot = claimInvalidApiKeyRateLimitAuditSlot(ip, now);
+  const slot = claimInvalidApiKeyRateLimitAuditSlot(now);
   if (slot.write) {
     try {
       await appendAuditLog({
