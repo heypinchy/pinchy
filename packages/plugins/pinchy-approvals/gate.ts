@@ -19,6 +19,11 @@ export interface GateContext {
   agentId?: string;
   sessionKey?: string;
   senderId?: string;
+  /** Identifies the individual tool call. OpenClaw puts it on the approval it
+   * broadcasts, so it is what links the card the user clicks to the call that
+   * is actually waiting — (agent, session, tool, args) does not, because one
+   * turn can emit the same call twice. */
+  toolCallId?: string;
 }
 
 export interface GateResult {
@@ -96,6 +101,7 @@ export async function evaluateGate(
         agentId,
         sessionKey: ctx.sessionKey,
         senderId: ctx.senderId,
+        toolCallId: ctx.toolCallId,
         toolName,
         params,
       }),

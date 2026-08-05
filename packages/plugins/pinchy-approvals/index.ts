@@ -60,7 +60,16 @@ const plugin = {
       return evaluateGate(
         event.toolName,
         event.params,
-        { agentId: ctx.agentId, sessionKey: ctx.sessionKey, senderId: ctx.senderId },
+        {
+          agentId: ctx.agentId,
+          sessionKey: ctx.sessionKey,
+          senderId: ctx.senderId,
+          // OpenClaw threads this through both the event and the context, and
+          // which one is populated depends on the call path. It is what the
+          // approval broadcast is keyed on, so losing it costs the ability to
+          // match a confirmation to the call it suspended.
+          toolCallId: event.toolCallId ?? ctx.toolCallId,
+        },
         cfg
       );
     });

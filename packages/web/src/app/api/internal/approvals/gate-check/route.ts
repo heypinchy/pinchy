@@ -55,7 +55,7 @@ export async function POST(request: NextRequest) {
 
   const parsed = await parseRequestBody(gateCheckSchema, request);
   if ("error" in parsed) return parsed.error;
-  const { agentId, sessionKey, senderId, toolName, params } = parsed.data;
+  const { agentId, sessionKey, senderId, toolCallId, toolName, params } = parsed.data;
 
   // Policy lives server-side: load the agent and short-circuit ungated tools
   // so the gate adds no pending row (and the plugin can safely call this for
@@ -95,6 +95,7 @@ export async function POST(request: NextRequest) {
     requesterId,
     sessionKey,
     toolName,
+    toolCallId,
     argsDigest,
     argsSummary: summarizeArgs(params),
   });

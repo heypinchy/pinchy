@@ -70,6 +70,27 @@ describe("approvals gate decision service", () => {
     expect(await db.select().from(toolApproval)).toHaveLength(1);
   });
 
+  // #1132. OpenClaw keys the approval it broadcasts on the toolCallId, so this
+  // is the only field that says WHICH suspended call a confirmation resumes.
+  it("records the toolCallId of the call that is waiting", async () => {
+    const r = await decideGate({ ...base(), toolCallId: "call_1" });
+    const [row] = await db.select().from(toolApproval).where(eq(toolApproval.id, r.requestId));
+    expect(row.toolCallId).toBe("call_1");
+  });
+
+  // A reused row must point at the call that is waiting NOW, not the one that
+  // opened it. The same tool with the same arguments gets a fresh toolCallId on
+  // every attempt, so a stale value would resolve an approval OpenClaw has
+  // already discarded — the user clicks approve, sees a success toast, and the
+  // run stays stuck on the attempt nobody resolved.
+  it("re-points a reused pending request at the newest call", async () => {
+    const r1 = await decideGate({ ...base(), toolCallId: "call_1" });
+    const r2 = await decideGate({ ...base(), toolCallId: "call_2" });
+    expect(r2.requestId).toBe(r1.requestId);
+    const [row] = await db.select().from(toolApproval).where(eq(toolApproval.id, r1.requestId));
+    expect(row.toolCallId).toBe("call_2");
+  });
+
   it("allows and consumes exactly once after approval, then re-gates", async () => {
     const r = await decideGate(base());
     await resolveDecision({ id: r.requestId, approverId: requesterId, decision: "approve" });

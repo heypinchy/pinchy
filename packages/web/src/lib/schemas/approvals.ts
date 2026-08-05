@@ -15,6 +15,10 @@ export const gateCheckSchema = z.object({
    * userId encoded in the session key. */
   senderId: z.string().optional(),
   toolName: z.string().min(1),
+  /** The individual OpenClaw tool call. Optional for the same reason as
+   * `sessionKey`: some run contexts carry none, and a gated call without one
+   * must get an answer it can act on rather than a 400. */
+  toolCallId: z.string().min(1).optional(),
   params: z.record(z.string(), z.unknown()).optional().default({}),
 });
 export type GateCheckBody = z.infer<typeof gateCheckSchema>;

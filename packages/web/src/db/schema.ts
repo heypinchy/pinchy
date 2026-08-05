@@ -373,6 +373,13 @@ export const toolApproval = pgTable(
     requesterId: text("requester_id").notNull(),
     sessionKey: text("session_key").notNull(),
     toolName: text("tool_name").notNull(),
+    // The OpenClaw tool call this confirmation is holding up. It is what the
+    // `plugin.approval.requested` broadcast is keyed on, so it is how a card
+    // the user clicks finds the suspended call to resume — (agent, requester,
+    // session, tool, argsDigest) cannot do that, because one turn can emit the
+    // same call twice and both would match. Nullable: a run context can carry
+    // no call id, and every row written before #1132 has none.
+    toolCallId: text("tool_call_id"),
     argsDigest: text("args_digest").notNull(),
     argsSummary: jsonb("args_summary").$type<Record<string, unknown>>(),
     tier: approvalTierEnum("tier").notNull().default("confirm"),
@@ -395,6 +402,9 @@ export const toolApproval = pgTable(
     ),
     // The chat UI lists a requester's pending confirmations.
     index("tool_approval_requester_status_idx").on(table.requesterId, table.status),
+    // An arriving `plugin.approval.requested` broadcast carries only the tool
+    // call id, so this is the lookup that turns it into our row.
+    index("tool_approval_call_idx").on(table.toolCallId),
   ]
 );
 

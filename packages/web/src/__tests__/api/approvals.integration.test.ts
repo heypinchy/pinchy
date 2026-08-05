@@ -173,6 +173,28 @@ describe("approval routes (integration, real DB)", () => {
     expect(row.requesterId).toBe(mixedCaseId);
   });
 
+  // #1132. The plugin sends the id of the call it is about to suspend; the row
+  // has to carry it, because the `plugin.approval.requested` broadcast names
+  // the call and nothing else. This is the wiring — schema field, route
+  // destructuring, service argument — that each unit test sees only half of.
+  it("stores the toolCallId the gate sent, so the waiting call can be found again", async () => {
+    const res = await (await gateCheck(gateReq(gateBody({ toolCallId: "call_abc" })))).json();
+    expect(res.decision).toBe("block");
+
+    const [row] = await db.select().from(toolApproval).where(eq(toolApproval.id, res.requestId));
+    expect(row.toolCallId).toBe("call_abc");
+  });
+
+  // A run context without a call id must still get a decision it can act on.
+  // Rejecting the body would reach the plugin as "service unavailable" and turn
+  // a confirmable action into an outage.
+  it("still decides a gated call that carries no toolCallId", async () => {
+    const res = await (await gateCheck(gateReq(gateBody()))).json();
+    expect(res.decision).toBe("block");
+    const [row] = await db.select().from(toolApproval).where(eq(toolApproval.id, res.requestId));
+    expect(row.toolCallId).toBeNull();
+  });
+
   it("allows an ungated tool without creating a pending request", async () => {
     const res = await (await gateCheck(gateReq(gateBody({ toolName: "odoo_list_models" })))).json();
     expect(res.decision).toBe("allow");

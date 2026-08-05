@@ -39,6 +39,9 @@ export interface DecideGateInput {
   requesterId: string;
   sessionKey: string;
   toolName: string;
+  /** The OpenClaw call this decision is about. Stored so an arriving approval
+   * broadcast can be matched back to this row. */
+  toolCallId?: string;
   argsDigest: string;
   argsSummary?: Record<string, unknown>;
   /** Override "now" for tests. */
@@ -102,6 +105,19 @@ export async function decideGate(input: DecideGateInput): Promise<GateDecision> 
     )
     .limit(1);
   if (existing.length > 0) {
+    // Re-point the reused row at the call that is waiting NOW. Every attempt
+    // gets a fresh toolCallId, so leaving the one that opened the row would
+    // resolve an approval OpenClaw has already discarded: the user clicks
+    // approve, gets a success toast, and the run stays stuck.
+    //
+    // Only when the new attempt actually carries an id — overwriting a usable
+    // one with `undefined` trades a stale target for no target at all.
+    if (input.toolCallId) {
+      await db
+        .update(toolApproval)
+        .set({ toolCallId: input.toolCallId })
+        .where(eq(toolApproval.id, existing[0].id));
+    }
     return { decision: "block", requestId: existing[0].id, created: false };
   }
 
@@ -134,6 +150,7 @@ export async function decideGate(input: DecideGateInput): Promise<GateDecision> 
       requesterId: input.requesterId,
       sessionKey: input.sessionKey,
       toolName: input.toolName,
+      toolCallId: input.toolCallId,
       argsDigest: input.argsDigest,
       argsSummary: input.argsSummary,
       tier: "confirm",
