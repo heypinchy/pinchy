@@ -46,6 +46,31 @@ test("extractRepositoryMapPlugins reads only the Repository Map section", () => 
   assert.ok(!plugins.includes("pinchy-ghost"));
 });
 
+test("extractRepositoryMapPlugins ignores a heading that only looks like the section", () => {
+  // The end of the section is found with an anchored `^## `. The start must be
+  // recognised the same way, or a `### Repository Map` subsection — whose
+  // heading contains `## Repository Map` as a substring — is read in place of
+  // the real one, and the guard reports on a section nobody wrote.
+  const md = [
+    "# AGENTS.md - Pinchy",
+    "",
+    "### Repository Map",
+    "",
+    "- `packages/plugins/` - OpenClaw plugins. Current Pinchy plugins: `pinchy-ghost`.",
+    "",
+    "## Repository Map",
+    "",
+    REAL_SHAPE,
+    "",
+    "## Tech Stack",
+  ].join("\n");
+  assert.deepEqual(extractRepositoryMapPlugins(md), [
+    "pinchy-files",
+    "pinchy-context",
+    "pinchy-web",
+  ]);
+});
+
 test("extractRepositoryMapPlugins stops at the end of the list sentence", () => {
   // The list is a sentence, not a line. Reading to the line end swallows the
   // backticks of anything written after it — the bullet's own pointer at this
@@ -102,8 +127,9 @@ test("extractRepositoryMapPlugins throws when the marker is followed by no names
 });
 
 test("checkRepositoryMapPlugins passes when both sides name the same set", () => {
-  // Order is prose's business (the list groups internal before external), so
-  // only the set is checked.
+  // Order is prose's business — the real list is neither sorted nor grouped
+  // (`pinchy-transcript` is internal and sits after `pinchy-odoo`), so pinning
+  // it would be this guard inventing a convention. Only the set is checked.
   assert.deepEqual(
     checkRepositoryMapPlugins(
       ["pinchy-web", "pinchy-files"],

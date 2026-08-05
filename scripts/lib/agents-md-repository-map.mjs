@@ -15,6 +15,13 @@
  * to a reader — an omitted plugin costs a `ls`, a phantom one costs a search
  * for something that is not there.
  *
+ * Scope: this reads ONE bullet. The Repository Map names eight other paths
+ * (`config/`, `plans/`, `sample-data/`, `marketplace/`, …) and nothing checks
+ * that any of them still exists — a green run here is not a statement about
+ * the section as a whole. The plugin list is singled out because it is the one
+ * that enumerates a directory's contents rather than naming a single path, and
+ * so is the one that goes stale by addition, silently.
+ *
  * Sibling of `agents-md-commands.mjs`, which reads the same file's bash blocks.
  */
 
@@ -22,21 +29,31 @@ import { readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 const SECTION_NAME = "Repository Map";
-const SECTION_HEADING = `## ${SECTION_NAME}`;
+// Built from the name so the two cannot drift apart. Safe as a pattern: the
+// heading is plain words, with nothing a regex reads as syntax.
+const SECTION_HEADING = new RegExp(`^## ${SECTION_NAME}[ \\t]*$`, "m");
+const NEXT_SECTION = /^## /m;
 const PLUGINS_BULLET = /^-\s+`packages\/plugins\/`.*$/m;
 const MARKER = "Current Pinchy plugins:";
 const BACKTICKED = /`([^`]+)`/g;
 
-/** The `## Repository Map` section, up to the next `## ` heading. */
+/**
+ * The `## Repository Map` section, up to the next `## ` heading.
+ *
+ * Both ends are anchored to a line start. An unanchored search for the heading
+ * would accept `### Repository Map` — which contains it as a substring — and
+ * then stop at the real heading, so the guard would report on a subsection in
+ * place of the section it names.
+ */
 function repositoryMapSection(markdown) {
-  const start = markdown.indexOf(SECTION_HEADING);
-  if (start === -1) {
+  const heading = markdown.match(SECTION_HEADING);
+  if (!heading) {
     throw new Error(
       `AGENTS.md has no "${SECTION_NAME}" section — this guard cannot read it`,
     );
   }
-  const rest = markdown.slice(start + SECTION_HEADING.length);
-  const end = rest.search(/^## /m);
+  const rest = markdown.slice(heading.index + heading[0].length);
+  const end = rest.search(NEXT_SECTION);
   return end === -1 ? rest : rest.slice(0, end);
 }
 
@@ -131,6 +148,11 @@ export function discoverPluginPackages(repoRoot) {
     .sort();
 }
 
+/** `` `a`, `b` `` — the names as the bullet would spell them. */
+function quoted(names) {
+  return names.map((name) => `\`${name}\``).join(", ");
+}
+
 /**
  * @param {string[]} documented names from AGENTS.md § "Repository Map"
  * @param {string[]} actual plugin directories on disk
@@ -138,26 +160,25 @@ export function discoverPluginPackages(repoRoot) {
  */
 export function checkRepositoryMapPlugins(documented, actual) {
   const problems = [];
+  const section = `AGENTS.md § "${SECTION_NAME}"`;
 
   const missing = actual.filter((name) => !documented.includes(name));
   if (missing.length > 0) {
+    const [is, them] =
+      missing.length === 1 ? ["is a plugin", "it"] : ["are plugins", "them"];
     problems.push(
-      `AGENTS.md § "${SECTION_NAME}" does not name ${missing
-        .map((name) => `\`${name}\``)
-        .join(
-          ", ",
-        )}, which ${missing.length === 1 ? "is a plugin" : "are plugins"} in packages/plugins/. Add ${missing.length === 1 ? "it" : "them"} to the "${MARKER}" list.`,
+      `${section} does not name ${quoted(missing)}, which ${is} in ` +
+        `packages/plugins/. Add ${them} to the "${MARKER}" list.`,
     );
   }
 
   const phantom = documented.filter((name) => !actual.includes(name));
   if (phantom.length > 0) {
+    const [exists, them] =
+      phantom.length === 1 ? ["exists", "it"] : ["exist", "them"];
     problems.push(
-      `AGENTS.md § "${SECTION_NAME}" names ${phantom
-        .map((name) => `\`${name}\``)
-        .join(
-          ", ",
-        )}, which no longer ${phantom.length === 1 ? "exists" : "exist"} under packages/plugins/. Remove ${phantom.length === 1 ? "it" : "them"} from the "${MARKER}" list.`,
+      `${section} names ${quoted(phantom)}, which no longer ${exists} under ` +
+        `packages/plugins/. Remove ${them} from the "${MARKER}" list.`,
     );
   }
 
