@@ -1,4 +1,4 @@
-import { evaluateGate, type FetchLike, type GateResult } from "./gate";
+import { evaluateGate, type GateResult } from "./gate";
 
 interface PluginConfig {
   apiBaseUrl: string;
@@ -61,8 +61,7 @@ const plugin = {
         event.toolName,
         event.params,
         { agentId: ctx.agentId, sessionKey: ctx.sessionKey, senderId: ctx.senderId },
-        cfg,
-        fetch as unknown as FetchLike
+        cfg
       );
     });
   },
