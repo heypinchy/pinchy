@@ -36,10 +36,13 @@ jobs:
         id: tags
         run: node scripts/moving-tag.mjs "$GITHUB_REF_NAME"
 
+      # Defense-in-depth pull-through cache for Docker Hub. See the longer
+      # comment on the same step in release.yml for why the input is spelled
+      # `buildkitd-config-inline` and what the old `config-inline` did (nothing).
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
         with:
-          config-inline: |
+          buildkitd-config-inline: |
             [registry."docker.io"]
               mirrors = ["mirror.gcr.io"]
 

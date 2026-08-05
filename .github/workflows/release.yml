@@ -30,10 +30,23 @@ jobs:
       # Hub (same reason as .github/actions/docker-mirror in CI — avoids the
       # 200 pulls/6h rate limit). buildx runs in its own buildkit container,
       # so /etc/docker/daemon.json doesn't apply; we configure it here.
+      #
+      # This is defense-in-depth, NOT the primary mechanism: every `FROM` in
+      # Dockerfile.pinchy / Dockerfile.openclaw already names
+      # mirror.gcr.io/library/node:22-slim explicitly. It catches the next
+      # `FROM` that forgets the prefix, and any transitive docker.io ref.
+      #
+      # The input is `buildkitd-config-inline`, NOT `config-inline` — the
+      # action renamed it in v3 and an unknown `with:` key is passed as an
+      # INPUT_* env var the action never reads. It ran that way from the
+      # workflow's first commit until 2026-08-05: green step, dead config,
+      # and the only trace was an `##[warning]Unexpected input(s)` line
+      # buried in the step log. The `actionlint` step in ci.yml's `quality`
+      # job is what makes the next such rename fail loudly instead.
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
         with:
-          config-inline: |
+          buildkitd-config-inline: |
             [registry."docker.io"]
               mirrors = ["mirror.gcr.io"]
 
