@@ -26,6 +26,10 @@ export interface GateContext {
   toolCallId?: string;
 }
 
+/** What OpenClaw finally did with a parked call. The first three come from a
+ * decision; the last two never do, and are the reason this callback exists. */
+export type ApprovalResolution = "allow-once" | "allow-always" | "deny" | "timeout" | "cancelled";
+
 export interface GateResult {
   block?: boolean;
   blockReason?: string;
@@ -36,6 +40,7 @@ export interface GateResult {
     timeoutMs?: number;
     timeoutBehavior?: "allow" | "deny";
     allowedDecisions?: Array<"allow-once" | "allow-always" | "deny">;
+    onResolution?: (decision: ApprovalResolution) => Promise<void>;
   };
 }
 
@@ -60,6 +65,38 @@ const UNAVAILABLE = "Tool blocked: the approval service is unavailable. Please t
 // milliseconds; this bound exists to make a blackhole terminate, not to enforce
 // a latency budget. Same value as pinchy-audit's internal calls.
 const FETCH_TIMEOUT_MS = 10_000;
+
+/**
+ * Tell Pinchy what OpenClaw did with a parked call.
+ *
+ * Deliberately silent on failure: OpenClaw calls this while finalizing the
+ * approval and only logs a rejection, and by then the decision has already
+ * taken effect — throwing would buy nothing and add noise. What it costs is a
+ * row that stays `pending` until the hourly sweep expires it, which is the
+ * behaviour we had before this callback existed.
+ */
+async function reportResolution(
+  toolCallId: string | undefined,
+  decision: ApprovalResolution,
+  cfg: GateConfig
+): Promise<void> {
+  // No call id, no row to attribute this to — posting anyway would make the
+  // endpoint guess which confirmation was meant.
+  if (!toolCallId) return;
+  try {
+    await fetch(`${cfg.apiBaseUrl}/api/internal/approvals/resolution`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${cfg.gatewayToken}`,
+      },
+      body: JSON.stringify({ toolCallId, decision }),
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    });
+  } catch {
+    // See above.
+  }
+}
 
 export async function evaluateGate(
   toolName: string,
@@ -129,6 +166,11 @@ export async function evaluateGate(
           timeoutMs: APPROVAL_TIMEOUT_MS,
           timeoutBehavior: "deny",
           allowedDecisions: ALLOWED_DECISIONS,
+          // What the runtime DID, as opposed to what the user clicked. The two
+          // differ on every outcome no button produces — a timeout, a
+          // cancelled run — and those are exactly the ones that would
+          // otherwise leave a confirmation looking unanswered.
+          onResolution: (resolution) => reportResolution(ctx.toolCallId, resolution, cfg),
         },
       };
     }

@@ -23,6 +23,17 @@ export const gateCheckSchema = z.object({
 });
 export type GateCheckBody = z.infer<typeof gateCheckSchema>;
 
+/**
+ * What OpenClaw finally did with a parked call, reported by the gate's
+ * `onResolution` callback. Unlike the decision route this also carries the
+ * outcomes no button produces — `timeout` and `cancelled`.
+ */
+export const resolutionSchema = z.object({
+  toolCallId: z.string().min(1),
+  decision: z.enum(["allow-once", "allow-always", "deny", "timeout", "cancelled"]),
+});
+export type ResolutionBody = z.infer<typeof resolutionSchema>;
+
 /** A requester's approve/deny decision on their own pending confirmation. */
 export const decisionSchema = z.object({
   decision: z.enum(["approve", "deny"]),

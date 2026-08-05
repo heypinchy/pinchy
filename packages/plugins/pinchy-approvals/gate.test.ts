@@ -170,3 +170,68 @@ describe("evaluateGate", () => {
     expect(JSON.parse(f.mock.calls[0][1].body)).toMatchObject({ agentId: "a1" });
   });
 });
+
+/**
+ * #1132. The decision route covers the button the user clicks. It does NOT
+ * cover the outcomes nobody clicks — a timeout, a cancelled run — and it does
+ * not know whether OpenClaw really acted on the answer. `onResolution` is the
+ * runtime telling us what it did, which is the only trustworthy source for
+ * "the grant was spent".
+ */
+describe("onResolution", () => {
+  function stubApprovalRequired() {
+    return stubFetch(() =>
+      Promise.resolve({
+        ok: true,
+        json: async () => ({
+          decision: "block",
+          approval: { title: "t", description: "d" },
+        }),
+      })
+    );
+  }
+
+  const withCall = { ...ctx, toolCallId: "call_7" };
+
+  it("reports what OpenClaw actually did with the parked call", async () => {
+    const f = stubApprovalRequired();
+    const res = await evaluateGate("odoo_write", {}, withCall, cfg);
+
+    await res.requireApproval?.onResolution?.("allow-once");
+
+    const [url, init] = f.mock.calls[1];
+    expect(url).toBe("http://pinchy:7777/api/internal/approvals/resolution");
+    expect(JSON.parse(init.body)).toEqual({ toolCallId: "call_7", decision: "allow-once" });
+  });
+
+  it("reports a timeout, which no button ever produces", async () => {
+    const f = stubApprovalRequired();
+    const res = await evaluateGate("odoo_write", {}, withCall, cfg);
+
+    await res.requireApproval?.onResolution?.("timeout");
+
+    expect(JSON.parse(f.mock.calls[1][1].body).decision).toBe("timeout");
+  });
+
+  // OpenClaw calls this callback while finalizing the approval and only logs a
+  // rejection. Throwing here buys nothing and risks noise on a path where the
+  // decision has already taken effect.
+  it("swallows a failed report instead of throwing into the runtime", async () => {
+    const f = stubApprovalRequired();
+    const gated = await evaluateGate("odoo_write", {}, withCall, cfg);
+    f.mockRejectedValueOnce(new Error("connection refused"));
+
+    await expect(gated.requireApproval?.onResolution?.("allow-once")).resolves.toBeUndefined();
+  });
+
+  // Without a call id there is no row to attribute the outcome to, and posting
+  // one would make the endpoint guess.
+  it("does not report when the call cannot be identified", async () => {
+    const f = stubApprovalRequired();
+    const res = await evaluateGate("odoo_write", {}, ctx, cfg);
+
+    await res.requireApproval?.onResolution?.("allow-once");
+
+    expect(f).toHaveBeenCalledTimes(1);
+  });
+});

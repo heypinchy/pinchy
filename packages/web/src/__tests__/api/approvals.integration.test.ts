@@ -59,6 +59,7 @@ import { users, agents, toolApproval, auditLog } from "@/db/schema";
 import { POST as gateCheck } from "@/app/api/internal/approvals/gate-check/route";
 import { GET as listApprovals } from "@/app/api/approvals/route";
 import { POST as decide } from "@/app/api/approvals/[id]/decision/route";
+import { POST as reportResolution } from "@/app/api/internal/approvals/resolution/route";
 import { MAX_PENDING_PER_REQUESTER, linkApproval } from "@/lib/approvals/service";
 
 const GW = "test-gw-token";
@@ -488,5 +489,104 @@ describe("approval routes (integration, real DB)", () => {
 
     const retry = await (await gateCheck(gateReq(gateBody()))).json();
     expect(retry.decision).toBe("block");
+  });
+
+  // #1132. `onResolution` is the runtime reporting what it DID. It is the only
+  // channel for the outcomes nobody clicks — and, since an approved call
+  // resumes inside the hook and never passes the gate again, the only thing
+  // that can still record a grant as spent.
+  describe("resolution reporting", () => {
+    function resolutionReq(body: object, token: string | null = GW) {
+      return new NextRequest("http://localhost/api/internal/approvals/resolution", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify(body),
+      });
+    }
+
+    it("rejects a report without the gateway token", async () => {
+      const res = await reportResolution(
+        resolutionReq({ toolCallId: "c", decision: "deny" }, null)
+      );
+      expect(res.status).toBe(401);
+    });
+
+    it("records an allowed call as a spent grant", async () => {
+      const blocked = await (
+        await gateCheck(gateReq({ ...gateBody(), toolCallId: "call_7" }))
+      ).json();
+      setSession(user);
+      await decide(decideReq({ decision: "approve" }), ctx(blocked.requestId));
+
+      const res = await reportResolution(
+        resolutionReq({ toolCallId: "call_7", decision: "allow-once" })
+      );
+
+      expect(res.status).toBe(200);
+      const [row] = await db
+        .select()
+        .from(toolApproval)
+        .where(eq(toolApproval.id, blocked.requestId));
+      expect(row.status).toBe("consumed");
+
+      await flushAfter();
+      const consumed = await db
+        .select()
+        .from(auditLog)
+        .where(eq(auditLog.eventType, "approval.consumed"));
+      expect(consumed).toHaveLength(1);
+      expect(consumed[0].detail).toMatchObject({ resolution: "allow-once" });
+    });
+
+    it("closes out a confirmation the run stopped waiting for", async () => {
+      const blocked = await (
+        await gateCheck(gateReq({ ...gateBody(), toolCallId: "call_7" }))
+      ).json();
+
+      await reportResolution(resolutionReq({ toolCallId: "call_7", decision: "timeout" }));
+
+      const [row] = await db
+        .select()
+        .from(toolApproval)
+        .where(eq(toolApproval.id, blocked.requestId));
+      expect(row.status).toBe("expired");
+      await flushAfter();
+      expect(
+        await db.select().from(auditLog).where(eq(auditLog.eventType, "approval.expired"))
+      ).toHaveLength(1);
+    });
+
+    // The decision route already flipped and audited this one. A second audit
+    // row for the same act would double-count in the trail.
+    it("writes nothing when the user's own decision already settled it", async () => {
+      const blocked = await (
+        await gateCheck(gateReq({ ...gateBody(), toolCallId: "call_7" }))
+      ).json();
+      setSession(user);
+      await decide(decideReq({ decision: "deny" }), ctx(blocked.requestId));
+      await flushAfter();
+
+      await reportResolution(resolutionReq({ toolCallId: "call_7", decision: "deny" }));
+      await flushAfter();
+
+      expect(
+        await db.select().from(auditLog).where(eq(auditLog.eventType, "approval.denied"))
+      ).toHaveLength(1);
+    });
+
+    // The same approval machinery carries OpenClaw's own requests (skill
+    // workshop, exec). Those name calls Pinchy never opened a row for, so this
+    // is the ordinary case rather than an error.
+    it("accepts a report for a call nobody was waiting on", async () => {
+      const res = await reportResolution(
+        resolutionReq({ toolCallId: "call_not_ours", decision: "allow-once" })
+      );
+      expect(res.status).toBe(200);
+      await flushAfter();
+      expect(await db.select().from(auditLog)).toHaveLength(0);
+    });
   });
 });

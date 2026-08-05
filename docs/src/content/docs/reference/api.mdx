@@ -1841,6 +1841,35 @@ One person can have at most **20 confirmations open on one agent** at a time. Pa
 
 - `401` — gateway token missing or wrong
 
+### `POST /api/internal/approvals/resolution`
+
+**Internal** — same gateway-token authentication as `gate-check`, called by the same plugin, never by the browser.
+
+Reports what the agent runtime finally did with a call it had held open. This is not a second decision endpoint: it is the runtime's account of the outcome, and it is the only channel for two things the decision route cannot carry — the resolutions nobody clicks (the run stopped waiting, or was cancelled), and the moment an approved grant is actually spent. An approved call resumes inside the runtime's own hook and never reaches `gate-check` again, so nothing else would record it.
+
+**Request body:**
+
+| Field        | Type   | Required | Description                                                    |
+| ------------ | ------ | -------- | -------------------------------------------------------------- |
+| `toolCallId` | string | Yes      | The call the confirmation was holding up                       |
+| `decision`   | string | Yes      | `allow-once`, `allow-always`, `deny`, `timeout` or `cancelled` |
+
+**Response:**
+
+```json
+{
+  "ok": true,
+  "settled": true,
+  "status": "consumed"
+}
+```
+
+`settled: false` means the report changed nothing, which is the ordinary case rather than an error: the user's own decision had already closed the confirmation, or the call was never Pinchy's — the same approval machinery carries the agent runtime's own requests. Nothing is written to the audit trail in that case, because a second row for the same act would double-count it.
+
+**Errors:**
+
+- `401` — gateway token missing or wrong
+
 ## Audit Trail (admin only)
 
 ### `GET /api/audit`

@@ -1,4 +1,4 @@
-import { and, eq, gt, lt, sql } from "drizzle-orm";
+import { and, eq, gt, inArray, lt, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { toolApproval } from "@/db/schema";
 
@@ -189,6 +189,73 @@ export async function linkApproval(input: {
     .where(and(eq(toolApproval.toolCallId, input.toolCallId), eq(toolApproval.status, "pending")))
     .returning({ id: toolApproval.id });
   return linked ?? null;
+}
+
+/** What OpenClaw finally did with a parked call — mirrors the plugin's
+ * `ApprovalResolution`. The last two never come from a button. */
+export type ApprovalResolution = "allow-once" | "allow-always" | "deny" | "timeout" | "cancelled";
+
+/** The row a resolution settled, or `null` when it settled nothing. */
+export interface SettledApproval {
+  id: string;
+  agentId: string;
+  requesterId: string;
+  toolName: string;
+  argsDigest: string;
+  status: "consumed" | "denied" | "expired";
+}
+
+/**
+ * Record what OpenClaw actually did with the call a confirmation was holding up.
+ *
+ * This is the outcome channel the decision route cannot be: it also covers the
+ * resolutions no button produces — the run stopped waiting, or was cancelled —
+ * which would otherwise leave a row `pending` and a card in the inbox over a
+ * call that is already gone.
+ *
+ * Every branch moves the row out of a state the decision route may also be
+ * moving it out of, so each one names the states it accepts and reports what it
+ * actually changed. Returning `null` means nothing was settled — either the
+ * user's own decision got there first (already flipped and already audited, so
+ * a second audit row would be a duplicate) or the call was never ours: the same
+ * approval machinery carries OpenClaw's own requests (skill workshop, exec).
+ */
+export async function recordResolution(input: {
+  toolCallId: string;
+  decision: ApprovalResolution;
+  now?: Date;
+}): Promise<SettledApproval | null> {
+  const now = input.now ?? new Date();
+  const allowed = input.decision === "allow-once" || input.decision === "allow-always";
+  // A grant is spent the moment OpenClaw acts on it: the call resumes inside
+  // the hook and never passes the gate again, so no later consume step exists
+  // to do this.
+  const next = allowed ? "consumed" : input.decision === "deny" ? "denied" : "expired";
+
+  const [settled] = await db
+    .update(toolApproval)
+    .set({
+      status: next,
+      ...(allowed ? { consumedAt: now } : {}),
+      ...(input.decision === "deny" ? { decidedAt: now } : {}),
+    })
+    .where(
+      and(
+        eq(toolApproval.toolCallId, input.toolCallId),
+        // An allow follows the user's approval, so `approved` is the expected
+        // state — `pending` too, because a resolution can arrive from another
+        // approval surface. Everything else is already settled.
+        inArray(toolApproval.status, allowed ? ["pending", "approved"] : ["pending"])
+      )
+    )
+    .returning({
+      id: toolApproval.id,
+      agentId: toolApproval.agentId,
+      requesterId: toolApproval.requesterId,
+      toolName: toolApproval.toolName,
+      argsDigest: toolApproval.argsDigest,
+    });
+  return settled ? { ...settled, status: next } : null;
 }
 
 export type ResolveResult =

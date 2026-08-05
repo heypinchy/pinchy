@@ -491,6 +491,13 @@ export type AuditLogEntry =
          * granted/denied; absent on the other events, which resolve nothing.
          */
         resumed?: boolean;
+        /**
+         * What the agent runtime finally did with the parked call, as the
+         * runtime reported it. `approval.expired` is written by two different
+         * things — a run that stopped waiting (this field) and the hourly
+         * bookkeeping sweep (`sweepId`) — and this is what tells them apart.
+         */
+        resolution?: "allow-once" | "allow-always" | "deny" | "timeout" | "cancelled";
         /** Why the decision did not reach the run. */
         resumeReason?: "nothing-waiting" | "refused" | "unreachable";
         /** The gateway's own words, when it gave any. */

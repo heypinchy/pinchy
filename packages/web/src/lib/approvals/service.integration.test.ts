@@ -12,6 +12,7 @@ import {
   resolveDecision,
   expireStale,
   linkApproval,
+  recordResolution,
   MAX_PENDING_PER_REQUESTER,
 } from "./service";
 
@@ -341,5 +342,65 @@ describe("approvals gate decision service", () => {
     });
     const [row] = await db.select().from(toolApproval).where(eq(toolApproval.id, r.requestId));
     expect(row.status).toBe("expired");
+  });
+
+  /**
+   * #1132. The decision route covers the button. `onResolution` covers what the
+   * runtime actually DID — including the outcomes no button produces, which is
+   * where a confirmation would otherwise sit `pending` until the hourly sweep.
+   */
+  describe("recordResolution", () => {
+    async function parked(toolCallId = "call_7") {
+      const r = await decideGate({ ...base(), toolCallId });
+      return r.requestId;
+    }
+
+    it("spends the grant when OpenClaw lets the call through", async () => {
+      const id = await parked();
+      await resolveDecision({ id, approverId: requesterId, decision: "approve" });
+
+      const settled = await recordResolution({ toolCallId: "call_7", decision: "allow-once" });
+
+      expect(settled).toMatchObject({ id, status: "consumed" });
+      const [row] = await db.select().from(toolApproval).where(eq(toolApproval.id, id));
+      expect(row.status).toBe("consumed");
+      expect(row.consumedAt).toBeInstanceOf(Date);
+    });
+
+    // Nobody clicks a timeout, so without this the row stays pending and the
+    // card stays in the inbox over a call that is already gone.
+    it("closes a confirmation the run stopped waiting for", async () => {
+      const id = await parked();
+
+      const settled = await recordResolution({ toolCallId: "call_7", decision: "timeout" });
+
+      expect(settled).toMatchObject({ id, status: "expired" });
+    });
+
+    it("closes a confirmation whose run was cancelled", async () => {
+      const id = await parked();
+      await recordResolution({ toolCallId: "call_7", decision: "cancelled" });
+      const [row] = await db.select().from(toolApproval).where(eq(toolApproval.id, id));
+      expect(row.status).toBe("expired");
+    });
+
+    // The decision route already flipped and audited this one. Reporting it a
+    // second time must not produce a second audit row, so nothing comes back.
+    it("does not re-settle a confirmation the user already decided", async () => {
+      const id = await parked();
+      await resolveDecision({ id, approverId: requesterId, decision: "deny" });
+
+      expect(await recordResolution({ toolCallId: "call_7", decision: "deny" })).toBeNull();
+      const [row] = await db.select().from(toolApproval).where(eq(toolApproval.id, id));
+      expect(row.status).toBe("denied");
+    });
+
+    // The same broadcast carries OpenClaw's own approvals (skill workshop,
+    // exec). Those name calls Pinchy never opened a row for.
+    it("settles nothing for a call nobody was waiting on", async () => {
+      expect(
+        await recordResolution({ toolCallId: "call_not_ours", decision: "allow-once" })
+      ).toBeNull();
+    });
   });
 });
