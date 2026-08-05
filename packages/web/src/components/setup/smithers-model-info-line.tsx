@@ -9,8 +9,8 @@ export function SmithersModelInfoLine({ modelId }: SmithersModelInfoLineProps) {
   return (
     <p className="text-sm text-muted-foreground mt-2">
       Smithers will use {getModelDisplayName(modelId)}. You can change this in{" "}
-      <Link href="/settings/agents" className="underline">
-        Agent Settings
+      <Link href="/agents" className="underline">
+        Agents
       </Link>
       .
     </p>

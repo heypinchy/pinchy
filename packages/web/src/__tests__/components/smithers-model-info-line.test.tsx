@@ -5,13 +5,13 @@ import "@testing-library/jest-dom";
 import { SmithersModelInfoLine } from "@/components/setup/smithers-model-info-line";
 
 describe("SmithersModelInfoLine", () => {
-  it("displays the model display name and link to agent settings", () => {
+  it("displays the model display name and links to a page that exists", () => {
+    // It linked to `/settings/agents` — a 404 — from the last screen of the
+    // setup wizard, and this assertion pinned it there. `app-route-link-coverage`
+    // is what makes that shape of green test impossible now.
     render(<SmithersModelInfoLine modelId="anthropic/claude-sonnet-4-6" />);
     expect(screen.getByText(/Claude Sonnet 4\.6/i)).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: /Agent Settings/i })).toHaveAttribute(
-      "href",
-      "/settings/agents"
-    );
+    expect(screen.getByRole("link", { name: /Agents/i })).toHaveAttribute("href", "/agents");
   });
 
   it("renders with openai model id", () => {
