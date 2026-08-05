@@ -1,8 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   buildLlmsFullTxt,
   buildLlmsTxt,
+  collectPages,
+  INLINE_CODE,
   mdxToMarkdown,
   parseFrontmatter,
   readSiteUrl,
@@ -12,6 +17,13 @@ import {
 } from "./generate-llms-txt.mjs";
 
 const SITE = "https://docs.heypinchy.com";
+const CONTENT_DIR = join(
+  dirname(fileURLToPath(import.meta.url)),
+  "..",
+  "src",
+  "content",
+  "docs",
+);
 
 // ── frontmatter ───────────────────────────────────────────────────────────
 
@@ -301,6 +313,31 @@ test("mdxToMarkdown drops an unknown component but keeps its children", () => {
   assert.match(out, /Kept\./);
 });
 
+test("mdxToMarkdown keeps a component-shaped placeholder inside inline code", () => {
+  // Inline code is verbatim content, exactly like a fenced block. Stripping it
+  // as if it were a component silently DELETES documentation, and no leak
+  // checker can see a deletion. All three of these were live: the API
+  // reference published `"at": ""` for a field that carries a timestamp.
+  const out = mdxToMarkdown(
+    [
+      "Used for any `env.<VAR>` template.",
+      "",
+      'It becomes `{ "ok": false, "at": "<ISO timestamp>" }`.',
+      "",
+      "The bubble reads `<Agent> couldn't respond.` instead.",
+    ].join("\n"),
+  );
+  assert.match(out, /`env\.<VAR>`/);
+  assert.match(out, /"at": "<ISO timestamp>"/);
+  assert.match(out, /`<Agent> couldn't respond\.`/);
+});
+
+test("mdxToMarkdown still strips a real component beside an inline code span", () => {
+  // The span is preserved, not the line: a tag outside it is still a tag.
+  const out = mdxToMarkdown('<Badge text="New" /> applies to `<VAR>` only.');
+  assert.match(out, /\(New\) applies to `<VAR>` only\./);
+});
+
 test("mdxToMarkdown leaves lowercase HTML alone", () => {
   // <details>/<summary> are real HTML in the deploy guides, valid in markdown.
   const out = mdxToMarkdown(
@@ -412,4 +449,44 @@ test("readSiteUrl throws rather than guessing a default", () => {
   // Every URL in both files is built from this. A silent fallback would publish
   // an index of links to a host that is not the docs site.
   assert.throws(() => readSiteUrl("export default defineConfig({});"), /site/);
+});
+
+// ── the real corpus ───────────────────────────────────────────────────────
+
+test("no page loses an inline code span on its way through the generator", () => {
+  // The tests above pin the three shapes that were live (`env.<VAR>`,
+  // `"at": "<ISO timestamp>"`, `<Agent> couldn't respond.`). This pins the
+  // CLASS across every page, so the next shape fails without anyone having
+  // thought of it — which is the whole point, because check-llms-txt.mjs
+  // structurally cannot: a leak checker looks for what SURVIVED, and this
+  // failure mode is a deletion. It reads the same corpus the build reads, so a
+  // page added tomorrow is covered the day it lands.
+  const pages = collectPages(CONTENT_DIR);
+  assert.ok(
+    pages.length > 40,
+    `only ${pages.length} pages found — has the walker stopped working?`,
+  );
+
+  const lost = [];
+  for (const page of pages) {
+    const { body } = parseFrontmatter(
+      readFileSync(join(CONTENT_DIR, page.sourcePath), "utf8"),
+      page.sourcePath,
+    );
+    // Per line, not per body: a span that WRAPS across a source line break is
+    // re-flowed on purpose (the generator dedents), and markdown renders the
+    // break as a space either way. Those are the only spans this cannot speak
+    // for, and `docker image prune -a\n     -f` in upgrading.mdx is the one.
+    for (const line of body.split("\n")) {
+      for (const span of line.match(INLINE_CODE) ?? []) {
+        if (!page.body.includes(span)) lost.push(`${page.sourcePath}: ${span}`);
+      }
+    }
+  }
+
+  assert.deepEqual(
+    lost,
+    [],
+    `inline code dropped from ${lost.length} place(s)`,
+  );
 });

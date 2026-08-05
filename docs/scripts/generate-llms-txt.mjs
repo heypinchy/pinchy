@@ -48,6 +48,36 @@ const CODE_TAG = /^(\s*)<Code\s+([^>]*?)\/>\s*$/;
 /** Any JSX component tag — capitalized, unlike the real HTML the pages use. */
 const COMPONENT_TAG = /<(\/?)([A-Z][A-Za-z0-9]*)\b([^>]*?)(\/?)>/g;
 
+/**
+ * An inline code span, `like this` or ``with `backticks` inside``.
+ *
+ * Its contents are verbatim, exactly like a fenced block — and a placeholder
+ * written in prose is shaped like a component tag. Running COMPONENT_TAG over a
+ * span therefore DELETES documentation: `env.<VAR>` became `env.`, and the API
+ * reference published `"at": ""` for a field that carries a timestamp. That
+ * class of damage is invisible to check-llms-txt.mjs by construction — a leak
+ * checker looks for what survived, and this is a deletion.
+ */
+export const INLINE_CODE = /(`+)[\s\S]*?\1/g;
+
+/**
+ * Applies `replacer` to the prose of a line, leaving its inline code spans
+ * byte-for-byte.
+ * @param {string} line
+ * @param {(...args: string[]) => string} replacer
+ * @returns {string}
+ */
+function replaceOutsideInlineCode(line, replacer) {
+  let out = "";
+  let last = 0;
+  for (const span of line.matchAll(INLINE_CODE)) {
+    out +=
+      line.slice(last, span.index).replace(COMPONENT_TAG, replacer) + span[0];
+    last = span.index + span[0].length;
+  }
+  return out + line.slice(last).replace(COMPONENT_TAG, replacer);
+}
+
 /** Starlight's markdown aside: `:::caution[Title]` … `:::`. */
 const DIRECTIVE_OPEN = /^:::+(\w+)(?:\[([^\]]*)\])?\s*$/;
 const DIRECTIVE_CLOSE = /^:::+\s*$/;
@@ -208,8 +238,10 @@ export function mdxToMarkdown(
     if (code) {
       const [, indent, attrs] = code;
       const ident = /code=\{(\w+)\}/.exec(attrs)?.[1];
-      const source = ident ? rawImports.get(ident) : undefined;
-      if (source === undefined) {
+      // Not `source`: that is the page path this function reports errors with,
+      // and shadowing it here would aim a later message at a file's contents.
+      const inlined = ident ? rawImports.get(ident) : undefined;
+      if (inlined === undefined) {
         // Nothing to inline — better an omission than a `<Code …/>` tag
         // published as if it were prose.
         continue;
@@ -218,7 +250,7 @@ export function mdxToMarkdown(
       const title = attr(attrs, "title");
       const open = `${indent}\`\`\`${lang}${title ? ` title="${title}"` : ""}`;
       out.push({ text: open, fenced: true });
-      for (const codeLine of source.replace(/\n+$/, "").split("\n")) {
+      for (const codeLine of inlined.replace(/\n+$/, "").split("\n")) {
         out.push({ text: `${indent}${codeLine}`, fenced: true });
       }
       out.push({ text: `${indent}\`\`\``, fenced: true });
@@ -243,8 +275,8 @@ export function mdxToMarkdown(
     let text = line;
     let replacedBlock = false;
 
-    text = text.replace(
-      COMPONENT_TAG,
+    text = replaceOutsideInlineCode(
+      text,
       (_match, closing, name, attrs, selfClosing) => {
         if (closing) {
           if (blocks.length > 0 && blocks[blocks.length - 1].name === name) {
@@ -400,7 +432,7 @@ function walk(dir, base = dir) {
 
 /**
  * @param {string} contentDir
- * @returns {Array<{ route: string, section: string, title: string, description: string, body: string }>}
+ * @returns {Array<{ sourcePath: string, route: string, section: string, title: string, description: string, body: string }>}
  */
 export function collectPages(contentDir) {
   return walk(contentDir).map((relPath) => {
@@ -417,6 +449,7 @@ export function collectPages(contentDir) {
     }
 
     return {
+      sourcePath: relPath,
       route: routeForSourcePath(relPath),
       section: sectionForSourcePath(relPath),
       title: data.title,
