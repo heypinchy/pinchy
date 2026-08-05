@@ -85,7 +85,7 @@ entry. Then fill in the verdicts below.
   **1** governed. The tool's hard error on a no-op create converts a
   fabricated success into an honest, audited failure; that is exactly what
   #720 was built to do.
-- **Controls** — happy-path: 91/132 (69%) → 87/132 (66%), Δ −4pp, driven by
+- **Controls** — happy-path: 91/132 (69%) → 87/132 (66%), Δ −3pp (−4 passes), driven by
   3 models drifting down (deepseek-v4-pro −0.25, minimax-m2.7 −0.167,
   qwen3.5:397b −0.167) and 3 drifting up by smaller amounts; not a
   systematic capability loss. line-items: 67/132 (51%) → 50/132 (38%),
