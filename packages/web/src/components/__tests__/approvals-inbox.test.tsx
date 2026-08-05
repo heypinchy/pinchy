@@ -44,7 +44,7 @@ describe("ApprovalsInbox", () => {
 
   it("approves a request and removes it from the list", async () => {
     fetchPendingApprovals.mockResolvedValue({ approvals: [pending] });
-    submitApprovalDecision.mockResolvedValue(undefined);
+    submitApprovalDecision.mockResolvedValue({ ok: true, status: "approved", resumed: true });
     render(<ApprovalsInbox />);
     await screen.findByText(/needs your confirmation/i);
 
@@ -52,6 +52,49 @@ describe("ApprovalsInbox", () => {
     await waitFor(() =>
       expect(submitApprovalDecision).toHaveBeenCalledWith("req-1", { decision: "approve" })
     );
+    await waitFor(() => expect(screen.queryByText(/needs your confirmation/i)).toBeNull());
+  });
+
+  // #1132. The run is parked inside OpenClaw and resumes on its own once the
+  // decision reaches it — so the old "ask Smithers to proceed" was an
+  // instruction to do something unnecessary, and a user who followed it would
+  // send a second turn on top of a call that was already running again.
+  it("says the agent is continuing, not that the user has to prompt it", async () => {
+    fetchPendingApprovals.mockResolvedValue({ approvals: [pending] });
+    submitApprovalDecision.mockResolvedValue({ ok: true, status: "approved", resumed: true });
+    render(<ApprovalsInbox />);
+    await screen.findByText(/needs your confirmation/i);
+
+    fireEvent.click(screen.getByRole("button", { name: /approve/i }));
+
+    const { toast } = await import("sonner");
+    await waitFor(() => expect(toast.success).toHaveBeenCalled());
+    expect(vi.mocked(toast.success).mock.calls[0][0]).toMatch(/Smithers/);
+    expect(vi.mocked(toast.success).mock.calls[0][0]).not.toMatch(/proceed/i);
+  });
+
+  // The decision is persisted but the parked run never heard it, so the tool
+  // will NOT run. A success toast here is the exact lie this path exists to
+  // avoid: the user walks away believing the invoice got booked.
+  it("warns instead of confirming when the decision did not reach the run", async () => {
+    fetchPendingApprovals.mockResolvedValue({ approvals: [pending] });
+    submitApprovalDecision.mockResolvedValue({
+      ok: true,
+      status: "approved",
+      resumed: false,
+      resumeError: "The agent is no longer waiting for this decision.",
+    });
+    render(<ApprovalsInbox />);
+    await screen.findByText(/needs your confirmation/i);
+
+    fireEvent.click(screen.getByRole("button", { name: /approve/i }));
+
+    const { toast } = await import("sonner");
+    await waitFor(() => expect(toast.error).toHaveBeenCalled());
+    expect(vi.mocked(toast.error).mock.calls[0][0]).toMatch(/no longer waiting/i);
+    expect(toast.success).not.toHaveBeenCalled();
+    // The row is settled either way, so the card must not stay clickable —
+    // a second click can only 409.
     await waitFor(() => expect(screen.queryByText(/needs your confirmation/i)).toBeNull());
   });
 
@@ -76,7 +119,7 @@ describe("ApprovalsInbox", () => {
 
   it("denies a request", async () => {
     fetchPendingApprovals.mockResolvedValue({ approvals: [pending] });
-    submitApprovalDecision.mockResolvedValue(undefined);
+    submitApprovalDecision.mockResolvedValue({ ok: true, status: "denied", resumed: true });
     render(<ApprovalsInbox />);
     await screen.findByText(/needs your confirmation/i);
 

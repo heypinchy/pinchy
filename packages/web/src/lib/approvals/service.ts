@@ -2,9 +2,16 @@ import { and, eq, gt, lt, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { toolApproval } from "@/db/schema";
 
-/** Default lifetime of a pending confirmation. The acting user is present, so
- * this is short — past it the request fails closed. */
-export const DEFAULT_CONFIRM_TTL_MS = 15 * 60 * 1000;
+/**
+ * Default lifetime of a pending confirmation. The acting user is present, so
+ * this is short — past it the request fails closed.
+ *
+ * Pinned to `APPROVAL_TIMEOUT_MS` in `pinchy-approvals/gate.ts`, which is
+ * OpenClaw's hard cap for a parked tool call. A longer TTL here does not buy
+ * the user more time; it only keeps a card clickable over a run that has
+ * already timed out (guarded by approvals-ttl-drift.test.ts).
+ */
+export const DEFAULT_CONFIRM_TTL_MS = 10 * 60 * 1000;
 
 /**
  * How many confirmations one person may have open on one agent at a time.

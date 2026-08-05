@@ -483,6 +483,18 @@ export type AuditLogEntry =
         toolName: string;
         argsDigest: string;
         reason?: string;
+        /**
+         * Whether the decision reached the tool call OpenClaw parked for it
+         * (#1132). `false` means the row was flipped but the run never heard
+         * it, so the tool did NOT run — the difference between a confirmation
+         * that took effect and one that only looks like it did. Set on
+         * granted/denied; absent on the other events, which resolve nothing.
+         */
+        resumed?: boolean;
+        /** Why the decision did not reach the run. */
+        resumeReason?: "nothing-waiting" | "refused" | "unreachable";
+        /** The gateway's own words, when it gave any. */
+        resumeDetail?: string;
         /** Set on sweep-emitted rows (approval.expired) so analysts can
          * correlate one sweep run (AGENTS.md §"Audit logging rules"). */
         sweepId?: string;

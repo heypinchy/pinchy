@@ -59,11 +59,17 @@ export function ApprovalsInbox() {
   const decide = async (approval: PendingApproval, decision: "approve" | "deny") => {
     setBusy(approval.id);
     try {
-      await submitApprovalDecision(approval.id, { decision });
+      const result = await submitApprovalDecision(approval.id, { decision });
+      // Off the list either way: the row is settled, so a second click can only
+      // 409 — leaving a card that looks actionable would be its own lie.
       setPending((prev) => prev.filter((a) => a.id !== approval.id));
+      if (!result.resumed) {
+        toast.error(result.resumeError ?? "Your decision did not reach the agent.");
+        return;
+      }
       toast.success(
         decision === "approve"
-          ? `Approved — ask ${approval.agentName} to proceed.`
+          ? `Approved — ${approval.agentName} is continuing.`
           : "Request denied."
       );
     } catch (e) {

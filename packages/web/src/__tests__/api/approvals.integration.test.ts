@@ -40,6 +40,14 @@ vi.mock("next/server", async (importOriginal) => {
   };
 });
 
+// The decision route hands the user's answer to the call OpenClaw parked for
+// it (#1132). There is no gateway in an integration run, so stand one in and
+// assert what the route actually sends it.
+const { gatewayRequest } = vi.hoisted(() => ({ gatewayRequest: vi.fn() }));
+vi.mock("@/server/openclaw-client", () => ({
+  getOpenClawClient: () => ({ request: gatewayRequest }),
+}));
+
 const mockGetSession = vi.fn();
 vi.mock("@/lib/auth", () => ({
   getSession: (...args: unknown[]) => mockGetSession(...args),
@@ -51,7 +59,7 @@ import { users, agents, toolApproval, auditLog } from "@/db/schema";
 import { POST as gateCheck } from "@/app/api/internal/approvals/gate-check/route";
 import { GET as listApprovals } from "@/app/api/approvals/route";
 import { POST as decide } from "@/app/api/approvals/[id]/decision/route";
-import { MAX_PENDING_PER_REQUESTER } from "@/lib/approvals/service";
+import { MAX_PENDING_PER_REQUESTER, linkApproval } from "@/lib/approvals/service";
 
 const GW = "test-gw-token";
 beforeAll(() => {
@@ -117,6 +125,7 @@ describe("approval routes (integration, real DB)", () => {
 
   beforeEach(async () => {
     vi.clearAllMocks();
+    gatewayRequest.mockResolvedValue({ ok: true });
     process.env.PINCHY_E2E_GATEWAY_TOKEN = GW;
     user = await seedUser();
     agent = await seedAgent(user.id);
@@ -380,6 +389,89 @@ describe("approval routes (integration, real DB)", () => {
       ctx("00000000-0000-4000-8000-000000000000")
     );
     expect(res.status).toBe(404);
+  });
+
+  // #1132. `requireApproval` parks the call inside OpenClaw's hook; flipping the
+  // row does nothing to that wait. These four cover the only thing the user
+  // actually cares about: did the run continue, and were they told the truth.
+  describe("resuming the parked run", () => {
+    /** Gate-check, then record the approval OpenClaw broadcast for that call —
+     * what `attachPluginApprovalBridge` does on a live gateway. */
+    async function blockedAndLinked(approvalId = "plugin:abc") {
+      const blocked = await (
+        await gateCheck(gateReq({ ...gateBody(), toolCallId: "call_7" }))
+      ).json();
+      await linkApproval({ approvalId, toolCallId: "call_7" });
+      setSession(user);
+      return blocked;
+    }
+
+    it("resolves the parked call so the tool actually runs", async () => {
+      const blocked = await blockedAndLinked();
+
+      const res = await decide(decideReq({ decision: "approve" }), ctx(blocked.requestId));
+
+      expect(gatewayRequest).toHaveBeenCalledWith("plugin.approval.resolve", {
+        id: "plugin:abc",
+        decision: "allow-once",
+      });
+      expect(await res.json()).toMatchObject({ ok: true, resumed: true });
+    });
+
+    it("denies the parked call rather than leaving it to time out", async () => {
+      const blocked = await blockedAndLinked();
+
+      await decide(decideReq({ decision: "deny" }), ctx(blocked.requestId));
+
+      expect(gatewayRequest).toHaveBeenCalledWith("plugin.approval.resolve", {
+        id: "plugin:abc",
+        decision: "deny",
+      });
+    });
+
+    // The decision IS persisted, so this is not a 500 — a retry would only
+    // 409. But reporting a bare `ok` would tell the user their approval went
+    // through while the run stays parked until it times out.
+    it("tells the user when the decision could not reach the run", async () => {
+      gatewayRequest.mockResolvedValue({ ok: false, error: { message: "approval not found" } });
+      const blocked = await blockedAndLinked();
+
+      const res = await decide(decideReq({ decision: "approve" }), ctx(blocked.requestId));
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.resumed).toBe(false);
+      expect(body.resumeError).toBeTruthy();
+
+      // The user's decision still stands — it is the delivery that failed.
+      const [row] = await db
+        .select()
+        .from(toolApproval)
+        .where(eq(toolApproval.id, blocked.requestId));
+      expect(row.status).toBe("approved");
+
+      // And the audit says the grant did not reach the run, rather than
+      // recording a success that never happened.
+      await flushAfter();
+      const [entry] = await db
+        .select()
+        .from(auditLog)
+        .where(eq(auditLog.eventType, "approval.granted"));
+      expect(entry.outcome).toBe("failure");
+      expect(entry.detail).toMatchObject({ resumed: false });
+    });
+
+    it("does not call the gateway when no run is parked on that call", async () => {
+      // No approval id on the row: the gate refused without suspending, the
+      // approval already timed out, or the row predates #1132.
+      const blocked = await (await gateCheck(gateReq(gateBody()))).json();
+      setSession(user);
+
+      const res = await decide(decideReq({ decision: "approve" }), ctx(blocked.requestId));
+
+      expect(gatewayRequest).not.toHaveBeenCalled();
+      expect(await res.json()).toMatchObject({ resumed: false });
+    });
   });
 
   it("deny records the reason and keeps the agent's retry blocked", async () => {

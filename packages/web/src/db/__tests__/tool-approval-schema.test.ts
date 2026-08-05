@@ -12,6 +12,11 @@ describe("tool_approval schema", () => {
         "requesterId",
         "sessionKey",
         "toolName",
+        // The parked OpenClaw call and its approval (#1132). Both nullable:
+        // a run context can carry no call id, and every row written before
+        // #1132 has neither.
+        "toolCallId",
+        "openclawApprovalId",
         "argsDigest",
         "argsSummary",
         "tier",

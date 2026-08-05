@@ -26,12 +26,14 @@ Confirmation is set per agent, by an admin:
 
 ## What the person sees
 
-When the agent reaches a gated tool, it doesn't run it. Instead a card appears with the action and its details — for example, _"Smithers needs your confirmation: run `email_send` with to: ada@example.com?"_ — and two buttons:
+When the agent reaches a gated tool, it doesn't run it — it **waits**, mid-turn, holding the call open. A card appears with the action and its details — for example, _"Smithers needs your confirmation: run `email_send` with to: ada@example.com?"_ — and two buttons:
 
-- **Approve** — the action is cleared. Ask the agent to go ahead, and it runs the tool.
-- **Deny** — the action is blocked, and the agent is told so.
+- **Approve** — the agent picks the turn straight back up and runs the tool. You don't have to prompt it again.
+- **Deny** — the action is blocked, the agent is told so, and it carries on with the rest of the turn.
 
 Approve clears exactly that one action. If the agent later tries something different — a different recipient, a different record — it asks again. One confirmation, one action.
+
+Because the agent is genuinely waiting, a confirmation doesn't stay open forever: **you have 10 minutes to answer**. Past that the agent stops waiting and the action stays blocked. If you answer after the agent has already given up — or if Pinchy can't reach the agent runtime at that moment — Pinchy tells you so instead of confirming, because your decision recorded but never delivered means the tool did **not** run.
 
 ## What gets recorded
 
@@ -41,7 +43,7 @@ Every step lands in the [audit trail](/concepts/audit-trail): the request, the d
 
 - **The check is enforced on the server**, inside the agent runtime — not in the browser. A gated tool can't run without a matching, approved, single-use confirmation, so the control holds even if someone pokes at the UI.
 - **It's per person.** A confirmation you approve is yours; it never clears the same action for a teammate on a shared agent.
-- **It fails safe.** If a confirmation isn't approved in time, it expires and the action stays blocked. The same goes for anything the agent does outside a conversation with a person — a scheduled run has nobody to ask, so a gated tool simply doesn't run there.
+- **It fails safe.** If a confirmation isn't approved within 10 minutes, it expires and the action stays blocked. The same goes for anything the agent does outside a conversation with a person — a scheduled run has nobody to ask, so a gated tool simply doesn't run there.
 - **You won't be buried in cards.** One agent can have at most 20 confirmations waiting for you at once. If an agent keeps asking, it's told to stop and to let you catch up first.
 - **Confirmations live in the Pinchy app.** On other channels (say, Telegram) there's no way to approve yet, so a gated tool stays blocked there — the safe default. If you want an agent to act freely on a channel, leave its tools un-gated; channel-side approval is on our list.
 

@@ -1772,7 +1772,7 @@ Your own pending confirmations, newest first — the source for the in-app confi
 
 ### `POST /api/approvals/:id/decision`
 
-Approve or deny one of your own pending confirmations. On approve the request becomes consumable exactly once: the agent re-issues the call and the gate spends it. Ask the agent to proceed after approving.
+Approve or deny one of your own pending confirmations. The agent's tool call is held open while the confirmation is pending, so the decision is handed straight to it: on approve the agent resumes the same turn and runs the tool, on deny it is told no. Nobody has to prompt the agent again.
 
 **Request body:**
 
@@ -1786,9 +1786,18 @@ Approve or deny one of your own pending confirmations. On approve the request be
 ```json
 {
   "ok": true,
-  "status": "approved"
+  "status": "approved",
+  "resumed": true
 }
 ```
+
+| Field         | Type    | Description                                                                                                                                                               |
+| ------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `status`      | string  | The confirmation's new state — `approved` or `denied`                                                                                                                     |
+| `resumed`     | boolean | Whether the decision reached the waiting tool call. `false` means the decision is recorded but the agent never heard it, so the tool did **not** run                      |
+| `resumeError` | string  | Present only when `resumed` is `false` — why, in words you can show the user (the agent had already stopped waiting, or the agent runtime was unreachable at that moment) |
+
+A failed delivery is still a `200`: the decision itself is persisted, and retrying would only return `409`. Clients must read `resumed` rather than treat `ok` as "the action ran".
 
 **Errors:**
 
