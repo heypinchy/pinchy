@@ -11,6 +11,7 @@ import {
   readPackageJsonVersion,
   collectMainVersionPins,
   findStaleVersionPins,
+  DECLARED_VERSION_PINS,
 } from "./main-version-pins.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -198,11 +199,59 @@ test("every tracked pin is readable from the repo's actual files", () => {
     ),
   });
   for (const [label, pinned] of Object.entries(pins)) {
+    // The two declared pins carry `<next>-dev` between releases (#1044), which
+    // parseSemver rejects on purpose — findStaleVersionPins short-circuits them
+    // before it gets there. Readability for those means "parses once the
+    // suffix is off".
+    const value =
+      DECLARED_VERSION_PINS.has(label) && /-dev$/.test(pinned)
+        ? pinned.slice(0, -4)
+        : pinned;
     assert.doesNotThrow(
-      () => parseSemver(pinned),
+      () => parseSemver(value),
       `${label} did not yield a vX.Y.Z version (got "${pinned}")`,
     );
   }
+});
+
+// The two halves of #1044's split, as this guard sees them.
+
+test("a `-dev` declared pin is the intended state, not drift", () => {
+  assert.deepEqual(
+    findStaleVersionPins(
+      {
+        "package.json": "0.10.0-dev",
+        "packages/web/package.json": "0.10.0-dev",
+        ".env.example": "v0.9.1",
+      },
+      "v0.9.1",
+    ),
+    [],
+  );
+});
+
+test("a declared pin WITHOUT the suffix is still checked — the v0.9.0-cycle incident", () => {
+  const stale = findStaleVersionPins(
+    { "package.json": "0.8.0", "packages/web/package.json": "0.8.0" },
+    "v0.9.1",
+  );
+  assert.deepEqual(
+    stale.map((s) => s.label),
+    ["package.json", "packages/web/package.json"],
+    "a bare version claims to BE a release, so it has to be a current one",
+  );
+});
+
+test("`-dev` does not excuse an INSTALL pin — those must name a tag that exists", () => {
+  // The short-circuit is keyed on the label, not on the suffix, so a `-dev` in
+  // an install pin still reaches parseSemver and throws. Loud is right here:
+  // that value is a `docker pull` nobody can run. The PR gate that catches it
+  // first is version-identity.mjs, which requires .env.example to equal the
+  // newest release exactly; this is the backstop behind it.
+  assert.throws(
+    () => findStaleVersionPins({ ".env.example": "v0.8.0-dev" }, "v0.9.1"),
+    /vX\.Y\.Z/,
+  );
 });
 
 test("collectMainVersionPins covers every file scripts/release.mjs bumps", () => {

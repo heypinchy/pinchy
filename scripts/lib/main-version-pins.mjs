@@ -146,12 +146,40 @@ export function collectMainVersionPins({
 }
 
 /**
+ * The two pins that answer "what is this tree?" rather than "what should I
+ * pull?". Since #1044 they carry `<next>-dev` at every moment that is not a
+ * release commit, so being AHEAD of the latest release is their correct state,
+ * not drift. The other four are install instructions and must name a tag that
+ * exists — a `-dev` version there is a pull command nobody can run.
+ *
+ * @type {ReadonlySet<string>}
+ */
+export const DECLARED_VERSION_PINS = new Set([
+  "package.json",
+  "packages/web/package.json",
+]);
+
+/**
  * @param {Record<string, string>} pins - label -> pinned version
  * @param {string} latestVersion - the latest published release tag
  * @returns {Array<{label: string, pinned: string, latest: string}>}
  */
 export function findStaleVersionPins(pins, latestVersion) {
   return Object.entries(pins)
-    .filter(([, pinned]) => isFullMinorBehind(pinned, latestVersion))
+    .filter(([label, pinned]) => {
+      // A `-dev` declared version is the intended state between releases; it is
+      // ahead of the latest release by construction. Whether it is far enough
+      // ahead is `version-identity.mjs`'s question, and that one is a PR gate,
+      // so this cron does not need to re-answer it — it would only get a second,
+      // weekly chance to say the same thing.
+      //
+      // A declared pin WITHOUT the suffix still goes through the normal check.
+      // That is the incident this guard was built for: `main` sat at a bare
+      // `0.8.0` through the whole v0.9.0 cycle, and a bare version claims to BE
+      // a release, so it has to be a current one.
+      if (DECLARED_VERSION_PINS.has(label) && /-dev$/.test(pinned))
+        return false;
+      return isFullMinorBehind(pinned, latestVersion);
+    })
     .map(([label, pinned]) => ({ label, pinned, latest: latestVersion }));
 }
