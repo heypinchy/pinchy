@@ -291,6 +291,20 @@ beforeEach(() => {
   mockGetClient.mockImplementation(() => {
     throw new Error("OpenClaw client not initialized");
   });
+  // Same cross-describe class, one layer deeper. A push coroutine OUTLIVES the
+  // test that spawned it — the not-connected path naps 2 s at a time for up to
+  // 60 s, the rate-limit path parks 33–53 s — and on resume it calls into
+  // whatever mocks are current. Cancelling belongs here rather than in the
+  // individual describes: only three of the eighteen used to call it, so the
+  // guarantee rested on an audit of which tests happen to leak today instead of
+  // on an invariant, while `restart-state integration` and `pinchy-web config`
+  // push config with no cancellation at all.
+  //
+  // This BUMPS the generation counter and must never reset it — a reset
+  // recycles the very tokens the parked coroutines hold, and is the only way
+  // one gets past the supersede check at all. See `_supersedePendingPushes`
+  // in write.ts.
+  _supersedePendingPushes();
 });
 
 // Drift guard: re-export the shared `isOpenClawLocalBaseUrl` (see
@@ -368,12 +382,6 @@ describe("regenerateOpenClawConfig", () => {
     mockGetClient.mockImplementation(() => {
       throw new Error("OpenClaw client not initialized");
     });
-    // Cancel every push coroutine still parked from a previous test, so none
-    // can resume into this test's mocks. This BUMPS the generation counter and
-    // must never reset it — a reset recycles the very tokens the parked
-    // coroutines hold and is the only way one gets past the supersede check at
-    // all. See `_supersedePendingPushes` in write.ts.
-    _supersedePendingPushes();
   });
 
   it("should write config with shared-volume file permissions (Pinchy + OpenClaw both r/w)", async () => {
@@ -3894,9 +3902,9 @@ describe("regenerateOpenClawConfig", () => {
       // this test: "Not connected" takes the extended WS-reconnect path, not
       // the ~3.5 s backoff ladder — it naps 2 s at a time for up to 60 s
       // before the writeConfigAtomic fallback, so it is still parked when the
-      // next test starts. The next `_supersedePendingPushes()` is what cancels
-      // it; that hook understating this leak as bounded is what let it flake
-      // the sibling tests below.
+      // next test starts. The top-level `beforeEach`'s
+      // `_supersedePendingPushes()` is what cancels it; that hook understating
+      // this leak as bounded is what let it flake the sibling tests below.
     });
 
     it("does not call config.apply at cold start before the OpenClaw client is initialised", async () => {
@@ -4148,9 +4156,9 @@ describe("regenerateOpenClawConfig", () => {
       // and applies test N's payload against test N+1's mocks. That is exactly
       // how the "rate-limit conservation" test above flaked under suite load —
       // the coroutine of "does not throw when the client is connected but
-      // config.apply fails" parks on the 2 s not-connected retry nap (its own
-      // header still says ~3.5 s; the not-connected path extends it to 60 s),
-      // and whichever test happens to be running ~2 s later inherits its
+      // config.apply fails" parks on the 2 s not-connected retry nap (that
+      // path bypasses the ~3.5 s backoff ladder and extends to 60 s), and
+      // whichever test happens to be running ~2 s later inherits its
       // `config.apply`. That landing point is pure scheduling luck, which is
       // why it reproduced only in the full run and never in isolation.
       //
@@ -8001,7 +8009,6 @@ describe("regenerateOpenClawConfig size-drop guard (#311)", () => {
     mockGetClient.mockImplementation(() => {
       throw new Error("OpenClaw client not initialized");
     });
-    _supersedePendingPushes();
   });
 
   it("refuses to write a config that would shrink the file by more than 50%", async () => {
@@ -8265,7 +8272,6 @@ describe("regenerateOpenClawConfig imageModel.primary (#416)", () => {
     mockGetClient.mockImplementation(() => {
       throw new Error("OpenClaw client not initialized");
     });
-    _supersedePendingPushes();
   });
 
   it("auto-sets agents.defaults.imageModel.primary when Anthropic is configured", async () => {
