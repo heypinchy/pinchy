@@ -38,6 +38,25 @@ FROM mirror.gcr.io/library/node:22-slim AS base
 ENV COREPACK_HOME=/app/.cache/corepack
 RUN corepack enable
 
+# python3 + build-essential make better-sqlite3's DOCUMENTED fallback real.
+# Its install script is `prebuild-install || node-gyp rebuild --release`: the
+# first half downloads a prebuilt binary, the second compiles one when that
+# download is unusable. Without a toolchain the second half cannot run, so a
+# transient network hiccup — `prebuild-install warn install Request timed out`,
+# observed in CI on 2026-08-05 — is not a slower build, it is a HARD build
+# failure, and a rerun only heals it for as long as the next download happens
+# to succeed (CI run 30994369292 on PR #1110).
+#
+# They sit in `base` and therefore reach ONLY prod-deps and build. The runtime
+# stage is a separate `FROM node:22-slim` that copies the already-installed
+# node_modules, so the 306 MB toolchain never ships — the same builder/runtime
+# split Dockerfile.openclaw makes for this exact module. Keep it here rather
+# than in `runtime`: native-build-toolchain.test.mjs asserts both halves.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      python3 \
+      build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 # Workspace manifests + lockfile + patches first, so the (expensive) install

@@ -384,6 +384,23 @@ The guard reads `FROM` lines only, never prose. These Dockerfiles explain their 
 
 `engine-strict` is deliberately **not** set: a mismatch is a pnpm warning, not a refused install. The goal is to make drift visible at install time, not to lock a contributor out of the repo over a minor.
 
+## A Documented Fallback That Cannot Run Is Not A Fallback
+
+`better-sqlite3`'s install script is one line — `prebuild-install || node-gyp rebuild --release`. The left half downloads a prebuilt binary; the right half compiles one when that download is unusable. On 2026-08-05 the left half timed out in CI and the whole dev-stack build died on `gyp ERR! find Python - "" could not be run` (CI run 30994369292 on PR #1110): `Dockerfile.pinchy.dev` installed `libreoffice-writer libreoffice-impress fonts-liberation catdoc` and nothing else, so the right half could not run **at all**.
+
+Read the shape rather than the timeout. This was not a flaky network — it was a transient network failure meeting a fallback that structurally did not exist, and a rerun heals it only for as long as the next download happens to succeed. `Dockerfile.pinchy` (prod) had the same gap, in both its install stages. `Dockerfile.openclaw` has carried `python3 build-essential` since its builder/runtime split and documents this exact module as the reason — one of three files got it right, which is the count at which hand-checking stops working.
+
+Both pinchy images now install the pair, and the placement is the whole trick: prod puts it in `base`, which feeds only `prod-deps` and `build`, so the 306 MB toolchain never reaches the runtime stage (a separate `FROM node:22-slim` that copies the finished `node_modules`). The single-stage dev image genuinely pays those 306 MB, next to LibreOffice's 423 MB, and that is the right place to pay for the fallback existing.
+
+`scripts/lib/native-build-toolchain.mjs` (+ its test, `pnpm test:scripts`) is the tripwire: every Dockerfile stage that runs `pnpm install` must have python3 **and** a C++ compiler, in that stage or one it descends from. Four details worth knowing before editing it:
+
+- **Ancestry is load-bearing.** A check that read only the installing stage would call the correct `Dockerfile.pinchy` broken, and the obvious way to silence it — duplicating the apt line into `runtime` — ships 306 MB nothing needs. The test asserts both halves: the install stages have the toolchain, `runtime` does not.
+- **Both packages, not either.** python3 alone gets node-gyp past `find Python` and into `make: c++: No such file or directory`. That is the same dead end one message later.
+- **Comments are stripped before anything is matched.** These Dockerfiles explain their apt lines in prose directly above them, so a text search would read the explanation of a _deleted_ install as the install — the same "reports on the presence of a string" failure the skip and format gates were each bitten by.
+- **It sees `pnpm install`, which here always means "install this workspace".** The seven `config/*-mock` images run `npm install` against their own manifests (express, imapflow, nodemailer — all pure JS) and are deliberately out of scope: demanding a 306 MB toolchain in each to protect a dependency they do not have would be worse than the gap. A mock that grows a native dependency is review's job. The guard also checks its own premise — an empty `pnpm.onlyBuiltDependencies` means nothing in the workspace compiles at install time, and it says so instead of demanding apt packages nobody can justify.
+
+**Verify a change to any of this by reproduction, not by reading.** Set `npm_config_build_from_source=true` in front of the install — that is exactly what a dead download looks like to the install script — and build. Measured on 2026-08-05: `Dockerfile.pinchy.dev` and `Dockerfile.pinchy --target prod-deps` both failed on `find Python` before the change and both compiled `better-sqlite3` (`gyp info ok`) after it.
+
 ## An Outside Reporter Never Waits Silently
 
 A stranger's bug report is the one input with no owner, no retry and no second chance. #849 proved it: someone reported that saving an OpenAI key fails, the report landed through the in-app deeplink **with no labels**, appeared in no triage filter, and sat unanswered for a week. Nothing was broken, no check went red, and that is exactly the failure — the same shape as a gate that reports on what it looks at rather than what it should.

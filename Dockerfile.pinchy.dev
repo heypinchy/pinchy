@@ -15,6 +15,25 @@ RUN apt-get update \
        libreoffice-writer libreoffice-impress fonts-liberation catdoc \
     && rm -rf /var/lib/apt/lists/*
 
+# python3 + build-essential make better-sqlite3's DOCUMENTED fallback real.
+# Its install script is `prebuild-install || node-gyp rebuild --release`: the
+# first half downloads a prebuilt binary, the second compiles one when that
+# download is unusable. Without a toolchain the second half cannot run, so a
+# transient network hiccup — `prebuild-install warn install Request timed out`,
+# observed in CI on 2026-08-05 — is not a slower build, it is a HARD build
+# failure that a rerun only heals for as long as the next download happens to
+# succeed. Dockerfile.openclaw has carried this pair since its split for the
+# same module; the two pinchy images never did (CI run 30994369292 on PR #1110).
+#
+# It costs 306 MB in this single-stage dev image, measured (`docker history`),
+# next to LibreOffice's 423 MB. Dockerfile.pinchy pays nothing at runtime — see
+# its `base` stage. That is the price of the fallback existing at all, and a
+# dev image is the right place to pay it.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+       python3 build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 COPY pnpm-workspace.yaml package.json pnpm-lock.yaml ./
