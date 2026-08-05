@@ -115,7 +115,7 @@ vi.mock("@/lib/provider-models", () => ({
   getDefaultModel: vi.fn(async () => "anthropic/claude-haiku-4-5-20251001"),
 }));
 
-import { readFileSync } from "fs";
+import { readFileSync, writeFileSync, rmSync } from "fs";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { db } from "@/db";
 import { mockJoinedPermissionsDb } from "@/test-helpers/db-mock";
@@ -436,5 +436,117 @@ describe("regenerateOpenClawConfig TOOLS.md mailbox context", () => {
     const config = getWrittenConfig();
     expect(config.plugins?.entries?.["pinchy-email"]).toBeUndefined();
     expect(config.agents.list.find((a) => a.id === "plain")).toBeDefined();
+  });
+});
+
+describe("regenerateOpenClawConfig — an unwritable workspace is not fatal (#1095)", () => {
+  // writeFileReclaiming repairs the case where the FILE is root-owned: the
+  // directory entry can be replaced via rename, which the directory's owner is
+  // allowed to do. It says so itself, and it names the case it cannot repair —
+  // when the DIRECTORY is what Pinchy may not write, the temp write is denied
+  // too and the error propagates. That needs root, and root only arrives on the
+  // OpenClaw-side tick, which reaches an instance when its image is upgraded.
+  //
+  // Until then this loop decides the blast radius. Unguarded, one agent's EACCES
+  // aborts regenerateOpenClawConfig BEFORE the openclaw.json write — so the
+  // symptom is not "one agent's TOOLS.md is stale" but every agent's runtime
+  // config frozen and pinchy-email absent. That is #1095 as it actually shipped.
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    fileStore.clear();
+    mockedReadFileSync.mockImplementation((p) => {
+      const path = String(p);
+      const stored = fileStore.get(path);
+      if (stored !== undefined) return stored;
+      if (path.endsWith("openclaw.json")) return JSON.stringify(gatewayConfig);
+      const err = new Error(`ENOENT: no such file or directory, open '${path}'`);
+      (err as NodeJS.ErrnoException).code = "ENOENT";
+      throw err;
+    });
+  });
+
+  /**
+   * Model a root-owned workspace DIRECTORY: every write under it is denied,
+   * including the sibling temp file writeFileReclaiming falls back to. Denying
+   * only TOOLS.md would let the reclaim rescue it and prove nothing.
+   */
+  function denyWritesUnder(agentId: string): void {
+    const dir = `/openclaw-config/workspaces/${agentId}/`;
+    const write = vi.mocked(writeFileSync);
+    const passthrough = write.getMockImplementation();
+    write.mockImplementation(((p: unknown, ...rest: unknown[]) => {
+      if (String(p).startsWith(dir)) {
+        const err = new Error(`EACCES: permission denied, open '${String(p)}'`);
+        (err as NodeJS.ErrnoException).code = "EACCES";
+        throw err;
+      }
+      return (passthrough as (...a: unknown[]) => unknown)(p, ...rest);
+    }) as never);
+  }
+
+  it("still pushes openclaw.json — with pinchy-email — when one workspace is locked", async () => {
+    const conn = emailConnection("conn-locked", { name: "Locked Mailbox" });
+    mockDb([agentRow("hermes")], [emailPermission("hermes", conn, "read")]);
+    denyWritesUnder("hermes");
+
+    await expect(regenerateOpenClawConfig()).resolves.not.toThrow();
+
+    // The point of the whole change: the grant the user just made reaches the
+    // runtime even though the file explaining it could not be written.
+    const config = getWrittenConfig();
+    expect(config.plugins?.entries?.["pinchy-email"]).toBeDefined();
+    expect(config.agents.list.find((a) => a.id === "hermes")).toBeDefined();
+  });
+
+  it("names the agent and quotes the errno rather than failing silently", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const conn = emailConnection("conn-locked", { name: "Locked Mailbox" });
+    mockDb([agentRow("hermes")], [emailPermission("hermes", conn, "read")]);
+    denyWritesUnder("hermes");
+
+    await regenerateOpenClawConfig();
+
+    const relevant = warn.mock.calls.map((c) => String(c[0])).find((m) => m.includes("TOOLS.md"));
+    expect(relevant).toBeDefined();
+    expect(relevant).toContain("hermes");
+    // A warning that hides the errno is the log line that cost #1095 two days.
+    expect(relevant).toContain("EACCES");
+    warn.mockRestore();
+  });
+
+  it("keeps every OTHER agent's TOOLS.md when one workspace is locked", async () => {
+    const locked = emailConnection("conn-locked", { name: "Locked Mailbox" });
+    const fine = emailConnection("conn-fine", { name: "Fine Mailbox" });
+    mockDb(
+      [agentRow("hermes"), agentRow("iris")],
+      [emailPermission("hermes", locked, "read"), emailPermission("iris", fine, "read")]
+    );
+    denyWritesUnder("hermes");
+
+    await regenerateOpenClawConfig();
+
+    expect(fileStore.get(toolsMdPath("hermes"))).toBeUndefined();
+    expect(fileStore.get(toolsMdPath("iris"))).toContain("conn-fine@example.com");
+  });
+
+  it("survives an unwritable REMOVAL too", async () => {
+    // writeToolsFile DELETES TOOLS.md for an agent with no mailbox. rmSync's
+    // `force` swallows ENOENT, never EACCES.
+    const rm = vi.mocked(rmSync);
+    const passthrough = rm.getMockImplementation();
+    rm.mockImplementation(((p: unknown, ...rest: unknown[]) => {
+      if (String(p) === toolsMdPath("plain")) {
+        const err = new Error(`EACCES: permission denied, unlink '${String(p)}'`);
+        (err as NodeJS.ErrnoException).code = "EACCES";
+        throw err;
+      }
+      return (passthrough as (...a: unknown[]) => unknown)(p, ...rest);
+    }) as never);
+    mockDb([agentRow("plain")], []);
+
+    await expect(regenerateOpenClawConfig()).resolves.not.toThrow();
+
+    expect(getWrittenConfig().agents.list.find((a) => a.id === "plain")).toBeDefined();
   });
 });

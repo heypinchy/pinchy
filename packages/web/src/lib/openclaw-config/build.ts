@@ -394,32 +394,50 @@ export async function regenerateOpenClawConfig() {
   // Agents without email connections get their TOOLS.md actively removed so
   // no stale mailbox identity survives a permission revocation.
   // The shared display order also dedupes ops merged across permission rows.
+  //
+  // Per-agent and non-fatal, exactly like the ensureWorkspace loop above and
+  // for the same reason — same volume, same cross-uid failure mode. This one
+  // was not guarded, and #1095 is what that costs: a single EACCES on one
+  // agent's root-owned TOOLS.md aborted this function BEFORE it pushed
+  // openclaw.json, so the symptom was not a stale bootstrap file but every
+  // agent save failing and pinchy-email missing from the runtime entirely.
+  // Trading one agent's mailbox context for every agent's config is never the
+  // right trade. The reclaim path in writeToolsFile should stop the EACCES
+  // happening at all; this is what keeps its failure proportionate if it does.
   for (const agent of liveAgents) {
-    const emailData = emailPermsByAgent.get(agent.id);
-    if (!emailData) {
-      writeToolsFile(agent.id, []);
-      continue;
-    }
-    if (emailData.connectionIds.size > 1) {
-      // Surface the silent first-wins pick (see the aggregation note above)
-      // so operators notice when an agent carries more than one email
-      // connection in the DB — the UI prevents this today, but the data
-      // model does not.
+    try {
+      const emailData = emailPermsByAgent.get(agent.id);
+      if (!emailData) {
+        writeToolsFile(agent.id, []);
+        continue;
+      }
+      if (emailData.connectionIds.size > 1) {
+        // Surface the silent first-wins pick (see the aggregation note above)
+        // so operators notice when an agent carries more than one email
+        // connection in the DB — the UI prevents this today, but the data
+        // model does not.
+        console.warn(
+          `[openclaw-config] Agent ${agent.name} (${agent.id}) has ${String(emailData.connectionIds.size)} email connections; pinchy-email serves only the first one (${emailData.connectionId}), and TOOLS.md lists exactly that connection.`
+        );
+      }
+      const conn = emailData.connection;
+      const connData =
+        conn.data && typeof conn.data === "object" ? (conn.data as { emailAddress?: string }) : {};
+      const grantedOps = emailData.ops.get("email") ?? [];
+      writeToolsFile(agent.id, [
+        {
+          address: connData.emailAddress || conn.name,
+          label: conn.name,
+          operations: EMAIL_OPERATION_DISPLAY_ORDER.filter((op) => grantedOps.includes(op)),
+        },
+      ]);
+    } catch (err) {
       console.warn(
-        `[openclaw-config] Agent ${agent.name} (${agent.id}) has ${String(emailData.connectionIds.size)} email connections; pinchy-email serves only the first one (${emailData.connectionId}), and TOOLS.md lists exactly that connection.`
+        `[openclaw-config] Could not write TOOLS.md for agent ${agent.name} (${agent.id}): ${
+          err instanceof Error ? err.message : String(err)
+        }. The agent keeps its previous mailbox context; every other agent's config is unaffected.`
       );
     }
-    const conn = emailData.connection;
-    const connData =
-      conn.data && typeof conn.data === "object" ? (conn.data as { emailAddress?: string }) : {};
-    const grantedOps = emailData.ops.get("email") ?? [];
-    writeToolsFile(agent.id, [
-      {
-        address: connData.emailAddress || conn.name,
-        label: conn.name,
-        operations: EMAIL_OPERATION_DISPLAY_ORDER.filter((op) => grantedOps.includes(op)),
-      },
-    ]);
   }
 
   // Pattern A from CLAUDE.md "Secrets Handling": secret pair for each LLM

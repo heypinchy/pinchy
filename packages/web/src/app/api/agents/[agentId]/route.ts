@@ -21,6 +21,14 @@ import { updateAgentSchema } from "@/lib/schemas/agents";
 
 type RouteContext = { params: Promise<{ agentId: string }> };
 
+/** What an `agent.updated` row carries, success or failure. */
+type AgentUpdateDetail = UpdateDetail & {
+  allowedGroups?: {
+    added: { id: string; name: string }[];
+    removed: { id: string; name: string }[];
+  };
+};
+
 export const GET = withAuth<RouteContext>(async (_req, { params }, session) => {
   const { agentId } = await params;
 
@@ -203,38 +211,54 @@ export const PATCH = withAuth<RouteContext>(async (request, { params }, session)
   //     forbids, and `outcome: "failure"` exists for precisely this shape.
   //   anything else → the write itself failed, nothing persisted. Claiming it
   //     was saved would stop the user retrying a change that never landed.
+  /**
+   * The answer a failed config push owes the caller.
+   *
+   * TWO sites in this handler push the runtime config — `updateAgent` for the
+   * fields it owns, and the tail of this handler for `allowedTools` /
+   * `pluginConfig`. They share this so they cannot drift into two different
+   * stories about the same failure, and so the second one cannot be forgotten
+   * the way it was: it went in unguarded, which left a permission change — the
+   * exact change #1095 broke — answering a blank Next.js 500.
+   *
+   * `detail` is null when there is nothing auditable to record.
+   */
+  function runtimeUpdateFailed(err: unknown, detail: AgentUpdateDetail | null): NextResponse {
+    const cause = err instanceof Error ? err.message : String(err);
+    console.error(`[agents] config regeneration failed for agent ${agentId}:`, err);
+    if (detail) {
+      after(() =>
+        appendAuditLog({
+          actorType: "user",
+          actorId: session.user.id!,
+          eventType: "agent.updated",
+          resource: `agent:${agentId}`,
+          // safeProviderError, not the raw string: an uncapped field would
+          // trip truncateDetail, which replaces the WHOLE detail with a
+          // summary blob rather than trimming the offender — taking
+          // `changes` with it, on the one row whose value is recording what
+          // changed. It also scrubs addresses, and this path exists because
+          // of TOOLS.md, the file carrying an agent's mailbox context.
+          detail: { ...detail, runtimeUpdate: { applied: false, error: safeProviderError(cause) } },
+          outcome: "failure",
+        })
+      );
+    }
+    return NextResponse.json(
+      { error: `Settings were saved, but the agent runtime was not updated: ${cause}` },
+      { status: 500 }
+    );
+  }
+
   let agent: typeof existingAgent;
   try {
     agent = Object.keys(data).length > 0 ? await updateAgent(agentId, data) : existingAgent;
   } catch (err) {
-    const cause = err instanceof Error ? err.message : String(err);
-
     if (err instanceof AgentRuntimeUpdateError) {
-      console.error(`[agents] config regeneration failed for agent ${agentId}:`, err);
-      if (Object.keys(changes).length > 0) {
-        after(() =>
-          appendAuditLog({
-            actorType: "user",
-            actorId: session.user.id!,
-            eventType: "agent.updated",
-            resource: `agent:${agentId}`,
-            // safeProviderError, not the raw string: an uncapped field would
-            // trip truncateDetail, which replaces the WHOLE detail with a
-            // summary blob rather than trimming the offender — taking
-            // `changes` with it, on the one row whose value is recording what
-            // changed. It also scrubs addresses, and this path exists because
-            // of TOOLS.md, the file carrying an agent's mailbox context.
-            detail: { changes, runtimeUpdate: { applied: false, error: safeProviderError(cause) } },
-            outcome: "failure",
-          })
-        );
-      }
-      return NextResponse.json(
-        { error: `Settings were saved, but the agent runtime was not updated: ${cause}` },
-        { status: 500 }
-      );
+      return runtimeUpdateFailed(err, Object.keys(changes).length > 0 ? { changes } : null);
     }
 
+    const cause = err instanceof Error ? err.message : String(err);
     console.error(`[agents] update failed for agent ${agentId}:`, err);
     return NextResponse.json({ error: `Could not update the agent: ${cause}` }, { status: 500 });
   }
@@ -270,12 +294,7 @@ export const PATCH = withAuth<RouteContext>(async (request, { params }, session)
   }
 
   // Build audit detail with group diffs
-  const auditDetail: UpdateDetail & {
-    allowedGroups?: {
-      added: { id: string; name: string }[];
-      removed: { id: string; name: string }[];
-    };
-  } = { changes };
+  const auditDetail: AgentUpdateDetail = { changes };
 
   if (body.groupIds !== undefined && session.user.role === "admin") {
     const newIds = body.groupIds;
@@ -298,7 +317,36 @@ export const PATCH = withAuth<RouteContext>(async (request, { params }, session)
     }
   }
 
-  if (Object.keys(changes).length > 0 || auditDetail.allowedGroups) {
+  const hasAuditableChange = Object.keys(changes).length > 0 || Boolean(auditDetail.allowedGroups);
+
+  // Recalculate Telegram allow-from stores when visibility or groups change.
+  // Above the push, where it has always run: the rows it mirrors are already
+  // committed, so a failed push must not skip it and leave the store enforcing
+  // an access rule the database no longer has.
+  if (body.visibility !== undefined || body.groupIds !== undefined) {
+    await recalculateTelegramAllowStores();
+  }
+
+  // Rebuild OpenClaw config when tool permissions or plugin config change — these
+  // fields affect the generated openclaw.json (e.g. write_paths for pinchy_write).
+  //
+  // Guarded like the push inside updateAgent, and for the same reason: this is
+  // the one a PERMISSION change rides on, which is the change #1095 actually
+  // broke. Unguarded it escaped as a blank 500.
+  //
+  // Ordered BEFORE the audit registration, which is the other half of the bug.
+  // `after()` cannot be cancelled once queued, so a success row registered
+  // first would still be written after this fails — one request leaving two
+  // rows that disagree, with the wrong one claiming `outcome: "success"`.
+  if (data.allowedTools !== undefined || data.pluginConfig !== undefined) {
+    try {
+      await regenerateOpenClawConfig();
+    } catch (err) {
+      return runtimeUpdateFailed(err, hasAuditableChange ? auditDetail : null);
+    }
+  }
+
+  if (hasAuditableChange) {
     after(() =>
       appendAuditLog({
         actorType: "user",
@@ -309,17 +357,6 @@ export const PATCH = withAuth<RouteContext>(async (request, { params }, session)
         outcome: "success",
       })
     );
-  }
-
-  // Recalculate Telegram allow-from stores when visibility or groups change
-  if (body.visibility !== undefined || body.groupIds !== undefined) {
-    await recalculateTelegramAllowStores();
-  }
-
-  // Rebuild OpenClaw config when tool permissions or plugin config change — these
-  // fields affect the generated openclaw.json (e.g. write_paths for pinchy_write).
-  if (data.allowedTools !== undefined || data.pluginConfig !== undefined) {
-    await regenerateOpenClawConfig();
   }
 
   return NextResponse.json(agent);

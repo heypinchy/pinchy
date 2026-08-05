@@ -84,15 +84,24 @@ vi.mock("@/lib/provider-models", () => ({
     },
   ]),
 }));
-vi.mock("@/db", () => ({
-  db: {
-    insert: vi.fn().mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) }),
-    delete: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }),
-    select: vi.fn().mockImplementation(() => ({
-      from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) }),
-    })),
-  },
-}));
+vi.mock("@/db", () => {
+  const insert = vi.fn().mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) });
+  const del = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
+  return {
+    db: {
+      insert,
+      delete: del,
+      // Group assignment runs inside a transaction; hand the callback a tx that
+      // behaves like db so the route's writes resolve.
+      transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) =>
+        fn({ insert, delete: del })
+      ),
+      select: vi.fn().mockImplementation(() => ({
+        from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) }),
+      })),
+    },
+  };
+});
 vi.mock("@/db/schema", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/db/schema")>();
   return { ...actual };
@@ -101,6 +110,8 @@ vi.mock("@/db/schema", async (importOriginal) => {
 import { auth } from "@/lib/auth";
 import { updateAgent, AgentRuntimeUpdateError } from "@/lib/agents";
 import { appendAuditLog } from "@/lib/audit";
+import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
+import { recalculateTelegramAllowStores } from "@/lib/telegram-allow-store";
 import { db } from "@/db";
 
 function mockAgent(agent: Record<string, unknown>) {
@@ -315,5 +326,130 @@ describe("PATCH /api/agents/[agentId] — config regeneration failure (#1095)", 
     await flushAfter();
 
     expect(appendAuditLog).not.toHaveBeenCalled();
+  });
+});
+
+// The handler pushes the runtime config from TWO places, and the tests above
+// cover only the first. `updateAgent` pushes for the fields it owns; the tail
+// of the handler pushes again for `allowedTools` / `pluginConfig`, because
+// those change the generated openclaw.json without changing the agents row in a
+// way updateAgent regenerates for.
+//
+// That second call went in unguarded, so it still escaped as a framework 500
+// with no `error` field — on a PERMISSION change, which is the change #1095
+// actually broke. And it sat AFTER the success audit registration: `after()`
+// cannot be cancelled once queued, so the row was written anyway, claiming
+// `outcome: "success"` for a request that answered 500.
+describe("PATCH /api/agents/[agentId] — the permission-change config push", () => {
+  let PATCH: typeof import("@/app/api/agents/[agentId]/route").PATCH;
+
+  const EXISTING = {
+    id: "agent-1",
+    name: "Penny",
+    model: "old",
+    allowedTools: [],
+    isPersonal: false,
+    ownerId: null,
+  };
+
+  function patchTools() {
+    return new NextRequest("http://localhost/api/agents/agent-1", {
+      method: "PATCH",
+      body: JSON.stringify({ allowedTools: ["email_read"] }),
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
+  async function patchToolsWithFailingPush() {
+    adminSession();
+    mockAgent(EXISTING);
+    vi.mocked(updateAgent).mockResolvedValueOnce({
+      ...EXISTING,
+      allowedTools: ["email_read"],
+    } as never);
+    vi.mocked(regenerateOpenClawConfig).mockRejectedValueOnce(eaccesOnToolsFile());
+
+    const res = await PATCH(patchTools(), { params: Promise.resolve({ agentId: "agent-1" }) });
+    await flushAfter();
+    return res;
+  }
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    const mod = await import("@/app/api/agents/[agentId]/route");
+    PATCH = mod.PATCH;
+  });
+
+  it("answers the same readable error as the other push site", async () => {
+    const res = await patchToolsWithFailingPush();
+
+    expect(res.status).toBe(500);
+    const { error } = (await res.json()) as { error: string };
+    expect(error).toMatch(/saved/i);
+    expect(error).toContain("EACCES");
+  });
+
+  it("writes ONE audit row for the request, and it says failure", async () => {
+    await patchToolsWithFailingPush();
+
+    const rows = vi
+      .mocked(appendAuditLog)
+      .mock.calls.map(([entry]) => entry)
+      .filter((entry) => entry.eventType === "agent.updated");
+
+    // Two rows disagreeing about one request is worse than no row: whichever
+    // an analyst reads first is as likely to be the wrong one.
+    expect(rows).toHaveLength(1);
+    expect(rows[0].outcome).toBe("failure");
+    expect(rows[0].detail).toMatchObject({
+      changes: { allowedTools: { to: ["email_read"] } },
+      runtimeUpdate: { applied: false },
+    });
+  });
+
+  it("still recalculates the Telegram allow-stores", async () => {
+    // They mirror group and visibility rows that are already committed, and
+    // they ran before the push until this early return existed. Skipping them
+    // would leave the store enforcing an access rule the database dropped —
+    // a drift introduced by the error path rather than by the error.
+    adminSession();
+    mockAgent(EXISTING);
+    vi.mocked(updateAgent).mockResolvedValueOnce({
+      ...EXISTING,
+      allowedTools: ["email_read"],
+    } as never);
+    vi.mocked(regenerateOpenClawConfig).mockRejectedValueOnce(eaccesOnToolsFile());
+
+    const res = await PATCH(
+      new NextRequest("http://localhost/api/agents/agent-1", {
+        method: "PATCH",
+        body: JSON.stringify({ allowedTools: ["email_read"], groupIds: [] }),
+        headers: { "Content-Type": "application/json" },
+      }),
+      { params: Promise.resolve({ agentId: "agent-1" }) }
+    );
+
+    expect(res.status).toBe(500);
+    expect(recalculateTelegramAllowStores).toHaveBeenCalled();
+  });
+
+  it("still answers 200 and audits success when the push works", async () => {
+    adminSession();
+    mockAgent(EXISTING);
+    vi.mocked(updateAgent).mockResolvedValueOnce({
+      ...EXISTING,
+      allowedTools: ["email_read"],
+    } as never);
+
+    const res = await PATCH(patchTools(), { params: Promise.resolve({ agentId: "agent-1" }) });
+    await flushAfter();
+
+    expect(res.status).toBe(200);
+    const rows = vi
+      .mocked(appendAuditLog)
+      .mock.calls.map(([entry]) => entry)
+      .filter((entry) => entry.eventType === "agent.updated");
+    expect(rows).toHaveLength(1);
+    expect(rows[0].outcome).toBe("success");
   });
 });
