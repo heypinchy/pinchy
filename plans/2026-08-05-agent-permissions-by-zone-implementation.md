@@ -18,6 +18,10 @@ Read the design record linked above. Then read these three, because every task t
 - `packages/web/src/lib/tool-registry.ts` — `TOOL_REGISTRY` is the **grant** model shown in the Permissions tab. It is _not_ the runtime allowlist: `computeAllowedTools()` derives that from the plugin manifests. `pinchy_ls`/`pinchy_read` are asserted **out** of the registry by test because they are implicit; `pinchy_memory` is the same idea from the other side — a grant with no tool of its own.
 - `packages/plugins/pinchy-files/validate.ts` — `validateAccess(..., "write")` checks `write_paths` only, and `assertNoSymlinkEscape` tolerates a not-yet-existing root. This is why granting `MEMORY.md` before the file exists is safe.
 
+**First, in a fresh worktree:** `pnpm install`. Without it nothing below resolves.
+
+**Run test binaries directly, never through `pnpm -C … exec`.** A worktree root is itself a pnpm workspace root with no `node_modules`, so `pnpm exec` resolves through _that_ workspace, goes recursive, and dies with `ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL`. A bare path to the binary works because the install lives in the package. Same trap AGENTS.md documents for the pre-commit hook.
+
 **Inner loop:** `pnpm test:related` (no arguments — it derives the change set from git). It takes no lock and runs only what imports your change.
 **Before pushing:** `pnpm test` from the repo root (takes a machine-wide lock, ~55s), plus `pnpm test:scripts`, `pnpm -C packages/web typecheck`, `pnpm format:check`.
 
@@ -63,7 +67,7 @@ describe("pinchy_memory grant", () => {
 **Step 2: Run it and watch it fail**
 
 ```bash
-pnpm -C packages/web exec vitest run src/__tests__/lib/tool-registry.test.ts
+packages/web/node_modules/.bin/vitest run --root packages/web src/__tests__/lib/tool-registry.test.ts
 ```
 
 Expected: fails on `getToolById("pinchy_memory")` being undefined. (The second test also fails to compile until Task 2 changes the signature — write it now, leave it red, it goes green in Task 2. If you would rather keep every task green, move that second `it` into Task 2.)
@@ -90,7 +94,7 @@ Then add the row to the permissions table in `agent-permissions.mdx`.
 **Step 4: Verify**
 
 ```bash
-pnpm -C packages/web exec vitest run src/__tests__/lib/tool-registry.test.ts
+packages/web/node_modules/.bin/vitest run --root packages/web src/__tests__/lib/tool-registry.test.ts
 pnpm test:scripts
 ```
 
@@ -133,7 +137,7 @@ it("emits session_status for every agent", () => {
 **Step 2: Run it and watch it fail**
 
 ```bash
-pnpm -C packages/web exec vitest run src/__tests__/lib/tool-registry.test.ts
+packages/web/node_modules/.bin/vitest run --root packages/web src/__tests__/lib/tool-registry.test.ts
 ```
 
 Expected: FAIL — `computeAllowedTools` takes no arguments, and both memory tools are currently unconditional.
@@ -290,7 +294,7 @@ Use whatever helper the neighbouring tests already use to build a config; do not
 
 **Step 3: Implement** — remove `workspaceUploads` from the write branch. `uploads` stays in `allowed_paths` (agents must still read what the user uploaded).
 
-**Step 4: Verify.** Check that `pinchy_generate_file` still registers: it looks for a `write_paths` entry ending in `/workbench` (`packages/plugins/pinchy-files/index.ts` ~L723). Run `pnpm -C packages/web exec vitest run ../plugins/pinchy-files`.
+**Step 4: Verify.** Check that `pinchy_generate_file` still registers: it looks for a `write_paths` entry ending in `/workbench` (`packages/plugins/pinchy-files/index.ts` ~L723). Run `packages/web/node_modules/.bin/vitest run --root packages/web ../plugins/pinchy-files`.
 
 **Step 5: Commit**
 
