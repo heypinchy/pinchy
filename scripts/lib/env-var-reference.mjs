@@ -14,12 +14,13 @@
  * Compose never expands.
  *
  * The second direction is the one that costs a reader real time, and it is not
- * hypothetical here. `AUDIT_HMAC_SECRET` is documented in `installation.mdx` as
- * something to set in `.env`; the app does read it, but the production Compose
- * file has never forwarded it, so setting it does exactly nothing. That is the
+ * hypothetical here. `AUDIT_HMAC_SECRET` was documented in `installation.mdx`
+ * as something to set in `.env`; the app read it, but the production Compose
+ * file never forwarded it, so setting it did exactly nothing. That is the
  * `findGhostEndpoints` lesson from AGENTS.md in a different file: an
  * undocumented variable costs a grep, a documented one that isn't wired costs
- * an afternoon.
+ * an afternoon. It is forwarded now — the ghost check is what would catch the
+ * next one.
  *
  * Defaults are checked too. A default is the single most copied fact on a
  * reference page — it is what a reader assumes when they *don't* set the
@@ -38,10 +39,10 @@
  * bug it describes.
  */
 export const READ_NOT_FORWARDED = {
-  AUDIT_HMAC_SECRET:
-    "read by packages/web/src/lib/encryption.ts, but absent from the pinchy " +
-    "service's environment block in docker-compose.yml — setting it in .env " +
-    "has no effect without an override file",
+  // Deliberately empty. `AUDIT_HMAC_SECRET` was the only entry and Compose now
+  // forwards it, so `assertReadNotForwardedAreAbsent` would reject it — which
+  // is the mechanism working, not a reason to keep the caveat. The map stays so
+  // the next genuinely-unwired variable has somewhere honest to land.
 };
 
 /** `${VAR}`, `${VAR:-default}`, `${VAR:?message}`. */

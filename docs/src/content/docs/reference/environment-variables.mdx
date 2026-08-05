@@ -53,21 +53,15 @@ Pinchy generates each of these on first start and persists it in the `pinchy-sec
 | `DB_PASSWORD`        | `pinchy_dev`   | Password for the PostgreSQL `pinchy` user. See the note below — the development default never stays active. |
 | `BETTER_AUTH_SECRET` | auto-generated | Signs login sessions. Generate with `openssl rand -hex 32`.                                                 |
 | `ENCRYPTION_KEY`     | auto-generated | Encrypts provider API keys at rest with AES-256-GCM. 64 hex characters.                                     |
-| `AUDIT_HMAC_SECRET`  | auto-generated | Signs audit-trail entries with HMAC-SHA256. **Not forwarded by the shipped Compose file** — see below.      |
+| `AUDIT_HMAC_SECRET`  | auto-generated | Signs audit-trail entries with HMAC-SHA256. Pin it for multi-instance installs — see below.                 |
 
 **`DB_PASSWORD`** is the one whose default deserves a second look. `docker-compose.yml` falls back to the literal `pinchy_dev`, which is fine for a laptop and unacceptable in production — so Pinchy does not leave it there. On the first production start the entrypoint generates a real password, applies it to PostgreSQL, and persists it in the `pinchy-secrets` volume. Set the variable yourself and your value wins, applied on the next restart even if the database still runs on an older one.
 
-**`AUDIT_HMAC_SECRET`** is read by the application, but the `docker-compose.yml` we ship does **not** pass it into the container. Putting it in `.env` therefore has no effect on a standard install: Pinchy keeps using the key it generated into the `pinchy-secrets` volume. Forwarding it needs an override file:
+**`AUDIT_HMAC_SECRET`** is worth pinning in two situations: a fresh install where you want to hold the key yourself, and any deployment running **more than one Pinchy instance against one database**. In that second case it isn't optional — each instance otherwise generates its own key, derives different pseudonyms for the same person, and none of them can show that user's full history.
 
-```yaml
-# docker-compose.override.yml
-services:
-  pinchy:
-    environment:
-      - AUDIT_HMAC_SECRET=${AUDIT_HMAC_SECRET:-}
-```
+Setting it on an install that has been running swaps the signing key. Entries written earlier keep their old signature, and that is handled rather than ignored: the generated key stays in the `pinchy-secrets` volume, and [integrity verification](/concepts/audit-trail-verification/) reports those rows as signed with an earlier secret rather than as tampered. The hash chain is not affected — each row links to its predecessor's stored signature, whichever key produced it.
 
-Do this only on a **fresh** install. Existing audit rows are signed with the generated key, and swapping the key mid-life breaks the hash chain that [audit trail verification](/concepts/audit-trail-verification/) checks.
+The one thing that cannot be recovered is a key you delete. Keep the `pinchy-secrets` volume in your backups even after pinning the value in `.env`.
 
 :::caution
 Losing `ENCRYPTION_KEY` means losing every stored provider API key — they cannot be recovered, only re-entered. If you back up anything, back up the `pinchy-secrets` volume.

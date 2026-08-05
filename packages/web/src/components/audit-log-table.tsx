@@ -89,6 +89,9 @@ interface VerifyResult {
   valid: boolean;
   totalChecked: number;
   invalidIds: number[];
+  // Rows that verify against a superseded AUDIT_HMAC_SECRET. Optional because
+  // this is a wire type: a response from an older server simply omits it.
+  previousKeyIds?: number[];
 }
 
 // Convert a date-only string (YYYY-MM-DD) to a UTC ISO string at local midnight / end of day,
@@ -426,7 +429,19 @@ export function AuditLogTable() {
           }`}
         >
           {verifyResult.valid ? (
-            <span>All {verifyResult.totalChecked} entries verified. Integrity intact.</span>
+            <span>
+              All {verifyResult.totalChecked} entries verified. Integrity intact.
+              {/* Naming the rotation matters: without it these rows either read
+                  as tampered (before previousKeyIds existed) or vanish into a
+                  green "all clear" that hides a key change from an auditor. */}
+              {verifyResult.previousKeyIds && verifyResult.previousKeyIds.length > 0 && (
+                <>
+                  {" "}
+                  {verifyResult.previousKeyIds.length} were signed with an earlier audit secret and
+                  verify against it — that&apos;s a key change, not tampering.
+                </>
+              )}
+            </span>
           ) : (
             <span>
               {verifyResult.invalidIds.length} tampered entries detected out of{" "}

@@ -359,7 +359,9 @@ Together they enforce: the request hit the right destination (domain lock), came
 
 ## AUDIT_HMAC_SECRET configuration
 
-The audit trail uses HMAC-SHA256 to sign every log entry. By default, Pinchy auto-generates a secret at startup. For production, set a persistent secret.
+The audit trail uses HMAC-SHA256 to sign every log entry. By default, Pinchy generates a secret on first start and persists it in the `pinchy-secrets` volume, which is a real secret and fine to keep. Set your own when you want to hold the key yourself, or when several Pinchy instances share one database — there it is required, because instances that sign with different keys also derive different pseudonyms for the same person.
+
+Best done on a fresh install. Setting it later swaps the key mid-life, which is handled but changes what verification reports — see the caution below.
 
 ### Generate a secret
 
@@ -375,7 +377,9 @@ AUDIT_HMAC_SECRET=your-generated-hex-string
 ```
 
 :::caution
-If the HMAC secret changes, previously signed audit entries will fail integrity verification. Back up your HMAC secret securely and never rotate it unless you understand the consequences. See [Audit Trail](/concepts/audit-trail/) for details on integrity verification.
+Changing the HMAC secret does not invalidate the entries already signed under the old one, as long as Pinchy can still reach that old key. When you set this variable over a secret Pinchy generated, the generated key stays in the `pinchy-secrets` volume and verification reports the older rows as signed with an earlier secret — not as tampered.
+
+What you cannot undo is deleting a key. Overwrite the file in `pinchy-secrets`, or lose the volume without having the value elsewhere, and every entry signed under it becomes unverifiable for good. Back the volume up, and keep any value you pin in `.env` somewhere safe. See [Audit Trail Verification](/concepts/audit-trail-verification/).
 :::
 
 ## Gateway-auth bootstrap

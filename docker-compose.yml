@@ -8,6 +8,13 @@ services:
       - BETTER_AUTH_SECRET=${BETTER_AUTH_SECRET:-}
       - OPENCLAW_WS_URL=ws://openclaw:18789
       - ENCRYPTION_KEY=${ENCRYPTION_KEY:-}
+      # Empty unless the operator pins it, and an empty value is NOT 64 hex
+      # characters — so getSecretSource() falls through to the generated file
+      # secret exactly as before. Pinning it on an install that has been running
+      # supersedes that file: rows written earlier keep the old signature, and
+      # verifyIntegrity reports them as signed under the previous key (which it
+      # reads from the same volume) rather than as tampered.
+      - AUDIT_HMAC_SECRET=${AUDIT_HMAC_SECRET:-}
       - PINCHY_ENTERPRISE_KEY=${PINCHY_ENTERPRISE_KEY:-}
     volumes:
       - openclaw-config:/openclaw-config

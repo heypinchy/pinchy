@@ -77,7 +77,7 @@ PINCHY_ENTERPRISE_KEY=
 
 **`ENCRYPTION_KEY`** — Used to encrypt provider API keys at rest (AES-256-GCM). Auto-generated and persisted in the `pinchy-secrets` volume if omitted. For production, set explicitly with `openssl rand -hex 32`.
 
-**`AUDIT_HMAC_SECRET`** — Used to sign audit trail entries with HMAC-SHA256. Auto-generated and persisted in the `pinchy-secrets` volume. Note that the Compose file above does **not** forward this one, so setting it in `.env` has no effect without an override file — see [Environment Variables](/reference/environment-variables/#secrets).
+**`AUDIT_HMAC_SECRET`** — Used to sign audit trail entries with HMAC-SHA256. Auto-generated and persisted in the `pinchy-secrets` volume if omitted. Pin it on a fresh install if you want to hold the key yourself, and always when several Pinchy instances share one database — they need the same key to agree on signatures. Setting it on an install that has already been running swaps the key; see [Environment Variables](/reference/environment-variables/#secrets) for what happens to entries signed before the swap.
 
 **`PINCHY_ENTERPRISE_KEY`** — License key for enterprise features (Groups, agent access control, basic RBAC — granular RBAC with custom roles is planned, [#527](https://github.com/heypinchy/pinchy/issues/527)). Optional — can also be entered via **Settings → License** in the UI. See [Enterprise Setup](/guides/enterprise-setup/) for details.
 

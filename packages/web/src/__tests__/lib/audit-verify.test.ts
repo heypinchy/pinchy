@@ -18,6 +18,9 @@ const { mockLimit, mockOrderBy, mockWhere, mockFrom, mockSelect, gtCursors } = v
 
 vi.mock("@/lib/encryption", () => ({
   getOrCreateSecret: vi.fn(() => Buffer.from("a".repeat(64), "hex")),
+  // Null by default: no previous signing secret is known, which is every
+  // install that never rotated. The rotation suite below opts in.
+  getPreviousSecret: vi.fn(() => null),
 }));
 
 vi.mock("@/db", () => ({
@@ -39,6 +42,7 @@ vi.mock("drizzle-orm", async (importOriginal) => {
 });
 
 import { computeRowHmacV1, computeRowHmacV2, computeRowHmacV3, verifyIntegrity } from "@/lib/audit";
+import { getPreviousSecret } from "@/lib/encryption";
 
 const secret = Buffer.from("a".repeat(64), "hex");
 
@@ -126,6 +130,7 @@ describe("verifyIntegrity", () => {
       totalChecked: 3,
       invalidIds: [],
       chainBreakIds: [],
+      previousKeyIds: [],
     });
   });
 
@@ -140,6 +145,7 @@ describe("verifyIntegrity", () => {
       totalChecked: 3,
       invalidIds: [2],
       chainBreakIds: [],
+      previousKeyIds: [],
     });
   });
 
@@ -154,6 +160,7 @@ describe("verifyIntegrity", () => {
       totalChecked: 2,
       invalidIds: [],
       chainBreakIds: [],
+      previousKeyIds: [],
     });
     // Verify that where() was called (meaning conditions were applied)
     expect(mockWhere).toHaveBeenCalled();
@@ -169,6 +176,7 @@ describe("verifyIntegrity", () => {
       totalChecked: 0,
       invalidIds: [],
       chainBreakIds: [],
+      previousKeyIds: [],
     });
   });
 
@@ -215,6 +223,7 @@ describe("verifyIntegrity", () => {
       totalChecked: 3,
       invalidIds: [1, 3],
       chainBreakIds: [],
+      previousKeyIds: [],
     });
   });
 
@@ -232,6 +241,7 @@ describe("verifyIntegrity", () => {
         totalChecked: 3,
         invalidIds: [],
         chainBreakIds: [],
+        previousKeyIds: [],
       });
     });
 
@@ -378,6 +388,7 @@ describe("verifyIntegrity", () => {
         totalChecked: 5,
         invalidIds: [],
         chainBreakIds: [],
+        previousKeyIds: [],
       });
       // Three pages were actually fetched — the whole table was never loaded
       // at once. (A short final page ends the walk; an exact-multiple table
@@ -409,5 +420,120 @@ describe("verifyIntegrity", () => {
       expect(result.chainBreakIds).toEqual([3]);
       expect(result.totalChecked).toBe(4);
     });
+  });
+});
+
+describe("verifyIntegrity across a signing-secret rotation", () => {
+  // An operator who pins AUDIT_HMAC_SECRET after running on the generated file
+  // secret leaves a log signed under two keys. Recomputing the older rows under
+  // the newer key mismatches every one of them — and `invalidIds` is the bucket
+  // audit-trail-verification.mdx defines as "a field inside the row was
+  // changed". Reporting a key rotation as tampering is worse than saying
+  // nothing, so rows that verify under the known previous secret get their own
+  // bucket and never land in `invalidIds`.
+  const previousSecret = Buffer.from("b".repeat(64), "hex");
+
+  function makeV1SignedWith(id: number, signingSecret: Buffer) {
+    const fields = {
+      timestamp: new Date("2026-02-21T10:00:00Z"),
+      eventType: "agent.created",
+      actorType: "user" as const,
+      actorId: `user-${id}`,
+      resource: `agent:abc-${id}`,
+      detail: { name: "Smithers" },
+    };
+    return {
+      id,
+      version: 1,
+      outcome: null,
+      error: null,
+      ...fields,
+      rowHmac: computeRowHmacV1(signingSecret, fields),
+    };
+  }
+
+  function makeV3SignedWith(id: number, prevHmac: string | null, signingSecret: Buffer) {
+    const fields = {
+      timestamp: new Date("2026-02-21T10:00:00Z"),
+      eventType: "auth.login",
+      actorType: "user" as const,
+      actorId: `user-${id}`,
+      resource: `user:${id}`,
+      detail: null,
+      outcome: "success" as "success" | "failure",
+      error: null as { message: string } | null,
+      prevHmac,
+    };
+    return { id, version: 3, ...fields, rowHmac: computeRowHmacV3(signingSecret, fields) };
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockSelect.mockReturnValue({ from: mockFrom });
+    mockFrom.mockReturnValue({ where: mockWhere });
+    mockWhere.mockReturnValue({ orderBy: mockOrderBy });
+    mockOrderBy.mockReturnValue({ limit: mockLimit });
+    vi.mocked(getPreviousSecret).mockReturnValue(previousSecret);
+  });
+
+  it("reports rows signed under the previous secret separately, not as tampered", async () => {
+    const entries = [
+      makeV1SignedWith(1, previousSecret),
+      makeV1SignedWith(2, previousSecret),
+      makeV1SignedWith(3, secret),
+    ];
+    mockLimit.mockResolvedValue(entries);
+
+    const result = await verifyIntegrity();
+
+    expect(result.invalidIds).toEqual([]);
+    expect(result.previousKeyIds).toEqual([1, 2]);
+    // Authentic rows under a superseded key are not an integrity violation.
+    expect(result.valid).toBe(true);
+  });
+
+  it("keeps the chain intact across the rotation boundary", async () => {
+    // The rotation does NOT break the hash chain: prev_hmac stores the
+    // predecessor's row_hmac verbatim, whatever key produced it. Only the row
+    // signatures change bucket. This is the claim the reference page got wrong.
+    const r1 = makeV3SignedWith(1, null, previousSecret);
+    const r2 = makeV3SignedWith(2, r1.rowHmac, previousSecret);
+    const r3 = makeV3SignedWith(3, r2.rowHmac, secret);
+    const r4 = makeV3SignedWith(4, r3.rowHmac, secret);
+    mockLimit.mockResolvedValue([r1, r2, r3, r4]);
+
+    const result = await verifyIntegrity();
+
+    expect(result.previousKeyIds).toEqual([1, 2]);
+    expect(result.invalidIds).toEqual([]);
+    expect(result.chainBreakIds).toEqual([]);
+    expect(result.valid).toBe(true);
+  });
+
+  it("still reports a genuinely tampered row as invalid", async () => {
+    // A row that verifies under NEITHER key is tampering, and the previous-key
+    // fallback must not launder it.
+    const tampered = { ...makeV1SignedWith(2, previousSecret), rowHmac: "0".repeat(64) };
+    const entries = [makeV1SignedWith(1, previousSecret), tampered, makeV1SignedWith(3, secret)];
+    mockLimit.mockResolvedValue(entries);
+
+    const result = await verifyIntegrity();
+
+    expect(result.invalidIds).toEqual([2]);
+    expect(result.previousKeyIds).toEqual([1]);
+    expect(result.valid).toBe(false);
+  });
+
+  it("reports pre-rotation rows as invalid when no previous secret is available", async () => {
+    // The honest limitation: an operator who overwrote the secret FILE has
+    // destroyed the old key, and nothing can reclassify those rows.
+    vi.mocked(getPreviousSecret).mockReturnValue(null);
+    mockLimit.mockResolvedValue([makeV1SignedWith(1, previousSecret), makeV1SignedWith(2, secret)]);
+
+    const result = await verifyIntegrity();
+
+    expect(result.invalidIds).toEqual([1]);
+    expect(result.previousKeyIds).toEqual([]);
+    expect(result.valid).toBe(false);
   });
 });

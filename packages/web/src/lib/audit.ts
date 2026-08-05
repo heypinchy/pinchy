@@ -2,7 +2,7 @@ import { createHmac } from "crypto";
 import { asc, desc, eq, gt, gte, lte, and, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { auditLog, users, type AuditDetail } from "@/db/schema";
-import { getOrCreateSecret } from "@/lib/encryption";
+import { getOrCreateSecret, getPreviousSecret } from "@/lib/encryption";
 import { scrubEmails } from "@/lib/scrub-emails";
 // Type-only (erased at build time), so the IMAP probe's runtime dependencies
 // never enter audit.ts's module graph.
@@ -617,6 +617,12 @@ export type AuditLogEntry =
         // huge number of violations still fits the 2048-byte detail budget.
         invalidIds: number[];
         chainBreakIds: number[];
+        // Rows that verified under the SUPERSEDED signing secret rather than
+        // the active one. Not a violation, so `outcome` stays "success" — this
+        // is the durable record that a rotation happened and which rows it
+        // covered. See getPreviousSecret() in lib/encryption.ts.
+        previousKeyCount: number;
+        previousKeyIds: number[];
       };
     })
   | (AuditLogBase & {
@@ -1102,6 +1108,13 @@ interface VerifyResult {
   // v3 chain links that don't point at their predecessor's rowHmac — evidence
   // of a deleted (middle) row or a reordering, distinct from field tampering.
   chainBreakIds: number[];
+  // Rows whose signature verifies under the SUPERSEDED signing secret rather
+  // than the active one — an operator pinned AUDIT_HMAC_SECRET on an install
+  // that had been signing with the generated file secret. These rows are
+  // authentic and unmodified, so they are not integrity violations and do not
+  // clear `valid`. They are reported separately and never folded into the
+  // healthy rows, so the rotation stays visible. See getPreviousSecret().
+  previousKeyIds: number[];
 }
 
 // Rows processed per fetch. The whole audit_log can grow unbounded, so loading
@@ -1126,11 +1139,15 @@ export async function verifyIntegrity(
   }
 ): Promise<VerifyResult> {
   const secret = getOrCreateSecret("audit_hmac_secret");
+  // Resolved once: the key an operator superseded by pinning AUDIT_HMAC_SECRET,
+  // or null on the overwhelming majority of installs that never rotated.
+  const previousSecret = getPreviousSecret("audit_hmac_secret");
   const pageSize = opts?.pageSize ?? VERIFY_PAGE_SIZE;
   const hasSeed = opts !== undefined && Object.prototype.hasOwnProperty.call(opts, "seedPrevHmac");
 
   const invalidIds: number[] = [];
   const chainBreakIds: number[] = [];
+  const previousKeyIds: number[] = [];
   let totalChecked = 0;
   // rowHmac of the previous row in range; undefined before the first row so the
   // first row in a partial range isn't chain-checked against a missing
@@ -1167,7 +1184,7 @@ export async function verifyIntegrity(
         continue;
       }
 
-      const expectedHmac = verifier(secret, {
+      const fields = {
         timestamp: entry.timestamp,
         eventType: entry.eventType,
         actorType: entry.actorType,
@@ -1177,9 +1194,19 @@ export async function verifyIntegrity(
         outcome: (entry.outcome ?? "success") as "success" | "failure",
         error: entry.error as { message: string } | null,
         prevHmac: entry.prevHmac, // v3 verifier uses this; v1/v2 ignore it
-      });
+      };
 
-      if (expectedHmac !== entry.rowHmac) {
+      let signatureOk = verifier(secret, fields) === entry.rowHmac;
+      // Only rows that fail under the ACTIVE key are retried, so an unrotated
+      // install pays nothing and a rotated one pays one extra HMAC per legacy
+      // row. A row that verifies under neither key is tampering, and the
+      // fallback must not launder it into the previous-key bucket.
+      if (!signatureOk && previousSecret && verifier(previousSecret, fields) === entry.rowHmac) {
+        previousKeyIds.push(entry.id);
+        signatureOk = true;
+      }
+
+      if (!signatureOk) {
         invalidIds.push(entry.id);
       } else if (
         entry.version >= 3 &&
@@ -1201,9 +1228,14 @@ export async function verifyIntegrity(
   }
 
   return {
+    // previousKeyIds is deliberately absent: a row signed under the superseded
+    // key is authentic and unmodified. Clearing `valid` for it would restore
+    // the exact defect this bucket exists to fix — a key rotation reported as
+    // tampering.
     valid: invalidIds.length === 0 && chainBreakIds.length === 0,
     totalChecked,
     invalidIds,
     chainBreakIds,
+    previousKeyIds,
   };
 }

@@ -355,6 +355,38 @@ describe("AuditLogTable", () => {
     });
   });
 
+  it("should name a signing-secret change instead of reporting it as tampering", async () => {
+    // The whole point of previousKeyIds: rows signed before the operator pinned
+    // AUDIT_HMAC_SECRET are authentic, so the banner stays green — but it must
+    // say why some rows verified against a different key rather than staying
+    // silent about a rotation.
+    renderWithEntriesLoaded();
+
+    await waitFor(() => {
+      expect(screen.getAllByText("auth.login").length).toBeGreaterThan(0);
+    });
+
+    vi.mocked(global.fetch).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        valid: true,
+        totalChecked: 3,
+        invalidIds: [],
+        chainBreakIds: [],
+        previousKeyIds: [1, 2],
+      }),
+    } as Response);
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Verify Integrity" }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/All 3 entries verified/)).toBeInTheDocument();
+    });
+    expect(screen.getByText(/2 were signed with an earlier audit secret/)).toBeInTheDocument();
+    expect(screen.queryByText(/tampered/)).not.toBeInTheDocument();
+  });
+
   it("should show red result when integrity check finds tampered entries", async () => {
     renderWithEntriesLoaded();
 

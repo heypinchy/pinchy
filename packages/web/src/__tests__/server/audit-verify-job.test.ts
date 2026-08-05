@@ -186,6 +186,7 @@ describe("sweepAuditVerify", () => {
       totalChecked: 0,
       invalidIds: [],
       chainBreakIds: [],
+      previousKeyIds: [],
     });
 
     const result = await sweepAuditVerify();
@@ -217,6 +218,7 @@ describe("sweepAuditVerify", () => {
       totalChecked: 5,
       invalidIds: [],
       chainBreakIds: [],
+      previousKeyIds: [],
     });
     mockLastScannedRow({ id: 5, rowHmac: "hmac-5" });
     mockOwnReportRow(6, "hmac-6");
@@ -234,6 +236,7 @@ describe("sweepAuditVerify", () => {
       totalChecked: 3, // rows 11, 12, 13
       invalidIds: [],
       chainBreakIds: [],
+      previousKeyIds: [],
     });
     mockLastScannedRow({ id: 13, rowHmac: "hmac-13" });
     // The sweep's own appendAuditLog call inserts row 14 and RETURNS it; the
@@ -250,6 +253,7 @@ describe("sweepAuditVerify", () => {
       valid: true,
       invalidCount: 0,
       chainBreakCount: 0,
+      previousKeyCount: 0,
     });
 
     // Checkpoint advances to row 14 (its own report), not just to row 13 (the
@@ -284,6 +288,7 @@ describe("sweepAuditVerify", () => {
           chainBreakCount: 0,
           invalidIds: [],
           chainBreakIds: [],
+          previousKeyCount: 0,
         }),
       })
     );
@@ -307,6 +312,7 @@ describe("sweepAuditVerify", () => {
       totalChecked: 3,
       invalidIds: [],
       chainBreakIds: [],
+      previousKeyIds: [],
     });
     mockLastScannedRow({ id: 13, rowHmac: "hmac-13" });
     mockAppendAuditLog.mockResolvedValue({ id: 14, rowHmac: "hmac-14" });
@@ -331,6 +337,7 @@ describe("sweepAuditVerify", () => {
       totalChecked: 3,
       invalidIds: [],
       chainBreakIds: [],
+      previousKeyIds: [],
     });
     mockLastScannedRow({ id: 13, rowHmac: "hmac-13" });
     mockOwnReportRow(16, "hmac-16");
@@ -367,6 +374,7 @@ describe("sweepAuditVerify", () => {
       totalChecked: 3,
       invalidIds: [],
       chainBreakIds: [],
+      previousKeyIds: [],
     });
     mockLastScannedRow({ id: 13, rowHmac: "hmac-13" });
     mockOwnReportRow(16, "hmac-16");
@@ -389,6 +397,7 @@ describe("sweepAuditVerify", () => {
       totalChecked: 3,
       invalidIds: [],
       chainBreakIds: [],
+      previousKeyIds: [],
     });
     mockLastScannedRow({ id: 13, rowHmac: "hmac-13" });
     mockOwnReportRow(14, "hmac-14");
@@ -413,6 +422,7 @@ describe("sweepAuditVerify", () => {
       totalChecked: 3,
       invalidIds: [],
       chainBreakIds: [],
+      previousKeyIds: [],
     });
     mockLastScannedRow({ id: 13, rowHmac: "hmac-13" });
     mockOwnReportRow(16, "hmac-16");
@@ -440,6 +450,7 @@ describe("sweepAuditVerify", () => {
       totalChecked: 2,
       invalidIds: [2],
       chainBreakIds: [],
+      previousKeyIds: [],
     });
     mockLastScannedRow({ id: 2, rowHmac: "hmac-2" });
     mockOwnReportRow(3, "hmac-3");
@@ -482,6 +493,7 @@ describe("sweepAuditVerify", () => {
       totalChecked: 80,
       invalidIds: manyIds,
       chainBreakIds: [],
+      previousKeyIds: [],
     });
     mockLastScannedRow({ id: 80, rowHmac: "hmac-80" });
     mockOwnReportRow(81, "hmac-81");
@@ -494,6 +506,33 @@ describe("sweepAuditVerify", () => {
     expect(call.detail.invalidIds.length).toBeLessThan(80);
   });
 
+  it("records rows verified under the superseded secret, and does NOT call it a violation", async () => {
+    // The first sweep after an operator pins AUDIT_HMAC_SECRET straddles the
+    // rotation: rows written before the restart carry the old signature. That
+    // is a rotation, not tampering — so the report row stays `success`, and the
+    // count is what makes the rotation durable evidence in the log itself
+    // rather than a line on stderr nobody reads.
+    mockCheckpointRow({ lastVerifiedId: 0, lastVerifiedHmac: null });
+    mockCurrentMaxId(4);
+    mockVerifyIntegrity.mockResolvedValue({
+      valid: true,
+      totalChecked: 4,
+      invalidIds: [],
+      chainBreakIds: [],
+      previousKeyIds: [1, 2],
+    });
+    mockLastScannedRow({ id: 4, rowHmac: "hmac-4" });
+    mockOwnReportRow(5, "hmac-5");
+
+    const result = await sweepAuditVerify();
+
+    const call = mockAppendAuditLog.mock.calls[0][0];
+    expect(call.outcome).toBe("success");
+    expect(call.detail.previousKeyCount).toBe(2);
+    expect(call.detail.previousKeyIds).toEqual([1, 2]);
+    expect(result.previousKeyCount).toBe(2);
+  });
+
   it("audit-write failure inside the sweep is recorded via recordAuditFailure, not thrown, and the checkpoint still advances to the scanned window", async () => {
     mockCheckpointRow({ lastVerifiedId: 0, lastVerifiedHmac: null });
     mockCurrentMaxId(1);
@@ -502,6 +541,7 @@ describe("sweepAuditVerify", () => {
       totalChecked: 1,
       invalidIds: [],
       chainBreakIds: [],
+      previousKeyIds: [],
     });
     mockLastScannedRow({ id: 1, rowHmac: "hmac-1" });
     mockAppendAuditLog.mockRejectedValueOnce(new Error("db down"));
@@ -535,6 +575,7 @@ describe("startAuditVerifyJob / stopAuditVerifyJob", () => {
       totalChecked: 1,
       invalidIds: [],
       chainBreakIds: [],
+      previousKeyIds: [],
     });
     mockLastScannedRow({ id: 1, rowHmac: "hmac-1" });
     mockOwnReportRow(2, "hmac-2");

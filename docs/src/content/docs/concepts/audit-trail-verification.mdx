@@ -47,6 +47,20 @@ Verification reports these two failure modes **separately**, because they mean d
 
 Keeping them distinct tells you not just _that_ something is wrong but _what kind_ of tampering happened, which is exactly what an investigation needs first.
 
+### Rows signed with an earlier secret
+
+There's a third bucket, and it is deliberately not a failure:
+
+- `previousKeyIds` — rows whose signature recomputes under the secret this instance **used to** sign with, rather than the current one.
+
+This is what a changed `AUDIT_HMAC_SECRET` looks like. If you pin the variable on an install that had been running on the key Pinchy generated, every entry written earlier carries the old signature. Recomputing those under the new key alone would mismatch on all of them — and reporting a key change as "the entire history was tampered with" is worse than useless during an investigation.
+
+So Pinchy keeps looking at the key it superseded. The generated secret stays in the `pinchy-secrets` volume; rows that verify against it are authentic and unmodified, and they're listed on their own instead of being folded into the healthy rows, so a rotation stays visible to whoever reads the report. `valid` stays true, because nothing was tampered with.
+
+The hash chain is untouched by any of this. Each row stores its predecessor's signature verbatim, whichever key produced that signature, so the links still match straight across the point where the key changed.
+
+Two limits worth stating plainly. This covers a secret **superseded by the environment variable** — the case pinning `AUDIT_HMAC_SECRET` creates. If you overwrite the key file itself, the old key is gone and the rows it signed can no longer be verified by anyone. And Pinchy remembers one previous key, not a history of them: rotate twice and the oldest rows become unverifiable the same way.
+
 :::note[Rows written before the chain existed]
 Entries created before the hash chain was introduced keep their original per-row signatures and stay verifiable under them. The chain binds forward from the point it was introduced — older rows are checked for content integrity but aren't chain-checked against a predecessor they never recorded. This is expected, not an integrity failure.
 :::

@@ -124,6 +124,9 @@ export interface AuditVerifySweepResult {
   valid?: boolean;
   invalidCount?: number;
   chainBreakCount?: number;
+  // Rows in this window that verified under the superseded signing secret. Not
+  // a violation — see the report entry below.
+  previousKeyCount?: number;
 }
 
 /**
@@ -183,6 +186,11 @@ export async function sweepAuditVerify(): Promise<AuditVerifySweepResult> {
 
   const cappedInvalidIds = result.invalidIds.slice(0, MAX_REPORTED_IDS);
   const cappedChainBreakIds = result.chainBreakIds.slice(0, MAX_REPORTED_IDS);
+  // A sweep straddling a signing-secret rotation sees the pre-rotation rows
+  // once — the checkpoint then moves past them, so this is the only sweep that
+  // can report it. Recording it in the audit log itself is what makes the
+  // rotation durable evidence, instead of a stderr line nobody reads (#599).
+  const cappedPreviousKeyIds = result.previousKeyIds.slice(0, MAX_REPORTED_IDS);
 
   const entry = {
     eventType: "audit.integrity_check" as const,
@@ -196,6 +204,8 @@ export async function sweepAuditVerify(): Promise<AuditVerifySweepResult> {
       chainBreakCount: result.chainBreakIds.length,
       invalidIds: cappedInvalidIds,
       chainBreakIds: cappedChainBreakIds,
+      previousKeyCount: result.previousKeyIds.length,
+      previousKeyIds: cappedPreviousKeyIds,
     },
   };
   // appendAuditLog inserts this audit.integrity_check row AND returns its
@@ -264,6 +274,7 @@ export async function sweepAuditVerify(): Promise<AuditVerifySweepResult> {
     valid: result.valid,
     invalidCount: result.invalidIds.length,
     chainBreakCount: result.chainBreakIds.length,
+    previousKeyCount: result.previousKeyIds.length,
   };
 }
 

@@ -333,4 +333,79 @@ describe("encryption", () => {
       );
     });
   });
+
+  describe("getPreviousSecret", () => {
+    // Pinning AUDIT_HMAC_SECRET on an install that had been running on the
+    // generated file secret leaves the log signed under two keys. The
+    // superseded key is still in the secrets volume; this is what finds it, so
+    // verifyIntegrity can report those rows as rotated instead of tampered.
+    const SECRET_NAME = "audit_hmac_secret";
+    const ENV_VAR_NAME = "AUDIT_HMAC_SECRET";
+    const FILE_NAME = ".audit_hmac_secret";
+
+    beforeEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    it("returns the file secret when the env var supersedes a different one", async () => {
+      const envHex = "a".repeat(64);
+      const fileHex = "b".repeat(64);
+      vi.stubEnv(ENV_VAR_NAME, envHex);
+      mockedExistsSync.mockImplementation((path) => String(path).endsWith(FILE_NAME));
+      mockedReadFileSync.mockReturnValue(fileHex);
+
+      const mod = await import("@/lib/encryption");
+      expect(mod.getPreviousSecret(SECRET_NAME)).toEqual(Buffer.from(fileHex, "hex"));
+    });
+
+    it("returns null when the env var and the file hold the same secret", async () => {
+      // Re-pinning the value Pinchy already generated supersedes nothing, so
+      // there is no previous key and no rotation to report.
+      const sameHex = "c".repeat(64);
+      vi.stubEnv(ENV_VAR_NAME, sameHex);
+      mockedExistsSync.mockImplementation((path) => String(path).endsWith(FILE_NAME));
+      mockedReadFileSync.mockReturnValue(sameHex);
+
+      const mod = await import("@/lib/encryption");
+      expect(mod.getPreviousSecret(SECRET_NAME)).toBeNull();
+    });
+
+    it("returns null when the file secret is the active one (no env var)", async () => {
+      mockedExistsSync.mockImplementation((path) => String(path).endsWith(FILE_NAME));
+      mockedReadFileSync.mockReturnValue("d".repeat(64));
+
+      const mod = await import("@/lib/encryption");
+      expect(mod.getPreviousSecret(SECRET_NAME)).toBeNull();
+    });
+
+    it("returns null when no secret file exists", async () => {
+      vi.stubEnv(ENV_VAR_NAME, "e".repeat(64));
+      mockedExistsSync.mockReturnValue(false);
+
+      const mod = await import("@/lib/encryption");
+      expect(mod.getPreviousSecret(SECRET_NAME)).toBeNull();
+    });
+
+    it("returns null rather than throwing when the leftover file is corrupt", async () => {
+      // A corrupt leftover is not a key we can verify against, and must never
+      // take verification down with it.
+      vi.stubEnv(ENV_VAR_NAME, "f".repeat(64));
+      mockedExistsSync.mockImplementation((path) => String(path).endsWith(FILE_NAME));
+      mockedReadFileSync.mockReturnValue("not-valid-hex!");
+
+      const mod = await import("@/lib/encryption");
+      expect(mod.getPreviousSecret(SECRET_NAME)).toBeNull();
+    });
+
+    it("ignores a non-hex env var, which never becomes the active secret", async () => {
+      // getSecretSource only accepts 64 hex chars, so junk in .env leaves the
+      // FILE active — nothing was superseded.
+      vi.stubEnv(ENV_VAR_NAME, "not-a-key");
+      mockedExistsSync.mockImplementation((path) => String(path).endsWith(FILE_NAME));
+      mockedReadFileSync.mockReturnValue("a".repeat(64));
+
+      const mod = await import("@/lib/encryption");
+      expect(mod.getPreviousSecret(SECRET_NAME)).toBeNull();
+    });
+  });
 });
