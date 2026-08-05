@@ -108,6 +108,26 @@ function makeRequest(body?: unknown) {
   });
 }
 
+// The detail as the `jsonb` column receives it — NOT the in-memory object the
+// route built. The route sets both failure codes unconditionally (`imap.ok ?
+// undefined : imap.code`) so excess-property checking can see them, and a key
+// whose value is `undefined` drops out on serialization.
+//
+// Asserting on the raw object cannot express "no failure code in the row":
+// toEqual ignores undefined-valued keys, so it reads `{ …, imapCode: undefined }`
+// and `{ … }` as the same thing. That is why the success case previously had to
+// grep the serialized string for "imapCode" — the assertion itself couldn't say
+// it. Serializing first says it directly, and toStrictEqual then holds the whole
+// row: every stored key is accounted for, and the string greps go away.
+//
+// What stays out of reach either way is a stray key whose value is `undefined`,
+// which is correct — it never reaches the database, so it is not part of the row
+// under test. Guarding against that is the route annotation's job (`const
+// auditDetail: CredentialsTestedDetail`), and tsc does reject it.
+function storedDetail(entry: { detail: unknown }): unknown {
+  return JSON.parse(JSON.stringify(entry.detail));
+}
+
 describe("POST /api/integrations/imap/test", () => {
   // Compile the route's whole dependency graph (better-auth, drizzle, imapflow,
   // nodemailer, …) ONCE here rather than inside whichever test happens to run
@@ -214,10 +234,10 @@ describe("POST /api/integrations/imap/test", () => {
       const entry = mockAppendAuditLog.mock.calls[0][0];
       expect(entry.eventType).toBe("integration.credentials_tested");
       expect(entry.outcome).toBe("success");
-      // Whole-shape, not field-by-field: the point is that a success row
-      // carries NO failure code (and no stray field the AuditLogEntry union
-      // doesn't declare). A per-field assertion cannot see an extra key.
-      expect(entry.detail).toEqual({
+      // Whole stored shape, not field-by-field: a success row carries NO
+      // failure code, and nothing else rides along. See storedDetail() for why
+      // this asserts on the serialized row rather than on the raw object.
+      expect(storedDetail(entry)).toStrictEqual({
         imapHost: "imap.example.com",
         smtpHost: "smtp.example.com",
         emailHash: expect.any(String),
@@ -228,13 +248,6 @@ describe("POST /api/integrations/imap/test", () => {
       expect(serializedEntry).not.toContain(validBody.password);
       // The username is email-shaped, so it must reach the log redacted.
       expect(serializedEntry).not.toContain("mailbox@example.com");
-      // The route sets both codes unconditionally (`imap.ok ? undefined :
-      // imap.code`) so that excess-property checking can see them. That is only
-      // equivalent to omitting them because JSON.stringify drops an undefined
-      // value — and `detail` is stored as jsonb, so this IS the stored row.
-      // Without this assertion the equivalence is a claim in a comment.
-      expect(serializedEntry).not.toContain("imapCode");
-      expect(serializedEntry).not.toContain("smtpCode");
     });
 
     it("returns 200 { ok: false, imap } and writes a failure audit entry when the IMAP login fails", async () => {
@@ -266,10 +279,12 @@ describe("POST /api/integrations/imap/test", () => {
       expect(entry.eventType).toBe("integration.credentials_tested");
       expect(entry.outcome).toBe("failure");
       // Failure codes go into detail, never the raw error/stack trace. Asserted
-      // as a whole shape so the row that a reader of AuditLogEntry expects is
-      // the row that is actually written: the failing leg's code is present,
-      // the passing leg's is absent, and nothing else rides along.
-      expect(entry.detail).toEqual({
+      // as a whole stored shape so the row that a reader of AuditLogEntry
+      // expects is the row that is actually written: the failing leg's code is
+      // present, the passing leg's is absent, and nothing else rides along.
+      // `smtpCode` being missing here (not just undefined) is what makes the
+      // success case's assertion discriminate rather than pass vacuously.
+      expect(storedDetail(entry)).toStrictEqual({
         imapHost: "imap.example.com",
         smtpHost: "smtp.example.com",
         imapCode: "auth",
@@ -281,10 +296,6 @@ describe("POST /api/integrations/imap/test", () => {
       expect(serializedEntry).not.toContain(validBody.password);
       expect(serializedEntry).not.toMatch(/at\s+Object/); // no raw stack trace
       expect(serializedEntry).not.toContain("mailbox@example.com"); // no raw error text with PII
-      // Counterpart to the success case's `not.toContain("imapCode")`: the key
-      // IS findable in the serialized row when the leg actually failed, so that
-      // assertion discriminates rather than being vacuously true.
-      expect(serializedEntry).toContain("imapCode");
     });
 
     it("returns 200 { ok: false, smtp } and writes a failure audit entry when the SMTP verify fails", async () => {
@@ -308,7 +319,7 @@ describe("POST /api/integrations/imap/test", () => {
       expect(entry.eventType).toBe("integration.credentials_tested");
       expect(entry.outcome).toBe("failure");
       // Mirror image of the IMAP case: only the failing leg contributes a code.
-      expect(entry.detail).toEqual({
+      expect(storedDetail(entry)).toStrictEqual({
         imapHost: "imap.example.com",
         smtpHost: "smtp.example.com",
         smtpCode: "refused",
@@ -450,7 +461,7 @@ describe("POST /api/integrations/imap/test", () => {
         expect(entry.outcome).toBe("failure");
         // The both-legs-failed shape: a row can carry either code, both, or
         // neither, and the type has to admit all three.
-        expect(entry.detail).toEqual({
+        expect(storedDetail(entry)).toStrictEqual({
           imapHost: "imap.example.com",
           smtpHost: "smtp.example.com",
           imapCode: "blocked",
@@ -487,7 +498,7 @@ describe("POST /api/integrations/imap/test", () => {
 
       expect(mockAppendAuditLog).toHaveBeenCalledTimes(1);
       const entry = mockAppendAuditLog.mock.calls[0][0];
-      expect(entry.detail).toEqual({
+      expect(storedDetail(entry)).toStrictEqual({
         imapHost: "imap.example.com",
         smtpHost: "smtp.example.com",
       });
