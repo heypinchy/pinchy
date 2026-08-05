@@ -312,12 +312,23 @@ export function removeWorkspaceSkill(agentId: string, skillId: string): void {
 }
 
 // The files OpenClaw loads as prompt-bootstrap context for an agent
-// (loadWorkspaceBootstrapFiles in openclaw@2026.5.x). Each is subject to the
-// per-file `bootstrapMaxChars` cap and the shared `bootstrapTotalMaxChars`
-// budget. Pinchy writes AGENTS.md/SOUL.md/TOOLS.md/IDENTITY.md/USER.md; the
-// rest are included so the sizing stays correct if a fork or future feature
-// adds them.
-const BOOTSTRAP_FILENAMES = [
+// (loadWorkspaceBootstrapFiles). Each is subject to the per-file
+// `bootstrapMaxChars` cap and the shared `bootstrapTotalMaxChars` budget.
+// Pinchy writes AGENTS.md/SOUL.md/TOOLS.md/IDENTITY.md/USER.md; the rest are
+// included so the sizing stays correct if a fork or future feature adds them.
+//
+// MEMORY.md is here even though the AGENT writes it, not Pinchy — omitting it
+// was a real bug. OpenClaw loads it LAST, so it is the first file the total
+// budget squeezes out, and it is also the one file that grows on its own after
+// the caps were computed. Two silent failures came out of that: a MEMORY.md
+// past OpenClaw's 12k per-file default was truncated because nothing here ever
+// reported a file that large, and once Pinchy emits a `bootstrapTotalMaxChars`
+// of `sum + headroom` there is no room left for it at all. Measuring it is what
+// keeps the agent's memory in the session it is supposed to open with.
+//
+// Kept honest by `__tests__/lib/bootstrap-filenames-drift.test.ts`, which reads
+// the pinned OpenClaw bundle instead of a second hand-written copy.
+export const BOOTSTRAP_FILENAMES = [
   "AGENTS.md",
   "SOUL.md",
   "TOOLS.md",
@@ -325,6 +336,7 @@ const BOOTSTRAP_FILENAMES = [
   "USER.md",
   "HEARTBEAT.md",
   "BOOTSTRAP.md",
+  "MEMORY.md",
 ] as const;
 
 /**

@@ -595,6 +595,22 @@ describe("getAgentBootstrapSizes", () => {
     expect(mockedExistsSync).not.toHaveBeenCalled();
   });
 
+  it("counts MEMORY.md, which OpenClaw loads last and therefore drops first", () => {
+    // MEMORY.md is a bootstrap file (loadWorkspaceBootstrapFiles) but was missing
+    // from BOOTSTRAP_FILENAMES, so the caps were sized to a total that had no room
+    // for it. Two ways that bites, both silent:
+    //   - a MEMORY.md past 12k chars is truncated by OpenClaw's per-file default,
+    //     because nothing here ever reported a file that large;
+    //   - once the emitted bootstrapTotalMaxChars is in play it is `sum + 2000`,
+    //     and MEMORY.md is LAST in OpenClaw's load order, so it gets the leftover
+    //     or is skipped entirely.
+    mockFiles({ "AGENTS.md": "instructions", "MEMORY.md": "m".repeat(20_000) });
+
+    const sizes = getAgentBootstrapSizes("agent-6");
+
+    expect(sizes).toContain(20_000);
+  });
+
   it("rejects invalid agentId with path traversal", () => {
     expect(() => getAgentBootstrapSizes("../evil")).toThrow("Invalid agentId: ../evil");
   });
