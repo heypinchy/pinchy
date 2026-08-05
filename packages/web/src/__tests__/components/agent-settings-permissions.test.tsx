@@ -158,7 +158,7 @@ describe("AgentSettingsPermissions", () => {
     data: null,
   };
 
-  it("should render Knowledge Base heading with pinchy_write toggle", () => {
+  it("renders the three permission sections", () => {
     render(
       <AgentSettingsPermissions
         agent={defaultAgent}
@@ -169,8 +169,50 @@ describe("AgentSettingsPermissions", () => {
       />
     );
 
-    expect(screen.getByText("Knowledge Base")).toBeInTheDocument();
-    expect(screen.getByLabelText("Write files")).toBeInTheDocument();
+    // By role, not by text: "Memory" is both the section heading and the
+    // checkbox label inside it, which is exactly the shape we want.
+    expect(screen.getByRole("heading", { name: "Memory" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Workspace" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Knowledge Base" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Memory")).toBeInTheDocument();
+    expect(screen.getByLabelText("Create files")).toBeInTheDocument();
+  });
+
+  it("keeps the memory toggle out of the Knowledge Base section", () => {
+    // Memory is not a knowledge-base concern. It appeared under that heading
+    // only because this component dumped every non-integration powerful tool
+    // there, which is how an agent's memory switch came to read "Write files"
+    // and sit next to the directory picker (#755).
+    render(
+      <AgentSettingsPermissions
+        agent={defaultAgent}
+        directories={defaultDirectories}
+        connections={[]}
+        isAdmin={true}
+        onChange={vi.fn()}
+      />
+    );
+
+    const memoryCheckbox = screen.getByLabelText("Memory");
+    const kbSection = screen.getByRole("heading", { name: "Knowledge Base" }).closest("section");
+    expect(kbSection).not.toBeNull();
+    expect(kbSection!.contains(memoryCheckbox)).toBe(false);
+  });
+
+  it("states that knowledge base directories are read-only", () => {
+    // Structurally true — build.ts never puts an admin path in write_paths —
+    // and users had no way to know it.
+    render(
+      <AgentSettingsPermissions
+        agent={defaultAgent}
+        directories={defaultDirectories}
+        connections={[]}
+        isAdmin={true}
+        onChange={vi.fn()}
+      />
+    );
+
+    expect(screen.getByText(/can never write to them/i)).toBeInTheDocument();
   });
 
   it("should not render odoo tools as checkboxes", () => {
@@ -599,7 +641,7 @@ describe("AgentSettingsPermissions", () => {
         />
       );
 
-      await userEvent.click(screen.getByLabelText("Write files"));
+      await userEvent.click(screen.getByLabelText("Create files"));
 
       await waitFor(() => {
         expect(onChange).toHaveBeenCalledWith(
@@ -680,7 +722,7 @@ describe("AgentSettingsPermissions", () => {
     expect(screen.getByRole("checkbox", { name: /kb/i })).toBeInTheDocument();
   });
 
-  it("renders pinchy_write toggle in tool permissions section", () => {
+  it("renders the pinchy_write toggle in the Workspace section", () => {
     render(
       <AgentSettingsPermissions
         agent={defaultAgent}
@@ -690,7 +732,7 @@ describe("AgentSettingsPermissions", () => {
         onChange={vi.fn()}
       />
     );
-    expect(screen.getByLabelText("Write files")).toBeInTheDocument();
+    expect(screen.getByLabelText("Create files")).toBeInTheDocument();
   });
 
   it("does not render pinchy_ls or pinchy_read toggles", () => {
@@ -797,7 +839,7 @@ describe("AgentSettingsPermissions", () => {
       );
 
       // User checks the pinchy_write tool.
-      await userEvent.click(screen.getByLabelText("Write files"));
+      await userEvent.click(screen.getByLabelText("Create files"));
 
       await waitFor(() => {
         expect(onChange).toHaveBeenLastCalledWith(

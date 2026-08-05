@@ -61,8 +61,18 @@ export function AgentSettingsPermissions({
   // KB tools: non-integration safe tools (pinchy_ls / pinchy_read are now implicit — not shown)
   const kbTools = getToolsByCategory("safe").filter((t) => !t.integration);
 
-  // Powerful tools shown in the KB section: non-integration powerful tools (e.g. pinchy_write)
-  const powerfulKbTools = getToolsByCategory("powerful").filter((t) => !t.integration);
+  // Memory is its own zone and its own section — it is not a knowledge-base
+  // concern and never was. It sat under that heading only because this
+  // component dumped every non-integration powerful tool there, which is also
+  // how the master switch for an agent's memory came to read "Write files"
+  // (#755).
+  const memoryTools = getToolsByCategory("powerful").filter((t) => t.id === "pinchy_memory");
+
+  // Workspace-write tools shown in their own section: non-integration powerful
+  // tools that are not memory.
+  const workspaceTools = getToolsByCategory("powerful").filter(
+    (t) => !t.integration && t.id !== "pinchy_memory"
+  );
 
   // Web tools = powerful tools with web-search integration
   const webTools = getToolsByCategory("powerful").filter((t) => t.integration === "web-search");
@@ -270,8 +280,37 @@ export function AgentSettingsPermissions({
     setWebSearchConfig(config);
   }
 
+  const renderToolCheckbox = (tool: { id: string; label: string; description: string }) => (
+    <div key={tool.id} className="flex items-center space-x-3">
+      <Checkbox
+        id={`tool-${tool.id}`}
+        checked={allowedKbTools.includes(tool.id)}
+        onCheckedChange={() => handleToolToggle(tool.id)}
+        aria-label={tool.label}
+      />
+      <Label htmlFor={`tool-${tool.id}`} className="cursor-pointer">
+        <span className="font-medium">{tool.label}</span>
+        <span className="text-sm text-muted-foreground ml-2">{tool.description}</span>
+      </Label>
+    </div>
+  );
+
   return (
     <div className="space-y-8">
+      {/* Memory section */}
+      <section className="space-y-4">
+        <h3 className="text-lg font-semibold">Memory</h3>
+        {memoryTools.map(renderToolCheckbox)}
+      </section>
+
+      {/* Workspace section — the agent's own drawer */}
+      {workspaceTools.length > 0 && (
+        <section className="space-y-4">
+          <h3 className="text-lg font-semibold">Workspace</h3>
+          {workspaceTools.map(renderToolCheckbox)}
+        </section>
+      )}
+
       {/* Knowledge Base section */}
       <section className="space-y-4">
         <h3 className="text-lg font-semibold">Knowledge Base</h3>
@@ -280,6 +319,9 @@ export function AgentSettingsPermissions({
         {directories.length > 0 && (
           <div className="space-y-2">
             <h4 className="text-sm font-medium">Allowed Directories</h4>
+            <p className="text-sm text-muted-foreground">
+              Agents can read these directories. They can never write to them.
+            </p>
             <DirectoryPicker
               directories={directories}
               selected={allowedPaths}
@@ -300,40 +342,7 @@ export function AgentSettingsPermissions({
         )}
 
         {/* Explicit KB tool toggles (safe, non-integration) — empty after pinchy_ls/pinchy_read became implicit */}
-        {kbTools.length > 0 && (
-          <div className="space-y-3">
-            {kbTools.map((tool) => (
-              <div key={tool.id} className="flex items-center space-x-3">
-                <Checkbox
-                  id={`tool-${tool.id}`}
-                  checked={allowedKbTools.includes(tool.id)}
-                  onCheckedChange={() => handleToolToggle(tool.id)}
-                  aria-label={tool.label}
-                />
-                <Label htmlFor={`tool-${tool.id}`} className="cursor-pointer">
-                  <span className="font-medium">{tool.label}</span>
-                  <span className="text-sm text-muted-foreground ml-2">{tool.description}</span>
-                </Label>
-              </div>
-            ))}
-          </div>
-        )}
-
-        {/* Powerful non-integration tools (e.g. pinchy_write) */}
-        {powerfulKbTools.map((tool) => (
-          <div key={tool.id} className="flex items-center space-x-3">
-            <Checkbox
-              id={`tool-${tool.id}`}
-              checked={allowedKbTools.includes(tool.id)}
-              onCheckedChange={() => handleToolToggle(tool.id)}
-              aria-label={tool.label}
-            />
-            <Label htmlFor={`tool-${tool.id}`} className="cursor-pointer">
-              <span className="font-medium">{tool.label}</span>
-              <span className="text-sm text-muted-foreground ml-2">{tool.description}</span>
-            </Label>
-          </div>
-        ))}
+        {kbTools.length > 0 && <div className="space-y-3">{kbTools.map(renderToolCheckbox)}</div>}
       </section>
 
       {/* Web Search section — only when at least one active Web Search connection exists */}

@@ -250,11 +250,19 @@ export const TOOL_REGISTRY: readonly ToolDefinition[] = [
     category: "powerful",
   },
 
-  // Workspace write — governed by pinchy-files plugin
+  // Workspace write — governed by pinchy-files plugin.
+  //
+  // Also what registers `pinchy_generate_file` (CSV/XLSX/PDF export delivered
+  // as a chat download): that tool is gated on `workbench` being in write_paths,
+  // so it rides on this grant. The description says "create files" rather than
+  // naming a tool, because the grant is about the ZONE — the agent's own drawer
+  // — and not about which of the two tools it reaches for. It previously read
+  // "into the agent's workspace (uploads directory)", which named the one
+  // directory this grant no longer touches.
   {
     id: "pinchy_write",
-    label: "Write files",
-    description: "Write files into the agent's workspace (uploads directory)",
+    label: "Create files",
+    description: "Create files in its workspace and share them with you as downloads",
     category: "powerful",
   },
 ];
