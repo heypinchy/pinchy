@@ -28,7 +28,7 @@
 import { eq, desc, and, gt, gte, lt, lte, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { auditVerifyState, auditLog } from "@/db/schema";
-import { verifyIntegrity, appendAuditLog } from "@/lib/audit";
+import { verifyIntegrity, appendAuditLog, type AuditLogEntry } from "@/lib/audit";
 import { recordAuditFailure } from "@/lib/audit-deferred";
 
 const CHECKPOINT_ID = 1;
@@ -184,7 +184,7 @@ export async function sweepAuditVerify(): Promise<AuditVerifySweepResult> {
   const cappedInvalidIds = result.invalidIds.slice(0, MAX_REPORTED_IDS);
   const cappedChainBreakIds = result.chainBreakIds.slice(0, MAX_REPORTED_IDS);
 
-  const entry = {
+  const entry: AuditLogEntry = {
     eventType: "audit.integrity_check" as const,
     actorType: "system" as const,
     actorId: "audit-verify-job",

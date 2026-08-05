@@ -405,6 +405,18 @@ type AuditLogBase = {
   error?: { message: string } | null;
 };
 
+// A NOTE ON THE `Record<string, unknown>` MEMBERS BELOW (`${AuditResource}.created`,
+// `auth.*`, `tool.*`, `chat.*`):
+//
+// Annotating a call site `const entry: AuditLogEntry = { … }` is what makes
+// TypeScript's excess-property check fire, and for a member with a spelled-out
+// `detail` it genuinely catches a field the type doesn't declare (verified with
+// a canary: adding a bogus field to the `inbox.claim_reset` writer fails tsc).
+// On these four members it catches NOTHING inside `detail` — every key is a
+// known property of `Record<string, unknown>` (the same canary passes clean).
+// The annotation there still pins the entry's TOP level, which is worth having,
+// but do not read one of these members as a description of what the row holds.
+// Giving an event a real detail shape is what buys the guarantee.
 export type AuditLogEntry =
   | (AuditLogBase & {
       eventType: `${AuditResource}.updated` | "user.role_updated";

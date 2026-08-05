@@ -5,7 +5,7 @@ import { imapCreateSchema } from "@/lib/schemas/imap";
 import { db } from "@/db";
 import { integrationConnections } from "@/db/schema";
 import { encrypt } from "@/lib/encryption";
-import { appendAuditLog, redactEmail, scrubEmails } from "@/lib/audit";
+import { appendAuditLog, redactEmail, scrubEmails, type AuditLogEntry } from "@/lib/audit";
 import { recordAuditFailure } from "@/lib/audit-deferred";
 import { assertMailHostAllowed, MailHostBlockedError } from "@/lib/integrations/mail-host-guard";
 
@@ -50,7 +50,7 @@ export const POST = withAdmin(async (request: NextRequest, _ctx, session) => {
     // say only THAT a host was blocked. The guard's message already tells the
     // admin which tier they hit; naming the resolved address in an immutable
     // row would just archive someone's internal topology.
-    const blockedEntry = {
+    const blockedEntry: AuditLogEntry = {
       eventType: "integration.created" as const,
       actorType: "user" as const,
       actorId,

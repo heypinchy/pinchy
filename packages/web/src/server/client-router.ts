@@ -13,7 +13,7 @@ import { directSessionKey } from "@/lib/session-key";
 import { getUserGroupIds, getAgentGroupIds } from "@/lib/groups";
 import { getLicenseState } from "@/lib/enterprise";
 import { buildMemoryPromptBlock } from "@/lib/memory-prompt";
-import { appendAuditLog, safeProviderError } from "@/lib/audit";
+import { appendAuditLog, safeProviderError, type AuditLogEntry } from "@/lib/audit";
 import { recordAuditFailure } from "@/lib/audit-deferred";
 import { maybeSelfHealOnModelError } from "@/server/model-self-heal";
 import { ActiveRuns } from "@/server/active-runs";
@@ -278,7 +278,7 @@ export class ClientRouter {
 
     if (!run) return;
 
-    const auditEntry = {
+    const auditEntry: AuditLogEntry = {
       actorType: "user" as const,
       actorId: this.userId,
       eventType: "chat.run_aborted" as const,
@@ -331,7 +331,7 @@ export class ClientRouter {
       );
     } catch {
       this.sendToClient(clientWs, { type: "error", message: "Access denied" });
-      const auditEntry = {
+      const auditEntry: AuditLogEntry = {
         actorType: "user" as const,
         actorId: this.userId,
         eventType: "tool.denied" as const,
@@ -523,7 +523,7 @@ export class ClientRouter {
         // Governance: a CISO needs to see that this turn's image went to a model
         // other than the agent's configured one. Non-request (WS) context, so
         // record-on-failure rather than rollback.
-        const fallbackAudit = {
+        const fallbackAudit: AuditLogEntry = {
           actorType: "user" as const,
           actorId: this.userId,
           eventType: "chat.image_model_fallback" as const,
@@ -606,7 +606,7 @@ export class ClientRouter {
         // Best-effort audit: a transient DB failure must not fail the chat
         // retry the user explicitly asked for. recordAuditFailure() emits
         // the structured signal so the gap stays observable.
-        const auditEntry = {
+        const auditEntry: AuditLogEntry = {
           actorType: "user" as const,
           actorId: this.userId,
           eventType: "chat.retry_triggered" as const,
@@ -1488,7 +1488,7 @@ export class ClientRouter {
               // request fragments in 5xx error bodies, redact here before
               // appending to the audit trail. AGENTS.md §"Audit logging
               // rules" forbids plaintext PII in audit `detail`.
-              const auditEntry = {
+              const auditEntry: AuditLogEntry = {
                 actorType: "user" as const,
                 actorId: this.userId,
                 eventType: "agent.model_unavailable" as const,
@@ -1645,7 +1645,7 @@ export class ClientRouter {
         // admins reviewing the audit trail. Throttled per (agentId, model)
         // so a degraded provider can't flood the log via user retries.
         if (shouldEmitSilentStreamAudit(agent.id, agent.model ?? "")) {
-          const auditEntry = {
+          const auditEntry: AuditLogEntry = {
             actorType: "user" as const,
             actorId: this.userId,
             eventType: "chat.silent_stream" as const,
@@ -1739,7 +1739,7 @@ export class ClientRouter {
         // `run_completed_after_disconnect` (that event means the browser left
         // but the reply still finished server-side).
         if (run && run.listeners.size === 0 && !sawTerminalError && !openclawDisconnected) {
-          const auditEntry = {
+          const auditEntry: AuditLogEntry = {
             actorType: "user" as const,
             actorId: this.userId,
             eventType: "chat.run_completed_after_disconnect" as const,
@@ -1934,7 +1934,7 @@ export class ClientRouter {
       }
       delivered.add(filename);
 
-      const auditEntry = {
+      const auditEntry: AuditLogEntry = {
         actorType: "user" as const,
         actorId: this.userId,
         eventType: "file.delivered" as const,
@@ -2184,7 +2184,7 @@ export class ClientRouter {
      */
     retried?: boolean;
   }): Promise<void> {
-    const auditEntry = {
+    const auditEntry: AuditLogEntry = {
       actorType: "user" as const,
       actorId: this.userId,
       eventType: "chat.agent_error" as const,

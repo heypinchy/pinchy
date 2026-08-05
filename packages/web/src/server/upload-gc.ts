@@ -3,7 +3,7 @@ import { join } from "path";
 import { and, eq, isNotNull, lt } from "drizzle-orm";
 import { db } from "@/db";
 import { uploadedFiles } from "@/db/schema";
-import { appendAuditLog } from "@/lib/audit";
+import { appendAuditLog, type AuditLogEntry } from "@/lib/audit";
 import { recordAuditFailure } from "@/lib/audit-deferred";
 import { getWorkspacePath } from "@/lib/workspace";
 
@@ -87,7 +87,7 @@ export async function sweepExpiredUploads(): Promise<SweepResult> {
     }
 
     if (rmFailed) {
-      const failureEntry = {
+      const failureEntry: AuditLogEntry = {
         eventType: "file.upload.expired" as const,
         actorType: "system" as const,
         actorId: "upload-gc",
@@ -129,7 +129,7 @@ export async function sweepExpiredUploads(): Promise<SweepResult> {
     try {
       await db.delete(uploadedFiles).where(eq(uploadedFiles.id, uploadId));
     } catch (dbErr) {
-      const dbFailEntry = {
+      const dbFailEntry: AuditLogEntry = {
         eventType: "file.upload.expired" as const,
         actorType: "system" as const,
         actorId: "upload-gc",
@@ -150,7 +150,7 @@ export async function sweepExpiredUploads(): Promise<SweepResult> {
     }
 
     // Emit success audit row
-    const successEntry = {
+    const successEntry: AuditLogEntry = {
       eventType: "file.upload.expired" as const,
       actorType: "system" as const,
       actorId: "upload-gc",

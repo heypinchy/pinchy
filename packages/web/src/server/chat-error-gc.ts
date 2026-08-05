@@ -15,7 +15,7 @@ import { and, eq, lt, or, isNotNull } from "drizzle-orm";
 
 import { db } from "@/db";
 import { chatSessionErrors } from "@/db/schema";
-import { appendAuditLog } from "@/lib/audit";
+import { appendAuditLog, type AuditLogEntry } from "@/lib/audit";
 import { recordAuditFailure } from "@/lib/audit-deferred";
 
 const RESOLVED_RETENTION_DAYS = 30;
@@ -57,7 +57,7 @@ export async function sweepResolvedChatErrors(): Promise<ChatErrorSweepResult> {
   const swept = deleted.length;
   if (swept > 0) {
     // Summary row (not per-deleted-row) — these are bulk housekeeping deletes.
-    const entry = {
+    const entry: AuditLogEntry = {
       eventType: "chat.error_gc" as const,
       actorType: "system" as const,
       actorId: "chat-error-gc",

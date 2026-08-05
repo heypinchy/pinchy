@@ -3,7 +3,7 @@ import { eq, inArray } from "drizzle-orm";
 import { db } from "@/db";
 import { emailWorkflows } from "@/db/schema";
 import type { EmailWorkflowStatus } from "@/db/enums";
-import { appendAuditLog } from "@/lib/audit";
+import { appendAuditLog, type AuditLogEntry } from "@/lib/audit";
 import { recordAuditFailure } from "@/lib/audit-deferred";
 import { dispatchEmails } from "@/lib/email-workflows/dispatch";
 import {
@@ -203,7 +203,7 @@ async function auditClaimResets(reset: StuckClaimKey[], sweepId: string): Promis
   );
 
   for (const claim of reset) {
-    const entry = {
+    const entry: AuditLogEntry = {
       eventType: "inbox.claim_reset" as const,
       actorType: "system" as const,
       actorId: "inbox-sweep",
