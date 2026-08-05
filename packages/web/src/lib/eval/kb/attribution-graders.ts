@@ -134,10 +134,55 @@ interface SourcesEntry {
  * the parser rather than the model.
  */
 const SOURCES_HEADING =
-  /^[ \t]*(?:#{0,3}[ \t]*\*{0,2}[ \t]*Sources[ \t]*(?::[ \t]*\*{0,2}|\*{0,2}[ \t]*:)|\*{2}[ \t]*Sources[ \t]*\*{2}[ \t]*$|#{1,3}[ \t]*Sources[ \t]*$)/gm;
+  /^[ \t]*(?:#{0,3}[ \t]*\*{0,2}[ \t]*(?:Sources|Quellen?)[ \t]*(?::[ \t]*\*{0,2}|\*{0,2}[ \t]*:)|\*{2}[ \t]*(?:Sources|Quellen?)[ \t]*\*{2}[ \t]*$|#{1,3}[ \t]*(?:Sources|Quellen?)[ \t]*$)/gm;
 
 /** Any `[N]` marker, inline citation or Sources-bullet citation number alike. */
 const INLINE_CITATION = /\[(\d+)\]/g;
+
+/**
+ * Bracket forms a model substitutes for `[` and `]` around a citation number.
+ *
+ * `gpt-oss:120b` does not write ASCII punctuation. Across the 2026-08-04 sweep
+ * it used U+3010/U+3011 for brackets, U+2011 for `-`, U+2013 for `–` and
+ * U+201C for `"` — consistently, not occasionally. Eight of its twelve runs
+ * therefore had no inline citation `INLINE_CITATION` could see, so
+ * `citedNumbers` was empty: every Sources entry read as listed-but-uncited, the
+ * premise set came back empty, and `ungrounded-claim` followed on answers that
+ * quote the retrieved passage word for word. Its 0/12 measured Unicode.
+ *
+ * Only the two bracket pairs, and only around the marker. U+FF3B/U+FF3D are by
+ * definition the fullwidth forms of `[`/`]`; U+3010/U+3011 is what the sweep
+ * actually produced. Nothing else is guessed at — a variant nobody has written
+ * would be speculation, and this list is cheap to extend when one shows up.
+ */
+const MARKER_BRACKETS: [RegExp, string][] = [
+  [/[【［]/g, "["],
+  [/[】］]/g, "]"],
+];
+
+/**
+ * The answer with citation-marker brackets in ASCII, and NOTHING else touched.
+ *
+ * The line this draws is the whole point, so it is worth stating twice:
+ * normalise what identifies STRUCTURE, never what identifies a DOCUMENT. A
+ * marker is a delimiter — the reader pairs `…per day【1】` with `[1] policy.md`
+ * without help, and nothing in the product parses inline markers at all
+ * (`source-links.ts` keys off the path). A PATH is identity: `retention‑correct
+ * .md` with U+2011 is not the path `knowledge_search` showed, `source-links.ts`
+ * will not linkify it, and a reader who clicks gets nothing — so `path-not-
+ * cited` is right to charge it and this function must not sand that off.
+ *
+ * The product already draws the same line: `TRAILING_PAGE` in `source-links.ts`
+ * accepts `—`, `–` and `-` alike for the page suffix while requiring the path
+ * to match exactly.
+ */
+export function normalizeCitationMarkers(answer: string): string {
+  let normalized = answer;
+  for (const [pattern, replacement] of MARKER_BRACKETS) {
+    normalized = normalized.replace(pattern, replacement);
+  }
+  return normalized;
+}
 
 /**
  * A Sources-list bullet: `- [N] <rest of line>` (or `*` bullets), one per
@@ -207,16 +252,25 @@ function parseSourcesEntries(sourcesText: string): SourcesEntry[] {
 
 /** Splits `answer` into its cited-body and Sources-list halves and parses both. */
 function parseAnswer(answer: string): ParsedAnswer {
+  // Marker brackets in ASCII before anything is located or counted, so every
+  // reader below — the heading split, `citedNumbers`, `BULLET_LINE`,
+  // `gradeSourcesFormat`'s two counts — sees one spelling. Applied to the whole
+  // answer rather than per-region because the split itself depends on it: a
+  // body whose citations are invisible is what made a Sources list read as
+  // entirely uncited. Path text is untouched by construction — the replacement
+  // is two bracket pairs, and no path in this corpus contains one.
+  const text = normalizeCitationMarkers(answer);
+
   // Take the LAST line-start heading match: the real Sources list is always
   // the trailing block, so an earlier mid-prose "Sources:" mention never wins
   // the split. `matchAll` (not `.exec`) avoids the stateful-`lastIndex`
   // footgun of a `g`-flagged regex.
-  const headingMatches = [...answer.matchAll(SOURCES_HEADING)];
+  const headingMatches = [...text.matchAll(SOURCES_HEADING)];
   const headingMatch = headingMatches.at(-1) ?? null;
   const hasSourcesList = headingMatch !== null;
   const headingIndex = headingMatch?.index ?? 0;
-  const body = hasSourcesList ? answer.slice(0, headingIndex) : answer;
-  const sourcesText = hasSourcesList ? answer.slice(headingIndex + headingMatch[0].length) : "";
+  const body = hasSourcesList ? text.slice(0, headingIndex) : text;
+  const sourcesText = hasSourcesList ? text.slice(headingIndex + headingMatch[0].length) : "";
 
   const citedNumbers = new Set<number>();
   for (const match of body.matchAll(INLINE_CITATION)) {

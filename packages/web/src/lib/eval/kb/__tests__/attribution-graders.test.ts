@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   citedSourcePaths,
+  sourcesListCandidates,
   composeKbGraderResults,
   gradeAttribution,
   gradeCitationResolution,
@@ -787,5 +788,104 @@ describe("citedSourcePaths", () => {
 
   it("returns an empty array for an answer with no Sources list (e.g. an abstention)", () => {
     expect(citedSourcePaths("I couldn't find this in the knowledge base.")).toEqual([]);
+  });
+});
+
+/**
+ * The line the 2026-08-04 sweep forced: normalise typography in what identifies
+ * STRUCTURE, never in what identifies a DOCUMENT.
+ *
+ * `gpt-oss:120b` does not write ASCII punctuation. Across its 12 runs it
+ * substituted U+3010/U+3011 for `[`/`]`, U+2011 for `-`, U+2013 for `–` and
+ * U+201C for `"`. Eight of its runs therefore carried no inline citation this
+ * parser could see, so `citedNumbers` was empty: every Sources entry read as
+ * listed-but-uncited, the premise set came back empty, and `ungrounded-claim`
+ * followed. Its 0/12 measured Unicode, not grounding.
+ *
+ * The heading half is the same shape in another language: asked in German, all
+ * four models answer in German and title the list `Quellen`.
+ *
+ * Where the line does NOT move: a PATH. `retention‑correct.md` with U+2011 is
+ * not the path the tool showed, `source-links.ts` will not linkify it, and a
+ * reader who clicks gets nothing — so the citation axis is right to charge it.
+ * The product already draws this line itself: `TRAILING_PAGE` in
+ * `source-links.ts` accepts `—`, `–` and `-` alike for the page suffix while
+ * requiring the path to match exactly.
+ */
+describe("typography in structure, exactness in paths", () => {
+  it("reads a fullwidth citation marker as the citation it is", () => {
+    // Verbatim shape from gpt-oss:120b: 【1】 inline, [1] in the list.
+    const input: AttributionInput = {
+      answer: `Laptops are replaced on a 3-year cycle【1】.
+
+**Sources:**
+
+- [1] it-equipment-policy.md — p. 1`,
+      retrieved: [src(1, "/data/it-equipment-policy.md")],
+    };
+
+    expect(gradeAttribution(input)).toEqual<KbGraderResult>({
+      passed: true,
+      tags: [],
+      notes: [],
+    });
+  });
+
+  it.each([
+    ["bold with a colon", "**Quellen:**"],
+    ["a hash heading", "### Quellen"],
+    ["bold, singular, no colon", "**Quelle**"],
+  ])("recognises a German Sources heading (%s)", (_label, heading) => {
+    const input: AttributionInput = {
+      answer: `Vollzeitbeschäftigte sammeln 2,5 Urlaubstage pro Monat [1].
+
+${heading}
+
+- [1] urlaub-policy-de.md — p. 1`,
+      retrieved: [src(1, "/data/urlaub-policy-de.md")],
+    };
+
+    expect(gradeAttribution(input)).toEqual<KbGraderResult>({
+      passed: true,
+      tags: [],
+      notes: [],
+    });
+  });
+
+  it("still charges a path written with a non-breaking hyphen", () => {
+    // U+2011 inside the filename. The document is obvious to a human and the
+    // citation is still unusable — this is the half that must NOT be
+    // normalised, and normalising the markers must not drag it along.
+    const input: AttributionInput = {
+      answer: `Tickets are retained for 24 months【1】.
+
+**Sources:**
+
+- [1] retention‑correct.md — p. 1`,
+      retrieved: [src(1, "/data/retention-correct.md")],
+    };
+
+    expect(gradePathCitation(input).tags).toEqual(["path-not-cited"]);
+  });
+
+  it("does not read ordinary German prose as a heading", () => {
+    // Every German noun is capitalised, so `Quellen` appears in prose in a way
+    // `sources` does not. The line-start + delimiter rules are what tell them
+    // apart, and they have to keep doing so.
+    const answer = `Laut unseren Quellen: die Richtlinie verlangt eine Prüfung [1].
+
+**Sources:**
+
+- [1] urlaub-policy-de.md — p. 1`;
+
+    // Assert the property, not the fragment shape: the real list is the one
+    // that got split off, so no candidate carries the prose. (Candidates split
+    // before each `[N]`, so the bullet arrives as `-` plus `[1] …` — an
+    // incidental detail this test must not pin, or it fails on a change that
+    // breaks nothing.)
+    const candidates = sourcesListCandidates(answer);
+
+    expect(candidates.join(" ")).not.toMatch(/Richtlinie verlangt/);
+    expect(candidates.join(" ")).toContain("urlaub-policy-de.md");
   });
 });
