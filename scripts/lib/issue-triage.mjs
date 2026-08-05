@@ -285,9 +285,20 @@ function reporter(authorLogin) {
   return authorLogin ? `@${escapeCell(authorLogin)}` : "(deleted account)";
 }
 
-/** Renders the sweep's verdict for the GitHub Actions job summary. */
-export function formatOverdueSummary(overdue) {
+/**
+ * Renders the sweep's verdict for the GitHub Actions job summary.
+ *
+ * The quiet case names how many outside reports were found, because "nothing
+ * is waiting" is exactly what a broken classifier says too. After the
+ * 2026-08-05 fix the sweep went from 99 names to zero in one commit, and the
+ * only way to tell a repair from a lobotomy was to go and read the two
+ * issues by hand.
+ */
+export function formatOverdueSummary(overdue, { externalCount } = {}) {
   if (overdue.length === 0) {
+    if (externalCount) {
+      return `✅ All ${externalCount} external issue${externalCount === 1 ? "" : "s"} have had a reply.`;
+    }
     return "✅ No external issues are waiting for a first reply.";
   }
 

@@ -15,6 +15,7 @@ import {
   annotateWriteAccess,
   findUnansweredIssues,
   formatOverdueSummary,
+  isExternalIssue,
   parseIssuesResponse,
   parsePageInfo,
 } from "./lib/issue-triage.mjs";
@@ -117,7 +118,11 @@ async function main() {
     graceHours: GRACE_HOURS,
   });
 
-  report(formatOverdueSummary(overdue));
+  // Reported even when nothing is overdue: a sweep that classifies nobody as
+  // external also finds nothing waiting, and the two look identical from the
+  // outside. This number is what makes a quiet run checkable.
+  const externalCount = known.filter(isExternalIssue).length;
+  report(formatOverdueSummary(overdue, { externalCount }));
 
   if (overdue.length > 0) {
     console.error(

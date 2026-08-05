@@ -448,6 +448,17 @@ test("formatOverdueSummary says so plainly when nothing is waiting", () => {
   assert.match(summary, /no external issues/i);
 });
 
+test("a quiet sweep says how many outside reports it actually found", () => {
+  // Otherwise a green run and a broken classifier read identically — which is
+  // the failure this whole fix is about, one level up. "All 2 external issues
+  // have a reply" is checkable; "nothing is waiting" is not.
+  assert.match(formatOverdueSummary([], { externalCount: 2 }), /\b2\b/);
+  assert.match(
+    formatOverdueSummary([], { externalCount: 0 }),
+    /no external issues/i,
+  );
+});
+
 test("formatOverdueSummary keeps a pipe in the title from breaking the table", () => {
   // Issue titles are attacker-controlled text. A bare `|` splits the row into
   // extra cells and the reader loses the link column — the one thing they
