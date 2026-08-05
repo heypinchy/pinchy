@@ -48,13 +48,21 @@ export const FORWARD_LOOKING_PHRASES = [
   "will ship",
   // "a scheduled sweep is tracked in #714" sat in the KB guide until the
   // weekly cron reported the two claims either side of it and not that one:
-  // "tracked in" asserts the work has a live home, which is the same promise
-  // the phrases above make, spelled as a statement of fact. Measured across
-  // the whole docs tree before adding — the only other occurrences are a real
-  // forward-looking claim (already caught by "not yet supported" beside it)
-  // and "Changes across all tabs are tracked independently", which the
-  // required `is ` does not match.
-  "is tracked in",
+  // asserting that the work has a live home is the same promise the phrases
+  // above make, spelled as a statement of fact.
+  //
+  // The preposition is deliberately NOT part of the phrase. "A dedicated,
+  // irreversible erasure action ... is tracked separately (#697)" in the
+  // audit-trail concept is the identical promise, and a first cut reading
+  // `is tracked in` left it invisible to the weekly cron — the one shape the
+  // grep that found the KB sentence could not see.
+  //
+  // Measured across the whole docs tree: every other line containing
+  // "tracked" is about the present, and none of them matches the required
+  // `is ` — "Changes across all tabs are tracked independently", "How costs
+  // are tracked", "Tool execution time isn't tracked here",
+  // "already-tracked addresses keep their own budget".
+  "is tracked",
 ];
 
 /** How far from the phrase an issue reference still counts as attached. */

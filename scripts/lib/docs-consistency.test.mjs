@@ -150,7 +150,7 @@ test("findUntrackedForwardClaims does not flag ordinary prose about the present"
   );
 });
 
-test("findUntrackedForwardClaims reads 'is tracked in' as the promise it is", () => {
+test("findUntrackedForwardClaims reads 'is tracked' as the promise it is", () => {
   // The shape that slipped past the weekly cron: the KB guide said "a
   // scheduled sweep is tracked in [#714]" while the two claims either side of
   // it were reported. It asserts the work has a live home, which is exactly
@@ -165,14 +165,35 @@ test("findUntrackedForwardClaims reads 'is tracked in' as the promise it is", ()
   assert.match(problems[0], /a\.mdx:1/);
 });
 
+test("findUntrackedForwardClaims does not let the preposition decide", () => {
+  // The audit-trail concept promises crypto-erasure with "is tracked
+  // separately (#697)" — the same promise, a different preposition. A phrase
+  // of `is tracked in` would leave it invisible to the weekly cron, which is
+  // the one shape the grep that found the KB sentence could not see.
+  const problems = findUntrackedForwardClaims([
+    {
+      path: "a.mdx",
+      source: "A dedicated erasure action is tracked separately.",
+    },
+  ]);
+  assert.equal(problems.length, 1);
+  assert.match(problems[0], /a\.mdx:1/);
+});
+
 test("findUntrackedForwardClaims leaves 'tracked' used about the present alone", () => {
-  // Measured across the docs tree before the phrase was added: this is the
-  // sentence that decided it had to be `is tracked in` and not `tracked`.
+  // Measured across the docs tree before the phrase was added: these are the
+  // sentences that decided it had to be `is tracked` and not `tracked`.
   assert.deepEqual(
     findUntrackedForwardClaims([
       {
         path: "a.mdx",
         source: "Changes across all tabs are tracked independently.",
+      },
+      { path: "b.mdx", source: "## How costs are tracked" },
+      { path: "c.mdx", source: "Tool execution time isn't tracked here." },
+      {
+        path: "d.mdx",
+        source: "Already-tracked addresses keep their own budget.",
       },
     ]),
     [],
