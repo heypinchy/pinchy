@@ -556,7 +556,9 @@ Scoped to the folders that agent is granted, exactly like search itself, so the 
 
 Standing email workflows an agent runs on its own — see [the Automations tab](/concepts/agent-settings/#automations-tab). You can manage automations on a personal agent you own; admins can manage them on any agent.
 
-Every endpoint here asks two questions in order, and answers differently depending on which one you fail. Can you **see** the agent at all? If not — someone else's personal agent, or a restricted one outside your groups — you get a plain `404`, identical to an ID that was never issued, because any other answer would confirm the agent exists. If you can see it but may not **manage** its automations — the everyday case of a shared agent you chat with daily — you get `403`, which tells you nothing you did not already know and points you at an admin instead of at a typo.
+The endpoints keyed by **`agentId`** ask two questions in order, and answer differently depending on which one you fail. Can you **see** the agent at all? If not — someone else's personal agent, or a restricted one outside your groups — you get a plain `404`, identical to an ID that was never issued, because any other answer would confirm the agent exists. If you can see it but may not **manage** its automations — the everyday case of a shared agent you chat with daily — you get `403`, which tells you nothing you did not already know and points you at an admin instead of at a typo.
+
+`PATCH` and `DELETE` are keyed by **workflow** id instead, and there a scope refusal is `404` too. The middle case has no equivalent: a workflow you may not manage is one you can never list either, since `GET /api/automations` is gated by the same rule. So `403` there would be the only way to learn that a workflow id is real.
 
 ### `GET /api/automations?agentId=<agentId>`
 
@@ -609,8 +611,7 @@ Toggling to the state it already has is a no-op: still `200`, no audit entry —
 
 - `400` — the body has no boolean `enabled`
 - `401` — not authenticated
-- `403` — the workflow's agent is outside your scope
-- `404` — no workflow has that id. This endpoint addresses a workflow, not an agent, so a malformed id lands here as well: it definitionally matches nothing
+- `404` — no workflow has that id, **or** its agent is outside your scope. This endpoint addresses a workflow, not an agent, so a malformed id lands here as well: it definitionally matches nothing
 
 ### `DELETE /api/automations/:id`
 
@@ -621,8 +622,7 @@ Delete a workflow for good.
 **Errors:**
 
 - `401` — not authenticated
-- `403` — the workflow's agent is outside your scope
-- `404` — no workflow has that id (as with `PATCH`, a malformed id matches nothing)
+- `404` — no workflow has that id, **or** its agent is outside your scope (as with `PATCH`, a malformed id matches nothing)
 
 ### `GET /api/automations/connections?agentId=<agentId>`
 

@@ -276,9 +276,16 @@ describe("Automations management API", () => {
       expect(deferAuditLogMock).not.toHaveBeenCalled();
     });
 
-    it("forbids a member from toggling a shared agent's workflow", async () => {
+    it("answers 404 for a shared agent's workflow — even when the agent is visible", async () => {
+      // The verdict for this route differs from the agent-keyed ones, and the
+      // visible agent is what makes the difference visible: there, a 403 is
+      // honest because the caller has already been told the agent exists. Here
+      // the resource is the WORKFLOW, and nobody who fails this scope gate can
+      // enumerate workflows at all — GET /api/automations is gated by the very
+      // same predicate. So any distinguishable answer discloses that this
+      // workflow id is real (#880).
       asMember(OWNER);
-      const agent = await seedAgent({ isPersonal: false, ownerId: null });
+      const agent = await seedAgent({ isPersonal: false, ownerId: null, visibility: "all" });
       const wf = await seedWorkflow(agent.id, { enabled: false });
 
       const res = await PATCH(
@@ -288,8 +295,35 @@ describe("Automations management API", () => {
         }),
         routeContext({ id: wf.id })
       );
-      expect(res.status).toBe(403);
+      expect(res.status).toBe(404);
       expect((await loadWorkflow(wf.id)).enabled).toBe(false);
+    });
+
+    it("answers a workflow it may not manage exactly as one that does not exist", async () => {
+      asMember(OWNER);
+      const agent = await seedAgent({ isPersonal: false, ownerId: null, visibility: "all" });
+      const wf = await seedWorkflow(agent.id, { enabled: false });
+
+      const denied = await PATCH(
+        req(`http://localhost/api/automations/${wf.id}`, {
+          method: "PATCH",
+          body: { enabled: true },
+        }),
+        routeContext({ id: wf.id })
+      );
+      // A real uuid that matches no row — not a malformed id, which the route
+      // short-circuits on shape alone and would prove nothing here.
+      const ghost = "00000000-0000-4000-8000-000000000000";
+      const missing = await PATCH(
+        req(`http://localhost/api/automations/${ghost}`, {
+          method: "PATCH",
+          body: { enabled: true },
+        }),
+        routeContext({ id: ghost })
+      );
+
+      expect(denied.status).toBe(missing.status);
+      expect(await denied.json()).toEqual(await missing.json());
     });
 
     it("returns 404 for an unknown workflow", async () => {
@@ -335,16 +369,31 @@ describe("Automations management API", () => {
       expect(entry.detail.name).toBe("Reject me");
     });
 
-    it("forbids a member from deleting a shared agent's workflow", async () => {
+    it("answers 404 for a shared agent's workflow — even when the agent is visible", async () => {
       asMember(OWNER);
-      const agent = await seedAgent({ isPersonal: false, ownerId: null });
+      const agent = await seedAgent({ isPersonal: false, ownerId: null, visibility: "all" });
       const wf = await seedWorkflow(agent.id);
 
       const res = await DELETE(
         req(`http://localhost/api/automations/${wf.id}`, { method: "DELETE" }),
         routeContext({ id: wf.id })
       );
-      expect(res.status).toBe(403);
+      expect(res.status).toBe(404);
+      // The refusal is a refusal, not just a quieter status.
+      expect(await loadWorkflow(wf.id)).toBeDefined();
+      expect(deferAuditLogMock).not.toHaveBeenCalled();
+    });
+
+    it("answers 404 for a workflow on someone else's personal agent", async () => {
+      asMember(OTHER);
+      const agent = await seedAgent({ isPersonal: true, ownerId: OWNER });
+      const wf = await seedWorkflow(agent.id);
+
+      const res = await DELETE(
+        req(`http://localhost/api/automations/${wf.id}`, { method: "DELETE" }),
+        routeContext({ id: wf.id })
+      );
+      expect(res.status).toBe(404);
       expect(await loadWorkflow(wf.id)).toBeDefined();
     });
 

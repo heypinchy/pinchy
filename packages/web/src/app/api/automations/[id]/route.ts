@@ -19,6 +19,30 @@ type RouteContext = { params: Promise<{ id: string }> };
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
+ * The one answer both routes give for a workflow the caller may not have: the
+ * same 404 an id that matches nothing gets.
+ *
+ * **This route's verdict differs from the agent-keyed Automations routes, and
+ * deliberately so** (#880). There, `resolveWorkflowAgent` keeps a 403 for an
+ * agent the caller can SEE but may not manage — a shared agent in their sidebar,
+ * where "not found" would be false and would send them checking the id instead
+ * of asking an admin. Here the resource is the WORKFLOW, and that middle state
+ * does not exist: `GET /api/automations` is gated by the very same
+ * `canManageAgentWorkflows`, so nobody who fails this gate can enumerate
+ * workflows at all. Read and manage coincide, which puts every refusal squarely
+ * in the oracle case of the criterion on `getAgentWithAccess` — a distinguishable
+ * error is fine when the caller can already enumerate the resource, and an oracle
+ * when they cannot.
+ *
+ * It costs nothing: a caller who gets this never sees the workflow in any list
+ * either, so there is no state in which 403 would have told them something they
+ * could act on.
+ */
+function workflowNotFound() {
+  return NextResponse.json({ error: "Workflow not found" }, { status: 404 });
+}
+
+/**
  * Load a workflow together with the ownership fields of its agent — everything
  * the scope gate and the audit snapshot need, in one round trip. Returns
  * undefined when the id is malformed or matches nothing.
@@ -45,7 +69,8 @@ async function loadWorkflowWithAgent(id: string) {
  * PATCH /api/automations/[id] — flip a workflow's `enabled` state. This is the
  * human-gated activation step "propose, don't self-activate" reserves for a
  * person: a created workflow sits disabled until a reviewer turns it on here.
- * Scope gate matches create (own personal agent → member; shared → admin).
+ * Scope RULE matches create (own personal agent → member; shared → admin); the
+ * refusal does not — see `workflowNotFound`.
  *
  * `status` is deliberately untouched — it is a health signal the dispatcher
  * writes (pending→active/error), not a field this route owns; the loader gates
@@ -59,14 +84,9 @@ export const PATCH = withAuth<RouteContext>(async (request, { params }, session)
   const { enabled } = parsed.data;
 
   const workflow = await loadWorkflowWithAgent(id);
-  if (!workflow) {
-    return NextResponse.json({ error: "Workflow not found" }, { status: 404 });
-  }
+  if (!workflow) return workflowNotFound();
   if (!canManageAgentWorkflows(workflow, { id: session.user.id!, role: session.user.role })) {
-    return NextResponse.json(
-      { error: "You do not have permission to change this workflow" },
-      { status: 403 }
-    );
+    return workflowNotFound();
   }
 
   // No-op toggle: nothing changed, so nothing to record. Return 200 (idempotent)
@@ -94,20 +114,16 @@ export const PATCH = withAuth<RouteContext>(async (request, { params }, session)
 
 /**
  * DELETE /api/automations/[id] — reject/remove a workflow. The FK cascade drops
- * its connection rows and ledger entries with it. Scope gate matches create.
+ * its connection rows and ledger entries with it. Scope RULE matches create; the
+ * refusal does not — see `workflowNotFound`.
  */
 export const DELETE = withAuth<RouteContext>(async (_request, { params }, session) => {
   const { id } = await params;
 
   const workflow = await loadWorkflowWithAgent(id);
-  if (!workflow) {
-    return NextResponse.json({ error: "Workflow not found" }, { status: 404 });
-  }
+  if (!workflow) return workflowNotFound();
   if (!canManageAgentWorkflows(workflow, { id: session.user.id!, role: session.user.role })) {
-    return NextResponse.json(
-      { error: "You do not have permission to delete this workflow" },
-      { status: 403 }
-    );
+    return workflowNotFound();
   }
 
   await db.delete(emailWorkflows).where(eq(emailWorkflows.id, id));
