@@ -1298,13 +1298,17 @@ Test credentials against the external system without persisting changes. Used by
 
 ### `GET /api/agents/:agentId/integrations`
 
-Get an agent's integration permissions: which connections are enabled, access level (read-only, read-write, full, custom), and which data models are allowed.
+Get an agent's integration permissions: which connections are enabled, access level (read-only, read-write, full, custom), and which data models are allowed. **Admin only.**
 
-All three endpoints in this group are **admin only**, and all three answer `404` for an agent you may not see — including another user's personal agent, which no admin can see.
+**Errors:**
+
+- `401` — not authenticated
+- `403` — not an admin
+- `404` — agent not found, or it is another user's personal agent (admins cannot reach those either)
 
 ### `PUT /api/agents/:agentId/integrations`
 
-Replace all permissions for this agent on a connection.
+Replace all permissions for this agent on a connection. **Admin only.**
 
 **Request body:**
 
@@ -1315,9 +1319,21 @@ Replace all permissions for this agent on a connection.
 
 This is a full replace, not a merge: the previous permission rows for this agent/connection pair are deleted and the submitted `permissions` array is inserted in their place. Pass an empty array to revoke every permission on that connection without clearing the connection selection itself.
 
+**Errors:**
+
+- `401` — not authenticated
+- `403` — not an admin
+- `404` — agent not found, or it is another user's personal agent (admins cannot reach those either); or the connection does not exist
+
 ### `DELETE /api/agents/:agentId/integrations`
 
-Remove all integration permissions for this agent, across every connection. Used when a connection is cleared from the agent's Permissions tab.
+Remove all integration permissions for this agent, across every connection. Used when a connection is cleared from the agent's Permissions tab. **Admin only.**
+
+**Errors:**
+
+- `401` — not authenticated
+- `403` — not an admin
+- `404` — agent not found, or it is another user's personal agent (admins cannot reach those either)
 
 ### `GET /api/integrations/oauth/start?provider=<google|microsoft>`
 

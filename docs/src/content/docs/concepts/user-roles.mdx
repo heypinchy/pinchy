@@ -57,7 +57,7 @@ Roles interact with agent visibility to determine which agents a user can see in
   - Shared agents with visibility set to **All users**
   - Shared agents with **Restricted** visibility, if they belong to an assigned group <Badge text="Enterprise" variant="note" />
 
-Nobody sees another user's personal agent, and that includes admins. A personal Smithers is private to the person it belongs to: it is absent from an admin's sidebar, and its ID answers "not found" on every management endpoint — reindexing its knowledge base, changing its permissions, connecting a Telegram bot to it. Admin power over agents is power over the agents an organization shares, not over the assistant each person talks to. Members additionally cannot see restricted agents they are not grouped into.
+Nobody sees another user's personal agent, and that includes admins. A personal Smithers is private to the person it belongs to: it is absent from an admin's sidebar, and its ID answers "not found" on the agent management endpoints — reindexing its knowledge base, changing its permissions, connecting a Telegram bot to it. Admin power over agents is power over the agents an organization shares, not over the assistant each person talks to — [automations](/concepts/agent-settings/#automations-tab) included. Members additionally cannot see restricted agents they are not grouped into.
 
 Only admins can change an agent's visibility setting or assign groups to it. For details on visibility modes, see [Agent Permissions](/concepts/agent-permissions/).
 

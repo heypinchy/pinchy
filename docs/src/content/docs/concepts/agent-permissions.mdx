@@ -208,7 +208,9 @@ Not every user can see every agent. Pinchy enforces access rules:
 
 - **Admins** can access every shared agent, of any visibility, plus their own personal agent
 - **Users** can access shared agents their visibility admits them to, plus their own personal agent
-- **Nobody** can see or access another user's personal agent — admins included. It is absent from the sidebar and its ID answers "not found" everywhere, including the admin-only management endpoints that reindex an agent's knowledge base, set its integration permissions, or connect a Telegram bot to it
+- **Nobody** can see or access another user's personal agent — admins included. It is absent from the sidebar, and its ID answers "not found" on every `/api/agents/:id/` endpoint, the admin-only management ones included: reindexing an agent's knowledge base, setting its integration permissions, connecting a Telegram bot to it
+
+That holds on every surface, [automations](/concepts/agent-settings/#automations-tab) included: an admin manages those on shared agents, not on a colleague's private Smithers. Admin power over agents is power over the agents your organization shares, not over the assistant each person talks to.
 
 Only admins can view and modify the Permissions tab. Regular users can chat with agents they have access to, but cannot change what tools those agents use.
 

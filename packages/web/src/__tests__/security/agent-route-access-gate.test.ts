@@ -34,9 +34,12 @@
 //     every path or that its refusal is returned. A handler that called it and
 //     ignored the result would pass. Review owns that; the route tests and
 //     `agent-admin-routes-visibility.integration.test.ts` cover the behaviour.
-//   - Its scope is this one prefix. `/api/automations` is keyed by `agentId`
-//     through a query parameter and is deliberately outside — that surface has
-//     its own scope gate (`canManageAgentWorkflows`) and its own open verdict.
+//   - Its scope is this one prefix, so it does not speak for `/api/automations`,
+//     which takes `agentId` as a query parameter. Those routes reach the same
+//     gate through `resolveWorkflowAgent` (#880) and layer a manage-scope 403 on
+//     top of it; `resolve-agent.test.ts` is what holds that end. Extending this
+//     walk to them would have to model that second gate, which is why they are
+//     covered where they live rather than here.
 import { describe, it, expect } from "vitest";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
