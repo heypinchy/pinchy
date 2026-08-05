@@ -163,9 +163,9 @@ Two different paths read the files under `/data/`, and they support different fo
 
 **Knowledge Base search** (`knowledge_search`) indexes **text-based PDFs**, and nothing else. Scanned PDFs, Office documents, plain text and Markdown files under `/data/` are not indexed — see [Create a Knowledge Base Agent — Scope in this release](/guides/create-knowledge-base-agent/#scope-in-this-release).
 
-**Reading a file directly** (the agent's file tools) additionally handles **Word documents** (`.docx`) and **scanned PDFs**, which are analyzed using the configured model's vision capabilities.
+**Reading a file directly** (the agent's file tools) handles more: PDFs of either kind, **Word documents** (`.docx`), plain text and Markdown. Scanned PDFs are analyzed using the configured model's vision capabilities.
 
-So a scanned certificate under `/data/` can be opened and read on request, but it won't come back as a search hit — the agent has to be pointed at it. If a large part of your corpus is scans, the reindex report tells you so: it counts them under `unsearchable` rather than `indexed`.
+So a scanned certificate under `/data/` can be opened and read on request, but it won't come back as a search hit — the agent has to be pointed at it. If a large part of your corpus is scans, the reindex report tells you so: it counts them under `unsearchable` rather than `indexed`. A file whose type the index doesn't take at all — a `.md` runbook, a `.docx` — never enters the run, so no count mentions it: mount a corpus of those and the report comes back the way it would for an empty folder.
 
 ## Knowledge Base vs. workspace files
 
