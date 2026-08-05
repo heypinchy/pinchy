@@ -50,6 +50,9 @@ You don't need to explain the memory model to your team — Pinchy handles it in
 
 ## What's coming next
 
-- **Per-agent memory toggle** — ability to disable memory for specific agents.
-- **Memory inspection** — tools for admins to see what agents have memorized.
-- **Memory deletion** — right to erasure for compliance requirements.
+Two gaps remain, both tracked in [#1137](https://github.com/heypinchy/pinchy/issues/1137):
+
+- **Memory inspection** — a way for admins to see what a shared agent has stored, without shell access to the host.
+- **Memory erasure** — an auditable path for a right-to-erasure request, and an honest answer for shared agents, where one file mixes every member's contributions.
+
+The per-agent toggle that used to head this list has shipped: memory is now its own permission, granted or withheld per agent — see [Memory is a permission](#memory-is-a-permission).
