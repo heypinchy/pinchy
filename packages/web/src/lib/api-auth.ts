@@ -3,6 +3,7 @@ import { headers } from "next/headers";
 import { getSession, auth, type Session } from "@/lib/auth";
 import { extractScopes, type ApiKeyScope } from "@/lib/api-key-scopes";
 import { appendAuditLog, safeAuditPath } from "@/lib/audit";
+import { looksLikeApiKey } from "@/lib/api-key-format";
 import {
   tryAcquireApiKeySlot,
   claimApiKeyRateLimitAuditSlot,
@@ -336,6 +337,18 @@ export function withApiKey<C = unknown>(
   return async (req: NextRequest, ctx: C): Promise<NextResponse> => {
     const key = readApiKey(req);
     if (!key) return denyInvalidApiKeyAttempt(req);
+
+    // Cheap shape check before the expensive one. `verifyApiKey` below hashes
+    // the candidate and does a database lookup, and it runs BEFORE the
+    // invalid-attempt limiter gets to say anything — so that limiter bounds
+    // the 429s and the audit rows, not the work. Without this line every
+    // sprayed `sk-live-…` bought a hash and a round trip, budget or no budget.
+    //
+    // Routed through `denyInvalidApiKeyAttempt` rather than a bare 401 on
+    // purpose: skipping verification must not also skip the accounting, or a
+    // wrongly shaped key would be the one attempt that never trips the per-IP
+    // limiter. Same response, same audit trail — just no round trip.
+    if (!looksLikeApiKey(key)) return denyInvalidApiKeyAttempt(req);
 
     // Fail closed: `verifyApiKey` catches internally today, but a malformed
     // input or a future plugin version must never fall through as

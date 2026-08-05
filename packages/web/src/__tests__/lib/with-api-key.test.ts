@@ -358,6 +358,73 @@ describe("withApiKey", () => {
     expect(handler).not.toHaveBeenCalled();
   });
 
+  // ── Shape check before verification ─────────────────────────────────────
+  //
+  // The invalid-key limiter bounds the RESPONSE, not the work: `verifyApiKey`
+  // runs one line above `denyInvalidApiKeyAttempt`, so before this check every
+  // sprayed string bought a hash and a database round trip whether or not the
+  // caller's IP had any budget left.
+
+  it("rejects a key of the wrong shape without paying for verification", async () => {
+    const handler = vi.fn(OK);
+
+    const res = await withApiKey(["agents:read"], handler)(
+      // What a credential scanner actually sprays at a public endpoint:
+      // somebody else's token format.
+      reqWith({ Authorization: "Bearer sk-live-4eC39HqLyjWDarjtT1zdp7dc" }),
+      {}
+    );
+
+    expect(res.status).toBe(401);
+    // The assertion that matters. Dropping the check would fail no other test
+    // in this file: every one of them would still answer 401 — just after the
+    // round trip this exists to avoid.
+    expect(mockVerifyApiKey).not.toHaveBeenCalled();
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it("still charges a wrongly shaped key to the invalid-attempt budget", async () => {
+    // The load-bearing one. Answering a bare 401 here would be cheaper AND a
+    // regression: a wrongly shaped key would then never trip the per-IP
+    // limiter, so spraying `sk-live-…` forever would cost an attacker nothing
+    // and leave no `auth.rate_limited` row. Skipping verification must not
+    // mean skipping the accounting.
+    const spray = () =>
+      withApiKey(["agents:read"], vi.fn(OK))(
+        reqWith({ Authorization: "Bearer ghp_notours", "x-forwarded-for": "9.9.9.9" }),
+        {}
+      );
+
+    for (let i = 0; i < INVALID_API_KEY_RATE_LIMIT_MAX_ATTEMPTS; i++) {
+      expect((await spray()).status).toBe(401);
+    }
+
+    const throttled = await spray();
+
+    expect(throttled.status).toBe(429);
+    expect(throttled.headers.get("Retry-After")).toBe(
+      String(INVALID_API_KEY_RATE_LIMIT_WINDOW_MS / 1000)
+    );
+    // Never verified, all 21 times.
+    expect(mockVerifyApiKey).not.toHaveBeenCalled();
+  });
+
+  it("still verifies a correctly shaped key — the filter must not become the gate", async () => {
+    mockVerifyApiKey.mockResolvedValue(verified({ permissions: { agents: ["read"] } }));
+    const handler = vi.fn(OK);
+
+    const res = await withApiKey(["agents:read"], handler)(
+      reqWith({ Authorization: "Bearer pinchy_correctly_shaped" }),
+      {}
+    );
+
+    // The check says a string is NOT one of ours, never that it is.
+    // A well-formed string still has to verify.
+    expect(mockVerifyApiKey).toHaveBeenCalledTimes(1);
+    expect(res.status).toBe(200);
+    expect(handler).toHaveBeenCalledTimes(1);
+  });
+
   // ── Auditing denials (#572) ─────────────────────────────────────────────
 
   it("audits a scope denial with the key as actor and what it tried to do", async () => {
@@ -455,13 +522,13 @@ describe("withApiKey", () => {
     mockVerifyApiKey.mockResolvedValue(
       verified({ id: "key-noisy", name: "Noisy", permissions: { agents: ["read"] } })
     );
-    await withApiKey(["agents:delete"], handler)(reqWith({ Authorization: "Bearer a" }), {});
-    await withApiKey(["agents:delete"], handler)(reqWith({ Authorization: "Bearer a" }), {});
+    await withApiKey(["agents:delete"], handler)(reqWith({ Authorization: "Bearer pinchy_a" }), {});
+    await withApiKey(["agents:delete"], handler)(reqWith({ Authorization: "Bearer pinchy_a" }), {});
 
     mockVerifyApiKey.mockResolvedValue(
       verified({ id: "key-other", name: "Other", permissions: { agents: ["read"] } })
     );
-    await withApiKey(["agents:delete"], handler)(reqWith({ Authorization: "Bearer b" }), {});
+    await withApiKey(["agents:delete"], handler)(reqWith({ Authorization: "Bearer pinchy_b" }), {});
 
     // A shared window would let a flood from one key swallow the first — and
     // only — denial from another. Two keys, two rows.

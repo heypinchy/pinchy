@@ -269,7 +269,9 @@ Pinchy applies its own limits instead, in-process, per running container:
 | Verified key        | the key's own id | 300 requests / minute | `429 Too Many Requests` with `Retry-After: 60` |
 | Invalid-key attempt | the caller's IP  | 20 attempts / minute  | `429 Too Many Requests` with `Retry-After: 60` |
 
-The per-key limit is deliberately generous — it exists to bound a compromised or malfunctioning key, not to throttle normal automation traffic. The invalid-key limit is deliberately strict: it only ever counts requests that never verified (missing key, unknown key, expired/disabled/revoked key), which is the shape of a brute-force or key-guessing attempt, not of legitimate use.
+The per-key limit is deliberately generous — it exists to bound a compromised or malfunctioning key, not to throttle normal automation traffic. The invalid-key limit is deliberately strict: it only ever counts requests that never verified (missing key, malformed key, unknown key, expired/disabled/revoked key), which is the shape of a brute-force or key-guessing attempt, not of legitimate use.
+
+A **malformed** key — anything not starting with `pinchy_`, which is every key Pinchy has ever issued — is rejected on the spot, before the hash and database lookup a real verification costs. It still counts against the limit above; it just doesn't cost us anything to say no. That covers the bulk of what a public endpoint actually receives: scanners spraying other products' token formats.
 
 ```json
 { "error": "Too many requests" }

@@ -8,6 +8,7 @@ import bcrypt from "bcryptjs";
 import { db } from "@/db";
 import * as schema from "@/db/schema";
 import { appendAuditLog, redactEmail } from "@/lib/audit";
+import { API_KEY_PREFIX } from "@/lib/api-key-format";
 import { SIGN_IN_RATE_LIMIT_WINDOW_SECONDS } from "@/lib/auth-rate-limit";
 import { getCachedDomain } from "@/lib/domain";
 import { shouldUseSecureCookies } from "@/lib/secure-cookies";
@@ -238,7 +239,11 @@ export const auth = betterAuth({
       // decision, not two.
       enableSessionForAPIKeys: false,
       // One-time key format: `pinchy_<random>`.
-      defaultPrefix: "pinchy_",
+      // Shared with `looksLikeApiKey` (lib/api-key-format.ts), which rejects a
+      // candidate carrying anything else BEFORE paying for verification. One
+      // constant rather than two agreeing strings: a drift between them would
+      // reject every valid key at once.
+      defaultPrefix: API_KEY_PREFIX,
       // MUST stay longer than `defaultPrefix`. The plugin stores
       // `start = key.substring(0, charactersLength)` as the masked identifier,
       // and its default is 6 — one character SHORTER than `pinchy_`. Left
@@ -248,7 +253,7 @@ export const auth = betterAuth({
       // plaintext is shown once and never stored — so 7 for the prefix + 6 real
       // characters, matching the plugin's own intent for the field.
       // Locked in by auth-apikey.integration.test.ts, against a real key.
-      startingCharactersConfig: { charactersLength: "pinchy_".length + 6 },
+      startingCharactersConfig: { charactersLength: API_KEY_PREFIX.length + 6 },
       // Defaults to false. Pinchy stores exactly one thing here: the
       // `createdBy` provenance snapshot behind "whose key is this, and do we
       // rotate it now that they've left?" (lib/api-key-identity.ts). Never
