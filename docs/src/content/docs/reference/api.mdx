@@ -554,11 +554,13 @@ Scoped to the folders that agent is granted, exactly like search itself, so the 
 
 ## Automations
 
-Standing email workflows an agent runs on its own — see [the Automations tab](/concepts/agent-settings/#automations-tab). You can manage automations on a personal agent you own; admins can manage them on any agent.
+Standing email workflows an agent runs on its own — see [the Automations tab](/concepts/agent-settings/#automations-tab). You can manage automations on a personal agent you own; admins can manage them on any agent they can see, which is every shared agent. Someone else's **personal** agent is not one of them: personal agents stay private to their owner, admins included, and that rule wins here as it does everywhere else in Pinchy.
 
 The endpoints keyed by **`agentId`** ask two questions in order, and answer differently depending on which one you fail. Can you **see** the agent at all? If not — someone else's personal agent, or a restricted one outside your groups — you get a plain `404`, identical to an ID that was never issued, because any other answer would confirm the agent exists. If you can see it but may not **manage** its automations — the everyday case of a shared agent you chat with daily — you get `403`, which tells you nothing you did not already know and points you at an admin instead of at a typo.
 
 `PATCH` and `DELETE` are keyed by **workflow** id instead, and there a scope refusal is `404` too. The middle case has no equivalent: a workflow you may not manage is one you can never list either, since `GET /api/automations` is gated by the same rule. So `403` there would be the only way to learn that a workflow id is real.
+
+Being keyed by workflow id also gives these two a reach the `agentId` endpoints deliberately lack: an admin who already holds a workflow's id — from the [audit trail](/concepts/audit-trail/), which is where a runaway automation surfaces — can disable or delete it even on someone's personal agent. Standing autonomous authority has to stay stoppable. It grants no way to **find** such a workflow, only to act on one already known.
 
 ### `GET /api/automations?agentId=<agentId>`
 

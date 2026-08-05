@@ -290,7 +290,18 @@ An agent with **Write files** permission can now turn tabular data it already ho
 
 #### Automations move into the agent
 
-Email workflows now have their own **Automations** tab in an agent's settings, where you can review, create, enable, disable and delete them. It is visible to admins on any agent, and to the owner of a personal agent. Existing workflows are listed as-is; nothing changes on upgrade until you edit one.
+Email workflows now have their own **Automations** tab in an agent's settings, where you can review, create, enable, disable and delete them. It is visible to admins on any shared agent, and to the owner of a personal agent. Existing workflows are listed as-is; nothing changes on upgrade until you edit one.
+
+#### An agent you may not see now answers "not found"
+
+Endpoints that gate on your access to an agent used to answer `403` when you asked about one you're not allowed to see. That told you the agent existed — which, for someone else's personal agent, is the one thing Pinchy withholds from everybody, admins included. They now answer `404`, with the same body an ID that was never issued gets.
+
+This closes the last of it on the Automations endpoints. Two consequences if you drive the API directly:
+
+- `GET`/`POST /api/automations` and `GET /api/automations/connections` answer `404` for an agent you can't see, and keep `403` for one you can see but may not manage — a shared agent you chat with daily still says so plainly.
+- Admins reach automations on **shared** agents, not on a colleague's personal agent. The agent's settings page has answered `404` there since the same change; these routes were the last ones that didn't. An admin who already holds a workflow's ID can still disable or delete it through `PATCH`/`DELETE /api/automations/:id` — a runaway automation stays stoppable.
+
+Nothing to configure, and nothing changes in the UI.
 
 #### Changing your password now signs you out on every other device
 
