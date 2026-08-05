@@ -1,5 +1,5 @@
 import { createCipheriv, createDecipheriv, randomBytes } from "crypto";
-import { readFileSync, writeFileSync, existsSync, statSync } from "fs";
+import { readFileSync, writeFileSync, existsSync, openSync, fstatSync, closeSync } from "fs";
 import { join } from "path";
 
 const ALGORITHM = "aes-256-gcm";
@@ -49,19 +49,29 @@ export function getOrCreateSecret(name: string): Buffer {
       return Buffer.from(process.env[envVarName]!, "hex");
 
     case "file": {
-      const mtimeMs = statSync(keyFilePath).mtimeMs;
-      const cached = fileSecretCache.get(keyFilePath);
-      if (cached && cached.mtimeMs === mtimeMs) {
-        return cached.secret;
-      }
+      // stat and read through the SAME descriptor: a path-based stat followed
+      // by a path-based read is a TOCTOU race (CodeQL js/file-system-race) —
+      // the file could be replaced between the two calls, and the cache would
+      // then pair the old file's mtime with the new file's bytes and never
+      // notice the rotation.
+      const fd = openSync(keyFilePath, "r");
+      try {
+        const mtimeMs = fstatSync(fd).mtimeMs;
+        const cached = fileSecretCache.get(keyFilePath);
+        if (cached && cached.mtimeMs === mtimeMs) {
+          return cached.secret;
+        }
 
-      const fileKey = readFileSync(keyFilePath, "utf-8").trim();
-      if (fileKey.length !== 64 || !/^[0-9a-fA-F]+$/.test(fileKey)) {
-        throw new Error(`Invalid secret in ${keyFilePath}: expected 64 hex characters`);
+        const fileKey = readFileSync(fd, "utf-8").trim();
+        if (fileKey.length !== 64 || !/^[0-9a-fA-F]+$/.test(fileKey)) {
+          throw new Error(`Invalid secret in ${keyFilePath}: expected 64 hex characters`);
+        }
+        const secret = Buffer.from(fileKey, "hex");
+        fileSecretCache.set(keyFilePath, { mtimeMs, secret });
+        return secret;
+      } finally {
+        closeSync(fd);
       }
-      const secret = Buffer.from(fileKey, "hex");
-      fileSecretCache.set(keyFilePath, { mtimeMs, secret });
-      return secret;
     }
 
     case "unset": {

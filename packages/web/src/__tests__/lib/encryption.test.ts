@@ -5,9 +5,23 @@ vi.mock("fs", async (importOriginal) => {
   const existsSyncMock = vi.fn(() => false);
   const readFileSyncMock = vi.fn();
   const writeFileSyncMock = vi.fn();
+  // The implementation stats and reads the secret file through one file
+  // descriptor (TOCTOU fix, CodeQL js/file-system-race), so the mock hands
+  // out fake fds and remembers which path each one names — `__fdToPath` lets
+  // a test dispatch a readFileSync(fd) back onto the path it opened.
+  const fdPaths = new Map<number, string>();
+  let nextFd = 100;
+  const openSyncMock = vi.fn((path: unknown) => {
+    const fd = nextFd++;
+    fdPaths.set(fd, String(path));
+    return fd;
+  });
+  const closeSyncMock = vi.fn((fd: number) => {
+    fdPaths.delete(fd);
+  });
   // The file-secret cache invalidates on mtime — default to a fixed value so
   // every existing test (one getOrCreateSecret call each) is unaffected.
-  const statSyncMock = vi.fn(() => ({ mtimeMs: 1 }));
+  const fstatSyncMock = vi.fn(() => ({ mtimeMs: 1 }));
   return {
     ...actual,
     default: {
@@ -15,21 +29,31 @@ vi.mock("fs", async (importOriginal) => {
       existsSync: existsSyncMock,
       readFileSync: readFileSyncMock,
       writeFileSync: writeFileSyncMock,
-      statSync: statSyncMock,
+      openSync: openSyncMock,
+      fstatSync: fstatSyncMock,
+      closeSync: closeSyncMock,
     },
     existsSync: existsSyncMock,
     readFileSync: readFileSyncMock,
     writeFileSync: writeFileSyncMock,
-    statSync: statSyncMock,
+    openSync: openSyncMock,
+    fstatSync: fstatSyncMock,
+    closeSync: closeSyncMock,
+    __fdToPath: (fd: number) => fdPaths.get(fd),
   };
 });
 
-import { existsSync, readFileSync, writeFileSync, statSync } from "fs";
+import { existsSync, readFileSync, writeFileSync, openSync, fstatSync } from "fs";
+
+const { __fdToPath } = (await import("fs")) as unknown as {
+  __fdToPath: (fd: number) => string | undefined;
+};
 
 const mockedExistsSync = vi.mocked(existsSync);
 const mockedReadFileSync = vi.mocked(readFileSync);
 const mockedWriteFileSync = vi.mocked(writeFileSync);
-const mockedStatSync = vi.mocked(statSync);
+const mockedOpenSync = vi.mocked(openSync);
+const mockedFstatSync = vi.mocked(fstatSync);
 
 describe("encryption", () => {
   const TEST_KEY = "a".repeat(64); // 32 bytes in hex
@@ -40,8 +64,8 @@ describe("encryption", () => {
     mockedExistsSync.mockReturnValue(false);
     mockedReadFileSync.mockReset();
     mockedWriteFileSync.mockReset();
-    mockedStatSync.mockReset();
-    mockedStatSync.mockReturnValue({ mtimeMs: 1 } as ReturnType<typeof statSync>);
+    mockedFstatSync.mockReset();
+    mockedFstatSync.mockReturnValue({ mtimeMs: 1 } as ReturnType<typeof fstatSync>);
   });
 
   afterEach(() => {
@@ -125,7 +149,7 @@ describe("encryption", () => {
       const mod = await import("@/lib/encryption");
       const secret = mod.getOrCreateSecret(SECRET_NAME);
       expect(secret).toEqual(Buffer.from(validHex, "hex"));
-      expect(mockedReadFileSync).toHaveBeenCalledWith(expect.stringContaining(FILE_NAME), "utf-8");
+      expect(mockedOpenSync).toHaveBeenCalledWith(expect.stringContaining(FILE_NAME), "r");
     });
 
     it("should auto-generate and persist when neither env nor file exists", async () => {
@@ -173,7 +197,7 @@ describe("encryption", () => {
 
       const mod = await import("@/lib/encryption");
       mod.getOrCreateSecret(SECRET_NAME);
-      expect(mockedReadFileSync).toHaveBeenCalledWith(`/custom/dir/${FILE_NAME}`, "utf-8");
+      expect(mockedOpenSync).toHaveBeenCalledWith(`/custom/dir/${FILE_NAME}`, "r");
     });
 
     it("should default to /app/secrets when ENCRYPTION_KEY_DIR is not set", async () => {
@@ -184,7 +208,7 @@ describe("encryption", () => {
 
       const mod = await import("@/lib/encryption");
       mod.getOrCreateSecret(SECRET_NAME);
-      expect(mockedReadFileSync).toHaveBeenCalledWith(`/app/secrets/${FILE_NAME}`, "utf-8");
+      expect(mockedOpenSync).toHaveBeenCalledWith(`/app/secrets/${FILE_NAME}`, "r");
     });
 
     // ── File-secret cache (mtime-invalidated) ─────────────────────────────
@@ -200,7 +224,7 @@ describe("encryption", () => {
         const validHex = "f".repeat(64);
         mockedExistsSync.mockImplementation((path) => String(path).endsWith(FILE_NAME));
         mockedReadFileSync.mockReturnValue(validHex);
-        mockedStatSync.mockReturnValue({ mtimeMs: 1000 } as ReturnType<typeof statSync>);
+        mockedFstatSync.mockReturnValue({ mtimeMs: 1000 } as ReturnType<typeof fstatSync>);
 
         const mod = await import("@/lib/encryption");
         const first = mod.getOrCreateSecret(SECRET_NAME);
@@ -211,13 +235,13 @@ describe("encryption", () => {
         expect(mockedReadFileSync).toHaveBeenCalledTimes(1);
         // statSync is the cheap check that runs every time — the whole point
         // is trading a read for a stat.
-        expect(mockedStatSync).toHaveBeenCalledTimes(2);
+        expect(mockedFstatSync).toHaveBeenCalledTimes(2);
       });
 
       it("re-reads the file when its mtime changes (rotation without a restart)", async () => {
         mockedExistsSync.mockImplementation((path) => String(path).endsWith(FILE_NAME));
         mockedReadFileSync.mockReturnValueOnce("1".repeat(64));
-        mockedStatSync.mockReturnValueOnce({ mtimeMs: 1000 } as ReturnType<typeof statSync>);
+        mockedFstatSync.mockReturnValueOnce({ mtimeMs: 1000 } as ReturnType<typeof fstatSync>);
 
         const mod = await import("@/lib/encryption");
         const before = mod.getOrCreateSecret(SECRET_NAME);
@@ -225,7 +249,7 @@ describe("encryption", () => {
 
         // Secret rotated on disk: new content, new mtime.
         mockedReadFileSync.mockReturnValueOnce("2".repeat(64));
-        mockedStatSync.mockReturnValueOnce({ mtimeMs: 2000 } as ReturnType<typeof statSync>);
+        mockedFstatSync.mockReturnValueOnce({ mtimeMs: 2000 } as ReturnType<typeof fstatSync>);
 
         const after = mod.getOrCreateSecret(SECRET_NAME);
         expect(after).toEqual(Buffer.from("2".repeat(64), "hex"));
@@ -234,10 +258,12 @@ describe("encryption", () => {
 
       it("keeps separate cache entries for different secret names (different files)", async () => {
         mockedExistsSync.mockReturnValue(true);
-        mockedReadFileSync.mockImplementation((path) =>
-          String(path).includes("audit_hmac_secret") ? "a".repeat(64) : "b".repeat(64)
+        mockedReadFileSync.mockImplementation((fd) =>
+          String(__fdToPath(Number(fd))).includes("audit_hmac_secret")
+            ? "a".repeat(64)
+            : "b".repeat(64)
         );
-        mockedStatSync.mockReturnValue({ mtimeMs: 1 } as ReturnType<typeof statSync>);
+        mockedFstatSync.mockReturnValue({ mtimeMs: 1 } as ReturnType<typeof fstatSync>);
 
         const mod = await import("@/lib/encryption");
         const audit = mod.getOrCreateSecret("audit_hmac_secret");
