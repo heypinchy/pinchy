@@ -18,6 +18,7 @@ import { mkdir, appendFile, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { describeError } from "../error-detail";
+import { KB_EVAL_CANARY_JSONL_LINE, parseEvalJsonl } from "../canary";
 import { buildScorecard } from "../../src/lib/eval/scorecard";
 import type { ScorecardEntry } from "../../src/lib/eval/scorecard";
 import type { KbRunResult, KbRunTrajectory } from "../../src/lib/eval/kb/answer-graders";
@@ -46,6 +47,27 @@ function assertValidLabel(label: string): void {
   }
 }
 
+/**
+ * Writes the contamination canary as a fresh file's FIRST line, once
+ * (`flag: "wx"` — an existing file is left alone). Mirrors `../run-eval.ts`'s
+ * private helper of the same name.
+ *
+ * On the writer rather than on the publish step because the canary cannot be
+ * retrofitted in the only place it matters: once a file is crawled unmarked,
+ * no later commit reaches the copy inside the training corpus. A sweep's
+ * `results/` is gitignored today and published to `data/` tomorrow, so the
+ * only moment that reliably precedes every copy of the file is the moment it
+ * is created.
+ */
+async function ensureCanaryHeader(filePath: string): Promise<void> {
+  try {
+    // eslint-disable-next-line security/detect-non-literal-fs-filename -- caller-validated label (alnum/./_/- only)
+    await writeFile(filePath, `${KB_EVAL_CANARY_JSONL_LINE}\n`, { encoding: "utf8", flag: "wx" });
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+  }
+}
+
 // ── JSONL append/resume ──────────────────────────────────────────────────
 
 /**
@@ -57,6 +79,7 @@ export async function appendRunResult(label: string, result: KbRunResultRow): Pr
   assertValidLabel(label);
   await mkdir(RESULTS_DIR, { recursive: true });
   const filePath = path.join(RESULTS_DIR, `${label}.jsonl`);
+  await ensureCanaryHeader(filePath);
   // eslint-disable-next-line security/detect-non-literal-fs-filename -- label validated above (alnum/./_/- only)
   await appendFile(filePath, `${JSON.stringify(result)}\n`, "utf8");
 }
@@ -77,10 +100,10 @@ export async function readExistingRuns(label: string): Promise<KbRunResult[]> {
   } catch {
     return [];
   }
-  return text
-    .split("\n")
-    .filter((line) => line.trim().length > 0)
-    .map((line) => JSON.parse(line) as KbRunResult);
+  // `parseEvalJsonl`, not a hand-rolled split: the canary header is a valid
+  // JSON line, so a naive reader turns it into a run with no `tags` and
+  // `pendingPairs`/`scorecardRuns` then trip over `undefined.includes`.
+  return parseEvalJsonl<KbRunResult>(text);
 }
 
 /**
@@ -206,6 +229,7 @@ export async function appendTrajectory(
   await mkdir(RESULTS_DIR, { recursive: true });
   const filePath = path.join(RESULTS_DIR, `${label}.trajectories.jsonl`);
   const record: PersistedKbTrajectory = { ...trajectory, goldId, passed, tags };
+  await ensureCanaryHeader(filePath);
   // eslint-disable-next-line security/detect-non-literal-fs-filename -- label validated above (alnum/./_/- only)
   await appendFile(filePath, `${JSON.stringify(record)}\n`, "utf8");
 }

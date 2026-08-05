@@ -7,12 +7,16 @@
 // twin) has no unit coverage today; this is the KB harness's read-side
 // insurance that the per-axis/per-model consolidation shape is right before
 // it ever gets wired to real Task 3.4 output.
-import { describe, expect, it } from "vitest";
-import { aggregateKbResults } from "./export-kb-scorecard";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import { aggregateKbResults, readAllRows } from "./export-kb-scorecard";
 import type { KbRunResultRow } from "./export-kb-scorecard";
 import { infraErrorRun } from "./run-kb-eval";
 import { GOLD_QA } from "./corpus/gold-qa";
 import { KB_EVAL_AXES } from "../../src/lib/eval/kb/types";
+import { KB_EVAL_CANARY_JSONL_LINE } from "../canary";
 
 function row(overrides: Partial<KbRunResultRow> = {}): KbRunResultRow {
   return {
@@ -167,8 +171,100 @@ describe("what the sweep writes is what the exporter reads", () => {
     // what the sweep actually runs — a new gold axis must appear in both.
     const goldAxes = new Set(GOLD_QA.map((g) => g.axis));
 
+    // Corpus floor FIRST: a `for` loop over an empty set is zero assertions
+    // and a green test. That is how a coverage guard becomes decoration, and
+    // the failure would arrive as "the gold set is fine" — the exact reading
+    // this harness has produced wrongly four times.
+    expect(goldAxes.size).toBeGreaterThan(0);
+
     for (const axis of goldAxes) {
       expect(KB_EVAL_AXES).toContain(axis);
     }
+  });
+
+  it("pins the coverage gap the published README states", () => {
+    // `data/README.md` tells readers, in print, that two of the eight axes
+    // have no gold questions and that their empty cells mean UNMEASURED. The
+    // day someone writes those questions the sentence becomes false, and a
+    // doc that says "nobody has measured this" about measured data is worse
+    // than no doc. Closing the gap must therefore fail here first.
+    const goldAxes = new Set<string>(GOLD_QA.map((g) => g.axis));
+    const uncovered = KB_EVAL_AXES.filter((a) => !goldAxes.has(a));
+
+    expect(uncovered).toEqual(["freshness", "crowding"]);
+  });
+});
+
+/**
+ * `readAllRows` is where a published number is actually assembled, and it was
+ * the untested half of #869. Measured, not reasoned: pointed at the committed
+ * 48-run dataset WITHOUT the name filter, the exporter reports
+ * `totalRuns: 96` — the trajectories were never "harmlessly dropped", they
+ * were already doubling the headline. So the filter is load-bearing and gets
+ * a guard, not a comment.
+ */
+describe("readAllRows", () => {
+  let dir: string;
+
+  afterEach(async () => {
+    if (dir) await rm(dir, { recursive: true, force: true });
+  });
+
+  async function dataDir(files: Record<string, string>): Promise<string> {
+    dir = await mkdtemp(path.join(tmpdir(), "kb-scorecard-"));
+    for (const [name, text] of Object.entries(files)) {
+      await writeFile(path.join(dir, name), text, "utf8");
+    }
+    return dir;
+  }
+
+  const runLine = (axis: string) =>
+    JSON.stringify({ model: "m", axis, passed: true, tags: [], notes: [], latencyMs: 1 });
+
+  it("reads run rows and skips the trajectories sidecar by NAME, not by its shape", async () => {
+    // The trajectory line here deliberately carries a valid `axis`. Today's
+    // sidecar has none, which is why an axis-based drop happened to work —
+    // luck the moment `PersistedKbTrajectory` gains a field. This fixture is
+    // that tomorrow, held today.
+    const d = await dataDir({
+      "sweep.jsonl": `${runLine("happy")}\n${runLine("dedup")}\n`,
+      "sweep.trajectories.jsonl": `${JSON.stringify({ model: "m", axis: "happy", answer: "…" })}\n`,
+    });
+
+    const rows = await readAllRows(d);
+
+    expect(rows).toHaveLength(2);
+    expect(rows.map((r) => r.axis)).toEqual(["happy", "dedup"]);
+  });
+
+  it("skips the canary header line instead of counting it as a run", async () => {
+    const d = await dataDir({
+      "sweep.jsonl": `${KB_EVAL_CANARY_JSONL_LINE}\n${runLine("happy")}\n`,
+    });
+
+    expect(await readAllRows(d)).toHaveLength(1);
+  });
+
+  it("throws on a row with no axis, naming the file and line", async () => {
+    // The pre-#869 row shape, and still reachable: a resumed sweep's
+    // `results/` mixes rows written before the fix, and `data/` is filled by
+    // copying that file. Silently dropping such a row is the original bug
+    // wearing a different hat — 48 runs in, every axis cell at n=0, and a
+    // `totalRuns` that says the data is all there. It has to be loud.
+    const d = await dataDir({
+      "sweep.jsonl": `${runLine("happy")}\n${JSON.stringify({ model: "m", scenario: "gqa-happy-1", passed: true, tags: [], notes: [], latencyMs: 1 })}\n`,
+    });
+
+    await expect(readAllRows(d)).rejects.toThrow(/sweep\.jsonl line 2/);
+  });
+
+  it("throws on an axis that is not a known KB_EVAL_AXES member", async () => {
+    const d = await dataDir({ "sweep.jsonl": `${runLine("retrieval-vibes")}\n` });
+
+    await expect(readAllRows(d)).rejects.toThrow(/retrieval-vibes/);
+  });
+
+  it("returns no rows when the directory does not exist", async () => {
+    expect(await readAllRows(path.join(tmpdir(), "kb-scorecard-does-not-exist"))).toEqual([]);
   });
 });
