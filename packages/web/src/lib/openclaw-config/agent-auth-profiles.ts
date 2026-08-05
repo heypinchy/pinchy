@@ -90,5 +90,26 @@ export async function writeAgentAuthProfiles(params: WriteAgentAuthProfilesParam
   await withPermissionRetry(() =>
     fs.writeFileSync(tmp, JSON.stringify({ profiles }, null, 2) + "\n", { mode: 0o600 })
   );
-  fs.renameSync(tmp, target);
+  // The rename gets the same retry as the write. It is a directory operation
+  // like the two above, so it fails on the same EACCES for the same reason, and
+  // the write having just succeeded does not carry over: the tick that repairs
+  // ownership is a repair, and OpenClaw asserting 0700 on the directory again
+  // between the two calls is the window this whole file is built around.
+  //
+  // On a failure the temp file is removed. Without that, every attempt leaves
+  // an `auth-profiles.json.tmp-<pid>` beside the real file, in a directory
+  // OpenClaw reads — and the throw below (correctly) surfaces to
+  // `authProfileFailures`, so the caller never gets a chance to clean up. The
+  // unlink is best-effort by construction: whatever denied the rename usually
+  // denies this too, and an error here must not replace the real one.
+  try {
+    await withPermissionRetry(() => fs.renameSync(tmp, target));
+  } catch (err) {
+    try {
+      fs.unlinkSync(tmp);
+    } catch {
+      // Nothing to add — the rename's error is the one worth reporting.
+    }
+    throw err;
+  }
 }

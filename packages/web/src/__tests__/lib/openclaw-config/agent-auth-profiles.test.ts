@@ -274,5 +274,58 @@ describe("writeAgentAuthProfiles", () => {
       ).rejects.toThrow(/ENOSPC/);
       expect(vi.mocked(fs.writeFileSync).mock.calls.length).toBe(1);
     });
+
+    // The rename is a directory operation like the mkdir and the write, so it
+    // is denied by the same root-owned 0700 directory for the same reason. The
+    // write having just succeeded proves nothing about the moment after it:
+    // OpenClaw re-asserts that mode on every models.json write, and landing
+    // between the two calls is the whole window this file exists for. Without
+    // the retry, an agent whose profile was written fine still ends up with no
+    // auth-profiles.json — and the failure reads as permanent.
+    it("retries a denied rename and succeeds once the tick lands", async () => {
+      vi.mocked(fs.renameSync).mockImplementationOnce(() => {
+        throw eaccesError();
+      });
+
+      await writeAgentAuthProfiles({ configRoot: tmpDir, agentId: "a", providers: ["openai"] });
+
+      const target = path.join(tmpDir, "agents", "a", "agent", "auth-profiles.json");
+      expect(fs.existsSync(target)).toBe(true);
+      expect(vi.mocked(fs.renameSync).mock.calls.length).toBe(2);
+    });
+
+    // The throw is correct — the caller has to hear about it — but it means the
+    // caller never gets to clean up, so this function has to. Every failed
+    // regenerate would otherwise drop another `auth-profiles.json.tmp-<pid>`
+    // into a directory OpenClaw reads.
+    it("removes the temp file when the rename stays denied, and still rethrows", async () => {
+      vi.mocked(fs.renameSync).mockImplementation(() => {
+        throw eaccesError();
+      });
+
+      await expect(
+        writeAgentAuthProfiles({ configRoot: tmpDir, agentId: "a", providers: ["openai"] })
+      ).rejects.toThrow(/EACCES/);
+
+      const dir = path.join(tmpDir, "agents", "a", "agent");
+      expect(fs.readdirSync(dir)).toEqual([]);
+      expect(vi.mocked(fs.renameSync).mock.calls.length).toBe(5);
+    });
+
+    // The cleanup runs in the same broken directory that just refused the
+    // rename, so it usually fails too. It must not become the reported error:
+    // "cannot remove the temp file" says nothing about why the write failed.
+    it("reports the rename's error even when the temp-file cleanup also fails", async () => {
+      vi.mocked(fs.renameSync).mockImplementation(() => {
+        throw eaccesError();
+      });
+      vi.mocked(fs.unlinkSync).mockImplementation(() => {
+        throw new Error("unlink blew up too");
+      });
+
+      await expect(
+        writeAgentAuthProfiles({ configRoot: tmpDir, agentId: "a", providers: ["openai"] })
+      ).rejects.toThrow(/EACCES/);
+    });
   });
 });
