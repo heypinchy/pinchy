@@ -34,6 +34,7 @@ jobs:
   version-pins:
     name: main's version pins vs. the latest release
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
     steps:
