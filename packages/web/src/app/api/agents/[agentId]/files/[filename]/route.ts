@@ -4,7 +4,8 @@ import { withAuth } from "@/lib/api-auth";
 import { readWorkspaceFile, writeWorkspaceFile } from "@/lib/workspace";
 import { getAgentWithAccess, requireAgentWriteAccess } from "@/lib/agent-access";
 import { parseRequestBody } from "@/lib/api-validation";
-import { appendAuditLog } from "@/lib/audit";
+import { appendAuditLog, type AuditLogEntry } from "@/lib/audit";
+import { recordAuditFailure } from "@/lib/audit-deferred";
 import { computeLineDiff } from "@/lib/memory-audit-watcher/compute-diff";
 
 const writeFileSchema = z.object({ content: z.string() });
@@ -54,43 +55,64 @@ export const PUT = withAuth<Params>(async (request, { params }, session) => {
     return NextResponse.json({ error: message }, { status: 400 });
   }
 
+  // A save that changes nothing is not an edit, and must not read like one.
+  // The settings page PUTs SOUL.md whenever the Personality tab is dirty —
+  // which an avatar or preset change makes it (agent-settings-page-content.tsx),
+  // without touching a word of the file. Auditing the write rather than the
+  // change would file "someone edited this agent's Personality" against
+  // someone who picked a new avatar, and nothing in the row would let an
+  // auditor tell that apart from a real edit. The write itself still runs: it
+  // is what reclaims a root-owned file (#1095), and skipping it would trade an
+  // audit fix for a production regression.
+  const contentChanged = previous !== content;
+
   const { addedLines, removedLines } = computeLineDiff(previous, content);
-  const auditDetail = {
-    agent: { id: agentOrError.id, name: agentOrError.name },
-    file: filename,
-    addedLines,
-    removedLines,
-    byteSize: content.length,
-  };
-
-  try {
-    writeWorkspaceFile(agentId, filename, content);
-  } catch (error: unknown) {
-    // Awaited like the success path: a write that failed after passing every
-    // access check is the interesting row, not the one worth dropping.
-    await appendAuditLog({
-      actorType: "user",
-      actorId: session.user.id!,
-      eventType: "agent.instructions_changed",
-      resource: `agent:${agentId}`,
-      detail: auditDetail,
-      outcome: "failure",
-    });
-    const message = error instanceof Error ? error.message : "Invalid file";
-    return NextResponse.json({ error: message }, { status: 400 });
-  }
-
-  // Awaited rather than deferred: rewriting a file is idempotent, so letting a
-  // failed audit write fail the request is safe — the caller retries and lands
-  // on the same content (AGENTS.md § audit rules).
-  await appendAuditLog({
+  const auditEntry = (outcome: "success" | "failure"): AuditLogEntry => ({
     actorType: "user",
     actorId: session.user.id!,
     eventType: "agent.instructions_changed",
     resource: `agent:${agentId}`,
-    detail: auditDetail,
-    outcome: "success",
+    detail: {
+      agent: { id: agentOrError.id, name: agentOrError.name },
+      file: filename,
+      addedLines,
+      removedLines,
+      // Bytes, not UTF-16 code units — `content.length` would disagree with
+      // agent.memory_changed on every non-ASCII file, and the point of sharing
+      // this detail shape is that one query reads both families.
+      byteSize: Buffer.byteLength(content, "utf8"),
+    },
+    outcome,
   });
+
+  try {
+    writeWorkspaceFile(agentId, filename, content);
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : "Invalid file";
+    if (contentChanged) {
+      // Awaited like the success row, but its own failure is caught rather
+      // than propagated. The write has already failed and the 400 below names
+      // the cause (#1095 surfaces as EACCES); letting a second failure escape
+      // would replace that with an unhandled rejection — a 500 explaining
+      // nothing, over a row the caller can do nothing about.
+      // recordAuditFailure is AGENTS.md's pattern for exactly this: an audit
+      // write that must not sink the response.
+      const entry = auditEntry("failure");
+      try {
+        await appendAuditLog(entry);
+      } catch (auditError: unknown) {
+        recordAuditFailure(auditError, entry);
+      }
+    }
+    return NextResponse.json({ error: message }, { status: 400 });
+  }
+
+  if (contentChanged) {
+    // Awaited rather than deferred: rewriting a file is idempotent, so letting
+    // a failed audit write fail the request is safe — the caller retries and
+    // lands on the same content (AGENTS.md § audit rules).
+    await appendAuditLog(auditEntry("success"));
+  }
 
   return NextResponse.json({ success: true });
 });

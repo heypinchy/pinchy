@@ -111,7 +111,9 @@ The detail never contains file contents — only counts and the relative filenam
 
 The sibling of `agent.memory_changed`, and the more consequential half. Memory is what the agent wrote about itself; Instructions and Personality are the rules a person gave it — which records it may reach for, which customer it puts first, what tone it takes. Both reach the model at the start of every conversation, and only one of them used to leave a trace.
 
-Written whenever someone saves the [Instructions](/concepts/agent-settings/#instructions-tab) or [Personality](/concepts/agent-settings/#personality-tab) tab. Only admins, and the owner of a personal agent, can do that.
+Written when someone saves the [Instructions](/concepts/agent-settings/#instructions-tab) or [Personality](/concepts/agent-settings/#personality-tab) tab **and the file's text actually differs**. Only admins, and the owner of a personal agent, can do that.
+
+The "actually differs" part matters when reading the trail: the Personality tab also holds the avatar and the personality preset, and saving it re-sends `SOUL.md` even when only the avatar moved. A row here therefore always means the text changed — an avatar swap shows up as `agent.updated`, not as an instruction edit.
 
 - `actorType`: `"user"` — the person who saved the change.
 - `resource`: `agent:<agentId>`.
@@ -119,7 +121,9 @@ Written whenever someone saves the [Instructions](/concepts/agent-settings/#inst
   - `agent`: `{ id, name }` — snapshot at the time of the change.
   - `file`: `"AGENTS.md"` or `"SOUL.md"`.
   - `addedLines` / `removedLines`: compared to the previous content.
-  - `byteSize`: size after the change.
+  - `byteSize`: size of the file in bytes after the change.
+
+`outcome` is `"failure"` when the save passed every access check and the write itself failed — a disk error, or a file Pinchy could not reclaim. The detail then describes the change that was _attempted_; the file on disk is unchanged.
 
 As with memory, the detail never contains the text. An audit row is immutable and hash-chained, so anything written into it cannot be corrected or erased later — and instructions are free text that may name customers or internal rules.
 

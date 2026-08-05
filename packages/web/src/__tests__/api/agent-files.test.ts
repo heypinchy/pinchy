@@ -25,6 +25,9 @@ vi.mock("@/lib/workspace", () => ({
 const { mockAppendAuditLog } = vi.hoisted(() => ({ mockAppendAuditLog: vi.fn() }));
 vi.mock("@/lib/audit", () => ({ appendAuditLog: mockAppendAuditLog }));
 
+const { mockRecordAuditFailure } = vi.hoisted(() => ({ mockRecordAuditFailure: vi.fn() }));
+vi.mock("@/lib/audit-deferred", () => ({ recordAuditFailure: mockRecordAuditFailure }));
+
 const { mockRequireAgentWriteAccess } = vi.hoisted(() => ({
   // Returns null when write is allowed; returns a NextResponse(403) when denied.
   mockRequireAgentWriteAccess: vi.fn(),
@@ -397,6 +400,50 @@ describe("PUT /api/agents/[agentId]/files/[filename] — audit trail", () => {
     });
   });
 
+  it("sizes the file in UTF-8 bytes, like the memory sibling does", async () => {
+    // The whole argument for this detail shape is that one query reads both
+    // families. agent.memory_changed measures Buffer.byteLength(…, "utf8");
+    // String.length counts UTF-16 code units, so the two disagree on every
+    // non-ASCII file — and instructions written in German, or carrying a
+    // single emoji, are the ordinary case rather than the exotic one.
+    const content = "Prüfe die Rechnung für Kunde ☕\n";
+    vi.mocked(readWorkspaceFile).mockReturnValueOnce("");
+
+    await PUT(
+      makePutRequest("agent-1", "AGENTS.md", { content }),
+      makeParams("agent-1", "AGENTS.md")
+    );
+
+    expect(Buffer.byteLength(content, "utf8")).not.toBe(content.length);
+    expect(mockAppendAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        detail: expect.objectContaining({ byteSize: Buffer.byteLength(content, "utf8") }),
+      })
+    );
+  });
+
+  it("writes no entry when the save left the file unchanged", async () => {
+    // The settings page PUTs SOUL.md whenever the Personality tab is dirty,
+    // and that tab is dirty for an avatar or preset change too
+    // (agent-settings-page-content.tsx). Auditing the write rather than the
+    // change would therefore file "someone edited this agent's Personality"
+    // against someone who picked a new avatar. A row that describes no change
+    // is worse than no row: an auditor cannot tell it from a real edit.
+    const unchanged = "# Same\ncontent\n";
+    vi.mocked(readWorkspaceFile).mockReturnValueOnce(unchanged);
+
+    const response = await PUT(
+      makePutRequest("agent-1", "SOUL.md", { content: unchanged }),
+      makeParams("agent-1", "SOUL.md")
+    );
+
+    expect(response.status).toBe(200);
+    expect(mockAppendAuditLog).not.toHaveBeenCalled();
+    // The write still happens — it is what reclaims a root-owned file (#1095),
+    // and skipping it would trade an audit fix for a production regression.
+    expect(writeWorkspaceFile).toHaveBeenCalledWith("agent-1", "SOUL.md", unchanged);
+  });
+
   it("names SOUL.md as the file rather than assuming instructions", async () => {
     // ALLOWED_FILES holds both, and they are different surfaces (Personality vs
     // Instructions). One event with the file in `detail` mirrors how
@@ -489,6 +536,50 @@ describe("PUT /api/agents/[agentId]/files/[filename] — audit trail", () => {
     expect(mockAppendAuditLog).toHaveBeenCalledWith(
       expect.objectContaining({ outcome: "failure" })
     );
+  });
+
+  it("keeps the write's own error when the failure row cannot be stored", async () => {
+    // Two things fail here: the file write, then the audit write describing it.
+    // Only the first is the caller's problem, and it is the one that names the
+    // cause (#1095 surfaces as EACCES). Awaiting the failure row the way the
+    // success row is awaited would replace a 400 that explains itself with an
+    // unhandled rejection — a 500 that explains nothing, over a row the caller
+    // can do nothing about. The dropped row goes to recordAuditFailure instead,
+    // which is the AGENTS.md pattern for an audit write that must not sink the
+    // response.
+    vi.mocked(readWorkspaceFile).mockReturnValueOnce("before\n");
+    vi.mocked(writeWorkspaceFile).mockImplementationOnce(() => {
+      throw new Error("EACCES: permission denied");
+    });
+    mockAppendAuditLog.mockRejectedValueOnce(new Error("audit db unreachable"));
+
+    const response = await PUT(
+      makePutRequest("agent-1", "AGENTS.md", { content: "after\n" }),
+      makeParams("agent-1", "AGENTS.md")
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({ error: "EACCES: permission denied" });
+    expect(mockRecordAuditFailure).toHaveBeenCalledWith(
+      expect.any(Error),
+      expect.objectContaining({ eventType: "agent.instructions_changed", outcome: "failure" })
+    );
+  });
+
+  it("fails the request when the success row cannot be stored", async () => {
+    // The other half of "awaited, not deferred": rewriting a file is
+    // idempotent, so a request that cannot be audited is one the caller may
+    // safely retry. Answering 200 would report a change Pinchy has no record
+    // of — which is the failure the audit trail exists to prevent.
+    vi.mocked(readWorkspaceFile).mockReturnValueOnce("before\n");
+    mockAppendAuditLog.mockRejectedValueOnce(new Error("audit db unreachable"));
+
+    await expect(
+      PUT(
+        makePutRequest("agent-1", "AGENTS.md", { content: "after\n" }),
+        makeParams("agent-1", "AGENTS.md")
+      )
+    ).rejects.toThrow("audit db unreachable");
   });
 
   it("writes no entry when the filename is not an allowed file", async () => {

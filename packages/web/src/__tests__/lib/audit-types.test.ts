@@ -31,6 +31,19 @@ describe("AuditLogEntry agent.memory_changed", () => {
   });
 });
 
+describe("AuditLogEntry agent.instructions_changed", () => {
+  it("types the detail shape and keeps the event in the curated union", () => {
+    // Identical to agent.memory_changed by design, so one query answers "what
+    // changed about this agent's behaviour" across both families. If the two
+    // shapes ever diverge, that argument stops holding — and this is where it
+    // shows up, rather than in a dashboard nobody re-checks.
+    expectTypeOf<
+      Extract<AuditLogEntry, { eventType: "agent.instructions_changed" }>["detail"]
+    >().toEqualTypeOf<Extract<AuditLogEntry, { eventType: "agent.memory_changed" }>["detail"]>();
+    expectTypeOf<"agent.instructions_changed">().toExtend<AuditEventType>();
+  });
+});
+
 describe("AuditLogEntry channel.auto_disabled (#477 layer 2)", () => {
   it("types the detail shape and keeps the event in the curated union", () => {
     expectTypeOf<
