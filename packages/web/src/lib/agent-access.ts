@@ -143,7 +143,22 @@ export function requireAgentWriteAccess(
  * WRITE denial stays 403 (`requireAgentWriteAccess`), and that is the same
  * rule rather than an exception to it: a caller who reaches the write gate has
  * already passed this one, so they can see the agent, and "you may not change
- * it" tells them nothing they did not know.
+ * it" tells them nothing they did not know. Routes that gate by hand rather
+ * than through this helper must run the read gate FIRST for the same reason —
+ * `DELETE /api/agents/[agentId]/channels/telegram` is the worked example.
+ *
+ * Two things this does NOT close, said plainly so the next reader does not
+ * mistake "byte-identical" for "indistinguishable":
+ *
+ * - **Timing.** The denial path runs a license lookup and, for a restricted
+ *   agent, two group queries that the `!agent` path never reaches. Equalising
+ *   that costs a query on every miss and buys little against a UUID keyspace.
+ * - **Routes that do not use this helper.** `GET`/`POST /api/automations` still
+ *   answer 403 for an agent the caller may not manage, and the admin-only
+ *   `/api/agents/:id/knowledge/*` and `/integrations` endpoints apply no
+ *   visibility rule at all. Both are separate verdicts, not oversights of this
+ *   one; `reference/api.mdx` describes what each endpoint really does rather
+ *   than claiming the prefix as a whole.
  */
 export async function getAgentWithAccess(agentId: string, userId: string, userRole: string) {
   const rows = await db.select().from(activeAgents).where(eq(activeAgents.id, agentId));

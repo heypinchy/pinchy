@@ -330,7 +330,12 @@ export class ClientRouter {
         licenseState
       );
     } catch {
-      this.sendToClient(clientWs, { type: "error", message: "Access denied" });
+      // Same message as the missing-agent branch above, for the reason spelled
+      // out on getAgentWithAccess: the HTTP routes stopped distinguishing the
+      // two, and a socket that still says "Access denied" hands back the exact
+      // fact they withhold. The audit row below keeps the distinction where it
+      // belongs — on the server, not in the answer.
+      this.sendToClient(clientWs, { type: "error", message: "Agent not found" });
       const auditEntry = {
         actorType: "user" as const,
         actorId: this.userId,

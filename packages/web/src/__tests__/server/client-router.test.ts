@@ -657,7 +657,7 @@ describe("ClientRouter", () => {
     expect(messages[0].message).toBe("Agent not found");
   });
 
-  it("should return access denied for unauthorized user", async () => {
+  it("answers a denied agent exactly as it answers a missing one", async () => {
     const clientWs = createMockClientWs();
     mockFindFirst.mockResolvedValue({
       id: "agent-1",
@@ -675,7 +675,10 @@ describe("ClientRouter", () => {
     const messages = clientWs.sent.map((s) => JSON.parse(s));
     expect(messages).toHaveLength(1);
     expect(messages[0].type).toBe("error");
-    expect(messages[0].message).toBe("Access denied");
+    // Deliberately the same string the "nonexistent-agent" test above asserts:
+    // over the socket as over HTTP, a personal agent owned by someone else must
+    // not be distinguishable from an id that was never issued.
+    expect(messages[0].message).toBe("Agent not found");
   });
 
   describe("multi-device live-sync subscription is gated on access (Lane B)", () => {
@@ -713,7 +716,7 @@ describe("ClientRouter", () => {
       // to a user who may not access the agent; this pins the ordering.
       expect(pokeBridge.view).not.toHaveBeenCalled();
       const messages = clientWs.sent.map((s) => JSON.parse(s));
-      expect(messages[0].message).toBe("Access denied");
+      expect(messages[0].message).toBe("Agent not found");
     });
 
     it("registers the socket to its OWN server-built session key once access is granted", async () => {

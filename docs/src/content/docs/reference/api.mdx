@@ -214,7 +214,9 @@ Get a single agent by ID.
 
 **Response:** The agent object, or `404` if not found.
 
-An agent you may not see answers `404` as well, with the same body — someone else's personal agent, or a restricted agent outside your groups, is deliberately indistinguishable from an ID that was never issued. This holds for admins too: nobody can list another user's personal agents, so nobody gets to confirm one exists. The same applies to every `/api/agents/:id/*` endpoint below.
+An agent you may not see answers `404` as well, with the same body — someone else's personal agent, or a restricted agent outside your groups, is deliberately indistinguishable from an ID that was never issued. This holds for admins too: nobody can list another user's personal agents, so nobody gets to confirm one exists.
+
+Every endpoint below that gates on **your access to the agent** answers the same way, over the WebSocket chat bridge as well as over HTTP. Two groups under this prefix do not, and it is worth knowing which: the admin-only management endpoints (`knowledge/*`, `integrations`, and connecting a Telegram bot) apply no visibility rule at all — they are restricted to admins and return `404` only when no agent has the ID. And `GET`/`POST /api/automations`, which is keyed by `agentId`, still answers `403` for an agent you may not manage.
 
 ### `PATCH /api/agents/:id`
 

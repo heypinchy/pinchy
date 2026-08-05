@@ -72,6 +72,13 @@ vi.mock("@/db", () => ({
   },
 }));
 
+// DELETE gates through the shared read gate (GET/POST are admin-only and look
+// the agent up themselves), so the denial response is the helper's to produce.
+const mockGetAgentWithAccess = vi.fn();
+vi.mock("@/lib/agent-access", () => ({
+  getAgentWithAccess: (...args: unknown[]) => mockGetAgentWithAccess(...args),
+}));
+
 vi.mock("drizzle-orm", async (importOriginal) => {
   const actual = await importOriginal();
   return {
@@ -536,6 +543,7 @@ describe("DELETE /api/agents/[agentId]/channels/telegram", () => {
     mockRequireAdmin.mockResolvedValue(adminSession);
     mockGetSession.mockResolvedValue(adminSession);
     vi.mocked(db.query.agents.findFirst).mockResolvedValue(mockAgent as any);
+    mockGetAgentWithAccess.mockResolvedValue(mockAgent);
   });
 
   it("removes token, clears account store, patches config, logs audit event", async () => {
@@ -615,11 +623,11 @@ describe("DELETE /api/agents/[agentId]/channels/telegram", () => {
   });
 
   it("allows an admin to disconnect a personal agent's bot (#476 gap 2)", async () => {
-    vi.mocked(db.query.agents.findFirst).mockResolvedValueOnce({
+    mockGetAgentWithAccess.mockResolvedValueOnce({
       ...mockAgent,
       isPersonal: true,
       ownerId: "someone-else",
-    } as any);
+    });
 
     const response = await DELETE(new NextRequest("http://localhost"), {
       params: mockParams,
@@ -629,11 +637,11 @@ describe("DELETE /api/agents/[agentId]/channels/telegram", () => {
   });
 
   it("allows a personal agent's owner (non-admin) to disconnect their own bot (#476 gap 2)", async () => {
-    vi.mocked(db.query.agents.findFirst).mockResolvedValueOnce({
+    mockGetAgentWithAccess.mockResolvedValueOnce({
       ...mockAgent,
       isPersonal: true,
       ownerId: "user-2",
-    } as any);
+    });
     mockGetSession.mockResolvedValueOnce({
       user: { id: "user-2", role: "member" },
     });
@@ -645,12 +653,15 @@ describe("DELETE /api/agents/[agentId]/channels/telegram", () => {
     expect(deleteSetting).toHaveBeenCalledWith("telegram_bot_token:agent-1");
   });
 
-  it("forbids a non-admin who is not the personal agent's owner (#476 gap 2)", async () => {
-    vi.mocked(db.query.agents.findFirst).mockResolvedValueOnce({
-      ...mockAgent,
-      isPersonal: true,
-      ownerId: "user-2",
-    } as any);
+  it("forwards the read gate's refusal instead of answering 403 itself (#476 gap 2)", async () => {
+    // The real case behind this mock is a member aiming at someone else's
+    // personal agent. The route used to look the agent up on its own — 404 when
+    // the row was missing, 403 here — which confirmed to any logged-in member
+    // that the id was real, for agents nobody can list. Now the read gate
+    // answers first and the route never gets to disagree with it.
+    mockGetAgentWithAccess.mockResolvedValueOnce(
+      NextResponse.json({ error: "Agent not found" }, { status: 404 })
+    );
     mockGetSession.mockResolvedValueOnce({
       user: { id: "user-3", role: "member" },
     });
@@ -658,15 +669,19 @@ describe("DELETE /api/agents/[agentId]/channels/telegram", () => {
     const response = await DELETE(new NextRequest("http://localhost"), {
       params: mockParams,
     });
-    expect(response.status).toBe(403);
+    expect(response.status).toBe(404);
+    expect((await response.json()).error).toBe("Agent not found");
     expect(deleteSetting).not.toHaveBeenCalled();
   });
 
   it("forbids a non-admin from disconnecting a shared agent's bot (#476 gap 2)", async () => {
-    vi.mocked(db.query.agents.findFirst).mockResolvedValueOnce({
+    // 403 survives here, and this is the case it was chosen for: the read gate
+    // let the caller through, so they can see this agent — being told they may
+    // not disconnect it reveals nothing they did not already know.
+    mockGetAgentWithAccess.mockResolvedValueOnce({
       ...mockAgent,
       isPersonal: false,
-    } as any);
+    });
     mockGetSession.mockResolvedValueOnce({
       user: { id: "user-3", role: "member" },
     });
@@ -679,7 +694,9 @@ describe("DELETE /api/agents/[agentId]/channels/telegram", () => {
   });
 
   it("returns 404 for non-existent agent", async () => {
-    vi.mocked(db.query.agents.findFirst).mockResolvedValueOnce(undefined as any);
+    mockGetAgentWithAccess.mockResolvedValueOnce(
+      NextResponse.json({ error: "Agent not found" }, { status: 404 })
+    );
 
     const response = await DELETE(new NextRequest("http://localhost"), {
       params: mockParams,

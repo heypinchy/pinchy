@@ -185,7 +185,7 @@ describe("getAgentWithAccess", () => {
     expect((result as NextResponse).status).toBe(404);
   });
 
-  it("returns 404 — not 403 — when user has no access, matching the missing-agent answer byte for byte", async () => {
+  it("returns 404 — not 403 — when user has no access, with the missing-agent body", async () => {
     mockSelectChain([{ id: "a1", ownerId: "other-user", isPersonal: true }]);
 
     const result = await getAgentWithAccess("a1", "user-1", "member");
@@ -196,6 +196,21 @@ describe("getAgentWithAccess", () => {
     // oracle this closes. Someone else's personal agent must be indis-
     // tinguishable from an id that was never issued.
     expect(await (result as NextResponse).json()).toEqual({ error: "Agent not found" });
+  });
+
+  it("gives a denied agent the very same answer as a missing one", async () => {
+    // Neither test above can see the two branches drift apart: each pins its own
+    // branch against a literal, so a later edit to the `!agent` body alone keeps
+    // both green while the invariant the docblock states is already broken.
+    // Compare the two answers against each other, which is the actual contract.
+    mockSelectChain([]);
+    const missing = (await getAgentWithAccess("nope", "user-1", "member")) as NextResponse;
+
+    mockSelectChain([{ id: "a1", ownerId: "other-user", isPersonal: true }]);
+    const denied = (await getAgentWithAccess("a1", "user-1", "member")) as NextResponse;
+
+    expect(denied.status).toBe(missing.status);
+    expect(await denied.json()).toEqual(await missing.json());
   });
 
   it("returns agent when access is granted", async () => {

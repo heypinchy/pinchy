@@ -17,6 +17,7 @@ import { agents, channelLinks, settings } from "@/db/schema";
 import { eq, like } from "drizzle-orm";
 import { parseRequestBody } from "@/lib/api-validation";
 import { setBotTokenSchema } from "@/lib/schemas/telegram";
+import { getAgentWithAccess } from "@/lib/agent-access";
 
 export async function GET(req: Request, { params }: { params: Promise<{ agentId: string }> }) {
   const admin = await requireAdmin();
@@ -199,12 +200,14 @@ export const DELETE = withAuth<{ params: Promise<{ agentId: string }> }>(
   async (_req, { params }, session) => {
     const { agentId } = await params;
 
-    const agent = await db.query.agents.findFirst({
-      where: eq(agents.id, agentId),
-    });
-    if (!agent) {
-      return NextResponse.json({ error: "Agent not found" }, { status: 404 });
-    }
+    // Read gate first, write gate second. This route used to look the agent up
+    // itself — 404 when the row was missing, 403 when the caller was neither
+    // admin nor owner — which handed any logged-in member the existence oracle
+    // `getAgentWithAccess` exists to close: someone else's personal agent is
+    // enumerable by nobody, so 403 confirmed what no list would tell them.
+    const agentOrError = await getAgentWithAccess(agentId, session.user.id!, session.user.role);
+    if (agentOrError instanceof NextResponse) return agentOrError;
+    const agent = agentOrError;
 
     // Gap 2 (#476): a personal agent's owner may disconnect its own bot without
     // an admin — the org-wide "Remove Telegram for everyone" was the only prior
@@ -212,6 +215,9 @@ export const DELETE = withAuth<{ params: Promise<{ agentId: string }> }>(
     // any agent (shared or personal). The connect path stays admin-only.
     const isOwner = agent.isPersonal && agent.ownerId === session.user.id;
     if (session.user.role !== "admin" && !isOwner) {
+      // Still 403, and for the reason the helper's docblock gives: the gate above
+      // already answered 404 for anything this caller cannot see, so reaching
+      // here means they can — "not yours to disconnect" reveals nothing further.
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
