@@ -83,6 +83,7 @@ import { gradeKbRun } from "../../src/lib/eval/kb/answer-graders";
 import type { KbRunTrajectory, KbRunResult } from "../../src/lib/eval/kb/answer-graders";
 import {
   DEFAULT_KB_JUDGE_MODEL,
+  LlmAbstentionJudge,
   LlmNliClient,
   LlmRelevanceJudge,
   createOllamaCloudChatFn,
@@ -299,6 +300,11 @@ test.describe("KB Eval Harness Layer 3: groundedness sweep (real Ollama Cloud)",
     const chat = createOllamaCloudChatFn({ apiKey: ollamaKey, model: judgeModel });
     const nli = new LlmNliClient(chat);
     const relevance = new LlmRelevanceJudge(chat);
+    // Third judge role, same chat fn. NOT the NLI client with a cleverly
+    // worded hypothesis: that was tried, and entailment turned out to be the
+    // wrong relation for "did this answer decline?" on every judge model
+    // tested. See `buildAbstentionPrompt`.
+    const abstention = new LlmAbstentionJudge(chat);
 
     const withRetry = async (fn: () => Promise<void>, what: string): Promise<void> => {
       const attempts = 4;
@@ -423,7 +429,7 @@ test.describe("KB Eval Harness Layer 3: groundedness sweep (real Ollama Cloud)",
         // dispatch above does — but by this point the answer is already in
         // hand and re-dispatching to recover it would be pure waste.
         const result = await withTransportRetry(
-          () => gradeKbRun(trajectory, gold, { nli, relevance }),
+          () => gradeKbRun(trajectory, gold, { nli, relevance, abstention }),
           { what: `judge ${model}/${goldId}` }
         );
         const stampedResult: KbRunResult = { ...result, scenario: goldId };

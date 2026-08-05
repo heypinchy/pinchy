@@ -7,6 +7,7 @@ import {
   splitSentences,
 } from "../groundedness-grader";
 import { stubNliClient } from "./stub-nli-client";
+import type { AbstentionJudge } from "../groundedness-grader";
 import type { GoldQA, KbGraderResult } from "../types";
 
 function highScoreClient() {
@@ -45,36 +46,137 @@ describe("splitSentences", () => {
   });
 });
 
+/** An AbstentionJudge stub returning a fixed score, recording what it was shown. */
+function stubAbstentionJudge(score: number) {
+  const calls: { query: string; answer: string }[] = [];
+  const judge: AbstentionJudge & { calls: typeof calls } = {
+    calls,
+    async declines(query, answer) {
+      calls.push({ query, answer });
+      return score;
+    },
+  };
+  return judge;
+}
+
 describe("isAbstention", () => {
+  /** Judge that reads every answer as a refusal — isolates STRUCTURE from judge quality. */
+  const judgeSaysYes = () => stubAbstentionJudge(0.95);
+  /** Judge that reads every answer as an answer — proves the threshold is real, not a rubber stamp. */
+  const judgeSaysNo = () => stubAbstentionJudge(0.05);
+
+  const Q = "What is Northwind's parental leave policy?";
+
   it.each([
     "I couldn't find this in the knowledge base.",
     "I could not find that information anywhere.",
     "The corpus doesn't contain an answer to this.",
     "The corpus does not contain any mention of this.",
     "This is not in the knowledge base.",
-  ])("detects abstention phrase: %s", (answer) => {
-    expect(isAbstention(answer)).toBe(true);
+  ])("detects abstention: %s", async (answer) => {
+    expect(await isAbstention(Q, answer, judgeSaysYes())).toBe(true);
   });
 
-  it("does not flag a normal answering sentence as abstention", () => {
-    expect(isAbstention("The retention policy requires seven years [1].")).toBe(false);
-  });
-
-  it("does NOT flag a grounded, cited answer that merely uses an abstention phrase mid-sentence", () => {
-    // Substring-match footgun: this answer literally contains "does not
-    // contain" yet is a real, cited answer. An abstention cites nothing, so
-    // the presence of an inline [N] citation is the discriminator — misreading
-    // this as a refusal would spuriously trip false-abstention AND skip the
-    // relevance judge, corrupting the (tracked) Layer-3 scorecard.
+  it("does not flag a normal answering sentence as abstention", async () => {
     expect(
-      isAbstention(
-        "The handbook does not contain a dedicated clause, but section 4 states records are kept for ten years [1]."
+      await isAbstention(Q, "The retention policy requires seven years [1].", judgeSaysNo())
+    ).toBe(false);
+  });
+
+  it("does NOT flag a grounded, cited answer that merely uses an abstention phrase mid-sentence", async () => {
+    // Substring-match footgun: this answer literally contains "does not
+    // contain" yet is a real, cited answer — it ANSWERS the question and
+    // happens to negate along the way. Misreading it as a refusal would
+    // spuriously trip false-abstention AND skip the relevance judge,
+    // corrupting the (tracked) Layer-3 scorecard.
+    //
+    // What separates it from a real abstention is not whether it carries a
+    // citation (the veto this detector used to apply, see below) but whether
+    // it states the requested fact. That is a question about meaning, so it is
+    // the judge's; this pins the wiring, and `buildAbstentionPrompt` is where
+    // the judge is told the distinction.
+    expect(
+      await isAbstention(
+        "How long are records kept?",
+        "The handbook does not contain a dedicated clause, but section 4 states records are kept for ten years [1].",
+        judgeSaysNo()
       )
     ).toBe(false);
   });
 
-  it("still detects a genuine abstention (abstention phrase, no citations)", () => {
-    expect(isAbstention("The knowledge base does not contain an answer to this.")).toBe(true);
+  it("still detects a genuine abstention (no citations at all)", async () => {
+    expect(
+      await isAbstention(
+        Q,
+        "The knowledge base does not contain an answer to this.",
+        judgeSaysYes()
+      )
+    ).toBe(true);
+  });
+
+  it("shows the judge the question, and the answer BODY with the Sources list stripped", async () => {
+    const judge = judgeSaysYes();
+
+    await isAbstention(
+      Q,
+      "I could not find the policy text [1].\n\n**Sources:**\n\n- [1] absent-topic-pointer.md",
+      judge
+    );
+
+    expect(judge.calls).toHaveLength(1);
+    // The question is load-bearing, not decoration: asking about the answer
+    // alone did not separate abstentions from answers on ANY judge model
+    // tried (see `buildAbstentionPrompt`).
+    expect(judge.calls[0].query).toBe(Q);
+    // Not the Sources list: a citation line quoting a document title is not
+    // the answer's claim, and feeding it to the judge grades the wrong text.
+    expect(judge.calls[0].answer).toBe("I could not find the policy text [1].");
+  });
+
+  it("uses the abstention tau, not the groundedness one", async () => {
+    // 0.55 sits above DEFAULT_ABSTENTION_TAU (0.5) and below DEFAULT_TAU
+    // (0.6). Reading the wrong default here would flip this verdict.
+    expect(await isAbstention(Q, "Some answer.", stubAbstentionJudge(0.55))).toBe(true);
+  });
+
+  // ---------------------------------------------------------------------
+  // Regressions from the 2026-08-05 sweep. Both answers below are verbatim
+  // model output from that run; both were charged `missed-abstention` (and
+  // `off-topic-grounded` downstream) by the previous detector, which
+  //
+  //   1. vetoed any answer carrying an inline [N] marker, on the stated
+  //      premise that "an abstention cites NOTHING" — but all four models
+  //      cited the index document as EVIDENCE that only a section title
+  //      exists, which is the better behaviour, and
+  //   2. matched a literal, English-only phrase list, which no German
+  //      abstention can satisfy — making the DE abstention item structurally
+  //      unpassable in a harness that has a cross-lingual axis and a skill
+  //      file instructing the agent to answer in the user's language.
+  //
+  // A stub judge cannot prove a real judge reads these correctly; that was
+  // measured separately against the live judge (all 8 abstentions 0.95–1.00,
+  // all 40 answering runs 0.00 — see `buildAbstentionPrompt`). What these two
+  // pin is that the detector no longer rules them out BEFORE the judge sees
+  // them.
+  // ---------------------------------------------------------------------
+
+  it("recognises an abstention that cites its evidence (sweep: qwen3.5, gqa-abstention-1)", async () => {
+    const answer = [
+      "I couldn't find the actual text of Northwind's parental leave policy in the indexed documents.",
+      "",
+      "The search results show that parental leave is listed as one of the HR policy sections maintained by the People Operations team [1], but the detailed policy text itself doesn't appear in the search results.",
+    ].join("\n");
+
+    expect(await isAbstention(Q, answer, judgeSaysYes())).toBe(true);
+  });
+
+  it("recognises an abstention written in German (sweep: glm-5.2, gqa-abstention-2)", async () => {
+    const answer =
+      "Ich konnte in den indizierten Dokumenten leider **keine eigentliche Richtlinie zur Elternzeit** (parental leave) finden.";
+
+    expect(
+      await isAbstention("Wie lautet Northwinds Richtlinie zur Elternzeit?", answer, judgeSaysYes())
+    ).toBe(true);
   });
 });
 
@@ -179,7 +281,8 @@ describe("gradeGroundednessForGold", () => {
       "I couldn't find this in the knowledge base.",
       [],
       gold,
-      nli
+      nli,
+      true
     );
 
     expect(result).toEqual<KbGraderResult>({ passed: true, tags: [], notes: [] });
@@ -194,7 +297,8 @@ describe("gradeGroundednessForGold", () => {
       "Records must be retained for seven years [1].",
       ["Records must be retained for seven years per policy."],
       gold,
-      nli
+      nli,
+      false
     );
 
     expect(result.passed).toBe(false);
@@ -209,7 +313,8 @@ describe("gradeGroundednessForGold", () => {
       "I couldn't find this in the knowledge base.",
       ["Records must be retained for seven years per policy."],
       gold,
-      nli
+      nli,
+      true
     );
 
     expect(result.passed).toBe(false);
@@ -224,7 +329,8 @@ describe("gradeGroundednessForGold", () => {
       "Records must be retained for seven years [1].",
       ["Records must be retained for seven years per policy."],
       gold,
-      nli
+      nli,
+      false
     );
 
     expect(result).toEqual<KbGraderResult>({ passed: true, tags: [], notes: [] });
@@ -237,7 +343,8 @@ describe("gradeGroundednessForGold", () => {
       "The sky is purple [1].",
       ["Records must be retained for seven years per policy."],
       baseGold,
-      nli
+      nli,
+      false
     );
 
     expect(result.passed).toBe(false);

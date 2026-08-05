@@ -25,6 +25,7 @@
 
 import type { NliClient, NliLabel, NliVerdict } from "./nli";
 import type { RelevanceJudge } from "./answer-graders";
+import type { AbstentionJudge } from "./groundedness-grader";
 
 /** A model call: send one prompt, get back the model's raw text reply. Dependency-injected — see module doc comment. */
 export type LlmChatFn = (prompt: string) => Promise<string>;
@@ -44,6 +45,28 @@ export const NLI_PARSE_FALLBACK: NliVerdict = { label: "neutral", score: 0 };
 
 /** Same conservative-failure reasoning as `NLI_PARSE_FALLBACK`, for `parseRelevanceResponse`. */
 export const RELEVANCE_PARSE_FALLBACK = 0;
+
+/**
+ * Fallback for `parseAbstentionResponse`: "this answer did not decline."
+ *
+ * Unlike the two above, this one is NOT unambiguously conservative, and it is
+ * worth saying so rather than implying a safety it does not have. Either
+ * fallback asserts something: 0 makes an unparseable reply read as a model
+ * that answered (so a gold-abstention item is charged `missed-abstention`),
+ * and 1 makes it read as a refusal (so an answerable item is charged
+ * `false-abstention`). There is no neutral value, because the grader's
+ * question is binary.
+ *
+ * 0 is chosen because it keeps the tag pointing at the more common case and
+ * matches the other two fallbacks' direction, and because the parse failure
+ * is logged either way. The honest fix is for an unparseable judge reply to
+ * be an INVALID TRIAL (`run-infra-error`) rather than a verdict — the sweep
+ * already has that concept for transport failures. Not built here: across the
+ * 48 archived answers this judge produced zero unparseable replies, so the
+ * path is untested in practice and a speculative implementation of it would
+ * be worse than a documented limitation.
+ */
+export const ABSTENTION_PARSE_FALLBACK = 0;
 
 const VALID_NLI_LABELS: readonly NliLabel[] = ["entailment", "neutral", "contradiction"];
 
@@ -137,12 +160,28 @@ export function parseNliResponse(raw: string): NliVerdict {
  * no entailment label, only a degree of "does this address the question."
  */
 export function parseRelevanceResponse(raw: string): number {
+  return parseScoreReply(raw, "relevance", RELEVANCE_PARSE_FALLBACK);
+}
+
+/**
+ * Same `{"score": <0..1>}` contract, for the abstention judge role. Kept as
+ * its own export (rather than reusing `parseRelevanceResponse`) so the warn
+ * lines name the role that actually failed — a judge reply that cannot be
+ * parsed is diagnosed from the log, and "relevance judge reply" printed for
+ * an abstention call sends the reader to the wrong prompt.
+ */
+export function parseAbstentionResponse(raw: string): number {
+  return parseScoreReply(raw, "abstention", ABSTENTION_PARSE_FALLBACK);
+}
+
+/** Shared body of the two `{"score": …}` parsers — same robustness, different role label and fallback. */
+function parseScoreReply(raw: string, role: string, fallback: number): number {
   const jsonText = extractJsonObjectText(raw);
   if (jsonText === null) {
     console.warn(
-      `[llm-nli] no JSON object found in relevance judge reply, falling back to ${RELEVANCE_PARSE_FALLBACK}: ${raw.slice(0, 200)}`
+      `[llm-nli] no JSON object found in ${role} judge reply, falling back to ${fallback}: ${raw.slice(0, 200)}`
     );
-    return RELEVANCE_PARSE_FALLBACK;
+    return fallback;
   }
 
   let parsed: unknown;
@@ -150,24 +189,24 @@ export function parseRelevanceResponse(raw: string): number {
     parsed = JSON.parse(jsonText);
   } catch (err) {
     console.warn(
-      `[llm-nli] relevance judge reply is not valid JSON, falling back to ${RELEVANCE_PARSE_FALLBACK}: ${String(err)}`
+      `[llm-nli] ${role} judge reply is not valid JSON, falling back to ${fallback}: ${String(err)}`
     );
-    return RELEVANCE_PARSE_FALLBACK;
+    return fallback;
   }
 
   if (typeof parsed !== "object" || parsed === null) {
     console.warn(
-      `[llm-nli] relevance judge reply parsed to a non-object, falling back to ${RELEVANCE_PARSE_FALLBACK}`
+      `[llm-nli] ${role} judge reply parsed to a non-object, falling back to ${fallback}`
     );
-    return RELEVANCE_PARSE_FALLBACK;
+    return fallback;
   }
 
   const score = (parsed as Record<string, unknown>).score;
   if (typeof score !== "number" || !Number.isFinite(score)) {
     console.warn(
-      `[llm-nli] relevance judge reply has an invalid score ${JSON.stringify(score)}, falling back to ${RELEVANCE_PARSE_FALLBACK}`
+      `[llm-nli] ${role} judge reply has an invalid score ${JSON.stringify(score)}, falling back to ${fallback}`
     );
-    return RELEVANCE_PARSE_FALLBACK;
+    return fallback;
   }
 
   return clamp01(score);
@@ -231,6 +270,53 @@ export class LlmRelevanceJudge implements RelevanceJudge {
   async score(query: string, answer: string): Promise<number> {
     const raw = await this.chat(buildRelevancePrompt(query, answer));
     return parseRelevanceResponse(raw);
+  }
+}
+
+/**
+ * Prompt contract for the abstention judge role — see `parseAbstentionResponse`.
+ *
+ * This is a CLASSIFICATION prompt with the question in it, and both of those
+ * properties were arrived at by measurement rather than taste. The detector
+ * this replaces asked the NLI judge to entail a claim about the answer text
+ * ("this text declines to answer the question") with no question in the
+ * prompt. Against the 48 archived answers of the 2026-08-05 sweep that failed
+ * on every judge tried — `gpt-oss:20b` scored a complete, unambiguous answer
+ * 0.95 on it twelve times running, and `gpt-oss:120b` and `kimi-k2.6` put
+ * abstentions and answers alike in one narrow band. Entailment is the wrong
+ * relation for the question, and the question is not answerable without the
+ * question.
+ *
+ * The two paragraphs about what does and does not count are the boundary the
+ * old phrase-list detector got wrong in both directions: an abstention that
+ * cites its evidence still declines, and an answer that supplies the
+ * requested fact does not decline merely because it also negates something
+ * along the way.
+ */
+export function buildAbstentionPrompt(query: string, answer: string): string {
+  return `You are grading whether an ANSWER declines to answer a QUESTION.
+
+An answer DECLINES when it reports that the documents do not contain what was asked. It still counts as declining when it cites documents as evidence of that absence, and when it offers related context it did find.
+
+An answer does NOT decline when it states the fact that was asked for — even if it also mentions that some other detail is missing, and even if it turns out to be wrong.
+
+Respond with ONLY a JSON object, no other text, in exactly this shape:
+{"score": <number between 0 and 1, where 1 = clearly declines to answer and 0 = clearly answers the question>}
+
+QUESTION:
+${query}
+
+ANSWER:
+${answer}`;
+}
+
+/** `AbstentionJudge` implementation backed by an injected LLM chat function — see `LlmNliClient`. */
+export class LlmAbstentionJudge implements AbstentionJudge {
+  constructor(private readonly chat: LlmChatFn) {}
+
+  async declines(query: string, answer: string): Promise<number> {
+    const raw = await this.chat(buildAbstentionPrompt(query, answer));
+    return parseAbstentionResponse(raw);
   }
 }
 

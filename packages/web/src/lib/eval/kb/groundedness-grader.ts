@@ -55,50 +55,68 @@ export function splitSentences(text: string): string[] {
 }
 
 /**
- * Small, documented phrase list matching the abstention language the KB
- * agent template teaches (`agent-templates/data/knowledge-base.ts`) for "the
- * corpus genuinely does not contain the answer." Matched case-insensitively
- * against the WHOLE answer (not just the body) since an abstention answer
- * typically has no Sources list to strip in the first place. Deliberately
- * kept small and literal rather than an NLI/LLM-judged abstention detector —
- * the template's phrasing is narrow and stable, and a false negative here
- * (an abstention not recognized as one) is preferable to a false positive
- * (ordinary prose that happens to include "not" and "contain" nearby getting
- * misread as a refusal).
+ * Judges whether an answer declines to answer its question. A separate role
+ * from `NliClient` and `RelevanceJudge` because it is a separate question, and
+ * — the expensive lesson — because it is NOT an entailment question. See
+ * `buildAbstentionPrompt` in `llm-nli.ts` for what the prompt must contain and
+ * what happened to three judge models when it did not.
  */
-const ABSTENTION_PHRASES = [
-  /couldn['’]t find/i,
-  /could not find/i,
-  /don['’]t contain/i,
-  /doesn['’]t contain/i,
-  /do not contain/i,
-  /does not contain/i,
-  /not in the knowledge base/i,
-];
-
-/** Any inline `[N]` citation marker. Its PRESENCE means the answer cited a source. */
-const INLINE_CITATION_MARKER = /\[\d+\]/;
+export interface AbstentionJudge {
+  /** 1 = clearly declines to answer `query`, 0 = clearly answers it. */
+  declines(query: string, answer: string): Promise<number>;
+}
 
 /**
- * True if `answer` is a template-taught abstention ("I couldn't find this in
- * the knowledge base").
- *
- * An abstention cites NOTHING — the template teaches a bare refusal with no
- * Sources. So the presence of any inline `[N]` citation is the discriminator:
- * an answer that USES an abstention phrase but still cites a source ("The
- * handbook does not contain a dedicated clause, but section 4 states … [1].")
- * is a real, grounded answer, not a refusal. Without this guard the substring
- * phrases below (`does not contain`, `do not contain` — ordinary prose, not
- * just refusals) would misread such an answer as an abstention, spuriously
- * tripping `false-abstention` in `gradeGroundednessForGold` and skipping the
- * relevance judge in `gradeAnswerRelevance` — both of which corrupt the
- * (tracked) Layer-3 scorecard. Requiring zero citations keeps the intended
- * bias toward false-negatives (a missed abstention is safer than a
- * misclassified real answer).
+ * Threshold for `isAbstention`. Against the 48 archived answers of the
+ * 2026-08-05 sweep the two classes land at 0.95–1.00 (all 8 abstentions) and
+ * 0.00 (all 40 answering runs) — no run falls between. 0.5 sits in the middle
+ * of that gap; any value in (0, 0.95] would classify those 48 identically, so
+ * this number is not load-bearing and should not be tuned to move a result.
  */
-export function isAbstention(answer: string): boolean {
-  if (INLINE_CITATION_MARKER.test(answer)) return false;
-  return ABSTENTION_PHRASES.some((phrase) => phrase.test(answer));
+export const DEFAULT_ABSTENTION_TAU = 0.5;
+
+/**
+ * True if `answer` declines to answer `query` because the corpus does not
+ * support it.
+ *
+ * This asks a JUDGE, not a phrase list, and that is a correction rather than a
+ * refinement. The previous detector matched seven literal English phrases and
+ * vetoed any answer carrying an inline `[N]` marker, on the stated premise
+ * that "an abstention cites NOTHING". Replayed against the 2026-08-05 sweep,
+ * it recognised **0 of 8** genuine abstentions:
+ *
+ * - All four models cited the index document as EVIDENCE that only a section
+ *   title exists ("the index lists parental leave but contains no policy text
+ *   [1]"). Citing the proof of absence is the better behaviour, and the veto
+ *   charged every one of them `missed-abstention` for it.
+ * - Dropping the veto still left 5 of 8 unrecognised, including ALL FOUR
+ *   German answers — an English phrase list cannot match a German refusal, so
+ *   the DE abstention item was structurally unpassable in a harness that has
+ *   a cross-lingual axis and ships a skill file telling the agent to answer in
+ *   the user's language.
+ *
+ * The counter-case the old veto existed to protect is still handled, and
+ * without guessing at shapes: "The handbook does not contain a dedicated
+ * clause, but section 4 states records are kept for ten years [1]" states the
+ * requested fact, and the judge scores it 0.
+ *
+ * Graded on the answer BODY (`answerBody`): a Sources line quoting a document
+ * title is not the answer's claim, and feeding it to the judge grades the
+ * wrong text. One judge call, no k-averaging — unlike the entailment scores
+ * this is a wide binary decision (0.95 vs 0.00, nothing between), so averaging
+ * repeats would cost three calls per run to move nothing.
+ */
+export async function isAbstention(
+  query: string,
+  answer: string,
+  judge: AbstentionJudge,
+  opts: { tau?: number } = {}
+): Promise<boolean> {
+  const tau = opts.tau ?? DEFAULT_ABSTENTION_TAU;
+  // `.trim()`: `answerBody` leaves the blank lines that separated the body
+  // from the stripped Sources list.
+  const score = await judge.declines(query, answerBody(answer).trim());
+  return score >= tau;
 }
 
 export interface GroundednessOptions {
@@ -176,16 +194,24 @@ export async function gradeGroundedness(
  * - `goldQA.expectAbstention` falsy (the corpus CAN answer): abstaining is a
  *   `false-abstention` failure. Otherwise, falls through to the normal
  *   per-sentence `gradeGroundedness` check.
+ *
+ * `abstained` is passed IN rather than computed here, and is required rather
+ * than defaulted. Two graders branch on it (this one and
+ * `gradeAnswerRelevance`), and when each decided for itself they could
+ * disagree about the same answer — the same "one question, two answers" shape
+ * that `cited-path-match.ts` was extracted to close on the citation axis.
+ * `gradeKbRun` resolves it once, via `isAbstention`, and hands both the same
+ * verdict. Required, so adding a third caller is a compile error rather than
+ * a silent third opinion.
  */
 export async function gradeGroundednessForGold(
   answer: string,
   citedPassages: string[],
   goldQA: GoldQA,
   nli: NliClient,
+  abstained: boolean,
   opts: GroundednessOptions = {}
 ): Promise<KbGraderResult> {
-  const abstained = isAbstention(answer);
-
   if (goldQA.expectAbstention) {
     if (abstained) return { passed: true, tags: [], notes: [] };
     return {
