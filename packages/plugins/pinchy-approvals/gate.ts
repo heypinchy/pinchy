@@ -24,7 +24,25 @@ export interface GateContext {
 export interface GateResult {
   block?: boolean;
   blockReason?: string;
+  requireApproval?: {
+    title: string;
+    description: string;
+    severity?: "info" | "warning" | "critical";
+    timeoutMs?: number;
+    timeoutBehavior?: "allow" | "deny";
+    allowedDecisions?: Array<"allow-once" | "allow-always" | "deny">;
+  };
 }
+
+// OpenClaw clamps anything above this, so asking for more does not extend the
+// wait — it only makes our own pending row outlive the approval it belongs to.
+const APPROVAL_TIMEOUT_MS = 600_000;
+
+// Deliberately no "allow-always". OpenClaw does not persist it for a generic
+// hook, so the button would promise durability we never deliver — and worse, a
+// member could use it to opt out of a policy an admin set. A more specific
+// level may be stricter than the one above it, never looser.
+const ALLOWED_DECISIONS: Array<"allow-once" | "deny"> = ["allow-once", "deny"];
 
 function extractAgentId(sessionKey: string | undefined): string | undefined {
   if (!sessionKey) return undefined;
@@ -62,7 +80,11 @@ export async function evaluateGate(
   // truncated response) must land in the same fail-closed branch as a network
   // error — OpenClaw would block on a throwing hook anyway, but with a generic
   // hook-failure text instead of this actionable reason.
-  let data: { decision?: string; reason?: string };
+  let data: {
+    decision?: string;
+    reason?: string;
+    approval?: { title?: string; description?: string };
+  };
   try {
     const res = await fetch(`${cfg.apiBaseUrl}/api/internal/approvals/gate-check`, {
       method: "POST",
@@ -87,6 +109,27 @@ export async function evaluateGate(
     return { block: true, blockReason: UNAVAILABLE };
   }
   if (data.decision === "block") {
+    // Prompt text present ⇒ somebody can actually decide this, so PAUSE the
+    // run rather than ending the call. `block: true` is terminal: the run
+    // carries on, the model reads the reason as a tool result and starts
+    // talking about it, and a later approval has nothing left to resume.
+    const { title, description } = data.approval ?? {};
+    if (title && description) {
+      return {
+        requireApproval: {
+          title,
+          description,
+          severity: "warning",
+          timeoutMs: APPROVAL_TIMEOUT_MS,
+          timeoutBehavior: "deny",
+          allowedDecisions: ALLOWED_DECISIONS,
+        },
+      };
+    }
+
+    // No prompt text means the refusal is not one a card can lift — an
+    // unattributable caller, or the pending-confirmation cap. Suspending the
+    // run there would hang it on an approval nobody is going to be shown.
     return {
       block: true,
       blockReason: data.reason ?? "Confirmation required before running this tool.",

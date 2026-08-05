@@ -215,6 +215,35 @@ describe("approval routes (integration, real DB)", () => {
     expect(res.reason).toMatch(/confirm/i);
   });
 
+  it("hands the gate the prompt text a person can act on", async () => {
+    // #1132: the plugin turns this into OpenClaw's `requireApproval`, which
+    // PAUSES the run instead of letting the model narrate a block. The title
+    // and description have to come from the server, because the plugin has no
+    // tool registry and must not grow one — policy and wording are the same
+    // decision, and it lives on this side of the gateway token.
+    const res = await (
+      await gateCheck(gateReq(gateBody({ toolName: "odoo_write", params: { recordId: 5 } })))
+    ).json();
+
+    expect(res.decision).toBe("block");
+    expect(res.approval.title).toBeTruthy();
+    expect(res.approval.title).not.toContain("odoo_write");
+    expect(res.approval.description).toContain("5");
+    // OpenClaw REJECTS a request past these caps, so exceeding one turns a
+    // confirmation into a failed tool call rather than an ugly card.
+    expect(res.approval.title.length).toBeLessThanOrEqual(80);
+    expect(res.approval.description.length).toBeLessThanOrEqual(256);
+  });
+
+  it("sends no prompt text when nothing is being confirmed", async () => {
+    // An allowed call must not carry approval wording: the plugin decides
+    // whether to pause on the presence of this field, so a stray one would
+    // pause a run nobody needs to confirm.
+    const res = await (await gateCheck(gateReq(gateBody({ toolName: "odoo_list_models" })))).json();
+    expect(res.decision).toBe("allow");
+    expect(res.approval).toBeUndefined();
+  });
+
   it("refuses a gated call it cannot attribute to a Pinchy user", async () => {
     // A channel sender (Telegram id, group principal) is not a Pinchy user, so
     // nobody in that conversation can confirm. Blocking is the only safe answer

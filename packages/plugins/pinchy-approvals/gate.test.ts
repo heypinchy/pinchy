@@ -31,6 +31,77 @@ describe("evaluateGate", () => {
     expect(res).toEqual({ block: true, blockReason: "Approve to proceed" });
   });
 
+  it("pauses the run instead of blocking when the server sends prompt text", async () => {
+    // #1132. `block: true` is terminal: the run continues, the model receives
+    // the reason as the tool result and narrates it — so the agent answers
+    // before the person has decided, and approving does nothing on its own.
+    // `requireApproval` is the one return value that actually suspends the
+    // call until someone resolves it.
+    stubFetch(() =>
+      Promise.resolve({
+        ok: true,
+        json: async () => ({
+          decision: "block",
+          requestId: "req-1",
+          reason: "model-facing text",
+          approval: { title: "Update a record", description: "Odoo: write — recordId: 5" },
+        }),
+      })
+    );
+
+    const res = await evaluateGate("odoo_write", { recordId: 5 }, ctx, cfg);
+
+    expect(res.block).toBeUndefined();
+    expect(res.requireApproval?.title).toBe("Update a record");
+    expect(res.requireApproval?.description).toBe("Odoo: write — recordId: 5");
+  });
+
+  it("offers only allow-once and deny, never allow-always", async () => {
+    // "Always allow" here would let a member permanently opt out of a policy
+    // an admin set — a more specific level may be stricter than the one above
+    // it, never looser. OpenClaw also does not persist allow-always for a
+    // generic hook, so the button would promise durability we do not deliver.
+    stubFetch(() =>
+      Promise.resolve({
+        ok: true,
+        json: async () => ({
+          decision: "block",
+          approval: { title: "t", description: "d" },
+        }),
+      })
+    );
+
+    const res = await evaluateGate("odoo_write", {}, ctx, cfg);
+    expect(res.requireApproval?.allowedDecisions).toEqual(["allow-once", "deny"]);
+  });
+
+  it("denies on timeout rather than letting the action through", async () => {
+    stubFetch(() =>
+      Promise.resolve({
+        ok: true,
+        json: async () => ({
+          decision: "block",
+          approval: { title: "t", description: "d" },
+        }),
+      })
+    );
+
+    const res = await evaluateGate("odoo_write", {}, ctx, cfg);
+    expect(res.requireApproval?.timeoutBehavior).toBe("deny");
+    // OpenClaw clamps anything above 600s, so asking for more would silently
+    // become 600s and leave our own row outliving the approval it belongs to.
+    expect(res.requireApproval?.timeoutMs).toBeLessThanOrEqual(600_000);
+  });
+
+  it("still blocks outright when there is nothing for anyone to confirm", async () => {
+    // No prompt text means the server refused for a reason no card can fix —
+    // an unattributable caller, or the pending-confirmation cap. Pausing the
+    // run there would hang it on an approval that is never going to appear.
+    stubDecision("block", "Nobody can confirm this here.");
+    const res = await evaluateGate("odoo_write", {}, ctx, cfg);
+    expect(res).toEqual({ block: true, blockReason: "Nobody can confirm this here." });
+  });
+
   it("fails closed when the approval service is unreachable", async () => {
     stubFetch(() => Promise.reject(new Error("ECONNREFUSED")));
     const res = await evaluateGate("odoo_write", {}, ctx, cfg);

@@ -6,6 +6,7 @@ import { gateCheckSchema } from "@/lib/schemas/approvals";
 import { decideGate } from "@/lib/approvals/service";
 import { computeArgsDigest } from "@/lib/approvals/digest";
 import { summarizeArgs } from "@/lib/approvals/summary";
+import { buildApprovalPrompt } from "@/lib/approvals/prompt";
 import { getConfirmTools } from "@/lib/approvals/policy";
 import { appendAuditLog, type AuditLogEntry } from "@/lib/audit";
 import { recordAuditFailure } from "@/lib/audit-deferred";
@@ -165,5 +166,14 @@ export async function POST(request: NextRequest) {
       `A confirmation card is waiting for them in Pinchy. ` +
       `Tell them what you are about to do and that you are waiting for their confirmation, ` +
       `then stop — do not call this tool again, and do not suggest any command.`,
+    // The wording the PERSON reads, as opposed to `reason`, which the model
+    // reads. It is built here rather than in the plugin because the plugin has
+    // no tool registry and must not grow one: what a tool is called in the UI
+    // and whether it needs confirming are the same decision, and that decision
+    // lives on this side of the gateway token.
+    //
+    // The plugin keys on the presence of this field to decide whether to pause
+    // the run, so it is absent from every non-blocking answer.
+    approval: buildApprovalPrompt(toolName, params),
   });
 }
