@@ -7,7 +7,13 @@ import { describe, it, expect, beforeEach } from "vitest";
 import { eq } from "drizzle-orm";
 import { db } from "@/db";
 import { users, agents, toolApproval } from "@/db/schema";
-import { decideGate, resolveDecision, expireStale, MAX_PENDING_PER_REQUESTER } from "./service";
+import {
+  decideGate,
+  resolveDecision,
+  expireStale,
+  linkApproval,
+  MAX_PENDING_PER_REQUESTER,
+} from "./service";
 
 async function seedUser(overrides?: Partial<typeof users.$inferInsert>) {
   const [row] = await db
@@ -76,6 +82,51 @@ describe("approvals gate decision service", () => {
     const r = await decideGate({ ...base(), toolCallId: "call_1" });
     const [row] = await db.select().from(toolApproval).where(eq(toolApproval.id, r.requestId));
     expect(row.toolCallId).toBe("call_1");
+  });
+
+  // #1132. OpenClaw announces the approval it created with its own id. Storing
+  // it is what makes the card resolvable — and storing it in the ROW rather
+  // than in process memory is what makes it survive a Pinchy restart: OpenClaw
+  // keeps an accepted approval pending until its timeout, and `operator.admin`
+  // may resolve it from any connection, so a reconnected Pinchy still can.
+  describe("linkApproval", () => {
+    it("records OpenClaw's approval id on the waiting row", async () => {
+      const r = await decideGate({ ...base(), toolCallId: "call_9" });
+      const linked = await linkApproval({ approvalId: "plugin:xyz", toolCallId: "call_9" });
+
+      expect(linked?.id).toBe(r.requestId);
+      const [row] = await db.select().from(toolApproval).where(eq(toolApproval.id, r.requestId));
+      expect(row.openclawApprovalId).toBe("plugin:xyz");
+    });
+
+    // The gateway carries OpenClaw's own approvals too (skill workshop, exec).
+    // Those name a call Pinchy never opened a row for, and must pass through
+    // without touching anything.
+    it("links nothing when no confirmation is waiting for that call", async () => {
+      await decideGate({ ...base(), toolCallId: "call_ours" });
+      const linked = await linkApproval({
+        approvalId: "plugin:someone-else",
+        toolCallId: "call_theirs",
+      });
+
+      expect(linked).toBeNull();
+      const rows = await db.select().from(toolApproval);
+      expect(rows.every((r) => r.openclawApprovalId === null)).toBe(true);
+    });
+
+    // A row the user already decided must not be re-armed by a late broadcast:
+    // it would make a settled confirmation look resolvable again.
+    it("leaves an already-decided confirmation alone", async () => {
+      const r = await decideGate({ ...base(), toolCallId: "call_done" });
+      await resolveDecision({ id: r.requestId, approverId: requesterId, decision: "deny" });
+
+      const linked = await linkApproval({ approvalId: "plugin:late", toolCallId: "call_done" });
+
+      expect(linked).toBeNull();
+      const [row] = await db.select().from(toolApproval).where(eq(toolApproval.id, r.requestId));
+      expect(row.openclawApprovalId).toBeNull();
+      expect(row.status).toBe("denied");
+    });
   });
 
   // A reused row must point at the call that is waiting NOW, not the one that

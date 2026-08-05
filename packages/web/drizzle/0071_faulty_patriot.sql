@@ -1,0 +1,1 @@
+ALTER TABLE "tool_approval" ADD COLUMN "openclaw_approval_id" text;

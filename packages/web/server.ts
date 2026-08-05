@@ -43,6 +43,7 @@ import {
   setupOpenClawStatusBroadcaster,
   createColdStartStatusBroadcaster,
 } from "./src/server/openclaw-status-broadcaster";
+import { attachPluginApprovalBridge } from "./src/server/plugin-approval-bridge";
 import { logCapture } from "./src/lib/log-capture";
 import { startUsagePoller, stopUsagePoller } from "./src/lib/usage-poller";
 import { registerShutdownHandlers } from "./src/lib/shutdown";
@@ -765,6 +766,13 @@ const startup = app.prepare().then(async () => {
 
     setupOpenClawDisconnectHandler(openclawClient, sessionMap);
     statusBroadcaster = setupOpenClawStatusBroadcaster(openclawClient, sessionMap);
+
+    // Hear the approvals OpenClaw creates when pinchy-approvals suspends a
+    // gated call, so the user's decision can resume the actual run (#1132).
+    // Attached to the client itself rather than inside the "connected" handler:
+    // the listener is on the local emitter, survives reconnects, and attaching
+    // it per-connect would stack a duplicate on every reconnect.
+    attachPluginApprovalBridge(openclawClient);
 
     openclawClient.on("disconnected", () => {
       openClawConnectionState.connected = false;

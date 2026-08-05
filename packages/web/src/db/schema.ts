@@ -380,6 +380,16 @@ export const toolApproval = pgTable(
     // same call twice and both would match. Nullable: a run context can carry
     // no call id, and every row written before #1132 has none.
     toolCallId: text("tool_call_id"),
+    // OpenClaw's own id for the suspended call, learned from the
+    // `plugin.approval.requested` broadcast. Resolving the run needs it.
+    //
+    // Stored on the row rather than in process memory on purpose: OpenClaw
+    // keeps an accepted approval pending until its timeout and never discards
+    // one because the reviewing connection dropped, and an `operator.admin`
+    // client may resolve it from ANY connection — so a Pinchy restart mid
+    // confirmation stays recoverable, and the card the user is looking at
+    // keeps working.
+    openclawApprovalId: text("openclaw_approval_id"),
     argsDigest: text("args_digest").notNull(),
     argsSummary: jsonb("args_summary").$type<Record<string, unknown>>(),
     tier: approvalTierEnum("tier").notNull().default("confirm"),

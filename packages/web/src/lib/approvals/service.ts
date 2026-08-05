@@ -161,6 +161,29 @@ export async function decideGate(input: DecideGateInput): Promise<GateDecision> 
   return { decision: "block", requestId: inserted.id, created: true };
 }
 
+/**
+ * Attach OpenClaw's approval id to the confirmation waiting for that call.
+ *
+ * Returns the row it linked, or `null` when nothing was waiting — which is the
+ * ordinary case, not a fault: the same gateway broadcast carries OpenClaw's own
+ * approvals (skill workshop, exec), and those name calls Pinchy never opened a
+ * row for.
+ *
+ * Restricted to `pending`: a late broadcast must not re-arm a confirmation the
+ * user has already decided, or a settled card would look resolvable again.
+ */
+export async function linkApproval(input: {
+  approvalId: string;
+  toolCallId: string;
+}): Promise<{ id: string } | null> {
+  const [linked] = await db
+    .update(toolApproval)
+    .set({ openclawApprovalId: input.approvalId })
+    .where(and(eq(toolApproval.toolCallId, input.toolCallId), eq(toolApproval.status, "pending")))
+    .returning({ id: toolApproval.id });
+  return linked ?? null;
+}
+
 export type ResolveResult =
   | { ok: true; request: typeof toolApproval.$inferSelect }
   | { ok: false; reason: "not_found" | "not_pending" | "forbidden" };

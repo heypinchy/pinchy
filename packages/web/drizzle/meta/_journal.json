@@ -498,6 +498,13 @@
       "when": 1785947363220,
       "tag": "0070_numerous_darkhawk",
       "breakpoints": true
+    },
+    {
+      "idx": 71,
+      "version": "7",
+      "when": 1785947668676,
+      "tag": "0071_faulty_patriot",
+      "breakpoints": true
     }
   ]
 }
