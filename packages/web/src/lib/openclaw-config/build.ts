@@ -614,7 +614,7 @@ export async function regenerateOpenClawConfig() {
     // host-filesystem access (CISO-review note, PR #316).
     const allowedTools = (agent.allowedTools as string[]) || [];
     agentEntry.tools = {
-      allow: computeAllowedTools(),
+      allow: computeAllowedTools(allowedTools),
       fs: { workspaceOnly: true },
     };
 

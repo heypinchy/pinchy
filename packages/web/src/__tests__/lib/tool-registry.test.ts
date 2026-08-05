@@ -166,15 +166,15 @@ describe("computeAllowedTools", () => {
   // attached file as unreadable even though it was present on disk (prod
   // incident 2026-07-14).
   it("does NOT allow the built-in `pdf` tool — it cannot read workspace uploads (prod incident 2026-07-14)", () => {
-    expect(computeAllowedTools()).not.toContain("pdf");
+    expect(computeAllowedTools([])).not.toContain("pdf");
   });
 
   it("does NOT allow the built-in `image` tool — same reason as `pdf` (prod incident 2026-07-14)", () => {
-    expect(computeAllowedTools()).not.toContain("image");
+    expect(computeAllowedTools([])).not.toContain("image");
   });
 
   it("keeps `pinchy_read` — the intended media reader — available", () => {
-    expect(computeAllowedTools()).toContain("pinchy_read");
+    expect(computeAllowedTools([])).toContain("pinchy_read");
   });
 
   it("keeps `pinchy_read` AND `pinchy_ls` available — the memory-prompt recall fallback promises both", () => {
@@ -185,34 +185,53 @@ describe("computeAllowedTools", () => {
     // EVERY agent — always lists both. If either is ever trimmed here, the prompt
     // would tell agents to use a tool they no longer have, silently breaking the
     // fallback (finding #3, PR #736 review). This guards that coupling.
-    const allowed = computeAllowedTools();
+    const allowed = computeAllowedTools([]);
     expect(allowed).toContain("pinchy_read");
     expect(allowed).toContain("pinchy_ls");
   });
 
-  it("allows memory_search/memory_get (bundled memory-core plugin powers agent memory)", () => {
-    const allowed = computeAllowedTools();
+  // memory_search/memory_get are the one part of this allowlist that is NOT the
+  // same for every agent. Every other tool here is either unconditional or gated
+  // per-agent inside its own plugin's config — these two are OpenClaw built-ins
+  // with no Pinchy-side config to gate them, so the allowlist is the only place
+  // they can be withheld. Handing them to an agent with no memory is not merely
+  // useless: memory-core keys its own "## Memory Recall" prompt section on these
+  // names being present, and that section tells the agent to search its memory
+  // before answering. That is the #755 report — an agent insisting it has memory,
+  // finding nothing, and inventing a reason why.
+  it("allows memory_search/memory_get only for an agent with the memory grant", () => {
+    const allowed = computeAllowedTools(["pinchy_memory"]);
     expect(allowed).toContain("memory_search");
     expect(allowed).toContain("memory_get");
+
+    const without = computeAllowedTools([]);
+    expect(without).not.toContain("memory_search");
+    expect(without).not.toContain("memory_get");
+  });
+
+  it("does not hand the memory built-ins to a write-only agent", () => {
+    const allowed = computeAllowedTools(["pinchy_write"]);
+    expect(allowed).not.toContain("memory_search");
+    expect(allowed).not.toContain("memory_get");
   });
 
   it("allows session_status (read-only self-status, the baseline `minimal` tool)", () => {
-    expect(computeAllowedTools()).toContain("session_status");
+    expect(computeAllowedTools([])).toContain("session_status");
   });
 
   it("does NOT allow `image_generate` (produces new content, requires explicit opt-in)", () => {
-    expect(computeAllowedTools()).not.toContain("image_generate");
+    expect(computeAllowedTools([])).not.toContain("image_generate");
   });
 
   it("includes every Pinchy plugin tool from the manifests (no plugin tool silently blocked)", () => {
-    const allowed = new Set(computeAllowedTools());
+    const allowed = new Set(computeAllowedTools([]));
     for (const tool of getAllPinchyPluginToolNames()) {
       expect(allowed.has(tool), `plugin tool "${tool}" must be in the allowlist`).toBe(true);
     }
   });
 
   it("is fail-closed: never allows raw runtime/fs/web/ui or other powerful built-ins", () => {
-    const allowed = new Set(computeAllowedTools());
+    const allowed = new Set(computeAllowedTools([]));
     const mustNeverAllow = [
       "exec",
       "process",
@@ -311,7 +330,7 @@ describe("allow-list drift guard vs OpenClaw built-in tool groups", () => {
   const INTENDED_BUILTINS = ["memory_search", "memory_get", "session_status"];
 
   it("excludes every built-in a governed agent must never reach", () => {
-    const allowed = new Set(computeAllowedTools());
+    const allowed = new Set(computeAllowedTools([]));
     for (const tool of MUST_NOT_ALLOW_BUILTINS) {
       const group = Object.entries(OPENCLAW_TOOL_GROUPS).find(([, tools]) =>
         tools.includes(tool)
@@ -324,15 +343,25 @@ describe("allow-list drift guard vs OpenClaw built-in tool groups", () => {
   });
 
   it("excludes the native browser/canvas (group:ui) — preserves the #603 boundary", () => {
-    const allowed = computeAllowedTools();
+    const allowed = computeAllowedTools([]);
     expect(allowed).not.toContain("browser");
     expect(allowed).not.toContain("canvas");
   });
 
+  // Checked for BOTH grant states, because the boundary claim is about what an
+  // agent may EVER reach: the memory-granted agent sees the widest set this
+  // allowlist can produce, so that is the case the boundary must hold for. The
+  // ungranted case pins the other end — the memory built-ins really are withheld
+  // and not merely reordered.
   it("allows no non-Pinchy tool beyond the intended read-only built-ins", () => {
     const pluginTools = new Set(getAllPinchyPluginToolNames());
-    const nonPinchy = computeAllowedTools().filter((t) => !pluginTools.has(t));
-    expect(nonPinchy.sort()).toEqual([...INTENDED_BUILTINS].sort());
+    const nonPinchyFor = (grants: string[]) =>
+      computeAllowedTools(grants)
+        .filter((t) => !pluginTools.has(t))
+        .sort();
+
+    expect(nonPinchyFor(["pinchy_memory"])).toEqual([...INTENDED_BUILTINS].sort());
+    expect(nonPinchyFor([])).toEqual(["session_status"]);
   });
 });
 

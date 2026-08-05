@@ -283,7 +283,21 @@ export const TOOL_REGISTRY: readonly ToolDefinition[] = [
 // at all. Worse, keeping them in the allowlist gave weaker models (e.g.
 // kimi-k2.6) a temptingly-named `pdf` tool they picked over `pinchy_read`, then
 // told the user the attachment was unreadable (prod incident 2026-07-14).
-const INTENDED_BUILTIN_TOOLS = ["memory_search", "memory_get", "session_status"] as const;
+const INTENDED_BUILTIN_TOOLS = ["session_status"] as const;
+
+// The two memory built-ins are the ONLY per-agent entry in this allowlist.
+// Every other tool here is either unconditional or gated inside its own
+// plugin's config; these are OpenClaw built-ins with no Pinchy-side config, so
+// `tools.allow` is the only place they can be withheld — and `tools.allow` is
+// already emitted per agent (build.ts), so this costs nothing structurally.
+//
+// Withholding them matters more than "a useless tool": memory-core builds its
+// own `## Memory Recall` prompt section off these NAMES being present
+// (buildPromptSection), and that section instructs the agent to search memory
+// before answering anything about prior work. Hand them to an agent with no
+// memory and OpenClaw itself tells it to go looking — which is the #755 report,
+// an agent that insists it has memory, finds nothing, and invents a reason.
+const MEMORY_BUILTIN_TOOLS = ["memory_search", "memory_get"] as const;
 
 export function getToolById(id: string): ToolDefinition | undefined {
   return TOOL_REGISTRY.find((t) => t.id === id);
@@ -302,13 +316,22 @@ export function getToolsByCategory(category: "safe" | "powerful"): ToolDefinitio
  * tool (derived from the manifests, so it can't drift) plus the intentionally
  * allowed read-only built-ins.
  *
- * The same superset is emitted for every agent: per-agent tool gating already
- * happens inside each plugin's own config (the plugin only registers the tools
- * that agent is permitted), so listing a tool an agent lacks is a harmless
- * no-match. This allowlist is the OUTER boundary against built-ins.
+ * Almost the same superset is emitted for every agent: per-agent tool gating
+ * already happens inside each plugin's own config (the plugin only registers the
+ * tools that agent is permitted), so listing a plugin tool an agent lacks is a
+ * harmless no-match. This allowlist is the OUTER boundary against built-ins.
+ *
+ * The exception is MEMORY_BUILTIN_TOOLS, which has no plugin config to gate it —
+ * see the comment there. `allowedTools` is the agent's Pinchy grant list
+ * (`agents.allowed_tools`), NOT this function's own output; it is passed in so
+ * the memory built-ins can follow the `pinchy_memory` grant.
  */
-export function computeAllowedTools(): string[] {
-  return [...getAllPinchyPluginToolNames(), ...INTENDED_BUILTIN_TOOLS];
+export function computeAllowedTools(allowedTools: string[]): string[] {
+  return [
+    ...getAllPinchyPluginToolNames(),
+    ...INTENDED_BUILTIN_TOOLS,
+    ...(allowedTools.includes("pinchy_memory") ? MEMORY_BUILTIN_TOOLS : []),
+  ];
 }
 
 // --- Email operation helpers ---

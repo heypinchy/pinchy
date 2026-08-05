@@ -5002,10 +5002,12 @@ describe("ClientRouter", () => {
       // proving nothing about sorting. Image description with built-ins only is
       // where minimax-m3 is still preferred.
       //
-      // Note `allowedTools: []` means "built-ins only" (memory_search,
-      // memory_get, session_status — computeAllowedTools takes no agent), NOT
-      // "no tools at all". Those schemas are flat, which minimax-m3 handles; see
-      // the proxy caveat at the resolveImageTurnModel call site.
+      // Note `allowedTools: []` means "built-ins only" — session_status, plus
+      // the Pinchy plugin tools the allowlist always names — NOT "no tools at
+      // all". The memory built-ins are no longer among them: they follow the
+      // `pinchy_memory` grant, which this agent does not have. Those schemas are
+      // flat, which minimax-m3 handles; see the proxy caveat at the
+      // resolveImageTurnModel call site.
       mockFindFirst.mockResolvedValue({
         ...defaultAgent,
         model: "ollama-cloud/glm-5.2",

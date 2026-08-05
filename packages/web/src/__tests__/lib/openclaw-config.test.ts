@@ -836,7 +836,7 @@ describe("regenerateOpenClawConfig", () => {
       model: "anthropic/claude-opus-4-7",
       workspace: "/root/.openclaw/workspaces/uuid-agent-1",
       tools: {
-        allow: computeAllowedTools(),
+        allow: computeAllowedTools([]),
         fs: { workspaceOnly: true },
       },
       heartbeat: { every: "0m" },
@@ -851,7 +851,7 @@ describe("regenerateOpenClawConfig", () => {
       model: "openai/gpt-5.4",
       workspace: "/root/.openclaw/workspaces/uuid-agent-2",
       tools: {
-        allow: computeAllowedTools(),
+        allow: computeAllowedTools([]),
         fs: { workspaceOnly: true },
       },
       heartbeat: { every: "0m" },
