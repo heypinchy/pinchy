@@ -214,6 +214,8 @@ Get a single agent by ID.
 
 **Response:** The agent object, or `404` if not found.
 
+An agent you may not see answers `404` as well, with the same body — someone else's personal agent, or a restricted agent outside your groups, is deliberately indistinguishable from an ID that was never issued. This holds for admins too: nobody can list another user's personal agents, so nobody gets to confirm one exists. The same applies to every `/api/agents/:id/*` endpoint below.
+
 ### `PATCH /api/agents/:id`
 
 Update an agent's settings. Any combination of fields can be included.
@@ -245,7 +247,7 @@ Update an agent's settings. Any combination of fields can be included.
 - `400` — cannot change permissions for personal agents
 - `401` — not authenticated
 - `403` — only admins can change `allowedTools` or `pluginConfig`
-- `404` — agent not found
+- `404` — agent not found, or you have no access to it (the two are indistinguishable)
 - `500` — the update failed, either before or after it was stored
 
 The `500` is worth handling deliberately, because it covers two outcomes that
@@ -289,7 +291,7 @@ Delete an agent. **Admin only.** Personal agents (auto-created Smithers) cannot 
 - `400` — attempting to delete a personal agent
 - `401` — not authenticated
 - `403` — not an admin
-- `404` — agent not found
+- `404` — agent not found, or it is another user's personal agent (admins cannot reach those either)
 
 ### `POST /api/agents/:agentId/uploads`
 
@@ -322,7 +324,7 @@ Send `id` in the chat message's `attachmentIds` (up to **10** attachments per me
 
 - `400` — missing or invalid `x-pinchy-draft-id`, malformed form data, missing `file` field, or invalid filename
 - `401` — not authenticated
-- `403` / `404` — no access to the agent
+- `404` — no such agent, or no access to it (the two answer alike)
 - `413` — file exceeds the 15 MB limit
 - `415` — unsupported or mismatched file type
 
@@ -1993,7 +1995,7 @@ Report that a chat run finished while the user was away from the chat page. Call
 | `agentId`    | string | Yes      | Agent the run belongs to. The caller must have access to it.    |
 | `durationMs` | number | Yes      | Wall-clock run duration, in milliseconds. Capped at 10 minutes. |
 
-**Response:** `204 No Content`. Returns `400` if `durationMs` is negative or above the cap, `404` if the agent doesn't exist, and `403` if the caller has no access to it.
+**Response:** `204 No Content`. Returns `400` if `durationMs` is negative or above the cap, and `404` if the agent doesn't exist **or** the caller has no access to it — one answer for both, so this endpoint cannot be used to probe which agent IDs are real.
 
 ### `GET /api/audit/export`
 

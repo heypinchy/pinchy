@@ -120,8 +120,12 @@ describe("GET /api/agents/[agentId]/uploads/[filename]", () => {
     expect(res.status).toBe(404);
   });
 
-  it("forwards the getAgentWithAccess denial response verbatim (403 from helper → 403 to caller)", async () => {
-    // getAgentWithAccess returns a NextResponse on denial.
+  it("forwards the getAgentWithAccess denial response verbatim, whatever its status", async () => {
+    // getAgentWithAccess returns a NextResponse on denial. The 403 below is a
+    // SYNTHETIC sentinel, not the helper's real answer — it really denies with
+    // 404 (see its docblock). A status the helper never emits is what makes
+    // this test meaningful: a 404 here would also be produced by the route's
+    // own missing-file path, so it could not tell forwarding from minting.
     const { NextResponse } = await import("next/server");
     mockGetAgentWithAccess.mockResolvedValue(
       NextResponse.json({ error: "forbidden" }, { status: 403 })

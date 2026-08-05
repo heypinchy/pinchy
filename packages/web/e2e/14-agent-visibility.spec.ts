@@ -92,11 +92,19 @@ test.describe.serial("Agent visibility — personal vs shared", () => {
     );
     expect(secondSeesAdminsSmithers).toBe(false);
 
-    // Direct fetch of the agent resource must return 403 (Forbidden).
-    // Accepting 404 here would mask a regression where the privacy check
-    // silently degrades to a not-found path. Match the second test exactly.
+    // Direct fetch of the agent resource must return 404 — the same answer an
+    // id that was never issued gets, so this cannot be used to confirm the
+    // agent exists (see the docblock on getAgentWithAccess).
+    //
+    // The original worry behind this assertion still stands and is still
+    // covered: a 404 must not be allowed to mask "the privacy check degraded
+    // into a not-found path" or "the id is simply wrong". What rules that out
+    // is the assertion above — the admin saw this exact id in their OWN
+    // /api/agents list moments ago, so the agent demonstrably exists and the
+    // 404 can only come from the access gate. Keep those two together; the
+    // status check alone would prove nothing.
     const directRes = await page.context().request.get(`/api/agents/${adminSmithersId}`);
-    expect(directRes.status()).toBe(403);
+    expect(directRes.status()).toBe(404);
 
     // Sidebar: admin's Smithers link must not be present
     // Both users have a Smithers agent, so we check by agentId in the href
@@ -131,9 +139,13 @@ test.describe.serial("Agent visibility — personal vs shared", () => {
     );
     expect(adminSeesSecondSmithers).toBe(false);
 
-    // Direct fetch should also return 403 (not just absent from list)
+    // Direct fetch should also return 404 (not just absent from list) — and
+    // note this caller is an ADMIN. Admins cannot list other users' personal
+    // agents either, so a 403 would hand even them an existence oracle.
+    // As in the first test, the id is proven real by the assertion above:
+    // the second user saw it in their own list before the switch.
     const directRes = await page.context().request.get(`/api/agents/${secondUserSmithersId}`);
-    expect(directRes.status()).toBe(403);
+    expect(directRes.status()).toBe(404);
 
     // UI: second user's Smithers link must not be present in admin's sidebar
     // /chat is not a route on its own — only /chat/[agentId]. Use /agents

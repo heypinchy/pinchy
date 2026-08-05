@@ -142,7 +142,9 @@ test.describe.serial("Agent permissions — restricted visibility", () => {
       // source of truth and the sidebar is a derived view of it. We assert
       // both sides of the contract via the API:
       //   1) the agent is absent from the user's agent list
-      //   2) a direct fetch of the agent resource returns 403
+      //   2) a direct fetch of the agent resource returns 404 — the same
+      //      answer an unknown id gets, so a member outside the group cannot
+      //      even confirm the agent exists (see getAgentWithAccess).
 
       const memberAgents = await memberPage.context().request.get("/api/agents");
       expect(memberAgents.ok()).toBeTruthy();
@@ -153,9 +155,26 @@ test.describe.serial("Agent permissions — restricted visibility", () => {
       ).toBe(false);
 
       const direct = await memberPage.context().request.get(`/api/agents/${agentId}`);
-      expect(direct.status()).toBe(403);
+      expect(direct.status()).toBe(404);
     } finally {
       await memberContext.close();
+    }
+
+    // A 404 on its own is a weak assertion: it is also what a deleted agent or
+    // a mistyped id would return, which is exactly why this test asserted 403
+    // before the status changed. Anchor it — an admin, who bypasses visibility
+    // filtering, must still get the agent. That pins the 404 above to the
+    // access gate rather than to the agent having gone missing.
+    const adminContext = await browser.newContext();
+    try {
+      await apiSignInAsAdmin(adminContext.request);
+      const adminDirect = await adminContext.request.get(`/api/agents/${agentId}`);
+      expect(
+        adminDirect.status(),
+        `Agent ${agentId} must still exist — otherwise the member's 404 proves nothing`
+      ).toBe(200);
+    } finally {
+      await adminContext.close();
     }
   });
 

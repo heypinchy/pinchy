@@ -122,7 +122,7 @@ describe("GET /api/agents/[agentId]", () => {
     expect(body.name).toBe("Test Agent");
   });
 
-  it("returns 403 when non-owner user tries to access personal agent of another user", async () => {
+  it("returns 404 when non-owner user tries to access personal agent of another user", async () => {
     vi.mocked(auth.api.getSession).mockResolvedValueOnce({
       user: { id: "user-2", role: "member" },
       expires: "",
@@ -140,10 +140,14 @@ describe("GET /api/agents/[agentId]", () => {
     const response = await GET(request, {
       params: Promise.resolve({ agentId: "agent-1" }),
     });
-    expect(response.status).toBe(403);
+    // 404, not 403: someone else's personal agent must be indistinguishable
+    // from an id that was never issued. Nobody — admins included — can list
+    // these agents, so a 403 would confirm an existence the caller could not
+    // otherwise establish. See the docblock on getAgentWithAccess.
+    expect(response.status).toBe(404);
 
     const body = await response.json();
-    expect(body.error).toBe("Forbidden");
+    expect(body.error).toBe("Agent not found");
   });
 });
 
@@ -206,7 +210,7 @@ describe("PATCH /api/agents/[agentId]", () => {
     expect(body.name).toBe("New Name");
   });
 
-  it("returns 403 when non-owner user tries to update personal agent of another user", async () => {
+  it("returns 404 when non-owner user tries to update personal agent of another user", async () => {
     vi.mocked(auth.api.getSession).mockResolvedValueOnce({
       user: { id: "user-2", role: "member" },
       expires: "",
@@ -227,10 +231,12 @@ describe("PATCH /api/agents/[agentId]", () => {
     const response = await PATCH(request, {
       params: Promise.resolve({ agentId: "agent-1" }),
     });
-    expect(response.status).toBe(403);
+    // The READ gate runs first and answers 404 — the caller never reaches the
+    // write gate, so they cannot tell "not yours to change" from "no such id".
+    expect(response.status).toBe(404);
 
     const body = await response.json();
-    expect(body.error).toBe("Forbidden");
+    expect(body.error).toBe("Agent not found");
   });
 
   it("returns 404 when agent not found for update", async () => {
@@ -575,10 +581,16 @@ describe("DELETE /api/agents/[agentId]", () => {
     expect(body.error).toBe("Personal agents cannot be deleted");
   });
 
-  it("returns 403 when admin tries to delete another user's personal agent", async () => {
-    // After the security fix: admins cannot access personal agents owned by other users.
-    // The isPersonal privacy check runs before the admin fast-path, so the route
-    // returns 403 (access denied) rather than 400 (personal agents cannot be deleted).
+  it("returns 404 when admin tries to delete another user's personal agent", async () => {
+    // Admins cannot access personal agents owned by other users. The isPersonal
+    // privacy check runs before the admin fast-path, so the route answers on the
+    // access gate rather than with 400 ("personal agents cannot be deleted").
+    //
+    // That answer is 404, and for admins specifically: `getVisibleAgents` keeps
+    // other people's personal agents out of an admin's list too, so an admin
+    // cannot enumerate them either — a 403 would hand even them an existence
+    // oracle. This mirrors DELETE /api/v1/agents/[agentId], which 404s a
+    // personal agent for exactly this reason.
     vi.mocked(auth.api.getSession).mockResolvedValueOnce({
       user: { id: "admin-1", role: "admin" },
       expires: "",
@@ -598,10 +610,10 @@ describe("DELETE /api/agents/[agentId]", () => {
     const response = await DELETE(request, {
       params: Promise.resolve({ agentId: "agent-1" }),
     });
-    expect(response.status).toBe(403);
+    expect(response.status).toBe(404);
 
     const body = await response.json();
-    expect(body.error).toBe("Forbidden");
+    expect(body.error).toBe("Agent not found");
   });
 
   it("returns 404 when agent not found", async () => {

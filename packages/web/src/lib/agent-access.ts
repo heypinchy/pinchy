@@ -115,6 +115,36 @@ export function requireAgentWriteAccess(
   }
 }
 
+/**
+ * Load an agent and gate READ access: returns the agent, or the response the
+ * route should send back.
+ *
+ * **A denied agent answers 404, byte-identical to an agent that does not
+ * exist.** Both paths return the same status and the same body on purpose, so
+ * the answer cannot be read as "this id exists, but not for you".
+ *
+ * The criterion is the one `DELETE /api/v1/agents/[agentId]` already writes
+ * down: a distinguishable error is fine when the caller **can already
+ * enumerate** the resource, and is an oracle when they cannot. Nobody can
+ * enumerate someone else's personal agent — `getVisibleAgents` withholds them
+ * from every caller including admins — so 403-vs-404 here was the oracle case.
+ * Three places in the product had already settled on 404 for this exact
+ * denial: the chat page (`notFound()`), the key-authenticated
+ * `GET /api/v1/agents/[agentId]`, and the FILE layer of the very routes this
+ * helper guards, where `agent-uploads-route.test.ts` spells out "a non-owner
+ * must not even be able to confirm the file exists". The agent above those
+ * files disclosed what they withheld.
+ *
+ * `agents.id` is `crypto.randomUUID()`, so there is no scanning either way —
+ * but that bounds the RATE, not the disclosure. Agent ids travel in shared
+ * links and outlive group membership, so the caller holding one is the
+ * ordinary case, not the exotic one.
+ *
+ * WRITE denial stays 403 (`requireAgentWriteAccess`), and that is the same
+ * rule rather than an exception to it: a caller who reaches the write gate has
+ * already passed this one, so they can see the agent, and "you may not change
+ * it" tells them nothing they did not know.
+ */
 export async function getAgentWithAccess(agentId: string, userId: string, userRole: string) {
   const rows = await db.select().from(activeAgents).where(eq(activeAgents.id, agentId));
   const agent = rows[0];
@@ -136,7 +166,10 @@ export async function getAgentWithAccess(agentId: string, userId: string, userRo
   try {
     assertAgentAccess(agent, userId, userRole, userGroupIds, agentGroupIds, licenseState);
   } catch {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    // Same response as the `!agent` branch above — see the docblock. Keep the
+    // two literals identical; a divergent body re-opens the oracle that equal
+    // statuses close.
+    return NextResponse.json({ error: "Agent not found" }, { status: 404 });
   }
 
   return agent;

@@ -112,7 +112,10 @@ describe("GET /api/agents/[agentId]/files/[filename]", () => {
     expect(data.error).toBe("Unauthorized");
   });
 
-  it("should return 403 when user has no access to agent", async () => {
+  it("forwards the getAgentWithAccess denial verbatim, whatever its status", async () => {
+    // Synthetic 403 sentinel — the helper really denies with 404 (see its
+    // docblock). A status it never emits keeps this distinct from the route's
+    // own 404 paths, so the test proves forwarding rather than coincidence.
     vi.mocked(getAgentWithAccess).mockResolvedValueOnce(
       NextResponse.json({ error: "Forbidden" }, { status: 403 })
     );
@@ -237,7 +240,8 @@ describe("PUT /api/agents/[agentId]/files/[filename]", () => {
     expect(data.error).toBe("Unauthorized");
   });
 
-  it("should return 403 when user has no access to agent", async () => {
+  it("forwards the getAgentWithAccess denial verbatim on write, whatever its status", async () => {
+    // Synthetic 403 sentinel — see the GET case above.
     vi.mocked(getAgentWithAccess).mockResolvedValueOnce(
       NextResponse.json({ error: "Forbidden" }, { status: 403 })
     );

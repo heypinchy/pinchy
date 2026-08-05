@@ -304,7 +304,10 @@ describe("GET /api/agents/[agentId]/workspace-file", () => {
     expect(mockDeferAuditLog).not.toHaveBeenCalled();
   });
 
-  it("returns 403 when the user is not authorized for the agent", async () => {
+  it("forwards the getAgentWithAccess denial verbatim, whatever its status", async () => {
+    // Synthetic 403 sentinel — the helper really denies with 404 (see its
+    // docblock); a status it never emits proves the route forwards rather than
+    // producing an answer of its own.
     mockGetAgentWithAccess.mockResolvedValue(
       NextResponse.json({ error: "Forbidden" }, { status: 403 })
     );

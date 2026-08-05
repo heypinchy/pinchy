@@ -125,7 +125,12 @@ describe("GET /api/agents/[agentId]/artifacts/[filename]", () => {
     expect(res.status).toBe(401);
   });
 
-  it("forwards the getAgentWithAccess denial response verbatim (403 → 403)", async () => {
+  it("forwards the getAgentWithAccess denial response verbatim, whatever its status", async () => {
+    // The 403 below is a SYNTHETIC sentinel: the helper really denies with 404
+    // (see its docblock), and the agent gate now matches the file gate two
+    // tests up. Mocking a status the helper never emits is deliberate — a 404
+    // would collide with the route's own missing-file answer and prove nothing
+    // about forwarding.
     const { NextResponse } = await import("next/server");
     mockGetAgentWithAccess.mockResolvedValue(
       NextResponse.json({ error: "forbidden" }, { status: 403 })

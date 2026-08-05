@@ -213,8 +213,10 @@ describe("POST /api/diagnostics/export (integration)", () => {
     mockSession(intruder);
 
     const response = await POST(makeRequest({ agentId: agent.id }), routeContext());
-    // getAgentWithAccess returns 403 for personal agents owned by someone else.
-    expect(response.status).toBe(403);
+    // getAgentWithAccess answers 404 for personal agents owned by someone else —
+    // the same answer an unknown id gets, so the export route cannot be used to
+    // confirm that a given agent exists. See the docblock on getAgentWithAccess.
+    expect(response.status).toBe(404);
   });
 
   it("writes a diagnostics.exported audit entry on success", async () => {

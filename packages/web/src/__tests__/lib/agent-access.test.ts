@@ -185,13 +185,17 @@ describe("getAgentWithAccess", () => {
     expect((result as NextResponse).status).toBe(404);
   });
 
-  it("returns 403 when user has no access", async () => {
+  it("returns 404 — not 403 — when user has no access, matching the missing-agent answer byte for byte", async () => {
     mockSelectChain([{ id: "a1", ownerId: "other-user", isPersonal: true }]);
 
     const result = await getAgentWithAccess("a1", "user-1", "member");
 
     expect(result).toBeInstanceOf(NextResponse);
-    expect((result as NextResponse).status).toBe(403);
+    expect((result as NextResponse).status).toBe(404);
+    // Status alone is not the contract — a differing body would re-open the
+    // oracle this closes. Someone else's personal agent must be indis-
+    // tinguishable from an id that was never issued.
+    expect(await (result as NextResponse).json()).toEqual({ error: "Agent not found" });
   });
 
   it("returns agent when access is granted", async () => {
@@ -216,7 +220,7 @@ describe("getAgentWithAccess", () => {
     expect(result).toEqual(groupsAgent);
   });
 
-  it("returns 403 when member is NOT in matching group for 'restricted' visibility", async () => {
+  it("returns 404 when member is NOT in matching group for 'restricted' visibility", async () => {
     const groupsAgent = { id: "a1", ownerId: null, isPersonal: false, visibility: "restricted" };
     mockSelectChain([groupsAgent]);
     vi.mocked(getUserGroupIds).mockResolvedValueOnce(["g1"]);
@@ -225,17 +229,17 @@ describe("getAgentWithAccess", () => {
     const result = await getAgentWithAccess("a1", "user-1", "member");
 
     expect(result).toBeInstanceOf(NextResponse);
-    expect((result as NextResponse).status).toBe(403);
+    expect((result as NextResponse).status).toBe(404);
   });
 
-  it("returns 403 for member accessing restricted agent with no groups", async () => {
+  it("returns 404 for member accessing restricted agent with no groups", async () => {
     const adminOnlyAgent = { id: "a1", ownerId: null, isPersonal: false, visibility: "restricted" };
     mockSelectChain([adminOnlyAgent]);
 
     const result = await getAgentWithAccess("a1", "user-1", "member");
 
     expect(result).toBeInstanceOf(NextResponse);
-    expect((result as NextResponse).status).toBe(403);
+    expect((result as NextResponse).status).toBe(404);
   });
 
   it("admin bypasses group checks for 'restricted' visibility", async () => {
@@ -294,7 +298,9 @@ describe("getAgentWithAccess", () => {
     const result = await getAgentWithAccess("a1", "user-1", "member");
 
     expect(result).toBeInstanceOf(NextResponse);
-    expect((result as NextResponse).status).toBe(403);
+    // Denial is a 404 (see the helper's docblock); what this test pins is that
+    // the restriction is still ENFORCED after expiry, not which status says so.
+    expect((result as NextResponse).status).toBe(404);
     expect(getUserGroupIds).toHaveBeenCalled();
   });
 
