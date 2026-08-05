@@ -81,6 +81,44 @@ export function extractComposeVariables(composeSource) {
 }
 
 /**
+ * Every name that appears as a key in any `environment:` block, in either
+ * spelling Compose accepts:
+ *
+ *   - `- NAME=${NAME:-}` — the explicit form, also caught by `COMPOSE_VAR`
+ *   - `- NAME`           — pass-through, which forwards the host value and
+ *                          contains no `${…}` at all
+ *
+ * The second form is why this exists. `assertReadNotForwardedAreAbsent` claims
+ * a caveat cannot outlive the gap it describes, and reading only `${VAR}`
+ * expansions would break that claim on the likelier of the two ways somebody
+ * wires `AUDIT_HMAC_SECRET` up — the exception would stay green while the page
+ * kept telling readers the variable does nothing.
+ *
+ * @param {string} composeSource contents of docker-compose.yml
+ * @returns {Set<string>}
+ */
+export function extractForwardedEnvNames(composeSource) {
+  const names = new Set();
+  let inEnvironment = false;
+  let blockIndent = 0;
+  for (const line of composeSource.split("\n")) {
+    if (!line.trim() || line.trim().startsWith("#")) continue;
+    const indent = line.length - line.trimStart().length;
+    if (inEnvironment && indent <= blockIndent) inEnvironment = false;
+    const header = /^(\s*)environment:\s*$/.exec(line);
+    if (header) {
+      inEnvironment = true;
+      blockIndent = header[1].length;
+      continue;
+    }
+    if (!inEnvironment) continue;
+    const entry = /^\s*-\s*([A-Z_][A-Z0-9_]*)\s*(=|$)/.exec(line);
+    if (entry) names.add(entry[1]);
+  }
+  return names;
+}
+
+/**
  * Variables the reference page documents, with the default it states.
  *
  * Reads the markdown table rows: `| \`NAME\` | \`default\` | description |`.
@@ -189,19 +227,22 @@ export function findWrongDefaults(compose, documented) {
  * should describe it as an ordinary knob and the exception should go.
  *
  * @param {Map<string, unknown>} compose
+ * @param {Set<string>} forwarded names from every `environment:` block
  * @param {Record<string, string>} [readNotForwarded]
  * @returns {string[]} problems (empty = ok)
  */
 export function assertReadNotForwardedAreAbsent(
   compose,
+  forwarded,
   readNotForwarded = READ_NOT_FORWARDED,
 ) {
   const problems = [];
   for (const [name, reason] of Object.entries(readNotForwarded)) {
-    if (compose.has(name)) {
+    if (compose.has(name) || forwarded.has(name)) {
       problems.push(
-        `READ_NOT_FORWARDED lists ${name}, but docker-compose.yml now expands ` +
-          `it. Drop the exception and document it as a normal variable.`,
+        `READ_NOT_FORWARDED lists ${name}, but docker-compose.yml now passes ` +
+          `it through. Drop the exception and document it as a normal variable ` +
+          `— the page still tells readers that setting it does nothing.`,
       );
     }
     if (reason.trim().length < 30) {

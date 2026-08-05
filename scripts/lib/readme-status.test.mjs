@@ -60,6 +60,21 @@ test("extractStatusItems reads the bullets under a heading and stops at the next
   ]);
 });
 
+test("extractStatusItems stops at a deeper heading too", () => {
+  const readme = [
+    "### What works today",
+    "",
+    "- **Setup wizard** — first run",
+    "",
+    "#### Coming later this year",
+    "",
+    "- Plugin marketplace",
+  ].join("\n");
+  assert.deepEqual(extractStatusItems(readme, "What works today"), [
+    "**Setup wizard** — first run",
+  ]);
+});
+
 test("extractStatusItems throws instead of returning an empty list", () => {
   // An empty list makes every check below pass vacuously — the exact way a
   // coverage gate turns into decoration.
@@ -93,6 +108,29 @@ test("findUnmentionedShippedFeatures flags a shipped feature the list omits", ()
   assert.match(problems[0], /Odoo integration/);
   assert.deepEqual(
     findUnmentionedShippedFeatures(["**Odoo** — scoped ERP access"], features),
+    [],
+  );
+});
+
+test("findUnmentionedShippedFeatures does not accept a term split across bullets", () => {
+  // The looseness a joined match would ship: "web" in one bullet and "search"
+  // in another satisfy "web search" while no bullet describes the feature.
+  const features = [
+    {
+      name: "Web search",
+      terms: ["web search"],
+      evidence: "packages/plugins/pinchy-web",
+    },
+  ];
+  assert.equal(
+    findUnmentionedShippedFeatures(
+      ["**Web UI** — chat in the browser", "**Search** — find a conversation"],
+      features,
+    ).length,
+    1,
+  );
+  assert.deepEqual(
+    findUnmentionedShippedFeatures(["**Web search** — via Brave"], features),
     [],
   );
 });

@@ -160,7 +160,10 @@ export function extractStatusItems(readme, heading) {
   }
   const items = [];
   for (const line of lines.slice(start + 1)) {
-    if (/^#{1,3} /.test(line)) break;
+    // Any heading ends the section, including a deeper one: `#### Something`
+    // introduces its own bullets, and counting those as this section's would
+    // let a subsection satisfy a check about the section above it.
+    if (/^#{1,6} /.test(line)) break;
     const bullet = /^\s*[-*]\s+(.*)$/.exec(line);
     if (bullet) items.push(bullet[1].trim());
   }
@@ -178,9 +181,12 @@ export function extractStatusItems(readme, heading) {
  * @returns {string[]} problems (empty = ok)
  */
 export function findUnmentionedShippedFeatures(items, features) {
-  const text = items.join("\n");
+  // Per bullet, never across the joined list. A term's words scattered over two
+  // unrelated bullets — "web" in one, "search" in another — would satisfy a
+  // joined match while nothing in the list describes the feature, which is the
+  // same accept-a-coincidence failure `mentions` refuses at the word level.
   return features
-    .filter((f) => !f.terms.some((t) => mentions(text, t)))
+    .filter((f) => !f.terms.some((t) => items.some((i) => mentions(i, t))))
     .map(
       (f) =>
         `README.md "What works today" never mentions ${f.name}, which shipped ` +

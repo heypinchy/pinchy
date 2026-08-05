@@ -51,19 +51,19 @@ Open the agent's chat, click the gear icon to open **Agent Settings**, and selec
 
 You are looking at an allow-list. Nothing here is on unless you switch it on, and Pinchy deliberately exposes no shell tool and no "read any file" tool at all — those stay unreachable no matter what you check.
 
-For this tutorial, grant exactly one thing beyond the default:
+For this tutorial, change nothing — the point is to see how little is on:
 
 <Steps>
 
-1. Leave **Read workspace** as it is — it is always on. Any text file, PDF, or image a user attaches in chat is readable by the agent.
+1. Confirm **Write files** is enabled. This lets the agent save results into its own `workbench/` and hand you generated files in chat.
 
-2. Confirm **Write files** is enabled. This lets the agent save results into its own `workbench/` and hand you generated files in chat.
+2. Leave everything else **off**. In particular leave the web tools off — we will come back to why.
 
-3. Leave everything else **off**. In particular leave the web tools off — we will come back to why.
-
-4. Click **Save & Restart**. Permission changes need the runtime to restart; the dialog lists what is pending and warns that active chats disconnect briefly.
+3. Click **Save & Restart**. Permission changes need the runtime to restart; the dialog lists what is pending and warns that active chats disconnect briefly.
 
 </Steps>
+
+You will not find a toggle for reading the workspace, and that is deliberate: listing and reading files inside the agent's own workspace is implicit, so any text file, PDF, or image a user attaches in chat is readable without granting anything. [Agent Permissions](/concepts/agent-permissions/) lists it as **Read workspace**, always on.
 
 <Aside type="caution" title="Why the web tools stay off">
   Pinchy warns you if you ever enable **Fetch web pages** on an agent that can

@@ -8,6 +8,7 @@ import {
   assertReadNotForwardedAreAbsent,
   extractComposeVariables,
   extractDocumentedVariables,
+  extractForwardedEnvNames,
   findGhostVariables,
   findUndocumentedVariables,
   findWrongDefaults,
@@ -168,19 +169,60 @@ test("findWrongDefaults rejects a stated default for a required variable", () =>
 test("assertReadNotForwardedAreAbsent flags a caveat that outlived the gap", () => {
   const problems = assertReadNotForwardedAreAbsent(
     new Map([["AUDIT_HMAC_SECRET", {}]]),
+    new Set(),
     {
       AUDIT_HMAC_SECRET:
         "read by the app, absent from the compose environment block",
     },
   );
   assert.equal(problems.length, 1);
-  assert.match(problems[0], /now expands/);
+  assert.match(problems[0], /now passes it through/);
+});
+
+test("assertReadNotForwardedAreAbsent sees the bare pass-through form too", () => {
+  // `- AUDIT_HMAC_SECRET` forwards the host value and contains no `${…}`, so a
+  // check reading only expansions would keep the caveat alive after the fix.
+  const problems = assertReadNotForwardedAreAbsent(
+    new Map(),
+    new Set(["AUDIT_HMAC_SECRET"]),
+    {
+      AUDIT_HMAC_SECRET:
+        "read by the app, absent from the compose environment block",
+    },
+  );
+  assert.equal(problems.length, 1);
+  assert.match(problems[0], /now passes it through/);
 });
 
 test("assertReadNotForwardedAreAbsent wants a real reason", () => {
-  const problems = assertReadNotForwardedAreAbsent(new Map(), { X: "because" });
+  const problems = assertReadNotForwardedAreAbsent(new Map(), new Set(), {
+    X: "because",
+  });
   assert.equal(problems.length, 1);
   assert.match(problems[0], /real reason/);
+});
+
+test("extractForwardedEnvNames reads both spellings, and only environment blocks", () => {
+  const names = extractForwardedEnvNames(
+    [
+      "services:",
+      "  pinchy:",
+      "    image: pinchy:${PINCHY_VERSION}",
+      "    environment:",
+      "      - ENCRYPTION_KEY=${ENCRYPTION_KEY:-}",
+      "      - AUDIT_HMAC_SECRET",
+      "    volumes:",
+      "      - NOT_AN_ENV_VAR:/data",
+      "  db:",
+      "    environment:",
+      "      - POSTGRES_DB=pinchy",
+    ].join("\n"),
+  );
+  assert.deepEqual([...names].sort(), [
+    "AUDIT_HMAC_SECRET",
+    "ENCRYPTION_KEY",
+    "POSTGRES_DB",
+  ]);
 });
 
 // ── the repo itself ───────────────────────────────────────────────────────
@@ -206,8 +248,13 @@ test("every default the reference states is the one compose falls back to", () =
 });
 
 test("every READ_NOT_FORWARDED entry is still un-forwarded, with a reason", () => {
+  const forwarded = extractForwardedEnvNames(readFileSync(COMPOSE, "utf8"));
+  assert.ok(
+    forwarded.has("ENCRYPTION_KEY"),
+    "environment blocks did not parse — this check would pass vacuously",
+  );
   assert.deepEqual(
-    assertReadNotForwardedAreAbsent(compose(), READ_NOT_FORWARDED),
+    assertReadNotForwardedAreAbsent(compose(), forwarded, READ_NOT_FORWARDED),
     [],
   );
 });
