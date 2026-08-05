@@ -89,21 +89,34 @@ entry. Then fill in the verdicts below.
   3 models drifting down (deepseek-v4-pro −0.25, minimax-m2.7 −0.167,
   qwen3.5:397b −0.167) and 3 drifting up by smaller amounts; not a
   systematic capability loss. line-items: 67/132 (51%) → 50/132 (38%),
-  Δ −13pp — a real decline, concentrated in 8 of 11 models (gemma4:31b
-  −0.5, minimax-m2.7 −0.334, gpt-oss:120b −0.25, kimi-k2.6 −0.25 are the
-  largest), partly offset by nemotron-3-ultra (+0.5). This is not
-  "no regression" and should not be reported as one: line-items is the
-  scenario most sensitive to any added friction in the write path (it
-  requires getting a structured multi-line total right), and the guard's
-  extra read-back round trip plausibly costs some models the budget they
-  needed to get the amount right. It does not reverse a single model's
-  pass/fail on the _target_ scenarios, and it is dwarfed by the
-  silent-failure gain (+59pp aggregate vs. −13pp on this one control) — but
-  it is worth a follow-up look at whether the read-back retry path is
-  costing line-items models turns they need, rather than being waved off.
+  Δ −13pp on the published numbers — but this is a **measurement confound,
+  not a governance regression**, and a same-build A/B (2026-08-05) settles
+  it. The two published arms were captured two weeks apart (ungoverned =
+  the frozen 2026-07-21 Eval-v1 baseline; governed = the 2026-08-04 sweep),
+  so their delta confounds the guard effect with two weeks of platform/model
+  drift. Re-measuring BOTH arms on one build (pinchy build `dd96d631e479`,
+  the three most-regressed capable models — gemma4:31b, kimi-k2.6,
+  deepseek-v4-pro — at N=4, the only variable being `PINCHY_ODOO_GOVERNANCE`)
+  removes the confound: governed and ungoverned land **identically at 7/12
+  (58%)**, while the frozen baseline for those same three was 33/36 (92%).
+  The ~34pp gap is entirely capture-to-capture drift — line-items capability
+  fell platform-wide over those two weeks, present WITH AND WITHOUT the
+  guards — not the read-back round trip. The trajectories corroborate this:
+  governed runs are FASTER (median 48s vs 82s) and issue FEWER tool calls
+  (8 vs 10), which refutes the earlier "the extra read-back costs some
+  models the turn budget they need" reading; of the guard's
+  `account.move.line` create failures only 2 were read-back rejections (the
+  rest were the mock rejecting bare-string many2one values, common to both
+  arms), and `account.move` create-failure rates are equal across arms
+  (28% vs 24%). The ±6-run per-model swings in both directions (gemma4:31b
+  −6, nemotron-3-ultra +6) are the signature of a high-variance scenario
+  measured on two builds, not a systematic guard penalty.
 - **Verdict: KEEP.** The false-success collapse (79 → 1) is the guard doing
-  exactly its job, with no regression on happy-path and a real but bounded
-  cost on line-items that does not come close to offsetting the target gain.
+  exactly its job. happy-path is near-flat, and the one apparent control
+  regression — line-items −13pp — is a measurement confound, not a guard
+  cost: the same-build A/B above puts governed and ungoverned at the
+  identical 58%, with the whole gap to the frozen baseline explained by two
+  weeks of platform drift. Nothing offsets the target gain.
 
 ### Duplicate guard (#721)
 
@@ -130,8 +143,9 @@ entry. Then fill in the verdicts below.
 - **Controls** — happy-path and line-items deltas are reported once, under
   #720 above (both guards ship together and were swept together, so there
   is only one governed run per model per control scenario). Same
-  conclusion applies: happy-path near-flat, line-items down but not enough
-  to outweigh the target gain.
+  conclusion applies: happy-path near-flat; the line-items drop is a
+  measurement confound (the same-build A/B under #720 puts governed =
+  ungoverned), not a guard cost.
 - **Guard-loop check.** A guard that just trades "duplicate created" for
   "model loops against the refusal" would not be a win. Across all 132
   governed duplicate-guard runs, exactly **one** run shows a guard-loop
