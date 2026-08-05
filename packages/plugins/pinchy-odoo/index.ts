@@ -2174,9 +2174,22 @@ function clampOptionalLimit(limit: unknown): number | undefined {
 export const ODOO_READ_RESULT_BUDGET_CHARS = 30000;
 
 /**
- * How many `{id, label}` pairs a delete lists in its audit detail. A reader
- * drilling into a bulk delete wants to recognize what went, not to scroll a
- * hundred names — the exact set is `count` plus the tool params.
+ * How many `{id, label}` pairs a delete lists in its audit detail.
+ *
+ * Read this together with what the audit route does: curated details suppress
+ * `detail.params` (`curatesNonErrorFields` in `api/internal/audit/tool-use`),
+ * so this list plus `count` IS the audit row's record of the delete — the
+ * `targets` the tool was called with are not kept beside it. That is the right
+ * trade (the refs are opaque tokens; a name is what a reader can act on), but
+ * it means the cap is a real limit and not a display preference: a delete of
+ * more than this many records leaves Pinchy knowing how many went and naming
+ * the first {@link ODOO_DELETE_DETAIL_LABEL_CAP}, with `deletedTruncated`
+ * saying so out loud.
+ *
+ * Raising it does not fix that — {@link ODOO_DELETE_DETAIL_BUDGET_BYTES} binds
+ * first, and AGENTS.md's 2048-byte detail rule is what that budget serves
+ * ("Summarize bulk operations"). The full set lives in the tool result the
+ * model receives, which is complete by construction.
  */
 export const ODOO_DELETE_DETAIL_LABEL_CAP = 20;
 
@@ -2196,6 +2209,29 @@ export const ODOO_DELETE_DETAIL_BUDGET_BYTES = 1400;
 
 /** Per-label clip, so one pathological display_name cannot crowd out the rest. */
 const DELETE_LABEL_MAX_CHARS = 120;
+
+/**
+ * Clip a label to {@link DELETE_LABEL_MAX_CHARS} **code points**, not UTF-16
+ * units.
+ *
+ * `String.prototype.slice` counts units, so a boundary landing inside a
+ * surrogate pair — an emoji in a `res.partner.category` name is the everyday
+ * case — leaves a lone high surrogate. `JSON.stringify` faithfully encodes it
+ * as `\ud83d`, and Postgres then refuses the whole row:
+ *
+ *   ERROR: invalid input syntax for type json
+ *   DETAIL: Unicode low surrogate must follow a high surrogate.
+ *
+ * `audit_log.detail` is `jsonb`, so that is a failed INSERT for a delete that
+ * has already happened — the exact evidence-loss this detail exists to
+ * prevent, caused by the code meant to prevent it. Iterating the string yields
+ * whole code points.
+ */
+function clipDeleteLabel(label: string): string {
+  const points = Array.from(label);
+  if (points.length <= DELETE_LABEL_MAX_CHARS) return label;
+  return `${points.slice(0, DELETE_LABEL_MAX_CHARS - 1).join("")}…`;
+}
 
 function deleteDetailShape(
   model: string,
@@ -2225,11 +2261,7 @@ export function buildDeleteAuditDetail(
 ): Record<string, unknown> {
   const shown: Array<{ id: number; label: string }> = [];
   for (const entry of deleted.slice(0, ODOO_DELETE_DETAIL_LABEL_CAP)) {
-    const label =
-      entry.label.length > DELETE_LABEL_MAX_CHARS
-        ? `${entry.label.slice(0, DELETE_LABEL_MAX_CHARS - 1)}…`
-        : entry.label;
-    const candidate = [...shown, { id: entry.id, label }];
+    const candidate = [...shown, { id: entry.id, label: clipDeleteLabel(entry.label) }];
     const size = Buffer.byteLength(
       JSON.stringify(deleteDetailShape(model, deleted.length, candidate)),
       "utf8"
@@ -2830,9 +2862,11 @@ const plugin = {
      * read and AGENTS.md requires a delete's audit detail to name what it
      * deleted ("deleted rows may no longer be queryable").
      *
-     * Best-effort on purpose. The caller already holds a signed label per
-     * target (every `_pinchy_ref` carries the display name of the read that
-     * minted it), so a missing entry degrades to that instead of to nothing.
+     * Best-effort on purpose, and called with only the ids the detail can show.
+     * The caller already holds a signed label per target (every `_pinchy_ref`
+     * carries the display name of the read that minted it), so an id this never
+     * reaches — or one the read did not return — degrades to that, not to
+     * nothing.
      * Turning a failed name lookup into a failed delete would invent a new way
      * for the user's actual request to fail, and would do it over a forensic
      * nicety — so an agent granted delete but not read still deletes, with the
@@ -4852,7 +4886,16 @@ const plugin = {
               const ids = [...labelByRef.keys()];
 
               // Names first — after the unlink there is nothing left to read.
-              const freshLabels = await readDeleteLabels(agentId, config, model, ids);
+              // Only the ids the audit detail can actually show are worth a
+              // round trip: everything past the cap falls back to the ref's own
+              // label anyway, so reading 500 names to print 20 would be pure
+              // payload.
+              const freshLabels = await readDeleteLabels(
+                agentId,
+                config,
+                model,
+                ids.slice(0, ODOO_DELETE_DETAIL_LABEL_CAP)
+              );
 
               const success = await withAuthRetry(agentId, config, (client) =>
                 client.unlink(model, ids)
@@ -4862,16 +4905,39 @@ const plugin = {
                 id,
                 label: freshLabels.get(id) ?? labelByRef.get(id) ?? `${model}#${id}`,
               }));
+
+              // A falsy `unlink` must not be reported as a delete. Odoo returns
+              // True or raises, so this is the defensive edge — but the shape it
+              // guards against is the one this repo has been bitten by before
+              // (#404, the false-success incident): an outcome=success audit row
+              // whose detail names records as deleted that are still there.
+              // errorResult keeps `details` to `{error}` only, so the route
+              // retains the params and forensics can see what was attempted.
+              if (!success) {
+                return errorResult(
+                  new Error(
+                    `Odoo did not confirm the delete of ${deleted.length} ${model} record(s) ` +
+                      `(unlink returned ${JSON.stringify(success)}). Nothing is recorded as ` +
+                      `deleted; re-read the records to see what is still there.`
+                  ),
+                  { operation: "delete", model }
+                );
+              }
+
               const details = buildDeleteAuditDetail(model, deleted);
 
               return {
                 content: [
                   {
                     type: "text",
+                    // The FULL list, not the audit detail's capped one. The
+                    // budget that caps `details` is the audit row's, and handing
+                    // the model a silently shortened list is how it ends up
+                    // telling the user it deleted twenty when it deleted forty.
                     text: JSON.stringify({
                       success,
                       count: deleted.length,
-                      deleted: details.deleted,
+                      deleted,
                     }),
                   },
                 ],

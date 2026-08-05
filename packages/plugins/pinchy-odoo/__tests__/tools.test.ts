@@ -3424,6 +3424,26 @@ describe("buildDeleteAuditDetail (pinchy#1078)", () => {
     expect(deleted[0].label.endsWith("…")).toBe(true);
     expect(detail.deletedTruncated).toBeUndefined();
   });
+
+  // A UTF-16 slice can cut a surrogate pair in half. JSON.stringify then emits a
+  // lone `\ud83d`, and audit_log.detail is jsonb — Postgres rejects the row with
+  // "Unicode low surrogate must follow a high surrogate", so the delete happens
+  // and its audit entry does not. An emoji in a res.partner.category name is the
+  // everyday way to land on that boundary.
+  it("clips on a code-point boundary so the detail stays valid JSON for jsonb", () => {
+    // The 120-char clip keeps 119 code points, so put the emoji exactly there.
+    const label = `${"x".repeat(118)}😀${"y".repeat(50)}`;
+    const detail = buildDeleteAuditDetail("res.partner.category", [{ id: 1, label }]);
+
+    const json = JSON.stringify(detail);
+    expect(json).not.toMatch(/\\ud[89ab][0-9a-f]{2}/i);
+    // Round-tripping is what Postgres does; a lone surrogate survives it, so
+    // assert on the code units directly as well.
+    const clipped = (detail.deleted as Array<{ label: string }>)[0].label;
+    for (const unit of [...clipped].map((c) => c.codePointAt(0)!)) {
+      expect(unit >= 0xd800 && unit <= 0xdfff).toBe(false);
+    }
+  });
 });
 
 // pinchy#1078: odoo_delete is the most destructive tool in the plugin and was
@@ -3630,6 +3650,65 @@ describe("odoo_delete", () => {
     expect(details.deleted).toHaveLength(ODOO_DELETE_DETAIL_LABEL_CAP);
     expect(details.deletedTruncated).toBe(40 - ODOO_DELETE_DETAIL_LABEL_CAP);
     expect(JSON.stringify(details).length).toBeLessThan(2048);
+
+    // Only the audit ROW is capped. The tool result the model reads is the full
+    // set — a shortened list here is how an agent ends up telling the user it
+    // deleted twenty when it deleted forty.
+    const data = JSON.parse(result.content[0].text);
+    expect(data.count).toBe(40);
+    expect(data.deleted).toHaveLength(40);
+    expect(data.deleted.at(-1)).toEqual({ id: 40, label: "Partner 40" });
+
+    // And the name read is scoped to what the detail can print: reading 40
+    // display names to log 20 is payload nobody sees.
+    expect(mockSearchRead).toHaveBeenCalledTimes(1);
+    expect(mockSearchRead.mock.calls[0][1]).toEqual([
+      ["id", "in", ids.slice(0, ODOO_DELETE_DETAIL_LABEL_CAP)],
+    ]);
+  });
+
+  // The plugin comment claims an agent granted delete but not read still
+  // deletes, falling back to the ref's signed label. Nothing proved it, and the
+  // fallback is what keeps a forensic nicety from inventing a new way for the
+  // user's actual request to fail.
+  it("still deletes when the agent has delete but not read on the model", async () => {
+    const deleteOnly = {
+      ...agentConfig,
+      permissions: { ...testPermissions, "res.partner": ["delete"] },
+    };
+
+    const result = await deleteTool(deleteOnly).execute("call-13", {
+      model: "res.partner",
+      targets: [partnerRef(5, "Müller GmbH")],
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(mockUnlink).toHaveBeenCalledWith("res.partner", [5]);
+    expect(mockSearchRead).not.toHaveBeenCalled();
+    expect(result.details).toEqual({
+      model: "res.partner",
+      count: 1,
+      deleted: [{ id: 5, label: "Müller GmbH" }],
+    });
+  });
+
+  // #404 / the 2026-06-25 false-success incident: the shape to refuse is an
+  // outcome=success audit row whose detail names records as deleted that are
+  // still in Odoo. Real Odoo returns True or raises, so this is the edge — but
+  // it is the edge that produces a lie rather than an error.
+  it("reports a failure when Odoo does not confirm the unlink", async () => {
+    mockUnlink.mockResolvedValue(false);
+
+    const result = await deleteTool().execute("call-14", {
+      model: "res.partner",
+      targets: [partnerRef(5, "Müller GmbH")],
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/did not confirm the delete/i);
+    // errorResult curates `{error}` only, which is what keeps the audit route
+    // from suppressing params — forensics need to see what was attempted.
+    expect(Object.keys(result.details as Record<string, unknown>)).toEqual(["error"]);
   });
 
   it("denies delete on a model without delete permission before decoding anything", async () => {
