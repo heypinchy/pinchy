@@ -206,9 +206,9 @@ If any one layer fails, the others still prevent unauthorized access.
 
 Not every user can see every agent. Pinchy enforces access rules:
 
-- **Admins** can access all agents — personal and shared
-- **Users** can access shared agents (created by anyone) and their own personal agent
-- Users **cannot** see or access other users' personal agents
+- **Admins** can access every shared agent, of any visibility, plus their own personal agent
+- **Users** can access shared agents their visibility admits them to, plus their own personal agent
+- **Nobody** can see or access another user's personal agent — admins included. It is absent from the sidebar and its ID answers "not found" everywhere, including the admin-only management endpoints that reindex an agent's knowledge base, set its integration permissions, or connect a Telegram bot to it
 
 Only admins can view and modify the Permissions tab. Regular users can chat with agents they have access to, but cannot change what tools those agents use.
 
