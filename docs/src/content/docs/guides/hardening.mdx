@@ -292,7 +292,7 @@ The `/sign-in/*` and `/sign-up/*` wildcard entries cover any future sub-path (OA
 
 - **IP rotation defeats per-IP limits.** A residential-proxy pool can sidestep these thresholds. We don't ship per-account lockout yet — a planned brute-force lockout will trigger on N consecutive `auth.failed` audit events for the same email.
 - **Storage is in-memory.** Counters reset on container restart and are not shared across replicas. For single-replica self-hosted deployments this is acceptable; for multi-replica deployments switch to a shared store (Redis) — not currently exposed as a config option, file an issue if you need this.
-- **Trust the X-Forwarded-For header from your reverse proxy only.** Better Auth derives the client IP from headers. If your reverse proxy does not set `X-Forwarded-For` to the real client IP — or worse, blindly trusts the header from the client — rate limiting can be bypassed. The reverse-proxy snippets earlier in this guide are configured correctly.
+- **The limits are only as good as your proxy's `X-Forwarded-For`.** Pinchy reads the **last** hop in that header — the one your proxy appended, which the sender had no say in — so a visitor who sends their own `X-Forwarded-For` gains nothing. That holds as long as your proxy _appends_ the address it saw; a proxy that forwards the visitor's header untouched hands Pinchy an address the visitor chose, and the limit follows it. The reverse-proxy snippets earlier in this guide are configured correctly. If a second proxy sits in front of yours — Cloudflare, a load balancer — name its addresses in [`PINCHY_TRUSTED_PROXIES`](/reference/environment-variables/#pinchy_trusted_proxies), or every visitor arriving through it shares one bucket.
 
 ### Customizing the thresholds
 
@@ -344,7 +344,7 @@ If your deployment chains multiple reverse proxies, `X-Forwarded-Host` may arriv
 
 ### Auditing CSRF probes
 
-Blocked requests appear in the audit log as `auth.csrf_blocked` with `outcome: failure`. The `detail` payload captures `method`, `pathname`, `origin`, `referer`, and the offending `remoteAddress`, so probes show up in the audit log alongside failed logins. Use the audit dashboard (or `GET /api/audit?eventType=auth.csrf_blocked`) to review them.
+Blocked requests appear in the audit log as `auth.csrf_blocked` with `outcome: failure`. The `detail` payload captures `method`, `pathname`, `origin`, `referer`, and two addresses — `remoteAddress`, the machine that opened the connection (your proxy), and `clientAddress`, who actually sent the request. See [the two address fields](/concepts/audit-trail/#the-two-address-fields). Probes show up in the audit log alongside failed logins. Use the audit dashboard (or `GET /api/audit?eventType=auth.csrf_blocked`) to review them.
 
 Like `auth.host_blocked`, this event is throttled to one row per minute: nobody needs a credential to trigger it, and every audit row is written under a single instance-wide lock, so an unbounded stream would stall genuine audit writes behind it and bury the one rejection worth reading. When a row stands in for others, `suppressedSinceLastEntry` reports how many.
 

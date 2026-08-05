@@ -304,6 +304,27 @@ A bug report filed from inside Pinchy used to carry the server's recent log line
 
 Nothing to configure. A member's bug report now says the logs were left out and asks them to forward it to you rather than to run anything on the host. When one reaches you, `docker compose logs pinchy --tail 200` gives you the same lines — unredacted, so read them there before deciding what goes into a public issue.
 
+#### Pinchy now works out which address a request came from
+
+Pinchy sits behind your reverse proxy, so the address it can see on the socket is the proxy's, not the visitor's. Three things were reading it anyway: the sign-in brute-force throttle, the WebSocket connection limit, and the `auth.csrf_blocked` / `auth.host_blocked` entries in the audit trail. The throttle could be sidestepped by sending a made-up `X-Forwarded-For` header, the connection limit counted every user on the instance as one, and the audit entries recorded the same address every time — the proxy's.
+
+All three now read one answer, worked out from the last hop your proxy added to `X-Forwarded-For`, which is the one hop a visitor cannot choose for themselves.
+
+For most installs there is nothing to do: one reverse proxy in front of Pinchy is what this expects. Two things are worth a look.
+
+**Your proxy must add the visitor's address to `X-Forwarded-For`.** nginx does this with `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`, Caddy and Traefik do it by default. A proxy that passes the visitor's own header through untouched hands Pinchy an address the visitor chose, and the throttle is only as trustworthy as that header.
+
+**More than one hop needs one setting.** If something else sits in front of your proxy — Cloudflare, a load balancer, a second nginx — name its addresses so Pinchy walks past them to the visitor:
+
+```bash
+# in /opt/pinchy/.env
+PINCHY_TRUSTED_PROXIES=10.0.0.0/8,173.245.48.0/20
+```
+
+Comma-separated addresses or CIDR ranges; loopback is trusted already. Leave it unset and sign-ins from behind that extra hop share one throttle bucket, keyed to the hop's own address — annoying rather than dangerous, but worth avoiding. See [Environment variables](/reference/environment-variables/#pinchy_trusted_proxies).
+
+Blocked-request entries in the audit trail now carry `clientAddress` beside `remoteAddress`. `remoteAddress` still means what it always did — the machine that opened the connection, i.e. your proxy — and `clientAddressSource` tells you whether the client address came from the forwarded header (`forwarded`) or is just the connection's own peer because nothing forwarded one (`socket`).
+
 ### Database migrations
 
 Nine migrations (`0056`–`0064`) run automatically on startup — no manual steps. Only `0056` is destructive, and only for the Knowledge Base tables (see the breaking change above); the rest are additive.

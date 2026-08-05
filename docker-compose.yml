@@ -16,6 +16,10 @@ services:
       # reads from the same volume) rather than as tampered.
       - AUDIT_HMAC_SECRET=${AUDIT_HMAC_SECRET:-}
       - PINCHY_ENTERPRISE_KEY=${PINCHY_ENTERPRISE_KEY:-}
+      # Extra reverse-proxy hops in front of the one Pinchy talks to, so it can
+      # walk past them to the visitor's own address. Empty is the normal case:
+      # loopback is trusted anyway, which is all a single proxy needs.
+      - PINCHY_TRUSTED_PROXIES=${PINCHY_TRUSTED_PROXIES:-}
     volumes:
       - openclaw-config:/openclaw-config
       - openclaw-secrets:/openclaw-secrets

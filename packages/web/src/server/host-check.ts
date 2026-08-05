@@ -4,6 +4,7 @@ import { getCachedDomain, normalizeHost } from "@/lib/domain-cache";
 import { appendAuditLog, safeAuditPath } from "@/lib/audit";
 import { publicHopOf, readRequestHost } from "@/server/forwarded-host";
 import { createAuditFloodWindow } from "@/server/audit-flood-window";
+import { clientAddressDetail, type ResolvedClientIp } from "@/server/client-ip";
 
 // Paths that bypass the domain-lock host check. Health/status endpoints must
 // remain accessible for monitoring/setup.
@@ -126,7 +127,8 @@ ${safeDomain ? `<p><a href="https://${safeDomain}">Go to ${safeDomain} →</a></
  */
 export async function applyDomainLockGate(
   req: IncomingMessage,
-  res: ServerResponse
+  res: ServerResponse,
+  client: ResolvedClientIp
 ): Promise<boolean> {
   const { pathname } = parse(req.url ?? "/", false);
   const host = readRequestHost(req.headers);
@@ -142,6 +144,7 @@ export async function applyDomainLockGate(
       host,
       lockedDomain: getCachedDomain(),
       remoteAddress: req.socket?.remoteAddress,
+      client,
     });
   }
 
@@ -192,6 +195,7 @@ export async function logHostBlocked(input: {
   host: string | undefined;
   lockedDomain: string | null;
   remoteAddress: string | undefined;
+  client: ResolvedClientIp;
 }): Promise<void> {
   const slot = hostBlockWindow.claim(Date.now());
   if (!slot.write) return;
@@ -214,6 +218,7 @@ export async function logHostBlocked(input: {
         host: input.host ? safeAuditPath(input.host) : null,
         lockedDomain: input.lockedDomain,
         remoteAddress: input.remoteAddress ?? null,
+        ...clientAddressDetail(input.client),
         ...(slot.suppressed > 0 ? { suppressedSinceLastEntry: slot.suppressed } : {}),
       },
     });

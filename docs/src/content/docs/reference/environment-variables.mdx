@@ -26,9 +26,10 @@ Pinning is deliberate: an unpinned stack silently changes under you on the next 
 
 ## Network
 
-| Variable      | Default          | What it does                                                                                |
-| ------------- | ---------------- | ------------------------------------------------------------------------------------------- |
-| `PINCHY_PORT` | `127.0.0.1:7777` | Where the web UI binds **on the host**. Pinchy always listens on 7777 inside the container. |
+| Variable                 | Default          | What it does                                                                                |
+| ------------------------ | ---------------- | ------------------------------------------------------------------------------------------- |
+| `PINCHY_PORT`            | `127.0.0.1:7777` | Where the web UI binds **on the host**. Pinchy always listens on 7777 inside the container. |
+| `PINCHY_TRUSTED_PROXIES` | loopback         | Proxy hops to look past when working out a visitor's address. See below.                    |
 
 Accepted forms are `HOST_PORT` (`3000`) or `HOST_IP:HOST_PORT` (`0.0.0.0:80`). Do not append the container port — Compose does that.
 
@@ -43,6 +44,27 @@ PINCHY_PORT=0.0.0.0:80
 ```
 
 For a public deployment, read [VPS Deployment](/guides/vps-deployment/) and [HTTPS & Domain Lock](/guides/domain-lock/) before widening this.
+
+### PINCHY_TRUSTED_PROXIES
+
+Behind a reverse proxy, every request reaches Pinchy from the proxy — so the address on the connection is the proxy's, and the visitor's own address only exists in the `X-Forwarded-For` header. Pinchy uses that header to key the sign-in brute-force throttle, the WebSocket connection limit, and the `clientAddress` field on blocked-request entries in the [audit trail](/concepts/audit-trail/).
+
+A visitor can put anything in that header themselves, so Pinchy reads the **last** hop — the one your proxy appended, which the visitor had no say in. That works out of the box for the usual setup: one reverse proxy, directly in front of Pinchy.
+
+Set this variable when something else sits in front of that proxy — Cloudflare, a load balancer, a second nginx — and name its addresses, so Pinchy walks past those hops too:
+
+```bash
+PINCHY_TRUSTED_PROXIES=10.0.0.0/8,173.245.48.0/20
+```
+
+Comma-separated, each entry an IP address or a CIDR range. Loopback (`127.0.0.0/8`, `::1`) is trusted whether or not you set this. An entry that is neither an address nor a range is ignored, with a warning at startup naming it.
+
+Two things worth knowing:
+
+- **Your proxy has to add the visitor's address.** nginx does it with `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`; Caddy and Traefik do it by default. A proxy that forwards the visitor's own header untouched hands Pinchy an address the visitor picked, and the sign-in throttle is only as trustworthy as that header.
+- **Do not list your whole private network.** On a company LAN the visitor's real address _is_ a `10.x` or `192.168.x` one. Trusting the entire range makes Pinchy walk past the visitor too, and land on whatever hop they wrote in front of it. List the proxies, not the network they live in.
+
+If a hop is left untrusted, sign-ins arriving through it share one throttle bucket keyed to that hop — a nuisance rather than a hole, since the address is still one nobody can forge.
 
 ## Secrets
 

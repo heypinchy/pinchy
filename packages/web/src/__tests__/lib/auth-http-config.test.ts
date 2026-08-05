@@ -175,4 +175,45 @@ describe("Auth HTTP/HTTPS configuration", () => {
       });
     });
   });
+
+  // #825. These assert the address Better Auth actually derives, through its
+  // own `getIp`, rather than that a config field is set — the config is only
+  // interesting because it decides which bucket a sign-in attempt lands in.
+  describe("sign-in throttle bucketing", () => {
+    beforeEach(() => {
+      delete process.env.PINCHY_TRUSTED_PROXIES;
+    });
+
+    async function resolve(headers: Record<string, string>): Promise<string | null> {
+      const { getIp } = await import("@better-auth/core/utils/ip");
+      const mod = await import("@/lib/auth");
+      return getIp(new Headers(headers), mod.auth.options);
+    }
+
+    it("prefers the address the HTTP server already resolved", async () => {
+      // server.ts can see the socket; Better Auth cannot. Its answer wins, and
+      // it is the one the WS limiter and the audit rows carry too.
+      const ip = await resolve({
+        "x-pinchy-client-ip": "203.0.113.42",
+        "x-forwarded-for": "198.51.100.7",
+      });
+      expect(ip).toBe("203.0.113.42");
+    });
+
+    it("ignores a hop the sender chose, left of the one the proxy appended", async () => {
+      // The bypass: an attacker prepends X-Forwarded-For, and unconfigured
+      // Better Auth either trusts it outright (single value) or gives up and
+      // buckets everyone together (two values). Neither throttles the attacker.
+      expect(await resolve({ "x-forwarded-for": "1.2.3.4, 203.0.113.42" })).toBe("203.0.113.42");
+    });
+
+    it("keeps a private client address, which a broader trust list would strip", async () => {
+      expect(await resolve({ "x-forwarded-for": "1.2.3.4, 192.168.1.50" })).toBe("192.168.1.50");
+    });
+
+    it("walks past the operator's own inner proxy when it is configured", async () => {
+      process.env.PINCHY_TRUSTED_PROXIES = "10.0.0.0/8";
+      expect(await resolve({ "x-forwarded-for": "203.0.113.42, 10.0.0.5" })).toBe("203.0.113.42");
+    });
+  });
 });

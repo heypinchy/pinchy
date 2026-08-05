@@ -31,14 +31,19 @@ describe("server.ts request gates", () => {
     ["domain lock", "applyDomainLockGate", "src/server/host-check.ts"],
     ["CSRF", "applyCsrfGate", "src/server/csrf-check.ts"],
   ])("invokes the %s gate and returns on a block", (_label, fn, module) => {
+    // Matched on the `(req, res` prefix rather than the whole argument list:
+    // the gates take a third argument since #825 and may take a fourth, and a
+    // tripwire that has to be edited for every added parameter invites being
+    // loosened in a hurry. The prefix still pins what this file is about — the
+    // call is present, on the request, in the handler.
     expect(
-      source.includes(`await ${fn}(req, res)`),
-      `server.ts does not await ${fn}(req, res). Every request must pass this gate before ` +
+      source.includes(`await ${fn}(req, res`),
+      `server.ts does not await ${fn}(req, res, …). Every request must pass this gate before ` +
         `Next handles it — ${module} passing its own tests says nothing if nothing calls it.`
     ).toBe(true);
 
     expect(
-      new RegExp(`if\\s*\\(await ${fn}\\(req, res\\)\\)\\s*return`).test(source),
+      new RegExp(`if\\s*\\(await ${fn}\\(req, res[^)]*\\)\\)\\s*return`).test(source),
       `server.ts calls ${fn} but does not return on a block. Both gates answer the request ` +
         `themselves and return true; ignoring that lets a rejected request reach Next anyway.`
     ).toBe(true);
@@ -48,11 +53,30 @@ describe("server.ts request gates", () => {
     // Domain lock first: "is this request addressed to us?" is a cheaper and
     // more fundamental question than "did it come from us?", and answering
     // them the other way round reports a foreign host as a CSRF failure.
-    const lock = source.indexOf("await applyDomainLockGate(req, res)");
-    const csrf = source.indexOf("await applyCsrfGate(req, res)");
+    const lock = source.indexOf("await applyDomainLockGate(req, res");
+    const csrf = source.indexOf("await applyCsrfGate(req, res");
 
     expect(lock).toBeGreaterThan(-1);
     expect(csrf).toBeGreaterThan(lock);
+  });
+
+  // #825. Same failure shape as the gates above, one step earlier: the stamp
+  // is a single line, deleting it leaves client-ip.test.ts entirely green, and
+  // the damage is silent — Better Auth falls back to reading `x-forwarded-for`
+  // itself, so the sign-in throttle keeps working while being spoofable again.
+  // It has to run BEFORE the gates, because it also strips a client-supplied
+  // copy of the internal header and the gates' audit rows read its result.
+  it("resolves the client address before the gates run", () => {
+    const stamp = source.indexOf("stampClientIp(req.headers");
+    const lock = source.indexOf("await applyDomainLockGate(req, res");
+
+    expect(
+      stamp,
+      "server.ts does not call stampClientIp(req.headers, …). Without it the address the " +
+        "sign-in throttle buckets by is whatever the sender put in X-Forwarded-For, and the " +
+        "blocked-request audit rows record the proxy instead of the client."
+    ).toBeGreaterThan(-1);
+    expect(stamp).toBeLessThan(lock);
   });
 });
 

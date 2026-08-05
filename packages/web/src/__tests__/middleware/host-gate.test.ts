@@ -12,8 +12,12 @@ vi.mock("@/lib/domain-cache", async (importOriginal) => {
 });
 
 import { applyDomainLockGate, resetHostBlockWindow } from "@/server/host-check";
+import type { ResolvedClientIp } from "@/server/client-ip";
 import { appendAuditLog } from "@/lib/audit";
 import { getCachedDomain } from "@/lib/domain-cache";
+
+/** server.ts resolves this before the gate runs; the gate only passes it on. */
+const TEST_CLIENT: ResolvedClientIp = { address: "203.0.113.42", source: "forwarded" };
 
 function makeReq(opts: {
   method: string;
@@ -71,7 +75,7 @@ describe("applyDomainLockGate", () => {
     const req = makeReq({ method: "GET", url: "/dashboard", host: "pinchy.example.com" });
     const res = makeRes();
 
-    expect(await applyDomainLockGate(req, res)).toBe(false);
+    expect(await applyDomainLockGate(req, res, TEST_CLIENT)).toBe(false);
     expect(res._statusCode).toBeUndefined();
     expect(appendAuditLog).not.toHaveBeenCalled();
   });
@@ -86,7 +90,7 @@ describe("applyDomainLockGate", () => {
     });
     const res = makeRes();
 
-    expect(await applyDomainLockGate(req, res)).toBe(false);
+    expect(await applyDomainLockGate(req, res, TEST_CLIENT)).toBe(false);
     expect(res._statusCode).toBeUndefined();
   });
 
@@ -99,7 +103,7 @@ describe("applyDomainLockGate", () => {
     });
     const res = makeRes();
 
-    expect(await applyDomainLockGate(req, res)).toBe(true);
+    expect(await applyDomainLockGate(req, res, TEST_CLIENT)).toBe(true);
     expect(res._statusCode).toBe(403);
     expect(res._headers["Content-Type"]).toBe("application/json");
     expect(res._body).toContain("does not match the configured domain");
@@ -125,7 +129,7 @@ describe("applyDomainLockGate", () => {
     });
     const res = makeRes();
 
-    expect(await applyDomainLockGate(req, res)).toBe(true);
+    expect(await applyDomainLockGate(req, res, TEST_CLIENT)).toBe(true);
     expect(res._statusCode).toBe(403);
     expect(res._headers["Content-Type"]).toBe("text/html; charset=utf-8");
     expect(res._body).toContain("Access Denied");
@@ -142,7 +146,7 @@ describe("applyDomainLockGate", () => {
     });
     const res = makeRes();
 
-    expect(await applyDomainLockGate(req, res)).toBe(false);
+    expect(await applyDomainLockGate(req, res, TEST_CLIENT)).toBe(false);
   });
 
   it("accepts a multi-hop x-forwarded-host on its public first hop", async () => {
@@ -159,7 +163,7 @@ describe("applyDomainLockGate", () => {
     });
     const res = makeRes();
 
-    expect(await applyDomainLockGate(req, res)).toBe(false);
+    expect(await applyDomainLockGate(req, res, TEST_CLIENT)).toBe(false);
     expect(res._statusCode).toBeUndefined();
   });
 
@@ -178,7 +182,7 @@ describe("applyDomainLockGate", () => {
     });
     const res = makeRes();
 
-    expect(await applyDomainLockGate(req, res)).toBe(true);
+    expect(await applyDomainLockGate(req, res, TEST_CLIENT)).toBe(true);
     expect(res._statusCode).toBe(403);
     expect(res._body).not.toContain("<script>alert(1)</script>");
     expect(res._body).not.toContain('a">');
@@ -197,7 +201,7 @@ describe("applyDomainLockGate", () => {
     const req = makeReq({ method: "POST", url: "/api/agents", host: "evil.example.com" });
     const res = makeRes();
 
-    expect(await applyDomainLockGate(req, res)).toBe(true);
+    expect(await applyDomainLockGate(req, res, TEST_CLIENT)).toBe(true);
     expect(res._statusCode).toBe(403);
     release();
   });

@@ -54,6 +54,13 @@ import { SERVER_WS_MAX_PAYLOAD_BYTES } from "./src/lib/limits";
 import { evaluateAuditSecretRotation, evaluateDbPasswordPolicy } from "./src/lib/secret-source";
 import { getPreviousSecret } from "./src/lib/encryption";
 import { exitOnStartupFailure } from "./src/server/startup-failure";
+import {
+  getTrustedProxies,
+  readForwardedFor,
+  resolveClientIp,
+  stampClientIp,
+  TRUSTED_PROXIES_ENV_VAR,
+} from "./src/server/client-ip";
 
 logCapture.install();
 
@@ -109,6 +116,21 @@ if (auditSecretPolicy.action === "warn") {
   console.warn(auditSecretPolicy.message);
 }
 
+// Which X-Forwarded-For hops belong to our own infrastructure. Read once at
+// startup — the value cannot change without a container restart, and parsing
+// it per request would re-validate the same list on every hit.
+const { trusted: trustedProxies, invalid: invalidTrustedProxies } = getTrustedProxies();
+if (invalidTrustedProxies.length > 0) {
+  // Silence here would be the worst outcome: the operator who added their
+  // inner proxy believes the hop is trusted, and every request would resolve
+  // to that proxy's address instead of the client's.
+  console.warn(
+    `⚠ ${TRUSTED_PROXIES_ENV_VAR} contains ${invalidTrustedProxies.length} entr` +
+      `${invalidTrustedProxies.length === 1 ? "y" : "ies"} that are neither an IP address ` +
+      `nor a CIDR range and were ignored: ${invalidTrustedProxies.join(", ")}`
+  );
+}
+
 const startup = app.prepare().then(async () => {
   // Import request-handling modules before the server starts — these don't
   // depend on bootInits having run (domain cache starts empty and fills lazily).
@@ -117,10 +139,21 @@ const startup = app.prepare().then(async () => {
   const { getCachedDomain } = await import("./src/lib/domain-cache");
 
   const server = createServer(async (req, res) => {
+    // Who is this request from? Answered once, here, and stamped onto the
+    // request so the gates' audit rows and Better Auth's sign-in throttle all
+    // read the same address instead of three different half-answers (#825).
+    // Must run before anything else touches the headers: the stamp also
+    // discards a client-supplied copy of the internal header, which would
+    // otherwise be a throttle bypass.
+    const client = stampClientIp(req.headers, {
+      trustedProxies,
+      socketAddress: req.socket?.remoteAddress,
+    });
+
     // Destination first (is this the locked domain?), then source (did the
     // request come from it?). Both gates return true when they answered.
-    if (await applyDomainLockGate(req, res)) return;
-    if (await applyCsrfGate(req, res)) return;
+    if (await applyDomainLockGate(req, res, client)) return;
+    if (await applyCsrfGate(req, res, client)) return;
 
     handle(req, res, parse(req.url!, true));
   });
@@ -177,9 +210,23 @@ const startup = app.prepare().then(async () => {
   server.on("upgrade", async (request, socket, head) => {
     const { pathname } = parse(request.url!, true);
     if (pathname === "/api/ws") {
+      // An upgrade never passes through the createServer handler, so it does
+      // its own resolution. No stamping: the request stops here either way,
+      // and nothing downstream of an upgrade reads headers.
+      const client = resolveClientIp({
+        forwardedFor: readForwardedFor(request.headers),
+        socketAddress: request.socket?.remoteAddress,
+        trustedProxies,
+      });
+
       // Rate limit by IP before doing any auth work. The limiter's onReject
       // hook (configured above) takes care of warn-level logging.
-      const ip = request.socket.remoteAddress ?? "unknown";
+      //
+      // Behind a proxy `socket.remoteAddress` is the proxy, so keying on it
+      // gave every user on the instance ONE 60-upgrades-per-minute bucket —
+      // a single reconnect-looping tab could lock everyone else out of chat
+      // (#825).
+      const ip = client.address ?? "unknown";
       if (!wsRateLimiter.allowUpgrade(ip)) {
         socket.write("HTTP/1.1 429 Too Many Requests\r\n\r\n");
         socket.destroy();
@@ -204,6 +251,7 @@ const startup = app.prepare().then(async () => {
             host: upgradeCheckInput.host,
             lockedDomain: getCachedDomain(),
             remoteAddress: request.socket?.remoteAddress,
+            client,
           });
         } else {
           // Mirrors applyCsrfGate, which awaits its own audit write.
@@ -214,6 +262,7 @@ const startup = app.prepare().then(async () => {
             origin: upgradeCheckInput.origin,
             referer: undefined,
             remoteAddress: request.socket?.remoteAddress,
+            client,
           });
         }
         socket.write("HTTP/1.1 403 Forbidden\r\n\r\n");

@@ -10,6 +10,7 @@ import * as schema from "@/db/schema";
 import { appendAuditLog, redactEmail } from "@/lib/audit";
 import { API_KEY_PREFIX } from "@/lib/api-key-format";
 import { SIGN_IN_RATE_LIMIT_WINDOW_SECONDS } from "@/lib/auth-rate-limit";
+import { CLIENT_IP_HEADER, getTrustedProxies } from "@/server/client-ip";
 import { getCachedDomain } from "@/lib/domain";
 import { shouldUseSecureCookies } from "@/lib/secure-cookies";
 import { PASSWORD_MIN_LENGTH } from "@/lib/validate-password";
@@ -178,6 +179,27 @@ export const auth = betterAuth({
     // landing the user on an authenticated page.
     defaultCookieAttributes: {
       sameSite: "lax",
+    },
+    // Which address the sign-in throttle buckets by (#825). Unconfigured,
+    // Better Auth reads `x-forwarded-for` and trusts a single value blindly —
+    // rotate the header, get a fresh 5-per-60s bucket, brute-force protection
+    // gone — while a proxy that appends produces two values, which it refuses
+    // to read at all, collapsing every sign-in on the instance into one bucket
+    // that five failures can lock for everyone.
+    //
+    // `server.ts` has already answered the question properly (it can see the
+    // socket, which Better Auth cannot) and stamped the answer, so that header
+    // comes first. It is an internal name the gate overwrites on every request;
+    // a client-supplied copy never survives to here.
+    //
+    // `x-forwarded-for` stays as a second entry for the paths that reach Better
+    // Auth without passing the stamp — a route imported directly by a test,
+    // or any future entry point that is not our HTTP server. With
+    // `trustedProxies` set, that fallback resolves right-to-left too, so it is
+    // a weaker source, not a spoofable one.
+    ipAddress: {
+      ipAddressHeaders: [CLIENT_IP_HEADER, "x-forwarded-for"],
+      trustedProxies: getTrustedProxies().trusted,
     },
   },
   database: drizzleAdapter(db, {

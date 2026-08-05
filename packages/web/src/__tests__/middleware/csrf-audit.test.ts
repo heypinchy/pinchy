@@ -15,6 +15,7 @@ function blocked(overrides: Partial<Parameters<typeof logCsrfBlocked>[0]> = {}) 
     origin: "https://evil.example.com",
     referer: undefined,
     remoteAddress: "203.0.113.42",
+    client: { address: "203.0.113.42", source: "socket" },
     ...overrides,
   });
 }
@@ -35,6 +36,7 @@ describe("logCsrfBlocked", () => {
       origin: "https://evil.example.com",
       referer: undefined,
       remoteAddress: "203.0.113.42",
+      client: { address: "203.0.113.42", source: "socket" },
     });
 
     expect(appendAuditLog).toHaveBeenCalledTimes(1);
@@ -61,6 +63,7 @@ describe("logCsrfBlocked", () => {
       origin: undefined,
       referer: undefined,
       remoteAddress: undefined,
+      client: { address: null, source: "unknown" },
     });
 
     const call = vi.mocked(appendAuditLog).mock.calls[0][0];
@@ -68,6 +71,42 @@ describe("logCsrfBlocked", () => {
       origin: null,
       referer: null,
       remoteAddress: null,
+      clientAddress: null,
+    });
+  });
+
+  // The reason #825 stayed invisible: every auth.csrf_blocked row on the
+  // production instance recorded `::ffff:172.18.0.1`, the Docker bridge
+  // gateway. `remoteAddress` was never wrong — it is the peer, and behind a
+  // proxy the peer IS the proxy — it just answered a question nobody was
+  // asking. So it keeps its meaning (older rows must not be reinterpreted)
+  // and the client's own address arrives beside it.
+  it("records the forwarded client address beside the proxy's own", async () => {
+    await blocked({
+      remoteAddress: "::ffff:172.18.0.1",
+      client: { address: "203.0.113.42", source: "forwarded" },
+    });
+
+    const call = vi.mocked(appendAuditLog).mock.calls[0][0];
+    expect(call.detail).toMatchObject({
+      remoteAddress: "::ffff:172.18.0.1",
+      clientAddress: "203.0.113.42",
+      clientAddressSource: "forwarded",
+    });
+  });
+
+  // Without the source marker the two identical addresses would read as "we
+  // know this is the client" — the same silent constant, one field over.
+  it("marks an address that is only the peer as such", async () => {
+    await blocked({
+      remoteAddress: "::ffff:172.18.0.1",
+      client: { address: "172.18.0.1", source: "socket" },
+    });
+
+    const call = vi.mocked(appendAuditLog).mock.calls[0][0];
+    expect(call.detail).toMatchObject({
+      clientAddress: "172.18.0.1",
+      clientAddressSource: "socket",
     });
   });
 

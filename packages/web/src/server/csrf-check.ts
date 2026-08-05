@@ -4,6 +4,7 @@ import { normalizeHost } from "@/lib/domain-cache";
 import { appendAuditLog } from "@/lib/audit";
 import { firstHeaderValue, publicHopOf, readRequestHost } from "@/server/forwarded-host";
 import { createAuditFloodWindow } from "@/server/audit-flood-window";
+import { clientAddressDetail, type ResolvedClientIp } from "@/server/client-ip";
 
 export type CsrfCheckInput = {
   method: string;
@@ -109,7 +110,11 @@ export function isCsrfRequestAllowed(input: CsrfCheckInput): CsrfCheckResult {
  * destination. Together they prevent the standard cross-site POST attack
  * against authenticated admin sessions (see issue #235).
  */
-export async function applyCsrfGate(req: IncomingMessage, res: ServerResponse): Promise<boolean> {
+export async function applyCsrfGate(
+  req: IncomingMessage,
+  res: ServerResponse,
+  client: ResolvedClientIp
+): Promise<boolean> {
   const method = (req.method ?? "GET").toUpperCase();
   const { pathname } = parse(req.url ?? "/", false);
 
@@ -136,6 +141,7 @@ export async function applyCsrfGate(req: IncomingMessage, res: ServerResponse): 
     origin,
     referer,
     remoteAddress: req.socket?.remoteAddress,
+    client,
   });
 
   res.writeHead(403, { "Content-Type": "application/json" });
@@ -171,6 +177,7 @@ export async function logCsrfBlocked(input: {
   origin: string | undefined;
   referer: string | undefined;
   remoteAddress: string | undefined;
+  client: ResolvedClientIp;
 }): Promise<void> {
   const slot = csrfBlockWindow.claim(Date.now());
   if (!slot.write) return;
@@ -188,6 +195,7 @@ export async function logCsrfBlocked(input: {
         origin: input.origin ?? null,
         referer: input.referer ?? null,
         remoteAddress: input.remoteAddress ?? null,
+        ...clientAddressDetail(input.client),
         ...(slot.suppressed > 0 ? { suppressedSinceLastEntry: slot.suppressed } : {}),
       },
     });

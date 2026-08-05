@@ -8,7 +8,11 @@ vi.mock("@/lib/audit", async (importOriginal) => ({
 }));
 
 import { logHostBlocked, shouldAuditHostBlock, resetHostBlockWindow } from "@/server/host-check";
+import type { ResolvedClientIp } from "@/server/client-ip";
 import { appendAuditLog } from "@/lib/audit";
+
+/** Behind a proxy the peer and the client are different addresses (#825). */
+const TEST_CLIENT: ResolvedClientIp = { address: "203.0.113.42", source: "forwarded" };
 
 describe("shouldAuditHostBlock", () => {
   it("audits blocked API requests", () => {
@@ -43,6 +47,7 @@ describe("logHostBlocked", () => {
       host: "pinchy:7777",
       lockedDomain: "pinchy.example.com",
       remoteAddress: "172.18.0.4",
+      client: TEST_CLIENT,
     });
 
     expect(appendAuditLog).toHaveBeenCalledTimes(1);
@@ -58,6 +63,10 @@ describe("logHostBlocked", () => {
       host: "pinchy:7777",
       lockedDomain: "pinchy.example.com",
       remoteAddress: "172.18.0.4",
+      // The peer is the Docker bridge gateway; the client is who actually
+      // called. Both belong in the row, and only one of them answers "who".
+      clientAddress: "203.0.113.42",
+      clientAddressSource: "forwarded",
     });
   });
 
@@ -68,10 +77,15 @@ describe("logHostBlocked", () => {
       host: undefined,
       lockedDomain: "pinchy.example.com",
       remoteAddress: undefined,
+      client: { address: null, source: "unknown" },
     });
 
     const call = vi.mocked(appendAuditLog).mock.calls[0][0];
-    expect(call.detail).toMatchObject({ host: null, remoteAddress: null });
+    expect(call.detail).toMatchObject({
+      host: null,
+      remoteAddress: null,
+      clientAddress: null,
+    });
   });
 
   it("caps the caller-controlled path and host", async () => {
@@ -85,6 +99,7 @@ describe("logHostBlocked", () => {
       host: "b".repeat(5000),
       lockedDomain: "pinchy.example.com",
       remoteAddress: "203.0.113.42",
+      client: TEST_CLIENT,
     });
 
     const detail = vi.mocked(appendAuditLog).mock.calls[0][0].detail as Record<string, string>;
@@ -102,6 +117,7 @@ describe("logHostBlocked", () => {
         host: "pinchy:7777",
         lockedDomain: "pinchy.example.com",
         remoteAddress: "172.18.0.4",
+        client: TEST_CLIENT,
       })
     ).resolves.toBeUndefined();
   });
@@ -120,6 +136,7 @@ describe("logHostBlocked throttling", () => {
       host,
       lockedDomain: "pinchy.example.com",
       remoteAddress: "203.0.113.42",
+      client: TEST_CLIENT,
     });
 
   beforeEach(() => {
