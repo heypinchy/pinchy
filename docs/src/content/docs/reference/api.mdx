@@ -242,6 +242,21 @@ Update an agent's settings. Any combination of fields can be included.
 - `401` — not authenticated
 - `403` — only admins can change `allowedTools` or `pluginConfig`
 - `404` — agent not found
+- `500` — the update was **saved**, but could not be applied to the agent runtime
+
+The `500` is worth handling deliberately, because it does not mean the request
+was rejected. Pinchy writes the agent row first and then regenerates the runtime
+configuration; if that second step fails, the change is already persisted and a
+later save (or a restart) applies it. The response body names the reason:
+
+```json
+{
+  "error": "Settings were saved, but the agent runtime was not updated: <cause>"
+}
+```
+
+Retrying is safe — the update is idempotent — but treating the change as
+discarded is not.
 
 ### `DELETE /api/agents/:id`
 
