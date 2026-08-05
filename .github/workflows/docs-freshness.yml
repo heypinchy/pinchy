@@ -45,8 +45,8 @@ jobs:
 
       # Same rationale as the freshness job above — network-dependent,
       # deliberately not a PR gate. See scripts/lib/main-version-pins.mjs and
-      # AGENTS.md § "Release process" / the cut-pinchy-release skill's "After
-      # the release" section (#1079).
+      # the cut-pinchy-release skill's "After the release" section, step 2
+      # ("Forward-port the version pins to main") — #1079.
       - name: Check main's version pins
         env:
           GH_TOKEN: ${{ github.token }}

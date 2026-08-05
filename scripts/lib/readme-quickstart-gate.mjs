@@ -25,8 +25,13 @@ const QUICKSTART_HEADING = /^## Quick Start\s*$/m;
 const COMPOSE_URL_PIN =
   /raw\.githubusercontent\.com\/heypinchy\/pinchy\/(v\d+\.\d+\.\d+)\/docker-compose\.yml/;
 
-/** The `.env` pin the compose file resolves its image tags from. */
-const ENV_VERSION_PIN = /PINCHY_VERSION=(v\d+\.\d+\.\d+)/;
+/**
+ * The `.env` pin the compose file resolves its image tags from. Exported so
+ * main-version-pins.mjs reads the same pattern rather than keeping a second
+ * copy of it — a duplicated regex over the same file is exactly the paired
+ * list this repo pins with drift guards everywhere else.
+ */
+export const ENV_VERSION_PIN = /PINCHY_VERSION=(v\d+\.\d+\.\d+)/;
 
 /**
  * Whether a line actually assigns PINCHY_VERSION, as opposed to merely

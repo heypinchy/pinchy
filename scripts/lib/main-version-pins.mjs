@@ -1,7 +1,8 @@
 /**
- * Compares `main`'s version pins (README quick-start, `.env.example`, the two
- * marketplace templates) against the latest published GitHub release, and
- * flags the ones that have drifted a full minor behind.
+ * Compares `main`'s version pins (README quick-start, `.env.example`, both
+ * package.json versions, the two marketplace templates — every file
+ * `scripts/release.mjs` bumps) against the latest published GitHub release,
+ * and flags the ones that have drifted a full minor behind.
  *
  * `pnpm release` bumps these pins only on the branch it runs on — a release
  * cut from `release/X.Y` never touches `main`. Left unattended, that drift
@@ -28,7 +29,10 @@
  * docs-consistency.mjs.
  */
 
-import { extractQuickstartBlock } from "./readme-quickstart-gate.mjs";
+import {
+  extractQuickstartBlock,
+  ENV_VERSION_PIN,
+} from "./readme-quickstart-gate.mjs";
 import {
   readPinchyVersionFromEnv,
   readMarketplaceVersion,
@@ -36,16 +40,6 @@ import {
 } from "./marketplace-version.mjs";
 
 const SEMVER = /^v?(\d+)\.(\d+)\.(\d+)$/;
-
-/**
- * The README quick-start's `PINCHY_VERSION=vX.Y.Z` pin. Mirrors
- * `ENV_VERSION_PIN` in readme-quickstart-gate.mjs — kept separate rather than
- * exported from there because the two guards check different things (that
- * guard checks internal agreement within the README; this one checks
- * staleness against a live release) and this file already imports that
- * module's block extractor.
- */
-const README_ENV_VERSION_PIN = /PINCHY_VERSION=(v\d+\.\d+\.\d+)/;
 
 /**
  * Parses a semver-ish string (with or without a leading "v") into numeric
@@ -86,7 +80,7 @@ export function isFullMinorBehind(pinned, latest) {
  */
 export function readReadmeVersionPin(readme) {
   const block = extractQuickstartBlock(readme);
-  const match = README_ENV_VERSION_PIN.exec(block);
+  const match = ENV_VERSION_PIN.exec(block);
   if (!match) {
     throw new Error(
       "README Quick Start block has no PINCHY_VERSION=vX.Y.Z pin to read",
@@ -96,11 +90,39 @@ export function readReadmeVersionPin(readme) {
 }
 
 /**
+ * Reads a package.json's `version` field. Unlike every other pin here this one
+ * carries no leading "v" — `parseSemver` accepts both, and the value is
+ * reported verbatim rather than normalised so the message names what the file
+ * actually says.
+ * @param {string} content - raw package.json contents
+ * @returns {string} e.g. "0.9.1"
+ * @throws {Error} if the file has no version field
+ */
+export function readPackageJsonVersion(content) {
+  const version = JSON.parse(content)?.version;
+  if (!version) {
+    throw new Error("package.json has no version field to read");
+  }
+  return version;
+}
+
+/**
  * Reads every tracked pin out of the raw file contents supplied by the
  * caller.
+ * One entry per file `scripts/release.mjs` bumps — all six, not the four that
+ * happen to carry a `vX.Y.Z` string. Both package.json versions drift exactly
+ * like the rest (main sat at 0.8.0 through the whole v0.9.0 cycle) and the
+ * forward-port step in the `cut-pinchy-release` skill names them explicitly,
+ * so a tripwire that skipped them would under-report the very incident it was
+ * built for. `package.json#version` also has a second reader: staging tracks
+ * `:next` off main, so a stale one makes `/api/version` — the thing the
+ * release checklist tells you to verify — report the wrong release.
+ *
  * @param {object} files
  * @param {string} files.readme - README.md contents
  * @param {string} files.envExample - .env.example contents
+ * @param {string} files.rootPackageJson - package.json contents
+ * @param {string} files.webPackageJson - packages/web/package.json contents
  * @param {string} files.digitalOcean - marketplace/digitalocean/template.json contents
  * @param {string} files.caprover - marketplace/caprover/pinchy.yml contents
  * @returns {Record<string, string>} label -> pinned version
@@ -108,12 +130,16 @@ export function readReadmeVersionPin(readme) {
 export function collectMainVersionPins({
   readme,
   envExample,
+  rootPackageJson,
+  webPackageJson,
   digitalOcean,
   caprover,
 }) {
   return {
     "README quick-start": readReadmeVersionPin(readme),
     ".env.example": readPinchyVersionFromEnv(envExample),
+    "package.json": readPackageJsonVersion(rootPackageJson),
+    "packages/web/package.json": readPackageJsonVersion(webPackageJson),
     "DigitalOcean marketplace template": readMarketplaceVersion(digitalOcean),
     "CapRover marketplace template": readCaproverVersion(caprover),
   };

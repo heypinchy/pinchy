@@ -8,6 +8,7 @@ import {
   parseSemver,
   isFullMinorBehind,
   readReadmeVersionPin,
+  readPackageJsonVersion,
   collectMainVersionPins,
   findStaleVersionPins,
 } from "./main-version-pins.mjs";
@@ -79,6 +80,24 @@ test("readReadmeVersionPin throws when the quick-start section is missing", () =
   assert.throws(() => readReadmeVersionPin("# Pinchy\n\nno quickstart here\n"));
 });
 
+// ─── readPackageJsonVersion ─────────────────────────────────────────────────
+
+test("readPackageJsonVersion reads the bare version field", () => {
+  assert.equal(
+    readPackageJsonVersion(
+      JSON.stringify({ name: "pinchy", version: "0.8.0" }),
+    ),
+    "0.8.0",
+  );
+});
+
+test("readPackageJsonVersion throws when there is no version field", () => {
+  assert.throws(
+    () => readPackageJsonVersion(JSON.stringify({ name: "pinchy" })),
+    /version/,
+  );
+});
+
 // ─── collectMainVersionPins / findStaleVersionPins ─────────────────────────
 
 const ENV_EXAMPLE_FIXTURE = "PINCHY_VERSION=v0.8.0\n";
@@ -93,37 +112,42 @@ const CAPROVER_TEMPLATE_FIXTURE = `caproverOneClickApp:
       defaultValue: 'v0.8.0'
 `;
 
-test("collectMainVersionPins reads all four pins", () => {
-  const pins = collectMainVersionPins({
-    readme: README_FIXTURE,
-    envExample: ENV_EXAMPLE_FIXTURE,
-    digitalOcean: DO_TEMPLATE_FIXTURE,
-    caprover: CAPROVER_TEMPLATE_FIXTURE,
-  });
-  assert.deepEqual(pins, {
+/** Every file `pnpm release` bumps, all pinned at v0.8.0 except the README. */
+const STALE_FIXTURES = {
+  readme: README_FIXTURE,
+  envExample: ENV_EXAMPLE_FIXTURE,
+  rootPackageJson: JSON.stringify({ name: "pinchy", version: "0.8.0" }),
+  webPackageJson: JSON.stringify({ name: "@pinchy/web", version: "0.8.0" }),
+  digitalOcean: DO_TEMPLATE_FIXTURE,
+  caprover: CAPROVER_TEMPLATE_FIXTURE,
+};
+
+test("collectMainVersionPins reads every file pnpm release bumps", () => {
+  assert.deepEqual(collectMainVersionPins(STALE_FIXTURES), {
     "README quick-start": "v0.9.1",
     ".env.example": "v0.8.0",
+    "package.json": "0.8.0",
+    "packages/web/package.json": "0.8.0",
     "DigitalOcean marketplace template": "v0.8.0",
     "CapRover marketplace template": "v0.8.0",
   });
 });
 
 test("findStaleVersionPins flags only the pins a full minor behind the latest release", () => {
-  const pins = collectMainVersionPins({
-    readme: README_FIXTURE,
-    envExample: ENV_EXAMPLE_FIXTURE,
-    digitalOcean: DO_TEMPLATE_FIXTURE,
-    caprover: CAPROVER_TEMPLATE_FIXTURE,
-  });
-  const stale = findStaleVersionPins(pins, "v0.9.1");
+  const stale = findStaleVersionPins(
+    collectMainVersionPins(STALE_FIXTURES),
+    "v0.9.1",
+  );
   const labels = stale.map((s) => s.label).sort();
   assert.deepEqual(labels, [
     ".env.example",
     "CapRover marketplace template",
     "DigitalOcean marketplace template",
+    "package.json",
+    "packages/web/package.json",
   ]);
   for (const entry of stale) {
-    assert.equal(entry.pinned, "v0.8.0");
+    assert.match(entry.pinned, /^v?0\.8\.0$/);
     assert.equal(entry.latest, "v0.9.1");
   }
 });
@@ -132,12 +156,78 @@ test("findStaleVersionPins flags nothing when every pin matches the latest relea
   const pins = collectMainVersionPins({
     readme: README_FIXTURE,
     envExample: "PINCHY_VERSION=v0.9.1\n",
+    rootPackageJson: JSON.stringify({ version: "0.9.1" }),
+    webPackageJson: JSON.stringify({ version: "0.9.1" }),
     digitalOcean: JSON.stringify({
       variables: { application_version: "v0.9.1" },
     }),
     caprover: CAPROVER_TEMPLATE_FIXTURE.replace("v0.8.0", "v0.9.1"),
   });
   assert.deepEqual(findStaleVersionPins(pins, "v0.9.1"), []);
+});
+
+// ─── The extractors still match the real files ──────────────────────────────
+// Fixtures prove the logic; they say nothing about whether the six regexes and
+// JSON paths still find anything in the repo as it stands today. Every sibling
+// guard reads the real files for exactly this reason (marketplace-version.mjs
+// against the real .env.example + templates, readme-quickstart-gate.mjs
+// against the real README). Without it, a reformatted pinchy.yml or a renamed
+// README heading surfaces as a stack trace in a weekly cron nobody watches,
+// instead of as a red PR.
+//
+// This asserts only that every pin is READABLE — not that it is current. main
+// is legitimately behind the latest release between a tag and its forward-port,
+// and asserting otherwise would make this test fail on the calendar.
+
+test("every tracked pin is readable from the repo's actual files", () => {
+  const pins = collectMainVersionPins({
+    readme: readFileSync(resolve(ROOT, "README.md"), "utf8"),
+    envExample: readFileSync(resolve(ROOT, ".env.example"), "utf8"),
+    rootPackageJson: readFileSync(resolve(ROOT, "package.json"), "utf8"),
+    webPackageJson: readFileSync(
+      resolve(ROOT, "packages/web/package.json"),
+      "utf8",
+    ),
+    digitalOcean: readFileSync(
+      resolve(ROOT, "marketplace/digitalocean/template.json"),
+      "utf8",
+    ),
+    caprover: readFileSync(
+      resolve(ROOT, "marketplace/caprover/pinchy.yml"),
+      "utf8",
+    ),
+  });
+  for (const [label, pinned] of Object.entries(pins)) {
+    assert.doesNotThrow(
+      () => parseSemver(pinned),
+      `${label} did not yield a vX.Y.Z version (got "${pinned}")`,
+    );
+  }
+});
+
+test("collectMainVersionPins covers every file scripts/release.mjs bumps", () => {
+  // The forward-port step this guard backs names all six files. A release
+  // bumper that grows a seventh must not leave the tripwire reporting on six.
+  const release = readFileSync(resolve(ROOT, "scripts/release.mjs"), "utf8");
+  for (const path of [
+    "package.json",
+    "packages/web/package.json",
+    ".env.example",
+    "README.md",
+    "marketplace/digitalocean/template.json",
+    "marketplace/caprover/pinchy.yml",
+  ]) {
+    assert.ok(
+      release.includes(path),
+      `release.mjs no longer bumps ${path} — re-check what this guard tracks`,
+    );
+  }
+  const labels = Object.keys(collectMainVersionPins(STALE_FIXTURES));
+  assert.equal(
+    labels.length,
+    6,
+    `expected a pin per bumped file, got ${labels.join(", ")}`,
+  );
 });
 
 // ─── CI wiring guard ────────────────────────────────────────────────────────
@@ -154,31 +244,78 @@ function uncommented(yaml) {
     .join("\n");
 }
 
+/**
+ * Returns the YAML block belonging to one job, ending at the NEXT job key
+ * rather than at a hard-coded sibling name or at EOF.
+ *
+ * Both matter, and both were wrong before. Slicing to EOF makes every
+ * assertion below read whatever job is appended next: a `continue-on-error`
+ * in an unrelated later job gets blamed on this one (false red). Naming a
+ * specific sibling is worse — `freshness` sits ABOVE version-pins, so the
+ * lookup never matched and the slice silently ran to EOF anyway.
+ */
+function jobBlock(yaml, jobName) {
+  const start = yaml.indexOf(`\n  ${jobName}:`);
+  assert.notEqual(start, -1, `docs-freshness.yml has no ${jobName} job`);
+  const rest = yaml.slice(start + 1);
+  const next = /\n {2}[A-Za-z_][\w-]*:/.exec(rest);
+  return next ? rest.slice(0, next.index) : rest;
+}
+
 test("check-main-version-pins.mjs exists", () => {
   assert.doesNotThrow(() => readFileSync(CHECK_SCRIPT, "utf8"));
 });
 
-test("docs-freshness.yml runs check-main-version-pins.mjs on a schedule", () => {
-  const yaml = uncommented(readFileSync(WORKFLOW, "utf8"));
-  assert.match(yaml, /schedule:/);
-  assert.match(yaml, /check-main-version-pins\.mjs/);
+test("the version-pins job itself runs check-main-version-pins.mjs", () => {
+  // Scoped to the job on purpose. Matching the whole file passes just as
+  // happily when the run step has been gutted and the script is invoked from
+  // some other job — verified by canary: replacing this job's `run:` with
+  // `echo idle` and chaining the script onto the freshness job left the old,
+  // unscoped assertions 17/17 green.
+  const block = jobBlock(
+    uncommented(readFileSync(WORKFLOW, "utf8")),
+    "version-pins",
+  );
+  assert.match(block, /run:\s*node scripts\/check-main-version-pins\.mjs/);
+});
+
+test("docs-freshness.yml runs on a schedule", () => {
+  assert.match(
+    uncommented(readFileSync(WORKFLOW, "utf8")),
+    /^on:\n(.*\n)*?\s+schedule:/m,
+  );
 });
 
 test("the version-pins job is never rescued into a green run", () => {
-  const yaml = uncommented(readFileSync(WORKFLOW, "utf8"));
-  const jobStart = yaml.indexOf("version-pins:");
-  assert.notEqual(jobStart, -1, "docs-freshness.yml has no version-pins job");
-  const jobBlock = yaml.slice(jobStart);
-  assert.doesNotMatch(jobBlock, /continue-on-error/);
-  assert.doesNotMatch(jobBlock, /\|\|\s*true/);
-  assert.doesNotMatch(jobBlock, /exit 0/);
+  const block = jobBlock(
+    uncommented(readFileSync(WORKFLOW, "utf8")),
+    "version-pins",
+  );
+  assert.doesNotMatch(block, /continue-on-error/);
+  assert.doesNotMatch(block, /\|\|\s*true/);
+  assert.doesNotMatch(block, /exit 0/);
 });
 
 test("the version-pins job grants only the contents:read it needs", () => {
-  const yaml = uncommented(readFileSync(WORKFLOW, "utf8"));
-  const jobStart = yaml.indexOf("version-pins:");
-  const nextJob = yaml.indexOf("\n  freshness:", jobStart);
-  const jobBlock = yaml.slice(jobStart, nextJob === -1 ? undefined : nextJob);
-  assert.match(jobBlock, /permissions:\s*\n\s*contents:\s*read/);
-  assert.doesNotMatch(jobBlock, /issues:\s*write/);
+  const block = jobBlock(
+    uncommented(readFileSync(WORKFLOW, "utf8")),
+    "version-pins",
+  );
+  assert.match(block, /permissions:\s*\n\s*contents:\s*read/);
+  assert.doesNotMatch(block, /issues:\s*write/);
+});
+
+test("jobBlock stops at the next job instead of running to EOF", () => {
+  // The property the two assertions above depend on. Without it an unrelated
+  // job appended later turns this guard red — also verified by canary.
+  const yaml = [
+    "jobs:",
+    "  version-pins:",
+    "    runs-on: ubuntu-latest",
+    "  later-job:",
+    "    continue-on-error: true",
+  ].join("\n");
+  const block = jobBlock(yaml, "version-pins");
+  assert.match(block, /runs-on/);
+  assert.doesNotMatch(block, /continue-on-error/);
 });

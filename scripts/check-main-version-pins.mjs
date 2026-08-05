@@ -3,8 +3,9 @@
  * `main`'s version pins vs. the latest GitHub release (weekly cron, not a PR
  * gate — see AGENTS.md § "Forward-looking claims need an issue" for why).
  *
- * `pnpm release` bumps README, `.env.example` and the marketplace templates
- * only on the branch it runs on. A release cut from `release/X.Y` never
+ * `pnpm release` bumps README, `.env.example`, both package.json versions and
+ * the marketplace templates only on the branch it runs on. A release cut from
+ * `release/X.Y` never
  * touches `main`, so without an explicit forward-port those pins sit stale
  * on `main` for the rest of the cycle — exactly what happened through all of
  * v0.9.0 (#1079). The `cut-pinchy-release` skill's "After the release"
@@ -57,12 +58,31 @@ try {
   process.exit(0);
 }
 
-const pins = collectMainVersionPins({
-  readme: readRepoFile("README.md"),
-  envExample: readRepoFile(".env.example"),
-  digitalOcean: readRepoFile("marketplace/digitalocean/template.json"),
-  caprover: readRepoFile("marketplace/caprover/pinchy.yml"),
-});
+// A pin that cannot be READ is a different failure from a pin that is stale:
+// it means an extractor stopped matching the file (a reformatted template, a
+// renamed README heading), and reporting it as drift would send someone
+// forward-porting a version that is already correct. Fail loudly either way —
+// but say which one it is, rather than surfacing a bare stack trace on a
+// weekly cron.
+let pins;
+try {
+  pins = collectMainVersionPins({
+    readme: readRepoFile("README.md"),
+    envExample: readRepoFile(".env.example"),
+    rootPackageJson: readRepoFile("package.json"),
+    webPackageJson: readRepoFile("packages/web/package.json"),
+    digitalOcean: readRepoFile("marketplace/digitalocean/template.json"),
+    caprover: readRepoFile("marketplace/caprover/pinchy.yml"),
+  });
+} catch (err) {
+  process.stdout.write(
+    `✖ main-version-pins: could not read a version pin (${err.message ?? err}).\n` +
+      `This is an extractor that stopped matching its file, NOT evidence that\n` +
+      `main is stale — fix scripts/lib/main-version-pins.mjs (or the file it\n` +
+      `reads) rather than forward-porting a version.\n`,
+  );
+  process.exit(1);
+}
 
 const stale = findStaleVersionPins(pins, latestVersion);
 
