@@ -38,7 +38,7 @@ describe("TOOL_REGISTRY", () => {
 
   it("contains powerful tools", () => {
     const powerful = TOOL_REGISTRY.filter((t) => t.category === "powerful");
-    expect(powerful.length).toBe(18);
+    expect(powerful.length).toBe(19);
     expect(powerful.map((t) => t.id)).toEqual([
       "pinchy_web_search",
       "pinchy_web_fetch",
@@ -57,6 +57,7 @@ describe("TOOL_REGISTRY", () => {
       "odoo_attach_file",
       "email_draft",
       "email_send",
+      "pinchy_memory",
       "pinchy_write",
     ]);
   });
@@ -133,6 +134,26 @@ describe("getToolsByCategory", () => {
   it("returns only powerful tools", () => {
     const powerful = getToolsByCategory("powerful");
     expect(powerful.every((t) => t.category === "powerful")).toBe(true);
+  });
+});
+
+describe("pinchy_memory grant", () => {
+  it("is a grantable permission with no integration", () => {
+    const tool = getToolById("pinchy_memory");
+    expect(tool).toBeDefined();
+    expect(tool!.category).toBe("powerful");
+    expect(tool!.integration).toBeUndefined();
+  });
+
+  // pinchy_memory controls PATHS, not a tool: build.ts turns it into write_paths
+  // entries and pinchy-files registers pinchy_write off their presence. No plugin
+  // manifest declares it, and computeAllowedTools() derives the emitted OpenClaw
+  // allowlist from those manifests — so a name in tools.allow that no plugin owns
+  // would be a silent no-match today and a collision the day OpenClaw ships a
+  // built-in by that name. Same relationship as pinchy_ls/pinchy_read, inverted:
+  // those are tools that are not grants, this is a grant that is not a tool.
+  it("never leaks into the emitted OpenClaw allowlist", () => {
+    expect(computeAllowedTools(["pinchy_memory"])).not.toContain("pinchy_memory");
   });
 });
 

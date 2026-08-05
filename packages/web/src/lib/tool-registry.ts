@@ -231,6 +231,25 @@ export const TOOL_REGISTRY: readonly ToolDefinition[] = [
     integration: "email",
   },
 
+  // Persistent agent memory — MEMORY.md + memory/, governed by pinchy-files.
+  //
+  // This grant owns no tool of its own. build.ts turns it into write_paths
+  // entries and pinchy-files registers `pinchy_write` off the presence of
+  // write_paths, so a memory-only agent gets a write tool scoped to nothing but
+  // its memory. Deliberately absent from every plugin manifest, so
+  // computeAllowedTools() — which derives the emitted OpenClaw allowlist from
+  // those manifests — can never put this name into tools.allow.
+  //
+  // Memory used to ride on the `pinchy_write` grant below, which made an
+  // agent's recall a side effect of a checkbox about files: no template granted
+  // it, so template-created agents had memory tools and no memory (#755).
+  {
+    id: "pinchy_memory",
+    label: "Memory",
+    description: "Remember information across conversations and look it up later",
+    category: "powerful",
+  },
+
   // Workspace write — governed by pinchy-files plugin
   {
     id: "pinchy_write",
