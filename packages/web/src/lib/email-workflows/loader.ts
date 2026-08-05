@@ -18,20 +18,20 @@ export interface DispatchableWorkflow {
 }
 
 /**
- * Why an enabled workflow could not be turned into a unit of work. The two
- * misconfigurations reach the same dead end but need different fixes — hand the
- * workflow to someone else, or give the agent an owner — so they are reported
- * apart rather than as one "no recipient".
+ * Why an enabled workflow could not be turned into a unit of work. Three
+ * misconfigurations reach the same dead end and each needs a different fix —
+ * hand the workflow to someone else, give the agent an owner, or point it at a
+ * mailbox again — so they are reported apart rather than as one "cannot run".
  */
-export type UndeliverableReason = "shared-agent-has-no-creator" | "personal-agent-has-no-owner";
+export type UnrunnableReason =
+  "shared-agent-has-no-creator" | "personal-agent-has-no-owner" | "watches-no-mailbox";
 
 /**
- * An enabled workflow the loader refused to emit because nobody could be
- * notified of its runs. One entry per *workflow*, not per (workflow ×
- * connection): the recipient is resolved from workflow and agent columns alone,
- * so every one of a workflow's rows drops together.
+ * An enabled workflow the loader emitted no unit of work for. One entry per
+ * *workflow*, not per (workflow × connection): every reason here is a property
+ * of the workflow alone, so all of its rows drop together.
  */
-export interface UndeliverableWorkflow {
+export interface UnrunnableWorkflow {
   workflowId: string;
   agentId: string;
   /**
@@ -39,18 +39,18 @@ export interface UndeliverableWorkflow {
    * log line that has to read sensibly for a workflow nobody is going to look up.
    */
   name: string;
-  reason: UndeliverableReason;
+  reason: UnrunnableReason;
 }
 
 /**
  * What one load produced: the dispatchable units, and the enabled workflows that
- * yielded none. The second half exists because dropping an undeliverable
- * workflow is correct but dropping it *silently* is not — see
+ * yielded none. The second half exists because dropping a workflow that cannot
+ * run is correct but dropping it *silently* is not — see
  * {@link loadDispatchableWorkflows}.
  */
-export interface DispatchableWorkflows {
+export interface WorkflowLoadResult {
   units: DispatchableWorkflow[];
-  undeliverable: UndeliverableWorkflow[];
+  unrunnable: UnrunnableWorkflow[];
 }
 
 /**
@@ -75,16 +75,28 @@ export interface DispatchableWorkflows {
  * emitted — `dispatchEmails` rejects an empty recipient set, so an
  * undeliverable unit of work must never reach it.
  *
- * It is **reported** as well as dropped, in `undeliverable`. The row stays
- * `enabled: true` and the Automations UI keeps showing it that way, so a bare
- * `continue` here is a workflow that has quietly stopped running with nothing
- * anywhere saying so. `email_workflows.created_by` is `ON DELETE SET NULL`
- * (#1097), which makes exactly that state reachable by erasing a user — before
- * that FK change the DELETE would have failed loudly instead. The sweep turns
- * this report into the workflow's `error` status, which is what an operator
- * actually sees.
+ * Every such workflow is **reported** as well as dropped, in `unrunnable`. The
+ * row stays `enabled: true` and the Automations UI keeps showing it that way, so
+ * a bare `continue` here is a workflow that has quietly stopped running with
+ * nothing anywhere saying so. The sweep turns this report into the workflow's
+ * `error` status, which is what an operator actually sees.
+ *
+ * Two of the three reasons are reachable through an ordinary admin action, and
+ * neither used to leave a trace (the third, a personal agent without an owner,
+ * is a shape the app never produces):
+ * - `email_workflows.created_by` is `ON DELETE SET NULL` (#1097), so erasing a
+ *   user orphans the workflows they created on shared agents. Before that FK
+ *   change the DELETE would have failed loudly instead.
+ * - `DELETE /api/integrations/:connectionId` hard-deletes a connection and
+ *   cascades `email_workflow_connections`, so disconnecting a mailbox can leave
+ *   an enabled workflow watching nothing.
+ *
+ * The second is why the connection join is a LEFT join. An inner join drops a
+ * workflow with no connections before this function can see it at all — not in
+ * `units`, not in `unrunnable`, and therefore not in the set of ids the sweep
+ * writes `status` for, so it went on displaying `active` while doing nothing.
  */
-export async function loadDispatchableWorkflows(): Promise<DispatchableWorkflows> {
+export async function loadDispatchableWorkflows(): Promise<WorkflowLoadResult> {
   const rows = await db
     .select({
       workflowId: emailWorkflows.id,
@@ -101,23 +113,35 @@ export async function loadDispatchableWorkflows(): Promise<DispatchableWorkflows
     })
     .from(emailWorkflows)
     .innerJoin(agents, eq(agents.id, emailWorkflows.agentId))
-    .innerJoin(emailWorkflowConnections, eq(emailWorkflowConnections.workflowId, emailWorkflows.id))
+    .leftJoin(emailWorkflowConnections, eq(emailWorkflowConnections.workflowId, emailWorkflows.id))
     .where(eq(emailWorkflows.enabled, true));
 
   const units: DispatchableWorkflow[] = [];
-  // Keyed by workflow id: a workflow drops on every one of its connection rows
-  // (the recipient does not depend on the connection), and the sweep writes one
-  // `status` per workflow — so report it once rather than once per mailbox.
-  const undeliverable = new Map<string, UndeliverableWorkflow>();
+  // Keyed by workflow id: every reason is a property of the workflow, so it
+  // holds on all of its connection rows, and the sweep writes one `status` per
+  // workflow — report it once rather than once per mailbox.
+  const unrunnable = new Map<string, UnrunnableWorkflow>();
+  const report = (row: (typeof rows)[number], reason: UnrunnableReason) => {
+    unrunnable.set(row.workflowId, {
+      workflowId: row.workflowId,
+      agentId: row.agentId,
+      name: row.name,
+      reason,
+    });
+  };
   for (const row of rows) {
+    // The LEFT join's unmatched row: an enabled workflow with no connections at
+    // all. Checked first because it is the row-shape question — the recipient
+    // is moot for a workflow with nothing to read. A workflow that has lost both
+    // its mailboxes and its recipient reports only this one; the operator hits
+    // the other on the next pass, once this is fixed.
+    if (row.connectionId === null || row.sinceTs === null) {
+      report(row, "watches-no-mailbox");
+      continue;
+    }
     const recipientUserIds = resolveRecipients(row);
     if (recipientUserIds.length === 0) {
-      undeliverable.set(row.workflowId, {
-        workflowId: row.workflowId,
-        agentId: row.agentId,
-        name: row.name,
-        reason: row.isPersonal ? "personal-agent-has-no-owner" : "shared-agent-has-no-creator",
-      });
+      report(row, row.isPersonal ? "personal-agent-has-no-owner" : "shared-agent-has-no-creator");
       continue;
     }
     units.push({
@@ -134,13 +158,13 @@ export async function loadDispatchableWorkflows(): Promise<DispatchableWorkflows
       sweepWindowDays: row.sweepWindowDays,
     });
   }
-  return { units, undeliverable: [...undeliverable.values()] };
+  return { units, unrunnable: [...unrunnable.values()] };
 }
 
 /**
  * Scope model (design §7): a personal agent's workflow notifies its owner; a
  * shared agent's workflow notifies its creator. Returns `[]` when no recipient
- * can be resolved, which the caller drops and reports as undeliverable.
+ * can be resolved, which the caller drops and reports as unrunnable.
  */
 function resolveRecipients(row: {
   isPersonal: boolean;

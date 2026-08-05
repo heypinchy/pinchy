@@ -67,7 +67,7 @@ export async function runReconciliationSweep(deps: SweepDeps): Promise<void> {
   const reset = await resetStuckProcessingEmails(deps.graceMs ?? DEFAULT_STUCK_GRACE_MS);
   await auditClaimResets(reset, crypto.randomUUID());
 
-  const { units, undeliverable } = await loadDispatchableWorkflows();
+  const { units, unrunnable } = await loadDispatchableWorkflows();
 
   // `status` is per workflow, but a unit of work is per (workflow × connection)
   // (D9). Collect each unit's health first and write the column once, so a
@@ -76,18 +76,18 @@ export async function runReconciliationSweep(deps: SweepDeps): Promise<void> {
   const failedWorkflowIds = new Set<string>();
   const seenWorkflowIds = new Set<string>();
 
-  // A workflow the loader could resolve no recipient for never becomes a unit of
-  // work at all: nothing runs, nothing throws, and the pass completes cleanly —
+  // A workflow the loader could emit no unit of work for never runs at all:
+  // nothing is dispatched, nothing throws, and the pass completes cleanly —
   // while the row stays `enabled: true` and the Automations UI keeps showing it
   // that way. That is a fault, and this is the only place that can say so:
   // `enabled` is the user's intent, `status` is what actually happens to it.
   //
-  // Disjoint from `units` by construction — the recipient is resolved from
-  // workflow and agent columns alone, so a workflow drops on all of its
+  // Disjoint from `units` by construction — every reason the loader reports is a
+  // property of the workflow alone, so a workflow drops on all of its
   // connections or on none — which is why adding to both sets here cannot
   // contradict a healthy unit below.
-  const undeliverableById = new Map(undeliverable.map((dropped) => [dropped.workflowId, dropped]));
-  for (const workflowId of undeliverableById.keys()) {
+  const unrunnableById = new Map(unrunnable.map((dropped) => [dropped.workflowId, dropped]));
+  for (const workflowId of unrunnableById.keys()) {
     seenWorkflowIds.add(workflowId);
     failedWorkflowIds.add(workflowId);
   }
@@ -119,8 +119,11 @@ export async function runReconciliationSweep(deps: SweepDeps): Promise<void> {
       // surfaces as the workflow's health status. One bad mailbox must never
       // stall the rest of the sweep.
       failedWorkflowIds.add(unit.workflow.id);
+      // The name is snapshotted beside the id, same rule as an audit row
+      // (AGENTS.md): an id alone sends the reader to the database to find out
+      // which automation broke, and to nothing at all once it is deleted.
       console.error(
-        `reconciliation sweep: workflow ${unit.workflow.id} failed on connection ${unit.workflow.connectionId}`,
+        `reconciliation sweep: workflow ${unit.workflow.id} ("${unit.workflow.name}") failed on connection ${unit.workflow.connectionId}`,
         err
       );
     }
@@ -134,22 +137,28 @@ export async function runReconciliationSweep(deps: SweepDeps): Promise<void> {
       workflowId,
       failedWorkflowIds.has(workflowId) ? "error" : "active"
     );
-    const dropped = undeliverableById.get(workflowId);
-    // Only on the transition. This sweep runs every minute and an undeliverable
-    // workflow cannot fix itself, so a line per pass is ~1400 identical lines a
-    // day per broken workflow — volume that gets a logger filtered out rather
-    // than read. The durable trace is the `status` column (and the badge the UI
-    // renders from it); this line only timestamps the moment it changed.
+    const dropped = unrunnableById.get(workflowId);
+    // Only on the transition. This sweep runs every minute and a workflow that
+    // cannot run will not fix itself, so a line per pass is ~1400 identical
+    // lines a day per broken workflow — volume that gets a logger filtered out
+    // rather than read. The durable trace is the `status` column (and the badge
+    // the UI renders from it); this line only timestamps the moment it changed.
     //
     // The cost of keying on the transition: a workflow already sitting at
     // `error` for a broken mailbox, which then loses its recipient, changes
     // cause without changing status and so is not re-logged. It still reads
     // `error`, which is the claim that matters.
+    //
+    // `error`, not `warn`, and deliberately: the broken-mailbox failure above
+    // logs at error on every single pass, while this one logs once in the
+    // workflow's lifetime. The quieter signal must not also be the lower
+    // severity, or an operator filtering on error sees the loud fault and never
+    // the silent one.
     if (changed && dropped) {
-      console.warn(
+      console.error(
         `reconciliation sweep: workflow ${dropped.workflowId} ("${dropped.name}") on agent ` +
-          `${dropped.agentId} is enabled but has nobody to notify (${dropped.reason}) — it is ` +
-          `marked error and dispatches nothing until it has a recipient again`
+          `${dropped.agentId} is enabled but cannot run (${dropped.reason}) — it is marked ` +
+          `error and dispatches nothing until that is fixed`
       );
     }
   }

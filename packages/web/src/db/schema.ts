@@ -617,10 +617,10 @@ export const emailWorkflows = pgTable(
     // not take the workflow (and its mailbox connections) down with them —
     // `loadDispatchableWorkflows` treats a null `createdBy` as "no creator
     // recipient" and drops the workflow from the shared-agent fan-out rather
-    // than crashing on it. It also *reports* the drop, and the sweep turns that
-    // into the workflow's `error` status: the row survives still `enabled`, so
-    // without that this FK would have traded a hard failure (the old rejected
-    // DELETE) for a silent one.
+    // than crashing on it. It also *reports* the drop as `unrunnable`, and the
+    // sweep turns that into the workflow's `error` status: the row survives
+    // still `enabled`, so without that this FK would have traded a hard failure
+    // (the old rejected DELETE) for a silent one.
     createdBy: text("created_by").references(() => users.id, { onDelete: "set null" }),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at").notNull().defaultNow(),
@@ -662,6 +662,12 @@ export const emailWorkflowConnections = pgTable(
     // Disconnecting an integration hard-deletes the connection row
     // (`DELETE /api/integrations/:connectionId`), cascading here. The PK leads
     // with workflowId, so that cascade had no usable index.
+    //
+    // That cascade can take away a workflow's LAST connection, leaving it
+    // enabled with nothing to watch. `loadDispatchableWorkflows` LEFT-joins this
+    // table so such a workflow still surfaces (reported `watches-no-mailbox`)
+    // instead of vanishing from the query — an inner join dropped it before the
+    // sweep could mark it, and it went on displaying `active` while idle.
     index("email_workflow_connections_connection_idx").on(table.connectionId),
   ]
 );

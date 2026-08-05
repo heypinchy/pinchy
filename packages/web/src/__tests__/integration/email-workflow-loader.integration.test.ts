@@ -86,9 +86,9 @@ type LoaderResult = Awaited<ReturnType<typeof loadDispatchableWorkflows>>;
 const onlyWorkflow = (result: LoaderResult, id: string) =>
   result.units.filter((r) => r.workflow.id === id);
 
-/** The undeliverable report, scoped to one test's own workflow. */
-const onlyUndeliverable = (result: LoaderResult, id: string) =>
-  result.undeliverable.filter((r) => r.workflowId === id);
+/** The unrunnable report, scoped to one test's own workflow. */
+const onlyUnrunnable = (result: LoaderResult, id: string) =>
+  result.unrunnable.filter((r) => r.workflowId === id);
 
 describe("email workflow loader — loadDispatchableWorkflows", () => {
   it("loads an enabled personal-agent workflow with the owner as the recipient", async () => {
@@ -174,7 +174,7 @@ describe("email workflow loader — loadDispatchableWorkflows", () => {
     );
   });
 
-  it("drops a workflow with no resolvable recipient — it would be undeliverable", async () => {
+  it("drops a workflow with no resolvable recipient — its notifications would go nowhere", async () => {
     // Shared agent, no creator recorded: dispatchEmails would reject an empty
     // recipient set, so the loader must not emit it at all.
     const agent = await seedAgent({ isPersonal: false, ownerId: null });
@@ -203,7 +203,7 @@ describe("email workflow loader — loadDispatchableWorkflows", () => {
     expect(mine).toHaveLength(0);
   });
 
-  it("reports the shared-agent drop as undeliverable rather than swallowing it", async () => {
+  it("reports the shared-agent drop as unrunnable rather than swallowing it", async () => {
     // Dropping is correct; dropping *silently* is not. The workflow stays
     // `enabled: true` and the UI keeps showing it as such, so the loader has to
     // hand the reason to its caller — the sweep turns this into the workflow's
@@ -213,7 +213,7 @@ describe("email workflow loader — loadDispatchableWorkflows", () => {
     const conn = await seedConnection();
     await linkConnection(wf.id, conn.id, new Date());
 
-    const mine = onlyUndeliverable(await loadDispatchableWorkflows(), wf.id);
+    const mine = onlyUnrunnable(await loadDispatchableWorkflows(), wf.id);
 
     expect(mine).toEqual([
       {
@@ -236,12 +236,12 @@ describe("email workflow loader — loadDispatchableWorkflows", () => {
     const conn = await seedConnection();
     await linkConnection(wf.id, conn.id, new Date());
 
-    const mine = onlyUndeliverable(await loadDispatchableWorkflows(), wf.id);
+    const mine = onlyUnrunnable(await loadDispatchableWorkflows(), wf.id);
 
     expect(mine.map((r) => r.reason)).toEqual(["personal-agent-has-no-owner"]);
   });
 
-  it("reports an undeliverable workflow once, however many mailboxes it watches", async () => {
+  it("reports an unrunnable workflow once, however many mailboxes it watches", async () => {
     // The loader fans out per (workflow × connection), but a missing recipient
     // is a property of the workflow alone — every one of its rows drops. The
     // report is per workflow, matching the per-workflow `status` column the
@@ -257,10 +257,10 @@ describe("email workflow loader — loadDispatchableWorkflows", () => {
     const result = await loadDispatchableWorkflows();
 
     expect(onlyWorkflow(result, wf.id)).toHaveLength(0);
-    expect(onlyUndeliverable(result, wf.id)).toHaveLength(1);
+    expect(onlyUnrunnable(result, wf.id)).toHaveLength(1);
   });
 
-  it("reports nothing undeliverable for a workflow that is merely disabled", async () => {
+  it("reports nothing unrunnable for a workflow that is merely disabled", async () => {
     // A disabled workflow is not dispatched by choice, so it is not a fault —
     // and it never reaches the recipient resolution at all. Reporting it would
     // flip every paused workflow in the instance to `error`.
@@ -272,7 +272,28 @@ describe("email workflow loader — loadDispatchableWorkflows", () => {
     const result = await loadDispatchableWorkflows();
 
     expect(onlyWorkflow(result, wf.id)).toHaveLength(0);
-    expect(onlyUndeliverable(result, wf.id)).toHaveLength(0);
+    expect(onlyUnrunnable(result, wf.id)).toHaveLength(0);
+  });
+
+  it("reports an enabled workflow that watches no mailboxes at all", async () => {
+    // The second door into the same dead end, and the one an admin walks
+    // through by accident: `DELETE /api/integrations/:id` hard-deletes the
+    // connection and cascades `email_workflow_connections` away, leaving an
+    // enabled workflow with nothing to watch.
+    //
+    // The fan-out join means such a workflow yields no row at all, so before
+    // this it was invisible even to the sweep's status write — it kept whatever
+    // status it last had (`active`) and the UI showed it as healthy while it
+    // did nothing. Worse than the missing-recipient case, which at least ends
+    // up on `error`.
+    const owner = await seedUser();
+    const agent = await seedAgent({ isPersonal: false, ownerId: null });
+    const wf = await seedWorkflow({ agentId: agent.id, enabled: true, createdBy: owner.id });
+
+    const result = await loadDispatchableWorkflows();
+
+    expect(onlyWorkflow(result, wf.id)).toHaveLength(0);
+    expect(onlyUnrunnable(result, wf.id).map((r) => r.reason)).toEqual(["watches-no-mailbox"]);
   });
 
   it("keeps a shared-agent workflow when its creator is deleted, and stops dispatching it (#1097)", async () => {
@@ -311,7 +332,7 @@ describe("email workflow loader — loadDispatchableWorkflows", () => {
     // state was unreachable (the DELETE would have failed), so the change traded
     // a hard failure for a silent one unless the loader says what it dropped —
     // the sweep turns this into the workflow's `error` status.
-    expect(onlyUndeliverable(after, wf.id).map((r) => r.reason)).toEqual([
+    expect(onlyUnrunnable(after, wf.id).map((r) => r.reason)).toEqual([
       "shared-agent-has-no-creator",
     ]);
   });

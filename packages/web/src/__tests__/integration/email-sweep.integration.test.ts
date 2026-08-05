@@ -585,7 +585,7 @@ async function workflowStatus(workflowId: string) {
  * shared agent's workflow leaves the row behind, still `enabled`, with a null
  * creator. Before that FK change the DELETE would have failed loudly instead.
  */
-async function seedUndeliverableWorkflow() {
+async function seedUnrunnableWorkflow() {
   const [agent] = await db
     .insert(agents)
     .values({
@@ -687,6 +687,31 @@ describe("reconciliation sweep — workflow health status", () => {
     expect((await ledgerRow(workflow.id, "msg-1")).status).toBe("done");
   });
 
+  it("names the workflow, not just its id, when a mailbox will not open", async () => {
+    // Both `error` causes have to read the same way in the log, because the
+    // docs promise one thing for both: Pinchy names the workflow and the
+    // reason. An id alone sends the reader back to the database to find out
+    // which automation is broken — and to nothing at all if it has since been
+    // deleted. Same snapshot rule as an audit row (AGENTS.md).
+    const { workflow, connection } = await seedDispatchableWorkflow();
+    const createPort = async (id: string): Promise<EmailPort> => {
+      if (id === connection.id) throw new Error("connection credentials missing");
+      return emptyMailbox(id);
+    };
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    let logged: string[] = [];
+    try {
+      await runReconciliationSweep({ createPort, runAgent: doneRun });
+      logged = error.mock.calls.map((call) => String(call[0]));
+    } finally {
+      error.mockRestore();
+    }
+
+    const mine = logged.filter((msg) => msg.includes(workflow.id));
+    expect(mine).toHaveLength(1);
+    expect(mine[0]).toContain("File invoices");
+  });
+
   it("marks a workflow error when nobody can be notified of its runs", async () => {
     // The other error path is a mailbox that throws. This one never throws at
     // all: the loader resolves no recipient, drops the workflow before it
@@ -695,7 +720,7 @@ describe("reconciliation sweep — workflow health status", () => {
     // without this the workflow has silently stopped running with nothing
     // anywhere saying so — the exact state `created_by ON DELETE SET NULL`
     // (#1097) made reachable.
-    const { workflow, connection } = await seedUndeliverableWorkflow();
+    const { workflow, connection } = await seedUnrunnableWorkflow();
     const opened: string[] = [];
     const createPort = async (id: string): Promise<EmailPort> => {
       opened.push(id);
@@ -709,11 +734,32 @@ describe("reconciliation sweep — workflow health status", () => {
     expect(opened).not.toContain(connection.id);
   });
 
-  it("recovers an undeliverable workflow once it has a recipient again", async () => {
+  it("marks a workflow error when its last mailbox has been disconnected", async () => {
+    // Reproduced the way it actually happens: `DELETE /api/integrations/:id`
+    // hard-deletes the connection, and the FK cascades the workflow's link row
+    // away. The workflow is left enabled with nothing to watch.
+    //
+    // This one used to be invisible even to the status write — the loader's
+    // fan-out join yields no row for a workflow with no connections, so it was
+    // in neither the units nor the report, and the sweep never reached it. It
+    // kept displaying `active` while doing nothing, which is a worse silence
+    // than the missing-recipient case it sits next to.
+    const { workflow, connection } = await seedDispatchableWorkflow();
+    await runReconciliationSweep({ createPort: emptyMailbox, runAgent: doneRun });
+    expect(await workflowStatus(workflow.id)).toBe("active");
+
+    await db.delete(integrationConnections).where(eq(integrationConnections.id, connection.id));
+
+    await runReconciliationSweep({ createPort: emptyMailbox, runAgent: doneRun });
+
+    expect(await workflowStatus(workflow.id)).toBe("error");
+  });
+
+  it("recovers an unrunnable workflow once it has a recipient again", async () => {
     // Same contract as the unreachable-mailbox recovery above: `error` is a
     // health signal, not a latch. Re-assigning the workflow to a live user is
     // the fix, and the next pass has to show it worked.
-    const { workflow } = await seedUndeliverableWorkflow();
+    const { workflow } = await seedUnrunnableWorkflow();
 
     await runReconciliationSweep({ createPort: emptyMailbox, runAgent: doneRun });
     expect(await workflowStatus(workflow.id)).toBe("error");
@@ -729,30 +775,36 @@ describe("reconciliation sweep — workflow health status", () => {
     expect(await workflowStatus(workflow.id)).toBe("active");
   });
 
-  it("names an undeliverable workflow in the log once, not on every pass", async () => {
+  it("names an unrunnable workflow in the log once, not on every pass", async () => {
     // The sweep runs every minute and this condition cannot resolve itself, so
     // a line per pass is ~1400 identical lines a day per broken workflow — the
     // kind of volume that gets a whole logger filtered out. The durable trace is
     // the `status` column; the log line only timestamps the moment it changed,
     // so it is emitted on the transition into `error` and not again.
-    const { workflow } = await seedUndeliverableWorkflow();
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    let warned: string[] = [];
+    //
+    // At `error`, not `warn`: the sibling failure — a mailbox that won't open —
+    // logs at error on EVERY pass, and this one logs once in the workflow's
+    // lifetime. Giving the quieter signal the lower severity is backwards, and
+    // an operator filtering on error would see the loud fault and miss the
+    // silent one.
+    const { workflow } = await seedUnrunnableWorkflow();
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    let logged: string[] = [];
     try {
       await runReconciliationSweep({ createPort: emptyMailbox, runAgent: doneRun });
       await runReconciliationSweep({ createPort: emptyMailbox, runAgent: doneRun });
       // Read the calls BEFORE restoring: mockRestore() also clears mock.calls.
-      warned = warn.mock.calls.map((call) => String(call[0]));
+      logged = error.mock.calls.map((call) => String(call[0]));
     } finally {
-      warn.mockRestore();
+      error.mockRestore();
     }
 
     // Scoped to this test's own workflow: the sweep is global, and other suites
-    // seed undeliverable workflows of their own against the same database.
-    const mine = warned.filter((msg) => msg.includes(workflow.id));
+    // seed unrunnable workflows of their own against the same database.
+    const mine = logged.filter((msg) => msg.includes(workflow.id));
     expect(
       mine,
-      `expected exactly one warning for the workflow; warnings seen: ${JSON.stringify(warned)}`
+      `expected exactly one log line for the workflow; lines seen: ${JSON.stringify(logged)}`
     ).toHaveLength(1);
     // It has to say what to fix, and read sensibly for a workflow the reader
     // cannot look up — hence the snapshotted name beside the id.

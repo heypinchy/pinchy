@@ -169,9 +169,14 @@ The tab lists every workflow on the agent with its trigger (in plain words, not 
 
 - **Pending** — proposed but never yet run.
 - **Active** — enabled and running on its schedule.
-- **Error** — the workflow is switched on, but Pinchy can't run it. Either a mailbox it watches won't open (expired credentials, a wrong host), or there's nobody left to notify — on a shared agent, results go to whoever created the workflow, and that person's account has since been deleted. Pinchy names the workflow and the reason in the server log the moment this happens.
+- **Error** — the workflow is switched on, but Pinchy can't run it. There are three causes:
+  - A mailbox it watches won't open — expired credentials, a wrong host.
+  - It watches no mailboxes at all, because the integration was disconnected under **Settings → Integrations**. Removing a connection takes it out of every workflow that pointed at it.
+  - There's nobody left to notify: on a shared agent, results go to whoever created the workflow, and that person's account has since been deleted.
 
-An errored workflow stays switched on and keeps being retried, so there's nothing to re-enable: fix the cause and the next pass moves it back to **Active** by itself. To hand an orphaned workflow to someone else, delete it and create it again as the new owner.
+Pinchy names the workflow and the reason in the server log the first time a workflow lands in this state. After that the badge is the record, so if you missed the line, the three causes above are what to check.
+
+An errored workflow stays switched on and keeps being retried, so there's nothing to re-enable. Repair the connection's credentials and the next pass moves the workflow back to **Active** by itself. The other two causes can't be edited on an existing workflow: a workflow's mailboxes and its recipient are fixed when you create it, so delete it and create it again — pointed at the reconnected mailbox, and by the person who should receive the results.
 
 Use **Enable** / **Disable** to turn a workflow on or off, and **Delete** to remove one for good. Enabling is the human-gated step that turns a proposal into a live automation; disabling pauses it without deleting it.
 
