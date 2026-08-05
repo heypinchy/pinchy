@@ -2,7 +2,12 @@ import { NextResponse, after } from "next/server";
 import { revalidatePath } from "next/cache";
 import { eq, inArray } from "drizzle-orm";
 import { z } from "zod";
-import { updateAgent, deleteAgent, AGENT_NAME_MAX_LENGTH } from "@/lib/agents";
+import {
+  updateAgent,
+  deleteAgent,
+  AGENT_NAME_MAX_LENGTH,
+  AgentRuntimeUpdateError,
+} from "@/lib/agents";
 import { withAuth, withAdmin } from "@/lib/api-auth";
 import { getAgentWithAccess, requireAgentWriteAccess } from "@/lib/agent-access";
 import { appendAuditLog } from "@/lib/audit";
@@ -166,30 +171,11 @@ export const PATCH = withAuth<RouteContext>(async (request, { params }, session)
   if (body.personalityPresetId !== undefined) data.personalityPresetId = body.personalityPresetId;
   if (body.visibility !== undefined) data.visibility = body.visibility;
 
-  // updateAgent writes the row and THEN calls regenerateOpenClawConfig(); the
-  // two are not in a transaction, so a regeneration failure leaves the change
-  // persisted while the runtime keeps the old value. Letting the throw escape
-  // hands Next.js a 500 whose body carries no `error` field, and the client can
-  // only say "Failed to save some settings" — which is wrong in both
-  // directions and is exactly how #1095 stayed invisible for two days: the
-  // cause (EACCES on a root-owned TOOLS.md) lived solely in the container log.
+  // Build from/to changes diff.
   //
-  // Answer both questions instead: what persisted, and why the rest did not.
-  let agent;
-  try {
-    agent = Object.keys(data).length > 0 ? await updateAgent(agentId, data) : existingAgent;
-  } catch (err) {
-    const cause = err instanceof Error ? err.message : String(err);
-    console.error(`[agents] config regeneration failed for agent ${agentId}:`, err);
-    return NextResponse.json(
-      {
-        error: `Settings were saved, but the agent runtime was not updated: ${cause}`,
-      },
-      { status: 500 }
-    );
-  }
-
-  // Build from/to changes diff
+  // Derived from `data` and `existingAgent` alone, so it is built BEFORE the
+  // write — a regeneration failure still changed the row, and the audit entry
+  // for that change needs this diff (see the catch below).
   const changes: Record<string, { from: unknown; to: unknown }> = {};
   const diffFields = [
     "name",
@@ -225,6 +211,51 @@ export const PATCH = withAuth<RouteContext>(async (request, { params }, session)
     if (JSON.stringify(oldConfig) !== JSON.stringify(newConfig)) {
       changes.pluginConfig = { from: oldConfig, to: newConfig };
     }
+  }
+
+  // updateAgent writes the row and THEN calls regenerateOpenClawConfig(); the
+  // two are not in a transaction. Letting the throw escape hands Next.js a 500
+  // whose body carries no `error` field, and the client can only say "Failed to
+  // save some settings" — which is exactly how #1095 stayed invisible for two
+  // days: the cause (EACCES on a root-owned TOOLS.md) lived solely in the
+  // container log.
+  //
+  // The two failures need opposite answers, and only `updateAgent` knows which
+  // one happened — hence the error type rather than an errno guess here:
+  //
+  //   AgentRuntimeUpdateError → the row IS written, the runtime is stale. Say
+  //     so, and audit it: a state change with no audit entry is what AGENTS.md
+  //     forbids, and `outcome: "failure"` exists for precisely this shape.
+  //   anything else → the write itself failed, nothing persisted. Claiming it
+  //     was saved would stop the user retrying a change that never landed.
+  let agent: typeof existingAgent;
+  try {
+    agent = Object.keys(data).length > 0 ? await updateAgent(agentId, data) : existingAgent;
+  } catch (err) {
+    const cause = err instanceof Error ? err.message : String(err);
+
+    if (err instanceof AgentRuntimeUpdateError) {
+      console.error(`[agents] config regeneration failed for agent ${agentId}:`, err);
+      if (Object.keys(changes).length > 0) {
+        after(() =>
+          appendAuditLog({
+            actorType: "user",
+            actorId: session.user.id!,
+            eventType: "agent.updated",
+            resource: `agent:${agentId}`,
+            detail: { changes, runtimeUpdate: { applied: false, error: cause } },
+            outcome: "failure",
+          })
+        );
+      }
+      return NextResponse.json(
+        { error: `Settings were saved, but the agent runtime was not updated: ${cause}` },
+        { status: 500 }
+      );
+    }
+
+    console.error(`[agents] update failed for agent ${agentId}:`, err);
+    return NextResponse.json({ error: `Could not update the agent: ${cause}` }, { status: 500 });
   }
 
   // Capture old group IDs for audit diff (BEFORE delete/insert)

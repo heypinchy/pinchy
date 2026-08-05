@@ -242,12 +242,19 @@ Update an agent's settings. Any combination of fields can be included.
 - `401` — not authenticated
 - `403` — only admins can change `allowedTools` or `pluginConfig`
 - `404` — agent not found
-- `500` — the update was **saved**, but could not be applied to the agent runtime
+- `500` — the update failed, either before or after it was stored
 
-The `500` is worth handling deliberately, because it does not mean the request
-was rejected. Pinchy writes the agent row first and then regenerates the runtime
-configuration; if that second step fails, the change is already persisted and a
-later save (or a restart) applies it. The response body names the reason:
+The `500` is worth handling deliberately, because it covers two outcomes that
+call for different responses. Pinchy stores the agent row first and then
+regenerates the runtime configuration, and the message tells you which step
+gave out:
+
+```json
+{ "error": "Could not update the agent: <cause>" }
+```
+
+Nothing was stored. The agent is unchanged and the request can simply be
+repeated.
 
 ```json
 {
@@ -255,8 +262,11 @@ later save (or a restart) applies it. The response body names the reason:
 }
 ```
 
-Retrying is safe — the update is idempotent — but treating the change as
-discarded is not.
+The change **is** stored; only the runtime has not caught up. A later save or a
+restart applies it. Retrying is safe — the update is idempotent — but treating
+the change as discarded is not. Pinchy records this case in the audit trail as
+an `agent.updated` entry with outcome `failure`, so a change that reached the
+database but not the runtime still leaves a trace.
 
 ### `DELETE /api/agents/:id`
 

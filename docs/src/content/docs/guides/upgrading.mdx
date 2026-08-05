@@ -223,7 +223,7 @@ Two symptoms, one cause, and they didn't look related. Saving an agent's setting
 
 An affected install repairs itself on upgrade, with no manual step and nothing to configure. Pinchy now takes such a file back the moment it writes it — so the first save after upgrading is already the fix — and the runtime hands them over on start and on every tick as well, which also covers files Pinchy isn't currently writing.
 
-Saving also tells you what actually happened now: if a change is stored but can't reach the runtime, it says so and names the reason, instead of reporting a flat failure.
+Saving also tells you what actually happened now, instead of reporting a flat failure. A change that was stored but hasn't reached the agent yet says exactly that — and so does one that never got stored, which is the case where trying again is the right move. Both name the reason.
 
 #### Ollama Cloud catalog: one model removed, two gain vision
 

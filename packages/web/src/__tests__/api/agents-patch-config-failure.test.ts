@@ -15,6 +15,29 @@ import { NextRequest } from "next/server";
 // So the route must answer the two questions the flat message destroyed:
 // WHAT persisted, and WHY the rest did not.
 
+// `after()` defers the audit write past the response. Run it inline so the
+// assertions can see it, matching the convention in the other route tests.
+const pendingAfter: Promise<unknown>[] = [];
+async function flushAfter(): Promise<void> {
+  while (pendingAfter.length > 0) {
+    await Promise.allSettled(pendingAfter.splice(0));
+  }
+}
+vi.mock("next/server", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("next/server")>();
+  return {
+    ...actual,
+    after: vi.fn((fn: () => void | Promise<void>) => {
+      try {
+        const result = fn();
+        if (result instanceof Promise) pendingAfter.push(result.catch(() => {}));
+      } catch {
+        // Swallowed — matches Next's after() error handling.
+      }
+    }),
+  };
+});
+
 vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
 vi.mock("next/headers", () => ({ headers: vi.fn().mockResolvedValue(new Headers()) }));
 vi.mock("@/lib/audit", () => ({ appendAuditLog: vi.fn().mockResolvedValue(undefined) }));
@@ -70,7 +93,8 @@ vi.mock("@/db/schema", async (importOriginal) => {
 });
 
 import { auth } from "@/lib/auth";
-import { updateAgent } from "@/lib/agents";
+import { updateAgent, AgentRuntimeUpdateError } from "@/lib/agents";
+import { appendAuditLog } from "@/lib/audit";
 import { db } from "@/db";
 
 function mockAgent(agent: Record<string, unknown>) {
@@ -104,6 +128,21 @@ function eaccesOnToolsFile(): Error {
   return err;
 }
 
+const PERSISTED_ROW = {
+  id: "agent-1",
+  name: "Penny",
+  model: "ollama-cloud/deepseek-v4-pro",
+} as never;
+
+/**
+ * The row was written, the runtime push then failed — the production case.
+ * updateAgent marks this with its own error type precisely so the route does
+ * not have to guess which half broke.
+ */
+function runtimeFailure(): AgentRuntimeUpdateError {
+  return new AgentRuntimeUpdateError(PERSISTED_ROW, eaccesOnToolsFile());
+}
+
 describe("PATCH /api/agents/[agentId] — config regeneration failure (#1095)", () => {
   let PATCH: typeof import("@/app/api/agents/[agentId]/route").PATCH;
 
@@ -116,7 +155,7 @@ describe("PATCH /api/agents/[agentId] — config regeneration failure (#1095)", 
   it("answers with a JSON error instead of letting the throw escape to Next.js", async () => {
     adminSession();
     mockAgent({ id: "agent-1", name: "Penny", model: "old", isPersonal: false, ownerId: null });
-    vi.mocked(updateAgent).mockRejectedValueOnce(eaccesOnToolsFile());
+    vi.mocked(updateAgent).mockRejectedValueOnce(runtimeFailure());
 
     const res = await PATCH(patchModel(), { params: Promise.resolve({ agentId: "agent-1" }) });
 
@@ -129,7 +168,7 @@ describe("PATCH /api/agents/[agentId] — config regeneration failure (#1095)", 
   it("names the underlying cause, so the operator does not need container logs", async () => {
     adminSession();
     mockAgent({ id: "agent-1", name: "Penny", model: "old", isPersonal: false, ownerId: null });
-    vi.mocked(updateAgent).mockRejectedValueOnce(eaccesOnToolsFile());
+    vi.mocked(updateAgent).mockRejectedValueOnce(runtimeFailure());
 
     const res = await PATCH(patchModel(), { params: Promise.resolve({ agentId: "agent-1" }) });
 
@@ -143,7 +182,7 @@ describe("PATCH /api/agents/[agentId] — config regeneration failure (#1095)", 
   it("says the settings were saved but the runtime was not updated", async () => {
     adminSession();
     mockAgent({ id: "agent-1", name: "Penny", model: "old", isPersonal: false, ownerId: null });
-    vi.mocked(updateAgent).mockRejectedValueOnce(eaccesOnToolsFile());
+    vi.mocked(updateAgent).mockRejectedValueOnce(runtimeFailure());
 
     const res = await PATCH(patchModel(), { params: Promise.resolve({ agentId: "agent-1" }) });
 
@@ -153,5 +192,60 @@ describe("PATCH /api/agents/[agentId] — config regeneration failure (#1095)", 
     const { error } = (await res.json()) as { error: string };
     expect(error.toLowerCase()).toContain("saved");
     expect(error.toLowerCase()).toMatch(/runtime|restart|not applied/);
+  });
+
+  it("does NOT claim the settings were saved when the write itself failed", async () => {
+    // The other half of the same honesty problem. updateAgent throws from two
+    // places — the row write and the runtime push — and "Settings were saved"
+    // is only true for the second. Told it for a failed DB write, a user stops
+    // retrying a change that never landed, which is the flat message's mistake
+    // pointing the other way.
+    adminSession();
+    mockAgent({ id: "agent-1", name: "Penny", model: "old", isPersonal: false, ownerId: null });
+    vi.mocked(updateAgent).mockRejectedValueOnce(new Error("connection terminated unexpectedly"));
+
+    const res = await PATCH(patchModel(), { params: Promise.resolve({ agentId: "agent-1" }) });
+
+    expect(res.status).toBe(500);
+    const { error } = (await res.json()) as { error: string };
+    expect(error.toLowerCase()).not.toContain("saved");
+    expect(error).toContain("connection terminated unexpectedly");
+  });
+
+  it("writes an agent.updated audit row with outcome failure — the row DID change", async () => {
+    // A regeneration failure is a state change: the model column already holds
+    // the new value. AGENTS.md is explicit that every state-changing route
+    // writes an audit entry, and `outcome: "failure"` exists for exactly this.
+    // Returning 500 without one leaves the change with no trace at all.
+    adminSession();
+    mockAgent({ id: "agent-1", name: "Penny", model: "old", isPersonal: false, ownerId: null });
+    vi.mocked(updateAgent).mockRejectedValueOnce(runtimeFailure());
+
+    await PATCH(patchModel(), { params: Promise.resolve({ agentId: "agent-1" }) });
+    await flushAfter();
+
+    expect(appendAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: "agent.updated",
+        resource: "agent:agent-1",
+        outcome: "failure",
+        detail: expect.objectContaining({
+          changes: { model: { from: "old", to: "ollama-cloud/deepseek-v4-pro" } },
+        }) as unknown,
+      })
+    );
+  });
+
+  it("does not write an audit row when nothing was persisted", async () => {
+    // The mirror of the test above: a failed row write changed nothing, so an
+    // `agent.updated` row would assert a change that never happened.
+    adminSession();
+    mockAgent({ id: "agent-1", name: "Penny", model: "old", isPersonal: false, ownerId: null });
+    vi.mocked(updateAgent).mockRejectedValueOnce(new Error("connection terminated unexpectedly"));
+
+    await PATCH(patchModel(), { params: Promise.resolve({ agentId: "agent-1" }) });
+    await flushAfter();
+
+    expect(appendAuditLog).not.toHaveBeenCalled();
   });
 });

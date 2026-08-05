@@ -159,12 +159,45 @@ const OPENCLAW_CONFIG_FIELDS: (keyof UpdateAgentInput)[] = [
   "pluginConfig",
 ];
 
+/**
+ * The row was written; telling the runtime about it failed.
+ *
+ * `updateAgent` does two things that are not in a transaction, in this order:
+ * it updates the `agents` row, then regenerates `openclaw.json`. Both can
+ * throw, and the two failures need opposite handling — after the first nothing
+ * is persisted, after the second everything is, and only the runtime is stale.
+ *
+ * A caller that cannot tell them apart has to guess, and the first fix for
+ * #1095 guessed: it answered "Settings were saved, but the agent runtime was
+ * not updated" for both. For a failed row write that is the same class of
+ * unfounded claim as the flat "Failed to save some settings" it replaced —
+ * a user who believes it stops retrying a change that never landed.
+ *
+ * So the fact travels in the type. `agent` carries the row as persisted, which
+ * is what lets the caller write an honest audit entry for a change that really
+ * did happen.
+ */
+export class AgentRuntimeUpdateError extends Error {
+  readonly agent: typeof agents.$inferSelect;
+
+  constructor(agent: typeof agents.$inferSelect, cause: unknown) {
+    super(cause instanceof Error ? cause.message : String(cause), { cause });
+    this.name = "AgentRuntimeUpdateError";
+    this.agent = agent;
+  }
+}
+
 export async function updateAgent(id: string, data: UpdateAgentInput) {
   const [updated] = await db.update(agents).set(data).where(eq(agents.id, id)).returning();
 
   const touchesOpenClawConfig = OPENCLAW_CONFIG_FIELDS.some((field) => field in data);
   if (touchesOpenClawConfig) {
-    await regenerateOpenClawConfig();
+    try {
+      await regenerateOpenClawConfig();
+    } catch (err) {
+      // Past this point the row is committed — see AgentRuntimeUpdateError.
+      throw new AgentRuntimeUpdateError(updated, err);
+    }
   }
 
   return updated;

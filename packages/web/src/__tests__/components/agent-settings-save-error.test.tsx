@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import "@testing-library/jest-dom";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -120,9 +120,19 @@ async function save(user: ReturnType<typeof userEvent.setup>) {
   await user.click(dialogButtons[dialogButtons.length - 1]);
 }
 
+const realFetch = global.fetch;
+
 describe("agent settings save — surfacing why a save failed (#1095)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    // `global.fetch` is process-wide. Vitest isolates test files today, so a
+    // leak would not cross into another file — but that is a property of the
+    // runner's config, not of this test, and it is one config flag away from
+    // being false.
+    global.fetch = realFetch;
   });
 
   it("shows the server's error message instead of a flat 'Failed to save'", async () => {
