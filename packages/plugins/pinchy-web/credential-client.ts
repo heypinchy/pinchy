@@ -122,8 +122,11 @@ const AUTH_MESSAGE_PATTERNS: readonly RegExp[] = [
   /\bauthentication (failed|error|required|denied)\b/,
   /\bfailed to authenticate\b/,
   // "invalid api key" (Odoo), "Invalid Credentials" (Gmail/IMAP),
-  // "invalid_grant" (OAuth refresh).
-  /\binvalid[ _-]?(api[ _-]?key|credentials?|token|grant|authentication)\b/,
+  // "invalid_grant" (OAuth refresh). `api (key|token)` and not just
+  // `api key`: pinchy-web's matcher tested the bare prefix "invalid api", so
+  // dropping "invalid api token" would be a narrowing beyond the one this
+  // module set out to make — digits, not words.
+  /\binvalid[ _-]?(api[ _-]?(key|token)|credentials?|token|grant|authentication)\b/,
   // Graph: "Access token has expired or is not yet valid."
   /\b(access[ _-]?)?token (has |have )?(been )?expired\b/,
   /\bexpired[ _-](access[ _-]?)?token\b/,

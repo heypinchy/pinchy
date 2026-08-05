@@ -80,4 +80,25 @@ describe("credential-client drift guard", () => {
       );
     }
   });
+
+  it("a plugin that tracks mutations also reads the flag", () => {
+    // `trackMutations` is a tripwire only while something acts on what it
+    // sets, and nothing else covers that: deleting `if (mutated) throw err`
+    // from pinchy-odoo/index.ts leaves all 493 of that plugin's tests green.
+    // It has to, in fact — the gate fires only for a closure that performs a
+    // step AFTER its mutating call, and no closure in the tree does, which is
+    // exactly why the gate is here. So the wiring cannot be proved by running
+    // it, and a textual check is the honest remaining option.
+    //
+    // Derived from the source, not from a list of plugins: the day a write
+    // tool lands in pinchy-web, it is covered the moment it wraps a client.
+    for (const plugin of [REFERENCE_PLUGIN, ...COPY_PLUGINS]) {
+      const index = readFileSync(resolve(PLUGINS_DIR, plugin, "index.ts"), "utf-8");
+      if (!/\btrackMutations\s*\(/.test(index)) continue;
+      expect(
+        index,
+        `${plugin}/index.ts wraps a client in trackMutations but never gates the retry on it`
+      ).toMatch(/if\s*\(\s*mutated\s*\)\s*(throw|return)\b/);
+    }
+  });
 });

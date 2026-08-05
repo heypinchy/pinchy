@@ -67,6 +67,17 @@ describe("isAuthError", () => {
     expect(isAuthError(err)).toBe(true);
   });
 
+  it("needs the status for Graph's own 401 body, whose words match nothing", () => {
+    // Graph names its reason in an error CODE, not in prose:
+    // `{"error":{"code":"InvalidAuthenticationToken", …}}`. "invalidauthenticationtoken"
+    // has no word boundary where the patterns need one, so the message alone
+    // is not classified — asserted here so that stays a deliberate fact and
+    // not an accident someone "fixes" by loosening a pattern.
+    const body = 'Graph 401: {"error":{"code":"InvalidAuthenticationToken","message":"x"}}';
+    expect(isAuthError(new Error(body))).toBe(false);
+    expect(isAuthError(Object.assign(new Error(body), { status: 401 }))).toBe(true);
+  });
+
   it("does not classify other structured statuses", () => {
     expect(isAuthError(Object.assign(new Error("nope"), { status: 500 }))).toBe(false);
     // 403 is an authorization/scope problem: a fresh token is the same token
@@ -84,6 +95,8 @@ describe("isAuthError", () => {
     ["HTTP 401: Invalid Credentials"],
     ["invalid_grant"],
     ["Invalid API key"],
+    // pinchy-web's old matcher caught this on the bare prefix "invalid api".
+    ["Invalid API token"],
     ["Access token has expired"],
     ["The session expired, please sign in again"],
     ["Expired access token"],
