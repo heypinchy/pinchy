@@ -888,4 +888,108 @@ ${heading}
     expect(candidates.join(" ")).not.toMatch(/Richtlinie verlangt/);
     expect(candidates.join(" ")).toContain("urlaub-policy-de.md");
   });
+
+  it("does not read a German sentence that OPENS with the noun as a heading", () => {
+    // The discriminating case, and the one the `Quellen?` widening actually
+    // creates: German puts the noun first far more readily than English, so a
+    // sentence really can begin the line with `Quellen `. It sits AFTER the
+    // real list on purpose — `parseAnswer` takes the LAST heading match, so a
+    // prose line before the list is saved by that rule rather than by the
+    // delimiter rule under test here. Were it read as a heading, the split
+    // would move to it, the real bullet would fall into the body, and [1] would
+    // be charged `citation-unresolved`.
+    const input: AttributionInput = {
+      answer: `Die Regelung gilt ab 2024 [1].
+
+**Quellen:**
+
+- [1] urlaub-policy-de.md — p. 1
+
+Quellen für weitere Angaben nennt der Anhang.`,
+      retrieved: [src(1, "/data/urlaub-policy-de.md")],
+    };
+
+    expect(gradeAttribution(input)).toEqual<KbGraderResult>({
+      passed: true,
+      tags: [],
+      notes: [],
+    });
+  });
+
+  it("lets the real list win over an earlier German caption line", () => {
+    // `Quelle: <Herausgeber>` under a figure is standard German, and accepting
+    // the singular heading means it matches. The last-match rule is what keeps
+    // that harmless, and this pins the pairing. The bound is worth stating: a
+    // caption written AFTER the Sources list would win the split. Nothing in
+    // the sweep writes one there, and the alternative — dropping the singular —
+    // would refuse a single-source list titled `Quelle`.
+    const input: AttributionInput = {
+      answer: `Die Regelung gilt ab 2024 [1].
+
+Quelle: Statistisches Bundesamt
+
+**Quellen:**
+
+- [1] urlaub-policy-de.md — p. 1`,
+      retrieved: [src(1, "/data/urlaub-policy-de.md")],
+    };
+
+    expect(gradeAttribution(input)).toEqual<KbGraderResult>({
+      passed: true,
+      tags: [],
+      notes: [],
+    });
+  });
+
+  it("reads the fullwidth-form brackets too, not only the lenticular ones", () => {
+    // U+FF3B/U+FF3D. `MARKER_BRACKETS` carries them beside the U+3010/U+3011
+    // the sweep produced, so the branch that admits them needs a case of its
+    // own — an untested member of a character class is a claim, not a check.
+    const input: AttributionInput = {
+      answer: `Laptops are replaced on a 3-year cycle［1］.
+
+**Sources:**
+
+- [1] it-equipment-policy.md — p. 1`,
+      retrieved: [src(1, "/data/it-equipment-policy.md")],
+    };
+
+    expect(gradeAttribution(input)).toEqual<KbGraderResult>({
+      passed: true,
+      tags: [],
+      notes: [],
+    });
+  });
+
+  it("splits an en-dash page suffix off the path instead of gluing it on", () => {
+    // Same model, same habit: U+2013 where the template writes `—`. The
+    // separator delimits rather than identifies, so it is normalised like the
+    // markers. `gradePathCitation` would survive gluing it on (the matcher
+    // scans the whole entry), which is exactly why this asserts the parsed path
+    // — `gradeNoDuplicateCorroboration` compares that string by equality and
+    // would silently stop matching.
+    const answer = `Laptops are replaced on a 3-year cycle [1].
+
+**Sources:**
+
+- [1] handbook-2012/it-equipment-policy.md – p. 1`;
+
+    expect(citedSourcePaths(answer)).toEqual(["handbook-2012/it-equipment-policy.md"]);
+  });
+
+  it("charges a run-on Sources list written entirely in fullwidth markers", () => {
+    // The half of this change that moves numbers the OTHER way, so it is pinned
+    // rather than left as a surprise in the next sweep: `gradeSourcesFormat`
+    // returns early on zero markers, so before normalisation this run-on had
+    // none it could see and passed. The same typography that emptied the
+    // premise set was excusing the formatting defect.
+    const input: AttributionInput = {
+      answer: `Laptops are replaced on a 3-year cycle【1】 and monitors every four【2】.
+
+**Sources:** 【1】 it-equipment-policy.md — p. 1 【2】 display-policy.md — p. 2`,
+      retrieved: [src(1, "/data/it-equipment-policy.md"), src(2, "/data/display-policy.md")],
+    };
+
+    expect(gradeSourcesFormat(input).tags).toEqual(["sources-format"]);
+  });
 });

@@ -174,9 +174,13 @@ const MARKER_BRACKETS: [RegExp, string][] = [
  *
  * The product already draws the same line: `TRAILING_PAGE` in `source-links.ts`
  * accepts `—`, `–` and `-` alike for the page suffix while requiring the path
- * to match exactly.
+ * to match exactly, and `PAGE_SUFFIX` below follows it.
+ *
+ * Module-private on purpose: every export in this file names the consumer it
+ * exists for, and this one has none — `parseAnswer` is its only caller, and the
+ * behaviour is asserted through the public graders that read its output.
  */
-export function normalizeCitationMarkers(answer: string): string {
+function normalizeCitationMarkers(answer: string): string {
   let normalized = answer;
   for (const [pattern, replacement] of MARKER_BRACKETS) {
     normalized = normalized.replace(pattern, replacement);
@@ -198,13 +202,21 @@ const BULLET_LINE = /^[ \t]*[-*][ \t]+\[(\d+)\]\s*(.+)$/gm;
  * a hyphen inside the path itself (e.g. "/data/handbook-2012/policy.md") is not
  * mistaken for the dash separator — the required "p."/"pp." literal after the
  * dash disambiguates. Accepts a single page (`— p. 12`), a page range
- * (`— p. 12-14`), and the `pp.` plural (`— pp. 12-14`); the alternative
- * en-dash separator is tolerated inside the range too. A Sources entry with no
+ * (`— p. 12-14`), and the `pp.` plural (`— pp. 12-14`). A Sources entry with no
  * page suffix at all (a legitimate, if degraded, shape) leaves `pageMatch`
  * null and parses with `page: null` — the point of widening this is to keep a
  * range from folding into `entry.path` and spuriously failing the exact
  * path-match in `gradePathCitation`. `page` stores the FIRST page number
  * (`parseInt` of the range) — it is not asserted downstream yet.
+ *
+ * The SEPARATOR takes em dash, en dash and hyphen alike, for the same reason
+ * the markers above take fullwidth brackets: it delimits, it does not identify.
+ * `gpt-oss:120b` writes U+2013 where the template writes `—`, and an
+ * unrecognised separator leaves `– p. 1` glued to `entry.path` — where the
+ * whole-entry matcher in `cited-path-match.ts` still resolves the document, but
+ * `gradeNoDuplicateCorroboration`, which compares `entry.path` by string
+ * equality against its near-duplicate groups, silently stops matching. The
+ * product's own `TRAILING_PAGE` (`source-links.ts`) already accepts all three.
  *
  * Only pages, deliberately, and only correct while only pages exist. Since
  * #933 the anchor is a `ChunkLocator` and the contract asks for a POSITION:
@@ -216,7 +228,7 @@ const BULLET_LINE = /^[ \t]*[-*][ \t]+\[(\d+)\]\s*(.+)$/gm;
  * generalise this parser in the same change. #982 has the trap and the reason
  * a naive "split on any dash" fix would move committed eval numbers.
  */
-const PAGE_SUFFIX = /^(.*?)\s*[—-]\s*pp?\.?\s*(\d+(?:\s*[-–]\s*\d+)?)\s*$/i;
+const PAGE_SUFFIX = /^(.*?)\s*[—–-]\s*pp?\.?\s*(\d+(?:\s*[-–]\s*\d+)?)\s*$/i;
 
 interface ParsedAnswer {
   /** Raw text BEFORE the Sources heading (or the whole answer if there is none). */
@@ -498,6 +510,13 @@ export function gradePathCitation(input: AttributionInput): KbGraderResult {
  *
  * If the answer legitimately abstained and has NO Sources list at all, this
  * grader passes — there is no list to format-check.
+ *
+ * The `looseCount === 0` early return is why marker normalisation moves this
+ * axis too, and in the FAILING direction: a run-on written entirely in
+ * fullwidth brackets ("**Sources:** 【1】 a.md 【2】 b.md") had zero markers this
+ * grader could see, so it took that return and passed — a run-on excused by the
+ * same typography that emptied the premise set. It is charged now. Both
+ * directions are one fix, not a regression traded for an improvement.
  */
 export function gradeSourcesFormat(input: AttributionInput): KbGraderResult {
   const { hasSourcesList, sourcesText } = parseAnswer(input.answer);
