@@ -27,24 +27,20 @@ if [ -z "$TAG" ]; then
   TAG=$(git -C "$REPO_ROOT" describe --tags --exact-match 2>/dev/null || true)
 fi
 
-# Fall back to package.json
+# Fall back to the newest release upgrading.mdx records as shipped.
+#
+# NOT packages/web/package.json. That was the same number until #1044 split
+# "what should I pull?" from "what is this tree?" — since then it declares
+# `<next>-dev` at every moment that is not a release commit, and
+# %%PINCHY_VERSION%% renders into `docker pull` lines and raw.githubusercontent
+# URLs, which need a tag that exists rather than the tree's own identity.
+#
+# This branch is not the hand-built-docs corner it looks like: `pnpm -C docs
+# build` takes it locally AND in CI's `quality` job, neither of which passes
+# PINCHY_VERSION and neither of which publishes anything. So it must resolve.
+# See docs/scripts/version-fallback.test.mjs.
 if [ -z "$TAG" ]; then
-  VERSION=$(node -p "require('$REPO_ROOT/packages/web/package.json').version" 2>/dev/null || true)
-  # Since #1044 this file declares `<next>-dev` at every moment that is not a
-  # release commit. %%PINCHY_VERSION%% is rendered into `docker pull` lines and
-  # raw.githubusercontent URLs, so a `-dev` version here publishes install
-  # instructions naming a tag that does not exist. Refuse rather than render it:
-  # both real callers already pass the version (release.yml from the tag,
-  # docs.yml as a required input), so reaching this branch on a dev tree means
-  # somebody built docs by hand and needs to say which version they meant.
-  case "$VERSION" in
-    *-dev)
-      echo "ERROR: packages/web/package.json declares $VERSION, a development version." >&2
-      echo "       %%PINCHY_VERSION%% would render an image tag that does not exist." >&2
-      echo "       Pass the version explicitly: PINCHY_VERSION=vX.Y.Z $0" >&2
-      exit 1
-      ;;
-  esac
+  VERSION=$(node "$DOCS_DIR/scripts/newest-released-version.mjs" "$REPO_ROOT" || true)
   if [ -n "$VERSION" ]; then
     TAG="v$VERSION"
   fi
