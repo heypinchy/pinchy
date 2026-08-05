@@ -186,10 +186,17 @@ export async function sweepAuditVerify(): Promise<AuditVerifySweepResult> {
 
   const cappedInvalidIds = result.invalidIds.slice(0, MAX_REPORTED_IDS);
   const cappedChainBreakIds = result.chainBreakIds.slice(0, MAX_REPORTED_IDS);
-  // A sweep straddling a signing-secret rotation sees the pre-rotation rows
-  // once — the checkpoint then moves past them, so this is the only sweep that
-  // can report it. Recording it in the audit log itself is what makes the
-  // rotation durable evidence, instead of a stderr line nobody reads (#599).
+  // When a sweep does straddle a signing-secret rotation it sees those rows
+  // once — the checkpoint then moves past them — so recording the ids here is
+  // what turns the rotation into durable evidence rather than a stderr line
+  // nobody reads (#599).
+  //
+  // It is not a reliable notice, and must not be read as one. This sweep scans
+  // forward from the checkpoint, so it reports only pre-rotation rows that were
+  // still above it when the key changed — up to one interval's worth. On an
+  // instance that was quiet before the restart the checkpoint sits at the tip
+  // and this stays 0 forever. The unconditional notice is the startup warning
+  // (evaluateAuditSecretRotation, server.ts).
   const cappedPreviousKeyIds = result.previousKeyIds.slice(0, MAX_REPORTED_IDS);
 
   const entry = {

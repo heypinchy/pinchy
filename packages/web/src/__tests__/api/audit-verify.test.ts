@@ -50,6 +50,27 @@ describe("GET /api/audit/verify", () => {
     expect(body.invalidIds).toEqual([]);
   });
 
+  it("should pass previousKeyIds through to the client", async () => {
+    // The banner that says "key change, not tampering" reads this field, and
+    // its component test mocks fetch — so nothing but this pins the wire.
+    // Assert what the URL resolves to, not what the handler intended.
+    mockVerifyIntegrity.mockResolvedValue({
+      valid: true,
+      totalChecked: 10,
+      invalidIds: [],
+      chainBreakIds: [],
+      previousKeyIds: [1, 2],
+    });
+
+    const { GET } = await import("@/app/api/audit/verify/route");
+    const request = new Request("http://localhost/api/audit/verify");
+    const response = await GET(request as any);
+    const body = await response.json();
+
+    expect(body.previousKeyIds).toEqual([1, 2]);
+    expect(body.valid).toBe(true);
+  });
+
   it("should return invalid IDs when entries are tampered", async () => {
     mockVerifyIntegrity.mockResolvedValue({
       valid: false,

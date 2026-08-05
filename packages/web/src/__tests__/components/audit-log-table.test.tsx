@@ -407,6 +407,37 @@ describe("AuditLogTable", () => {
     });
   });
 
+  it("should still name the signing-secret change when tampering is also found", async () => {
+    // The rotation note belongs in BOTH banners. A partly-rotated log with a
+    // real violation in it is exactly the moment an investigator needs to know
+    // which rows verify under which key — showing it only on the green banner
+    // hides it from the one reader who has to act on it.
+    renderWithEntriesLoaded();
+
+    await waitFor(() => {
+      expect(screen.getAllByText("auth.login").length).toBeGreaterThan(0);
+    });
+
+    vi.mocked(global.fetch).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        valid: false,
+        totalChecked: 9,
+        invalidIds: [3],
+        chainBreakIds: [],
+        previousKeyIds: [1, 2],
+      }),
+    } as Response);
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Verify Integrity" }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/1 tampered entries/)).toBeInTheDocument();
+    });
+    expect(screen.getByText(/2 were signed with an earlier audit secret/)).toBeInTheDocument();
+  });
+
   it("should show secondary badge for all event types including deleted/failed", async () => {
     renderWithEntriesLoaded();
 

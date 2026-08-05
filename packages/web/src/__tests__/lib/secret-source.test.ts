@@ -26,6 +26,7 @@ import {
   getDbPasswordSource,
   getSecretsProvenance,
   evaluateDbPasswordPolicy,
+  evaluateAuditSecretRotation,
 } from "@/lib/secret-source";
 
 const mockedExistsSync = vi.mocked(existsSync);
@@ -195,5 +196,39 @@ describe("evaluateDbPasswordPolicy", () => {
         databaseUrl: `postgresql://pinchy:${generated}@db:5432/pinchy`,
       }).action
     ).toBe("none");
+  });
+});
+
+describe("evaluateAuditSecretRotation", () => {
+  // Pinning AUDIT_HMAC_SECRET over a secret Pinchy generated leaves the log
+  // signed under two keys. verifyIntegrity handles it, but only when somebody
+  // clicks "Verify Integrity" — and the periodic sweep sees the pre-rotation
+  // rows only if the checkpoint happened to lag the tip when the key changed.
+  // On a quiet instance it never reports the rotation at all. So the state has
+  // to announce itself at startup, the same way #156 announces the database
+  // password: warn loudly, never refuse to start.
+  it("warns when the environment variable superseded a generated secret", () => {
+    const result = evaluateAuditSecretRotation({ hasSupersededSecret: true });
+
+    expect(result.action).toBe("warn");
+    expect(result.message).toMatch(/AUDIT_HMAC_SECRET/);
+    // The two facts an operator has to act on: older rows are fine, and the
+    // volume holding the key that proves it must stay backed up.
+    expect(result.message).toMatch(/not.*tamper|tamper.*not/i);
+    expect(result.message).toMatch(/pinchy-secrets/);
+  });
+
+  it("is silent when nothing was superseded", () => {
+    expect(evaluateAuditSecretRotation({ hasSupersededSecret: false })).toEqual({
+      action: "none",
+    });
+  });
+
+  it("never puts a key value in the message", () => {
+    // #156's rule for this whole module: surface WHERE a secret comes from,
+    // never its value. The policy takes a boolean precisely so no key can
+    // reach it, and this pins that signature.
+    const result = evaluateAuditSecretRotation({ hasSupersededSecret: true });
+    expect(result.message).not.toMatch(/[0-9a-f]{32}/i);
   });
 });

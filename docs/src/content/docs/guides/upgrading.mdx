@@ -251,6 +251,8 @@ curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/%%PINCHY_VERSION%%
 
 **If you already have a value in `.env`, that switches the key your audit trail is signed with.** Entries written before the switch keep their old signature, and they're neither lost nor damaged: Pinchy still holds the previous key in the `pinchy-secrets` volume, so integrity verification reports those rows as signed with an earlier secret instead of flagging them as tampered. The hash chain is unaffected either way — it links each row to its predecessor's stored signature, whichever key produced it.
 
+You won't have to remember which install this happened on: while the pinned value differs from the key in the volume, Pinchy says so in the container log on every start (`docker compose logs pinchy`).
+
 Two things follow. Keep backing up the `pinchy-secrets` volume: that's where the previous key lives, and verifying older entries depends on it. And if you'd rather not switch keys, remove the line from `.env` before you restart — Pinchy carries on with the generated one.
 
 Pin it on a fresh install, or when you run several Pinchy instances against one database. That second case is the one it exists for: without a shared secret each instance derives different actor pseudonyms, and no single instance can show a user's full history. See [Secrets](/reference/environment-variables/#secrets).

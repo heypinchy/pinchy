@@ -428,27 +428,35 @@ export function AuditLogTable() {
               : "border-red-500 bg-red-50 text-red-800 dark:bg-red-950 dark:text-red-200"
           }`}
         >
-          {verifyResult.valid ? (
-            <span>
-              All {verifyResult.totalChecked} entries verified. Integrity intact.
-              {/* Naming the rotation matters: without it these rows either read
-                  as tampered (before previousKeyIds existed) or vanish into a
-                  green "all clear" that hides a key change from an auditor. */}
-              {verifyResult.previousKeyIds && verifyResult.previousKeyIds.length > 0 && (
-                <>
-                  {" "}
-                  {verifyResult.previousKeyIds.length} were signed with an earlier audit secret and
-                  verify against it — that&apos;s a key change, not tampering.
-                </>
-              )}
-            </span>
-          ) : (
-            <span>
-              {verifyResult.invalidIds.length} tampered entries detected out of{" "}
-              {verifyResult.totalChecked} checked. Tampered entries are highlighted in the table
-              below.
-            </span>
-          )}
+          {/* Naming the rotation matters: without it these rows either read as
+              tampered (before previousKeyIds existed) or vanish into a green
+              "all clear" that hides a key change from an auditor. It belongs on
+              BOTH banners — a partly-rotated log with a real violation in it is
+              exactly when a reader needs to know which rows verify under which
+              key. */}
+          {(() => {
+            const rotated = verifyResult.previousKeyIds?.length ?? 0;
+            const rotationNote = rotated > 0 && (
+              <>
+                {" "}
+                {rotated} were signed with an earlier audit secret and verify against it —
+                that&apos;s a key change, not tampering.
+              </>
+            );
+            return verifyResult.valid ? (
+              <span>
+                All {verifyResult.totalChecked} entries verified. Integrity intact.
+                {rotationNote}
+              </span>
+            ) : (
+              <span>
+                {verifyResult.invalidIds.length} tampered entries detected out of{" "}
+                {verifyResult.totalChecked} checked. Tampered entries are highlighted in the table
+                below.
+                {rotationNote}
+              </span>
+            );
+          })()}
           <Button
             variant="ghost"
             size="sm"

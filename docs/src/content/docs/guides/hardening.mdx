@@ -377,7 +377,7 @@ AUDIT_HMAC_SECRET=your-generated-hex-string
 ```
 
 :::caution
-Changing the HMAC secret does not invalidate the entries already signed under the old one, as long as Pinchy can still reach that old key. When you set this variable over a secret Pinchy generated, the generated key stays in the `pinchy-secrets` volume and verification reports the older rows as signed with an earlier secret — not as tampered.
+Changing the HMAC secret does not invalidate the entries already signed under the old one, as long as Pinchy can still reach that old key. When you set this variable over a secret Pinchy generated, the generated key stays in the `pinchy-secrets` volume and verification reports the older rows as signed with an earlier secret — not as tampered. Pinchy logs a notice on every start while that is the case, so the state is visible in `docker compose logs pinchy` rather than only in a verification report.
 
 What you cannot undo is deleting a key. Overwrite the file in `pinchy-secrets`, or lose the volume without having the value elsewhere, and every entry signed under it becomes unverifiable for good. Back the volume up, and keep any value you pin in `.env` somewhere safe. See [Audit Trail Verification](/concepts/audit-trail-verification/).
 :::

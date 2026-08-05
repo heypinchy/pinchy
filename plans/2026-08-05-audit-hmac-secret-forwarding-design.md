@@ -96,8 +96,27 @@ historical keys, keep records signed under a previous key verifiable.
    the passthrough creates. An operator who overwrites the _file_ has genuinely
    destroyed the old key and nothing can recover it.
 
-3. **Early notice.** A structured warning when the previous-key situation is
-   detected, so it does not wait for a verify click.
+3. **Early notice.** `evaluateAuditSecretRotation` (`lib/secret-source.ts`),
+   called from `server.ts`, warns on every boot while the env var supersedes a
+   generated key. Same house rule as the #156 policy one function up: warn
+   loudly, never refuse to start.
+
+   Neither of the two other surfaces can carry this. The admin-triggered verify
+   may be months away and plausibly mid-investigation — that lateness is the
+   defect, not the report. And the periodic sweep scans **forward from a
+   checkpoint**: it reports pre-rotation rows only if any were still above that
+   checkpoint when the key changed, so on an instance that was quiet before the
+   restart it stays 0 forever. Its `previousKeyCount` is worth recording — a
+   sweep that does straddle the rotation makes it durable evidence — but it is
+   not a notice.
+
+   Repeating on every boot is deliberate. The two-key state is permanent (the
+   log is append-only, so those rows never age out), and so is what the operator
+   must keep doing about it: back up the volume holding the older key.
+
+   The policy takes a boolean, never the key. #156's rule for that module is to
+   surface where a secret comes from and never its value, and a signature that
+   cannot accept a key cannot leak one.
 
 4. **Docs.** Rewrite the `AUDIT_HMAC_SECRET` entries in `installation.mdx`,
    `hardening.mdx`, `reference/environment-variables.mdx` (drop the override-file

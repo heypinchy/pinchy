@@ -51,7 +51,8 @@ import { seedSessionCache } from "./src/server/session-cache-seeder";
 import { readGatewayToken } from "./src/lib/gateway-token-reader";
 import { regenerateOpenClawConfig } from "./src/lib/openclaw-config";
 import { SERVER_WS_MAX_PAYLOAD_BYTES } from "./src/lib/limits";
-import { evaluateDbPasswordPolicy } from "./src/lib/secret-source";
+import { evaluateAuditSecretRotation, evaluateDbPasswordPolicy } from "./src/lib/secret-source";
+import { getPreviousSecret } from "./src/lib/encryption";
 import { exitOnStartupFailure } from "./src/server/startup-failure";
 
 logCapture.install();
@@ -94,6 +95,18 @@ const dbPasswordPolicy = evaluateDbPasswordPolicy({
 });
 if (dbPasswordPolicy.action === "warn") {
   console.warn(dbPasswordPolicy.message);
+}
+
+// An operator who pins AUDIT_HMAC_SECRET over the generated key changes what
+// the audit log is signed with. That is supported and handled, but nothing
+// else announces it: the admin-triggered verify may be months away, and the
+// periodic sweep only catches pre-rotation rows that were still above its
+// checkpoint. Say it here, on every boot, while the operator is watching.
+const auditSecretPolicy = evaluateAuditSecretRotation({
+  hasSupersededSecret: getPreviousSecret("audit_hmac_secret") !== null,
+});
+if (auditSecretPolicy.action === "warn") {
+  console.warn(auditSecretPolicy.message);
 }
 
 const startup = app.prepare().then(async () => {

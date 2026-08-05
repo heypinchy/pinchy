@@ -99,3 +99,51 @@ export function evaluateDbPasswordPolicy(opts: {
     message: "WARNING: Using default DB_PASSWORD. Set a secure password via .env for production.",
   };
 }
+
+export interface AuditSecretPolicyResult {
+  action: "warn" | "none";
+  message?: string;
+}
+
+/**
+ * Pinning `AUDIT_HMAC_SECRET` over a secret Pinchy generated leaves the audit
+ * log signed under two keys. `verifyIntegrity` handles that — rows signed with
+ * the superseded key land in `previousKeyIds` instead of `invalidIds` — but
+ * only when somebody asks. Nothing announces the state on its own:
+ *
+ *   - The **admin** sees it when they click "Verify Integrity", which may be
+ *     months later and plausibly mid-investigation.
+ *   - The **periodic sweep** scans forward from a checkpoint, so it reports the
+ *     rotation only for pre-rotation rows that were still above that checkpoint
+ *     when the key changed. On an instance that was quiet before the restart,
+ *     the checkpoint sits at the tip and no sweep ever reports it.
+ *
+ * So the state announces itself at startup instead. Same house rule as #156
+ * one function up: warn loudly, never refuse to start. A rotation is a
+ * documented, supported upgrade step — not a reason to hold an install down.
+ *
+ * The warning repeats on every boot on purpose. The two-key state is permanent
+ * (the log is append-only, so those rows never age out), and so is the thing
+ * the operator has to keep doing about it: back up the volume holding the key
+ * that proves they are authentic.
+ *
+ * Takes a boolean, never the key. This module's rule since #156 is to surface
+ * WHERE a secret comes from and never its value; a signature that cannot
+ * accept a key cannot leak one.
+ */
+export function evaluateAuditSecretRotation(opts: {
+  hasSupersededSecret: boolean;
+}): AuditSecretPolicyResult {
+  if (!opts.hasSupersededSecret) return { action: "none" };
+
+  return {
+    action: "warn",
+    message:
+      "NOTICE: AUDIT_HMAC_SECRET is set and differs from the audit signing key " +
+      "in the secrets volume. Entries written before this start are signed with " +
+      "the older key — integrity verification reports them as signed with an " +
+      "earlier secret, not as tampered. Verifying them depends on that key, so " +
+      "keep backing up the pinchy-secrets volume. If you did not mean to change " +
+      "the key, remove AUDIT_HMAC_SECRET from your .env and restart.",
+  };
+}
