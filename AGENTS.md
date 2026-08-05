@@ -590,6 +590,7 @@ Useful web package commands:
 pnpm -C packages/web lint
 pnpm -C packages/web db:generate
 pnpm -C packages/web test
+pnpm -C packages/web test:coverage
 pnpm -C packages/web test:db
 pnpm -C packages/web test:e2e
 pnpm -C packages/web test:e2e:telegram
@@ -598,6 +599,8 @@ pnpm -C packages/web test:e2e:web
 pnpm -C packages/web test:e2e:email
 pnpm -C packages/web test:integration
 ```
+
+`test:coverage` runs the same suite as `test` with `@vitest/coverage-v8` instrumentation, for on-demand local investigation of untested code. It is not wired into CI — a coverage percentage is a signal to look at, not a threshold to gate on.
 
 Docs commands:
 
