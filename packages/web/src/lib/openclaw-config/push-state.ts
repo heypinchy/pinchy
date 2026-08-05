@@ -43,8 +43,27 @@ declare global {
 }
 
 function state(): ConfigPushState {
-  globalThis.__pinchyConfigPushState ??= { pending: 0, generation: 0 };
-  return globalThis.__pinchyConfigPushState;
+  // Normalize the FIELDS, not just the object. globalThis outlives a module
+  // reload — that is the whole reason this state lives here — so the object
+  // found here can have been written by a PREVIOUS version of this module,
+  // and `??=` leaves an existing object untouched. A dev server that was
+  // already running when `generation` was added holds `{ pending: N }`; the
+  // missing field then reads as undefined, `++undefined` is NaN, and
+  // `NaN !== NaN` makes every push take the superseded branch on its very
+  // first retry iteration. No config change reaches config.apply, none
+  // reaches the file fallback either, for the life of the process — with a
+  // `gen=NaN` log line as the only trace. Same shape in the other field: a
+  // NaN pending count makes `/api/health/openclaw` serve
+  // `configPushesPending: null` while the E2E stability gates wait for a 0
+  // that can never arrive.
+  const existing = globalThis.__pinchyConfigPushState as Partial<ConfigPushState> | undefined;
+  if (!existing) {
+    globalThis.__pinchyConfigPushState = { pending: 0, generation: 0 };
+    return globalThis.__pinchyConfigPushState;
+  }
+  existing.pending ??= 0;
+  existing.generation ??= 0;
+  return existing as ConfigPushState;
 }
 
 /** Record that a `pushConfigInBackground` coroutine has started. */

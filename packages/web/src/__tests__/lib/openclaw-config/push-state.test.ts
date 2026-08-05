@@ -20,12 +20,22 @@ import {
   trackConfigPushStarted,
   trackConfigPushSettled,
   getPendingConfigPushCount,
+  nextConfigPushGeneration,
+  getCurrentConfigPushGeneration,
   _resetConfigPushState,
 } from "@/lib/openclaw-config/push-state";
 
 describe("config push pending-state tracker", () => {
   beforeEach(() => {
     _resetConfigPushState();
+    // The generation is a monotonic cancellation token and there is no reset
+    // for it, on purpose (see push-state.ts). The tests below that need a
+    // known starting value seed the globalThis object directly — which is what
+    // a contract test for this cell should be doing in any case.
+    (globalThis as Record<string, unknown>).__pinchyConfigPushState = {
+      pending: 0,
+      generation: 0,
+    };
   });
 
   it("starts at zero pending", () => {
@@ -63,5 +73,59 @@ describe("config push pending-state tracker", () => {
     // is visible through our getter.
     state.pending = 3;
     expect(getPendingConfigPushCount()).toBe(3);
+  });
+
+  it("shares the generation counter through the same globalThis key", () => {
+    // Same contract for the push-generation counter, and it carries more
+    // weight: `pushConfigInBackground` cancels an older push by comparing its
+    // own generation against this one, so a per-instance counter means a
+    // route-triggered push cannot supersede a server-triggered one — both
+    // reach config.apply, which is the restart storm #193 is about.
+    expect(nextConfigPushGeneration()).toBe(1);
+    const state = (globalThis as Record<string, unknown>).__pinchyConfigPushState as {
+      generation: number;
+    };
+    expect(state.generation).toBe(1);
+    // A push claimed from a foreign module instance is visible here.
+    state.generation = 7;
+    expect(getCurrentConfigPushGeneration()).toBe(7);
+    expect(nextConfigPushGeneration()).toBe(8);
+  });
+
+  it("normalizes a state object written before a field existed", () => {
+    // globalThis outlives a module reload — that is the whole reason the state
+    // lives here rather than in a module variable. So a dev server that was
+    // already running when `generation` was added to this shape holds the
+    // PREVIOUS version's object, and `??=` leaves an existing object alone.
+    //
+    // `generation` then reads as undefined, `++undefined` is NaN, and
+    // `NaN !== NaN` is true — so every push takes the superseded branch at the
+    // top of its very first retry iteration and returns. No config change
+    // reaches config.apply, none reaches the file fallback either, for the
+    // life of the process, with only a `gen=NaN` line in the log to say so.
+    // Normalize the FIELDS, not just the object.
+    (globalThis as Record<string, unknown>).__pinchyConfigPushState = { pending: 2 };
+
+    expect(nextConfigPushGeneration()).toBe(1);
+    expect(getCurrentConfigPushGeneration()).toBe(1);
+    // A generation must be comparable to itself — the whole guard is `!==`.
+    const claimed = nextConfigPushGeneration();
+    expect(claimed === getCurrentConfigPushGeneration()).toBe(true);
+    // …and the pre-existing field is carried over, not reset.
+    expect(getPendingConfigPushCount()).toBe(2);
+  });
+
+  it("normalizes a state object that is missing the pending count", () => {
+    // The mirror image, for whichever field a future shape adds next:
+    // `Math.max(0, undefined - 1)` is NaN too, and a NaN pending count makes
+    // `/api/health/openclaw` report `configPushesPending: null` while the E2E
+    // stability gates wait for a 0 that can never arrive.
+    (globalThis as Record<string, unknown>).__pinchyConfigPushState = { generation: 4 };
+
+    expect(getPendingConfigPushCount()).toBe(0);
+    trackConfigPushStarted();
+    trackConfigPushSettled();
+    expect(getPendingConfigPushCount()).toBe(0);
+    expect(getCurrentConfigPushGeneration()).toBe(4);
   });
 });
