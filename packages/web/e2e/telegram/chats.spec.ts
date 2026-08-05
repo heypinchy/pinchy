@@ -421,13 +421,24 @@ test.describe.serial("Chats — per-task session model (#508)", () => {
     // merely until the transcript is non-empty. OpenClaw can surface the
     // assistant's reply (or an older turn) a beat before the just-sent user
     // message is queryable, so a loop that exits on "any message" races the
-    // specific-text assertion below — the intermittent failure this guards. If
-    // the fallback genuinely drops the message, this now fails deterministically
-    // (the loop exhausts its budget) instead of flaking.
+    // specific-text assertion below.
+    //
+    // And WIPE AGAIN each round, which is the half a single delete cannot cover.
+    // The exchange produces TWO captured rows — the inbound message and the
+    // agent's reply — written independently, and the precondition above exits on
+    // the first of them. A delete that lands between the two leaves the reply
+    // behind, `channel_messages` is then non-empty, and the route takes the DB
+    // path where HIDDEN_MSG no longer exists: the fallback never runs at all, so
+    // polling for it cannot succeed no matter how long it waits. That is the
+    // 2026-08-05 failure exactly — `messages.length > 0` passed, the text
+    // assertion failed, and the 20s budget was spent on a branch the request was
+    // never going to take. "Pinchy captured nothing" has to hold for the whole
+    // window, not for the instant of one DELETE.
     const fallbackHasSentMessage = (r: { status: number; messages: { text: string }[] }) =>
       r.status === 200 && r.messages.some((m) => m.text.includes(HIDDEN_MSG));
     let after = await getTelegramChatAs(adminCookie, agentId);
     for (let i = 0; i < 20 && !fallbackHasSentMessage(after); i++) {
+      await deleteCapturedTelegramMessages(TG_PEER_ID);
       await new Promise((r) => setTimeout(r, 1000));
       after = await getTelegramChatAs(adminCookie, agentId);
     }
@@ -438,10 +449,15 @@ test.describe.serial("Chats — per-task session model (#508)", () => {
     ).toBeGreaterThan(0);
 
     // It renders the ACTUAL conversation, not just "something non-empty": the
-    // exact message we sent must come back through the history fallback.
+    // exact message we sent must come back through the history fallback. The
+    // message names what came back instead — without it the failure says only
+    // "false", and telling a fallback that dropped the message apart from a
+    // capture row that beat the wipe means downloading the trace.
     expect(
       after.messages.some((m) => m.text.includes(HIDDEN_MSG)),
-      "the fallback must render the real message text from OpenClaw history"
+      `the fallback must render the real message text from OpenClaw history; got ${JSON.stringify(
+        after.messages.map((m) => `${m.role}: ${m.text.slice(0, 80)}`)
+      )}`
     ).toBe(true);
 
     // ...and in chronological order (oldest→newest), matching the live chat and
