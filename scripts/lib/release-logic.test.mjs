@@ -1034,6 +1034,78 @@ test("checkCiGreenForHead names the branch and the commit it wanted", () => {
   assert.match(r.message, /push/i);
 });
 
+test("checkCiGreenForHead picks the newest run by timestamp, not by array position", () => {
+  // The gate must not inherit its judgment from `gh`'s output order. That order
+  // is newest-first today and nothing pins it; if it ever flipped, a red re-run
+  // would be ignored in favour of an earlier green — silently, because a test
+  // that encodes array position would stay green too. So the array here is
+  // deliberately in the WRONG order relative to createdAt.
+  const r = checkCiGreenForHead({
+    runs: [
+      {
+        conclusion: "success",
+        headSha: RUN_HEAD,
+        createdAt: "2026-08-01T10:00:00Z",
+      },
+      {
+        conclusion: "failure",
+        headSha: RUN_HEAD,
+        createdAt: "2026-08-01T12:00:00Z",
+      },
+    ],
+    headSha: RUN_HEAD,
+    branch: "main",
+  });
+  assert.equal(r.ok, false);
+  assert.match(r.message, /failure/i);
+});
+
+test("checkCiGreenForHead falls back to gh's order when createdAt is unreadable", () => {
+  // Pins the contract, not a specific implementation bug: this case passes
+  // both before and after the timestamp ordering landed, because NaN
+  // comparisons are false either way. It is here so a future rewrite to an
+  // explicit sort has to keep answering "unreadable ⇒ keep gh's order"
+  // instead of letting a malformed timestamp reorder the verdict.
+  const r = checkCiGreenForHead({
+    runs: [
+      { conclusion: "failure", headSha: RUN_HEAD },
+      { conclusion: "success", headSha: RUN_HEAD, createdAt: "not-a-date" },
+    ],
+    headSha: RUN_HEAD,
+    branch: "main",
+  });
+  assert.equal(r.ok, false);
+  assert.match(r.message, /failure/i);
+});
+
+test("checkCiGreenForHead links the run the operator has to go look at", () => {
+  // The URL is already in the payload we fetch. Making the operator search the
+  // Actions tab for a run we are holding the link to is a gate that reports a
+  // problem and hides its evidence.
+  const url = "https://github.com/heypinchy/pinchy/actions/runs/30955121313";
+  const red = checkCiGreenForHead({
+    runs: [{ conclusion: "failure", headSha: RUN_HEAD, url }],
+    headSha: RUN_HEAD,
+    branch: "main",
+  });
+  assert.equal(red.ok, false);
+  assert.ok(
+    red.message.includes(url),
+    `expected the run URL in: ${red.message}`,
+  );
+
+  const pending = checkCiGreenForHead({
+    runs: [{ conclusion: "", status: "in_progress", headSha: RUN_HEAD, url }],
+    headSha: RUN_HEAD,
+    branch: "main",
+  });
+  assert.equal(pending.ok, false);
+  assert.ok(
+    pending.message.includes(url),
+    `expected the run URL in: ${pending.message}`,
+  );
+});
+
 // Wiring — the gates above must actually run in release.mjs.
 //
 // This is the load-bearing half. `checkReleaseVerification` shipped fully unit
@@ -1070,6 +1142,17 @@ test("release.mjs checks CI against HEAD's own run", () => {
     /headSha/,
     "release.mjs must ask gh for each run's headSha",
   );
+  // A field the gate reads but the caller never requests arrives as undefined,
+  // and the ordering silently degrades to whatever order gh happened to send —
+  // this PR's own bug, one level down. Every field the gate reads has to be in
+  // the --json list.
+  for (const field of ["conclusion", "status", "url", "createdAt"]) {
+    assert.match(
+      RELEASE_MJS_SRC,
+      new RegExp(`--json[\\s\\S]{0,80}${field}`),
+      `release.mjs must request "${field}" from gh run list — checkCiGreenForHead reads it`,
+    );
+  }
 });
 
 test("release.mjs fails the release when a gate returns not-ok", () => {

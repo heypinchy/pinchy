@@ -677,13 +677,28 @@ export function checkCiGreenForHead({ runs, headSha, branch }) {
   }
 
   const short = head.slice(0, 12);
-  const run = runs.find(
+  const forHead = runs.filter(
     (r) =>
       r &&
       String(r.headSha || "")
         .trim()
         .toLowerCase() === head,
   );
+  // Order explicitly rather than trusting `gh`'s newest-first output. Nothing
+  // pins that order, and if it ever flipped, a red re-run would be ignored in
+  // favour of an earlier green — the exact failure this gate exists to close,
+  // arriving silently.
+  //
+  // An unreadable timestamp never displaces the incumbent, so the fallback is
+  // gh's own order. That already follows from every comparison against NaN
+  // being false; the explicit guard states the policy instead of leaving it to
+  // be re-derived by whoever refactors this next.
+  const run = forHead.reduce((best, r) => {
+    const rt = Date.parse(r.createdAt ?? "");
+    const bt = Date.parse(best.createdAt ?? "");
+    if (Number.isNaN(rt) || Number.isNaN(bt)) return best;
+    return rt > bt ? r : best;
+  }, forHead[0]);
   if (!run) {
     return {
       ok: false,
@@ -698,16 +713,20 @@ export function checkCiGreenForHead({ runs, headSha, branch }) {
   // verdict would tell the operator to fix CI when the only thing to do is
   // wait, so anything falsy means not-finished-yet.
   const conclusion = String(run.conclusion ?? "").trim();
+  // The run URL is already in the payload we fetch. A gate that reports a
+  // problem and then makes the operator hunt through the Actions tab for the
+  // run it is holding a link to is hiding its own evidence.
+  const link = run.url ? ` ${run.url}` : "";
   if (!conclusion) {
     return {
       ok: false,
-      message: `CI for HEAD ${short} is still running (status: ${run.status || "unknown"}). Wait for it to finish.`,
+      message: `CI for HEAD ${short} is still running (status: ${run.status || "unknown"}). Wait for it to finish.${link}`,
     };
   }
   if (conclusion !== "success") {
     return {
       ok: false,
-      message: `CI for HEAD ${short} on ${branch} concluded "${run.conclusion}". Fix CI before releasing.`,
+      message: `CI for HEAD ${short} on ${branch} concluded "${run.conclusion}". Fix CI before releasing.${link}`,
     };
   }
   return { ok: true, message: `CI green for HEAD ${short}` };

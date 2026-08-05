@@ -170,7 +170,7 @@ try {
       "--limit",
       "30",
       "--json",
-      "conclusion,status,headSha,url",
+      "conclusion,status,headSha,url,createdAt",
     ]),
   );
 } catch (e) {
