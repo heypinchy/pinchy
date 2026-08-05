@@ -9,12 +9,13 @@ The Agent Provisioning API is a programmatic, non-browser way to create, list, g
 
 It's built for scripts, CI/CD pipelines, and infrastructure-as-code — not for the browser. The motivating use case is resetting a demo or staging instance to a known state on every release, without depending on database snapshots that break across schema migrations. The same foundation works for provisioning agents per team or organization as part of a deployment pipeline.
 
-|                  | [Session API](/reference/api/)                                       | Agent Provisioning API                                                                                            |
-| ---------------- | -------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
-| Auth             | Session cookie, set by logging in through the web UI                 | API key, sent in a header on every request                                                                        |
-| URL prefix       | `/api/*`                                                             | `/api/v1/*`                                                                                                       |
-| Agent visibility | Per-user — `GET /api/agents` returns what the signed-in user can see | Org-wide for shared agents — `GET /api/v1/agents` returns every shared agent; personal agents are always excluded |
-| Typical caller   | The Pinchy web UI                                                    | Scripts, CI/CD, infrastructure-as-code                                                                            |
+|                  | [Session API](/reference/api/)                                                                                | Agent Provisioning API                                                                                            |
+| ---------------- | ------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| Auth             | Session cookie, set by logging in through the web UI                                                          | API key, sent in a header on every request                                                                        |
+| URL prefix       | `/api/*`                                                                                                      | `/api/v1/*`                                                                                                       |
+| Agent visibility | Per-user — `GET /api/agents` returns what the signed-in user can see                                          | Org-wide for shared agents — `GET /api/v1/agents` returns every shared agent; personal agents are always excluded |
+| Rate limit       | Per-IP limits on the credential endpoints only ([Hardening](/guides/hardening/#authentication-rate-limiting)) | [300 requests per minute per key](#rate-limiting), on every endpoint                                              |
+| Typical caller   | The Pinchy web UI                                                                                             | Scripts, CI/CD, infrastructure-as-code                                                                            |
 
 Only agent create/list/get/delete are covered by API keys today. Updating an agent and listing templates remain session-only — see the [`POST /api/v1/agents`](#post-apiv1agents) notes below.
 
