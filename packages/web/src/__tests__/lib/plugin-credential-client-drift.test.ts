@@ -27,12 +27,35 @@
  * passes.
  */
 import { describe, it, expect } from "vitest";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 
 const PLUGINS_DIR = resolve(import.meta.dirname, "../../../../plugins");
 const REFERENCE_PLUGIN = "pinchy-odoo";
-const COPY_PLUGINS = ["pinchy-email", "pinchy-web"];
+
+/** Every `pinchy-*` package, whether or not it carries a credential client. */
+function allPlugins(): string[] {
+  return readdirSync(PLUGINS_DIR)
+    .filter((entry) => entry.startsWith("pinchy-"))
+    .sort();
+}
+
+/**
+ * The plugins carrying a copy, DISCOVERED rather than listed.
+ *
+ * A literal here would have been the same defect one level up: the guard
+ * would report on the three copies it was told about, and the fourth plugin
+ * to copy this module — the one whose author has not read this file — would
+ * drift unwatched while the guard stayed green. That is the shape AGENTS.md
+ * keeps naming, and it is the shape #1077 itself had.
+ */
+const COPY_OWNERS = allPlugins().filter((plugin) =>
+  existsSync(resolve(PLUGINS_DIR, plugin, "credential-client.ts"))
+);
+const COPY_PLUGINS = COPY_OWNERS.filter((plugin) => plugin !== REFERENCE_PLUGIN);
+
+/** Plugins known to carry a copy today — a floor, not the iteration set. */
+const KNOWN_COPY_OWNERS = ["pinchy-email", "pinchy-odoo", "pinchy-web"];
 
 function readCopy(plugin: string): string {
   return readFileSync(resolve(PLUGINS_DIR, plugin, "credential-client.ts"), "utf-8");
@@ -40,6 +63,17 @@ function readCopy(plugin: string): string {
 
 describe("credential-client drift guard", () => {
   const reference = readCopy(REFERENCE_PLUGIN);
+
+  it("discovers the reference copy and every other plugin carrying one", () => {
+    // Asserts against the filesystem, not against a literal three lines up.
+    // Discovery is what makes a new copy covered automatically; this is what
+    // keeps discovery itself from silently finding nothing — a renamed
+    // plugin directory or a moved file would otherwise shrink the set to
+    // one, and a set of one passes every byte-comparison there is.
+    expect(COPY_OWNERS).toEqual(expect.arrayContaining(KNOWN_COPY_OWNERS));
+    expect(COPY_OWNERS).toContain(REFERENCE_PLUGIN);
+    expect(COPY_PLUGINS.length).toBeGreaterThan(0);
+  });
 
   it("the reference copy is not empty and exports the shared surface", () => {
     // A guard that compares three unreadable files to each other passes on an
@@ -70,7 +104,13 @@ describe("credential-client drift guard", () => {
     // words would also flag `isOdooAccessError`, which decides what error
     // MESSAGE to show the model and never gates a retry — a guard that
     // reports on an unrelated helper is a guard someone deletes.
-    for (const plugin of [REFERENCE_PLUGIN, ...COPY_PLUGINS]) {
+    //
+    // Scanned across EVERY plugin, not only the three carrying a copy: a
+    // plugin that hand-rolls a matcher instead of importing the module is
+    // this drift in its purest form, and a scan restricted to copy owners
+    // would look straight past it. No other plugin classifies an auth error
+    // today, so widening the scope costs nothing and closes the gap.
+    for (const plugin of allPlugins()) {
       const index = readFileSync(resolve(PLUGINS_DIR, plugin, "index.ts"), "utf-8");
       expect(index, `${plugin}/index.ts must not test for a bare "401"`).not.toMatch(
         /includes\(\s*["'`]401/
@@ -91,8 +131,9 @@ describe("credential-client drift guard", () => {
     // it, and a textual check is the honest remaining option.
     //
     // Derived from the source, not from a list of plugins: the day a write
-    // tool lands in pinchy-web, it is covered the moment it wraps a client.
-    for (const plugin of [REFERENCE_PLUGIN, ...COPY_PLUGINS]) {
+    // tool lands in pinchy-web — or in a plugin that does not exist yet —
+    // it is covered the moment it wraps a client.
+    for (const plugin of allPlugins()) {
       const index = readFileSync(resolve(PLUGINS_DIR, plugin, "index.ts"), "utf-8");
       if (!/\btrackMutations\s*\(/.test(index)) continue;
       expect(
