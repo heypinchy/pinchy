@@ -166,8 +166,15 @@ describe("PUT /api/enterprise/key", () => {
     const res = await putKey("expired-or-typo-token");
     expect(res.status).toBe(400);
 
+    // The load-bearing claims: the route touched neither setting, so the value
+    // it was holding is the value it is still holding.
     expect(settingsStore.get("enterprise_key")).toBe(VALID_TOKEN);
     expect(deleteSetting).not.toHaveBeenCalled();
+    expect(setSetting).not.toHaveBeenCalled();
+
+    // And the consequence, spelled out. This re-derives from the same store —
+    // it proves nothing the two lines above don't — but it is the sentence a
+    // reader of this file cares about, so state it rather than leave it implied.
     await expect(getLicenseStatus()).resolves.toMatchObject({ active: true, type: "paid" });
   });
 

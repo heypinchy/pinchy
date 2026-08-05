@@ -38,7 +38,12 @@ vi.mock("@/lib/settings", () => ({
 import { getSetting } from "@/lib/settings";
 
 beforeEach(() => {
-  vi.clearAllMocks();
+  // reset, not clear: `clearAllMocks` keeps implementations, so a test that
+  // sets a lasting `mockResolvedValue` (the agreement loop below does) would
+  // hand its last token to every test after it. Nothing breaks today, which is
+  // exactly what makes it worth removing — `getSetting` is declared as a bare
+  // `vi.fn()`, so resetting restores the state each test already assumes.
+  vi.resetAllMocks();
   delete process.env.PINCHY_ENTERPRISE_KEY;
   vi.resetModules();
 });
@@ -176,9 +181,21 @@ describe("validateLicenseToken", () => {
   // validateLicense directly and this goes red.
   it("has getLicenseStatus validate through validateLicenseToken", () => {
     const source = readFileSync(ENTERPRISE_SOURCE, "utf8");
-    const body = source.slice(source.indexOf("export async function getLicenseStatus"));
-    const fn = body.slice(0, body.indexOf("\n}"));
 
+    // Fail on input this cannot read, rather than on the empty slice it would
+    // otherwise produce. `indexOf` answering -1 walks straight through both
+    // slices to "", and the report becomes `expected '' to contain
+    // 'validateLicenseToken('` — the symptom, with the cause (the function was
+    // renamed, or its brace no longer closes at column 0) nowhere in it.
+    const start = source.indexOf("export async function getLicenseStatus");
+    expect(
+      start,
+      "no `export async function getLicenseStatus` in lib/enterprise.ts"
+    ).toBeGreaterThan(-1);
+    const end = source.indexOf("\n}", start);
+    expect(end, "getLicenseStatus has no closing brace at column 0").toBeGreaterThan(start);
+
+    const fn = source.slice(start, end);
     expect(fn).toContain("validateLicenseToken(");
     expect(fn).not.toContain("validateLicense(");
   });
