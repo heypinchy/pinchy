@@ -26,12 +26,14 @@ Confirmation is set per agent, by an admin:
 
 ## What the person sees
 
-When the agent reaches a gated tool, it doesn't run it — it **waits**, mid-turn, holding the call open. A card appears with the action and its details — for example, _"Smithers needs your confirmation: run `email_send` with to: ada@example.com?"_ — and two buttons:
+When the agent reaches a gated tool, it doesn't run it — it **waits**, mid-turn, holding the call open. A card appears **at the end of the conversation**, where the agent stopped, with the action and its details — for example, _"Smithers needs your confirmation: run `email_send` with to: ada@example.com?"_ — and two buttons:
 
 - **Approve** — the agent picks the turn straight back up and runs the tool. You don't have to prompt it again.
 - **Deny** — the action is blocked, the agent is told so, and it carries on with the rest of the turn.
 
 Approve clears exactly that one action. If the agent later tries something different — a different recipient, a different record — it asks again. One confirmation, one action.
+
+If you've moved on to another chat in the meantime, the card follows you into the corner of the screen rather than disappearing — an agent waiting in a conversation you've left still needs an answer.
 
 Because the agent is genuinely waiting, a confirmation doesn't stay open forever: **you have 10 minutes to answer**. Past that the agent stops waiting and the action stays blocked. If you answer after the agent has already given up — or if Pinchy can't reach the agent runtime at that moment — Pinchy tells you so instead of confirming, because your decision recorded but never delivered means the tool did **not** run.
 

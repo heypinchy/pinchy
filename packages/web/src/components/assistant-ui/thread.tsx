@@ -11,6 +11,7 @@ import { AttachmentPreview } from "@/components/assistant-ui/attachment-preview"
 import { ChatImage } from "@/components/assistant-ui/chat-image";
 import { MarkdownText } from "@/components/assistant-ui/markdown-text";
 import { ToolFallback } from "@/components/assistant-ui/tool-fallback";
+import { ThreadApprovals } from "@/components/thread-approvals";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -111,6 +112,11 @@ const ThreadInner: FC<{ isReconcilingMessages: boolean }> = ({ isReconcilingMess
               AssistantMessage,
             }}
           />
+
+          {/* At the end of the conversation, because that is where the parked
+              run stands (#1132). Inside the viewport rather than the sticky
+              footer, so it scrolls with the thread like any other turn. */}
+          <ThreadApprovals />
         </>
       )}
 

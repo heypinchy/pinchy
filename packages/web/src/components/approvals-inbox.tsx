@@ -1,85 +1,28 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { toast } from "sonner";
-import { Button } from "@/components/ui/button";
-import { ApiError } from "@/lib/api-client";
-import {
-  fetchPendingApprovals,
-  submitApprovalDecision,
-  type PendingApproval,
-} from "@/lib/approvals/client";
-
-const POLL_MS = 5000;
-
-function summarize(args: Record<string, unknown>): string {
-  return Object.entries(args)
-    .map(([k, v]) => `${k}: ${typeof v === "string" ? v : JSON.stringify(v)}`)
-    .join(", ");
-}
+import { useParams } from "next/navigation";
+import { ApprovalCard } from "@/components/approval-card";
+import { usePendingApprovals } from "@/hooks/use-pending-approvals";
 
 /**
- * A lightweight inbox of the acting user's pending tool-call confirmations
- * (#124 Tier 2). It polls the API and lets the user approve or deny their own
- * agent's gated calls in context. After approving, the user asks the agent to
- * proceed and the gate consumes the now-approved ticket.
+ * Pending confirmations for agents whose chat is NOT currently open (#124 Tier
+ * 2, placement per #1132).
+ *
+ * The open agent's confirmations render inline in its thread, where the action
+ * stands. This is the fallback for everything else: a run parked in a chat the
+ * user has left is held for at most 10 minutes, so dropping its card would let
+ * it time out with nobody ever seeing it.
+ *
+ * The open agent is read from the route (`/chat/[agentId]`) rather than passed
+ * down — this sits above the chat in the tree, so there is no context to read.
  */
 export function ApprovalsInbox() {
-  const [pending, setPending] = useState<PendingApproval[]>([]);
-  const [busy, setBusy] = useState<string | null>(null);
+  const params = useParams<{ agentId?: string }>();
+  const openAgentId = params?.agentId;
+  const { approvals, busy, decide } = usePendingApprovals();
 
-  useEffect(() => {
-    let cancelled = false;
-    // Defined inside the effect (not a useCallback) so the setState is clearly
-    // behind the await — satisfies the react-compiler set-state-in-effect rule.
-    const poll = async () => {
-      // Every signed-in tab runs this poller; a hidden tab has nobody to act
-      // on a card, so skip the request and catch up on the visibility flip.
-      if (document.visibilityState === "hidden") return;
-      try {
-        const { approvals } = await fetchPendingApprovals();
-        if (!cancelled) setPending(approvals);
-      } catch {
-        // Background poller — transient failures self-heal on the next tick.
-      }
-    };
-    void poll();
-    const timer = setInterval(() => void poll(), POLL_MS);
-    const onVisibilityChange = () => {
-      if (document.visibilityState === "visible") void poll();
-    };
-    document.addEventListener("visibilitychange", onVisibilityChange);
-    return () => {
-      cancelled = true;
-      clearInterval(timer);
-      document.removeEventListener("visibilitychange", onVisibilityChange);
-    };
-  }, []);
-
-  const decide = async (approval: PendingApproval, decision: "approve" | "deny") => {
-    setBusy(approval.id);
-    try {
-      const result = await submitApprovalDecision(approval.id, { decision });
-      // Off the list either way: the row is settled, so a second click can only
-      // 409 — leaving a card that looks actionable would be its own lie.
-      setPending((prev) => prev.filter((a) => a.id !== approval.id));
-      if (!result.resumed) {
-        toast.error(result.resumeError ?? "Your decision did not reach the agent.");
-        return;
-      }
-      toast.success(
-        decision === "approve"
-          ? `Approved — ${approval.agentName} is continuing.`
-          : "Request denied."
-      );
-    } catch (e) {
-      toast.error(e instanceof ApiError ? e.message : "Could not submit your decision.");
-    } finally {
-      setBusy(null);
-    }
-  };
-
-  if (pending.length === 0) return null;
+  const elsewhere = approvals.filter((a) => a.agentId !== openAgentId);
+  if (elsewhere.length === 0) return null;
 
   return (
     <div
@@ -91,30 +34,13 @@ export function ApprovalsInbox() {
       role="region"
       aria-label="Pending approvals"
     >
-      {pending.map((a) => (
-        <div key={a.id} className="rounded-lg border bg-background p-3 shadow-lg">
-          <p className="text-sm font-medium">{a.agentName} needs your confirmation</p>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Run <span className="font-mono">{a.toolName}</span>
-            {a.argsSummary && Object.keys(a.argsSummary).length > 0 ? (
-              <> with {summarize(a.argsSummary)}</>
-            ) : null}
-            ?
-          </p>
-          <div className="mt-3 flex justify-end gap-2">
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={busy === a.id}
-              onClick={() => decide(a, "deny")}
-            >
-              Deny
-            </Button>
-            <Button size="sm" disabled={busy === a.id} onClick={() => decide(a, "approve")}>
-              Approve
-            </Button>
-          </div>
-        </div>
+      {elsewhere.map((a) => (
+        <ApprovalCard
+          key={a.id}
+          approval={a}
+          busy={busy === a.id}
+          onDecide={(approval, decision) => void decide(approval, decision)}
+        />
       ))}
     </div>
   );
