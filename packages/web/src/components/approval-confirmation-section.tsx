@@ -24,9 +24,20 @@ export function ApprovalConfirmationSection({
   confirmTools,
   onChange,
 }: ApprovalConfirmationSectionProps) {
+  // Every tool the agent may call is offerable here, whether or not it is in
+  // TOOL_REGISTRY. The registry is the catalogue of *grantable* tools; an agent
+  // can hold tools from outside it — Smithers, the agent every install has,
+  // carries only the onboarding context tools, which personal-agent.ts grants
+  // directly. Filtering through the registry rendered an empty section on the
+  // default agent. The gate matches on tool NAME and never reads the registry,
+  // so anything the agent can call must be gateable. Unknown tools fall back to
+  // their id as the label and carry no category.
   const tools = allowedTools
-    .map((id) => TOOL_REGISTRY.find((t) => t.id === id))
-    .filter((t): t is NonNullable<typeof t> => Boolean(t) && !t!.deprecated);
+    .map((id) => {
+      const known = TOOL_REGISTRY.find((t) => t.id === id);
+      return known ?? { id, label: id, category: undefined, deprecated: false };
+    })
+    .filter((t) => !t.deprecated);
 
   if (tools.length === 0) {
     return (

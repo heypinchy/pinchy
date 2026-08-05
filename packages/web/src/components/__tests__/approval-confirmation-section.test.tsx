@@ -40,4 +40,43 @@ describe("ApprovalConfirmationSection", () => {
     render(<ApprovalConfirmationSection allowedTools={[]} confirmTools={[]} onChange={() => {}} />);
     expect(screen.getByText(/choose which ones require confirmation/i)).toBeInTheDocument();
   });
+
+  // Smithers — the agent every install has — carries exactly two tools, and
+  // NEITHER is in TOOL_REGISTRY: the onboarding context tools are granted by
+  // personal-agent.ts, not by the grantable-tool catalogue. Filtering the list
+  // through the registry therefore rendered an empty section on the default
+  // agent, telling the admin to "add tools above" on an agent whose tool list
+  // a personal agent cannot change at all. The gate itself never consults the
+  // registry — it matches tool names — so anything the agent may call must be
+  // offerable here.
+  it("offers a tool the agent is allowed to use even when it is not in the registry", () => {
+    const onChange = vi.fn();
+    render(
+      <ApprovalConfirmationSection
+        allowedTools={["pinchy_save_user_context"]}
+        confirmTools={[]}
+        onChange={onChange}
+      />
+    );
+    const box = screen.getByRole("checkbox", { name: /pinchy_save_user_context/i });
+    expect(box).toBeInTheDocument();
+    fireEvent.click(box);
+    expect(onChange).toHaveBeenCalledWith(["pinchy_save_user_context"]);
+  });
+
+  it("keeps a registry-less tool out of 'Use recommended'", () => {
+    // "Recommended" means the write/side-effecting tools, which is a property
+    // the registry carries. An unknown tool has no category, so it must not be
+    // silently swept in — the admin ticks it deliberately or not at all.
+    const onChange = vi.fn();
+    render(
+      <ApprovalConfirmationSection
+        allowedTools={["pinchy_web_search", "pinchy_save_user_context"]}
+        confirmTools={[]}
+        onChange={onChange}
+      />
+    );
+    fireEvent.click(screen.getByRole("button", { name: /use recommended/i }));
+    expect(onChange).toHaveBeenCalledWith(["pinchy_web_search"]);
+  });
 });
