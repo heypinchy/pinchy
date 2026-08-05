@@ -4630,6 +4630,7 @@ describe("regenerateOpenClawConfig", () => {
       // (#193), arriving through the fallback instead of through apply.
       vi.useFakeTimers();
       try {
+        _resetConfigPushState();
         const rateLimited = () => new Error("rate limit exceeded for config.apply; retry after 1s");
         let rejectInFlightApply: ((err: Error) => void) | undefined;
         mockConfigGet.mockResolvedValue({ hash: "h1" });
@@ -4664,9 +4665,15 @@ describe("regenerateOpenClawConfig", () => {
         // Only now does the in-flight apply fail — budget exhausted, so the
         // old code took the file-write fallback.
         rejectInFlightApply?.(rateLimited());
-        for (let i = 0; i < 5; i++) {
+        // Drain until both coroutines have actually terminated, not for a
+        // fixed number of ticks. The assertion below is a NEGATIVE one, so a
+        // tick budget that runs out one await before the fallback would fire
+        // makes it pass for the wrong reason. The pending counter settles on
+        // every terminal exit, which is the real signal.
+        for (let tick = 0; tick < 50 && getPendingConfigPushCount() > 0; tick++) {
           await vi.advanceTimersByTimeAsync(0);
         }
+        expect(getPendingConfigPushCount(), "both push coroutines must have settled").toBe(0);
 
         const openclawWrite = findOpenClawConfigWrite(mockedWriteFileSync);
         expect(
@@ -4684,6 +4691,7 @@ describe("regenerateOpenClawConfig", () => {
       // must leave the file to the newer push.
       vi.useFakeTimers();
       try {
+        _resetConfigPushState();
         const applyFailed = () => new Error("INTERNAL_ERROR: config.apply failed");
         let rejectInFlightApply: ((err: Error) => void) | undefined;
         mockConfigGet.mockResolvedValue({ hash: "h1" });
@@ -4715,9 +4723,11 @@ describe("regenerateOpenClawConfig", () => {
         await vi.advanceTimersByTimeAsync(0);
 
         rejectInFlightApply?.(applyFailed());
-        for (let i = 0; i < 5; i++) {
+        // Same as above: wait on the coroutines terminating, not on a tick count.
+        for (let tick = 0; tick < 50 && getPendingConfigPushCount() > 0; tick++) {
           await vi.advanceTimersByTimeAsync(0);
         }
+        expect(getPendingConfigPushCount(), "both push coroutines must have settled").toBe(0);
 
         const openclawWrite = findOpenClawConfigWrite(mockedWriteFileSync);
         expect(
