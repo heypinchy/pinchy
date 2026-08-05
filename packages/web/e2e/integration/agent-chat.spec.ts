@@ -745,27 +745,18 @@ test.describe("Plugin behavior — pinchy-approvals", () => {
       await input.press("Enter");
 
       // The gate blocks the call and records approval.requested for this agent.
-      let requestId: string | null = null;
-      const deadline = Date.now() + 30000;
-      while (Date.now() < deadline) {
-        const res = await page.request.get("/api/audit?eventType=approval.requested&limit=10");
-        expect(res.status()).toBe(200);
-        const audit = await res.json();
-        const entry = audit.entries.find(
-          (e: {
-            resource: string | null;
-            detail: { toolName?: string; request?: { id: string } };
-          }) =>
-            e.detail?.toolName === "pinchy_save_user_context" &&
-            typeof e.detail?.request?.id === "string"
-        );
-        if (entry) {
-          requestId = entry.detail.request.id as string;
-          break;
-        }
-        await new Promise((r) => setTimeout(r, 500));
-      }
-      expect(requestId, "gate should have created an approval.requested record").toBeTruthy();
+      const requested = await pollAuditForEvent(page, {
+        eventType: "approval.requested",
+        predicate: (e) => {
+          const detail = e.detail as { toolName?: string; request?: { id?: string } } | null;
+          return (
+            detail?.toolName === "pinchy_save_user_context" &&
+            typeof detail?.request?.id === "string"
+          );
+        },
+        deadlineMs: 30000,
+      });
+      const requestId = (requested.detail as { request: { id: string } }).request.id;
 
       // The acting user grants their own pending confirmation.
       const decision = await page.request.post(`/api/approvals/${requestId}/decision`, {
@@ -774,18 +765,11 @@ test.describe("Plugin behavior — pinchy-approvals", () => {
       expect(decision.status()).toBe(200);
 
       // The decision is recorded as approval.granted.
-      let granted = false;
-      const grantDeadline = Date.now() + 15000;
-      while (Date.now() < grantDeadline) {
-        const res = await page.request.get("/api/audit?eventType=approval.granted&limit=10");
-        const audit = await res.json();
-        granted = audit.entries.some(
-          (e: { resource: string | null }) => e.resource === `approval:${requestId}`
-        );
-        if (granted) break;
-        await new Promise((r) => setTimeout(r, 500));
-      }
-      expect(granted).toBe(true);
+      await pollAuditForEvent(page, {
+        eventType: "approval.granted",
+        predicate: (e) => e.resource === `approval:${requestId}`,
+        deadlineMs: 15000,
+      });
     } finally {
       await page.request.patch(`/api/agents/${agentId}`, {
         data: { pluginConfig: originalPluginConfig },
