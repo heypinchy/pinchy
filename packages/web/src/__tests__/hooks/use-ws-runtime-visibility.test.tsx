@@ -516,4 +516,153 @@ describe("useWsRuntime — visibility-driven reconnect lifecycle (#895)", () => 
 
     expect(vi.getTimerCount()).toBe(0);
   });
+
+  // `offline`/`pagehide`/`freeze` and `online`/`pageshow`/`resume` fire on the
+  // network's and the OS's schedule, not the user's — so both halves of the
+  // suspend/recover pair can run start to finish on a tab that is still hidden.
+  // The grace period was only ever wired to `visibilitychange`, which does not
+  // fire again until the user comes back, so these paths escaped it entirely.
+  describe("lifecycle events that fire while the tab is still hidden", () => {
+    it("does not let a stale grace timer close a socket that a later recover reopened", () => {
+      // Hidden arms the grace timer; `offline` suspends by another route before
+      // it elapses; `online` recovers and dials a fresh socket. If the original
+      // timer is still armed it fires into that new connection and closes it —
+      // minutes after the socket it was armed for stopped existing.
+      //
+      // The two deadlines have to be told apart, so the outage is placed well
+      // inside the grace period: the ORIGINAL timer is due 2 minutes after the
+      // recovery, the recovered socket's own is due 5.
+      const { result } = renderHook(() => useWsRuntime("agent-1"));
+      const ws1 = latestWs();
+
+      act(() => {
+        ws1.simulateOpen();
+        ws1.simulateMessage({ type: "history", messages: [], sessionKnown: true });
+      });
+
+      act(() => {
+        setVisibility("hidden");
+      });
+
+      act(() => {
+        vi.advanceTimersByTime(FIVE_MINUTES_MS - 2 * 60_000);
+      });
+      expect(ws1.close).not.toHaveBeenCalled();
+
+      act(() => {
+        window.dispatchEvent(new Event("offline"));
+      });
+      expect(ws1.close).toHaveBeenCalled();
+
+      act(() => {
+        ws1.simulateClose();
+      });
+
+      act(() => {
+        window.dispatchEvent(new Event("online"));
+      });
+
+      const ws2 = latestWs();
+      expect(ws2).not.toBe(ws1);
+      act(() => {
+        ws2.simulateOpen();
+        ws2.simulateMessage({ type: "history", messages: [], sessionKnown: true });
+      });
+      expect(result.current.isConnected).toBe(true);
+
+      // Past where the ORIGINAL timer was due, short of the recovered socket's.
+      act(() => {
+        vi.advanceTimersByTime(3 * 60_000);
+      });
+
+      expect(ws2.close).not.toHaveBeenCalled();
+      expect(result.current.isConnected).toBe(true);
+    });
+
+    it("puts the grace period back on a connection recovered while hidden", () => {
+      // The other half: a recovery on a hidden tab must not hold the connection
+      // open indefinitely just because `visibilitychange` won't fire again until
+      // the user returns. Holding a server-side connection for a tab nobody is
+      // looking at is the cost #895 exists to avoid.
+      //
+      // The grace close is allowed to elapse FIRST, so no timer survives into
+      // the recovery: whatever bounds the new socket has to have been armed by
+      // the recovery itself.
+      const { result } = renderHook(() => useWsRuntime("agent-1"));
+      const ws1 = latestWs();
+
+      act(() => {
+        ws1.simulateOpen();
+        ws1.simulateMessage({ type: "history", messages: [], sessionKnown: true });
+      });
+
+      act(() => {
+        setVisibility("hidden");
+      });
+      act(() => {
+        vi.advanceTimersByTime(FIVE_MINUTES_MS);
+      });
+      expect(ws1.close).toHaveBeenCalled();
+      act(() => {
+        ws1.simulateClose();
+      });
+
+      // A network blip minutes later, with the tab still in the background.
+      act(() => {
+        window.dispatchEvent(new Event("online"));
+      });
+
+      const ws2 = latestWs();
+      expect(ws2).not.toBe(ws1);
+      act(() => {
+        ws2.simulateOpen();
+        ws2.simulateMessage({ type: "history", messages: [], sessionKnown: true });
+      });
+      expect(result.current.isConnected).toBe(true);
+
+      act(() => {
+        vi.advanceTimersByTime(FIVE_MINUTES_MS);
+      });
+
+      expect(ws2.close).toHaveBeenCalled();
+    });
+
+    it("arms no history watchdog for a request sent while already hidden", () => {
+      // `scheduleHiddenGraceClose` disarms a watchdog that was already running
+      // when the tab went hidden. This is the other order: the request itself
+      // is sent from a hidden tab (the recovered socket's onopen asks for
+      // history), and its deadline's remedy is a forceReconnect — dialing in
+      // the background, which is exactly what the hidden pause prevents
+      // everywhere else.
+      const { result } = renderHook(() => useWsRuntime("agent-1"));
+      const ws1 = latestWs();
+
+      act(() => {
+        ws1.simulateOpen();
+        ws1.simulateMessage({ type: "history", messages: [], sessionKnown: true });
+      });
+
+      act(() => {
+        setVisibility("hidden");
+        window.dispatchEvent(new Event("offline"));
+        ws1.simulateClose();
+        window.dispatchEvent(new Event("online"));
+      });
+
+      const ws2 = latestWs();
+      act(() => {
+        // Deliberately no history answer — the request stays outstanding.
+        ws2.simulateOpen();
+      });
+
+      const openedSockets = wsInstances.length;
+      act(() => {
+        vi.advanceTimersByTime(40_000);
+      });
+
+      expect(result.current.historyTimedOut).toBe(false);
+      expect(ws2.close).not.toHaveBeenCalled();
+      expect(wsInstances).toHaveLength(openedSockets);
+    });
+  });
 });

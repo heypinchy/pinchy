@@ -811,9 +811,20 @@ export function useWsRuntime(
   /**
    * Start the clock on an outstanding history request (#956). Every path that
    * sends one arms this, so no request can wait without a deadline.
+   *
+   * Except on a hidden tab, where the invariant is the other one (#895):
+   * nobody is watching a stalled load nobody can see, and the deadline's own
+   * remedy is a `forceReconnect` — dialing in the background is precisely what
+   * the hidden-aware pause exists to prevent. `scheduleHiddenGraceClose`
+   * disarms a watchdog that was already running when the tab went hidden; this
+   * covers the other order, where the request is sent while ALREADY hidden
+   * (`online` recovering a background tab, whose `onopen` asks for history).
+   * Whichever path brings the tab back re-requests history and arms a fresh
+   * deadline, so a genuine stall is still caught — just not unobserved.
    */
   const armHistoryWatchdog = useCallback(() => {
     clearHistoryWatchdog();
+    if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
     historyWatchdogRef.current = setTimeout(() => {
       historyWatchdogRef.current = null;
       // Surface the stall immediately rather than after the self-heal has had
@@ -916,6 +927,16 @@ export function useWsRuntime(
     function suspendForPageLifecycle() {
       lifecycleSuspendedRef.current = true;
       clearUiTimers();
+      // The grace close has already happened — by another route, but it has
+      // happened. Leaving its timer armed lets it fire into a LATER connection:
+      // hidden arms the timer, `offline` (or `pagehide`) suspends before it
+      // elapses, `online` recovers and dials a fresh socket while the tab is
+      // still hidden, and then the orphaned timer closes that healthy socket
+      // minutes after the state it was armed for is gone. Not in clearUiTimers,
+      // which ws.onclose also calls: a socket that merely dropped while hidden
+      // must keep its grace timer, because that timer is what marks the drop as
+      // lifecycle-driven for handleTabVisible.
+      clearHiddenGraceTimer();
       setIsDelayed(false);
       setIsConnected(false);
       if (reconnectTimerRef.current) {
@@ -939,6 +960,14 @@ export function useWsRuntime(
       } else {
         connect();
       }
+      // `online` and `resume` fire on their own schedule, not on the user's:
+      // both can recover a tab that is still hidden, and the connection they
+      // reopen would then be held for as long as the tab stays in the
+      // background — `visibilitychange` will not fire again until the user
+      // returns, so nothing else would ever bound it. That is the exact cost
+      // #895 exists to avoid, so put the same grace period back on it. A
+      // recovery on a visible tab is unaffected: nothing is armed.
+      if (isTabHidden()) scheduleHiddenGraceClose();
     }
 
     // Multi-device live-sync: a lightweight catch-up re-pull used by the poke
