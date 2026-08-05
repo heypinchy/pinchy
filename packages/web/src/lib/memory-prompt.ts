@@ -9,10 +9,15 @@
  * would drift per-agent. extraSystemPrompt is rebuilt by OpenClaw every turn,
  * so the hint is always present and always current.
  *
- * Gated on `pinchy_write`: an agent with no write path literally cannot
- * persist memory (group:fs is denied; pinchy_write is the only writer — see
- * build.ts). Telling such an agent it has memory would reproduce the
- * hallucination this whole change fixes (#368), just from the other side.
+ * Gated on `pinchy_memory`: an agent without that grant has no memory paths at
+ * all (build.ts emits them from this grant alone), so it literally cannot
+ * persist memory — group:fs is denied and pinchy-files is the only writer.
+ * Telling such an agent it has memory would reproduce the hallucination this
+ * whole change fixes (#368), just from the other side.
+ *
+ * The gate used to be `pinchy_write`, which is what made an agent's memory a
+ * side effect of a checkbox about files: no template granted pinchy_write, so
+ * every template-created agent silently had no memory (#755).
  *
  * Recall fallback: `memory_search` / `memory_get` ride on OpenClaw's memory-core
  * embedding index, which is unavailable whenever no embedding provider is
@@ -21,14 +26,19 @@
  * confabulate ("the memory index changed, tell me again"). So we steer it to the
  * ALWAYS-working path: reading its own memory files with `pinchy_read`, using
  * `pinchy_ls` to discover topic notes. This is safe to promise unconditionally
- * here because a write-capable agent ALWAYS has those tools with its `MEMORY.md`
- * + `memory/` dir in `allowed_paths` — `computeAllowedTools()` emits pinchy_read
- * / pinchy_ls for every agent and build.ts grants the memory paths whenever
- * pinchy_write is granted (the per-agent `allowedTools` DB column is Pinchy's UI
- * grant model, NOT the emitted OpenClaw allowlist, so it must not gate this).
+ * here because a memory-granted agent ALWAYS has those tools with its
+ * `MEMORY.md` + `memory/` dir in `allowed_paths` — `computeAllowedTools()`
+ * emits pinchy_read / pinchy_ls for every agent, and build.ts grants the memory
+ * paths from exactly the grant this block is gated on (the per-agent
+ * `allowedTools` DB column is Pinchy's UI grant model, NOT the emitted OpenClaw
+ * allowlist, so it must not gate the tool names themselves).
+ *
+ * `pinchy_write` is still the tool named in the text below, and still correct:
+ * pinchy-files registers it off the presence of write_paths, so a memory-only
+ * agent has it, scoped to its memory and nothing else.
  */
 export function buildMemoryPromptBlock(allowedTools: string[]): string | null {
-  if (!allowedTools.includes("pinchy_write")) return null;
+  if (!allowedTools.includes("pinchy_memory")) return null;
 
   return [
     "## Memory",

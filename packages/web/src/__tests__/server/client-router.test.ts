@@ -3408,9 +3408,9 @@ describe("ClientRouter", () => {
       );
     });
 
-    it("injects the ## Memory capability block when the agent has pinchy_write", async () => {
+    it("injects the ## Memory capability block when the agent has pinchy_memory", async () => {
       mockUserFindFirst.mockResolvedValue({ id: "user-1", name: "Alice", context: null });
-      mockFindFirst.mockResolvedValue({ ...defaultAgent, allowedTools: ["pinchy_write"] });
+      mockFindFirst.mockResolvedValue({ ...defaultAgent, allowedTools: ["pinchy_memory"] });
       async function* fakeStream() {
         yield { type: "text" as const, text: "Hello!" };
         yield { type: "done" as const, text: "" };
