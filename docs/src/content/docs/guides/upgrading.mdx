@@ -299,7 +299,7 @@ Endpoints that gate on your access to an agent used to answer `403` when you ask
 This closes the last of it on the Automations endpoints. Two consequences if you drive the API directly:
 
 - `GET`/`POST /api/automations` and `GET /api/automations/connections` answer `404` for an agent you can't see, and keep `403` for one you can see but may not manage — a shared agent you chat with daily still says so plainly.
-- Admins reach automations on **shared** agents, not on a colleague's personal agent. The agent's settings page has answered `404` there since the same change; these routes were the last ones that didn't. An admin who already holds a workflow's ID can still disable or delete it through `PATCH`/`DELETE /api/automations/:id` — a runaway automation stays stoppable.
+- Admins reach automations on **shared** agents, not on a colleague's personal agent. Opening that agent's settings has failed the same way since the same change; these routes were the last ones that still answered. An admin who already holds a workflow's ID can still disable or delete it through `PATCH`/`DELETE /api/automations/:id` — a runaway automation stays stoppable.
 
 Nothing to configure, and nothing changes in the UI.
 

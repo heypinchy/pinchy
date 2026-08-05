@@ -69,9 +69,10 @@ export type WorkflowAgentResult = { agent: WorkflowAgent } | { error: NextRespon
  *   resolve them in favour of the scope rule, granting admins a reach into a
  *   colleague's private agent that no other agent-scoped surface gives them.
  *   Nothing in the product could exercise it: the Automations tab lives on
- *   `/chat/[agentId]/settings`, which loads through `GET /api/agents/[agentId]`
- *   — gated by this same read gate since #1148 — so that page already answers
- *   404 for exactly this case. This was the last route under it still saying
+ *   `/chat/[agentId]/settings`, which loads its agent through
+ *   `GET /api/agents/[agentId]` — gated by this same read gate since #1148 — so
+ *   that fetch already answers 404 for exactly this case and the tab renders
+ *   with no agent at all. This was the last route under that page still saying
  *   otherwise, reachable only by hand against an id obtained out of band.
  *   Running the read gate first settles it the way the rest of the product
  *   already had. The emergency capability
