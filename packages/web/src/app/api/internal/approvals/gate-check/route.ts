@@ -129,6 +129,21 @@ export async function POST(request: NextRequest) {
   if (result.decision === "allow") {
     return NextResponse.json({ decision: "allow", requestId: result.requestId });
   }
+
+  // Backpressure, not a confirmation request: nothing was opened, so there is
+  // nothing to audit as `approval.requested` either (the block above already
+  // skipped it — `created` is false). Say what is actually in the way, or the
+  // user goes looking for a card that was never created.
+  if (result.limited) {
+    return NextResponse.json({
+      decision: "block",
+      requestId: result.requestId,
+      reason:
+        `This action was not run: the user already has the maximum number of ` +
+        `confirmations waiting in Pinchy. Ask them to work through those first, ` +
+        `then stop — do not call this tool again, and do not suggest any command.`,
+    });
+  }
   // This reason is consumed by the MODEL as the tool result, and the model
   // relays it to the person in the chat — so it is written for that relay, not
   // as an error string.

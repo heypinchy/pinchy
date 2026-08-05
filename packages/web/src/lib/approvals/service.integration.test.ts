@@ -7,7 +7,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 import { eq } from "drizzle-orm";
 import { db } from "@/db";
 import { users, agents, toolApproval } from "@/db/schema";
-import { decideGate, resolveDecision, expireStale } from "./service";
+import { decideGate, resolveDecision, expireStale, MAX_PENDING_PER_REQUESTER } from "./service";
 
 async function seedUser(overrides?: Partial<typeof users.$inferInsert>) {
   const [row] = await db
@@ -204,6 +204,57 @@ describe("approvals gate decision service", () => {
     const [row] = await db.select().from(toolApproval).where(eq(toolApproval.id, r.requestId));
     expect(row.status).toBe("pending");
     expect(row.approverId).toBeNull();
+  });
+
+  // Each distinct argsDigest mints its own row, and the block reason is a
+  // prompt, not a schranke: a model that retries with a changed argument opens
+  // one confirmation per attempt. That lands twice — a wall of cards in the
+  // requester's inbox now, and one approval.expired audit row per request at
+  // the next sweep, each of which takes the audit log's single advisory lock
+  // (AGENTS.md §"An audit row … needs a bound").
+  it("stops opening new confirmations once the requester is at the pending cap", async () => {
+    for (let i = 0; i < MAX_PENDING_PER_REQUESTER; i++) {
+      await decideGate({ ...base(), argsDigest: `digest-${i}` });
+    }
+    const over = await decideGate({ ...base(), argsDigest: "one-too-many" });
+
+    expect(over.decision).toBe("block");
+    expect(over.limited).toBe(true);
+    expect(over.created).toBe(false);
+    expect(await db.select().from(toolApproval)).toHaveLength(MAX_PENDING_PER_REQUESTER);
+  });
+
+  it("still spends an approved ticket while the requester is at the cap", async () => {
+    // The cap is backpressure on OPENING confirmations. Refusing to consume a
+    // ticket the user already approved would strand the action they said yes
+    // to — the one outcome worse than the wall of cards.
+    for (let i = 0; i < MAX_PENDING_PER_REQUESTER; i++) {
+      await decideGate({ ...base(), argsDigest: `digest-${i}` });
+    }
+    const first = await decideGate({ ...base(), argsDigest: "digest-0" });
+    await resolveDecision({ id: first.requestId, approverId: requesterId, decision: "approve" });
+    // Back to the cap: approving moved digest-0 out of `pending`.
+    await decideGate({ ...base(), argsDigest: "refill" });
+
+    const allow = await decideGate({ ...base(), argsDigest: "digest-0" });
+    expect(allow.decision).toBe("allow");
+  });
+
+  it("counts the cap per requester, not per agent", async () => {
+    // Two people sharing an agent must not exhaust each other's budget — the
+    // same reason a grant is never shared across them.
+    const other = await seedUser();
+    for (let i = 0; i < MAX_PENDING_PER_REQUESTER; i++) {
+      await decideGate({ ...base(), argsDigest: `digest-${i}` });
+    }
+    const theirs = await decideGate({
+      ...base(),
+      requesterId: other.id,
+      argsDigest: "their-first",
+    });
+    expect(theirs.decision).toBe("block");
+    expect(theirs.limited).toBeFalsy();
+    expect(theirs.created).toBe(true);
   });
 
   it("expireStale flips overdue pending requests to expired and returns them", async () => {

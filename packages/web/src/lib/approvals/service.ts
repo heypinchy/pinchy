@@ -6,12 +6,32 @@ import { toolApproval } from "@/db/schema";
  * this is short — past it the request fails closed. */
 export const DEFAULT_CONFIRM_TTL_MS = 15 * 60 * 1000;
 
+/**
+ * How many confirmations one person may have open on one agent at a time.
+ *
+ * A retry with the SAME arguments reuses its pending row, but a changed
+ * argument opens a new one — and the only thing telling the model to stop is
+ * the block reason, which is a prompt rather than a bound. A model that keeps
+ * adjusting an argument therefore opens one confirmation per attempt: a wall of
+ * cards in the requester's inbox now, and one `approval.expired` audit row per
+ * request at the next sweep, each taking the audit log's single advisory lock
+ * (AGENTS.md §"An audit row … needs a bound").
+ *
+ * Generous for a human — nobody works through twenty cards and wants a
+ * twenty-first — and small enough that the burst stays a burst.
+ */
+export const MAX_PENDING_PER_REQUESTER = 20;
+
 export type GateDecision = {
   decision: "allow" | "block";
   requestId: string;
   /** True only when a brand-new pending request row was inserted — lets the
    * route audit `approval.requested` once, not on every retry. */
   created: boolean;
+  /** Set when the block is backpressure — the requester is at
+   * {@link MAX_PENDING_PER_REQUESTER} and nothing new was opened. `requestId`
+   * then names one of the confirmations already waiting, not a new one. */
+  limited?: boolean;
 };
 
 export interface DecideGateInput {
@@ -35,7 +55,8 @@ export interface DecideGateInput {
  * user saw:
  *   1. consume exactly one approved, unexpired ticket → allow;
  *   2. else reuse an existing unexpired pending request → block;
- *   3. else create a new pending request → block.
+ *   3. else refuse to open one past {@link MAX_PENDING_PER_REQUESTER} → block;
+ *   4. else create a new pending request → block.
  * Consume step 1 uses `FOR UPDATE SKIP LOCKED` so concurrent retries consume
  * at most one ticket.
  */
@@ -82,6 +103,27 @@ export async function decideGate(input: DecideGateInput): Promise<GateDecision> 
     .limit(1);
   if (existing.length > 0) {
     return { decision: "block", requestId: existing[0].id, created: false };
+  }
+
+  // Backpressure, checked only here: it must never stand between a user and a
+  // ticket they already approved, so it sits after the consume step and after
+  // the reuse step (a retry of an already-open confirmation opens nothing).
+  // One query answers both halves — at the cap, and which confirmation to name.
+  const waiting = await db
+    .select({ id: toolApproval.id })
+    .from(toolApproval)
+    .where(
+      and(
+        eq(toolApproval.agentId, input.agentId),
+        eq(toolApproval.requesterId, input.requesterId),
+        eq(toolApproval.status, "pending"),
+        gt(toolApproval.expiresAt, now)
+      )
+    )
+    .orderBy(toolApproval.createdAt)
+    .limit(MAX_PENDING_PER_REQUESTER);
+  if (waiting.length >= MAX_PENDING_PER_REQUESTER) {
+    return { decision: "block", requestId: waiting[0].id, created: false, limited: true };
   }
 
   const ttlMs = input.ttlMs ?? DEFAULT_CONFIRM_TTL_MS;

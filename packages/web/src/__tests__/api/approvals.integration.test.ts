@@ -51,6 +51,7 @@ import { users, agents, toolApproval, auditLog } from "@/db/schema";
 import { POST as gateCheck } from "@/app/api/internal/approvals/gate-check/route";
 import { GET as listApprovals } from "@/app/api/approvals/route";
 import { POST as decide } from "@/app/api/approvals/[id]/decision/route";
+import { MAX_PENDING_PER_REQUESTER } from "@/lib/approvals/service";
 
 const GW = "test-gw-token";
 beforeAll(() => {
@@ -237,6 +238,24 @@ describe("approval routes (integration, real DB)", () => {
     expect(res.decision).toBe("block");
     expect(res.reason).toMatch(/could not be identified/i);
     expect(await db.select().from(toolApproval)).toHaveLength(0);
+  });
+
+  it("refuses to open a confirmation past the cap, and audits nothing for it", async () => {
+    for (let i = 0; i < MAX_PENDING_PER_REQUESTER; i++) {
+      await gateCheck(gateReq(gateBody({ params: { recordId: i } })));
+    }
+    const over = await (await gateCheck(gateReq(gateBody({ params: { recordId: 9999 } })))).json();
+
+    expect(over.decision).toBe("block");
+    expect(over.reason).toMatch(/waiting in Pinchy/i);
+    expect(await db.select().from(toolApproval)).toHaveLength(MAX_PENDING_PER_REQUESTER);
+    // Nothing was requested, so nothing may be recorded as requested — the row
+    // count is the whole point of the cap.
+    const requested = await db
+      .select()
+      .from(auditLog)
+      .where(eq(auditLog.eventType, "approval.requested"));
+    expect(requested).toHaveLength(MAX_PENDING_PER_REQUESTER);
   });
 
   it("lists the caller's pending confirmations with a redacted summary", async () => {

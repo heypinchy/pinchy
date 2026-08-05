@@ -77,7 +77,11 @@ export function ApprovalsInbox() {
 
   return (
     <div
-      className="fixed bottom-4 right-4 z-50 w-80 space-y-2"
+      // Scrollable and height-bounded: the server caps how many confirmations
+      // one person can have open, but that cap is a wall of cards, not one —
+      // and an unbounded stack here covers the app it is asking about, with the
+      // oldest card pushed off-screen and unreachable.
+      className="fixed bottom-4 right-4 z-50 flex max-h-[calc(100vh-2rem)] w-80 flex-col gap-2 overflow-y-auto"
       role="region"
       aria-label="Pending approvals"
     >
