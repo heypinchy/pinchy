@@ -74,7 +74,11 @@ export async function POST(request: NextRequest) {
     // a real Pinchy user can confirm it.
     return NextResponse.json({
       decision: "block",
-      reason: `Confirmation required for "${toolName}", but the requesting user could not be identified.`,
+      reason:
+        `This action needs a confirmation from the person who asked for it, ` +
+        `but that person could not be identified in this conversation — so it was not run. ` +
+        `This happens outside the Pinchy app, where nobody can confirm. ` +
+        `Tell them that, then stop — do not call this tool again.`,
     });
   }
 
@@ -119,9 +123,26 @@ export async function POST(request: NextRequest) {
   if (result.decision === "allow") {
     return NextResponse.json({ decision: "allow", requestId: result.requestId });
   }
+  // This reason is consumed by the MODEL as the tool result, and the model
+  // relays it to the person in the chat — so it is written for that relay, not
+  // as an error string.
+  //
+  // It deliberately carries NO request id: `/approve <id>` is a real OpenClaw
+  // command for OpenClaw's OWN approvals, and given an id the model helpfully
+  // invents that command. Ours are Pinchy rows OpenClaw has never heard of, so
+  // the user is handed an instruction that fails. The id still travels in the
+  // response body, where the plugin — not the model — can read it.
+  //
+  // It also tells the model to stop rather than retry: without that, a model
+  // that reads "confirmation required" often calls the tool again immediately
+  // and burns the same block on a loop.
   return NextResponse.json({
     decision: "block",
     requestId: result.requestId,
-    reason: `Confirmation required: approve running "${toolName}" in the chat to proceed (request ${result.requestId}).`,
+    reason:
+      `This action needs the user's confirmation before it can run. ` +
+      `A confirmation card is waiting for them in Pinchy. ` +
+      `Tell them what you are about to do and that you are waiting for their confirmation, ` +
+      `then stop — do not call this tool again, and do not suggest any command.`,
   });
 }

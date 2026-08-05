@@ -181,7 +181,10 @@ describe("approval routes (integration, real DB)", () => {
   it("blocks an un-approved gated call: one pending row, one requested-audit, idempotent on retry", async () => {
     const r1 = await (await gateCheck(gateReq(gateBody()))).json();
     expect(r1.decision).toBe("block");
-    expect(r1.reason).toContain("Confirmation required");
+    // Wording itself is pinned by the "bogus command" test above; here we only
+    // assert that a block carries a reason at all — the model gets nothing to
+    // relay without one.
+    expect(r1.reason).toMatch(/confirmation/i);
 
     const r2 = await (await gateCheck(gateReq(gateBody()))).json();
     expect(r2.requestId).toBe(r1.requestId);
@@ -192,6 +195,23 @@ describe("approval routes (integration, real DB)", () => {
       .from(auditLog)
       .where(eq(auditLog.eventType, "approval.requested"));
     expect(requested).toHaveLength(1);
+  });
+
+  it("blocks with a reason the model cannot turn into a bogus command", async () => {
+    // The reason reaches the MODEL as the tool result, and the model relays it
+    // to the user. `/approve <id>` is a real OpenClaw command for ITS native
+    // approvals — ours live in Pinchy's DB and OpenClaw knows nothing about
+    // them. An earlier wording carried the request id, and the model duly
+    // invented `/approve 7854bab6-…`, handing the user an instruction that
+    // fails. Keep the id out of the prose and out of the model's reach.
+    const res = await (await gateCheck(gateReq(gateBody()))).json();
+    expect(res.decision).toBe("block");
+    expect(res.requestId, "the id still travels in the response body").toBeTruthy();
+
+    expect(res.reason).not.toContain(res.requestId);
+    expect(res.reason, "no slash command the user could copy").not.toMatch(/(^|\s)\/\w+/);
+    // It must still say what is happening and where to act.
+    expect(res.reason).toMatch(/confirm/i);
   });
 
   it("lists the caller's pending confirmations with a redacted summary", async () => {
