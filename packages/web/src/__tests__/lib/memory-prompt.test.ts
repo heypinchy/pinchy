@@ -111,6 +111,18 @@ describe("buildMemoryPromptBlock", () => {
     expect(block!).toContain("pinchy_delete");
   });
 
+  it("points the delete at a topic note and rules MEMORY.md out", () => {
+    // `MEMORY.md` is a write_paths entry in its own right, so pinchy_delete
+    // reaches it — and it is the ONLY memory file OpenClaw loads at session
+    // start. An agent that reads "remove the file" as covering it wipes its
+    // whole durable store on a request to forget one thing. The zone is right
+    // (whoever may overwrite may remove); the instruction has to be narrower
+    // than the zone.
+    const block = buildMemoryPromptBlock(["pinchy_memory"])!;
+    expect(block).toMatch(/never delete `MEMORY\.md`/i);
+    expect(block).toMatch(/topic note/i);
+  });
+
   it("frames memory_search as possibly unavailable so failure triggers the file fallback", () => {
     // The behavioural fix for the reported symptom: a memory_search that returns
     // 'unavailable' must route the agent to its files, not to a fabricated excuse.

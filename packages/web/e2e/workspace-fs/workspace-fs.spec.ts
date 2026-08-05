@@ -244,11 +244,18 @@ test.describe.skip("Workspace filesystem dispatch probe (pinchy-files plugin cov
     expect(detailVerified).toBe(true);
   });
 
-  // Runs after the write probe above, deliberately: pinchy_delete reports a
-  // missing path as an error, so a probe against a seeded-but-unknown file
-  // would prove the refusal rather than the dispatch. Playwright runs a file's
-  // tests in order with workers: 1, so the file this deletes is the one the
-  // previous test wrote.
+  // NOT COVERAGE — this whole block is skipped on #427, so nothing below has
+  // ever run and CI will not run it either. `pinchy_delete` has no live
+  // end-to-end proof today; the plugin-tool-coverage guard stays green only
+  // because pinchy-files is discharged by pinchy_generate_file's running probe
+  // in e2e/integration/agent-chat.spec.ts. Said out loud because the file
+  // header's warning is 150 lines up and the probe below reads as if it runs.
+  //
+  // Ordered after the write probe, deliberately, for when #427 re-enables the
+  // block: pinchy_delete reports a missing path as an error, so a probe against
+  // a seeded-but-unknown file would prove the refusal rather than the dispatch.
+  // Playwright runs a file's tests in order with workers: 1, so the file this
+  // deletes is the one the previous test wrote.
   test("pinchy_delete dispatches via fake-LLM and audits the file it removed", async ({ page }) => {
     await loginViaUI(page, ADMIN_USER.email, ADMIN_USER.password);
 

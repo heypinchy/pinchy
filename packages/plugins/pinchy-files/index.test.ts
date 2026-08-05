@@ -13,7 +13,7 @@ import {
 import { join } from "path";
 import { tmpdir } from "os";
 import Database from "better-sqlite3";
-import { MAX_DOCX_FILE_SIZE } from "./validate";
+import { MAX_DOCX_FILE_SIZE, validateAccess } from "./validate";
 import manifest from "./openclaw.plugin.json";
 
 const FIXTURES = join(import.meta.dirname, "test-fixtures");
@@ -1770,10 +1770,50 @@ describe("pinchy_delete tool", () => {
     expect(existsSync(target)).toBe(false);
   });
 
+  it("audits the zone-relative path and the size of what it removed", async () => {
+    // `details` IS the audit row: /api/internal/audit/tool-use records it
+    // verbatim into an append-only, HMAC-chained table nothing can rewrite
+    // afterwards. So the path must be relativized — the raw form is
+    // /root/.openclaw/workspaces/<agent-uuid>/… and would put the container
+    // layout, and an agent id, into a row that cannot be redacted later.
+    // sizeBytes is read BEFORE the unlink because afterwards there is nothing
+    // left to measure, which is the whole reason an auditor can tell a real
+    // removal from a no-op.
+    //
+    // Asserted here rather than only in the E2E probe: that probe lives inside
+    // workspace-fs.spec.ts's skipped block (#427) and never runs, so without
+    // this test nothing in the repo checks the shape of the row.
+    const workbench = join(tmpDir, "workbench");
+    mkdirSync(workbench);
+    const target = join(workbench, "stale-note.md");
+    writeFileSync(target, "0123456789");
+    const api = createMockApi({
+      "agent-1": { allowed_paths: [workbench], write_paths: [workbench] },
+    });
+    const { default: plugin } = await import("./index");
+    plugin.register!(api as any);
+
+    const result = await getDeleteFactory()({ agentId: "agent-1" }).execute("call-1", {
+      path: target,
+    });
+
+    expect(result.details).toEqual({ path: "workbench/stale-note.md", sizeBytes: 10 });
+  });
+
   it("refuses a path outside the writable zone even when it is readable", async () => {
     // The knowledge base is mounted read-only and lives in allowed_paths, never
     // in write_paths. Deleting through a read grant would be the one way an
     // agent could destroy an organisation's documents.
+    //
+    // Which gate says no, precisely: `validateAccess` is mocked to a
+    // pass-through at the top of this file, so the LEXICAL write-zone check
+    // does not run here — that one is covered directly in validate.test.ts
+    // ("rejects write to read-only path when write_paths excludes it"). What
+    // rejects below is `assertNoSymlinkEscape`, which is real and compares the
+    // resolved target against write_paths. Both gates matter, so the test also
+    // pins that delete asks validateAccess in "write" mode rather than "read":
+    // downgrading that argument would hand the whole knowledge base to a
+    // read-granted agent, and every assertion here would still pass.
     const readable = join(tmpDir, "kb");
     const writable = join(tmpDir, "workbench");
     mkdirSync(readable);
@@ -1793,6 +1833,7 @@ describe("pinchy_delete tool", () => {
 
     expect(result.isError).toBe(true);
     expect(existsSync(victim)).toBe(true);
+    expect(vi.mocked(validateAccess)).toHaveBeenCalledWith(expect.anything(), victim, "write");
   });
 
   it("refuses a directory, so one call cannot take out a whole zone", async () => {

@@ -288,6 +288,12 @@ A knowledge-base document now counts as archived if any **folder** on its path i
 
 An agent with **Write files** permission can now turn tabular data it already holds into a CSV, XLSX or PDF and deliver it in the conversation, via the new `pinchy_generate_file` tool. It rides on the existing permission — no new grant to make, and agents without write access can't reach it. See [Generating files](/guides/file-uploads/#generating-files).
 
+#### Agents can delete a file they wrote
+
+An agent can now remove a file with the new `pinchy_delete` tool, and **deletion is permanent — there is no trash and no undo**. It reaches exactly what the agent could already write and nothing else: its own `workbench/`, and its memory if it has the **Memory** grant. Your uploads, the knowledge base, and the agent's own instructions are all outside that boundary and cannot be reached. One file per call, never a directory.
+
+There is no new permission to make. Whoever could put a file into a zone can now take it out of one, so an agent that already has **Write files** or **Memory** gains this the moment you upgrade — which is the point: until now an agent asked to forget a topic could only blank the note, and the emptied file kept turning up in its own recall. See [Powerful Tools](/concepts/agent-permissions/#powerful-tools). If you would rather an agent could not delete anything, remove its write grant; there is no way to keep writing and withhold deleting.
+
 #### Automations move into the agent
 
 Email workflows now have their own **Automations** tab in an agent's settings, where you can review, create, enable, disable and delete them. It is visible to admins on any agent, and to the owner of a personal agent. Existing workflows are listed as-is; nothing changes on upgrade until you edit one.
