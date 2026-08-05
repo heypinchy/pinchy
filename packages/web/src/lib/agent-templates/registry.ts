@@ -6,17 +6,48 @@ import { ODOO_TEMPLATES } from "./data/odoo-agents";
 import { WEB_TEMPLATES } from "./data/web-agents";
 import type { AgentTemplate } from "./types";
 
+// Grants every curated template carries on top of its own tools.
+//
+// Pinchy's default is that nothing is on, and a from-scratch agent honours that
+// literally. A curated template is different: it IS a decision somebody already
+// made about what this kind of agent is for, so it may be generous. Memory is
+// the clearest case — an assistant that cannot remember anything between
+// conversations is not the thing the template promises.
+//
+// Applied here rather than repeated in ~35 template definitions, so the rule
+// has one home and a new template cannot quietly ship without it.
+const CURATED_DEFAULT_GRANTS = ["pinchy_memory", "pinchy_write"] as const;
+
+function withCuratedDefaults(
+  templates: Record<string, AgentTemplate>
+): Record<string, AgentTemplate> {
+  return Object.fromEntries(
+    Object.entries(templates).map(([id, template]) => [
+      id,
+      {
+        ...template,
+        // Merged, never substituted: a template's own integration grants are
+        // what make it useful. Deduped, so a template may also name one of
+        // these explicitly without ending up with it twice.
+        allowedTools: [...new Set([...template.allowedTools, ...CURATED_DEFAULT_GRANTS])],
+      },
+    ])
+  );
+}
+
 // Order matters: the template selector grid renders templates in this
 // iteration order. Keep `custom` between the document templates and the
 // integration-specific (odoo, email, web) templates so it stays visually
 // grouped with the "no integration required" templates.
+//
+// CUSTOM_TEMPLATES is deliberately NOT wrapped — "Start from scratch" means it.
 export const AGENT_TEMPLATES: Record<string, AgentTemplate> = {
-  ...KNOWLEDGE_BASE_TEMPLATES,
-  ...DOCUMENT_TEMPLATES,
+  ...withCuratedDefaults(KNOWLEDGE_BASE_TEMPLATES),
+  ...withCuratedDefaults(DOCUMENT_TEMPLATES),
   ...CUSTOM_TEMPLATES,
-  ...ODOO_TEMPLATES,
-  ...EMAIL_TEMPLATES,
-  ...WEB_TEMPLATES,
+  ...withCuratedDefaults(ODOO_TEMPLATES),
+  ...withCuratedDefaults(EMAIL_TEMPLATES),
+  ...withCuratedDefaults(WEB_TEMPLATES),
 };
 
 export function getTemplate(id: string): AgentTemplate | undefined {

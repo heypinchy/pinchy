@@ -357,10 +357,11 @@ describe("POST /api/agents", () => {
 
     await POST(request, routeContext());
 
-    // knowledge-base grants knowledge_search (Task 11 of the KB plan).
+    // knowledge-base grants knowledge_search (Task 11 of the KB plan), plus the
+    // curated defaults every non-custom template carries.
     expect(insertValuesMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        allowedTools: ["knowledge_search"],
+        allowedTools: ["knowledge_search", "pinchy_memory", "pinchy_write"],
       })
     );
   });
@@ -1241,11 +1242,12 @@ describe("POST /api/agents", () => {
 
     await POST(request, routeContext());
 
-    // knowledge-base's template allowedTools is ["knowledge_search"] (Task 11
-    // of the KB plan) — this test asserts it passes through unmodified.
+    // knowledge-base's template allowedTools is knowledge_search (Task 11 of
+    // the KB plan) plus the curated defaults — this test asserts the template's
+    // list passes through unmodified, i.e. the caller adds nothing.
     expect(insertValuesMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        allowedTools: ["knowledge_search"],
+        allowedTools: ["knowledge_search", "pinchy_memory", "pinchy_write"],
       })
     );
   });

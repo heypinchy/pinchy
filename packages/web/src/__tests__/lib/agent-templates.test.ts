@@ -49,7 +49,13 @@ describe("agent-templates", () => {
     // knowledge_search (Task 11 of the KB plan) lets the agent retrieve
     // citable passages via pinchy-knowledge; see knowledge-base.test.ts for
     // the cite-then-answer/abstention prompt coverage.
-    expect(AGENT_TEMPLATES["knowledge-base"].allowedTools).toEqual(["knowledge_search"]);
+    // Plus the curated defaults every non-custom template carries — see
+    // "curated template default grants" below.
+    expect(AGENT_TEMPLATES["knowledge-base"].allowedTools).toEqual([
+      "knowledge_search",
+      "pinchy_memory",
+      "pinchy_write",
+    ]);
   });
 
   it("should have a custom template with no allowed tools", () => {
@@ -428,7 +434,10 @@ describe("Document templates", () => {
     for (const id of DOCUMENT_TEMPLATE_IDS) {
       const t = getTemplate(id)!;
       expect(t.pluginId).toBe("pinchy-files");
-      expect(t.allowedTools).toEqual([]);
+      // Document templates declare no tools of their own; what they hold is
+      // exactly the curated defaults. Asserting that set rather than [] keeps
+      // the "declares nothing itself" claim checkable.
+      expect(t.allowedTools).toEqual(["pinchy_memory", "pinchy_write"]);
     }
   });
 
@@ -1082,16 +1091,32 @@ describe("Odoo template drift invariants", () => {
   });
 
   it("every Odoo template's allowedTools matches getOdooToolsForAccessLevel(accessLevel)", () => {
+    // Scoped to the odoo_* tools on purpose. This guard is about the ACCESS
+    // LEVEL not drifting from the tool set it implies; every template also
+    // carries the curated defaults (pinchy_memory, pinchy_write), which say
+    // nothing about Odoo access and must not be able to satisfy or break it.
+    // Comparing the full list would make the guard fail on any unrelated
+    // platform grant added later — and tempt whoever hits it to loosen it.
     const drifted: Array<{ id: string }> = [];
     for (const [id, t] of odooEntries) {
       const expected = getOdooToolsForAccessLevel(t.odooConfig!.accessLevel);
-      const actual = [...t.allowedTools].sort();
+      const actual = t.allowedTools.filter((tool) => tool.startsWith("odoo_")).sort();
       const want = [...expected].sort();
       if (actual.length !== want.length || !actual.every((v, i) => v === want[i])) {
         drifted.push({ id });
       }
     }
     expect(drifted).toEqual([]);
+
+    // …and the access level really is the ONLY source of odoo_* tools: nothing
+    // outside getOdooToolsForAccessLevel may add one. Without this, scoping the
+    // comparison above to odoo_* would let a stray odoo grant in from elsewhere.
+    for (const [id, t] of odooEntries) {
+      const nonOdoo = t.allowedTools.filter((tool) => !tool.startsWith("odoo_"));
+      expect(new Set(nonOdoo), `${id} carries an unexpected non-odoo grant`).toEqual(
+        new Set(["pinchy_memory", "pinchy_write"])
+      );
+    }
   });
 });
 
@@ -1813,5 +1838,43 @@ describe("defaultStarterPrompts (per-agent starter prompts, #570)", () => {
       requiredModels: [{ model: "sale.order", operations: ["read"] }],
     });
     expect(t.defaultStarterPrompts).toBeUndefined();
+  });
+});
+
+describe("curated template default grants", () => {
+  // Pinchy's default is that nothing is on. A curated template, though, IS a
+  // decision somebody already made — so templates are generous and a
+  // from-scratch agent starts empty. Applying the rule at the registry rather
+  // than in ~35 template definitions is what keeps it from drifting as
+  // templates are added.
+  it("grants memory and file creation to every curated template", () => {
+    for (const template of getTemplateList()) {
+      if (template.id === "custom") continue;
+      expect(template.allowedTools, `${template.id} is missing pinchy_memory`).toContain(
+        "pinchy_memory"
+      );
+      expect(template.allowedTools, `${template.id} is missing pinchy_write`).toContain(
+        "pinchy_write"
+      );
+    }
+  });
+
+  it("leaves the from-scratch template empty", () => {
+    // "Custom Agent — Start from scratch" is the absence of a decision. It used
+    // to receive pinchy_write anyway, because the New-Agent form injected it
+    // into every creation regardless of template.
+    expect(getTemplate("custom")!.allowedTools).toEqual([]);
+  });
+
+  it("keeps each template's own tools alongside the defaults", () => {
+    // The defaults are merged, not substituted — a regression here would strip
+    // the integration grants that make a template useful.
+    expect(getTemplate("knowledge-base")!.allowedTools).toContain("knowledge_search");
+  });
+
+  it("does not duplicate a grant a template already declares", () => {
+    for (const template of getTemplateList()) {
+      expect(new Set(template.allowedTools).size).toBe(template.allowedTools.length);
+    }
   });
 });
