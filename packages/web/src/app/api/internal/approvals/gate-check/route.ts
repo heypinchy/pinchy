@@ -20,9 +20,10 @@ import { agents, users } from "@/db/schema";
  */
 function deriveRequesterPrincipal(
   senderId: string | undefined,
-  sessionKey: string
+  sessionKey: string | undefined
 ): string | undefined {
   if (senderId) return senderId;
+  if (!sessionKey) return undefined;
   // Non-greedy: a userId never contains a colon, but a `:<chatId>` segment can
   // follow it. Mirrors extractUserIdFromSessionKey in the tool-use audit route —
   // a greedy `(.+)$` would swallow `<userId>:<chatId>` and mis-attribute.
@@ -69,9 +70,14 @@ export async function POST(request: NextRequest) {
 
   const principal = deriveRequesterPrincipal(senderId, sessionKey);
   const requesterId = principal ? await resolveRequesterUserId(principal) : undefined;
-  if (!requesterId) {
+  if (!requesterId || !sessionKey) {
     // Fail closed: a gated tool must not run for an unidentifiable user — only
     // a real Pinchy user can confirm it.
+    //
+    // A missing sessionKey lands here for the same reason and not by accident:
+    // a grant is bound to one session, so without one there is nothing to bind
+    // it to and no inbox the card would appear in. This is the branch the
+    // plugin used to pre-empt by allowing the call outright.
     return NextResponse.json({
       decision: "block",
       reason:

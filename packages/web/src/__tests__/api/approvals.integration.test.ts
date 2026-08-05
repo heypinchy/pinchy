@@ -214,6 +214,31 @@ describe("approval routes (integration, real DB)", () => {
     expect(res.reason).toMatch(/confirm/i);
   });
 
+  it("refuses a gated call it cannot attribute to a Pinchy user", async () => {
+    // A channel sender (Telegram id, group principal) is not a Pinchy user, so
+    // nobody in that conversation can confirm. Blocking is the only safe answer
+    // — and no pending row may be created, because there is no inbox it would
+    // ever appear in.
+    const res = await (await gateCheck(gateReq(gateBody({ senderId: "telegram:44215" })))).json();
+    expect(res.decision).toBe("block");
+    expect(res.reason).toMatch(/could not be identified/i);
+    expect(await db.select().from(toolApproval)).toHaveLength(0);
+  });
+
+  it("refuses a gated call from a run that carries no session key", async () => {
+    // The plugin used to answer this one itself, by allowing it: no session key
+    // meant "nothing to gate". But the agent and the tool are both known here,
+    // so the admin's policy applies in full — what is missing is the person who
+    // would confirm. Any run OpenClaw hands over without a session key (cron,
+    // subagent) therefore executed every gated tool unchecked. A grant is bound
+    // to a session; with none there is nothing to bind and nobody to ask.
+    const { sessionKey: _dropped, ...noSession } = gateBody();
+    const res = await (await gateCheck(gateReq(noSession))).json();
+    expect(res.decision).toBe("block");
+    expect(res.reason).toMatch(/could not be identified/i);
+    expect(await db.select().from(toolApproval)).toHaveLength(0);
+  });
+
   it("lists the caller's pending confirmations with a redacted summary", async () => {
     await gateCheck(gateReq(gateBody()));
     setSession(user);

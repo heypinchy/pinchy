@@ -45,9 +45,16 @@ export async function evaluateGate(
   cfg: GateConfig
 ): Promise<GateResult> {
   const agentId = ctx.agentId ?? extractAgentId(ctx.sessionKey);
-  if (!agentId || !ctx.sessionKey) {
-    // No identifiable agent/session — the per-agent confirmation policy cannot
-    // apply, so there is nothing to gate.
+  if (!agentId) {
+    // Nothing identifies the agent, so no per-agent policy exists to apply and
+    // there is nothing to ask about.
+    //
+    // A MISSING SESSION KEY is a different question and deliberately NOT
+    // answered here: the agent and the tool are both known, so the admin's
+    // policy applies in full and only the confirming person is missing. That is
+    // the server's call — it refuses a request it cannot attribute. Deciding it
+    // here (as this used to, by allowing) meant every run context OpenClaw
+    // hands over without a session key ran gated tools unchecked.
     return {};
   }
 

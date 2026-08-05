@@ -6,7 +6,11 @@ import { z } from "zod";
  */
 export const gateCheckSchema = z.object({
   agentId: z.string().min(1),
-  sessionKey: z.string().min(1),
+  /** The OpenClaw session the call belongs to. Optional because some run
+   * contexts carry none — the route refuses a gated call in that case rather
+   * than rejecting the request, so the gate gets an actionable answer instead
+   * of a 400 it can only read as "service unavailable". */
+  sessionKey: z.string().min(1).optional(),
   /** Human who triggered the call (Telegram senderId etc.); falls back to the
    * userId encoded in the session key. */
   senderId: z.string().optional(),

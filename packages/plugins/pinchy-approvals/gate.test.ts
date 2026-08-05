@@ -84,4 +84,18 @@ describe("evaluateGate", () => {
     expect(await evaluateGate("odoo_write", {}, {}, cfg)).toEqual({});
     expect(f).not.toHaveBeenCalled();
   });
+
+  // A missing session key is NOT "nothing to gate". The agent and the tool are
+  // both known, so the admin's policy applies in full — what is missing is the
+  // person who would confirm, and that is the server's call to make (it already
+  // refuses a request it cannot attribute). Deciding it here meant any run
+  // context OpenClaw hands us without a session key — a cron run, a subagent —
+  // silently executed every tool an admin had gated.
+  it("asks the server even when the run carries no session key", async () => {
+    const f = stubDecision("block", "Nobody can confirm this here.");
+    const res = await evaluateGate("odoo_write", {}, { agentId: "a1" }, cfg);
+    expect(res).toEqual({ block: true, blockReason: "Nobody can confirm this here." });
+    expect(f).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(f.mock.calls[0][1].body)).toMatchObject({ agentId: "a1" });
+  });
 });
