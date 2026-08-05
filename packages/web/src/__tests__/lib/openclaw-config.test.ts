@@ -1950,14 +1950,48 @@ describe("regenerateOpenClawConfig", () => {
     const config = JSON.parse(written);
     const agentConfig = config.plugins.entries["pinchy-files"]?.config?.agents?.["writer"];
 
-    // workbench/ is the agent's primary write zone. uploads/ stays writable
-    // for backward-compat with custom AGENTS.md files that historically told
-    // the agent to write there (#418). Memory is NOT here: it follows its own
-    // grant now, so a file-writing agent does not silently gain a memory.
-    expect(agentConfig.write_paths).toEqual([
-      "/root/.openclaw/workspaces/writer/uploads",
-      "/root/.openclaw/workspaces/writer/workbench",
-    ]);
+    // workbench/ is the agent's own drawer and its only file-write zone.
+    // Memory is NOT here: it follows its own grant, so a file-writing agent
+    // does not silently gain a memory.
+    expect(agentConfig.write_paths).toEqual(["/root/.openclaw/workspaces/writer/workbench"]);
+  });
+
+  it("never puts the user's uploads directory in write_paths", async () => {
+    // uploads/ is the USER's zone — it holds what they attached in chat. The
+    // rest of the codebase already treats it that way: pinchy_generate_file
+    // deliberately targets workbench only, and pinchy-email writes attachments
+    // with flag "wx" under the comment "uploads/ is also the user's".
+    // pinchy_write with overwrite:true was the one path in the system that
+    // could replace a file the user uploaded.
+    const grants: Record<string, string[]> = {
+      w: ["pinchy_write"],
+      m: ["pinchy_memory"],
+      b: ["pinchy_write", "pinchy_memory"],
+    };
+    mockedDb.select.mockReturnValue({
+      from: mockFrom(
+        Object.entries(grants).map(([id, allowedTools]) => ({
+          id,
+          name: `Agent ${id}`,
+          model: "anthropic/claude-opus-4-7",
+          createdAt: new Date(),
+          allowedTools,
+          pluginConfig: null,
+        }))
+      ),
+    } as never);
+
+    await regenerateOpenClawConfig();
+
+    const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
+    for (const id of Object.keys(grants)) {
+      const agentConfig = config.plugins.entries["pinchy-files"]?.config?.agents?.[id];
+      expect(agentConfig.write_paths ?? []).not.toContain(
+        `/root/.openclaw/workspaces/${id}/uploads`
+      );
+      // Still READABLE — the agent must see what the user attached.
+      expect(agentConfig.allowed_paths).toContain(`/root/.openclaw/workspaces/${id}/uploads`);
+    }
   });
 
   it("injects workspace/workbench into allowed_paths so pinchy_read can see agent-written files", async () => {
@@ -2135,7 +2169,6 @@ describe("regenerateOpenClawConfig", () => {
     const agentConfig = config.plugins.entries["pinchy-files"]?.config?.agents?.["both"];
 
     expect(agentConfig.write_paths).toEqual([
-      "/root/.openclaw/workspaces/both/uploads",
       "/root/.openclaw/workspaces/both/workbench",
       "/root/.openclaw/workspaces/both/MEMORY.md",
       "/root/.openclaw/workspaces/both/memory",

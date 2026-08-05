@@ -640,10 +640,13 @@ export async function regenerateOpenClawConfig() {
     const writePaths: string[] = [];
 
     if (allowedTools.includes("pinchy_write")) {
-      // uploads/ stays writable for backward-compat with existing custom
-      // AGENTS.md that told the agent to write there. New guidance points
-      // agents at workbench/.
-      writePaths.push(workspaceUploads, workspaceWorkbench);
+      // workbench/ ONLY. uploads/ is the user's zone — it holds what they
+      // attached in chat — and it stays readable but never writable. It was
+      // writable for backward-compat with custom AGENTS.md that told agents to
+      // write there; that made `pinchy_write` with overwrite:true the one path
+      // in the system that could replace a file the user uploaded, while
+      // pinchy_generate_file and pinchy-email both deliberately refuse to.
+      writePaths.push(workspaceWorkbench);
     }
 
     if (allowedTools.includes("pinchy_memory")) {
