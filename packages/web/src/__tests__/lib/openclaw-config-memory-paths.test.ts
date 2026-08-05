@@ -165,7 +165,9 @@ function agentRow(id: string, overrides: Partial<Record<string, unknown>> = {}) 
     id,
     name: `Agent ${id}`,
     model: "anthropic/claude-haiku-4-5-20251001",
-    allowedTools: ["pinchy_write"],
+    // pinchy_memory is what grants the memory PATHS this file is about; a
+    // pinchy_write agent writes its workbench and has no memory.
+    allowedTools: ["pinchy_write", "pinchy_memory"],
     pluginConfig: null,
     ownerId: null,
     deletedAt: null,
@@ -273,11 +275,11 @@ describe("regenerateOpenClawConfig materializes the agent memory paths", () => {
     expect(dirStore.has(memoryDir("scout"))).toBe(true);
   });
 
-  it("creates memory/ for an agent that has no write grant", async () => {
+  it("creates memory/ for an agent that has no memory grant", async () => {
     // memory/ belongs to the workspace layout, not to the grant: uploads/ and
     // workbench/ exist for every agent regardless of tools, and a later grant
-    // of pinchy_write must not depend on a regeneration having run since. The
-    // config still only grants the path to write-capable agents (build.ts).
+    // of pinchy_memory must not depend on a regeneration having run since. The
+    // config still only grants the path to agents holding it (build.ts).
     seedLegacyWorkspace("reader");
     mockDb([agentRow("reader", { allowedTools: ["pinchy_read"] })]);
 

@@ -631,13 +631,24 @@ export async function regenerateOpenClawConfig() {
 
     if (!pluginConfigs["pinchy-files"]) pluginConfigs["pinchy-files"] = {};
 
+    // Write access is granted by ZONE, and the two zones are independent grants.
+    // `pinchy_write` is the agent's own drawer; `pinchy_memory` is its memory.
+    // Neither implies the other — memory used to ride on pinchy_write, which
+    // made an agent's recall a side effect of a checkbox about files and left
+    // every template-created agent with memory tools and no memory (#755).
     const agentFilesConfig: Record<string, unknown> = { allowed_paths: allowedPaths };
+    const writePaths: string[] = [];
+
     if (allowedTools.includes("pinchy_write")) {
+      // uploads/ stays writable for backward-compat with existing custom
+      // AGENTS.md that told the agent to write there. New guidance points
+      // agents at workbench/.
+      writePaths.push(workspaceUploads, workspaceWorkbench);
+    }
+
+    if (allowedTools.includes("pinchy_memory")) {
       // Persistent agent memory (OpenClaw-managed): MEMORY.md holds curated
-      // long-term knowledge, memory/ holds daily logs. A write-capable agent
-      // gets them so it can actually persist what the user tells it to
-      // remember — without a write path it sees memory_search but can never
-      // write, which led agents to hallucinate saved memories (#368).
+      // long-term knowledge, memory/ holds daily logs.
       //
       // MEMORY.md is granted as a FILE, not the workspace root: the
       // trailing-slash boundary in pinchy-files validate.ts makes the entry
@@ -650,16 +661,15 @@ export async function regenerateOpenClawConfig() {
       // Both lists: write_paths ⊆ allowed_paths is enforced build-time
       // (validate-built-config.ts) and runtime (pinchy-files validate.ts).
       agentFilesConfig.allowed_paths = [...allowedPaths, workspaceMemoryFile, workspaceMemoryDir];
+      writePaths.push(workspaceMemoryFile, workspaceMemoryDir);
+    }
 
-      // uploads/ stays writable for backward-compat with existing custom
-      // AGENTS.md that told the agent to write there. New guidance points
-      // agents at workbench/.
-      agentFilesConfig.write_paths = [
-        workspaceUploads,
-        workspaceWorkbench,
-        workspaceMemoryFile,
-        workspaceMemoryDir,
-      ];
+    // Emit the KEY only when there is something in it. pinchy-files registers
+    // `pinchy_write` off write_paths being present and non-empty, so an empty
+    // array would hand a no-grant agent a write tool that can reach nothing —
+    // a tool it would then describe to the user as available.
+    if (writePaths.length > 0) {
+      agentFilesConfig.write_paths = writePaths;
     }
     pluginConfigs["pinchy-files"][agent.id] = agentFilesConfig;
 

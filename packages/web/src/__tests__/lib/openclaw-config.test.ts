@@ -1952,14 +1952,11 @@ describe("regenerateOpenClawConfig", () => {
 
     // workbench/ is the agent's primary write zone. uploads/ stays writable
     // for backward-compat with custom AGENTS.md files that historically told
-    // the agent to write there (#418). MEMORY.md (file) + memory/ (dir) are
-    // the agent's persistent memory — a write-capable agent gets them too so
-    // it can actually persist what it's told to remember.
+    // the agent to write there (#418). Memory is NOT here: it follows its own
+    // grant now, so a file-writing agent does not silently gain a memory.
     expect(agentConfig.write_paths).toEqual([
       "/root/.openclaw/workspaces/writer/uploads",
       "/root/.openclaw/workspaces/writer/workbench",
-      "/root/.openclaw/workspaces/writer/MEMORY.md",
-      "/root/.openclaw/workspaces/writer/memory",
     ]);
   });
 
@@ -2009,18 +2006,19 @@ describe("regenerateOpenClawConfig", () => {
     const agentConfig = config.plugins.entries["pinchy-files"]?.config?.agents?.["reader"];
 
     expect(agentConfig).toBeDefined();
+    // The KEY must be absent, not an empty array: pinchy-files registers
+    // pinchy_write off write_paths being present and non-empty, so an empty
+    // array would be a behaviour change dressed as a no-op.
     expect(agentConfig.write_paths).toBeUndefined();
-    // A read-only agent gets no memory paths at all — memory is only writable,
-    // so without a write path there's nothing to grant.
+    // An agent with neither grant gets no memory paths at all.
     expect(agentConfig.allowed_paths).not.toContain("/root/.openclaw/workspaces/reader/MEMORY.md");
     expect(agentConfig.allowed_paths).not.toContain("/root/.openclaw/workspaces/reader/memory");
   });
 
-  it("grants MEMORY.md + memory/ as writable memory when pinchy_write is present", async () => {
-    // The reason agents could never persist memory: group:fs is denied and
-    // pinchy_write only covered uploads/ + workbench/. A write-capable agent
-    // now gets MEMORY.md (curated long-term) and memory/ (daily logs) so it
-    // can actually write what the user tells it to remember.
+  it("grants MEMORY.md + memory/ as writable memory when pinchy_memory is present", async () => {
+    // Memory used to ride on pinchy_write, which made an agent's recall a side
+    // effect of a checkbox about files — and since no template granted
+    // pinchy_write, template-created agents had no memory at all (#755).
     mockedDb.select.mockReturnValue({
       from: mockFrom([
         {
@@ -2028,7 +2026,7 @@ describe("regenerateOpenClawConfig", () => {
           name: "Writer Agent",
           model: "anthropic/claude-opus-4-7",
           createdAt: new Date(),
-          allowedTools: ["pinchy_write"],
+          allowedTools: ["pinchy_memory"],
           pluginConfig: null,
         },
       ]),
@@ -2057,6 +2055,91 @@ describe("regenerateOpenClawConfig", () => {
     expect(agentConfig.write_paths).not.toContain("/root/.openclaw/workspaces/writer/AGENTS.md");
     expect(agentConfig.write_paths).not.toContain("/root/.openclaw/workspaces/writer/IDENTITY.md");
     expect(agentConfig.write_paths).not.toContain("/root/.openclaw/workspaces/writer/USER.md");
+  });
+
+  it("gives a memory-only agent a write path to its memory and nothing else", async () => {
+    // This is what makes memory a permission rather than a second write tool:
+    // pinchy-files registers pinchy_write off the PRESENCE of write_paths, so a
+    // memory-only agent gets a write tool whose entire reach is its own memory.
+    // The tool's description enumerates its paths, so the agent sees the truth.
+    mockedDb.select.mockReturnValue({
+      from: mockFrom([
+        {
+          id: "rememberer",
+          name: "Memory Only",
+          model: "anthropic/claude-opus-4-7",
+          createdAt: new Date(),
+          allowedTools: ["pinchy_memory"],
+          pluginConfig: null,
+        },
+      ]),
+    } as never);
+
+    await regenerateOpenClawConfig();
+
+    const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
+    const agentConfig = config.plugins.entries["pinchy-files"]?.config?.agents?.["rememberer"];
+
+    expect(agentConfig.write_paths).toEqual([
+      "/root/.openclaw/workspaces/rememberer/MEMORY.md",
+      "/root/.openclaw/workspaces/rememberer/memory",
+    ]);
+    expect(agentConfig.write_paths).not.toContain(
+      "/root/.openclaw/workspaces/rememberer/workbench"
+    );
+    expect(agentConfig.write_paths).not.toContain("/root/.openclaw/workspaces/rememberer/uploads");
+  });
+
+  it("does not grant memory paths to a write-only agent", async () => {
+    mockedDb.select.mockReturnValue({
+      from: mockFrom([
+        {
+          id: "writer",
+          name: "Writer Agent",
+          model: "anthropic/claude-opus-4-7",
+          createdAt: new Date(),
+          allowedTools: ["pinchy_write"],
+          pluginConfig: null,
+        },
+      ]),
+    } as never);
+
+    await regenerateOpenClawConfig();
+
+    const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
+    const agentConfig = config.plugins.entries["pinchy-files"]?.config?.agents?.["writer"];
+
+    for (const list of [agentConfig.write_paths, agentConfig.allowed_paths]) {
+      expect(list).not.toContain("/root/.openclaw/workspaces/writer/MEMORY.md");
+      expect(list).not.toContain("/root/.openclaw/workspaces/writer/memory");
+    }
+  });
+
+  it("grants both zones to an agent holding both grants", async () => {
+    mockedDb.select.mockReturnValue({
+      from: mockFrom([
+        {
+          id: "both",
+          name: "Both Grants",
+          model: "anthropic/claude-opus-4-7",
+          createdAt: new Date(),
+          allowedTools: ["pinchy_write", "pinchy_memory"],
+          pluginConfig: null,
+        },
+      ]),
+    } as never);
+
+    await regenerateOpenClawConfig();
+
+    const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
+    const agentConfig = config.plugins.entries["pinchy-files"]?.config?.agents?.["both"];
+
+    expect(agentConfig.write_paths).toEqual([
+      "/root/.openclaw/workspaces/both/uploads",
+      "/root/.openclaw/workspaces/both/workbench",
+      "/root/.openclaw/workspaces/both/MEMORY.md",
+      "/root/.openclaw/workspaces/both/memory",
+    ]);
   });
 
   it("never lists the workspace root in allowed_paths or write_paths (hard-deny invariant)", async () => {
