@@ -14,8 +14,15 @@ import {
  * These tests verify:
  *  1. Admin can write SOUL.md via the UI and the new content is readable back
  *     via the API (file write + API read-back).
- *  2. A non-admin member cannot write to a shared agent's SOUL.md (403
- *     permission boundary).
+ *  2. A non-admin member is refused that same file, with an answer that does
+ *     not reveal whether the agent exists.
+ *
+ * Item 2 was described as the shared-agent WRITE boundary and asserted 403. It
+ * never tested that: `beforeAll` prefers the admin's Smithers, which is a
+ * PERSONAL agent, so the member is stopped by the READ gate long before any
+ * write check is reached — and that 403 was precisely the existence disclosure
+ * `getAgentWithAccess` now closes. The shared-agent write boundary is covered
+ * deterministically in `src/__tests__/api/agent-files.test.ts`.
  *
  * End-to-end "agent answers using uploaded file" is left to the integration
  * test suite (packages/web/e2e/integration/).
@@ -109,7 +116,19 @@ test.describe.serial("Knowledge base file editing", () => {
     expect(content).toBe(uniqueContent);
   });
 
-  test("non-admin cannot write to a shared agent SOUL.md (403)", async ({ page }) => {
+  test("a non-admin is refused SOUL.md on an agent they cannot see — 404, not 403", async ({
+    page,
+  }) => {
+    // Anchor the assertion before switching users: beforeEach left this page
+    // logged in as the admin, who can read the agent, so it demonstrably
+    // exists. Without this the 404 below is also what a mistyped id returns,
+    // and the test would pass against a route that had stopped working.
+    const adminRes = await page.context().request.get(`/api/agents/${agentId}`);
+    expect(
+      adminRes.status(),
+      `Agent ${agentId} must exist — otherwise the member's 404 proves nothing`
+    ).toBe(200);
+
     // Switch from admin (set by beforeEach) to the non-admin via the auth API
     // directly. UI-based loginAs has racy form-state interactions when chained
     // after a prior login on the same page; switchUser is deterministic.
@@ -120,7 +139,12 @@ test.describe.serial("Knowledge base file editing", () => {
       data: { content: "Hacked" },
     });
 
-    // Non-admins cannot write shared agent files — expect 403
-    expect(putRes.status()).toBe(403);
+    // The read gate answers before the write gate, and it withholds the agent's
+    // existence. This holds for either branch of beforeAll: the admin's
+    // personal Smithers (the preferred one) is invisible to a non-owner, and a
+    // freshly created agent sits at the DB default `restricted` visibility with
+    // the member in no group.
+    expect(putRes.status()).toBe(404);
+    expect(await putRes.json()).toEqual({ error: "Agent not found" });
   });
 });
