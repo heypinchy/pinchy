@@ -3,7 +3,17 @@ title: Understanding Agent Memory
 description: How Pinchy agents remember information and what that means for your team.
 ---
 
-Pinchy agents have a memory system that persists knowledge across conversations. When you talk to an agent, it can remember important information and use it in future conversations — giving better, more contextual responses over time.
+Pinchy agents can persist knowledge across conversations. An agent with memory remembers important information and uses it in future conversations — giving better, more contextual responses over time.
+
+## Memory is a permission
+
+Memory is something you grant, not something every agent has. It lives in **Agent Settings → Permissions → Memory**, and an agent without it has no memory at all: it cannot store anything, and it is not offered the recall tools either, so it will not claim a memory it does not have.
+
+Agents created from a template get memory by default — a template is a decision about what that kind of agent is for, and an assistant that forgets everything between conversations is rarely it. An agent created from **Custom Agent — Start from scratch** gets nothing until you say otherwise, which is Pinchy's general rule: no permission is on unless someone turned it on.
+
+Turning memory off later revokes access but does not delete anything. The files stay on disk; the agent simply can no longer reach them.
+
+## How recall works
 
 Recall runs entirely inside your deployment: agents search their memory with a local embedding model that ships in the image, so no memory content is sent to an external service and search keeps working offline and air-gapped. It's multilingual, so an agent recalls what it stored regardless of the language you wrote it in.
 

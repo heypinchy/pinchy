@@ -225,6 +225,20 @@ sed -i 's/^PINCHY_VERSION=.*/PINCHY_VERSION=%%PINCHY_VERSION%%/' .env
 docker compose pull && docker compose up -d && docker image prune -f
 ```
 
+#### Memory is now its own permission — and most agents gain it on upgrade
+
+An agent's memory used to hang off the **Write files** permission. Nothing said so, no agent template granted that permission, and the New Agent form quietly ticked it for you — so whether an agent could remember anything depended on a checkbox about files, and any agent created outside that form, including your personal Smithers, had no memory at all.
+
+Memory is now a permission of its own, in its own section of the **Permissions** tab. Upgrading grants it to the agents that should have it:
+
+- every agent that had **Write files**, so nothing an agent already wrote becomes unreachable,
+- every agent created from a template,
+- every personal agent.
+
+An agent created from **Custom Agent — Start from scratch** gains nothing, which is what starting from scratch is supposed to mean. Turn memory on for it in **Agent Settings → Permissions → Memory** if you want it.
+
+**Write files** keeps its own checkbox, now labelled **Create files**, and it no longer covers the `uploads/` directory. That is where your chat attachments live; agents can still read it, but nothing can overwrite what you uploaded. If you wrote a custom instruction telling an agent to save files into `uploads/`, point it at `workbench/` instead.
+
 #### An Odoo URL is now checked against the address it resolves to
 
 The SSRF guard on the Odoo connection routes only ever read the hostname as a string, so a name pointing at `169.254.169.254` or an internal address passed a check that a bare `10.0.0.5` failed. It now resolves the name and classifies every address it gets back.

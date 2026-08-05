@@ -96,12 +96,13 @@ Not sure whether a piece of knowledge belongs here or in Memory? See [Instructio
 
 The Permissions tab controls which tools an agent can use. Pinchy uses an **allow-list** model: agents start with zero tools enabled, and admins grant specific capabilities.
 
-Tools are organised into a **Knowledge Base** section that's always shown, plus sections that only appear when a matching connection exists.
+Tools are organised into three sections that are always shown — **Memory**, **Workspace** and **Knowledge Base** — plus sections that only appear when a matching connection exists. The three permanent sections follow the zones of an agent's workspace: what it remembers, what it may produce, and what it may read.
 
-**Knowledge Base** — sandboxed access to the agent's own workspace and admin-curated directories. **Workspace read access is always on** — agents can always list and read files under `uploads/` and `workbench/`. This section contains:
+**Memory** — the **Memory** (`pinchy_memory`) toggle, which lets the agent write and re-read `MEMORY.md` and the daily notes under `memory/`. Without it the agent has no memory and is not offered the recall tools, so it will not claim one. See [Understanding Agent Memory](/explanation/agent-memory/#memory-is-a-permission).
 
-- The **Allowed Directories** picker, which grants the agent read-access to additional directories under `/data/` — separate from the agent's own workspace.
-- The **Write files** (`pinchy_write`) toggle — the one powerful tool shown here, letting the agent save files into its own `workbench/` directory (and `uploads/`, kept writable for compat).
+**Workspace** — the **Create files** (`pinchy_write`) toggle, letting the agent save files into its own `workbench/` directory and hand them to you as chat downloads. It does **not** cover `uploads/`: that is where your chat attachments live, and nothing may overwrite them.
+
+**Knowledge Base** — sandboxed **read** access to admin-curated directories. **Workspace read access is always on** — agents can always list and read files under `uploads/` and `workbench/`. This section contains the **Allowed Directories** picker, which grants the agent read-access to additional directories under `/data/`. Agents can never write to those directories.
 
 **Web Search** — appears only when at least one active Web Search (Brave) connection exists:
 
@@ -189,7 +190,7 @@ Agents are created from the **Create New Agent** page. Pinchy ships with pre-con
 The generic starting points are:
 
 - **Knowledge Base** — pre-configured with safe file tools for answering questions from directories you select
-- **Custom Agent** — starts with only the default **Write files** tool enabled, for when you want to configure everything else manually
+- **Custom Agent** — starts with **no permissions at all**, for when you want to configure everything yourself. Every other template arrives with **Memory** and **Create files** already on.
 
 Domain-specific templates (e.g., Sales Analyst, HR Analyst, Contract Analyzer) appear in the template picker when the corresponding integration is connected or their required capabilities are available. See [Connect Odoo](/guides/connect-odoo/#agent-templates) for the Odoo template list.
 

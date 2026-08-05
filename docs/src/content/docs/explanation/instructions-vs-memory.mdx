@@ -12,7 +12,7 @@ This page is the short version. Use it as a cheat sheet when you're editing an a
 ## The two stores
 
 - **Instructions** — what the agent _is_ and how it _operates_. Loaded at the start of every conversation. In Pinchy, this is the **SOUL.md** ([Personality tab](/concepts/agent-settings/#personality-tab)) plus **AGENTS.md** ([Instructions tab](/concepts/agent-settings/#instructions-tab)).
-- **Memory** — what the agent has _learned_ across conversations. Stored in `MEMORY.md` and daily logs under `memory/YYYY-MM-DD.md`. Written automatically when the agent decides something is worth keeping, or explicitly when you tell it to "remember this."
+- **Memory** — what the agent has _learned_ across conversations. Stored in `MEMORY.md` and daily logs under `memory/YYYY-MM-DD.md`. The agent writes there when it decides something is worth keeping, or when you tell it to "remember this." Memory is a permission — see [Understanding Agent Memory](/explanation/agent-memory/#memory-is-a-permission).
 
 A useful mental model: Instructions are the job description you hand a new hire on day one. Memory is the notebook they fill in as they work.
 
@@ -23,7 +23,7 @@ A useful mental model: Instructions are the job description you hand a new hire 
 | WHO is the agent? (persona, tone, language)                        | **Instructions** — SOUL.md                                                                                                                               |
 | HOW does the agent behave? (rules, SOPs, tool order)               | **Instructions** — AGENTS.md                                                                                                                             |
 | Stable fact, relevant every session (product list, tax rates, IDs) | **Memory** — say "remember this" in chat                                                                                                                 |
-| User preference learned from interaction                           | **Memory** — auto-memory usually catches this on its own                                                                                                 |
+| User preference learned from interaction                           | **Memory** — the agent usually saves this on its own; say "remember this" if it matters                                                                  |
 | One-off detail for a single conversation                           | **Don't persist** — leave it in chat context                                                                                                             |
 | Large body of knowledge (manuals, policies, codebases)             | **Knowledge base** — mount as a [data directory](/guides/mount-data-directories/) and use a [knowledge-base agent](/guides/create-knowledge-base-agent/) |
 
@@ -34,7 +34,7 @@ If you're still not sure: ask yourself whether a brand-new conversation tomorrow
 Memory and Instructions have different lifetimes and load rules:
 
 - **Memory survives compaction.** When a conversation gets long, the agent runtime compacts the chat history into a summary — older messages disappear. Memory entries already written to `MEMORY.md` or `memory/` do not. Anything important enough to outlive a single thread belongs in Memory, not in the chat itself.
-- **Memory is written as the agent learns — not salvaged at the last second.** Pinchy's agents persist memory the moment they decide something is worth keeping (auto-memory), or when you say "remember this" — through a governed write tool that keeps every save auditable. There is no separate last-moment flush right before compaction, so don't rely on one: if a detail matters beyond this thread, make sure the agent has actually saved it.
+- **Memory is written as the agent learns — not salvaged at the last second.** An agent with the Memory permission persists what it decides is worth keeping, or what you tell it to remember, through a governed write tool that keeps every save auditable. There is no automatic sweep and no last-moment flush before compaction, so don't rely on one: if a detail matters beyond this thread, say so, and check that the agent confirms it saved.
 - **You can compact on demand.** If a long conversation starts feeling sluggish or repetitive, use **Compact conversation** in the chat header's actions menu (`⋯`). It triggers the same summarization the runtime does automatically — your visible messages stay put, and it takes effect on your next message. Anything already in Memory is unaffected; for an unsaved detail that matters, ask the agent to remember it before you compact.
 - **Subagent and cron sessions don't load MEMORY.md.** Background and delegated sessions intentionally skip Memory to stay focused on their task. If a piece of knowledge needs to be available to _every_ session — including cron jobs and subagents — it belongs in **Instructions**, not Memory. See the [OpenClaw memory docs](https://docs.openclaw.ai/concepts/memory) for the underlying filter logic.
 
