@@ -49,10 +49,16 @@ const ISSUER = "heypinchy.com";
  * Subject reserved for the development license this repository ships (in
  * `docker-compose.dev.yml` and the dev toolbar's toggle route).
  *
- * Two rules hang off it, and together they are the fix for #1083:
+ * Two rules hang off it, and together they are the fix for #1083. Only the
+ * second is enforced here — say which is which, because a comment that claims
+ * coverage the code lacks is how the unbounded Gmail fetch survived a review
+ * (AGENTS.md § "Every plugin `fetch()` passes a signal"):
  *
- *   - the development key signs licenses for this subject and no other;
- *   - the PRODUCTION key never honours it.
+ *   - CONVENTION: we mint development licenses for this subject and no other.
+ *     Nothing checks it, and nothing needs to — the development private key is
+ *     not published, so no one else can mint under that key at all.
+ *   - ENFORCED: the PRODUCTION key never honours this subject, on the valid and
+ *     the expired path alike.
  *
  * The second rule is what revokes the production-signed dev token this
  * repository shipped until v0.9. That token cannot be un-published — it is in

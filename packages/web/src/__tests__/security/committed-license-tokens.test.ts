@@ -5,11 +5,12 @@
 // Guard for the license material this repository ships.
 //
 // Until v0.9 the dev stack was unlocked by a license signed with the
-// PRODUCTION key (exp 2088), committed in two places. It was NODE_ENV-gated
-// only at the route that installs it — the string itself was a working
-// enterprise key, and pasting it into Settings → License unlocked paid
-// features on any install (#1083). Nothing was red: the token was valid, so
-// every test that used it passed, which is exactly the point.
+// PRODUCTION key (valid to 2036-03-11 — the issue said 2088, which is the
+// epoch value 2088845234), committed in two places. It was NODE_ENV-gated only
+// at the route that installs it — the string itself was a working enterprise
+// key, and pasting it into Settings → License unlocked paid features on any
+// install (#1083). Nothing was red: the token was valid, so every test that
+// used it passed, which is exactly the point.
 //
 // The fix is structural (a development keypair no production build trusts,
 // plus a validator that never honours the dev subject under the production
@@ -20,6 +21,22 @@
 // It asks jose directly rather than going through `validateLicense`, so it
 // still fires on a token the validator's own policy would reject. The question
 // is "did our production key sign this?", not "would we grant it today".
+//
+// What it does NOT cover, stated so nobody reads the green check as more:
+//
+//   - **The tracked tree, never the history.** A token committed and removed
+//     again lives on in every clone, and no CI check can retract it — which is
+//     why the revocation is a validator rule rather than a scrub. History was
+//     audited once, on 2026-08-05, by extracting every JWT-shaped string from
+//     `git log --all -p` and verifying each against the production key:
+//     exactly ONE has ever existed, `sub=pinchy-dev`, i.e. the token above,
+//     and `DEV_LICENSE_SUBJECT` revokes it. The other two hits are test
+//     fixtures we never signed. Re-run that scan if the revocation rule is
+//     ever narrowed — it is the evidence that the rule is sufficient.
+//   - **One line at a time.** `git grep` matches per line (all matches on a
+//     line, verified — not just the first), so a token split across lines or
+//     assembled by concatenation is invisible to it. Writing one that way to
+//     dodge the guard is a deliberate act, and review owns that case.
 import { describe, it, expect } from "vitest";
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";

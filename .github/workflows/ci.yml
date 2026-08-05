@@ -476,13 +476,23 @@ jobs:
       - name: Verify private key matches public key
         env:
           PINCHY_LICENSE_PRIVATE_KEY: ${{ secrets.PINCHY_LICENSE_PRIVATE_KEY }}
+          # "true" on a fork PR, "false" on a same-repo PR, empty on push and
+          # merge_group. Only the first case legitimately has no secrets.
+          FORK_PR: ${{ github.event.pull_request.head.repo.fork }}
         run: |
-          # Fork PRs get no secrets; a missing key must read as "cannot verify
-          # here", not as a red check on every outside contribution. Runs with
-          # the secret on same-repo PRs, merge queue and main.
+          # A fork PR carries no secrets by design, so "cannot verify here" must
+          # not read as a red check on every outside contribution. Anywhere else
+          # the secret is supposed to be present, and its absence means this
+          # check has been silently switched off — which is the one outcome a
+          # security check may never report as green. Skip on a fork, fail
+          # otherwise.
           if [ -z "$PINCHY_LICENSE_PRIVATE_KEY" ]; then
-            echo "::notice::PINCHY_LICENSE_PRIVATE_KEY not available (fork PR or unset secret) — skipping keypair verification."
-            exit 0
+            if [ "$FORK_PR" = "true" ]; then
+              echo "::notice::Fork PR carries no secrets — keypair verification cannot run here."
+              exit 0
+            fi
+            echo "::error::PINCHY_LICENSE_PRIVATE_KEY is unset on a run that should have it (event=${GITHUB_EVENT_NAME}). The keypair check cannot verify anything; restore the repository secret rather than letting this pass."
+            exit 1
           fi
           npm install jose
           node -e "
