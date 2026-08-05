@@ -765,11 +765,32 @@ test.describe("Plugin behavior — pinchy-approvals", () => {
       });
       expect(decision.status()).toBe(200);
 
-      // The decision is recorded as approval.granted.
-      await pollAuditForEvent(page, {
+      // The decision is recorded as approval.granted — and `resumed` says it
+      // reached the parked call. Asserting only that the row exists would pass
+      // just as happily over a run that stays parked until it times out, which
+      // is the failure #1132 is about.
+      const granted = await pollAuditForEvent(page, {
         eventType: "approval.granted",
         predicate: (e) => e.resource === `approval:${requestId}`,
         deadlineMs: 15000,
+      });
+      expect(granted.outcome).toBe("success");
+      expect((granted.detail as { resumed?: boolean }).resumed).toBe(true);
+
+      // The runtime reports back that it let the call through…
+      await pollAuditForEvent(page, {
+        eventType: "approval.consumed",
+        predicate: (e) => e.resource === `approval:${requestId}`,
+        deadlineMs: 20000,
+      });
+
+      // …and the tool actually runs, in the same turn, with nobody prompting
+      // the agent again. This is the whole feature: everything above is
+      // bookkeeping about a call that either resumes or does not.
+      await pollAuditForTool(page, {
+        toolName: "pinchy_save_user_context",
+        agentId,
+        deadlineMs: 30000,
       });
     } finally {
       await page.request.patch(`/api/agents/${agentId}`, {
