@@ -384,14 +384,18 @@ export function NewAgentForm() {
     setSubmitting(true);
 
     try {
-      // Enable workspace write by default so new agents can save files out of
-      // the box. The API dedups this against the template's own allowedTools;
-      // users can toggle it off later in Agent Settings → Permissions.
+      // No defaultAllowedTools: permissions belong to the template, not to this
+      // form. Injecting pinchy_write here gave every agent file-write access
+      // (and, before memory became its own grant, a memory) regardless of what
+      // the chosen template asked for — including "Custom Agent — Start from
+      // scratch", which is supposed to start with nothing.
+      //
+      // createAgent still accepts the field; it is part of the API contract for
+      // external clients. The first-party UI just stops using it.
       const body: CreateAgentInput = {
         name: values.name.trim(),
         tagline: values.tagline?.trim() || null,
         templateId: selectedTemplate,
-        defaultAllowedTools: ["pinchy_write"],
       };
 
       if (requiresDirectories && selectedPaths.length > 0) {

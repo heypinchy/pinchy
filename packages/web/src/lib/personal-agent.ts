@@ -36,9 +36,17 @@ export async function createSmithersAgent({
   // docs_list / docs_read come from the pinchy-docs plugin, which is enabled
   // automatically for every personal agent (see openclaw-config.ts). No need
   // to list them here.
+  // pinchy_memory is not negotiable for a personal agent: the docs call
+  // Smithers the user's personal notebook, and until memory became its own
+  // grant it had none at all — createSmithersAgent never received the
+  // pinchy_write the New-Agent form injected into UI-created agents, so every
+  // personal agent shipped memory-less (#755).
+  //
+  // Deliberately NOT pinchy_write: Smithers has no file-producing job today,
+  // and granting one here would be a capability nobody asked for.
   const allowedTools = isAdmin
-    ? ["pinchy_save_user_context", "pinchy_save_org_context"]
-    : ["pinchy_save_user_context"];
+    ? ["pinchy_memory", "pinchy_save_user_context", "pinchy_save_org_context"]
+    : ["pinchy_memory", "pinchy_save_user_context"];
 
   const [agent] = await db
     .insert(agents)
