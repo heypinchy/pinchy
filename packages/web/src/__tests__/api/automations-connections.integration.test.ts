@@ -147,6 +147,8 @@ describe("GET /api/automations/connections", () => {
     const agent = await seedAgent({ isPersonal: false, ownerId: null });
     const res = await GET(req(agent.id), routeContext());
     expect(res.status).toBe(403);
+    // Read-side default wording from the shared gate (#1087).
+    expect(await res.json()).toEqual({ error: "You do not have access to this agent" });
   });
 
   it("forbids a member from listing another user's personal agent's connections", async () => {

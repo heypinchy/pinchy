@@ -185,6 +185,13 @@ describe("POST /api/automations — create email workflow", () => {
 
     const res = await POST(postBody(validBody(agent.id, "conn-shared")), routeContext());
     expect(res.status).toBe(403);
+    // The wording, not just the status: create shares its scope gate with the
+    // two GET routes but keeps its own refusal ("permission to create a
+    // workflow", not "access to this agent"). Since #1087 that is a defaulted
+    // parameter, so an omitted argument would silently swap the sentence.
+    expect(await res.json()).toEqual({
+      error: "You do not have permission to create a workflow on this agent",
+    });
     expect(await loadWorkflows(agent.id)).toHaveLength(0);
     expect(deferAuditLogMock).not.toHaveBeenCalled();
   });

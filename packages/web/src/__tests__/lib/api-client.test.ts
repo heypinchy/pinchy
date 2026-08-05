@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { apiPost, apiDelete, apiGet, ApiError } from "@/lib/api-client";
+import { apiPost, apiDelete, apiGet, ApiError, extractFieldErrors } from "@/lib/api-client";
 
 /**
  * Helper to build a Response-shaped mock that matches what `send()` reads.
@@ -114,5 +114,54 @@ describe("apiPost", () => {
       expect((e as ApiError).status).toBe(403);
       expect((e as ApiError).message).toBe("Forbidden");
     }
+  });
+});
+
+/**
+ * The inline-vs-toast split from AGENTS.md § "Error And Notification UI" hangs
+ * off this helper's null: a field the user can correct gets an inline message,
+ * anything else gets a toast. It lived as an untested copy inside two settings
+ * components until #1087 pulled it here, so its contract is pinned now.
+ */
+describe("extractFieldErrors", () => {
+  it("flattens Zod's fieldErrors to the first message per field", () => {
+    const err = new ApiError(400, "Validation failed", {
+      fieldErrors: { name: ["Name is required", "Name is too short"], scopes: ["Pick one"] },
+    });
+    expect(extractFieldErrors(err)).toEqual({
+      name: "Name is required",
+      scopes: "Pick one",
+    });
+  });
+
+  it("returns null for an error that is not an ApiError", () => {
+    expect(extractFieldErrors(new Error("network down"))).toBeNull();
+    expect(extractFieldErrors("nope")).toBeNull();
+    expect(extractFieldErrors(undefined)).toBeNull();
+  });
+
+  it("returns null for an ApiError carrying no details", () => {
+    expect(extractFieldErrors(new ApiError(500, "Server error"))).toBeNull();
+  });
+
+  it("returns null when details carry no fieldErrors", () => {
+    expect(extractFieldErrors(new ApiError(400, "Bad", { formErrors: ["nope"] }))).toBeNull();
+  });
+
+  it("returns null when every field's message list is empty", () => {
+    // Not `{}` — the caller branches on null to fall back to a toast, so an
+    // empty map would render an inline error area with nothing in it.
+    const err = new ApiError(400, "Validation failed", { fieldErrors: { name: [] } });
+    expect(extractFieldErrors(err)).toBeNull();
+  });
+
+  it("skips a field whose messages are not an array but keeps the rest", () => {
+    const err = new ApiError(400, "Validation failed", {
+      fieldErrors: { name: "not-an-array", scopes: ["Pick one"] } as unknown as Record<
+        string,
+        string[]
+      >,
+    });
+    expect(extractFieldErrors(err)).toEqual({ scopes: "Pick one" });
   });
 });

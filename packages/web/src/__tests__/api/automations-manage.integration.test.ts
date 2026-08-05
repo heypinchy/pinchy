@@ -148,6 +148,9 @@ describe("Automations management API", () => {
         routeContext()
       );
       expect(res.status).toBe(403);
+      // The read-side wording, which the shared gate supplies as its default
+      // (#1087) — the create route deliberately overrides it.
+      expect(await res.json()).toEqual({ error: "You do not have access to this agent" });
     });
 
     it("requires an agentId query parameter", async () => {
