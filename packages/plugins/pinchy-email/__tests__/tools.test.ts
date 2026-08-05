@@ -1406,6 +1406,49 @@ describe("email_send", () => {
     });
   });
 
+  it("does not re-send when the failure merely contains the digits 401 (pinchy#1077)", async () => {
+    // The pre-#1077 matcher tested `msg.includes("401")` over the whole
+    // error message, so any provider error carrying those digits — a quota
+    // figure, a size, a message id — was classified as an auth failure.
+    // withAuthRetry then invalidated the adapter and replayed the entire
+    // closure, and for email_send that closure IS the send: the recipient
+    // gets the mail twice.
+    //
+    // Asserted on the tool, not on isAuthError: the unit test proves the
+    // matcher rejects the string, this proves the send is not repeated.
+    mockSend.mockRejectedValue(new Error("Recipient mailbox is 401 MB over quota"));
+
+    const configWithSend: PluginConfig = {
+      ...testConfig,
+      agents: {
+        "agent-1": {
+          connectionId: "conn-1",
+          permissions: { email: ["read", "draft", "send"] },
+        },
+      },
+    };
+    const tools = createApi(configWithSend);
+    const tool = findTool(tools, "email_send", agentId)!;
+
+    const result = await tool.execute("call-1", {
+      to: "recipient@test.com",
+      subject: "Sent Subject",
+      body: "Sent body text",
+    });
+
+    // Read the count, THEN reset, THEN assert. `vi.clearAllMocks()` in
+    // beforeEach clears recorded calls but keeps a standing implementation
+    // (and any unconsumed `…Once`), so a rejection left behind here would
+    // surface as a failure in whichever later test calls send without its
+    // own setup. Resetting before the assertions means a red assertion
+    // cannot skip the cleanup and turn one failure into several.
+    const sendCalls = mockSend.mock.calls.length;
+    mockSend.mockReset();
+
+    expect(result.isError).toBe(true);
+    expect(sendCalls).toBe(1);
+  });
+
   it("reports a direct send honestly when the adapter returns messageId: null (Graph's 202-with-no-location case) instead of fabricating an empty id", async () => {
     mockSend.mockResolvedValue({ messageId: null });
 

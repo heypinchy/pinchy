@@ -3719,6 +3719,83 @@ describe("client caching (#209 layer 2: credentials fetched lazily, cached)", ()
     expect(mockSearchRead).toHaveBeenCalledTimes(2);
   });
 
+  it("refetches after a connection hot-swap instead of serving the previous connection's client (pinchy#1077)", async () => {
+    mockSearchRead.mockResolvedValue({
+      records: [],
+      total: 0,
+      limit: 100,
+      offset: 0,
+    });
+
+    // A hot swap re-points the SAME agent at a different integration
+    // connection; the agentId does not change. Keying the client cache on
+    // agentId alone therefore kept the OLD connection's OdooClient — and
+    // with it the old Odoo instance's credentials — serving tool calls for
+    // up to CREDENTIAL_CACHE_TTL_MS after the swap.
+    //
+    // This asserts the behaviour, not the helper: credentialCacheKey's own
+    // unit test can only prove that two strings differ, which stays true
+    // even if index.ts goes back to caching on `agentId`.
+    const agentConfigs: Record<string, AgentOdooConfig> = {
+      [agentId]: { ...agentConfig, connectionId: "conn-before-swap" },
+    };
+    const tools = createApi(agentConfigs);
+
+    await findTool(tools, "odoo_read", agentId)!.execute("call-1", {
+      model: "sale.order",
+      filters: [],
+    });
+
+    agentConfigs[agentId] = { ...agentConfig, connectionId: "conn-after-swap" };
+
+    await findTool(tools, "odoo_read", agentId)!.execute("call-2", {
+      model: "sale.order",
+      filters: [],
+    });
+
+    const credentialUrls = fetchMock.mock.calls
+      .map((call) => String(call[0]))
+      .filter((url) => url.includes("/credentials"));
+    expect(credentialUrls).toHaveLength(2);
+    expect(credentialUrls[0]).toContain("conn-before-swap");
+    expect(credentialUrls[1]).toContain("conn-after-swap");
+  });
+
+  it("does not replay a create when the failure merely contains the digits 401 (pinchy#1077)", async () => {
+    vi.stubEnv("PINCHY_REF_TOKEN_KEY", "a".repeat(64));
+    // The pre-#1077 matcher tested `msg.includes("401")` over the whole
+    // error message, so an amount or record id that happened to contain
+    // those digits was classified as an auth failure. withAuthRetry then
+    // invalidated the client and replayed the ENTIRE closure — including
+    // `client.create`, which is not idempotent. The second create is a
+    // duplicate record nobody asked for.
+    //
+    // Asserted on the tool, not on isAuthError: the unit test proves the
+    // matcher rejects the string, this proves the write is not repeated.
+    mockCreate.mockRejectedValue(new Error("Invalid value 401.00 for field credit_limit"));
+
+    const tools = createApi({ [agentId]: agentConfig });
+    const tool = findTool(tools, "odoo_create", agentId)!;
+
+    const result = await tool.execute("call-1", {
+      model: "res.partner",
+      values: { name: "New Partner" },
+    });
+
+    // Read the count, THEN reset, THEN assert. `vi.clearAllMocks()` in
+    // beforeEach clears recorded calls but keeps a standing implementation
+    // (and any unconsumed `…Once`), so a rejection left behind here would
+    // surface as a failure in whichever later test calls create without its
+    // own setup — odoo_attach_file creates ir.attachment rows through this
+    // same mock. Resetting before the assertions means a red assertion
+    // cannot skip the cleanup and turn one failure into several.
+    const createCalls = mockCreate.mock.calls.length;
+    mockCreate.mockReset();
+
+    expect(result.isError).toBe(true);
+    expect(createCalls).toBe(1);
+  });
+
   it("POSTs report-auth-failure when retry-once also returns an auth error", async () => {
     fetchMock.mockResolvedValue({
       ok: true,
