@@ -10,7 +10,7 @@ import {
 } from "@/lib/agents";
 import { withAuth, withAdmin } from "@/lib/api-auth";
 import { getAgentWithAccess, requireAgentWriteAccess } from "@/lib/agent-access";
-import { appendAuditLog } from "@/lib/audit";
+import { appendAuditLog, safeProviderError } from "@/lib/audit";
 import type { UpdateDetail } from "@/lib/audit";
 import { isEnterprise } from "@/lib/enterprise";
 import { writeIdentityFile } from "@/lib/workspace";
@@ -243,7 +243,13 @@ export const PATCH = withAuth<RouteContext>(async (request, { params }, session)
             actorId: session.user.id!,
             eventType: "agent.updated",
             resource: `agent:${agentId}`,
-            detail: { changes, runtimeUpdate: { applied: false, error: cause } },
+            // safeProviderError, not the raw string: an uncapped field would
+            // trip truncateDetail, which replaces the WHOLE detail with a
+            // summary blob rather than trimming the offender — taking
+            // `changes` with it, on the one row whose value is recording what
+            // changed. It also scrubs addresses, and this path exists because
+            // of TOOLS.md, the file carrying an agent's mailbox context.
+            detail: { changes, runtimeUpdate: { applied: false, error: safeProviderError(cause) } },
             outcome: "failure",
           })
         );

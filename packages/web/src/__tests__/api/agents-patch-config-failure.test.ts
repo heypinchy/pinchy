@@ -40,7 +40,13 @@ vi.mock("next/server", async (importOriginal) => {
 
 vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
 vi.mock("next/headers", () => ({ headers: vi.fn().mockResolvedValue(new Headers()) }));
-vi.mock("@/lib/audit", () => ({ appendAuditLog: vi.fn().mockResolvedValue(undefined) }));
+// Only appendAuditLog is faked. safeProviderError stays real — the assertions
+// below are about the sanitising the route actually applies, and a stubbed
+// version would let an unsanitised detail pass.
+vi.mock("@/lib/audit", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/audit")>();
+  return { ...actual, appendAuditLog: vi.fn().mockResolvedValue(undefined) };
+});
 vi.mock("@/lib/groups", () => ({
   getUserGroupIds: vi.fn().mockResolvedValue([]),
   getAgentGroupIds: vi.fn().mockResolvedValue([]),
@@ -234,6 +240,68 @@ describe("PATCH /api/agents/[agentId] — config regeneration failure (#1095)", 
         }) as unknown,
       })
     );
+  });
+
+  it("caps the cause, so a long one cannot evict the diff from the row", async () => {
+    // appendAuditLog runs truncateDetail, and truncateDetail does NOT trim the
+    // offending field — it replaces the whole detail object with a summary
+    // blob. So an uncapped error string takes `changes` down with it, on the
+    // one row whose entire value is recording what changed. safeAuditPath's
+    // doc comment spells out this failure mode for caller-controlled fields.
+    adminSession();
+    mockAgent({ id: "agent-1", name: "Penny", model: "old", isPersonal: false, ownerId: null });
+    const huge = new Error(`EACCES: ${"x".repeat(5000)}`);
+    vi.mocked(updateAgent).mockRejectedValueOnce(new AgentRuntimeUpdateError(PERSISTED_ROW, huge));
+
+    await PATCH(patchModel(), { params: Promise.resolve({ agentId: "agent-1" }) });
+    await flushAfter();
+
+    const entry = vi.mocked(appendAuditLog).mock.calls[0][0];
+    const detail = entry.detail as { changes: unknown; runtimeUpdate: { error: string } };
+    expect(Buffer.byteLength(detail.runtimeUpdate.error, "utf8")).toBeLessThanOrEqual(1024);
+    expect(detail.changes).toEqual({ model: { from: "old", to: "ollama-cloud/deepseek-v4-pro" } });
+  });
+
+  it("keeps an email address out of the audit detail", async () => {
+    // AGENTS.md: never write plaintext email addresses into audit `detail` —
+    // the row is immutable and HMAC-chained, so it cannot be rewritten later.
+    // Not hypothetical here: this code path exists because of TOOLS.md, the
+    // file that carries an agent's MAILBOX context, so a failure message from
+    // it is one of the likelier places for an address to appear.
+    adminSession();
+    mockAgent({ id: "agent-1", name: "Penny", model: "old", isPersonal: false, ownerId: null });
+    vi.mocked(updateAgent).mockRejectedValueOnce(
+      new AgentRuntimeUpdateError(
+        PERSISTED_ROW,
+        new Error("IMAP connection commercial@helmcraft.ai refused")
+      )
+    );
+
+    await PATCH(patchModel(), { params: Promise.resolve({ agentId: "agent-1" }) });
+    await flushAfter();
+
+    const entry = vi.mocked(appendAuditLog).mock.calls[0][0];
+    expect(JSON.stringify(entry.detail)).not.toContain("commercial@helmcraft.ai");
+  });
+
+  it("still gives the operator the unscrubbed cause in the response", async () => {
+    // The two channels get different treatment on purpose. The audit row is
+    // immutable, long-lived and subject to erasure requests; the response is
+    // ephemeral and goes only to the authenticated user who just triggered it
+    // — and stripping it there would undo the whole point of the change.
+    adminSession();
+    mockAgent({ id: "agent-1", name: "Penny", model: "old", isPersonal: false, ownerId: null });
+    vi.mocked(updateAgent).mockRejectedValueOnce(
+      new AgentRuntimeUpdateError(
+        PERSISTED_ROW,
+        new Error("IMAP connection commercial@helmcraft.ai refused")
+      )
+    );
+
+    const res = await PATCH(patchModel(), { params: Promise.resolve({ agentId: "agent-1" }) });
+
+    const { error } = (await res.json()) as { error: string };
+    expect(error).toContain("commercial@helmcraft.ai");
   });
 
   it("does not write an audit row when nothing was persisted", async () => {
