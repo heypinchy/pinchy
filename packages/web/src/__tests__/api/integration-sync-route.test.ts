@@ -72,8 +72,9 @@ vi.mock("@/lib/integrations/auth-state", () => ({
   setIntegrationAuthFailed: (...args: unknown[]) => mockSetIntegrationAuthFailed(...args),
 }));
 
+const mockDeferAuditLog = vi.fn();
 vi.mock("@/lib/audit-deferred", () => ({
-  deferAuditLog: vi.fn(),
+  deferAuditLog: (...args: unknown[]) => mockDeferAuditLog(...args),
 }));
 
 import { NextRequest } from "next/server";
@@ -135,6 +136,34 @@ describe("POST /api/integrations/[connectionId]/sync — auth state flipping", (
       actor: { type: "user", id: "user-1" },
     });
     expect(mockSetIntegrationAuthFailed).not.toHaveBeenCalled();
+  });
+
+  it("scrubs an email-shaped connection name out of the integration.synced audit detail", async () => {
+    // The connection name is admin-supplied free text, so it can be an address
+    // even on an Odoo connection. The audit row is HMAC-signed and append-only:
+    // once an address is in it, GDPR Art. 17 erasure is off the table. The other
+    // writers on this event family scrub; this one has to as well.
+    mockSelectWhere.mockResolvedValue([{ ...mockConnection, name: "ops@example.com" }]);
+    mockFetchOdooSchema.mockResolvedValue({
+      success: true,
+      models: 5,
+      lastSyncAt: "2026-05-11T00:00:00.000Z",
+      categories: [],
+      data: { models: [], lastSyncAt: "2026-05-11T00:00:00.000Z" },
+    });
+
+    const { POST } = await import("@/app/api/integrations/[connectionId]/sync/route");
+    await POST(makeRequest("/api/integrations/conn-1/sync"), {
+      params: Promise.resolve({ connectionId: "conn-1" }),
+    });
+
+    const entry = mockDeferAuditLog.mock.calls[0]![0];
+    expect(entry.detail).toEqual({
+      id: "conn-1",
+      name: "<email-redacted>",
+      modelCount: 5,
+    });
+    expect(JSON.stringify(entry)).not.toContain("ops@example.com");
   });
 
   it("calls setIntegrationAuthFailed when fetchOdooSchema returns failure with isAuthError: true", async () => {

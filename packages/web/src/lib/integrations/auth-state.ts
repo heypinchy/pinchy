@@ -1,7 +1,7 @@
 import { and, eq, ne } from "drizzle-orm";
 import { db } from "@/db";
 import { integrationConnections } from "@/db/schema";
-import { appendAuditLog } from "@/lib/audit";
+import { appendAuditLog, scrubEmails, type AuditLogEntry } from "@/lib/audit";
 import { recordAuditFailure } from "@/lib/audit-deferred";
 
 type Actor = { type: "user" | "system"; id: string };
@@ -38,13 +38,17 @@ export async function setIntegrationAuthFailed(args: {
 
   if (transitioned.length === 0) return;
 
-  const entry = {
+  // scrubEmails, not the raw name: an IMAP connection's name defaults to the
+  // mailbox address, and this row is HMAC-signed and append-only — GDPR Art. 17
+  // erasure is impossible once it lands, so it must not land. Same treatment
+  // the other writers on this event family already apply.
+  const entry: AuditLogEntry = {
     actorType: actor.type,
     actorId: actor.id,
-    eventType: "integration.auth_failed" as const,
+    eventType: "integration.auth_failed",
     resource: `integration:${connectionId}`,
-    detail: { id: connectionId, name: existing.name, reason },
-    outcome: "success" as const,
+    detail: { id: connectionId, name: scrubEmails(existing.name), reason },
+    outcome: "success",
   };
   try {
     await appendAuditLog(entry);
@@ -80,13 +84,14 @@ export async function clearIntegrationAuthError(args: {
 
   if (transitioned.length === 0) return;
 
-  const entry = {
+  // Same row, same name, same reason to scrub it — see setIntegrationAuthFailed.
+  const entry: AuditLogEntry = {
     actorType: actor.type,
     actorId: actor.id,
-    eventType: "integration.auth_recovered" as const,
+    eventType: "integration.auth_recovered",
     resource: `integration:${connectionId}`,
-    detail: { id: connectionId, name: existing.name },
-    outcome: "success" as const,
+    detail: { id: connectionId, name: scrubEmails(existing.name) },
+    outcome: "success",
   };
   try {
     await appendAuditLog(entry);

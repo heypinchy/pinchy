@@ -6,9 +6,13 @@ vi.mock("@/db", () => ({
     select: vi.fn(),
   },
 }));
-vi.mock("@/lib/audit", () => ({
-  appendAuditLog: vi.fn(),
-}));
+// Only appendAuditLog is faked. scrubEmails stays REAL, because the redaction
+// assertions below are about what it actually produces — a hand-written stub
+// would let them pass against a scrubber that scrubs nothing.
+vi.mock("@/lib/audit", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/audit")>("@/lib/audit");
+  return { ...actual, appendAuditLog: vi.fn() };
+});
 vi.mock("@/lib/audit-deferred", () => ({
   recordAuditFailure: vi.fn(),
 }));
@@ -60,6 +64,42 @@ describe("setIntegrationAuthFailed", () => {
         detail: { id: "c1", name: "Odoo", reason: "401 from Odoo" },
       })
     );
+  });
+
+  it("scrubs an email-shaped connection name out of the audit detail", async () => {
+    // An IMAP connection's name DEFAULTS to the mailbox address, so this path
+    // routinely carries one. The audit row is HMAC-signed and append-only, which
+    // makes GDPR Art. 17 erasure impossible after the fact — the address must
+    // never get written in the first place. The sibling writers on the same
+    // event family (PATCH /api/integrations/[connectionId], POST
+    // /api/integrations/imap) already scrub; these two did not.
+    const fakeUpdate = {
+      set: vi.fn().mockReturnThis(),
+      where: vi.fn().mockReturnThis(),
+      returning: vi.fn().mockResolvedValue([{ id: "c1" }]),
+    };
+    mockedDb.select.mockReturnValue({
+      from: () => ({
+        where: () => Promise.resolve([{ id: "c1", name: "mailbox@example.com", status: "active" }]),
+      }),
+    } as never);
+    mockedDb.update.mockReturnValue(fakeUpdate as never);
+
+    await setIntegrationAuthFailed({
+      connectionId: "c1",
+      reason: "Authentication failed",
+      actor: { type: "system", id: "inbox-sweep" },
+    });
+
+    const entry = mockedAppendAudit.mock.calls[0]![0];
+    expect(entry.detail).toEqual({
+      id: "c1",
+      name: "<email-redacted>",
+      reason: "Authentication failed",
+    });
+    // Belt and braces: the address must not survive anywhere in the row, not
+    // just in the field we happened to assert on.
+    expect(JSON.stringify(entry)).not.toContain("mailbox@example.com");
   });
 
   it("is idempotent: does NOT write a second audit entry when status is already auth_failed", async () => {
@@ -163,6 +203,32 @@ describe("clearIntegrationAuthError", () => {
         outcome: "success",
       })
     );
+  });
+
+  it("scrubs an email-shaped connection name out of the audit detail", async () => {
+    // Recovery writes the same `name` from the same row as the failure path,
+    // so it leaks the same address unless it scrubs too.
+    mockedDb.select.mockReturnValue({
+      from: () => ({
+        where: () =>
+          Promise.resolve([{ id: "c1", name: "mailbox@example.com", status: "auth_failed" }]),
+      }),
+    } as never);
+    const fakeUpdate = {
+      set: vi.fn().mockReturnThis(),
+      where: vi.fn().mockReturnThis(),
+      returning: vi.fn().mockResolvedValue([{ id: "c1" }]),
+    };
+    mockedDb.update.mockReturnValue(fakeUpdate as never);
+
+    await clearIntegrationAuthError({
+      connectionId: "c1",
+      actor: { type: "user", id: "u1" },
+    });
+
+    const entry = mockedAppendAudit.mock.calls[0]![0];
+    expect(entry.detail).toEqual({ id: "c1", name: "<email-redacted>" });
+    expect(JSON.stringify(entry)).not.toContain("mailbox@example.com");
   });
 
   it("does nothing when prior status was already active", async () => {

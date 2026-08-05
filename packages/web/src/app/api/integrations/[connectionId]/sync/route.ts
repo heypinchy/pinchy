@@ -5,6 +5,7 @@ import { db } from "@/db";
 import { integrationConnections } from "@/db/schema";
 import { decrypt } from "@/lib/encryption";
 import { odooCredentialsSchema } from "@/lib/integrations/odoo-schema";
+import { scrubEmails } from "@/lib/audit";
 import { deferAuditLog } from "@/lib/audit-deferred";
 import { fetchOdooSchema } from "@/lib/integrations/odoo-sync";
 import { validateExternalUrl } from "@/lib/integrations/url-validation";
@@ -67,8 +68,11 @@ export const POST = withAdmin<RouteContext>(async (_req, { params }, session) =>
       eventType: "integration.synced",
       resource: `integration:${connectionId}`,
       detail: {
+        // Admin-supplied free text, so it can be an address — and this row is
+        // HMAC-signed and append-only, which puts GDPR Art. 17 erasure out of
+        // reach once one lands. See PATCH /api/integrations/[connectionId].
         id: connectionId,
-        name: connection.name,
+        name: scrubEmails(connection.name),
         modelCount: result.models,
       },
       outcome: "success",
