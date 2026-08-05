@@ -15,15 +15,24 @@
  *
  * Runs via `pnpm -C packages/web test:db` against the dev-stack Postgres on
  * :5434 (or VITEST_INTEGRATION_DB_URL in CI). The global setup creates a fresh
- * migrated DB, so the SQL here is exercised as plain UPDATE statements rather
- * than through drizzle-kit, which would be a no-op on an already-migrated DB.
- * Kept byte-identical in substance to drizzle/0069_agent_memory_grant.sql.
+ * migrated DB, so the migration is re-executed here as plain UPDATE statements
+ * rather than through drizzle-kit, which would be a no-op on an already-migrated
+ * DB.
+ *
+ * It re-executes the SHIPPED FILE, not a copy of it. A copy would be a
+ * hand-maintained mirror of code — the failure mode AGENTS.md keeps naming: edit
+ * the .sql, and a test that re-types the statements stays green about a
+ * migration it no longer describes.
  */
 
 import { describe, it, expect, afterEach } from "vitest";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { db } from "@/db";
 import { agents } from "@/db/schema";
 import { sql, eq } from "drizzle-orm";
+
+const MIGRATION_FILE = join(process.cwd(), "drizzle", "0069_agent_memory_grant.sql");
 
 const WRITER = "test-mem-grant-writer";
 const TEMPLATED = "test-mem-grant-templated";
@@ -34,26 +43,28 @@ const NO_TEMPLATE = "test-mem-grant-no-template";
 
 const ALL_IDS = [WRITER, TEMPLATED, CUSTOM, PERSONAL, ALREADY, NO_TEMPLATE];
 
+/**
+ * The statements of 0069, read off disk.
+ *
+ * Split rather than executed in one call: drizzle sends `db.execute` through a
+ * prepared statement, and Postgres' extended protocol accepts exactly one
+ * command per message. Comment lines go first so a `--` line can never hide the
+ * `;` that ends the statement it sits above.
+ */
+function migrationStatements(): string[] {
+  return readFileSync(MIGRATION_FILE, "utf-8")
+    .split("\n")
+    .filter((line) => !line.trimStart().startsWith("--"))
+    .join("\n")
+    .split(";")
+    .map((statement) => statement.trim())
+    .filter((statement) => statement.length > 0);
+}
+
 async function runMigration() {
-  await db.execute(sql`
-    UPDATE agents
-    SET allowed_tools = allowed_tools || '["pinchy_memory"]'::jsonb
-    WHERE allowed_tools @> '["pinchy_write"]'::jsonb
-      AND NOT (allowed_tools @> '["pinchy_memory"]'::jsonb)
-  `);
-  await db.execute(sql`
-    UPDATE agents
-    SET allowed_tools = allowed_tools || '["pinchy_memory"]'::jsonb
-    WHERE template_id IS NOT NULL
-      AND template_id <> 'custom'
-      AND NOT (allowed_tools @> '["pinchy_memory"]'::jsonb)
-  `);
-  await db.execute(sql`
-    UPDATE agents
-    SET allowed_tools = allowed_tools || '["pinchy_memory"]'::jsonb
-    WHERE is_personal = true
-      AND NOT (allowed_tools @> '["pinchy_memory"]'::jsonb)
-  `);
+  for (const statement of migrationStatements()) {
+    await db.execute(sql.raw(statement));
+  }
 }
 
 async function insertTestAgent(
@@ -85,6 +96,17 @@ describe("0069 agent memory grant migration", () => {
   afterEach(async () => {
     for (const id of ALL_IDS) {
       await db.delete(agents).where(eq(agents.id, id));
+    }
+  });
+
+  it("reads all three rules out of the migration file", () => {
+    // The two "grants nothing" tests below pass vacuously if the split returns
+    // an empty list, so the corpus is asserted rather than assumed. The
+    // positive tests would still fail loudly — this one names the cause.
+    const statements = migrationStatements();
+    expect(statements).toHaveLength(3);
+    for (const statement of statements) {
+      expect(statement).toMatch(/^UPDATE agents/);
     }
   });
 

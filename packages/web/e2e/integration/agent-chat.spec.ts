@@ -576,9 +576,10 @@ test.describe.serial("Plugin behavior — pinchy-knowledge", () => {
 // `allowedTools.includes("pinchy_write")` alone (build.ts:579-606), and
 // pinchy_generate_file's own registerTool context (index.ts) requires a
 // `.../workbench` write path to exist before the tool becomes available at
-// all. OpenClaw's per-agent `tools.allow` is the SAME manifest-derived
-// superset for every agent (tool-registry.ts computeAllowedTools), so
-// pinchy_generate_file never needs to appear in allowedTools itself.
+// all. OpenClaw's per-agent `tools.allow` names every Pinchy plugin tool for
+// every agent (tool-registry.ts computeAllowedTools — only the memory built-ins
+// vary, on the `pinchy_memory` grant), so pinchy_generate_file never needs to
+// appear in allowedTools itself.
 test.describe.serial("Plugin behavior — pinchy-files generate_file", () => {
   let agentId: string;
 

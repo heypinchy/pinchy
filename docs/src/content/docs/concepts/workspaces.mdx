@@ -32,7 +32,7 @@ Each workspace separates content by who owns it. Knowing which zone owns what ke
 
 The agent can **read** everything in its workspace, and each writable zone has its own permission: **Memory** covers `MEMORY.md` and `memory/`, **Create files** covers `workbench/`. Both are in the agent's [Permissions tab](/concepts/agent-permissions/#powerful-tools), and an agent may hold either, both, or neither.
 
-`uploads/` is the one zone the agent can never write. It is where your chat attachments live, so nothing the agent does can overwrite a file you uploaded — the `email_get_attachment` tool only ever adds new files there, never replaces one. Nor can the agent write the identity files at the workspace root: `SOUL.md`, `AGENTS.md`, `IDENTITY.md`, and `USER.md` are system-managed. The file plugin enforces this file by file, so an agent can update what it _remembers_ but never rewrite _who it is_.
+`uploads/` is the one zone the agent's file tools can never write. It is where your chat attachments live, so nothing the agent does can overwrite a file you uploaded. Files do still arrive there from the agent's side — `email_get_attachment` saves a mailbox attachment, and a photo sent to a Telegram-connected agent is mirrored in — but those paths only ever **add** a new file, never replace one. Nor can the agent write the identity files at the workspace root: `SOUL.md`, `AGENTS.md`, `IDENTITY.md`, and `USER.md` are system-managed. The file plugin enforces this file by file, so an agent can update what it _remembers_ but never rewrite _who it is_.
 
 ## Personal vs. shared agent workspaces
 

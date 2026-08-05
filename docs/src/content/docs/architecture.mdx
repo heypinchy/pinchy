@@ -162,7 +162,7 @@ Tools are organized into two categories:
 
 When an agent has safe tools enabled, the `pinchy-files` plugin validates every file access request against the agent's allowed directories, with symlink resolution to prevent escapes.
 
-In addition to the allow-list, every agent has built-in PDF and image readers that are **scoped to its own [workspace](/concepts/workspaces/)** — they cannot reach files outside the workspace, regardless of permissions. Each workspace has two subdirectories: `uploads/` (files the user attached in chat, readable but never writable by the agent) and `workbench/` (the agent's writable area for `pinchy_write` deliverables). Both are created eagerly on workspace spawn, so a fresh agent can save files immediately without needing a prior user upload.
+In addition to the allow-list, every agent has built-in PDF and image readers that are **scoped to its own [workspace](/concepts/workspaces/)** — they cannot reach files outside the workspace, regardless of permissions. Each workspace has two subdirectories: `uploads/` (files the user attached in chat — the agent reads them, and its file tools can never write there) and `workbench/` (the agent's writable area for `pinchy_write` deliverables). Both are created eagerly on workspace spawn, so a fresh agent can save files immediately without needing a prior user upload.
 
 Smithers agents also use the `pinchy-context` plugin, which provides `pinchy_save_user_context` and `pinchy_save_org_context` tools. These tools call Pinchy's internal API (authenticated via a shared gateway token) to save context from the onboarding interview directly to the database and sync it to agent workspaces.
 

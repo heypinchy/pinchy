@@ -896,7 +896,12 @@ const TOOL_TRIGGERS: TriggerConfig[] = [
     trigger: WORKSPACE_WRITE_TRIGGER,
     response: WORKSPACE_WRITE_RESPONSE,
     toolName: "pinchy_write",
-    arguments: { path: "uploads/result.csv", content: "id,value\n1,E2E probe\n" },
+    // workbench/, not uploads/. `uploads/` is the user's zone and left
+    // `write_paths` when memory became its own grant, so a write there is now
+    // denied — this probe exists to prove pinchy_write DISPATCHES, and a probe
+    // aimed at a denied path proves the rejection instead. The spec asserts the
+    // audited `path` back, so the target is the assertion.
+    arguments: { path: "workbench/result.csv", content: "id,value\n1,E2E probe\n" },
   },
   {
     trigger: GENERATE_FILE_TRIGGER,

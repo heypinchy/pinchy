@@ -4,7 +4,8 @@
 //
 // Pinchy emits `agents.list[].tools.allow` (no profile) so OpenClaw resolves an
 // absolute allowlist: only Pinchy plugin tools + a few read-only built-ins
-// (memory/pdf/image/session_status) reach the model; every other built-in is
+// (session_status always, memory_search/memory_get on the `pinchy_memory`
+// grant — never pdf/image) reach the model; every other built-in is
 // denied — cron, gateway, message, nodes, subagents, sessions_*, raw exec/fs/
 // web, the native browser. The unit emitter test proves Pinchy WRITES that
 // shape; this spec proves OpenClaw HONORS it at runtime by inspecting the tool

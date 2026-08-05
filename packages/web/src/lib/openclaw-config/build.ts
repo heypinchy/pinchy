@@ -598,7 +598,9 @@ export async function regenerateOpenClawConfig() {
 
     // Fail-closed tool policy: emit an explicit allowlist (`tools.allow`) of
     // exactly the Pinchy plugin tools plus the intentionally-allowed read-only
-    // built-ins (memory, pdf, image, session_status — see computeAllowedTools).
+    // built-ins: `session_status` for every agent, and `memory_search` /
+    // `memory_get` for an agent holding `pinchy_memory` (see
+    // computeAllowedTools — `pdf` and `image` are deliberately NOT among them).
     // With no `tools.profile` set, OpenClaw treats `allow` as an absolute
     // allowlist (full ∩ allow), so every other built-in is denied by default,
     // including ones added in future OpenClaw versions: cron, gateway, message,
@@ -621,8 +623,9 @@ export async function regenerateOpenClawConfig() {
     // pinchy-files: always inject workspace uploads + workbench; merge with
     // admin-configured KB paths. `uploads/` is the user's zone (chat
     // attachments); `workbench/` is the agent's writable zone for pinchy_write.
-    // Both are read+write so an agent can revisit deliverables it produced
-    // earlier (#418).
+    // Both are READABLE for every agent, so an agent can revisit what the user
+    // gave it and what it produced earlier (#418). Only workbench/ is writable,
+    // and only on the grant — see the write_paths block below.
     const adminFilesConfig = (agent.pluginConfig as AgentPluginConfig)?.["pinchy-files"];
     const adminPaths: string[] = adminFilesConfig?.allowed_paths ?? [];
     const workspaceUploads = `${getOpenClawWorkspacePath(agent.id)}/uploads`;

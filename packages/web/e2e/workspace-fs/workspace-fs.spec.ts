@@ -3,7 +3,11 @@
 // Dispatch probe for the pinchy-files plugin workspace tools:
 //   pinchy_ls   — list files in the agent's uploads directory
 //   pinchy_read — read a file from the agent's uploads directory
-//   pinchy_write — write a file into the agent's uploads directory
+//   pinchy_write — write a file into the agent's workbench directory
+//
+// The read side reaches `uploads/` and the write side does not, which is the
+// zone split itself: `uploads/` holds what the user attached, so the agent may
+// read it and never write it (`write_paths` covers `workbench/` only).
 //
 // Satisfies the plugin-tool-coverage drift guard by exercising all three tools
 // that pinchy-files exposes and asserting the audit entries appear.
@@ -221,7 +225,11 @@ test.describe.skip("Workspace filesystem dispatch probe (pinchy-files plugin cov
           (e) => e.resource === `agent:${agentId}` && e.detail?.toolName === "pinchy_write"
         );
         if (entry?.detail) {
-          expect(entry.detail.path).toContain("uploads/");
+          // workbench/, and the audited path is the RESOLVED one: a write the
+          // plugin denied never reaches this branch at all (no path, no mode,
+          // no hash — the details are error-only). So this line is what proves
+          // the write landed in the agent's own zone.
+          expect(entry.detail.path).toContain("workbench/");
           expect(entry.detail.mode).toBe("create");
           expect(typeof entry.detail.sizeBytes).toBe("number");
           // SHA-256 hex digest is always 64 characters

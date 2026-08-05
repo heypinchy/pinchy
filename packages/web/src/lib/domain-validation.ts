@@ -97,9 +97,10 @@ export const pluginConfigSchema = z
           message: "allowed_paths entries must be directories under /data",
         }),
         // Not confined to /data, and it does not have to be: nothing reads a
-        // STORED write_paths. `build.ts` derives the emitted list itself
-        // (workspace uploads/workbench/memory, only when pinchy_write is
-        // granted) and never looks at this field, so it is accepted for
+        // STORED write_paths. `build.ts` derives the emitted list itself, by
+        // zone and per grant (`workbench/` on pinchy_write, `MEMORY.md` +
+        // `memory/` on pinchy_memory; never the user's `uploads/`), and never
+        // looks at this field, so it is accepted for
         // backward compatibility with rows that already carry it rather than
         // as a grant anyone can widen. `write_paths ⊆ allowed_paths` is
         // enforced on that emitted list (validate-built-config.ts) and again
