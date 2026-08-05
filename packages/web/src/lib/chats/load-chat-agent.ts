@@ -42,6 +42,11 @@ export async function loadChatAgentName(agentId: string): Promise<string | undef
  * than a 403 on purpose: a member who cannot see an agent should not learn that
  * it exists.
  *
+ * The Automations gate (`resolveWorkflowAgent`) answers 403 for its refusals,
+ * which looks like the opposite call. It gates *manage scope*, not visibility,
+ * so its ordinary refusal is an agent the member demonstrably can see — the
+ * reasoning, and the one leg left knowingly open, are on that function.
+ *
  * Group ids are fetched only when they can change the answer (a non-admin
  * hitting a restricted agent), which is what keeps the common case at one
  * query.

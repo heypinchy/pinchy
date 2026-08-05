@@ -16,6 +16,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 vi.mock("@/db", () => ({ db: { select: vi.fn() } }));
 
 import { db } from "@/db";
+import { assertAgentAccess } from "@/lib/agent-access";
 import {
   resolveWorkflowAgent,
   resolveWorkflowAgentFromQuery,
@@ -93,6 +94,45 @@ describe("resolveWorkflowAgent", () => {
   });
 
   it("refuses someone else's personal agent", async () => {
+    mockLookup(personalAgent);
+    const result = await resolveWorkflowAgent("agent-1", { id: OTHER, role: "user" });
+    if (!("error" in result)) throw new Error("expected an error response");
+    expect(result.error.status).toBe(403);
+  });
+});
+
+/**
+ * This gate answers 403 where `loadChatPageAgent` answers 404 for a refusal,
+ * which reads as a contradiction now that both live one directory apart. It is
+ * deliberate, and the reasoning is on `resolveWorkflowAgent` — but reasoning in
+ * a comment is not a check, so pin the two legs it rests on. Both assert the
+ * SAME (agent, actor) pair against BOTH gates: what would silently rot here is
+ * not the status code, it is the visibility fact the argument is built on.
+ */
+describe("the deliberate 403-not-404 split", () => {
+  const visibleSharedAgent = { ...sharedAgent, visibility: "all" };
+
+  it("answers 403 for an agent the visibility gate lets the actor see", async () => {
+    // The honest leg. A 404 here would deny an agent this member has in their
+    // sidebar and chats with — `assertAgentAccess` throws on denial, so this
+    // not throwing IS the claim that they can see it.
+    expect(() =>
+      assertAgentAccess(visibleSharedAgent, OWNER, "user", [], [], "paid")
+    ).not.toThrow();
+
+    mockLookup(visibleSharedAgent);
+    const result = await resolveWorkflowAgent("agent-2", { id: OWNER, role: "user" });
+    if (!("error" in result)) throw new Error("expected an error response");
+    expect(result.error.status).toBe(403);
+  });
+
+  it("answers 403 for an agent the visibility gate hides — the knowingly-open leg", async () => {
+    // Someone else's personal agent: refused by both gates, so 403-vs-404 here
+    // really does confirm existence. Left open on the reasoning in the
+    // docblock, and asserted rather than assumed so that "this leg is the
+    // hidden one" cannot quietly stop being true.
+    expect(() => assertAgentAccess(personalAgent, OTHER, "user", [], [], "paid")).toThrow();
+
     mockLookup(personalAgent);
     const result = await resolveWorkflowAgent("agent-1", { id: OTHER, role: "user" });
     if (!("error" in result)) throw new Error("expected an error response");

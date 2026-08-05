@@ -33,6 +33,33 @@ export type WorkflowAgentResult = { agent: WorkflowAgent } | { error: NextRespon
  * The 403 wording is a parameter because it is user-visible copy that legitimately
  * differs per route ("access to this agent" when reading, "permission to create a
  * workflow" when writing). Sharing the gate must not silently rewrite either.
+ *
+ * **A refusal answers 403, and that deliberately differs from `loadChatPageAgent`,
+ * which answers 404** ("a member who cannot see an agent should not learn that it
+ * exists"). The two are not the same question. That one is a *visibility* gate
+ * (`assertAgentAccess`): whoever fails it cannot reach the agent anywhere, so the
+ * only thing a 403 would tell them is that it exists. This is a *manage-scope*
+ * gate (`canManageAgentWorkflows`), and its ordinary refusal is a shared agent the
+ * member sees in their sidebar and chats with daily. "Agent not found" about an
+ * agent on their screen is simply false, and it sends them checking the id instead
+ * of asking an admin.
+ *
+ * The other leg — someone else's personal agent, or a restricted one outside the
+ * actor's groups — is refused by both gates, so there 403-vs-404 really does
+ * confirm existence. It stays 403 knowingly, for two reasons:
+ *
+ * - There is nothing to enumerate. `agents.id` is `crypto.randomUUID()`, so the
+ *   answer only ever speaks about an id the caller already holds; it reveals none
+ *   they don't. Holding a foreign agent's id is itself the leak worth chasing, and
+ *   this function is not where that happened.
+ * - 404 here would close nothing. `getAgentWithAccess` answers 403 for exactly
+ *   that invisible agent on every `/api/agents/[agentId]/*` route a plain member
+ *   can reach, so an Automations-only 404 would trade a worse error message for a
+ *   property the instance does not actually have. Closing the oracle means
+ *   changing `getAgentWithAccess` (and the ~10 routes built on it), not this.
+ *
+ * Both legs are pinned in resolve-agent.test.ts against `assertAgentAccess`
+ * itself, so the visibility facts this rests on cannot rot unnoticed.
  */
 export async function resolveWorkflowAgent(
   agentId: string,

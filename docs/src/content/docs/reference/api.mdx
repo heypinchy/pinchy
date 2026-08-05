@@ -552,6 +552,16 @@ Scoped to the folders that agent is granted, exactly like search itself, so the 
 
 Standing email workflows an agent runs on its own — see [the Automations tab](/concepts/agent-settings/#automations-tab). You can manage automations on a personal agent you own; admins can manage them on any agent.
 
+The three agent-scoped endpoints below (`GET`, `POST`, and the connection picker) share one scope check, so they share their errors:
+
+**Errors:**
+
+- `400` — `agentId` is missing
+- `403` — the agent exists, but its automations are outside your scope: a shared agent is admin-only, and a personal agent's automations belong to its owner
+- `404` — no agent has that id
+
+The `403` is deliberate, and it differs from how a chat page answers: opening an agent you may not see gives you a plain "not found", because a refusal there would tell you the agent exists. Automations refuse a scope you lack on an agent you can normally see and use, so they say so instead of pretending it is missing.
+
 ### `GET /api/automations?agentId=<agentId>`
 
 List the agent's email workflows.
@@ -588,6 +598,8 @@ Enable or disable a workflow — the human-gated step that turns a proposal into
 Delete a workflow for good.
 
 **Response:** `{ "id": "..." }`
+
+Both endpoints address a workflow directly rather than an agent, so they answer `404` when no workflow has that id, and `403` when the workflow's agent is outside your scope.
 
 ### `GET /api/automations/connections?agentId=<agentId>`
 
