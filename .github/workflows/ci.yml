@@ -264,6 +264,71 @@ jobs:
       - name: Format check (repo)
         run: pnpm format:check
 
+      # The one thing in this repo that CI could not read: its own workflow
+      # files. Two bugs shipped straight through that gap.
+      #
+      # PR #1063 landed a ci.yml GitHub could not parse. Nothing failed —
+      # the required checks reported "Expected — Waiting for status" instead,
+      # which is the unmergeable-with-nothing-broken shape AGENTS.md already
+      # documents twice (§ "CI Path Filtering Is Job-Level" and § "Never Put
+      # A Required Check In A Matrix"), arriving here from a third direction.
+      #
+      # And release.yml / pre-release.yml both passed `config-inline:` to
+      # docker/setup-buildx-action, an input renamed to
+      # `buildkitd-config-inline` back in v3. An unknown `with:` key is
+      # handed to the action as an INPUT_* env var it never reads, so the
+      # buildkit registry-mirror config was dead from those workflows' first
+      # commit until 2026-08-05 — a green step whose only trace was one
+      # `##[warning]Unexpected input(s)` line buried in the step log.
+      #
+      # Neither is a YAML error nor a shell error. Both are *schema* errors,
+      # and actionlint is the only checker here that reads the schema.
+      #
+      # It lives in `quality` because `quality` is ungated (it is required),
+      # so this runs on every PR. A gated job would skip on a docs-only PR —
+      # and `.github/**` is not docs, so that is precisely a PR that can
+      # break a workflow. Same argument as the docs checks below.
+      #
+      # Pinned by version AND sha256 on purpose: this fetches an executable
+      # into a job holding a GHCR-write token, so an unpinned download would
+      # be a supply-chain hole. Bump the two together; a stale checksum fails
+      # loudly at the verify step rather than silently skipping the lint.
+      #
+      # shellcheck integration is OFF (`-shellcheck=`), and that is a design
+      # decision rather than a deferred cleanup — do not "finish the job" by
+      # switching it on without also pinning shellcheck.
+      #
+      # actionlint is pinned above by version and checksum, so it can only
+      # change its verdict when somebody edits this file. shellcheck is NOT:
+      # actionlint shells out to whatever binary the `ubuntu-latest` image
+      # happens to ship. Wiring that into `quality` — a REQUIRED check —
+      # means a runner-image bump that adds one SC rule turns main red with
+      # no commit behind it. AGENTS.md makes exactly this call for the
+      # docs-freshness sweep ("a check that can go red between two identical
+      # commits does not belong in front of a merge button"), and it applies
+      # with more force here, because this check gates every merge.
+      #
+      # The cost is real and worth naming: 15 shellcheck findings in `run:`
+      # blocks go unreported, most of them deliberate word-splitting, one of
+      # them a malformed `disable=` directive that silently suppresses
+      # nothing (ci.yml's Squawk step). `actionlint` with no flags, run
+      # locally, still reports all of them — that is the intended place for
+      # them. What this gate owns is workflow *schema*, which nothing else
+      # in this repo reads at all.
+      - name: Lint GitHub Actions workflows (actionlint)
+        env:
+          ACTIONLINT_VERSION: 1.7.12
+          ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          curl -sSfL -o actionlint.tar.gz \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          echo "${ACTIONLINT_SHA256}  actionlint.tar.gz" | sha256sum --check --strict
+          tar -xzf actionlint.tar.gz actionlint
+          cd "$GITHUB_WORKSPACE"
+          "$RUNNER_TEMP/actionlint" -color -shellcheck=
+
       - name: Typecheck plugins
         # The pinchy-* plugins run via tsx with no ahead-of-time type checking
         # elsewhere (root `pnpm build` is `next build`, which only typechecks
