@@ -585,6 +585,13 @@ sweeps and was broken by the 2026-07-15 retirement wave before anything checked
 it (a dispatched-but-retired id 404s into `run-infra-error` rows the exporter
 drops from `n`, so the scorecard quietly holds fewer models than intended).
 
+A vitest guard can only see those two lists, and most sweeps do not run them
+unmodified — `EVAL_CANDIDATE_MODELS` replaces them wholesale, and every probe
+is supposed to (iron rule 2). So `candidateModelsFromEnv` puts the same check
+on whatever it is about to return: prefixed, served, distinct, non-empty, or it
+throws before the stack boots and the key is spent. A model the catalog does
+not know is a reason to run `pnpm models:discover`, not to pass a flag.
+
 The set started as three models — `kimi-k2.6`, `gemma4:31b` and `glm-4.7` — the
 ones named in the model-selection methodology's R1 evidence (the 2026-07-07
 staging incident: `gemma4:31b` corrupted a Graph message id across turns while
@@ -606,8 +613,9 @@ sentences × k`.
 
 Running Eval-v1 against this set is the action item the methodology names under
 `kimi-k2.6`: _"Eval-v1 (the Hetzner scenario) quantifies its residual
-false-success rate before any deeper intervention."_ A scorecard produced here is the evidence tier-1 input the
-methodology expects for any future rule change — see
+false-success rate before any deeper intervention."_ A scorecard produced here
+is the evidence tier-1 input the methodology expects for any future rule
+change — see
 `packages/web/eval/model-selection-methodology.md` for the full evidence
 hierarchy and how a scorecard is meant to feed back into the resolver
 tier-map (always human-ratified, per rule R6).
