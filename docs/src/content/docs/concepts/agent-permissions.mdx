@@ -175,16 +175,16 @@ For the full setup walkthrough, see [Connect Email](/guides/connect-email/). For
 
 ## Agent templates and default permissions
 
-When you create an agent, you pick a template. Each template comes with different default tool permissions. Every new agent also starts with **Write files** (`pinchy_write`) enabled by default — reading the workspace is always on, and the create flow adds write so the agent can save notes and exports out of the box. You can toggle it off later in the Permissions tab.
+When you create an agent, you pick a template. Every template except **Custom Agent** starts with **Memory** and **Create files** enabled, then adds the tools its role needs. A template is a decision about what that kind of agent is for, so it may be generous; **Custom Agent** is the absence of that decision and starts with nothing at all.
 
-| Template family                                                                                    | Default tools on top of Write files                  | Use case                                                 |
+| Template family                                                                                    | Default tools on top of Memory + Create files        | Use case                                                 |
 | -------------------------------------------------------------------------------------------------- | ---------------------------------------------------- | -------------------------------------------------------- |
 | **Knowledge Base**                                                                                 | `knowledge_search`                                   | Answer questions from selected documents, with citations |
 | **Document agents** (Contract Analyzer, Resume Screener, Proposal Comparator, …)                   | none                                                 | Read and reason over files you attach in chat            |
 | **Email agents** ([Email, Sales, Support Assistant](/guides/connect-email/#email-agent-templates)) | the email tools an assistant needs                   | Triage, read, and draft mail                             |
 | **Odoo agents** ([two dozen roles](/guides/connect-odoo/#agent-templates))                         | the Odoo tools that role needs, read-only or writing | Work in a connected Odoo, scoped to one job              |
 | **[Market & News Monitor](/guides/create-market-monitor-agent/)**                                  | `pinchy_web_search`, `pinchy_web_fetch`              | Research a topic on the web and report back              |
-| **Custom Agent**                                                                                   | none                                                 | Start from scratch, configure permissions manually       |
+| **Custom Agent**                                                                                   | **nothing** — not even Memory or Create files        | Start from scratch, configure permissions manually       |
 
 A template is a starting point, not a ceiling: everything except `knowledge_search` can be turned on or off afterwards in the Permissions tab.
 

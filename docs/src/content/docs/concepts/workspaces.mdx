@@ -26,11 +26,13 @@ Each workspace separates content by who owns it. Knowing which zone owns what ke
 | Zone                    | Who writes                                                           | What lives here                                                                                                     |
 | ----------------------- | -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
 | Identity files (root)   | Pinchy (system)                                                      | Who the agent is: SOUL.md, AGENTS.md, IDENTITY.md, USER.md                                                          |
-| `MEMORY.md` + `memory/` | The agent, via `pinchy_write`                                        | What the agent has learned: curated long-term memory and dated daily notes                                          |
+| `MEMORY.md` + `memory/` | The agent, with the **Memory** permission                            | What the agent has learned: curated long-term memory and dated daily notes                                          |
 | `uploads/`              | The user (chat upload button) and the agent (`email_get_attachment`) | Receipts, PDFs, images, documents the user attaches, plus attachments the agent downloaded from a connected mailbox |
-| `workbench/`            | The agent, via `pinchy_write`                                        | Notes, drafts, exports, reports — anything the agent produces                                                       |
+| `workbench/`            | The agent, with the **Create files** permission                      | Notes, drafts, exports, reports — anything the agent produces                                                       |
 
-The agent can **read** everything in its workspace. It can **write** to its memory (`MEMORY.md` and `memory/`), to `workbench/`, and — for backward compatibility — to `uploads/`. It cannot write the identity files at the workspace root: `SOUL.md`, `AGENTS.md`, `IDENTITY.md`, and `USER.md` are system-managed. The file plugin enforces this file by file, so the agent can update what it _remembers_ but never rewrite _who it is_. Writing memory requires the agent to have the `pinchy_write` capability (most agents, including the default Smithers, do).
+The agent can **read** everything in its workspace, and each writable zone has its own permission: **Memory** covers `MEMORY.md` and `memory/`, **Create files** covers `workbench/`. Both are in the agent's [Permissions tab](/concepts/agent-permissions/#powerful-tools), and an agent may hold either, both, or neither.
+
+`uploads/` is the one zone the agent can never write. It is where your chat attachments live, so nothing the agent does can overwrite a file you uploaded — the `email_get_attachment` tool only ever adds new files there, never replaces one. Nor can the agent write the identity files at the workspace root: `SOUL.md`, `AGENTS.md`, `IDENTITY.md`, and `USER.md` are system-managed. The file plugin enforces this file by file, so an agent can update what it _remembers_ but never rewrite _who it is_.
 
 ## Personal vs. shared agent workspaces
 
