@@ -109,12 +109,42 @@ export async function addLabels({ owner, name }, issueNumber, labels) {
 const WRITE_PERMISSIONS = new Set(["admin", "maintain", "write"]);
 
 /**
- * GitHub logins are alphanumeric with single hyphens. The strictness is not
- * decoration: these arrive from the tracker, so a stranger picks them, and
- * they go straight into a request path. Bots (`x[bot]`) fail this on purpose
- * — callers must not ask about them at all.
+ * Every value the permission API's `permission` field may take.
+ *
+ * We read that field rather than the neighbouring `role_name` deliberately:
+ * `permission` is the collapsed *base* permission, so an org's CUSTOM role
+ * arrives as the role it inherits instead of as a name this set has never
+ * heard of. `maintain` and `triage` are listed because the field may stop
+ * collapsing them; measured on 2026-08-05 they arrive as `write` and `read`.
+ *
+ * An unrecognised value THROWS, for the same reason a failed lookup does. A
+ * renamed or absent field parses fine and yields `undefined`, which set
+ * membership answers "cannot write" — every author silently demoted to
+ * outsider, which is the 2026-08-05 incident reproduced with no trace of why.
  */
-const LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}$/;
+const KNOWN_PERMISSIONS = new Set([
+  "admin",
+  "maintain",
+  "write",
+  "triage",
+  "read",
+  "none",
+]);
+
+/**
+ * GitHub logins are 1–39 alphanumerics and hyphens, never leading or
+ * trailing. The strictness is not decoration: these arrive from the tracker,
+ * so a stranger picks them, and they go straight into a request path. Bots
+ * (`x[bot]`) fail this on purpose — callers must not ask about them at all.
+ *
+ * Consecutive hyphens are allowed, deliberately. Today's signup rule forbids
+ * them, but accounts that predate it are still around (`J--J` is real), and
+ * refusing to resolve one would hold the sweep red for as long as that person
+ * has an issue open — an alarm nobody can clear, which is the state this
+ * whole check exists to end. Rejecting them buys no path safety: a hyphen
+ * cannot steer a URL.
+ */
+const LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/;
 
 /**
  * Answers "may this person write to the repo?" from the permission API,
@@ -161,6 +191,11 @@ export function createWriteAccessResolver({ owner, name }) {
       } catch {
         throw new Error(
           `Could not read repo permission for @${login}: unparseable response ${body}`,
+        );
+      }
+      if (!KNOWN_PERMISSIONS.has(permission)) {
+        throw new Error(
+          `Could not read repo permission for @${login}: unexpected permission ${JSON.stringify(permission)} in ${body}`,
         );
       }
     }

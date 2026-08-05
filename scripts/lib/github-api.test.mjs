@@ -202,6 +202,40 @@ test("the write-access resolver refuses an unreadable permission body", async ()
   );
 });
 
+test("the write-access resolver refuses a permission value it cannot place", async () => {
+  // A parseable body is not a readable one. A renamed or dropped field yields
+  // `undefined`, which set membership answers "cannot write" — every author
+  // silently demoted to outsider, i.e. the 2026-08-05 incident again with
+  // nothing in the log to say why. A decode failure must be as loud here as a
+  // failed request.
+  for (const body of [
+    "{}",
+    '{"permission":null}',
+    '{"permission":"superuser"}',
+    '{"role_name":"admin"}',
+  ]) {
+    stubFetch([{ status: 200, body }]);
+    await assert.rejects(
+      () => createWriteAccessResolver(REPO)("clemenshelm"),
+      /clemenshelm/,
+      `expected a throw for body=${body}`,
+    );
+  }
+});
+
+test("the write-access resolver resolves a legacy login with a double hyphen", async () => {
+  // GitHub refuses these at signup today, but accounts predating that rule
+  // are still around — `J--J` is real. Refusing to look one up would keep the
+  // sweep red for as long as that person has an issue open, which is the one
+  // failure this alarm may not have.
+  stubFetch([{ status: 200, body: '{"permission":"read"}' }]);
+  assert.equal(await createWriteAccessResolver(REPO)("J--J"), false);
+  assert.equal(
+    calls[0].url,
+    "https://api.github.com/repos/heypinchy/pinchy/collaborators/J--J/permission",
+  );
+});
+
 test("the write-access resolver refuses to let a login steer the request path", async () => {
   // Logins arrive from the tracker, i.e. from strangers. Same lock as
   // addLabels: the URL builder does not trust its caller to have checked.
