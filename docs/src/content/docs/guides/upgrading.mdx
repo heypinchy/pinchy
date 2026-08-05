@@ -221,7 +221,9 @@ The same shared-volume mix-up as above reached the agent's workspace, where the 
 
 Two symptoms, one cause, and they didn't look related. Saving an agent's settings failed with "Failed to save some settings" and nothing more. And an agent with a connected mailbox insisted it had no email access at all — truthfully, because its email tools never reached the runtime either, while the **Permissions** tab showed the connection saved.
 
-The runtime now hands those files back on start and on every tick, so an affected install repairs itself on upgrade — no manual step. Saving also tells you what actually happened now: if a change is stored but can't reach the runtime, it says so and names the reason, instead of reporting a flat failure.
+An affected install repairs itself on upgrade, with no manual step and nothing to configure. Pinchy now takes such a file back the moment it writes it — so the first save after upgrading is already the fix — and the runtime hands them over on start and on every tick as well, which also covers files Pinchy isn't currently writing.
+
+Saving also tells you what actually happened now: if a change is stored but can't reach the runtime, it says so and names the reason, instead of reporting a flat failure.
 
 #### Ollama Cloud catalog: one model removed, two gain vision
 

@@ -92,6 +92,46 @@ export function getWorkspacePath(agentId: string): string {
   return join(getWorkspaceBasePath(), agentId);
 }
 
+/**
+ * Writes a workspace file, reclaiming it when Pinchy no longer owns it.
+ *
+ * The workspace volume is shared with the OpenClaw container, which runs as
+ * root and creates any missing bootstrap file from its own template. Pinchy
+ * runs as uid 999, so a file OpenClaw created is 0644 root-owned: readable,
+ * and permanently un-overwritable. That is #1095 — it denied every agent save
+ * on production for two days, because the EACCES aborts
+ * regenerateOpenClawConfig() before it pushes openclaw.json.
+ *
+ * `unlink()`, though, is authorized by write permission on the DIRECTORY, and
+ * the workspace directory is Pinchy's. Measured in the production container:
+ *
+ *   file owner: 0, dir owner: 999
+ *     overwrite: DENIED    unlink: OK    recreate: OK (owner now 999)
+ *
+ * So Pinchy repairs this itself, at the moment of the write — no root, and no
+ * dependency on the OpenClaw-side repair tick, which only reaches an instance
+ * when its OpenClaw image is upgraded. Recreating also returns the file to uid
+ * 999, so the reclaim happens once rather than on every save.
+ *
+ * Safe for every caller here, and the reason is narrow: this runs only where
+ * Pinchy is already replacing the file's entire contents, so deleting first
+ * destroys nothing the write itself would have kept. Files Pinchy only reads
+ * (MEMORY.md, uploads/) never pass through it.
+ *
+ * When the DIRECTORY is what Pinchy cannot write, unlink is denied too and the
+ * error propagates — nothing here may turn a failed write into a silent no-op.
+ * That case needs root, and belongs to config/fix-config-permissions.sh.
+ */
+function writeFileReclaiming(filePath: string, content: string): void {
+  try {
+    writeFileSync(filePath, content, "utf-8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "EACCES") throw err;
+    rmSync(filePath, { force: true });
+    writeFileSync(filePath, content, "utf-8");
+  }
+}
+
 // Canonical OpenClaw-side path resolver — the path OpenClaw itself sees and
 // the value written into openclaw.json's `agents[].workspace`. OpenClaw
 // resolves MEMORY.md / memory/ relative to this. See the top-of-file layout
@@ -170,7 +210,7 @@ export function writeWorkspaceFile(agentId: string, filename: string, content: s
     mkdirSync(workspacePath, { recursive: true });
   }
 
-  writeFileSync(join(workspacePath, filename), content, "utf-8");
+  writeFileReclaiming(join(workspacePath, filename), content);
 }
 
 export function writeWorkspaceFileInternal(
@@ -186,7 +226,7 @@ export function writeWorkspaceFileInternal(
     mkdirSync(workspacePath, { recursive: true });
   }
 
-  writeFileSync(join(workspacePath, filename), content, "utf-8");
+  writeFileReclaiming(join(workspacePath, filename), content);
 }
 
 // =============================================================================
@@ -213,7 +253,7 @@ export function writeWorkspaceSkill(agentId: string, skillId: string, content: s
 
   const dir = join(getWorkspacePath(agentId), "skills", skillId);
   mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, "SKILL.md"), content, "utf-8");
+  writeFileReclaiming(join(dir, "SKILL.md"), content);
 }
 
 export function removeWorkspaceSkill(agentId: string, skillId: string): void {
@@ -352,7 +392,7 @@ export function writeToolsFile(agentId: string, mailboxes: MailboxContext[]): vo
   if (!existsSync(workspacePath)) {
     mkdirSync(workspacePath, { recursive: true });
   }
-  writeFileSync(filePath, content, "utf-8");
+  writeFileReclaiming(filePath, content);
 }
 
 export function generateIdentityContent(agent: { name: string; tagline: string | null }): string {
@@ -370,5 +410,5 @@ export function writeIdentityFile(
   if (!existsSync(workspacePath)) {
     mkdirSync(workspacePath, { recursive: true });
   }
-  writeFileSync(join(workspacePath, "IDENTITY.md"), generateIdentityContent(agent), "utf-8");
+  writeFileReclaiming(join(workspacePath, "IDENTITY.md"), generateIdentityContent(agent));
 }
