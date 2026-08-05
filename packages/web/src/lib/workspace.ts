@@ -1,5 +1,5 @@
-import { writeFileSync, readFileSync, existsSync, mkdirSync, rmSync } from "fs";
-import { join } from "path";
+import { writeFileSync, readFileSync, existsSync, mkdirSync, rmSync, renameSync } from "fs";
+import { join, dirname, basename } from "path";
 
 // =============================================================================
 // Agent on-disk layout — READ THIS before touching any code that resolves an
@@ -102,33 +102,59 @@ export function getWorkspacePath(agentId: string): string {
  * on production for two days, because the EACCES aborts
  * regenerateOpenClawConfig() before it pushes openclaw.json.
  *
- * `unlink()`, though, is authorized by write permission on the DIRECTORY, and
- * the workspace directory is Pinchy's. Measured in the production container:
+ * Replacing the DIRECTORY ENTRY, though, is authorized by write permission on
+ * the DIRECTORY rather than on the file — and the workspace directory is
+ * Pinchy's. Measured in the production container, and locally against the
+ * mode-based equivalent:
  *
  *   file owner: 0, dir owner: 999
- *     overwrite: DENIED    unlink: OK    recreate: OK (owner now 999)
+ *     overwrite: DENIED (EACCES)   unlink: OK   rename over it: OK (owner 999)
  *
  * So Pinchy repairs this itself, at the moment of the write — no root, and no
  * dependency on the OpenClaw-side repair tick, which only reaches an instance
- * when its OpenClaw image is upgraded. Recreating also returns the file to uid
- * 999, so the reclaim happens once rather than on every save.
+ * when its OpenClaw image is upgraded. The replacement is created by Pinchy, so
+ * the reclaim happens once rather than on every save.
  *
- * Safe for every caller here, and the reason is narrow: this runs only where
- * Pinchy is already replacing the file's entire contents, so deleting first
- * destroys nothing the write itself would have kept. Files Pinchy only reads
- * (MEMORY.md, uploads/) never pass through it.
+ * It goes through a temp file and `rename(2)` rather than unlink-then-write,
+ * and that choice is load-bearing rather than stylistic. AGENTS.md and SOUL.md
+ * have NO copy in the database — `GET /api/agents/:id/files/:filename` serves
+ * the file itself, so the file is the user's instructions. Unlinking first
+ * means that between the two calls the only copy does not exist, and a failed
+ * second write (a full disk; the OpenClaw container recreating the bootstrap
+ * file root-owned in exactly that gap) destroys it. `rename` is atomic: the
+ * target is never absent, and when it cannot proceed the original is untouched.
  *
- * When the DIRECTORY is what Pinchy cannot write, unlink is denied too and the
- * error propagates — nothing here may turn a failed write into a silent no-op.
- * That case needs root, and belongs to config/fix-config-permissions.sh.
+ * The temp file is a sibling, because rename cannot cross filesystems.
+ *
+ * When the DIRECTORY is what Pinchy cannot write, the temp write is denied too
+ * and the error propagates — nothing here may turn a failed write into a silent
+ * no-op. That case needs root, and belongs to config/fix-config-permissions.sh.
  */
+let reclaimCounter = 0;
+
 function writeFileReclaiming(filePath: string, content: string): void {
   try {
     writeFileSync(filePath, content, "utf-8");
+    return;
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== "EACCES") throw err;
-    rmSync(filePath, { force: true });
-    writeFileSync(filePath, content, "utf-8");
+  }
+
+  const tmpPath = join(
+    dirname(filePath),
+    `.${basename(filePath)}.${process.pid}.${++reclaimCounter}.tmp`
+  );
+  try {
+    writeFileSync(tmpPath, content, "utf-8");
+    renameSync(tmpPath, filePath);
+  } catch (err) {
+    try {
+      rmSync(tmpPath, { force: true });
+    } catch {
+      // Best-effort: the write's own error is the one worth reporting, and a
+      // cleanup failure masking it would be #1095's core problem again.
+    }
+    throw err;
   }
 }
 

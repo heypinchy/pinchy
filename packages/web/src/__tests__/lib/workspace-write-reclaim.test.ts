@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from "vitest";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,14 +11,19 @@ import { join } from "node:path";
 // its own, because of a POSIX detail we measured in the production container:
 //
 //   file owner: 0, dir owner: 999
-//     overwrite: DENIED (EACCES — the production failure)
-//     unlink:    OK
-//     recreate:  OK (owner now 999)
+//     overwrite:      DENIED (EACCES — the production failure)
+//     unlink:         OK
+//     rename over it: OK (owner now 999)
 //
-// `unlink()` is authorized by write permission on the DIRECTORY, not on the
-// file, and the workspace directory is Pinchy's. So every one of these writes
-// can reclaim a file it no longer owns, at the moment the user hits Save,
-// without root and without a container upgrade on the other side.
+// Replacing a directory entry is authorized by write permission on the
+// DIRECTORY, not on the file, and the workspace directory is Pinchy's. So
+// every one of these writes can reclaim a file it no longer owns, at the
+// moment the user hits Save, without root and without a container upgrade on
+// the other side.
+//
+// The reclaim uses a temp file and rename(2) rather than unlink-then-write, so
+// the target is never briefly absent — see the failure path in
+// `workspace-write-reclaim-failure.test.ts`, which is where that matters.
 //
 // This is safe for ALL bootstrap files, not just the generated ones, and the
 // reason is worth stating precisely: the fallback only ever runs where Pinchy
@@ -43,6 +48,10 @@ beforeEach(async () => {
 
 afterEach(() => {
   rmSync(join(TEST_ROOT, AGENT_ID), { recursive: true, force: true });
+});
+
+afterAll(() => {
+  rmSync(TEST_ROOT, { recursive: true, force: true });
 });
 
 /**
@@ -112,6 +121,22 @@ describe.skipIf(runningAsRoot)(
       workspace.writeWorkspaceFileInternal(AGENT_ID, "USER.md", "# Context\n");
 
       expect(readFileSync(filePath, "utf-8")).toBe("# Context\n");
+    });
+
+    it("writeWorkspaceSkill replaces an unwritable SKILL.md one level down", () => {
+      // Skills live in skills/<id>/, not the workspace root, so the reclaim
+      // depends on a different directory being Pinchy's. It is — Pinchy
+      // mkdirs it — but that is worth proving rather than assuming, since
+      // this writer takes the same fallback as the rest.
+      const dir = join(TEST_ROOT, AGENT_ID, "skills", "invoice-filing");
+      mkdirSync(dir, { recursive: true });
+      const filePath = join(dir, "SKILL.md");
+      writeFileSync(filePath, "# bootstrapped elsewhere\n", "utf-8");
+      chmodSync(filePath, 0o444);
+
+      workspace.writeWorkspaceSkill(AGENT_ID, "invoice-filing", "# How to file invoices\n");
+
+      expect(readFileSync(filePath, "utf-8")).toBe("# How to file invoices\n");
     });
 
     it("leaves the file writable afterwards, so the next save needs no reclaim", () => {
