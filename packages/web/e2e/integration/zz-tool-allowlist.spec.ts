@@ -93,10 +93,16 @@ test.describe("Tool allowlist — fail-closed at runtime (#605)", () => {
     }
 
     // (2) Allowlist still lets governed tools through (not accidentally empty):
-    //     memory_search is an intended read-only built-in present for every agent.
+    //     session_status is the read-only built-in every agent gets.
+    expect(toolsSeen).toContain("session_status");
+
+    // (3) The memory built-ins follow the `pinchy_memory` grant, and this agent
+    //     is Smithers, which createSmithersAgent grants. So this doubles as the
+    //     runtime proof that a per-agent entry in tools.allow really reaches the
+    //     model — the emit-layer test can only show Pinchy writes it.
     expect(toolsSeen).toContain("memory_search");
 
-    // (3) At least one Pinchy plugin tool reaches the model — proves plugin
+    // (4) At least one Pinchy plugin tool reaches the model — proves plugin
     //     tools survive the allowlist, not just the built-in helpers.
     expect(
       toolsSeen.some((t) => t.startsWith("pinchy_") || t.startsWith("docs_")),
