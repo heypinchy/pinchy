@@ -4619,6 +4619,116 @@ describe("regenerateOpenClawConfig", () => {
       }
     });
 
+    it("does not write a superseded push's stale payload when the rate-limit budget runs out", async () => {
+      // The generation checks sit at the top of each retry iteration and right
+      // after config.get(), so a superseded coroutine can never reach
+      // config.apply. The two writeConfigAtomic fallbacks in the catch block
+      // had no check at all: supersede a push while its LAST rate-limited
+      // apply is still in flight, and the stale payload still lands on disk —
+      // overwriting whatever the newer push just applied. That is precisely
+      // the stale-payload-lands-anyway race the counter exists to prevent
+      // (#193), arriving through the fallback instead of through apply.
+      vi.useFakeTimers();
+      try {
+        const rateLimited = () => new Error("rate limit exceeded for config.apply; retry after 1s");
+        let rejectInFlightApply: ((err: Error) => void) | undefined;
+        mockConfigGet.mockResolvedValue({ hash: "h1" });
+        mockConfigApply
+          .mockRejectedValueOnce(rateLimited())
+          .mockRejectedValueOnce(rateLimited())
+          // The apply that exhausts the budget stays in flight until we reject
+          // it by hand — that pending window is where the newer push starts.
+          .mockImplementationOnce(
+            () =>
+              new Promise<void>((_resolve, reject) => {
+                rejectInFlightApply = reject;
+              })
+          )
+          // The newer push's own apply lands cleanly over WS.
+          .mockResolvedValue(undefined);
+        mockGetClient.mockReturnValue({
+          config: { get: mockConfigGet, apply: mockConfigApply },
+        });
+
+        pushConfigInBackground(JSON.stringify({ env: { OLD: "1" } }));
+        // Burn both rate-limit window waits; the third apply is now pending.
+        await vi.advanceTimersByTimeAsync(5_000);
+        await vi.advanceTimersByTimeAsync(5_000);
+        expect(mockConfigApply).toHaveBeenCalledTimes(3);
+        expect(rejectInFlightApply).toBeDefined();
+
+        // A newer push supersedes while that apply is still in flight.
+        pushConfigInBackground(JSON.stringify({ env: { NEW: "2" } }));
+        await vi.advanceTimersByTimeAsync(0);
+
+        // Only now does the in-flight apply fail — budget exhausted, so the
+        // old code took the file-write fallback.
+        rejectInFlightApply?.(rateLimited());
+        for (let i = 0; i < 5; i++) {
+          await vi.advanceTimersByTimeAsync(0);
+        }
+
+        const openclawWrite = findOpenClawConfigWrite(mockedWriteFileSync);
+        expect(
+          openclawWrite,
+          "a superseded push must not write its stale payload — the newer push owns the file"
+        ).toBeUndefined();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("does not write a superseded push's stale payload when the retry budget runs out", async () => {
+      // Same gap, the other fallback: the retries-exhausted branch on the last
+      // backoff slot. A push superseded while its final apply is in flight
+      // must leave the file to the newer push.
+      vi.useFakeTimers();
+      try {
+        const applyFailed = () => new Error("INTERNAL_ERROR: config.apply failed");
+        let rejectInFlightApply: ((err: Error) => void) | undefined;
+        mockConfigGet.mockResolvedValue({ hash: "h1" });
+        mockConfigApply
+          .mockRejectedValueOnce(applyFailed())
+          .mockRejectedValueOnce(applyFailed())
+          .mockRejectedValueOnce(applyFailed())
+          .mockRejectedValueOnce(applyFailed())
+          // Fifth (last) backoff slot — held in flight until we reject it.
+          .mockImplementationOnce(
+            () =>
+              new Promise<void>((_resolve, reject) => {
+                rejectInFlightApply = reject;
+              })
+          )
+          .mockResolvedValue(undefined);
+        mockGetClient.mockReturnValue({
+          config: { get: mockConfigGet, apply: mockConfigApply },
+        });
+
+        pushConfigInBackground(JSON.stringify({ env: { OLD: "1" } }));
+        // backoffsMs = [100, 250, 500, 1000, 2000]: 1850 ms of sleeps reaches
+        // the fifth and final attempt.
+        await vi.advanceTimersByTimeAsync(2_000);
+        expect(mockConfigApply).toHaveBeenCalledTimes(5);
+        expect(rejectInFlightApply).toBeDefined();
+
+        pushConfigInBackground(JSON.stringify({ env: { NEW: "2" } }));
+        await vi.advanceTimersByTimeAsync(0);
+
+        rejectInFlightApply?.(applyFailed());
+        for (let i = 0; i < 5; i++) {
+          await vi.advanceTimersByTimeAsync(0);
+        }
+
+        const openclawWrite = findOpenClawConfigWrite(mockedWriteFileSync);
+        expect(
+          openclawWrite,
+          "a superseded push must not write its stale payload after its retries are exhausted"
+        ).toBeUndefined();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it("uses generic backoff (not the stale-hash bypass) for unrelated config.apply errors", async () => {
       // Regression guard: only the OC-specific "config changed since last
       // load" message gets the immediate-refetch path. Any other error

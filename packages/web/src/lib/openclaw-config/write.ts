@@ -8,7 +8,12 @@ import {
   configsAreEquivalentUpToOpenClawMetadata,
 } from "./normalize";
 import { CONFIG_PATH } from "./paths";
-import { trackConfigPushStarted, trackConfigPushSettled } from "./push-state";
+import {
+  trackConfigPushStarted,
+  trackConfigPushSettled,
+  nextConfigPushGeneration,
+  getCurrentConfigPushGeneration,
+} from "./push-state";
 
 /** Atomic write: tmp file + rename to prevent OpenClaw reading a truncated config */
 export function writeConfigAtomic(content: string) {
@@ -123,11 +128,16 @@ export function readExistingConfig(): Record<string, unknown> {
 // actual agent create all in quick succession with a slow CI event loop), the
 // retry window of an early call can extend into a later one's territory.
 //
-// Cancellation scope: the counter is checked between awaits in the retry loop
-// and again right before client.config.apply(). It does NOT cancel an in-flight
-// apply() RPC — once that call starts, it runs to completion. The newer call's
-// payload simply overwrites through its own config.apply or writeConfigAtomic.
-let _pushGeneration = 0;
+// The counter itself lives in `push-state.ts`, on globalThis: this module is
+// loaded TWICE in one Pinchy process (custom server via tsx + Next's route
+// bundles), and a module-level counter would give each instance a private
+// sequence that the other's pushes never touch.
+//
+// Cancellation scope: the counter is checked between awaits in the retry loop,
+// right before client.config.apply(), and once more when an attempt fails, so a
+// superseded coroutine never applies NOR file-writes its stale payload. It does
+// NOT cancel an in-flight apply() RPC — once that call starts, it runs to
+// completion; only its aftermath is abandoned.
 
 /**
  * Test-only: cancel every push coroutine that is currently in flight, by
@@ -146,9 +156,13 @@ let _pushGeneration = 0;
  * purpose: it was the only way a stale coroutine could get past the guard at
  * all. Guarded by "a push parked since an earlier test can never reach
  * config.apply" in that file.
+ *
+ * Which is also why `push-state.ts` exports no reset for the generation, only
+ * `nextConfigPushGeneration()`: now that the counter is process-wide, a reset
+ * would recycle tokens held by coroutines in the OTHER module instance too.
  */
 export function _supersedePendingPushes() {
-  _pushGeneration++;
+  nextConfigPushGeneration();
 }
 
 // OC's explicit recovery hint when the file-watcher reloaded openclaw.json
@@ -241,7 +255,7 @@ export interface PushConfigOptions {
 
 export function pushConfigInBackground(newContent: string, options: PushConfigOptions = {}): void {
   const { onChangeApplied } = options;
-  const generation = ++_pushGeneration;
+  const generation = nextConfigPushGeneration();
 
   // Make the in-flight push observable (health endpoint `configPushesPending`,
   // consumed by the E2E stability gates): a rate-limited apply can park this
@@ -306,9 +320,9 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
     for (let i = 0; i < backoffsMs.length; i++) {
       // Check before each attempt — a newer pushConfigInBackground call
       // may have started while we were sleeping.
-      if (generation !== _pushGeneration) {
+      if (generation !== getCurrentConfigPushGeneration()) {
         console.log(
-          `[openclaw-config] push gen=${String(generation)}: superseded by newer push (gen=${String(_pushGeneration)}) before attempt ${String(i)}`
+          `[openclaw-config] push gen=${String(generation)}: superseded by newer push (gen=${String(getCurrentConfigPushGeneration())}) before attempt ${String(i)}`
         );
         return;
       }
@@ -319,9 +333,9 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
         };
 
         // Newer call started while we were awaiting config.get()
-        if (generation !== _pushGeneration) {
+        if (generation !== getCurrentConfigPushGeneration()) {
           console.log(
-            `[openclaw-config] push gen=${String(generation)}: superseded by newer push (gen=${String(_pushGeneration)}) during config.get`
+            `[openclaw-config] push gen=${String(generation)}: superseded by newer push (gen=${String(getCurrentConfigPushGeneration())}) during config.get`
           );
           return;
         }
@@ -402,6 +416,27 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
         return;
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
+
+        // A newer push can have started while this attempt's RPC was in
+        // flight. Both terminal branches below end in writeConfigAtomic, and a
+        // superseded coroutine writing its stale payload is exactly the
+        // stale-payload-lands-anyway race the counter exists to prevent (#193)
+        // — it would overwrite on disk what the newer push just applied to
+        // OC's runtime. From here the newer push owns both.
+        //
+        // Checked once at the top of the catch rather than in front of each
+        // fallback: the retry branches below only ever `continue` into the
+        // loop-top check anyway, so returning here just skips a sleep they
+        // would spend on a decision already made. `onChangeApplied` stays
+        // unfired, same as at the other two supersede checks — a push that
+        // delivered nothing must not report a landed change.
+        if (generation !== getCurrentConfigPushGeneration()) {
+          console.log(
+            `[openclaw-config] push gen=${String(generation)}: superseded by newer push (gen=${String(getCurrentConfigPushGeneration())}) during attempt ${String(i)} — skipping fallback write:`,
+            message
+          );
+          return;
+        }
 
         // Rate-limit handling: OC 5.3 rejects apply calls over the budget with
         // an explicit "retry after Ns" hint. Because the no-op guard above
