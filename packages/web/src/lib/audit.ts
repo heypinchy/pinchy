@@ -156,6 +156,11 @@ export type AuditEventType =
   | "chat.image_model_fallback"
   | "agent.model_unavailable"
   | "agent.memory_changed"
+  // A person edited an agent's SOUL.md (Personality) or AGENTS.md
+  // (Instructions) through the API. The sibling of agent.memory_changed, and
+  // the more consequential half: memory is what the agent wrote about itself,
+  // instructions are the rules it operates under.
+  | "agent.instructions_changed"
   | "audit.exported"
   | "audit.integrity_check"
   | "diagnostics.exported"
@@ -561,6 +566,24 @@ export type AuditLogEntry =
     })
   | (AuditLogBase & {
       eventType: "agent.memory_changed";
+      detail: {
+        agent: { id: string; name: string };
+        file: string;
+        addedLines: number;
+        removedLines: number;
+        byteSize: number;
+      };
+    })
+  | (AuditLogBase & {
+      // Same shape as agent.memory_changed on purpose: an analyst asking "what
+      // changed about this agent's behaviour" reads both families with one
+      // query. `file` distinguishes SOUL.md from AGENTS.md.
+      //
+      // The line counts are the whole payload — the text never is. An audit row
+      // is immutable and hash-chained, so anything written here cannot be
+      // corrected or erased later, and instructions are free text a user
+      // authored that may name customers or internal rules.
+      eventType: "agent.instructions_changed";
       detail: {
         agent: { id: string; name: string };
         file: string;
