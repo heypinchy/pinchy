@@ -454,6 +454,12 @@ git commit -am "feat(ui): memory is its own permission section"
 
 **Files:**
 
+> **Shipped as `0069`, not `0068`.** PR #865 (tool-call confirmation) merged
+> first and took `0068_lucky_bloodscream`, so this migration was renumbered on
+> rebase. The numbers below are left as they were planned — the collision is
+> the ordinary cost of two migrations in flight, and knowing it happened is more
+> useful to a later reader than a silently corrected plan.
+
 - Create: `packages/web/drizzle/0068_agent_memory_grant.sql`
 - Create: `packages/web/drizzle/meta/0068_snapshot.json`
 - Modify: `packages/web/drizzle/meta/_journal.json`
