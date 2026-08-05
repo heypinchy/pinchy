@@ -112,6 +112,12 @@ fix_config_permissions() {
     # Scoped to the bootstrap filenames rather than a recursive sweep: this runs
     # on a 50 ms tick, and workspaces also hold uploads/ and memory/ with
     # unbounded file counts. Same `! -uid` ctime gate as above.
+    #
+    # The directory pass has no `-mindepth`, so it covers workspaces/ ITSELF as
+    # well as workspaces/<id> — deliberately. ensureWorkspace() mkdirs a new
+    # agent's directory as uid 999 and needs write permission on the parent to
+    # do it, so a root-owned workspaces/ breaks every agent that does not exist
+    # yet, not just the saves of the ones that do.
     find "$OPENCLAW_STATE_DIR/workspaces" -maxdepth 1 -type d ! -uid "$PINCHY_UID" \
         -exec chown "$PINCHY_UID:$PINCHY_GID" {} \; 2>/dev/null || true
     find "$OPENCLAW_STATE_DIR/workspaces" -mindepth 2 -maxdepth 2 -type f \

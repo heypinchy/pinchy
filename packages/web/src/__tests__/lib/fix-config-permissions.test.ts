@@ -263,6 +263,19 @@ describe("fix_config_permissions — workspace bootstrap file ownership (#1095)"
     expect(chownedPaths()).toContain(join(stateDir, "workspaces", "agent-a"));
   });
 
+  it("chowns the workspaces/ root itself, so a NEW agent's workspace can be created", () => {
+    // `-maxdepth 1 -type d` matches depth 0 as well as depth 1, and that is
+    // deliberate rather than incidental. ensureWorkspace() mkdirs
+    // workspaces/<id> as uid 999, which needs write permission on the parent —
+    // so a root-owned workspaces/ breaks every agent that does not exist yet,
+    // a failure the per-agent repair below would never reach.
+    seedWorkspaceFile("agent-a", "TOOLS.md");
+
+    runFix();
+
+    expect(chownedPaths()).toContain(join(stateDir, "workspaces"));
+  });
+
   it("skips workspace files already owned by the pinchy uid", () => {
     // Same ctime argument as the agents/ gate above: at a 50 ms tick an
     // ungated chown is ~20 ctime bumps a second, per file, forever.
