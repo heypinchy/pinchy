@@ -27,12 +27,24 @@
  * passes.
  */
 import { describe, it, expect } from "vitest";
-import { readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 const PLUGINS_DIR = resolve(import.meta.dirname, "../../../../plugins");
 const REFERENCE_PLUGIN = "pinchy-odoo";
-const COPY_PLUGINS = ["pinchy-email", "pinchy-web"];
+
+// Discovered, not listed. A literal list is a gate that reports on what it
+// looks at rather than on what it should: the fourth plugin to copy
+// credential-client.ts would drift unwatched while this file stayed green —
+// the failure shape AGENTS.md names in § "A Hand-Maintained List That Mirrors
+// Code Will Be Wrong". The floor below is what keeps a broken walk from
+// passing on an empty corpus.
+const PLUGINS_WITH_A_COPY = readdirSync(PLUGINS_DIR)
+  .filter((entry) => entry.startsWith("pinchy-"))
+  .filter((plugin) => existsSync(resolve(PLUGINS_DIR, plugin, "credential-client.ts")))
+  .sort();
+
+const COPY_PLUGINS = PLUGINS_WITH_A_COPY.filter((plugin) => plugin !== REFERENCE_PLUGIN);
 
 function readCopy(plugin: string): string {
   return readFileSync(resolve(PLUGINS_DIR, plugin, "credential-client.ts"), "utf-8");
@@ -40,6 +52,17 @@ function readCopy(plugin: string): string {
 
 describe("credential-client drift guard", () => {
   const reference = readCopy(REFERENCE_PLUGIN);
+
+  it("finds every plugin that carries a copy, including ones added later", () => {
+    // Asserted against the plugins known to carry a copy rather than against
+    // the length of a literal defined above — the latter is a tautology that
+    // a typo'd path would not fail. Adding a copy to a fourth plugin should
+    // extend this list; it must never shrink silently.
+    expect(PLUGINS_WITH_A_COPY).toEqual(
+      expect.arrayContaining(["pinchy-email", "pinchy-odoo", "pinchy-web"])
+    );
+    expect(COPY_PLUGINS.length).toBeGreaterThanOrEqual(2);
+  });
 
   it("the reference copy is not empty and exports the shared surface", () => {
     // A guard that compares three unreadable files to each other passes on an
