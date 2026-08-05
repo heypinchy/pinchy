@@ -201,6 +201,9 @@ describe("GET /api/automations/connections", () => {
     const denied = await GET(req(agent.id), routeContext());
     const missing = await GET(req("no-such-agent"), routeContext());
 
+    // Pinned explicitly, not only compared: two equal statuses prove the oracle
+    // closed only once we know WHICH status they agree on.
+    expect(denied.status).toBe(404);
     expect(denied.status).toBe(missing.status);
     expect(await denied.json()).toEqual(await missing.json());
   });

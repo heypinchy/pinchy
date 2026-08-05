@@ -215,8 +215,27 @@ describe("Automations management API", () => {
         routeContext()
       );
 
+      // Pinned explicitly, not only compared: two equal statuses prove the
+      // oracle closed only once we know WHICH status they agree on.
+      expect(denied.status).toBe(404);
       expect(denied.status).toBe(missing.status);
       expect(await denied.json()).toEqual(await missing.json());
+    });
+
+    it("answers 404 to an ADMIN for someone else's personal agent", async () => {
+      // A deliberate narrowing, not a side effect (#880). `assertAgentAccess`
+      // holds personal agents private to their owner *including admins*, while
+      // `canManageAgentWorkflows` admits any admin anywhere; the Automations API
+      // was where the two met, and it used to resolve them the other way.
+      // Running the read gate first settles it the way every other agent-scoped
+      // surface already does.
+      asAdmin(ADMIN);
+      const agent = await seedAgent({ isPersonal: true, ownerId: OWNER });
+      const res = await GET(
+        req(`http://localhost/api/automations?agentId=${agent.id}`),
+        routeContext()
+      );
+      expect(res.status).toBe(404);
     });
 
     it("requires an agentId query parameter", async () => {
@@ -395,6 +414,31 @@ describe("Automations management API", () => {
       );
       expect(res.status).toBe(404);
       expect(await loadWorkflow(wf.id)).toBeDefined();
+      expect(deferAuditLogMock).not.toHaveBeenCalled();
+    });
+
+    it("still lets an admin stop a workflow on someone else's personal agent", async () => {
+      // The other half of the #880 narrowing, and the reason it is a narrowing
+      // rather than a revocation: the agentId-keyed routes now answer 404 to an
+      // admin for a colleague's private agent, but a workflow is standing
+      // autonomous authority, and one that misbehaves must stay stoppable by
+      // someone. This route is keyed by WORKFLOW id and gates on
+      // `canManageAgentWorkflows` alone, so an admin who already holds the id —
+      // from the audit trail, which is where they would learn of a runaway
+      // workflow — can still delete it.
+      //
+      // That asymmetry is deliberate: it grants no way to FIND the workflow, so
+      // it adds no enumeration, only the ability to act on one already known.
+      asAdmin(ADMIN);
+      const agent = await seedAgent({ isPersonal: true, ownerId: OWNER });
+      const wf = await seedWorkflow(agent.id);
+
+      const res = await DELETE(
+        req(`http://localhost/api/automations/${wf.id}`, { method: "DELETE" }),
+        routeContext({ id: wf.id })
+      );
+      expect(res.status).toBe(200);
+      expect(await loadWorkflow(wf.id)).toBeUndefined();
     });
 
     it("lets an admin delete a shared agent's workflow", async () => {

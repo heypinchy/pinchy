@@ -55,9 +55,29 @@ export type WorkflowAgentResult = { agent: WorkflowAgent } | { error: NextRespon
  * here would let this file re-open the oracle while `agent-access` stayed
  * correct — the response, not merely the status, is the thing being shared.
  *
- * One consequence worth naming: the read gate reads `active_agents`, so a
- * soft-deleted agent now answers 404 instead of accepting workflow calls. That
- * is the right answer and was not previously true.
+ * Two consequences worth naming, because both are narrowings this layering
+ * causes rather than merely permits:
+ *
+ * - The read gate reads `active_agents`, so a soft-deleted agent now answers
+ *   404 instead of accepting workflow calls. That is the right answer and was
+ *   not previously true.
+ * - **An admin no longer reaches someone else's personal agent here.**
+ *   `canManageAgentWorkflows` returns true for any admin on any agent, while
+ *   `assertAgentAccess` holds personal agents private to their owner *including
+ *   admins* — its own comment insists the admin fast-path must not bypass that.
+ *   The Automations API was the one place those two rules met, and it used to
+ *   resolve them in favour of the scope rule, granting admins a reach into a
+ *   colleague's private agent that no other agent-scoped surface gives them.
+ *   Nothing in the product could exercise it: the Automations tab lives on
+ *   `/chat/[agentId]/settings`, which loads through `GET /api/agents/[agentId]`
+ *   — gated by this same read gate since #1148 — so that page already answers
+ *   404 for exactly this case. This was the last route under it still saying
+ *   otherwise, reachable only by hand against an id obtained out of band.
+ *   Running the read gate first settles it the way the rest of the product
+ *   already had. The emergency capability
+ *   survives one route down: `PATCH`/`DELETE /api/automations/[id]` is keyed by
+ *   workflow id and still lets an admin stop a runaway automation they already
+ *   hold the id for — acting on a known workflow, with no way to find one.
  *
  * The legs are pinned in resolve-agent.test.ts against `assertAgentAccess`
  * itself, so the visibility facts this rests on cannot rot unnoticed.

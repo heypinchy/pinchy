@@ -252,6 +252,30 @@ describe("POST /api/automations — create email workflow", () => {
     const res = await POST(postBody(validBody(agent.id, "conn-restricted")), routeContext());
     expect(res.status).toBe(404);
     expect(await loadWorkflows(agent.id)).toHaveLength(0);
+    expect(deferAuditLogMock).not.toHaveBeenCalled();
+  });
+
+  it("answers 404 to an ADMIN for someone else's personal agent", async () => {
+    // The admin-visible consequence of running the read gate first, and it is a
+    // deliberate narrowing rather than a side effect (#880): `assertAgentAccess`
+    // holds personal agents private to their owner *including admins* — its own
+    // comment says the admin fast-path must not bypass it — while
+    // `canManageAgentWorkflows` returns true for any admin on any agent. The
+    // Automations API was the one place those two rules met, and it used to
+    // resolve them the other way, granting admins a reach into a colleague's
+    // private agent that no other agent-scoped surface gives them.
+    //
+    // The emergency capability survives one route down: an admin holding a
+    // WORKFLOW id can still stop it (automations-manage.integration.test.ts).
+    asAdmin(ADMIN);
+    const agent = await seedAgent({ isPersonal: true, ownerId: OWNER });
+    await seedConnection("conn-admin-personal");
+    await grantEmailPermission(agent.id, "conn-admin-personal");
+
+    const res = await POST(postBody(validBody(agent.id, "conn-admin-personal")), routeContext());
+    expect(res.status).toBe(404);
+    expect(await loadWorkflows(agent.id)).toHaveLength(0);
+    expect(deferAuditLogMock).not.toHaveBeenCalled();
   });
 
   it("answers an agent it may not see byte-identically to one that does not exist", async () => {
@@ -263,6 +287,11 @@ describe("POST /api/automations — create email workflow", () => {
     const denied = await POST(postBody(validBody(agent.id, "conn-any")), routeContext());
     const missing = await POST(postBody(validBody("no-such-agent", "conn-any")), routeContext());
 
+    // Pinned explicitly, not just compared: "conn-any" is deliberately unseeded,
+    // so a route that checked connections BEFORE the agent would answer 400 to
+    // both and satisfy the comparison while asserting nothing about the oracle.
+    // Symmetric blindness reads exactly like agreement.
+    expect(denied.status).toBe(404);
     expect(denied.status).toBe(missing.status);
     expect(await denied.json()).toEqual(await missing.json());
   });
