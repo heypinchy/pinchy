@@ -150,6 +150,35 @@ test("findUntrackedForwardClaims does not flag ordinary prose about the present"
   );
 });
 
+test("findUntrackedForwardClaims reads 'is tracked in' as the promise it is", () => {
+  // The shape that slipped past the weekly cron: the KB guide said "a
+  // scheduled sweep is tracked in [#714]" while the two claims either side of
+  // it were reported. It asserts the work has a live home, which is exactly
+  // what the other phrases promise.
+  const problems = findUntrackedForwardClaims([
+    {
+      path: "a.mdx",
+      source: "A scheduled sweep is tracked in a backlog item.",
+    },
+  ]);
+  assert.equal(problems.length, 1);
+  assert.match(problems[0], /a\.mdx:1/);
+});
+
+test("findUntrackedForwardClaims leaves 'tracked' used about the present alone", () => {
+  // Measured across the docs tree before the phrase was added: this is the
+  // sentence that decided it had to be `is tracked in` and not `tracked`.
+  assert.deepEqual(
+    findUntrackedForwardClaims([
+      {
+        path: "a.mdx",
+        source: "Changes across all tabs are tracked independently.",
+      },
+    ]),
+    [],
+  );
+});
+
 test("extractForwardClaims reports the issues a promise cites", () => {
   const claims = extractForwardClaims([
     {

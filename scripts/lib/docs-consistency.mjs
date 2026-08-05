@@ -46,6 +46,15 @@ export const FORWARD_LOOKING_PHRASES = [
   "are planned",
   "is planned",
   "will ship",
+  // "a scheduled sweep is tracked in #714" sat in the KB guide until the
+  // weekly cron reported the two claims either side of it and not that one:
+  // "tracked in" asserts the work has a live home, which is the same promise
+  // the phrases above make, spelled as a statement of fact. Measured across
+  // the whole docs tree before adding — the only other occurrences are a real
+  // forward-looking claim (already caught by "not yet supported" beside it)
+  // and "Changes across all tabs are tracked independently", which the
+  // required `is ` does not match.
+  "is tracked in",
 ];
 
 /** How far from the phrase an issue reference still counts as attached. */

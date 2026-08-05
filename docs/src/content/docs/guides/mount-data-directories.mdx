@@ -161,7 +161,7 @@ Nothing is re-indexed or re-uploaded by this — the mounts point at the same ho
 
 Two different paths read the files under `/data/`, and they support different formats. The distinction matters when you plan a corpus, so it's worth knowing before you mount one.
 
-**Knowledge Base search** (`knowledge_search`) indexes **text-based PDFs**, plain text and Markdown. Scanned PDFs and Office documents are not indexed today — see [Create a Knowledge Base Agent — Scope in this release](/guides/create-knowledge-base-agent/#scope-in-this-release).
+**Knowledge Base search** (`knowledge_search`) indexes **text-based PDFs**, and nothing else. Scanned PDFs, Office documents, plain text and Markdown files under `/data/` are not indexed — see [Create a Knowledge Base Agent — Scope in this release](/guides/create-knowledge-base-agent/#scope-in-this-release).
 
 **Reading a file directly** (the agent's file tools) additionally handles **Word documents** (`.docx`) and **scanned PDFs**, which are analyzed using the configured model's vision capabilities.
 
