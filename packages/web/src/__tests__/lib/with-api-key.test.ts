@@ -52,7 +52,7 @@ import { appendAuditLog } from "@/lib/audit";
 import {
   claimApiKeyRequest,
   resetApiKeyRateLimits,
-  API_KEY_RATE_LIMIT_MAX,
+  DEFAULT_API_KEY_RATE_LIMIT_MAX,
 } from "@/lib/api-key-rate-limit";
 
 // ── Helpers ─────────────────────────────────────────────────────────────
@@ -578,7 +578,7 @@ describe("withApiKey", () => {
 
   /** Spends the whole budget for `keyId` without going through the wrapper. */
   function exhaustBudget(keyId: string): void {
-    for (let i = 0; i < API_KEY_RATE_LIMIT_MAX; i++) claimApiKeyRequest(keyId);
+    for (let i = 0; i < DEFAULT_API_KEY_RATE_LIMIT_MAX; i++) claimApiKeyRequest(keyId);
   }
 
   it("counts every served request, and answers 429 once the key's budget is spent", async () => {
@@ -592,7 +592,7 @@ describe("withApiKey", () => {
     const call = () =>
       withApiKey(["agents:read"], handler)(reqWith({ Authorization: "Bearer pinchy_busy" }), {});
 
-    for (let i = 0; i < API_KEY_RATE_LIMIT_MAX; i++) {
+    for (let i = 0; i < DEFAULT_API_KEY_RATE_LIMIT_MAX; i++) {
       expect((await call()).status).toBe(200);
     }
 
@@ -602,7 +602,7 @@ describe("withApiKey", () => {
     expect(await res.json()).toEqual({ error: "Too Many Requests" });
     // The handler ran for the budget and not once more — a 429 that still
     // reaches the handler is a limiter in name only.
-    expect(handler).toHaveBeenCalledTimes(API_KEY_RATE_LIMIT_MAX);
+    expect(handler).toHaveBeenCalledTimes(DEFAULT_API_KEY_RATE_LIMIT_MAX);
   });
 
   it("tells the client when to come back, in seconds", async () => {
@@ -691,7 +691,7 @@ describe("withApiKey", () => {
         // Snapshotted beside the id: the key may be revoked, and its row hard
         // deleted, long before anyone reads this.
         apiKey: { id: "key-a", name: "Audited key" },
-        limit: { max: API_KEY_RATE_LIMIT_MAX, windowSeconds: 60 },
+        limit: { max: DEFAULT_API_KEY_RATE_LIMIT_MAX, windowSeconds: 60 },
         path: "/api/v1/agents",
       },
     });
@@ -716,7 +716,7 @@ describe("withApiKey", () => {
     ).toBeUndefined();
 
     vi.advanceTimersByTime(61_000); // the window elapses
-    for (let i = 0; i < API_KEY_RATE_LIMIT_MAX; i++) await call(); // spend it again
+    for (let i = 0; i < DEFAULT_API_KEY_RATE_LIMIT_MAX; i++) await call(); // spend it again
     await call();
 
     const [, second] = vi.mocked(appendAuditLog).mock.calls;

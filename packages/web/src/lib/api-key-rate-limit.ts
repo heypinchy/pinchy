@@ -35,6 +35,16 @@
  * allocating an entry per value an attacker invents. The Agent Provisioning
  * API reference says all of this under its own heading.
  *
+ * ## Why not `FixedWindowRateLimiter`
+ *
+ * Because it says not to. That class (lib/fixed-window-rate-limiter.ts) is one
+ * global bucket per instance and documents the limit in its own header: "not
+ * per-client … not sufficient for public, multi-tenant limits." This surface is
+ * exactly that — public, and one budget per key. Reusing it would mean a Map of
+ * instances plus the window bookkeeping below anyway, since the caller needs
+ * the seconds left (for `Retry-After`) and the audit slot, neither of which a
+ * boolean carries.
+ *
  * Per-process state, like `audit-deferred`'s failure counter. Pinchy runs a
  * single Node process per container; a restart just reopens every window,
  * which costs a client at most one extra window's budget.
@@ -49,8 +59,11 @@
  * retry loop or a stolen key being drained sits above it. Too low and the
  * limiter breaks exactly the trusted automation these keys exist for — which
  * is why the plugin's own 10/24h is off.
+ *
+ * A default, not a constant: see `getApiKeyRateLimitMax`.
  */
-export const API_KEY_RATE_LIMIT_MAX = 300;
+export const DEFAULT_API_KEY_RATE_LIMIT_MAX = 300;
+
 export const API_KEY_RATE_LIMIT_WINDOW_MS = 60_000;
 
 /** The window's seconds, for the docs and for `Retry-After` arithmetic. */
@@ -79,14 +92,70 @@ type KeyWindow = {
 
 const windows = new Map<string, KeyWindow>();
 let lastSweep = 0;
+let resolvedMax: number | null = null;
 
-/** Test seam — windows are process-global, so suites must start from zero. */
+/**
+ * The budget in force, from `PINCHY_API_KEY_RATE_LIMIT_MAX` or the default.
+ *
+ * 300/min is a guess about somebody else's pipeline, and an operator who needs
+ * a different one should not have to fork Pinchy to get it — that is the same
+ * unconfigurable-limit trap the plugin's 10/24h default falls into, one layer
+ * down. A deployment whose CI legitimately needs more sets the variable; a
+ * deployment that wants a tighter blast radius on a leaked key sets it lower.
+ *
+ * Rejects anything that isn't a positive integer, including `0` — an operator
+ * meaning "unlimited" would otherwise lock their own API shut. There is no
+ * upper clamp: setting it absurdly high is a deliberate way to opt out, and
+ * the per-key keying means it still cannot exhaust anything but that key's own
+ * quota.
+ *
+ * Memoized because this runs on every API request and Docker fixes env at
+ * process start, so re-reading `process.env` per request would buy nothing.
+ * `resetApiKeyRateLimits` clears it so tests can vary the variable.
+ */
+export function getApiKeyRateLimitMax(): number {
+  if (resolvedMax !== null) return resolvedMax;
+
+  // Named literally, as `usage-poller.ts` does: an exported name constant read
+  // back as `process.env[NAME]` would be a computed sink for no gain, and the
+  // tests below set the variable by name — a rename that misses one goes red.
+  const raw = process.env.PINCHY_API_KEY_RATE_LIMIT_MAX;
+  if (raw === undefined) {
+    resolvedMax = DEFAULT_API_KEY_RATE_LIMIT_MAX;
+    return resolvedMax;
+  }
+
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    // Said out loud, once. A silently discarded setting is the worst outcome
+    // available here: the operator believes they raised the limit, their
+    // client is throttled at the default, and nothing connects the two. The
+    // value is quoted as written — a message built from `parsed` would say
+    // "got NaN" and hide the typo it is reporting.
+    console.warn(
+      `[api-key-rate-limit] Ignoring PINCHY_API_KEY_RATE_LIMIT_MAX="${raw}": ` +
+        `expected a positive integer. Falling back to ${DEFAULT_API_KEY_RATE_LIMIT_MAX} requests per minute per key.`
+    );
+    resolvedMax = DEFAULT_API_KEY_RATE_LIMIT_MAX;
+    return resolvedMax;
+  }
+
+  resolvedMax = parsed;
+  return resolvedMax;
+}
+
+/**
+ * Test seam — windows and the resolved budget are process-global, so suites
+ * must start from zero. Clearing the resolved budget is what lets a test set
+ * the env var and see it take effect.
+ */
 export function resetApiKeyRateLimits(): void {
   windows.clear();
   lastSweep = 0;
+  resolvedMax = null;
 }
 
-/** Number of keys currently tracked. For tests and observability. */
+/** Number of keys currently tracked. A test seam; nothing reads it in prod. */
 export function trackedApiKeyCount(): number {
   return windows.size;
 }
@@ -139,7 +208,7 @@ export function claimApiKeyRequest(
     return { allowed: true };
   }
 
-  if (open.count < API_KEY_RATE_LIMIT_MAX) {
+  if (open.count < getApiKeyRateLimitMax()) {
     open.count++;
     return { allowed: true };
   }

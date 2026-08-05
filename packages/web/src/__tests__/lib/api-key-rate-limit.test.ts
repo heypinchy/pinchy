@@ -9,13 +9,14 @@
  * `now` is injected on every call rather than read from the clock, so these
  * tests state window boundaries as arithmetic instead of as sleeps.
  */
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 
 import {
   claimApiKeyRequest,
   resetApiKeyRateLimits,
   trackedApiKeyCount,
-  API_KEY_RATE_LIMIT_MAX,
+  getApiKeyRateLimitMax,
+  DEFAULT_API_KEY_RATE_LIMIT_MAX,
   API_KEY_RATE_LIMIT_WINDOW_MS,
 } from "@/lib/api-key-rate-limit";
 
@@ -34,11 +35,12 @@ describe("claimApiKeyRequest", () => {
   beforeEach(() => {
     // Process-global state, exactly like the scope-denial windows next door:
     // without this a previous test's key still holds an open window.
+    delete process.env.PINCHY_API_KEY_RATE_LIMIT_MAX;
     resetApiKeyRateLimits();
   });
 
   it("allows the configured budget and rejects the request after it", () => {
-    for (let i = 0; i < API_KEY_RATE_LIMIT_MAX; i++) {
+    for (let i = 0; i < DEFAULT_API_KEY_RATE_LIMIT_MAX; i++) {
       expect(claimApiKeyRequest("key-1", T0)).toEqual({ allowed: true });
     }
 
@@ -48,7 +50,7 @@ describe("claimApiKeyRequest", () => {
   });
 
   it("budgets each key separately, so one noisy client cannot throttle another", () => {
-    spend("noisy", API_KEY_RATE_LIMIT_MAX, T0);
+    spend("noisy", DEFAULT_API_KEY_RATE_LIMIT_MAX, T0);
     expect(claimApiKeyRequest("noisy", T0).allowed).toBe(false);
 
     // The whole point of keying on the VERIFIED key id: a second key's budget
@@ -57,7 +59,7 @@ describe("claimApiKeyRequest", () => {
   });
 
   it("reopens the budget once the window has elapsed", () => {
-    spend("key-1", API_KEY_RATE_LIMIT_MAX, T0);
+    spend("key-1", DEFAULT_API_KEY_RATE_LIMIT_MAX, T0);
     expect(claimApiKeyRequest("key-1", T0).allowed).toBe(false);
 
     // One millisecond short of the window is still the same window.
@@ -69,7 +71,7 @@ describe("claimApiKeyRequest", () => {
   });
 
   it("reports Retry-After as the time left in the window, rounded up", () => {
-    spend("key-1", API_KEY_RATE_LIMIT_MAX, T0);
+    spend("key-1", DEFAULT_API_KEY_RATE_LIMIT_MAX, T0);
 
     // 30s into a 60s window → 30s left.
     const mid = claimApiKeyRequest("key-1", T0 + 30_000);
@@ -85,7 +87,7 @@ describe("claimApiKeyRequest", () => {
   });
 
   it("never reports Retry-After: 0, which a client would read as 'retry now'", () => {
-    spend("key-1", API_KEY_RATE_LIMIT_MAX, T0);
+    spend("key-1", DEFAULT_API_KEY_RATE_LIMIT_MAX, T0);
 
     const verdict = claimApiKeyRequest("key-1", T0 + API_KEY_RATE_LIMIT_WINDOW_MS - 1);
 
@@ -94,7 +96,7 @@ describe("claimApiKeyRequest", () => {
   });
 
   it("audits the first rejection of a window and suppresses the rest", () => {
-    spend("key-1", API_KEY_RATE_LIMIT_MAX, T0);
+    spend("key-1", DEFAULT_API_KEY_RATE_LIMIT_MAX, T0);
 
     const first = claimApiKeyRequest("key-1", T0);
     if (first.allowed) throw new Error("unreachable");
@@ -109,7 +111,7 @@ describe("claimApiKeyRequest", () => {
   });
 
   it("carries the suppressed count into the next audited row rather than dropping it", () => {
-    spend("key-1", API_KEY_RATE_LIMIT_MAX, T0);
+    spend("key-1", DEFAULT_API_KEY_RATE_LIMIT_MAX, T0);
     claimApiKeyRequest("key-1", T0); // audited, suppressed: 0
     for (let i = 0; i < 7; i++) claimApiKeyRequest("key-1", T0); // suppressed
 
@@ -117,7 +119,7 @@ describe("claimApiKeyRequest", () => {
     // reports the seven rejections that never got a row of their own. A silent
     // drop would read as "one stray call" when it was eight.
     const t1 = T0 + API_KEY_RATE_LIMIT_WINDOW_MS;
-    spend("key-1", API_KEY_RATE_LIMIT_MAX, t1);
+    spend("key-1", DEFAULT_API_KEY_RATE_LIMIT_MAX, t1);
 
     const next = claimApiKeyRequest("key-1", t1);
     if (next.allowed) throw new Error("unreachable");
@@ -126,18 +128,18 @@ describe("claimApiKeyRequest", () => {
   });
 
   it("does not re-report a suppressed count that has already been written", () => {
-    spend("key-1", API_KEY_RATE_LIMIT_MAX, T0);
+    spend("key-1", DEFAULT_API_KEY_RATE_LIMIT_MAX, T0);
     claimApiKeyRequest("key-1", T0);
     claimApiKeyRequest("key-1", T0); // one suppressed
 
     const t1 = T0 + API_KEY_RATE_LIMIT_WINDOW_MS;
-    spend("key-1", API_KEY_RATE_LIMIT_MAX, t1);
+    spend("key-1", DEFAULT_API_KEY_RATE_LIMIT_MAX, t1);
     const reported = claimApiKeyRequest("key-1", t1);
     if (reported.allowed) throw new Error("unreachable");
     expect(reported.suppressed).toBe(1);
 
     const t2 = t1 + API_KEY_RATE_LIMIT_WINDOW_MS;
-    spend("key-1", API_KEY_RATE_LIMIT_MAX, t2);
+    spend("key-1", DEFAULT_API_KEY_RATE_LIMIT_MAX, t2);
     const afterwards = claimApiKeyRequest("key-1", t2);
     if (afterwards.allowed) throw new Error("unreachable");
     expect(afterwards.suppressed).toBe(0);
@@ -155,7 +157,7 @@ describe("claimApiKeyRequest", () => {
   });
 
   it("keeps an elapsed entry that still owes a suppressed count", () => {
-    spend("owes", API_KEY_RATE_LIMIT_MAX, T0);
+    spend("owes", DEFAULT_API_KEY_RATE_LIMIT_MAX, T0);
     claimApiKeyRequest("owes", T0); // audited
     claimApiKeyRequest("owes", T0); // suppressed, not yet reported
     claimApiKeyRequest("settled", T0);
@@ -165,7 +167,7 @@ describe("claimApiKeyRequest", () => {
     // "settled" is gone; "owes" survives because evicting it would silently
     // lose the volume its next row is supposed to report.
     const t2 = T0 + 2 * API_KEY_RATE_LIMIT_WINDOW_MS;
-    spend("owes", API_KEY_RATE_LIMIT_MAX, t2);
+    spend("owes", DEFAULT_API_KEY_RATE_LIMIT_MAX, t2);
     const verdict = claimApiKeyRequest("owes", t2);
     if (verdict.allowed) throw new Error("unreachable");
     expect(verdict.suppressed).toBe(1);
@@ -178,5 +180,112 @@ describe("claimApiKeyRequest", () => {
     for (let i = 0; i < 60; i++) {
       expect(claimApiKeyRequest("ci", T0 + i * 1000)).toEqual({ allowed: true });
     }
+  });
+});
+
+/**
+ * The operator's knob.
+ *
+ * 300/min is a guess about somebody else's pipeline. Shipping it as a constant
+ * would repeat the mistake this limiter exists to avoid: the plugin's own
+ * 10/24h is off precisely because an unconfigurable limit that is wrong for a
+ * deployment breaks the trusted automation these keys are for. "Fork the repo
+ * and rebuild the image" is not a remedy an operator can carry across
+ * upgrades.
+ */
+describe("getApiKeyRateLimitMax", () => {
+  beforeEach(() => {
+    delete process.env.PINCHY_API_KEY_RATE_LIMIT_MAX;
+    resetApiKeyRateLimits();
+  });
+
+  afterEach(() => {
+    delete process.env.PINCHY_API_KEY_RATE_LIMIT_MAX;
+    resetApiKeyRateLimits();
+    vi.restoreAllMocks();
+  });
+
+  it("falls back to the shipped default when the operator sets nothing", () => {
+    expect(getApiKeyRateLimitMax()).toBe(DEFAULT_API_KEY_RATE_LIMIT_MAX);
+  });
+
+  it("honours an override", () => {
+    process.env.PINCHY_API_KEY_RATE_LIMIT_MAX = "900";
+    resetApiKeyRateLimits();
+
+    expect(getApiKeyRateLimitMax()).toBe(900);
+  });
+
+  it("actually widens the budget, not just the reported number", () => {
+    // The assertion that matters. A resolver that returns 5 while
+    // `claimApiKeyRequest` keeps counting against the constant would satisfy
+    // every test above and throttle the operator at 300 anyway.
+    process.env.PINCHY_API_KEY_RATE_LIMIT_MAX = "5";
+    resetApiKeyRateLimits();
+
+    for (let i = 0; i < 5; i++) {
+      expect(claimApiKeyRequest("tuned", T0)).toEqual({ allowed: true });
+    }
+
+    expect(claimApiKeyRequest("tuned", T0).allowed).toBe(false);
+  });
+
+  it.each([
+    ["not-a-number", "abc"],
+    ["empty", ""],
+    ["zero — an operator locking themselves out by typo", "0"],
+    ["negative", "-1"],
+    ["fractional", "12.5"],
+    ["Infinity", "Infinity"],
+  ])("ignores a %s value and keeps the default", (_label, raw) => {
+    process.env.PINCHY_API_KEY_RATE_LIMIT_MAX = raw;
+    resetApiKeyRateLimits();
+
+    expect(getApiKeyRateLimitMax()).toBe(DEFAULT_API_KEY_RATE_LIMIT_MAX);
+  });
+
+  it("says so when it ignores a value, rather than falling back in silence", () => {
+    // A silently discarded setting is the worst of both: the operator believes
+    // they raised the limit, their pipeline is throttled at 300, and nothing
+    // anywhere connects the two. Same principle as the host-check 403 that
+    // used to be invisible (AGENTS.md § "/api/internal/ Is A Security Claim").
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    process.env.PINCHY_API_KEY_RATE_LIMIT_MAX = "lots";
+    resetApiKeyRateLimits();
+
+    getApiKeyRateLimitMax();
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    const message = String(warn.mock.calls[0][0]);
+    expect(message).toContain("PINCHY_API_KEY_RATE_LIMIT_MAX");
+    // Quote the offending value AS WRITTEN: a message built from the converted
+    // number says "got NaN", which hides the typo it is reporting.
+    expect(message).toContain("lots");
+    expect(message).toContain(String(DEFAULT_API_KEY_RATE_LIMIT_MAX));
+  });
+
+  it("warns once, not once per request", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    process.env.PINCHY_API_KEY_RATE_LIMIT_MAX = "lots";
+    resetApiKeyRateLimits();
+
+    for (let i = 0; i < 50; i++) claimApiKeyRequest("noisy", T0 + i);
+
+    // This runs on the request path. A warning per request would turn a
+    // one-character typo into a log flood — the failure mode the audit
+    // throttle above exists to prevent, moved to stdout.
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  it("resolves once per process — a change needs a restart, like every other env var", () => {
+    process.env.PINCHY_API_KEY_RATE_LIMIT_MAX = "500";
+    resetApiKeyRateLimits();
+    expect(getApiKeyRateLimitMax()).toBe(500);
+
+    process.env.PINCHY_API_KEY_RATE_LIMIT_MAX = "900";
+
+    // Memoized deliberately: this is read on every API request, and Docker
+    // injects env at process start, so re-reading would buy nothing.
+    expect(getApiKeyRateLimitMax()).toBe(500);
   });
 });

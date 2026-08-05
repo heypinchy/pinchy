@@ -5,7 +5,7 @@ import { extractScopes, type ApiKeyScope } from "@/lib/api-key-scopes";
 import { appendAuditLog, safeAuditPath } from "@/lib/audit";
 import {
   claimApiKeyRequest,
-  API_KEY_RATE_LIMIT_MAX,
+  getApiKeyRateLimitMax,
   API_KEY_RATE_LIMIT_WINDOW_SECONDS,
 } from "@/lib/api-key-rate-limit";
 import { looksLikeApiKey } from "@/lib/api-key-format";
@@ -251,9 +251,11 @@ export function withApiKey<C = unknown>(
             detail: {
               apiKey: { id: res.key.id, name: res.key.name ?? "" },
               // What the caller hit, so the row is readable without going to
-              // look up the constant that produced it.
+              // look up the constant that produced it — and, since the budget
+              // is operator-tunable, without having to know what THIS
+              // deployment was configured with at the time.
               limit: {
-                max: API_KEY_RATE_LIMIT_MAX,
+                max: getApiKeyRateLimitMax(),
                 windowSeconds: API_KEY_RATE_LIMIT_WINDOW_SECONDS,
               },
               // Capped for the same reason as the scope-denial row below.
