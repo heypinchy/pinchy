@@ -8,6 +8,7 @@ import {
   API_KEY_RATE_LIMIT_MAX,
   API_KEY_RATE_LIMIT_WINDOW_SECONDS,
 } from "@/lib/api-key-rate-limit";
+import { looksLikeApiKey } from "@/lib/api-key-format";
 
 /**
  * Standardized API auth error responses. Use these instead of inline
@@ -211,6 +212,14 @@ export function withApiKey<C = unknown>(
   return async (req: NextRequest, ctx: C): Promise<NextResponse> => {
     const key = readApiKey(req);
     if (!key) return unauthorized();
+
+    // Cheap shape check before the expensive one (#1086). `verifyApiKey`
+    // hashes the candidate and does a database lookup, and this endpoint is
+    // reachable without any credential at all — so a string that cannot be one
+    // of our keys must not buy that round trip. Same 401 as a wrong key: the
+    // prefix is published, so the timing difference reveals only what the
+    // reference already documents.
+    if (!looksLikeApiKey(key)) return unauthorized();
 
     // Fail closed: `verifyApiKey` catches internally today, but a malformed
     // input or a future plugin version must never fall through as

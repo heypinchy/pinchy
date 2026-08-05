@@ -285,9 +285,14 @@ Better Auth's own limiters don't cover this surface, which is why Pinchy carries
 
 ### What this does not cover
 
-The budget is charged against a **verified** key, so it bounds what an authenticated client can do and nothing else. Requests carrying an invalid, revoked or expired key are still answered `401` as fast as they arrive — that path has no key to bill, and the only other handle on it is the caller's source address, which is a header a client can set to anything.
+The budget is charged against a **verified** key, so it bounds what an authenticated client can do and nothing else. Requests carrying an invalid, revoked or expired key are answered `401` as fast as they arrive, with no budget involved — there's no key to charge.
 
-So if you expose this API to the open internet, a reverse proxy in front of it is still the right place for a connection-level limit. On a trusted network — which is what these keys are for — the per-key budget is the part that matters.
+Two things soften that, and it's worth being precise about which:
+
+- A key that isn't shaped like one of ours — anything not starting with `pinchy_` — is rejected on the spot, without the hash and database lookup a real verification costs. That covers the traffic a public endpoint actually sees most of: scanners spraying other products' token formats.
+- A well-formed but wrong key still costs that lookup, and nothing bounds how many of those arrive.
+
+We don't limit the second case by source address, deliberately. A key is 64 random characters, so guessing one isn't a threat worth pricing — the only real risk on that path is load, and an address taken from a request header is something the caller chooses. Limiting on it wouldn't bound the load (vary the header) while giving an attacker a way to make Pinchy allocate per value they invent. That belongs one layer out, where the connection is: **if you expose this API to the open internet, put a connection-level limit on your reverse proxy.** On a trusted network — which is what these keys are for — the per-key budget is the part that matters.
 
 Counters live in the app's memory. They reset when the container restarts and aren't shared between replicas, the same trade-off the [auth rate limits](/guides/hardening/#authentication-rate-limiting) make.
 

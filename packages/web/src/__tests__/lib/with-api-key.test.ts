@@ -353,6 +353,42 @@ describe("withApiKey", () => {
     expect(handler).not.toHaveBeenCalled();
   });
 
+  it("rejects a key of the wrong shape without paying for verification (#1086)", async () => {
+    const handler = vi.fn(OK);
+
+    const res = await withApiKey(["agents:read"], handler)(
+      // What a credential scanner actually sprays at a public endpoint:
+      // somebody else's token format.
+      reqWith({ Authorization: "Bearer sk-live-4eC39HqLyjWDarjtT1zdp7dc" }),
+      {}
+    );
+
+    expect(res.status).toBe(401);
+    // The assertion that matters. `verifyApiKey` hashes the candidate and hits
+    // the database, and /api/v1/* is reachable by anyone — so a string that
+    // cannot be one of our keys must not buy a round trip. Dropping this check
+    // would not fail any other test in this file: every one of them would
+    // still answer 401, just after the work.
+    expect(mockVerifyApiKey).not.toHaveBeenCalled();
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it("still verifies a correctly shaped key — the filter must not become the gate", async () => {
+    mockVerifyApiKey.mockResolvedValue(verified({ permissions: { agents: ["read"] } }));
+    const handler = vi.fn(OK);
+
+    const res = await withApiKey(["agents:read"], handler)(
+      reqWith({ Authorization: "Bearer pinchy_correctly_shaped" }),
+      {}
+    );
+
+    // The shape check says a string is NOT one of ours, never that it is.
+    // A well-formed string still has to verify.
+    expect(mockVerifyApiKey).toHaveBeenCalledTimes(1);
+    expect(res.status).toBe(200);
+    expect(handler).toHaveBeenCalledTimes(1);
+  });
+
   // ── Auditing denials (#572) ─────────────────────────────────────────────
 
   it("audits a scope denial with the key as actor and what it tried to do", async () => {
@@ -452,13 +488,13 @@ describe("withApiKey", () => {
     mockVerifyApiKey.mockResolvedValue(
       verified({ id: "key-noisy", name: "Noisy", permissions: { agents: ["read"] } })
     );
-    await withApiKey(["agents:delete"], handler)(reqWith({ Authorization: "Bearer a" }), {});
-    await withApiKey(["agents:delete"], handler)(reqWith({ Authorization: "Bearer a" }), {});
+    await withApiKey(["agents:delete"], handler)(reqWith({ Authorization: "Bearer pinchy_a" }), {});
+    await withApiKey(["agents:delete"], handler)(reqWith({ Authorization: "Bearer pinchy_a" }), {});
 
     mockVerifyApiKey.mockResolvedValue(
       verified({ id: "key-other", name: "Other", permissions: { agents: ["read"] } })
     );
-    await withApiKey(["agents:delete"], handler)(reqWith({ Authorization: "Bearer b" }), {});
+    await withApiKey(["agents:delete"], handler)(reqWith({ Authorization: "Bearer pinchy_b" }), {});
 
     // A shared window would let a flood from one key swallow the first — and
     // only — denial from another. Two keys, two rows.
@@ -511,8 +547,9 @@ describe("withApiKey", () => {
     //
     // #1086's per-key budget does NOT change this, and it is worth being exact
     // about why: it is charged against a verified key id, so it bounds what an
-    // authenticated caller can do and touches this path not at all. A flood of
-    // invalid keys still reaches verifyApiKey unthrottled.
+    // authenticated caller can do and touches this path not at all. The shape
+    // check above spares a wrongly-shaped key the database lookup, but a
+    // well-formed wrong key still arrives here unbounded.
     expect(appendAuditLog).not.toHaveBeenCalled();
   });
 

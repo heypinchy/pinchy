@@ -23,10 +23,17 @@
  *
  * The cost of that choice is stated plainly rather than papered over: this
  * bounds what an *authenticated* key can do, and nothing else. A flood of
- * **invalid** keys still reaches `verifyApiKey` unthrottled, because the only
- * handle on such a request is its source address — a spoofable claim, and an
- * unbounded map key. The Agent Provisioning API reference says so in its
- * "Rate limiting" section rather than leaving the gap implied.
+ * **invalid** keys is answered 401 with no budget involved — `looksLikeApiKey`
+ * (lib/api-key-format.ts) at least keeps a wrongly-shaped one from paying for
+ * a database lookup, but a well-formed wrong key still does, and nothing
+ * bounds how many arrive.
+ *
+ * That is left to the reverse proxy on purpose rather than left undone: the
+ * only handle on an unverified request is its source address, which is a
+ * header the caller sets. Keys are 64 random characters, so guessing one is
+ * not the threat — load is, and a header-keyed limiter bounds no load while
+ * allocating an entry per value an attacker invents. The Agent Provisioning
+ * API reference says all of this under its own heading.
  *
  * Per-process state, like `audit-deferred`'s failure counter. Pinchy runs a
  * single Node process per container; a restart just reopens every window,
