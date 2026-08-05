@@ -140,6 +140,13 @@ vi.mock("@/hooks/use-model-capabilities", () => ({
   })),
 }));
 
+// The action bar navigates to the agent's Instructions tab (#1144). JSDOM has
+// no Next app router mounted, so the hook is stubbed and the push asserted.
+const { mockRouterPush } = vi.hoisted(() => ({ mockRouterPush: vi.fn() }));
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ push: mockRouterPush }),
+}));
+
 vi.mock("@/components/chat", async () => {
   const React = await import("react");
   return {
@@ -147,6 +154,7 @@ vi.mock("@/components/chat", async () => {
     AgentIdContext: React.createContext<string | null>(null),
     ChatIdContext: React.createContext<string | null>(null),
     AgentNameContext: React.createContext<string | null>(null),
+    CanEditAgentContext: React.createContext<boolean>(false),
     RetryResendContext: React.createContext<(messageId: string) => void>(() => {}),
     RetryContinueContext: React.createContext<() => void>(() => {}),
     ChatStatusContext: React.createContext<{ kind: string; reason?: string }>({ kind: "ready" }),
@@ -194,6 +202,7 @@ describe("Per-message Report issue menu entry", () => {
     const fakeMessageState = {
       id: "msg-assistant-1",
       isLast: true,
+      content: [{ type: "text", text: "Score leads by VUE." }],
       metadata: { custom: {} },
     } as unknown as MessageState;
     vi.mocked(useMessage).mockImplementation(
@@ -236,5 +245,70 @@ describe("Per-message Report issue menu entry", () => {
     expect(dialog).toHaveAttribute("data-anchor-message-id", "msg-assistant-1");
     expect(dialog).toHaveAttribute("data-agent-id", "agt_42");
     expect(dialog).toHaveAttribute("data-agent-name", "Smithers");
+  });
+});
+
+// #1144: promoting a working method the user and agent developed together into
+// the agent's Instructions, where it is reviewed, versioned, and — unlike
+// memory — loaded by scheduled runs too.
+describe('Per-message "Save as instruction" menu entry', () => {
+  beforeEach(async () => {
+    const { useMessage } = await import("@assistant-ui/react");
+    type UseMessageSelector = (state: MessageState) => unknown;
+    const fakeMessageState = {
+      id: "msg-assistant-1",
+      isLast: true,
+      content: [{ type: "text", text: "Score leads by VUE." }],
+      metadata: { custom: {} },
+    } as unknown as MessageState;
+    vi.mocked(useMessage).mockImplementation(((selector: UseMessageSelector) =>
+      selector(fakeMessageState)) as typeof useMessage);
+    window.sessionStorage.clear();
+    mockRouterPush.mockClear();
+  });
+
+  async function renderWith(canEdit: boolean) {
+    const { AssistantMessage } = await import("@/components/assistant-ui/thread");
+    const { AgentIdContext, AgentNameContext, CanEditAgentContext } =
+      await import("@/components/chat");
+
+    render(
+      <AgentIdContext.Provider value="agt_42">
+        <AgentNameContext.Provider value="Smithers">
+          <CanEditAgentContext.Provider value={canEdit}>
+            <AssistantMessage />
+          </CanEditAgentContext.Provider>
+        </AgentNameContext.Provider>
+      </AgentIdContext.Provider>
+    );
+  }
+
+  it("is offered to someone who may save it", async () => {
+    await renderWith(true);
+
+    expect(screen.getByText("Save as instruction")).toBeInTheDocument();
+  });
+
+  it("is absent for a member who may not write this agent", async () => {
+    // The API refuses the write for anyone but an admin or a personal agent's
+    // owner. A menu item that leads to a 403 is worse than one that isn't
+    // there; #1145 is the real path for a member's proposal.
+    await renderWith(false);
+
+    expect(screen.queryByText("Save as instruction")).not.toBeInTheDocument();
+  });
+
+  it("carries the message into the Instructions tab without writing anything", async () => {
+    // The draft travels in sessionStorage rather than the URL — it is free text
+    // from a conversation and can name a customer, and a query string lands in
+    // history, referrers and proxy logs. Nothing is saved here: the settings
+    // page opens dirty and the user presses Save.
+    await renderWith(true);
+    fireEvent.click(screen.getByText("Save as instruction"));
+
+    expect(window.sessionStorage.getItem("pinchy:instruction-draft:agt_42")).toBe(
+      "Score leads by VUE."
+    );
+    expect(mockRouterPush).toHaveBeenCalledWith("/agents/agt_42/settings?tab=instructions");
   });
 });

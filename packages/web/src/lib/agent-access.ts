@@ -79,13 +79,17 @@ export function assertAgentAccess(
  * - Personal agent owners can modify their own agents
  * - Non-admin users CANNOT modify shared agents
  */
+export function canWriteAgent(agent: AgentForAccess, userId: string, userRole: string): boolean {
+  if (userRole === "admin") return true;
+  return Boolean(agent.isPersonal && agent.ownerId === userId);
+}
+
 export function assertAgentWriteAccess(
   agent: AgentForAccess,
   userId: string,
   userRole: string
 ): void {
-  if (userRole === "admin") return;
-  if (agent.isPersonal && agent.ownerId === userId) return;
+  if (canWriteAgent(agent, userId, userRole)) return;
 
   throw new Error("Access denied");
 }

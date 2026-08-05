@@ -61,6 +61,13 @@ export const AgentIdContext = createContext<string | null>(null);
  */
 export const ChatIdContext = createContext<string | null>(null);
 export const AgentNameContext = createContext<string | null>(null);
+/**
+ * Whether the viewer may edit this agent's files — `canWriteAgent`, resolved
+ * server-side in `loadChatPageAgent` and handed down rather than re-derived.
+ * Read by the assistant action bar to decide whether "Save as instruction"
+ * exists: a menu item that leads to a 403 is worse than one that isn't there.
+ */
+export const CanEditAgentContext = createContext<boolean>(false);
 export const AgentModelContext = createContext<string | null>(null);
 /**
  * Which serving route a file chip fetches from (#703). User attachments live in
@@ -240,114 +247,116 @@ export function Chat({
     <AgentIdContext.Provider value={agentId}>
       <ChatIdContext.Provider value={chatId ?? null}>
         <AgentNameContext.Provider value={displayName}>
-          <AgentModelContext.Provider value={liveAgent?.model ?? null}>
-            <AssistantRuntimeProvider runtime={runtime}>
-              <ChatStatusContext.Provider value={chatStatus}>
-                <RetryContinueContext.Provider value={onRetryContinue}>
-                  <RetryResendContext.Provider value={onRetryResend}>
-                    <PendingUploadsContext.Provider value={pendingUploads}>
-                      <AddPendingUploadContext.Provider value={addPendingUpload}>
-                        <RemovePendingUploadContext.Provider value={removePendingUpload}>
-                          <RetryPendingUploadContext.Provider value={retryPendingUpload}>
-                            <AgentAvatarContext.Provider value={displayAvatar ?? null}>
-                              <div className="flex flex-col h-full min-h-0">
-                                <MobileChatHeader
-                                  agentId={agentId}
-                                  agentName={displayName}
-                                  chatId={chatId ?? null}
-                                  avatarUrl={displayAvatar}
-                                  canEdit={canEdit}
-                                />
-                                <header className="hidden md:flex px-4 py-2.5 border-b items-center justify-between shrink-0">
-                                  <div className="flex items-center gap-2 min-w-0 flex-1 animate-in fade-in duration-300">
-                                    {displayAvatar && (
-                                      // eslint-disable-next-line @next/next/no-img-element
-                                      <img
-                                        src={displayAvatar}
-                                        alt=""
-                                        className="size-10 rounded-full shrink-0"
+          <CanEditAgentContext.Provider value={canEdit}>
+            <AgentModelContext.Provider value={liveAgent?.model ?? null}>
+              <AssistantRuntimeProvider runtime={runtime}>
+                <ChatStatusContext.Provider value={chatStatus}>
+                  <RetryContinueContext.Provider value={onRetryContinue}>
+                    <RetryResendContext.Provider value={onRetryResend}>
+                      <PendingUploadsContext.Provider value={pendingUploads}>
+                        <AddPendingUploadContext.Provider value={addPendingUpload}>
+                          <RemovePendingUploadContext.Provider value={removePendingUpload}>
+                            <RetryPendingUploadContext.Provider value={retryPendingUpload}>
+                              <AgentAvatarContext.Provider value={displayAvatar ?? null}>
+                                <div className="flex flex-col h-full min-h-0">
+                                  <MobileChatHeader
+                                    agentId={agentId}
+                                    agentName={displayName}
+                                    chatId={chatId ?? null}
+                                    avatarUrl={displayAvatar}
+                                    canEdit={canEdit}
+                                  />
+                                  <header className="hidden md:flex px-4 py-2.5 border-b items-center justify-between shrink-0">
+                                    <div className="flex items-center gap-2 min-w-0 flex-1 animate-in fade-in duration-300">
+                                      {displayAvatar && (
+                                        // eslint-disable-next-line @next/next/no-img-element
+                                        <img
+                                          src={displayAvatar}
+                                          alt=""
+                                          className="size-10 rounded-full shrink-0"
+                                        />
+                                      )}
+                                      <ChatSwitcher
+                                        agentId={agentId}
+                                        chatId={chatId ?? null}
+                                        agentName={displayName}
                                       />
-                                    )}
-                                    <ChatSwitcher
-                                      agentId={agentId}
-                                      chatId={chatId ?? null}
-                                      agentName={displayName}
-                                    />
-                                    <TooltipProvider>
-                                      <Tooltip>
-                                        <TooltipTrigger asChild>
-                                          <Badge
-                                            variant="outline"
-                                            className="text-xs font-normal shrink-0"
-                                          >
-                                            {displayIsPersonal ? "Private" : "Shared"}
-                                          </Badge>
-                                        </TooltipTrigger>
-                                        <TooltipContent>
-                                          {displayIsPersonal
-                                            ? "Your conversations are private and not shared with anyone."
-                                            : "Your conversations help build team knowledge that's available to all team members."}
-                                        </TooltipContent>
-                                      </Tooltip>
-                                    </TooltipProvider>
-                                    <AiDisclosureLabel />
+                                      <TooltipProvider>
+                                        <Tooltip>
+                                          <TooltipTrigger asChild>
+                                            <Badge
+                                              variant="outline"
+                                              className="text-xs font-normal shrink-0"
+                                            >
+                                              {displayIsPersonal ? "Private" : "Shared"}
+                                            </Badge>
+                                          </TooltipTrigger>
+                                          <TooltipContent>
+                                            {displayIsPersonal
+                                              ? "Your conversations are private and not shared with anyone."
+                                              : "Your conversations help build team knowledge that's available to all team members."}
+                                          </TooltipContent>
+                                        </Tooltip>
+                                      </TooltipProvider>
+                                      <AiDisclosureLabel />
+                                    </div>
+                                    <div className="flex items-center gap-3 shrink-0">
+                                      {canEdit && (
+                                        <Link
+                                          href={`/chat/${agentId}/settings`}
+                                          aria-label="Settings"
+                                          className="text-muted-foreground hover:text-foreground transition-colors"
+                                        >
+                                          <Settings className="size-5" />
+                                        </Link>
+                                      )}
+                                      <TooltipProvider delayDuration={200}>
+                                        <Tooltip>
+                                          <TooltipTrigger asChild>
+                                            <button
+                                              type="button"
+                                              aria-label={indicator.label}
+                                              className="cursor-default p-1.5 -m-1.5 inline-flex items-center justify-center rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                                            >
+                                              <span
+                                                className={`size-2 rounded-full shrink-0 ${indicator.colorClass}`}
+                                              />
+                                            </button>
+                                          </TooltipTrigger>
+                                          <TooltipContent>{indicator.label}</TooltipContent>
+                                        </Tooltip>
+                                      </TooltipProvider>
+                                    </div>
+                                  </header>
+                                  <ChatErrorBanner
+                                    agentId={agentId}
+                                    chatId={chatId}
+                                    onRetry={() => onRetryContinue("partial_stream_failure")}
+                                  />
+                                  <div className="flex-1 min-h-0 animate-in fade-in duration-300">
+                                    <ChatCrashBoundary>
+                                      <Thread isReconcilingMessages={isReconcilingMessages} />
+                                    </ChatCrashBoundary>
                                   </div>
-                                  <div className="flex items-center gap-3 shrink-0">
-                                    {canEdit && (
-                                      <Link
-                                        href={`/chat/${agentId}/settings`}
-                                        aria-label="Settings"
-                                        className="text-muted-foreground hover:text-foreground transition-colors"
-                                      >
-                                        <Settings className="size-5" />
-                                      </Link>
-                                    )}
-                                    <TooltipProvider delayDuration={200}>
-                                      <Tooltip>
-                                        <TooltipTrigger asChild>
-                                          <button
-                                            type="button"
-                                            aria-label={indicator.label}
-                                            className="cursor-default p-1.5 -m-1.5 inline-flex items-center justify-center rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                                          >
-                                            <span
-                                              className={`size-2 rounded-full shrink-0 ${indicator.colorClass}`}
-                                            />
-                                          </button>
-                                        </TooltipTrigger>
-                                        <TooltipContent>{indicator.label}</TooltipContent>
-                                      </Tooltip>
-                                    </TooltipProvider>
-                                  </div>
-                                </header>
-                                <ChatErrorBanner
-                                  agentId={agentId}
-                                  chatId={chatId}
-                                  onRetry={() => onRetryContinue("partial_stream_failure")}
-                                />
-                                <div className="flex-1 min-h-0 animate-in fade-in duration-300">
-                                  <ChatCrashBoundary>
-                                    <Thread isReconcilingMessages={isReconcilingMessages} />
-                                  </ChatCrashBoundary>
+                                  {!displayIsPersonal && (
+                                    <p className="text-xs text-muted-foreground px-3 py-1">
+                                      Files uploaded here are visible to anyone with access to this
+                                      agent.
+                                    </p>
+                                  )}
+                                  <ChatStatusBanner status={chatStatus} isDelayed={isDelayed} />
                                 </div>
-                                {!displayIsPersonal && (
-                                  <p className="text-xs text-muted-foreground px-3 py-1">
-                                    Files uploaded here are visible to anyone with access to this
-                                    agent.
-                                  </p>
-                                )}
-                                <ChatStatusBanner status={chatStatus} isDelayed={isDelayed} />
-                              </div>
-                            </AgentAvatarContext.Provider>
-                          </RetryPendingUploadContext.Provider>
-                        </RemovePendingUploadContext.Provider>
-                      </AddPendingUploadContext.Provider>
-                    </PendingUploadsContext.Provider>
-                  </RetryResendContext.Provider>
-                </RetryContinueContext.Provider>
-              </ChatStatusContext.Provider>
-            </AssistantRuntimeProvider>
-          </AgentModelContext.Provider>
+                              </AgentAvatarContext.Provider>
+                            </RetryPendingUploadContext.Provider>
+                          </RemovePendingUploadContext.Provider>
+                        </AddPendingUploadContext.Provider>
+                      </PendingUploadsContext.Provider>
+                    </RetryResendContext.Provider>
+                  </RetryContinueContext.Provider>
+                </ChatStatusContext.Provider>
+              </AssistantRuntimeProvider>
+            </AgentModelContext.Provider>
+          </CanEditAgentContext.Provider>
         </AgentNameContext.Provider>
       </ChatIdContext.Provider>
     </AgentIdContext.Provider>

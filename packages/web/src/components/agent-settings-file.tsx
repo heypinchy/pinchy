@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
+import { appendInstructionDraft } from "@/lib/instruction-handoff";
 import { MarkdownEditor } from "@/components/markdown-editor";
 import { DocsLink } from "@/components/docs-link";
 
@@ -19,6 +20,12 @@ interface AgentSettingsFileProps {
   agentId: string;
   filename: Filename;
   content: string;
+  /**
+   * A draft carried over from chat by "Save as instruction" (#1144), appended
+   * to the editor's text but deliberately NOT to the saved baseline: the tab
+   * has to open dirty, or the user's Save would have nothing to write.
+   */
+  appendDraft?: string;
   onChange: (content: string, isDirty: boolean) => void;
 }
 
@@ -26,14 +33,21 @@ export function AgentSettingsFile({
   agentId: _agentId,
   filename,
   content: initialContent,
+  appendDraft,
   onChange,
 }: AgentSettingsFileProps) {
-  const [content, setContent] = useState(initialContent);
+  const [content, setContent] = useState(() =>
+    appendDraft ? appendInstructionDraft(initialContent, appendDraft) : initialContent
+  );
+  // The baseline is what is SAVED, never what was carried over. Folding the
+  // draft in here would make the appended text look like it had always been
+  // there, and the save would be skipped as a no-op.
   const initialRef = useRef(initialContent);
+  const mountedContentRef = useRef(content);
 
-  // Notify parent on mount with isDirty=false
+  // Notify parent on mount — dirty exactly when a draft was carried in.
   useEffect(() => {
-    onChange(initialRef.current, false);
+    onChange(mountedContentRef.current, mountedContentRef.current !== initialRef.current);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

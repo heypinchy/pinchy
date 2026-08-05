@@ -4,7 +4,7 @@ import { notFound } from "next/navigation";
 import { db } from "@/db";
 import { activeAgents } from "@/db/schema";
 import { requireAuth } from "@/lib/require-auth";
-import { assertAgentAccess, effectiveVisibility } from "@/lib/agent-access";
+import { assertAgentAccess, canWriteAgent, effectiveVisibility } from "@/lib/agent-access";
 import { getUserGroupIds, getAgentGroupIds } from "@/lib/groups";
 import { getLicenseState } from "@/lib/enterprise";
 import { getAgentAvatarSvg } from "@/lib/avatar";
@@ -80,7 +80,9 @@ export async function loadChatPageAgent(agentId: string) {
   }
 
   const avatarUrl = getAgentAvatarSvg({ avatarSeed: agent.avatarSeed, name: agent.name });
-  const canEdit = userRole === "admin" || (agent.isPersonal && agent.ownerId === userId);
+  // The same predicate the write routes enforce, not a second spelling of it:
+  // the UI must never offer an edit the API refuses, nor withhold one it allows.
+  const canEdit = canWriteAgent(agent, userId, userRole);
 
   return { agent, userId, userRole, avatarUrl, canEdit };
 }

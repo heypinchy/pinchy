@@ -31,6 +31,7 @@ import { normalizeStarterPrompts } from "@/lib/schemas/starter-prompts";
 import { apiPatch, apiPut, apiDelete, ApiError, errorMessage } from "@/lib/api-client";
 import type { UpdateAgentInput, WriteAgentFileInput } from "@/lib/schemas/agents";
 import type { SetAgentIntegrationsInput } from "@/lib/schemas/agent-integrations";
+import { takeInstructionDraft } from "@/lib/instruction-handoff";
 import type { AgentPluginConfig } from "@/db/schema";
 import type { AgentVisibility } from "@/db/enums";
 
@@ -188,6 +189,16 @@ export function AgentSettingsPageContent({ initialTab }: { initialTab?: string }
   const generalDraft = useRef<GeneralValues | null>(null);
   const personalityDraft = useRef<PersonalityValues | null>(null);
   const instructionsDraft = useRef<string | null>(null);
+  /**
+   * A draft carried over from chat by "Save as instruction" (#1144).
+   *
+   * Read ONCE, before the first paint, and removed from sessionStorage in the
+   * same step: a draft that survived its own consumption would reappear the
+   * next time someone opened this tab for an unrelated edit, and they would
+   * save it without noticing. Nothing is written to the agent here — the text
+   * lands in the editor, dirty, and the user still presses Save.
+   */
+  const [carriedDraft] = useState(() => takeInstructionDraft(agentId));
   const permissionsDraft = useRef<PermissionsValues | null>(null);
   const accessDraft = useRef<AccessValues | null>(null);
 
@@ -518,6 +529,7 @@ export function AgentSettingsPageContent({ initialTab }: { initialTab?: string }
               agentId={agentId}
               filename="AGENTS.md"
               content={agentsContent}
+              appendDraft={carriedDraft ?? undefined}
               onChange={handleInstructionsChange}
             />
           </TabsContent>

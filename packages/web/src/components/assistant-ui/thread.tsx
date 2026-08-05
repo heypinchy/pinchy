@@ -28,6 +28,7 @@ import {
   AlertCircle,
   ArrowDownIcon,
   ArrowUpIcon,
+  BookmarkIcon,
   BugIcon,
   CheckCircle,
   CheckIcon,
@@ -45,6 +46,7 @@ import {
   AgentIdContext,
   ChatIdContext,
   AgentNameContext,
+  CanEditAgentContext,
   RetryResendContext,
   RetryContinueContext,
   ChatStatusContext,
@@ -65,6 +67,9 @@ import { GatedRetry } from "@/components/chat/gated-retry";
 import { useComposerRuntime } from "@assistant-ui/react";
 import { getDraft, saveDraft, draftKey } from "@/lib/draft-store";
 import { useShareIntake } from "@/components/share/use-share-intake";
+import { useRouter } from "next/navigation";
+import { toast } from "sonner";
+import { canOfferInstructionHandoff, stashInstructionDraft } from "@/lib/instruction-handoff";
 
 function formatTimestamp(iso: string): string {
   const date = new Date(iso);
@@ -711,6 +716,22 @@ const AssistantActionBar: FC = () => {
   const messageId = useMessage((s) => s.id);
   const agentId = useContext(AgentIdContext) ?? "";
   const agentName = useContext(AgentNameContext) ?? "Unknown";
+  // Only offered to someone who may actually save it — `canWriteAgent`,
+  // resolved server-side. The route enforces the same rule; this keeps the menu
+  // from advertising an action that would come back 403.
+  const canEditAgent = useContext(CanEditAgentContext);
+  // `?? []` rather than trusting the type: this selector runs inside the action
+  // bar of every assistant message, so throwing here blanks the whole message
+  // for a field it only ever reads to decide whether to show a menu item. A
+  // message with no text parts is a tool-call or image turn — nothing to
+  // promote, which `canOfferInstructionHandoff` already treats as "don't offer".
+  const messageText = useMessage((s) =>
+    (s.content ?? [])
+      .filter((part): part is { type: "text"; text: string } => part.type === "text")
+      .map((part) => part.text)
+      .join("\n\n")
+  );
+  const router = useRouter();
   // The active chat (null = default/legacy) so the export dialog preselects the
   // chat the user is actually looking at, not the default one (#639).
   const chatId = useContext(ChatIdContext);
@@ -754,6 +775,24 @@ const AssistantActionBar: FC = () => {
               Export as Markdown
             </ActionBarMorePrimitive.Item>
           </ActionBarPrimitive.ExportMarkdown>
+          {canOfferInstructionHandoff(canEditAgent, messageText) && (
+            <ActionBarMorePrimitive.Item
+              onSelect={() => {
+                // Stash first, navigate second: a browser that refuses storage
+                // must not drop the user on a settings page with nothing in it.
+                if (!stashInstructionDraft(agentId, messageText)) {
+                  toast.error("Couldn't carry the draft over — copy the message instead.");
+                  return;
+                }
+                router.push(`/agents/${agentId}/settings?tab=instructions`);
+              }}
+              data-testid="save-as-instruction-menu-item"
+              className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground"
+            >
+              <BookmarkIcon className="size-4" />
+              Save as instruction
+            </ActionBarMorePrimitive.Item>
+          )}
           <ActionBarMorePrimitive.Item
             onSelect={() => setReportIssueOpen(true)}
             data-testid="report-issue-menu-item"

@@ -83,6 +83,16 @@ The Instructions tab provides an editor for the agent's **AGENTS.md** file. This
 
 Think of AGENTS.md as the agent's job description. Use it to define what the agent should do, how it should handle specific tasks, and any domain-specific rules it should follow.
 
+### Saving a rule straight from a conversation
+
+The best instructions usually aren't written at a desk — they come out of working with the agent. When you and the agent settle on a way of working worth keeping, ask it to write the rule up, then open the `⋯` menu on that message and choose **Save as instruction**.
+
+The text lands in this editor, appended below what's already there, with nothing saved yet: you can edit it, cut it down, or drop it, and it takes effect when you press **Save**.
+
+The action appears only for people who can edit this agent — an admin, or the owner of a personal agent. If you can't edit a shared agent, ask an admin to add the rule.
+
+Why not just let the agent remember it? Because memory isn't loaded by scheduled runs, so a working rule kept there quietly stops applying the moment the same work happens on a schedule. [Instructions vs. Memory](/explanation/instructions-vs-memory/) has the full heuristic.
+
 The agent reads both files at the start of every conversation. Separating personality from instructions makes it easy to change one without affecting the other — for example, switching an agent from "The Butler" to "The Pilot" personality without rewriting its task instructions.
 
 Not sure whether a piece of knowledge belongs here or in Memory? See [Instructions vs. Memory](/explanation/instructions-vs-memory/) for the heuristic.

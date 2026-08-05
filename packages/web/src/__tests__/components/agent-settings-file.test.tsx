@@ -117,3 +117,81 @@ describe("AgentSettingsFile", () => {
     });
   });
 });
+
+// #1144: "Save as instruction" carries a draft from a chat message into this
+// editor. The subtlety is the BASELINE — the tab has to open dirty, or the
+// user's Save is skipped as a no-op and the draft is silently lost.
+describe("AgentSettingsFile with a carried-over draft", () => {
+  it("appends the draft to the saved content rather than replacing it", () => {
+    render(
+      <AgentSettingsFile
+        agentId="agent-1"
+        filename="AGENTS.md"
+        content="Answer in English."
+        appendDraft="Score leads by VUE."
+        onChange={vi.fn()}
+      />
+    );
+
+    const editor = screen.getByRole("textbox") as HTMLTextAreaElement;
+    expect(editor.value).toBe("Answer in English.\n\nScore leads by VUE.\n");
+  });
+
+  it("opens dirty, so the pending Save actually writes", () => {
+    const onChange = vi.fn();
+
+    render(
+      <AgentSettingsFile
+        agentId="agent-1"
+        filename="AGENTS.md"
+        content="Answer in English."
+        appendDraft="Score leads by VUE."
+        onChange={onChange}
+      />
+    );
+
+    expect(onChange).toHaveBeenCalledWith(
+      "Answer in English.\n\nScore leads by VUE.\n",
+      /* isDirty */ true
+    );
+  });
+
+  it("keeps the SAVED content as the baseline, so deleting the draft is clean again", () => {
+    // The regression this guards: folding the draft into the baseline would
+    // make the appended text read as always-having-been-there — and then
+    // reverting it by hand would look like an edit rather than an undo.
+    const onChange = vi.fn();
+
+    render(
+      <AgentSettingsFile
+        agentId="agent-1"
+        filename="AGENTS.md"
+        content="Answer in English."
+        appendDraft="Score leads by VUE."
+        onChange={onChange}
+      />
+    );
+
+    fireEvent.change(screen.getByRole("textbox"), {
+      target: { value: "Answer in English." },
+    });
+
+    expect(onChange).toHaveBeenLastCalledWith("Answer in English.", false);
+  });
+
+  it("behaves exactly as before when no draft was carried in", () => {
+    const onChange = vi.fn();
+
+    render(
+      <AgentSettingsFile
+        agentId="agent-1"
+        filename="AGENTS.md"
+        content="Answer in English."
+        onChange={onChange}
+      />
+    );
+
+    expect(screen.getByRole("textbox")).toHaveValue("Answer in English.");
+    expect(onChange).toHaveBeenCalledWith("Answer in English.", false);
+  });
+});
