@@ -118,9 +118,11 @@ describe("GET /api/agents/[agentId]/chats", () => {
 
   beforeEach(async () => {
     vi.clearAllMocks();
-    // Fresh module per test so the route's process-local title cache (keyed by
-    // sessionId, 60s TTL) doesn't leak a derived title from one test into the
-    // next (several tests reuse the s-web-legacy sessionId).
+    // Fresh module graph per test so the process-local title cache (keyed by
+    // sessionId, 60s TTL — it lives in @/lib/chats/title-cache, which the
+    // dynamic import below re-evaluates along with the route) doesn't leak a
+    // derived title from one test into the next (several tests reuse the
+    // s-web-legacy sessionId).
     vi.resetModules();
     mockGetSession.mockResolvedValue({
       user: { id: "user-1", email: "user@test.com", role: "member" },

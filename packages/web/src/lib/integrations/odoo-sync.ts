@@ -1,4 +1,5 @@
 import { OdooClient } from "odoo-node";
+import { runWithConcurrency } from "@/lib/concurrency";
 
 /**
  * Curated list of common Odoo models organized by category.
@@ -301,25 +302,6 @@ function isTransientOdooProbeError(error: unknown): boolean {
     msg.includes("gateway timeout") ||
     msg.includes("temporarily unavailable")
   );
-}
-
-/** Run async tasks with limited concurrency. */
-async function runWithConcurrency<T>(
-  tasks: (() => Promise<T>)[],
-  concurrency: number
-): Promise<T[]> {
-  const results: T[] = new Array(tasks.length);
-  let nextIndex = 0;
-
-  async function worker() {
-    while (nextIndex < tasks.length) {
-      const index = nextIndex++;
-      results[index] = await tasks[index]();
-    }
-  }
-
-  await Promise.all(Array.from({ length: Math.min(concurrency, tasks.length) }, () => worker()));
-  return results;
 }
 
 /**

@@ -11,6 +11,11 @@
  * same "bounded concurrent fan-out" shape, and letting the OpenClaw or Odoo
  * side of either one hang no longer costs the request 100+ simultaneous
  * in-flight RPCs.
+ *
+ * A non-positive `concurrency` is clamped to 1 rather than honoured: the pool
+ * size is `min(concurrency, tasks.length)`, so a 0 would spawn no workers at
+ * all and return a sparse array of `undefined` with nothing having run —
+ * silent data loss where the caller asked for slow.
  */
 export async function runWithConcurrency<T>(
   tasks: (() => Promise<T>)[],
@@ -26,6 +31,7 @@ export async function runWithConcurrency<T>(
     }
   }
 
-  await Promise.all(Array.from({ length: Math.min(concurrency, tasks.length) }, () => worker()));
+  const workerCount = Math.min(Math.max(1, concurrency), tasks.length);
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
   return results;
 }

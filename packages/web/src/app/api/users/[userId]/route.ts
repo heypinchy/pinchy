@@ -161,12 +161,22 @@ export async function DELETE(
   // awaiting it here would still hold this response open for however long
   // that takes. The ban and soft-delete above already committed, so the
   // user's deactivation is complete and auditable regardless of how long
-  // cleanup takes. deleteWorkspace() is idempotent (rm with force: true) and
-  // logs its own failures rather than throwing, so scheduling it via after()
-  // and not waiting on the result is safe.
-  after(() => {
-    void Promise.all(personalAgents.map((agent) => deleteWorkspace(agent.id)));
-  });
+  // cleanup takes.
+  //
+  // RETURN the promise rather than discarding it: after() awaits what its
+  // callback returns, which costs nothing here (the response is already on
+  // its way) and is what keeps the request lifecycle open until cleanup
+  // finishes. A discarded promise also puts any rejection outside anyone's
+  // reach — deleteWorkspace() swallows rm() failures, but its agent-id
+  // validation throws before that catch, and Node answers an unhandled
+  // rejection by killing the process.
+  //
+  // Residual risk, stated rather than papered over: this is best-effort. A
+  // hard crash between the response and the rm() completing leaves the
+  // directory on disk, and nothing sweeps for orphaned workspaces. That costs
+  // disk, never correctness — deleteWorkspace() is idempotent (force: true)
+  // and logs its own failures.
+  after(() => Promise.all(personalAgents.map((agent) => deleteWorkspace(agent.id))));
 
   await regenerateOpenClawConfig();
   await recalculateTelegramAllowStores();

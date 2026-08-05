@@ -49,4 +49,21 @@ describe("runWithConcurrency", () => {
     const results = await runWithConcurrency([], 5);
     expect(results).toEqual([]);
   });
+
+  // A worker pool sized `Math.min(concurrency, tasks.length)` spawns zero
+  // workers for a non-positive limit, so every task is skipped and the caller
+  // gets back a sparse array of undefined — silent data loss rather than an
+  // error. Today's call sites pass constants, but this is a shared helper now.
+  it.each([0, -1])("still runs every task when the limit is %i", async (limit) => {
+    const calls: number[] = [];
+    const tasks = [0, 1, 2].map((i) => async () => {
+      calls.push(i);
+      return i;
+    });
+
+    const results = await runWithConcurrency(tasks, limit);
+
+    expect(calls).toHaveLength(3);
+    expect(results).toEqual([0, 1, 2]);
+  });
 });

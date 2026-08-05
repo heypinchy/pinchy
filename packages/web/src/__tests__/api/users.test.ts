@@ -725,6 +725,80 @@ describe("DELETE /api/users/[userId]", () => {
     expect(deleteWorkspace).toHaveBeenCalledWith("agent-1");
   });
 
+  // The after() callback must RETURN the deletion promise, not fire-and-forget
+  // it. after() awaits what its callback returns — that costs nothing (the
+  // response is already on its way) and buys two things a discarded promise
+  // loses: Next keeps the request lifecycle open until cleanup finishes, so a
+  // graceful shutdown mid-request doesn't silently orphan a GB-sized
+  // workspace directory (nothing in the repo sweeps for orphans); and a
+  // rejection reaches Next's error handler instead of surfacing as an
+  // unhandled rejection, which Node 22 answers by killing the process.
+  it("returns the deletion promise from the after() callback instead of discarding it", async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
+      user: { id: "admin-1", role: "admin" },
+      expires: "",
+    } as any);
+
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue([{ id: "agent-1" }]),
+      }),
+    } as never);
+
+    vi.mocked(db.update).mockReturnValueOnce({
+      set: vi.fn().mockReturnThis(),
+      where: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: "user-1" }]),
+      }),
+    } as never);
+
+    vi.mocked(db.update).mockReturnValueOnce({
+      set: vi.fn().mockReturnThis(),
+      where: vi.fn().mockResolvedValue(undefined),
+    } as never);
+
+    // A deletion that is still in flight — the whole question is whether the
+    // callback's own promise stays pending alongside it.
+    let finishDeletion!: () => void;
+    vi.mocked(deleteWorkspace).mockImplementationOnce(
+      () => new Promise<void>((resolve) => (finishDeletion = resolve))
+    );
+
+    const { after } = await import("next/server");
+    const runImmediately = vi.mocked(after).getMockImplementation();
+    const capturedCallbacks: Array<() => void | Promise<void>> = [];
+    vi.mocked(after).mockImplementation((task: Parameters<typeof after>[0]) => {
+      capturedCallbacks.push(task as () => void | Promise<void>);
+    });
+
+    try {
+      const response = await DELETE(
+        new NextRequest("http://localhost:7777/api/users/user-1", { method: "DELETE" }),
+        { params: Promise.resolve({ userId: "user-1" }) }
+      );
+      expect(response.status).toBe(200);
+
+      // The audit callback is scheduled first; the workspace one is last.
+      const workspaceCallback = capturedCallbacks[capturedCallbacks.length - 1];
+      let settled = false;
+      const pending = Promise.resolve(workspaceCallback()).then(() => {
+        settled = true;
+      });
+
+      // Drain the microtask queue. A callback that discarded the promise has
+      // already resolved to undefined by now, even though the rm() behind it
+      // has not finished.
+      for (let i = 0; i < 10; i++) await Promise.resolve();
+      expect(settled).toBe(false);
+
+      finishDeletion();
+      await pending;
+      expect(settled).toBe(true);
+    } finally {
+      if (runImmediately) vi.mocked(after).mockImplementation(runImmediately);
+    }
+  });
+
   it("calls regenerateOpenClawConfig after deletion", async () => {
     vi.mocked(auth.api.getSession).mockResolvedValueOnce({
       user: { id: "admin-1", role: "admin" },
