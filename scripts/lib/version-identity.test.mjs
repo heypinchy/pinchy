@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import {
   newestFrozenRelease,
   readEnvExampleVersion,
-  readReadmeComposePins,
+  readReadmeVersionPins,
   checkVersionIdentity,
 } from "./version-identity.mjs";
 import { parseDeclaredVersion, compareVersions } from "./release-logic.mjs";
@@ -33,12 +33,16 @@ const MDX = [
 
 const ENV = (v) => `# comment\nPINCHY_VERSION=${v}\nOTHER=1\n`;
 
-const README = (v) =>
+// Both pins the quick start carries, because `bumpReadmeQuickstartPins`
+// rewrites both and the reader needs both to agree.
+const README = (v, envPin = v) =>
   [
     "## Quick Start",
     "",
     "```bash",
+    "mkdir -p pinchy && cd pinchy",
     `curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/${v}/docker-compose.yml -o docker-compose.yml`,
+    `echo "PINCHY_VERSION=${envPin}" > .env`,
     "docker compose up -d",
     "```",
     "",
@@ -134,19 +138,33 @@ test("readEnvExampleVersion finds the line among others", () => {
   assert.equal(readEnvExampleVersion("NOTHING=1\n"), null);
 });
 
-// ─── readReadmeComposePins ───────────────────────────────────────────────────
+// ─── readReadmeVersionPins ───────────────────────────────────────────────────
 
-test("readReadmeComposePins reads the quick-start install pin", () => {
-  assert.deepEqual(readReadmeComposePins(README("v0.9.1")), ["v0.9.1"]);
-  assert.deepEqual(readReadmeComposePins("no install instructions here"), []);
+test("readReadmeVersionPins reads the quick-start install pin", () => {
+  assert.deepEqual(readReadmeVersionPins(README("v0.9.1")), ["v0.9.1"]);
+  assert.deepEqual(readReadmeVersionPins("no install instructions here"), []);
 });
 
-// Every pin is returned, not just the first: `bumpReadmeComposePin` rewrites
-// them all, so a guard that reads one would pass a README where a second copy
-// of the command drifted.
-test("readReadmeComposePins returns every distinct pin, in order", () => {
+// Every pin is returned, not just the first: `bumpReadmeQuickstartPins`
+// rewrites them all, so a guard that reads one would pass a README where a
+// second copy of the command drifted.
+test("readReadmeVersionPins returns every distinct pin, in order", () => {
   const two = README("v0.9.1") + README("v0.8.0") + README("v0.9.1");
-  assert.deepEqual(readReadmeComposePins(two), ["v0.9.1", "v0.8.0"]);
+  assert.deepEqual(readReadmeVersionPins(two), ["v0.9.1", "v0.8.0"]);
+});
+
+// The quick start pins the version TWICE — the curl'd compose URL and the
+// `PINCHY_VERSION=` line written into `.env` — and `bumpReadmeQuickstartPins`
+// bumps both because the compose file resolves its image tags from the second.
+// A reader that saw only the URL would pass a README installing v0.9.1's
+// topology with v0.8.0's images, which is silent by construction: the install
+// succeeds. That is the same "enumeration missed one" failure this guard was
+// written for, one file further in.
+test("readReadmeVersionPins reads the PINCHY_VERSION pin too, not just the URL", () => {
+  assert.deepEqual(readReadmeVersionPins(README("v0.9.1", "v0.8.0")), [
+    "v0.9.1",
+    "v0.8.0",
+  ]);
 });
 
 // ─── checkVersionIdentity ────────────────────────────────────────────────────
@@ -216,11 +234,11 @@ test("a missing PINCHY_VERSION line is flagged", () => {
 
 // The README quick-start curl is the most-read install instruction the repo
 // has — it is what a visitor runs off the GitHub front page — and `pnpm release`
-// bumps it (`bumpReadmeComposePin`) for exactly that reason. So it belongs to
+// bumps it (`bumpReadmeQuickstartPins`) for exactly that reason. So it belongs to
 // the same "what should I pull?" set as .env.example and the marketplace
 // templates, and a release cut from a release branch leaves it behind on `main`
 // identically. It really was still on v0.8.0 when this guard was written, two
-// releases after the fact, and `bumpReadmeComposePin`'s own docstring records
+// releases after the fact, and `bumpReadmeQuickstartPins`'s own docstring records
 // the same drift one cycle earlier (v0.5.7 through both v0.5.8 and v0.6.0).
 test("a README install pin on a superseded release is flagged", () => {
   const problems = ok({ readme: README("v0.8.0") });
@@ -231,10 +249,10 @@ test("a README install pin on a superseded release is flagged", () => {
 
 test("a README with no install pin at all is flagged", () => {
   // Not silence: the pin moving or being reworded is precisely how this stops
-  // being checked, and `bumpReadmeComposePin` throws on the same condition.
+  // being checked, and `bumpReadmeQuickstartPins` throws on the same condition.
   const problems = ok({ readme: "# Pinchy\n\nNo quick start.\n" });
   assert.equal(problems.length, 1);
-  assert.match(problems[0], /no pinned docker-compose URL/i);
+  assert.match(problems[0], /pins no version in its quick start/i);
 });
 
 test("every drifted README pin is named, not just the first", () => {
