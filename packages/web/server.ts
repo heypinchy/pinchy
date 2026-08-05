@@ -54,13 +54,7 @@ import { SERVER_WS_MAX_PAYLOAD_BYTES } from "./src/lib/limits";
 import { evaluateAuditSecretRotation, evaluateDbPasswordPolicy } from "./src/lib/secret-source";
 import { getPreviousSecret } from "./src/lib/encryption";
 import { exitOnStartupFailure } from "./src/server/startup-failure";
-import {
-  getTrustedProxies,
-  readForwardedFor,
-  resolveClientIp,
-  stampClientIp,
-  TRUSTED_PROXIES_ENV_VAR,
-} from "./src/server/client-ip";
+import { getTrustedProxies, stampClientIp, TRUSTED_PROXIES_ENV_VAR } from "./src/server/client-ip";
 
 logCapture.install();
 
@@ -211,12 +205,14 @@ const startup = app.prepare().then(async () => {
     const { pathname } = parse(request.url!, true);
     if (pathname === "/api/ws") {
       // An upgrade never passes through the createServer handler, so it does
-      // its own resolution. No stamping: the request stops here either way,
-      // and nothing downstream of an upgrade reads headers.
-      const client = resolveClientIp({
-        forwardedFor: readForwardedFor(request.headers),
-        socketAddress: request.socket?.remoteAddress,
+      // its own resolution. Stamped rather than merely resolved, for the same
+      // reason it is stamped there: the stamp is what DISCARDS a client-supplied
+      // copy of the internal header, and `request.headers` outlives this block —
+      // `readWsUpgradeCheckInput`, `validateWsSession` and every `wss`
+      // connection handler are handed the same object.
+      const client = stampClientIp(request.headers, {
         trustedProxies,
+        socketAddress: request.socket?.remoteAddress,
       });
 
       // Rate limit by IP before doing any auth work. The limiter's onReject

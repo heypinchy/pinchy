@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 vi.mock("@/lib/domain", () => ({
   getCachedDomain: vi.fn(),
@@ -180,8 +180,19 @@ describe("Auth HTTP/HTTPS configuration", () => {
   // own `getIp`, rather than that a config field is set — the config is only
   // interesting because it decides which bucket a sign-in attempt lands in.
   describe("sign-in throttle bucketing", () => {
+    // Restored, not just cleared up front: `@/lib/auth` reads the variable at
+    // import time and vitest reuses a worker across test FILES, so a value left
+    // behind here decides the trust list for whatever file this worker picks up
+    // next — a cross-file failure with nothing in it pointing back to here.
+    const original = process.env.PINCHY_TRUSTED_PROXIES;
+
     beforeEach(() => {
       delete process.env.PINCHY_TRUSTED_PROXIES;
+    });
+
+    afterEach(() => {
+      if (original === undefined) delete process.env.PINCHY_TRUSTED_PROXIES;
+      else process.env.PINCHY_TRUSTED_PROXIES = original;
     });
 
     async function resolve(headers: Record<string, string>): Promise<string | null> {

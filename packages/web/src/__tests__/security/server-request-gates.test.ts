@@ -112,6 +112,31 @@ describe("server.ts WebSocket upgrade gate", () => {
     ).toBe(true);
   });
 
+  // #825, same failure shape as the stamp tripwire above and one entry point
+  // over. `wsRateLimiter.allowUpgrade` takes a string, so keying it back on
+  // `request.socket.remoteAddress` leaves ws-rate-limit.test.ts and
+  // client-ip.test.ts both entirely green — while every user on the instance
+  // shares one 60-upgrades-per-minute bucket again and a single
+  // reconnect-looping tab can lock the rest out of chat.
+  it("rate-limits the upgrade on the resolved client address, not the peer", () => {
+    const stamp = source.indexOf("stampClientIp(request.headers");
+    const limit = source.indexOf("wsRateLimiter.allowUpgrade(");
+
+    expect(
+      stamp,
+      "server.ts does not resolve the client address in the upgrade handler. The handler is " +
+        "a separate entry point — the createServer stamp never runs for a WebSocket handshake."
+    ).toBeGreaterThan(-1);
+    expect(limit).toBeGreaterThan(stamp);
+
+    expect(
+      /const ip = client\.address \?\? "unknown"/.test(source),
+      "server.ts keys the upgrade limiter on something other than the resolved client " +
+        "address. Behind a proxy `socket.remoteAddress` is the proxy, so that is one bucket " +
+        "for the whole instance."
+    ).toBe(true);
+  });
+
   it("rejects the handshake when the gate says no", () => {
     expect(
       /if\s*\(!upgradeCheck\.allowed\)/.test(source),

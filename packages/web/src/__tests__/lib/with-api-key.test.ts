@@ -822,6 +822,36 @@ describe("withApiKey", () => {
       expect(res.status).toBe(429);
     });
 
+    it("keys the bucket on the address server.ts resolved, over anything the caller forwards", async () => {
+      // #825. The last-hop rule above is the FALLBACK. In a real deployment the
+      // HTTP server has already answered "who is this request from" — against
+      // the trusted-proxy list, and discarding any inbound copy of its own
+      // header — and every other limiter in Pinchy buckets by that answer. A
+      // second rule reading the raw header here is how two call sites end up
+      // disagreeing about who a request is.
+      mockVerifyApiKey.mockResolvedValue({ valid: false, error: null, key: null });
+      const handler = vi.fn(OK);
+      const probe = (forged: string) =>
+        withApiKey(["agents:read"], handler)(
+          reqWith({
+            Authorization: "Bearer pinchy_bad",
+            "x-pinchy-client-ip": "9.9.9.9",
+            "x-forwarded-for": forged,
+          }),
+          {}
+        );
+
+      for (let i = 0; i < INVALID_API_KEY_RATE_LIMIT_MAX_ATTEMPTS; i++) {
+        // A whole fresh forwarded chain per request, tail included.
+        await probe(`10.0.0.${i}, 172.16.0.${i}`);
+      }
+
+      // Still throttled: the stamped address never moved, so neither did the
+      // bucket. Reading x-forwarded-for here would have handed out a fresh one
+      // every time.
+      expect((await probe("10.0.0.99, 172.16.0.99")).status).toBe(429);
+    });
+
     it("writes ONE auth.rate_limited row per window GLOBALLY, and none before the throttle fires", async () => {
       mockVerifyApiKey.mockResolvedValue({ valid: false, error: null, key: null });
       const handler = vi.fn(OK);

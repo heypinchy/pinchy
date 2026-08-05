@@ -63,6 +63,7 @@ Two things worth knowing:
 
 - **Your proxy has to add the visitor's address.** nginx does it with `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`; Caddy and Traefik do it by default. A proxy that forwards the visitor's own header untouched hands Pinchy an address the visitor picked, and the sign-in throttle is only as trustworthy as that header.
 - **Do not list your whole private network.** On a company LAN the visitor's real address _is_ a `10.x` or `192.168.x` one. Trusting the entire range makes Pinchy walk past the visitor too, and land on whatever hop they wrote in front of it. List the proxies, not the network they live in.
+- **Keep a proxy in front.** Pinchy cannot tell your proxy's connection from a visitor's, so it reads `X-Forwarded-For` on both. An install exposed straight to the internet (`PINCHY_PORT=0.0.0.0:80`, no reverse proxy) therefore takes that header from the visitor themselves, and the sign-in throttle follows an address they picked. The default `127.0.0.1:7777` bind is what prevents this, and a reverse proxy is needed for TLS anyway. See [VPS Deployment](/guides/vps-deployment/).
 
 If a hop is left untrusted, sign-ins arriving through it share one throttle bucket keyed to that hop — a nuisance rather than a hole, since the address is still one nobody can forge.
 

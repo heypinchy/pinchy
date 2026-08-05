@@ -4,6 +4,7 @@ import { getSession, auth, type Session } from "@/lib/auth";
 import { extractScopes, type ApiKeyScope } from "@/lib/api-key-scopes";
 import { appendAuditLog, safeAuditPath } from "@/lib/audit";
 import { looksLikeApiKey } from "@/lib/api-key-format";
+import { CLIENT_IP_HEADER } from "@/server/client-ip";
 import {
   tryAcquireApiKeySlot,
   claimApiKeyRateLimitAuditSlot,
@@ -138,34 +139,39 @@ function readApiKey(req: NextRequest): string | null {
 const UNKNOWN_CLIENT_IP = "unknown";
 
 /**
- * Best-effort client IP, used ONLY to bucket the invalid-key-attempt limiter
+ * The caller's address, used ONLY to bucket the invalid-key-attempt limiter
  * below (`tryAcquireInvalidApiKeyIpSlot`) — never for anything that needs
- * strong identity. `NextRequest` carries no `.ip` (removed after Next
- * 13.4), so this reads `x-forwarded-for`, which Caddy sets on every
- * deployment path (`Caddyfile.dev`, the marketplace `Caddyfile`).
+ * strong identity. `NextRequest` carries no `.ip` (removed after Next 13.4),
+ * so it has to come from a header either way.
  *
- * Deliberately the LAST hop, not the first: Caddy's `reverse_proxy`
- * *appends* the peer address it directly observed to any inbound value
- * rather than replacing it, so a request can arrive with an
- * attacker-supplied prefix already present. Only the tail is something
- * Caddy itself vouches for. This is a different question from
- * `publicHopOf` in `@/server/forwarded-host`, which reads the FIRST hop of
- * `x-forwarded-host` — that header answers "what did the browser address",
- * this one answers "who do we trust to bucket on", and the trustworthy hop
- * sits at the opposite end for each.
+ * `CLIENT_IP_HEADER` is the answer `server.ts` already worked out for this
+ * request, and it is the one to read: it is stamped on every request the HTTP
+ * server handles, it discards any inbound copy, and it resolves the forwarded
+ * chain right-to-left against the trusted-proxy list rather than believing a
+ * hop the sender chose (#825). Reading `x-forwarded-for` here a second time,
+ * with a second rule, is how two call sites end up disagreeing about who a
+ * request is — see the module docstring in `@/server/client-ip`.
  *
- * A caller with no `x-forwarded-for` at all buckets into one fixed key
- * rather than going unlimited — but be precise about what that buys. It
- * bounds a MISCONFIGURED deployment, not an adversarial one: every path
- * Pinchy ships puts Caddy in front, and where it doesn't, the header is
- * caller-supplied end to end, so an attacker sends one and picks a fresh
- * bucket per request instead of falling into this branch at all. Two things
- * still bind there, by design rather than by luck: the tracked-bucket cap in
- * `tryAcquireInvalidApiKeyIpSlot`, which fails closed rather than growing,
- * and the `auth.rate_limited` audit window, which is global for exactly this
- * reason. Nothing here is a substitute for a limiter in the proxy.
+ * The `x-forwarded-for` branch is the fallback for a request that never passed
+ * that stamp — a route invoked directly by a test, or any future entry point
+ * that is not our HTTP server. It takes the LAST hop, not the first: a proxy
+ * that appends (Caddy's `reverse_proxy`, nginx's `$proxy_add_x_forwarded_for`)
+ * leaves any attacker-supplied prefix in place and vouches only for the tail.
+ * That is the opposite end from `publicHopOf` in `@/server/forwarded-host`,
+ * which reads the FIRST hop of `x-forwarded-host` — that header answers "what
+ * did the browser address", this one answers "who do we trust to bucket on".
+ *
+ * A caller with neither header buckets into one fixed key rather than going
+ * unlimited. That bounds a misconfigured deployment, not an adversarial one,
+ * and two things still bind regardless: the tracked-bucket cap in
+ * `tryAcquireInvalidApiKeyIpSlot`, which fails closed rather than growing, and
+ * the `auth.rate_limited` audit window, which is global. Nothing here is a
+ * substitute for a limiter in the proxy.
  */
 function readClientIp(req: NextRequest): string {
+  const stamped = req.headers.get(CLIENT_IP_HEADER);
+  if (stamped) return stamped;
+
   const header = req.headers.get("x-forwarded-for");
   if (!header) return UNKNOWN_CLIENT_IP;
   const hops = header
@@ -234,9 +240,10 @@ function claimScopeDenialSlot(keyId: string, now: number): { write: boolean; sup
  * unauthenticated attacker an unbounded write into the audit table. Once
  * the caller is actually THROTTLED, the write is no longer unbounded — one
  * row per window across the whole path, the shape `claimHostBlockSlot`
- * (`@/server/host-check`) uses for the same reason. Not one row per IP:
- * that window would be keyed on a value the caller supplies, which is how
- * a throttle stops throttling.
+ * (`@/server/host-check`) uses for the same reason. Deliberately not one row
+ * per IP even now that the address is resolved rather than caller-supplied
+ * (#825): a botnet still has as many addresses as it has hosts, and the point
+ * of the window is a ceiling on writes an unauthenticated caller can cause.
  */
 async function denyInvalidApiKeyAttempt(req: NextRequest): Promise<NextResponse> {
   const ip = readClientIp(req);
