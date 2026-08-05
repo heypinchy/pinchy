@@ -32,11 +32,14 @@ export async function GET() {
   } else if (session?.user) {
     // Signed in, but not an admin. An absent `logs` field on its own cannot
     // say WHY it is absent, and the in-app bug reporter has to tell the two
-    // causes apart: it can send whoever is holding the host shell to
-    // `docker compose logs`, but a member has no account there and needs
-    // their administrator instead. The anonymous caller is the setup
-    // wizard's pre-flight check — that person IS the host operator, so no
-    // marker for them.
+    // causes apart: a member has no account on the host, so sending them to
+    // `docker compose logs` yields a report with no logs and an instruction
+    // they cannot follow — their administrator is the step they can take.
+    // An anonymous caller gets no marker, because with no session there is
+    // no role to withhold for. That is deliberately NOT a claim that the
+    // caller holds the host shell: nothing in the request separates whoever
+    // is running the setup wizard from a signed-out member, so the client's
+    // fallback copy names both routes instead.
     response.logsWithheld = "admin-only";
   }
 
