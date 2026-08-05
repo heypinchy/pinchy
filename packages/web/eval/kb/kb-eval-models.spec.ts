@@ -80,7 +80,9 @@ import {
 import type { KnowledgeSearchAuditEntry } from "./run-kb-eval";
 import { getRawAssistantMessage } from "./getRawAssistantMessage";
 import { gradeKbRun } from "../../src/lib/eval/kb/answer-graders";
-import type { KbRunTrajectory, KbRunResult } from "../../src/lib/eval/kb/answer-graders";
+import type { KbRunTrajectory } from "../../src/lib/eval/kb/answer-graders";
+import type { KbRunResult } from "../../src/lib/eval/kb/answer-graders";
+import type { KbRunResultRow } from "../../src/lib/eval/kb/types";
 import {
   DEFAULT_KB_JUDGE_MODEL,
   LlmAbstentionJudge,
@@ -362,7 +364,13 @@ test.describe("KB Eval Harness Layer 3: groundedness sweep (real Ollama Cloud)",
           console.warn(
             `[kb-eval] setup failed for ${model}/${goldId} after retries, recording run-infra-error: ${describeError(err)}`
           );
-          const setupErrorRun = infraErrorRun(model, goldId, err, Date.now() - setupStart);
+          const setupErrorRun = infraErrorRun(
+            model,
+            goldId,
+            gold.axis,
+            err,
+            Date.now() - setupStart
+          );
           allRuns.push(setupErrorRun);
           await appendRunResult(RESULT_LABEL, setupErrorRun);
           consecutiveInfraErrors++;
@@ -432,7 +440,7 @@ test.describe("KB Eval Harness Layer 3: groundedness sweep (real Ollama Cloud)",
           () => gradeKbRun(trajectory, gold, { nli, relevance, abstention }),
           { what: `judge ${model}/${goldId}` }
         );
-        const stampedResult: KbRunResult = { ...result, scenario: goldId };
+        const stampedResult: KbRunResultRow = { ...result, scenario: goldId, axis: gold.axis };
         allRuns.push(stampedResult);
         await appendRunResult(RESULT_LABEL, stampedResult);
         // A completed run — graded pass OR fail — proves the endpoints are
@@ -457,7 +465,13 @@ test.describe("KB Eval Harness Layer 3: groundedness sweep (real Ollama Cloud)",
         console.warn(
           `[kb-eval] run for ${model}/${goldId} recorded as run-infra-error: ${describeError(err)}`
         );
-        const infraErrorResult = infraErrorRun(model, goldId, err, Date.now() - runStart);
+        const infraErrorResult = infraErrorRun(
+          model,
+          goldId,
+          gold.axis,
+          err,
+          Date.now() - runStart
+        );
         allRuns.push(infraErrorResult);
         await appendRunResult(RESULT_LABEL, infraErrorResult);
         consecutiveInfraErrors++;

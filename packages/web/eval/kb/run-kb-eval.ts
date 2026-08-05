@@ -21,6 +21,7 @@ import { describeError } from "../error-detail";
 import { buildScorecard } from "../../src/lib/eval/scorecard";
 import type { ScorecardEntry } from "../../src/lib/eval/scorecard";
 import type { KbRunResult, KbRunTrajectory } from "../../src/lib/eval/kb/answer-graders";
+import type { KbEvalAxis, KbRunResultRow } from "../../src/lib/eval/kb/types";
 import type { RetrievedSource } from "../../src/lib/eval/kb/attribution-graders";
 
 export {
@@ -52,7 +53,7 @@ function assertValidLabel(label: string): void {
  * completes, so a long unattended sweep never loses finished runs if it
  * crashes mid-sweep. Mirrors `../run-eval.ts`'s `appendRunResult`.
  */
-export async function appendRunResult(label: string, result: KbRunResult): Promise<void> {
+export async function appendRunResult(label: string, result: KbRunResultRow): Promise<void> {
   assertValidLabel(label);
   await mkdir(RESULTS_DIR, { recursive: true });
   const filePath = path.join(RESULTS_DIR, `${label}.jsonl`);
@@ -116,12 +117,19 @@ export function scorecardRuns(runs: KbRunResult[]): KbRunResult[] {
 export function infraErrorRun(
   model: string,
   goldId: string,
+  axis: KbEvalAxis,
   err: unknown,
   latencyMs: number
-): KbRunResult {
+): KbRunResultRow {
   return {
     model,
     scenario: goldId,
+    // Carried even though this row is EXCLUDED from every cell's n: the
+    // exporter groups by axis before it filters, and a row that cannot be
+    // grouped is a row that cannot be counted in `excludedInfraErrors` either
+    // — so an axis whose runs all failed on infrastructure would report as
+    // untested rather than as unmeasured.
+    axis,
     passed: false,
     tags: ["run-infra-error"],
     notes: [`[run-infra-error] ${describeError(err)}`],
