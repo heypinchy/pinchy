@@ -99,7 +99,14 @@ async function readAllRows(): Promise<KbRunResultRow[]> {
   }
 
   const rows: KbRunResultRow[] = [];
-  for (const file of files) {
+  // `*.trajectories.jsonl` sits in this directory too — the answers are
+  // published alongside the verdicts so a reader can check a tag against what
+  // the model actually wrote. Its lines are NOT run rows, and this reader
+  // casts every line blindly. Today they happen to be dropped downstream for
+  // carrying no `axis`; that is luck rather than design, and it would end the
+  // day a trajectory gained one. Skipping by name is the part that does not
+  // depend on the shape of the other file.
+  for (const file of files.filter((f) => !f.endsWith(".trajectories.jsonl"))) {
     const text = await readFile(path.join(DATA_DIR, file), "utf8");
     for (const line of text.split("\n")) {
       if (line.trim().length === 0) continue;
