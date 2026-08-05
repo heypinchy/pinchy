@@ -1720,13 +1720,13 @@ This is the server-side security boundary for the whole feature. The plugin asks
 
 **Request body:**
 
-| Field        | Type   | Required | Description                                                        |
-| ------------ | ------ | -------- | ------------------------------------------------------------------ |
-| `agentId`    | string | Yes      | The agent making the call                                          |
-| `sessionKey` | string | Yes      | The OpenClaw session key, which identifies the acting person       |
-| `toolName`   | string | Yes      | The tool the agent wants to run                                    |
-| `params`     | object | No       | The tool's arguments; hashed into the grant's digest, never stored |
-| `senderId`   | string | No       | The channel-side sender, when one is known                         |
+| Field        | Type   | Required | Description                                                                                   |
+| ------------ | ------ | -------- | --------------------------------------------------------------------------------------------- |
+| `agentId`    | string | Yes      | The agent making the call                                                                     |
+| `sessionKey` | string | No       | The OpenClaw session, which identifies the acting person; a gated call without one is blocked |
+| `toolName`   | string | Yes      | The tool the agent wants to run                                                               |
+| `params`     | object | No       | The tool's arguments; hashed into the grant's digest, never stored                            |
+| `senderId`   | string | No       | The channel-side sender, when one is known                                                    |
 
 **Response:**
 
@@ -1734,11 +1734,15 @@ This is the server-side security boundary for the whole feature. The plugin asks
 {
   "decision": "block",
   "requestId": "b1f4…",
-  "reason": "Confirmation required: approve running \"email_send\" in the chat to proceed (request b1f4…)."
+  "reason": "This action needs the user's confirmation before it can run. A confirmation card is waiting for them in Pinchy. …"
 }
 ```
 
-A grant is bound to the agent, the person, the session, the tool **and** a sha256 of the exact arguments, and is spent on first use — so a changed recipient or a different tool asks again. The route fails closed: if the acting person cannot be resolved to a Pinchy user, the call is blocked rather than allowed, because only a real user can confirm it. The plugin applies the same rule to this endpoint being unreachable.
+The `reason` is written for the model, which relays it to the person in the chat — so it names the action, says where to act, and tells the model to stop rather than retry. It deliberately carries no request id: `/approve <id>` is a real OpenClaw command for OpenClaw's own approvals, and given an id a model will invent it, handing the user an instruction that fails. The id travels in `requestId`, where the plugin reads it.
+
+A grant is bound to the agent, the person, the session, the tool **and** a sha256 of the exact arguments, and is spent on first use — so a changed recipient or a different tool asks again. The route fails closed: if the acting person cannot be resolved to a Pinchy user — or the call arrives from a run with no session at all, which a grant could not be bound to — it is blocked rather than allowed, because only a real user can confirm it. The plugin applies the same rule to this endpoint being unreachable.
+
+One person can have at most **20 confirmations open on one agent** at a time. Past that the route blocks with a reason saying so and opens nothing: a changed argument otherwise mints a new confirmation per attempt, and an agent that retries in a loop would bury the requester's inbox. Consuming a grant the user already approved is never subject to the cap.
 
 **Errors:**
 
