@@ -27,9 +27,13 @@ Caveats that belong next to any use of these numbers:
 - **7 of 48 runs have an empty premise set**, all of them answers that cite no
   source inline at all. `premiseSourcePaths` deliberately refuses to recover
   premises there — otherwise an answer that asserts and appends an uncited
-  Sources list would pass. Their verdicts are correct; one of them carries
-  `ungrounded-claim` where "cited nothing" would be the more precise label.
+  Sources list would pass. Their verdicts are correct; five of the seven carry
+  `ungrounded-claim`, and on the one that carries nothing else, "cited nothing"
+  would be the more precise label.
 - **`freshness` and `crowding` have no gold questions** and therefore no data.
+
+Both files carry the contamination-canary header line (see `README.md`). It is
+the first line of each and is not a run; `totalRuns` counts 48.
 
 ### Why there is no earlier entry
 

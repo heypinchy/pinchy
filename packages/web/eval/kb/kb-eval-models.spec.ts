@@ -80,8 +80,7 @@ import {
 import type { KnowledgeSearchAuditEntry } from "./run-kb-eval";
 import { getRawAssistantMessage } from "./getRawAssistantMessage";
 import { gradeKbRun } from "../../src/lib/eval/kb/answer-graders";
-import type { KbRunTrajectory } from "../../src/lib/eval/kb/answer-graders";
-import type { KbRunResult } from "../../src/lib/eval/kb/answer-graders";
+import type { KbRunTrajectory, KbRunResult } from "../../src/lib/eval/kb/answer-graders";
 import type { KbRunResultRow } from "../../src/lib/eval/kb/types";
 import {
   DEFAULT_KB_JUDGE_MODEL,
