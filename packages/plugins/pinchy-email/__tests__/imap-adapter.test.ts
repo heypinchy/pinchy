@@ -9,6 +9,7 @@ import {
   MAX_MESSAGE_BYTES,
   type ImapAdapterOptions,
 } from "../imap-adapter.js";
+import { MAX_ATTACHMENT_BYTES } from "../email-adapter.js";
 
 // Shared mock SMTP transport for send() tests. Created inside vi.hoisted() so
 // it's visible to the vi.mock("nodemailer", ...) factory below, which vitest
@@ -378,12 +379,12 @@ describe("ImapAdapter fetchParsed message-size precheck (#1093)", () => {
   // paying for the full `{ source: true }` fetch that materializes every
   // attachment's bytes. Both read() and getAttachment() share fetchParsed(),
   // so a message-level precheck protects both call sites.
-  function mockSizedMessage(size: number) {
+  function mockSizedMessage(size: number, uid = 42) {
     mockClient.fetchOne
       .mockReset()
       .mockImplementation(async (_uid: number, query: Record<string, unknown>) => {
         if (query.size) {
-          return { uid: 42, size, flags: new Set(["\\Seen"]) };
+          return { uid, size, flags: new Set(["\\Seen"]) };
         }
         return {
           source: Buffer.from(buildMultipartFixture()),
@@ -392,17 +393,26 @@ describe("ImapAdapter fetchParsed message-size precheck (#1093)", () => {
       });
   }
 
+  // The cap is derived from MAX_ATTACHMENT_BYTES rather than restating 25 MB,
+  // and the factor is the load-bearing part: RFC822.SIZE counts bytes on the
+  // wire, MAX_ATTACHMENT_BYTES counts decoded ones, and base64 costs 4/3 plus
+  // CRLF folding (~1.37×). A message cap set to the attachment cap would
+  // refuse a 20 MB PDF that the Gmail and Graph paths both deliver.
+  it("leaves wire-format room for an attachment at the full decoded cap", () => {
+    expect(MAX_MESSAGE_BYTES).toBeGreaterThan(MAX_ATTACHMENT_BYTES * 1.37);
+  });
+
   it("rejects an oversized message by RFC822.SIZE via read(), without ever fetching the source", async () => {
-    mockSizedMessage(50 * 1024 * 1024);
+    mockSizedMessage(MAX_MESSAGE_BYTES * 2);
 
     const adapter = new ImapAdapter(opts);
-    await expect(adapter.read("42")).rejects.toThrow(/too large.*50\.0 MB.*max allowed is 25 MB/is);
-
-    expect(mockClient.fetchOne).toHaveBeenCalledWith(
-      42,
-      { size: true, flags: true },
-      { uid: true }
+    // Names the message, its size and the limit — and what still works, since
+    // there is nothing the caller can retry.
+    await expect(adapter.read("42")).rejects.toThrow(
+      /message 42 is too large.*100\.0 MB.*limit is 50\.0 MB.*email_search/is
     );
+
+    expect(mockClient.fetchOne).toHaveBeenCalledWith(42, { size: true }, { uid: true });
     // The whole point: never download the full message body once its
     // declared size already exceeds the cap.
     expect(mockClient.fetchOne).not.toHaveBeenCalledWith(
@@ -413,17 +423,28 @@ describe("ImapAdapter fetchParsed message-size precheck (#1093)", () => {
   });
 
   it("rejects an oversized message by RFC822.SIZE via getAttachment(), without ever fetching the source", async () => {
-    mockSizedMessage(50 * 1024 * 1024);
+    mockSizedMessage(MAX_MESSAGE_BYTES * 2);
 
     const adapter = new ImapAdapter(opts);
-    await expect(adapter.getAttachment("42", "whatever")).rejects.toThrow(
-      /too large.*50\.0 MB.*max allowed is 25 MB/is
-    );
+    await expect(adapter.getAttachment("42", "whatever")).rejects.toThrow(/too large/i);
     expect(mockClient.fetchOne).not.toHaveBeenCalledWith(
       42,
       expect.objectContaining({ source: true }),
       { uid: true }
     );
+  });
+
+  // The precheck runs after mailboxOpen and must address the SAME uid the
+  // source fetch would: a folder-encoded id carries a non-INBOX mailbox, and
+  // pricing the wrong mailbox's uid 42 would gate on an unrelated message.
+  it("prices the decoded uid in the message's own mailbox for a folder-encoded id", async () => {
+    mockSizedMessage(MAX_MESSAGE_BYTES * 2, 7);
+
+    const adapter = new ImapAdapter(opts);
+    await expect(adapter.read(encodeMessageId("Sent Items", 7))).rejects.toThrow(/too large/i);
+
+    expect(mockClient.mailboxOpen).toHaveBeenCalledWith("Sent Items");
+    expect(mockClient.fetchOne).toHaveBeenCalledWith(7, { size: true }, { uid: true });
   });
 
   // The pair below is the actual boundary. "a size under the cap is allowed"

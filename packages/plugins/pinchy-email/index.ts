@@ -1,7 +1,7 @@
 import { mkdir, writeFile, access, chown } from "node:fs/promises";
 import { basename } from "node:path";
 import type { EmailAdapter, EmailSummary, Folder } from "./email-adapter.js";
-import { truncateEmailBody } from "./email-adapter.js";
+import { MAX_ATTACHMENT_BYTES, truncateEmailBody } from "./email-adapter.js";
 import { checkPermission, type Permissions } from "./permissions.js";
 import {
   putHandle,
@@ -34,9 +34,10 @@ const WORKSPACE_ROOT = "/root/.openclaw/workspaces";
 const DELIVERY_UID = 999;
 const DELIVERY_GID = 999;
 
-// 25 MB matches odoo_attach_file's own cap (see packages/plugins/pinchy-odoo/index.ts),
-// so anything saved here is always small enough to hand off downstream.
-const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+// MAX_ATTACHMENT_BYTES is imported from email-adapter.ts, which owns it: the
+// 25 MB literal used to sit here AND in imap-adapter.ts, with a comment
+// claiming the two stayed in sync and nothing that would notice if they
+// stopped.
 
 // The two Pinchy-internal calls this plugin makes (credentials fetch,
 // auth-failure report) are bounded inside credential-client.ts. The mailbox

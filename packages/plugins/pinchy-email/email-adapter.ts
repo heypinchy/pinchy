@@ -91,6 +91,19 @@ export function truncateEmailBody(body: string, max: number = EMAIL_BODY_MAX_CHA
   );
 }
 
+/**
+ * The largest attachment `email_get_attachment` will write to a workspace, in
+ * DECODED bytes — 25 MB matches `odoo_attach_file`'s own cap (see
+ * packages/plugins/pinchy-odoo/index.ts), so anything saved here is always
+ * small enough to hand off downstream.
+ *
+ * It lives here rather than in index.ts because an adapter needs it too:
+ * imap-adapter.ts derives its wire-level `MAX_MESSAGE_BYTES` from it, and
+ * index.ts importing from an adapter — or either file keeping its own 25 MB
+ * literal — is how the two numbers drift apart.
+ */
+export const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+
 // Shared by every adapter: the canonical-name validation and error message are
 // identical across providers, only the provider-specific value for each
 // folder differs (Gmail label IDs vs Graph well-known folder names). Sharing

@@ -4,7 +4,7 @@ import { simpleParser } from "mailparser";
 import type { AddressObject, ParsedMail } from "mailparser";
 import nodemailer from "nodemailer";
 import MailComposer from "nodemailer/lib/mail-composer/index.js";
-import { stripHtml } from "./email-adapter.js";
+import { MAX_ATTACHMENT_BYTES, stripHtml } from "./email-adapter.js";
 import type {
   EmailAdapter,
   EmailAttachment,
@@ -141,30 +141,28 @@ export function resolveFolders(mailboxes: ImapMailbox[]): Partial<Record<Folder,
 const DEFAULT_LIMIT = 20;
 const MS_PER_DAY = 86_400_000;
 
-// 25 MB — matches the MAX_ATTACHMENT_BYTES cap in index.ts (itself matching
-// odoo_attach_file's own limit downstream). Unlike Graph (Content-Length on
-// the attachment response) and Gmail (the part-listing `size` field), IMAP
-// has no cheap way to learn a SINGLE attachment's size before download —
-// see the note above ImapAdapter#getAttachment. It CAN learn the whole
-// message's declared byte count via RFC822.SIZE (client.fetchOne(uid,
-// { size: true })) before paying for the full `{ source: true }` fetch that
-// downloads and parses every attachment's bytes into memory (#1093).
+// Bounds what fetchParsed() will pull over the wire. `{ source: true }`
+// downloads the ENTIRE RFC822 message — every attachment's bytes included —
+// and hands it to mailparser, so without a cap a single huge message can
+// exhaust the plugin's memory (#1093). Graph (Content-Length) and Gmail (the
+// part-listing `size` field) can price one attachment before downloading it;
+// IMAP can only price the whole message, via RFC822.SIZE. So this gate is
+// coarser: a message over the cap is refused even when the attachment
+// actually being requested is 1 KB. Matching a BODYSTRUCTURE node back to the
+// id mailparser assigns in `parsed.attachments` is the finer fix, tracked in
+// #1093 rather than attempted here. Both read() and getAttachment() go
+// through fetchParsed(), so one gate covers both.
 //
-// This is a coarser, conservative gate than the sibling adapters': it
-// rejects a message whose TOTAL declared size already exceeds the cap, even
-// when the specific attachment being requested would itself fit (e.g. a
-// 30 MB message with a 1 KB attachment among several larger ones). Fixing
-// that would mean matching a BODYSTRUCTURE part to the attachment identity
-// mailparser assigns from `parsed.attachments` — real work with a real risk
-// of mismatching, tracked as a possible follow-up in #1093's own analysis
-// rather than attempted here. This precheck closes the OOM for BOTH read()
-// and getAttachment(), since they share fetchParsed().
+// TWICE MAX_ATTACHMENT_BYTES, and the factor is the point: RFC822.SIZE counts
+// bytes on the wire while MAX_ATTACHMENT_BYTES counts DECODED ones. base64
+// inflates an attachment to ~1.37× (4/3 plus CRLF folding) and the message
+// carries headers and a body on top, so a cap equal to MAX_ATTACHMENT_BYTES
+// would refuse a 20 MB PDF that the Gmail and Graph paths both deliver.
 //
-// Best-effort like the sibling adapters' prechecks: a missing/false
-// RFC822.SIZE just falls through to the real fetch — index.ts's own
-// post-download length check on getAttachment's returned buffer remains the
-// authoritative guard for that path.
-export const MAX_MESSAGE_BYTES = 25 * 1024 * 1024;
+// Best-effort, like the sibling adapters' prechecks: a missing RFC822.SIZE
+// falls straight through to the real fetch, and index.ts's post-download
+// check on the returned buffer stays the authoritative per-attachment guard.
+export const MAX_MESSAGE_BYTES = MAX_ATTACHMENT_BYTES * 2;
 
 // Maps the structured SearchOptions DSL to an imapflow SearchObject. Pure and
 // deterministic: `now` is supplied by the caller (never read internally via
@@ -435,20 +433,24 @@ export class ImapAdapter implements EmailAdapter {
     const decoded = decodeMessageId(id);
     await client.mailboxOpen(decoded.mailboxPath);
 
-    // Precheck RFC822.SIZE before paying for `{ source: true }` below, which
+    // Price the message before paying for `{ source: true }` below, which
     // downloads and fully parses the ENTIRE message — every attachment's
-    // bytes included — into memory. See MAX_MESSAGE_BYTES above for why this
-    // is message-level rather than per-attachment, and why it's best-effort.
-    const sizeCheck = await client.fetchOne(
-      decoded.uid,
-      { size: true, flags: true },
-      { uid: true }
-    );
+    // bytes included — into memory. This costs one extra FETCH round-trip on
+    // every read: asking for RFC822.SIZE is the only way to learn a message's
+    // size without downloading it, and a combined fetch would already have
+    // paid for the body. See MAX_MESSAGE_BYTES above for why the gate is
+    // message-level rather than per-attachment, and why it's best-effort.
+    const sizeCheck = await client.fetchOne(decoded.uid, { size: true }, { uid: true });
     if (sizeCheck && sizeCheck.size != null && sizeCheck.size > MAX_MESSAGE_BYTES) {
       const declaredMb = (sizeCheck.size / 1024 / 1024).toFixed(1);
-      const maxMb = (MAX_MESSAGE_BYTES / 1024 / 1024).toFixed(0);
+      const maxMb = (MAX_MESSAGE_BYTES / 1024 / 1024).toFixed(1);
+      // There is nothing to retry here, so say what still works instead of
+      // leaving the model to guess: list/search read envelopes, not bodies,
+      // and are unaffected by the message's size.
       throw new Error(
-        `Message too large to download: ${declaredMb} MB, max allowed is ${maxMb} MB.`
+        `Message ${id} is too large to fetch: ${declaredMb} MB on the wire, and the limit ` +
+          `is ${maxMb} MB. Its sender, subject and date are still available through ` +
+          `email_list and email_search.`
       );
     }
 
@@ -586,6 +588,13 @@ export class ImapAdapter implements EmailAdapter {
     return { messageId };
   }
 
+  // No per-attachment size precheck is possible here, unlike Graph and Gmail:
+  // by the time fetchParsed() returns, mailparser has already decoded every
+  // part. Learning one part's size beforehand would mean walking BODYSTRUCTURE
+  // and matching a node back to the id mailparser assigns below — see #1093.
+  // The message-level gate in fetchParsed() (MAX_MESSAGE_BYTES) is what bounds
+  // this path; index.ts's post-download `data.length` check stays the
+  // authoritative per-attachment guard.
   async getAttachment(
     messageId: string,
     attachmentId: string

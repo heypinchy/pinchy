@@ -132,8 +132,8 @@ When email permissions are granted, the agent gets access to these tools — the
 | Tool                   | Permission required | Description                                                                                                                                                                               |
 | ---------------------- | ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `email_list`           | Read                | List emails from a folder (INBOX, SENT, DRAFTS, TRASH, SPAM; defaults to INBOX). Supports filtering by read status.                                                                       |
-| `email_read`           | Read                | Read the full content of a specific email by ID. Lists any attachments with their IDs. Looks up the message in INBOX (see the limitation above).                                          |
-| `email_get_attachment` | Read                | Download an email attachment into the agent's workspace. Looks up the message in INBOX (see the limitation above).                                                                        |
+| `email_read`           | Read                | Read the full content of a specific email by ID. Lists any attachments with their IDs. Opens the message's own folder automatically.                                                      |
+| `email_get_attachment` | Read                | Download an email attachment into the agent's workspace. Opens the message's own folder automatically.                                                                                    |
 | `email_search`         | Read                | Search emails using structured fields: `from`, `to`, `subject`, `text`, `unread`, `sinceDays`, `folder`, `limit` (e.g. `{ from: "user@example.com", subject: "invoice", sinceDays: 7 }`). |
 | `email_draft`          | Draft               | Create a draft email. Saved directly to the mailbox's Drafts folder over IMAP.                                                                                                            |
 | `email_send`           | Send                | Send an email immediately over SMTP. Can also send replies with `replyTo`.                                                                                                                |
@@ -161,6 +161,12 @@ The server didn't respond in time — usually a network issue or an incorrect ho
 **"Blocked: this host resolves to a private network address"**
 
 See [Mail servers on your own network](#mail-servers-on-your-own-network) below.
+
+**"Message … is too large to fetch"**
+
+IMAP has no way to hand over a single attachment on its own — the whole message comes down in one piece, attachments included — so an agent reading a message loads all of it into memory at once. To keep one oversized message from taking the agent down with it, we check the size the server reports before downloading and refuse anything over 50 MB. That's the message as it travels, which is roughly a third larger than the files inside it, so a mail carrying an attachment at the 25 MB cap still comes through.
+
+The message itself is fine, and `email_list` and `email_search` still show its sender, subject and date. Only its body and attachments are out of reach. Gmail and Microsoft 365 have no equivalent limit — they can fetch one attachment at a time.
 
 ---
 
