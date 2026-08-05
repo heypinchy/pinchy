@@ -1,8 +1,9 @@
 import { NextResponse } from "next/server";
 import { eq, and, inArray } from "drizzle-orm";
 import { withAdmin } from "@/lib/api-auth";
+import { getAgentWithAccess } from "@/lib/agent-access";
 import { db } from "@/db";
-import { agentConnectionPermissions, integrationConnections, agents } from "@/db/schema";
+import { agentConnectionPermissions, integrationConnections } from "@/db/schema";
 import { appendAuditLog, type AuditLogEntry } from "@/lib/audit";
 import { recordAuditFailure } from "@/lib/audit-deferred";
 import { parseRequestBody } from "@/lib/api-validation";
@@ -14,9 +15,22 @@ type RouteContext = { params: Promise<{ agentId: string }> };
  * GET /api/agents/[agentId]/integrations
  *
  * Returns current integration permissions for this agent, grouped by connection.
+ *
+ * Admin-only AND gated on the admin's own view of the agent: another user's
+ * personal agent answers 404, the same answer an id nobody ever issued gets.
+ * Being an admin is not a visibility rule — see getAgentWithAccess's docblock
+ * for the verdict, and `PATCH`/`DELETE /api/agents/:id` for the two routes that
+ * already answered this way.
+ *
+ * Until the gate landed this route checked nothing at all, so it answered `200
+ * []` for every id — indistinguishable from a real agent that simply has no
+ * integrations.
  */
-export const GET = withAdmin<RouteContext>(async (_req, { params }) => {
+export const GET = withAdmin<RouteContext>(async (_req, { params }, session) => {
   const { agentId } = await params;
+
+  const agentOrError = await getAgentWithAccess(agentId, session.user.id!, session.user.role);
+  if (agentOrError instanceof NextResponse) return agentOrError;
 
   // Join permissions with connections WITHOUT a projection-less
   // `.innerJoin(integrationConnections, …)`. That returns every column of both
@@ -90,9 +104,22 @@ export const GET = withAdmin<RouteContext>(async (_req, { params }) => {
  * PUT /api/agents/[agentId]/integrations
  *
  * Replace all permissions for this agent on a given connection.
+ *
+ * The sharpest of this file's three handlers, and the reason the read gate
+ * belongs on all of them: this is a permission WRITE, not index management.
+ * Granting another user's private Smithers live access to an Odoo or email
+ * connection would be invisible to its owner and absent from every list the
+ * granting admin can see.
  */
 export const PUT = withAdmin<RouteContext>(async (request, { params }, session) => {
   const { agentId } = await params;
+
+  // Also the agent's existence check, which this route used to run against
+  // `agents` — the gate reads `active_agents`, so a soft-deleted agent now
+  // answers 404 instead of accepting permission rows. The FK violation that
+  // check was written for (a stale UI submitting a deleted id) stays covered.
+  const agentOrError = await getAgentWithAccess(agentId, session.user.id!, session.user.role);
+  if (agentOrError instanceof NextResponse) return agentOrError;
 
   const parsed = await parseRequestBody(setAgentIntegrationsSchema, request);
   if ("error" in parsed) return parsed.error;
@@ -100,14 +127,6 @@ export const PUT = withAdmin<RouteContext>(async (request, { params }, session) 
 
   let existingPerms: { model: string; operation: string }[];
   try {
-    // Validate the agent exists. The path param is unconstrained; a stale UI
-    // can submit a deleted agentId, which would otherwise reach a raw FK
-    // violation on insert and surface as a 500 with the DB error text.
-    const agentRows = await db.select({ id: agents.id }).from(agents).where(eq(agents.id, agentId));
-    if (agentRows.length === 0) {
-      return NextResponse.json({ error: "Agent not found" }, { status: 404 });
-    }
-
     // Validate connection exists
     const connRows = await db
       .select()
@@ -213,9 +232,16 @@ export const PUT = withAdmin<RouteContext>(async (request, { params }, session) 
  * DELETE /api/agents/[agentId]/integrations
  *
  * Remove ALL integration permissions for this agent (used when connection is cleared).
+ *
+ * Gated like its siblings. It, too, checked nothing before: an unknown id was
+ * answered `200 {success:true}` and given a `config.changed` audit row claiming
+ * permissions had been cleared.
  */
 export const DELETE = withAdmin<RouteContext>(async (_req, { params }, session) => {
   const { agentId } = await params;
+
+  const agentOrError = await getAgentWithAccess(agentId, session.user.id!, session.user.role);
+  if (agentOrError instanceof NextResponse) return agentOrError;
 
   // Get existing permissions for audit log
   const existingPerms = await db

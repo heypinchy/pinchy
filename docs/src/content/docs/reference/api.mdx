@@ -134,7 +134,7 @@ default is an explicit action ([`PATCH /api/settings/providers/default`](#patch-
 
 ### `GET /api/agents`
 
-List agents visible to the current user. Admins see all agents. Non-admin users see shared agents and their own personal agents.
+List agents visible to the current user. Admins see every shared agent, of any visibility; non-admin users see shared agents their visibility setting admits them to. Everyone additionally sees their own personal Smithers, and nobody sees anyone else's — admins included.
 
 **Response:**
 
@@ -216,7 +216,9 @@ Get a single agent by ID.
 
 An agent you may not see answers `404` as well, with the same body — someone else's personal agent, or a restricted agent outside your groups, is deliberately indistinguishable from an ID that was never issued. This holds for admins too: nobody can list another user's personal agents, so nobody gets to confirm one exists.
 
-Every endpoint that gates on **your access to the agent** answers the same way, over the WebSocket chat bridge as well as over HTTP, and including the `agentId`-keyed [Automations endpoints](#automations). One group under this prefix does not, and it is worth knowing which: the admin-only management endpoints (`knowledge/*`, `integrations`, and connecting a Telegram bot) apply no visibility rule at all — they are restricted to admins and return `404` only when no agent has the ID.
+Every endpoint that gates on **your access to the agent** answers the same way, over the WebSocket chat bridge as well as over HTTP, and including the `agentId`-keyed [Automations endpoints](#automations). That now covers the admin-only management endpoints too — `knowledge/*`, `integrations`, and connecting a Telegram bot: being an admin is not a visibility rule, so those answer `404` for another user's personal agent as well. They are the surfaces that reindex an agent's documents, grant it an integration, or give it a Telegram bot, and none of that is reachable for an agent Pinchy will not show you.
+
+No endpoint under this prefix is exempt, and a test asserts it rather than this page claiming it: `agent-route-access-gate.test.ts` fails on a handler that does not run the gate, so a new one cannot quietly skip it.
 
 ### `PATCH /api/agents/:id`
 
@@ -477,7 +479,7 @@ The request returns as soon as the job is queued — indexing runs in the backgr
 
 - `401` — not authenticated
 - `403` — not an admin
-- `404` — agent not found
+- `404` — agent not found, or it is another user's personal agent (admins cannot reach those either)
 - `409` — a reindex is already running. One index job runs at a time across the whole instance, so the run in your way may belong to a **different** agent. The response carries the running job's `jobId`, `status`, and `agent` — `GET` that agent's reindex endpoint to watch it, rather than retrying.
 - `503` — the bundled embedding model file is missing from the image (a broken build or mount, not a configuration step)
 
@@ -536,7 +538,7 @@ Every run writes two `knowledge.reindex` audit entries, correlated by `jobId`: t
 
 - `401` — not authenticated
 - `403` — not an admin
-- `404` — agent not found
+- `404` — agent not found, or it is another user's personal agent (admins cannot reach those either)
 
 ### `POST /api/internal/knowledge/search`
 
@@ -551,6 +553,12 @@ Runs a hybrid (vector + full-text) search over the requesting agent's indexed, g
 The counter answers for the last run; this answers for everything currently in the agent's granted folders, so it is usually the larger of the two. That is the two numbers agreeing, not disagreeing: a file unchanged since an earlier run is `skipped` by the next one and never counted again.
 
 Scoped to the folders that agent is granted, exactly like search itself, so the list never names a document the agent isn't allowed to know about.
+
+**Errors:**
+
+- `401` — not authenticated
+- `403` — not an admin
+- `404` — agent not found, or it is another user's personal agent (admins cannot reach those either)
 
 ## Automations
 
@@ -1158,6 +1166,12 @@ Get the Telegram bot configuration for an agent. **Admin only.**
 
 `hint` is the last 4 characters of the bot token for visual verification. `mainBotConfigured` indicates whether the global Smithers/main bot is set up — a prerequisite before any other agent can connect to Telegram.
 
+**Errors:**
+
+- `401` — not authenticated
+- `403` — not an admin
+- `404` — agent not found, or it is another user's personal agent (admins cannot reach those either)
+
 ### `POST /api/agents/:agentId/channels/telegram`
 
 Connect an agent to a Telegram bot. **Admin only.** The main bot must be configured first (exception: the main bot itself).
@@ -1177,6 +1191,7 @@ Connect an agent to a Telegram bot. **Admin only.** The main bot must be configu
 **Errors:**
 
 - `400` — invalid or non-working bot token
+- `404` — agent not found, or it is another user's personal agent (admins cannot reach those either)
 - `409` — `telegram_not_configured` (main bot missing), or the bot token is already used by another agent
 
 ### `DELETE /api/agents/:agentId/channels/telegram`
@@ -1284,6 +1299,8 @@ Test credentials against the external system without persisting changes. Used by
 ### `GET /api/agents/:agentId/integrations`
 
 Get an agent's integration permissions: which connections are enabled, access level (read-only, read-write, full, custom), and which data models are allowed.
+
+All three endpoints in this group are **admin only**, and all three answer `404` for an agent you may not see — including another user's personal agent, which no admin can see.
 
 ### `PUT /api/agents/:agentId/integrations`
 

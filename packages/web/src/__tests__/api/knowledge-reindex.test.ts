@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { NextRequest } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { DEFAULT_ORG_ID } from "@/lib/knowledge/constants";
 import type { KbIndexJob } from "@/lib/knowledge/index-jobs";
 import type { IngestResult } from "@/lib/knowledge/types";
@@ -15,16 +15,15 @@ vi.mock("@/lib/auth", () => ({
   getSession: (...args: unknown[]) => mockGetSession(...args),
 }));
 
-const mockLimit = vi.fn();
-const mockWhere = vi.fn().mockReturnValue({ limit: mockLimit });
-const mockFrom = vi.fn().mockReturnValue({ where: mockWhere });
-const mockSelect = vi.fn().mockReturnValue({ from: mockFrom });
-vi.mock("@/db", () => ({
-  db: { select: (...args: unknown[]) => mockSelect(...args) },
-}));
-
-vi.mock("@/db/schema", () => ({
-  activeAgents: { __table: "active_agents", id: "active_agents.id" },
+// The route no longer looks the agent up itself: it asks the shared read gate,
+// which is what withholds another user's personal agent from an admin. Mocking
+// the helper (rather than `@/db`) is what lets this file assert the delegation;
+// the helper's own rule is pinned in lib/agent-access.test.ts, and the
+// end-to-end answer against a real DB in
+// agent-admin-routes-visibility.integration.test.ts.
+const mockGetAgentWithAccess = vi.fn();
+vi.mock("@/lib/agent-access", () => ({
+  getAgentWithAccess: (...args: unknown[]) => mockGetAgentWithAccess(...args),
 }));
 
 const mockGetSetting = vi.fn();
@@ -104,7 +103,7 @@ describe("POST /api/agents/[agentId]/knowledge/reindex", () => {
   beforeEach(async () => {
     vi.clearAllMocks();
     mockGetSession.mockResolvedValue({ user: { id: "admin-1", role: "admin" } });
-    mockLimit.mockResolvedValue([agentRow]);
+    mockGetAgentWithAccess.mockResolvedValue(agentRow);
     mockGetSetting.mockResolvedValue("http://ollama.local:11434");
     mockKbEmbedderAvailable.mockReturnValue(true);
     mockEnqueueIndexJob.mockResolvedValue({ status: "queued", job: makeJob() });
@@ -126,10 +125,28 @@ describe("POST /api/agents/[agentId]/knowledge/reindex", () => {
   });
 
   it("returns 404 when the agent does not exist (or is deleted) and never enqueues", async () => {
-    mockLimit.mockResolvedValueOnce([]);
+    mockGetAgentWithAccess.mockResolvedValueOnce(
+      NextResponse.json({ error: "Agent not found" }, { status: 404 })
+    );
     const res = await POST(makeRequest(), ctx as never);
     expect(res.status).toBe(404);
     expect(mockEnqueueIndexJob).not.toHaveBeenCalled();
+  });
+
+  it("asks the read gate with the caller's identity, before it reads the body", async () => {
+    // Being admin-only is not a visibility rule: another user's personal agent
+    // is withheld from admins too, and only the gate knows that. It runs
+    // first, so an agent this caller may not see costs no validation error
+    // that would distinguish it from one that does not exist.
+    mockGetAgentWithAccess.mockResolvedValueOnce(
+      NextResponse.json({ error: "Agent not found" }, { status: 404 })
+    );
+
+    const res = await POST(makeRequest({ paths: 42 }), ctx as never);
+
+    expect(mockGetAgentWithAccess).toHaveBeenCalledWith("agent-1", "admin-1", "admin");
+    expect(res.status).toBe(404);
+    expect(mockDeferAuditLog).not.toHaveBeenCalled();
   });
 
   // The whole point of #714: a real corpus is hours of embedding, so the
@@ -205,7 +222,11 @@ describe("POST /api/agents/[agentId]/knowledge/reindex", () => {
   });
 
   it("returns 200 and never enqueues when the agent has no granted folders", async () => {
-    mockLimit.mockResolvedValueOnce([{ id: "agent-1", name: "Smithers", pluginConfig: null }]);
+    mockGetAgentWithAccess.mockResolvedValueOnce({
+      id: "agent-1",
+      name: "Smithers",
+      pluginConfig: null,
+    });
     const res = await POST(makeRequest(), ctx as never);
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ jobId: null, status: "noop", pathCount: 0 });
@@ -278,7 +299,7 @@ describe("GET /api/agents/[agentId]/knowledge/reindex", () => {
   beforeEach(async () => {
     vi.clearAllMocks();
     mockGetSession.mockResolvedValue({ user: { id: "admin-1", role: "admin" } });
-    mockLimit.mockResolvedValue([agentRow]);
+    mockGetAgentWithAccess.mockResolvedValue(agentRow);
     GET = (await import("@/app/api/agents/[agentId]/knowledge/reindex/route")).GET;
   });
 
@@ -293,8 +314,24 @@ describe("GET /api/agents/[agentId]/knowledge/reindex", () => {
   });
 
   it("returns 404 when the agent does not exist", async () => {
-    mockLimit.mockResolvedValueOnce([]);
+    mockGetAgentWithAccess.mockResolvedValueOnce(
+      NextResponse.json({ error: "Agent not found" }, { status: 404 })
+    );
     expect((await GET(makeGetRequest(), ctx as never)).status).toBe(404);
+  });
+
+  it("asks the read gate with the caller's identity, and reports no job state on refusal", async () => {
+    // The status projection is the readable half of the same secret: it names
+    // the agent, its path count and its run history. Same gate as the write.
+    mockGetAgentWithAccess.mockResolvedValueOnce(
+      NextResponse.json({ error: "Agent not found" }, { status: 404 })
+    );
+
+    const res = await GET(makeGetRequest(), ctx as never);
+
+    expect(mockGetAgentWithAccess).toHaveBeenCalledWith("agent-1", "admin-1", "admin");
+    expect(res.status).toBe(404);
+    expect(mockGetLatestIndexJobForAgent).not.toHaveBeenCalled();
   });
 
   it("reports no job for an agent that has never been reindexed", async () => {

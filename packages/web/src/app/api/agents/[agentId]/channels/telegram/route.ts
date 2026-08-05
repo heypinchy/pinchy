@@ -13,7 +13,7 @@ import {
   recalculateTelegramAllowStores,
 } from "@/lib/telegram-allow-store";
 import { db } from "@/db";
-import { agents, channelLinks, settings } from "@/db/schema";
+import { channelLinks, settings } from "@/db/schema";
 import { eq, like } from "drizzle-orm";
 import { parseRequestBody } from "@/lib/api-validation";
 import { setBotTokenSchema } from "@/lib/schemas/telegram";
@@ -24,11 +24,20 @@ export async function GET(req: Request, { params }: { params: Promise<{ agentId:
   if (admin instanceof NextResponse) return admin;
   const { agentId } = await params;
 
-  const [agent, botToken, globalMainBot] = await Promise.all([
-    db.query.agents.findFirst({
-      where: eq(agents.id, agentId),
-      columns: { isPersonal: true },
-    }),
+  // Read gate before anything else, and it must be awaited on its own rather
+  // than folded into the Promise.all below: a refusal has to cost no lookup of
+  // this agent's token. Being an admin is not a visibility rule — see
+  // getAgentWithAccess's docblock. The role check above is not an oracle: it
+  // refuses every id alike.
+  //
+  // The personal agent that matters here is the admin's OWN Smithers, which the
+  // gate lets an owner through; telegram-link-settings.tsx finds it in the
+  // admin's own `/api/agents` list. Only somebody else's is turned away.
+  const agentOrError = await getAgentWithAccess(agentId, admin.user.id, admin.user.role);
+  if (agentOrError instanceof NextResponse) return agentOrError;
+  const agent = agentOrError;
+
+  const [botToken, globalMainBot] = await Promise.all([
     getSetting(`telegram_bot_token:${agentId}`),
     hasMainTelegramBot(),
   ]);
@@ -36,7 +45,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ agentId:
   // Personal agents (Smithers) are themselves the main bot — the prerequisite
   // is trivially satisfied from their perspective, otherwise first-time setup
   // would hit an unresolvable chicken-and-egg.
-  const mainBotConfigured = agent?.isPersonal ? true : globalMainBot;
+  const mainBotConfigured = agent.isPersonal ? true : globalMainBot;
 
   if (!botToken) {
     return NextResponse.json({ configured: false, mainBotConfigured });
@@ -81,16 +90,18 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ age
   const admin = await requireAdmin();
   if (admin instanceof NextResponse) return admin;
   const { agentId } = await params;
+
+  // Read gate first, before the body is even parsed: connecting a bot to
+  // another user's private Smithers is a write into an agent nobody can list,
+  // and a validation error only a real id can reach would disclose which ids
+  // are real. Same rule as the DELETE below.
+  const agentOrError = await getAgentWithAccess(agentId, admin.user.id, admin.user.role);
+  if (agentOrError instanceof NextResponse) return agentOrError;
+  const agent = agentOrError;
+
   const parsed = await parseRequestBody(setBotTokenSchema, req);
   if ("error" in parsed) return parsed.error;
   const { botToken } = parsed.data;
-
-  const agent = await db.query.agents.findFirst({
-    where: eq(agents.id, agentId),
-  });
-  if (!agent) {
-    return NextResponse.json({ error: "Agent not found" }, { status: 404 });
-  }
 
   // Guard: main Telegram bot must exist before additional agents can connect.
   // Users can only link their Telegram account via the main bot — without it,

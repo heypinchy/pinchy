@@ -1,11 +1,10 @@
 import { NextResponse } from "next/server";
-import { eq } from "drizzle-orm";
 
 import { withAdmin } from "@/lib/api-auth";
+import { getAgentWithAccess } from "@/lib/agent-access";
 import { parseRequestBody } from "@/lib/api-validation";
 import { knowledgeReindexSchema } from "@/lib/schemas/knowledge-base";
-import { db } from "@/db";
-import { activeAgents, type AgentPluginConfig } from "@/db/schema";
+import { type AgentPluginConfig } from "@/db/schema";
 import { enqueueIndexJob, getLatestIndexJobForAgent } from "@/lib/knowledge/index-jobs";
 import { reindexAuditEntry } from "@/lib/knowledge/reindex-audit";
 import { DEFAULT_ORG_ID } from "@/lib/knowledge/constants";
@@ -14,12 +13,6 @@ import { deferAuditLog } from "@/lib/audit-deferred";
 import { safeProviderError, type EntityRef } from "@/lib/audit";
 
 type RouteContext = { params: Promise<{ agentId: string }> };
-
-/** The agent, or null if it does not exist / is deleted. */
-async function findAgent(agentId: string) {
-  const [agent] = await db.select().from(activeAgents).where(eq(activeAgents.id, agentId)).limit(1);
-  return agent ?? null;
-}
 
 /**
  * The agent's granted knowledge-base folders, optionally narrowed to a
@@ -43,10 +36,18 @@ function resolveTargetPaths(agent: { pluginConfig: unknown }, requested?: string
  * (src/server/kb-index-worker.ts) and this route hands back a job id to poll
  * via GET on the same path (#714).
  *
- * Access boundary: admin-only (`withAdmin`) — index management is an admin
- * action. The folders reindexed are resolved from the SAME source the search
- * route scopes retrieval by: the agent's admin-configured `pinchy-files`
- * `allowed_paths`.
+ * Access boundary: admin-only (`withAdmin`) AND gated on the admin's own view
+ * of the agent (`getAgentWithAccess`) — being an admin is not a visibility
+ * rule. Another user's personal agent answers 404 here exactly as it does on
+ * `PATCH`/`DELETE /api/agents/:id`; see the verdict in getAgentWithAccess's
+ * docblock. The role check runs first and is not an oracle: a non-admin is
+ * refused for every id alike, real or invented.
+ *
+ * The folders reindexed are resolved from the SAME source the search route
+ * scopes retrieval by: the agent's admin-configured `pinchy-files`
+ * `allowed_paths`. That is also why "index management is instance-wide" does
+ * not survive contact with this route — its scope is one agent's grants, and
+ * `PATCH` is the only route that can set them.
  *
  * Both the resolved paths and the agent's name are snapshotted onto the job:
  * the worker must index what was authorized at the moment of the request, and
@@ -56,13 +57,15 @@ export const POST = withAdmin<RouteContext>(async (request, { params }, session)
   const { agentId } = await params;
   const actorId = session.user.id!;
 
+  // Read gate before body validation: an agent this admin may not see must not
+  // be distinguishable from one that does not exist, and a 400 that only a real
+  // id can reach would be exactly that distinction.
+  const agentOrError = await getAgentWithAccess(agentId, actorId, session.user.role);
+  if (agentOrError instanceof NextResponse) return agentOrError;
+  const agent = agentOrError;
+
   const parsed = await parseRequestBody(knowledgeReindexSchema, request);
   if ("error" in parsed) return parsed.error;
-
-  const agent = await findAgent(agentId);
-  if (!agent) {
-    return NextResponse.json({ error: "Agent not found" }, { status: 404 });
-  }
 
   const agentRef: EntityRef = { id: agent.id, name: agent.name };
   const targetPaths = resolveTargetPaths(agent, parsed.data.paths);
@@ -197,18 +200,18 @@ export const POST = withAdmin<RouteContext>(async (request, { params }, session)
  * snapshot is the run's input, which the admin already owns in the permissions
  * UI and which can disagree with the grants they are looking at now.
  *
- * Admin-only, like the reindex it reports on.
+ * Admin-only and access-gated, like the reindex it reports on: this is the
+ * readable half of the same secret — it names the agent's run history and how
+ * many folders were behind it.
  */
 // Read-only status projection, no state change — GET is outside
 // require-audit-log's scope (it only checks POST/PUT/PATCH/DELETE), so no
 // audit call is needed here.
-export const GET = withAdmin<RouteContext>(async (_request, { params }) => {
+export const GET = withAdmin<RouteContext>(async (_request, { params }, session) => {
   const { agentId } = await params;
 
-  const agent = await findAgent(agentId);
-  if (!agent) {
-    return NextResponse.json({ error: "Agent not found" }, { status: 404 });
-  }
+  const agentOrError = await getAgentWithAccess(agentId, session.user.id!, session.user.role);
+  if (agentOrError instanceof NextResponse) return agentOrError;
 
   const job = await getLatestIndexJobForAgent(agentId);
   if (!job) return NextResponse.json({ job: null });

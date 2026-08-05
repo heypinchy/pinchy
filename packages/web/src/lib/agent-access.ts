@@ -151,22 +151,45 @@ export function requireAgentWriteAccess(
  * than through this helper must run the read gate FIRST for the same reason —
  * `DELETE /api/agents/[agentId]/channels/telegram` is the worked example.
  *
- * Two things this does NOT close, said plainly so the next reader does not
+ * **Being an admin is not a visibility rule**, and the admin-only management
+ * surfaces under `/api/agents/:id/` go through this helper for that reason
+ * (`knowledge/reindex`, `knowledge/unsearchable`, `integrations`, and
+ * connecting a Telegram bot). They used to look the agent up by id and
+ * proceed, so an admin holding one could reindex a stranger's Smithers, read
+ * the documents its index cannot search, grant it live access to an Odoo or
+ * email connection, and attach a Telegram bot to it. The argument that index
+ * management is instance-wide does not rescue that: those routes resolve their
+ * scope from ONE agent's `pinchy-files` grants, and `PATCH /api/agents/:id` —
+ * the only route that can set them — already answers 404 for the same agent.
+ * A surface that can act on a grant it cannot see or set is an inconsistency,
+ * not a capability. `POST /integrations` is the plainest case: a permission
+ * write into a private agent, invisible to its owner and to every list the
+ * granting admin can see.
+ *
+ * Their role check runs BEFORE this gate, and that ordering is safe where the
+ * telegram DELETE's was not: `withAdmin`/`requireAdmin` refuse every id alike,
+ * real or invented, so the answer carries nothing about the agent.
+ *
+ * One thing this does NOT close, said plainly so the next reader does not
  * mistake "byte-identical" for "indistinguishable":
  *
  * - **Timing.** The denial path runs a license lookup and, for a restricted
  *   agent, two group queries that the `!agent` path never reaches. Equalising
  *   that costs a query on every miss and buys little against a UUID keyspace.
- * - **Routes that do not use this helper.** The admin-only
- *   `/api/agents/:id/knowledge/*` and `/integrations` endpoints apply no
- *   visibility rule at all — a separate verdict, not an oversight of this one;
- *   `reference/api.mdx` describes what each endpoint really does rather than
- *   claiming the prefix as a whole.
  *
- * The Automations routes were the third item here and are now closed (#880).
- * `resolveWorkflowAgent` shows the layering this docblock asks for: read gate
- * first, so an agent the caller cannot see is a 404, and only then the
- * manage-scope 403 for one they can.
+ * The list used to carry two more. The Automations routes were one and are now
+ * closed (#880) — `resolveWorkflowAgent` shows the layering this docblock asks
+ * for: read gate first, so an agent the caller cannot see is a 404, and only
+ * then the manage-scope 403 for one they can. The admin-only
+ * `/api/agents/:id/knowledge/*`, `/integrations` and Telegram-connect endpoints
+ * were the other, and are the paragraph above.
+ *
+ * What is left is deliberate and narrow: `PATCH`/`DELETE /api/automations/[id]`
+ * are keyed by WORKFLOW id and gate on `canManageAgentWorkflows` alone, so an
+ * admin already holding such an id can stop a runaway automation on an agent
+ * they cannot see. They cannot list or create one — that path is `agentId`-keyed
+ * and runs this gate. See `email-workflows/authz.ts` for why, and do not add a
+ * caller that consults that predicate without a visibility gate in front of it.
  */
 export async function getAgentWithAccess(agentId: string, userId: string, userRole: string) {
   const rows = await db.select().from(activeAgents).where(eq(activeAgents.id, agentId));

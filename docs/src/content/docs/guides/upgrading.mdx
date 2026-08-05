@@ -302,10 +302,14 @@ Email workflows now have their own **Automations** tab in an agent's settings, w
 
 Endpoints that gate on your access to an agent used to answer `403` when you asked about one you're not allowed to see. That told you the agent existed — which, for someone else's personal agent, is the one thing Pinchy withholds from everybody, admins included. They now answer `404`, with the same body an ID that was never issued gets.
 
-This closes the last of it on the Automations endpoints. Two consequences if you drive the API directly:
+Two consequences on the Automations endpoints if you drive the API directly:
 
 - `GET`/`POST /api/automations` and `GET /api/automations/connections` answer `404` for an agent you can't see, and keep `403` for one you can see but may not manage — a shared agent you chat with daily still says so plainly.
-- Admins reach automations on **shared** agents, not on a colleague's personal agent. Opening that agent's settings has failed the same way since the same change; these routes were the last ones that still answered. An admin who already holds a workflow's ID can still disable or delete it through `PATCH`/`DELETE /api/automations/:id` — a runaway automation stays stoppable.
+- Admins reach automations on **shared** agents, not on a colleague's personal agent. Opening that agent's settings has failed the same way since the same change. An admin who already holds a workflow's ID can still disable or delete it through `PATCH`/`DELETE /api/automations/:id` — a runaway automation stays stoppable.
+
+Four admin-only management endpoints were still answering, and they are the last of it: reindexing an agent's knowledge base, listing the documents its index cannot search, setting its integration permissions, and connecting a Telegram bot to it. Each looked the agent up by ID and proceeded, so an admin who had a colleague's agent ID could act on their personal assistant. All four answer `404` there now.
+
+Nothing in Pinchy's own screens reaches those agents, so day-to-day admin work is unchanged: shared agents, and your own Smithers during Telegram setup, work exactly as before. Two smaller answers changed along with it — `GET`/`DELETE /api/agents/:agentId/integrations` and `GET /api/agents/:agentId/channels/telegram` used to answer `200` for an agent ID that belongs to nothing at all, and now answer `404`. Only a script calling those endpoints directly would notice.
 
 Nothing to configure, and nothing changes in the UI.
 
