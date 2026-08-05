@@ -365,7 +365,7 @@ describe("the same routes still serve an agent the admin may see (real DB)", () 
     // telegram-link-settings.tsx sets the org's main bot up on the admin's own
     // Smithers, found via `/api/agents`. The owner branch of the read gate is
     // what keeps that flow working.
-    const [session] = [await mockGetSession()];
+    const session = await mockGetSession();
     const [own] = await db
       .insert(agents)
       .values({

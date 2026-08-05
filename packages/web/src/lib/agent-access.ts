@@ -170,6 +170,13 @@ export function requireAgentWriteAccess(
  * telegram DELETE's was not: `withAdmin`/`requireAdmin` refuse every id alike,
  * real or invented, so the answer carries nothing about the agent.
  *
+ * That the prefix has no gap left is asserted, not asserted-in-prose:
+ * `__tests__/security/agent-route-access-gate.test.ts` walks every exported
+ * handler under `app/api/agents/[agentId]/` and fails on one that does not call
+ * this function. The four families above were a paragraph nothing checked, and
+ * the docs now state the property outright — so the next handler added under the
+ * prefix inherits the rule instead of quietly re-opening it.
+ *
  * One thing this does NOT close, said plainly so the next reader does not
  * mistake "byte-identical" for "indistinguishable":
  *
