@@ -10,8 +10,17 @@
  */
 
 import { readFileSync } from "node:fs";
-import { isExternalIssue, parseIssueEvent } from "./lib/issue-triage.mjs";
-import { addLabels, currentRepo, ensureLabel } from "./lib/github-api.mjs";
+import {
+  annotateWriteAccess,
+  isExternalIssue,
+  parseIssueEvent,
+} from "./lib/issue-triage.mjs";
+import {
+  addLabels,
+  createWriteAccessResolver,
+  currentRepo,
+  ensureLabel,
+} from "./lib/github-api.mjs";
 
 const EXTERNAL_LABEL = {
   name: "external",
@@ -28,8 +37,16 @@ async function main() {
     );
   }
 
-  const issue = parseIssueEvent(JSON.parse(readFileSync(eventPath, "utf8")));
+  const repo = currentRepo();
+  const [issue] = await annotateWriteAccess(
+    [parseIssueEvent(JSON.parse(readFileSync(eventPath, "utf8")))],
+    createWriteAccessResolver(repo),
+  );
 
+  // The webhook's `author_association` is written from the app's point of
+  // view, which cannot see a private org membership either — so without the
+  // lookup this labels the team's own issues `external`, as it did to four
+  // of them on 2026-08-05.
   if (!isExternalIssue(issue)) {
     console.log(
       `#${issue.number} was opened by @${issue.authorLogin} (team) — no labels added.`,
@@ -37,7 +54,6 @@ async function main() {
     return;
   }
 
-  const repo = currentRepo();
   await ensureLabel(repo, EXTERNAL_LABEL);
   await addLabels(repo, issue.number, LABELS);
 

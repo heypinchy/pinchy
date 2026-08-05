@@ -26,8 +26,29 @@ function isBot(login) {
   return typeof login === "string" && login.endsWith("[bot]");
 }
 
-function isTeam({ authorLogin, authorAssociation }) {
-  return isBot(authorLogin) || TEAM_ASSOCIATIONS.has(authorAssociation);
+/**
+ * True when this person may write to the repo.
+ *
+ * `authorAssociation` alone is not enough, and the reason is the whole point
+ * of `annotateWriteAccess` below: the association GitHub reports is relative
+ * to the ASKING TOKEN. An Actions `GITHUB_TOKEN` cannot see a private org
+ * membership, so on 2026-08-05 it reported this repo's own admin as
+ * CONTRIBUTOR on all 122 of his issues — and CONTRIBUTOR is external by
+ * design. The sweep named 99 "waiting strangers", two of whom were real.
+ *
+ * So the association may only ever ADD team membership, never withhold it:
+ * a token that can see more is believed, a token that sees less defers to
+ * `authorHasWriteAccess`, which comes from the permission API and does not
+ * depend on who is asking.
+ */
+function hasWriteAccess({ authorAssociation, authorHasWriteAccess }) {
+  return (
+    authorHasWriteAccess === true || TEAM_ASSOCIATIONS.has(authorAssociation)
+  );
+}
+
+function isTeam(person) {
+  return isBot(person.authorLogin) || hasWriteAccess(person);
 }
 
 /**
@@ -43,10 +64,51 @@ export function isExternalIssue(issue) {
 /** True once anyone with write access has commented. */
 export function hasMaintainerReply(issue) {
   return (issue.comments ?? []).some(
-    (comment) =>
-      !isBot(comment.authorLogin) &&
-      TEAM_ASSOCIATIONS.has(comment.authorAssociation),
+    (comment) => !isBot(comment.authorLogin) && hasWriteAccess(comment),
   );
+}
+
+/**
+ * Fills in `authorHasWriteAccess` for every author and commenter the
+ * association cannot settle, by asking `resolveWriteAccess(login)`.
+ *
+ * Kept here, injected rather than imported, so the rule stays testable
+ * without a network — but it lives beside the rule it feeds, because getting
+ * it wrong is not a formatting bug: too few lookups and we are back to the
+ * incident above, too many and one author costs 122 requests.
+ *
+ * Three things it deliberately does NOT ask about: a login the association
+ * already settles, a bot, and `null` (a deleted account, where there is
+ * nobody to ask about). A rejection propagates on purpose — see the note in
+ * the resolver.
+ */
+export async function annotateWriteAccess(issues, resolveWriteAccess) {
+  const answers = new Map();
+
+  const annotate = async (person) => {
+    const login = person.authorLogin;
+    if (
+      !login ||
+      isBot(login) ||
+      TEAM_ASSOCIATIONS.has(person.authorAssociation)
+    ) {
+      return person;
+    }
+    // The promise is cached, not the value: two people asking at once share
+    // one request rather than racing to make a second.
+    if (!answers.has(login)) answers.set(login, resolveWriteAccess(login));
+    return { ...person, authorHasWriteAccess: await answers.get(login) };
+  };
+
+  const annotated = [];
+  for (const issue of issues) {
+    const comments = [];
+    for (const comment of issue.comments ?? []) {
+      comments.push(await annotate(comment));
+    }
+    annotated.push({ ...(await annotate(issue)), comments });
+  }
+  return annotated;
 }
 
 const MS_PER_DAY = 24 * 3600 * 1000;

@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
 import {
   TEAM_ASSOCIATIONS,
+  annotateWriteAccess,
   isExternalIssue,
   hasMaintainerReply,
   findUnansweredIssues,
@@ -79,6 +80,37 @@ test("isExternalIssue does not flag issues opened by a bot", () => {
   );
 });
 
+test("isExternalIssue believes write access over the association", () => {
+  // The 2026-08-05 incident: the Actions token cannot see a private org
+  // membership, so it reports the repo's own admin as CONTRIBUTOR. The
+  // association is a claim about what the ASKING TOKEN may see; the
+  // permission lookup is a fact about the repo.
+  assert.equal(
+    isExternalIssue(
+      issue({
+        authorLogin: "clemenshelm",
+        authorAssociation: "CONTRIBUTOR",
+        authorHasWriteAccess: true,
+      }),
+    ),
+    false,
+  );
+});
+
+test("isExternalIssue keeps a past contributor without write access external", () => {
+  // The other direction, and the one the CONTRIBUTOR rule exists for: a
+  // merged PR is not team membership.
+  assert.equal(
+    isExternalIssue(
+      issue({
+        authorAssociation: "CONTRIBUTOR",
+        authorHasWriteAccess: false,
+      }),
+    ),
+    true,
+  );
+});
+
 test("hasMaintainerReply sees a comment from the team", () => {
   assert.equal(
     hasMaintainerReply(
@@ -100,6 +132,26 @@ test("hasMaintainerReply ignores a reply from another outsider", () => {
       }),
     ),
     false,
+  );
+});
+
+test("hasMaintainerReply believes write access over the association", () => {
+  // Same downgrade, read from the other end: every reply we have ever written
+  // arrives as CONTRIBUTOR too, so without this the sweep counts an answered
+  // issue as unanswered.
+  assert.equal(
+    hasMaintainerReply(
+      issue({
+        comments: [
+          {
+            authorLogin: "clemenshelm",
+            authorAssociation: "CONTRIBUTOR",
+            authorHasWriteAccess: true,
+          },
+        ],
+      }),
+    ),
+    true,
   );
 });
 
@@ -234,6 +286,118 @@ test("issue #849 is exactly the shape this sweep exists to catch", () => {
   );
   assert.equal(overdue.length, 1);
   assert.equal(overdue[0].number, 849);
+});
+
+test("the 2026-08-05 incident: our own tracker read as 99 waiting strangers", async () => {
+  // What the scheduled sweep actually reported, in miniature. Every issue in
+  // this repo is opened by the admin, whom the Actions token sees as
+  // CONTRIBUTOR — so the alarm named 99 issues and drowned the two real ones.
+  // An alarm that is always red is the state before #849, with more noise.
+  const ours = issue({
+    number: 124,
+    authorLogin: "clemenshelm",
+    authorAssociation: "CONTRIBUTOR",
+    createdAt: hoursAgo(24 * 113),
+  });
+  const theirs = issue({
+    number: 849,
+    authorLogin: "Flindor",
+    authorAssociation: "NONE",
+  });
+
+  const annotated = await annotateWriteAccess(
+    [ours, theirs],
+    async (login) => login === "clemenshelm",
+  );
+  const overdue = findUnansweredIssues(annotated, { now: NOW, graceHours: 48 });
+
+  assert.deepEqual(
+    overdue.map((i) => i.number),
+    [849],
+  );
+});
+
+test("annotateWriteAccess asks about each login once, however many issues", async () => {
+  // 122 issues, one author: the lookup is per person, not per row. A resolver
+  // called once per issue would spend 122 requests to learn one fact.
+  const asked = [];
+  await annotateWriteAccess(
+    [
+      issue({ number: 1, authorLogin: "clemenshelm" }),
+      issue({ number: 2, authorLogin: "clemenshelm" }),
+      issue({
+        number: 3,
+        authorLogin: "outsider",
+        comments: [{ authorLogin: "clemenshelm", authorAssociation: "NONE" }],
+      }),
+    ],
+    async (login) => {
+      asked.push(login);
+      return login === "clemenshelm";
+    },
+  );
+
+  assert.deepEqual(asked.sort(), ["clemenshelm", "outsider"]);
+});
+
+test("annotateWriteAccess spends no request on someone the association settles", async () => {
+  // A token that CAN see the membership says MEMBER, and a bot needs no
+  // lookup at all. Neither is worth a round trip.
+  const asked = [];
+  await annotateWriteAccess(
+    [
+      issue({ authorLogin: "clemenshelm", authorAssociation: "OWNER" }),
+      issue({ authorLogin: "dependabot[bot]", authorAssociation: "NONE" }),
+    ],
+    async (login) => {
+      asked.push(login);
+      return false;
+    },
+  );
+
+  assert.deepEqual(asked, []);
+});
+
+test("annotateWriteAccess annotates comment authors too, not just reporters", async () => {
+  const [annotated] = await annotateWriteAccess(
+    [
+      issue({
+        authorLogin: "outsider",
+        comments: [
+          { authorLogin: "clemenshelm", authorAssociation: "CONTRIBUTOR" },
+        ],
+      }),
+    ],
+    async (login) => login === "clemenshelm",
+  );
+
+  assert.equal(hasMaintainerReply(annotated), true);
+});
+
+test("annotateWriteAccess leaves a deleted author alone instead of asking about null", async () => {
+  const asked = [];
+  const [annotated] = await annotateWriteAccess(
+    [issue({ authorLogin: null, authorAssociation: "NONE" })],
+    async (login) => {
+      asked.push(login);
+      return true;
+    },
+  );
+
+  assert.deepEqual(asked, []);
+  assert.equal(isExternalIssue(annotated), true);
+});
+
+test("annotateWriteAccess lets a failed lookup fail the sweep", async () => {
+  // The one thing this must not do is decide "external" because it could not
+  // ask. That is how a permissions change would quietly reproduce the very
+  // incident this fixes — 99 names, all wrong, and nobody reading them.
+  await assert.rejects(
+    annotateWriteAccess([issue({ authorLogin: "clemenshelm" })], async () => {
+      throw new Error("HTTP 403");
+    }),
+    /403/,
+  );
 });
 
 test("formatOverdueSummary names each issue, its age and its link", () => {
@@ -553,6 +717,29 @@ test("both scripts the workflow names actually exist", () => {
     "scripts/check-unanswered-issues.mjs",
   ]) {
     assert.ok(existsSync(join(REPO_ROOT, script)), `${script} is missing`);
+  }
+});
+
+test("both scripts resolve write access instead of trusting the association", () => {
+  // The unit tests above prove the rule; nothing in them proves either script
+  // still calls it. Delete the annotate step and every test here stays green
+  // while the sweep goes back to reporting the whole tracker — which is how
+  // this shipped in the first place.
+  for (const script of [
+    "scripts/triage-new-issue.mjs",
+    "scripts/check-unanswered-issues.mjs",
+  ]) {
+    const source = readFileSync(join(REPO_ROOT, script), "utf8");
+    assert.match(
+      source,
+      /annotateWriteAccess\(/,
+      `${script} must annotate write access before classifying`,
+    );
+    assert.match(
+      source,
+      /createWriteAccessResolver\(/,
+      `${script} must pass the real resolver, not a stub`,
+    );
   }
 });
 

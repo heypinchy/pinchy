@@ -12,12 +12,17 @@
 
 import { appendFileSync } from "node:fs";
 import {
+  annotateWriteAccess,
   findUnansweredIssues,
   formatOverdueSummary,
   parseIssuesResponse,
   parsePageInfo,
 } from "./lib/issue-triage.mjs";
-import { currentRepo, graphql } from "./lib/github-api.mjs";
+import {
+  createWriteAccessResolver,
+  currentRepo,
+  graphql,
+} from "./lib/github-api.mjs";
 
 /**
  * Passed on as given, not pre-converted: findUnansweredIssues rejects anything
@@ -99,7 +104,15 @@ async function main() {
     `Checked ${issues.length} open issues in ${repo.owner}/${repo.name}.`,
   );
 
-  const overdue = findUnansweredIssues(issues, {
+  // The association this token was given is not the last word on who is on
+  // the team — see createWriteAccessResolver. Without this step the sweep
+  // reports the whole tracker.
+  const known = await annotateWriteAccess(
+    issues,
+    createWriteAccessResolver(repo),
+  );
+
+  const overdue = findUnansweredIssues(known, {
     now: new Date(),
     graceHours: GRACE_HOURS,
   });

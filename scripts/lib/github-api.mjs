@@ -104,3 +104,69 @@ export async function addLabels({ owner, name }, issueNumber, labels) {
     );
   }
 }
+
+/** The repo roles that can push. `triage` manages issues but cannot write. */
+const WRITE_PERMISSIONS = new Set(["admin", "maintain", "write"]);
+
+/**
+ * GitHub logins are alphanumeric with single hyphens. The strictness is not
+ * decoration: these arrive from the tracker, so a stranger picks them, and
+ * they go straight into a request path. Bots (`x[bot]`) fail this on purpose
+ * — callers must not ask about them at all.
+ */
+const LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}$/;
+
+/**
+ * Answers "may this person write to the repo?" from the permission API,
+ * caching one answer per login.
+ *
+ * This exists because `authorAssociation` answers a different question than
+ * it appears to. It is computed relative to the asking token, and an Actions
+ * `GITHUB_TOKEN` cannot see a private org membership — so on 2026-08-05 the
+ * sweep saw this repo's admin as CONTRIBUTOR and reported 99 of our own
+ * issues as strangers waiting for a reply. This endpoint returns the
+ * effective permission and does not depend on who is asking; a canary run
+ * confirmed the workflow's existing `contents: read` is enough to call it.
+ *
+ * A failed lookup THROWS rather than answering "no write access". Guessing
+ * would recreate the incident silently, which is the one outcome worth a red
+ * run to avoid.
+ */
+export function createWriteAccessResolver({ owner, name }) {
+  const answers = new Map();
+
+  return async function hasWriteAccess(login) {
+    if (typeof login !== "string" || !LOGIN.test(login)) {
+      throw new Error(`Refusing to build a request path for login "${login}"`);
+    }
+    if (answers.has(login)) return answers.get(login);
+
+    const { ok, status, body } = await request(
+      `/repos/${owner}/${name}/collaborators/${login}/permission`,
+    );
+
+    // 404 is the honest "no such collaborator" — a deleted or renamed
+    // account, which is an outsider for our purposes. Every other non-2xx is
+    // us failing to ask, not an answer.
+    if (!ok && status !== 404) {
+      throw new Error(
+        `Could not read repo permission for @${login} (HTTP ${status}): ${body}`,
+      );
+    }
+
+    let permission = "none";
+    if (ok) {
+      try {
+        permission = JSON.parse(body).permission;
+      } catch {
+        throw new Error(
+          `Could not read repo permission for @${login}: unparseable response ${body}`,
+        );
+      }
+    }
+
+    const answer = WRITE_PERMISSIONS.has(permission);
+    answers.set(login, answer);
+    return answer;
+  };
+}

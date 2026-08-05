@@ -1,6 +1,12 @@
 import { test, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { addLabels, currentRepo, ensureLabel, graphql } from "./github-api.mjs";
+import {
+  addLabels,
+  createWriteAccessResolver,
+  currentRepo,
+  ensureLabel,
+  graphql,
+} from "./github-api.mjs";
 
 /**
  * This client is thin, but it is the half of the triage scripts that talks to
@@ -139,4 +145,91 @@ test("addLabels refuses to let the issue number steer the request path", async (
 test("addLabels surfaces a failed write instead of reporting success", async () => {
   stubFetch([{ status: 403, body: '{"message":"Resource not accessible"}' }]);
   await assert.rejects(() => addLabels(REPO, 849, ["external"]), /849.*403/s);
+});
+
+test("the write-access resolver asks the repo about that one person", async () => {
+  stubFetch([{ status: 200, body: '{"permission":"admin"}' }]);
+  const resolve = createWriteAccessResolver(REPO);
+  assert.equal(await resolve("clemenshelm"), true);
+  assert.equal(
+    calls[0].url,
+    "https://api.github.com/repos/heypinchy/pinchy/collaborators/clemenshelm/permission",
+  );
+});
+
+test("the write-access resolver counts the roles that can actually write", async () => {
+  // `triage` can manage issues but cannot push, and `read` is a stranger with
+  // a subscription. Both err toward "external", which keeps the sweep loud —
+  // the direction this check is supposed to fail in.
+  for (const [permission, expected] of [
+    ["admin", true],
+    ["maintain", true],
+    ["write", true],
+    ["triage", false],
+    ["read", false],
+    ["none", false],
+  ]) {
+    stubFetch([{ status: 200, body: JSON.stringify({ permission }) }]);
+    assert.equal(
+      await createWriteAccessResolver(REPO)("someone"),
+      expected,
+      `permission=${permission}`,
+    );
+  }
+});
+
+test("the write-access resolver treats an unknown account as an outsider", async () => {
+  stubFetch([{ status: 404, body: '{"message":"Not Found"}' }]);
+  assert.equal(await createWriteAccessResolver(REPO)("ghost"), false);
+});
+
+test("the write-access resolver refuses to guess when the lookup breaks", async () => {
+  // A 403 here would otherwise reproduce the 2026-08-05 incident exactly:
+  // every author silently demoted to outsider, 99 wrong names in the alarm.
+  // Failing loudly costs one red run; guessing costs the alarm's credibility.
+  stubFetch([{ status: 403, body: '{"message":"Resource not accessible"}' }]);
+  await assert.rejects(
+    () => createWriteAccessResolver(REPO)("clemenshelm"),
+    /clemenshelm.*403/s,
+  );
+});
+
+test("the write-access resolver refuses an unreadable permission body", async () => {
+  stubFetch([{ status: 200, body: "not json" }]);
+  await assert.rejects(
+    () => createWriteAccessResolver(REPO)("clemenshelm"),
+    /clemenshelm/,
+  );
+});
+
+test("the write-access resolver refuses to let a login steer the request path", async () => {
+  // Logins arrive from the tracker, i.e. from strangers. Same lock as
+  // addLabels: the URL builder does not trust its caller to have checked.
+  for (const login of [
+    "clemenshelm/../../attacker/x",
+    "a b",
+    "",
+    null,
+    "dependabot[bot]",
+  ]) {
+    stubFetch([{ status: 200, body: '{"permission":"admin"}' }]);
+    await assert.rejects(
+      () => createWriteAccessResolver(REPO)(login),
+      /Refusing to build a request path/,
+      `expected a throw for login=${String(login)}`,
+    );
+    assert.deepEqual(calls, [], "no request may be sent for a bad login");
+    calls = [];
+  }
+});
+
+test("the write-access resolver asks about each person only once", async () => {
+  stubFetch([
+    { status: 200, body: '{"permission":"admin"}' },
+    { status: 500, body: "should never be reached" },
+  ]);
+  const resolve = createWriteAccessResolver(REPO);
+  assert.equal(await resolve("clemenshelm"), true);
+  assert.equal(await resolve("clemenshelm"), true);
+  assert.equal(calls.length, 1);
 });
