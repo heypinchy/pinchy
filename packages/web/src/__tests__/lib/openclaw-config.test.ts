@@ -226,7 +226,7 @@ import {
   MEMORY_EMBEDDING_MODEL_PATH,
 } from "@/lib/openclaw-config";
 import { MAX_EFFECTIVE_CONTEXT_TOKENS } from "@/lib/openclaw-config/effective-context";
-import { pushConfigInBackground, _resetPushGeneration } from "@/lib/openclaw-config/write";
+import { pushConfigInBackground, _supersedePendingPushes } from "@/lib/openclaw-config/write";
 import { getPendingConfigPushCount, _resetConfigPushState } from "@/lib/openclaw-config/push-state";
 import { db } from "@/db";
 import { getSetting } from "@/lib/settings";
@@ -368,10 +368,12 @@ describe("regenerateOpenClawConfig", () => {
     mockGetClient.mockImplementation(() => {
       throw new Error("OpenClaw client not initialized");
     });
-    // Reset the push-generation counter so stale background coroutines from a
-    // previous test's pushConfigInBackground retry loop cannot sneak past the
-    // generation check during the 300ms readExistingConfig async retry window.
-    _resetPushGeneration();
+    // Cancel every push coroutine still parked from a previous test, so none
+    // can resume into this test's mocks. This BUMPS the generation counter and
+    // must never reset it — a reset recycles the very tokens the parked
+    // coroutines hold and is the only way one gets past the supersede check at
+    // all. See `_supersedePendingPushes` in write.ts.
+    _supersedePendingPushes();
   });
 
   it("should write config with shared-volume file permissions (Pinchy + OpenClaw both r/w)", async () => {
@@ -3888,8 +3890,13 @@ describe("regenerateOpenClawConfig", () => {
       });
 
       await expect(regenerateOpenClawConfig()).resolves.not.toThrow();
-      // The fallback writeConfigAtomic fires asynchronously after all retry
-      // backoffs (~3.5 s total); only verify no throw here.
+      // Only verify no throw here. Note the coroutine deliberately OUTLIVES
+      // this test: "Not connected" takes the extended WS-reconnect path, not
+      // the ~3.5 s backoff ladder — it naps 2 s at a time for up to 60 s
+      // before the writeConfigAtomic fallback, so it is still parked when the
+      // next test starts. The next `_supersedePendingPushes()` is what cancels
+      // it; that hook understating this leak as bounded is what let it flake
+      // the sibling tests below.
     });
 
     it("does not call config.apply at cold start before the OpenClaw client is initialised", async () => {
@@ -4126,6 +4133,60 @@ describe("regenerateOpenClawConfig", () => {
       // No config.apply call — supplement made the payload equivalent to
       // OC's runtime, so we conserved the rate-limit slot.
       expect(mockConfigApply).not.toHaveBeenCalled();
+    });
+
+    it("a push parked since an earlier test can never reach config.apply, whatever generation the next push mints", async () => {
+      // The generation counter is a MONOTONIC cancellation token: a coroutine
+      // captures its own number and bails the moment `_pushGeneration` has
+      // moved on. Monotonicity is the whole guarantee — a number that is minted
+      // once can never be minted again, so a parked coroutine's `generation`
+      // can never compare equal to a later push's.
+      //
+      // The per-test hook used to RESET the counter to 0, which recycles live
+      // tokens: a coroutine parked at gen 1 in test N sails straight through
+      // `generation !== _pushGeneration` the moment test N+1 mints gen 1 again,
+      // and applies test N's payload against test N+1's mocks. That is exactly
+      // how the "rate-limit conservation" test above flaked under suite load —
+      // the coroutine of "does not throw when the client is connected but
+      // config.apply fails" parks on the 2 s not-connected retry nap (its own
+      // header still says ~3.5 s; the not-connected path extends it to 60 s),
+      // and whichever test happens to be running ~2 s later inherits its
+      // `config.apply`. That landing point is pure scheduling luck, which is
+      // why it reproduced only in the full run and never in isolation.
+      //
+      // Parking inside `config.get` rather than on a timer keeps this
+      // deterministic: same defect, no wall clock.
+      let releaseParkedGet!: (value: unknown) => void;
+      mockConfigGet.mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            releaseParkedGet = resolve;
+          })
+      );
+      mockGetClient.mockReturnValue({
+        config: { get: mockConfigGet, apply: mockConfigApply },
+      });
+
+      pushConfigInBackground(JSON.stringify({ env: { STALE: "1" } }));
+      await new Promise((r) => setImmediate(r));
+      expect(mockConfigApply).not.toHaveBeenCalled(); // parked, not yet applied
+
+      // Everything below is what the NEXT test does: the hook runs, then the
+      // test configures its own mocks and pushes its own payload.
+      _supersedePendingPushes();
+      mockConfigGet.mockResolvedValue({ hash: "h-fresh" });
+      mockConfigApply.mockResolvedValue(undefined);
+      pushConfigInBackground(JSON.stringify({ env: { FRESH: "2" } }));
+
+      // The parked RPC finally answers — the load that stalled it clears.
+      releaseParkedGet({ hash: "h-stale" });
+      await drainBackgroundCoroutine();
+      await drainBackgroundCoroutine();
+
+      // Only the newer push reached OpenClaw. The parked one was superseded.
+      expect(mockConfigApply).toHaveBeenCalledTimes(1);
+      expect(String(mockConfigApply.mock.calls[0][0])).toContain('"FRESH"');
+      expect(String(mockConfigApply.mock.calls[0][0])).not.toContain('"STALE"');
     });
 
     it("applies config via config.apply even when OC in-memory config and file both lack meta (no obsolete meta-guard)", async () => {
@@ -7940,7 +8001,7 @@ describe("regenerateOpenClawConfig size-drop guard (#311)", () => {
     mockGetClient.mockImplementation(() => {
       throw new Error("OpenClaw client not initialized");
     });
-    _resetPushGeneration();
+    _supersedePendingPushes();
   });
 
   it("refuses to write a config that would shrink the file by more than 50%", async () => {
@@ -8204,7 +8265,7 @@ describe("regenerateOpenClawConfig imageModel.primary (#416)", () => {
     mockGetClient.mockImplementation(() => {
       throw new Error("OpenClaw client not initialized");
     });
-    _resetPushGeneration();
+    _supersedePendingPushes();
   });
 
   it("auto-sets agents.defaults.imageModel.primary when Anthropic is configured", async () => {

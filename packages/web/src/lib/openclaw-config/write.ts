@@ -129,9 +129,26 @@ export function readExistingConfig(): Record<string, unknown> {
 // payload simply overwrites through its own config.apply or writeConfigAtomic.
 let _pushGeneration = 0;
 
-/** Exposed only for unit-testing the cancellation path; do not call in app code. */
-export function _resetPushGeneration() {
-  _pushGeneration = 0;
+/**
+ * Test-only: cancel every push coroutine that is currently in flight, by
+ * moving the token past whatever generation they captured. Do not call in app
+ * code.
+ *
+ * It BUMPS; it must never reset. The counter's only guarantee is monotonicity:
+ * a generation minted once is never minted again, so a parked coroutine's
+ * captured number can never compare equal to a later push's. This helper set
+ * it back to 0 instead, which recycles live tokens — a per-test hook that
+ * resets and then lets the test mint gen 1 again hands a coroutine parked at
+ * gen 1 in the PREVIOUS test a matching number. It sails through the supersede
+ * check and applies the previous test's payload against the current test's
+ * mocks, which is how `openclaw-config.test.ts`'s "rate-limit conservation"
+ * test saw a config.apply it never made. The reset inverted the hook's stated
+ * purpose: it was the only way a stale coroutine could get past the guard at
+ * all. Guarded by "a push parked since an earlier test can never reach
+ * config.apply" in that file.
+ */
+export function _supersedePendingPushes() {
+  _pushGeneration++;
 }
 
 // OC's explicit recovery hint when the file-watcher reloaded openclaw.json
