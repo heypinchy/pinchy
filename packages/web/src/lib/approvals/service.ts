@@ -174,6 +174,10 @@ export async function decideGate(input: DecideGateInput): Promise<GateDecision> 
  * delivered, so an id there would only be noise on a settled record. */
 const LINKABLE_STATES = ["pending", "approved", "denied"] as const;
 
+/** Derived, never restated: the `inArray` below and {@link LinkOutcome} have to
+ * name the same set, and writing it twice is how those two drift apart. */
+type LinkableState = (typeof LINKABLE_STATES)[number];
+
 /**
  * What {@link linkApproval} did with one broadcast.
  *
@@ -186,7 +190,7 @@ const LINKABLE_STATES = ["pending", "approved", "denied"] as const;
 export type LinkOutcome =
   /** `status` is what tells the bridge whether a decision is already sitting on
    * this row waiting to be delivered — the race in #1132's follow-up. */
-  | { linked: true; id: string; status: "pending" | "approved" | "denied" }
+  | { linked: true; id: string; status: LinkableState }
   /** No row for that call. Routine: the same gateway broadcast carries
    * OpenClaw's own approvals (skill workshop, exec), which name calls Pinchy
    * never opened a row for. */
@@ -230,11 +234,9 @@ export async function linkApproval(input: {
     )
     .returning({ id: toolApproval.id, status: toolApproval.status });
   if (linked) {
-    return {
-      linked: true,
-      id: linked.id,
-      status: linked.status as "pending" | "approved" | "denied",
-    };
+    // The column is a plain string; the `inArray` three lines up is what makes
+    // this narrowing true, which is why the two share one list.
+    return { linked: true, id: linked.id, status: linked.status as LinkableState };
   }
 
   // Nothing updated: either the call is not ours at all, or it is ours and
@@ -245,6 +247,97 @@ export async function linkApproval(input: {
     .where(eq(toolApproval.toolCallId, input.toolCallId))
     .limit(1);
   return { linked: false, reason: row ? "settled" : "not-ours" };
+}
+
+/**
+ * How long a decision may wait for {@link linkApproval} to land.
+ *
+ * The gap is structural, not a hiccup: OpenClaw mints its approval id only
+ * AFTER `before_tool_call` answers `requireApproval`, and announces it on a
+ * separate gateway broadcast. Pinchy's own row — and the `approval.requested`
+ * audit event the inbox and the E2E both key on — therefore exist before the id
+ * does. Anything that reacts to the card the instant it appears lands in that
+ * window.
+ *
+ * Two seconds is a BOUND, not a measurement, and the difference is worth being
+ * honest about. The failing CI run (31111018560) shows the decision POST
+ * completing at 14:44:47.827 and the gate's `plugin.approval.request` answered
+ * at 14:44:47.944 — the click lost by 25 ms — then the stack came down, so how
+ * long the hop actually takes was never observed. So this is ~4x a window that
+ * demonstrably was not enough, over a path that is one websocket frame plus one
+ * indexed UPDATE, and short enough that no decision ever feels hung.
+ *
+ * It is only ever spent inside the window: a row that already carries the id,
+ * or that no broadcast can reach, returns immediately. And when it does run
+ * out, the miss is no longer permanent — {@link linkApproval} still attaches to
+ * a decided row and the gateway bridge delivers from there. This is the fast
+ * path, not the only one.
+ */
+export const APPROVAL_LINK_WAIT_MS = 2000;
+
+/** Re-read cadence for {@link waitForApprovalLink}. Short because the wait is
+ * short; the read is a single indexed lookup by primary key. */
+const APPROVAL_LINK_POLL_MS = 50;
+
+/**
+ * Wait for OpenClaw's approval id to reach this user's pending confirmation,
+ * and return it — or `null` when it is not coming.
+ *
+ * Deciding without it means answering the user with `resumed: false` /
+ * `nothing-waiting` about a call that IS waiting — and then telling them to ask
+ * the agent to try again, over a tool that is gated precisely because repeating
+ * it is expensive. Seen on CI 2026-08-06, where the E2E granted its own
+ * confirmation 25 ms before OpenClaw announced the approval.
+ *
+ * The bridge delivers a decision the wait missed ({@link linkApproval} attaches
+ * to a decided row for exactly that reason), so this is about telling the user
+ * the truth the first time, not about whether the run eventually resumes.
+ *
+ * Four things end the wait immediately rather than burning the deadline: the id
+ * is already there; the row is gone; it is no longer `pending`, so somebody
+ * already decided and this caller is not the one still waiting; or it carries
+ * no `toolCallId`, which is the key `linkApproval` matches on — no broadcast
+ * can ever name it.
+ *
+ * `requesterId` scopes the wait to the caller's own row. `resolveDecision`
+ * remains the authority on who may decide; this only avoids making a stranger's
+ * request measurably slower than an unknown one, which would answer a question
+ * the 403 is careful not to.
+ */
+export async function waitForApprovalLink(input: {
+  id: string;
+  requesterId: string;
+  timeoutMs?: number;
+  pollMs?: number;
+  /** Seam for tests; defaults to a real timer. */
+  sleep?: (ms: number) => Promise<void>;
+  /** Seam for tests; defaults to the wall clock. */
+  now?: () => number;
+}): Promise<string | null> {
+  const timeoutMs = input.timeoutMs ?? APPROVAL_LINK_WAIT_MS;
+  const pollMs = input.pollMs ?? APPROVAL_LINK_POLL_MS;
+  const sleep = input.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
+  const now = input.now ?? Date.now;
+  const deadline = now() + timeoutMs;
+
+  for (;;) {
+    const [row] = await db
+      .select({
+        approvalId: toolApproval.openclawApprovalId,
+        status: toolApproval.status,
+        requesterId: toolApproval.requesterId,
+        toolCallId: toolApproval.toolCallId,
+      })
+      .from(toolApproval)
+      .where(eq(toolApproval.id, input.id))
+      .limit(1);
+
+    if (!row || row.requesterId !== input.requesterId) return null;
+    if (row.approvalId) return row.approvalId;
+    if (row.status !== "pending" || !row.toolCallId) return null;
+    if (now() >= deadline) return null;
+    await sleep(pollMs);
+  }
 }
 
 /** What OpenClaw finally did with a parked call — mirrors the plugin's

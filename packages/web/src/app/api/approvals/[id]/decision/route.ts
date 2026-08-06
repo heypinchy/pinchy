@@ -3,7 +3,7 @@ import { eq } from "drizzle-orm";
 import { withAuth } from "@/lib/api-auth";
 import { parseRequestBody } from "@/lib/api-validation";
 import { decisionSchema } from "@/lib/schemas/approvals";
-import { resolveDecision } from "@/lib/approvals/service";
+import { resolveDecision, waitForApprovalLink } from "@/lib/approvals/service";
 import { resolvePluginApproval } from "@/server/resolve-plugin-approval";
 import { type AuditLogEntry } from "@/lib/audit";
 import { deferAuditLog } from "@/lib/audit-deferred";
@@ -12,11 +12,20 @@ import { agents, users } from "@/db/schema";
 
 type RouteContext = { params: Promise<{ id: string }> };
 
-/** What to tell the user when their decision did not reach the parked run.
- * Worded for approve and deny alike: in both cases the agent was not told. */
+/**
+ * What to tell the user when their decision did not reach the parked run.
+ * Worded for approve and deny alike: in both cases the agent was not told.
+ *
+ * None of these may say "try it again", and `nothing-waiting` used to. That
+ * reason covers the case where OpenClaw's approval id simply had not arrived
+ * yet, and the gateway bridge delivers such a decision as soon as it does — so
+ * the advice was to run a tool a second time that is gated precisely because
+ * running it once matters. Say what happened and point at the chat; the user
+ * can see there whether the action went ahead.
+ */
 const NOT_DELIVERED: Record<"nothing-waiting" | "refused" | "unreachable", string> = {
   "nothing-waiting":
-    "The agent is no longer waiting for this decision. Ask it to try the action again.",
+    "Your decision is recorded, but the agent hasn't picked it up. Check the chat before asking it to try again.",
   refused: "OpenClaw would not accept this decision, so the agent has not been told.",
   unreachable: "Pinchy could not reach OpenClaw, so the agent has not been told.",
 };
@@ -25,12 +34,23 @@ const NOT_DELIVERED: Record<"nothing-waiting" | "refused" | "unreachable", strin
  * The acting user approves or denies their own pending confirmation (Tier 2
  * self-confirm — enforced by `selfConfirmOnly`).
  *
- * Two things have to happen, in this order. The row is flipped first, so a
- * failure between them leaves a decision on record and a tool that did NOT run
- * — the safe direction. Then the decision is handed to the call OpenClaw parked
- * for it: `pinchy-approvals` answers with `requireApproval`, which suspends the
- * call inside OpenClaw's hook, and only `plugin.approval.resolve` ends that
- * wait. Flipping the row alone leaves the run parked until its 600 s cap.
+ * Three things happen, in this order, and the order is the whole design.
+ *
+ * First the route waits — briefly, and only when something can still arrive —
+ * for OpenClaw's approval id, because that id is minted after the gate answered
+ * and reaches us on a later broadcast (see `waitForApprovalLink`). Then the row
+ * is flipped, so a failure between the remaining steps leaves a decision on
+ * record and a tool that did NOT run — the safe direction. Then the decision is
+ * handed to the call OpenClaw parked for it: `pinchy-approvals` answers with
+ * `requireApproval`, which suspends the call inside OpenClaw's hook, and only
+ * `plugin.approval.resolve` ends that wait. Flipping the row alone leaves the
+ * run parked until its 600 s cap.
+ *
+ * The wait is bounded, so it can still lose. That is no longer terminal: the
+ * gateway bridge links a broadcast to a row the user has already decided and
+ * delivers the decision from there. What the wait buys is the honest answer
+ * here, in this response, rather than a warning the user reads before the run
+ * quietly carries on.
  */
 export const POST = withAuth<RouteContext>(async (request, { params }, session) => {
   const { id } = await params;
@@ -38,6 +58,14 @@ export const POST = withAuth<RouteContext>(async (request, { params }, session) 
   const parsed = await parseRequestBody(decisionSchema, request);
   if ("error" in parsed) return parsed.error;
   const { decision, reason } = parsed.data;
+
+  // BEFORE flipping the row, not after: OpenClaw announces the id it minted for
+  // the parked call on a broadcast that necessarily follows the gate's answer,
+  // so a decision taken the moment the card appears arrives first — and
+  // `linkApproval` refuses a row that is no longer pending, which makes that
+  // miss permanent rather than momentary. Bounded, and skipped entirely when
+  // there is nothing to wait for.
+  await waitForApprovalLink({ id, requesterId: session.user.id! });
 
   const res = await resolveDecision({
     id,

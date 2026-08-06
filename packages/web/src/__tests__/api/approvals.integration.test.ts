@@ -462,33 +462,71 @@ describe("approval routes (integration, real DB)", () => {
       expect(entry.detail).toMatchObject({ resumed: false });
     });
 
+    // The id arrives on a broadcast OpenClaw only sends AFTER the gate answered
+    // `requireApproval`, so a decision taken the moment the card appears lands
+    // before it. That used to report `nothing-waiting` — a false statement
+    // about a call that IS parked — and it was permanent, because linkApproval
+    // refuses a row that is no longer pending: the run then sat until
+    // OpenClaw's 600 s cap, whatever the user clicked. CI, 2026-08-06.
+    it("resumes a decision taken before the approval broadcast arrived", async () => {
+      const blocked = await (
+        await gateCheck(gateReq({ ...gateBody(), toolCallId: "call_race" }))
+      ).json();
+      setSession(user);
+
+      // The broadcast lands while the decision is already in flight.
+      const linked = new Promise<void>((resolve) => {
+        setTimeout(() => {
+          void linkApproval({ approvalId: "plugin:late", toolCallId: "call_race" }).then(() =>
+            resolve()
+          );
+        }, 150);
+      });
+
+      const res = await decide(decideReq({ decision: "approve" }), ctx(blocked.requestId));
+      await linked;
+
+      expect(gatewayRequest).toHaveBeenCalledWith("plugin.approval.resolve", {
+        id: "plugin:late",
+        decision: "allow-once",
+      });
+      expect(await res.json()).toMatchObject({ ok: true, resumed: true });
+
+      await flushAfter();
+      const [entry] = await db
+        .select()
+        .from(auditLog)
+        .where(eq(auditLog.eventType, "approval.granted"));
+      expect(entry.outcome).toBe("success");
+      expect(entry.detail).toMatchObject({ resumed: true });
+    });
+
     /**
-     * The ordering every other test in this block assumes away.
+     * And when the broadcast misses even the wait.
      *
-     * `blockedAndLinked` links BEFORE deciding, which is the common case and
-     * was the only one covered. `gate-check` creates the row before the hook
-     * returns `requireApproval`, though, so the card is clickable before
-     * OpenClaw has announced the approval — and a decision taken in that window
-     * had no id to resolve with. It used to stay that way permanently, because
-     * `linkApproval` only matched `pending` rows and `resolveDecision` had
-     * already moved the row out of `pending`. The run then sat parked until
-     * OpenClaw's 600 s cap.
+     * The wait above is bounded, so it can still lose — and losing it used to
+     * be PERMANENT: `linkApproval` matched `pending` only, while the route had
+     * already flipped the row, so the id could never attach afterwards and the
+     * run sat until OpenClaw's 600 s cap with nothing saying why.
      *
-     * Caught in CI on 2026-08-06 by the E2E probe, and only by luck of timing:
-     * one plugin.approval.request, zero plugin.approval.resolve.
+     * This asserts the contract the bridge stands on rather than the resume
+     * itself: the link still attaches to a decided row, and it carries the
+     * decision in `status`. What the bridge then does with that is pinned in
+     * `plugin-approval-bridge.test.ts` ("delivers a decision that was made
+     * before the approval was announced") — deliberately not restated here,
+     * because a test that names a guarantee it does not exercise is worse than
+     * no test at all.
      */
-    it("resumes a run whose approval was announced after the user had already decided", async () => {
+    it("leaves a decided row linkable, so a broadcast past the wait still has somewhere to land", async () => {
       const blocked = await (
         await gateCheck(gateReq({ ...gateBody(), toolCallId: "call_early" }))
       ).json();
       setSession(user);
 
-      // Decide first — no id on the row yet.
+      // Decide first — no id on the row, and none arrives inside the wait.
       await decide(decideReq({ decision: "approve" }), ctx(blocked.requestId));
       expect(gatewayRequest).not.toHaveBeenCalled();
 
-      // …then the broadcast lands. This is the only thing left that can carry
-      // the decision to the parked call.
       const outcome = await linkApproval({
         approvalId: "plugin:late",
         toolCallId: "call_early",
