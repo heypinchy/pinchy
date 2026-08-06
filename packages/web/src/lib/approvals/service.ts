@@ -168,27 +168,83 @@ export async function decideGate(input: DecideGateInput): Promise<GateDecision> 
   return { decision: "block", requestId: inserted.id, created: true };
 }
 
+/** States in which OpenClaw's approval id is still worth recording: a decision
+ * either has not been made yet, or has been made and still has to reach the
+ * parked call. `consumed` and `expired` are terminal — nothing is waiting to be
+ * delivered, so an id there would only be noise on a settled record. */
+const LINKABLE_STATES = ["pending", "approved", "denied"] as const;
+
 /**
- * Attach OpenClaw's approval id to the confirmation waiting for that call.
+ * What {@link linkApproval} did with one broadcast.
  *
- * Returns the row it linked, or `null` when nothing was waiting — which is the
- * ordinary case, not a fault: the same gateway broadcast carries OpenClaw's own
- * approvals (skill workshop, exec), and those name calls Pinchy never opened a
- * row for.
+ * The distinction is the point. Before #1132's follow-up this returned a bare
+ * `null` for two very different situations, and the bridge logged neither,
+ * because one of them is genuinely routine. That made the other one — a
+ * confirmation of ours we could NOT link — invisible, and it is precisely the
+ * one worth seeing.
+ */
+export type LinkOutcome =
+  /** `status` is what tells the bridge whether a decision is already sitting on
+   * this row waiting to be delivered — the race in #1132's follow-up. */
+  | { linked: true; id: string; status: "pending" | "approved" | "denied" }
+  /** No row for that call. Routine: the same gateway broadcast carries
+   * OpenClaw's own approvals (skill workshop, exec), which name calls Pinchy
+   * never opened a row for. */
+  | { linked: false; reason: "not-ours" }
+  /** Our row, already past deciding. Nothing is waiting for this id — but if it
+   * shows up often it means broadcasts are arriving after a run has already
+   * given up, which is worth knowing. */
+  | { linked: false; reason: "settled" };
+
+/**
+ * Attach OpenClaw's approval id to the confirmation opened for that call.
  *
- * Restricted to `pending`: a late broadcast must not re-arm a confirmation the
- * user has already decided, or a settled card would look resolvable again.
+ * This used to be restricted to `pending`, on the reasoning that a late
+ * broadcast "must not re-arm a confirmation the user has already decided". That
+ * reasoning conflated two different things and cost users their runs:
+ *
+ *   - what makes a card ACTIONABLE is `status = 'pending'`, which is what
+ *     `GET /api/approvals` filters on;
+ *   - what makes it RESOLVABLE is this id.
+ *
+ * Storing the id on a decided row therefore brings nothing back into the inbox.
+ * Refusing to store it, on the other hand, threw away the one value the
+ * decision needs to reach the parked call — permanently, because
+ * `resolveDecision` moves the row out of `pending` before the id is read, so
+ * the row can never satisfy the old condition again. A broadcast that lost a
+ * millisecond race left the run parked until OpenClaw's 600 s cap, with nothing
+ * anywhere saying why.
  */
 export async function linkApproval(input: {
   approvalId: string;
   toolCallId: string;
-}): Promise<{ id: string } | null> {
+}): Promise<LinkOutcome> {
   const [linked] = await db
     .update(toolApproval)
     .set({ openclawApprovalId: input.approvalId })
-    .where(and(eq(toolApproval.toolCallId, input.toolCallId), eq(toolApproval.status, "pending")))
-    .returning({ id: toolApproval.id });
-  return linked ?? null;
+    .where(
+      and(
+        eq(toolApproval.toolCallId, input.toolCallId),
+        inArray(toolApproval.status, [...LINKABLE_STATES])
+      )
+    )
+    .returning({ id: toolApproval.id, status: toolApproval.status });
+  if (linked) {
+    return {
+      linked: true,
+      id: linked.id,
+      status: linked.status as "pending" | "approved" | "denied",
+    };
+  }
+
+  // Nothing updated: either the call is not ours at all, or it is ours and
+  // already terminal. One extra read, only on the path that changed nothing.
+  const [row] = await db
+    .select({ id: toolApproval.id })
+    .from(toolApproval)
+    .where(eq(toolApproval.toolCallId, input.toolCallId))
+    .limit(1);
+  return { linked: false, reason: row ? "settled" : "not-ours" };
 }
 
 /** What OpenClaw finally did with a parked call — mirrors the plugin's

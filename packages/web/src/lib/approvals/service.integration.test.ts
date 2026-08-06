@@ -95,7 +95,7 @@ describe("approvals gate decision service", () => {
       const r = await decideGate({ ...base(), toolCallId: "call_9" });
       const linked = await linkApproval({ approvalId: "plugin:xyz", toolCallId: "call_9" });
 
-      expect(linked?.id).toBe(r.requestId);
+      expect(linked).toEqual({ linked: true, id: r.requestId, status: "pending" });
       const [row] = await db.select().from(toolApproval).where(eq(toolApproval.id, r.requestId));
       expect(row.openclawApprovalId).toBe("plugin:xyz");
     });
@@ -110,23 +110,61 @@ describe("approvals gate decision service", () => {
         toolCallId: "call_theirs",
       });
 
-      expect(linked).toBeNull();
+      // "not-ours" rather than a bare miss: the bridge stays quiet about these,
+      // and must be able to tell them from one of ours it could not link.
+      expect(linked).toEqual({ linked: false, reason: "not-ours" });
       const rows = await db.select().from(toolApproval);
       expect(rows.every((r) => r.openclawApprovalId === null)).toBe(true);
     });
 
-    // A row the user already decided must not be re-armed by a late broadcast:
-    // it would make a settled confirmation look resolvable again.
-    it("leaves an already-decided confirmation alone", async () => {
+    // This test used to assert the opposite — that a decided row is left alone,
+    // reasoning that a late broadcast "would make a settled confirmation look
+    // resolvable again". That reasoning was wrong, and it was wrong in the
+    // direction that costs a user their run.
+    //
+    // What makes a card actionable is `status = 'pending'`, which is what
+    // `GET /api/approvals` filters on. The OpenClaw id makes it RESOLVABLE — a
+    // different question. So refusing to store the id on a decided row does not
+    // protect anything; it throws away the one value the decision needs to
+    // reach the parked call, permanently, because the row will never be
+    // `pending` again.
+    //
+    // That turned a millisecond ordering problem into an unrecoverable one: decide
+    // before the broadcast lands and the run stays parked until OpenClaw's
+    // 600 s cap, with nothing anywhere saying why.
+    it("records the id even when the user already decided — that is when it is needed", async () => {
       const r = await decideGate({ ...base(), toolCallId: "call_done" });
       await resolveDecision({ id: r.requestId, approverId: requesterId, decision: "deny" });
 
       const linked = await linkApproval({ approvalId: "plugin:late", toolCallId: "call_done" });
 
-      expect(linked).toBeNull();
+      // `status` is what the bridge reads to know a decision is already sitting
+      // here waiting to be delivered.
+      expect(linked).toEqual({ linked: true, id: r.requestId, status: "denied" });
+      const [row] = await db.select().from(toolApproval).where(eq(toolApproval.id, r.requestId));
+      expect(row.openclawApprovalId).toBe("plugin:late");
+      // …and the decision itself is untouched, so the card does not come back:
+      // the pending list keys on status, not on the id.
+      expect(row.status).toBe("denied");
+    });
+
+    // Terminal states are the real exception. Once a row is consumed or
+    // expired, no decision is waiting to be delivered, so an id would only be
+    // noise on a settled record.
+    it("leaves a row alone once it is past deciding", async () => {
+      const r = await decideGate({ ...base(), toolCallId: "call_gone" });
+      await db
+        .update(toolApproval)
+        .set({ status: "expired" })
+        .where(eq(toolApproval.id, r.requestId));
+
+      const linked = await linkApproval({ approvalId: "plugin:tooLate", toolCallId: "call_gone" });
+
+      // "settled", not "not-ours": the row IS ours. The bridge says so out loud,
+      // because a broadcast arriving after a run gave up is worth seeing.
+      expect(linked).toEqual({ linked: false, reason: "settled" });
       const [row] = await db.select().from(toolApproval).where(eq(toolApproval.id, r.requestId));
       expect(row.openclawApprovalId).toBeNull();
-      expect(row.status).toBe("denied");
     });
   });
 

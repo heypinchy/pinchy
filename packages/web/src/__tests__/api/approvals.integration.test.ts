@@ -462,6 +462,48 @@ describe("approval routes (integration, real DB)", () => {
       expect(entry.detail).toMatchObject({ resumed: false });
     });
 
+    /**
+     * The ordering every other test in this block assumes away.
+     *
+     * `blockedAndLinked` links BEFORE deciding, which is the common case and
+     * was the only one covered. `gate-check` creates the row before the hook
+     * returns `requireApproval`, though, so the card is clickable before
+     * OpenClaw has announced the approval — and a decision taken in that window
+     * had no id to resolve with. It used to stay that way permanently, because
+     * `linkApproval` only matched `pending` rows and `resolveDecision` had
+     * already moved the row out of `pending`. The run then sat parked until
+     * OpenClaw's 600 s cap.
+     *
+     * Caught in CI on 2026-08-06 by the E2E probe, and only by luck of timing:
+     * one plugin.approval.request, zero plugin.approval.resolve.
+     */
+    it("resumes a run whose approval was announced after the user had already decided", async () => {
+      const blocked = await (
+        await gateCheck(gateReq({ ...gateBody(), toolCallId: "call_early" }))
+      ).json();
+      setSession(user);
+
+      // Decide first — no id on the row yet.
+      await decide(decideReq({ decision: "approve" }), ctx(blocked.requestId));
+      expect(gatewayRequest).not.toHaveBeenCalled();
+
+      // …then the broadcast lands. This is the only thing left that can carry
+      // the decision to the parked call.
+      const outcome = await linkApproval({
+        approvalId: "plugin:late",
+        toolCallId: "call_early",
+      });
+      expect(outcome).toMatchObject({ linked: true, status: "approved" });
+
+      const [row] = await db
+        .select()
+        .from(toolApproval)
+        .where(eq(toolApproval.id, blocked.requestId));
+      expect(row.openclawApprovalId).toBe("plugin:late");
+      // …and the card does not reappear: the pending list keys on status.
+      expect(row.status).toBe("approved");
+    });
+
     it("does not call the gateway when no run is parked on that call", async () => {
       // No approval id on the row: the gate refused without suspending, the
       // approval already timed out, or the row predates #1132.
