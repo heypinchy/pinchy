@@ -259,17 +259,25 @@ export async function linkApproval(input: {
  * does. Anything that reacts to the card the instant it appears lands in that
  * window.
  *
- * Two seconds is a BOUND, not a measurement, and the difference is worth being
- * honest about. The failing CI run (31111018560) shows the decision POST
- * completing at 14:44:47.827 and the gate's `plugin.approval.request` answered
- * at 14:44:47.944 — the click lost by 25 ms — then the stack came down, so how
- * long the hop actually takes was never observed. So this is ~4x a window that
- * demonstrably was not enough, over a path that is one websocket frame plus one
- * indexed UPDATE, and short enough that no decision ever feels hung.
+ * Two seconds is sized from a measurement, taken by instrumenting this wait and
+ * the bridge and running the integration E2E against the real stack:
+ *
+ *   gated call reaches the gate        19:12:13.063
+ *   broadcast arrives at Pinchy        19:12:13.282   (+219 ms)
+ *   row carries the id                 19:12:13.284   (+2 ms — one UPDATE)
+ *   OpenClaw's waitDecision returns     19:12:13.603   (297 ms parked in total)
+ *
+ * So the whole hop is ~220 ms locally, and the CI runner that failed was
+ * slower — run 31111018560 has the decision POST completing at 14:44:47.827 and
+ * the gate's `plugin.approval.request` answered at 14:44:47.944, so the click
+ * lost by 25 ms and the link had still not attached ~0.5 s later. 2 s is roughly
+ * 9x the measured chain and 4x the worst observed shortfall, while staying short
+ * enough that no decision ever feels hung.
  *
  * It is only ever spent inside the window: a row that already carries the id,
- * or that no broadcast can reach, returns immediately. And when it does run
- * out, the miss is no longer permanent — {@link linkApproval} still attaches to
+ * or that no broadcast can reach, returns immediately — in that same run the
+ * decision arrived after the link and waited 0 ms. And when the bound does run
+ * out, the miss is no longer permanent: {@link linkApproval} still attaches to
  * a decided row and the gateway bridge delivers from there. This is the fast
  * path, not the only one.
  */
