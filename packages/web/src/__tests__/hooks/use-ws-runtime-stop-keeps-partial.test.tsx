@@ -206,4 +206,76 @@ describe("useWsRuntime — a stopped run keeps its partial reply (#978)", () => 
     // would leave this green on its own.
     expect(renderedText(result.current.runtime)).toContain("lima");
   });
+
+  it("stops swallowing errors once the stopped turn has been terminated", async () => {
+    const { result, ws } = stopAfterFirstWord();
+
+    await act(async () => {
+      await cancel(result);
+    });
+    // The server terminates a stopped run for everyone watching it — that is
+    // what the `complete` frame is, and client-router now sends one down both
+    // abort paths. It also bounds the suppression: the leftover error frame
+    // this guard exists for travels AHEAD of the terminator, never behind it.
+    // Anything that arrives afterwards is about something else, and swallowing
+    // it would leave the user with a broken chat and no explanation.
+    act(() => ws.simulateMessage({ type: "complete" }));
+    act(() =>
+      ws.simulateMessage({
+        type: "error",
+        agentName: "Smithers",
+        providerError: "upstream exploded",
+        messageId: "srv-2",
+      })
+    );
+
+    const errorBubbles = messagesOf(result.current.runtime).filter(
+      (m) => m.metadata?.custom?.error !== undefined
+    );
+    expect(errorBubbles).toHaveLength(1);
+  });
+
+  it("keeps the whole conversation when the catch-up finds history unavailable", async () => {
+    const { result, ws } = stopAfterFirstWord();
+
+    await act(async () => {
+      await cancel(result);
+    });
+    // `messages: [], sessionKnown: true` is client-router's "the session exists
+    // but OpenClaw can't answer right now" frame (a restart race, or the
+    // history RPC throwing twice). `shouldReplaceLocalWithServerHistory` bails
+    // on an EMPTY list precisely so that frame can never wipe a conversation —
+    // a guard the stopped-reply anchor must not defeat by handing it a list of
+    // one.
+    act(() => window.dispatchEvent(new Event("focus")));
+    act(() => ws.simulateMessage({ type: "history", messages: [], sessionKnown: true }));
+    act(() => vi.advanceTimersByTime(50));
+
+    const text = renderedText(result.current.runtime);
+    expect(text).toContain("lima");
+    // The earlier, settled turn is what proves nothing was replaced: an anchor
+    // that turned the empty frame into a one-message history would leave the
+    // stopped reply alone on screen.
+    expect(text).toContain("A");
+    expect(messagesOf(result.current.runtime).length).toBeGreaterThanOrEqual(4);
+  });
+
+  it("still applies chunks buffered while the post-stop catch-up was in flight", async () => {
+    const { result, ws } = stopAfterFirstWord();
+
+    await act(async () => {
+      await cancel(result);
+    });
+    // The catch-up is requested first, so everything the server sends until the
+    // history frame lands is HELD in the pre-history buffer. The pipe's own
+    // terminator is exactly that: on `done` it flushes the words it had
+    // buffered for safe emission, which for a stopped run is the tail of the
+    // very reply the stop was pressed to keep.
+    act(() => window.dispatchEvent(new Event("focus")));
+    act(() => ws.simulateMessage({ type: "chunk", messageId: "srv-1", content: " charlie" }));
+    act(() => ws.simulateMessage(HISTORY_WITHOUT_THE_ABORTED_REPLY));
+    act(() => vi.advanceTimersByTime(50));
+
+    expect(renderedText(result.current.runtime)).toContain("lima charlie");
+  });
 });

@@ -39,6 +39,23 @@ test.describe("Chat stop button — user-triggered abort (#550)", () => {
   test("stops the run, audits chat.run_aborted, and leaves the session reusable", async ({
     page,
   }) => {
+    // Count the `history` frames the chat socket RECEIVES. Step 5 forces a
+    // history catch-up and has to wait for it; there is no DOM change to key
+    // off, because the whole point of the assertion that follows is that the
+    // reconcile changes nothing. The frame itself is the event — attached
+    // before the first navigation so the socket cannot open ahead of us.
+    let historyFrames = 0;
+    page.on("websocket", (ws) => {
+      ws.on("framereceived", (frame) => {
+        if (typeof frame.payload !== "string") return;
+        try {
+          if ((JSON.parse(frame.payload) as { type?: string }).type === "history") historyFrames++;
+        } catch {
+          // Not one of ours — the chat protocol is JSON text frames only.
+        }
+      });
+    });
+
     await login(page);
     const agentId = await getSmithersAgentId(page);
     await page.goto(`/chat/${agentId}`);
@@ -69,7 +86,7 @@ test.describe("Chat stop button — user-triggered abort (#550)", () => {
       .filter({ hasText: STREAM_FIRST_WORD });
     await expect(assistantMessage).toBeVisible({ timeout: 15000 });
 
-    // 3. Click stop. Anchor the audit window here (#978, step 8): this suite
+    // 3. Click stop. Anchor the audit window here (#978, step 9): this suite
     //    shares one OpenClaw session and the specs just before this one END
     //    RUNS ON PURPOSE, so the log already holds genuine `chat.agent_error`
     //    rows. Only what lands after the click can be about the click.
@@ -104,12 +121,19 @@ test.describe("Chat stop button — user-triggered abort (#550)", () => {
     //    and each time it read as a flake because whether the poke landed
     //    inside the window above was a coin toss. Firing `focus` here makes the
     //    re-pull happen on EVERY run, so a regression is red every time instead
-    //    of once a quarter. `expect.poll` below waits on the reconciled DOM, not
-    //    on a timer.
+    //    of once a quarter.
+    //
+    //    Waited on the FRAME, not on the DOM. A poll for "an assistant message
+    //    exists" is already satisfied when the focus is dispatched — the
+    //    greeting, the earlier specs' replies and this run's own partial are all
+    //    on screen — so it would resolve on its first sample and wait for
+    //    nothing, leaving the race it just forced still in flight under the
+    //    assertions below. The counter proves the round trip landed; that the
+    //    reconcile it starts left the reply alone is re-checked at step 9,
+    //    behind a completed turn.
+    const framesBeforeFocus = historyFrames;
     await page.evaluate(() => window.dispatchEvent(new Event("focus")));
-    await expect
-      .poll(async () => page.locator('[data-role="assistant"]').count(), { timeout: 10000 })
-      .toBeGreaterThan(0);
+    await expect.poll(() => historyFrames, { timeout: 10000 }).toBeGreaterThan(framesBeforeFocus);
 
     //    Re-assert presence first: `not.toContainText` is also satisfied by a
     //    locator that matches NOTHING, so a reply that vanished from the DOM
@@ -151,7 +175,15 @@ test.describe("Chat stop button — user-triggered abort (#550)", () => {
       { timeout: 30000 }
     );
 
-    // 8. The stop was not recorded as a failure (#978). OpenClaw hands a user
+    // 8. The stopped reply is STILL on screen (#978). The catch-up forced at
+    //    step 5 stages its reconcile behind a timer, so an assertion fired
+    //    immediately after the history frame can pass and then be falsified
+    //    milliseconds later. A completed follow-up turn is the anchor: it is
+    //    strictly after every timer that frame started.
+    await expect(assistantMessage).toBeVisible();
+    await expect(assistantMessage).not.toContainText(STREAM_LAST_WORD);
+
+    // 9. The stop was not recorded as a failure (#978). OpenClaw hands a user
     //    abort to the stream as an error chunk, which Pinchy used to audit as
     //    `chat.agent_error` and mirror into a durable "The model provider timed
     //    out." banner — blaming the provider for the user's own click.
