@@ -1,4 +1,4 @@
-import { and, eq, gt, inArray, lt, sql } from "drizzle-orm";
+import { and, eq, gt, inArray, isNull, lt, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { toolApproval } from "@/db/schema";
 
@@ -176,8 +176,17 @@ export async function decideGate(input: DecideGateInput): Promise<GateDecision> 
  * approvals (skill workshop, exec), and those name calls Pinchy never opened a
  * row for.
  *
- * Restricted to `pending`: a late broadcast must not re-arm a confirmation the
- * user has already decided, or a settled card would look resolvable again.
+ * Accepts a confirmation the user has ALREADY decided, and that is the point.
+ * The decision route flips the row before it resolves, so a broadcast arriving
+ * after a fast decision finds a row that is no longer `pending` — and rejecting
+ * it there does not lose a race, it makes the link permanently impossible while
+ * the run stays parked. Recording the id re-arms nothing: the inbox lists on
+ * `status = pending`, so a decided confirmation stays gone from it either way.
+ * What the id buys is the ability to deliver a decision already made.
+ *
+ * Never overwrites an id already on the row — two approvals for one call cannot
+ * both be live, and the first is the one the run is waiting on. A finished
+ * confirmation is skipped: an address nobody will write to is noise.
  *
  * Scoped to the broadcast's session when it names one — see {@link sessionScope}.
  */
@@ -192,12 +201,52 @@ export async function linkApproval(input: {
     .where(
       and(
         eq(toolApproval.toolCallId, input.toolCallId),
-        eq(toolApproval.status, "pending"),
+        isNull(toolApproval.openclawApprovalId),
+        inArray(toolApproval.status, ["pending", "approved", "denied"]),
         ...sessionScope(input.sessionKey)
       )
     )
     .returning({ id: toolApproval.id });
   return linked ?? null;
+}
+
+/** How long a decision waits for the broadcast that names the parked call, and
+ * how often it looks. The observed gap is one `plugin.approval.request` round
+ * trip (~125 ms on a loaded CI runner) plus the broadcast hop, so this is
+ * roughly an order of magnitude of headroom over the case it exists for. */
+const LINK_WAIT_MS = 2_000;
+const LINK_POLL_MS = 40;
+
+/**
+ * Wait for the approval broadcast to name the call this confirmation is holding.
+ *
+ * A decision made in a confirmation's first moments gets here before the
+ * broadcast does: the gate writes `approval.requested` from inside gate-check,
+ * so the card is actionable a full `plugin.approval.request` round trip before
+ * Pinchy learns OpenClaw's id. Answering "nothing is waiting" in that window is
+ * simply untrue — the run IS parked, we just do not know its address yet, and
+ * the user is told their approval did not take when it did.
+ *
+ * Bounded, because the broadcast may genuinely never come (the bridge was down,
+ * Pinchy restarted after it, or the row predates #1132). Then the honest answer
+ * is "no", and it has to arrive rather than hang.
+ */
+export async function awaitApprovalLink(
+  id: string,
+  opts: { timeoutMs?: number; pollMs?: number } = {}
+): Promise<string | null> {
+  const pollMs = opts.pollMs ?? LINK_POLL_MS;
+  const deadline = Date.now() + (opts.timeoutMs ?? LINK_WAIT_MS);
+  for (;;) {
+    const [row] = await db
+      .select({ approvalId: toolApproval.openclawApprovalId })
+      .from(toolApproval)
+      .where(eq(toolApproval.id, id))
+      .limit(1);
+    if (row?.approvalId) return row.approvalId;
+    if (Date.now() >= deadline) return null;
+    await new Promise((resolve) => setTimeout(resolve, pollMs));
+  }
 }
 
 /**

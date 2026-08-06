@@ -462,6 +462,35 @@ describe("approval routes (integration, real DB)", () => {
       expect(entry.detail).toMatchObject({ resumed: false });
     });
 
+    /**
+     * The decision can beat the broadcast, and this is not a hypothetical: the
+     * gate writes `approval.requested` inside gate-check, so the card is
+     * actionable a full `plugin.approval.request` round trip before Pinchy
+     * learns OpenClaw's id. It made the approvals E2E flake — and it was not
+     * merely a lost race, because the route flips the row before resolving, so
+     * a broadcast arriving after that found a row that was no longer `pending`
+     * and could never link at all. The user got "the agent is no longer waiting
+     * for this decision" about a run that was still parked.
+     */
+    it("waits for the broadcast when the decision gets there first", async () => {
+      const blocked = await (
+        await gateCheck(gateReq({ ...gateBody(), toolCallId: "call_race" }))
+      ).json();
+      setSession(user);
+      // The broadcast lands mid-decision, exactly as it does on a loaded runner.
+      setTimeout(() => {
+        void linkApproval({ approvalId: "plugin:raced", toolCallId: "call_race" });
+      }, 80);
+
+      const res = await decide(decideReq({ decision: "approve" }), ctx(blocked.requestId));
+
+      expect(gatewayRequest).toHaveBeenCalledWith("plugin.approval.resolve", {
+        id: "plugin:raced",
+        decision: "allow-once",
+      });
+      expect(await res.json()).toMatchObject({ resumed: true });
+    });
+
     it("does not call the gateway when no run is parked on that call", async () => {
       // No approval id on the row: the gate refused without suspending, the
       // approval already timed out, or the row predates #1132.

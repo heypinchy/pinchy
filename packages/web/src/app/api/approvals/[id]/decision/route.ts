@@ -3,7 +3,7 @@ import { eq } from "drizzle-orm";
 import { withAuth } from "@/lib/api-auth";
 import { parseRequestBody } from "@/lib/api-validation";
 import { decisionSchema } from "@/lib/schemas/approvals";
-import { resolveDecision } from "@/lib/approvals/service";
+import { resolveDecision, awaitApprovalLink } from "@/lib/approvals/service";
 import { resolvePluginApproval } from "@/server/resolve-plugin-approval";
 import { type AuditLogEntry } from "@/lib/audit";
 import { deferAuditLog } from "@/lib/audit-deferred";
@@ -63,10 +63,15 @@ export const POST = withAuth<RouteContext>(async (request, { params }, session) 
     .where(eq(users.id, req.requesterId))
     .limit(1);
 
-  const resumed = await resolvePluginApproval({
-    approvalId: req.openclawApprovalId,
-    decision,
-  });
+  // A decision made in a confirmation's first moments arrives before the
+  // broadcast that names the parked call: `approval.requested` is written from
+  // inside gate-check, so the card is actionable a full `plugin.approval.request`
+  // round trip before Pinchy learns OpenClaw's id. Reading the row once and
+  // reporting "nothing is waiting" there tells the user their approval did not
+  // take when the run is in fact still parked.
+  const approvalId = req.openclawApprovalId ?? (await awaitApprovalLink(req.id));
+
+  const resumed = await resolvePluginApproval({ approvalId, decision });
 
   const entry: AuditLogEntry = {
     actorType: "user",

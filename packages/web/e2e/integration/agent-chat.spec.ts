@@ -759,7 +759,12 @@ test.describe("Plugin behavior — pinchy-approvals", () => {
       });
       const requestId = (requested.detail as { request: { id: string } }).request.id;
 
-      // The acting user grants their own pending confirmation.
+      // The acting user grants their own pending confirmation — immediately,
+      // and deliberately so. `approval.requested` is written from inside
+      // gate-check, so this decision can reach the route before OpenClaw's
+      // approval broadcast reaches Pinchy. Do not "stabilise" this by waiting
+      // first: that window is the thing under test, and closing it is the
+      // route's job (`awaitApprovalLink`), not the test's.
       const decision = await page.request.post(`/api/approvals/${requestId}/decision`, {
         data: { decision: "approve" },
       });
