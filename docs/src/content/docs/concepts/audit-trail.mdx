@@ -200,7 +200,12 @@ Two fields answer "did this confirmation actually do anything", from the two end
 
 **`resolution`**, on `approval.consumed` and `approval.expired`, is the agent's end: what the runtime did with the call. It is one of `allow-once`, `allow-always`, `deny`, `timeout` or `cancelled` — the last two being outcomes no button produces, which is why they only ever appear here.
 
-Read together, a `granted` with `resumed: true` followed by a `consumed` is one action cleared and then run. A `granted` with no `consumed` deserves a look: the usual cause is that the agent stopped waiting, and the matching `expired` row will say so. For certainty that the action itself executed, pair the grant with the `tool.<name>` row the agent writes when a tool runs.
+Read together, a `granted` with `resumed: true` followed by a `consumed` is one action cleared and then run. A `granted` with no `consumed` deserves a look, and `resumed` is where to start:
+
+- **`resumed: false`** — the decision never reached the agent, so the tool did not run. That row is the whole story; no `expired` row follows it, because a confirmation somebody decided is settled and only an undecided one can expire.
+- **`resumed: true`** — the agent was told, so the action very likely ran and only the runtime's report of it went missing. The `tool.<name>` row the agent writes when a tool runs is the evidence either way, and the agent runtime logs a warning when it cannot get a report through.
+
+An `approval.expired` therefore never follows a `granted` or a `denied`: it belongs to confirmations nobody answered.
 
 The same sweep also reaps settled confirmations after 30 days and records that as a single `approval.gc` summary row (`swept`, `retentionDays`, `sweepId`) rather than one row per deleted record.
 
