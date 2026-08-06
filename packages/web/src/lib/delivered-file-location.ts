@@ -29,6 +29,7 @@
 
 import { createHash } from "crypto";
 import { createReadStream } from "fs";
+import { stat } from "fs/promises";
 import { join, resolve, sep } from "path";
 import { getWorkspacePath } from "@/lib/workspace";
 import { realpathWithinDir } from "@/lib/agent-file-access";
@@ -79,14 +80,31 @@ export async function resolveInZone(
  * Used when a grant is being **minted**: the deliverer does not know which zone
  * the agent wrote to, so it looks the same way the pre-#903 serving route did
  * and then records the answer. From then on the grant names it outright.
+ *
+ * `modifiedAtMs` comes back with it because the minting side needs to tell
+ * "this run wrote it" from "somebody else's run did". A workspace is shared by
+ * every member of a shared agent, so changed bytes alone do not mean the
+ * current user was handed anything — see the re-grant gate in
+ * `deliverRunArtifacts`. It is `stat`ed here rather than at the call site so
+ * the time and the path come from the same resolution.
  */
 export async function locateDeliveredFile(
   agentId: string,
   safeName: string
-): Promise<{ zone: DeliveryZone; realPath: string } | null> {
+): Promise<{ zone: DeliveryZone; realPath: string; modifiedAtMs: number } | null> {
   for (const zone of DELIVERY_ZONES) {
     const realPath = await resolveInZone(agentId, zone, safeName);
-    if (realPath) return { zone, realPath };
+    if (!realPath) continue;
+    try {
+      // eslint-disable-next-line security/detect-non-literal-fs-filename -- realPath is the output of realpathWithinDir, i.e. a path already proven to resolve inside the agent's own workspace zone.
+      const { mtimeMs } = await stat(realPath);
+      return { zone, realPath, modifiedAtMs: mtimeMs };
+    } catch {
+      // Resolution succeeded, so the file was there a moment ago. Treat a
+      // failed stat exactly like a miss and keep looking, rather than failing
+      // the whole delivery on a race with a concurrent delete.
+      continue;
+    }
   }
   return null;
 }

@@ -1573,7 +1573,13 @@ export class ClientRouter {
       // any file/image blocks into per-user download grants + chips. Wrapped so a
       // failed poll never breaks the run.
       try {
-        await this.deliverRunArtifacts(sessionKey, agent, clientWs, lastStreamedMessageId);
+        await this.deliverRunArtifacts(
+          sessionKey,
+          agent,
+          clientWs,
+          lastStreamedMessageId,
+          runStartedAt
+        );
       } catch (err) {
         console.error("[delivery] artifacts poll failed", err);
       }
@@ -1874,11 +1880,16 @@ export class ClientRouter {
    *
    * Keying that diff on the filename alone was the natural reading before the
    * pin below, and wrong after it: a grant answers for bytes now, so a name
-   * that comes back carrying different ones is a new delivery, not a repeat.
-   * Keyed on the name, `pinchy_delete` followed by regenerating the same name
-   * (`pinchy_generate_file` restarts its collision loop at the bare name) left
-   * the user with a chip whose hash names the deleted file and no new chip to
-   * replace it — refusing the new bytes AND minting nothing.
+   * that comes back carrying different ones may be a new delivery rather than a
+   * repeat. Keyed on the name, `pinchy_delete` followed by regenerating the same
+   * name (`pinchy_generate_file` restarts its collision loop at the bare name)
+   * left the user with a chip whose hash names the deleted file and no new chip
+   * to replace it — refusing the new bytes AND minting nothing.
+   *
+   * Keying it on bytes ALONE is wrong in the other direction, and dangerously
+   * so: on a shared agent another member's write changes those bytes without
+   * delivering anything to this user. `runStartedAt` is what tells the two
+   * apart — see the gate at the re-grant branch below.
    *
    * Only files the serving route can actually stream are delivered — a type
    * outside SERVABLE_DELIVERED_MIMES would 415 on download, so we never mint a
@@ -1901,7 +1912,9 @@ export class ClientRouter {
     sessionKey: string,
     agent: { id: string; name: string },
     clientWs: WebSocket,
-    messageId: string
+    messageId: string,
+    /** When this run began — the window a re-delivery's bytes must fall inside. */
+    runStartedAt: Date
   ): Promise<void> {
     const res = await this.openclawClient.request("artifacts.list", { sessionKey });
     const artifacts =
@@ -1967,9 +1980,15 @@ export class ClientRouter {
       const located = await locateDeliveredFile(agent.id, filename);
       const contentHash = located ? await hashFileBytes(located.realPath) : null;
       if (!located || !contentHash) {
-        console.error(
-          `[delivery] no readable file behind artifact "${filename}" for agent ${agent.id}; skipping the grant`
-        );
+        // An artifact whose file was never there is worth a line. One that was
+        // delivered and has since been removed (`pinchy_delete`) is not: the
+        // list is cumulative, so this would log on every later turn of the
+        // conversation, forever, for an ordinary thing to have happened.
+        if (!delivered.has(filename)) {
+          console.error(
+            `[delivery] no readable file behind artifact "${filename}" for agent ${agent.id}; skipping the grant`
+          );
+        }
         continue;
       }
 
@@ -1978,7 +1997,30 @@ export class ClientRouter {
       // turn — the price of asking about bytes instead of about a name. It is
       // bounded by what the session has delivered, and the serving route pays
       // the same read on every download.
-      if (delivered.get(filename)?.has(contentHash)) continue;
+      const priorHashes = delivered.get(filename);
+      if (priorHashes?.has(contentHash)) continue;
+
+      // Changed bytes under an already-delivered name are not automatically a
+      // new delivery TO THIS USER, and treating them as one would undo #903
+      // rather than complete it. A shared agent's workspace is written by every
+      // member, so member B's `pinchy_write(overwrite=true)` changes the bytes
+      // behind member A's grant; the next ordinary turn in A's conversation —
+      // about anything — then polls a cumulative list that still names the file
+      // and would hand A a grant, a chip and a `file.delivered` row for
+      // something A's agent never produced for them. That is gap 1 of the issue
+      // with a fresh chip drawn over it.
+      //
+      // What separates a re-delivery from a foreign overwrite is WHEN the bytes
+      // were written: a delivery to this user was written during this user's
+      // run. `runStartedAt` already carries a small clock-skew buffer for the
+      // retry-gate lookup, and it is reused rather than re-derived so there is
+      // one definition of when this run began.
+      //
+      // Only the re-grant path is gated. A FIRST delivery is not: the file may
+      // legitimately predate the run (a poll that failed on an earlier turn, a
+      // grant insert that errored), and there is nothing to re-open — an
+      // artifact only reaches this user's list if their own agent put it there.
+      if (priorHashes && located.modifiedAtMs < runStartedAt.getTime()) continue;
 
       try {
         await db.insert(agentDeliveredFiles).values({
@@ -2009,6 +2051,11 @@ export class ClientRouter {
           agent: { id: agent.id, name: agent.name },
           filename,
           mimeType,
+          // Which file, not just which name. A name can be delivered more than
+          // once (the re-grant path above), and the hash is what the grant is
+          // keyed on — without it two rows for one filename say the same thing
+          // about different bytes. It is a digest, never the contents.
+          contentHash,
         },
         outcome: "success" as const,
       };

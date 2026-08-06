@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { EventEmitter } from "events";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, utimesSync } from "fs";
 import { createHash } from "crypto";
 import { join } from "path";
 import { tmpdir } from "os";
@@ -104,17 +104,31 @@ function makeRouter(artifacts: Artifact[]) {
   return { router, client };
 }
 
-async function deliver(router: ClientRouter, clientWs: unknown) {
+/**
+ * `runStartedAt` bounds a RE-delivery: changed bytes only count as one when they
+ * were written during this run (see the gate in `deliverRunArtifacts`). The
+ * default matches production — `Date.now() - 2000`, the same clock-skew buffer
+ * the retry gate uses — so a file a test just wrote reads as written by this
+ * run. A test about a foreign overwrite backdates the FILE, not this.
+ */
+async function deliver(router: ClientRouter, clientWs: unknown, runStartedAt?: Date) {
   await (
     router as unknown as {
       deliverRunArtifacts: (
         sessionKey: string,
         agent: { id: string; name: string },
         clientWs: unknown,
-        messageId: string
+        messageId: string,
+        runStartedAt: Date
       ) => Promise<void>;
     }
-  ).deliverRunArtifacts(SESSION_KEY, agent, clientWs, "msg-1");
+  ).deliverRunArtifacts(
+    SESSION_KEY,
+    agent,
+    clientWs,
+    "msg-1",
+    runStartedAt ?? new Date(Date.now() - 2000)
+  );
 }
 
 describe("ClientRouter file-delivery glue (artifacts.list poll)", () => {
@@ -244,6 +258,24 @@ describe("ClientRouter file-delivery glue (artifacts.list poll)", () => {
     expect(detail).not.toHaveProperty("zone");
   });
 
+  // A name can now be delivered more than once (see the re-grant test below), so
+  // `filename` alone no longer identifies WHICH file a row is about — two rows
+  // for `invoice.pdf` would be indistinguishable. The hash is what the grant is
+  // keyed on, so it is what makes the row say which delivery it records
+  // (AGENTS.md § "Audit logging rules": log what changed).
+  it("names the delivered bytes in the audit row, not just the filename", async () => {
+    const { router } = makeRouter([
+      { type: "file", title: "invoice.pdf", mimeType: "application/pdf" },
+    ]);
+    await deliver(router, clientWs);
+
+    expect(mockAppendAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        detail: expect.objectContaining({ contentHash: sha256(DEFAULT_BYTES) }),
+      })
+    );
+  });
+
   it("delivers image artifacts too", async () => {
     const { router } = makeRouter([{ type: "image", title: "chart.png", mimeType: "image/png" }]);
     await deliver(router, clientWs);
@@ -333,6 +365,62 @@ describe("ClientRouter file-delivery glue (artifacts.list poll)", () => {
       expect.objectContaining({ filename: "invoice.pdf", contentHash: sha256(DEFAULT_BYTES) })
     );
     expect(sentFrames().some((f) => f.type === "file")).toBe(true);
+  });
+
+  // `artifacts.list` is cumulative, so a file that was delivered and has since
+  // been removed comes back on EVERY later turn of the conversation. Logging
+  // that as an error would put one line per turn per deleted file into the
+  // container log, forever, for something ordinary — `pinchy_delete` doing its
+  // job. A name that was never delivered is a different matter and still logs.
+  it("stays quiet about a delivered file that has since been deleted", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      mockGrantSelect.mockReturnValue([
+        { filename: "gone.pdf", contentHash: sha256(DEFAULT_BYTES) },
+      ]);
+      const { router } = makeRouter([
+        { type: "file", title: "gone.pdf", mimeType: "application/pdf" },
+      ]);
+      await deliver(router, clientWs);
+
+      expect(mockInsertValues).not.toHaveBeenCalled();
+      expect(errorSpy).not.toHaveBeenCalled();
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  // The other half of that rule, and the one #903 is about. "The bytes changed"
+  // does NOT mean "this user was handed something new": on a shared agent every
+  // member's chats write into one workspace, so member B's
+  // `pinchy_write(workbench/report.pdf, overwrite=true)` changes the bytes
+  // behind member A's grant too. `artifacts.list` is cumulative, so the next
+  // ordinary turn in A's conversation — any turn, about anything — polls a list
+  // that still names `report.pdf` and finds B's bytes on disk.
+  //
+  // Re-granting on "different bytes" alone hands A a grant, a chip and a
+  // `file.delivered` audit row for a file A's agent never produced for them,
+  // which is exactly gap 1 of the issue with a fresh chip drawn on top. What
+  // separates the two cases is WHEN the bytes were written: a delivery to this
+  // user was written during this user's run.
+  it("does not re-grant a file another member's turn overwrote", async () => {
+    const foreignBytes = Buffer.from("member-B-confidential");
+    writeArtifactFile("workbench", "report.pdf", foreignBytes);
+    // Written before this run started, i.e. by someone else's turn.
+    const longAgo = new Date(Date.now() - 60_000);
+    utimesSync(join(tmpRoot, agent.id, "workbench", "report.pdf"), longAgo, longAgo);
+
+    mockGrantSelect.mockReturnValue([
+      { filename: "report.pdf", contentHash: sha256(Buffer.from("what-A-was-handed")) },
+    ]);
+    const { router } = makeRouter([
+      { type: "file", title: "report.pdf", mimeType: "application/pdf" },
+    ]);
+    await deliver(router, clientWs);
+
+    expect(mockInsertValues).not.toHaveBeenCalled();
+    expect(mockAppendAuditLog).not.toHaveBeenCalled();
+    expect(sentFrames().some((f) => f.type === "file")).toBe(false);
   });
 
   // A grant minted before the pin carries no hash, so "did the bytes change?"

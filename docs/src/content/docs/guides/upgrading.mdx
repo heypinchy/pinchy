@@ -300,7 +300,7 @@ A download chip in chat used to point at a filename. An agent's workspace is sha
 
 Each delivery now records where the file was and a checksum of its contents, and a download that no longer matches is refused. Nothing to configure, and no action on upgrade.
 
-Two things to know. Links handed out **before** this upgrade cannot be checked — there is no honest way to reconstruct what they were given, and guessing from what is on disk today would certify exactly the swap this prevents — so they keep working the way they did. And a link whose file really is replaced or deleted now stops working instead of serving whatever took its place: ask the agent for the file again and you get a fresh one. That is also what `pinchy_delete` above runs into — an agent retiring a file it wrote ends the download link that file was handed out on.
+Two things to know. Links handed out **before** this upgrade cannot be checked — there is no honest way to reconstruct what they were given, and guessing from what is on disk today would certify exactly the swap this prevents — so they keep working the way they did. And a link stops working when its file is deleted, or replaced by anything other than the agent working in that same conversation: it returns "not found" instead of serving whatever took its place. Ask the agent for the file again and you get a fresh one. That is also what `pinchy_delete` above runs into — an agent retiring a file it wrote ends the download link that file was handed out on, and hands out a new one if it writes the file again.
 
 #### Automations move into the agent
 

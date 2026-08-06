@@ -107,6 +107,14 @@ export const GET = withAuth<Params>(async (_req, { params }, session) => {
     // it that does not also confirm the file exists.
     if (!hash || !hashes.has(hash)) continue;
 
+    // The check is a read before a read, so a window remains: replacing the
+    // resolved, in-zone file between the hash and the stream serves bytes this
+    // never verified. Closing it needs a file HANDLE held across both — hash
+    // the fd, stream the fd — which `streamWorkspaceFile` (shared with the
+    // uploads route) does not take. Stated rather than implied, because what
+    // this check buys is a much larger window closed, not the absence of one:
+    // before it, every download after an overwrite served the new bytes, with
+    // no timing needed at all.
     const res = await streamWorkspaceFile(realPath, safeName);
     if (res.status !== 404) return res;
   }
