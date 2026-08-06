@@ -63,6 +63,7 @@ import { describeError } from "./error-detail";
 import { captureRunFingerprint } from "./fingerprint";
 import { makeTokenCollector } from "./token-usage";
 import { setupHetznerAgent } from "./eval-shared";
+import { assertOdooMockEnforcesMany2One, resolveOdooMockJsonRpcUrl } from "./odoo-mock-fidelity";
 import type { PromptVariantId, RunResult } from "../src/lib/eval/types";
 
 /**
@@ -130,6 +131,11 @@ test.describe("Eval-v1: model sweep (real Ollama Cloud)", () => {
     await seedSetup();
     await waitForPinchy();
     await waitForOdooMock();
+    // #1165: refuse to sweep against a STALE odoo-mock. A mock image predating
+    // the many2one validation fix (#615) silently credits invalid account_id
+    // writes and contaminates the scorecard — exactly how the 2026-07-13
+    // line-items baseline shipped. Abort loudly before burning hours + tokens.
+    await assertOdooMockEnforcesMany2One(resolveOdooMockJsonRpcUrl());
     await waitForGraphMock();
     const cookie = await login();
 
