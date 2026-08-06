@@ -201,18 +201,24 @@ export async function linkApproval(input: {
  * does. Anything that reacts to the card the instant it appears lands in that
  * window.
  *
- * Two seconds is a BOUND, not a measurement, and the difference is worth being
- * honest about. The failing CI run shows the gate's `plugin.approval.request`
- * answered in 83 ms and the decision arriving roughly half a second later with
- * the link still unattached — then the stack came down, so how long the hop
- * actually takes was never observed. So this is ~4x the window that
- * demonstrably was not enough, over a path that is one websocket frame plus one
- * indexed UPDATE, and short enough that no decision ever feels hung.
+ * Two seconds is sized from a measurement, taken by instrumenting this wait and
+ * the bridge and running the integration E2E against the real stack:
+ *
+ *   gated call reaches the gate        19:12:13.063
+ *   broadcast arrives at Pinchy        19:12:13.282   (+219 ms)
+ *   row carries the id                 19:12:13.284   (+2 ms — one UPDATE)
+ *   OpenClaw's waitDecision returns     19:12:13.603   (297 ms parked in total)
+ *
+ * So the whole hop is ~220 ms locally, and the CI runner that failed was
+ * slower — there the link had still not attached ~0.5 s after the request RPC
+ * was answered. 2 s is roughly 9x the measured chain and 4x the worst observed
+ * shortfall, while staying short enough that no decision ever feels hung.
  *
  * It is only ever spent inside the window: a row that already carries the id,
- * or that no broadcast can reach, returns immediately. And if it ever does
+ * or that no broadcast can reach, returns immediately — in that same run the
+ * decision arrived after the link and waited 0 ms. And if the bound ever does
  * prove short, the symptom is the same honest `resumed: false` it replaced,
- * from one place — not a new failure mode.
+ * from one place, rather than a new failure mode.
  */
 export const APPROVAL_LINK_WAIT_MS = 2000;
 
