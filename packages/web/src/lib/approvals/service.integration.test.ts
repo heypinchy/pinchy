@@ -253,6 +253,25 @@ describe("approvals gate decision service", () => {
     expect(row.toolCallId).toBe("call_2");
   });
 
+  // The approval id has to move with the call id, for exactly the reason above.
+  // OpenClaw mints one approval per attempt and discards the one before it, so
+  // an id left over from the attempt that OPENED the row addresses an approval
+  // that no longer exists — and `linkApproval` refuses to overwrite an id, so
+  // the dead one would be permanent. Clearing it is what lets the next
+  // broadcast land: it is not "the first approval wins", it is "the approval
+  // for the call this row is pointing at wins".
+  it("drops the previous attempt's approval id when a reused row is re-pointed", async () => {
+    const r1 = await decideGate({ ...base(), toolCallId: "call_1" });
+    await linkApproval({ approvalId: "plugin:1", toolCallId: "call_1" });
+
+    await decideGate({ ...base(), toolCallId: "call_2" });
+
+    const relinked = await linkApproval({ approvalId: "plugin:2", toolCallId: "call_2" });
+    expect(relinked?.id).toBe(r1.requestId);
+    const [row] = await db.select().from(toolApproval).where(eq(toolApproval.id, r1.requestId));
+    expect(row.openclawApprovalId).toBe("plugin:2");
+  });
+
   it("allows and consumes exactly once after approval, then re-gates", async () => {
     const r = await decideGate(base());
     await resolveDecision({ id: r.requestId, approverId: requesterId, decision: "approve" });

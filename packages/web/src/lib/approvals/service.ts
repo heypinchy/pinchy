@@ -97,7 +97,7 @@ export async function decideGate(input: DecideGateInput): Promise<GateDecision> 
   }
 
   const existing = await db
-    .select({ id: toolApproval.id })
+    .select({ id: toolApproval.id, toolCallId: toolApproval.toolCallId })
     .from(toolApproval)
     .where(
       and(
@@ -117,12 +117,20 @@ export async function decideGate(input: DecideGateInput): Promise<GateDecision> 
     // resolve an approval OpenClaw has already discarded: the user clicks
     // approve, gets a success toast, and the run stays stuck.
     //
-    // Only when the new attempt actually carries an id — overwriting a usable
-    // one with `undefined` trades a stale target for no target at all.
-    if (input.toolCallId) {
+    // The approval id has to go with it, and for the same reason: OpenClaw
+    // mints one approval per attempt and drops the one before it, so an id
+    // belonging to the previous call is already dead. Clearing it is what lets
+    // the next broadcast land at all — {@link linkApproval} refuses to
+    // overwrite an id, so a dead one left here would be permanent.
+    //
+    // Only when the new attempt actually carries an id, and only when that id
+    // has really changed: overwriting a usable target with `undefined` trades a
+    // stale one for none, and re-clearing on a repeated gate-check for the SAME
+    // call would throw away an approval that is still live.
+    if (input.toolCallId && input.toolCallId !== existing[0].toolCallId) {
       await db
         .update(toolApproval)
-        .set({ toolCallId: input.toolCallId })
+        .set({ toolCallId: input.toolCallId, openclawApprovalId: null })
         .where(eq(toolApproval.id, existing[0].id));
     }
     return { decision: "block", requestId: existing[0].id, created: false };
@@ -184,9 +192,12 @@ export async function decideGate(input: DecideGateInput): Promise<GateDecision> 
  * `status = pending`, so a decided confirmation stays gone from it either way.
  * What the id buys is the ability to deliver a decision already made.
  *
- * Never overwrites an id already on the row — two approvals for one call cannot
- * both be live, and the first is the one the run is waiting on. A finished
- * confirmation is skipped: an address nobody will write to is noise.
+ * Never overwrites an id already on the row — two approvals for ONE call cannot
+ * both be live, and the first is the one the run is waiting on. That is a rule
+ * about the call, not about the row: a retry re-points the row at a new call,
+ * and {@link decideGate} clears the id in the same statement precisely so the
+ * new call's broadcast can land here. A finished confirmation is skipped: an
+ * address nobody will write to is noise.
  *
  * Scoped to the broadcast's session when it names one — see {@link sessionScope}.
  */

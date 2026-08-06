@@ -53,7 +53,7 @@ export function attachPluginApprovalBridge(
     //
     // The whole `approval` goes through — including the session, when OpenClaw
     // named one — because a tool call id is not a key on its own (see
-    // `SESSION_SCOPE` in lib/approvals/service.ts).
+    // `sessionScope` in lib/approvals/service.ts).
     void link(approval)
       .then((linked) => {
         // `null` is the ordinary case, not a fault: the same broadcast carries
