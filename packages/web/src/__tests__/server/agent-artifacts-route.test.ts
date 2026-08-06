@@ -156,6 +156,23 @@ describe("GET /api/agents/[agentId]/artifacts/[filename]", () => {
     expect(res.status).toBe(404);
   });
 
+  // The ordinary shape after a file is replaced: the user holds the grant for
+  // what they were handed first AND one for what replaced it, because the
+  // delivery glue mints on changed bytes rather than on a new name. Their older
+  // chip points at the same filename, so it must open the file they currently
+  // hold a grant for instead of dying with the bytes it was minted from.
+  it("serves the current file when a stale grant for the same name sits beside it", async () => {
+    mockGrantLookup.mockResolvedValue([
+      ...pinnedGrant("workbench", SECRET_PDF_BYTES), // the replaced file
+      ...pinnedGrant("workbench", PDF_BYTES), // what replaced it
+    ]);
+    writeArtifact("agent-1", "workbench", "report.pdf", PDF_BYTES);
+
+    const res = await callGET("agent-1", "report.pdf");
+    expect(res.status).toBe(200);
+    expect(Buffer.from(await res.arrayBuffer()).equals(PDF_BYTES)).toBe(true);
+  });
+
   it("sets Cache-Control: private (delivered files are user-scoped, never public)", async () => {
     writeArtifact("agent-1", "workbench", "report.pdf", PDF_BYTES);
     const res = await callGET("agent-1", "report.pdf");

@@ -290,9 +290,13 @@ describe("ClientRouter file-delivery glue (artifacts.list poll)", () => {
   });
 
   it("skips an artifact already granted to this user (idempotent re-poll)", async () => {
-    // The batched grant lookup returns the filenames already granted to this
-    // (agent, user); a matching filename is skipped.
-    mockGrantSelect.mockReturnValue([{ filename: "invoice.pdf" }]);
+    // The batched grant lookup returns what is already granted to this
+    // (agent, user); the same file, unchanged, is skipped. `artifacts.list` is
+    // cumulative, so this runs on every turn of a conversation that ever
+    // delivered something.
+    mockGrantSelect.mockReturnValue([
+      { filename: "invoice.pdf", contentHash: sha256(DEFAULT_BYTES) },
+    ]);
     const { router } = makeRouter([
       { type: "file", title: "invoice.pdf", mimeType: "application/pdf" },
     ]);
@@ -300,6 +304,49 @@ describe("ClientRouter file-delivery glue (artifacts.list poll)", () => {
 
     expect(mockInsertValues).not.toHaveBeenCalled();
     expect(mockAppendAuditLog).not.toHaveBeenCalled();
+    expect(sentFrames().some((f) => f.type === "file")).toBe(false);
+  });
+
+  // The pin (#903) makes a grant answer for BYTES, so the idempotency set has
+  // to be keyed on bytes too. Keyed on the filename alone, this sequence leaves
+  // the user with no working download at all:
+  //
+  //   1. the agent generates `invoice.pdf`     -> grant pinned to those bytes
+  //   2. `pinchy_delete` removes it (#1159)
+  //   3. the agent generates `invoice.pdf` again — `pinchy_generate_file`
+  //      restarts its collision loop at the bare name, so the name comes back
+  //   4. the filename is already in the set  => no grant, no chip
+  //
+  // and the chip from step 1 now 404s, because its hash is the deleted file's.
+  // Before the pin the old chip would have served the new bytes; that was the
+  // bug. Refusing them AND minting nothing is not the fix, it is a dead end.
+  it("mints a fresh grant when a delivered filename comes back with different bytes", async () => {
+    mockGrantSelect.mockReturnValue([
+      { filename: "invoice.pdf", contentHash: sha256(Buffer.from("the-deleted-file")) },
+    ]);
+    const { router } = makeRouter([
+      { type: "file", title: "invoice.pdf", mimeType: "application/pdf" },
+    ]);
+    await deliver(router, clientWs);
+
+    expect(mockInsertValues).toHaveBeenCalledWith(
+      expect.objectContaining({ filename: "invoice.pdf", contentHash: sha256(DEFAULT_BYTES) })
+    );
+    expect(sentFrames().some((f) => f.type === "file")).toBe(true);
+  });
+
+  // A grant minted before the pin carries no hash, so "did the bytes change?"
+  // has no answer for it — and re-polling would mint a duplicate row on every
+  // turn forever. Keep the old skip, and let the legacy grant serve the way it
+  // always did until it ages out.
+  it("does not re-grant a legacy filename that carries no hash to compare", async () => {
+    mockGrantSelect.mockReturnValue([{ filename: "invoice.pdf", contentHash: null }]);
+    const { router } = makeRouter([
+      { type: "file", title: "invoice.pdf", mimeType: "application/pdf" },
+    ]);
+    await deliver(router, clientWs);
+
+    expect(mockInsertValues).not.toHaveBeenCalled();
     expect(sentFrames().some((f) => f.type === "file")).toBe(false);
   });
 

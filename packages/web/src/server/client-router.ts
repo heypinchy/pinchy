@@ -1867,9 +1867,18 @@ export class ClientRouter {
    *
    * `artifacts.list` is cumulative across the whole session, so this runs after
    * every turn and must be idempotent: a grant already recorded for this user +
-   * agent + filename is skipped (no duplicate insert, audit, or chip). Because
-   * the list is cumulative we fetch the caller's already-granted filenames ONCE
-   * per poll (not once per artifact) and diff in memory.
+   * agent + filename **for those same bytes** is skipped (no duplicate insert,
+   * audit, or chip). Because the list is cumulative we fetch the caller's
+   * already-granted deliveries ONCE per poll (not once per artifact) and diff
+   * in memory.
+   *
+   * Keying that diff on the filename alone was the natural reading before the
+   * pin below, and wrong after it: a grant answers for bytes now, so a name
+   * that comes back carrying different ones is a new delivery, not a repeat.
+   * Keyed on the name, `pinchy_delete` followed by regenerating the same name
+   * (`pinchy_generate_file` restarts its collision loop at the bare name) left
+   * the user with a chip whose hash names the deleted file and no new chip to
+   * replace it — refusing the new bytes AND minting nothing.
    *
    * Only files the serving route can actually stream are delivered — a type
    * outside SERVABLE_DELIVERED_MIMES would 415 on download, so we never mint a
@@ -1908,20 +1917,36 @@ export class ClientRouter {
     );
     if (candidates.length === 0) return;
 
-    // One batched lookup of this (agent, user)'s already-granted filenames — the
-    // idempotency set for a cumulative artifacts.list. `delivered` also absorbs
-    // titles minted within THIS poll so a duplicate title can't double-insert.
+    // One batched lookup of this (agent, user)'s already-granted deliveries —
+    // the idempotency set for a cumulative artifacts.list. `delivered` also
+    // absorbs what is minted within THIS poll so a duplicate title can't
+    // double-insert.
+    //
+    // A filename maps to the hashes already granted for it. `null` stands for a
+    // grant minted before the pin existed: "did the bytes change?" has no answer
+    // for those, and re-polling them would append a duplicate row on every turn
+    // forever, so they keep the old name-only skip until they age out.
     const priorGrants = await db
-      .select({ filename: agentDeliveredFiles.filename })
+      .select({
+        filename: agentDeliveredFiles.filename,
+        contentHash: agentDeliveredFiles.contentHash,
+      })
       .from(agentDeliveredFiles)
       .where(
         and(eq(agentDeliveredFiles.agentId, agent.id), eq(agentDeliveredFiles.userId, this.userId))
       );
-    const delivered = new Set(priorGrants.map((g) => g.filename));
+    const delivered = new Map<string, Set<string | null>>();
+    for (const g of priorGrants) {
+      const hashes = delivered.get(g.filename) ?? new Set<string | null>();
+      hashes.add(g.contentHash ?? null);
+      delivered.set(g.filename, hashes);
+    }
 
     for (const a of candidates) {
       const filename = a.title;
-      if (delivered.has(filename)) continue;
+      // A legacy grant short-circuits before the file is read: it can never be
+      // matched on bytes, so hashing for it would buy nothing.
+      if (delivered.get(filename)?.has(null)) continue;
       const mimeType = a.mimeType ?? "application/octet-stream";
 
       // Only deliver what the serving route can stream. A non-servable type
@@ -1948,6 +1973,13 @@ export class ClientRouter {
         continue;
       }
 
+      // Now that the bytes are known, the real idempotency check. This is what
+      // costs the cumulative list a re-hash per already-delivered artifact per
+      // turn — the price of asking about bytes instead of about a name. It is
+      // bounded by what the session has delivered, and the serving route pays
+      // the same read on every download.
+      if (delivered.get(filename)?.has(contentHash)) continue;
+
       try {
         await db.insert(agentDeliveredFiles).values({
           userId: this.userId,
@@ -1964,7 +1996,9 @@ export class ClientRouter {
         console.error("[delivery] failed to record delivery grant", err);
         continue;
       }
-      delivered.add(filename);
+      const grantedHashes = delivered.get(filename) ?? new Set<string | null>();
+      grantedHashes.add(contentHash);
+      delivered.set(filename, grantedHashes);
 
       const auditEntry = {
         actorType: "user" as const,
