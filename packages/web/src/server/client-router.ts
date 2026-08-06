@@ -238,7 +238,12 @@ export class ClientRouter {
     chatId: string | undefined
   ): Promise<void> {
     const sessionKey = this.computeSessionKey(agent.id, chatId);
-    const run = this.activeRuns.get(sessionKey);
+    // Mark BEFORE the RPC, not after (#978). OpenClaw answers `chat.abort` and
+    // surfaces the abort into the stream as an error independently, and the
+    // stream pipe is a different async context — awaiting the RPC first leaves
+    // a window where the error chunk arrives while the run still looks healthy,
+    // and the whole point is that the pipe can recognise it.
+    const run = this.activeRuns.markUserAborted(sessionKey);
     // A PENDING run's runId is provisional — Pinchy's per-turn messageId, which
     // the gateway has never seen (`registerPending`; reconciled to the real one
     // by `markFirstChunk`). Handing it to `chatAbort` would name a run the
@@ -1203,6 +1208,10 @@ export class ClientRouter {
     // or an explicit error chunk closes the safety net.
     let sawText = false;
     let sawError = false;
+    // #978: the stream carried the user's own abort. Distinct from `sawError`
+    // because it must NOT produce a banner, and distinct from plain silence
+    // because it must not produce one either.
+    let sawUserAbort = false;
     // Durable chat-error banner (Concern 1): the triggering user message id
     // anchors supersede + a safe retry. `runStartedAt` (with a small clock-skew
     // buffer) bounds the audit lookup that decides `sideEffects` — whether the
@@ -1328,7 +1337,21 @@ export class ClientRouter {
         } else if (activeRunRegistered) {
           this.activeRuns.touch(sessionKey, Date.now());
         }
-        if (chunk.type === "error") {
+        // #978: OpenClaw hands a user abort to the stream as an error chunk
+        // (`decision=surface_error reason=none rawError=Request was aborted`),
+        // and nothing in its text separates that from a provider blowing up.
+        // The registry does: `handleAbort` marked this run the moment the stop
+        // click arrived. Read once per chunk rather than caching in a local —
+        // the abort can land at any point during the stream, including between
+        // two chunks of this very loop.
+        //
+        // Everything below then treats it as the clean end of turn it is. The
+        // terminal `done` OpenClaw sends after the error still arrives and does
+        // the ordinary work: flush the buffered words, rotate the messageId,
+        // supersede any earlier durable error. So there is nothing to
+        // synthesize here — only side effects to NOT produce.
+        const userAbort = chunk.type === "error" && this.activeRuns.get(sessionKey)?.abortedByUser;
+        if (chunk.type === "error" && !userAbort) {
           sawTerminalError = true;
         }
         // Durable-banner bookkeeping: `userMessagePersisted` is OC's first chunk
@@ -1379,7 +1402,15 @@ export class ClientRouter {
         // second DB query — and inherit the persist's best-effort try/catch
         // (a persist failure can never break the live error frame).
         let liveSideEffects = false;
-        if (chunk.type === "error") {
+        if (chunk.type === "error" && userAbort) {
+          // Not a failure, and not silence either — say so at the level an
+          // operator reads. `chat.run_aborted` is already on the trail from
+          // `handleAbort`; a second row here would double-count the same click.
+          console.log(
+            `[client-router] user abort surfaced as an error chunk for ${sessionKey} — ` +
+              `not auditing or persisting it (#978): ${chunk.text}`
+          );
+        } else if (chunk.type === "error") {
           console.error("OpenClaw error chunk:", chunk.text);
 
           // Issue #355: universal `chat.agent_error` audit. Fires for every
@@ -1456,6 +1487,18 @@ export class ClientRouter {
                 messageId,
               });
             }
+          } else if (chunk.type === "error" && userAbort) {
+            // #978: the user's own stop. No error frame, no `liveness: failed`
+            // — the client already drove itself to `completed` in `onCancel`,
+            // and an error frame arriving after that both contradicts it and
+            // (via the error bubble) unlocks the destructive history reconcile
+            // that discards the partial reply the stop was meant to keep.
+            //
+            // `sawError` stays false on purpose, but the silent-stream safety
+            // net below must not fire either: a run stopped before its first
+            // word is a run the user ended, not one the model slept through.
+            // `sawUserAbort` gates it.
+            sawUserAbort = true;
           } else if (chunk.type === "error") {
             sawError = true;
             const modelUnavailable = classifyModelError(chunk.text, agent.model ?? "");
@@ -1604,7 +1647,7 @@ export class ClientRouter {
       // swallowed a `surface_error reason=timeout` into `continue_normal`).
       // Must precede the `complete` frame so the client's error handler
       // runs before the spinner is cleared.
-      if (!sawText && !sawError) {
+      if (!sawText && !sawError && !sawUserAbort) {
         const providerError = "The model did not produce a response. It may have timed out.";
         // Durable banner: a silent timeout is also a "no response" the user
         // should still see after a reload. Best-effort. Computed before the
@@ -1720,7 +1763,15 @@ export class ClientRouter {
       // socket dropped and `iterateUntilAborted` surfaced it. That is handled by
       // the disconnect machinery + the client's own reconnect; re-surfacing it as
       // an agent error would double-signal. The finally below still cleans up.
-      if (!openclawDisconnected) {
+      // #978: the same abort can arrive as a REJECTION rather than an error
+      // chunk (openclaw-node raises `Request was aborted` on some paths instead
+      // of yielding it), and this sink is the rich one — it audits, persists
+      // the durable banner and sends the error frame. Reaching it for a stop
+      // click would put the whole failure treatment back through the other
+      // door. Read the registry rather than matching the message text: "was
+      // aborted" is a string a provider is free to use for its own failures.
+      const abortedHere = this.activeRuns.get(sessionKey)?.abortedByUser === true;
+      if (!openclawDisconnected && !abortedHere) {
         sawTerminalError = true;
         await this.surfaceRunFailure({
           clientWs,
@@ -1736,6 +1787,13 @@ export class ClientRouter {
         // stops the client's thinking indicator, and `complete` is reserved for
         // a stream that reached its natural end (existing contract asserted by
         // "should not send a 'complete' message when the stream errors").
+      } else if (abortedHere) {
+        // A stopped run still has to be TERMINATED for everyone watching. The
+        // tab that clicked stop already ended its own turn optimistically, but
+        // a second tab on this session got no error frame (correctly) and would
+        // otherwise spin until it reconnects.
+        this.broadcastForRun(sessionKey, clientWs, { type: "liveness", state: "completed" });
+        this.broadcastForRun(sessionKey, clientWs, { type: "complete" });
       }
     } finally {
       // #310 Tier 2a: clean up the registry entry and, if the run finished

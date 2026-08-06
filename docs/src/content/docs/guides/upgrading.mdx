@@ -284,6 +284,14 @@ Re-verified against the live API. `nemotron-3-nano:30b` is **no longer offered**
 
 A knowledge-base document now counts as archived if any **folder** on its path is called `old`, `archive`, `archived` or `archiv` — matched whole and case-insensitively, so `OLD/` counts and `Goldakte/` does not. The rule reads directories only: a file named `archive.pdf` is not archived. Archived documents are still fully indexed, and the agent can still reach them when a question asks it to; they are simply left out of an ordinary answer. Year and quarter folders (`2013/`, `Q3/`) are never archives. See [Current documents first](/guides/create-knowledge-base-agent/#current-documents-first). If you keep superseded files in a folder named something else, rename it to one of those four to get the same treatment.
 
+#### Stopping a reply keeps what it already said
+
+The chat composer's **stop** button has always promised to keep the words already on screen and only stop paying for the rest. It did not always keep them: pressing stop could clear the partial reply a moment later and leave a banner reading _"The model provider timed out."_ for something you did on purpose.
+
+Both came from the same place. OpenClaw hands a stopped run to Pinchy as an _error_, and nothing in that error says who ended the run — so Pinchy treated it as a provider failure, wrote a failure banner, and the reply was then discarded by the next background refresh of the conversation. It only happened when that refresh landed in the seconds right after the click, which is why it looked intermittent.
+
+Pinchy now recognises the abort as your own, so a stopped reply stays where it is, no banner appears, and the audit trail records the stop once as `chat.run_aborted` instead of also as an agent error. Nothing to configure.
+
 #### Agents can hand you a file in chat
 
 An agent with **Write files** permission can now turn tabular data it already holds into a CSV, XLSX or PDF and deliver it in the conversation, via the new `pinchy_generate_file` tool. It rides on the existing permission — no new grant to make, and agents without write access can't reach it. See [Generating files](/guides/file-uploads/#generating-files).
