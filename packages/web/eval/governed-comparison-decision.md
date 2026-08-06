@@ -91,32 +91,36 @@ entry. Then fill in the verdicts below.
   systematic capability loss. line-items: 67/132 (51%) → 50/132 (38%),
   Δ −13pp on the published numbers — but this is a **measurement confound,
   not a governance regression**, and a same-build A/B (2026-08-05) settles
-  it. The two published arms were captured two weeks apart (ungoverned =
-  the frozen 2026-07-21 Eval-v1 baseline; governed = the 2026-08-04 sweep),
-  so their delta confounds the guard effect with two weeks of platform/model
-  drift. Re-measuring BOTH arms on one build (pinchy build `dd96d631e479`,
-  the three most-regressed capable models — gemma4:31b, kimi-k2.6,
-  deepseek-v4-pro — at N=4, the only variable being `PINCHY_ODOO_GOVERNANCE`)
-  removes the confound: governed and ungoverned land **identically at 7/12
-  (58%)**, while the frozen baseline for those same three was 33/36 (92%).
-  The ~34pp gap is entirely capture-to-capture drift — line-items capability
-  fell platform-wide over those two weeks, present WITH AND WITHOUT the
-  guards — not the read-back round trip. The trajectories corroborate this:
-  governed runs are FASTER (median 48s vs 82s) and issue FEWER tool calls
-  (8 vs 10), which refutes the earlier "the extra read-back costs some
-  models the turn budget they need" reading; of the guard's
-  `account.move.line` create failures only 2 were read-back rejections (the
-  rest were the mock rejecting bare-string many2one values, common to both
-  arms), and `account.move` create-failure rates are equal across arms
-  (28% vs 24%). The ±6-run per-model swings in both directions (gemma4:31b
-  −6, nemotron-3-ultra +6) are the signature of a high-variance scenario
-  measured on two builds, not a systematic guard penalty.
+  it. The two published arms were captured against DIFFERENT odoo-mock
+  fidelity levels. The ungoverned line-items baseline was captured before
+  the mock learned to validate many2one writes (#615): its trajectories show
+  `account.move.line` creates passing with an unresolvable display-string id
+  (`account_id: "Expenses"`) or with the required account omitted entirely —
+  writes that real Odoo, and today's faithful mock, both reject. That is not
+  a subtle drift: **zero** of the baseline's line-create calls failed, which
+  is only possible against a mock that accepts unresolved ids. The frozen
+  baseline therefore carries **false-greens**, and the governed arm (run on
+  the current, faithful mock) does not. Re-measuring BOTH arms on ONE current
+  build (pinchy `dd96d631e479`, the three most-regressed capable models —
+  gemma4:31b, kimi-k2.6, deepseek-v4-pro — at N=4, the only variable being
+  `PINCHY_ODOO_GOVERNANCE`) removes the confound: governed and ungoverned
+  land **identically at 7/12 (58%)**, while the frozen baseline for those
+  same three was 33/36 (92%). The ~34pp gap is the mock-fidelity correction,
+  not the guards — deepseek-v4-pro, which resolves ids and books inline,
+  still scores 100% on the current mock, while gemma4:31b, which relies on
+  unresolved-id standalone-line writes, correctly fails now and would have
+  failed against real Odoo all along. The trajectories independently kill the
+  read-back-cost story: governed runs are FASTER (median 48s vs 82s) with
+  FEWER tool calls (8 vs 10); only 2 of the guard's `account.move.line`
+  failures were read-back rejections (the rest were the mock rejecting
+  unresolvable m2o ids, common to both arms), and `account.move`
+  create-failure rates are equal across arms (28% vs 24%).
 - **Verdict: KEEP.** The false-success collapse (79 → 1) is the guard doing
   exactly its job. happy-path is near-flat, and the one apparent control
   regression — line-items −13pp — is a measurement confound, not a guard
   cost: the same-build A/B above puts governed and ungoverned at the
-  identical 58%, with the whole gap to the frozen baseline explained by two
-  weeks of platform drift. Nothing offsets the target gain.
+  identical 58%, with the whole gap to the frozen baseline explained by that
+  baseline's pre-#615 mock false-greens. Nothing offsets the target gain.
 
 ### Duplicate guard (#721)
 
