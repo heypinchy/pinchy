@@ -12,7 +12,9 @@ import {
   resolveDecision,
   expireStale,
   linkApproval,
+  waitForApprovalLink,
   recordResolution,
+  APPROVAL_LINK_WAIT_MS,
   MAX_PENDING_PER_REQUESTER,
 } from "./service";
 
@@ -127,6 +129,81 @@ describe("approvals gate decision service", () => {
       const [row] = await db.select().from(toolApproval).where(eq(toolApproval.id, r.requestId));
       expect(row.openclawApprovalId).toBeNull();
       expect(row.status).toBe("denied");
+    });
+  });
+
+  // OpenClaw mints its approval id only after the gate answered, so the row and
+  // the `approval.requested` audit event both exist before the id does. A
+  // decision taken inside that window found no id — and because linkApproval
+  // above refuses a non-pending row, deciding first made the link permanently
+  // undeliverable and left the run parked to its 600s cap.
+  describe("waitForApprovalLink", () => {
+    it("returns the id the broadcast attaches while the decision is waiting", async () => {
+      const r = await decideGate({ ...base(), toolCallId: "call_race" });
+
+      const waiting = waitForApprovalLink({ id: r.requestId, requesterId });
+      setTimeout(() => {
+        void linkApproval({ approvalId: "plugin:late", toolCallId: "call_race" });
+      }, 120);
+
+      await expect(waiting).resolves.toBe("plugin:late");
+    });
+
+    it("returns an id that is already there without waiting for it", async () => {
+      const r = await decideGate({ ...base(), toolCallId: "call_early" });
+      await linkApproval({ approvalId: "plugin:early", toolCallId: "call_early" });
+
+      const started = performance.now();
+      await expect(waitForApprovalLink({ id: r.requestId, requesterId })).resolves.toBe(
+        "plugin:early"
+      );
+      expect(performance.now() - started).toBeLessThan(APPROVAL_LINK_WAIT_MS);
+    });
+
+    // The bound is what keeps this from becoming a hang: a broadcast that never
+    // comes must cost the user a moment, not the request.
+    it("gives up at the deadline instead of blocking the decision", async () => {
+      const r = await decideGate({ ...base(), toolCallId: "call_silent" });
+
+      await expect(
+        waitForApprovalLink({ id: r.requestId, requesterId, timeoutMs: 60, pollMs: 10 })
+      ).resolves.toBeNull();
+    });
+
+    // linkApproval matches on toolCallId, so a row without one can never be
+    // named by any broadcast. Waiting on it would be waiting for something that
+    // cannot arrive.
+    it("does not wait for a row no broadcast can name", async () => {
+      const r = await decideGate(base());
+
+      const started = performance.now();
+      await expect(waitForApprovalLink({ id: r.requestId, requesterId })).resolves.toBeNull();
+      expect(performance.now() - started).toBeLessThan(APPROVAL_LINK_WAIT_MS);
+    });
+
+    // Same reason: nothing can link a settled row, so there is nothing to wait
+    // for — and a card the user already answered must not stall their next one.
+    it("does not wait for a confirmation that is already settled", async () => {
+      const r = await decideGate({ ...base(), toolCallId: "call_settled" });
+      await resolveDecision({ id: r.requestId, approverId: requesterId, decision: "deny" });
+
+      const started = performance.now();
+      await expect(waitForApprovalLink({ id: r.requestId, requesterId })).resolves.toBeNull();
+      expect(performance.now() - started).toBeLessThan(APPROVAL_LINK_WAIT_MS);
+    });
+
+    // resolveDecision owns the 403. This only makes sure a stranger's request
+    // does not take measurably longer than an unknown one, which would answer
+    // the question the 403 declines to.
+    it("does not wait on someone else's confirmation", async () => {
+      const r = await decideGate({ ...base(), toolCallId: "call_theirs" });
+      const other = await seedUser();
+
+      const started = performance.now();
+      await expect(
+        waitForApprovalLink({ id: r.requestId, requesterId: other.id })
+      ).resolves.toBeNull();
+      expect(performance.now() - started).toBeLessThan(APPROVAL_LINK_WAIT_MS);
     });
   });
 

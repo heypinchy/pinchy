@@ -191,6 +191,93 @@ export async function linkApproval(input: {
   return linked ?? null;
 }
 
+/**
+ * How long a decision may wait for {@link linkApproval} to land.
+ *
+ * The gap is structural, not a hiccup: OpenClaw mints its approval id only
+ * AFTER `before_tool_call` answers `requireApproval`, and announces it on a
+ * separate gateway broadcast. Pinchy's own row — and the `approval.requested`
+ * audit event the inbox and the E2E both key on — therefore exist before the id
+ * does. Anything that reacts to the card the instant it appears lands in that
+ * window.
+ *
+ * Two seconds is a BOUND, not a measurement, and the difference is worth being
+ * honest about. The failing CI run shows the gate's `plugin.approval.request`
+ * answered in 83 ms and the decision arriving roughly half a second later with
+ * the link still unattached — then the stack came down, so how long the hop
+ * actually takes was never observed. So this is ~4x the window that
+ * demonstrably was not enough, over a path that is one websocket frame plus one
+ * indexed UPDATE, and short enough that no decision ever feels hung.
+ *
+ * It is only ever spent inside the window: a row that already carries the id,
+ * or that no broadcast can reach, returns immediately. And if it ever does
+ * prove short, the symptom is the same honest `resumed: false` it replaced,
+ * from one place — not a new failure mode.
+ */
+export const APPROVAL_LINK_WAIT_MS = 2000;
+
+/** Re-read cadence for {@link waitForApprovalLink}. Short because the wait is
+ * short; the read is a single indexed lookup by primary key. */
+const APPROVAL_LINK_POLL_MS = 50;
+
+/**
+ * Wait for OpenClaw's approval id to reach this user's pending confirmation,
+ * and return it — or `null` when it is not coming.
+ *
+ * Deciding without it is not merely a missed resume, it is a permanent one:
+ * {@link linkApproval} refuses a row that is no longer `pending`, so flipping
+ * the row first makes an in-flight link undeliverable forever, and the parked
+ * run then sits until OpenClaw's 600 s cap. The decision route reports that as
+ * `resumed: false` / `nothing-waiting` — a false statement about a call that IS
+ * waiting. Seen on CI 2026-08-06, where the E2E granted its own confirmation
+ * ~0.6 s after the gate opened it.
+ *
+ * Four things end the wait immediately rather than burning the deadline:
+ * the id is already there; the row is gone; it is no longer `pending` (nothing
+ * can link it any more); or it carries no `toolCallId`, which is the key
+ * `linkApproval` matches on — no broadcast can ever name it.
+ *
+ * `requesterId` scopes the wait to the caller's own row. `resolveDecision`
+ * remains the authority on who may decide; this only avoids making a stranger's
+ * request measurably slower than an unknown one, which would answer a question
+ * the 403 is careful not to.
+ */
+export async function waitForApprovalLink(input: {
+  id: string;
+  requesterId: string;
+  timeoutMs?: number;
+  pollMs?: number;
+  /** Seam for tests; defaults to a real timer. */
+  sleep?: (ms: number) => Promise<void>;
+  /** Seam for tests; defaults to the wall clock. */
+  now?: () => number;
+}): Promise<string | null> {
+  const timeoutMs = input.timeoutMs ?? APPROVAL_LINK_WAIT_MS;
+  const pollMs = input.pollMs ?? APPROVAL_LINK_POLL_MS;
+  const sleep = input.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
+  const now = input.now ?? Date.now;
+  const deadline = now() + timeoutMs;
+
+  for (;;) {
+    const [row] = await db
+      .select({
+        approvalId: toolApproval.openclawApprovalId,
+        status: toolApproval.status,
+        requesterId: toolApproval.requesterId,
+        toolCallId: toolApproval.toolCallId,
+      })
+      .from(toolApproval)
+      .where(eq(toolApproval.id, input.id))
+      .limit(1);
+
+    if (!row || row.requesterId !== input.requesterId) return null;
+    if (row.approvalId) return row.approvalId;
+    if (row.status !== "pending" || !row.toolCallId) return null;
+    if (now() >= deadline) return null;
+    await sleep(pollMs);
+  }
+}
+
 /** What OpenClaw finally did with a parked call — mirrors the plugin's
  * `ApprovalResolution`. The last two never come from a button. */
 export type ApprovalResolution = "allow-once" | "allow-always" | "deny" | "timeout" | "cancelled";

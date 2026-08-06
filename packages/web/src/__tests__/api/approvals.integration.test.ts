@@ -462,6 +462,45 @@ describe("approval routes (integration, real DB)", () => {
       expect(entry.detail).toMatchObject({ resumed: false });
     });
 
+    // The id arrives on a broadcast OpenClaw only sends AFTER the gate answered
+    // `requireApproval`, so a decision taken the moment the card appears lands
+    // before it. That used to report `nothing-waiting` — a false statement
+    // about a call that IS parked — and it was permanent, because linkApproval
+    // refuses a row that is no longer pending: the run then sat until
+    // OpenClaw's 600 s cap, whatever the user clicked. CI, 2026-08-06.
+    it("resumes a decision taken before the approval broadcast arrived", async () => {
+      const blocked = await (
+        await gateCheck(gateReq({ ...gateBody(), toolCallId: "call_race" }))
+      ).json();
+      setSession(user);
+
+      // The broadcast lands while the decision is already in flight.
+      const linked = new Promise<void>((resolve) => {
+        setTimeout(() => {
+          void linkApproval({ approvalId: "plugin:late", toolCallId: "call_race" }).then(() =>
+            resolve()
+          );
+        }, 150);
+      });
+
+      const res = await decide(decideReq({ decision: "approve" }), ctx(blocked.requestId));
+      await linked;
+
+      expect(gatewayRequest).toHaveBeenCalledWith("plugin.approval.resolve", {
+        id: "plugin:late",
+        decision: "allow-once",
+      });
+      expect(await res.json()).toMatchObject({ ok: true, resumed: true });
+
+      await flushAfter();
+      const [entry] = await db
+        .select()
+        .from(auditLog)
+        .where(eq(auditLog.eventType, "approval.granted"));
+      expect(entry.outcome).toBe("success");
+      expect(entry.detail).toMatchObject({ resumed: true });
+    });
+
     it("does not call the gateway when no run is parked on that call", async () => {
       // No approval id on the row: the gate refused without suspending, the
       // approval already timed out, or the row predates #1132.

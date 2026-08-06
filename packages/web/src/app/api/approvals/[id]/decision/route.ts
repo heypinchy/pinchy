@@ -3,7 +3,7 @@ import { eq } from "drizzle-orm";
 import { withAuth } from "@/lib/api-auth";
 import { parseRequestBody } from "@/lib/api-validation";
 import { decisionSchema } from "@/lib/schemas/approvals";
-import { resolveDecision } from "@/lib/approvals/service";
+import { resolveDecision, waitForApprovalLink } from "@/lib/approvals/service";
 import { resolvePluginApproval } from "@/server/resolve-plugin-approval";
 import { type AuditLogEntry } from "@/lib/audit";
 import { deferAuditLog } from "@/lib/audit-deferred";
@@ -38,6 +38,14 @@ export const POST = withAuth<RouteContext>(async (request, { params }, session) 
   const parsed = await parseRequestBody(decisionSchema, request);
   if ("error" in parsed) return parsed.error;
   const { decision, reason } = parsed.data;
+
+  // BEFORE flipping the row, not after: OpenClaw announces the id it minted for
+  // the parked call on a broadcast that necessarily follows the gate's answer,
+  // so a decision taken the moment the card appears arrives first — and
+  // `linkApproval` refuses a row that is no longer pending, which makes that
+  // miss permanent rather than momentary. Bounded, and skipped entirely when
+  // there is nothing to wait for.
+  await waitForApprovalLink({ id, requesterId: session.user.id! });
 
   const res = await resolveDecision({
     id,
