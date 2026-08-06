@@ -69,7 +69,11 @@ test.describe("Chat stop button — user-triggered abort (#550)", () => {
       .filter({ hasText: STREAM_FIRST_WORD });
     await expect(assistantMessage).toBeVisible({ timeout: 15000 });
 
-    // 3. Click stop.
+    // 3. Click stop. Anchor the audit window here (#978, step 8): this suite
+    //    shares one OpenClaw session and the specs just before this one END
+    //    RUNS ON PURPOSE, so the log already holds genuine `chat.agent_error`
+    //    rows. Only what lands after the click can be about the click.
+    const stoppedAt = new Date().toISOString();
     await stopButton.click();
 
     // 4. The turn ends client-side: the stop button is replaced by the send
@@ -113,15 +117,6 @@ test.describe("Chat stop button — user-triggered abort (#550)", () => {
     await expect(assistantMessage).toBeVisible();
     await expect(assistantMessage).not.toContainText(STREAM_LAST_WORD);
 
-    //    And no error UI: the stop was the user's, so nothing may blame the
-    //    provider for it — neither an in-chat bubble nor the durable banner
-    //    that survives a reload (the trace on #978 showed "Smithers paused —
-    //    The model provider timed out." after a plain stop click).
-    //    Matched on the provider-blame wording rather than on "paused": the
-    //    banner's own word is generic enough to collide with unrelated UI, and
-    //    an assertion that can go red for the wrong reason gets deleted.
-    await expect(page.getByText(/model provider timed out/i)).toHaveCount(0);
-
     // 6. The abort is audited as chat.run_aborted (actor = user, success).
     await expect
       .poll(
@@ -155,5 +150,31 @@ test.describe("Chat stop button — user-triggered abort (#550)", () => {
       FAKE_OLLAMA_RESPONSE,
       { timeout: 30000 }
     );
+
+    // 8. The stop was not recorded as a failure (#978). OpenClaw hands a user
+    //    abort to the stream as an error chunk, which Pinchy used to audit as
+    //    `chat.agent_error` and mirror into a durable "The model provider timed
+    //    out." banner — blaming the provider for the user's own click.
+    //
+    //    Asserted on the trail rather than on the banner in the DOM. The banner
+    //    is per SESSION and this suite shares one: spec 18 kills a stream on
+    //    purpose immediately before this test, so its banner is legitimately on
+    //    screen when we get here. A page-wide "no such text" check reads that as
+    //    our failure — it did, on the first run of this assertion — which is the
+    //    unscoped-assertion trap the header comment of this file already warns
+    //    about for the reply itself.
+    //
+    //    Placed after step 7 on purpose: a completed follow-up turn on the same
+    //    session proves the aborted run's pipe has finished, so a row that was
+    //    going to be written has been. Without that anchor this is a negative
+    //    window with nothing bounding it.
+    const errs = await page.request.get(
+      `/api/audit?eventType=chat.agent_error&limit=20&from=${encodeURIComponent(stoppedAt)}`
+    );
+    expect(errs.status()).toBe(200);
+    const errBody = (await errs.json()) as {
+      entries: Array<{ resource: string | null; detail: { providerError?: string } | null }>;
+    };
+    expect(errBody.entries.filter((e) => e.resource === `agent:${agentId}`)).toEqual([]);
   });
 });
