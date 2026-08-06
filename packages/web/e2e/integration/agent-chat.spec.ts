@@ -765,6 +765,21 @@ test.describe("Plugin behavior — pinchy-approvals", () => {
       });
       expect(decision.status()).toBe(200);
 
+      // Assert the ROUTE'S OWN ANSWER first, and assert the whole object.
+      //
+      // The route already knows why a decision did not reach the parked call —
+      // it puts `resumeError` in this body, one string per branch
+      // (nothing-waiting / refused / unreachable). The first version of this
+      // probe threw that away and asserted only the audit row's `outcome`, so
+      // a failure read `Expected: "success" / Received: "failure"` and named
+      // none of the three. Diagnosing one occurrence then took the CI gateway
+      // log — which, it turns out, is only captured on failure at all, so the
+      // "control" comparison against a green run was worthless.
+      //
+      // toMatchObject on the whole body is what surfaces it: an unexpected
+      // `resumeError` shows up in the diff instead of being invisible.
+      expect(await decision.json()).toMatchObject({ ok: true, resumed: true });
+
       // The decision is recorded as approval.granted — and `resumed` says it
       // reached the parked call. Asserting only that the row exists would pass
       // just as happily over a run that stays parked until it times out, which
@@ -774,8 +789,12 @@ test.describe("Plugin behavior — pinchy-approvals", () => {
         predicate: (e) => e.resource === `approval:${requestId}`,
         deadlineMs: 15000,
       });
-      expect(granted.outcome).toBe("success");
-      expect((granted.detail as { resumed?: boolean }).resumed).toBe(true);
+      // Same reasoning: compare the fields together so a failure prints the
+      // recorded reason rather than just the word "failure".
+      expect({
+        outcome: granted.outcome,
+        ...(granted.detail as { resumed?: boolean; resumeReason?: string; resumeDetail?: string }),
+      }).toMatchObject({ outcome: "success", resumed: true });
 
       // The runtime reports back that it let the call through…
       await pollAuditForEvent(page, {
