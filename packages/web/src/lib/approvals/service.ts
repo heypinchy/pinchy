@@ -178,17 +178,50 @@ export async function decideGate(input: DecideGateInput): Promise<GateDecision> 
  *
  * Restricted to `pending`: a late broadcast must not re-arm a confirmation the
  * user has already decided, or a settled card would look resolvable again.
+ *
+ * Scoped to the broadcast's session when it names one — see {@link sessionScope}.
  */
 export async function linkApproval(input: {
   approvalId: string;
   toolCallId: string;
+  sessionKey?: string;
 }): Promise<{ id: string } | null> {
   const [linked] = await db
     .update(toolApproval)
     .set({ openclawApprovalId: input.approvalId })
-    .where(and(eq(toolApproval.toolCallId, input.toolCallId), eq(toolApproval.status, "pending")))
+    .where(
+      and(
+        eq(toolApproval.toolCallId, input.toolCallId),
+        eq(toolApproval.status, "pending"),
+        ...sessionScope(input.sessionKey)
+      )
+    )
     .returning({ id: toolApproval.id });
   return linked ?? null;
+}
+
+/**
+ * Why a tool call id is not a key on its own.
+ *
+ * It is only as unique as the model provider makes it. Several self-hosted
+ * OpenAI-compatible servers number tool calls per response (`call_0`, `call_1`),
+ * and Pinchy explicitly supports those deployments, so two people can hold
+ * pending confirmations under one id at the same moment. Matching on the id
+ * alone then touches BOTH rows: one Approve resumes a call nobody confirmed,
+ * and one resolution report spends a grant the runtime said nothing about —
+ * with only one of the two rows getting an audit entry.
+ *
+ * The session is what tells them apart, and both callers already have it: the
+ * approval OpenClaw broadcasts carries `sessionKey` verbatim, and the gate's
+ * `onResolution` reports from the same hook context the gate-check read.
+ *
+ * Optional rather than required, deliberately: narrowing must never cost a
+ * match that works today. A caller that names no session falls back to the id
+ * alone, exactly as before — and a Pinchy row always has a session, because
+ * gate-check refuses to open a confirmation without one.
+ */
+function sessionScope(sessionKey: string | undefined) {
+  return sessionKey ? [eq(toolApproval.sessionKey, sessionKey)] : [];
 }
 
 /** What OpenClaw finally did with a parked call — mirrors the plugin's
@@ -222,6 +255,8 @@ export interface SettledApproval {
  */
 export async function recordResolution(input: {
   toolCallId: string;
+  /** The session the runtime reported on — see {@link sessionScope}. */
+  sessionKey?: string;
   decision: ApprovalResolution;
   now?: Date;
 }): Promise<SettledApproval | null> {
@@ -245,7 +280,8 @@ export async function recordResolution(input: {
         // An allow follows the user's approval, so `approved` is the expected
         // state — `pending` too, because a resolution can arrive from another
         // approval surface. Everything else is already settled.
-        inArray(toolApproval.status, allowed ? ["pending", "approved"] : ["pending"])
+        inArray(toolApproval.status, allowed ? ["pending", "approved"] : ["pending"]),
+        ...sessionScope(input.sessionKey)
       )
     )
     .returning({

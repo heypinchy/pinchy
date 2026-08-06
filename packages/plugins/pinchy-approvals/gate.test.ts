@@ -201,7 +201,15 @@ describe("onResolution", () => {
 
     const [url, init] = f.mock.calls[1];
     expect(url).toBe("http://pinchy:7777/api/internal/approvals/resolution");
-    expect(JSON.parse(init.body)).toEqual({ toolCallId: "call_7", decision: "allow-once" });
+    // The session travels with it for the same reason it travels on the
+    // approval OpenClaw broadcasts: a tool call id is only as unique as the
+    // model provider makes it, and settling on the id alone can spend a grant
+    // in a session the runtime said nothing about.
+    expect(JSON.parse(init.body)).toEqual({
+      toolCallId: "call_7",
+      sessionKey: "agent:a1:direct:u1",
+      decision: "allow-once",
+    });
   });
 
   it("reports a timeout, which no button ever produces", async () => {
@@ -215,13 +223,45 @@ describe("onResolution", () => {
 
   // OpenClaw calls this callback while finalizing the approval and only logs a
   // rejection. Throwing here buys nothing and risks noise on a path where the
-  // decision has already taken effect.
+  // decision has already taken effect — but staying quiet is not the same as
+  // not throwing, so the log line is part of the contract.
   it("swallows a failed report instead of throwing into the runtime", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const f = stubApprovalRequired();
     const gated = await evaluateGate("odoo_write", {}, withCall, cfg);
     f.mockRejectedValueOnce(new Error("connection refused"));
 
     await expect(gated.requireApproval?.onResolution?.("allow-once")).resolves.toBeUndefined();
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  // Staying quiet on a network blip is a choice; staying quiet when Pinchy
+  // ANSWERED and said no is not. `approval.consumed` is now written from this
+  // report and nowhere else, so a rejected report silently drops the only
+  // record that an approved action ran — and nothing anywhere would say so.
+  it("says so when Pinchy refuses the report", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const f = stubApprovalRequired();
+    const gated = await evaluateGate("odoo_write", {}, withCall, cfg);
+    f.mockResolvedValueOnce({ ok: false, status: 401, json: async () => ({}) });
+
+    await gated.requireApproval?.onResolution?.("allow-once");
+
+    expect(warn).toHaveBeenCalled();
+    expect(String(warn.mock.calls[0][0])).toMatch(/401/);
+    warn.mockRestore();
+  });
+
+  it("stays quiet when the report lands", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    stubApprovalRequired();
+    const gated = await evaluateGate("odoo_write", {}, withCall, cfg);
+
+    await gated.requireApproval?.onResolution?.("allow-once");
+
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
   });
 
   // Without a call id there is no row to attribute the outcome to, and posting

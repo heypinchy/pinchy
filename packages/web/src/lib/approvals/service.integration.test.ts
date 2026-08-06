@@ -115,6 +115,43 @@ describe("approvals gate decision service", () => {
       expect(rows.every((r) => r.openclawApprovalId === null)).toBe(true);
     });
 
+    // A tool call id is only as unique as the model provider makes it, and
+    // Pinchy explicitly supports self-hosted OpenAI-compatible servers — several
+    // of which number tool calls per response (`call_0`, `call_1`). Two people
+    // can then hold pending confirmations under one id at the same moment, and
+    // matching on the id alone would arm BOTH rows with one approval: the second
+    // person's Approve resumes the first person's call, which nobody confirmed.
+    // The session is what OpenClaw already carries to tell them apart.
+    it("arms only the confirmation from the session the approval names", async () => {
+      const mine = await decideGate({ ...base(), toolCallId: "call_0" });
+      const theirs = await decideGate({
+        ...base(),
+        sessionKey: "agent:a:direct:someone-else",
+        toolCallId: "call_0",
+      });
+
+      const linked = await linkApproval({
+        approvalId: "plugin:mine",
+        toolCallId: "call_0",
+        sessionKey: "agent:a:direct:u",
+      });
+
+      expect(linked?.id).toBe(mine.requestId);
+      const [other] = await db
+        .select()
+        .from(toolApproval)
+        .where(eq(toolApproval.id, theirs.requestId));
+      expect(other.openclawApprovalId).toBeNull();
+    });
+
+    // Narrowing must never cost a link that works today: a broadcast without a
+    // session still resolves by call id alone.
+    it("still links when the broadcast names no session", async () => {
+      const r = await decideGate({ ...base(), toolCallId: "call_9" });
+      const linked = await linkApproval({ approvalId: "plugin:xyz", toolCallId: "call_9" });
+      expect(linked?.id).toBe(r.requestId);
+    });
+
     // A row the user already decided must not be re-armed by a late broadcast:
     // it would make a settled confirmation look resolvable again.
     it("leaves an already-decided confirmation alone", async () => {
@@ -401,6 +438,39 @@ describe("approvals gate decision service", () => {
       expect(
         await recordResolution({ toolCallId: "call_not_ours", decision: "allow-once" })
       ).toBeNull();
+    });
+
+    // Same reason as `linkApproval` above: a provider that numbers tool calls
+    // per response lets two sessions share an id, and settling on the id alone
+    // would spend BOTH grants — writing `approval.consumed` for an action that
+    // never ran, on a row the runtime said nothing about.
+    it("spends only the grant from the session the runtime reported on", async () => {
+      const mine = await parked("call_0");
+      const theirs = await decideGate({
+        ...base(),
+        sessionKey: "agent:a:direct:someone-else",
+        toolCallId: "call_0",
+      });
+
+      const settled = await recordResolution({
+        toolCallId: "call_0",
+        sessionKey: "agent:a:direct:u",
+        decision: "allow-once",
+      });
+
+      expect(settled?.id).toBe(mine);
+      const [other] = await db
+        .select()
+        .from(toolApproval)
+        .where(eq(toolApproval.id, theirs.requestId));
+      expect(other.status).toBe("pending");
+    });
+
+    it("still settles when the report names no session", async () => {
+      const id = await parked("call_9");
+      expect(await recordResolution({ toolCallId: "call_9", decision: "timeout" })).toMatchObject({
+        id,
+      });
     });
   });
 });

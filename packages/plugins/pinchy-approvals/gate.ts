@@ -69,14 +69,22 @@ const FETCH_TIMEOUT_MS = 10_000;
 /**
  * Tell Pinchy what OpenClaw did with a parked call.
  *
- * Deliberately silent on failure: OpenClaw calls this while finalizing the
- * approval and only logs a rejection, and by then the decision has already
- * taken effect — throwing would buy nothing and add noise. What it costs is a
- * row that stays `pending` until the hourly sweep expires it, which is the
- * behaviour we had before this callback existed.
+ * Never throws: OpenClaw calls this while finalizing the approval and only logs
+ * a rejection, and by then the decision has already taken effect — throwing
+ * would buy nothing and add noise. What a lost report costs is a row that stays
+ * `pending` until the hourly sweep expires it, which is the behaviour we had
+ * before this callback existed.
+ *
+ * It does NOT stay quiet, though. `approval.consumed` is written from this
+ * report and from nowhere else — an approved call resumes inside OpenClaw's
+ * hook and never passes the gate again — so a report Pinchy refuses drops the
+ * only record that the action ran. A network blip is worth one line in the
+ * OpenClaw log; an answered "no" is worth it twice over, because it means a
+ * rotated token or a changed contract rather than weather.
  */
 async function reportResolution(
   toolCallId: string | undefined,
+  sessionKey: string | undefined,
   decision: ApprovalResolution,
   cfg: GateConfig
 ): Promise<void> {
@@ -84,17 +92,29 @@ async function reportResolution(
   // endpoint guess which confirmation was meant.
   if (!toolCallId) return;
   try {
-    await fetch(`${cfg.apiBaseUrl}/api/internal/approvals/resolution`, {
+    const res = await fetch(`${cfg.apiBaseUrl}/api/internal/approvals/resolution`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
         authorization: `Bearer ${cfg.gatewayToken}`,
       },
-      body: JSON.stringify({ toolCallId, decision }),
+      // The session travels with the call id because the id alone is not a key:
+      // a provider that numbers tool calls per response lets two sessions share
+      // one, and settling on the id alone spends a grant nobody reported on.
+      body: JSON.stringify({ toolCallId, ...(sessionKey ? { sessionKey } : {}), decision }),
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     });
-  } catch {
-    // See above.
+    if (!res.ok) {
+      console.warn(
+        `[pinchy-approvals] Pinchy refused the resolution report for ${toolCallId} ` +
+          `(${decision}): HTTP ${res.status}. The grant was not recorded as spent.`
+      );
+    }
+  } catch (err) {
+    console.warn(
+      `[pinchy-approvals] could not report the resolution for ${toolCallId} ` +
+        `(${decision}): ${String(err)}. The grant was not recorded as spent.`
+    );
   }
 }
 
@@ -170,7 +190,8 @@ export async function evaluateGate(
           // differ on every outcome no button produces — a timeout, a
           // cancelled run — and those are exactly the ones that would
           // otherwise leave a confirmation looking unanswered.
-          onResolution: (resolution) => reportResolution(ctx.toolCallId, resolution, cfg),
+          onResolution: (resolution) =>
+            reportResolution(ctx.toolCallId, ctx.sessionKey, resolution, cfg),
         },
       };
     }

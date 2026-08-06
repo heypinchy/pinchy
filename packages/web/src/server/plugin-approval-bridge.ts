@@ -50,6 +50,10 @@ export function attachPluginApprovalBridge(
     // `emit` is synchronous, so a rejected promise escaping this listener is an
     // UNHANDLED rejection and takes the server process down. A database blip
     // during one approval must cost that approval, not the whole install.
+    //
+    // The whole `approval` goes through — including the session, when OpenClaw
+    // named one — because a tool call id is not a key on its own (see
+    // `SESSION_SCOPE` in lib/approvals/service.ts).
     void link(approval)
       .then((linked) => {
         // `null` is the ordinary case, not a fault: the same broadcast carries

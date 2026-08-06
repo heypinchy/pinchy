@@ -1851,10 +1851,11 @@ Reports what the agent runtime finally did with a call it had held open. This is
 
 **Request body:**
 
-| Field        | Type   | Required | Description                                                    |
-| ------------ | ------ | -------- | -------------------------------------------------------------- |
-| `toolCallId` | string | Yes      | The call the confirmation was holding up                       |
-| `decision`   | string | Yes      | `allow-once`, `allow-always`, `deny`, `timeout` or `cancelled` |
+| Field        | Type   | Required | Description                                                                                                                                                                                         |
+| ------------ | ------ | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `toolCallId` | string | Yes      | The call the confirmation was holding up                                                                                                                                                            |
+| `sessionKey` | string | No       | The conversation that call belongs to. A tool call id is only unique per response on some model backends, so this is what keeps a report from closing a confirmation in someone else's conversation |
+| `decision`   | string | Yes      | `allow-once`, `allow-always`, `deny`, `timeout` or `cancelled`                                                                                                                                      |
 
 **Response:**
 

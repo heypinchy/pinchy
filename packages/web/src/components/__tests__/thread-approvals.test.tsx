@@ -99,4 +99,57 @@ describe("approval card placement", () => {
 
     await screen.findByText(/needs your confirmation/i);
   });
+
+  /**
+   * Every test above renders ONE surface and reads the filter it applies. That
+   * is each half's own account of itself, and the invariant is about the pair:
+   * in the running app both are mounted at once, and a card must appear exactly
+   * once — never twice, never nowhere. Same lesson as the X-Frame-Options gate:
+   * assert what the mounted app renders, not what a component asked for.
+   *
+   * It is also the only test that can fail if the two ever stop sharing one
+   * poller: two of them drift for up to a poll interval, which is exactly long
+   * enough to render the same confirmation in both places.
+   */
+  describe("both surfaces mounted, as the app mounts them", () => {
+    function bothSurfaces(openAgentId: string | null) {
+      return render(
+        <>
+          <AgentIdContext.Provider value={openAgentId}>
+            <ThreadApprovals />
+          </AgentIdContext.Provider>
+          <ApprovalsInbox />
+        </>
+      );
+    }
+
+    it("shows the open agent's confirmation exactly once", async () => {
+      fetchPendingApprovals.mockResolvedValue({ approvals: [approval()] });
+
+      bothSurfaces("a1");
+
+      await screen.findByText(/needs your confirmation/i);
+      expect(screen.getAllByText(/needs your confirmation/i)).toHaveLength(1);
+    });
+
+    it("shows another agent's confirmation exactly once", async () => {
+      fetchPendingApprovals.mockResolvedValue({ approvals: [approval({ agentId: "other" })] });
+
+      bothSurfaces("a1");
+
+      await screen.findByText(/needs your confirmation/i);
+      expect(screen.getAllByText(/needs your confirmation/i)).toHaveLength(1);
+    });
+
+    it("shows one card per confirmation when both agents are waiting", async () => {
+      fetchPendingApprovals.mockResolvedValue({
+        approvals: [approval(), approval({ id: "req-2", agentId: "other", agentName: "Odoo" })],
+      });
+
+      bothSurfaces("a1");
+
+      await screen.findByText(/Odoo needs your confirmation/i);
+      expect(screen.getAllByText(/needs your confirmation/i)).toHaveLength(2);
+    });
+  });
 });

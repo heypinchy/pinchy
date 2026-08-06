@@ -577,6 +577,35 @@ describe("approval routes (integration, real DB)", () => {
       ).toHaveLength(1);
     });
 
+    // A tool call id is only as unique as the model provider makes it — several
+    // self-hosted OpenAI-compatible servers number them per response — so the
+    // gate reports the session alongside it. This is the wiring (schema field,
+    // route destructuring, service argument) that the service test sees only
+    // half of: drop it anywhere along the way and the report silently widens
+    // back to "any row with this call id".
+    it("settles only the session the runtime reported on", async () => {
+      const mine = await (await gateCheck(gateReq({ ...gateBody(), toolCallId: "call_0" }))).json();
+      const theirs = await (
+        await gateCheck(
+          gateReq({
+            ...gateBody(),
+            sessionKey: `${sessionKey()}:other-chat`,
+            toolCallId: "call_0",
+          })
+        )
+      ).json();
+      expect(theirs.requestId).not.toBe(mine.requestId);
+
+      await reportResolution(
+        resolutionReq({ toolCallId: "call_0", sessionKey: sessionKey(), decision: "timeout" })
+      );
+
+      const rows = await db.select().from(toolApproval);
+      const byId = Object.fromEntries(rows.map((r) => [r.id, r.status]));
+      expect(byId[mine.requestId]).toBe("expired");
+      expect(byId[theirs.requestId]).toBe("pending");
+    });
+
     // The same approval machinery carries OpenClaw's own requests (skill
     // workshop, exec). Those name calls Pinchy never opened a row for, so this
     // is the ordinary case rather than an error.
