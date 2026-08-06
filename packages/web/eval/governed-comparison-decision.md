@@ -50,6 +50,14 @@ you may instead re-measure it under `PINCHY_ODOO_GOVERNANCE=off` into fresh
 plain-label files — twice the compute, isolates the guard effect from all build
 drift.
 
+Prefer the same-build re-measure for line-items specifically: the frozen
+line-items baseline was captured against a stack that did not enforce
+many2one write validation on `account.move.line`, so 10 of its 67 passes are
+false-greens (see the #720 controls verdict below). Bring the stack up with
+`--build` when capturing a baseline — the eval `odoo-mock` is built from its
+context, and a plain `docker compose up` will happily reuse an image older
+than the fidelity fix it is supposed to be running.
+
 Publish per the runbook (copy `results/<label>-governed.*` → `eval/data/`),
 which makes `export-scorecard.ts`'s `governedComparison` block appear, moves
 `DATASET_FINGERPRINT`, and forces a `DATASET_VERSION` MINOR bump + changelog
@@ -89,38 +97,83 @@ entry. Then fill in the verdicts below.
   3 models drifting down (deepseek-v4-pro −0.25, minimax-m2.7 −0.167,
   qwen3.5:397b −0.167) and 3 drifting up by smaller amounts; not a
   systematic capability loss. line-items: 67/132 (51%) → 50/132 (38%),
-  Δ −13pp on the published numbers — but this is a **measurement confound,
-  not a governance regression**, and a same-build A/B (2026-08-05) settles
-  it. The two published arms were captured against DIFFERENT odoo-mock
-  fidelity levels. The ungoverned line-items baseline was captured before
-  the mock learned to validate many2one writes (#615): its trajectories show
-  `account.move.line` creates passing with an unresolvable display-string id
-  (`account_id: "Expenses"`) or with the required account omitted entirely —
-  writes that real Odoo, and today's faithful mock, both reject. That is not
-  a subtle drift: **zero** of the baseline's line-create calls failed, which
-  is only possible against a mock that accepts unresolved ids. The frozen
-  baseline therefore carries **false-greens**, and the governed arm (run on
-  the current, faithful mock) does not. Re-measuring BOTH arms on ONE current
-  build (pinchy `dd96d631e479`, the three most-regressed capable models —
-  gemma4:31b, kimi-k2.6, deepseek-v4-pro — at N=4, the only variable being
-  `PINCHY_ODOO_GOVERNANCE`) removes the confound: governed and ungoverned
-  land **identically at 7/12 (58%)**, while the frozen baseline for those
-  same three was 33/36 (92%). The ~34pp gap is the mock-fidelity correction,
-  not the guards — deepseek-v4-pro, which resolves ids and books inline,
-  still scores 100% on the current mock, while gemma4:31b, which relies on
-  unresolved-id standalone-line writes, correctly fails now and would have
-  failed against real Odoo all along. The trajectories independently kill the
-  read-back-cost story: governed runs are FASTER (median 48s vs 82s) with
-  FEWER tool calls (8 vs 10); only 2 of the guard's `account.move.line`
-  failures were read-back rejections (the rest were the mock rejecting
-  unresolvable m2o ids, common to both arms), and `account.move`
-  create-failure rates are equal across arms (28% vs 24%).
+  Δ −13pp on the published numbers, spread over 8 of the 11 models (largest,
+  in runs of 12: gemma4:31b −6, minimax-m2.7 −4, gpt-oss:120b −3, kimi-k2.6
+  −3), 2 flat, 1 up (nemotron-3-ultra +6). That delta is **not attributable
+  to the guards**: the two arms did not face the same write validation, and
+  the mechanism proposed for a guard cost never fired once.
+
+  _The frozen arm was credited for writes the current stack rejects._ The
+  line-items baseline was captured 2026-07-13 (data commit `171862a94`,
+  frozen into dataset v1.0.0 on 07-17); the governed arm is the 2026-08-04
+  sweep. In the baseline, 21 `account.move.line` creates carry an
+  `account_id` the plugin cannot resolve — 12 a display string ("Expenses",
+  "Cloud Services"), 9 a raw numeric id — and **all 21 succeed**. In the
+  governed arm the identical shapes are rejected, 22 out of 22 ("Raw numeric
+  IDs are not accepted for account_id", "Could not resolve account_id from
+  Expenses"). Real Odoo rejects them too, which makes the baseline's
+  passes false-greens — and they are not a rounding error: **10 of
+  gemma4:31b's 11 baseline passes** contain such a write, and gemma4:31b is
+  the single largest published regression (−6). Across all 11 paired models,
+  10 of the 67 baseline passes rest on it; drop them and the comparison
+  reads 57/132 (43%) against governed 50/132 (38%).
+
+  Two things this is _not_, both checked rather than assumed. It is not the
+  guards: the rejection comes from the always-on ref normalizer, ungated by
+  `PINCHY_ODOO_GOVERNANCE`, and it fires in the ungoverned arm too (7
+  `partner_id` and 1 `journal_id` rejections on `account.move`). What
+  differs is only where it lands — on `account.move.line`, 0 failures in 91
+  baseline creates against 25 in 38 governed. And it is not simply
+  "pre-#615": the mock's top-level many2one validation landed in
+  `69e090871` on 2026-07-07, six days _before_ the baseline was captured, so
+  the source already carried it. A stale eval image is the likeliest
+  explanation — `docker-compose.eval.yml` builds `odoo-mock` from its
+  context, and `docker compose up` without `--build` reuses an older image —
+  but that is inference, not evidence, and until it is settled a baseline
+  capture should pin `--build`. (Omitting `account_id` altogether is a
+  different case and not a false-green driver: it succeeded 86/86 in the
+  baseline and still succeeds today, 13 of 14.)
+
+  _The same-build A/B agrees, within its power._ 2026-08-05, pinchy build
+  `dd96d631e479`, `PINCHY_ODOO_GOVERNANCE` the only variable, three models
+  at n=4 each: governed and ungoverned land **identically at 7/12 (58%)**,
+  where the frozen baseline for those same three was 33/36 (92%) and their
+  published governed cell was 22/36 (61%). The governed cell reproduces on
+  the current build; the frozen one does not. Read that for exactly what it
+  is — n=12 per arm is enough to show the baseline no longer reproduces and
+  to put both arms on one point estimate, but nowhere near enough to _bound_
+  a −13pp effect. It removes the attribution; it does not measure the guard
+  cost to be zero. The trio is a diagnostic, not a dataset arm: gemma4:31b
+  (−6) and kimi-k2.6 (−3) are among the largest capable regressions,
+  deepseek-v4-pro (−2) is not, and minimax-m2.7 (−4) was not re-run. It is
+  therefore deliberately unpublished and moves no fingerprint. Reproduce it
+  by running the sweep command above twice, once per
+  `PINCHY_ODOO_GOVERNANCE` value, with
+  `EVAL_SCENARIO=hetzner-invoice-lineitems-models`, `EVAL_N=4`, and
+  `EVAL_CANDIDATE_MODELS=ollama-cloud/gemma4:31b,ollama-cloud/kimi-k2.6,ollama-cloud/deepseek-v4-pro`.
+
+  _The proposed mechanism never fired._ The earlier reading here was that
+  the guard's extra read-back round trip "plausibly costs some models the
+  budget they needed". Across all 136 `account.move` creates in the governed
+  line-items arm, the read-back verification rejected **zero** — every one of
+  the dataset's 257 read-back rejections sits in silent-failure, the scenario
+  it was built for. A mechanism that never triggers cannot be the cost.
+  `account.move` create-failure rates are close either way (governed 38/136 =
+  28%, ungoverned 37/156 = 24%). Governed runs are also shorter (median 48s
+  vs 81s, 8 vs 10 tool calls); read that as a symptom, not as evidence in
+  either direction, since a shorter run is equally consistent with "less
+  friction" and with "gives up sooner".
+
 - **Verdict: KEEP.** The false-success collapse (79 → 1) is the guard doing
   exactly its job. happy-path is near-flat, and the one apparent control
-  regression — line-items −13pp — is a measurement confound, not a guard
-  cost: the same-build A/B above puts governed and ungoverned at the
-  identical 58%, with the whole gap to the frozen baseline explained by that
-  baseline's pre-#615 mock false-greens. Nothing offsets the target gain.
+  regression — line-items −13pp — is not attributable to the guards: the
+  frozen arm was credited for writes the current stack (and real Odoo)
+  rejects, the rejection that removes them is ungated by governance, the
+  read-back verification rejected nothing at all in this scenario, and a
+  same-build A/B puts governed and ungoverned at an identical 58%. What none
+  of that does is _bound_ a small residual cost at n=12, so the honest claim
+  is "not attributable", not "measured to be zero". Nothing established
+  offsets the target gain.
 
 ### Duplicate guard (#721)
 
@@ -147,9 +200,10 @@ entry. Then fill in the verdicts below.
 - **Controls** — happy-path and line-items deltas are reported once, under
   #720 above (both guards ship together and were swept together, so there
   is only one governed run per model per control scenario). Same
-  conclusion applies: happy-path near-flat; the line-items drop is a
-  measurement confound (the same-build A/B under #720 puts governed =
-  ungoverned), not a guard cost.
+  conclusion applies: happy-path near-flat; the line-items drop is not
+  attributable to the guards (the frozen arm's unresolved-`account_id`
+  false-greens plus a same-build A/B that puts governed = ungoverned — see
+  #720 above).
 - **Guard-loop check.** A guard that just trades "duplicate created" for
   "model loops against the refusal" would not be a win. Across all 132
   governed duplicate-guard runs, exactly **one** run shows a guard-loop

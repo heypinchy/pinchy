@@ -72,10 +72,15 @@ MINOR bump.
   The mechanism is the `false-success` tag count collapsing from 79 (across
   the 11 comparable models, re-graded) to 1: the tool's hard error on a
   no-op create converts a fabricated success into an honest, audited failure.
-  Controls: happy-path roughly flat (91/132 → 87/132), line-items shows a
-  real aggregate decline (67/132 → 50/132) concentrated in a handful of
-  models. **Verdict: KEEP** — full reasoning and the control-scenario numbers
-  in `../governed-comparison-decision.md`.
+  Controls: happy-path roughly flat (91/132 → 87/132), line-items down in
+  aggregate (67/132 → 50/132) and concentrated in a handful of models.
+  **Verdict: KEEP** — full reasoning and the control-scenario numbers in
+  `../governed-comparison-decision.md`. _Amended 2026-08-06: the line-items
+  delta is not a guard cost. The frozen baseline was captured against a stack
+  that credited `account.move.line` writes carrying an unresolvable
+  `account_id` (21 writes, all accepted; 10 of gemma4:31b's 11 passes rest on
+  them) which the current stack rejects — no published number moves, but the
+  interpretation in the decision doc does._
 - **Duplicate guard (#721), target — duplicate-guard**: governed 41/132
   (31%) vs. the _frozen_ baseline's own on-disk scorecard for the same 11
   models, 42/132 (32%), looks flat to slightly down at first glance — but

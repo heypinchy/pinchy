@@ -214,9 +214,16 @@ silent-failure's `false-success` count collapses from 79 to 1 across the 11
 shared models (governed 125/130 vs. ungoverned 47/132); duplicate-guard
 improves 41/132 → from a same-grader-re-graded 31/132 baseline (the frozen
 scorecard's own number looks close because it predates a grader fix — see
-the decision doc). Both guards are **KEEP**; happy-path is near-flat and
-line-items shows a real, bounded decline that does not offset the target
-gains. Full per-model numbers and the keep-or-revert reasoning:
+the decision doc). Both guards are **KEEP**; happy-path is near-flat, and
+line-items' −13pp (67/132 → 50/132) is **not attributable to the guards** —
+the frozen line-items baseline was captured against a stack that accepted
+`account.move.line` writes with an unresolvable `account_id` (21 such writes,
+all credited; 10 of gemma4:31b's 11 passes rest on them), which the current
+stack and real Odoo both reject. That rejection is ungated by governance, the
+read-back guard rejected nothing at all in this scenario, and a same-build
+A/B puts governed and ungoverned at an identical 58%. **Treat the frozen
+line-items baseline as contaminated** for any comparison, not only this one.
+Full per-model numbers and the keep-or-revert reasoning:
 `../governed-comparison-decision.md`.
 
 ## Completeness manifest (as of harness `255678c25`)
