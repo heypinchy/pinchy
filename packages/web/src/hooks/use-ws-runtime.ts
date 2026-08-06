@@ -1408,6 +1408,16 @@ export function useWsRuntime(
             historyMessages.push(...preserved);
           }
 
+          // Read BEFORE the two anchoring blocks below, both of which APPEND an
+          // assistant to `historyMessages`. `bufferIsStale` (further down) asks
+          // whether the SERVER already holds this turn's reply; an anchored copy
+          // of a reply the server does NOT hold answers that question `true` and
+          // throws away every frame buffered during the catch-up — including the
+          // pipe's post-`done` flush, which for a stopped run carries the tail of
+          // the very reply the anchor exists to keep.
+          const serverHistoryEndsInAssistant =
+            historyMessages[historyMessages.length - 1]?.role === "assistant";
+
           // Tier 2b: if the server reports an in-flight run for this
           // session, anchor the last assistant message in the reconciled
           // history to the server-side `currentMessageId`. Subsequent
@@ -1453,7 +1463,17 @@ export function useWsRuntime(
             // A live run means a NEW turn is streaming; whatever the user
             // stopped before it is no longer the trailing reply.
             stoppedReplyRef.current = null;
-          } else if (stoppedReplyRef.current) {
+          } else if (stoppedReplyRef.current && historyMessages.length > 0) {
+            // The empty list is client-router's "the session exists but OpenClaw
+            // cannot answer right now" frame (`messages: [], sessionKnown: true`
+            // — a restart race, or two failed history RPCs). It is NOT a shorter
+            // view of the conversation, and `shouldReplaceLocalWithServerHistory`
+            // refuses to adopt it for exactly that reason. Anchoring into it
+            // would hand that guard a list of ONE, which then reads as a genuine
+            // shrink and stages the destructive reconcile: the whole
+            // conversation replaced by the stopped reply alone. Hold the reply
+            // and let the next catch-up, which has a real history, release it.
+            //
             // #978: the user pressed stop and this catch-up is the first look at
             // the server's version of the turn. An aborted run's reply is not in
             // OpenClaw's transcript — the history therefore ends at the USER
@@ -1528,11 +1548,11 @@ export function useWsRuntime(
             }
           };
           // Stale iff the turn is done server-side (no activeRun) and its reply
-          // is already in history. When activeRun is set, historyMessages has
-          // been re-anchored above, but `!activeRun` short-circuits before we
-          // read it, so this only inspects the unmutated server list.
-          const bufferIsStale =
-            !activeRun && historyMessages[historyMessages.length - 1]?.role === "assistant";
+          // is already in history. Reads the snapshot taken before the anchoring
+          // blocks: `!activeRun` used to short-circuit before the only mutation
+          // there was, but the stopped-reply anchor (#978) runs on the
+          // `!activeRun` side, so the mutated list is no longer a safe reading.
+          const bufferIsStale = !activeRun && serverHistoryEndsInAssistant;
 
           if (shouldStageReplace) {
             stageDestructiveHistoryReconcile(historyMessages);
@@ -1774,6 +1794,13 @@ export function useWsRuntime(
           // Tier 2b: the run finished cleanly. Drop the in-flight runId
           // so the next turn's activeRun signal (if any) replaces it.
           inflightRunIdRef.current = null;
+          // #978: the terminator BOUNDS the error suppression below. The frame
+          // it guards against is the abort's own error racing the server's
+          // knowledge of the click, and the server sends that error before this
+          // `complete` — so anything arriving after it is about a different
+          // event and must reach the user. Left unbounded, a tab that stopped a
+          // reply and was then left open would silently drop every later error.
+          cancelledTurnRef.current = false;
         }
 
         if (data.type === "error") {

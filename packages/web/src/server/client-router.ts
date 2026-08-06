@@ -1647,7 +1647,14 @@ export class ClientRouter {
       // swallowed a `surface_error reason=timeout` into `continue_normal`).
       // Must precede the `complete` frame so the client's error handler
       // runs before the spinner is cleared.
-      if (!sawText && !sawError && !sawUserAbort) {
+      // #978: `sawUserAbort` only knows about an abort that arrived as an error
+      // chunk. A gateway that simply CLOSES the stream on `chat.abort` surfaces
+      // nothing at all, which is indistinguishable from a model that said
+      // nothing — except to the registry, which `handleAbort` marked when the
+      // click came in. Both readings are kept: the local one still answers for a
+      // run whose registry entry a rapid follow-up turn has already replaced.
+      const stoppedByUser = sawUserAbort || this.activeRuns.get(sessionKey)?.abortedByUser === true;
+      if (!sawText && !sawError && !stoppedByUser) {
         const providerError = "The model did not produce a response. It may have timed out.";
         // Durable banner: a silent timeout is also a "no response" the user
         // should still see after a reload. Best-effort. Computed before the

@@ -250,6 +250,30 @@ describe("ClientRouter — a stop click is not a provider error (#978)", () => {
     expect(eventTypes()).not.toContain("chat.silent_stream");
   });
 
+  it("does not synthesise a silent stream when the abort just ends the stream", async () => {
+    const router = makeRouter();
+    const ws = createMockWs();
+
+    async function* stream(): AsyncGenerator<ChatChunk> {
+      await tick();
+      yield { type: "userMessagePersisted", clientMessageId: "cm-1", runId: "run-1" } as ChatChunk;
+      await router.handleMessage(ws, { type: "abort", agentId: "agent-1" });
+      await tick();
+      // The third arrival shape, next to the error chunk and the rejection: the
+      // gateway simply closes the stream on the abort and surfaces nothing. The
+      // two tests above both key off an error, so only the registry mark can
+      // tell this apart from a model that genuinely said nothing — and reading
+      // it is what stops the safety net blaming a timeout for the user's click.
+    }
+    mockChat.mockReturnValue(stream());
+    await router.handleMessage(ws, { type: "message", content: "hi", agentId: "agent-1" });
+
+    expect(ws.sent.filter((f) => f.type === "error")).toEqual([]);
+    expect(mockRecordChatSessionError).not.toHaveBeenCalled();
+    expect(eventTypes()).not.toContain("chat.silent_stream");
+    expect(eventTypes()).not.toContain("chat.agent_error");
+  });
+
   it("treats the abort the same when it arrives as a rejection rather than a chunk", async () => {
     const router = makeRouter();
     const ws = createMockWs();
