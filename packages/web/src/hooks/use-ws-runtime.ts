@@ -657,6 +657,41 @@ export function useWsRuntime(
    */
   const inflightRunIdRef = useRef<string | null>(null);
   /**
+   * The partial reply the user pressed stop on, held only until the server's
+   * history agrees (#978).
+   *
+   * OpenClaw does not persist an aborted run's assistant text, so every history
+   * catch-up after a stop hands back a list that is one message SHORTER than
+   * what is on screen — and the reconcile's job is to adopt the server's view.
+   * Nothing distinguishes that from a genuine shrink (a compaction, a deletion
+   * on another device) except knowing the stop happened, which is what this
+   * ref is.
+   *
+   * Held in a ref rather than a message flag because it must survive the
+   * destructive reconcile that would otherwise consume it. Cleared as soon as
+   * it stops being needed — a new turn, or a history that carries the reply
+   * itself — so it can never resurrect a message the user later deleted.
+   */
+  const stoppedReplyRef = useRef<{
+    id: string;
+    content: string;
+    timestamp?: string;
+  } | null>(null);
+  /**
+   * True from a stop click until the next turn starts (#978).
+   *
+   * The server no longer turns a user abort into an error frame, but it can
+   * only do that once it KNOWS about the abort — and the error chunk may
+   * already be on its way when the click arrives. That leftover frame would
+   * put "The model provider timed out." on a turn the user ended deliberately,
+   * which `onCancel` promises not to do.
+   *
+   * Deliberately not folded into `stoppedReplyRef`: a run stopped before its
+   * first word has no partial to hold, and that is precisely the case where a
+   * spurious error banner is the ONLY thing the user would be left with.
+   */
+  const cancelledTurnRef = useRef(false);
+  /**
    * True iff at least one assistant chunk was received during the current turn.
    * Reset when a new turn starts (user sends or retry). Used to classify
    * incoming error frames: with chunks → partial_stream_failure, without
@@ -701,6 +736,10 @@ export function useWsRuntime(
     setMessages(capMessages([]));
     setIsRunning(false);
     setIsDelayed(false);
+    // #978: a stopped reply belongs to the chat it was stopped in. Carrying it
+    // across a switch would anchor it onto the next chat's history.
+    cancelledTurnRef.current = false;
+    stoppedReplyRef.current = null;
     // Reset the liveness machine for the new agent. Updating the ref
     // synchronously here (same rationale as the timer cleanup below) means any
     // frame handler that fires before the next commit sees the cleared state.
@@ -1411,6 +1450,38 @@ export function useWsRuntime(
             isRunningRef.current = true;
             setIsRunning(true);
             inflightRunIdRef.current = activeRun.runId;
+            // A live run means a NEW turn is streaming; whatever the user
+            // stopped before it is no longer the trailing reply.
+            stoppedReplyRef.current = null;
+          } else if (stoppedReplyRef.current) {
+            // #978: the user pressed stop and this catch-up is the first look at
+            // the server's version of the turn. An aborted run's reply is not in
+            // OpenClaw's transcript — the history therefore ends at the USER
+            // turn, is shorter than the local list, and the reconcile below
+            // adopts it wholesale. That silently deletes the words the stop was
+            // pressed to keep.
+            //
+            // Anchor them back, exactly as the activeRun branch does for a run
+            // that is still going. Same helper, same rule: if the server DOES
+            // have the reply (it persisted after all, or another device
+            // continued the conversation) it wins whenever it is longer, so this
+            // can restore text but never shrink it.
+            const stopped = stoppedReplyRef.current;
+            const last = historyMessages[historyMessages.length - 1];
+            if (last?.role === "assistant" && last.content.length >= stopped.content.length) {
+              // The server caught up. Stop holding a private copy — keeping it
+              // would resurrect this reply after a later /reset or a deletion.
+              stoppedReplyRef.current = null;
+            } else {
+              const anchored = ensureTrailingAssistant(historyMessages, {
+                id: stopped.id,
+                role: "assistant",
+                content: stopped.content,
+                timestamp: stopped.timestamp ?? new Date().toISOString(),
+              });
+              historyMessages.length = 0;
+              historyMessages.push(...anchored);
+            }
           }
           const shouldRecoverFromHistory = shouldRecoverFromHistoryRef.current;
           const prevMessages = messagesRef.current;
@@ -1712,6 +1783,20 @@ export function useWsRuntime(
           }
           setIsDelayed(false);
 
+          // #978: this turn was stopped by the user. A terminal error for it is
+          // the abort itself arriving the long way round — surfacing it would
+          // blame the provider for the user's own click, and the error bubble
+          // is also what flips the destructive-reconcile predicate that then
+          // discards the partial reply. `PROTOCOL_OUTDATED` is deliberately
+          // BELOW this: it is about the bundle, not about this turn, and it
+          // stays actionable no matter what the user just pressed.
+          if (cancelledTurnRef.current && data.code !== "PROTOCOL_OUTDATED") {
+            isRunningRef.current = false;
+            setIsRunning(false);
+            inflightRunIdRef.current = null;
+            return;
+          }
+
           // PROTOCOL_OUTDATED: the server rejected a legacy frame shape.
           // Surface a persistent reload toast — the tab needs the new bundle
           // before the user can send anything. Resetting hasReceivedChunkRef
@@ -1990,6 +2075,11 @@ export function useWsRuntime(
       isRunningRef.current = true;
       hasReceivedChunkRef.current = false;
       setIsRunning(true);
+      // #978: the previous turn's stopped reply is now settled history as far
+      // as this client is concerned — it sits in the local list, and the next
+      // reconcile must be free to correct it like any other message.
+      cancelledTurnRef.current = false;
+      stoppedReplyRef.current = null;
       // A new turn starts — drive the liveness machine to `responding`. This
       // clears any prior failure/slow state so a fresh send always starts clean.
       dispatchLiveness({ type: "started" });
@@ -2064,6 +2154,17 @@ export function useWsRuntime(
       delayTimerRef.current = null;
     }
     setIsDelayed(false);
+    // #978: remember the words already on screen BEFORE clearing isRunning.
+    // Clearing it is what re-opens `requestHistoryCatchup`, and the server's
+    // history for an aborted run does not contain this reply — so without a
+    // local copy the next poke or window focus adopts a shorter history and the
+    // partial disappears. That is the flake behind 19-chat-stop-button.
+    const trailing = messagesRef.current[messagesRef.current.length - 1];
+    stoppedReplyRef.current =
+      trailing?.role === "assistant" && trailing.content.length > 0 && !trailing.error
+        ? { id: trailing.id, content: trailing.content, timestamp: trailing.timestamp }
+        : null;
+    cancelledTurnRef.current = true;
     isRunningRef.current = false;
     hasReceivedChunkRef.current = false;
     setIsRunning(false);
@@ -2091,6 +2192,12 @@ export function useWsRuntime(
       hasReceivedChunkRef.current = false;
       trimTrailingOnNextChunkRef.current = true;
       setIsRunning(true);
+      // #978: a retry is a new turn, and it explicitly discards the trailing
+      // partial (`trimTrailingOnNextChunkRef`). Holding either stop-related ref
+      // past this point would re-anchor a reply the retry just replaced, and
+      // swallow the retry's own errors.
+      stoppedReplyRef.current = null;
+      cancelledTurnRef.current = false;
       // A retry starts a fresh turn — clear any prior failed/slow liveness.
       dispatchLiveness({ type: "started" });
 

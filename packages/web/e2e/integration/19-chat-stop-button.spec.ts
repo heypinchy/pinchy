@@ -91,11 +91,36 @@ test.describe("Chat stop button — user-triggered abort (#550)", () => {
     //    a fake-ollama control endpoint reporting whether this run's stream
     //    completed or was client-aborted; #952 owns building it.
     await page.waitForTimeout(FAKE_OLLAMA_ABORT_STREAM_DEFAULT_DELAY_MS * STREAM_WORDS.length);
+
+    //    Force the history catch-up rather than hoping for it (#978). Stopping
+    //    a run clears `isRunningRef`, which is the guard that refuses a mid-run
+    //    re-pull — so the next poke or window focus adopts the server's history
+    //    for a run whose reply OpenClaw did not persist, and the partial is
+    //    gone. This spec failed exactly that way three times on unrelated PRs,
+    //    and each time it read as a flake because whether the poke landed
+    //    inside the window above was a coin toss. Firing `focus` here makes the
+    //    re-pull happen on EVERY run, so a regression is red every time instead
+    //    of once a quarter. `expect.poll` below waits on the reconciled DOM, not
+    //    on a timer.
+    await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+    await expect
+      .poll(async () => page.locator('[data-role="assistant"]').count(), { timeout: 10000 })
+      .toBeGreaterThan(0);
+
     //    Re-assert presence first: `not.toContainText` is also satisfied by a
     //    locator that matches NOTHING, so a reply that vanished from the DOM
     //    would make the assertion below pass without proving anything.
     await expect(assistantMessage).toBeVisible();
     await expect(assistantMessage).not.toContainText(STREAM_LAST_WORD);
+
+    //    And no error UI: the stop was the user's, so nothing may blame the
+    //    provider for it — neither an in-chat bubble nor the durable banner
+    //    that survives a reload (the trace on #978 showed "Smithers paused —
+    //    The model provider timed out." after a plain stop click).
+    //    Matched on the provider-blame wording rather than on "paused": the
+    //    banner's own word is generic enough to collide with unrelated UI, and
+    //    an assertion that can go red for the wrong reason gets deleted.
+    await expect(page.getByText(/model provider timed out/i)).toHaveCount(0);
 
     // 6. The abort is audited as chat.run_aborted (actor = user, success).
     await expect
