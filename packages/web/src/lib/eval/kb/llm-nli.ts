@@ -174,8 +174,16 @@ export function parseAbstentionResponse(raw: string): number {
   return parseScoreReply(raw, "abstention", ABSTENTION_PARSE_FALLBACK);
 }
 
-/** Shared body of the two `{"score": …}` parsers — same robustness, different role label and fallback. */
-function parseScoreReply(raw: string, role: string, fallback: number): number {
+/**
+ * Shared body of the two `{"score": …}` parsers — same robustness, different
+ * role label and fallback.
+ *
+ * `role` is a union, not a `string`: naming the failing role is the ONLY reason
+ * the two parsers are separate exports, so a free-form label would let the next
+ * role in with a typo and quietly send the reader to the wrong prompt — the
+ * exact failure the split exists to prevent.
+ */
+function parseScoreReply(raw: string, role: "relevance" | "abstention", fallback: number): number {
   const jsonText = extractJsonObjectText(raw);
   if (jsonText === null) {
     console.warn(

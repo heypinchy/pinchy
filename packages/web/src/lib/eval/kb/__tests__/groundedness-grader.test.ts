@@ -67,14 +67,24 @@ describe("isAbstention", () => {
 
   const Q = "What is Northwind's parental leave policy?";
 
+  // The five strings below are the phrases the DELETED phrase-list detector
+  // matched literally. They are kept as inputs, but the assertion is now the
+  // opposite of what it was: each must follow whatever the judge says, in BOTH
+  // directions. A test that only asserted `judgeSaysYes ⇒ true` would pass for
+  // any string at all, while its name went on implying that English abstention
+  // phrasing is what the detector recognises — which is precisely the mechanism
+  // this file's subject no longer has. Flipping the judge is what makes these
+  // five inputs mean something: it fails the moment anyone reintroduces a
+  // phrase shortcut ahead of the judge.
   it.each([
     "I couldn't find this in the knowledge base.",
     "I could not find that information anywhere.",
     "The corpus doesn't contain an answer to this.",
     "The corpus does not contain any mention of this.",
     "This is not in the knowledge base.",
-  ])("detects abstention: %s", async (answer) => {
+  ])("follows the judge, with no shortcut for the old phrase list: %s", async (answer) => {
     expect(await isAbstention(Q, answer, judgeSaysYes())).toBe(true);
+    expect(await isAbstention(Q, answer, judgeSaysNo())).toBe(false);
   });
 
   it("does not flag a normal answering sentence as abstention", async () => {
@@ -156,8 +166,10 @@ describe("isAbstention", () => {
   // A stub judge cannot prove a real judge reads these correctly; that was
   // measured separately against the live judge (all 8 abstentions 0.95–1.00,
   // all 40 answering runs 0.00 — see `buildAbstentionPrompt`). What these two
-  // pin is that the detector no longer rules them out BEFORE the judge sees
-  // them.
+  // pin is that the detector reaches the judge with them intact and returns
+  // the judge's verdict — so both directions are asserted. `judgeSaysYes ⇒
+  // true` fails if the `[N]` veto comes back; `judgeSaysNo ⇒ false` fails if a
+  // phrase shortcut does. One direction alone would pass for any input.
   // ---------------------------------------------------------------------
 
   it("recognises an abstention that cites its evidence (sweep: qwen3.5, gqa-abstention-1)", async () => {
@@ -168,15 +180,16 @@ describe("isAbstention", () => {
     ].join("\n");
 
     expect(await isAbstention(Q, answer, judgeSaysYes())).toBe(true);
+    expect(await isAbstention(Q, answer, judgeSaysNo())).toBe(false);
   });
 
   it("recognises an abstention written in German (sweep: glm-5.2, gqa-abstention-2)", async () => {
+    const deQuery = "Wie lautet Northwinds Richtlinie zur Elternzeit?";
     const answer =
       "Ich konnte in den indizierten Dokumenten leider **keine eigentliche Richtlinie zur Elternzeit** (parental leave) finden.";
 
-    expect(
-      await isAbstention("Wie lautet Northwinds Richtlinie zur Elternzeit?", answer, judgeSaysYes())
-    ).toBe(true);
+    expect(await isAbstention(deQuery, answer, judgeSaysYes())).toBe(true);
+    expect(await isAbstention(deQuery, answer, judgeSaysNo())).toBe(false);
   });
 });
 

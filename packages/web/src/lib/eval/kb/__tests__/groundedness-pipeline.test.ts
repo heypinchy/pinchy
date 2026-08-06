@@ -63,11 +63,12 @@ describe("groundedness pipeline self-test: gradeKbRun -> buildScorecard, end to 
   // Scripted NLI: the one cited sentence is highly entailed by the cited
   // passage — a deterministic "grounded" verdict, not a real model judgment.
   //
-  // `gradeKbRun` puts TWO questions to this same client — "is this sentence
-  // supported?" and "does this answer decline to answer?" — so each fixture's
-  // client answers them separately, keyed off the hypothesis. A client that
-  // returned one flat score would answer both with it and read every answer
-  // here as a refusal.
+  // This client answers ONE question: "is this sentence supported by the cited
+  // passages?" Abstention is a separate question put to a separate role, so it
+  // is scripted separately per fixture (the `abstention:` dep below) rather
+  // than by wording a hypothesis for this client. That separation is the whole
+  // point of the change this file guards — entailment turned out to be the
+  // wrong relation for "did this answer decline?" (see `buildAbstentionPrompt`).
   const groundedNli = stubNliClient([0.95]);
 
   // --- Fixture 2: an answer with one ungrounded sentence. ---
