@@ -298,7 +298,8 @@ export async function extractPdfText(
   const maxPages = options.maxPages ?? DEFAULT_MAX_PAGES;
   const data = new Uint8Array(buffer);
 
-  const doc = await getDocument({
+  // pdfjs 6 removed PDFDocumentProxy.destroy(); the loading task owns teardown.
+  const loadingTask = getDocument({
     data,
     isEvalSupported: false,
     disableAutoFetch: true,
@@ -306,7 +307,8 @@ export async function extractPdfText(
     useSystemFonts: false,
     standardFontDataUrl: STANDARD_FONT_DATA_URL,
     CanvasFactory: NodeCanvasFactory,
-  } as Record<string, unknown>).promise;
+  } as Record<string, unknown>);
+  const doc = await loadingTask.promise;
 
   const totalPages = doc.numPages;
   const pagesToProcess = Math.min(totalPages, maxPages);
@@ -370,6 +372,6 @@ export async function extractPdfText(
     await yieldToEventLoop();
   }
 
-  await doc.destroy();
+  await loadingTask.destroy();
   return { pages, totalPages, truncated: totalPages > maxPages };
 }

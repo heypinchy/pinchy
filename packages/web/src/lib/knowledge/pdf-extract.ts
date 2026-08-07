@@ -36,13 +36,15 @@ export async function extractPdfPages(absPath: string): Promise<ExtractedPdfPage
   // type but is a documented runtime option (disables eval-based font
   // compilation, which Node has no use for); same cast pinchy-files' own
   // pdf-extract.ts uses for its (larger) options object.
-  const doc = await getDocument({
+  // pdfjs 6 removed PDFDocumentProxy.destroy(); the loading task owns teardown.
+  const loadingTask = getDocument({
     data,
     isEvalSupported: false,
     disableAutoFetch: true,
     disableFontFace: true,
     useSystemFonts: false,
-  } as Record<string, unknown>).promise;
+  } as Record<string, unknown>);
+  const doc = await loadingTask.promise;
 
   const pages: ExtractedPdfPage[] = [];
   try {
@@ -74,7 +76,7 @@ export async function extractPdfPages(absPath: string): Promise<ExtractedPdfPage
       }
     }
   } finally {
-    await doc.destroy();
+    await loadingTask.destroy();
   }
 
   return pages;
