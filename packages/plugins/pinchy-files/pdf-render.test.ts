@@ -11,13 +11,14 @@ describe("renderPageToImage", () => {
   it("renders a PDF page to a PNG buffer", async () => {
     const buffer = readFileSync(join(FIXTURES, "text-only.pdf"));
     const data = new Uint8Array(buffer);
-    const doc = await getDocument({
+    const loadingTask = getDocument({
       data,
       isEvalSupported: false,
       disableAutoFetch: true,
       disableFontFace: true,
       useSystemFonts: false,
-    } as Record<string, unknown>).promise;
+    } as Record<string, unknown>);
+    const doc = await loadingTask.promise;
 
     const page = await doc.getPage(1);
     const pngBuffer = await renderPageToImage(page);
@@ -32,6 +33,6 @@ describe("renderPageToImage", () => {
     expect(pngBuffer.length).toBeLessThan(5_000_000);
 
     page.cleanup();
-    await doc.destroy();
+    await loadingTask.destroy();
   });
 });

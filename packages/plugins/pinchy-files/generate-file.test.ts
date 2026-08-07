@@ -7,15 +7,16 @@ import { generateFile } from "./generate-file";
  * by an unbounded wrap (the regression #1/#2 guard against). No font data or
  * canvas factory is needed just to read structural page count. */
 async function countPdfPages(buffer: Buffer): Promise<number> {
-  const doc = await getDocument({
+  const loadingTask = getDocument({
     data: new Uint8Array(buffer),
     isEvalSupported: false,
     disableAutoFetch: true,
     disableFontFace: true,
     useSystemFonts: false,
-  } as Record<string, unknown>).promise;
+  } as Record<string, unknown>);
+  const doc = await loadingTask.promise;
   const numPages = doc.numPages;
-  await doc.destroy();
+  await loadingTask.destroy();
   return numPages;
 }
 
