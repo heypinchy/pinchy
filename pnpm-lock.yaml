@@ -33,7 +33,7 @@ overrides:
   ws@>=8.0.0 <8.20.1: '>=8.20.1'
   qs@<6.15.2: '>=6.15.2'
   uuid@8.3.2: '>=11.1.1'
-  js-yaml@>=4.0.0 <4.3.0: '>=4.3.0 <5'
+  js-yaml@>=4.0.0 <4.3.1: '>=4.3.1 <5'
   body-parser@>=2.0.0 <2.3.0: '>=2.3.0 <3'
   '@babel/core@>=7.0.0 <7.29.6': '>=7.29.6'
   tar@>=7.0.0 <7.5.21: '>=7.5.21'
@@ -5561,8 +5561,8 @@ packages:
   js-tokens@4.0.0:
     resolution: {integrity: sha512-RdJUflcE3cUzKiMqQgsCu06FPu9UdIJO0beYbPhHN4k6apgJtifcoCtT9bcxOpYBtpD2kCM6Sbzg4CausW/PKQ==}
 
-  js-yaml@4.3.0:
-    resolution: {integrity: sha512-1td788aAnnZ5qs7V2QIRl1owjtYpbKt749Y3xauqQgwIIGF/xXWz1wMTEBx5O3LK3lXLVuqXPdPxj2BoFHaW9Q==}
+  js-yaml@4.3.1:
+    resolution: {integrity: sha512-CY6crGq313MX8GkwvB7tzgp99vjQxY1++5y10/BKN/GUfHqWaOGQMNZkBvqSzsZKWk/ijwHlWzzkLulsGHhjWQ==}
     hasBin: true
 
   jsdom@29.1.1:
@@ -8756,7 +8756,7 @@ snapshots:
       globals: 14.0.0
       ignore: 5.3.2
       import-fresh: 3.3.1
-      js-yaml: 4.3.0
+      js-yaml: 4.3.1
       minimatch: 3.1.5
       strip-json-comments: 3.1.1
     transitivePeerDependencies:
@@ -13075,7 +13075,7 @@ snapshots:
 
   js-tokens@4.0.0: {}
 
-  js-yaml@4.3.0:
+  js-yaml@4.3.1:
     dependencies:
       argparse: 2.0.1
 
