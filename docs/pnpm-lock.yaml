@@ -39,8 +39,8 @@ importers:
         specifier: ^3.0.1
         version: 3.0.1(astro@6.4.8(@types/node@24.12.2)(lightningcss@1.32.0)(rollup@4.60.1))
       mermaid:
-        specifier: ^11.16.0
-        version: 11.16.0
+        specifier: ^11.16.1
+        version: 11.16.1
 
 packages:
 
@@ -1784,8 +1784,8 @@ packages:
   mdn-data@2.12.2:
     resolution: {integrity: sha512-IEn+pegP1aManZuckezWCO+XZQDplx1366JoVhTpMpBB1sPey/SbveZQUosKiKiGYjg1wH4pMlNgXbCiYgihQA==}
 
-  mermaid@11.16.0:
-    resolution: {integrity: sha512-Zvm3kbstgdpvIJPPItlL7fppIZ3kibvc1oZIGxdvk9t6UFz6flv+Jw7FtRGKwfcI8OckmH04LqG6LlS6X4B1pA==}
+  mermaid@11.16.1:
+    resolution: {integrity: sha512-TQsq6u22fAn3rek5VOubrhKPo1g5hwC3FXUN9hiyupTckcYiGuuKGkNQrKYwGJkXUxZdojwRG46gsSCFZMDp4g==}
 
   micromark-core-commonmark@2.0.3:
     resolution: {integrity: sha512-RDBrHEMSxVFLg6xvnXmb1Ayr2WzLAWjeSATAoxwKYJV94TeNavgoIdA0a9ytzDSVzBy2YKFK+emCPOEibLeCrg==}
@@ -3049,7 +3049,7 @@ snapshots:
     dependencies:
       '@astrojs/markdown-remark': 7.2.0
       '@astrojs/starlight': 0.38.3(astro@6.4.8(@types/node@24.12.2)(lightningcss@1.32.0)(rollup@4.60.1))
-      mermaid: 11.16.0
+      mermaid: 11.16.1
       unist-util-visit: 5.1.0
 
   '@rollup/pluginutils@5.3.0(rollup@4.60.1)':
@@ -4501,7 +4501,7 @@ snapshots:
 
   mdn-data@2.12.2: {}
 
-  mermaid@11.16.0:
+  mermaid@11.16.1:
     dependencies:
       '@braintree/sanitize-url': 7.1.2
       '@iconify/utils': 3.1.3
