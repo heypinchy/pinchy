@@ -170,15 +170,16 @@ export const PUT = withAuth<RouteContext>(async (request, { params }, session) =
   if ("error" in parsed) return parsed.error;
   const { name, filter, action, connectionIds, sweepWindowDays } = parsed.data;
 
+  // Same refusal as PATCH and DELETE — see `workflowNotFound`. This route was
+  // written before #880 settled that verdict and originally answered 403 here,
+  // which is the existence oracle that decision closed: read and manage
+  // coincide for a workflow, so a caller who fails this gate cannot enumerate
+  // the workflow anywhere, and a distinguishable refusal is the only way they
+  // could learn the id is real.
   const workflow = await loadWorkflowWithAgent(id);
-  if (!workflow) {
-    return NextResponse.json({ error: "Workflow not found" }, { status: 404 });
-  }
+  if (!workflow) return workflowNotFound();
   if (!canManageAgentWorkflows(workflow, { id: session.user.id!, role: session.user.role })) {
-    return NextResponse.json(
-      { error: "You do not have permission to change this workflow" },
-      { status: 403 }
-    );
+    return workflowNotFound();
   }
 
   const requestedConnectionIds = [...new Set(connectionIds)];
