@@ -335,7 +335,13 @@ jobs:
         run: |
           set -euo pipefail
           cd "$RUNNER_TEMP"
-          curl -sSfL --retry 3 --retry-delay 2 --retry-all-errors \
+          # No --retry-delay: it disables curl's exponential backoff, which is
+          # what made the GGUF download give up after 25 s against an HF 429
+          # (Dockerfile.openclaw carries the long version, including what the
+          # flag does NOT do). Lower stakes here — a 2 MB asset from GitHub
+          # releases — but the same wrong flag. --retry-max-time caps when a
+          # retry may still start, not the total.
+          curl -sSfL --retry 5 --retry-all-errors --retry-max-time 120 \
             -o actionlint.tar.gz \
             "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
           echo "${ACTIONLINT_SHA256}  actionlint.tar.gz" | sha256sum --check --strict

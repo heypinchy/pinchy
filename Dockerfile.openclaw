@@ -92,8 +92,30 @@ RUN openclaw plugins install @openclaw/llama-cpp-provider \
 # for whatever HF returns under load. Integrity is still enforced by the
 # sha256sum -c below — a truncated or tampered download fails the build
 # regardless of how many retries it took.
+#
+# There is deliberately NO --retry-delay. It reads like a tuning knob and is a
+# kill switch: curl's manual says "By using --retry-delay you disable this
+# exponential backoff algorithm". `--retry 5 --retry-delay 5` therefore spent
+# its whole patience in 25 s, and on 2026-08-06 that lost the Pre-release build
+# on main to HF 429s — six requests fired INTO a rate limit rather than waiting
+# one out. Without the flag the wait doubles 1,2,4,8,… so the retry COUNT is
+# what buys patience: 8 retries sleep ~255 s where 5 would sleep ~31 s.
+#
+# Retry-After is NOT the lever here, tempting as it is to credit. curl honours
+# that header whether or not --retry-delay is set — it takes the larger of the
+# two, never the smaller (checked against curl 8.x, not inferred from the
+# manual). So the exact 5 s spacing above is itself the evidence that HF sent
+# no usable Retry-After at all, and restored backoff is the entire fix.
+#
+# --retry-max-time bounds when curl may still START another retry, not the
+# total wall clock: "if the timer has not reached the limit, the request is
+# made and while performing, it may take longer than this given time period".
+# That is the right bound for a rate limit, where attempts fail in
+# milliseconds and the sleeping is the whole cost. A transfer that stalls
+# mid-flight is a different failure needing different flags (-m /
+# --speed-limit); this bound does not pretend to cover it.
 RUN mkdir -p /opt/embedding-models \
-    && curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 \
+    && curl -fsSL --retry 8 --retry-all-errors --retry-max-time 600 \
        -o /opt/embedding-models/embeddinggemma-300m-qat-Q8_0.gguf \
        https://huggingface.co/ggml-org/embeddinggemma-300m-qat-q8_0-GGUF/resolve/66f974f8cd48cc3b9c41c516b95508e75b4bee64/embeddinggemma-300m-qat-Q8_0.gguf \
     && echo "6fa0c02a9c302be6f977521d399b4de3a46310a4f2621ee0063747881b673f67  /opt/embedding-models/embeddinggemma-300m-qat-Q8_0.gguf" | sha256sum -c -
