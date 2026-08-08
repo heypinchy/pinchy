@@ -364,3 +364,44 @@ describe("gradeGroundednessForGold", () => {
     expect(result.tags).toEqual(["ungrounded-claim"]);
   });
 });
+
+/**
+ * Every fragment below was produced by `splitSentences` against a real answer
+ * from the 2026-08-05 sweep, and each was then entailment-checked as if it were
+ * a claim. None of them asserts anything, so none of them can be entailed —
+ * they were free `ungrounded-claim` verdicts charged to the model for typing a
+ * horizontal rule.
+ */
+describe("splitSentences keeps claims and drops what cannot be one", () => {
+  it("drops a horizontal rule (kimi-k2.6, gqa-pathcite-1 and three others)", () => {
+    // The real shape: the rule sits between the prose and the Sources heading,
+    // so `answerBody` cuts at the heading and leaves it as the trailing
+    // fragment. A rule in mid-body has no `.!?` to split on and simply rides
+    // along with the sentence after it — no run in the sweep wrote one there,
+    // so nothing here pretends to handle it.
+    expect(splitSentences("The rate is $60 [1].\n\n---\n\n")).toEqual(["The rate is $60 [1]."]);
+  });
+
+  it("drops a citation marker left standing alone (kimi-k2.6, gqa-distractor-2)", () => {
+    expect(splitSentences("Tickets are kept for 24 months.\n\n[1]")).toEqual([
+      "Tickets are kept for 24 months.",
+    ]);
+  });
+
+  it("drops an ordered-list marker the splitter orphaned (gpt-oss:120b, gqa-happy-2)", () => {
+    // A list marker is followed by a space, so the splitter treats it as a
+    // sentence end: "1." and "2." each break off as fragments of their own.
+    // The claims survive intact; only the markers go.
+    expect(splitSentences("1. Laptops run a 3-year cycle. 2. Monitors are replaced too.")).toEqual([
+      "Laptops run a 3-year cycle.",
+      "Monitors are replaced too.",
+    ]);
+  });
+
+  it("keeps a claim that is short, numeric and citation-heavy", () => {
+    expect(splitSentences("It is $60 [1]. The cap is 10 days [2].")).toEqual([
+      "It is $60 [1].",
+      "The cap is 10 days [2].",
+    ]);
+  });
+});
