@@ -7,7 +7,7 @@
  * lib/knowledge/unsearchable.integration.test.ts.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { NextRequest } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 
 import { DEFAULT_ORG_ID } from "@/lib/knowledge/constants";
 
@@ -22,16 +22,15 @@ vi.mock("@/lib/auth", () => ({
   getSession: (...args: unknown[]) => mockGetSession(...args),
 }));
 
-const mockLimit = vi.fn();
-const mockWhere = vi.fn().mockReturnValue({ limit: mockLimit });
-const mockFrom = vi.fn().mockReturnValue({ where: mockWhere });
-const mockSelect = vi.fn().mockReturnValue({ from: mockFrom });
-vi.mock("@/db", () => ({
-  db: { select: (...args: unknown[]) => mockSelect(...args) },
-}));
-
-vi.mock("@/db/schema", () => ({
-  activeAgents: { __table: "active_agents", id: "active_agents.id" },
+// The route no longer looks the agent up itself: it asks the shared read gate,
+// which is what withholds another user's personal agent from an admin. Mocking
+// the helper (rather than `@/db`) is what lets this file assert the delegation;
+// the helper's own rule is pinned in lib/agent-access.test.ts, and the
+// end-to-end answer against a real DB in
+// agent-admin-routes-visibility.integration.test.ts.
+const mockGetAgentWithAccess = vi.fn();
+vi.mock("@/lib/agent-access", () => ({
+  getAgentWithAccess: (...args: unknown[]) => mockGetAgentWithAccess(...args),
 }));
 
 const mockListUnsearchableDocuments = vi.fn();
@@ -58,7 +57,7 @@ describe("GET /api/agents/[agentId]/knowledge/unsearchable", () => {
   beforeEach(async () => {
     vi.clearAllMocks();
     mockGetSession.mockResolvedValue({ user: { id: "admin-1", role: "admin" } });
-    mockLimit.mockResolvedValue([agentRow]);
+    mockGetAgentWithAccess.mockResolvedValue(agentRow);
     mockListUnsearchableDocuments.mockResolvedValue({ documents: [], total: 0 });
     GET = (await import("@/app/api/agents/[agentId]/knowledge/unsearchable/route")).GET;
   });
@@ -82,12 +81,23 @@ describe("GET /api/agents/[agentId]/knowledge/unsearchable", () => {
   });
 
   it("returns 404 for an unknown agent and never queries", async () => {
-    mockLimit.mockResolvedValueOnce([]);
+    mockGetAgentWithAccess.mockResolvedValueOnce(
+      NextResponse.json({ error: "Agent not found" }, { status: 404 })
+    );
 
     const res = await GET(makeRequest(), ctx as never);
 
     expect(res.status).toBe(404);
     expect(mockListUnsearchableDocuments).not.toHaveBeenCalled();
+  });
+
+  it("asks the read gate with the caller's identity, not just the agent id", async () => {
+    // Being admin-only is not a visibility rule. The gate is what withholds
+    // another user's personal agent, and it can only do that if the route
+    // hands it who is asking — the answer differs per caller, not per role.
+    await GET(makeRequest(), ctx as never);
+
+    expect(mockGetAgentWithAccess).toHaveBeenCalledWith("agent-1", "admin-1", "admin");
   });
 
   // The security boundary of this route: the scope comes from the agent's
@@ -104,7 +114,11 @@ describe("GET /api/agents/[agentId]/knowledge/unsearchable", () => {
   });
 
   it("scopes to nothing when the agent has no pinchy-files grants", async () => {
-    mockLimit.mockResolvedValueOnce([{ id: "agent-1", name: "Smithers", pluginConfig: null }]);
+    mockGetAgentWithAccess.mockResolvedValueOnce({
+      id: "agent-1",
+      name: "Smithers",
+      pluginConfig: null,
+    });
 
     const res = await GET(makeRequest(), ctx as never);
 
