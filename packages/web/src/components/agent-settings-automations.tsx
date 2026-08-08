@@ -7,7 +7,7 @@ import { apiGet, apiPatch, apiDelete, errorMessage } from "@/lib/api-client";
 import type { AutomationListItem } from "@/lib/schemas/automations";
 import type { EmailWorkflowFilter } from "@/lib/email-workflows/types";
 import type { EmailWorkflowStatus } from "@/db/enums";
-import { AgentSettingsAutomationCreateDialog } from "@/components/agent-settings-automation-create-dialog";
+import { AgentSettingsAutomationDialog } from "@/components/agent-settings-automation-dialog";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -77,6 +77,7 @@ export function AgentSettingsAutomations({ agentId }: { agentId: string }) {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<AutomationListItem | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
+  const [editTarget, setEditTarget] = useState<AutomationListItem | null>(null);
 
   // No synchronous setState here: `loading` starts true and the `finally`
   // clears it, so the effect that calls this never sets state before its first
@@ -154,12 +155,26 @@ export function AgentSettingsAutomations({ agentId }: { agentId: string }) {
         </Button>
       </div>
 
-      <AgentSettingsAutomationCreateDialog
+      <AgentSettingsAutomationDialog
         agentId={agentId}
         open={createOpen}
         onOpenChange={setCreateOpen}
-        onCreated={load}
+        onSaved={load}
       />
+
+      {/* Edit reuses the same dialog, seeded with the row's workflow. Mounted
+          only while editing so each open re-seeds cleanly from the target. */}
+      {editTarget && (
+        <AgentSettingsAutomationDialog
+          agentId={agentId}
+          open={true}
+          onOpenChange={(o) => {
+            if (!o) setEditTarget(null);
+          }}
+          onSaved={load}
+          workflow={editTarget}
+        />
+      )}
 
       {loading ? (
         <div className="space-y-2">
@@ -221,6 +236,15 @@ export function AgentSettingsAutomations({ agentId }: { agentId: string }) {
                         onClick={() => handleToggle(item)}
                       >
                         {item.enabled ? "Disable" : "Enable"}
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="ml-2"
+                        disabled={busyId === item.id}
+                        onClick={() => setEditTarget(item)}
+                      >
+                        Edit
                       </Button>
                       <Button
                         size="sm"

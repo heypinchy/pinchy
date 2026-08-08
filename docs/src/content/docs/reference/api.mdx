@@ -558,7 +558,7 @@ Standing email workflows an agent runs on its own — see [the Automations tab](
 
 The endpoints keyed by **`agentId`** ask two questions in order, and answer differently depending on which one you fail. Can you **see** the agent at all? If not — someone else's personal agent, or a restricted one outside your groups — you get a plain `404`, identical to an ID that was never issued, because any other answer would confirm the agent exists. If you can see it but may not **manage** its automations — the everyday case of a shared agent you chat with daily — you get `403`, which tells you nothing you did not already know and points you at an admin instead of at a typo.
 
-`PATCH` and `DELETE` are keyed by **workflow** id instead, and there a scope refusal is `404` too. The middle case has no equivalent: a workflow you may not manage is one you can never list either, since `GET /api/automations` is gated by the same rule. So `403` there would be the only way to learn that a workflow id is real.
+`PUT`, `PATCH` and `DELETE` are keyed by **workflow** id instead, and there a scope refusal is `404` too. The middle case has no equivalent: a workflow you may not manage is one you can never list either, since `GET /api/automations` is gated by the same rule. So `403` there would be the only way to learn that a workflow id is real.
 
 Being keyed by workflow id also gives these two a reach the `agentId` endpoints deliberately lack: an admin who already holds a workflow's id — from the [audit trail](/concepts/audit-trail/), which is where a runaway automation surfaces — can disable or delete it even on someone's personal agent. Standing autonomous authority has to stay stoppable. It grants no way to **find** such a workflow, only to act on one already known.
 
@@ -614,6 +614,24 @@ Toggling to the state it already has is a no-op: still `200`, no audit entry —
 - `400` — the body has no boolean `enabled`
 - `401` — not authenticated
 - `404` — no workflow has that id, **or** its agent is outside your scope. This endpoint addresses a workflow, not an agent, so a malformed id lands here as well: it definitionally matches nothing
+
+### `PUT /api/automations/:id`
+
+Change an existing workflow in place — its name, instruction, trigger, mailboxes, or look-back window. Same body as `POST /api/automations` minus `agentId`, which a workflow cannot move between agents.
+
+**Request body:** `{ "name": "...", "filter": { … }, "action": "...", "connectionIds": ["..."], "sweepWindowDays": 7 }`
+
+**Response:** `{ "id": "..." }`
+
+Two things this endpoint deliberately does **not** do. It never changes `enabled` — activation stays with `PATCH`, so an edit cannot quietly switch a workflow on. And it reconciles mailboxes as a **diff**, not a rewrite: a mailbox you keep holds its position in the mail stream, a mailbox you add starts watching from now, and a removed one is dropped. Rewriting the set would make an enabled workflow re-process or skip mail across the edit.
+
+An edit that changes nothing is still `200` and writes no audit entry.
+
+**Errors:**
+
+- `400` — the body fails validation, or the agent has no read access to a requested connection (the message names the ids)
+- `401` — not authenticated
+- `404` — no workflow has that id, **or** its agent is outside your scope (as with `PATCH`, a malformed id matches nothing)
 
 ### `DELETE /api/automations/:id`
 

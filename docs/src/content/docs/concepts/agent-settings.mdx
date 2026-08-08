@@ -174,7 +174,7 @@ Click **New automation** and fill in:
 A new automation is always created **disabled**. Pinchy proposes the workflow; it never activates one on its own. This is deliberate — an agent (or a form) should never grant itself standing autonomous authority. Nothing runs until a person reviews the workflow and switches it on.
 :::
 
-### Review, enable, and remove
+### Review, edit, enable, and remove
 
 The tab lists every workflow on the agent with its trigger (in plain words, not raw filters), its instruction, the mailboxes it watches, and its status:
 
@@ -187,9 +187,11 @@ The tab lists every workflow on the agent with its trigger (in plain words, not 
 
 Pinchy names the workflow and the reason in the server log the first time a workflow lands in this state. After that the badge is the record, so if you missed the line, the three causes above are what to check.
 
-An errored workflow stays switched on and keeps being retried, so there's nothing to re-enable. Repair the connection's credentials and the next pass moves the workflow back to **Active** by itself. The other two causes can't be edited on an existing workflow: a workflow's mailboxes and its recipient are fixed when you create it, so delete it and create it again — pointed at the reconnected mailbox, and by the person who should receive the results.
+An errored workflow stays switched on and keeps being retried, so there's nothing to re-enable. Repair the connection's credentials and the next pass moves the workflow back to **Active** by itself. A workflow watching the wrong mailbox is fixed with **Edit** (below). Only the recipient is fixed at creation, so a workflow reporting to the wrong person has to be deleted and created again by the person who should receive the results.
 
 Use **Enable** / **Disable** to turn a workflow on or off, and **Delete** to remove one for good. Enabling is the human-gated step that turns a proposal into a live automation; disabling pauses it without deleting it.
+
+**Edit** reopens the same form, pre-filled, so you can change a workflow's name, instruction, trigger, mailboxes, or look-back window in place. Two things stay put on purpose: editing **never** changes whether the workflow is enabled — activation is only ever the Enable/Disable toggle's job — and a mailbox you keep across an edit keeps its place in the mail stream, so no message is re-processed or skipped over the change. A mailbox you add starts watching from now on, never retroactively.
 
 For a walkthrough from a connected mailbox to a running workflow — including how to scope a trigger and what to check afterwards — see [Set Up Email Automations](/guides/email-automations/).
 

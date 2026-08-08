@@ -1,14 +1,14 @@
 import { NextResponse } from "next/server";
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { desc, eq, inArray } from "drizzle-orm";
 
 import { db } from "@/db";
-import { emailWorkflows, emailWorkflowConnections, agentConnectionPermissions } from "@/db/schema";
+import { emailWorkflows, emailWorkflowConnections } from "@/db/schema";
 import { withAuth } from "@/lib/api-auth";
 import { parseRequestBody } from "@/lib/api-validation";
 import { createAutomationSchema } from "@/lib/schemas/automations";
 import { scrubEmails } from "@/lib/audit";
 import { deferAuditLog } from "@/lib/audit-deferred";
-import { EMAIL_READ_OPERATIONS } from "@/lib/tool-registry";
+import { findUnreadableConnectionIds } from "@/lib/email-workflows/connection-access";
 import {
   resolveWorkflowAgent,
   resolveWorkflowAgentFromQuery,
@@ -102,25 +102,12 @@ export const POST = withAuth(async (request, _ctx, session) => {
 
   // Every requested mailbox must be one the agent is allowed to READ — a
   // workflow's trigger lists and reads mail, so a draft/send-only grant is not
-  // enough. EMAIL_READ_OPERATIONS includes the legacy "search"/"list" aliases
-  // the runtime already treats as read (tool-registry). An unknown connection
-  // id has no permission row either, so this single check rejects "no read
-  // access" and "no such connection" alike — a workflow must never point at a
-  // mailbox its agent can't open.
+  // enough. The rule (and why an unknown connection id is rejected by the same
+  // check) lives in `findUnreadableConnectionIds`, which PATCH shares: the edit
+  // path has to enforce the identical rule, and two copies of it would be one
+  // copy away from a workflow pointing at a mailbox its agent cannot open.
   const requestedConnectionIds = [...new Set(connectionIds)];
-  const permittedRows = await db
-    .selectDistinct({ connectionId: agentConnectionPermissions.connectionId })
-    .from(agentConnectionPermissions)
-    .where(
-      and(
-        eq(agentConnectionPermissions.agentId, agentId),
-        eq(agentConnectionPermissions.model, "email"),
-        inArray(agentConnectionPermissions.operation, [...EMAIL_READ_OPERATIONS]),
-        inArray(agentConnectionPermissions.connectionId, requestedConnectionIds)
-      )
-    );
-  const permitted = new Set(permittedRows.map((r) => r.connectionId));
-  const missing = requestedConnectionIds.filter((id) => !permitted.has(id));
+  const missing = await findUnreadableConnectionIds(agentId, requestedConnectionIds);
   if (missing.length > 0) {
     return NextResponse.json(
       { error: `The agent has no email access to connection(s): ${missing.join(", ")}` },
