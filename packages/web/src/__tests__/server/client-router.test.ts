@@ -1,6 +1,9 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { EventEmitter } from "events";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
+import { join } from "path";
+import { tmpdir } from "os";
 import type { LicenseState } from "@/lib/license-state";
 
 const {
@@ -963,25 +966,37 @@ describe("ClientRouter", () => {
     mockOpenClawClient.request = vi.fn().mockResolvedValue({
       payload: { artifacts: [{ type: "file", title: "invoice.pdf", mimeType: "application/pdf" }] },
     });
+    // A delivery is pinned to the bytes it was minted from (#903), so the file
+    // has to exist for a grant — and therefore a chip — to be produced at all.
+    const workspaceRoot = mkdtempSync(join(tmpdir(), "pinchy-client-router-delivery-"));
+    vi.stubEnv("WORKSPACE_BASE_PATH", workspaceRoot);
+    mkdirSync(join(workspaceRoot, "agent-1", "workbench"), { recursive: true });
+    writeFileSync(join(workspaceRoot, "agent-1", "workbench", "invoice.pdf"), "%PDF-1.4\n");
+
     async function* fakeStream() {
       yield { type: "text" as const, text: "Here is your invoice." };
       yield { type: "done" as const, text: "" };
     }
     mockChat.mockReturnValue(fakeStream());
 
-    await router.handleMessage(clientWs as any, {
-      type: "message",
-      content: "get the invoice",
-      agentId: "agent-1",
-    });
+    try {
+      await router.handleMessage(clientWs as any, {
+        type: "message",
+        content: "get the invoice",
+        agentId: "agent-1",
+      });
 
-    const frames = clientWs.sent.map((s) => JSON.parse(s));
-    const doneFrame = frames.find((f: any) => f.type === "done");
-    const fileFrame = frames.find((f: any) => f.type === "file");
-    expect(fileFrame).toBeTruthy();
-    expect(fileFrame.filename).toBe("invoice.pdf");
-    expect(doneFrame).toBeTruthy();
-    expect(fileFrame.messageId).toBe(doneFrame.messageId);
+      const frames = clientWs.sent.map((s) => JSON.parse(s));
+      const doneFrame = frames.find((f: any) => f.type === "done");
+      const fileFrame = frames.find((f: any) => f.type === "file");
+      expect(fileFrame).toBeTruthy();
+      expect(fileFrame.filename).toBe("invoice.pdf");
+      expect(doneFrame).toBeTruthy();
+      expect(fileFrame.messageId).toBe(doneFrame.messageId);
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(workspaceRoot, { recursive: true, force: true });
+    }
   });
 
   it("recovers from the cold-start 'Unknown model' dispatch race without surfacing an error", async () => {
