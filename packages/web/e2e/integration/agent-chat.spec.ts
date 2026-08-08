@@ -770,6 +770,25 @@ test.describe("Plugin behavior — pinchy-approvals", () => {
       });
       expect(decision.status()).toBe(200);
 
+      // Assert the ROUTE'S OWN ANSWER first, and assert the whole object.
+      //
+      // The route already knows why a decision did not reach the parked call —
+      // it puts `resumeError` in this body, one sentence per branch
+      // (nothing-waiting / refused / unreachable). This probe used to throw
+      // that response away and assert only the audit row's `outcome`, so its
+      // one live failure read
+      //
+      //     Expected: "success"   Received: "failure"
+      //
+      // and named none of the three. Diagnosing it took the CI gateway log,
+      // which is only dumped on failure — so even the comparison against a
+      // green run was worthless, because that run had captured nothing.
+      //
+      // toMatchObject on the whole body is what surfaces it: an unexpected
+      // `resumeError` lands in the diff instead of hiding behind a boolean
+      // that merely says "not true".
+      expect(await decision.json()).toMatchObject({ ok: true, resumed: true });
+
       // The decision is recorded as approval.granted — and `resumed` says it
       // reached the parked call. Asserting only that the row exists would pass
       // just as happily over a run that stays parked until it times out, which
@@ -779,8 +798,12 @@ test.describe("Plugin behavior — pinchy-approvals", () => {
         predicate: (e) => e.resource === `approval:${requestId}`,
         deadlineMs: 15000,
       });
-      expect(granted.outcome).toBe("success");
-      expect((granted.detail as { resumed?: boolean }).resumed).toBe(true);
+      // Same reasoning: compare the fields together so a failure prints the
+      // recorded reason rather than just the word "failure".
+      expect({
+        outcome: granted.outcome,
+        ...(granted.detail as { resumed?: boolean; resumeReason?: string; resumeDetail?: string }),
+      }).toMatchObject({ outcome: "success", resumed: true });
 
       // The runtime reports back that it let the call through…
       await pollAuditForEvent(page, {
