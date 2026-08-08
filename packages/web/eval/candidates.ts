@@ -14,11 +14,18 @@
  * `data/CHANGELOG.md`'s legacy policy, and the reason this file is not the
  * place to "clean up" a model's history.
  *
- * Both are overridable per run with `EVAL_CANDIDATE_MODELS`.
+ * Both are overridable per run with `EVAL_CANDIDATE_MODELS`, which is why
+ * `assertCandidatesDispatchable` below exists: the vitest guard can only see
+ * the two lists in this file, and the override is the path an operator types
+ * by hand.
  */
+
+import { TOOL_CAPABLE_OLLAMA_CLOUD_MODEL_IDS } from "../src/lib/ollama-cloud-models";
 
 /** Provider prefix every candidate id carries, stripped to index the catalog. */
 export const OLLAMA_CLOUD_PREFIX = "ollama-cloud/";
+
+const SERVED_IDS: ReadonlySet<string> = new Set(TOOL_CAPABLE_OLLAMA_CLOUD_MODEL_IDS);
 
 /**
  * The curated candidate set for the public open-weight agent-reliability
@@ -70,3 +77,71 @@ export const DEFAULT_KB_CANDIDATES = [
   "ollama-cloud/qwen3.5:397b",
   "ollama-cloud/gpt-oss:120b",
 ];
+
+/**
+ * The candidate ids the curated catalog does not serve, as written (not bare),
+ * so an error message can echo back exactly what was typed. A missing provider
+ * prefix counts as unserved too — `kimi-k2.6` without it is not an id any
+ * dispatch path resolves.
+ */
+export function unservedCandidates(candidates: readonly string[]): string[] {
+  return candidates.filter(
+    (id) =>
+      !id.startsWith(OLLAMA_CLOUD_PREFIX) || !SERVED_IDS.has(id.slice(OLLAMA_CLOUD_PREFIX.length))
+  );
+}
+
+/**
+ * Refuses a candidate set no sweep should dispatch — BEFORE the stack boots
+ * and a real key is spent.
+ *
+ * `sweep-candidates.test.ts` checks the two lists above at `pnpm test` time,
+ * but a sweep rarely runs them unmodified: `EVAL_CANDIDATE_MODELS` overrides
+ * them wholesale, and the `run-model-eval` skill's iron rule 2 tells the
+ * operator to probe with exactly that env var before every full sweep. A typo
+ * or a just-retired id there hits the same silent failure the guard was
+ * written for — every run 404s, the rows land as `run-infra-error`, the
+ * exporter drops them from `n`, and the scorecard quietly holds fewer models
+ * than the operator believes they measured.
+ *
+ * So the override gets the same three guarantees the defaults have (prefixed,
+ * served, distinct), plus a non-empty check: `EVAL_CANDIDATE_MODELS=","`
+ * currently produces an empty set and a sweep that "succeeds" measuring
+ * nothing.
+ *
+ * There is deliberately no escape hatch for a model missing from the catalog.
+ * The catalog is generated from what the provider serves (`pnpm
+ * models:discover`, iron rule 1), so refreshing it is both the fix and the
+ * step that should have happened first.
+ */
+export function assertCandidatesDispatchable(candidates: readonly string[], source: string): void {
+  if (candidates.length === 0) {
+    throw new Error(
+      `${source} resolves to an empty candidate set. The sweep would boot the ` +
+        `stack, dispatch nothing and export an empty scorecard — which reads as ` +
+        `a clean run. Name at least one model.`
+    );
+  }
+
+  const unserved = unservedCandidates(candidates);
+  if (unserved.length > 0) {
+    throw new Error(
+      `${source} names models the curated catalog does not serve: ` +
+        `${unserved.join(", ")}. Every run against these 404s and lands as a ` +
+        `run-infra-error row the exporter drops from n, so the scorecard would ` +
+        `quietly measure fewer models than intended. Ids need the ` +
+        `"${OLLAMA_CLOUD_PREFIX}" prefix and must exist in ` +
+        `src/lib/ollama-cloud-models.ts — run \`pnpm models:discover\` to ` +
+        `refresh it before blaming the id.`
+    );
+  }
+
+  const duplicates = [...new Set(candidates.filter((id, i) => candidates.indexOf(id) !== i))];
+  if (duplicates.length > 0) {
+    throw new Error(
+      `${source} names the same model twice: ${duplicates.join(", ")}. Both ` +
+        `copies write rows under one model key, so that cell's n comes out a ` +
+        `multiple of every other cell's and the sweep costs more than it reports.`
+    );
+  }
+}
