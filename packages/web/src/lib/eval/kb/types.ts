@@ -117,3 +117,19 @@ export interface KbGraderResult extends Omit<GraderResult, "tags"> {
 }
 
 export type { RunResult, RunTokenUsage };
+
+/**
+ * One persisted KB run: the graded verdict plus the axis its gold query
+ * exercises.
+ *
+ * This lives HERE, not next to the exporter that consumes it, because the
+ * runner writes it and `export-kb-scorecard.ts` reads it — and until #869 the
+ * two disagreed in silence. The sweep stamped `scenario` (the gold id) and
+ * nothing else; the exporter groups by `axis` and would have found none on
+ * every row, so every axis cell would have come back empty from a dataset that
+ * was in fact complete. One definition both sides import is what stops that
+ * from being possible rather than merely unlikely.
+ */
+export interface KbRunResultRow extends RunResult<KbFailureTag> {
+  axis: KbEvalAxis;
+}

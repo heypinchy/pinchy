@@ -6,12 +6,16 @@
  *   pnpm -C packages/web tsx eval/kb/export-kb-scorecard.ts > /tmp/kb-reliability.json
  *
  * Input shape: every `*.jsonl` file directly under `eval/kb/data/` is read
- * and concatenated. Each line is a `KbRunResultRow` — a `KbRunResult`
+ * and concatenated, EXCEPT `*.trajectories.jsonl` — that sidecar holds the
+ * evidence (raw answers, retrieved passages) behind the verdicts, not run
+ * rows, and counting it doubles `totalRuns`. Any number of files, any names,
+ * subject to that one suffix.
+ *
+ * Each remaining line is a `KbRunResultRow` — a `KbRunResult`
  * (`../../src/lib/eval/kb/answer-graders.ts`) plus the gold query's `axis`
- * the run answered. The Task 3.4 runner (not yet built) is expected to write
- * files in this directory in this shape; any number of files, any names —
- * this script does not care which run produced which file, only that every
- * row carries `axis` alongside the standard KbRunResult fields.
+ * the run answered — or the contamination-canary header, which is skipped.
+ * A row with no known `axis` is a hard error rather than a silent drop: see
+ * `readAllRows`.
  *
  * Consolidation: `aggregateKbResults` groups rows by `axis` (one cell per
  * `KB_EVAL_AXES` entry, always present even with zero rows — mirrors
@@ -36,17 +40,18 @@
 import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { isCanaryLine } from "../canary";
 import { buildScorecard, type ScorecardEntry } from "../../src/lib/eval/scorecard";
 import { KB_EVAL_AXES } from "../../src/lib/eval/kb/types";
-import type { KbEvalAxis, KbFailureTag } from "../../src/lib/eval/kb/types";
+import type { KbEvalAxis, KbFailureTag, KbRunResultRow } from "../../src/lib/eval/kb/types";
 import type { KbRunResult } from "../../src/lib/eval/kb/answer-graders";
 
 const DATA_DIR = path.join(__dirname, "data");
 
-/** One curated KB run result row: a `KbRunResult` plus the axis its gold query exercises. */
-export interface KbRunResultRow extends KbRunResult {
-  axis: KbEvalAxis;
-}
+// Re-exported, not redeclared: the runner writes this shape and this file
+// reads it, so both import one definition from `types.ts`. See its doc comment
+// for what silently went wrong when they were two.
+export type { KbRunResultRow };
 
 export interface KbAxisCell {
   axis: KbEvalAxis;
@@ -90,20 +95,57 @@ export function aggregateKbResults(rows: KbRunResultRow[]): KbAxisCell[] {
   });
 }
 
-async function readAllRows(): Promise<KbRunResultRow[]> {
+const KNOWN_AXES = new Set<string>(KB_EVAL_AXES);
+
+/**
+ * Reads every published run row under `dataDir`.
+ *
+ * Exported (and parameterized) so the assembly of a PUBLISHED number is under
+ * test rather than only the pure aggregation downstream of it — this is the
+ * half of the exporter that #869's row-shape drift actually passed through.
+ *
+ * Two things it refuses to do quietly:
+ *
+ * - **`*.trajectories.jsonl` is skipped by NAME.** The answers are published
+ *   beside the verdicts so a reader can check a tag against what the model
+ *   actually wrote, but its lines are not run rows. Dropping them by shape
+ *   (they carry no `axis` today) held only by luck — and not even that far:
+ *   measured against the committed 48-run dataset, an unfiltered read reports
+ *   `totalRuns: 96`.
+ * - **A row whose `axis` is missing or unknown THROWS**, naming file and line.
+ *   Such a row groups into nothing while still counting toward `totalRuns`,
+ *   so the report would read "48 runs, every axis untested" — the exact
+ *   failure #869 exists to end, and one a resumed pre-fix sweep can still
+ *   write. An extractor that cannot read its input must say so; returning a
+ *   short list reads as "there was nothing there".
+ */
+export async function readAllRows(dataDir: string = DATA_DIR): Promise<KbRunResultRow[]> {
   let files: string[];
   try {
-    files = (await readdir(DATA_DIR)).filter((f) => f.endsWith(".jsonl"));
+    // eslint-disable-next-line security/detect-non-literal-fs-filename -- caller-supplied dir, test-only parameter; defaults to the module's own data/
+    files = (await readdir(dataDir)).filter((f) => f.endsWith(".jsonl"));
   } catch {
     return [];
   }
 
   const rows: KbRunResultRow[] = [];
-  for (const file of files) {
-    const text = await readFile(path.join(DATA_DIR, file), "utf8");
+  for (const file of files.filter((f) => !f.endsWith(".trajectories.jsonl"))) {
+    // eslint-disable-next-line security/detect-non-literal-fs-filename -- name comes from readdir of the directory above
+    const text = await readFile(path.join(dataDir, file), "utf8");
+    // Line numbers are 1-based and count the canary/blank lines, so an error
+    // names the line a reader would open the file to.
+    let lineNo = 0;
     for (const line of text.split("\n")) {
-      if (line.trim().length === 0) continue;
-      rows.push(JSON.parse(line) as KbRunResultRow);
+      lineNo++;
+      if (line.trim().length === 0 || isCanaryLine(line)) continue;
+      const row = JSON.parse(line) as KbRunResultRow;
+      if (!KNOWN_AXES.has(row.axis)) {
+        throw new Error(
+          `${file} line ${lineNo}: run row has no known axis (got ${JSON.stringify(row.axis)}). ` +
+            `Every published row must carry one of: ${KB_EVAL_AXES.join(", ")}.`
+        );
+      }
+      rows.push(row);
     }
   }
   return rows;
