@@ -46,12 +46,34 @@ import type { GoldQA, KbGraderResult } from "./types";
  */
 const SENTENCE_BOUNDARY = /(?<=[.!?])\s+(?=\S)/g;
 
-/** Splits an answer BODY (Sources list already stripped) into sentences. */
+/**
+ * A fragment that asserts nothing, so nothing can entail it. Three shapes, one
+ * test — a fragment carrying no letter in any script:
+ *
+ * - `---`, a horizontal rule. Four of the 2026-08-05 sweep's runs typed one.
+ * - `[1]`, a citation marker the splitter left standing after the sentence it
+ *   belonged to ended in `.` before it.
+ * - `2.`, an ordered-list marker. `SENTENCE_BOUNDARY` cannot tell it from a
+ *   sentence end (a `.` followed by a space), so every numbered list in an
+ *   answer body sheds one fragment per item.
+ *
+ * Each was entailment-scored as if it were a claim, scored ~0 by construction,
+ * and charged the model `ungrounded-claim`. `\p{L}` rather than `[a-z]`: the
+ * corpus is bilingual and the axis it feeds has a cross-lingual gold item.
+ *
+ * A claim contains a word. Nothing else is dropped — a short, numeric,
+ * citation-heavy sentence ("It is $60 [1].") carries letters and stays.
+ */
+function isClaimBearing(fragment: string): boolean {
+  return /\p{L}/u.test(fragment);
+}
+
+/** Splits an answer BODY (Sources list already stripped) into claim sentences. */
 export function splitSentences(text: string): string[] {
   return text
     .split(SENTENCE_BOUNDARY)
     .map((sentence) => sentence.trim())
-    .filter((sentence) => sentence.length > 0);
+    .filter((sentence) => sentence.length > 0 && isClaimBearing(sentence));
 }
 
 /**

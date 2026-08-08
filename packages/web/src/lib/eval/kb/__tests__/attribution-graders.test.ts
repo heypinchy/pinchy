@@ -993,3 +993,294 @@ Quelle: Statistisches Bundesamt
     expect(gradeSourcesFormat(input).tags).toEqual(["sources-format"]);
   });
 });
+
+/**
+ * Every answer quoted in this block is a verbatim Sources region from the
+ * 2026-08-05 groundedness sweep, named by the model and gold item that wrote
+ * it. They are here because the graders charged all of them, and the charge was
+ * the parser's rather than the model's: `BULLET_LINE` requires a `-`/`*` bullet,
+ * so a list written any other way parsed to ZERO entries — and an empty entry
+ * set makes every inline `[N]` read as a dead end (`citation-unresolved`) on a
+ * list that names the right documents on its own lines.
+ */
+describe("Sources-entry shapes the first real sweep produced", () => {
+  it("reads `[N] path` lines that carry no bullet (gpt-oss:120b, gqa-distractor-1)", () => {
+    const input: AttributionInput = {
+      answer: `Tickets are kept for 24 months【1】【2】.
+
+**Sources**
+
+[1] retention-correct.md (undefined)  
+[2] retention-correct.md (undefined)`,
+      retrieved: [src(1, "/data/retention-correct.md"), src(2, "/data/retention-correct.md")],
+    };
+
+    expect(gradeCitationResolution(input)).toEqual<KbGraderResult>({
+      passed: true,
+      tags: [],
+      notes: [],
+    });
+  });
+
+  it("reads an ordered list's own number as the citation number (glm-5.2, gqa-pathcite-1)", () => {
+    // The model renumbered the list to its own 1..3 rather than reusing the
+    // numbers knowledge_search handed it — which is fine, because the reader
+    // pairs the inline [3] with the third entry, not with the tool's ordering.
+    const input: AttributionInput = {
+      answer: `The 2012 per diem is $60 [1]. Receipts are not required [2]. The 2011 rate was $45 [3].
+
+Sources:
+1. handbook-2012/policy.md
+2. handbook-2012/policy.md
+3. handbook-2011/policy.md`,
+      retrieved: [src(1, "/data/handbook-2012/policy.md"), src(2, "/data/handbook-2011/policy.md")],
+    };
+
+    expect(gradeCitationResolution(input)).toEqual<KbGraderResult>({
+      passed: true,
+      tags: [],
+      notes: [],
+    });
+    expect(citedSourcePaths(input.answer)).toEqual([
+      "handbook-2012/policy.md",
+      "handbook-2011/policy.md",
+    ]);
+  });
+
+  it("takes the marker, not the list position, when a line carries both (glm-5.2, gqa-multihop-1)", () => {
+    const input: AttributionInput = {
+      answer: `Training happens in week one [2]. The module code is SEC-100 [1].
+
+### Sources
+1. [1] onboarding-part2.md — module code SEC-100
+2. [2] onboarding-part1.md — first-week completion requirement`,
+      retrieved: [src(1, "/data/onboarding-part2.md"), src(2, "/data/onboarding-part1.md")],
+    };
+
+    expect(gradeCitationResolution(input).passed).toBe(true);
+    // Returned with the trailing gloss still attached — `PAGE_SUFFIX` strips
+    // "— p. N" and nothing else, and `matchRetrievedDocument` resolves the rest
+    // at segment boundaries downstream. The discriminating case (marker and
+    // ordinal DISAGREEING) is the test below; here they agree.
+    expect(citedSourcePaths(input.answer)).toEqual([
+      "onboarding-part2.md — module code SEC-100",
+      "onboarding-part1.md — first-week completion requirement",
+    ]);
+  });
+
+  it("disagreeing marker and list position: the marker wins", () => {
+    const answer = `Only the third source is cited [3].
+
+**Sources:**
+1. [3] c.md`;
+
+    expect(citedSourcePaths(answer)).toEqual(["c.md"]);
+  });
+
+  it("does not invent an entry from a line carrying neither a marker nor a number", () => {
+    const input: AttributionInput = {
+      answer: `A claim [1].
+
+**Sources:**
+
+- [1] a.md
+All of the above were retrieved on 2026-08-05.`,
+      retrieved: [src(1, "/data/a.md")],
+    };
+
+    // The trailing prose names no source; treating it as one would charge a
+    // spurious `source-uncited` (an entry nothing cites) and hand the
+    // groundedness premise lookup a document that does not exist.
+    expect(gradeCitationResolution(input)).toEqual<KbGraderResult>({
+      passed: true,
+      tags: [],
+      notes: [],
+    });
+  });
+});
+
+/**
+ * `sources-format` exists because a Sources list that renders as one paragraph
+ * is unreadable. That is a claim about RENDERING, and markdown separates lines
+ * in exactly three ways: a list item, a blank line, or a hard break (two
+ * trailing spaces). Counting bullet characters answered a narrower question,
+ * and charged the two separators that are not bullets.
+ */
+describe("gradeSourcesFormat measures what renders, not which character was typed", () => {
+  it("passes plain `[N]` entries separated by hard breaks (gpt-oss:120b, gqa-abstention-1)", () => {
+    const input: AttributionInput = {
+      answer: `The index lists the section but holds no policy text [3][5].
+
+**Sources**
+
+[3] absent-topic-pointer.md — lists "parental leave" among HR policy sections.  
+[5] absent-topic-pointer.md — notes the index gives section titles only.`,
+      retrieved: [src(3, "/data/absent-topic-pointer.md"), src(5, "/data/absent-topic-pointer.md")],
+    };
+
+    expect(gradeSourcesFormat(input)).toEqual<KbGraderResult>({
+      passed: true,
+      tags: [],
+      notes: [],
+    });
+  });
+
+  it("passes entries separated by blank lines (gpt-oss:120b, gqa-crosslingual-2)", () => {
+    const input: AttributionInput = {
+      answer: `Up to 10 days carry over [1][2].
+
+**Sources**
+
+[1] vacation-policy-en.md — "up to a maximum carryover cap of 10 days"
+
+[2] urlaub-policy-de.md — "bis zu einer maximalen Übertragungsgrenze von 10 Tagen"`,
+      retrieved: [src(1, "/data/vacation-policy-en.md"), src(2, "/data/urlaub-policy-de.md")],
+    };
+
+    expect(gradeSourcesFormat(input).passed).toBe(true);
+  });
+
+  it("passes an ordered list (gpt-oss:120b, gqa-multihop-1)", () => {
+    const input: AttributionInput = {
+      answer: `Week one, module SEC-100 [1][2].
+
+**Sources**
+
+1. onboarding-part1.md — "must complete mandatory IT security awareness training"
+2. onboarding-part2.md — "catalogued as module code SEC-100"`,
+      retrieved: [src(1, "/data/onboarding-part1.md"), src(2, "/data/onboarding-part2.md")],
+    };
+
+    expect(gradeSourcesFormat(input).passed).toBe(true);
+  });
+
+  it("fails consecutive plain lines, which really do collapse into one paragraph (qwen3.5:397b, gqa-abstention-1)", () => {
+    const input: AttributionInput = {
+      answer: `The index lists it but holds no text [1][2].
+
+**Sources:**
+[1] absent-topic-pointer.md
+[2] absent-topic-pointer.md`,
+      retrieved: [src(1, "/data/absent-topic-pointer.md"), src(2, "/data/absent-topic-pointer.md")],
+    };
+
+    expect(gradeSourcesFormat(input).tags).toEqual(["sources-format"]);
+  });
+
+  it("still fails a list whose first entry runs into the heading", () => {
+    // Unchanged from the bullet-counting rule, and deliberately so: this entry
+    // does not begin a rendered line of its own, it continues the heading's.
+    const input: AttributionInput = {
+      answer: `X [1].
+
+**Sources:** [1] /data/a.md — p. 1`,
+      retrieved: [src(1, "/data/a.md")],
+    };
+
+    expect(gradeSourcesFormat(input).tags).toEqual(["sources-format"]);
+  });
+});
+
+/**
+ * The inline half of the same lesson. Widening the Sources parser alone would
+ * have traded one artefact for another: with the list parsing and the body not,
+ * every entry reads as listed-but-never-cited (`source-uncited`) — a charge of
+ * dressing up a single source as corroborated, laid against an answer that
+ * cited every one of them.
+ *
+ * Both spellings below are from the 2026-08-05 sweep, and neither is a
+ * near-miss of the taught form: they are what two model families emit by
+ * default. As with the fullwidth brackets, only the MARKER is normalised — a
+ * marker delimits, it does not identify a document.
+ */
+describe("inline citation-marker spellings the sweep produced", () => {
+  it("reads a labelled marker `【N†file】` (gpt-oss:120b, gqa-dedup-1)", () => {
+    const input: AttributionInput = {
+      answer: `Replace every 6 months【1†quality-file.md (undefined)】【2†product-insert.md (undefined)】.
+
+**Sources**
+
+1. quality-file.md — "replaced every 6 months, or after filtering approximately 1,200 gallons"
+2. product-insert.md — "replaced every 6 months or after filtering 1,200 gallons"`,
+      retrieved: [src(1, "/data/quality-file.md"), src(2, "/data/product-insert.md")],
+    };
+
+    expect(gradeCitationResolution(input)).toEqual<KbGraderResult>({
+      passed: true,
+      tags: [],
+      notes: [],
+    });
+  });
+
+  it("reads a comma-grouped marker `[3, 4]` (glm-5.2, gqa-abstention-2)", () => {
+    const input: AttributionInput = {
+      answer: `Both handbook revisions cover travel expense [3, 4].
+
+**Sources:**
+1. handbook-2011/policy.md — 2011 travel policy
+2. handbook-2012/policy.md — 2012 travel policy`,
+      // The list is renumbered by the model, so [3] and [4] resolve to nothing
+      // — but they ARE read as two citations, which is what this pins.
+      retrieved: [src(3, "/data/handbook-2011/policy.md"), src(4, "/data/handbook-2012/policy.md")],
+    };
+
+    const result = gradeCitationResolution(input);
+    expect(result.tags).toContain("citation-unresolved");
+    expect(result.notes[0]).toContain("[3], [4]");
+  });
+
+  it("leaves a path that merely contains a comma or a dagger alone", () => {
+    // The normalisation must not reach into the text that identifies a
+    // document: a renamed file keeps its name, and `path-not-cited` is right to
+    // charge a citation that mangles one.
+    const input: AttributionInput = {
+      answer: `A claim [1].
+
+**Sources:**
+
+- [1] reports/q1, q2 summary†draft.md`,
+      retrieved: [src(1, "/data/reports/q1, q2 summary†draft.md")],
+    };
+
+    expect(gradePathCitation(input)).toEqual<KbGraderResult>({
+      passed: true,
+      tags: [],
+      notes: [],
+    });
+  });
+});
+
+describe("horizontal whitespace models actually type", () => {
+  it("reads an entry whose marker is followed by a narrow no-break space (gpt-oss:120b, gqa-distractor-2)", () => {
+    // U+202F, not U+0020. `gpt-oss:120b` types it between the marker and the
+    // path, and JS counts it as `\s` — so a `[ \t]`-separated parser skipped
+    // the marker and then refused the line for starting with whitespace. The
+    // entry vanished and its inline citation read as a dead end.
+    const input: AttributionInput = {
+      answer: `Marketing records are kept for 12 months [1].
+
+**Sources**  
+[1] retention-distractor.md – statement on 12-month retention.`,
+      retrieved: [src(1, "/data/retention-distractor.md")],
+    };
+
+    expect(gradeAttribution(input)).toEqual<KbGraderResult>({
+      passed: true,
+      tags: [],
+      notes: [],
+    });
+  });
+
+  it("reads a list marker followed by a no-break space", () => {
+    const input: AttributionInput = {
+      answer: `A claim [1].
+
+**Sources**
+
+- [1] a.md`,
+      retrieved: [src(1, "/data/a.md")],
+    };
+
+    expect(gradeAttribution(input).passed).toBe(true);
+  });
+});

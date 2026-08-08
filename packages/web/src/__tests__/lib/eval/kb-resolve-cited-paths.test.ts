@@ -319,14 +319,17 @@ describe("premiseSourcePaths", () => {
   });
 
   it("cannot turn a failing run into a passing one — the bound the fallback rests on", () => {
-    // Every shape the fallback exists for is charged by gradeAttribution
-    // independently. Assert that rather than trusting the reasoning: if a
-    // future parser change made one of these shapes grade clean, the fallback's
-    // lower precision would start affecting verdicts and this test says so.
+    // The bound binds only where the fallback RUNS, so the partition is
+    // asserted rather than assumed. Three of these four shapes moved across it
+    // when `SOURCES_ENTRY_LINE` learned to read a Sources list that is not
+    // bulleted: the strict intersection resolves them now, and a shape the
+    // strict path handles is not a shape the fallback's lower precision can
+    // touch. The one that remains is the run-on, which has no per-entry
+    // structure to intersect on at all.
     //
-    // `passed`, not a chosen tag pair. Which axis charges a shape is an
-    // implementation detail that shifts as the parsers widen; that SOME axis
-    // does is the whole bound. An earlier draft asserted
+    // For the rest, `passed`, not a chosen tag pair. Which axis charges a shape
+    // is an implementation detail that shifts as the parsers widen; that SOME
+    // axis does is the whole bound. An earlier draft asserted
     // `sources-format || citation-unresolved` and was already too narrow — a
     // parsing list the body never cites is charged `source-uncited`, a third
     // tag the pair would have missed.
@@ -336,9 +339,20 @@ describe("premiseSourcePaths", () => {
     // above needs only the path and is typed accordingly.
     const graded = RETRIEVED.map((source, i) => ({ ...source, n: i + 1, page: 1 }));
 
-    for (const [label, answer] of SWEEP_SHAPES) {
+    let fallbackShapes = 0;
+    for (const [label, answer, expected] of SWEEP_SHAPES) {
+      const strict = resolveCitedSourcePaths(citedSourcePaths(answer), RETRIEVED);
+      if (strict.length > 0) {
+        expect(strict, `${label} (resolved strictly, fallback never runs)`).toEqual(expected);
+        continue;
+      }
+      fallbackShapes++;
       expect(gradeAttribution({ answer, retrieved: graded }).passed, label).toBe(false);
     }
+
+    // Without this the test goes vacuously green the day the strict path
+    // absorbs the last shape — asserting a bound on an empty set.
+    expect(fallbackShapes).toBeGreaterThan(0);
   });
 
   it("recovers nothing for an answer that never cites inline, the one shape nothing charges", () => {
