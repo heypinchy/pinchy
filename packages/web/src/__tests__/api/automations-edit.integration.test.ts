@@ -265,7 +265,17 @@ describe("PUT /api/automations/[id]", () => {
     expect(deferAuditLogMock).not.toHaveBeenCalled();
   });
 
-  it("forbids a member from editing a shared agent's workflow", async () => {
+  // This asserted 403 when it was written. #880 later settled the verdict for
+  // the workflow-keyed routes the other way — see `workflowNotFound` — because
+  // read and manage coincide here: a caller who fails this gate cannot list the
+  // workflow anywhere, so a distinguishable refusal is the only way they could
+  // learn the id is real. PATCH and DELETE already answer 404; PUT arrived
+  // after that decision was made and has to give the same answer.
+  //
+  // Asserting the status alone would not pin what matters. The property is that
+  // this refusal is INDISTINGUISHABLE from the one an id matching nothing gets,
+  // so the two are compared against each other rather than against a constant.
+  it("hides a shared agent's workflow from a member rather than refusing visibly", async () => {
     asMember(OWNER);
     const agent = await seedAgent({ isPersonal: false, ownerId: null });
     await seedConnection("conn-a");
@@ -273,8 +283,17 @@ describe("PUT /api/automations/[id]", () => {
     const wf = await seedWorkflow(agent.id, { name: "Untouched" });
     await linkConnection(wf.id, "conn-a", new Date("2020-01-01T00:00:00Z"));
 
-    const res = await PUT(put(wf.id, editBody({ name: "Hijacked" })), routeContext({ id: wf.id }));
-    expect(res.status).toBe(403);
+    const denied = await PUT(
+      put(wf.id, editBody({ name: "Hijacked" })),
+      routeContext({ id: wf.id })
+    );
+    const missingId = "11111111-1111-4111-8111-111111111111";
+    const absent = await PUT(put(missingId, editBody()), routeContext({ id: missingId }));
+
+    expect(denied.status).toBe(absent.status);
+    expect(await denied.json()).toEqual(await absent.json());
+    expect(denied.status).toBe(404);
+
     expect((await loadWorkflow(wf.id)).name).toBe("Untouched");
     expect(deferAuditLogMock).not.toHaveBeenCalled();
   });
