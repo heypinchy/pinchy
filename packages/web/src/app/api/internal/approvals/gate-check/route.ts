@@ -7,11 +7,21 @@ import { decideGate } from "@/lib/approvals/service";
 import { computeArgsDigest } from "@/lib/approvals/digest";
 import { summarizeArgs } from "@/lib/approvals/summary";
 import { buildApprovalPrompt } from "@/lib/approvals/prompt";
-import { getConfirmTools } from "@/lib/approvals/policy";
+import { resolveConfirmation, toolIsConfigured } from "@/lib/approvals/policy";
+import { collectCallModels } from "@/lib/approvals/call-models";
+import { readPluginSecret } from "@/lib/plugin-secrets-source";
 import { appendAuditLog, type AuditLogEntry } from "@/lib/audit";
 import { recordAuditFailure } from "@/lib/audit-deferred";
 import { db } from "@/db";
 import { agents, users } from "@/db/schema";
+
+/**
+ * The AES key the opaque `_pinchy_ref` tokens are encrypted under. Pinchy
+ * generates it (`collectPluginSecrets`) and materialises it into secrets.json
+ * for the OC-side plugin, so reading it back here decodes a ref without any
+ * round trip — which is how a ref-based tool call names the model it touches.
+ */
+const REF_TOKEN_KEY = "pinchy-odoo:ref-token-key";
 
 /**
  * The pinchy-approvals gate calls this for every tool it has decided is gated.
@@ -65,7 +75,16 @@ export async function POST(request: NextRequest) {
     .from(agents)
     .where(eq(agents.id, agentId))
     .limit(1);
-  if (!agent || !getConfirmTools(agent.pluginConfig).includes(toolName)) {
+  if (!agent || !toolIsConfigured(agent.pluginConfig, toolName)) {
+    return NextResponse.json({ decision: "allow" });
+  }
+
+  // Which records this call touches, so a policy can be set per resource and
+  // not only per tool (#1133). Only reached for a tool the policy mentions —
+  // reading the ref key is a second settings query, and the answer for almost
+  // every tool call is already decided above.
+  const resources = collectCallModels(params, await readPluginSecret(REF_TOKEN_KEY));
+  if (resolveConfirmation(agent.pluginConfig, toolName, resources) === "allow") {
     return NextResponse.json({ decision: "allow" });
   }
 
@@ -175,6 +194,6 @@ export async function POST(request: NextRequest) {
     //
     // The plugin keys on the presence of this field to decide whether to pause
     // the run, so it is absent from every non-blocking answer.
-    approval: buildApprovalPrompt(toolName, params),
+    approval: buildApprovalPrompt(toolName, params, resources),
   });
 }

@@ -83,7 +83,18 @@ export type AgentPluginConfig = {
    * the gate (pinchy-approvals) enforces it server-side.
    */
   "pinchy-approvals"?: {
-    confirmTools: string[];
+    /**
+     * Per tool, optionally per resource: `"odoo_delete"` covers the tool,
+     * `"odoo_delete:account.move"` is an exception for one model (#1133).
+     * See `lib/approvals/policy.ts` for how the two resolve.
+     */
+    confirm?: Record<string, "confirm" | "allow">;
+    /**
+     * Pre-#1133 shape, still READ so an agent configured before the switch
+     * keeps its policy (`getConfirmMap`). Nothing writes it any more; an agent
+     * converges to `confirm` the first time it is saved.
+     */
+    confirmTools?: string[];
   };
 };
 

@@ -647,4 +647,86 @@ describe("approval routes (integration, real DB)", () => {
       expect(await db.select().from(auditLog)).toHaveLength(0);
     });
   });
+
+  /**
+   * #1133: the policy resolves per resource, not only per tool. These run at
+   * route level because that is where the three pieces meet — the stored
+   * config, the model read out of the call, and the resolution rule. Each unit
+   * test sees only one of them.
+   *
+   * Note that every OTHER test in this file seeds `confirmTools`, the pre-#1133
+   * shape. That is deliberate and is the migration evidence AGENTS.md § "Test
+   * Migrations Against Pre-Existing Data" asks for: the suite proves an agent
+   * configured before the switch still gets gated by the new code, using the
+   * new code's own route.
+   */
+  describe("per-resource policy", () => {
+    async function seedWithConfirm(confirm: Record<string, "confirm" | "allow">) {
+      const [a] = await db
+        .insert(agents)
+        .values({
+          name: "Per-model",
+          model: "anthropic/claude-haiku-4-5-20251001",
+          greetingMessage: "Hi",
+          ownerId: user.id,
+          pluginConfig: { "pinchy-approvals": { confirm } },
+        })
+        .returning();
+      return a;
+    }
+    const check = (agentId: string, toolName: string, params: object) =>
+      gateCheck(
+        gateReq({
+          agentId,
+          sessionKey: `agent:${agentId}:direct:${user.id}`,
+          toolName,
+          params,
+        })
+      ).then((r) => r.json());
+
+    it("exempts one model from a tool that is otherwise gated", async () => {
+      const a = await seedWithConfirm({
+        odoo_delete: "confirm",
+        "odoo_delete:note.note": "allow",
+      });
+      expect((await check(a.id, "odoo_delete", { model: "note.note", ids: [1] })).decision).toBe(
+        "allow"
+      );
+      expect((await check(a.id, "odoo_delete", { model: "account.move", ids: [1] })).decision).toBe(
+        "block"
+      );
+    });
+
+    // The rule that keeps a per-model grid from becoming an allowlist: a model
+    // nobody has ticked inherits the tool setting. If it defaulted to allow, a
+    // model added after the admin configured the agent would arrive ungated.
+    it("gates a model the admin never ticked, because it inherits the tool", async () => {
+      const a = await seedWithConfirm({
+        odoo_delete: "confirm",
+        "odoo_delete:note.note": "allow",
+      });
+      const res = await check(a.id, "odoo_delete", { model: "a.model.nobody.ticked", ids: [1] });
+      expect(res.decision).toBe("block");
+    });
+
+    it("gates a single model while leaving the tool itself open", async () => {
+      const a = await seedWithConfirm({ "odoo_write:account.move": "confirm" });
+      expect((await check(a.id, "odoo_write", { model: "res.partner", values: {} })).decision).toBe(
+        "allow"
+      );
+      expect(
+        (await check(a.id, "odoo_write", { model: "account.move", values: {} })).decision
+      ).toBe("block");
+    });
+
+    // Without the model on the card, "Delete a record in Odoo" is not a
+    // decision anyone can make — which would make the whole setting pointless
+    // for the person it exists to inform.
+    it("names the resource on the card the person reads", async () => {
+      const a = await seedWithConfirm({ odoo_delete: "confirm" });
+      const res = await check(a.id, "odoo_delete", { model: "account.move", ids: [1] });
+      expect(res.decision).toBe("block");
+      expect(res.approval.title).toContain("account.move");
+    });
+  });
 });
