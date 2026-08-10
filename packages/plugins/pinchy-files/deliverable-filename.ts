@@ -4,7 +4,7 @@
 // [filename]/route.ts) authorizes a download by running the URL filename
 // through upload-validation.ts's sanitizeFilename and looking the grant up
 // under the RESULT. The grant itself stores the name this plugin emitted,
-// verbatim (client-router.ts, deliverRunArtifacts). So every name we accept
+// verbatim (stream-pipe.ts, deliverRunArtifacts). So every name we accept
 // must be a fixed point of that sanitizer — sanitize(name) === name — or the
 // lookup never matches and the delivered chip 404s forever.
 //

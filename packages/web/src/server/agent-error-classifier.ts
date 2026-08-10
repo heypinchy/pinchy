@@ -61,7 +61,7 @@ const FAILOVER_INCOMPLETE_STREAM_PATTERN = /FailoverError[\s\S]*incomplete termi
 /**
  * Reasons Pinchy itself synthesises an error frame (no upstream provider
  * text exists to pattern-match). Today: only the silent-stream watchdog at
- * the bottom of `pipeStream` in `client-router.ts`. Add a new arm here if
+ * the bottom of `StreamPipe.pipe` in `stream-pipe.ts`. Add a new arm here if
  * another synthesised-error site appears — the exhaustive switch in
  * `classifySynthesisedError` will refuse to compile until the new reason
  * has a corresponding `AgentErrorClass` label, which is the point.
