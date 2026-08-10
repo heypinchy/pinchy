@@ -53,13 +53,76 @@
  * seeding silently.
  */
 
+/** Author-declared chunk: id + the exact substring that forms the chunk. */
+export interface CorpusChunk {
+  id: string;
+  page: number;
+  text: string;
+  /**
+   * Names the underlying fact this chunk states, when another document states
+   * the SAME fact in different words. Chunks sharing a `factGroup` are
+   * near-duplicates: retrieval legitimately returns both (per-path access
+   * control requires it — see `retrieval-eval.ts`), but an answer that cites
+   * both as if they corroborated each other independently is inflating its
+   * own support, which is what `dedup-inflation` charges.
+   *
+   * The marking lives HERE, on the chunk, because here is where the author
+   * writing the duplicate passage is standing. `nearDuplicatePathGroups()`
+   * derives the grader's input from it; a list maintained anywhere else would
+   * be a hand-maintained mirror of this file, and those go wrong.
+   */
+  factGroup?: string;
+}
+
 export interface CorpusDoc {
   /** The sourcePath as it will be seeded (mirrors a real /data mount). */
   sourcePath: string;
   /** Relative path to the raw .md under corpus/docs/. */
   file: string;
-  /** Author-declared chunks: id + the exact substring that forms the chunk. */
-  chunks: { id: string; page: number; text: string }[];
+  chunks: CorpusChunk[];
+}
+
+/**
+ * The near-duplicate path groups `gradeNoDuplicateCorroboration` scores a
+ * Sources list against, derived from the `factGroup` markings above.
+ *
+ * Every pipeline that grades a KB answer must pass these in. Until #1178 none
+ * did, and the grader's "empty list ⇒ pass unconditionally" branch meant
+ * `dedup-inflation` could not fire anywhere a published number came from — the
+ * dataset printed a 0 that meant "not asked". Deriving the groups here, from
+ * the corpus itself, is what makes that 0 a measurement.
+ *
+ * Returns paths, not chunk ids, because the grader compares against the
+ * Sources list, and a Sources entry names a document.
+ */
+export function nearDuplicatePathGroups(corpus: CorpusDoc[] = KB_EVAL_CORPUS): string[][] {
+  const byFact = new Map<string, Set<string>>();
+  for (const doc of corpus) {
+    for (const chunk of doc.chunks) {
+      if (!chunk.factGroup) continue;
+      // A Set per fact: several chunks of one document restating the fact are
+      // still one source, and counting the path twice would let the grader
+      // charge dedup-inflation for citing a single document.
+      const paths = byFact.get(chunk.factGroup) ?? new Set<string>();
+      paths.add(doc.sourcePath);
+      byFact.set(chunk.factGroup, paths);
+    }
+  }
+
+  return [...byFact].map(([factGroup, paths]) => {
+    // Throws rather than filtering: a group that reaches one document is a
+    // mistyped group name, and silently dropping it un-pairs BOTH halves —
+    // the pair stops being compared and the tag goes quiet again, with
+    // nothing red. The typo must be an error, not a shrug.
+    if (paths.size < 2) {
+      throw new Error(
+        `factGroup "${factGroup}" marks chunks in only one document (${[...paths].join(", ")}). ` +
+          `A fact group exists to pair a restatement with its original — check the spelling ` +
+          `against the other document's chunk.`
+      );
+    }
+    return [...paths];
+  });
 }
 
 export const KB_EVAL_CORPUS: CorpusDoc[] = [
@@ -110,6 +173,7 @@ export const KB_EVAL_CORPUS: CorpusDoc[] = [
       {
         id: "product-insert#c2",
         page: 1,
+        factGroup: "cartridge-replacement-interval",
         text: "The filter cartridge should be replaced every 6 months or after filtering 1,200 gallons, whichever comes first, to maintain rated filtration performance. Continuing to use a cartridge past its rated life may reduce chlorine and sediment removal effectiveness.",
       },
     ],
@@ -126,6 +190,7 @@ export const KB_EVAL_CORPUS: CorpusDoc[] = [
       {
         id: "quality-file#c2",
         page: 1,
+        factGroup: "cartridge-replacement-interval",
         text: "Per the product specification, the Aqua-Filter 200 cartridge should be replaced every 6 months, or after filtering approximately 1,200 gallons of water, whichever occurs first, in order to maintain the cartridge's rated filtration performance. Field returns show that units run past this interval show measurably reduced chlorine removal.",
       },
       {
@@ -320,6 +385,7 @@ export const KB_EVAL_CORPUS: CorpusDoc[] = [
       {
         id: "petrifilm-datasheet#c2",
         page: 1,
+        factGroup: "petrifilm-incubation",
         text: "Incubate Petrifilm Aerobic Count Plates at 32 degrees Celsius for 48 hours, then count the red colonies to determine the aerobic plate count. Store unused plates in a freezer at minus 15 degrees Celsius.",
       },
     ],
@@ -341,6 +407,7 @@ export const KB_EVAL_CORPUS: CorpusDoc[] = [
       {
         id: "quality-binder#c3",
         page: 1,
+        factGroup: "petrifilm-incubation",
         text: "Section 3 — Aerobic enumeration. For aerobic count determinations the laboratory uses Petrifilm plates; these are incubated at 32 degrees Celsius for 48 hours and the resulting red colonies are counted. This restates the datasheet method for the binder's readers.",
       },
       {

@@ -33,7 +33,7 @@ import { rm } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { KB_EVAL_CORPUS } from "./corpus/manifest";
+import { KB_EVAL_CORPUS, nearDuplicatePathGroups } from "./corpus/manifest";
 import { GOLD_QA } from "./corpus/gold-qa";
 import { premiseSourcePaths } from "./resolve-cited-paths";
 import { readAllTrajectories, runKey } from "./published-dataset";
@@ -150,6 +150,10 @@ async function main(): Promise<void> {
     nli: new LlmNliClient(chat),
     relevance: new LlmRelevanceJudge(chat),
     abstention: new LlmAbstentionJudge(chat),
+    // Same groups the sweep grades against, from the same source: a re-grade
+    // that scored a different dedup rule than the sweep would publish two
+    // measurements under one column heading.
+    nearDuplicateGroups: nearDuplicatePathGroups(),
   };
 
   console.log(

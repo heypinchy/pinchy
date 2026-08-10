@@ -28,6 +28,14 @@ function fixedAbstentionJudge(score: number): AbstentionJudge {
 const ANSWERED = fixedAbstentionJudge(0);
 const DECLINED = fixedAbstentionJudge(1);
 
+/**
+ * For the runs below that grade an axis other than dedup. Spelled out rather
+ * than defaulted: `gradeKbRun` requires the groups precisely because an
+ * optional one went unpassed for the whole life of the published dataset, and
+ * a named empty list keeps that decision readable at each call site.
+ */
+const NO_DUPLICATES: string[][] = [];
+
 describe("gradeAnswerRelevance", () => {
   it("passes an on-topic answer (judge scores high)", async () => {
     const judge = fixedRelevanceJudge(0.9);
@@ -188,6 +196,7 @@ describe("gradeKbRun", () => {
       nli: highScoreNli(),
       relevance: fixedRelevanceJudge(0.9),
       abstention: ANSWERED,
+      nearDuplicateGroups: NO_DUPLICATES,
     });
 
     expect(result).toEqual({
@@ -211,6 +220,7 @@ describe("gradeKbRun", () => {
       nli: highScoreNli(),
       relevance: fixedRelevanceJudge(0.1),
       abstention: ANSWERED,
+      nearDuplicateGroups: NO_DUPLICATES,
     });
 
     expect(result.model).toBe("other-model");
@@ -239,6 +249,7 @@ describe("gradeKbRun", () => {
       nli,
       relevance: fixedRelevanceJudge(0.9),
       abstention: ANSWERED,
+      nearDuplicateGroups: NO_DUPLICATES,
     });
 
     expect(result.passed).toBe(false);
@@ -270,6 +281,7 @@ describe("gradeKbRun", () => {
       nli: highScoreNli(),
       relevance,
       abstention: DECLINED,
+      nearDuplicateGroups: NO_DUPLICATES,
     });
 
     expect(result).toEqual({
@@ -283,20 +295,16 @@ describe("gradeKbRun", () => {
     expect(relevanceJudgeCalled).toBe(false);
   });
 
-  it("cannot charge dedup-inflation, because it passes gradeAttribution no near-duplicate groups", async () => {
-    // `data/README.md` publishes `dedup-inflation` with a 0 and now says in
-    // print that this particular zero is structural rather than measured:
-    // `gradeNoDuplicateCorroboration` compares the Sources list against
-    // `nearDuplicateGroups`, and passes unconditionally when that list is
-    // empty — which it always is here, because `gradeKbRun` never supplies one.
-    // So the tag cannot reach a published number no matter what a model writes.
-    //
-    // This is the guard on that sentence. Wiring the corpus's duplicate pairs
-    // through is a fine change to make; it must go red here first, so the
-    // README stops claiming "not asked" about a tag that by then can fire.
+  it("charges dedup-inflation when the answer co-cites a near-duplicate pair the corpus declares", async () => {
+    // The reachability half of `dedup-inflation`. `gradeNoDuplicateCorroboration`
+    // passes unconditionally on an empty group list, and for the whole life of
+    // the published dataset `gradeKbRun` supplied none — so the tag could not
+    // fire anywhere a number came from, and `data/README.md` printed a 0 that
+    // meant "not asked". `deps.nearDuplicateGroups` is required for that
+    // reason: an optional one is what nobody passed.
     const traj = baseTraj({
-      // The crowding pair from the eval corpus: one fact, two documents, both
-      // cited as if they corroborated each other independently.
+      // The crowding pair from the eval corpus: one fact, two documents, cited
+      // as if they corroborated each other independently.
       answer: `Aerobic plates are incubated at 32 degrees Celsius for 48 hours [1][2].
 
 **Sources:**
@@ -310,11 +318,36 @@ describe("gradeKbRun", () => {
       nli: highScoreNli(),
       relevance: fixedRelevanceJudge(0.9),
       abstention: ANSWERED,
+      nearDuplicateGroups: [["/data/petrifilm-datasheet.md", "/data/quality-binder.md"]],
     });
 
-    // Asserted as a clean pass, not merely as "dedup-inflation absent": a run
-    // that failed for some unrelated reason would satisfy a bare `not.toContain`
-    // while proving nothing about the grader under test.
+    expect(result.passed).toBe(false);
+    expect(result.tags).toEqual(["dedup-inflation"]);
+    expect(result.notes[0]).toMatch(/petrifilm-datasheet\.md/);
+  });
+
+  it("leaves the same answer alone when no group pairs the two documents", async () => {
+    // The other side of the same wire: co-citing two documents is only a defect
+    // when they restate ONE fact. Without that declaration the run is clean, so
+    // a green verdict here means the corpus's marking is doing the work — not
+    // that the grader dislikes two citations.
+    const traj = baseTraj({
+      answer: `Aerobic plates are incubated at 32 degrees Celsius for 48 hours [1][2].
+
+**Sources:**
+
+- [1] /data/petrifilm-datasheet.md — p. 1
+- [2] /data/quality-binder.md — p. 1`,
+      retrieved: [src(1, "/data/petrifilm-datasheet.md"), src(2, "/data/quality-binder.md")],
+    });
+
+    const result = await gradeKbRun(traj, baseGold, {
+      nli: highScoreNli(),
+      relevance: fixedRelevanceJudge(0.9),
+      abstention: ANSWERED,
+      nearDuplicateGroups: [],
+    });
+
     expect(result.tags).toEqual([]);
     expect(result.passed).toBe(true);
   });
@@ -327,6 +360,7 @@ describe("gradeKbRun", () => {
       nli: highScoreNli(),
       relevance: fixedRelevanceJudge(0.9),
       abstention: ANSWERED,
+      nearDuplicateGroups: NO_DUPLICATES,
     });
 
     expect(result.passed).toBe(false);

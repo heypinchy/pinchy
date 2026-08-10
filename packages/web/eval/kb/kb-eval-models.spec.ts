@@ -105,6 +105,7 @@ import {
 } from "./sweep-agent";
 import { getTemplate } from "../../src/lib/agent-templates/registry";
 import { GOLD_QA } from "./corpus/gold-qa";
+import { nearDuplicatePathGroups } from "./corpus/manifest";
 
 const RESULT_LABEL = "kb-groundedness-sweep";
 
@@ -436,7 +437,13 @@ test.describe("KB Eval Harness Layer 3: groundedness sweep (real Ollama Cloud)",
         // dispatch above does — but by this point the answer is already in
         // hand and re-dispatching to recover it would be pure waste.
         const result = await withTransportRetry(
-          () => gradeKbRun(trajectory, gold, { nli, relevance, abstention }),
+          () =>
+            gradeKbRun(trajectory, gold, {
+              nli,
+              relevance,
+              abstention,
+              nearDuplicateGroups: nearDuplicatePathGroups(),
+            }),
           { what: `judge ${model}/${goldId}` }
         );
         const stampedResult: KbRunResultRow = { ...result, scenario: goldId, axis: gold.axis };

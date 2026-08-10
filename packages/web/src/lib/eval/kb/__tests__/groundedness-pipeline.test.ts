@@ -26,6 +26,9 @@ import type { GoldQA, KbFailureTag } from "../types";
 const ANSWERED = { declines: async () => 0 };
 const DECLINED = { declines: async () => 1 };
 
+/** These three fixtures grade groundedness, not dedup — no pairs to declare. */
+const NO_DUPLICATES: string[][] = [];
+
 function src(n: number, sourcePath: string, page: number | null = 1): RetrievedSource {
   return { n, sourcePath, page };
 }
@@ -129,16 +132,19 @@ describe("groundedness pipeline self-test: gradeKbRun -> buildScorecard, end to 
       nli: groundedNli,
       relevance,
       abstention: ANSWERED,
+      nearDuplicateGroups: NO_DUPLICATES,
     });
     const ungrounded = await gradeKbRun(ungroundedTraj, ungroundedGold, {
       nli: ungroundedNli,
       relevance,
       abstention: ANSWERED,
+      nearDuplicateGroups: NO_DUPLICATES,
     });
     const abstained = await gradeKbRun(abstentionTraj, abstentionGold, {
       nli: groundedNli,
       relevance,
       abstention: DECLINED,
+      nearDuplicateGroups: NO_DUPLICATES,
     });
 
     // Per-run KbRunResult assertions — the exact, scripted verdicts.

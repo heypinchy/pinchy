@@ -183,11 +183,32 @@ export async function gradeKbRun(
     nli: NliClient;
     relevance: RelevanceJudge;
     abstention: AbstentionJudge;
+    /**
+     * Path groups whose documents restate one fact, so `dedup-inflation` can
+     * charge an answer that cites both as independent corroboration.
+     *
+     * Required, not optional, and that is the whole point. It WAS optional,
+     * nobody passed it, and `gradeNoDuplicateCorroboration`'s "empty list ⇒
+     * pass" branch made the tag unreachable in every pipeline that produces a
+     * published number — the dataset printed a 0 that meant "not asked" rather
+     * than "did not happen", which is precisely the defect this harness exists
+     * to catch. A caller with no such knowledge passes `[]`, and then the
+     * decision is visible in the diff instead of absent from it.
+     *
+     * `nearDuplicatePathGroups()` in `eval/kb/corpus/manifest.ts` derives them
+     * from the corpus. This module cannot import it: `src/lib` must not reach
+     * into `eval/`, so the groups are handed in.
+     */
+    nearDuplicateGroups: string[][];
     groundedness?: GroundednessOptions;
     relevanceOpts?: AnswerRelevanceOptions;
   }
 ): Promise<KbRunResult> {
-  const attribution = gradeAttribution({ answer: traj.answer, retrieved: traj.retrieved });
+  const attribution = gradeAttribution({
+    answer: traj.answer,
+    retrieved: traj.retrieved,
+    nearDuplicateGroups: deps.nearDuplicateGroups,
+  });
   const abstained = await isAbstention(gold.query, traj.answer, deps.abstention);
   const groundedness = await gradeGroundednessForGold(
     traj.answer,
