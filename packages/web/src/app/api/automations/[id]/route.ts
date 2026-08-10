@@ -27,12 +27,23 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
  * agent the caller can SEE but may not manage — a shared agent in their sidebar,
  * where "not found" would be false and would send them checking the id instead
  * of asking an admin. Here the resource is the WORKFLOW, and that middle state
- * does not exist: `GET /api/automations` is gated by the very same
- * `canManageAgentWorkflows`, so nobody who fails this gate can enumerate
- * workflows at all. Read and manage coincide, which puts every refusal squarely
- * in the oracle case of the criterion on `getAgentWithAccess` — a distinguishable
+ * does not exist: `GET /api/automations` asks this same `canManageAgentWorkflows`
+ * — behind a visibility gate, so strictly more than this route asks — and nobody
+ * refused here could have passed it there. Every caller who reaches this refusal
+ * is therefore one who cannot enumerate the workflow at all, which is squarely
+ * the oracle case of the criterion on `getAgentWithAccess`: a distinguishable
  * error is fine when the caller can already enumerate the resource, and an oracle
  * when they cannot.
+ *
+ * The implication runs one way only, and the gap is what this route is for. An
+ * ADMIN passes the scope gate on a colleague's personal agent and is still
+ * refused by `GET /api/automations`, which runs the visibility gate first — so
+ * they can stop a workflow whose id they already hold without ever being able to
+ * find one. Read and manage come apart exactly there, and it is not a hole in the
+ * reasoning above: that case describes who gets THROUGH, never who gets this 404.
+ * See `canManageAgentWorkflows` for the verdict, and
+ * `__tests__/security/workflow-scope-gate-callers.test.ts` for what keeps the
+ * split from spreading to a third caller.
  *
  * It costs nothing: a caller who gets this never sees the workflow in any list
  * either, so there is no state in which 403 would have told them something they

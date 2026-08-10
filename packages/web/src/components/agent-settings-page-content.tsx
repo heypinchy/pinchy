@@ -163,9 +163,17 @@ export function AgentSettingsPageContent({ initialTab }: { initialTab?: string }
   // `canEdit`), so `isPersonal` here implies the viewer owns it. (#476 gap 2)
   const canManageTelegram = isAdmin || agent?.isPersonal === true;
   // Same scope as Telegram: a personal agent's owner (non-admin) manages its own
-  // automations; a shared agent's are admin-only. The management API enforces
-  // the exact same gate (canManageAgentWorkflows), so the tab and the routes
-  // never disagree.
+  // automations; a shared agent's are admin-only. That mirrors the scope gate the
+  // management API applies (canManageAgentWorkflows), so for a member the tab and
+  // the routes agree on every agent this page will load.
+  //
+  // For an admin on a COLLEAGUE'S personal agent they no longer do, and the whole
+  // page is already in that state rather than this tab alone: since #880 the
+  // agentId-keyed Automations routes run the visibility gate first, and a personal
+  // agent stays private to its owner — admins included. The agent fetch above
+  // (`GET /api/agents/[agentId]`) has answered 404 for that case since #1148, so
+  // `agent` stays null and every tab renders empty. Listing the tab grants
+  // nothing; the routes behind it answer 404 too.
   const canManageAutomations = isAdmin || agent?.isPersonal === true;
   const visibleTabs: AgentSettingsTab[] =
     isPending || isAdmin
