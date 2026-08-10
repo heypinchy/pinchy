@@ -9,6 +9,7 @@ import { updateAutomationSchema, editAutomationSchema } from "@/lib/schemas/auto
 import { scrubEmails } from "@/lib/audit";
 import { deferAuditLog } from "@/lib/audit-deferred";
 import { canManageAgentWorkflows } from "@/lib/email-workflows/authz";
+import { getAgentWithAccess } from "@/lib/agent-access";
 import { findUnreadableConnectionIds } from "@/lib/email-workflows/connection-access";
 
 type RouteContext = { params: Promise<{ id: string }> };
@@ -178,6 +179,32 @@ export const PUT = withAuth<RouteContext>(async (request, { params }, session) =
   // could learn the id is real.
   const workflow = await loadWorkflowWithAgent(id);
   if (!workflow) return workflowNotFound();
+
+  // Unlike its two neighbours, this handler runs the VISIBILITY gate as well —
+  // it is deliberately NOT in `UNGATED_CALLERS` (see
+  // `__tests__/security/workflow-scope-gate-callers.test.ts`).
+  //
+  // The exemption PATCH and DELETE hold is written narrowly on purpose: an admin
+  // holding a workflow id from the audit trail must be able to STOP standing
+  // autonomous authority even on an agent they cannot see, and a read gate would
+  // remove that emergency stop. Stopping is the entire warrant.
+  //
+  // Editing is not stopping. `canManageAgentWorkflows` admits ANY admin on ANY
+  // agent, so without this gate an admin could rewrite the instruction of a
+  // workflow on a colleague's personal agent — changing what somebody's private
+  // agent does with their private mail, on an agent every other surface withholds
+  // from them. That is the #880 reach, arriving through a new door.
+  //
+  // Its refusal is collapsed into ours rather than returned: `getAgentWithAccess`
+  // answers `{error: "Agent not found"}`, and a body that differs from the one an
+  // unknown workflow id gets would itself confirm the id is real.
+  const agentOrError = await getAgentWithAccess(
+    workflow.agentId,
+    session.user.id!,
+    session.user.role
+  );
+  if (agentOrError instanceof NextResponse) return workflowNotFound();
+
   if (!canManageAgentWorkflows(workflow, { id: session.user.id!, role: session.user.role })) {
     return workflowNotFound();
   }

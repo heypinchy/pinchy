@@ -26,9 +26,10 @@ import {
 } from "@/db/schema";
 import { makeNextRequest, routeContext } from "@/test-helpers/route";
 
-const { getSessionMock, deferAuditLogMock } = vi.hoisted(() => ({
+const { getSessionMock, deferAuditLogMock, licenseStateMock } = vi.hoisted(() => ({
   getSessionMock: vi.fn(),
   deferAuditLogMock: vi.fn(),
+  licenseStateMock: vi.fn(),
 }));
 
 vi.mock("next/headers", () => ({
@@ -42,10 +43,22 @@ vi.mock("@/lib/audit-deferred", () => ({
   deferAuditLog: (...args: unknown[]) => deferAuditLogMock(...args),
 }));
 
+// Only the license STATE is replaced; the visibility half of the access gate
+// stays live. It only bites on a LICENSED instance — a community instance maps
+// "restricted" to "all" (agent-access.effectiveVisibility) — so a suite that
+// inherited the state could not tell a visibility denial from a scope one, and
+// would stay green whichever the route produced. Same reasoning as
+// automations-manage.integration.test.ts.
+vi.mock("@/lib/enterprise", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/enterprise")>()),
+  getLicenseState: licenseStateMock,
+}));
+
 const { PUT } = await import("@/app/api/automations/[id]/route");
 
 const OWNER = "user-owner";
 const ADMIN = "user-admin";
+const OTHER = "user-other";
 
 function asMember(id: string) {
   getSessionMock.mockResolvedValue({ user: { id, email: `${id}@test.com`, role: "member" } });
@@ -143,8 +156,45 @@ function editBody(overrides: Record<string, unknown> = {}) {
 describe("PUT /api/automations/[id]", () => {
   beforeEach(async () => {
     vi.clearAllMocks();
+    licenseStateMock.mockResolvedValue("paid");
     await seedUser(OWNER);
     await seedUser(ADMIN, "admin");
+    await seedUser(OTHER);
+  });
+
+  // The #880 verdict, applied to the write path. `canManageAgentWorkflows`
+  // returns true for ANY admin on ANY agent, while the visibility gate holds a
+  // personal agent private to its owner — admins included. PATCH and DELETE are
+  // deliberately exempt from the read gate, and the exemption is written down
+  // narrowly: an admin holding a workflow id from the audit trail must be able
+  // to STOP standing autonomous authority. Stopping is the whole warrant.
+  //
+  // Editing is not stopping. Rewriting the instruction of a workflow on an agent
+  // an admin cannot even see changes what somebody's private agent does with
+  // their private mail — a reach no other agent-scoped surface grants. So PUT
+  // runs the read gate, and its refusal is byte-identical to the one an unknown
+  // id gets: a distinguishable body would itself confirm the workflow is real.
+  it("hides a colleague's personal-agent workflow from an admin, and changes nothing", async () => {
+    asAdmin(ADMIN);
+    const agent = await seedAgent({ isPersonal: true, ownerId: OTHER });
+    await seedConnection("conn-a");
+    await grantEmailRead(agent.id, "conn-a");
+    const wf = await seedWorkflow(agent.id, { name: "Private" });
+    await linkConnection(wf.id, "conn-a", new Date("2020-01-01T00:00:00Z"));
+
+    const denied = await PUT(
+      put(wf.id, editBody({ name: "Hijacked" })),
+      routeContext({ id: wf.id })
+    );
+    const missingId = "11111111-1111-4111-8111-111111111111";
+    const absent = await PUT(put(missingId, editBody()), routeContext({ id: missingId }));
+
+    expect(denied.status).toBe(absent.status);
+    expect(await denied.json()).toEqual(await absent.json());
+    expect(denied.status).toBe(404);
+
+    expect((await loadWorkflow(wf.id)).name).toBe("Private");
+    expect(deferAuditLogMock).not.toHaveBeenCalled();
   });
 
   it("updates name, filter, action and sweep window on an owner's personal-agent workflow", async () => {

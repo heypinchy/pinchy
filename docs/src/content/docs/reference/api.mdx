@@ -588,7 +588,9 @@ The endpoints keyed by **`agentId`** ask two questions in order, and answer diff
 
 `PUT`, `PATCH` and `DELETE` are keyed by **workflow** id instead, and there a scope refusal is `404` too. The middle case has no equivalent: `GET /api/automations` asks this same scope question _and_ the visibility one in front of it, so anyone refused here could never have listed the workflow in the first place. `403` would be the only way to learn that a workflow id is real.
 
-Being keyed by workflow id also gives these two a reach the `agentId` endpoints deliberately lack: an admin who already holds a workflow's id — from the [audit trail](/concepts/audit-trail/), which is where a runaway automation surfaces — can disable or delete it even on someone's personal agent. Standing autonomous authority has to stay stoppable. It grants no way to **find** such a workflow, only to act on one already known.
+Being keyed by workflow id also gives **`PATCH` and `DELETE`** a reach the `agentId` endpoints deliberately lack: an admin who already holds a workflow's id — from the [audit trail](/concepts/audit-trail/), which is where a runaway automation surfaces — can disable or delete it even on someone's personal agent. Standing autonomous authority has to stay stoppable. It grants no way to **find** such a workflow, only to act on one already known.
+
+`PUT` is pointedly not in that company, though it is keyed the same way. That reach is warranted by _stopping_ a runaway automation, and editing one is not stopping: rewriting an instruction on an agent you cannot see would change what somebody's private agent does with their private mail. So `PUT` asks the visibility question as well, and answers `404` when it fails — the same `404`, byte for byte, that an id matching nothing gets.
 
 ### `GET /api/automations?agentId=<agentId>`
 
@@ -659,7 +661,7 @@ An edit that changes nothing is still `200` and writes no audit entry.
 
 - `400` — the body fails validation, or the agent has no read access to a requested connection (the message names the ids)
 - `401` — not authenticated
-- `404` — no workflow has that id, **or** its agent is outside your scope (as with `PATCH`, a malformed id matches nothing)
+- `404` — no workflow has that id, **or** its agent is one you cannot see, **or** its agent is outside your scope. All three answer identically, on purpose (a malformed id matches nothing either). Unlike `PATCH` and `DELETE`, this includes an admin on someone else's personal agent: editing carries no emergency-stop warrant
 
 ### `DELETE /api/automations/:id`
 
