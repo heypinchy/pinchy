@@ -76,6 +76,8 @@ Useful for monitoring the WebSocket gateway separately from the web process.
 
 `configPushesPending` is the number of configuration updates Pinchy has accepted but not yet confirmed inside the OpenClaw runtime (for example while OpenClaw's config-apply rate limit defers an update). A value of `0` means the runtime reflects every change you've made — useful for automation that needs to act right after a settings or permission change. While the gateway restarts, the response is `{ "status": "restarting", "connected": false, "since": <timestamp> }` instead.
 
+With `?agentId=<uuid>`, the response additionally includes `agentDispatchable` — `true` when the OpenClaw runtime currently carries that agent, i.e. a chat sent to it right now would not be rejected as unknown. This is how a client waits out the gap between a route that changed an agent answering and the runtime having the change; the setup wizard polls it after saving the first provider. It reveals no agent metadata, so it stays public, and every failure on the OpenClaw side reports `false` rather than an error status.
+
 With `?channelHealth=1`, the response additionally includes a `channelHealth` array — the channel-health watchdog's per-account snapshot (used by the admin Telegram settings UI to show a "degraded" badge). **This mode requires an admin session** and returns `401`/`403` otherwise: entries carry `accountId` (a Pinchy agent id) and `lastError` (worker error text, passed through the same scrubbing used for the audit trail). The rest of this endpoint — the default `{ status, connected }` check and `?agentId=` — stays public.
 
 ## Setup (public)
@@ -128,7 +130,19 @@ API keys are encrypted at rest with AES-256-GCM. Only the **first** provider
 configured on an instance becomes the default automatically; afterwards the
 default is an explicit action ([`PATCH /api/settings/providers/default`](#patch-apisettingsprovidersdefault)).
 
-**Response:** `{ "success": true }`
+**Response:** `{ "success": true }`, plus:
+
+| Field     | Type   | When                                                                                                                               |
+| --------- | ------ | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `warning` | string | The credential was saved but applying it to the agent runtime failed. Not an error — the runtime picks it up on its next restart.  |
+| `agentId` | string | The config was regenerated. Poll [`GET /api/health/openclaw?agentId=…`](#get-apihealthopenclaw) until `agentDispatchable` is true. |
+
+The route does not wait for the runtime itself. Pinchy hands OpenClaw the new
+config in the background, so an agent becomes dispatchable shortly after this
+call answers — and on a fresh install "shortly" can be most of a minute, because
+the first saved key also provisions the runtime's secrets store and restarts it.
+`agentId` is what lets a caller render that wait instead of holding a request
+open through it; the setup wizard uses it to gate **Continue to Pinchy**.
 
 ## Agents
 

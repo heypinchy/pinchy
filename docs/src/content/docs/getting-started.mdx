@@ -64,6 +64,8 @@ Your API key is encrypted at rest using AES-256-GCM before being stored in the d
 
 If the provider you configure has no vision-capable model, the wizard shows an amber warning: **No vision-capable model configured.** Adding Anthropic, OpenAI, or Google as a provider enables image uploads and scanned-PDF support.
 
+Once the key is saved, the wizard shows **Provider connected!** and briefly waits on **Getting Smithers ready…** — this is Pinchy handing the new configuration to the agent runtime, and **Continue to Pinchy** unlocks as soon as the runtime has it. On a fresh install that step occasionally takes most of a minute, because saving the first API key also provisions the runtime's secrets store and restarts it. If it is still going after 30 seconds the wizard lets you through anyway with a note; your first message just takes a moment longer to land.
+
 ## 6. Chat with Smithers
 
 Once your provider is configured, Pinchy redirects you to the chat interface. Your default agent — **Smithers** — greets you automatically and starts a short onboarding interview to learn about you (and your organization, if you're an admin). This builds context that every agent on the platform can use.

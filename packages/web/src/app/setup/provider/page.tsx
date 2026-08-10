@@ -2,12 +2,13 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { AlertTriangle } from "lucide-react";
+import { AlertTriangle, Loader2 } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { CheckCircle2 } from "lucide-react";
 import { ProviderKeyForm } from "@/components/provider-key-form";
 import { SmithersModelInfoLine } from "@/components/setup/smithers-model-info-line";
+import { useAgentRuntimeReadiness } from "@/hooks/use-agent-runtime-readiness";
 import { PROVIDERS, type ProviderName } from "@/lib/providers";
 import { BALANCED_ANCHORS } from "@/lib/provider-model-constants";
 
@@ -15,9 +16,15 @@ export default function SetupProviderPage() {
   const router = useRouter();
   const [configuredProvider, setConfiguredProvider] = useState<ProviderName | null>(null);
   const [noVision, setNoVision] = useState(false);
+  // Set from the save response. Null means there is nothing to wait for — the
+  // regenerate never reached OpenClaw, so no reload is coming (the save's own
+  // warning toast covers that case).
+  const [runtimeAgentId, setRuntimeAgentId] = useState<string | null>(null);
+  const runtime = useAgentRuntimeReadiness(runtimeAgentId);
 
-  function handleSaved(_provider: ProviderName, hasVision: boolean) {
+  function handleSaved(_provider: ProviderName, hasVision: boolean, agentId?: string) {
     setNoVision(!hasVision);
+    setRuntimeAgentId(agentId ?? null);
   }
 
   if (configuredProvider) {
@@ -41,7 +48,32 @@ export default function SetupProviderPage() {
             </CardHeader>
             <CardContent className="space-y-4">
               <SmithersModelInfoLine modelId={defaultModel} />
-              <Button onClick={() => router.push("/")} className="w-full">
+              {/*
+                The provider is saved; Smithers still has to reach OpenClaw's
+                runtime before a chat can be dispatched to him (#1150). That
+                step is usually instant and occasionally takes most of a minute
+                on a fresh install, so it gets named here instead of being
+                hidden inside the save request. `slow` is not a failure — the
+                first chat has its own dispatch-race retry behind it — so it
+                unlocks the button and says what to expect.
+              */}
+              {runtime === "preparing" && (
+                <p className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <Loader2 className="size-4 shrink-0 animate-spin" aria-hidden />
+                  Getting Smithers ready…
+                </p>
+              )}
+              {runtime === "slow" && (
+                <p className="text-sm text-muted-foreground">
+                  Smithers is still catching up. You can continue — your first message may take a
+                  moment to land.
+                </p>
+              )}
+              <Button
+                onClick={() => router.push("/")}
+                className="w-full"
+                disabled={runtime === "preparing"}
+              >
                 Continue to Pinchy
               </Button>
             </CardContent>

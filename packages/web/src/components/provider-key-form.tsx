@@ -337,10 +337,13 @@ interface ProviderKeyFormProps {
   defaultProvider?: string | null;
   onDirtyChange?: (isDirty: boolean) => void;
   /**
-   * Called after a successful save. Receives the provider name and whether
-   * the provider's default models include vision capability.
+   * Called after a successful save. Receives the provider name, whether the
+   * provider's default models include vision capability, and — when the save
+   * actually regenerated OpenClaw's config — the id of the agent whose arrival
+   * in OC's runtime the caller may want to wait for (#1150). Absent when
+   * nothing was pushed, i.e. when there is no reload to wait for.
    */
-  onSaved?: (provider: ProviderName, hasVision: boolean) => void;
+  onSaved?: (provider: ProviderName, hasVision: boolean, agentId?: string) => void;
   /**
    * Setup wizard only (#894): offer a "Custom provider" action below the
    * built-in tiles that swaps in the multi-field custom provider form. Off by
@@ -542,7 +545,7 @@ export function ProviderKeyForm({
         ? { provider, url: values.apiKey }
         : { provider, apiKey: values.apiKey };
 
-      const data = await apiPost<{ warning?: string }, SetupProviderInput>(
+      const data = await apiPost<{ warning?: string; agentId?: string }, SetupProviderInput>(
         "/api/setup/provider",
         body
       );
@@ -561,7 +564,11 @@ export function ProviderKeyForm({
         toast.success(isUrlProvider ? "URL saved" : "API key saved");
       }
       triggerRestart();
-      onSaved?.(provider, VISION_CAPABLE_PROVIDERS.has(provider));
+      onSaved?.(
+        provider,
+        VISION_CAPABLE_PROVIDERS.has(provider),
+        typeof data?.agentId === "string" ? data.agentId : undefined
+      );
       onSuccess(provider);
     } catch (err) {
       // Session expired — redirect to login rather than showing an inline error.

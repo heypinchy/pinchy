@@ -64,6 +64,17 @@ vi.mock("@/lib/openclaw-config", () => ({
   regenerateOpenClawConfig: vi.fn().mockResolvedValue(undefined),
 }));
 
+// The only OpenClaw round trip this route can reach is `config.get`. Handing a
+// test a controllable one is what lets it model the state #1150 describes: a
+// `config.apply` parked in OpenClaw's rate-limit window, so the runtime does
+// not yet carry Smithers and a poll for him would never finish.
+const { openClawConfigGet } = vi.hoisted(() => ({
+  openClawConfigGet: vi.fn(),
+}));
+vi.mock("@/server/openclaw-client", () => ({
+  getOpenClawClient: () => ({ config: { get: openClawConfigGet } }),
+}));
+
 vi.mock("@/lib/audit", () => ({
   appendAuditLog: vi.fn().mockResolvedValue(undefined),
 }));
@@ -133,9 +144,38 @@ import { resolveAvailableModelForTemplate } from "@/lib/model-resolver/resolve-a
 import { TemplateCapabilityUnavailableError } from "@/lib/model-resolver/types";
 import { SMITHERS_MODEL_HINT } from "@/lib/personal-agent";
 
+/**
+ * Race `promise` against a 2 s timer and fail with a message that names the
+ * defect rather than "test timed out after 20000ms".
+ *
+ * The timer only ever runs to completion on the red path — a handler that
+ * answers wins the race immediately — so the budget is free on green and can
+ * be generous enough to survive a loaded machine.
+ */
+const BLOCKED = Symbol("blocked");
+async function answersWithoutBlocking(promise: Promise<Response>): Promise<Response> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const blocked = new Promise<typeof BLOCKED>((resolve) => {
+    timer = setTimeout(() => resolve(BLOCKED), 2000);
+  });
+  const settled = await Promise.race([promise, blocked]);
+  clearTimeout(timer);
+  if (settled === BLOCKED) {
+    throw new Error(
+      "POST /api/setup/provider did not answer within 2 s while OpenClaw's runtime was " +
+        "unreachable. The handler is waiting on the runtime inside the request — that wait " +
+        "belongs to the wizard, which can render it (#1150)."
+    );
+  }
+  return settled;
+}
+
 describe("POST /api/setup/provider", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    openClawConfigGet.mockResolvedValue({
+      config: { agents: { list: [{ id: "agent-1" }] } },
+    });
     vi.mocked(getSetting).mockResolvedValue(null);
     vi.mocked(db.query.agents.findFirst).mockResolvedValue({
       id: "agent-1",
@@ -312,6 +352,57 @@ describe("POST /api/setup/provider", () => {
     const data = await response.json();
     expect(data.success).toBe(true);
     expect(data.warning).toBeUndefined();
+  });
+
+  // #1150 — the wizard's provider step sat on a disabled "Validating..." button
+  // until the request came back, and the request came back when OpenClaw's
+  // runtime did. On a fresh install those are tens of seconds apart: the first
+  // secrets.json provisioning restarts the gateway, the restarts spend the
+  // ~3-per-45 s `config.apply` budget, and Pinchy's push is then parked for the
+  // advertised retry-after (49 s in the reported run). Nothing crashed and no
+  // timeout fired — the handler was simply waiting, behind a spinner
+  // indistinguishable from a hang.
+  describe("runtime readiness is the wizard's wait, not the request's (#1150)", () => {
+    it("answers while OpenClaw's runtime has not caught up yet", async () => {
+      // A `config.get` that never settles is what a parked push looks like from
+      // inside the request: the agent is not in `agents.list` and no poll for
+      // him can finish.
+      openClawConfigGet.mockReturnValue(new Promise(() => {}));
+
+      const response = await answersWithoutBlocking(
+        POST(makeRequest({ provider: "anthropic", apiKey: "sk-ant-key" }) as any)
+      );
+
+      expect(response.status).toBe(200);
+      const data = await response.json();
+      expect(data.success).toBe(true);
+    });
+
+    it("hands the wizard the agent id it needs to poll readiness itself", async () => {
+      const response = await POST(
+        makeRequest({ provider: "anthropic", apiKey: "sk-ant-key" }) as any
+      );
+
+      const data = await response.json();
+      // `GET /api/health/openclaw?agentId=…` answers `agentDispatchable`, which
+      // is the same question `waitForAgentInRuntime` used to ask in here.
+      expect(data.agentId).toBe("agent-1");
+    });
+
+    it("omits the agent id when the config never regenerated", async () => {
+      // Nothing was pushed, so OpenClaw's runtime will not change and polling it
+      // would only burn the wizard's budget before letting the user through. The
+      // warning already tells them the runtime did not get the change.
+      vi.mocked(regenerateOpenClawConfig).mockRejectedValueOnce(new Error("EACCES"));
+
+      const response = await POST(
+        makeRequest({ provider: "anthropic", apiKey: "sk-ant-key" }) as any
+      );
+
+      const data = await response.json();
+      expect(data.agentId).toBeUndefined();
+      expect(typeof data.warning).toBe("string");
+    });
   });
 
   it("should reset model cache after saving provider", async () => {
