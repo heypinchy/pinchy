@@ -196,7 +196,10 @@ export function requireAgentWriteAccess(
  * admin already holding such an id can stop a runaway automation on an agent
  * they cannot see. They cannot list or create one — that path is `agentId`-keyed
  * and runs this gate. See `email-workflows/authz.ts` for why, and do not add a
- * caller that consults that predicate without a visibility gate in front of it.
+ * caller that consults that predicate without a visibility gate in front of it:
+ * `__tests__/security/workflow-scope-gate-callers.test.ts` walks those call
+ * sites the way the guard above walks this prefix, so the narrowness is asserted
+ * rather than promised, and those two handlers are its whole exemption list.
  */
 export async function getAgentWithAccess(agentId: string, userId: string, userRole: string) {
   const rows = await db.select().from(activeAgents).where(eq(activeAgents.id, agentId));

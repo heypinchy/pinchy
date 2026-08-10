@@ -39,7 +39,9 @@
 //     gate through `resolveWorkflowAgent` (#880) and layer a manage-scope 403 on
 //     top of it; `resolve-agent.test.ts` is what holds that end. Extending this
 //     walk to them would have to model that second gate, which is why they are
-//     covered where they live rather than here.
+//     covered where they live rather than here — `workflow-scope-gate-callers.test.ts`
+//     is the same idea keyed on the manage-scope predicate instead of on a route
+//     prefix, and it is where a NEW ungated Automations caller is caught.
 import { describe, it, expect } from "vitest";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative, resolve } from "node:path";

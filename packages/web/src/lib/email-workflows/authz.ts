@@ -20,6 +20,15 @@
  * colleague's private agent. Adding a caller that consults this function
  * WITHOUT a visibility gate re-grants that reach; do it deliberately or not at
  * all.
+ *
+ * That last sentence is asserted rather than asserted-in-prose:
+ * `__tests__/security/workflow-scope-gate-callers.test.ts` walks every call site
+ * of this function in `packages/web/src` and fails on one that reaches no
+ * visibility gate and is not named there with a reason. The two workflow-id
+ * handlers above are the whole exemption list, and it is checked in both
+ * directions — a rule three docblocks state and nothing reads is the drift
+ * AGENTS.md § "A Hand-Maintained List That Mirrors Code Will Be Wrong"
+ * catalogues.
  */
 export interface WorkflowAgentScope {
   isPersonal: boolean;
