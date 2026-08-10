@@ -474,6 +474,53 @@ export function getEmailTools(): ToolDefinition[] {
   return TOOL_REGISTRY.filter((t) => t.integration === "email");
 }
 
+/**
+ * Which tools each column of the Odoo permission matrix speaks for.
+ *
+ * The matrix is (model × read|create|write|delete) and #1133 gives each cell a
+ * third state, "ask". That state is stored per tool (`odoo_delete:account.move`)
+ * because the gate matches on tool name, so a cell has to know its tools.
+ *
+ * This is the one hand-maintained list the feature could not derive, and
+ * `odoo-operation-tools.test.ts` guards it: every non-deprecated Odoo tool must
+ * appear here or in `ODOO_MODEL_AGNOSTIC_TOOLS`, exactly once. Without that,
+ * a new Odoo tool would be one the "ask" state cannot reach — an admin sets a
+ * cell to ask, the call runs unconfirmed, and nothing says why.
+ *
+ * The record-action tools sit under `write`: each mutates an existing record,
+ * and filing them elsewhere would hide them under a column nobody associates
+ * with them.
+ */
+export const ODOO_OPERATION_TOOLS: Record<"read" | "create" | "write" | "delete", string[]> = {
+  read: ["odoo_read", "odoo_count", "odoo_aggregate"],
+  create: ["odoo_create"],
+  write: [
+    "odoo_write",
+    "odoo_attach_file",
+    "odoo_schedule_activity",
+    "odoo_complete_activity",
+    "odoo_reschedule_activity",
+    "odoo_confirm_order",
+    "odoo_apply_inventory",
+    "odoo_validate_picking",
+    "odoo_mark_mo_done",
+    "odoo_set_approval",
+    "odoo_reconcile",
+  ],
+  delete: ["odoo_delete"],
+};
+
+/**
+ * Odoo tools that act on the schema rather than on records, so no row of the
+ * model matrix owns them. They are listed rather than left out, so the drift
+ * guard can tell "deliberately not in a cell" from "nobody classified it".
+ */
+export const ODOO_MODEL_AGNOSTIC_TOOLS: string[] = ["odoo_list_models", "odoo_describe_model"];
+
+export function odooToolsForOperation(operation: keyof typeof ODOO_OPERATION_TOOLS): string[] {
+  return ODOO_OPERATION_TOOLS[operation];
+}
+
 /** Returns the odoo_* tool IDs that should be enabled for the given access level. */
 export function getOdooToolsForAccessLevel(level: OdooAccessLevel): string[] {
   switch (level) {
