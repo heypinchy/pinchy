@@ -283,6 +283,42 @@ describe("gradeKbRun", () => {
     expect(relevanceJudgeCalled).toBe(false);
   });
 
+  it("cannot charge dedup-inflation, because it passes gradeAttribution no near-duplicate groups", async () => {
+    // `data/README.md` publishes `dedup-inflation` with a 0 and now says in
+    // print that this particular zero is structural rather than measured:
+    // `gradeNoDuplicateCorroboration` compares the Sources list against
+    // `nearDuplicateGroups`, and passes unconditionally when that list is
+    // empty — which it always is here, because `gradeKbRun` never supplies one.
+    // So the tag cannot reach a published number no matter what a model writes.
+    //
+    // This is the guard on that sentence. Wiring the corpus's duplicate pairs
+    // through is a fine change to make; it must go red here first, so the
+    // README stops claiming "not asked" about a tag that by then can fire.
+    const traj = baseTraj({
+      // The crowding pair from the eval corpus: one fact, two documents, both
+      // cited as if they corroborated each other independently.
+      answer: `Aerobic plates are incubated at 32 degrees Celsius for 48 hours [1][2].
+
+**Sources:**
+
+- [1] /data/petrifilm-datasheet.md — p. 1
+- [2] /data/quality-binder.md — p. 1`,
+      retrieved: [src(1, "/data/petrifilm-datasheet.md"), src(2, "/data/quality-binder.md")],
+    });
+
+    const result = await gradeKbRun(traj, baseGold, {
+      nli: highScoreNli(),
+      relevance: fixedRelevanceJudge(0.9),
+      abstention: ANSWERED,
+    });
+
+    // Asserted as a clean pass, not merely as "dedup-inflation absent": a run
+    // that failed for some unrelated reason would satisfy a bare `not.toContain`
+    // while proving nothing about the grader under test.
+    expect(result.tags).toEqual([]);
+    expect(result.passed).toBe(true);
+  });
+
   it("a missed-abstention run (gold expects abstention, model answered anyway) is flagged", async () => {
     const gold: GoldQA = { ...baseGold, expectAbstention: true };
     const traj = baseTraj();

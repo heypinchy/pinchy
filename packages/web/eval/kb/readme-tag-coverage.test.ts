@@ -3,10 +3,16 @@
  *
  * It is a hand-maintained list that mirrors code, which AGENTS.md says will be
  * wrong — and it already was on the day it was written: it listed six of the
- * nine tags `gradeKbRun` composes, so `path-not-cited`, `dedup-inflation` and
- * `false-abstention` were reachable with nothing in the published dataset's
- * own documentation to look them up against. Nothing was red, because nothing
- * was looking.
+ * nine tags `gradeKbRun` composes, so `path-not-cited` and `false-abstention`
+ * were reachable with nothing in the published dataset's own documentation to
+ * look them up against. Nothing was red, because nothing was looking.
+ *
+ * (The third missing tag, `dedup-inflation`, turned out not to be reachable at
+ * all: `gradeKbRun` passes `gradeAttribution` no `nearDuplicateGroups`, so the
+ * grader passes unconditionally. It is documented anyway, and the README says
+ * why its 0 is not a measurement — guarded by a behavioural test next to
+ * `gradeKbRun` rather than by this file, which only checks that a tag is
+ * named.)
  *
  * Same shape as `scripts/lib/docs-coverage.test.mjs` one level up: read the
  * union from the source, and fail rather than shrink when the source stops

@@ -57,11 +57,23 @@ a groundedness property) and grades the answer on nine tags:
 | `false-abstention`    | refused where the corpus did contain the answer        | 0          |
 | `off-topic-grounded`  | grounded, but does not answer the question             | 0          |
 
-All nine are reachable in this sweep's pipeline; the last column is what it
-actually charged. The four that read 0 are listed for the same reason the two
-gold-less axes below keep their empty cells: a tag missing from this table is
-one a reader meets in the data with nothing to look it up against, and "did
-not fire" is a measurement, not an absence.
+The last column is what this sweep actually charged. The five tags that read 0
+are listed for the same reason the two gold-less axes below keep their empty
+cells: a tag missing from this table is one a reader meets in the data with
+nothing to look it up against, and "did not fire" is a measurement, not an
+absence.
+
+Four of those zeros are measurements. **`dedup-inflation`'s is not**, and the
+difference matters more than the number: `gradeNoDuplicateCorroboration` scores
+the Sources list against `nearDuplicateGroups`, and passes unconditionally when
+that list is empty — which it always is, because `gradeKbRun` calls
+`gradeAttribution` without it. The tag is therefore unreachable in every
+pipeline that produces a published number, and its 0 means "not asked", not
+"did not happen". Wiring the corpus's known duplicate pairs through would make
+the `dedup` axis grade the thing it is named for, and it is a fine change to
+make — `answer-graders.test.ts` goes red the day someone does, so this paragraph
+is corrected in that change rather than left standing over a tag that by then
+can fire.
 
 A run **passes** only with zero tags. That is a deliberately strict bar: these
 are conjunctive quality gates, not a score.
@@ -90,26 +102,39 @@ part — `gold-queries.ts` already carries four of each for Layer 1 — and doin
 only that would produce two cells that look measured and measure nothing the
 axis is named for:
 
-- **`freshness` is invisible to an entailment judge.** The archived certificate
-  says, in as many words, "certificate number NF-2013-0092". An answer citing it
-  as current accreditation is **entailed by the passage it cites**, so
-  `ungrounded-claim` cannot fire. Grounded and stale is a distinct failure, and
-  no `KbFailureTag` names it. (Default retrieval also excludes archived
-  documents, so the stale source only reaches the model when it sets
-  `include_archived` itself — which is exactly the behaviour worth measuring,
-  and exactly what a pass rate over the current tags would hide.) Measuring this
-  axis needs a grader, not a question.
+- **`freshness` asks about a document this sweep never puts in front of the
+  model.** `retrieve()` appends `AND d.status = 'active'` unless the caller sets
+  `includeArchived`, and the expired certificate is seeded `archived` by its
+  `OLD/` path segment. A gold question like "what is the current AFNOR
+  certificate?" therefore retrieves the 2024 cert alone: the model answers it
+  correctly, the cell goes green, and the stale document was never in the
+  running. It reaches the model only when the model sets `include_archived`
+  itself — which is the behaviour worth measuring, and which a pass rate over
+  today's tags reports as a plain pass either way. Measuring this axis means
+  controlling that flag in a sweep variant, not writing a question.
+
+  Where a stale answer _is_ possible, only half of it is caught. Our archived
+  chunk announces its own expiry ("expired in December 2016 … retained for
+  historical reference only"), so an answer calling NF-2013-0092 current is
+  contradicted by the passage it cites and the judge should charge
+  `ungrounded-claim`. What no tag names is the honest-sounding half: citing the
+  expired certificate for something it really does say, without claiming
+  currency. Grounded and stale is its own failure mode, and it needs a grader.
+
 - **`crowding` is a ranking property, and Layer 3 grades text.** Both
   `petrifilm-datasheet#c2` and `quality-binder#c3` state the same incubation
-  fact, so an answer citing the binder is grounded, relevant and correctly
-  attributed — it passes. The only Layer-3-visible failure is citing both as
-  independent corroboration, which is `dedup-inflation`, i.e. the `dedup` axis
-  `gqa-dedup-1` already covers. Layer 1 measures crowding where it lives, with
-  four gold queries against `retrieve()`'s ranking.
+  fact, so an answer citing the binder rather than the datasheet is grounded,
+  relevant and correctly attributed — every Layer-3 grader passes it, and
+  passing is the right verdict on the text. Which of the two the retrieval
+  ranked first is the actual question, and Layer 1 is where it is asked, with
+  four gold queries scored against `retrieve()`'s ranking. The one Layer-3 tag
+  that could speak to crowding — `dedup-inflation`, for citing both copies as
+  independent corroboration — is the unreachable one described above.
 
-So the empty cells stay empty on purpose until someone decides the grader
-question, and this note exists so the next person does not close the gap by
-writing two questions and reporting a green axis.
+So the empty cells stay empty on purpose. Closing the gap honestly means a sweep
+variant for `freshness` and a wired-up `dedup-inflation` for `crowding`, both of
+which carry a real design decision. This note exists so the next person does not
+close it instead by writing two questions and reporting a green axis.
 
 The `distractor` axis carries the two abstention items (`gqa-abstention-1/2`)
 by design; see the note at the top of `../corpus/gold-qa.ts`.
