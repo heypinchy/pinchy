@@ -4,13 +4,17 @@ import {
   buildEmailAgentConfigs,
   type JoinedPermissionRow,
 } from "@/lib/openclaw-config/email-agent-config";
+import { EMAIL_CONNECTION_TYPES } from "@/lib/integrations/oauth-providers";
+import { EMAIL_READ_OPERATIONS } from "@/lib/tool-registry";
 
 /**
  * Minimal integration_connections fixture. Only the fields the two functions
  * under test actually read (`type`, `id`, `name`, `data`) are meaningful;
- * the rest are present to satisfy the schema-derived type and deliberately
- * carry a plausible-looking encrypted-credentials string so the "no plaintext
- * secret in output" test below has something real to check against.
+ * the rest are spelled out because the fixture is checked against the
+ * schema-derived type — no `as` cast, so a new NOT NULL column shows up here
+ * as a compile error instead of an absent field the code reads as undefined.
+ * `credentials` deliberately carries a plausible-looking encrypted string so
+ * the "no plaintext secret in output" test below has something real to check.
  */
 function makeConnection(
   overrides: Partial<JoinedPermissionRow["integration_connections"]> = {}
@@ -28,7 +32,7 @@ function makeConnection(
     createdAt: new Date("2026-01-01T00:00:00Z"),
     updatedAt: new Date("2026-01-01T00:00:00Z"),
     ...overrides,
-  } as JoinedPermissionRow["integration_connections"];
+  };
 }
 
 function makePermission(
@@ -41,7 +45,7 @@ function makePermission(
     model: "email",
     operation: "read",
     ...overrides,
-  } as JoinedPermissionRow["agent_connection_permissions"];
+  };
 }
 
 function row(
@@ -65,17 +69,19 @@ describe("aggregateEmailPermissionsByAgent", () => {
     expect(result.size).toBe(0);
   });
 
-  it("accepts every EMAIL_CONNECTION_TYPES member (google, microsoft, imap)", () => {
-    const rows: JoinedPermissionRow[] = [
-      row({ agentId: "agent-google" }, { type: "google" }),
-      row({ agentId: "agent-microsoft" }, { type: "microsoft" }),
-      row({ agentId: "agent-imap" }, { type: "imap" }),
-    ];
+  // Driven off EMAIL_CONNECTION_TYPES itself, not a hand-written copy of it:
+  // a fourth email provider added to the constant is then covered here the
+  // moment it lands, instead of leaving a test whose name claims "every
+  // member" while it checks three.
+  it("accepts every EMAIL_CONNECTION_TYPES member", () => {
+    const rows: JoinedPermissionRow[] = EMAIL_CONNECTION_TYPES.map((type) =>
+      row({ agentId: `agent-${type}` }, { type })
+    );
 
     const result = aggregateEmailPermissionsByAgent(rows);
 
     expect(new Set(result.keys())).toEqual(
-      new Set(["agent-google", "agent-microsoft", "agent-imap"])
+      new Set(EMAIL_CONNECTION_TYPES.map((type) => `agent-${type}`))
     );
   });
 
@@ -131,22 +137,38 @@ describe("buildEmailAgentConfigs", () => {
     ]);
   });
 
-  it("grants the same read toolset for legacy 'search'/'list' aliases without a 'read' row", () => {
-    const emailPermsByAgent = aggregateEmailPermissionsByAgent([
-      row({ agentId: "agent-1", model: "email", operation: "search" }),
-    ]);
+  // Every alias in EMAIL_READ_OPERATIONS, not just "search": a legacy
+  // list-only agent (pre-#328 rows, no accompanying "read") must derive the
+  // same toolset, and deriving the cases from the constant keeps a future
+  // alias from slipping past a hand-written pair.
+  it.each(EMAIL_READ_OPERATIONS.filter((op) => op !== "read"))(
+    "grants the same read toolset for the legacy '%s' alias without a 'read' row",
+    (operation) => {
+      const emailPermsByAgent = aggregateEmailPermissionsByAgent([
+        row({ agentId: "agent-1", model: "email", operation }),
+      ]);
 
-    const configs = buildEmailAgentConfigs(emailPermsByAgent);
+      const configs = buildEmailAgentConfigs(emailPermsByAgent);
 
-    expect(configs["agent-1"].tools).toEqual([
-      "email_list",
-      "email_read",
-      "email_search",
-      "email_get_attachment",
-    ]);
+      expect(configs["agent-1"].tools).toEqual([
+        "email_list",
+        "email_read",
+        "email_search",
+        "email_get_attachment",
+      ]);
+    }
+  );
+
+  // The half a derived test cannot see: drop "list" from the constant and the
+  // case above simply vanishes rather than going red. Nothing else in the repo
+  // pins the alias list, so a legacy list-only agent losing every email tool
+  // would ship silently.
+  it("keeps the legacy read aliases in EMAIL_READ_OPERATIONS", () => {
+    expect(EMAIL_READ_OPERATIONS).toContain("search");
+    expect(EMAIL_READ_OPERATIONS).toContain("list");
   });
 
-  it("adds draft/send tools only when explicitly granted, never implied by read", () => {
+  it("adds draft tools only when explicitly granted, never implied by read", () => {
     const emailPermsByAgent = aggregateEmailPermissionsByAgent([
       row({ agentId: "agent-1", model: "email", operation: "read" }),
       row({ agentId: "agent-1", model: "email", operation: "draft" }),
@@ -156,6 +178,21 @@ describe("buildEmailAgentConfigs", () => {
 
     expect(configs["agent-1"].tools).toContain("email_draft");
     expect(configs["agent-1"].tools).not.toContain("email_send");
+  });
+
+  // The other half of the same rule: send is the most consequential grant in
+  // the set, so it gets its own pin rather than only ever being asserted
+  // absent above.
+  it("adds email_send only when 'send' is granted, and not email_draft with it", () => {
+    const emailPermsByAgent = aggregateEmailPermissionsByAgent([
+      row({ agentId: "agent-1", model: "email", operation: "read" }),
+      row({ agentId: "agent-1", model: "email", operation: "send" }),
+    ]);
+
+    const configs = buildEmailAgentConfigs(emailPermsByAgent);
+
+    expect(configs["agent-1"].tools).toContain("email_send");
+    expect(configs["agent-1"].tools).not.toContain("email_draft");
   });
 
   it("emits an empty tools array when the agent has no 'email' model ops", () => {
