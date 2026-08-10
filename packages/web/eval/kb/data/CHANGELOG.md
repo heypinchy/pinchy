@@ -5,32 +5,82 @@
 48 runs: 12 gold questions × 4 candidate models × 1 run. **48 of 48 valid** —
 no `run-infra-error` rows.
 
-| model        | passed |
-| ------------ | ------ |
-| qwen3.5:397b | 5/12   |
-| kimi-k2.6    | 4/12   |
-| glm-5.2      | 3/12   |
-| gpt-oss:120b | 0/12   |
+The answers were measured on 2026-08-05. They were graded twice: once by the
+sweep itself, and again on 2026-08-10 (`../regrade-kb-runs.ts`, judge
+`ollama-cloud/gpt-oss:20b`) after two grader defects were fixed — #1163 replaced
+an English phrase-list abstention detector with a judge, and #1173 widened a
+Sources-list parser that recognised one entry shape. **The numbers below are the
+re-grade.** The first grading is kept here, in the same table, because the size
+of the gap is the most useful thing this dataset has to say.
 
-Axis totals across all models: `citation-unresolved` 20, `sources-format` 17,
-`ungrounded-claim` 17, `missed-abstention` 8, `off-topic-grounded` 7,
-`source-uncited` 3.
+| model        | as first graded | re-graded |
+| ------------ | --------------- | --------- |
+| glm-5.2      | 3/12            | 9/12      |
+| kimi-k2.6    | 4/12            | 8/12      |
+| qwen3.5:397b | 5/12            | 7/12      |
+| gpt-oss:120b | 0/12            | 7/12      |
 
-**The headline is the shape, not the rate.** Citation discipline dominates:
-markers that resolve to nothing and Sources lists that do not render as lists.
-Groundedness is the smaller problem. That points at what the agent is taught
-(`src/lib/skills/knowledge-search/SKILL.md`) rather than at model selection.
+Axis totals across all models:
+
+| tag                   | as first graded | re-graded |
+| --------------------- | --------------- | --------- |
+| `citation-unresolved` | 20              | 1         |
+| `sources-format`      | 17              | 4         |
+| `ungrounded-claim`    | 17              | 12        |
+| `missed-abstention`   | 8               | 0         |
+| `off-topic-grounded`  | 7               | 0         |
+| `source-uncited`      | 3               | 6         |
+
+**The published ranking was an artifact, and so is any ranking you read off the
+new column.** The model that looked worst by a wide margin — 0 of 12, the number
+that would have been quoted — is the one whose typography the Sources parser
+could not read; corrected, it is indistinguishable from the field. Every one of
+the 8 `missed-abstention` charges was an honest refusal the old detector could
+not recognise, including all four German ones, which an English phrase list
+could never have matched. At n = 12 the Wilson intervals for 9/12 and 7/12
+overlap across most of their width, so the re-graded column separates no two
+models either. It is a floor on how well these models can do the task, not an
+ordering of them.
+
+**The earlier headline is withdrawn.** This entry used to read "citation
+discipline dominates: markers that resolve to nothing and Sources lists that do
+not render as lists", and pointed at what the agent is taught rather than at
+model selection. That claim rested on 20 `citation-unresolved` and 17
+`sources-format`, of which 1 and 4 survive. The models were mostly writing
+citations that resolve; the grader could not read them.
+
+What is left, and looks real:
+
+- **`ungrounded-claim`, 12 runs — exactly 3 per model.** The one axis the
+  re-grade barely moved, and the only one that lands evenly across four very
+  different models. That is the shape of a task property rather than a model
+  property. Four of the twelve are runs that cite nothing inline at all (see
+  the empty-premise note below), so the harder number is 8.
+- **`source-uncited`, 6 runs** — a Sources list carrying an entry the answer
+  never cites. This went UP (3 → 6), because five of these runs previously
+  failed `citation-unresolved` instead: the parser could not see the list, so it
+  charged the citation rather than the unused entry. The new label is the
+  precise one.
+- **`sources-format`, 4 runs** and **`citation-unresolved`, 1 run.** All five
+  were read by hand against what the model wrote and are genuine: lists that
+  really do collapse into one rendered paragraph, and one inline `[N]` with no
+  matching entry.
 
 Caveats that belong next to any use of these numbers:
 
 - **n is 12 per model.** A two-run gap between models is noise at this size.
-- **7 of 48 runs have an empty premise set**, all of them answers that cite no
-  source inline at all. `premiseSourcePaths` deliberately refuses to recover
-  premises there — otherwise an answer that asserts and appends an uncited
-  Sources list would pass. Their verdicts are correct; five of the seven carry
-  `ungrounded-claim`, and on the one that carries nothing else, "cited nothing"
-  would be the more precise label.
+- **6 of 48 runs have an empty premise set**, all of them answers that cite no
+  source inline. `premiseSourcePaths` deliberately refuses to recover premises
+  there — otherwise an answer that asserts and appends an uncited Sources list
+  would pass groundedness for free. Five of the six now carry `source-uncited`,
+  which names what actually happened; the sixth is a correct abstention and
+  passes.
 - **`freshness` and `crowding` have no gold questions** and therefore no data.
+- **The groundedness verdicts are not reproducible byte-for-byte.** They come
+  from an LLM judge, so re-running `regrade-kb-runs.ts` will move a borderline
+  sentence. The citation verdicts ARE reproducible, and
+  `../data-reproducibility.test.ts` fails CI if they stop being — see
+  `README.md`.
 
 Both files carry the contamination-canary header line (see `README.md`). It is
 the first line of each and is not a run; `totalRuns` counts 48.
@@ -45,3 +95,9 @@ premise set), typographic punctuation from one model (its whole row), and a
 row-shape drift between the sweep and the exporter (every axis would have
 reported as untested). The raw runs are archived outside the repo; they are
 kept as evidence of the failure modes, not as measurements.
+
+This sweep was the fifth, and it was written up before it was correct — the
+table above is what that cost. The lesson is not "check harder": four of those
+five defects were caught by reading trajectories, and the fifth was too, one
+draft too late. It is that a dataset needs to survive its graders changing,
+which is why the re-grade is a committed tool and the citation half has a guard.
