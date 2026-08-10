@@ -43,16 +43,25 @@ or a gold source ships without it.
 The sweep dispatches each gold question to a fresh **Knowledge Base** agent
 (the shipped template, instructions and all — a bare `custom` agent measures
 whether a model invents the cite-then-answer contract unprompted, which is not
-a groundedness property) and grades the answer on six axes:
+a groundedness property) and grades the answer on nine tags:
 
-| tag                   | what it catches                                        |
-| --------------------- | ------------------------------------------------------ |
-| `ungrounded-claim`    | an answer sentence not entailed by any cited passage   |
-| `citation-unresolved` | an inline `[N]` with no matching Sources entry         |
-| `source-uncited`      | a Sources entry never cited inline                     |
-| `sources-format`      | a Sources list that does not render as a markdown list |
-| `missed-abstention`   | answered where the corpus cannot support it            |
-| `off-topic-grounded`  | grounded, but does not answer the question             |
+| tag                   | what it catches                                        | 2026-08-05 |
+| --------------------- | ------------------------------------------------------ | ---------- |
+| `ungrounded-claim`    | an answer sentence not entailed by any cited passage   | 12         |
+| `source-uncited`      | a Sources entry never cited inline                     | 6          |
+| `sources-format`      | a Sources list that does not render as a markdown list | 4          |
+| `citation-unresolved` | an inline `[N]` with no matching Sources entry         | 1          |
+| `path-not-cited`      | a citation naming no retrieved document, in full       | 0          |
+| `dedup-inflation`     | near-duplicate chunks counted as independent sources   | 0          |
+| `missed-abstention`   | answered where the corpus cannot support it            | 0          |
+| `false-abstention`    | refused where the corpus did contain the answer        | 0          |
+| `off-topic-grounded`  | grounded, but does not answer the question             | 0          |
+
+All nine are reachable in this sweep's pipeline; the last column is what it
+actually charged. The four that read 0 are listed for the same reason the two
+gold-less axes below keep their empty cells: a tag missing from this table is
+one a reader meets in the data with nothing to look it up against, and "did
+not fire" is a measurement, not an absence.
 
 A run **passes** only with zero tags. That is a deliberately strict bar: these
 are conjunctive quality gates, not a score.
