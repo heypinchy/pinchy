@@ -503,5 +503,51 @@ describe("AgentSettingsAutomationDialog", () => {
       expect(onSaved).not.toHaveBeenCalled();
       expect(onOpenChange).not.toHaveBeenCalledWith(false);
     });
+
+    // A workflow can outlive its mailbox's read grant: the connections GET is
+    // email-read gated, so a mailbox the agent lost access to after creation is
+    // simply absent from the options. Its id would otherwise sit invisibly in
+    // the selection (no checkbox renders for a non-option) and ride along on the
+    // PUT, only to be rejected 400 by the server for a mailbox the user never
+    // saw. The dialog drops it up front and says so, so a plain rename saves.
+    it("drops a no-longer-readable mailbox, tells the user, and keeps it out of the PUT", async () => {
+      const WF = { ...EXISTING_WORKFLOW, connectionIds: ["conn-a", "conn-gone"] };
+      vi.mocked(global.fetch).mockImplementation(async (input, init) => {
+        const url = String(input);
+        // Options no longer include conn-gone — the agent can't read it anymore.
+        if (url.startsWith("/api/automations/connections")) return jsonResponse(CONNECTIONS);
+        if (url === `/api/automations/${WF.id}` && (init as RequestInit)?.method === "PUT") {
+          return jsonResponse({ id: WF.id, name: "x" });
+        }
+        return jsonResponse({});
+      });
+      const user = userEvent.setup();
+      render(
+        <AgentSettingsAutomationDialog
+          agentId={AGENT_ID}
+          open={true}
+          onOpenChange={vi.fn()}
+          onSaved={vi.fn()}
+          workflow={WF}
+        />
+      );
+
+      await waitFor(() =>
+        expect(screen.getByRole("checkbox", { name: /Invoices mailbox/i })).toBeInTheDocument()
+      );
+      // The still-readable mailbox stays checked; the gone one has no checkbox.
+      expect(screen.getByRole("checkbox", { name: /Invoices mailbox/i })).toBeChecked();
+      // The user is told one previously-watched mailbox is no longer accessible.
+      expect(screen.getByText(/no longer readable/i)).toBeInTheDocument();
+
+      await user.click(screen.getByRole("button", { name: /save changes/i }));
+
+      const url = `/api/automations/${WF.id}`;
+      await waitFor(() => expect(findPut(url)).toBeTruthy());
+      const body = JSON.parse((findPut(url)![1] as RequestInit).body as string);
+      // The unreadable id was pruned — it never reaches the server, so the save
+      // succeeds instead of 400-ing on a mailbox the user could not see.
+      expect(body.connectionIds).toEqual(["conn-a"]);
+    });
   });
 });
