@@ -70,6 +70,18 @@ export interface CorpusChunk {
    * writing the duplicate passage is standing. `nearDuplicatePathGroups()`
    * derives the grader's input from it; a list maintained anywhere else would
    * be a hand-maintained mirror of this file, and those go wrong.
+   *
+   * **"Same fact, different words" is necessary and not sufficient.** The
+   * charge is that an answer presented one fact as if two sources had
+   * confirmed it independently, and that rests on the duplication being
+   * invisible: nothing about `product-insert.md` and `quality-file.md`
+   * announces that the second reworded the first. A pair that announces
+   * itself is a different case — `vacation-policy-en.md` and
+   * `urlaub-policy-de.md` are a faithful translation pair, and citing both is
+   * what a model does when it says the rule appears in both language
+   * versions. Mark what a reader cannot tell apart, not everything that
+   * overlaps; `../near-duplicate-groups.test.ts` pins that boundary with the
+   * runs it decides.
    */
   factGroup?: string;
 }

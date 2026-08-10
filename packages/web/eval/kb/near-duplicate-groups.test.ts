@@ -118,6 +118,32 @@ describe("nearDuplicatePathGroups", () => {
     }
   });
 
+  it("leaves the EN/DE translation pair unmarked, and that is a decision, not an omission", () => {
+    // The corpus header describes `vacation-policy-en.md` + `urlaub-policy-de.md`
+    // as "a faithful EN/DE translation pair" — one fact in two documents, which
+    // is the letter of what `factGroup` marks. It is deliberately NOT marked,
+    // and this test is where the reason lives, because the next person to read
+    // that header will reach for a factGroup and would be re-grading real runs.
+    //
+    // `dedup-inflation` charges an answer for presenting one fact as if two
+    // sources had confirmed it independently. That charge rests on the reader
+    // being unable to tell: nothing about `product-insert.md` and
+    // `quality-file.md` announces that the second reworded the first, which is
+    // why every model stacked them. A translation pair announces itself — in
+    // the filenames, in the language of the text — and the sweep's answers show
+    // the models handling it exactly that way: glm-5.2 writes "the same rule
+    // appears in both the English and German policy documents", which is the
+    // opposite of claiming two witnesses.
+    //
+    // Seven of the 48 published runs cite both, three of them as clean passes.
+    // Marking this pair would fail all three for a defect they do not commit.
+    const paired = nearDuplicatePathGroups().some(
+      (group) =>
+        group.includes("/data/vacation-policy-en.md") && group.includes("/data/urlaub-policy-de.md")
+    );
+    expect(paired).toBe(false);
+  });
+
   it("marks only chunks that are in the corpus", () => {
     const paths = new Set(KB_EVAL_CORPUS.map((doc) => doc.sourcePath));
     for (const group of nearDuplicatePathGroups()) {
