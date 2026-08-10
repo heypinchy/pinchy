@@ -97,6 +97,11 @@ export function AgentSettingsAutomationDialog({
   const [connections, setConnections] = useState<AutomationConnectionOption[]>([]);
   const [loadingConnections, setLoadingConnections] = useState(true);
   const [connectionsError, setConnectionsError] = useState<string | null>(null);
+  // How many mailboxes this workflow watched are no longer email-readable by the
+  // agent (grant revoked after creation), so the picker can't offer them. We drop
+  // them from the selection and tell the user, rather than let an invisible id
+  // ride along on the PUT and come back a 400 for a mailbox they never saw.
+  const [unavailableCount, setUnavailableCount] = useState(0);
   const [submitting, setSubmitting] = useState(false);
   // Monotonic sequence for connection loads: a response only lands if it still
   // belongs to the latest load, so a slow response from a previous open can
@@ -142,6 +147,7 @@ export function AgentSettingsAutomationDialog({
       setSelectedConnectionIds(seed.selectedConnectionIds);
       setConnections([]);
       setConnectionsError(null);
+      setUnavailableCount(0);
       setLoadingConnections(true);
     }
   }
@@ -155,7 +161,18 @@ export function AgentSettingsAutomationDialog({
         `/api/automations/connections?agentId=${encodeURIComponent(agentId)}`
       );
       if (seq !== loadSeqRef.current) return;
-      setConnections(Array.isArray(data) ? data : []);
+      const options = Array.isArray(data) ? data : [];
+      setConnections(options);
+      // Any mailbox this workflow watched that the options don't offer is one the
+      // agent can no longer read. Prune those ids from the selection so they
+      // never reach the PUT (which would 400 on them), and surface the count.
+      const optionIds = new Set(options.map((c) => c.id));
+      const unavailable = (workflow?.connectionIds ?? []).filter((id) => !optionIds.has(id));
+      setUnavailableCount(unavailable.length);
+      if (unavailable.length > 0) {
+        const gone = new Set(unavailable);
+        setSelectedConnectionIds((prev) => prev.filter((id) => !gone.has(id)));
+      }
     } catch (e) {
       if (seq !== loadSeqRef.current) return;
       setConnections([]);
@@ -165,7 +182,7 @@ export function AgentSettingsAutomationDialog({
     } finally {
       if (seq === loadSeqRef.current) setLoadingConnections(false);
     }
-  }, [agentId]);
+  }, [agentId, workflow]);
 
   useEffect(() => {
     if (!open) return;
@@ -365,6 +382,13 @@ export function AgentSettingsAutomationDialog({
               Which connected mailboxes this automation watches. Only mailboxes this agent may read
               are listed.
             </p>
+            {!loadingConnections && !connectionsError && unavailableCount > 0 && (
+              <p className="rounded-md border border-amber-500/50 bg-amber-500/10 p-3 text-xs text-amber-700 dark:text-amber-400">
+                {unavailableCount === 1
+                  ? "1 mailbox this automation watched is no longer readable by this agent and has been removed from the selection. Saving will stop watching it."
+                  : `${unavailableCount} mailboxes this automation watched are no longer readable by this agent and have been removed from the selection. Saving will stop watching them.`}
+              </p>
+            )}
             {loadingConnections ? (
               <div className="space-y-2">
                 <Skeleton className="h-6 w-full" />

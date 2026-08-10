@@ -249,7 +249,12 @@ export const PUT = withAuth<RouteContext>(async (request, { params }, session) =
     if (toAdd.length) {
       await tx
         .insert(emailWorkflowConnections)
-        .values(toAdd.map((connectionId) => ({ workflowId: id, connectionId, sinceTs: now })));
+        .values(toAdd.map((connectionId) => ({ workflowId: id, connectionId, sinceTs: now })))
+        // (workflow_id, connection_id) is the composite PK. A concurrent edit that
+        // linked the same mailbox first would otherwise make this insert throw a
+        // duplicate-key 500. The add is idempotent — the row already exists with
+        // its own watermark, which we must not stomp — so skip the conflicting one.
+        .onConflictDoNothing();
     }
     // Kept connections are intentionally left untouched → watermark preserved.
   });
