@@ -25,20 +25,33 @@
 // `/api/agents/[agentId]/` prefix and that it "does not speak for
 // /api/automations". This is the other end.
 //
-// What it checks, precisely: for each top-level statement that CALLS the scope
-// gate, the AST of that same statement also contains a call to a visibility
-// gate. It resolves the local binding from the import, so an aliased
-// `import { canManageAgentWorkflows as gate }` is still found, and it matches
-// call expressions rather than text — every one of these files explains its gate
-// in prose directly above it, and a mention must never stand in for a call.
+// What it checks, precisely: for each declared unit that CALLS the scope gate —
+// a top-level statement, or one declarator of a `const` list — the AST of that
+// same unit also contains a call to a visibility gate. It resolves the local
+// binding from the import for BOTH gates, so an aliased
+// `import { canManageAgentWorkflows as gate }` is still found and an aliased
+// `getAgentWithAccess` still counts as gating, and it matches call expressions
+// rather than text — every one of these files explains its gate in prose
+// directly above it, and a mention must never stand in for a call.
+//
+// `extractCallersFromSource` has its own fixtures at the bottom of this file.
+// Every assertion the guard makes is an ABSENCE, so an extractor that quietly
+// stops seeing a caller reads exactly like compliance; the corpus floor only
+// catches one that sees nothing at all. Verify a change to it there, and by
+// canary against the tree — not by reading.
 //
 // Known limitations, so nobody reads a green run as more than it is:
 //
-//   - It proves the visibility gate is present in the same statement, not that
-//     it is reached on every path or that its refusal is returned. A handler
-//     that called it and ignored the result would pass. Review owns that;
+//   - It proves the visibility gate is present in the same unit, not that it is
+//     reached on every path or that its refusal is returned. A handler that
+//     called it and ignored the result would pass, as would one that gated a
+//     DIFFERENT agent id than it then scoped. Review owns that;
 //     `resolve-agent.test.ts` and `automations-manage.integration.test.ts` cover
 //     the behaviour, admin legs included.
+//   - A caller that reaches the predicate through a local helper is reported as
+//     ungated, even when every one of the helper's own callers gates. That is
+//     the safe direction — it fails loud — but the fix is to gate inside the
+//     helper (as `resolveWorkflowAgent` does), never to exempt it.
 //   - It reads `packages/web/src` production code only. The predicate lives in
 //     an `@/lib` module, so nothing outside this package can import it; tests
 //     are skipped because a unit test of the predicate calls it on purpose.
@@ -102,15 +115,22 @@ function walkSourceFiles(dir: string): string[] {
  * `{ foo as bar }` alike. A namespace import (`import * as authz`) needs no
  * entry: it reaches the function through a property access, which the matcher
  * below recognises by the property name.
+ *
+ * Both gates go through this, and the symmetry is the point rather than tidiness.
+ * Resolving the alias for the scope gate alone would leave
+ * `import { getAgentWithAccess as loadAgent }` reading as *no* visibility gate —
+ * a false positive whose obvious fix is an `UNGATED_CALLERS` entry, which is a
+ * permanent hole opened by a guard that was wrong.
  */
-function localNamesFor(source: ts.SourceFile, exported: string): Set<string> {
-  const names = new Set<string>([exported]);
+function localNamesFor(source: ts.SourceFile, exported: Iterable<string>): Set<string> {
+  const wanted = new Set(exported);
+  const names = new Set<string>(wanted);
   for (const statement of source.statements) {
     if (!ts.isImportDeclaration(statement)) continue;
     const bindings = statement.importClause?.namedBindings;
     if (!bindings || !ts.isNamedImports(bindings)) continue;
     for (const element of bindings.elements) {
-      if ((element.propertyName ?? element.name).text === exported) {
+      if (wanted.has((element.propertyName ?? element.name).text)) {
         names.add(element.name.text);
       }
     }
@@ -136,12 +156,40 @@ function countCalls(node: ts.Node, names: Set<string>): number {
 function statementName(statement: ts.Statement, source: ts.SourceFile): string {
   if (ts.isFunctionDeclaration(statement) && statement.name) return statement.name.text;
   if (ts.isClassDeclaration(statement) && statement.name) return statement.name.text;
-  if (ts.isVariableStatement(statement)) {
-    const named = statement.declarationList.declarations.find((d) => ts.isIdentifier(d.name));
-    if (named) return (named.name as ts.Identifier).text;
-  }
   const line = source.getLineAndCharacterOfPosition(statement.getStart(source)).line + 1;
   return `<statement@${line}>`;
+}
+
+/**
+ * The units one top-level statement contributes: normally itself, but a
+ * `const` declaration list contributes one per declarator.
+ *
+ * Statement granularity is one notch too coarse, and the notch lands on the one
+ * file that carries exemptions. `export const PATCH = …, POST = …` is a single
+ * VariableStatement, so naming it after its first declarator reports `PATCH`
+ * and never mentions `POST` — and since `PATCH …/[id]/route.ts` is exempt, a
+ * second handler declared beside it would inherit that exemption in silence.
+ * Verified by canary before this split existed: a two-declarator file with two
+ * ungated handlers reported one, and went fully green once the first was
+ * exempted. The sibling `agent-route-access-gate.test.ts` walks declarations
+ * for the same reason.
+ */
+function callerUnits(
+  statement: ts.Statement,
+  source: ts.SourceFile
+): Array<{ name: string; node: ts.Node }> {
+  if (ts.isVariableStatement(statement)) {
+    const named = statement.declarationList.declarations
+      .filter((declaration) => ts.isIdentifier(declaration.name))
+      .map((declaration) => ({
+        name: (declaration.name as ts.Identifier).text,
+        node: declaration as ts.Node,
+      }));
+    // A purely destructured declaration (`const { a } = …`) names nothing, so
+    // it falls through to the statement rather than vanishing.
+    if (named.length > 0) return named;
+  }
+  return [{ name: statementName(statement, source), node: statement }];
 }
 
 interface Caller {
@@ -152,30 +200,40 @@ interface Caller {
 }
 
 /**
- * Every top-level statement in one file that calls the scope gate, and whether
- * that same statement also calls a visibility gate. Statement granularity, not
- * file granularity: `[id]/route.ts` holds two handlers, and a gate on one of
- * them would satisfy any file-level check.
+ * Every unit in one file that calls the scope gate, and whether that same unit
+ * also calls a visibility gate. Declarator granularity, not file granularity:
+ * `[id]/route.ts` holds two handlers, and a gate on one of them would satisfy
+ * any file-level check.
+ *
+ * Takes text rather than a path so the fixtures below can drive it. Reading the
+ * tree is what the guard does; whether it reads the tree *correctly* is a
+ * separate question, and one a green run against a healthy tree cannot answer.
  */
-function extractCallers(file: string): Caller[] {
-  const text = readFileSync(file, "utf8");
+function extractCallersFromSource(text: string, relativePath: string): Caller[] {
   if (!text.includes(SCOPE_GATE)) return [];
 
-  const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true);
-  const scopeGateNames = localNamesFor(source, SCOPE_GATE);
-  const relativePath = relative(WEB_DIR, file);
+  const source = ts.createSourceFile(relativePath, text, ts.ScriptTarget.Latest, true);
+  const scopeGateNames = localNamesFor(source, [SCOPE_GATE]);
+  const visibilityGateNames = localNamesFor(source, VISIBILITY_GATES);
 
   const callers: Caller[] = [];
   for (const statement of source.statements) {
-    const callSites = countCalls(statement, scopeGateNames);
-    if (callSites === 0) continue;
-    callers.push({
-      id: `${statementName(statement, source)} ${relativePath}`,
-      gated: countCalls(statement, VISIBILITY_GATES) > 0,
-      callSites,
-    });
+    if (countCalls(statement, scopeGateNames) === 0) continue;
+    for (const unit of callerUnits(statement, source)) {
+      const callSites = countCalls(unit.node, scopeGateNames);
+      if (callSites === 0) continue;
+      callers.push({
+        id: `${unit.name} ${relativePath}`,
+        gated: countCalls(unit.node, visibilityGateNames) > 0,
+        callSites,
+      });
+    }
   }
   return callers;
+}
+
+function extractCallers(file: string): Caller[] {
+  return extractCallersFromSource(readFileSync(file, "utf8"), relative(WEB_DIR, file));
 }
 
 const callers = walkSourceFiles(SRC_DIR).flatMap(extractCallers);
@@ -234,5 +292,86 @@ describe("every canManageAgentWorkflows caller runs a visibility gate, or says w
         `UNGATED_CALLERS["${id}"] is exempt but now runs a visibility gate`
       ).toBe(false);
     }
+  });
+});
+
+/**
+ * The extraction itself, against fixtures.
+ *
+ * The suite above is the guard; this is the guard on the guard. Every assertion
+ * it makes is an *absence* ("no ungated caller"), so an extractor that quietly
+ * stops seeing a caller reads exactly like compliance — and the corpus floor
+ * only catches one that sees nothing at all. Each fixture here is a shape that
+ * was, or could be, mis-read into silence.
+ */
+describe("extractCallersFromSource", () => {
+  const FILE = "src/app/api/automations/[id]/route.ts";
+
+  it("names every declarator in one statement, not just the first", () => {
+    // The hole this guard shipped with: `PATCH …/[id]/route.ts` is exempt, so a
+    // second handler declared beside it inherited that exemption unnamed.
+    const found = extractCallersFromSource(
+      `import { canManageAgentWorkflows } from "@/lib/email-workflows/authz";
+       export const PATCH = withAuth(async (s) => canManageAgentWorkflows(w, s)),
+         POST = withAuth(async (s) => canManageAgentWorkflows(w, s));`,
+      FILE
+    );
+
+    expect(found.map((caller) => caller.id)).toEqual([`PATCH ${FILE}`, `POST ${FILE}`]);
+    expect(found.every((caller) => !caller.gated)).toBe(true);
+  });
+
+  it("judges each declarator on its own gate, not on its neighbour's", () => {
+    const found = extractCallersFromSource(
+      `import { canManageAgentWorkflows } from "@/lib/email-workflows/authz";
+       import { getAgentWithAccess } from "@/lib/agent-access";
+       export const GATED = async (id) => canManageAgentWorkflows(await getAgentWithAccess(id), a),
+         UNGATED = async (id) => canManageAgentWorkflows(w, a);`,
+      FILE
+    );
+
+    expect(found.find((caller) => caller.id.startsWith("GATED"))?.gated).toBe(true);
+    expect(found.find((caller) => caller.id.startsWith("UNGATED"))?.gated).toBe(false);
+  });
+
+  it("resolves an aliased import of either gate", () => {
+    // Asymmetry here is not harmless: an alias the guard cannot see on the
+    // VISIBILITY side reports a gated caller as ungated, and the obvious fix for
+    // that false positive is an exemption — a permanent hole.
+    const found = extractCallersFromSource(
+      `import { canManageAgentWorkflows as mayManage } from "@/lib/email-workflows/authz";
+       import { getAgentWithAccess as loadAgent } from "@/lib/agent-access";
+       export async function PATCH(id) { return mayManage(await loadAgent(id), a); }`,
+      FILE
+    );
+
+    expect(found.map((caller) => caller.id)).toEqual([`PATCH ${FILE}`]);
+    expect(found[0].gated).toBe(true);
+  });
+
+  it("finds a namespace-imported call through its property access", () => {
+    const found = extractCallersFromSource(
+      `import * as authz from "@/lib/email-workflows/authz";
+       export async function PATCH() { return authz.canManageAgentWorkflows(w, a); }`,
+      FILE
+    );
+
+    expect(found.map((caller) => caller.id)).toEqual([`PATCH ${FILE}`]);
+    expect(found[0].gated).toBe(false);
+  });
+
+  it("does not let a mention stand in for a call", () => {
+    // Every one of these files explains its gate in prose directly above it, so
+    // a text scan would read the explanation of a DELETED gate as the gate.
+    const found = extractCallersFromSource(
+      `import { canManageAgentWorkflows } from "@/lib/email-workflows/authz";
+       // Gated by getAgentWithAccess before this runs.
+       const note = "getAgentWithAccess";
+       export async function PATCH() { return canManageAgentWorkflows(w, a); }`,
+      FILE
+    );
+
+    expect(found.map((caller) => caller.id)).toEqual([`PATCH ${FILE}`]);
+    expect(found[0].gated).toBe(false);
   });
 });
