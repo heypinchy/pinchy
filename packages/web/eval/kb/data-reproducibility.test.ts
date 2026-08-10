@@ -63,6 +63,9 @@ const DETERMINISTIC = new Set<string>(DETERMINISTIC_TAGS);
 /** The published dataset is 48 runs; a reader that finds far fewer is broken, not thorough. */
 const MIN_EXPECTED_RUNS = 40;
 
+/** Derived once, not per trajectory: same input for all 48, and it validates the corpus once. */
+const NEAR_DUPLICATE_GROUPS = nearDuplicatePathGroups();
+
 function sorted(tags: readonly string[]): string[] {
   return [...tags].sort();
 }
@@ -122,7 +125,7 @@ describe("the published KB dataset reproduces its own deterministic verdicts", (
         gradeAttribution({
           answer: traj.answer,
           retrieved: traj.retrieved,
-          nearDuplicateGroups: nearDuplicatePathGroups(),
+          nearDuplicateGroups: NEAR_DUPLICATE_GROUPS,
         }),
         gradeCitationCorrectness(traj.answer, traj.retrieved),
       ]);
@@ -143,7 +146,7 @@ describe("the published KB dataset reproduces its own deterministic verdicts", (
         gradeAttribution({
           answer: traj.answer,
           retrieved: traj.retrieved,
-          nearDuplicateGroups: nearDuplicatePathGroups(),
+          nearDuplicateGroups: NEAR_DUPLICATE_GROUPS,
         }),
         gradeCitationCorrectness(traj.answer, traj.retrieved),
       ]);

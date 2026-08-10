@@ -61,7 +61,14 @@ export interface AttributionInput {
   retrieved: RetrievedSource[];
   /**
    * Known near-duplicate path groups (each group = paths sharing a passage).
-   * Supplied by the harness (deterministic in the self-test). Empty by default.
+   *
+   * Optional here because three of the four graders composed by
+   * `gradeAttribution` never read it — but a pipeline that GRADES A RUN must
+   * supply it, and `gradeKbRun` requires it for that reason. Omitting it is
+   * not "no duplicates known": it silently disables `dedup-inflation`, which
+   * is how the published dataset carried a 0 that meant "not asked" (#1181).
+   * `nearDuplicatePathGroups()` in `eval/kb/corpus/manifest.ts` derives them
+   * from the corpus.
    */
   nearDuplicateGroups?: string[][];
 }
@@ -685,7 +692,11 @@ export function gradeSourcesFormat(input: AttributionInput): KbGraderResult {
  * `retrieval-eval.ts`), but the ANSWER must present one underlying fact as
  * one claim, not stack lookalike citations to appear better-supported than it
  * is. If `nearDuplicateGroups` is empty/undefined, this grader trivially
- * passes — there is nothing to compare against.
+ * passes — there is nothing to compare against, which is a correct verdict
+ * only when the caller really knows of no duplicate pairs. It is not a safe
+ * default: the same branch is what kept this tag at 0 for the whole life of
+ * the published dataset (#1181), so a grading pipeline supplies the corpus's
+ * groups rather than relying on it.
  *
  * Each entry is resolved to a retrieved document through
  * `matchRetrievedDocument`, the same way `gradePathCitation` and the

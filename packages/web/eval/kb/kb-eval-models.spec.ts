@@ -110,6 +110,16 @@ import { nearDuplicatePathGroups } from "./corpus/manifest";
 const RESULT_LABEL = "kb-groundedness-sweep";
 
 /**
+ * Derived once, at module load, rather than per graded run: a mistyped
+ * `factGroup` makes `nearDuplicatePathGroups()` THROW, and inside the grading
+ * call that throw would arrive after the first model had already been
+ * dispatched — 48 times over, one per run, each having spent a real API call
+ * on a sweep the corpus had already invalidated. Here it fails before the
+ * stack is even asked for an answer.
+ */
+const NEAR_DUPLICATE_GROUPS = nearDuplicatePathGroups();
+
+/**
  * The (local-only, guarded) real Noack corpus path. `corpusFromEnv()` already
  * enforces the opt-in (KB_EVAL_CORPUS_DIR set, never in CI) before this is
  * ever called — see run-kb-eval.ts's doc comments. NOT WIRED TO A REAL
@@ -442,7 +452,7 @@ test.describe("KB Eval Harness Layer 3: groundedness sweep (real Ollama Cloud)",
               nli,
               relevance,
               abstention,
-              nearDuplicateGroups: nearDuplicatePathGroups(),
+              nearDuplicateGroups: NEAR_DUPLICATE_GROUPS,
             }),
           { what: `judge ${model}/${goldId}` }
         );
