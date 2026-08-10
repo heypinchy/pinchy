@@ -136,7 +136,24 @@ test.describe.serial("Odoo Permission Setup", () => {
     await expect(page.getByRole("button", { name: /add model/i })).toBeVisible();
   });
 
-  test("add a model and verify checkboxes", async ({ page }) => {
+  /**
+   * The matrix cell is a three-state radiogroup since #1133 (not allowed ·
+   * ask first · allowed), so an assertion has to name WHICH state is set
+   * rather than checked/unchecked. That is stricter than what it replaced:
+   * "not checked" could not tell "not allowed" from "allowed but pausing".
+   */
+  // Exact string rather than a constructed RegExp: `new RegExp(op)` trips
+  // security/detect-non-literal-regexp, and an exact name is the stronger
+  // assertion anyway — "read Orders" must not be satisfied by a cell whose
+  // label merely contains it.
+  const cell = (page: Page, op: string, model = "Orders") =>
+    page.getByRole("radiogroup", { name: `${op} ${model}`, exact: true });
+  const expectState = (page: Page, op: string, state: RegExp) =>
+    expect(cell(page, op).getByRole("radio", { name: state })).toBeChecked();
+  const ALLOWED = /^allowed/i;
+  const NOT_ALLOWED = /^not allowed/i;
+
+  test("add a model and verify its access states", async ({ page }) => {
     await loginViaUI(page);
 
     await page.goto(`/chat/${agentId}/settings?tab=permissions`);
@@ -166,18 +183,11 @@ test.describe.serial("Odoo Permission Setup", () => {
     // Model should now appear in the table
     await expect(page.getByText("sale.order")).toBeVisible();
 
-    // At Read-only: Read checkbox should be checked
-    const readCheckbox = page.getByRole("checkbox", { name: /read orders/i });
-    await expect(readCheckbox).toBeChecked();
-
-    // Create, Write, Delete should be unchecked at Read-only level
-    const createCheckbox = page.getByRole("checkbox", { name: /create orders/i });
-    const writeCheckbox = page.getByRole("checkbox", { name: /write orders/i });
-    const deleteCheckbox = page.getByRole("checkbox", { name: /delete orders/i });
-
-    await expect(createCheckbox).not.toBeChecked();
-    await expect(writeCheckbox).not.toBeChecked();
-    await expect(deleteCheckbox).not.toBeChecked();
+    // At Read-only: read is granted and ungated, the rest not granted at all.
+    await expectState(page, "read", ALLOWED);
+    await expectState(page, "create", NOT_ALLOWED);
+    await expectState(page, "write", NOT_ALLOWED);
+    await expectState(page, "delete", NOT_ALLOWED);
   });
 
   test("change access level updates existing models", async ({ page }) => {
@@ -201,20 +211,20 @@ test.describe.serial("Odoo Permission Setup", () => {
       .first()
       .click();
 
-    // Verify only Read is checked
-    await expect(page.getByRole("checkbox", { name: /read orders/i })).toBeChecked();
-    await expect(page.getByRole("checkbox", { name: /create orders/i })).not.toBeChecked();
-    await expect(page.getByRole("checkbox", { name: /write orders/i })).not.toBeChecked();
-    await expect(page.getByRole("checkbox", { name: /delete orders/i })).not.toBeChecked();
+    // Verify only Read is granted
+    await expectState(page, "read", ALLOWED);
+    await expectState(page, "create", NOT_ALLOWED);
+    await expectState(page, "write", NOT_ALLOWED);
+    await expectState(page, "delete", NOT_ALLOWED);
 
     // Switch to "Read & Write"
     await page.getByRole("radio", { name: "Read & Write" }).click();
 
-    // Now Read, Create, Write should be checked; Delete still unchecked
-    await expect(page.getByRole("checkbox", { name: /read orders/i })).toBeChecked();
-    await expect(page.getByRole("checkbox", { name: /create orders/i })).toBeChecked();
-    await expect(page.getByRole("checkbox", { name: /write orders/i })).toBeChecked();
-    await expect(page.getByRole("checkbox", { name: /delete orders/i })).not.toBeChecked();
+    // Now Read, Create and Write are granted; Delete still is not
+    await expectState(page, "read", ALLOWED);
+    await expectState(page, "create", ALLOWED);
+    await expectState(page, "write", ALLOWED);
+    await expectState(page, "delete", NOT_ALLOWED);
   });
 
   test("remove a model", async ({ page }) => {
