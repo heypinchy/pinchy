@@ -89,6 +89,8 @@ The same rule as the underlying API:
 - **Members** can manage automations on a personal agent they own.
 - **Admins** can manage them on any **shared** agent. A colleague's personal agent is not included: personal agents stay private to their owner, admins included.
 
+There's one deliberate exception, and it only goes one way. An admin who already has a workflow's ID — from the [audit trail](/concepts/audit-trail/), where a runaway automation shows up — can disable or delete that workflow even on a personal agent. Standing autonomous authority has to stay stoppable. It gives them no way to _find_ an automation on an agent they can't see, only to stop one they already know about. See the [API reference](/reference/api/#automations).
+
 In practice automations live on shared agents, because that is where mailboxes can be connected — a personal Smithers has no integrations of its own. See [Integrations](/concepts/integrations/#integrations-are-admin-managed-and-attach-to-shared-agents).
 
 ## Related
