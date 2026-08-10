@@ -14,6 +14,7 @@ import { EmailPermissionSection } from "@/components/email-permission-section";
 import { WebSearchPermissionSection } from "@/components/web-search-permission-section";
 import { KnowledgeReindexSection } from "@/components/knowledge-reindex-section";
 import { ApprovalConfirmationSection } from "@/components/approval-confirmation-section";
+import { getConfirmMap, type ConfirmMap } from "@/lib/approvals/policy";
 import type { Connection as OdooConnection } from "@/hooks/use-odoo-permissions";
 import type { AgentPluginConfig } from "@/db/schema";
 import { EMAIL_CONNECTION_TYPES } from "@/lib/integrations/oauth-providers";
@@ -26,7 +27,34 @@ export interface PermissionsValues {
     permissions: Array<{ model: string; operation: string }>;
   }>;
   webSearchConfig?: AgentPluginConfig["pinchy-web"];
-  confirmTools: string[];
+  confirm: ConfirmMap;
+}
+
+/**
+ * Key-by-key, because a confirm map is written from two places (the tool
+ * section and the Odoo matrix) and neither controls insertion order — so
+ * comparing serialized JSON would report a form as dirty for having reordered.
+ */
+function sameConfirmMap(a: ConfirmMap, b: ConfirmMap): boolean {
+  const keys = Object.keys(a);
+  return keys.length === Object.keys(b).length && keys.every((k) => a[k] === b[k]);
+}
+
+/**
+ * Drop entries for tools the agent may no longer call. A stale key is not
+ * merely untidy: revoke a tool, grant it again later, and a confirmation
+ * setting nobody can see on the page would come back with it.
+ *
+ * Resource keys (`odoo_delete:account.move`) are matched on their tool half,
+ * so removing a MODEL from the matrix leaves its exception in place — which is
+ * deliberate. Models come and go from that grid while the agent's tools stay,
+ * and an exception that survives a model being re-added is the kinder answer.
+ */
+function pruneConfirmMap(confirm: ConfirmMap, allowedTools: string[]): ConfirmMap {
+  const allowed = new Set(allowedTools);
+  return Object.fromEntries(
+    Object.entries(confirm).filter(([key]) => allowed.has(key.split(":")[0]))
+  );
 }
 
 interface Connection {
@@ -99,14 +127,16 @@ export function AgentSettingsPermissions({
   const [webSearchConfig, setWebSearchConfig] = useState<AgentPluginConfig["pinchy-web"]>(
     agent.pluginConfig?.["pinchy-web"] ?? {}
   );
-  const [confirmTools, setConfirmTools] = useState<string[]>(
-    agent.pluginConfig?.["pinchy-approvals"]?.confirmTools ?? []
-  );
+  // Normalized through getConfirmMap, which reads a pre-#1133 `confirmTools`
+  // list when the agent has not been saved since the upgrade. Without that the
+  // form would open showing no confirmations on an agent that has them, and
+  // saving would then persist that as the truth.
+  const [confirm, setConfirm] = useState<ConfirmMap>(() => getConfirmMap(agent.pluginConfig));
 
   const initialKbToolsRef = useRef(initialKbTools);
   const initialAllowedPaths = useRef(agent.pluginConfig?.["pinchy-files"]?.allowed_paths ?? []);
   const initialWebSearchConfig = useRef(agent.pluginConfig?.["pinchy-web"] ?? {});
-  const initialConfirmTools = useRef(agent.pluginConfig?.["pinchy-approvals"]?.confirmTools ?? []);
+  const initialConfirm = useRef<ConfirmMap>(getConfirmMap(agent.pluginConfig));
 
   // Re-sync the "initial" snapshot when the agent prop changes (the parent
   // refetches the agent after a successful save, so the prop now reflects the
@@ -121,7 +151,7 @@ export function AgentSettingsPermissions({
     );
     initialAllowedPaths.current = agent.pluginConfig?.["pinchy-files"]?.allowed_paths ?? [];
     initialWebSearchConfig.current = agent.pluginConfig?.["pinchy-web"] ?? {};
-    initialConfirmTools.current = agent.pluginConfig?.["pinchy-approvals"]?.confirmTools ?? [];
+    initialConfirm.current = getConfirmMap(agent.pluginConfig);
   }, [agent.allowedTools, agent.pluginConfig]);
 
   const hasWebToolChecked = webTools.some((tool) => allowedKbTools.includes(tool.id));
@@ -210,10 +240,8 @@ export function AgentSettingsPermissions({
         JSON.stringify([...initialAllowedPaths.current].sort());
     const webConfigDirty =
       JSON.stringify(webSearchConfig) !== JSON.stringify(initialWebSearchConfig.current);
-    const confirmToolsDirty =
-      JSON.stringify([...confirmTools].sort()) !==
-      JSON.stringify([...initialConfirmTools.current].sort());
-    const isDirty = kbDirty || odooIsDirty || emailIsDirty || webConfigDirty || confirmToolsDirty;
+    const confirmDirty = !sameConfirmMap(confirm, initialConfirm.current);
+    const isDirty = kbDirty || odooIsDirty || emailIsDirty || webConfigDirty || confirmDirty;
     // Collect all active integrations
     const integrations: Array<{
       connectionId: string;
@@ -227,7 +255,7 @@ export function AgentSettingsPermissions({
         allowedPaths,
         integrations,
         webSearchConfig,
-        confirmTools: confirmTools.filter((id) => allAllowedTools.includes(id)),
+        confirm: pruneConfirmMap(confirm, allAllowedTools),
       },
       isDirty
     );
@@ -239,7 +267,7 @@ export function AgentSettingsPermissions({
     emailIntegration,
     emailIsDirty,
     webSearchConfig,
-    confirmTools,
+    confirm,
     onChange,
     computeAllowedTools,
   ]);
@@ -384,6 +412,8 @@ export function AgentSettingsPermissions({
             agentId={agent.id}
             connections={odooConnections}
             onChange={handleOdooChange}
+            confirm={confirm}
+            onConfirmChange={setConfirm}
           />
         </section>
       )}
@@ -407,8 +437,8 @@ export function AgentSettingsPermissions({
           <h3 className="text-lg font-semibold">Require confirmation before</h3>
           <ApprovalConfirmationSection
             allowedTools={computeAllowedTools(allowedKbTools, odooIntegration, emailIntegration)}
-            confirmTools={confirmTools}
-            onChange={setConfirmTools}
+            confirm={confirm}
+            onChange={setConfirm}
           />
         </section>
       )}

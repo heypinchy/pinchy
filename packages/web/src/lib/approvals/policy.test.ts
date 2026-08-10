@@ -104,6 +104,10 @@ describe("resolveConfirmation", () => {
   });
 });
 
+const cfgWith = (confirm: Record<string, "confirm" | "allow">) => ({
+  "pinchy-approvals": { confirm },
+});
+
 describe("toolIsConfigured", () => {
   it("sees a tool-level setting", () => {
     expect(
@@ -114,12 +118,12 @@ describe("toolIsConfigured", () => {
   // The short-circuit must not skip a tool that is only gated on one model —
   // that would make every per-model exception a no-op, silently.
   it("sees a tool that only appears in a resource cell", () => {
-    const cfg = { "pinchy-approvals": { confirm: { "odoo_write:account.move": "confirm" } } };
+    const cfg = cfgWith({ "odoo_write:account.move": "confirm" });
     expect(toolIsConfigured(cfg, "odoo_write")).toBe(true);
   });
 
   it("does not match a tool whose name merely prefixes another", () => {
-    const cfg = { "pinchy-approvals": { confirm: { odoo_write_off: "confirm" } } };
+    const cfg = cfgWith({ odoo_write_off: "confirm" });
     expect(toolIsConfigured(cfg, "odoo_write")).toBe(false);
   });
 

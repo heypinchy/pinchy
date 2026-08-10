@@ -92,7 +92,7 @@ interface PermissionsValues {
     permissions: Array<{ model: string; operation: string }>;
   }>;
   webSearchConfig?: AgentPluginConfig["pinchy-web"];
-  confirmTools?: string[];
+  confirm?: Record<string, "confirm" | "allow">;
 }
 
 interface AccessValues {
@@ -354,7 +354,10 @@ export function AgentSettingsPageContent({ initialTab }: { initialTab?: string }
           ...agent?.pluginConfig,
           "pinchy-files": { allowed_paths: permissionsDraft.current.allowedPaths },
           "pinchy-web": permissionsDraft.current.webSearchConfig,
-          "pinchy-approvals": { confirmTools: permissionsDraft.current.confirmTools ?? [] },
+          // Writes only the new shape, never `confirmTools`. A saved agent is
+          // therefore migrated for good, and the read-side fallback in
+          // getConfirmMap only ever covers agents nobody has saved yet.
+          "pinchy-approvals": { confirm: permissionsDraft.current.confirm ?? {} },
         };
 
         // Save each active integration separately, or clear all if none
