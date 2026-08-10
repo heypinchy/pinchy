@@ -257,6 +257,58 @@ describe("EditCredentialsDialog", () => {
         });
       });
     });
+
+    it("shows a generic message, not the raw error, when the save fails opaquely", async () => {
+      // The non-ApiError branch of the shared save path (#1087): a transport
+      // failure carries no server-authored message, and its text is an
+      // internal detail rather than something to render at a user. Only the
+      // ApiError branch was covered before the copies were collapsed.
+      const user = userEvent.setup();
+      vi.mocked(apiPatch).mockRejectedValue(new Error("ECONNRESET"));
+
+      render(
+        <EditCredentialsDialog
+          connection={webSearchConnection}
+          open={true}
+          onOpenChange={vi.fn()}
+          onSuccess={vi.fn()}
+        />
+      );
+
+      await user.type(screen.getByLabelText("API Key"), "new-brave-key");
+      await user.click(screen.getByRole("button", { name: "Save" }));
+
+      await waitFor(() => {
+        expect(screen.getByText("Something went wrong. Please try again.")).toBeInTheDocument();
+      });
+      expect(screen.queryByText("ECONNRESET")).not.toBeInTheDocument();
+      expect(toast.success).not.toHaveBeenCalled();
+    });
+
+    it("re-enables Save after a failed attempt so the user can retry", async () => {
+      // The `finally` that clears `saving` is the one line of the shared save
+      // path with no visible success counterpart — lose it and the dialog
+      // strands the user on a spinner after a transient failure.
+      const user = userEvent.setup();
+      vi.mocked(apiPatch).mockRejectedValue(new ApiError(502, "Upstream is down"));
+
+      render(
+        <EditCredentialsDialog
+          connection={webSearchConnection}
+          open={true}
+          onOpenChange={vi.fn()}
+          onSuccess={vi.fn()}
+        />
+      );
+
+      await user.type(screen.getByLabelText("API Key"), "new-brave-key");
+      await user.click(screen.getByRole("button", { name: "Save" }));
+
+      await waitFor(() => {
+        expect(screen.getByText("Upstream is down")).toBeInTheDocument();
+      });
+      expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
+    });
   });
 
   describe("Google integration", () => {
@@ -307,6 +359,30 @@ describe("EditCredentialsDialog", () => {
       await waitFor(() => {
         expect(assignMock).toHaveBeenCalledWith("https://accounts.google.com/oauth?code=xxx");
       });
+    });
+
+    it("shows a generic message when starting the OAuth redirect fails opaquely", async () => {
+      // The reconnect branch shares `credentialErrorMessage` with the three
+      // credential forms since #1087, but reaches it from apiPost rather than
+      // apiPatch — and it was the branch with no failure test at all.
+      const user = userEvent.setup();
+      vi.mocked(apiPost).mockRejectedValue(new Error("ECONNRESET"));
+
+      render(
+        <EditCredentialsDialog
+          connection={googleConnection}
+          open={true}
+          onOpenChange={vi.fn()}
+          onSuccess={vi.fn()}
+        />
+      );
+
+      await user.click(screen.getByRole("button", { name: "Reconnect via Google" }));
+
+      await waitFor(() => {
+        expect(screen.getByText("Something went wrong. Please try again.")).toBeInTheDocument();
+      });
+      expect(screen.queryByText("ECONNRESET")).not.toBeInTheDocument();
     });
   });
 

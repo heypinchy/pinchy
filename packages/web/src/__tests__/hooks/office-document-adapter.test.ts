@@ -27,6 +27,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 import mammoth from "mammoth";
 import { OfficeDocumentAttachmentAdapter } from "@/hooks/use-ws-runtime";
 import { CLIENT_MAX_ATTACHMENT_SIZE_BYTES } from "@/lib/limits";
+import { oversizeAttachmentError } from "@/lib/attachment-size-check";
 
 function fakeDocxFile({ size, name = "briefing.docx" }: { size: number; name?: string }): File {
   return {
@@ -92,6 +93,22 @@ describe("OfficeDocumentAttachmentAdapter.add", () => {
       name: "huge.docx",
     });
     await expect(adapter.add({ file })).rejects.toThrow(/huge\.docx/);
+  });
+
+  it("rejects in the shared wording, not a second sentence for the same refusal", async () => {
+    // Until #1087 this adapter re-implemented the size check it already
+    // imported, and answered with "The limit is N MB." while every other
+    // attachment path said "The maximum is N MB." — one rejection, two
+    // sentences, depending on which file the user happened to drop. The two
+    // loose regexes above pass against either, so the exact string is what
+    // holds the paths together.
+    const adapter = new OfficeDocumentAttachmentAdapter();
+    const size = CLIENT_MAX_ATTACHMENT_SIZE_BYTES + 1024 * 1024;
+    const file = fakeDocxFile({ size, name: "huge.docx" });
+
+    await expect(adapter.add({ file })).rejects.toThrow(
+      oversizeAttachmentError({ name: "huge.docx", type: file.type, size })!
+    );
   });
 });
 
