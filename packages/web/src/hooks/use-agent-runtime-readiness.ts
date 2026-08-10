@@ -59,7 +59,20 @@ export function useAgentRuntimeReadiness(agentId: string | null): AgentRuntimeRe
     if (!agentId) return;
 
     let cancelled = false;
-    const deadline = Date.now() + RUNTIME_READY_BUDGET_MS;
+
+    // The budget runs on its own timer rather than being read between polls,
+    // and that is the load-bearing part. `apiGet` issues a bare `fetch` with no
+    // signal, and the endpoint behind it waits on an OpenClaw RPC — so a
+    // gateway wedged mid-restart, or a Pinchy container that goes away between
+    // two polls, suspends the loop wherever it happens to be. A deadline only
+    // consulted after the request settles is not a deadline: the caller would
+    // stay in `preparing` for as long as the browser keeps the socket open,
+    // which is precisely the unbounded wait this hook exists to replace.
+    const budget = setTimeout(() => {
+      if (cancelled) return;
+      cancelled = true;
+      setOutcome({ agentId, state: "slow" });
+    }, RUNTIME_READY_BUDGET_MS);
 
     void (async () => {
       while (!cancelled) {
@@ -69,6 +82,7 @@ export function useAgentRuntimeReadiness(agentId: string | null): AgentRuntimeRe
           );
           if (cancelled) return;
           if (health.agentDispatchable) {
+            clearTimeout(budget);
             setOutcome({ agentId, state: "ready" });
             return;
           }
@@ -76,16 +90,13 @@ export function useAgentRuntimeReadiness(agentId: string | null): AgentRuntimeRe
           // A gateway that is mid-restart is the common case here, not an
           // anomaly — keep polling until the budget says otherwise.
         }
-        if (Date.now() >= deadline) {
-          if (!cancelled) setOutcome({ agentId, state: "slow" });
-          return;
-        }
         await new Promise((resolve) => setTimeout(resolve, RUNTIME_READY_POLL_MS));
       }
     })();
 
     return () => {
       cancelled = true;
+      clearTimeout(budget);
     };
   }, [agentId]);
 

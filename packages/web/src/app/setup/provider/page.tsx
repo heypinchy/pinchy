@@ -57,14 +57,19 @@ export default function SetupProviderPage() {
                 first chat has its own dispatch-race retry behind it — so it
                 unlocks the button and says what to expect.
               */}
+              {/*
+                `role="status"` because the only other cue that the wait ended
+                is a disabled attribute coming off a button, which announces
+                nothing. The spinner is decorative; the sentence is the status.
+              */}
               {runtime === "preparing" && (
-                <p className="flex items-center gap-2 text-sm text-muted-foreground">
+                <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground">
                   <Loader2 className="size-4 shrink-0 animate-spin" aria-hidden />
                   Getting Smithers ready…
                 </p>
               )}
               {runtime === "slow" && (
-                <p className="text-sm text-muted-foreground">
+                <p role="status" className="text-sm text-muted-foreground">
                   Smithers is still catching up. You can continue — your first message may take a
                   moment to land.
                 </p>

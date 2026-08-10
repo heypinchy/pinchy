@@ -219,6 +219,33 @@ describe("Setup Provider Page", () => {
       }
     });
 
+    // The budget has to hold against a request that never answers, not only
+    // against one that keeps saying "not yet". `apiGet` issues a bare `fetch`
+    // with no signal, and `/api/health/openclaw?agentId=` waits on an OpenClaw
+    // RPC — so a gateway wedged mid-restart, or a Pinchy container that goes
+    // away between two polls, leaves the poll suspended. A deadline that is
+    // only read after the request settles is not a deadline: the button stays
+    // disabled for as long as the browser keeps the socket, which is the hang
+    // this whole change removes, one layer up.
+    it("gives up on the budget even when the health request never answers", async () => {
+      vi.useFakeTimers();
+      try {
+        apiGetMock.mockReturnValue(new Promise(() => {}));
+
+        render(<SetupProviderPage />);
+        saveProvider("agent-1");
+
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(RUNTIME_READY_BUDGET_MS + RUNTIME_READY_POLL_MS);
+        });
+
+        expect(screen.getByRole("button", { name: /continue to pinchy/i })).toBeEnabled();
+        expect(screen.getByText(/still catching up/i)).toBeInTheDocument();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it("does not gate Continue when the save reported no agent id", async () => {
       render(<SetupProviderPage />);
       act(() => {

@@ -166,22 +166,22 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  // Only update agent model when adding the first provider
-  if (isFirstProvider) {
-    const smithers = await db.query.agents.findFirst();
-    if (smithers) {
-      try {
-        const resolved = await resolveAvailableModelForTemplate({
-          hint: SMITHERS_MODEL_HINT,
-          provider: provider as ProviderName,
-        });
-        await db.update(agents).set({ model: resolved.model }).where(eq(agents.id, smithers.id));
-      } catch (err) {
-        if (!(err instanceof TemplateCapabilityUnavailableError)) {
-          throw err;
-        }
-        // Provider has no model matching Smithers' hint — keep existing model.
+  // Only update agent model when adding the first provider. Looked up once:
+  // the readiness id further down means this same agent, and an unfiltered
+  // `findFirst()` only names Smithers on the first-provider path — see there.
+  const smithers = isFirstProvider ? await db.query.agents.findFirst() : undefined;
+  if (smithers) {
+    try {
+      const resolved = await resolveAvailableModelForTemplate({
+        hint: SMITHERS_MODEL_HINT,
+        provider: provider as ProviderName,
+      });
+      await db.update(agents).set({ model: resolved.model }).where(eq(agents.id, smithers.id));
+    } catch (err) {
+      if (!(err instanceof TemplateCapabilityUnavailableError)) {
+        throw err;
       }
+      // Provider has no model matching Smithers' hint — keep existing model.
     }
   }
 
@@ -226,13 +226,18 @@ export async function POST(request: NextRequest) {
   // this question via `agentDispatchable` — show it as a named step, and time
   // out of it into an honest note instead of holding a connection open.
   //
-  // Omitted when the regenerate threw: nothing was pushed, so OC's runtime is
-  // not about to change and polling it would only delay the user past a gap
-  // that `warning` already describes.
-  let agentId: string | undefined;
-  if (!runtimeWarning) {
-    agentId = (await db.query.agents.findFirst())?.id;
-  }
+  // Omitted in two cases. When the regenerate threw: nothing was pushed, so
+  // OC's runtime is not about to change and polling it would only delay the
+  // user past a gap that `warning` already describes. And when this is not the
+  // instance's first provider: despite the path, this route also serves
+  // Settings → AI Provider, where the instance has many agents and the
+  // unfiltered `findFirst()` above answers whichever row comes back first. An
+  // id chosen that way names nobody in particular, and this one is documented
+  // as the agent a caller should poll — so it is only sent where it is true.
+  // A Settings save that wants to know when its change landed has
+  // `configPushesPending` on the same health endpoint, which is the question
+  // it is actually asking.
+  const agentId = runtimeWarning ? undefined : smithers?.id;
 
   // Build a CLAUDE.md-compliant audit detail: snapshot the human-readable
   // provider name alongside its id, and never log secrets. For URL-based

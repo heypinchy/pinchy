@@ -132,10 +132,10 @@ default is an explicit action ([`PATCH /api/settings/providers/default`](#patch-
 
 **Response:** `{ "success": true }`, plus:
 
-| Field     | Type   | When                                                                                                                               |
-| --------- | ------ | ---------------------------------------------------------------------------------------------------------------------------------- |
-| `warning` | string | The credential was saved but applying it to the agent runtime failed. Not an error — the runtime picks it up on its next restart.  |
-| `agentId` | string | The config was regenerated. Poll [`GET /api/health/openclaw?agentId=…`](#get-apihealthopenclaw) until `agentDispatchable` is true. |
+| Field     | Type   | When                                                                                                                                                                                                                               |
+| --------- | ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `warning` | string | The credential was saved but applying it to the agent runtime failed. Not an error — the runtime picks it up on its next restart.                                                                                                  |
+| `agentId` | string | This was the instance's **first** provider and the config regenerated. The id of the Smithers agent it was configured for — poll [`GET /api/health/openclaw?agentId=…`](#get-apihealthopenclaw) until `agentDispatchable` is true. |
 
 The route does not wait for the runtime itself. Pinchy hands OpenClaw the new
 config in the background, so an agent becomes dispatchable shortly after this
@@ -143,6 +143,10 @@ call answers — and on a fresh install "shortly" can be most of a minute, becau
 the first saved key also provisions the runtime's secrets store and restarts it.
 `agentId` is what lets a caller render that wait instead of holding a request
 open through it; the setup wizard uses it to gate **Continue to Pinchy**.
+
+Later provider saves send no `agentId`: they change no agent, so there is no
+particular one to wait for. To know when such a change has reached the runtime,
+poll `configPushesPending` on the same health endpoint until it is `0`.
 
 ## Agents
 

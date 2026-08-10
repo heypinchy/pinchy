@@ -403,6 +403,25 @@ describe("POST /api/setup/provider", () => {
       expect(data.agentId).toBeUndefined();
       expect(typeof data.warning).toBe("string");
     });
+
+    it("omits the agent id when this is not the instance's first provider", async () => {
+      // Despite the path, this route also serves Settings → AI Provider, where
+      // the instance has many agents and `findFirst()` answers whichever row
+      // comes back first. An id picked that way names nobody in particular, and
+      // the API reference tells callers to poll it — so it is only sent on the
+      // wizard's first-provider path, where the route already treats that row as
+      // Smithers.
+      vi.mocked(getSetting).mockResolvedValue("anthropic");
+
+      const response = await POST(
+        makeRequest({ provider: "openai", apiKey: "sk-openai-key" }) as any
+      );
+
+      const data = await response.json();
+      expect(data.success).toBe(true);
+      expect(data.warning).toBeUndefined();
+      expect(data.agentId).toBeUndefined();
+    });
   });
 
   it("should reset model cache after saving provider", async () => {
