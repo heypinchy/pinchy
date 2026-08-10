@@ -1,5 +1,49 @@
 # KB groundedness dataset — changelog
 
+## 2026-08-10 — citation re-grade: `dedup-inflation` becomes reachable (#1179)
+
+Same 48 answers, same file. Only the **citation** half of each verdict was
+re-derived; the four judge-produced tags (`ungrounded-claim`,
+`off-topic-grounded`, `missed-abstention`, `false-abstention`) and their notes
+are carried over untouched, because the defect was in a pure grader and
+re-running the judge would have re-rolled numbers the fix has nothing to say
+about. `../data-reproducibility.test.ts` is what proves the result: it
+re-derives these same citation verdicts from these same answers.
+
+`dedup-inflation` could not fire. `gradeNoDuplicateCorroboration` passes
+unconditionally on an empty `nearDuplicateGroups`, and no pipeline ever passed
+one — the corpus knew its two duplicate pairs only in a header comment. Beneath
+that sat a second defect: the grader compared a Sources entry's raw text against
+an absolute corpus path (`/data/product-insert.md`), while every model in this
+sweep cites the data-root-relative form `knowledge_search` prints, mostly inside
+a code span. Wiring the groups through without fixing the comparison would have
+produced the same 0 and looked like a fix.
+
+| tag                | as published | this re-grade |
+| ------------------ | ------------ | ------------- |
+| `dedup-inflation`  | 0            | 4             |
+| total runs passing | 31/48        | 28/48         |
+| `dedup` axis       | 3/4          | 0/4           |
+
+| model        | as published | this re-grade |
+| ------------ | ------------ | ------------- |
+| glm-5.2      | 9/12         | 8/12          |
+| kimi-k2.6    | 9/12         | 8/12          |
+| qwen3.5:397b | 7/12         | 6/12          |
+| gpt-oss:120b | 7/12         | 6/12          |
+
+All four charges land on `gqa-dedup-1` — the single gold question the `dedup`
+axis exists for — and each was read by hand against what the model wrote. They
+are genuine: every model answered "how often should the cartridge be replaced?"
+by citing `quality-file.md` **and** `product-insert.md` as if two documents
+independently confirmed the interval, when the second is a rewording of the
+first. Three of those runs had been published as clean passes.
+
+The models did not get worse. A check that was never running started running,
+and the axis it belongs to turns out to be the one they all fail. Note which
+direction the error ran: the harness was too lenient, and the symptom was a 0 —
+the one value that reads as good news and gets no scrutiny.
+
 ## 2026-08-05 — first published sweep (`kb-groundedness-2026-08-05.jsonl`)
 
 48 runs: 12 gold questions × 4 candidate models × 1 run. **48 of 48 valid** —

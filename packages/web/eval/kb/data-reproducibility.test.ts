@@ -13,6 +13,13 @@
  * fails when the two disagree. Same contract as `manifest-tools-drift.test.ts`
  * next door: the one list with a guard is the one list that stays correct.
  *
+ * It re-derives with the corpus's `nearDuplicatePathGroups()`, the same input
+ * the sweep and the re-grade pass. That is not a detail: for the dataset's
+ * whole life this file called `gradeAttribution` without them, which happens to
+ * be exactly how `dedup-inflation` stayed at a 0 that no check could question
+ * (#1179). A re-derivation that grades differently from the pipeline proves the
+ * pipeline nothing.
+ *
  * **It covers the deterministic half only, and that limit is the honest part.**
  * `gradeAttribution` and `gradeCitationCorrectness` are pure functions of the
  * answer text and the retrieved set, so they re-run here in milliseconds with no
@@ -27,6 +34,7 @@
 import { describe, expect, it } from "vitest";
 
 import { readAllRows } from "./export-kb-scorecard";
+import { nearDuplicatePathGroups } from "./corpus/manifest";
 import { readAllTrajectories, runKey } from "./published-dataset";
 import {
   gradeAttribution,
@@ -111,7 +119,11 @@ describe("the published KB dataset reproduces its own deterministic verdicts", (
 
     for (const traj of trajectories) {
       const recomputed = composeKbGraderResults([
-        gradeAttribution({ answer: traj.answer, retrieved: traj.retrieved }),
+        gradeAttribution({
+          answer: traj.answer,
+          retrieved: traj.retrieved,
+          nearDuplicateGroups: nearDuplicatePathGroups(),
+        }),
         gradeCitationCorrectness(traj.answer, traj.retrieved),
       ]);
       const published = traj.tags.filter((tag) => DETERMINISTIC.has(tag));
@@ -128,7 +140,11 @@ describe("the published KB dataset reproduces its own deterministic verdicts", (
   it("produces no citation tag outside the declared deterministic set", async () => {
     for (const traj of await readAllTrajectories()) {
       const recomputed = composeKbGraderResults([
-        gradeAttribution({ answer: traj.answer, retrieved: traj.retrieved }),
+        gradeAttribution({
+          answer: traj.answer,
+          retrieved: traj.retrieved,
+          nearDuplicateGroups: nearDuplicatePathGroups(),
+        }),
         gradeCitationCorrectness(traj.answer, traj.retrieved),
       ]);
       for (const tag of recomputed.tags) {
