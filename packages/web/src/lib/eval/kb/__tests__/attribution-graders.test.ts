@@ -479,6 +479,75 @@ describe("gradeNoDuplicateCorroboration", () => {
 
     expect(gradeNoDuplicateCorroboration(input).passed).toBe(true);
   });
+
+  // Every test above spells the Sources entry as the absolute path the corpus
+  // stores. Real models do not: all 48 answers in the published sweep cite the
+  // data-root-relative form knowledge_search prints, most of them inside a code
+  // span and followed by a quoted passage — `` `it-equipment-policy.md`: "…" ``.
+  // Against those, a raw string comparison of entry paths to group paths matches
+  // NOTHING, so wiring the corpus's groups through would have produced a
+  // dedup-inflation of 0 that was still structural, one layer further down.
+  // `gradePathCitation` and the groundedness lookup already resolve this exact
+  // question through `matchRetrievedDocument`; this grader is the third caller
+  // and must not answer it differently.
+  it("resolves the citation path against the retrieved set, as models really write it", () => {
+    const input: AttributionInput = {
+      answer: `Aerobic plates are incubated at 32 degrees Celsius for 48 hours [1][2].
+
+### Sources
+
+- [1] \`petrifilm-datasheet.md\`: "Incubate Petrifilm Aerobic Count Plates at 32 degrees Celsius for 48 hours."
+- [2] \`quality-binder.md\`: "these are incubated at 32 degrees Celsius for 48 hours."`,
+      retrieved: [src(1, "/data/petrifilm-datasheet.md"), src(2, "/data/quality-binder.md")],
+      nearDuplicateGroups: [["/data/petrifilm-datasheet.md", "/data/quality-binder.md"]],
+    };
+
+    const result = gradeNoDuplicateCorroboration(input);
+
+    expect(result.passed).toBe(false);
+    expect(result.tags).toEqual(["dedup-inflation"]);
+    // The note names the documents, so a reader can check the charge without
+    // re-deriving which two entries collided.
+    expect(result.notes[0]).toMatch(/petrifilm-datasheet\.md/);
+    expect(result.notes[0]).toMatch(/quality-binder\.md/);
+  });
+
+  it("does not charge an entry whose path names no retrieved document", () => {
+    // A fabricated path cannot be a near-duplicate of anything: it names no
+    // document, so there is nothing it could be inflating. That failure belongs
+    // to `path-not-cited`, and charging it twice under two tags would double-count
+    // one defect in a table where every tag is meant to be its own question.
+    const input: AttributionInput = {
+      answer: `X [1][2].
+
+**Sources:**
+
+- [1] petrifilm-datasheet.md — p. 1
+- [2] invented-binder.md — p. 1`,
+      retrieved: [src(1, "/data/petrifilm-datasheet.md"), src(2, "/data/quality-binder.md")],
+      nearDuplicateGroups: [["/data/petrifilm-datasheet.md", "/data/quality-binder.md"]],
+    };
+
+    expect(gradeNoDuplicateCorroboration(input).passed).toBe(true);
+  });
+
+  it("does not charge one document cited twice under two numbers", () => {
+    // Two entries, one document: an answer that lists the same source twice is
+    // sloppy, but it is not presenting two near-duplicates as independent
+    // corroboration — which is the only thing this tag claims.
+    const input: AttributionInput = {
+      answer: `X [1][2].
+
+**Sources:**
+
+- [1] petrifilm-datasheet.md — p. 1
+- [2] \`petrifilm-datasheet.md\`: "Incubate Petrifilm Aerobic Count Plates."`,
+      retrieved: [src(1, "/data/petrifilm-datasheet.md"), src(2, "/data/quality-binder.md")],
+      nearDuplicateGroups: [["/data/petrifilm-datasheet.md", "/data/quality-binder.md"]],
+    };
+
+    expect(gradeNoDuplicateCorroboration(input).passed).toBe(true);
+  });
 });
 
 describe("composeKbGraderResults", () => {

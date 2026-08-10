@@ -686,13 +686,30 @@ export function gradeSourcesFormat(input: AttributionInput): KbGraderResult {
  * one claim, not stack lookalike citations to appear better-supported than it
  * is. If `nearDuplicateGroups` is empty/undefined, this grader trivially
  * passes — there is nothing to compare against.
+ *
+ * Each entry is resolved to a retrieved document through
+ * `matchRetrievedDocument`, the same way `gradePathCitation` and the
+ * groundedness lookup resolve it — NOT by comparing the entry's raw path text
+ * to a group's path. The groups name documents by their absolute corpus path
+ * (`/data/petrifilm-datasheet.md`), while an answer cites the data-root-relative
+ * form `knowledge_search` prints, usually inside a code span and followed by a
+ * quoted passage. Against every one of the 48 answers in the published sweep, a
+ * raw comparison matched nothing — so this grader would have reported a 0 that
+ * still meant "not asked", one layer below the empty-group-list branch that
+ * meant it before. An entry naming no retrieved document is skipped rather than
+ * charged: a fabricated path is `path-not-cited`'s finding, and one defect
+ * should not be counted under two tags.
  */
 export function gradeNoDuplicateCorroboration(input: AttributionInput): KbGraderResult {
   const groups = input.nearDuplicateGroups ?? [];
   if (groups.length === 0) return passKb();
 
   const { entries } = parseAnswer(input.answer);
-  const citedPaths = new Set(entries.map((entry) => entry.path));
+  const citedPaths = new Set(
+    entries
+      .map((entry) => matchRetrievedDocument(entry.path, input.retrieved)?.sourcePath)
+      .filter((sourcePath): sourcePath is string => sourcePath !== undefined)
+  );
 
   const notes: string[] = [];
   for (const group of groups) {
