@@ -41,6 +41,7 @@ import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { isCanaryLine } from "../canary";
+import { parseJsonlLine } from "../jsonl-line";
 import { buildScorecard, type ScorecardEntry } from "../../src/lib/eval/scorecard";
 import { KB_EVAL_AXES } from "../../src/lib/eval/kb/types";
 import type { KbEvalAxis, KbFailureTag, KbRunResultRow } from "../../src/lib/eval/kb/types";
@@ -104,7 +105,7 @@ const KNOWN_AXES = new Set<string>(KB_EVAL_AXES);
  * test rather than only the pure aggregation downstream of it — this is the
  * half of the exporter that #869's row-shape drift actually passed through.
  *
- * Two things it refuses to do quietly:
+ * Three things it refuses to do quietly:
  *
  * - **`*.trajectories.jsonl` is skipped by NAME.** The answers are published
  *   beside the verdicts so a reader can check a tag against what the model
@@ -118,18 +119,25 @@ const KNOWN_AXES = new Set<string>(KB_EVAL_AXES);
  *   failure #869 exists to end, and one a resumed pre-fix sweep can still
  *   write. An extractor that cannot read its input must say so; returning a
  *   short list reads as "there was nothing there".
+ * - **A line that is not valid JSON throws by file and line too**, via
+ *   `parseJsonlLine`. `JSON.parse`'s own error names neither, and the case is
+ *   ordinary rather than exotic: `appendFile` is not atomic, so a sweep killed
+ *   mid-write leaves a truncated last line in the very file `data/` is copied
+ *   from.
  */
 export async function readAllRows(dataDir: string = DATA_DIR): Promise<KbRunResultRow[]> {
   let files: string[];
   try {
     // eslint-disable-next-line security/detect-non-literal-fs-filename -- caller-supplied dir, test-only parameter; defaults to the module's own data/
-    files = (await readdir(dataDir)).filter((f) => f.endsWith(".jsonl"));
+    files = (await readdir(dataDir)).filter(
+      (f) => f.endsWith(".jsonl") && !f.endsWith(".trajectories.jsonl")
+    );
   } catch {
     return [];
   }
 
   const rows: KbRunResultRow[] = [];
-  for (const file of files.filter((f) => !f.endsWith(".trajectories.jsonl"))) {
+  for (const file of files) {
     // eslint-disable-next-line security/detect-non-literal-fs-filename -- name comes from readdir of the directory above
     const text = await readFile(path.join(dataDir, file), "utf8");
     // Line numbers are 1-based and count the canary/blank lines, so an error
@@ -138,7 +146,7 @@ export async function readAllRows(dataDir: string = DATA_DIR): Promise<KbRunResu
     for (const line of text.split("\n")) {
       lineNo++;
       if (line.trim().length === 0 || isCanaryLine(line)) continue;
-      const row = JSON.parse(line) as KbRunResultRow;
+      const row = parseJsonlLine(file, lineNo, line) as KbRunResultRow;
       if (!KNOWN_AXES.has(row.axis)) {
         throw new Error(
           `${file} line ${lineNo}: run row has no known axis (got ${JSON.stringify(row.axis)}). ` +

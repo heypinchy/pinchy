@@ -258,6 +258,16 @@ describe("readAllRows", () => {
     await expect(readAllRows(d)).rejects.toThrow(/sweep\.jsonl line 2/);
   });
 
+  it("names the file and line when a line is not valid JSON", async () => {
+    // Same reason the axis check is loud, one step earlier: a sweep killed
+    // mid-`appendFile` leaves a truncated last line, and `data/` is filled by
+    // copying that file. A bare `SyntaxError: Unexpected end of JSON input`
+    // names neither the file nor the line of a 49-line dataset.
+    const d = await dataDir({ "sweep.jsonl": `${runLine("happy")}\n{"model":"m","axis":` });
+
+    await expect(readAllRows(d)).rejects.toThrow(/sweep\.jsonl line 2/);
+  });
+
   it("throws on an axis that is not a known KB_EVAL_AXES member", async () => {
     const d = await dataDir({ "sweep.jsonl": `${runLine("retrieval-vibes")}\n` });
 

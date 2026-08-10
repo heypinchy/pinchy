@@ -80,21 +80,22 @@ describe("the published KB dataset reproduces its own deterministic verdicts", (
     // dataset is one run per (model, gold question) today, so a Map keyed that
     // way reads the same — and would quietly compare a single row against both
     // trajectories the moment a sweep publishes n > 1.
-    const group = <T>(items: T[], key: (item: T) => string) => {
-      const map = new Map<string, string[]>();
-      for (const item of items) {
-        const k = key(item);
-        map.set(k, [...(map.get(k) ?? [])]);
-      }
-      return map;
-    };
     const verdict = (v: { passed: boolean; tags: readonly string[] }) =>
       `${v.passed ? "pass" : "fail"} [${sorted(v.tags).join(", ")}]`;
 
-    const rowVerdicts = group(rows, (r) => runKey(r.model, r.scenario ?? ""));
-    for (const r of rows) rowVerdicts.get(runKey(r.model, r.scenario ?? ""))!.push(verdict(r));
-    const trajVerdicts = group(trajectories, (t) => runKey(t.model, t.goldId));
-    for (const t of trajectories) trajVerdicts.get(runKey(t.model, t.goldId))!.push(verdict(t));
+    const groupVerdicts = <T extends { passed: boolean; tags: readonly string[] }>(
+      items: T[],
+      key: (item: T) => string
+    ) => {
+      const map = new Map<string, string[]>();
+      for (const item of items) {
+        map.set(key(item), [...(map.get(key(item)) ?? []), verdict(item)]);
+      }
+      return map;
+    };
+
+    const rowVerdicts = groupVerdicts(rows, (r) => runKey(r.model, r.scenario ?? ""));
+    const trajVerdicts = groupVerdicts(trajectories, (t) => runKey(t.model, t.goldId));
 
     for (const [key, published] of rowVerdicts) {
       expect(

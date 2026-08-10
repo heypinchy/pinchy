@@ -14,6 +14,7 @@ import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 
 import { isCanaryLine } from "../canary";
+import { parseJsonlLine } from "../jsonl-line";
 import type { KbFailureTag } from "../../src/lib/eval/kb/types";
 import type { RetrievedSource } from "../../src/lib/eval/kb/attribution-graders";
 
@@ -38,13 +39,26 @@ export interface PublishedTrajectory {
   tags: KbFailureTag[];
 }
 
+/**
+ * Every field the type above promises, not a representative sample of them.
+ *
+ * A predicate that asserts `PublishedTrajectory` while checking five of its
+ * nine fields hands its callers a lie in the shape of a type: `query` and
+ * `latencyMs` go straight into the judge's input in `regrade-kb-runs.ts`, so a
+ * line missing `query` re-grades an answer against `undefined` and publishes
+ * the verdict, and `passed` is what the reproducibility guard compares on.
+ */
 function isCompleteTrajectory(value: unknown): value is PublishedTrajectory {
   const t = value as Partial<PublishedTrajectory> | null;
   return (
     typeof t?.model === "string" &&
     typeof t.goldId === "string" &&
+    typeof t.query === "string" &&
     typeof t.answer === "string" &&
+    typeof t.latencyMs === "number" &&
+    typeof t.passed === "boolean" &&
     Array.isArray(t.retrieved) &&
+    Array.isArray(t.citedPassageTexts) &&
     Array.isArray(t.tags)
   );
 }
@@ -78,10 +92,11 @@ export async function readAllTrajectories(
     for (const line of text.split("\n")) {
       lineNo++;
       if (line.trim().length === 0 || isCanaryLine(line)) continue;
-      const parsed: unknown = JSON.parse(line);
+      const parsed: unknown = parseJsonlLine(file, lineNo, line);
       if (!isCompleteTrajectory(parsed)) {
         throw new Error(
-          `${file} line ${lineNo}: not a complete trajectory (needs model, goldId, answer, retrieved, tags).`
+          `${file} line ${lineNo}: not a complete trajectory (needs model, goldId, query, answer, ` +
+            `latencyMs, passed, retrieved, citedPassageTexts, tags).`
         );
       }
       trajectories.push(parsed);

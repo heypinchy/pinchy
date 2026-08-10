@@ -21,9 +21,8 @@ import { EVAL_CANARY_GUID, KB_EVAL_CANARY_JSONL_LINE, isCanaryLine } from "../ca
  * memorizable of the two — `gold-qa.ts` carries the questions AND reference
  * answers, and the published trajectories carry the corpus passages verbatim.
  */
-const KB_DIR = path.join(__dirname);
-const CORPUS_DIR = path.join(KB_DIR, "corpus");
-const DATA_DIR = path.join(KB_DIR, "data");
+const CORPUS_DIR = path.join(__dirname, "corpus");
+const DATA_DIR = path.join(__dirname, "data");
 
 /**
  * The query/answer keys only — NOT `corpus/docs/`. The corpus documents are
