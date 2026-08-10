@@ -9,7 +9,7 @@
  *
  * (The third missing tag, `dedup-inflation`, turned out not to be reachable at
  * all — `gradeKbRun` passed `gradeAttribution` no `nearDuplicateGroups`, so the
- * grader passed unconditionally. #1179 wired the corpus's pairs through and
+ * grader passed unconditionally. #1181 wired the corpus's pairs through and
  * fixed the path comparison underneath, and the tag now charges 4 runs. The
  * reachability itself is guarded by behavioural tests next to `gradeKbRun` and
  * the grader; this file only checks that a tag is named.)

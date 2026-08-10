@@ -1,6 +1,6 @@
 # KB groundedness dataset — changelog
 
-## 2026-08-10 — citation re-grade: `dedup-inflation` becomes reachable (#1179)
+## 2026-08-10 — citation re-grade: `dedup-inflation` becomes reachable (#1181)
 
 Same 48 answers, same file. Only the **citation** half of each verdict was
 re-derived; the four judge-produced tags (`ungrounded-claim`,

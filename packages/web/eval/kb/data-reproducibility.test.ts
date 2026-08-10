@@ -17,7 +17,7 @@
  * the sweep and the re-grade pass. That is not a detail: for the dataset's
  * whole life this file called `gradeAttribution` without them, which happens to
  * be exactly how `dedup-inflation` stayed at a 0 that no check could question
- * (#1179). A re-derivation that grades differently from the pipeline proves the
+ * (#1181). A re-derivation that grades differently from the pipeline proves the
  * pipeline nothing.
  *
  * **It covers the deterministic half only, and that limit is the honest part.**

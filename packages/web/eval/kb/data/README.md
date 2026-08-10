@@ -63,7 +63,7 @@ cells: a tag missing from this table is one a reader meets in the data with
 nothing to look it up against, and "did not fire" is a measurement, not an
 absence.
 
-**`dedup-inflation` read 0 here until #1179, and that 0 was not a measurement.**
+**`dedup-inflation` read 0 here until #1181, and that 0 was not a measurement.**
 It is worth reading how it survived, because nothing about it looked wrong.
 `gradeNoDuplicateCorroboration` scores the Sources list against
 `nearDuplicateGroups` and passes unconditionally when that list is empty —
@@ -137,7 +137,7 @@ axis is named for:
   ranked first is the actual question, and Layer 1 is where it is asked, with
   four gold queries scored against `retrieve()`'s ranking. The one Layer-3 tag
   that speaks to crowding — `dedup-inflation`, for citing both copies as
-  independent corroboration — now fires (#1179), and it is what a `crowding`
+  independent corroboration — now fires (#1181), and it is what a `crowding`
   gold question would mostly end up measuring. That is a real signal but it is
   not the axis: it charges what the ANSWER did with two lookalike sources, and
   says nothing about which of them retrieval put first.
@@ -172,7 +172,7 @@ rather than the models, and every one of them looked plausible:
    `missed-abstention` — of which 1, 4 and 0 survive. What is published here is
    a re-grade of those same 48 answers after #1163 and #1173; the CHANGELOG
    carries both columns.
-6. **`dedup-inflation`, twice over (#1179).** The grader was never handed the
+6. **`dedup-inflation`, twice over (#1181).** The grader was never handed the
    corpus's duplicate pairs, and when it was, it compared the entry's raw text
    to an absolute path no model writes. Both defects printed the same 0, and the
    second was hidden behind the first. It read as three passing runs on the
