@@ -60,7 +60,7 @@ The same action is available over the API, which is what you'd script for schedu
 curl -X POST -b session_cookie "https://pinchy.example.com/api/agents/<agentId>/knowledge/reindex"
 ```
 
-This reads the agent's granted folders, extracts text from each PDF, splits it into overlapping chunks, embeds every chunk with a bundled local model (`embeddinggemma`), and stores the result in Pinchy's own Postgres database (using `pgvector`) so it can be searched later.
+This reads the agent's granted folders, extracts text from each PDF and reads the cells of each Excel workbook, splits the result into overlapping chunks, embeds every chunk with a bundled local model (`embeddinggemma`), and stores the result in Pinchy's own Postgres database (using `pgvector`) so it can be searched later.
 
 Indexing is idempotent — unchanged files are skipped on the next run, changed files are re-indexed, and files removed from disk are dropped from the index. **Re-run reindex whenever documents change** — new files, edits, or deletions. Pinchy does not watch the directory and does not sweep it on a schedule: a reindex happens because somebody asked for one.
 
@@ -140,11 +140,13 @@ Sources are named by their path, not just the filename. In a real document tree 
 
 The path you see is the one you'd recognise: it starts at the folder you mounted, not at the container path underneath. If you mounted a share as `quality`, a citation reads `quality/QM/Handbook.pdf` — the same tree you see in Explorer, minus the plumbing.
 
-Not every document has pages, which is why a citation says "the spot" rather than "the page". A PDF is cited by page and a slide deck by slide number, because both are properties of the file itself. A Word document is cited by its heading path instead: where a Word page break falls depends on fonts and printer settings, so a page number would describe our rendering of the document rather than yours, and a citation should never state something you can't verify in the file you open.
+Not every document has pages, which is why a citation says "the spot" rather than "the page". A PDF is cited by page and a slide deck by slide number, because both are properties of the file itself. A Word document is cited by its heading path instead: where a Word page break falls depends on fonts and printer settings, so a page number would describe our rendering of the document rather than yours, and a citation should never state something you can't verify in the file you open. A spreadsheet is cited by sheet and row range — `Suppliers, rows 5-12` — which is what you scroll to in Excel, and what a page number could never be for a sheet forty columns wide.
 
 ### Open a source and check it
 
 Each source path in an answer is a link. Click it and the PDF opens in a viewer over the chat, at the cited page, with the answer still visible behind it — the same viewer a PDF you attach to a message opens into. Checking a claim takes a click instead of a hunt through folders.
+
+A spreadsheet is the exception: its citation names the sheet and rows, and you open the workbook itself from your share rather than a preview in the chat. Nothing renders a sheet as pages, and showing you an invented page layout would be worse than sending you to the file you already know how to read.
 
 Word documents and slide decks open in that same viewer. No browser renders a `.doc`, so what you see is the PDF Pinchy converted on its way into the index — the same rendering the citation was measured against, which is what lets it point at a spot you can actually find. The original is never modified and never replaced; it stays exactly where it is on your share.
 
@@ -188,7 +190,7 @@ We cap how many passages any one document can contribute to a single answer, so 
 
 What the knowledge base does is deliberately narrow:
 
-- Only **text-based PDFs** are indexed and searchable via `knowledge_search`. Scanned or image-only PDFs, Office documents, plain text and Markdown are not. Pointed at one directly, the agent's file tools read more than the index does — Word documents, scanned PDFs, plain text — so a document can be readable on request and still not come back as a search hit. [Supported file types](/guides/mount-data-directories/#supported-file-types) has the full split.
+- Only **text-based PDFs** and **Excel workbooks** (`.xlsx`, `.xlsm`) are indexed and searchable via `knowledge_search`. Scanned or image-only PDFs, Word documents, slide decks, older `.xls` workbooks, plain text and Markdown are not. Pointed at one directly, the agent's file tools read more than the index does — Word documents, scanned PDFs, plain text — so a document can be readable on request and still not come back as a search hit. [Supported file types](/guides/mount-data-directories/#supported-file-types) has the full split.
 - Indexing is a manual admin action (step 6). It runs in the background and reports its progress in the app, but you still have to ask for it: nothing watches the directory and nothing sweeps it on a schedule.
 
 ### Documents that can't be searched

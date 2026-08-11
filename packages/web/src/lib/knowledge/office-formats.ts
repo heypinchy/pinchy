@@ -23,6 +23,20 @@
 export const OFFICE_EXTENSIONS = [".doc", ".docx", ".ppt", ".pptx"] as const;
 
 /**
+ * The spreadsheet formats the knowledge base reads directly, cells and all,
+ * instead of converting (see `xlsx-extract.ts` for the three reasons).
+ *
+ * OOXML only, and that is a capability statement rather than a preference:
+ * `extractXlsx` reads through `workbook.xlsx.readFile`, which parses the
+ * zipped XML formats and not legacy BIFF. Listing `.xls` here would index
+ * every legacy workbook straight into the unreadable list (#935) — an
+ * allowlist that names what we cannot read is a promise the extractor breaks
+ * one file at a time. `.csv` is out for a different reason: it has no sheet,
+ * so half of the `sheet + rows` anchor would have to be invented.
+ */
+export const SPREADSHEET_EXTENSIONS = [".xlsx", ".xlsm"] as const;
+
+/**
  * The lowercased extension of `path`, or "" — `node:path`'s `extname` written
  * as string surgery, including its rule that a leading dot is a dotfile and
  * not an extension (`.doc` → "", never ".doc").
@@ -36,6 +50,11 @@ function extensionOf(path: string): string {
 /** Is this a page-shaped Office document the knowledge base converts? */
 export function isOfficeFile(path: string): boolean {
   return (OFFICE_EXTENSIONS as readonly string[]).includes(extensionOf(path));
+}
+
+/** Is this a spreadsheet the knowledge base reads directly, rather than converts? */
+export function isSpreadsheetFile(path: string): boolean {
+  return (SPREADSHEET_EXTENSIONS as readonly string[]).includes(extensionOf(path));
 }
 
 /**

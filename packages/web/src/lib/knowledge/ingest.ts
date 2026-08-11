@@ -23,10 +23,18 @@
  * reachable from two overlapping roots counts once. ingestDirectory() is the
  * single-root wrapper over it.
  *
- * The embedder and PDF extractor are dependency-injected: production wires
- * `embedTexts` (./embeddings.ts) and a pdfjs-based extractor
- * (./pdf-extract.ts); tests inject deterministic fakes so the integration
- * suite stays hermetic (real Postgres, no Ollama, no real PDF parsing).
+ * The embedder and the extractors are dependency-injected: production wires
+ * `embedTexts` (./embeddings.ts), a pdfjs-based PDF extractor
+ * (./pdf-extract.ts) and `extractXlsx` (./xlsx-extract.ts); tests inject
+ * deterministic fakes so the integration suite stays hermetic (real Postgres,
+ * no Ollama, no real PDF or workbook parsing).
+ *
+ * WHICH extractor runs is decided per file by `extractDocument`, on the
+ * extension, and so is the anchor the chunks carry: a PDF page for a PDF, a
+ * sheet + row range for a spreadsheet (#940). Everything downstream of that
+ * dispatch — embedding, writing, idempotency, the removal pass — is
+ * format-blind on purpose, which is what makes #938's heading and slide
+ * producers a change to one function rather than to the pipeline.
  */
 import { createHash } from "node:crypto";
 import { readdir, readFile, stat } from "node:fs/promises";
@@ -48,7 +56,9 @@ import { isArchivedPath, statusForPath } from "./archive-paths";
 import { chunkPages } from "./chunk";
 import { DEFAULT_BATCH_SIZE } from "./embeddings";
 import { detectLang } from "./lid";
+import { isSpreadsheetFile } from "./office-formats";
 import type { ChunkLocator } from "./locator";
+import type { XlsxExtraction } from "./xlsx-extract";
 import type { IngestPage, IngestResult } from "./types";
 
 // IngestPage/IngestResult live in ./types (a runtime-free module) because
@@ -62,6 +72,17 @@ export interface IngestDeps {
   embed: (texts: string[]) => Promise<number[][]>;
   /** Extracts per-page text from a PDF at an absolute path. Prod: pdfjs-based (./pdf-extract.ts). */
   extractPdf: (absPath: string) => Promise<IngestPage[]>;
+  /**
+   * Reads a spreadsheet's cells into row-grouped chunks. Prod: `extractXlsx`
+   * (./xlsx-extract.ts).
+   *
+   * Required rather than optional, and the reason is the allowlist: the moment
+   * `DEFAULT_ALLOWED_EXTENSIONS` names `.xlsx`, every caller's ingest WILL meet
+   * one. An optional extractor would make that a runtime surprise in whichever
+   * deployment happens to hold a spreadsheet, instead of a compile error at the
+   * one call site that needs updating.
+   */
+  extractXlsx: (absPath: string) => Promise<XlsxExtraction>;
 }
 
 export interface IngestOptions {
@@ -249,22 +270,80 @@ export const EMBED_PROGRESS_BATCH = DEFAULT_BATCH_SIZE;
 /** Reports that `embedded` of `total` chunks of the CURRENT document are done. */
 export type ChunkProgressCallback = (embedded: number, total: number) => void | Promise<void>;
 
+/** A chunk with the anchor a citation will point at. Every format producer converges here. */
+interface LocatedChunk {
+  text: string;
+  locator: ChunkLocator;
+}
+
 /**
- * Chunks `pages`, embeds every chunk, and inserts the resulting kb_chunks rows
- * for `documentId`. Returns the number of chunks written — zero means the
+ * One document, read into the two things the pipeline needs: the chunks to
+ * embed, and the facts the `kb_documents` row carries.
+ */
+interface ExtractedDocument {
+  chunks: LocatedChunk[];
+  /**
+   * Pages, when the format HAS pages — null for a spreadsheet.
+   *
+   * Not "number of sheets". The column is called `pageCount` and a sheet is
+   * not a page; writing one into the other would make the row state something
+   * false about the document, which is the same mistake `ChunkLocator` exists
+   * to prevent one level down. The column is nullable, so null is a spelling
+   * the schema already has for "this format has no pages".
+   */
+  pageCount: number | null;
+  /** Everything the document says, concatenated — read only for language detection. */
+  text: string;
+}
+
+/**
+ * Reads one file into chunks with locators, dispatching on its extension.
+ *
+ * The dispatch is the whole Wave-2 shape: a PDF's pages are chunked by
+ * `chunkPages` and anchored on the page they came from, a spreadsheet is read
+ * by `extractXlsx` and anchored on sheet + row range. `XlsxChunk` is
+ * field-for-field the `sheet` locator, so that half is a spread rather than a
+ * mapping (locator.ts says so, and this is the producer it was said for).
+ */
+async function extractDocument(absPath: string, deps: IngestDeps): Promise<ExtractedDocument> {
+  if (isSpreadsheetFile(absPath)) {
+    const extraction = await deps.extractXlsx(absPath);
+    return {
+      chunks: extraction.chunks.map(({ text, sheet, startRow, endRow }) => ({
+        text,
+        locator: { kind: "sheet", sheet, startRow, endRow },
+      })),
+      pageCount: null,
+      text: extraction.chunks.map((chunk) => chunk.text).join("\n"),
+    };
+  }
+
+  const pages = await deps.extractPdf(absPath);
+  return {
+    chunks: chunkPages(pages).map((chunk) => ({
+      text: chunk.text,
+      locator: { kind: "page", page: chunk.page },
+    })),
+    pageCount: pages.length,
+    text: pages.map((page) => page.text).join("\n"),
+  };
+}
+
+/**
+ * Embeds every chunk and inserts the resulting kb_chunks rows for
+ * `documentId`. Returns the number of chunks written — zero means the
  * document is indexed but unsearchable (e.g. an image-only scan whose text
- * layer is empty), which callers must report as such rather than as a
- * successful index.
+ * layer is empty, or a workbook whose every sheet is hidden), which callers
+ * must report as such rather than as a successful index.
  */
 async function writeChunks(
   documentId: string,
   orgId: string,
   sourcePath: string,
-  pages: IngestPage[],
+  chunks: LocatedChunk[],
   deps: IngestDeps,
   onChunkProgress?: ChunkProgressCallback
 ): Promise<number> {
-  const chunks = chunkPages(pages);
   if (chunks.length === 0) return 0;
 
   const vectors: number[][] = [];
@@ -283,10 +362,12 @@ async function writeChunks(
       orgId,
       sourcePath,
       chunkText: chunk.text,
-      // The only locator producer that exists today. PDF pages are intrinsic,
-      // so `page` is the honest anchor here; Wave 2 adds the heading/slide/
-      // sheet producers against the same closed union (locator.ts, #933).
-      locator: { kind: "page", page: chunk.page } satisfies ChunkLocator,
+      // Decided by `extractDocument`, per format, against the closed union in
+      // locator.ts (#933): a page for a PDF, a sheet + row range for a
+      // spreadsheet. This function no longer knows which, which is the point —
+      // adding the heading and slide producers (#938) touches the dispatch and
+      // not the write.
+      locator: chunk.locator,
       lang: detectLang(chunk.text),
       embedding: vectors[i],
     }))
@@ -376,8 +457,8 @@ async function ingestFile(
     // A file with no text at all lands here too, on every run, and rebuilds
     // to zero chunks again — the write result, not the branch, is what tells
     // the two apart.
-    const pages = await fileStep(absPath, () => deps.extractPdf(absPath));
-    const written = await writeChunks(existing.id, orgId, absPath, pages, deps, onChunkProgress);
+    const { chunks } = await fileStep(absPath, () => extractDocument(absPath, deps));
+    const written = await writeChunks(existing.id, orgId, absPath, chunks, deps, onChunkProgress);
     return written > 0 ? "indexed" : "unsearchable";
   }
 
@@ -385,7 +466,7 @@ async function ingestFile(
   // something unparseable throws here and stays a `failed` update, with the
   // last good document and its chunks still searchable. Deleting first would
   // turn that same failure into silent data loss on a success response.
-  const pages = await fileStep(absPath, () => deps.extractPdf(absPath));
+  const extracted = await fileStep(absPath, () => extractDocument(absPath, deps));
 
   if (existing) {
     // Content changed since the last ingest: replace wholesale. Deleting
@@ -394,8 +475,6 @@ async function ingestFile(
     await db.delete(kbDocuments).where(eq(kbDocuments.id, existing.id));
   }
 
-  const wholeDocText = pages.map((p) => p.text).join("\n");
-
   const [doc] = await db
     .insert(kbDocuments)
     .values({
@@ -403,13 +482,20 @@ async function ingestFile(
       contentHash,
       sourcePath: absPath,
       status: statusForPath(absPath),
-      pageCount: pages.length,
+      pageCount: extracted.pageCount,
       mtime: fileStat.mtime,
-      lang: detectLang(wholeDocText),
+      lang: detectLang(extracted.text),
     })
     .returning();
 
-  const written = await writeChunks(doc.id, orgId, absPath, pages, deps, onChunkProgress);
+  const written = await writeChunks(
+    doc.id,
+    orgId,
+    absPath,
+    extracted.chunks,
+    deps,
+    onChunkProgress
+  );
   return written > 0 ? "indexed" : "unsearchable";
 }
 

@@ -21,7 +21,7 @@ describe("isHiddenSegment", () => {
 
 describe("isAllowedExtension", () => {
   it("defaults to PDF-only (MVP Scope A)", () => {
-    expect(DEFAULT_ALLOWED_EXTENSIONS).toEqual([".pdf"]);
+    expect(DEFAULT_ALLOWED_EXTENSIONS).toEqual([".pdf", ".xlsx", ".xlsm"]);
     expect(isAllowedExtension("handbook.pdf")).toBe(true);
     expect(isAllowedExtension("handbook.PDF")).toBe(true);
     expect(isAllowedExtension("handbook.docx")).toBe(false);

@@ -24,6 +24,7 @@ import {
   type IngestProgress,
   type IngestResult,
 } from "@/lib/knowledge/ingest";
+import type { XlsxExtraction } from "@/lib/knowledge/xlsx-extract";
 
 const ORG_ID = "org-kb-ingest-test";
 
@@ -44,17 +45,49 @@ afterEach(() => {
   rmSync(tmpRoot, { recursive: true, force: true });
 });
 
+const SHEET_ROWS_TEXT =
+  "Supplier: Nordwind GmbH | Material: Petrifilm plates | Lead time: 14 days. " +
+  "Supplier: Acme Labor | Material: Agar | Lead time: 5 days.";
+
+/**
+ * A spreadsheet extraction with no chunks and every sheet hidden — the shape
+ * `extractXlsx` reports for a workbook whose author hid all of it, and the one
+ * that must land as `unsearchable` rather than `indexed`.
+ */
+const EMPTY_XLSX = { chunks: [], sheets: [], hiddenSheets: ["Internal"], hiddenRows: 0 };
+
+/**
+ * For the PDF-only tests below that build their deps inline. A spreadsheet
+ * never reaches them, and a stub that THROWS says so — a silent empty
+ * extraction would let a dispatch bug route a .pdf here and still pass.
+ */
+const neverCalledXlsx = async (): Promise<XlsxExtraction> => {
+  throw new Error("extractXlsx must not be called for a PDF");
+};
+
 function fakeDeps(
   pages = [
     { page: 1, text: PAGE_1_TEXT },
     { page: 2, text: PAGE_2_TEXT },
-  ]
-): { deps: IngestDeps; embed: ReturnType<typeof vi.fn>; extractPdf: ReturnType<typeof vi.fn> } {
+  ],
+  xlsx: XlsxExtraction = {
+    chunks: [{ text: SHEET_ROWS_TEXT, sheet: "Suppliers", startRow: 2, endRow: 3 }],
+    sheets: ["Suppliers"],
+    hiddenSheets: [],
+    hiddenRows: 0,
+  }
+): {
+  deps: IngestDeps;
+  embed: ReturnType<typeof vi.fn>;
+  extractPdf: ReturnType<typeof vi.fn>;
+  extractXlsx: ReturnType<typeof vi.fn>;
+} {
   const embed = vi.fn(async (texts: string[]) =>
     texts.map((_, i) => Array(768).fill(0.001 * (i + 1)))
   );
   const extractPdf = vi.fn(async () => pages);
-  return { deps: { embed, extractPdf }, embed, extractPdf };
+  const extractXlsx = vi.fn(async () => xlsx);
+  return { deps: { embed, extractPdf, extractXlsx }, embed, extractPdf, extractXlsx };
 }
 
 async function chunksFor(documentId: string) {
@@ -387,7 +420,11 @@ it("keeps ingesting the rest of the corpus when one file's extraction throws", a
 
   const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
   try {
-    const result = await ingestDirectory(ORG_ID, tmpRoot, { embed, extractPdf });
+    const result = await ingestDirectory(ORG_ID, tmpRoot, {
+      embed,
+      extractPdf,
+      extractXlsx: neverCalledXlsx,
+    });
 
     expect(result).toEqual(counts({ indexed: 1, failed: 1 }));
 
@@ -422,9 +459,9 @@ it("surfaces an embedding outage as a run failure instead of blaming every file"
   });
   const extractPdf = vi.fn(async () => [{ page: 1, text: PAGE_1_TEXT }]);
 
-  await expect(ingestDirectory(ORG_ID, tmpRoot, { embed, extractPdf })).rejects.toThrow(
-    /ECONNREFUSED/
-  );
+  await expect(
+    ingestDirectory(ORG_ID, tmpRoot, { embed, extractPdf, extractXlsx: neverCalledXlsx })
+  ).rejects.toThrow(/ECONNREFUSED/);
   // Bailed on the first file rather than walking the rest of the corpus.
   expect(embed).toHaveBeenCalledTimes(1);
 });
@@ -453,7 +490,11 @@ it("keeps the last indexed version searchable when a file changes into one that 
     throw new Error("Invalid PDF structure");
   });
 
-  const result = await ingestDirectory(ORG_ID, tmpRoot, { embed, extractPdf });
+  const result = await ingestDirectory(ORG_ID, tmpRoot, {
+    embed,
+    extractPdf,
+    extractXlsx: neverCalledXlsx,
+  });
   expect(result).toEqual(counts({ failed: 1 }));
 
   // The last good version is still there, chunks and all: same document row,
@@ -801,4 +842,90 @@ it("heals a stored status that disagrees with the archive rule on the next skip 
     .from(kbDocuments)
     .where(and(eq(kbDocuments.orgId, ORG_ID), eq(kbDocuments.sourcePath, archivedPath)));
   expect(doc.status).toBe("archived");
+});
+
+it("indexes a spreadsheet with sheet + row-range locators, and never converts it", async () => {
+  const xlsxPath = join(tmpRoot, "suppliers.xlsx");
+  writeFileSync(xlsxPath, "fake-xlsx-bytes-v1");
+
+  const { deps, extractPdf, extractXlsx } = fakeDeps();
+
+  const result = await ingestDirectory(ORG_ID, tmpRoot, deps);
+
+  expect(result).toEqual(counts({ indexed: 1 }));
+  expect(extractXlsx).toHaveBeenCalledWith(xlsxPath);
+  // The dispatch, asserted from both sides. A spreadsheet reaching the PDF
+  // extractor is the failure this whole format split exists to prevent, and it
+  // would otherwise show up only as an unreadable citation much later.
+  expect(extractPdf).not.toHaveBeenCalled();
+
+  const [doc] = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
+  expect(doc.sourcePath).toBe(xlsxPath);
+  // A sheet is not a page. Writing the sheet COUNT here would make the row
+  // state something false about the document; the column is nullable for it.
+  expect(doc.pageCount).toBeNull();
+
+  const chunks = await chunksFor(doc.id);
+  expect(chunks).toHaveLength(1);
+  expect(chunks[0].locator).toEqual({
+    kind: "sheet",
+    sheet: "Suppliers",
+    startRow: 2,
+    endRow: 3,
+  });
+  expect(chunks[0].embedding).toHaveLength(768);
+  expect(chunks[0].sourcePath).toBe(xlsxPath);
+});
+
+it("books a workbook it could read nothing out of as unsearchable, not indexed", async () => {
+  // Every sheet hidden by its author: `extractXlsx` reports the hidden sheets
+  // and no chunks. "0 chunks" is exactly what an unreadable file gives, so it
+  // must land in the same bucket a text-less scan does — visible in the
+  // unreadable list rather than counted as a successful index (#935).
+  const xlsxPath = join(tmpRoot, "internal.xlsx");
+  writeFileSync(xlsxPath, "fake-xlsx-all-hidden");
+
+  const { deps } = fakeDeps(undefined, EMPTY_XLSX);
+
+  expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ unsearchable: 1 }));
+
+  const [doc] = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
+  expect(await chunksFor(doc.id)).toHaveLength(0);
+});
+
+it("keeps PDFs indexed before spreadsheets existed working, untouched", async () => {
+  // AGENTS.md § Test Migrations Against Pre-Existing Data. Every other test
+  // here starts from a clean slate where the dispatch is live from the first
+  // write, so none of them can see what an UPGRADE produces: rows written by
+  // the PDF-only pipeline, read by code that now dispatches on extension.
+  //
+  // Simulated by ingesting the PDF alone (which is exactly what the old
+  // pipeline did), then dropping a spreadsheet beside it and re-running.
+  const pdfPath = join(tmpRoot, "handbook.pdf");
+  writeFileSync(pdfPath, "fake-pdf-bytes-v1");
+
+  const { deps } = fakeDeps();
+  expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ indexed: 1 }));
+
+  const [before] = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
+  const chunksBefore = await chunksFor(before.id);
+
+  writeFileSync(join(tmpRoot, "suppliers.xlsx"), "fake-xlsx-bytes-v1");
+  const rerun = await ingestDirectory(ORG_ID, tmpRoot, deps);
+
+  // The PDF is SKIPPED, not re-indexed: the content hash still matches, and a
+  // widened allowlist must not invalidate what was already there.
+  expect(rerun).toEqual(counts({ skipped: 1, indexed: 1 }));
+
+  const [pdfDoc] = await db
+    .select()
+    .from(kbDocuments)
+    .where(and(eq(kbDocuments.orgId, ORG_ID), eq(kbDocuments.sourcePath, pdfPath)));
+  expect(pdfDoc.id).toBe(before.id);
+  expect(pdfDoc.pageCount).toBe(2);
+  const chunksAfter = await chunksFor(pdfDoc.id);
+  expect(chunksAfter.map((c) => c.id).sort()).toEqual(chunksBefore.map((c) => c.id).sort());
+  for (const chunk of chunksAfter) {
+    expect(chunk.locator).toEqual({ kind: "page", page: expect.any(Number) });
+  }
 });

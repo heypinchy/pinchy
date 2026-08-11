@@ -21,6 +21,7 @@ import { recordAuditFailure } from "@/lib/audit-deferred";
 import { embedTexts } from "@/lib/knowledge/embeddings";
 import { kbEmbedderAvailable, kbEmbeddingConfig } from "@/lib/knowledge/kb-embedder";
 import { extractPdfPages } from "@/lib/knowledge/pdf-extract";
+import { extractXlsx } from "@/lib/knowledge/xlsx-extract";
 import { ingestPaths, type IngestDeps } from "@/lib/knowledge/ingest";
 import {
   claimNextIndexJob,
@@ -40,6 +41,7 @@ function resolveIngestDeps(): IngestDeps | null {
   return {
     embed: (texts) => embedTexts(texts, cfg),
     extractPdf: extractPdfPages,
+    extractXlsx,
   };
 }
 
