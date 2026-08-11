@@ -10,7 +10,12 @@
  */
 import { describe, it, expect } from "vitest";
 
-import { convertedPdfName, isOfficeFile, OFFICE_EXTENSIONS } from "@/lib/knowledge/office-formats";
+import {
+  convertedPdfName,
+  isOfficeFile,
+  isSpreadsheetFile,
+  OFFICE_EXTENSIONS,
+} from "@/lib/knowledge/office-formats";
 
 describe("isOfficeFile", () => {
   it("recognises every converted format, whatever the case", () => {
@@ -57,5 +62,33 @@ describe("convertedPdfName", () => {
 
   it("leaves a doubled extension alone apart from the last one", () => {
     expect(convertedPdfName("/data/report.v2.docx")).toBe("report.v2.pdf");
+  });
+});
+
+describe("isSpreadsheetFile", () => {
+  it("recognises the OOXML workbooks the extractor can open", () => {
+    expect(isSpreadsheetFile("/data/quality/Lieferanten.xlsx")).toBe(true);
+    expect(isSpreadsheetFile("/data/quality/Makros.xlsm")).toBe(true);
+  });
+
+  it("matches the extension case-insensitively, as a Windows share writes it", () => {
+    // Not hypothetical for this product: a corpus arriving over SMB routinely
+    // carries `.XLSX`. Discovery lowercases (isAllowedExtension) and so must
+    // the dispatch, or a file would be admitted to the ingest and then handed
+    // to the PDF extractor.
+    expect(isSpreadsheetFile("/data/QF_2012/LIEFERANTEN.XLSX")).toBe(true);
+    expect(isSpreadsheetFile("/data/QF_2012/Liste.XlSm")).toBe(true);
+  });
+
+  it("leaves out the formats the extractor cannot open", () => {
+    // `.xls` is BIFF, not OOXML: `workbook.xlsx.readFile` does not parse it,
+    // and a `.csv` has no sheet to anchor half the citation on.
+    expect(isSpreadsheetFile("/data/legacy/Preise.xls")).toBe(false);
+    expect(isSpreadsheetFile("/data/export.csv")).toBe(false);
+  });
+
+  it("is not confused by a page-shaped Office document, or by a dotfile", () => {
+    expect(isSpreadsheetFile("/data/Angebot.docx")).toBe(false);
+    expect(isSpreadsheetFile("/data/.xlsx")).toBe(false);
   });
 });
