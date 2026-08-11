@@ -26,6 +26,7 @@ import type { RetrievedSource } from "../../src/lib/eval/kb/attribution-graders"
 export {
   requireOllamaCloudApiKey,
   candidateModelsFromEnv,
+  judgeModelFromEnv,
   runsPerModelFromEnv,
   pinAgentModel,
   pinchyGet,

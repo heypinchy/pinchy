@@ -64,6 +64,7 @@ import { dispatchAndScrape } from "../run-eval";
 import {
   requireOllamaCloudApiKey,
   candidateModelsFromEnv,
+  judgeModelFromEnv,
   runsPerModelFromEnv,
   pinAgentModel,
   appendRunResult,
@@ -283,19 +284,26 @@ test.describe("KB Eval Harness Layer 3: groundedness sweep (real Ollama Cloud)",
     }
 
     const candidates = candidateModelsFromEnv(DEFAULT_KB_CANDIDATES);
-    const n = runsPerModelFromEnv(1);
-    const goldIds = GOLD_QA.map((g) => g.id);
-
-    const { agentId } = await setupKbSweepAgent(cookie);
 
     // The LLM-as-NLI judge + relevance judge (llm-nli.ts) — a pinned,
     // separate model from the candidates under test, same reasoning as
     // groundedness-grader.ts's DEFAULT_TAU comment: keep the JUDGE fixed so
     // score drift over a long sweep reflects the candidate's behavior, not
-    // the judge's. The default lives in llm-nli.ts (one literal, checked
-    // against the catalog by sweep-candidates.test.ts); override per run with
+    // the judge's. The default lives in llm-nli.ts; override per run with
     // KB_EVAL_JUDGE_MODEL.
-    const judgeModel = process.env.KB_EVAL_JUDGE_MODEL || DEFAULT_KB_JUDGE_MODEL;
+    //
+    // Resolved HERE, next to the candidates, rather than after the agent
+    // setup below: `judgeModelFromEnv` checks the pair (served, and not one of
+    // the candidates it is about to grade), and a judge that 404s fails every
+    // verdict — so no KB run is gradeable at all. That refusal is worth
+    // nothing once the corpus is seeded and the key is being spent.
+    const judgeModel = judgeModelFromEnv(DEFAULT_KB_JUDGE_MODEL, candidates);
+
+    const n = runsPerModelFromEnv(1);
+    const goldIds = GOLD_QA.map((g) => g.id);
+
+    const { agentId } = await setupKbSweepAgent(cookie);
+
     const chat = createOllamaCloudChatFn({ apiKey: ollamaKey, model: judgeModel });
     const nli = new LlmNliClient(chat);
     const relevance = new LlmRelevanceJudge(chat);

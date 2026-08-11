@@ -592,6 +592,14 @@ on whatever it is about to return: prefixed, served, distinct, non-empty, or it
 throws before the stack boots and the key is spent. A model the catalog does
 not know is a reason to run `pnpm models:discover`, not to pass a flag.
 
+The KB sweep's NLI judge has the same hand-typed override
+(`KB_EVAL_JUDGE_MODEL`) and gets the same treatment through
+`judgeModelFromEnv`, against the candidate set it is about to grade. Its two
+properties — served, and not itself under test — belong to the resolved pair
+rather than to the pinned literal, and it is the more expensive of the two ids
+to get wrong: a bad candidate costs that model's column, a bad judge fails
+every verdict, so no KB run is gradeable at all.
+
 The set started as three models — `kimi-k2.6`, `gemma4:31b` and `glm-4.7` — the
 ones named in the model-selection methodology's R1 evidence (the 2026-07-07
 staging incident: `gemma4:31b` corrupted a Graph message id across turns while

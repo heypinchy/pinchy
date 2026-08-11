@@ -113,6 +113,13 @@ export function unservedCandidates(candidates: readonly string[]): string[] {
  * The catalog is generated from what the provider serves (`pnpm
  * models:discover`, iron rule 1), so refreshing it is both the fix and the
  * step that should have happened first.
+ *
+ * A missing prefix is refused SEPARATELY from a retirement, even though
+ * `unservedCandidates` folds the two together for the checked-in lists. The
+ * remedies are opposites: `kimi-k2.6` is in the catalog and needs a prefix,
+ * and reporting it as unserved both states something false and sends the
+ * operator to `models:discover`, which refreshes a catalog that already has
+ * the model. The point of failing early is to hand back the next step.
  */
 export function assertCandidatesDispatchable(candidates: readonly string[], source: string): void {
   if (candidates.length === 0) {
@@ -123,14 +130,23 @@ export function assertCandidatesDispatchable(candidates: readonly string[], sour
     );
   }
 
+  const unprefixed = candidates.filter((id) => !id.startsWith(OLLAMA_CLOUD_PREFIX));
+  if (unprefixed.length > 0) {
+    throw new Error(
+      `${source} names ids without the "${OLLAMA_CLOUD_PREFIX}" prefix: ` +
+        `${unprefixed.join(", ")}. A bare id is not what any dispatch path ` +
+        `resolves, so every run against it 404s. Write them as ` +
+        `"${OLLAMA_CLOUD_PREFIX}<id>".`
+    );
+  }
+
   const unserved = unservedCandidates(candidates);
   if (unserved.length > 0) {
     throw new Error(
       `${source} names models the curated catalog does not serve: ` +
         `${unserved.join(", ")}. Every run against these 404s and lands as a ` +
         `run-infra-error row the exporter drops from n, so the scorecard would ` +
-        `quietly measure fewer models than intended. Ids need the ` +
-        `"${OLLAMA_CLOUD_PREFIX}" prefix and must exist in ` +
+        `quietly measure fewer models than intended. They must exist in ` +
         `src/lib/ollama-cloud-models.ts — run \`pnpm models:discover\` to ` +
         `refresh it before blaming the id.`
     );
@@ -144,4 +160,95 @@ export function assertCandidatesDispatchable(candidates: readonly string[], sour
         `multiple of every other cell's and the sweep costs more than it reports.`
     );
   }
+}
+
+/**
+ * The candidate set a sweep will actually dispatch — the caller's default, or
+ * `EVAL_CANDIDATE_MODELS` when set — validated before it is returned.
+ *
+ * This lives beside the lists rather than in `run-eval.ts` for the reason this
+ * whole module exists: a spec is unreachable from vitest, and the guard that
+ * pins this behavior has to run in `pnpm test`. Resolving the candidate set is
+ * not orchestration, and routing the guard through the orchestrator would make
+ * it die on the first value import `run-eval.ts` grows that vitest cannot
+ * load. `run-eval.ts` re-exports it, so both specs and `kb/run-kb-eval.ts`
+ * still resolve candidates through one function.
+ */
+export function candidateModelsFromEnv(defaultModels: string[]): string[] {
+  const raw = process.env.EVAL_CANDIDATE_MODELS;
+  const candidates = raw
+    ? raw
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean)
+    : defaultModels;
+
+  assertCandidatesDispatchable(
+    candidates,
+    raw ? "EVAL_CANDIDATE_MODELS" : "The sweep default in eval/candidates.ts"
+  );
+
+  return candidates;
+}
+
+/**
+ * Refuses an NLI judge a KB sweep should not dispatch — same two properties
+ * `sweep-candidates.test.ts` pins for the checked-in pin, applied to whatever
+ * the sweep resolved.
+ *
+ * The judge is the second model a KB sweep dispatches and it has its own
+ * hand-typed override (`KB_EVAL_JUDGE_MODEL`), so it inherits the argument
+ * this module was written for. It is the more expensive of the two to get
+ * wrong: a bad candidate costs that model's column, a bad judge fails every
+ * verdict and no KB run is gradeable at all — after the stack is up, the
+ * corpus is seeded and a real key has been spent.
+ *
+ * Independence from the models under test is the whole justification for
+ * pinning a judge, and it is a property of the RESOLVED pair, not of the two
+ * literals: either override can put the judge in the candidate set. The
+ * overlap leaves no trace in the scorecard — one model's groundedness column
+ * is quietly self-graded while every other column is not.
+ */
+export function assertJudgeDispatchable(
+  judge: string,
+  candidates: readonly string[],
+  source: string
+): void {
+  if (unservedCandidates([judge]).length > 0) {
+    throw new Error(
+      `${source} names \`${judge}\`, which is not a model the curated catalog ` +
+        `serves. Every NLI verdict fails against a judge that 404s, so no KB ` +
+        `run is gradeable at all — and it surfaces only after the stack is up ` +
+        `and the key is spent. Ids need the "${OLLAMA_CLOUD_PREFIX}" prefix and ` +
+        `must exist in src/lib/ollama-cloud-models.ts (\`pnpm models:discover\`).`
+    );
+  }
+
+  if (candidates.includes(judge)) {
+    throw new Error(
+      `${source} names \`${judge}\`, which is also a candidate under test. The ` +
+        `pin buys independence only while the judge is not one of the models ` +
+        `being graded — that model's groundedness column would be self-graded ` +
+        `and every other column would not, with nothing in the scorecard to ` +
+        `show for it. Judge with a model outside the candidate set.`
+    );
+  }
+}
+
+/**
+ * The NLI judge a KB sweep will actually dispatch — the caller's pin, or
+ * `KB_EVAL_JUDGE_MODEL` when set — validated against the candidate set it will
+ * grade. The `candidateModelsFromEnv` shape, for the same reason.
+ */
+export function judgeModelFromEnv(defaultJudge: string, candidates: readonly string[]): string {
+  const raw = process.env.KB_EVAL_JUDGE_MODEL?.trim();
+  const judge = raw || defaultJudge;
+
+  assertJudgeDispatchable(
+    judge,
+    candidates,
+    raw ? "KB_EVAL_JUDGE_MODEL" : "DEFAULT_KB_JUDGE_MODEL in src/lib/eval/kb/llm-nli.ts"
+  );
+
+  return judge;
 }

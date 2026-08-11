@@ -44,13 +44,29 @@ import {
   DEFAULT_KB_CANDIDATES,
   OLLAMA_CLOUD_PREFIX,
   assertCandidatesDispatchable,
+  assertJudgeDispatchable,
+  candidateModelsFromEnv,
+  judgeModelFromEnv,
   unservedCandidates,
 } from "../../../../eval/candidates";
-import { candidateModelsFromEnv } from "../../../../eval/run-eval";
 
 afterEach(() => {
   vi.unstubAllEnvs();
 });
+
+/**
+ * The message a refusal carried, so a case can assert WHICH check fired rather
+ * than only that something did. Two of these refusals differ by their advice,
+ * and a test matching the model id alone passes for either one.
+ */
+function refusalMessage(call: () => unknown): string {
+  try {
+    call();
+  } catch (err) {
+    return err instanceof Error ? err.message : String(err);
+  }
+  throw new Error("Expected the call to refuse, but it returned normally.");
+}
 
 const EVAL_DIR = path.join(__dirname, "..", "..", "..", "..", "eval");
 
@@ -152,6 +168,19 @@ describe("assertCandidatesDispatchable", () => {
     expect(() => assertCandidatesDispatchable(["kimi-k2.6"], "test")).toThrow(/kimi-k2\.6/);
   });
 
+  it("tells a missing prefix apart from a retirement, so the advice fits", () => {
+    // `kimi-k2.6` IS in the catalog — only the prefix is missing. Reporting it
+    // as unserved states something false and sends the operator to `pnpm
+    // models:discover`, which refreshes a catalog that already has the model
+    // and leaves them exactly where they started. This guard exists to save
+    // that hour, so its two refusals must not read alike.
+    const message = refusalMessage(() => assertCandidatesDispatchable(["kimi-k2.6"], "test"));
+
+    expect(message).toContain(`"${OLLAMA_CLOUD_PREFIX}"`);
+    expect(message).not.toMatch(/does not serve/);
+    expect(message).not.toMatch(/models:discover/);
+  });
+
   it("refuses an empty set rather than exporting an empty scorecard", () => {
     expect(() => assertCandidatesDispatchable([], "test")).toThrow(/empty/i);
   });
@@ -203,6 +232,84 @@ describe("candidateModelsFromEnv", () => {
     vi.stubEnv("EVAL_CANDIDATE_MODELS", " , ");
 
     expect(() => candidateModelsFromEnv([...DEFAULT_KB_CANDIDATES])).toThrow(/empty/i);
+  });
+});
+
+/**
+ * The judge is the OTHER model a KB sweep dispatches, and it has the same
+ * hand-typed override — `KB_EVAL_JUDGE_MODEL`. Both properties the two
+ * describes above pin for the checked-in default (served, and not itself under
+ * test) are properties of whatever the sweep ends up using, so they belong on
+ * the resolved value rather than on the literal.
+ *
+ * A judge id is the more expensive of the two to get wrong: a bad candidate
+ * costs that model's column, a bad judge fails every verdict, so NO KB run is
+ * gradeable at all — discovered after the stack is up, the corpus is seeded and
+ * a real key has been spent.
+ */
+describe("assertJudgeDispatchable", () => {
+  it("accepts the pinned default against the checked-in KB set", () => {
+    expect(() =>
+      assertJudgeDispatchable(DEFAULT_KB_JUDGE_MODEL, DEFAULT_KB_CANDIDATES, "test")
+    ).not.toThrow();
+  });
+
+  it("refuses a judge the catalog no longer serves", () => {
+    expect(() =>
+      assertJudgeDispatchable("ollama-cloud/glm-4.7", DEFAULT_KB_CANDIDATES, "test")
+    ).toThrow(/glm-4\.7/);
+  });
+
+  it("refuses a judge that is also under test", () => {
+    // The pin buys independence only while the judge is not a candidate. The
+    // overlap leaves no trace in the scorecard: one model's groundedness column
+    // is simply self-graded, and every other column is not.
+    expect(() =>
+      assertJudgeDispatchable("ollama-cloud/kimi-k2.6", DEFAULT_KB_CANDIDATES, "test")
+    ).toThrow(/kimi-k2\.6/);
+  });
+});
+
+describe("judgeModelFromEnv", () => {
+  it("returns the pinned default when the env var is unset", () => {
+    vi.stubEnv("KB_EVAL_JUDGE_MODEL", undefined);
+
+    expect(judgeModelFromEnv(DEFAULT_KB_JUDGE_MODEL, DEFAULT_KB_CANDIDATES)).toBe(
+      DEFAULT_KB_JUDGE_MODEL
+    );
+  });
+
+  it("takes the override, trimming whitespace", () => {
+    vi.stubEnv("KB_EVAL_JUDGE_MODEL", "  ollama-cloud/gpt-oss:120b  ");
+
+    expect(judgeModelFromEnv(DEFAULT_KB_JUDGE_MODEL, [])).toBe("ollama-cloud/gpt-oss:120b");
+  });
+
+  it("throws on an override naming a retired judge, before anything is graded", () => {
+    vi.stubEnv("KB_EVAL_JUDGE_MODEL", "ollama-cloud/glm-4.7");
+
+    const message = refusalMessage(() =>
+      judgeModelFromEnv(DEFAULT_KB_JUDGE_MODEL, DEFAULT_KB_CANDIDATES)
+    );
+
+    expect(message).toMatch(/glm-4\.7/);
+    expect(message).toMatch(/KB_EVAL_JUDGE_MODEL/);
+  });
+
+  it("throws on an override that puts the judge in the candidate set", () => {
+    vi.stubEnv("KB_EVAL_JUDGE_MODEL", "ollama-cloud/qwen3.5:397b");
+
+    expect(() => judgeModelFromEnv(DEFAULT_KB_JUDGE_MODEL, DEFAULT_KB_CANDIDATES)).toThrow(
+      /qwen3\.5:397b/
+    );
+  });
+
+  it("names the pin, not the env var, when the default is the bad one", () => {
+    vi.stubEnv("KB_EVAL_JUDGE_MODEL", undefined);
+
+    expect(() => judgeModelFromEnv("ollama-cloud/glm-4.7", DEFAULT_KB_CANDIDATES)).toThrow(
+      /DEFAULT_KB_JUDGE_MODEL/
+    );
   });
 });
 

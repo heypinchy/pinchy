@@ -24,7 +24,6 @@ import { mkdir, writeFile, appendFile, readFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { EVAL_CANARY_JSONL_LINE, parseEvalJsonl } from "./canary";
-import { assertCandidatesDispatchable } from "./candidates";
 import type { RunFingerprint } from "./fingerprint";
 import type { TokenCollector } from "./token-usage";
 import { buildTrajectory, type NormalizeAuditEntry } from "../src/lib/eval/normalize";
@@ -851,32 +850,13 @@ export function requireOllamaCloudApiKey(): string {
 }
 
 /**
- * The candidate set a sweep will actually dispatch — the caller's default, or
- * `EVAL_CANDIDATE_MODELS` when set — validated before it is returned.
- *
- * The validation is here rather than at each call site because this is the one
- * place both sweeps and `kb/run-kb-eval.ts` funnel through, and because the
- * env path is the unchecked one: `sweep-candidates.test.ts` guards the two
- * lists in `candidates.ts` at `pnpm test` time, but it cannot see a string
- * typed into a shell. See `assertCandidatesDispatchable` for what a bad id
- * costs.
+ * Candidate/judge resolution lives in `candidates.ts` — a Playwright-free
+ * module a vitest guard can import — and is re-exported here so both specs and
+ * `kb/run-kb-eval.ts` keep resolving through the one place they always have.
+ * See `assertCandidatesDispatchable` for what a bad id costs, and why the
+ * checks sit on the resolved value rather than on the checked-in lists.
  */
-export function candidateModelsFromEnv(defaultModels: string[]): string[] {
-  const raw = process.env.EVAL_CANDIDATE_MODELS;
-  const candidates = raw
-    ? raw
-        .split(",")
-        .map((s) => s.trim())
-        .filter(Boolean)
-    : defaultModels;
-
-  assertCandidatesDispatchable(
-    candidates,
-    raw ? "EVAL_CANDIDATE_MODELS" : "The sweep default in eval/candidates.ts"
-  );
-
-  return candidates;
-}
+export { candidateModelsFromEnv, judgeModelFromEnv } from "./candidates";
 
 /**
  * A positive-integer run count from a raw env value, falling back to
