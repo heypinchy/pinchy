@@ -877,6 +877,22 @@ it("indexes a spreadsheet with sheet + row-range locators, and never converts it
   expect(chunks[0].sourcePath).toBe(xlsxPath);
 });
 
+it("routes a macro-enabled .xlsm the same way, in caps as a Windows share writes it", async () => {
+  // `.xlsm` is in the allowlist and NOT in the test above, so nothing pinned
+  // the second half of the pair. The two halves lowercase independently —
+  // discovery in `isAllowedExtension`, the dispatch in `isSpreadsheetFile` —
+  // and a file admitted by one and refused by the other is not a compile
+  // error, it is a workbook quietly handed to pdfjs and counted `failed`.
+  const xlsmPath = join(tmpRoot, "MAKROS.XLSM");
+  writeFileSync(xlsmPath, "fake-xlsm-bytes-v1");
+
+  const { deps, extractPdf, extractXlsx } = fakeDeps();
+
+  expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ indexed: 1 }));
+  expect(extractXlsx).toHaveBeenCalledWith(xlsmPath);
+  expect(extractPdf).not.toHaveBeenCalled();
+});
+
 it("books a workbook it could read nothing out of as unsearchable, not indexed", async () => {
   // Every sheet hidden by its author: `extractXlsx` reports the hidden sheets
   // and no chunks. "0 chunks" is exactly what an unreadable file gives, so it

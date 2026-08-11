@@ -20,12 +20,25 @@ describe("isHiddenSegment", () => {
 });
 
 describe("isAllowedExtension", () => {
-  it("defaults to PDF-only (MVP Scope A)", () => {
+  it("defaults to PDFs and the OOXML workbooks (#940)", () => {
     expect(DEFAULT_ALLOWED_EXTENSIONS).toEqual([".pdf", ".xlsx", ".xlsm"]);
     expect(isAllowedExtension("handbook.pdf")).toBe(true);
     expect(isAllowedExtension("handbook.PDF")).toBe(true);
+    expect(isAllowedExtension("Lieferanten.xlsx")).toBe(true);
+    expect(isAllowedExtension("Makros.xlsm")).toBe(true);
+    // A share written from Windows routinely spells the extension in caps, and
+    // discovery is the ONLY place that lowercases before matching — a file
+    // admitted here is handed straight to `isSpreadsheetFile`, which lowercases
+    // too. The pair is asserted from both sides so it cannot drift into
+    // "admitted by the allowlist, dispatched to the PDF extractor".
+    expect(isAllowedExtension("LIEFERANTEN.XLSX")).toBe(true);
     expect(isAllowedExtension("handbook.docx")).toBe(false);
     expect(isAllowedExtension("handbook.txt")).toBe(false);
+    // The two spreadsheet formats deliberately left out, each for its own
+    // reason (office-formats.ts): `.xls` is BIFF, which the extractor cannot
+    // open, and `.csv` has no sheet to anchor half a citation on.
+    expect(isAllowedExtension("Preise.xls")).toBe(false);
+    expect(isAllowedExtension("export.csv")).toBe(false);
   });
 
   it("honors an overridden allowlist", () => {
