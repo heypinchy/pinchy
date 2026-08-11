@@ -84,15 +84,13 @@ interface SourcesEntry {
    * The position the entry cites, in whatever shape the document's format has
    * — `parseCitedPosition` reads all four, so a slide or a sheet range no
    * longer folds into `path` and grades as a fabricated citation (#982).
+   *
+   * The union is kept whole rather than flattened to the `page` this replaced:
+   * a slide is not a page, and the reserved position-mismatch grader must
+   * narrow on `kind` before it compares anything against `RetrievedSource.page`
+   * — which a `page: number | null` field beside this one would let it skip.
    */
   locator: ChunkLocator | null;
-  /**
-   * The cited page, when the position IS a page. Kept beside `locator` because
-   * it is what `RetrievedSource.page` can be compared against; null for every
-   * other locator kind, which is honest rather than lossy — a slide is not a
-   * page, and the reserved position-mismatch grader must not compare them.
-   */
-  page: number | null;
   /** Offset of the entry's line start within `sourcesText` — read by `gradeSourcesFormat`. */
   index: number;
   /** Whether markdown renders this line as a list item (so it starts a line of its own). */
@@ -333,20 +331,6 @@ const BURIED_MARKER = /\[\d+\][^\S\r\n]*\S/;
  */
 const RENDERED_SEPARATION = /(?:\n[^\S\r\n]*\n|(?:[ \t]{2,}|\\)\n)[^\S\r\n]*$/;
 
-/**
- * Where the path/position split used to live as `PAGE_SUFFIX`, a regex that
- * knew one position shape (`— p. 12`) and one separator. `parseCitedPosition`
- * (`cited-position.ts`) replaced it in #982: it reads every shape
- * `formatLocator` emits, in the parenthesised spelling the knowledge tool
- * actually prints as well as the dashed one the older contract taught, and its
- * round-trip pin fails when a fifth `ChunkLocator` kind arrives unparsed.
- *
- * The trap that governs both is unchanged and worth keeping in view from here:
- * the split may never widen to "any dash-space separator", or
- * `a/study.pdf – AOAC Performance Tested Method Study` starts parsing as a
- * position and moves numbers committed under `packages/web/eval/data`.
- */
-
 interface ParsedAnswer {
   /** Raw text BEFORE the Sources heading (or the whole answer if there is none). */
   body: string;
@@ -360,6 +344,19 @@ interface ParsedAnswer {
   sourcesText: string;
 }
 
+/**
+ * The path/position split used to live here as `PAGE_SUFFIX`, a regex that knew
+ * one position shape (`— p. 12`) and one separator. `parseCitedPosition`
+ * (`cited-position.ts`) replaced it in #982: it reads every shape
+ * `formatLocator` emits, in the parenthesised spelling the knowledge tool
+ * actually prints as well as the dashed one the older contract taught, and its
+ * round-trip pin fails when a fifth `ChunkLocator` kind arrives unparsed.
+ *
+ * The trap that governs both is unchanged and worth keeping in view from here:
+ * the split may never widen to "any dash-space separator", or
+ * `a/study.pdf – AOAC Performance Tested Method Study` starts parsing as a
+ * position and moves numbers committed under `packages/web/eval/data`.
+ */
 function parseSourcesEntries(sourcesText: string): SourcesEntry[] {
   const entries: SourcesEntry[] = [];
   for (const match of sourcesText.matchAll(SOURCES_ENTRY_LINE)) {
@@ -374,7 +371,6 @@ function parseSourcesEntries(sourcesText: string): SourcesEntry[] {
       n,
       path,
       locator,
-      page: locator?.kind === "page" ? locator.page : null,
       index: match.index,
       isListItem: LIST_ITEM_PREFIX.test(match[0]),
       hasMarker: marker !== undefined,
