@@ -14,9 +14,15 @@
  *
  * **And the wrong separator.** The dash form is what the OLD contract taught.
  * `pinchy-knowledge/index.ts` renders a hit as `` `[1] quality-file.md (p. 1):
- * "…"` `` — the position in PARENTHESES — and the contract asks the model to
- * repeat the path and position "exactly as written above". So the shape a
- * well-behaved answer really carries never matched at all. Both are parsed now.
+ * "…"` `` — the position in PARENTHESES, and the passage AFTER it — and the
+ * contract asks the model to repeat the path and position "exactly as written
+ * above". So the shape a well-behaved answer really carries never matched at
+ * all. Both separators are parsed now, and the parenthesised one is read
+ * wherever it sits rather than only at the end of the entry: of the 22 entries
+ * in the 2026-08-05 sweep that repeat the tool's rendering, 12 keep the quoted
+ * passage after the position, and an end-anchored read would hand the reserved
+ * position-mismatch grader a number covering 10 of 22 — a partial count
+ * indistinguishable from "not asked", which is the defect #1181 corrected.
  *
  * ── What this deliberately will NOT split ─────────────────────────────────
  * `[1] a/study.pdf – AOAC Performance Tested Method Study` is a path followed
@@ -28,18 +34,25 @@
  * through `formatLocator`, and a fifth `ChunkLocator` kind fails that pin
  * rather than silently arriving unparsed.
  */
-import type { ChunkLocator } from "../../knowledge/locator";
+import type { ChunkLocator } from "@/lib/knowledge/locator";
 
 /** What a Sources entry names: the document, and where in it. */
 export interface CitedPosition {
-  /** The entry with its position suffix removed, trimmed. */
+  /**
+   * The entry with its position excised, trimmed — NOT the text before the
+   * position. Anything that followed it is handed back joined to the front
+   * half, because `matchRetrievedDocument` scans whatever it is given and a
+   * trailing passage is where a second, real path can appear. Dropping it would
+   * narrow the fabrication hole `cited-path-match.ts` documents as deliberately
+   * open, which is a change of grading behaviour, not a parser fix.
+   */
   path: string;
   /** The parsed position, or null when the entry carries none this parser knows. */
   locator: ChunkLocator | null;
 }
 
 /**
- * The position shapes, each anchored to the END of the string it is given.
+ * The position shapes, each a fragment the wrappers below anchor and delimit.
  *
  * Three of the four open with a literal no path fragment can produce (`p.`,
  * `slide`, `§`), which is what lets them accept a plain hyphen as the
@@ -57,7 +70,10 @@ const POSITION_SHAPES: {
   pattern: RegExp;
   /** Whether a plain `-` may introduce it (see above). */
   plainHyphen: boolean;
-  /** Receives the SHAPE's own capture groups — the wrapper's path group is stripped first. */
+  /**
+   * Receives the shape's OWN capture groups, and only those: the wrappers below
+   * contribute none, so `match.slice(1)` is exactly this list at every spelling.
+   */
   build: (groups: (string | undefined)[]) => ChunkLocator;
 }[] = [
   {
@@ -95,31 +111,62 @@ const POSITION_SHAPES: {
   },
 ];
 
-/** `<path> (<position>)` — what the knowledge tool prints and the contract asks for back. */
-function parenthesised(shape: RegExp): RegExp {
-  return new RegExp(`^(.*?)\\s*\\(\\s*${shape.source}\\s*\\)\\s*$`, "i");
+/**
+ * `<path> (<position>)` — what the knowledge tool prints and the contract asks
+ * for back. `atEnd` requires the closing parenthesis to end the entry; without
+ * it the entry may continue, as the tool's own line does past its position.
+ */
+function parenthesised(shape: RegExp, atEnd: boolean): RegExp {
+  return new RegExp(`\\s*\\(\\s*${shape.source}\\s*\\)${atEnd ? "\\s*$" : ""}`, "i");
 }
 
 /** `<path> — <position>` — the shape the older contract taught, still written by models. */
 function dashed(shape: RegExp, plainHyphen: boolean): RegExp {
-  return new RegExp(`^(.*?)\\s*[—–${plainHyphen ? "-" : ""}]\\s*${shape.source}\\s*$`, "i");
+  return new RegExp(`\\s*[—–${plainHyphen ? "-" : ""}]\\s*${shape.source}\\s*$`, "i");
 }
 
 /**
- * Reads the position off the end of a Sources entry.
+ * Every spelling of every shape, compiled once, in the order they are tried.
+ *
+ * Shapes come in `POSITION_SHAPES` order: they are mutually exclusive by their
+ * opening literal, except `sheet`, which is last because its leading group is
+ * free text and would otherwise swallow the others.
+ *
+ * Within a shape the END-ANCHORED spellings come first, and that ordering is
+ * load-bearing rather than tidy. A Word heading may carry parentheses of its
+ * own (`§ Quality (2012 revision)`), and the trailing-text spelling closes at
+ * the FIRST `)` it can, which would cut that heading in half and leave a
+ * stray `)` on the path. Trying the anchored spelling first means every entry
+ * that parsed before this spelling existed still parses exactly as it did.
+ */
+const SPELLINGS = POSITION_SHAPES.map(({ pattern, plainHyphen, build }) => ({
+  spellings: [
+    parenthesised(pattern, true),
+    dashed(pattern, plainHyphen),
+    parenthesised(pattern, false),
+  ],
+  build,
+}));
+
+/**
+ * Reads the position out of a Sources entry.
+ *
+ * The spellings match the POSITION BLOCK alone rather than the whole entry, so
+ * the path is the entry with the matched span cut out — which is what lets the
+ * entry carry text on both sides of its position, and is why `build` sees the
+ * shape's own groups at `slice(1)` with nothing of the wrapper's in front.
  *
  * Returns the entry unchanged with a null locator when it carries no position
  * this parser recognises — which is a legitimate, if degraded, shape and not an
- * error. Shapes are tried in `POSITION_SHAPES` order; they are mutually
- * exclusive by their opening literal, except `sheet`, which is last because its
- * leading group is free text and would otherwise swallow the others.
+ * error.
  */
 export function parseCitedPosition(entry: string): CitedPosition {
-  for (const { pattern, plainHyphen, build } of POSITION_SHAPES) {
-    for (const wrapped of [parenthesised(pattern), dashed(pattern, plainHyphen)]) {
-      const match = wrapped.exec(entry);
-      // Group 1 is the wrapper's path; everything after it belongs to the shape.
-      if (match) return { path: match[1].trim(), locator: build(match.slice(2)) };
+  for (const { spellings, build } of SPELLINGS) {
+    for (const spelling of spellings) {
+      const match = spelling.exec(entry);
+      if (match === null) continue;
+      const path = entry.slice(0, match.index) + entry.slice(match.index + match[0].length);
+      return { path: path.trim(), locator: build(match.slice(1)) };
     }
   }
   return { path: entry.trim(), locator: null };

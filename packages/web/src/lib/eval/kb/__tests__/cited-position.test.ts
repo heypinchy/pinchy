@@ -13,7 +13,8 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { formatLocator, type ChunkLocator } from "../../../knowledge/locator";
+import { formatLocator, type ChunkLocator } from "@/lib/knowledge/locator";
+
 import { parseCitedPosition } from "../cited-position";
 
 /**
@@ -46,6 +47,18 @@ describe("parseCitedPosition", () => {
       const parsed = parseCitedPosition(`quality-file.md — ${formatLocator(locator)}`);
 
       expect(parsed.path).toBe("quality-file.md");
+      expect(parsed.locator).toEqual(locator);
+    });
+
+    // The tool's full line: position in parentheses, passage after it. Pinned
+    // per kind for the same reason as the two above — a fifth kind must not
+    // arrive readable only when it happens to end the entry.
+    it.each(EVERY_KIND)("parenthesised, with the passage after it: $kind", (locator) => {
+      const parsed = parseCitedPosition(
+        `quality-file.md (${formatLocator(locator)}): "the passage"`
+      );
+
+      expect(parsed.path).toBe('quality-file.md: "the passage"');
       expect(parsed.locator).toEqual(locator);
     });
   });
@@ -96,6 +109,60 @@ describe("parseCitedPosition", () => {
     expect(parseCitedPosition("report.docx (§ Quality)")).toEqual({
       path: "report.docx",
       locator: { kind: "heading", headings: ["Quality"] },
+    });
+  });
+
+  describe("reads a position the entry continues past", () => {
+    // The tool prints `[1] quality-file.md (p. 1): "…"` — the position is
+    // FOLLOWED by the passage, and a model repeating the line "exactly as
+    // written above" carries all of it. Measured on the 2026-08-05 sweep: 22 of
+    // 98 Sources entries repeat that rendering, and 12 of those 22 keep text
+    // after the position. An end-anchored read sees a position on 10 of 22 —
+    // and a 10 that means "not asked" for the other 12 is the shape #1181 spent
+    // two defects correcting.
+    it("reads the tool's own rendering: position, colon, quoted passage", () => {
+      expect(parseCitedPosition('it-equipment-policy.md (p. 3): "Northwind issues …"')).toEqual({
+        path: 'it-equipment-policy.md: "Northwind issues …"',
+        locator: { kind: "page", page: 3 },
+      });
+    });
+
+    it("reads it when a dash and a gloss follow instead", () => {
+      // The other half of the 12: `gpt-oss:120b` writes the passage behind an
+      // en dash rather than a colon.
+      expect(parseCitedPosition('quality-file.md (p. 3) – "Per the specification …"')).toEqual({
+        path: 'quality-file.md – "Per the specification …"',
+        locator: { kind: "page", page: 3 },
+      });
+    });
+
+    it("hands the rest back joined to the path, so the document still resolves", () => {
+      // `matchRetrievedDocument` scans whatever it is given, and the trailing
+      // passage is where a second, real path can appear. Dropping it here would
+      // narrow a hole `cited-path-match.ts` documents as deliberately open —
+      // a change of grading behaviour smuggled in as a parser fix.
+      expect(parseCitedPosition("fabricated.md (p. 3): see handbook-2012/policy.md").path).toBe(
+        "fabricated.md: see handbook-2012/policy.md"
+      );
+    });
+
+    it("still closes on the OUTER parenthesis when the position ends the entry", () => {
+      // A Word heading may carry parentheses of its own. The end-anchored
+      // spelling is tried first for exactly this reason: reading trailing text
+      // first would close at the inner `)` and hand back `report.docx)`.
+      expect(parseCitedPosition("report.docx (§ Quality (2012 revision))")).toEqual({
+        path: "report.docx",
+        locator: { kind: "heading", headings: ["Quality (2012 revision)"] },
+      });
+    });
+
+    it("leaves the DASHED spelling end-anchored", () => {
+      // A stated bound. A parenthesis closes; a dash does not, so there is
+      // nothing to prove where a position behind a dash ends — and reading one
+      // mid-entry is how the AOAC title below would start parsing.
+      const entry = "a.md — p. 3 of the printed annex";
+
+      expect(parseCitedPosition(entry)).toEqual({ path: entry, locator: null });
     });
   });
 
