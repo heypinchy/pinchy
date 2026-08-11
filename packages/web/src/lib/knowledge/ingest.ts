@@ -86,7 +86,13 @@ export interface IngestDeps {
 }
 
 export interface IngestOptions {
-  /** Overrides the default extension allowlist (`[".pdf"]` for the MVP). */
+  /**
+   * Overrides `DEFAULT_ALLOWED_EXTENSIONS` (exclude-globs.ts).
+   *
+   * Naming a type here does NOT teach `extractDocument` to read it: the
+   * dispatch is by extension, and anything it does not recognise goes to the
+   * PDF extractor. Widening this is half a change.
+   */
   allowedExtensions?: readonly string[];
   /**
    * Called once with the discovery total before the first file is touched, then
