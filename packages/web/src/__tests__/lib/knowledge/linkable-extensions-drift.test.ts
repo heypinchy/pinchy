@@ -18,10 +18,11 @@
  *     scan never looks there, so the type is silently unlinkable and the only
  *     symptom is a citation that stopped being clickable.
  *
- * Wave 2 widens this alternation (#936/#937 make Office and spreadsheets
- * servable), which is exactly when a pair like this drifts. Source inspection
- * rather than behaviour, because the failure is a MISSING case: no fixture set
- * can cover an extension nobody has thought of yet.
+ * The alternation grows as a format becomes servable — Office joined it with
+ * its preview route (#939), spreadsheets are still out (#940) — and that is
+ * exactly when a pair like this drifts. Source inspection rather than
+ * behaviour, because the failure is a MISSING case: no fixture set can cover
+ * an extension nobody has thought of yet.
  */
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
@@ -35,22 +36,35 @@ const SOURCE_LINKS = resolve(import.meta.dirname, "../../../lib/knowledge/source
  * Every extension a regex assigned to `name` accepts.
  *
  * Reads the alternation, not a list of `\.ext` literals. That distinction cost
- * this guard its whole value once already: it was written when the patterns
- * spelled the set as `\.pdf|\.docx`, the Office commit (#939) rewrote both as
- * `\.(?:pdf|docx?|pptx?)` — a single `\.` in front of a group — and from then
- * on BOTH calls returned `[]`. Test one compared `[]` to `[]`, test two looped
+ * this guard its whole value once already: it was written when both patterns
+ * carried a single literal `\.pdf`, the Office commit (#939) rewrote them as
+ * `\.(?:pdf|docx?|pptx?)` — one `\.` in front of a group — and from then on
+ * BOTH calls returned `[]`. Test one compared `[]` to `[]`, test two looped
  * over nothing, and the pair stayed green while checking neither direction.
  *
- * Hence the two floors below. A guard that reads nothing must fail, not pass:
- * the failure this exists for is a MISSING case, and an extractor that finds
- * no cases at all cannot see a missing one. Same rule as
- * `extractAuditEventTypes` one level up — throw on input you cannot read
- * rather than return a short list.
+ * Hence the floors below, and hence what each one refuses. A guard that reads
+ * nothing must fail, not pass: the failure this exists for is a MISSING case,
+ * and an extractor that finds no cases cannot see a missing one. But a partial
+ * read is the same defect wearing better clothes — this reads ONE alternation,
+ * so a widening written anywhere else in the pattern (`\.(?:pdf)|\.xlsx?`)
+ * would be applied to both patterns, agree with itself, and go unreported.
+ * Counting the escaped dots is what turns that back into a loud failure. Same
+ * rule as `extractAuditEventTypes` one level up — throw on input you cannot
+ * read rather than return a short list.
  */
 function extensionsIn(source: string, name: string): string[] {
   const declaration = new RegExp(`const ${name}\\s*=\\s*(/[^\\n]+/[gimsuy]*)`).exec(source);
   if (!declaration) {
     throw new Error(`No regex literal assigned to ${name} in source-links.ts — update this guard`);
+  }
+
+  const dots = declaration[1].match(/\\\./g) ?? [];
+  if (dots.length !== 1) {
+    throw new Error(
+      `${name} escapes ${dots.length} dots (${declaration[1]}) — this guard reads exactly one ` +
+        `extension alternation, so anything a second one adds would go unread. Fold the ` +
+        `extensions into the one group, or teach this guard the new shape.`
+    );
   }
 
   const alternation = /\\\.\(\?:([a-z0-9|?]+)\)/i.exec(declaration[1]);
@@ -66,11 +80,21 @@ function extensionsIn(source: string, name: string): string[] {
   // one literal `docx?` could not tell `.doc` from `.docx` on either side.
   const extensions = alternation[1]
     .split("|")
-    .flatMap((alt) => (alt.endsWith("?") ? [alt.slice(0, -2), alt.slice(0, -1)] : [alt]));
-  if (extensions.length === 0) {
-    throw new Error(`Read no extensions out of ${name} — see the floor above.`);
+    .flatMap((alt) => (alt.endsWith("?") ? [alt.slice(0, -2), alt.slice(0, -1)] : [alt]))
+    .map((ext) => ext.toLowerCase());
+
+  // The floor that can actually fire. A count is not one: every degenerate
+  // alternation this could read (`pdf|`, `x?`, `|`) yields entries rather than
+  // none — empty strings, which would then sit in both lists, compare equal,
+  // and read as agreement.
+  const malformed = extensions.filter((ext) => !/^[a-z0-9]+$/.test(ext));
+  if (malformed.length > 0) {
+    throw new Error(
+      `Read ${JSON.stringify(malformed)} out of ${name} (${declaration[1]}) — not extensions. ` +
+        `The alternation changed shape; do not leave this guard comparing nonsense to nonsense.`
+    );
   }
-  return extensions.map((ext) => ext.toLowerCase()).sort();
+  return extensions.sort();
 }
 
 describe("linkable-extension drift guard", () => {
@@ -108,18 +132,80 @@ describe("linkable-extension drift guard", () => {
     // only 404 — so it is allowed only with an issue against its name.
     const indexable = DEFAULT_ALLOWED_EXTENSIONS.map((ext) => ext.replace(/^\./, "").toLowerCase());
     for (const linkable of extensionsIn(source, "EXTENSION")) {
-      if (linkable in PENDING_INGEST) continue;
+      if (Object.hasOwn(PENDING_INGEST, linkable)) continue;
       expect(indexable, `.${linkable} is linkable but not indexable`).toContain(linkable);
     }
   });
 
-  it("carries no pending-ingest entry for a type the ingest already takes", () => {
+  it("carries no pending-ingest entry that has stopped earning its place", () => {
     // A stale exemption is the same drift one level up: it would go on
     // excusing a gap that closed, and the day a fifth format is added nobody
-    // would trust the list. #938 lands -> these entries must go.
+    // would trust the list. An entry expires in BOTH directions — the ingest
+    // catching up (#938 lands) and the type ceasing to be linkable at all —
+    // because either way it is excusing something that is no longer there.
     const indexable = DEFAULT_ALLOWED_EXTENSIONS.map((ext) => ext.replace(/^\./, "").toLowerCase());
+    const linkable = extensionsIn(source, "EXTENSION");
     for (const [ext, reason] of Object.entries(PENDING_INGEST)) {
       expect(indexable, `.${ext} is indexable now — drop its entry (${reason})`).not.toContain(ext);
+      expect(linkable, `.${ext} is not linkable — drop its entry (${reason})`).toContain(ext);
     }
+  });
+});
+
+/**
+ * The extractor's own failure modes, pinned as fixtures.
+ *
+ * The guard above reads the real file, so it can only ever exercise the shape
+ * the file happens to carry today — and that is precisely how this guard died
+ * the first time. Every throw below is a shape that once returned, or would
+ * return, a silently short list. Verified by canary when written; these keep it
+ * verified.
+ */
+describe("extensionsIn", () => {
+  const declare = (pattern: string) => `const EXTENSION = ${pattern};`;
+
+  it("reads the shape source-links.ts carries, expanding the optional suffixes", () => {
+    expect(extensionsIn(declare(String.raw`/\.(?:pdf|docx?|pptx?)/gi`), "EXTENSION")).toEqual([
+      "doc",
+      "docx",
+      "pdf",
+      "ppt",
+      "pptx",
+    ]);
+  });
+
+  it("throws on the pre-#939 shape instead of returning it short", () => {
+    // What the old extractor read, and what this one must refuse: a set spelled
+    // as separate `\.ext` literals hides every extension after the first.
+    expect(() => extensionsIn(declare(String.raw`/\.pdf|\.docx/gi`), "EXTENSION")).toThrow(
+      /escapes 2 dots/
+    );
+  });
+
+  it("throws when a widening lands outside the group it reads", () => {
+    // The failure this guard exists for, one rewrite along: both patterns grow
+    // `.xls`/`.xlsx` consistently, so the equality test is happy, and a
+    // single-group reader reports neither of them.
+    expect(() =>
+      extensionsIn(declare(String.raw`/\.(?:pdf|docx?|pptx?)|\.xlsx?/gi`), "EXTENSION")
+    ).toThrow(/escapes 2 dots/);
+  });
+
+  it("throws rather than reporting an extension that is not one", () => {
+    expect(() => extensionsIn(declare(String.raw`/\.(?:pdf|)/gi`), "EXTENSION")).toThrow(
+      /not extensions/
+    );
+  });
+
+  it("throws when the extension is no longer written as an alternation", () => {
+    expect(() => extensionsIn(declare(String.raw`/\.[a-z]{3}/gi`), "EXTENSION")).toThrow(
+      /alternation/
+    );
+  });
+
+  it("throws when the declaration is gone", () => {
+    expect(() => extensionsIn("const SOMETHING_ELSE = /x/;", "EXTENSION")).toThrow(
+      /No regex literal/
+    );
   });
 });
