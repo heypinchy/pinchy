@@ -86,7 +86,15 @@ export interface IngestDeps {
 }
 
 export interface IngestOptions {
-  /** Overrides the default extension allowlist (`[".pdf"]` for the MVP). */
+  /**
+   * Overrides the default extension allowlist (`DEFAULT_ALLOWED_EXTENSIONS`:
+   * `.pdf` plus the OOXML workbooks).
+   *
+   * An override widens DISCOVERY, not the dispatch: `extractDocument` reads a
+   * spreadsheet and treats everything else as a PDF, so naming a type no
+   * extractor handles queues those files up to be read by pdfjs and counted
+   * `failed`. There is no production caller today — it exists for tests.
+   */
   allowedExtensions?: readonly string[];
   /**
    * Called once with the discovery total before the first file is touched, then

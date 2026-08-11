@@ -340,15 +340,23 @@ const RENDERED_SEPARATION = /(?:\n[^\S\r\n]*\n|(?:[ \t]{2,}|\\)\n)[^\S\r\n]*$/;
  * equality against its near-duplicate groups, silently stops matching. The
  * product's own `TRAILING_PAGE` (`source-links.ts`) already accepts all three.
  *
- * Only pages, deliberately, and only correct while only pages exist. Since
+ * Only pages, deliberately, and only correct while only pages reach it. Since
  * #933 the anchor is a `ChunkLocator` and the contract asks for a POSITION:
  * `slide 4`, `§ Quality > Incoming goods`, `Suppliers, rows 5-12`. None of
  * those match here, so the whole line would fall into `entry.path` and grade a
- * correct citation as a fabricated one. Nothing writes a non-page locator yet
- * (xlsx-extract is not wired into the ingest, the Office path produces pages),
- * so this cannot fire today — but the producer that changes that must
- * generalise this parser in the same change. #982 has the trap and the reason
- * a naive "split on any dash" fix would move committed eval numbers.
+ * correct citation as a fabricated one.
+ *
+ * The PRODUCT now writes one of those: #940 wired `extractXlsx` into the
+ * ingest, so a workbook under a granted folder really is cited as
+ * `Suppliers, rows 5-12`. What still keeps this parser correct is not the
+ * ingest but the CORPUS — the harness seeds its own documents from
+ * `eval/kb/corpus/manifest.ts`, whose `CorpusChunk` carries a `page` number
+ * and nothing else, so no ingested workbook ever reaches a grader. That is a
+ * narrower guarantee than "nothing writes a non-page locator", and it is worth
+ * saying which one is load-bearing: the first workbook (or slide deck, or
+ * heading path) added to the eval corpus has to generalise this parser IN THE
+ * SAME CHANGE. #982 has the trap and the reason a naive "split on any dash"
+ * fix would move committed eval numbers.
  */
 const PAGE_SUFFIX = /^(.*?)\s*[—–-]\s*pp?\.?\s*(\d+(?:\s*[-–]\s*\d+)?)\s*$/i;
 

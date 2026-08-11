@@ -22,8 +22,8 @@
  *  - Structure-Aware Chunking for Tabular Data in RAG — arxiv.org/pdf/2605.00318
  *  - Sheet as Token: multi-sheet spreadsheet understanding — arxiv.org/pdf/2605.05811
  *
- * Wiring this into ingest.ts is a separate change; this module is standalone
- * and knows nothing about documents, chunk rows or embeddings.
+ * ingest.ts dispatches to this on the extension (#940); the module itself is
+ * standalone and knows nothing about documents, chunk rows or embeddings.
  */
 import ExcelJS from "exceljs";
 
@@ -300,9 +300,19 @@ function chunkSheet(sheet: SheetContent, targetChars: number): XlsxChunk[] {
  * result reports what was excluded so a zero-chunk workbook can still explain
  * itself.
  *
- * Only OOXML `.xlsx` is readable — exceljs has no BIFF reader, so a legacy
- * binary `.xls` (an OLE2 container, not a zip) fails at the opener like any
- * other unreadable file. That is the intended outcome: loud, with a reason.
+ * OOXML only, which is both `.xlsx` and macro-enabled `.xlsm` — the two are
+ * the same zipped-XML package and exceljs reads a workbook by PART PATH
+ * (`xl/workbook.xml`, `xl/worksheets/sheet*.xml`), never by the content type
+ * that distinguishes them. Measured rather than assumed: a package rewritten
+ * to `application/vnd.ms-excel.sheet.macroEnabled.main+xml` and carrying an
+ * `xl/vbaProject.bin` reads back with its worksheets intact. The macros
+ * themselves are never read, and nothing here executes anything.
+ *
+ * A legacy binary `.xls` is a different format — an OLE2 container, not a zip,
+ * and exceljs has no BIFF reader — so one fails at the opener like any other
+ * unreadable file. That is the intended outcome: loud, with a reason. It is
+ * also why `SPREADSHEET_EXTENSIONS` (office-formats.ts) does not name it: an
+ * allowlist must never promise what this function cannot deliver.
  *
  * @throws XlsxExtractionError if the file cannot be read as a workbook.
  */
