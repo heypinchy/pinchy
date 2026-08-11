@@ -190,7 +190,7 @@ We cap how many passages any one document can contribute to a single answer, so 
 
 What the knowledge base does is deliberately narrow:
 
-- Only **text-based PDFs** and **Excel workbooks** (`.xlsx`, `.xlsm`) are indexed and searchable via `knowledge_search`. Scanned or image-only PDFs, Word documents, slide decks, older `.xls` workbooks, plain text and Markdown are not. Pointed at one directly, the agent's file tools read more than the index does — Word documents, scanned PDFs, plain text — so a document can be readable on request and still not come back as a search hit. [Supported file types](/guides/mount-data-directories/#supported-file-types) has the full split.
+- Only **text-based PDFs** and **Excel workbooks** (`.xlsx`, `.xlsm`) are indexed and searchable via `knowledge_search`. Scanned or image-only PDFs, Word documents, slide decks, older `.xls` workbooks, plain text and Markdown are not. What the agent can read when pointed at a file directly is a different set, not a bigger one: Word documents, scanned PDFs and plain text are readable on request without ever being a search hit, and a workbook goes the other way — searchable, but not something an agent can open, so ask about its contents rather than asking for the file. [Supported file types](/guides/mount-data-directories/#supported-file-types) has the full split.
 - Indexing is a manual admin action (step 6). It runs in the background and reports its progress in the app, but you still have to ask for it: nothing watches the directory and nothing sweeps it on a schedule.
 
 ### Documents that can't be searched
