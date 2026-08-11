@@ -38,6 +38,9 @@
 import { toCitationPath } from "@/lib/knowledge/citation-path";
 
 import { matchRetrievedDocument } from "./cited-path-match";
+import { parseCitedPosition } from "./cited-position";
+
+import type { ChunkLocator } from "@/lib/knowledge/locator";
 
 import type { KbFailureTag, KbGraderResult } from "./types";
 
@@ -73,10 +76,22 @@ export interface AttributionInput {
   nearDuplicateGroups?: string[][];
 }
 
-/** One parsed `- [N] <path> — p. <page>` line from the Sources list. */
+/** One parsed `- [N] <path> (<position>)` line from the Sources list. */
 interface SourcesEntry {
   n: number;
   path: string;
+  /**
+   * The position the entry cites, in whatever shape the document's format has
+   * — `parseCitedPosition` reads all four, so a slide or a sheet range no
+   * longer folds into `path` and grades as a fabricated citation (#982).
+   */
+  locator: ChunkLocator | null;
+  /**
+   * The cited page, when the position IS a page. Kept beside `locator` because
+   * it is what `RetrievedSource.page` can be compared against; null for every
+   * other locator kind, which is honest rather than lossy — a slide is not a
+   * page, and the reserved position-mismatch grader must not compare them.
+   */
   page: number | null;
   /** Offset of the entry's line start within `sourcesText` — read by `gradeSourcesFormat`. */
   index: number;
@@ -319,38 +334,18 @@ const BURIED_MARKER = /\[\d+\][^\S\r\n]*\S/;
 const RENDERED_SEPARATION = /(?:\n[^\S\r\n]*\n|(?:[ \t]{2,}|\\)\n)[^\S\r\n]*$/;
 
 /**
- * Trailing page suffix on a Sources entry's rest-of-line text — separates the
- * PATH (group 1) from the page reference (group 2). Non-greedy path capture so
- * a hyphen inside the path itself (e.g. "/data/handbook-2012/policy.md") is not
- * mistaken for the dash separator — the required "p."/"pp." literal after the
- * dash disambiguates. Accepts a single page (`— p. 12`), a page range
- * (`— p. 12-14`), and the `pp.` plural (`— pp. 12-14`). A Sources entry with no
- * page suffix at all (a legitimate, if degraded, shape) leaves `pageMatch`
- * null and parses with `page: null` — the point of widening this is to keep a
- * range from folding into `entry.path` and spuriously failing the exact
- * path-match in `gradePathCitation`. `page` stores the FIRST page number
- * (`parseInt` of the range) — it is not asserted downstream yet.
+ * Where the path/position split used to live as `PAGE_SUFFIX`, a regex that
+ * knew one position shape (`— p. 12`) and one separator. `parseCitedPosition`
+ * (`cited-position.ts`) replaced it in #982: it reads every shape
+ * `formatLocator` emits, in the parenthesised spelling the knowledge tool
+ * actually prints as well as the dashed one the older contract taught, and its
+ * round-trip pin fails when a fifth `ChunkLocator` kind arrives unparsed.
  *
- * The SEPARATOR takes em dash, en dash and hyphen alike, for the same reason
- * the markers above take fullwidth brackets: it delimits, it does not identify.
- * `gpt-oss:120b` writes U+2013 where the template writes `—`, and an
- * unrecognised separator leaves `– p. 1` glued to `entry.path` — where the
- * whole-entry matcher in `cited-path-match.ts` still resolves the document, but
- * `gradeNoDuplicateCorroboration`, which compares `entry.path` by string
- * equality against its near-duplicate groups, silently stops matching. The
- * product's own `TRAILING_PAGE` (`source-links.ts`) already accepts all three.
- *
- * Only pages, deliberately, and only correct while only pages exist. Since
- * #933 the anchor is a `ChunkLocator` and the contract asks for a POSITION:
- * `slide 4`, `§ Quality > Incoming goods`, `Suppliers, rows 5-12`. None of
- * those match here, so the whole line would fall into `entry.path` and grade a
- * correct citation as a fabricated one. Nothing writes a non-page locator yet
- * (xlsx-extract is not wired into the ingest, the Office path produces pages),
- * so this cannot fire today — but the producer that changes that must
- * generalise this parser in the same change. #982 has the trap and the reason
- * a naive "split on any dash" fix would move committed eval numbers.
+ * The trap that governs both is unchanged and worth keeping in view from here:
+ * the split may never widen to "any dash-space separator", or
+ * `a/study.pdf – AOAC Performance Tested Method Study` starts parsing as a
+ * position and moves numbers committed under `packages/web/eval/data`.
  */
-const PAGE_SUFFIX = /^(.*?)\s*[—–-]\s*pp?\.?\s*(\d+(?:\s*[-–]\s*\d+)?)\s*$/i;
 
 interface ParsedAnswer {
   /** Raw text BEFORE the Sources heading (or the whole answer if there is none). */
@@ -374,11 +369,12 @@ function parseSourcesEntries(sourcesText: string): SourcesEntry[] {
     const n = Number(marker ?? ordinal);
     const rest = (restRaw ?? "").trim();
     if (rest.length === 0) continue;
-    const pageMatch = PAGE_SUFFIX.exec(rest);
+    const { path, locator } = parseCitedPosition(rest);
     entries.push({
       n,
-      path: pageMatch ? pageMatch[1].trim() : rest,
-      page: pageMatch ? Number.parseInt(pageMatch[2], 10) : null,
+      path,
+      locator,
+      page: locator?.kind === "page" ? locator.page : null,
       index: match.index,
       isListItem: LIST_ITEM_PREFIX.test(match[0]),
       hasMarker: marker !== undefined,
