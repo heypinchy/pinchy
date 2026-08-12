@@ -50,13 +50,15 @@ export function hasSparseText(text: string): boolean {
  * How large a page may be rendered before it is scaled down, in pixels.
  *
  * The BUDGET is shared; the render CALL is not, and that split is the point.
- * `pinchy-files` and `packages/web` resolve different pdfjs majors (5.x and
- * 6.x), whose `page.render()` parameters differ — a shared render function
- * would be type-checked against one and executed against the other. So each
- * side owns its own ~20-line renderer and both read the budget from here,
- * which is the part that must not drift: it decides how much of a page a
- * vision model actually gets to see, and two documents rendered at different
- * resolutions read differently to the same model.
+ * The renderer needs real imports — `@napi-rs/canvas` and pdfjs — and a module
+ * shared across this boundary must have none (see the header): web's
+ * production image copies the shared files into its build stage WITHOUT the
+ * plugin's node_modules, so a bare specifier imported from a file under
+ * `packages/plugins/` would not resolve there. So each side owns its own
+ * ~20-line renderer against its own dependency resolution, and both read the
+ * budget from here, which is the part that must not drift: it decides how much
+ * of a page a vision model actually gets to see, and two documents rendered at
+ * different resolutions read differently to the same model.
  *
  * 4,000,000 is OpenClaw's own budget for the built-in `pdf` tool.
  */
