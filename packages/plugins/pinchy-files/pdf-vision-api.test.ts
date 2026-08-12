@@ -340,6 +340,32 @@ describe("describePageImage", () => {
       expect(headers).not.toHaveProperty("Authorization");
     });
 
+    it("does not double the /v1 the emitted config already carries", async () => {
+      // The URL every real install has. `rewriteOllamaHostForOpenClaw` appends
+      // `/v1` when emitting `models.providers.ollama.baseUrl` (pi-ai adds only
+      // `/chat/completions`), and `createVisionConfig` reads that same value —
+      // so appending `/v1/chat/completions` here produced
+      // `…/v1/v1/chat/completions` and a 404 on every scanned page. Every test
+      // above passes a bare host, which is a shape production never emits: the
+      // assertion was on what the caller asked for, not on what the URL
+      // resolves to.
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ choices: [{ message: { content: "text" } }] }),
+      });
+
+      await describePageImage("base64data", {
+        model: "ollama/llava:7b",
+        ollamaBaseUrl: "http://ollama.local:11434/v1",
+        resolveApiKey: async () => null,
+      });
+
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        "http://ollama.local:11434/v1/chat/completions",
+        expect.anything()
+      );
+    });
+
     it("returns null when ollamaBaseUrl is not configured", async () => {
       globalThis.fetch = vi.fn();
 
@@ -365,15 +391,87 @@ describe("describePageImage", () => {
       });
       expect(result).toBeNull();
     });
+  });
 
-    it("does not handle ollama-cloud models", async () => {
+  describe("Ollama Cloud provider", () => {
+    // This provider used to fall through to the `default: return null` arm,
+    // asserted by a test that recorded the gap without explaining it. The gap
+    // was not harmless: Pinchy's own model resolver
+    // (`resolveDefaultVisionModelChain`) emits `ollama-cloud/<id>` whenever
+    // that is the configured stack, so web picked a model this consumer could
+    // not call — a scanned PDF then produced no text, with no error anywhere.
+    // Ollama Cloud speaks the same OpenAI-compatible dialect as the local
+    // server; the only differences are the host and the Bearer key.
+    it("calls Ollama Cloud with a bearer key at the configured base URL", async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          choices: [{ message: { content: "AFNOR VALIDATION CERTIFICATE" } }],
+          usage: { prompt_tokens: 900, completion_tokens: 40 },
+        }),
+      });
+
+      const result = await describePageImage("base64imagedata", {
+        model: "ollama-cloud/gemini-3-flash-preview",
+        ollamaCloudBaseUrl: "https://ollama.com",
+        resolveApiKey: async (provider) => (provider === "ollama-cloud" ? "sk-cloud" : null),
+      });
+
+      expect(result?.text).toBe("AFNOR VALIDATION CERTIFICATE");
+      expect(result?.usage).toEqual({ inputTokens: 900, outputTokens: 40 });
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        "https://ollama.com/v1/chat/completions",
+        expect.objectContaining({ method: "POST" })
+      );
+      const callArgs = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+      const headers = (callArgs[1] as RequestInit).headers as Record<string, string>;
+      expect(headers.Authorization).toBe("Bearer sk-cloud");
+    });
+
+    it("returns null without a key rather than calling unauthenticated", async () => {
       globalThis.fetch = vi.fn();
 
       const result = await describePageImage("base64data", {
-        model: "ollama-cloud/gemini-3-flash-preview:cloud",
-        ollamaBaseUrl: "http://localhost:11434",
+        model: "ollama-cloud/gemini-3-flash-preview",
+        ollamaCloudBaseUrl: "https://ollama.com",
         resolveApiKey: async () => null,
       });
+
+      expect(result).toBeNull();
+      expect(globalThis.fetch).not.toHaveBeenCalled();
+    });
+
+    it("falls back to the canonical host when none is configured", async () => {
+      // Unlike the local server, Ollama Cloud has ONE canonical host, and
+      // `resolveProviderBaseUrl` on the web side already defaults to it. A
+      // missing baseUrl here is a config that never set an override, not a
+      // provider that is unreachable — so it must not disable OCR.
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ choices: [{ message: { content: "text" } }] }),
+      });
+
+      await describePageImage("base64data", {
+        model: "ollama-cloud/gemini-3-flash-preview",
+        resolveApiKey: async () => "sk-cloud",
+      });
+
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        "https://ollama.com/v1/chat/completions",
+        expect.anything()
+      );
+    });
+  });
+
+  describe("an unknown provider", () => {
+    it("returns null rather than guessing a protocol", async () => {
+      globalThis.fetch = vi.fn();
+
+      const result = await describePageImage("base64data", {
+        model: "some-future-provider/some-model",
+        resolveApiKey: async () => "key",
+      });
+
       expect(result).toBeNull();
       expect(globalThis.fetch).not.toHaveBeenCalled();
     });

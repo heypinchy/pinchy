@@ -72,8 +72,14 @@ async function fetchWithRetry(
 export interface VisionApiConfig {
   resolveApiKey: (provider: string) => Promise<string | null>;
   model: string; // e.g. "anthropic/claude-haiku-4-5-20251001"
+  /** Local Ollama server. No default: without a configured host there is nothing to call. */
   ollamaBaseUrl?: string;
+  /** Ollama Cloud. Defaults to the canonical host — an override, not a requirement. */
+  ollamaCloudBaseUrl?: string;
 }
+
+/** Ollama Cloud's single canonical host, mirroring `resolveProviderBaseUrl`'s fallback in web. */
+const OLLAMA_CLOUD_DEFAULT_BASE_URL = "https://ollama.com";
 
 /** Internal config that carries the OpenClaw cfg object */
 export interface VisionApiInternalConfig {
@@ -127,6 +133,8 @@ export async function describePageImage(
       return describeViaGoogle(imageBase64, modelId, config);
     case "ollama":
       return describeViaOllama(imageBase64, modelId, config);
+    case "ollama-cloud":
+      return describeViaOllamaCloud(imageBase64, modelId, config);
     default:
       return null;
   }
@@ -136,13 +144,15 @@ export async function describePageImage(
  * Create a VisionApiConfig from OpenClaw's internal runtime APIs.
  */
 export function createVisionConfig(internal: VisionApiInternalConfig): VisionApiConfig {
-  const ollamaBaseUrl = (internal.cfg as Record<string, unknown>)?.models
-    ? ((internal.cfg as any).models.providers?.ollama?.baseUrl as string | undefined)
+  const providers = (internal.cfg as Record<string, unknown>)?.models
+    ? ((internal.cfg as any).models.providers as Record<string, { baseUrl?: string }> | undefined)
     : undefined;
 
   return {
     model: internal.model,
-    ollamaBaseUrl,
+    ollamaBaseUrl: providers?.ollama?.baseUrl,
+    // Emitted by build.ts as `<host>/v1`; the endpoint helper normalises that.
+    ollamaCloudBaseUrl: providers?.["ollama-cloud"]?.baseUrl,
     resolveApiKey: async (provider: string) => {
       try {
         const result = await internal.modelAuth.resolveApiKeyForProvider({
@@ -334,15 +344,77 @@ async function describeViaOllama(
   modelId: string,
   config: VisionApiConfig
 ): Promise<VisionResult | null> {
+  // No default host: a local server lives wherever the operator put it, so an
+  // unconfigured base URL means there is nothing to call.
   if (!config.ollamaBaseUrl) return null;
 
-  const url = `${config.ollamaBaseUrl.replace(/\/$/, "")}/v1/chat/completions`;
+  return describeViaOllamaEndpoint({
+    imageBase64,
+    modelId,
+    baseUrl: config.ollamaBaseUrl,
+    apiKey: null,
+    label: "Ollama",
+    timeoutMs: LOCAL_VISION_TIMEOUT_MS,
+  });
+}
+
+/**
+ * Ollama Cloud speaks the same OpenAI-compatible dialect as the local server,
+ * differing only in having one canonical host and requiring a bearer key.
+ *
+ * It reached this file late: the provider previously fell through to the
+ * `default: return null` arm below, which was pinned by a test that recorded
+ * the gap without explaining it. The gap was not harmless — Pinchy's own
+ * `resolveDefaultVisionModelChain` emits `ollama-cloud/<id>` whenever that is
+ * the configured stack, so the platform picked a vision model this consumer
+ * could not call, and a scanned PDF produced no text with no error anywhere.
+ */
+async function describeViaOllamaCloud(
+  imageBase64: string,
+  modelId: string,
+  config: VisionApiConfig
+): Promise<VisionResult | null> {
+  const apiKey = await config.resolveApiKey("ollama-cloud");
+  if (!apiKey) return null;
+
+  return describeViaOllamaEndpoint({
+    imageBase64,
+    modelId,
+    // Unlike the local server, Ollama Cloud has ONE canonical host, so an
+    // absent value is an override nobody set — not an unreachable provider.
+    baseUrl: config.ollamaCloudBaseUrl ?? OLLAMA_CLOUD_DEFAULT_BASE_URL,
+    apiKey,
+    label: "Ollama Cloud",
+    timeoutMs: CLOUD_VISION_TIMEOUT_MS,
+  });
+}
+
+async function describeViaOllamaEndpoint(opts: {
+  imageBase64: string;
+  modelId: string;
+  baseUrl: string;
+  apiKey: string | null;
+  label: string;
+  timeoutMs: number;
+}): Promise<VisionResult | null> {
+  const { imageBase64, modelId, baseUrl, apiKey, label, timeoutMs } = opts;
+  // Idempotent about `/v1`, mirroring `rewriteOllamaHostForOpenClaw`, which is
+  // what produces the value the plugin receives: the emitted
+  // `models.providers.ollama.baseUrl` already ends in `/v1` (pi-ai appends only
+  // `/chat/completions`), so appending it again yielded `/v1/v1/…` and a 404 on
+  // every scanned page. Callers that hold a bare host — the knowledge-base
+  // ingest reads Pinchy's raw setting — are unaffected.
+  const root = baseUrl.replace(/\/$/, "").replace(/\/v1$/, "");
+  const url = `${root}/v1/chat/completions`;
 
   const response = await fetchWithRetry(
     url,
     {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: {
+        "content-type": "application/json",
+        ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+      },
       body: JSON.stringify({
         model: modelId,
         messages: [
@@ -359,12 +431,12 @@ async function describeViaOllama(
         ],
       }),
     },
-    LOCAL_VISION_TIMEOUT_MS
+    timeoutMs
   );
 
   if (!response.ok) {
     const error = await response.text().catch(() => "unknown error");
-    console.error(`[pinchy-files] Ollama vision API error (${response.status}):`, error);
+    console.error(`[pinchy-files] ${label} vision API error (${response.status}):`, error);
     return null;
   }
 
