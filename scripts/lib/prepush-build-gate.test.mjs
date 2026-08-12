@@ -255,10 +255,19 @@ describe("the build graph is not the same thing as the web package", () => {
   // expensive place to learn it. So pin the two lists to each other.
   test("every shared plugin source the build reaches is copied into the image", () => {
     const WEB = join(REPO_ROOT, "packages/web");
+    // Comment lines are dropped before matching: the prose above a COPY names
+    // the same paths the COPY does, so a raw substring match is satisfied by
+    // the explanation of an instruction somebody deleted — the "reports on the
+    // presence of a string" failure AGENTS.md keeps a list of. Proven by
+    // canary: with the comment kept and the COPY's pdf-scan-rule.ts removed,
+    // the unfiltered read stayed green.
     const dockerfile = readFileSync(
       join(REPO_ROOT, "Dockerfile.pinchy"),
       "utf8",
-    );
+    )
+      .split("\n")
+      .filter((line) => !line.trimStart().startsWith("#"))
+      .join("\n");
     const missing = [];
 
     const walk = (absDir) => {
