@@ -43,10 +43,14 @@ function fakeDeps(): IngestDeps {
     extractPdf: vi.fn(async () => [
       { page: 1, text: "Onboarding starts on day one and every hire receives a laptop." },
     ]),
-    // This suite indexes PDFs only; a spreadsheet reaching it would mean the
-    // dispatch is broken, so the stub throws rather than returning nothing.
+    // This suite indexes PDFs only; a spreadsheet or an Office document
+    // reaching it would mean the dispatch is broken, so the stubs throw rather
+    // than returning nothing.
     extractXlsx: vi.fn(async () => {
       throw new Error("extractXlsx must not be called for a PDF");
+    }),
+    convertOffice: vi.fn(async () => {
+      throw new Error("convertOffice must not be called for a PDF");
     }),
   };
 }

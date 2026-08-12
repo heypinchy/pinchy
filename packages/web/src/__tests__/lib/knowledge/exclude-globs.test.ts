@@ -21,10 +21,22 @@ describe("isHiddenSegment", () => {
 
 describe("isAllowedExtension", () => {
   it("defaults to PDF-only (MVP Scope A)", () => {
-    expect(DEFAULT_ALLOWED_EXTENSIONS).toEqual([".pdf", ".xlsx", ".xlsm"]);
+    expect(DEFAULT_ALLOWED_EXTENSIONS).toEqual([
+      ".pdf",
+      ".xlsx",
+      ".xlsm",
+      ".doc",
+      ".docx",
+      ".ppt",
+      ".pptx",
+    ]);
     expect(isAllowedExtension("handbook.pdf")).toBe(true);
     expect(isAllowedExtension("handbook.PDF")).toBe(true);
-    expect(isAllowedExtension("handbook.docx")).toBe(false);
+    expect(isAllowedExtension("Qualitätshandbuch.doc")).toBe(true);
+    expect(isAllowedExtension("Schulung.PPTX")).toBe(true);
+    // `.xls` stays out: LibreOffice would convert it, but a sheet has no page
+    // for a citation to point at, and the direct reader is OOXML-only.
+    expect(isAllowedExtension("Preise.xls")).toBe(false);
     expect(isAllowedExtension("handbook.txt")).toBe(false);
   });
 

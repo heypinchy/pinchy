@@ -21,10 +21,12 @@ import {
   ingestDirectory,
   ingestPaths,
   type IngestDeps,
+  type IngestPage,
   type IngestProgress,
   type IngestResult,
 } from "@/lib/knowledge/ingest";
 import type { XlsxExtraction } from "@/lib/knowledge/xlsx-extract";
+import type { ConversionOutcome } from "@/lib/knowledge/office-convert";
 
 const ORG_ID = "org-kb-ingest-test";
 
@@ -65,6 +67,11 @@ const neverCalledXlsx = async (): Promise<XlsxExtraction> => {
   throw new Error("extractXlsx must not be called for a PDF");
 };
 
+/** Same reasoning for the converter: no PDF-only test may reach LibreOffice. */
+const neverCalledConvert = async (): Promise<ConversionOutcome[]> => {
+  throw new Error("convertOffice must not be called for a PDF");
+};
+
 function fakeDeps(
   pages = [
     { page: 1, text: PAGE_1_TEXT },
@@ -87,7 +94,12 @@ function fakeDeps(
   );
   const extractPdf = vi.fn(async () => pages);
   const extractXlsx = vi.fn(async () => xlsx);
-  return { deps: { embed, extractPdf, extractXlsx }, embed, extractPdf, extractXlsx };
+  return {
+    deps: { embed, extractPdf, extractXlsx, convertOffice: neverCalledConvert },
+    embed,
+    extractPdf,
+    extractXlsx,
+  };
 }
 
 async function chunksFor(documentId: string) {
@@ -424,6 +436,7 @@ it("keeps ingesting the rest of the corpus when one file's extraction throws", a
       embed,
       extractPdf,
       extractXlsx: neverCalledXlsx,
+      convertOffice: neverCalledConvert,
     });
 
     expect(result).toEqual(counts({ indexed: 1, failed: 1 }));
@@ -460,7 +473,12 @@ it("surfaces an embedding outage as a run failure instead of blaming every file"
   const extractPdf = vi.fn(async () => [{ page: 1, text: PAGE_1_TEXT }]);
 
   await expect(
-    ingestDirectory(ORG_ID, tmpRoot, { embed, extractPdf, extractXlsx: neverCalledXlsx })
+    ingestDirectory(ORG_ID, tmpRoot, {
+      embed,
+      extractPdf,
+      extractXlsx: neverCalledXlsx,
+      convertOffice: neverCalledConvert,
+    })
   ).rejects.toThrow(/ECONNREFUSED/);
   // Bailed on the first file rather than walking the rest of the corpus.
   expect(embed).toHaveBeenCalledTimes(1);
@@ -494,6 +512,7 @@ it("keeps the last indexed version searchable when a file changes into one that 
     embed,
     extractPdf,
     extractXlsx: neverCalledXlsx,
+    convertOffice: neverCalledConvert,
   });
   expect(result).toEqual(counts({ failed: 1 }));
 
@@ -916,6 +935,277 @@ it("keeps PDFs indexed before spreadsheets existed working, untouched", async ()
   // The PDF is SKIPPED, not re-indexed: the content hash still matches, and a
   // widened allowlist must not invalidate what was already there.
   expect(rerun).toEqual(counts({ skipped: 1, indexed: 1 }));
+
+  const [pdfDoc] = await db
+    .select()
+    .from(kbDocuments)
+    .where(and(eq(kbDocuments.orgId, ORG_ID), eq(kbDocuments.sourcePath, pdfPath)));
+  expect(pdfDoc.id).toBe(before.id);
+  expect(pdfDoc.pageCount).toBe(2);
+  const chunksAfter = await chunksFor(pdfDoc.id);
+  expect(chunksAfter.map((c) => c.id).sort()).toEqual(chunksBefore.map((c) => c.id).sort());
+  for (const chunk of chunksAfter) {
+    expect(chunk.locator).toEqual({ kind: "page", page: expect.any(Number) });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Page-shaped Office documents (#938)
+// ---------------------------------------------------------------------------
+
+/**
+ * The Office half of the pipeline: convert with LibreOffice, index the
+ * CONVERTED PDF, but keep the original as the document's identity.
+ *
+ * The converter and the extractor are both fakes here for the same reason the
+ * PDF tests fake theirs — what is under test is the dispatch, the anchors and
+ * the failure semantics, not LibreOffice. That the real binary carries a Word
+ * outline into PDF bookmarks (and leaves comments and speaker notes out) is
+ * pinned separately, against the real thing, in
+ * `office-convert.libreoffice.test.ts`.
+ */
+const WORD_PAGES: IngestPage[] = [
+  {
+    page: 1,
+    text: "Quality management\nEvery delivery is checked against the order before storage.",
+    headings: [{ charStart: 0, headings: ["Quality management"] }],
+  },
+  { page: 2, text: "Protective equipment is mandatory in zone B at all times." },
+];
+
+const SLIDE_PAGES: IngestPage[] = [
+  { page: 1, text: "Pricing for the coming season, including the volume discounts." },
+  { page: 2, text: "Delivery windows and the lead times each supplier has committed to." },
+];
+
+/**
+ * Deps whose converter answers with an artifact path per source, and whose
+ * extractor answers per artifact. `convertOffice` records its calls so a test
+ * can assert on BATCHES — the property the conversion cost depends on.
+ */
+function officeDeps(
+  outcomes: (absPath: string) => ConversionOutcome,
+  pagesFor: (artifactPath: string) => IngestPage[]
+) {
+  const embed = vi.fn(async (texts: string[]) => texts.map(() => Array(768).fill(0.05)));
+  const extractPdf = vi.fn(async (absPath: string) => pagesFor(absPath));
+  const convertOffice = vi.fn(async (sources: readonly { absPath: string }[]) =>
+    sources.map((source) => outcomes(source.absPath))
+  );
+  return {
+    deps: { embed, extractPdf, extractXlsx: neverCalledXlsx, convertOffice } as IngestDeps,
+    extractPdf,
+    convertOffice,
+  };
+}
+
+/** A converted outcome whose artifact sits beside the source, as the store's would. */
+const convertedTo =
+  (artifactPath: string) =>
+  (absPath: string): ConversionOutcome => ({
+    sourcePath: absPath,
+    status: "converted" as const,
+    artifactPath,
+  });
+
+it("indexes a Word document through its converted PDF, anchored on the heading path", async () => {
+  const docPath = join(tmpRoot, "Qualitätshandbuch.doc");
+  writeFileSync(docPath, "fake-doc-bytes");
+
+  const { deps, extractPdf } = officeDeps(convertedTo("/artifacts/ab/cd.pdf"), () => WORD_PAGES);
+  expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ indexed: 1 }));
+
+  // The outline is only asked for where it is the anchor.
+  expect(extractPdf).toHaveBeenCalledWith("/artifacts/ab/cd.pdf", { outline: true });
+
+  const [doc] = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
+  // Identity stays the ORIGINAL. A citation naming the artifact would point at
+  // a file that is not on the reader's share.
+  expect(doc.sourcePath).toBe(docPath);
+  // Word's pagination belongs to the renderer, so the row says nothing rather
+  // than something the reader's Word disagrees with.
+  expect(doc.pageCount).toBeNull();
+
+  const chunks = await chunksFor(doc.id);
+  expect(chunks).not.toHaveLength(0);
+  expect(chunks.every((chunk) => chunk.sourcePath === docPath)).toBe(true);
+  for (const chunk of chunks) {
+    expect(chunk.locator).toEqual({ kind: "heading", headings: ["Quality management"] });
+  }
+});
+
+it("gives a Word document without headings no locator at all, rather than a page", async () => {
+  // #938 says it plainly: an omitted locator beats one that does not match
+  // what the reader sees in Word. A page number would be exactly that.
+  writeFileSync(join(tmpRoot, "Notiz.docx"), "fake-docx-bytes");
+
+  const { deps } = officeDeps(convertedTo("/artifacts/no/outline.pdf"), () => [
+    { page: 1, text: "A short note with no heading styles anywhere in it." },
+  ]);
+  expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ indexed: 1 }));
+
+  const [doc] = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
+  const chunks = await chunksFor(doc.id);
+  expect(chunks).not.toHaveLength(0);
+  expect(chunks.every((chunk) => chunk.locator === null)).toBe(true);
+});
+
+it("anchors a presentation on its slide number, which the converter maps one to one", async () => {
+  const pptPath = join(tmpRoot, "Schulung.ppt");
+  writeFileSync(pptPath, "fake-ppt-bytes");
+
+  const { deps, extractPdf } = officeDeps(convertedTo("/artifacts/ee/ff.pdf"), () => SLIDE_PAGES);
+  expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ indexed: 1 }));
+
+  // No outline is asked for: a presentation's bookmarks are slide names, not
+  // a heading hierarchy, and slide N is page N without them.
+  expect(extractPdf).toHaveBeenCalledWith("/artifacts/ee/ff.pdf", { outline: false });
+
+  const [doc] = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
+  expect(doc.sourcePath).toBe(pptPath);
+  // Slides ARE the document's own units, so the count is the document's.
+  expect(doc.pageCount).toBe(2);
+
+  const chunks = await chunksFor(doc.id);
+  expect(
+    chunks
+      .map((chunk) => chunk.locator)
+      .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)))
+  ).toEqual([
+    { kind: "slide", slide: 1 },
+    { kind: "slide", slide: 2 },
+  ]);
+});
+
+it("leaves a document whose conversion failed in the index with no chunks", async () => {
+  // #936's `failed` is a FINAL verdict about this document. A row with no
+  // chunks is how the unreadable list (#935) finds it, with nothing to wire
+  // up — so the row must exist, and it must be empty.
+  const docPath = join(tmpRoot, "kaputt.doc");
+  writeFileSync(docPath, "fake-doc-bytes");
+
+  const { deps, extractPdf } = officeDeps(
+    (absPath) => ({ sourcePath: absPath, status: "failed", reason: "no artifact produced" }),
+    () => WORD_PAGES
+  );
+
+  expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ unsearchable: 1 }));
+  expect(extractPdf).not.toHaveBeenCalled();
+
+  const [doc] = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
+  expect(doc.sourcePath).toBe(docPath);
+  expect(await chunksFor(doc.id)).toHaveLength(0);
+});
+
+it("does not record a document as unreadable when the converter itself was unavailable", async () => {
+  // The distinction #936 exists for: out of memory or a missing binary says
+  // nothing about the document. Recording it would brand a perfectly good file
+  // as permanently unreadable, and nothing ever retries that.
+  writeFileSync(join(tmpRoot, "gut.doc"), "fake-doc-bytes");
+
+  const { deps } = officeDeps(
+    (absPath) => ({
+      sourcePath: absPath,
+      status: "infrastructure",
+      reason: "converter was killed — out of memory",
+    }),
+    () => WORD_PAGES
+  );
+
+  const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+  try {
+    expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ failed: 1 }));
+  } finally {
+    consoleError.mockRestore();
+  }
+
+  // No row at all, so the unreadable list does not claim this document.
+  expect(await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID))).toHaveLength(0);
+});
+
+it("keeps the last indexed version when a re-conversion of a changed file fails at the infrastructure level", async () => {
+  const docPath = join(tmpRoot, "Angebot.docx");
+  writeFileSync(docPath, "fake-docx-v1");
+
+  const good = officeDeps(convertedTo("/artifacts/v1.pdf"), () => WORD_PAGES);
+  expect(await ingestDirectory(ORG_ID, tmpRoot, good.deps)).toEqual(counts({ indexed: 1 }));
+  const [before] = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
+  const chunksBefore = await chunksFor(before.id);
+
+  writeFileSync(docPath, "fake-docx-v2");
+  const squeezed = officeDeps(
+    (absPath) => ({ sourcePath: absPath, status: "infrastructure", reason: "killed" }),
+    () => WORD_PAGES
+  );
+
+  const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+  try {
+    expect(await ingestDirectory(ORG_ID, tmpRoot, squeezed.deps)).toEqual(counts({ failed: 1 }));
+  } finally {
+    consoleError.mockRestore();
+  }
+
+  const [after] = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
+  expect(after.id).toBe(before.id);
+  expect((await chunksFor(after.id)).map((c) => c.id).sort()).toEqual(
+    chunksBefore.map((c) => c.id).sort()
+  );
+});
+
+it("converts in batches, and not at all for a document it can skip", async () => {
+  // Process startup dominates conversion, so the ingest must hand the
+  // converter a slice of its queue rather than one path at a time. And an
+  // unchanged document costs no conversion at all: the skip decision happens
+  // before anything is handed over.
+  for (let i = 0; i < 3; i++) writeFileSync(join(tmpRoot, `doc-${i}.docx`), `bytes-${i}`);
+  writeFileSync(join(tmpRoot, "handbook.pdf"), "fake-pdf-bytes");
+
+  const { deps, convertOffice } = officeDeps(convertedTo("/artifacts/batch.pdf"), (artifact) =>
+    artifact === "/artifacts/batch.pdf" ? WORD_PAGES : [{ page: 1, text: PAGE_1_TEXT }]
+  );
+
+  expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ indexed: 4 }));
+
+  // One call carrying all three Office documents — and the PDF is not among
+  // them, so a dispatch bug cannot route it through LibreOffice.
+  expect(convertOffice).toHaveBeenCalledTimes(1);
+  const converted = convertOffice.mock.calls[0][0].map((source) => source.absPath);
+  expect(converted).toHaveLength(3);
+  expect(converted.every((path: string) => path.endsWith(".docx"))).toBe(true);
+
+  const rerun = await ingestDirectory(ORG_ID, tmpRoot, deps);
+  expect(rerun).toEqual(counts({ skipped: 4 }));
+  expect(convertOffice).toHaveBeenCalledTimes(1);
+});
+
+it("leaves PDFs indexed before Office support was added exactly as they were", async () => {
+  // AGENTS.md § "Test Migrations Against Pre-Existing Data": the upgrade state
+  // is old rows plus new code, and every test that starts from an empty
+  // database is blind to it. Simulated by indexing the PDF alone — which is
+  // what the old pipeline did — and then dropping a Word file beside it.
+  const pdfPath = join(tmpRoot, "handbook.pdf");
+  writeFileSync(pdfPath, "fake-pdf-bytes-v1");
+
+  const { deps } = fakeDeps();
+  expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ indexed: 1 }));
+  const [before] = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
+  const chunksBefore = await chunksFor(before.id);
+
+  writeFileSync(join(tmpRoot, "Handbuch.doc"), "fake-doc-bytes");
+  const mixed = officeDeps(convertedTo("/artifacts/mixed.pdf"), (artifact) =>
+    artifact === "/artifacts/mixed.pdf"
+      ? WORD_PAGES
+      : [
+          { page: 1, text: PAGE_1_TEXT },
+          { page: 2, text: PAGE_2_TEXT },
+        ]
+  );
+
+  // The PDF is SKIPPED, not re-indexed: its content hash still matches, and a
+  // widened allowlist must not invalidate what was already there.
+  expect(await ingestDirectory(ORG_ID, tmpRoot, mixed.deps)).toEqual(
+    counts({ skipped: 1, indexed: 1 })
+  );
 
   const [pdfDoc] = await db
     .select()

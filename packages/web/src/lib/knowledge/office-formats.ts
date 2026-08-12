@@ -23,6 +23,19 @@
 export const OFFICE_EXTENSIONS = [".doc", ".docx", ".ppt", ".pptx"] as const;
 
 /**
+ * The two halves of that list, because they are anchored differently and the
+ * split is the whole of #938's dispatch: a presentation's slide N IS the
+ * converted PDF's page N, while a Word document's pages belong to the renderer
+ * and its citations ride the heading outline instead (locator.ts).
+ *
+ * Derived from `OFFICE_EXTENSIONS` by partition rather than re-typed, so a
+ * fifth format cannot be added to the list above and silently belong to
+ * neither anchor — `office-formats.test.ts` pins the two halves to cover it.
+ */
+export const WORD_EXTENSIONS = [".doc", ".docx"] as const;
+export const PRESENTATION_EXTENSIONS = [".ppt", ".pptx"] as const;
+
+/**
  * The spreadsheet formats the knowledge base reads directly, cells and all,
  * instead of converting (see `xlsx-extract.ts` for the three reasons).
  *
@@ -55,6 +68,16 @@ export function isOfficeFile(path: string): boolean {
 /** Is this a spreadsheet the knowledge base reads directly, rather than converts? */
 export function isSpreadsheetFile(path: string): boolean {
   return (SPREADSHEET_EXTENSIONS as readonly string[]).includes(extensionOf(path));
+}
+
+/** Is this a Word document — the format anchored on its heading outline? */
+export function isWordFile(path: string): boolean {
+  return (WORD_EXTENSIONS as readonly string[]).includes(extensionOf(path));
+}
+
+/** Is this a presentation — the format whose slide N is the converted PDF's page N? */
+export function isPresentationFile(path: string): boolean {
+  return (PRESENTATION_EXTENSIONS as readonly string[]).includes(extensionOf(path));
 }
 
 /**

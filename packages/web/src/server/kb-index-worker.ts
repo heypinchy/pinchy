@@ -25,6 +25,7 @@ import { kbEmbedderAvailable, kbEmbeddingConfig } from "@/lib/knowledge/kb-embed
 import { resolveKbOcr } from "@/lib/knowledge/kb-ocr";
 import { extractPdfPages } from "@/lib/knowledge/pdf-extract";
 import { extractXlsx } from "@/lib/knowledge/xlsx-extract";
+import { convertOfficeFiles } from "@/lib/knowledge/office-convert";
 import { ingestPaths, type IngestDeps } from "@/lib/knowledge/ingest";
 import {
   claimNextIndexJob,
@@ -83,10 +84,10 @@ async function resolveIngestDeps(tally: { current: OcrTally | null }): Promise<I
 
   return {
     embed: (texts) => embedTexts(texts, cfg),
-    extractPdf: (absPath) =>
-      extractPdfPages(
-        absPath,
-        ocr
+    extractPdf: (absPath, opts) =>
+      extractPdfPages(absPath, {
+        outline: opts?.outline,
+        ...(ocr
           ? {
               ocr: {
                 ocrPage: ocr.ocrPage,
@@ -99,9 +100,10 @@ async function resolveIngestDeps(tally: { current: OcrTally | null }): Promise<I
                 },
               },
             }
-          : undefined
-      ),
+          : {}),
+      }),
     extractXlsx,
+    convertOffice: (sources) => convertOfficeFiles(sources),
   };
 }
 

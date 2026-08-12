@@ -161,15 +161,19 @@ Nothing is re-indexed or re-uploaded by this — the mounts point at the same ho
 
 Two different paths read the files under `/data/`, and they support different formats. The distinction matters when you plan a corpus, so it's worth knowing before you mount one.
 
-**Knowledge Base search** (`knowledge_search`) indexes **PDFs** — text-based and scanned alike — and **Excel workbooks** (`.xlsx`, `.xlsm`). Word documents, slide decks, plain text and Markdown files under `/data/` are not indexed — see [Create a Knowledge Base Agent — Scope in this release](/guides/create-knowledge-base-agent/#scope-in-this-release).
+**Knowledge Base search** (`knowledge_search`) indexes **PDFs** — text-based and scanned alike — **Excel workbooks** (`.xlsx`, `.xlsm`), **Word documents** (`.doc`, `.docx`) and **slide decks** (`.ppt`, `.pptx`). Plain text and Markdown files under `/data/` are not indexed — see [Create a Knowledge Base Agent — Scope in this release](/guides/create-knowledge-base-agent/#scope-in-this-release).
+
+Word documents and slide decks — the old formats as well as the new ones — are converted to PDF on their way into the index, and that converted copy is what the search reads and what a citation opens. It never replaces your file: the original stays exactly where it is, untouched, and is still the document a citation names.
 
 A page with no text layer is read the same way an agent reads one when you open it in chat: the page is rendered to an image and handed to a vision model. That is worth knowing before you mount a corpus of scans, because it is the one part of indexing that sends document content to your model provider — see [What indexing sends to your provider](#what-indexing-sends-to-your-provider) below.
 
-A workbook is read from its cells rather than converted to a page layout, so a row that is too wide for its column keeps its full text instead of being clipped at a page edge. Older `.xls` workbooks are not indexed: they use a different file format that our reader does not open, so we leave them out rather than list every one of them as unreadable.
+A workbook is read from its cells rather than converted to a page layout, so a row that is too wide for its column keeps its full text instead of being clipped at a page edge. That is also why a workbook is the one format that is not converted: pages would be invented, and an invented page is not a place anyone can point at. Older `.xls` workbooks are not indexed: they use a different file format that our reader does not open, so we leave them out rather than list every one of them as unreadable.
 
-**Reading a file directly** (the agent's file tools) handles more: PDFs of either kind, **Word documents** (`.docx`), plain text and Markdown. Scanned PDFs are analyzed using the configured model's vision capabilities.
+Two things a conversion does not carry into the index, because it does not render them: **comments** in a Word document and **speaker notes** in a slide deck. What it does carry is text that a tracked change deleted but nobody has accepted yet — it is still printed, struck through, in the copy you open from the citation. That is deliberate. Search and preview read the same copy, so anything else would either hide a passage you can see or quote one you cannot find. If a document's draft history should not be searchable, accept or reject its changes before you index it.
 
-A workbook whose every sheet is hidden is counted `unsearchable`: it was read without error and holds nothing to search. A scan lands there too when no vision model is configured to read it. A file whose type the index doesn't take at all — a `.md` runbook, a `.docx` — never enters the run, so no count mentions it: mount a corpus of those and the report comes back the way it would for an empty folder.
+**Reading a file directly** (the agent's file tools) handles a different set: PDFs of either kind, **Word documents** (`.docx` only), plain text and Markdown. Scanned PDFs are analyzed using the configured model's vision capabilities. So a legacy `.doc` is searchable but cannot be opened directly, and a `.md` runbook is the other way round.
+
+A workbook whose every sheet is hidden is counted `unsearchable`: it was read without error and holds nothing to search. A scan lands there too when no vision model is configured to read it, and so does a Word document or slide deck that could not be converted — the document is listed, by name, rather than dropped. A file whose type the index doesn't take at all — a `.md` runbook, an older `.xls` — never enters the run, so no count mentions it: mount a corpus of those and the report comes back the way it would for an empty folder.
 
 ## What indexing sends to your provider
 

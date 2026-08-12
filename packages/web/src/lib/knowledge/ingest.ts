@@ -23,18 +23,24 @@
  * reachable from two overlapping roots counts once. ingestDirectory() is the
  * single-root wrapper over it.
  *
- * The embedder and the extractors are dependency-injected: production wires
- * `embedTexts` (./embeddings.ts), a pdfjs-based PDF extractor
- * (./pdf-extract.ts) and `extractXlsx` (./xlsx-extract.ts); tests inject
- * deterministic fakes so the integration suite stays hermetic (real Postgres,
- * no Ollama, no real PDF or workbook parsing).
+ * The embedder, the extractors and the Office converter are
+ * dependency-injected: production wires `embedTexts` (./embeddings.ts), a
+ * pdfjs-based PDF extractor (./pdf-extract.ts), `extractXlsx`
+ * (./xlsx-extract.ts) and `convertOfficeFiles` (./office-convert.ts); tests
+ * inject deterministic fakes so the integration suite stays hermetic (real
+ * Postgres, no Ollama, no LibreOffice, no real PDF or workbook parsing).
  *
  * WHICH extractor runs is decided per file by `extractDocument`, on the
- * extension, and so is the anchor the chunks carry: a PDF page for a PDF, a
- * sheet + row range for a spreadsheet (#940). Everything downstream of that
+ * extension, and so is the anchor the chunks carry: a page for a PDF, a sheet
+ * + row range for a spreadsheet (#940), a slide number for a presentation and
+ * a heading path for a Word document (#938). Everything downstream of that
  * dispatch — embedding, writing, idempotency, the removal pass — is
- * format-blind on purpose, which is what makes #938's heading and slide
- * producers a change to one function rather than to the pipeline.
+ * format-blind on purpose, which is what kept adding two formats a change to
+ * one function rather than to the pipeline.
+ *
+ * A page-shaped Office document is read through the PDF LibreOffice makes of
+ * it, but its IDENTITY stays the original: the row and every chunk carry the
+ * source path, because the artifact is not a file the reader has.
  */
 import { createHash } from "node:crypto";
 import { readdir, readFile, stat } from "node:fs/promises";
@@ -56,8 +62,10 @@ import { isArchivedPath, statusForPath } from "./archive-paths";
 import { chunkPages } from "./chunk";
 import { DEFAULT_BATCH_SIZE } from "./embeddings";
 import { detectLang } from "./lid";
-import { isSpreadsheetFile } from "./office-formats";
+import { collectHeadingSections, headingLocatorAt } from "./heading-sections";
+import { isOfficeFile, isPresentationFile, isSpreadsheetFile, isWordFile } from "./office-formats";
 import type { ChunkLocator } from "./locator";
+import type { ConversionOutcome, OfficeSource } from "./office-convert";
 import type { XlsxExtraction } from "./xlsx-extract";
 import type { IngestPage, IngestResult } from "./types";
 
@@ -70,8 +78,15 @@ export type { IngestPage, IngestResult } from "./types";
 export interface IngestDeps {
   /** Batch-embeds chunk texts into dense vectors (embeddinggemma-300m, 768-dim). Prod: `(t) => embedTexts(t, embedCfg)`. */
   embed: (texts: string[]) => Promise<number[][]>;
-  /** Extracts per-page text from a PDF at an absolute path. Prod: pdfjs-based (./pdf-extract.ts). */
-  extractPdf: (absPath: string) => Promise<IngestPage[]>;
+  /**
+   * Extracts per-page text from a PDF at an absolute path. Prod: pdfjs-based
+   * (./pdf-extract.ts).
+   *
+   * `outline` asks for the heading marks a converted Word document is anchored
+   * on (#938). It is a request, not a promise: a document with no heading
+   * styles yields none, and its chunks then carry no locator at all.
+   */
+  extractPdf: (absPath: string, opts?: { outline?: boolean }) => Promise<IngestPage[]>;
   /**
    * Reads a spreadsheet's cells into row-grouped chunks. Prod: `extractXlsx`
    * (./xlsx-extract.ts).
@@ -83,6 +98,22 @@ export interface IngestDeps {
    * one call site that needs updating.
    */
   extractXlsx: (absPath: string) => Promise<XlsxExtraction>;
+  /**
+   * Converts page-shaped Office documents to PDFs in the artifact store,
+   * returning one outcome per source in input order. Prod: `convertOfficeFiles`
+   * (./office-convert.ts).
+   *
+   * Required for the same reason `extractXlsx` is: once
+   * `DEFAULT_ALLOWED_EXTENSIONS` names `.doc`, every caller's ingest WILL meet
+   * one, and an optional converter would turn that into a runtime surprise in
+   * whichever deployment happens to hold a Word file.
+   *
+   * It takes a BATCH because process startup dominates conversion — 17 real
+   * corpus files cost 14.2 s in one process against 25.6 s one-per-file — and
+   * the ingest calls it with a slice of its queue rather than one path at a
+   * time.
+   */
+  convertOffice: (sources: readonly OfficeSource[]) => Promise<ConversionOutcome[]>;
 }
 
 export interface IngestOptions {
@@ -276,10 +307,17 @@ export const EMBED_PROGRESS_BATCH = DEFAULT_BATCH_SIZE;
 /** Reports that `embedded` of `total` chunks of the CURRENT document are done. */
 export type ChunkProgressCallback = (embedded: number, total: number) => void | Promise<void>;
 
-/** A chunk with the anchor a citation will point at. Every format producer converges here. */
+/**
+ * A chunk with the anchor a citation will point at. Every format producer
+ * converges here.
+ *
+ * Null is a real answer, not a missing one: a Word document written without
+ * heading styles has no anchor its reader could follow, and #938 chose an
+ * omitted locator over one that does not match what they see in Word.
+ */
 interface LocatedChunk {
   text: string;
-  locator: ChunkLocator;
+  locator: ChunkLocator | null;
 }
 
 /**
@@ -303,15 +341,84 @@ interface ExtractedDocument {
 }
 
 /**
+ * Hands out the converted PDF for an Office source, converting in batches as
+ * the queue reaches them.
+ *
+ * Lazy rather than a pre-pass over the whole corpus, and that is a progress
+ * decision: converting everything up front is the same total work but spends
+ * it before the first document is reported, so a corpus of Office files would
+ * show a bar that does not move for minutes. Batched rather than per-file
+ * because process startup dominates (see `IngestDeps.convertOffice`). A run
+ * that stops early converts only what it reached.
+ *
+ * Unchanged documents cost no conversion: the artifact store is keyed on
+ * content, so the second run answers from cache (`office-convert.ts`).
+ */
+function officeArtifacts(
+  queue: readonly { absPath: string }[],
+  deps: IngestDeps,
+  batchSize = OFFICE_CONVERT_BATCH
+): (absPath: string) => Promise<ConversionOutcome> {
+  const pending = queue.map((file) => file.absPath).filter(isOfficeFile);
+  const done = new Map<string, ConversionOutcome>();
+  let next = 0;
+
+  return async (absPath: string) => {
+    while (!done.has(absPath) && next < pending.length) {
+      const batch = pending.slice(next, next + batchSize);
+      next += batch.length;
+      const outcomes = await deps.convertOffice(batch.map((path) => ({ absPath: path })));
+      batch.forEach((path, i) => {
+        if (outcomes[i]) done.set(path, outcomes[i]);
+      });
+    }
+
+    const outcome = done.get(absPath);
+    if (outcome) return outcome;
+    // The converter returned fewer outcomes than it was given sources, which
+    // is a broken contract rather than a statement about this document.
+    // Retryable, so it must not be recorded as unreadable.
+    return {
+      sourcePath: absPath,
+      status: "infrastructure",
+      reason: "converter returned no outcome for this document",
+    };
+  };
+}
+
+/**
+ * Documents per converter process. Matches `office-convert.ts`'s own default —
+ * the ingest slices the queue, so a second number here would silently cap the
+ * one that was measured.
+ */
+const OFFICE_CONVERT_BATCH = 20;
+
+/** Resolves the converted PDF for one Office source. */
+type ResolveArtifact = (absPath: string) => Promise<ConversionOutcome>;
+
+/**
  * Reads one file into chunks with locators, dispatching on its extension.
  *
- * The dispatch is the whole Wave-2 shape: a PDF's pages are chunked by
- * `chunkPages` and anchored on the page they came from, a spreadsheet is read
- * by `extractXlsx` and anchored on sheet + row range. `XlsxChunk` is
- * field-for-field the `sheet` locator, so that half is a spread rather than a
- * mapping (locator.ts says so, and this is the producer it was said for).
+ * The dispatch is the whole Wave-2 shape, and every branch anchors on what the
+ * format actually has (locator.ts):
+ *
+ *   PDF           `chunkPages` on the page the text came from
+ *   spreadsheet   `extractXlsx`, sheet + row range — `XlsxChunk` IS the
+ *                 locator field-for-field, so that half is a spread
+ *   presentation  the converted PDF, slide N = page N
+ *   Word          the converted PDF's outline, heading path — never a page,
+ *                 which the renderer decides and the reader's Word disagrees
+ *                 with
  */
-async function extractDocument(absPath: string, deps: IngestDeps): Promise<ExtractedDocument> {
+async function extractDocument(
+  absPath: string,
+  deps: IngestDeps,
+  resolveArtifact: ResolveArtifact
+): Promise<ExtractedDocument> {
+  if (isOfficeFile(absPath)) {
+    return extractOfficeDocument(absPath, deps, resolveArtifact);
+  }
+
   if (isSpreadsheetFile(absPath)) {
     const extraction = await deps.extractXlsx(absPath);
     return {
@@ -331,6 +438,65 @@ async function extractDocument(absPath: string, deps: IngestDeps): Promise<Extra
       locator: { kind: "page", page: chunk.page },
     })),
     pageCount: pages.length,
+    text: pages.map((page) => page.text).join("\n"),
+  };
+}
+
+/**
+ * Reads a page-shaped Office document through the PDF LibreOffice made of it.
+ *
+ * The identity stays the original: the chunks are written against the source
+ * path, and the artifact is never named anywhere a reader can see. A citation
+ * that pointed at the artifact would name a file that is not on their share.
+ *
+ * What the artifact renders is what gets indexed — including text struck
+ * through by an unaccepted tracked change, which LibreOffice draws and its
+ * text layer therefore carries. That is deliberate: the same artifact is what
+ * the citation opens (#939), so indexing anything else would mean the reader
+ * is shown a passage the search does not know, or promised one they cannot
+ * find. Comments and speaker notes are not rendered at all and so never enter
+ * the index — measured against the real binary, not assumed
+ * (`office-convert.libreoffice.test.ts`).
+ */
+async function extractOfficeDocument(
+  absPath: string,
+  deps: IngestDeps,
+  resolveArtifact: ResolveArtifact
+): Promise<ExtractedDocument> {
+  const outcome = await resolveArtifact(absPath);
+
+  if (outcome.status === "infrastructure") {
+    // The converter never got to judge this document (out of memory, timed
+    // out, binary missing). Throwing keeps the existing row and its chunks
+    // untouched and counts the file `failed`, so a memory squeeze cannot brand
+    // a perfectly good document as permanently unreadable (#936).
+    throw new Error(`office conversion unavailable: ${outcome.reason ?? "unknown"}`);
+  }
+
+  if (outcome.status !== "converted" || !outcome.artifactPath) {
+    // A final verdict about THIS document: it cannot be converted, so there is
+    // nothing to index. Returning an empty extraction — rather than throwing —
+    // is what gives it a row with no chunks, which is exactly how the
+    // unreadable list finds it (unsearchable.ts), with nothing to wire up.
+    return { chunks: [], pageCount: null, text: "" };
+  }
+
+  const word = isWordFile(absPath);
+  const pages = await deps.extractPdf(outcome.artifactPath, { outline: word });
+  const sections = word ? collectHeadingSections(pages) : [];
+
+  return {
+    chunks: chunkPages(pages).map((chunk) => ({
+      text: chunk.text,
+      locator: word
+        ? headingLocatorAt(sections, chunk.page, chunk.charStart)
+        : { kind: "slide", slide: chunk.page },
+    })),
+    // A presentation's slides are its own units and the converter maps them
+    // one to one. A Word document's pages are the RENDERER's — LibreOffice's
+    // pagination is not the reader's Word — so the row says nothing rather
+    // than something false, the same call `ChunkLocator` makes one level down.
+    pageCount: isPresentationFile(absPath) ? pages.length : null,
     text: pages.map((page) => page.text).join("\n"),
   };
 }
@@ -421,6 +587,7 @@ async function ingestFile(
   orgId: string,
   absPath: string,
   deps: IngestDeps,
+  resolveArtifact: ResolveArtifact,
   onChunkProgress?: ChunkProgressCallback
 ): Promise<FileOutcome> {
   const { buffer, fileStat } = await fileStep(absPath, async () => ({
@@ -463,7 +630,9 @@ async function ingestFile(
     // A file with no text at all lands here too, on every run, and rebuilds
     // to zero chunks again — the write result, not the branch, is what tells
     // the two apart.
-    const { chunks } = await fileStep(absPath, () => extractDocument(absPath, deps));
+    const { chunks } = await fileStep(absPath, () =>
+      extractDocument(absPath, deps, resolveArtifact)
+    );
     const written = await writeChunks(existing.id, orgId, absPath, chunks, deps, onChunkProgress);
     return written > 0 ? "indexed" : "unsearchable";
   }
@@ -472,7 +641,7 @@ async function ingestFile(
   // something unparseable throws here and stays a `failed` update, with the
   // last good document and its chunks still searchable. Deleting first would
   // turn that same failure into silent data loss on a success response.
-  const extracted = await fileStep(absPath, () => extractDocument(absPath, deps));
+  const extracted = await fileStep(absPath, () => extractDocument(absPath, deps, resolveArtifact));
 
   if (existing) {
     // Content changed since the last ingest: replace wholesale. Deleting
@@ -589,6 +758,10 @@ export async function ingestPaths(
     }
   }
 
+  // Converts in queue order, in batches, as the loop below reaches Office
+  // documents — see officeArtifacts for why this is not a pre-pass.
+  const resolveArtifact = officeArtifacts(queue, deps);
+
   const tally: Record<FileOutcome, number> = { indexed: 0, skipped: 0, unsearchable: 0 };
   let failed = 0;
   let processed = 0;
@@ -620,13 +793,18 @@ export async function ingestPaths(
 
   for (const { absPath, bytes } of queue) {
     try {
-      const outcome = await ingestFile(orgId, absPath, deps, (embedded, chunkTotal) =>
-        // Credit this file's bytes in proportion to the chunks embedded from
-        // it. Its chunk count IS known once it is split, and that is the one
-        // thing chunk-level progress is uniquely good for: without it the
-        // compilation PDF worth 38% of the corpus would hold both bar and ETA
-        // still for over an hour (#907).
-        report(chunkTotal > 0 ? Math.round((bytes * embedded) / chunkTotal) : 0)
+      const outcome = await ingestFile(
+        orgId,
+        absPath,
+        deps,
+        resolveArtifact,
+        (embedded, chunkTotal) =>
+          // Credit this file's bytes in proportion to the chunks embedded from
+          // it. Its chunk count IS known once it is split, and that is the one
+          // thing chunk-level progress is uniquely good for: without it the
+          // compilation PDF worth 38% of the corpus would hold both bar and ETA
+          // still for over an hour (#907).
+          report(chunkTotal > 0 ? Math.round((bytes * embedded) / chunkTotal) : 0)
       );
       tally[outcome]++;
       if (isArchivedPath(absPath)) archived++;

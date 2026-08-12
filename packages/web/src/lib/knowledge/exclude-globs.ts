@@ -21,21 +21,28 @@
  * Kept as plain data + small predicates (no glob DSL) so it's easy to read,
  * test, and override.
  */
-import { SPREADSHEET_EXTENSIONS } from "./office-formats";
+import { OFFICE_EXTENSIONS, SPREADSHEET_EXTENSIONS } from "./office-formats";
 
 /**
  * File extensions eligible for ingest.
  *
- * PDFs, plus the OOXML spreadsheets #940 wired in. A spreadsheet is read
- * cell-by-cell rather than converted (`xlsx-extract.ts` argues why), so it
- * needs no conversion chain in front of it — which is what lets it join this
- * list before its page-shaped Office siblings do.
+ * PDFs, the OOXML spreadsheets #940 wired in, and the page-shaped Office
+ * formats #938 reads through their converted PDF. Two different routes: a
+ * spreadsheet is read cell-by-cell (`xlsx-extract.ts` argues why), while
+ * `.doc/.docx/.ppt/.pptx` go through LibreOffice first (`office-convert.ts`) —
+ * which is why the spreadsheets could join this list a wave earlier.
  *
- * `SPREADSHEET_EXTENSIONS` is spread rather than re-typed: this list and the
- * extractor's capability are the same fact, and two spellings of one fact is
- * how an allowlist ends up naming a format nothing can read.
+ * Both lists are spread rather than re-typed: this list and what the pipeline
+ * can actually read are the same fact, and two spellings of one fact is how an
+ * allowlist ends up naming a format nothing can open. `.xls` is absent for
+ * exactly that reason and stays absent — LibreOffice would convert it, but a
+ * sheet has no page to cite (see `SPREADSHEET_EXTENSIONS`).
  */
-export const DEFAULT_ALLOWED_EXTENSIONS: readonly string[] = [".pdf", ...SPREADSHEET_EXTENSIONS];
+export const DEFAULT_ALLOWED_EXTENSIONS: readonly string[] = [
+  ".pdf",
+  ...SPREADSHEET_EXTENSIONS,
+  ...OFFICE_EXTENSIONS,
+];
 
 /** Exact (case-insensitive) file names that are always OS artifacts. */
 const DENYLIST_EXACT_NAMES: readonly string[] = ["thumbs.db", "desktop.ini"];

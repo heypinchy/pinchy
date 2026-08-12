@@ -13,8 +13,12 @@ import { describe, it, expect } from "vitest";
 import {
   convertedPdfName,
   isOfficeFile,
+  isPresentationFile,
   isSpreadsheetFile,
+  isWordFile,
   OFFICE_EXTENSIONS,
+  PRESENTATION_EXTENSIONS,
+  WORD_EXTENSIONS,
 } from "@/lib/knowledge/office-formats";
 
 describe("isOfficeFile", () => {
@@ -90,5 +94,39 @@ describe("isSpreadsheetFile", () => {
   it("is not confused by a page-shaped Office document, or by a dotfile", () => {
     expect(isSpreadsheetFile("/data/Angebot.docx")).toBe(false);
     expect(isSpreadsheetFile("/data/.xlsx")).toBe(false);
+  });
+});
+
+describe("the two halves of OFFICE_EXTENSIONS", () => {
+  it("covers every page-shaped format, with nothing in both", () => {
+    // The dispatch that gives a Word chunk a heading and a slide chunk a slide
+    // number reads these two lists. A format in neither would be admitted to
+    // the ingest and then anchored by nothing; a format in both would take
+    // whichever branch happens to be tested first.
+    expect([...WORD_EXTENSIONS, ...PRESENTATION_EXTENSIONS].sort()).toEqual(
+      [...OFFICE_EXTENSIONS].sort()
+    );
+    expect(
+      WORD_EXTENSIONS.filter((ext) => (PRESENTATION_EXTENSIONS as readonly string[]).includes(ext))
+    ).toEqual([]);
+  });
+
+  it("recognises legacy and OOXML alike, case-insensitively", () => {
+    // Legacy is the majority of the reference corpus (13 of 19), and it is
+    // exactly what the OOXML-only parsing ecosystem cannot read — the reason
+    // both anchors come out of the converted PDF instead.
+    expect(isWordFile("/data/QF_2012/Bericht.DOC")).toBe(true);
+    expect(isWordFile("/data/Angebot.docx")).toBe(true);
+    expect(isPresentationFile("/data/Schulung.PPT")).toBe(true);
+    expect(isPresentationFile("/data/Schulung.pptx")).toBe(true);
+  });
+
+  it("keeps the two apart, and both away from the formats they do not own", () => {
+    expect(isWordFile("/data/Schulung.pptx")).toBe(false);
+    expect(isPresentationFile("/data/Angebot.docx")).toBe(false);
+    for (const path of ["/data/report.pdf", "/data/Preise.xlsx", "/data/.docx"]) {
+      expect(isWordFile(path)).toBe(false);
+      expect(isPresentationFile(path)).toBe(false);
+    }
   });
 });

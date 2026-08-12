@@ -110,20 +110,13 @@ describe("linkable-extension drift guard", () => {
    * Linkable, deliberately, before the ingest can index it — each with the
    * issue that closes the gap.
    *
-   * The Office formats became linkable with their preview route (#939) and
-   * become indexable with the ingest integration (#938), which is the order
-   * those issues plan. Until #938 lands, a path-shaped `.doc` mentioned in
-   * chat prose really does linkify to a route that answers 404: nothing has
-   * converted the document, so `resolveConvertedArtifact` finds no artifact.
-   * That is a real if narrow cost, and naming it here is what keeps it a
-   * decision rather than an oversight.
+   * Empty since #938: the Office formats were the four entries here, linkable
+   * with their preview route (#939) and indexable one issue later, which is
+   * the order those issues planned. The map stays because the situation
+   * recurs — a format becomes servable before it becomes indexable — and an
+   * exemption with an issue against its name is how that stays a decision.
    */
-  const PENDING_INGEST: Record<string, string> = {
-    doc: "#938 — Office ingest; linkable since the preview route (#939)",
-    docx: "#938 — Office ingest; linkable since the preview route (#939)",
-    ppt: "#938 — Office ingest; linkable since the preview route (#939)",
-    pptx: "#938 — Office ingest; linkable since the preview route (#939)",
-  };
+  const PENDING_INGEST: Record<string, string> = {};
 
   it("links no type the ingest cannot index in the first place", () => {
     // The looser direction is fine and stays unasserted: the ingest may accept
