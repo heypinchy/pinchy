@@ -8,9 +8,26 @@
  * email-workflows/types exists.
  */
 
+/**
+ * Where one heading's section begins, as an offset into the page text that
+ * opens it. Produced by the PDF extractor when a caller asks for the outline,
+ * consumed by the ingest to anchor a converted Word document's chunks (#938).
+ */
+export interface HeadingMark {
+  charStart: number;
+  /** The path from the outline's root, outermost first. */
+  headings: string[];
+}
+
 export interface IngestPage {
   page: number;
   text: string;
+  /**
+   * The heading sections that START on this page, ascending. Absent for a
+   * format whose citations are anchored on the page itself, and for a page
+   * that merely continues an earlier section.
+   */
+  headings?: HeadingMark[];
 }
 
 export interface IngestResult {
