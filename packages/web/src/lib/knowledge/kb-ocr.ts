@@ -45,6 +45,15 @@ const PROVIDER_KEY_SETTINGS = new Map<string, string>(
 export interface ResolveKbOcrDeps {
   /** Test seam. Production uses the plugin's shared vision call. */
   describeImage?: typeof describePageImage;
+  /**
+   * Called with the tokens each successful page read cost.
+   *
+   * These are real calls against the operator's own key, and the Usage
+   * Dashboard promises a record for every completed LLM call. The chat-time
+   * vision path already reports its tokens; without this, a corpus of scans
+   * would spend hundreds of calls that no total on that page accounts for.
+   */
+  onUsage?: (usage: { inputTokens: number; outputTokens: number }) => void;
 }
 
 /**
@@ -96,6 +105,10 @@ export async function resolveKbOcr(deps: ResolveKbOcrDeps = {}): Promise<KbOcrSe
     model,
     ocrPage: async (pageImage) => {
       const result = await describeImage(pageImage.toString("base64"), config);
+      // Reported only on a result: a call that never reached the provider
+      // (no key, an unsupported provider, an HTTP error) spent nothing, and a
+      // zero row would suggest it did.
+      if (result) deps.onUsage?.(result.usage);
       // null, not "": a failed provider call must stay distinguishable from a
       // page that genuinely says nothing.
       return result?.text ?? null;

@@ -15,6 +15,8 @@
  * the interval is a poll for NEW work, not a run cadence: the re-entrancy guard
  * keeps overlapping ticks from starting a second run.
  */
+import { db } from "@/db";
+import { usageRecords } from "@/db/schema";
 import { appendAuditLog } from "@/lib/audit";
 import { safeProviderError } from "@/lib/audit";
 import { recordAuditFailure } from "@/lib/audit-deferred";
@@ -48,6 +50,8 @@ interface OcrTally {
   documents: number;
   pages: number;
   skippedPages: number;
+  inputTokens: number;
+  outputTokens: number;
 }
 
 /** Resolves the production embedder + extractor, or null if the bundled embedding model is missing (a broken image, not a config choice). */
@@ -58,8 +62,24 @@ async function resolveIngestDeps(tally: { current: OcrTally | null }): Promise<I
   // Resolved once per run rather than per document: the model choice and the
   // provider key cannot meaningfully change mid-run, and re-resolving would
   // re-read settings once per PDF across a corpus of thousands.
-  const ocr = await resolveKbOcr();
-  if (ocr) tally.current = { model: ocr.model, documents: 0, pages: 0, skippedPages: 0 };
+  const ocr = await resolveKbOcr({
+    onUsage: ({ inputTokens, outputTokens }) => {
+      const t = tally.current;
+      if (!t) return;
+      t.inputTokens += inputTokens;
+      t.outputTokens += outputTokens;
+    },
+  });
+  if (ocr) {
+    tally.current = {
+      model: ocr.model,
+      documents: 0,
+      pages: 0,
+      skippedPages: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+    };
+  }
 
   return {
     embed: (texts) => embedTexts(texts, cfg),
@@ -139,6 +159,7 @@ export async function runNextIndexJob(opts: RunIndexJobOptions = {}): Promise<Kb
     // database outage is already an operator's problem, not a queue's.
     const reason = safeProviderError(err instanceof Error ? err.message : "reindex_failed");
     await finishIndexJob(job.id, { outcome: "failed", counts, error: reason });
+    await recordOcrUsage(job, ocrTally.current);
     await auditOutcome({ job, agent, outcome: "failure", counts, reason, ocr: ocrTally.current });
     return { ...job, status: "failed", counts, error: reason };
   }
@@ -147,8 +168,46 @@ export async function runNextIndexJob(opts: RunIndexJobOptions = {}): Promise<Kb
   // reindex did its job, and those counts are findings about the corpus.
   // Burying them would be the failure.
   await finishIndexJob(job.id, { outcome: "succeeded", counts });
+  await recordOcrUsage(job, ocrTally.current);
   await auditOutcome({ job, agent, outcome: "success", counts, ocr: ocrTally.current });
   return { ...job, status: "succeeded", counts };
+}
+
+/**
+ * Writes one usage row for the vision tokens this run spent.
+ *
+ * One row per RUN, not per page: a corpus of scans is hundreds of calls, and
+ * the dashboard's question is "what did indexing cost", not "what did page 7
+ * cost". The `kb-index:` session key classifies as `system` — background work
+ * Pinchy triggered on the agent's behalf, which is exactly what a reindex is.
+ *
+ * Written inline rather than through /api/internal/usage/record: that route
+ * exists so the OpenClaw container can reach the database it has no connection
+ * to. This worker runs inside the web process and already has one.
+ */
+async function recordOcrUsage(job: KbIndexJob, ocr: OcrTally | null): Promise<void> {
+  if (!ocr || ocr.inputTokens + ocr.outputTokens === 0) return;
+
+  try {
+    await db.insert(usageRecords).values({
+      // Same sentinel the plugin's vision reporter uses: nobody typed
+      // anything, so there is no user to attribute this to.
+      userId: "system",
+      agentId: job.agentId,
+      agentName: job.agentName,
+      sessionKey: `kb-index:${job.id}`,
+      model: ocr.model,
+      inputTokens: ocr.inputTokens,
+      outputTokens: ocr.outputTokens,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      estimatedCostUsd: null,
+    });
+  } catch (err) {
+    // Telemetry must never take down a reindex that actually happened — the
+    // same call the audit write makes one line below.
+    console.error("[kb-index-worker] failed to record OCR usage:", err);
+  }
 }
 
 /**

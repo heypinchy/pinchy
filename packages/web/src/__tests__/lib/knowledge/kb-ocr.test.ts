@@ -83,6 +83,35 @@ describe("when it runs", () => {
     expect(config.model).toBe("anthropic/claude-haiku-4-5-20251001");
   });
 
+  it("reports the tokens each page cost", async () => {
+    // Index-time OCR is a real LLM call against the operator's own key, and
+    // "Pinchy writes a usage record whenever an LLM call completes" is a claim
+    // the Usage Dashboard docs make. The chat-time vision path already reports
+    // its tokens; a corpus of scans must not spend them invisibly.
+    mockChain.mockResolvedValue(["anthropic/claude-haiku-4-5-20251001"]);
+    mockGetSetting.mockResolvedValue("sk-ant-test");
+    const describeImage = vi
+      .fn()
+      .mockResolvedValue({ text: "t", usage: { inputTokens: 900, outputTokens: 40 } });
+    const onUsage = vi.fn();
+
+    const ocr = await resolveKbOcr({ describeImage, onUsage });
+    await ocr!.ocrPage(Buffer.from("png"));
+
+    expect(onUsage).toHaveBeenCalledWith({ inputTokens: 900, outputTokens: 40 });
+  });
+
+  it("reports nothing for a call that never reached the provider", async () => {
+    mockChain.mockResolvedValue(["anthropic/claude-haiku-4-5-20251001"]);
+    mockGetSetting.mockResolvedValue("sk-ant-test");
+    const onUsage = vi.fn();
+
+    const ocr = await resolveKbOcr({ describeImage: vi.fn().mockResolvedValue(null), onUsage });
+    await ocr!.ocrPage(Buffer.from("png"));
+
+    expect(onUsage).not.toHaveBeenCalled();
+  });
+
   it("reports a failed vision call as null rather than as empty text", async () => {
     // `describePageImage` returns null on a provider error. Passing that
     // through as "" would make a failed OCR indistinguishable from a page
