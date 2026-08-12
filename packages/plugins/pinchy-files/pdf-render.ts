@@ -1,7 +1,9 @@
 import { createCanvas } from "@napi-rs/canvas";
 import type { PDFPageProxy } from "pdfjs-dist/legacy/build/pdf.mjs";
 
-const MAX_PIXELS = 4_000_000; // 4M pixel budget
+// Shared with the knowledge-base ingest's own renderer — see pdf-scan-rule.ts
+// for why the budget crosses the package boundary but the render call does not.
+import { MAX_RENDER_PIXELS as MAX_PIXELS } from "./pdf-scan-rule";
 
 export async function renderPageToImage(page: PDFPageProxy): Promise<Buffer> {
   const viewport = page.getViewport({ scale: 1.0 });

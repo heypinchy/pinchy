@@ -3,6 +3,10 @@ import { createCanvas } from "@napi-rs/canvas";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { renderPageToImage } from "./pdf-render";
+// The scan decision is shared with the knowledge-base ingest, which imports
+// this module's rule across the package boundary. See pdf-scan-rule.ts for why
+// the canonical copy sits in the plugin rather than in web.
+import { hasSparseText, isScannedPage } from "./pdf-scan-rule";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const STANDARD_FONT_DATA_URL = join(__dirname, "node_modules/pdfjs-dist/standard_fonts/");
@@ -26,7 +30,6 @@ class NodeCanvasFactory {
   }
 }
 
-const PDF_MIN_TEXT_CHARS = 200;
 const DEFAULT_MAX_PAGES = 50;
 
 const MIN_IMAGE_DIMENSION = 100;
@@ -140,23 +143,10 @@ export function getImageObject(
   });
 }
 
-/**
- * Whether a page should be treated as a scan — i.e. rendered to PNG and handed
- * to a vision model instead of being served as its (near-empty) text layer.
- *
- * `imageSizeUnknown` is set only when the page provably painted an image and the
- * size lookup timed out. In that state the page has already shown it is not a
- * plain text page, so the safe reading is "scan": the agent gets a picture it
- * can actually read. The alternative — the behaviour this replaces — was to
- * silently classify it as text and hand over a blank page.
- */
-export function isScannedPage(opts: {
-  sparseText: boolean;
-  hasLargeImages: boolean;
-  imageSizeUnknown: boolean;
-}): boolean {
-  return opts.sparseText && (opts.hasLargeImages || opts.imageSizeUnknown);
-}
+// The scan rule moved to ./pdf-scan-rule so the knowledge-base ingest can share
+// it verbatim; re-exported here because this module has always been where the
+// rule was imported from.
+export { isScannedPage } from "./pdf-scan-rule";
 
 /** The operator list shape both image loops read out of `page.getOperatorList()`. */
 type PaintOperatorList = { fnArray: ArrayLike<number>; argsArray: ArrayLike<unknown[]> };
@@ -326,7 +316,7 @@ export async function extractPdfText(
       .replace(/\s+/g, " ")
       .trim();
 
-    const sparseText = text.length < PDF_MIN_TEXT_CHARS;
+    const sparseText = hasSparseText(text);
 
     // Check if a sparse-text page contains large images (indicating it's a scan,
     // not just a short page like a title page or separator).
