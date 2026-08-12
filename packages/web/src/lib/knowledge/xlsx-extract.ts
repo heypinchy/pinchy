@@ -81,13 +81,20 @@ export class XlsxExtractionError extends Error {
 const CHARS_PER_TOKEN = 4;
 const DEFAULT_TARGET_TOKENS = 512;
 
-/** One kept row: its Excel row number and its rendered single-line key-value block. */
-/** One visible cell of a row, with the label the sheet's header row gives its column. */
-export interface SheetCell {
+/**
+ * One visible cell of a row: the sheet column it sits in, the label that
+ * column's header gives it (or its letter), and its rendered text. The column
+ * NUMBER stays on the cell because labels are not identities — two columns
+ * legitimately share a header ("Price" twice), and only the number can keep
+ * them apart when the preview lays cells under columns.
+ */
+interface SheetCell {
+  column: number;
   label: string;
   text: string;
 }
 
+/** One kept row: its Excel row number and its visible cells. */
 interface SheetRow {
   number: number;
   cells: SheetCell[];
@@ -262,6 +269,7 @@ function readSheet(worksheet: ExcelJS.Worksheet): { rows: SheetRow[]; hiddenRows
     rows.push({
       number: rowNumber,
       cells: cells.map((cell) => ({
+        column: cell.column,
         label: headers?.get(cell.column) ?? cell.letter,
         text: cell.text,
       })),
@@ -385,18 +393,19 @@ export async function extractXlsx(
   return { chunks, sheets, hiddenSheets, hiddenRows };
 }
 
-/** One row of a citation preview: its sheet row number and its visible cells. */
-export interface SheetRangeRow {
-  number: number;
-  cells: SheetCell[];
-}
-
 /** The slice of a workbook one citation points at. */
 export interface SheetRange {
   sheet: string;
-  /** Column labels in the order the preview should show them, headers first where the sheet has them. */
+  /**
+   * Column labels in the sheet's own left-to-right order, restricted to the
+   * columns the selected rows actually fill (a 40-column sheet whose cited
+   * rows fill four should render four columns, not 36 empty ones). Labels may
+   * repeat — two columns headed "Price" are two columns — which is why rows
+   * align to columns by POSITION, not by label.
+   */
   columns: string[];
-  rows: SheetRangeRow[];
+  /** Each row's cell texts, index-aligned to `columns`; "" where the row has no cell there. */
+  rows: Array<{ number: number; cells: string[] }>;
 }
 
 /** How many rows one preview may return, however wide a range a citation names. */
@@ -416,11 +425,16 @@ export const SHEET_RANGE_MAX_ROWS = 200;
  * receive, not an error to raise at the reader. An empty result is a legitimate
  * answer and the caller renders it as such.
  *
+ * `sheetName: null` means no sheet was named at all — a bare workbook mention —
+ * and resolves to the first VISIBLE sheet, where the workbook itself would
+ * open. It never falls back to a hidden sheet: the index skipped those, and
+ * the preview must not show what the index never read.
+ *
  * @throws XlsxExtractionError if the file cannot be read as a workbook.
  */
 export async function readSheetRange(
   absPath: string,
-  sheetName: string,
+  sheetName: string | null,
   startRow: number,
   endRow: number
 ): Promise<SheetRange | null> {
@@ -438,7 +452,7 @@ export async function readSheetRange(
   // deliberately never read.
   const worksheet = workbook.worksheets.find(
     (candidate) =>
-      candidate.name === sheetName &&
+      (sheetName === null || candidate.name === sheetName) &&
       candidate.state !== "hidden" &&
       candidate.state !== "veryHidden"
   );
@@ -449,15 +463,22 @@ export async function readSheetRange(
     .filter((row) => row.number >= startRow && row.number <= endRow)
     .slice(0, SHEET_RANGE_MAX_ROWS);
 
-  // Column order follows first appearance across the selected rows rather than
-  // the sheet's full width: a 40-column sheet whose cited rows fill four should
-  // render four columns, not 36 empty ones.
-  const columns: string[] = [];
-  for (const row of selected) {
-    for (const cell of row.cells) {
-      if (!columns.includes(cell.label)) columns.push(cell.label);
-    }
-  }
+  // The columns the selected rows fill, in the sheet's own left-to-right
+  // order, keyed on the column NUMBER: labels may repeat, so they cannot
+  // identify a column (see the test with two "Price" headers).
+  const columnNumbers = [
+    ...new Set(selected.flatMap((row) => row.cells.map((c) => c.column))),
+  ].sort((a, b) => a - b);
+  const labelFor = new Map(selected.flatMap((row) => row.cells.map((c) => [c.column, c.label])));
 
-  return { sheet: worksheet.name, columns, rows: selected };
+  return {
+    sheet: worksheet.name,
+    columns: columnNumbers.map((column) => labelFor.get(column)!),
+    rows: selected.map((row) => ({
+      number: row.number,
+      cells: columnNumbers.map(
+        (column) => row.cells.find((cell) => cell.column === column)?.text ?? ""
+      ),
+    })),
+  };
 }

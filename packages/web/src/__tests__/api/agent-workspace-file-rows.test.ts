@@ -104,6 +104,23 @@ describe("serving the cited rows", () => {
     expect(body.sheet).toBe("Suppliers");
     expect(body.columns).toEqual(["Supplier", "Part", "Price"]);
     expect(body.rows.map((r: { number: number }) => r.number)).toEqual([3, 4]);
+    // Cells arrive index-aligned to `columns`, so the dialog renders them
+    // positionally and two columns sharing one header label stay two columns.
+    expect(body.rows[0].cells).toEqual(["Acme 2", "P-2", "20"]);
+  });
+
+  it("opens at the top of the first sheet when no range is named at all", async () => {
+    // A bare workbook citation names no sheet and no rows. That is a request
+    // for the top of the workbook — where opening the file itself would land —
+    // not a client defect to 400 at.
+    const path = await writeWorkbook();
+
+    const res = await callGET(path, { variant: "rows" });
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body.sheet).toBe("Suppliers");
+    expect(body.rows[0].number).toBe(2);
   });
 
   it("records the read as a view of the document, like any other", async () => {
@@ -118,6 +135,9 @@ describe("serving the cited rows", () => {
     expect(entry.eventType).toBe("knowledge.source_viewed");
     expect(entry.outcome).toBe("success");
     expect(entry.detail.document.name).toBe("preise.xlsx");
+    // Which representation left is a separate question from whether one did —
+    // same field the byte-serving path records ("original"/"converted").
+    expect(entry.detail.representation).toBe("rows");
   });
 });
 
@@ -136,12 +156,17 @@ describe("what it refuses", () => {
   it("rejects a malformed range rather than guessing one", async () => {
     const path = await writeWorkbook();
 
-    for (const bad of [
+    const badRanges: Array<Record<string, string>> = [
       { variant: "rows", sheet: "Suppliers", from: "0", to: "4" },
       { variant: "rows", sheet: "Suppliers", from: "5", to: "2" },
       { variant: "rows", sheet: "", from: "1", to: "2" },
       { variant: "rows", sheet: "Suppliers", from: "x", to: "2" },
-    ]) {
+      // A partial range is a typo, not a request for the top of the workbook:
+      // only naming NOTHING means that.
+      { variant: "rows", sheet: "Suppliers" },
+      { variant: "rows", from: "1", to: "2" },
+    ];
+    for (const bad of badRanges) {
       expect((await callGET(path, bad)).status).toBe(400);
     }
   });
@@ -158,7 +183,12 @@ describe("what it refuses", () => {
   it("still rejects an unknown variant, which this one must not have loosened", async () => {
     const path = await writeWorkbook();
 
-    expect((await callGET(path, { variant: "row" })).status).toBe(400);
+    const res = await callGET(path, { variant: "row" });
+
+    expect(res.status).toBe(400);
+    // The refusal names every variant that exists, so the client with a typo
+    // learns the real choices rather than a stale pair.
+    expect((await res.json()).error).toContain("rows");
   });
 });
 

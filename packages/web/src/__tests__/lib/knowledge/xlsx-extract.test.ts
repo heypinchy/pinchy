@@ -550,7 +550,64 @@ describe("readSheetRange — what a spreadsheet citation opens", () => {
 
     expect(range?.columns).toEqual(["Supplier", "Part", "Price"]);
     expect(range?.rows.map((r) => r.number)).toEqual([3, 4]);
-    expect(range?.rows[0].cells.map((c) => c.text)).toEqual(["Acme 2", "P-2", "20"]);
+    expect(range?.rows[0].cells).toEqual(["Acme 2", "P-2", "20"]);
+  });
+
+  it("keeps two columns that share one header label apart", async () => {
+    // Real sheets repeat labels — a list price next to a discounted price, both
+    // headed "Price". The index renders BOTH cells of such a row, so a preview
+    // that matched cells by label would silently drop one and disagree with the
+    // index — the one thing this preview must never do. Cells are therefore
+    // aligned to columns by position, and the label is display text only.
+    const path = await buildWorkbook("dup-labels.xlsx", (workbook) => {
+      const sheet = workbook.addWorksheet("Sheet1");
+      sheet.addRow(["Supplier", "Price", "Price"]);
+      sheet.addRow(["Acme", 10, 8]);
+    });
+
+    const range = await readSheetRange(path, "Sheet1", 2, 2);
+
+    expect(range?.columns).toEqual(["Supplier", "Price", "Price"]);
+    expect(range?.rows[0].cells).toEqual(["Acme", "10", "8"]);
+  });
+
+  it("aligns a sparse row's cells under their own columns", async () => {
+    // The first cited row has no Part. Its Price must stay under Price with an
+    // empty cell under Part — not shift left — and the column order is the
+    // sheet's own left-to-right order, not the order cells happen to appear in.
+    const path = await buildWorkbook("sparse.xlsx", (workbook) => {
+      const sheet = workbook.addWorksheet("Sheet1");
+      sheet.addRow(["Supplier", "Part", "Price"]);
+      sheet.addRow(["Globex", undefined, 20]);
+      sheet.addRow(["Acme", "P-1", 10]);
+    });
+
+    const range = await readSheetRange(path, "Sheet1", 2, 3);
+
+    expect(range?.columns).toEqual(["Supplier", "Part", "Price"]);
+    expect(range?.rows.map((r) => r.cells)).toEqual([
+      ["Globex", "", "20"],
+      ["Acme", "P-1", "10"],
+    ]);
+  });
+
+  it("opens at the top of the first visible sheet when no sheet is named", async () => {
+    // A bare workbook mention carries no sheet and no rows. The preview then
+    // opens where the workbook itself would — the first VISIBLE sheet, from the
+    // top — and never on a hidden sheet the index deliberately skipped.
+    const path = await buildWorkbook("bare.xlsx", (workbook) => {
+      const internal = workbook.addWorksheet("Internal");
+      internal.addRow(["secret"]);
+      internal.state = "hidden";
+      const sheet = workbook.addWorksheet("Prices");
+      sheet.addRow(["Supplier"]);
+      sheet.addRow(["Acme"]);
+    });
+
+    const range = await readSheetRange(path, null, 1, SHEET_RANGE_MAX_ROWS);
+
+    expect(range?.sheet).toBe("Prices");
+    expect(range?.rows.map((r) => r.cells)).toEqual([["Acme"]]);
   });
 
   it("reads the same cells the index read, hidden rows included in the skip", async () => {
@@ -567,7 +624,7 @@ describe("readSheetRange — what a spreadsheet citation opens", () => {
 
     const range = await readSheetRange(path, "Sheet1", 1, 4);
 
-    expect(range?.rows.flatMap((r) => r.cells.map((c) => c.text))).not.toContain("secret");
+    expect(range?.rows.flatMap((r) => r.cells)).not.toContain("secret");
   });
 
   it("answers null for a sheet the workbook does not have", async () => {

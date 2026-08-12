@@ -24,9 +24,14 @@ export const SheetDialog: FC<{
   /** The citation href; the rows request is derived from it. */
   url: string;
   title: string;
-  sheet: string;
-  startRow: number;
-  endRow: number;
+  /**
+   * The cited anchor — all three together, or none of them: a bare workbook
+   * mention names no sheet, and the dialog then asks for the top of the
+   * workbook (the route resolves that to the first visible sheet).
+   */
+  sheet?: string;
+  startRow?: number;
+  endRow?: number;
   children: ReactNode;
   /** Test-only escape hatch; the dialog is trigger-driven in the app. */
   defaultOpen?: boolean;
@@ -35,11 +40,14 @@ export const SheetDialog: FC<{
   const [range, setRange] = useState<SheetRange | null>(null);
   const [error, setError] = useState(false);
   const filename = title.split("/").filter(Boolean).pop() ?? title;
+  const hasRange = sheet !== undefined && startRow !== undefined && endRow !== undefined;
 
   useEffect(() => {
     if (!open || range || error) return;
     const base = url.split("#")[0];
-    const query = `&variant=rows&sheet=${encodeURIComponent(sheet)}&from=${startRow}&to=${endRow}`;
+    const query = hasRange
+      ? `&variant=rows&sheet=${encodeURIComponent(sheet)}&from=${startRow}&to=${endRow}`
+      : "&variant=rows";
     let cancelled = false;
 
     void fetch(`${base}${query}`)
@@ -54,9 +62,13 @@ export const SheetDialog: FC<{
     return () => {
       cancelled = true;
     };
-  }, [open, range, error, url, sheet, startRow, endRow]);
+  }, [open, range, error, url, hasRange, sheet, startRow, endRow]);
 
   const rangeLabel = startRow === endRow ? `row ${startRow}` : `rows ${startRow}-${endRow}`;
+  // What the resolved range is called once loaded: the citation's own anchor
+  // when it named one, otherwise the sheet the route resolved the bare mention
+  // to — so the reader still learns which sheet they are looking at.
+  const anchorLabel = hasRange ? `${sheet}, ${rangeLabel}` : (range?.sheet ?? null);
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
@@ -72,9 +84,9 @@ export const SheetDialog: FC<{
           </DialogTitle>
           {/* The anchor the reader is looking at, spelled the way the citation
               spelled it, so the two are recognisably the same thing. */}
-          <span className="shrink-0 text-muted-foreground text-xs">
-            {sheet}, {rangeLabel}
-          </span>
+          {anchorLabel && (
+            <span className="shrink-0 text-muted-foreground text-xs">{anchorLabel}</span>
+          )}
           <Button asChild size="sm" variant="ghost" className="ml-auto shrink-0">
             {/* The workbook itself. A preview answers "does the answer say what
                 this document says"; the file answers everything else. */}
@@ -93,15 +105,20 @@ export const SheetDialog: FC<{
             // An honest empty state rather than a blank pane: the citation
             // resolved to a document but not to rows inside it.
             <p className="text-muted-foreground text-sm">
-              This document has no {sheet ? `“${sheet}” ` : ""}rows in that range.
+              {hasRange
+                ? `This document has no “${sheet}” rows in that range.`
+                : "This workbook has no rows to show."}
             </p>
           ) : (
             <table className="w-full border-collapse text-sm">
               <thead>
                 <tr className="border-b text-left">
                   <th className="p-2 font-medium text-muted-foreground">#</th>
-                  {range.columns.map((column) => (
-                    <th key={column} className="p-2 font-medium">
+                  {/* Keyed by INDEX on purpose: two columns legitimately share
+                      one header label, and cells align to columns by position
+                      (the server guarantees the alignment — see SheetRange). */}
+                  {range.columns.map((column, index) => (
+                    <th key={index} className="p-2 font-medium">
                       {column}
                     </th>
                   ))}
@@ -113,9 +130,9 @@ export const SheetDialog: FC<{
                     {/* The sheet's own row number, so a reader can find the row
                         again in Excel rather than counting from the top. */}
                     <td className="p-2 text-muted-foreground tabular-nums">{row.number}</td>
-                    {range.columns.map((column) => (
-                      <td key={column} className="p-2 align-top">
-                        {row.cells.find((cell) => cell.label === column)?.text ?? ""}
+                    {range.columns.map((_, index) => (
+                      <td key={index} className="p-2 align-top">
+                        {row.cells[index] ?? ""}
                       </td>
                     ))}
                   </tr>

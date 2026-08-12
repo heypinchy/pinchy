@@ -472,3 +472,33 @@ describe("a spreadsheet citation", () => {
     expect(para.children!.map((c) => c.value ?? "").join("")).toContain("(Sheet1, rows 5-12)");
   });
 });
+
+describe("a locator only attaches to a document that can honour it", () => {
+  // The parser is forgiving about SPELLING, never about SHAPE: a locator the
+  // viewer cannot open is worse than none, because the link then opens a pane
+  // that shows an error instead of the document.
+  it("ignores a page-style hint on a spreadsheet, which has no page to open at", () => {
+    // "#page=N" on a .xlsx would send the workbook into the PDF lightbox. The
+    // mention still links — it opens the top of the workbook, locator-less.
+    const tree = run(paragraph("- a/b.xlsx — S. 12"));
+
+    expect(parseSourceHref(links(tree)[0].url)).toEqual({ path: "a/b.xlsx", locator: null });
+  });
+
+  it("ignores a sheet-range hint on a document that has no sheets", () => {
+    // Prose after a PDF path can happen to spell the range shape ("a/b.pdf,
+    // well, rows 3 and 4…"). A sheet locator on a PDF would open the rows pane
+    // just to show a 400.
+    const tree = run(paragraph("- a/b.pdf (Sheet1, rows 5-12)"));
+
+    expect(parseSourceHref(links(tree)[0].url)).toEqual({ path: "a/b.pdf", locator: null });
+  });
+
+  it("declines a range it cannot honestly open, rather than carrying it to a 400", () => {
+    for (const text of ["- a/b.xlsx (Sheet1, rows 12-5)", "- a/b.xlsx (Sheet1, row 0)"]) {
+      const tree = run(paragraph(text));
+
+      expect(parseSourceHref(links(tree)[0].url)?.locator).toBeNull();
+    }
+  });
+});

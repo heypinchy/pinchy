@@ -24,6 +24,7 @@ import {
   buildSourceDownloads,
   parseSourceHref,
 } from "@/lib/knowledge/source-links";
+import { isSpreadsheetFile } from "@/lib/knowledge/office-formats";
 import { cn } from "@/lib/utils";
 
 /** Taken from the consuming component so the list below cannot drift from what it accepts. */
@@ -168,15 +169,19 @@ const defaultComponents = memoizeMarkdownComponents({
     const source = href ? parseSourceHref(href) : null;
     // A spreadsheet opens into its cited ROWS, not into the PDF lightbox: it
     // has no page to open at, and an <embed> of a .xlsx is a pane no browser
-    // renders. See sheet-dialog.tsx.
-    if (source && href && source.locator?.kind === "sheet") {
+    // renders. Dispatched on the PATH, not only the locator, so a workbook
+    // mentioned without rows still reaches the sheet dialog (which then opens
+    // the top of the workbook) instead of falling through to a viewer that
+    // cannot render it. See sheet-dialog.tsx.
+    if (source && href && (source.locator?.kind === "sheet" || isSpreadsheetFile(source.path))) {
+      const locator = source.locator?.kind === "sheet" ? source.locator : null;
       return (
         <SheetDialog
           url={href}
           title={source.path}
-          sheet={source.locator.sheet}
-          startRow={source.locator.startRow}
-          endRow={source.locator.endRow}
+          sheet={locator?.sheet}
+          startRow={locator?.startRow}
+          endRow={locator?.endRow}
         >
           <button type="button" className={cn(linkClasses, "cursor-pointer text-left")}>
             {children}

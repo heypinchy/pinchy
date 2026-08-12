@@ -22,7 +22,7 @@
  */
 import { fromCitationPath, toCitationPath } from "./citation-path";
 import type { ChunkLocator } from "./locator";
-import { convertedPdfName, isOfficeFile } from "./office-formats";
+import { convertedPdfName, isOfficeFile, isSpreadsheetFile } from "./office-formats";
 
 /**
  * A DATA-ROOT-RELATIVE path ending in an extension we can serve, anchored at the
@@ -45,11 +45,10 @@ import { convertedPdfName, isOfficeFile } from "./office-formats";
  * alternation and `OFFICE_EXTENSIONS` are paired by a test rather than shared
  * as a variable — a built RegExp would hide the one thing a reader of this
  * comment needs to see, and the pattern's cost model (see `findSourcePaths`)
- * depends on what is written here. Spreadsheets stay out: nothing converts
- * one. Spreadsheets joined them in turn (#940), and NOT by gaining a
- * conversion: paginating a wide sheet clips the very columns the cell-based
- * ingest exists to preserve (see xlsx-extract.ts), so a `.xlsx` citation opens
- * a rendering of the cited ROWS instead of a page of a PDF.
+ * depends on what is written here. Spreadsheets joined in turn (#940), and
+ * NOT by gaining a conversion: paginating a wide sheet clips the very columns
+ * the cell-based ingest exists to preserve (see xlsx-extract.ts), so a `.xlsx`
+ * citation opens a rendering of the cited ROWS instead of a page of a PDF.
  *
  * At least one `/` is required. A bare `report.pdf` is exactly the citation
  * shape a full path exists to prevent — unfindable in a deep tree, ambiguous
@@ -177,22 +176,31 @@ const TRAILING_PAGE = /^\s*[—–\-,]?\s*(?:p\.?|pp\.?|page|s\.|seite)\s*(\d{1,
 const TRAILING_SHEET_RANGE =
   /^\s*[—–\-,]?\s*\(?\s*([^(),\n]+?),\s*rows?\s*(\d{1,7})(?:\s*[-–]\s*(\d{1,7}))?\s*\)?/i;
 
-/** The position a citation names, read from whatever trails the path. */
-function trailingLocator(rest: string): ChunkLocator | null {
-  const page = TRAILING_PAGE.exec(rest);
-  if (page) return { kind: "page", page: Number(page[1]) };
+/**
+ * The position a citation names, read from whatever trails the path — but only
+ * a position THIS document can honour. A page hint on a spreadsheet (no page
+ * to open at) and a sheet range on anything else (no sheets to open) are both
+ * dropped rather than carried: a locator the viewer can only answer with an
+ * error pane is worse than none, while a locator-less spreadsheet link still
+ * opens the top of the workbook. Forgiving about spelling, never about shape —
+ * which is also why a range the route would 400 on (row 0, a descending
+ * range, a blank sheet name) is declined here instead of shipped to a reader.
+ */
+function trailingLocator(rest: string, isSpreadsheet: boolean): ChunkLocator | null {
+  if (!isSpreadsheet) {
+    const page = TRAILING_PAGE.exec(rest);
+    return page ? { kind: "page", page: Number(page[1]) } : null;
+  }
 
   const range = TRAILING_SHEET_RANGE.exec(rest);
   if (!range) return null;
+  const sheet = range[1].trim();
   const startRow = Number(range[2]);
-  return {
-    kind: "sheet",
-    sheet: range[1].trim(),
-    startRow,
-    // `formatLocator` collapses a one-row range to "row 5"; both ends are
-    // restored so the preview asks for a range either way.
-    endRow: range[3] === undefined ? startRow : Number(range[3]),
-  };
+  // `formatLocator` collapses a one-row range to "row 5"; both ends are
+  // restored so the preview asks for a range either way.
+  const endRow = range[3] === undefined ? startRow : Number(range[3]);
+  if (sheet === "" || startRow < 1 || endRow < startRow) return null;
+  return { kind: "sheet", sheet, startRow, endRow };
 }
 
 /**
@@ -360,7 +368,7 @@ function linkifyText(value: string, agentId: string): MdastNode[] | null {
     // A position may trail the path ("— p. 44", "(Suppliers, rows 5-12)"). It
     // is consumed into the href but left in the visible text: the reader still
     // sees what is being cited, and the link merely opens there.
-    const locator = trailingLocator(value.slice(end));
+    const locator = trailingLocator(value.slice(end), isSpreadsheetFile(path));
 
     if (start > cursor) parts.push({ type: "text", value: value.slice(cursor, start) });
     parts.push({

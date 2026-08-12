@@ -419,13 +419,18 @@ Serve a file from a directory this agent is granted under `allowed_paths` — th
 
 **Query parameters:**
 
-| Field      | Required | Description                                                                                         |
-| ---------- | -------- | --------------------------------------------------------------------------------------------------- |
-| `path`     | Yes      | The file, which must resolve inside one of the agent's granted directories                          |
-| `download` | No       | `1` marks this as taking a copy rather than reading it                                              |
-| `variant`  | No       | `original` or `converted` — the converted PDF is what previews an Office source. Anything else 400s |
+| Field      | Required | Description                                                                                                            |
+| ---------- | -------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `path`     | Yes      | The file, which must resolve inside one of the agent's granted directories                                             |
+| `download` | No       | `1` marks this as taking a copy rather than reading it                                                                 |
+| `variant`  | No       | `original`, `converted` or `rows` — the converted PDF is what previews an Office source. Anything else 400s            |
+| `sheet`    | No       | `variant=rows` only: the worksheet the cited rows live on. Pass it together with `from` and `to`, or none of the three |
+| `from`     | No       | `variant=rows` only: first cited row, 1-based inclusive                                                                |
+| `to`       | No       | `variant=rows` only: last cited row, inclusive; clamped to at most 200 returned rows                                   |
 
-`download` decides which audit row is written: `knowledge.source_viewed` without it, `knowledge.source_downloaded` with it. Reading a cited document and carrying it out of the building are different acts, so they are different rows — and the caller has to say which, because the response cannot: a `.docx` is served as an attachment either way.
+`variant=rows` is what a spreadsheet citation's preview asks for. It answers JSON instead of bytes — `{ sheet, columns, rows }`, each row carrying its sheet row number and its cell texts index-aligned to `columns` — read through the same traversal the index used, so hidden rows and hidden sheets stay excluded. With none of `sheet`/`from`/`to` it opens the top of the first visible sheet; naming a sheet the workbook does not have answers `200` with an empty range (the document was found); a workbook that will not open answers `422`.
+
+`download` decides which audit row is written: `knowledge.source_viewed` without it, `knowledge.source_downloaded` with it. Reading a cited document and carrying it out of the building are different acts, so they are different rows — and the caller has to say which, because the response cannot: a `.docx` is served as an attachment either way. A successful read also records which representation left (`original`, `converted` or `rows`).
 
 ### `GET /api/agents/:agentId/telegram-chat`
 

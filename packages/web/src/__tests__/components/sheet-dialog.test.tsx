@@ -17,17 +17,12 @@ const HREF = "/api/agents/agent-1/workspace-file?path=%2Fdata%2Fx%2Fpreise.xlsx"
 const RANGE = {
   sheet: "Suppliers",
   columns: ["Supplier", "Price"],
+  // Cells arrive index-aligned to `columns` — the SERVER aligns them (see
+  // readSheetRange), so a sparse row carries "" where it has no cell and the
+  // dialog renders positionally without any matching logic of its own.
   rows: [
-    {
-      number: 3,
-      cells: [
-        { label: "Supplier", text: "Acme" },
-        { label: "Price", text: "20" },
-      ],
-    },
-    // A row missing one of the columns must render an empty cell rather than
-    // shifting the row's values into the wrong columns.
-    { number: 4, cells: [{ label: "Supplier", text: "Globex" }] },
+    { number: 3, cells: ["Acme", "20"] },
+    { number: 4, cells: ["Globex", ""] },
   ],
 };
 
@@ -84,6 +79,21 @@ describe("SheetDialog", () => {
     expect(url).toContain("sheet=Suppliers");
     expect(url).toContain("from=3");
     expect(url).toContain("to=4");
+  });
+
+  it("asks for the top of the workbook when the citation named no rows", async () => {
+    // A bare workbook mention carries no sheet and no range. The dialog then
+    // requests variant=rows with no range parameters, which the route answers
+    // with the first visible sheet from the top.
+    const fetchMock = mockFetch(RANGE);
+    open({ sheet: undefined, startRow: undefined, endRow: undefined });
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const url = String(fetchMock.mock.calls[0][0]);
+    expect(url).toContain("variant=rows");
+    expect(url).not.toContain("sheet=");
+    expect(url).not.toContain("from=");
+    expect(url).not.toContain("to=");
   });
 
   it("fetches nothing until it is opened", async () => {
