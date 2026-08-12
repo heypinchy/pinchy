@@ -17,6 +17,7 @@ import type { TextMessagePartProps } from "@assistant-ui/react";
 
 import { AgentIdContext } from "@/components/chat";
 import { PdfDialog } from "@/components/assistant-ui/attachment-preview";
+import { SheetDialog } from "@/components/assistant-ui/sheet-dialog";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import {
   remarkSourceLinks,
@@ -165,6 +166,24 @@ const defaultComponents = memoizeMarkdownComponents({
     // navigating: the point of the citation is to check a claim against the
     // answer still on screen. Every other link keeps normal anchor behaviour.
     const source = href ? parseSourceHref(href) : null;
+    // A spreadsheet opens into its cited ROWS, not into the PDF lightbox: it
+    // has no page to open at, and an <embed> of a .xlsx is a pane no browser
+    // renders. See sheet-dialog.tsx.
+    if (source && href && source.locator?.kind === "sheet") {
+      return (
+        <SheetDialog
+          url={href}
+          title={source.path}
+          sheet={source.locator.sheet}
+          startRow={source.locator.startRow}
+          endRow={source.locator.endRow}
+        >
+          <button type="button" className={cn(linkClasses, "cursor-pointer text-left")}>
+            {children}
+          </button>
+        </SheetDialog>
+      );
+    }
     if (source && href) {
       return (
         // The download list is derived from the SAME href the viewer opens, so
@@ -174,7 +193,7 @@ const defaultComponents = memoizeMarkdownComponents({
         <PdfDialog
           url={href}
           title={source.path}
-          page={source.page}
+          page={source.locator?.kind === "page" ? source.locator.page : null}
           downloads={buildSourceDownloads(href) ?? undefined}
         >
           <button type="button" className={cn(linkClasses, "cursor-pointer text-left")}>
