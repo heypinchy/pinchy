@@ -247,6 +247,67 @@ describe("the build graph is not the same thing as the web package", () => {
     );
   });
 
+  // The sibling of the guard above, one layer down. Classifying a cross-package
+  // import as build-relevant makes the LOCAL gate correct; it does nothing for
+  // the production image, whose build stage copies plugin files in one by one.
+  // A shared file that is classified but not copied compiles on every laptop
+  // and dies in `docker build` with MODULE_NOT_FOUND — the slowest, most
+  // expensive place to learn it. So pin the two lists to each other.
+  test("every shared plugin source the build reaches is copied into the image", () => {
+    const WEB = join(REPO_ROOT, "packages/web");
+    const dockerfile = readFileSync(
+      join(REPO_ROOT, "Dockerfile.pinchy"),
+      "utf8",
+    );
+    const missing = [];
+
+    const walk = (absDir) => {
+      for (const entry of readdirSync(absDir, { withFileTypes: true })) {
+        const abs = join(absDir, entry.name);
+        if (entry.isDirectory()) {
+          if (entry.name === "node_modules" || entry.name === ".next") continue;
+          walk(abs);
+          continue;
+        }
+        if (!/\.(ts|tsx|mts)$/.test(entry.name)) continue;
+        const repoPath = abs
+          .slice(REPO_ROOT.length + 1)
+          .split("\\")
+          .join("/");
+        if (isBuildIrrelevant(repoPath)) continue;
+
+        for (const target of escapingImportTargets(
+          repoPath,
+          readFileSync(abs, "utf8"),
+        )) {
+          const resolved = [
+            target,
+            `${target}.ts`,
+            `${target}.tsx`,
+            `${target}/index.ts`,
+          ].find((c) => existsSync(join(REPO_ROOT, c)));
+          // Only source files need their own COPY. The runtime stage takes the
+          // whole plugins tree from the build stage, so getting it into the
+          // build stage is the whole job.
+          if (!resolved || !resolved.endsWith(".ts")) continue;
+          if (!dockerfile.includes(resolved))
+            missing.push(`${resolved} (imported by ${repoPath})`);
+        }
+      }
+    };
+
+    walk(WEB);
+
+    assert.deepEqual(
+      missing,
+      [],
+      `the web build imports these files from outside packages/web, but ` +
+        `Dockerfile.pinchy's build stage never copies them — the production ` +
+        `image would fail to build:\n  ` +
+        missing.join("\n  "),
+    );
+  });
+
   test("the walk above actually reads the web tree", () => {
     // A guard that silently traverses nothing is the failure mode here: it stays
     // green forever. Pin the one import we know escapes today.

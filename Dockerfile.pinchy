@@ -91,6 +91,16 @@ COPY packages/web packages/web
 # plugin-manifest-loader.ts imports these JSON manifests at Next.js build time
 # (static imports bundled by Turbopack). They must be present before `pnpm build`.
 COPY packages/plugins/pinchy-files/openclaw.plugin.json packages/plugins/pinchy-files/
+# The scanned-PDF reader the knowledge-base ingest SHARES with pinchy-files
+# (#941): the scan rule and the vision-API client. Both are deliberately
+# import-free, and the canonical copy lives in the plugin because a plugin is
+# deployed as a self-contained directory and can import nothing outside itself —
+# see packages/plugins/pinchy-files/pdf-scan-rule.ts. `pnpm build` compiles them
+# (web imports them with a relative path that climbs out of the package), and
+# `tsx` resolves them again as a LIVE require at runtime, on the index worker's
+# path. The runtime stage inherits them through its `COPY --from=build
+# /app/packages/plugins`. Pinned by scripts/lib/prepush-build-gate.test.mjs.
+COPY packages/plugins/pinchy-files/pdf-scan-rule.ts packages/plugins/pinchy-files/pdf-vision-api.ts packages/plugins/pinchy-files/
 COPY packages/plugins/pinchy-context/openclaw.plugin.json packages/plugins/pinchy-context/
 COPY packages/plugins/pinchy-audit/openclaw.plugin.json packages/plugins/pinchy-audit/
 COPY packages/plugins/pinchy-transcript/openclaw.plugin.json packages/plugins/pinchy-transcript/
