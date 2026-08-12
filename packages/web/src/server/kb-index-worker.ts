@@ -20,6 +20,7 @@ import { safeProviderError } from "@/lib/audit";
 import { recordAuditFailure } from "@/lib/audit-deferred";
 import { embedTexts } from "@/lib/knowledge/embeddings";
 import { kbEmbedderAvailable, kbEmbeddingConfig } from "@/lib/knowledge/kb-embedder";
+import { resolveKbOcr } from "@/lib/knowledge/kb-ocr";
 import { extractPdfPages } from "@/lib/knowledge/pdf-extract";
 import { extractXlsx } from "@/lib/knowledge/xlsx-extract";
 import { ingestPaths, type IngestDeps } from "@/lib/knowledge/ingest";
@@ -33,14 +34,53 @@ import {
 import { KB_INDEX_WORKER_ACTOR, reindexAuditEntry } from "@/lib/knowledge/reindex-audit";
 import { zeroIngestResult, type IngestResult } from "@/lib/knowledge/types";
 
+/**
+ * What one run sent to a vision model, for the audit row.
+ *
+ * Counts, never paths: `reindexAuditEntry` explains why an immutable,
+ * HMAC-signed detail must not carry filesystem paths, and that reasoning does
+ * not weaken because the payload would be interesting. So the trail answers
+ * "how much of this corpus was sent, and to which model" — not "which files",
+ * which stays answerable from the index itself.
+ */
+interface OcrTally {
+  model: string;
+  documents: number;
+  pages: number;
+  skippedPages: number;
+}
+
 /** Resolves the production embedder + extractor, or null if the bundled embedding model is missing (a broken image, not a config choice). */
-function resolveIngestDeps(): IngestDeps | null {
+async function resolveIngestDeps(tally: { current: OcrTally | null }): Promise<IngestDeps | null> {
   if (!kbEmbedderAvailable()) return null;
 
   const cfg = kbEmbeddingConfig();
+  // Resolved once per run rather than per document: the model choice and the
+  // provider key cannot meaningfully change mid-run, and re-resolving would
+  // re-read settings once per PDF across a corpus of thousands.
+  const ocr = await resolveKbOcr();
+  if (ocr) tally.current = { model: ocr.model, documents: 0, pages: 0, skippedPages: 0 };
+
   return {
     embed: (texts) => embedTexts(texts, cfg),
-    extractPdf: extractPdfPages,
+    extractPdf: (absPath) =>
+      extractPdfPages(
+        absPath,
+        ocr
+          ? {
+              ocr: {
+                ocrPage: ocr.ocrPage,
+                onDocumentOcr: ({ rendered, skipped }) => {
+                  const t = tally.current;
+                  if (!t) return;
+                  t.documents++;
+                  t.pages += rendered;
+                  t.skippedPages += skipped;
+                },
+              },
+            }
+          : undefined
+      ),
     extractXlsx,
   };
 }
@@ -66,11 +106,15 @@ export async function runNextIndexJob(opts: RunIndexJobOptions = {}): Promise<Kb
   // still indexed 1500 documents. Reading the tally off the last report is the
   // only way that survives the throw.
   let counts: IngestResult = zeroIngestResult();
+  // Mutated by the extractor's per-document callback. Held in a box rather
+  // than returned, for the same reason as `counts`: a run that dies partway
+  // still sent whatever it sent, and that has to reach the audit row.
+  const ocrTally: { current: OcrTally | null } = { current: null };
 
   try {
     // Resolved per run, not per process: the route's precheck only covers the
     // moment of the request, and existsSync is cheap enough to re-check here.
-    const deps = opts.deps ?? resolveIngestDeps();
+    const deps = opts.deps ?? (await resolveIngestDeps(ocrTally));
     if (!deps) throw new Error("embedding_model_missing");
 
     counts = await ingestPaths(job.orgId, job.paths, deps, {
@@ -95,7 +139,7 @@ export async function runNextIndexJob(opts: RunIndexJobOptions = {}): Promise<Kb
     // database outage is already an operator's problem, not a queue's.
     const reason = safeProviderError(err instanceof Error ? err.message : "reindex_failed");
     await finishIndexJob(job.id, { outcome: "failed", counts, error: reason });
-    await auditOutcome({ job, agent, outcome: "failure", counts, reason });
+    await auditOutcome({ job, agent, outcome: "failure", counts, reason, ocr: ocrTally.current });
     return { ...job, status: "failed", counts, error: reason };
   }
 
@@ -103,7 +147,7 @@ export async function runNextIndexJob(opts: RunIndexJobOptions = {}): Promise<Kb
   // reindex did its job, and those counts are findings about the corpus.
   // Burying them would be the failure.
   await finishIndexJob(job.id, { outcome: "succeeded", counts });
-  await auditOutcome({ job, agent, outcome: "success", counts });
+  await auditOutcome({ job, agent, outcome: "success", counts, ocr: ocrTally.current });
   return { ...job, status: "succeeded", counts };
 }
 
@@ -120,6 +164,7 @@ async function auditOutcome(args: {
   outcome: "success" | "failure";
   counts: IngestResult;
   reason?: string;
+  ocr: OcrTally | null;
 }): Promise<void> {
   const entry = reindexAuditEntry({
     actorType: "system",
@@ -130,6 +175,9 @@ async function auditOutcome(args: {
     jobId: args.job.id,
     counts: args.counts,
     reason: args.reason,
+    // Omitted entirely when the run OCR'd nothing, so an absent field means
+    // "nothing was sent" rather than "we did not look".
+    ocr: args.ocr && args.ocr.documents > 0 ? args.ocr : undefined,
   });
   try {
     await appendAuditLog(entry);

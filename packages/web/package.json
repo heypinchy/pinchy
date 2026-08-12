@@ -42,6 +42,7 @@
     "@dicebear/core": "^9.4.2",
     "@dicebear/notionists": "^9.4.2",
     "@hookform/resolvers": "^5.5.7",
+    "@napi-rs/canvas": "^1.0.3",
     "@types/pdfkit": "^0.17.6",
     "ajv": "^8.20.0",
     "bcryptjs": "^3.0.3",

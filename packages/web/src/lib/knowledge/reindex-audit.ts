@@ -29,6 +29,17 @@ export interface ReindexAuditArgs {
   counts?: IngestResult;
   /** Scrubbed failure summary. Failure rows only. */
   reason?: string;
+  /**
+   * What this run sent to a vision model, when it sent anything.
+   *
+   * Index-time OCR is the one part of indexing that transmits document CONTENT
+   * to a third party — every other step is local — so the trail has to record
+   * it. Counts and the model, never paths: see the note on `pathCount` below,
+   * which does not weaken because this payload would be more interesting.
+   * Absent when the run OCR'd nothing, so a missing field reads as "nothing
+   * was sent", not "we did not look".
+   */
+  ocr?: { model: string; documents: number; pages: number; skippedPages: number };
 }
 
 export function reindexAuditEntry(args: ReindexAuditArgs): AuditLogEntry {
@@ -57,6 +68,7 @@ export function reindexAuditEntry(args: ReindexAuditArgs): AuditLogEntry {
             archived: args.counts.archived,
           }
         : {}),
+      ...(args.ocr !== undefined ? { ocr: args.ocr } : {}),
       ...(args.reason !== undefined ? { reason: args.reason } : {}),
     },
   };
