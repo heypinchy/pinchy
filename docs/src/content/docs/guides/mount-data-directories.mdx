@@ -161,13 +161,34 @@ Nothing is re-indexed or re-uploaded by this — the mounts point at the same ho
 
 Two different paths read the files under `/data/`, and they support different formats. The distinction matters when you plan a corpus, so it's worth knowing before you mount one.
 
-**Knowledge Base search** (`knowledge_search`) indexes **text-based PDFs** and **Excel workbooks** (`.xlsx`, `.xlsm`). Scanned PDFs, Word documents, slide decks, plain text and Markdown files under `/data/` are not indexed — see [Create a Knowledge Base Agent — Scope in this release](/guides/create-knowledge-base-agent/#scope-in-this-release).
+**Knowledge Base search** (`knowledge_search`) indexes **PDFs** — text-based and scanned alike — and **Excel workbooks** (`.xlsx`, `.xlsm`). Word documents, slide decks, plain text and Markdown files under `/data/` are not indexed — see [Create a Knowledge Base Agent — Scope in this release](/guides/create-knowledge-base-agent/#scope-in-this-release).
+
+A page with no text layer is read the same way an agent reads one when you open it in chat: the page is rendered to an image and handed to a vision model. That is worth knowing before you mount a corpus of scans, because it is the one part of indexing that sends document content to your model provider — see [What indexing sends to your provider](#what-indexing-sends-to-your-provider) below.
 
 A workbook is read from its cells rather than converted to a page layout, so a row that is too wide for its column keeps its full text instead of being clipped at a page edge. Older `.xls` workbooks are not indexed: they use a different file format that our reader does not open, so we leave them out rather than list every one of them as unreadable.
 
 **Reading a file directly** (the agent's file tools) handles more: PDFs of either kind, **Word documents** (`.docx`), plain text and Markdown. Scanned PDFs are analyzed using the configured model's vision capabilities.
 
-So a scanned certificate under `/data/` can be opened and read on request, but it won't come back as a search hit — the agent has to be pointed at it. If a large part of your corpus is scans, the reindex report tells you so: it counts them under `unsearchable` rather than `indexed`. A workbook whose every sheet is hidden lands in the same count, for the same reason: it was read without error and holds nothing to search. A file whose type the index doesn't take at all — a `.md` runbook, a `.docx` — never enters the run, so no count mentions it: mount a corpus of those and the report comes back the way it would for an empty folder.
+A workbook whose every sheet is hidden is counted `unsearchable`: it was read without error and holds nothing to search. A scan lands there too when no vision model is configured to read it. A file whose type the index doesn't take at all — a `.md` runbook, a `.docx` — never enters the run, so no count mentions it: mount a corpus of those and the report comes back the way it would for an empty folder.
+
+## What indexing sends to your provider
+
+Everything about indexing is local — reading the file, splitting it, computing embeddings — with exactly one exception: **a page with no text layer is sent to your configured model provider**, as an image, so a vision model can read it.
+
+Three consequences worth stating plainly:
+
+- It happens at index time, for **every** scanned page in the corpus, whether or not anyone ever asks about that document.
+- It uses the same vision model Pinchy already picks for reading PDFs in chat, so a scan reads the same way whether the index read it or an agent did.
+- It happens once per document, not once per question.
+
+If that is not acceptable for your instance, set `PINCHY_KB_OCR=off` in your environment and restart. Indexing then skips scanned pages entirely, nothing leaves the building, and those documents are reported as `unsearchable` instead — visible, not silent.
+
+Two limits to know:
+
+- **A local-only stack has no vision model.** Pinchy picks the vision model from your configured cloud providers; a model you pulled into a local Ollama is not considered, because whether it can read images depends on which model you pulled. An air-gapped instance therefore indexes scans as unsearchable today.
+- **At most 200 pages per document** are read this way. A document with more reports what was left behind rather than dropping it quietly.
+
+The reindex entry in the [audit trail](/concepts/audit-trail/) records how many documents and pages were sent, and to which model. It does not record which files — audit rows are immutable and deliberately carry no filesystem paths.
 
 ## Knowledge Base vs. workspace files
 

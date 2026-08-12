@@ -105,15 +105,15 @@ curl -b session_cookie "https://pinchy.example.com/api/agents/<agentId>/knowledg
 
 `processed` counts whole documents, so a long one holds the number still while we work through it — a 300-page PDF can sit there for minutes. That's the run being slow, not stuck. `processedBytes` keeps moving through it, though: it's weighed by file size and credited as each document's pages are embedded, which is why the progress bar and the estimate are built on those two rather than on the document counters.
 
-| Field          | What it means                                                                                                                                 |
-| -------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| `indexed`      | Added or updated, and searchable afterwards.                                                                                                  |
-| `skipped`      | Unchanged since the last run, left alone.                                                                                                     |
-| `removed`      | Gone from disk, dropped from the index.                                                                                                       |
-| `unsearchable` | Read without error, but the file holds no text to search — nearly always a scanned PDF (see [Scope in this release](#scope-in-this-release)). |
-| `failed`       | Couldn't be read or parsed at all. The run continues; if an earlier version of the file was indexed, that version stays searchable.           |
+| Field          | What it means                                                                                                                                                                                             |
+| -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `indexed`      | Added or updated, and searchable afterwards.                                                                                                                                                              |
+| `skipped`      | Unchanged since the last run, left alone.                                                                                                                                                                 |
+| `removed`      | Gone from disk, dropped from the index.                                                                                                                                                                   |
+| `unsearchable` | Read without error, but the file holds no text to search — a scan no vision model was available to read, or a workbook whose sheets are all hidden (see [Scope in this release](#scope-in-this-release)). |
+| `failed`       | Couldn't be read or parsed at all. The run continues; if an earlier version of the file was indexed, that version stays searchable.                                                                       |
 
-`indexed` counts documents the agent can actually reach, not documents we processed — that's why a scanned PDF lands under `unsearchable` instead. If either of the last two numbers is above zero, part of your corpus can't answer questions yet, and it's worth knowing which part before someone asks it something. For `unsearchable` you don't have to go looking: the **Index** section names those documents, one path per document (see [Documents that can't be searched](#documents-that-cant-be-searched)). A `failed` file can't be named there — it never got far enough to have an entry in the index — so that one you find in the run's log.
+`indexed` counts documents the agent can actually reach, not documents we processed — that's why a document we read but found nothing searchable in lands under `unsearchable` instead. If either of the last two numbers is above zero, part of your corpus can't answer questions yet, and it's worth knowing which part before someone asks it something. For `unsearchable` you don't have to go looking: the **Index** section names those documents, one path per document (see [Documents that can't be searched](#documents-that-cant-be-searched)). A `failed` file can't be named there — it never got far enough to have an entry in the index — so that one you find in the run's log.
 
 A `status` of `failed` is a different thing from a `failed` file: it means something systemic stopped the whole run — the embedding model failed to load, or the database did — and `error` says what. A broken file never gets that far; it's counted and stepped over.
 
@@ -190,7 +190,8 @@ We cap how many passages any one document can contribute to a single answer, so 
 
 What the knowledge base does is deliberately narrow:
 
-- Only **text-based PDFs** and **Excel workbooks** (`.xlsx`, `.xlsm`) are indexed and searchable via `knowledge_search`. Scanned or image-only PDFs, Word documents, slide decks, older `.xls` workbooks, plain text and Markdown are not. Pointed at one directly, the agent's file tools read more than the index does — Word documents, scanned PDFs, plain text — so a document can be readable on request and still not come back as a search hit. [Supported file types](/guides/mount-data-directories/#supported-file-types) has the full split.
+- Only **PDFs** and **Excel workbooks** (`.xlsx`, `.xlsm`) are indexed and searchable via `knowledge_search`. Word documents, slide decks, older `.xls` workbooks, plain text and Markdown are not. Pointed at one directly, the agent's file tools read more than the index does — Word documents, plain text — so a document can be readable on request and still not come back as a search hit. [Supported file types](/guides/mount-data-directories/#supported-file-types) has the full split.
+- **Scanned PDFs are indexed by sending their pages to a vision model**, the same one that reads a scan when you open it in chat. That is the one step of indexing that transmits document content to your model provider, and it applies to every scanned page in the corpus rather than only the ones somebody asks about. [What indexing sends to your provider](/guides/mount-data-directories/#what-indexing-sends-to-your-provider) states the data flow, how to turn it off, and why an air-gapped instance cannot use it yet.
 - Indexing is a manual admin action (step 6). It runs in the background and reports its progress in the app, but you still have to ask for it: nothing watches the directory and nothing sweeps it on a schedule.
 
 ### Documents that can't be searched
@@ -201,7 +202,7 @@ So the **Index** section in the agent's Permissions tab lists the documents this
 
 The list covers everything in those folders, while the `unsearchable` count above it covers only the documents the last run actually touched — a file that hasn't changed since the run before is `skipped`, not counted again. So the list is usually the larger of the two, and that's them agreeing, not disagreeing.
 
-These are almost always scans, which the index cannot read. The list is how you find out which questions your agent can't answer, before somebody asks one of them — and an agent can still be pointed at a scanned document directly, which reads it with the model's vision capabilities.
+The list is how you find out which questions your agent can't answer, before somebody asks one of them. A scan reaches this list when no vision model was available to read it — an instance with `PINCHY_KB_OCR=off`, or one whose only models are local. An agent can still be pointed at such a document directly, which reads it with the model's vision capabilities.
 
 If the list is empty after a run that finished, that's the whole message: every document in those folders came back with searchable text. After a run that failed we don't say it — the run stopped early, so there's nothing solid to say it about.
 
