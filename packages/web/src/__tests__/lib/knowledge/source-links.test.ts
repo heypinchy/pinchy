@@ -69,7 +69,7 @@ describe("buildSourceHref", () => {
   });
 
   it("appends the PDF viewer's page fragment when a page is known", () => {
-    const href = buildSourceHref(AGENT, "x/doc.pdf", 44);
+    const href = buildSourceHref(AGENT, "x/doc.pdf", { kind: "page", page: 44 });
     expect(href.endsWith("#page=44")).toBe(true);
   });
 
@@ -89,13 +89,16 @@ describe("parseSourceHref", () => {
     // viewer's title, and a title reading "/data/noack/…" would put the
     // container path back in front of the reader that #933 took out of it.
     const path = "noack/PF LAB/a & b.pdf";
-    expect(parseSourceHref(buildSourceHref(AGENT, path, 44))).toEqual({ path, page: 44 });
+    expect(parseSourceHref(buildSourceHref(AGENT, path, { kind: "page", page: 44 }))).toEqual({
+      path,
+      locator: { kind: "page", page: 44 },
+    });
   });
 
-  it("reports no page when the href carries none", () => {
+  it("reports no position when the href carries none", () => {
     expect(parseSourceHref(buildSourceHref(AGENT, "x/doc.pdf", null))).toEqual({
       path: "x/doc.pdf",
-      page: null,
+      locator: null,
     });
   });
 
@@ -125,7 +128,8 @@ describe("parseSourceHref", () => {
 });
 
 describe("buildSourceDownloads", () => {
-  const hrefFor = (citationPath: string) => buildSourceHref(AGENT, citationPath, 510);
+  const hrefFor = (citationPath: string) =>
+    buildSourceHref(AGENT, citationPath, { kind: "page", page: 510 });
 
   it("offers one copy of a PDF, because a PDF has only one representation", () => {
     const downloads = buildSourceDownloads(hrefFor("noack/PPR/document.pdf"))!;
@@ -286,14 +290,18 @@ describe("remarkSourceLinks", () => {
     expect(links(tree).map((l) => l.text)).toEqual(["noack/Angebot.doc"]);
   });
 
-  it("still leaves a spreadsheet alone, because nothing converts one", () => {
-    // Spreadsheets take a different path entirely (#937/#940): a sheet is not a
-    // page, so there is no artifact to preview and a link would open a pane
-    // that can never render.
-    const tree = paragraph("siehe noack/Budget.xlsx hier");
-    const before = JSON.stringify(tree);
-    run(tree);
-    expect(JSON.stringify(tree)).toBe(before);
+  it("links a spreadsheet named without any range at all", () => {
+    // This test used to assert the opposite — that a spreadsheet stayed plain
+    // text, because nothing converts one to a PDF and a link would have opened
+    // a pane that could never render. #940 changed the answer rather than the
+    // reasoning: a `.xlsx` still gets no conversion, it gets a rendering of the
+    // cited rows. Prose that names a workbook without naming rows opens it at
+    // the top, which is what a reader following a bare mention wants anyway.
+    const tree = run(paragraph("siehe noack/Budget.xlsx hier"));
+    const [link] = links(tree);
+
+    expect(link.text).toBe("noack/Budget.xlsx");
+    expect(parseSourceHref(link.url)).toEqual({ path: "noack/Budget.xlsx", locator: null });
   });
 
   it("links a url-shaped path the same way, because the route decides access", () => {
@@ -390,5 +398,77 @@ describe("remarkSourceLinks", () => {
       expect(JSON.stringify(tree)).toBe(before);
       expect(elapsed).toBeLessThan(BUDGET_MS);
     });
+  });
+});
+
+describe("a spreadsheet citation", () => {
+  // Until #940's second half, a `.xlsx` citation rendered as PLAIN TEXT: the
+  // alternation deliberately left spreadsheets out, because nothing converts
+  // one to a PDF and a link would have opened a pane that could never render.
+  // The answer is not a conversion — paginating a wide sheet clips exactly the
+  // columns the cell-based ingest exists to preserve (see xlsx-extract.ts) —
+  // but a rendering of the cited rows themselves.
+  it("is a link, so the reader can check the claim", () => {
+    const tree = run(paragraph("- [1] lieferanten/preise.xlsx (Suppliers, rows 5-12)"));
+
+    expect(links(tree).map((l) => l.text)).toEqual(["lieferanten/preise.xlsx"]);
+  });
+
+  it("carries the sheet and the row range, not a page", () => {
+    // A row range is not a page and must not be flattened into one: the
+    // preview opens on exactly these rows, and "#page=5" would ask a PDF
+    // viewer for something that does not exist.
+    const href = buildSourceHref(AGENT, "lieferanten/preise.xlsx", {
+      kind: "sheet",
+      sheet: "Suppliers",
+      startRow: 5,
+      endRow: 12,
+    });
+
+    expect(parseSourceHref(href)).toEqual({
+      path: "lieferanten/preise.xlsx",
+      locator: { kind: "sheet", sheet: "Suppliers", startRow: 5, endRow: 12 },
+    });
+  });
+
+  it("survives a sheet name with the characters a real workbook uses", () => {
+    // Sheet names carry spaces, ampersands and umlauts. The fragment is built
+    // by us and read by us, so it has to encode rather than hope.
+    const href = buildSourceHref(AGENT, "x/b.xlsx", {
+      kind: "sheet",
+      sheet: "Preise & Rabatte 2026",
+      startRow: 3,
+      endRow: 3,
+    });
+
+    expect(parseSourceHref(href)?.locator).toEqual({
+      kind: "sheet",
+      sheet: "Preise & Rabatte 2026",
+      startRow: 3,
+      endRow: 3,
+    });
+  });
+
+  it("reads the range out of the text the tool taught the model to write", () => {
+    // `formatLocator` renders "Suppliers, rows 5-12" and the citation contract
+    // asks for it back verbatim, so this is the shape a well-behaved answer
+    // carries. A single row renders "row 5" and must parse to a range of one.
+    const tree = run(paragraph("- a/b.xlsx (Sheet1, row 5)"));
+
+    expect(parseSourceHref(links(tree)[0].url)?.locator).toEqual({
+      kind: "sheet",
+      sheet: "Sheet1",
+      startRow: 5,
+      endRow: 5,
+    });
+  });
+
+  it("leaves the range in the visible text, so the reader still sees it", () => {
+    // Same contract the page hint has always had: the link opens there, the
+    // sentence still says where "there" is.
+    const tree = run(paragraph("- a/b.xlsx (Sheet1, rows 5-12)"));
+    const para = tree.children![0];
+
+    expect(para.children!.map((c) => c.value ?? "").join("")).toContain("(Sheet1, rows 5-12)");
   });
 });

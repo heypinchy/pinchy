@@ -21,6 +21,7 @@
  * it cannot widen what the user may read.
  */
 import { fromCitationPath, toCitationPath } from "./citation-path";
+import type { ChunkLocator } from "./locator";
 import { convertedPdfName, isOfficeFile } from "./office-formats";
 
 /**
@@ -45,7 +46,10 @@ import { convertedPdfName, isOfficeFile } from "./office-formats";
  * as a variable — a built RegExp would hide the one thing a reader of this
  * comment needs to see, and the pattern's cost model (see `findSourcePaths`)
  * depends on what is written here. Spreadsheets stay out: nothing converts
- * one, so a link would open a pane that can never render (#937/#940).
+ * one. Spreadsheets joined them in turn (#940), and NOT by gaining a
+ * conversion: paginating a wide sheet clips the very columns the cell-based
+ * ingest exists to preserve (see xlsx-extract.ts), so a `.xlsx` citation opens
+ * a rendering of the cited ROWS instead of a page of a PDF.
  *
  * At least one `/` is required. A bare `report.pdf` is exactly the citation
  * shape a full path exists to prevent — unfindable in a deep tree, ambiguous
@@ -65,7 +69,7 @@ import { convertedPdfName, isOfficeFile } from "./office-formats";
  * rather than "a/one.pdf". A mount name with a space in it is the price, and
  * "the citation starts at a word" is a rule a reader can predict.
  */
-const SOURCE_PATH_ENDING_HERE = /[^\s/]+(?:\/[^/\n]+?)+?\.(?:pdf|docx?|pptx?)$/i;
+const SOURCE_PATH_ENDING_HERE = /[^\s/]+(?:\/[^/\n]+?)+?\.(?:pdf|docx?|pptx?|xlsx|xlsm)$/i;
 
 /** What may follow a path so that "…/doc.pdf." links the file and not the full stop. */
 const PATH_BOUNDARY = /[\s,.;:)\]]/;
@@ -76,8 +80,14 @@ const PATH_BOUNDARY = /[\s,.;:)\]]/;
  * length-preserving ("İ".toLowerCase() is two characters), so every offset
  * after such a character shifts and the path is extracted one character short.
  * Matching on the ORIGINAL string keeps offsets meaning what they say.
+ *
+ * Paired with `SOURCE_PATH_ENDING_HERE` above: this one finds where a candidate
+ * might END, that one decides whether what precedes it is a path. Teaching one
+ * a new extension and not the other yields a link that never appears, with
+ * nothing anywhere saying why — which is what `linkable-extensions-drift`
+ * checks.
  */
-const EXTENSION = /\.(?:pdf|docx?|pptx?)/gi;
+const EXTENSION = /\.(?:pdf|docx?|pptx?|xlsx|xlsm)/gi;
 
 /**
  * How far back from an extension a path may reasonably start. The longest path
@@ -151,6 +161,77 @@ function findSourcePaths(value: string): Array<{ start: number; end: number }> {
 /** `p. 44`, `S. 275`, `page 12`, `Seite 3` — the page hint that may follow a path. */
 const TRAILING_PAGE = /^\s*[—–\-,]?\s*(?:p\.?|pp\.?|page|s\.|seite)\s*(\d{1,5})\b/i;
 
+/**
+ * `(Suppliers, rows 5-12)` / `(Sheet1, row 5)` — the range hint that may follow
+ * a spreadsheet path, in the shape `formatLocator` renders and the citation
+ * contract asks the model to repeat.
+ *
+ * Deliberately NOT shared with `parseCitedPosition` in `lib/eval/kb`, which
+ * parses the same rendering for the eval graders. That one is strict on
+ * purpose — it answers "did the model repeat what the tool printed?" and a
+ * looser reading would inflate its scores. This one is forgiving, because its
+ * job is to give a reader a working link out of whatever the model actually
+ * wrote. Same input, opposite failure costs; merging them would quietly pick
+ * one cost for both.
+ */
+const TRAILING_SHEET_RANGE =
+  /^\s*[—–\-,]?\s*\(?\s*([^(),\n]+?),\s*rows?\s*(\d{1,7})(?:\s*[-–]\s*(\d{1,7}))?\s*\)?/i;
+
+/** The position a citation names, read from whatever trails the path. */
+function trailingLocator(rest: string): ChunkLocator | null {
+  const page = TRAILING_PAGE.exec(rest);
+  if (page) return { kind: "page", page: Number(page[1]) };
+
+  const range = TRAILING_SHEET_RANGE.exec(rest);
+  if (!range) return null;
+  const startRow = Number(range[2]);
+  return {
+    kind: "sheet",
+    sheet: range[1].trim(),
+    startRow,
+    // `formatLocator` collapses a one-row range to "row 5"; both ends are
+    // restored so the preview asks for a range either way.
+    endRow: range[3] === undefined ? startRow : Number(range[3]),
+  };
+}
+
+/**
+ * The fragment that carries a locator to the viewer, or "" for none.
+ *
+ * `#page=N` is what Chrome's and Firefox's built-in PDF viewers honour, so that
+ * arm is not ours to name. The sheet arm IS ours — nothing but our own dialog
+ * reads it — and it is encoded rather than trusted: a real workbook has sheets
+ * called "Preise & Rabatte 2026".
+ *
+ * `slide` and `heading` produce no fragment yet. They cannot reach a citation
+ * until Office ingest (#938) lands, and inventing a spelling for them now would
+ * be a contract nobody has read the requirements for.
+ */
+function locatorFragment(locator: ChunkLocator | null): string {
+  if (locator === null) return "";
+  if (locator.kind === "page") return `#page=${locator.page}`;
+  if (locator.kind === "sheet") {
+    const sheet = encodeURIComponent(locator.sheet);
+    return `#sheet=${sheet}&rows=${locator.startRow}-${locator.endRow}`;
+  }
+  return "";
+}
+
+/** The inverse of `locatorFragment`. */
+function parseLocatorFragment(fragment: string): ChunkLocator | null {
+  const page = /^page=(\d{1,5})$/.exec(fragment);
+  if (page) return { kind: "page", page: Number(page[1]) };
+
+  const sheet = /^sheet=([^&]*)&rows=(\d{1,7})-(\d{1,7})$/.exec(fragment);
+  if (!sheet) return null;
+  return {
+    kind: "sheet",
+    sheet: decodeURIComponent(sheet[1]),
+    startRow: Number(sheet[2]),
+    endRow: Number(sheet[3]),
+  };
+}
+
 interface MdastNode {
   type: string;
   value?: string;
@@ -165,18 +246,20 @@ interface MdastNode {
  * root, since `citationPath` reaches here from model output.
  *
  * The path is carried as a query parameter (not a path segment) because it is
- * absolute and may contain any character a filesystem allows; `#page=N` is the
- * fragment Chrome's and Firefox's built-in PDF viewers both honour, and it is
- * inert for anything else.
+ * absolute and may contain any character a filesystem allows. Where in the
+ * document to open is a `ChunkLocator` — the same closed union the index
+ * anchors a chunk on — rather than a second position model living only here:
+ * two of those would drift the moment a third locator kind arrives, and
+ * `locatorFragment` says which kinds have a spelling today.
  */
 export function buildSourceHref(
   agentId: string,
   citationPath: string,
-  page: number | null
+  locator: ChunkLocator | null
 ): string {
   const absolutePath = fromCitationPath(citationPath);
   const base = `/api/agents/${encodeURIComponent(agentId)}/workspace-file?path=${encodeURIComponent(absolutePath)}`;
-  return page === null ? base : `${base}#page=${page}`;
+  return `${base}${locatorFragment(locator)}`;
 }
 
 /**
@@ -206,18 +289,19 @@ export const WORKSPACE_FILE_HREF = /^\/api\/agents\/[^/]+\/workspace-file\?path=
  * screen-reader user, and string surgery on a url is exactly the kind of code
  * that decays quietly.
  */
-export function parseSourceHref(href: string): { path: string; page: number | null } | null {
+export function parseSourceHref(
+  href: string
+): { path: string; locator: ChunkLocator | null } | null {
   const match = WORKSPACE_FILE_HREF.exec(href);
   if (!match) return null;
 
   const [, encodedPath, fragment] = match;
   if (!encodedPath) return null;
 
-  const pageMatch = /^page=(\d{1,5})$/.exec(fragment ?? "");
   try {
     return {
       path: toCitationPath(decodeURIComponent(encodedPath)),
-      page: pageMatch ? Number(pageMatch[1]) : null,
+      locator: parseLocatorFragment(fragment ?? ""),
     };
   } catch {
     // A malformed percent-escape must not take down the render of a whole message.
@@ -273,16 +357,15 @@ function linkifyText(value: string, agentId: string): MdastNode[] | null {
   for (const { start, end } of matches) {
     const path = value.slice(start, end);
 
-    // A page number may trail the path ("— p. 44"). It is consumed into the
-    // href but left in the visible text: the reader still sees which page is
-    // being cited, and the link merely opens there.
-    const pageMatch = TRAILING_PAGE.exec(value.slice(end));
-    const page = pageMatch ? Number(pageMatch[1]) : null;
+    // A position may trail the path ("— p. 44", "(Suppliers, rows 5-12)"). It
+    // is consumed into the href but left in the visible text: the reader still
+    // sees what is being cited, and the link merely opens there.
+    const locator = trailingLocator(value.slice(end));
 
     if (start > cursor) parts.push({ type: "text", value: value.slice(cursor, start) });
     parts.push({
       type: "link",
-      url: buildSourceHref(agentId, path, page),
+      url: buildSourceHref(agentId, path, locator),
       children: [{ type: "text", value: path }],
     });
     cursor = end;

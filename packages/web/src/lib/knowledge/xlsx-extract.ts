@@ -82,9 +82,29 @@ const CHARS_PER_TOKEN = 4;
 const DEFAULT_TARGET_TOKENS = 512;
 
 /** One kept row: its Excel row number and its rendered single-line key-value block. */
+/** One visible cell of a row, with the label the sheet's header row gives its column. */
+export interface SheetCell {
+  label: string;
+  text: string;
+}
+
 interface SheetRow {
   number: number;
-  text: string;
+  cells: SheetCell[];
+}
+
+/**
+ * The indexed rendering of one row: `Header: value; Header2: value2`.
+ *
+ * Split out from `readSheet` so the SAME traversal feeds two consumers — the
+ * chunk text the index embeds, and the table the citation preview renders
+ * (#940). A second traversal for the preview would be free to disagree with
+ * the index about hidden rows, hidden columns or which row is the header, and
+ * a preview that shows a reader something the index never read is worse than
+ * no preview at all.
+ */
+function rowText(cells: SheetCell[]): string {
+  return cells.map((cell) => `${cell.label}: ${cell.text}`).join("; ");
 }
 
 interface SheetContent {
@@ -239,10 +259,13 @@ function readSheet(worksheet: ExcelJS.Worksheet): { rows: SheetRow[]; hiddenRows
       }
     }
 
-    const text = cells
-      .map((cell) => `${headers?.get(cell.column) ?? cell.letter}: ${cell.text}`)
-      .join("; ");
-    rows.push({ number: rowNumber, text });
+    rows.push({
+      number: rowNumber,
+      cells: cells.map((cell) => ({
+        label: headers?.get(cell.column) ?? cell.letter,
+        text: cell.text,
+      })),
+    });
   });
 
   return { rows, hiddenRows };
@@ -273,17 +296,18 @@ function chunkSheet(sheet: SheetContent, targetChars: number): XlsxChunk[] {
   };
 
   for (const row of sheet.rows) {
-    if (rows.length > 0 && length + 1 + row.text.length <= targetChars) {
-      rows.push(row.text);
+    const text = rowText(row.cells);
+    if (rows.length > 0 && length + 1 + text.length <= targetChars) {
+      rows.push(text);
       endRow = row.number;
-      length += 1 + row.text.length;
+      length += 1 + text.length;
       continue;
     }
     flush();
-    rows = [row.text];
+    rows = [text];
     startRow = row.number;
     endRow = row.number;
-    length = prefix.length + 1 + row.text.length;
+    length = prefix.length + 1 + text.length;
   }
   flush();
 
@@ -359,4 +383,81 @@ export async function extractXlsx(
   }
 
   return { chunks, sheets, hiddenSheets, hiddenRows };
+}
+
+/** One row of a citation preview: its sheet row number and its visible cells. */
+export interface SheetRangeRow {
+  number: number;
+  cells: SheetCell[];
+}
+
+/** The slice of a workbook one citation points at. */
+export interface SheetRange {
+  sheet: string;
+  /** Column labels in the order the preview should show them, headers first where the sheet has them. */
+  columns: string[];
+  rows: SheetRangeRow[];
+}
+
+/** How many rows one preview may return, however wide a range a citation names. */
+export const SHEET_RANGE_MAX_ROWS = 200;
+
+/**
+ * Reads the rows one citation names, for the preview a `.xlsx` citation opens.
+ *
+ * Goes through the SAME `readSheet` traversal the index uses, which is the
+ * point: hidden rows, hidden columns and the header decision are made once, so
+ * the preview cannot show a reader a row the index never read — or hide one it
+ * did. A preview that disagrees with the index is worse than none, because it
+ * makes a correct citation look fabricated.
+ *
+ * The range is INCLUSIVE and clamped rather than validated: a citation is model
+ * output, so a range running past the end of the sheet is an ordinary thing to
+ * receive, not an error to raise at the reader. An empty result is a legitimate
+ * answer and the caller renders it as such.
+ *
+ * @throws XlsxExtractionError if the file cannot be read as a workbook.
+ */
+export async function readSheetRange(
+  absPath: string,
+  sheetName: string,
+  startRow: number,
+  endRow: number
+): Promise<SheetRange | null> {
+  const workbook = new ExcelJS.Workbook();
+  try {
+    await workbook.xlsx.readFile(absPath);
+  } catch (err) {
+    throw new XlsxExtractionError(absPath, "the file could not be opened as a workbook", {
+      cause: err,
+    });
+  }
+
+  // Hidden sheets are skipped here exactly as they are during indexing, so a
+  // citation naming one resolves to nothing rather than to content the index
+  // deliberately never read.
+  const worksheet = workbook.worksheets.find(
+    (candidate) =>
+      candidate.name === sheetName &&
+      candidate.state !== "hidden" &&
+      candidate.state !== "veryHidden"
+  );
+  if (!worksheet) return null;
+
+  const { rows } = readSheet(worksheet);
+  const selected = rows
+    .filter((row) => row.number >= startRow && row.number <= endRow)
+    .slice(0, SHEET_RANGE_MAX_ROWS);
+
+  // Column order follows first appearance across the selected rows rather than
+  // the sheet's full width: a 40-column sheet whose cited rows fill four should
+  // render four columns, not 36 empty ones.
+  const columns: string[] = [];
+  for (const row of selected) {
+    for (const cell of row.cells) {
+      if (!columns.includes(cell.label)) columns.push(cell.label);
+    }
+  }
+
+  return { sheet: worksheet.name, columns, rows: selected };
 }

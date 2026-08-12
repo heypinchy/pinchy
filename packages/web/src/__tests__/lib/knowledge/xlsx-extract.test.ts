@@ -16,7 +16,12 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import ExcelJS from "exceljs";
 
-import { extractXlsx, XlsxExtractionError } from "@/lib/knowledge/xlsx-extract";
+import {
+  extractXlsx,
+  readSheetRange,
+  SHEET_RANGE_MAX_ROWS,
+  XlsxExtractionError,
+} from "@/lib/knowledge/xlsx-extract";
 
 /** The first 8 bytes of every legacy BIFF .xls: the OLE2 compound-file magic. */
 const OLE2_MAGIC = Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]);
@@ -529,4 +534,75 @@ describe.skipIf(
     // walking and rendering it afterwards costs ~0.2 s. The default 5 s test
     // timeout is not enough for a file of this size.
   }, 30_000);
+});
+
+describe("readSheetRange — what a spreadsheet citation opens", () => {
+  it("returns exactly the cited rows, with the sheet's own header labels", async () => {
+    // The acceptance criterion from #940, stated as a test: "a readable
+    // rendering of exactly those rows, with headers for context".
+    const path = await buildWorkbook("suppliers.xlsx", (workbook) => {
+      const sheet = workbook.addWorksheet("Sheet1");
+      sheet.addRow(["Supplier", "Part", "Price"]);
+      for (let i = 1; i <= 6; i++) sheet.addRow([`Acme ${i}`, `P-${i}`, i * 10]);
+    });
+
+    const range = await readSheetRange(path, "Sheet1", 3, 4);
+
+    expect(range?.columns).toEqual(["Supplier", "Part", "Price"]);
+    expect(range?.rows.map((r) => r.number)).toEqual([3, 4]);
+    expect(range?.rows[0].cells.map((c) => c.text)).toEqual(["Acme 2", "P-2", "20"]);
+  });
+
+  it("reads the same cells the index read, hidden rows included in the skip", async () => {
+    // The preview must not show a row the index never read: a reader who sees
+    // one and cannot find it in an answer concludes the answer is wrong.
+    const path = await buildWorkbook("hidden.xlsx", (workbook) => {
+      const sheet = workbook.addWorksheet("Sheet1");
+      sheet.addRow(["A"]);
+      sheet.addRow(["visible"]);
+      const hidden = sheet.addRow(["secret"]);
+      hidden.hidden = true;
+      sheet.addRow(["also visible"]);
+    });
+
+    const range = await readSheetRange(path, "Sheet1", 1, 4);
+
+    expect(range?.rows.flatMap((r) => r.cells.map((c) => c.text))).not.toContain("secret");
+  });
+
+  it("answers null for a sheet the workbook does not have", async () => {
+    // A citation is model output, so a fabricated sheet name is an ordinary
+    // thing to receive. It resolves to nothing rather than to another sheet.
+    const path = await buildWorkbook("one.xlsx", (workbook) =>
+      workbook.addWorksheet("Sheet1").addRow(["A"])
+    );
+
+    expect(await readSheetRange(path, "Nope", 1, 5)).toBeNull();
+  });
+
+  it("clamps a range that runs past the end instead of raising", async () => {
+    const path = await buildWorkbook("short.xlsx", (workbook) => {
+      const sheet = workbook.addWorksheet("Sheet1");
+      sheet.addRow(["A"]);
+      sheet.addRow(["only data row"]);
+    });
+
+    const range = await readSheetRange(path, "Sheet1", 2, 9999);
+
+    expect(range?.rows.map((r) => r.number)).toEqual([2]);
+  });
+
+  it("bounds how much one preview may return", async () => {
+    // A citation naming rows 1-100000 must not stream a whole sheet into a
+    // dialog. The bound is on the RESPONSE, not on what the model may ask for.
+    const path = await buildWorkbook("big.xlsx", (workbook) => {
+      const sheet = workbook.addWorksheet("Sheet1");
+      sheet.addRow(["A"]);
+      for (let i = 0; i < SHEET_RANGE_MAX_ROWS + 50; i++) sheet.addRow([`row ${i}`]);
+    });
+
+    const range = await readSheetRange(path, "Sheet1", 1, 100000);
+
+    expect(range?.rows).toHaveLength(SHEET_RANGE_MAX_ROWS);
+  });
 });
