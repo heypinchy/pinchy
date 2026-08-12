@@ -68,7 +68,20 @@ export function reindexAuditEntry(args: ReindexAuditArgs): AuditLogEntry {
             archived: args.counts.archived,
           }
         : {}),
-      ...(args.ocr !== undefined ? { ocr: args.ocr } : {}),
+      // Field by field for the same reason as `counts` above: the worker's
+      // tally also carries the token counters the usage row records, and a
+      // spread would sign them onto this row too — undocumented, and
+      // unremovable once written.
+      ...(args.ocr !== undefined
+        ? {
+            ocr: {
+              model: args.ocr.model,
+              documents: args.ocr.documents,
+              pages: args.ocr.pages,
+              skippedPages: args.ocr.skippedPages,
+            },
+          }
+        : {}),
       ...(args.reason !== undefined ? { reason: args.reason } : {}),
     },
   };
