@@ -9,6 +9,7 @@
  * logic that Task 6 owns.
  */
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -1176,6 +1177,83 @@ it("converts in batches, and not at all for a document it can skip", async () =>
   const rerun = await ingestDirectory(ORG_ID, tmpRoot, deps);
   expect(rerun).toEqual(counts({ skipped: 4 }));
   expect(convertOffice).toHaveBeenCalledTimes(1);
+});
+
+it("batches from the document that asked, carrying the hash the ingest already computed", async () => {
+  // Two properties of the same call, because they are the same decision.
+  //
+  // A batch sliced from the HEAD of the queue drags every Office document
+  // before the changed one through the converter — and those are exactly the
+  // documents the run is about to skip, so the work is thrown away. Worse, it
+  // is not free: `convertOfficeFiles` hashes every source it is handed, a full
+  // read each, even for a cache hit.
+  //
+  // And the hash is the artifact key. The ingest computed it one step earlier
+  // for its own idempotency check; `OfficeSource.contentHash` exists so that
+  // read is not paid for twice.
+  for (let i = 0; i < 3; i++) writeFileSync(join(tmpRoot, `doc-${i}.docx`), `bytes-${i}`);
+
+  const { deps, convertOffice } = officeDeps(convertedTo("/artifacts/batch.pdf"), () => WORD_PAGES);
+  expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ indexed: 3 }));
+  expect(convertOffice).toHaveBeenCalledTimes(1);
+
+  // A first run needs every document, so the batch is still the whole queue.
+  // Only the document that ASKED carries a hash: the ingest has read exactly
+  // that one so far, and `convertOfficeFiles` hashes the rest itself when it
+  // gets to them. Claiming otherwise would mean reading them here as well,
+  // which is the read this is removing.
+  expect(convertOffice.mock.calls[0][0]).toEqual([
+    {
+      absPath: join(tmpRoot, "doc-0.docx"),
+      contentHash: createHash("sha256").update("bytes-0").digest("hex"),
+    },
+    { absPath: join(tmpRoot, "doc-1.docx") },
+    { absPath: join(tmpRoot, "doc-2.docx") },
+  ]);
+
+  // Only the LAST document changes, so the two before it are skipped and must
+  // never reach the converter again.
+  const changed = join(tmpRoot, "doc-2.docx");
+  writeFileSync(changed, "bytes-2-v2");
+  expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ skipped: 2, indexed: 1 }));
+
+  expect(convertOffice).toHaveBeenCalledTimes(2);
+  expect(convertOffice.mock.calls[1][0]).toEqual([
+    { absPath: changed, contentHash: createHash("sha256").update("bytes-2-v2").digest("hex") },
+  ]);
+});
+
+it("spends one converter attempt per batch when the converter never answers at all", async () => {
+  // `convertOfficeFiles` reports an unavailable converter as an `infrastructure`
+  // OUTCOME, but it can still reject outright — constructing the artifact store
+  // creates its directory, and a volume that is not mounted throws there.
+  //
+  // A batch consumed by a rejection with nothing recorded is the trap: every
+  // other document in it would then ask again and pull a fresh slice of the
+  // queue through LibreOffice before answering the same thing. So the batch is
+  // answered once, for all of its documents, and none of them gets a row —
+  // an unavailable converter says nothing about any document (#936).
+  for (let i = 0; i < 3; i++) writeFileSync(join(tmpRoot, `doc-${i}.docx`), `bytes-${i}`);
+
+  const embed = vi.fn(async (texts: string[]) => texts.map(() => Array(768).fill(0.05)));
+  const extractPdf = vi.fn(async () => {
+    throw new Error("extractPdf must not be called when no artifact exists");
+  });
+  const convertOffice = vi.fn(async () => {
+    throw new Error("artifact volume is not mounted");
+  });
+  const deps = { embed, extractPdf, extractXlsx: neverCalledXlsx, convertOffice } as IngestDeps;
+
+  const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+  try {
+    expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ failed: 3 }));
+  } finally {
+    consoleError.mockRestore();
+  }
+
+  expect(convertOffice).toHaveBeenCalledTimes(1);
+  expect(extractPdf).not.toHaveBeenCalled();
+  expect(await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID))).toHaveLength(0);
 });
 
 it("leaves PDFs indexed before Office support was added exactly as they were", async () => {

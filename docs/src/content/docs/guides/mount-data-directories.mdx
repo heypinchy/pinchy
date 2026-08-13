@@ -165,6 +165,8 @@ Two different paths read the files under `/data/`, and they support different fo
 
 Word documents and slide decks — the old formats as well as the new ones — are converted to PDF on their way into the index, and that converted copy is what the search reads and what a citation opens. It never replaces your file: the original stays exactly where it is, untouched, and is still the document a citation names.
 
+From that point on the copy is read exactly like any other PDF, and that includes the scan path below: a slide that is one exported image, or a Word page holding a scanned certificate, carries no text layer and is sent to your model provider to be read.
+
 A page with no text layer is read the same way an agent reads one when you open it in chat: the page is rendered to an image and handed to a vision model. That is worth knowing before you mount a corpus of scans, because it is the one part of indexing that sends document content to your model provider — see [What indexing sends to your provider](#what-indexing-sends-to-your-provider) below.
 
 A workbook is read from its cells rather than converted to a page layout, so a row that is too wide for its column keeps its full text instead of being clipped at a page edge. That is also why a workbook is the one format that is not converted: pages would be invented, and an invented page is not a place anyone can point at. Older `.xls` workbooks are not indexed: they use a different file format that our reader does not open, so we leave them out rather than list every one of them as unreadable.
@@ -181,7 +183,7 @@ Everything about indexing is local — reading the file, splitting it, computing
 
 Three consequences worth stating plainly:
 
-- It happens at index time, for **every** scanned page in the corpus, whether or not anyone ever asks about that document.
+- It happens at index time, for **every** scanned page in the corpus, whether or not anyone ever asks about that document. A Word document or slide deck counts here too: it is indexed through its converted PDF, so a page of it that holds only an image is read the same way a scan is.
 - It uses the same vision model Pinchy already picks for reading PDFs in chat, so a scan reads the same way whether the index read it or an agent did.
 - It happens once per document, not once per question.
 

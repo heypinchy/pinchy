@@ -36,6 +36,22 @@ export const WORD_EXTENSIONS = [".doc", ".docx"] as const;
 export const PRESENTATION_EXTENSIONS = [".ppt", ".pptx"] as const;
 
 /**
+ * Documents per converter process.
+ *
+ * Big enough that LibreOffice's startup is amortised (17 real corpus files cost
+ * 14.2 s in one process against 25.6 s one-per-file), small enough that an OOM
+ * kill — which fails the WHOLE batch as infrastructure — costs bounded re-work.
+ *
+ * It lives in this import-free module because BOTH sides of the batch need it
+ * and neither may hold its own copy: `office-convert.ts` sizes the process, and
+ * `ingest.ts` slices the queue it hands over. A second number in the slicer
+ * would silently cap the one that was measured, with nothing to notice — and
+ * the slicer cannot simply import the converter, whose module graph carries
+ * `child_process` and pdfjs.
+ */
+export const OFFICE_CONVERT_BATCH_SIZE = 20;
+
+/**
  * The spreadsheet formats the knowledge base reads directly, cells and all,
  * instead of converting (see `xlsx-extract.ts` for the three reasons).
  *

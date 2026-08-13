@@ -63,7 +63,13 @@ import { chunkPages } from "./chunk";
 import { DEFAULT_BATCH_SIZE } from "./embeddings";
 import { detectLang } from "./lid";
 import { collectHeadingSections, headingLocatorAt } from "./heading-sections";
-import { isOfficeFile, isPresentationFile, isSpreadsheetFile, isWordFile } from "./office-formats";
+import {
+  isOfficeFile,
+  isPresentationFile,
+  isSpreadsheetFile,
+  isWordFile,
+  OFFICE_CONVERT_BATCH_SIZE,
+} from "./office-formats";
 import type { ChunkLocator } from "./locator";
 import type { ConversionOutcome, OfficeSource } from "./office-convert";
 import type { XlsxExtraction } from "./xlsx-extract";
@@ -352,49 +358,94 @@ interface ExtractedDocument {
  * that stops early converts only what it reached.
  *
  * Unchanged documents cost no conversion: the artifact store is keyed on
- * content, so the second run answers from cache (`office-convert.ts`).
+ * content, so the second run answers from cache (`office-convert.ts`). Which
+ * is why the batch starts at the document that asked rather than at the head
+ * of the queue — a skipped document never asks, so a batch cut from the front
+ * would convert exactly what the run is about to leave alone.
+ *
+ * Every document in a batch is answered by that batch, including when the
+ * converter rejects outright. One event, one answer: an unanswered document
+ * would come back for a slice of its own.
  */
 function officeArtifacts(
   queue: readonly { absPath: string }[],
   deps: IngestDeps,
-  batchSize = OFFICE_CONVERT_BATCH
-): (absPath: string) => Promise<ConversionOutcome> {
+  batchSize = OFFICE_CONVERT_BATCH_SIZE
+): ResolveArtifact {
   const pending = queue.map((file) => file.absPath).filter(isOfficeFile);
+  const positionOf = new Map(pending.map((absPath, i) => [absPath, i]));
   const done = new Map<string, ConversionOutcome>();
-  let next = 0;
 
-  return async (absPath: string) => {
-    while (!done.has(absPath) && next < pending.length) {
-      const batch = pending.slice(next, next + batchSize);
-      next += batch.length;
-      const outcomes = await deps.convertOffice(batch.map((path) => ({ absPath: path })));
-      batch.forEach((path, i) => {
-        if (outcomes[i]) done.set(path, outcomes[i]);
-      });
+  return async (absPath, contentHash) => {
+    const known = done.get(absPath);
+    if (known) return known;
+
+    const start = positionOf.get(absPath);
+    if (start === undefined) {
+      // Only a caller outside this run's queue can land here. Retryable
+      // rather than final: nothing was learned about the document.
+      return unavailable(absPath, "document is not part of this run's queue");
     }
 
-    const outcome = done.get(absPath);
-    if (outcome) return outcome;
-    // The converter returned fewer outcomes than it was given sources, which
-    // is a broken contract rather than a statement about this document.
-    // Retryable, so it must not be recorded as unreadable.
-    return {
-      sourcePath: absPath,
-      status: "infrastructure",
-      reason: "converter returned no outcome for this document",
-    };
+    // The batch begins at the document that ASKED, not at the head of the
+    // queue. Everything before it was either converted already or skipped as
+    // unchanged — and a skipped document never asks, so converting it ahead of
+    // time is work this run throws away. It is not free work either: the
+    // converter hashes every source it is handed, a full read each, even for a
+    // cache hit.
+    const batch: string[] = [];
+    for (let i = start; i < pending.length && batch.length < batchSize; i++) {
+      if (!done.has(pending[i])) batch.push(pending[i]);
+    }
+
+    try {
+      const outcomes = await deps.convertOffice(
+        batch.map((path) =>
+          // Only the asking document's hash is known: the ingest has read
+          // exactly that file so far. The converter hashes the rest itself.
+          path === absPath && contentHash ? { absPath: path, contentHash } : { absPath: path }
+        )
+      );
+      batch.forEach((path, i) => {
+        if (outcomes[i]) {
+          done.set(path, outcomes[i]);
+        } else {
+          // The converter returned fewer outcomes than it was given sources,
+          // which is a broken contract rather than a statement about this
+          // document. Retryable, so it must not be recorded as unreadable.
+          done.set(path, unavailable(path, "converter returned no outcome for this document"));
+        }
+      });
+    } catch (err) {
+      // `convertOfficeFiles` reports an unusable converter as an outcome, but
+      // it can still reject — constructing the artifact store creates its
+      // directory, and an unmounted volume throws there. Answering the WHOLE
+      // batch is what keeps that one event one event: leaving the others
+      // unanswered would send each of them back for a fresh slice of the
+      // queue, dragging unrelated documents through LibreOffice to learn the
+      // same thing. Every one of them stays retryable, so no row is written
+      // and nothing is branded unreadable (#936).
+      const reason = `converter did not answer: ${err instanceof Error ? err.message : String(err)}`;
+      for (const path of batch) done.set(path, unavailable(path, reason));
+    }
+
+    return (
+      done.get(absPath) ?? unavailable(absPath, "converter returned no outcome for this document")
+    );
   };
 }
 
-/**
- * Documents per converter process. Matches `office-convert.ts`'s own default —
- * the ingest slices the queue, so a second number here would silently cap the
- * one that was measured.
- */
-const OFFICE_CONVERT_BATCH = 20;
+/** A retryable non-answer: the converter never judged this document (#936). */
+function unavailable(sourcePath: string, reason: string): ConversionOutcome {
+  return { sourcePath, status: "infrastructure", reason };
+}
 
-/** Resolves the converted PDF for one Office source. */
-type ResolveArtifact = (absPath: string) => Promise<ConversionOutcome>;
+/**
+ * Resolves the converted PDF for one Office source. `contentHash` is the sha256
+ * the caller has already computed for its own idempotency check — the artifact
+ * key, passed on so the converter need not read the file a second time.
+ */
+type ResolveArtifact = (absPath: string, contentHash?: string) => Promise<ConversionOutcome>;
 
 /**
  * Reads one file into chunks with locators, dispatching on its extension.
@@ -413,10 +464,11 @@ type ResolveArtifact = (absPath: string) => Promise<ConversionOutcome>;
 async function extractDocument(
   absPath: string,
   deps: IngestDeps,
-  resolveArtifact: ResolveArtifact
+  resolveArtifact: ResolveArtifact,
+  contentHash: string
 ): Promise<ExtractedDocument> {
   if (isOfficeFile(absPath)) {
-    return extractOfficeDocument(absPath, deps, resolveArtifact);
+    return extractOfficeDocument(absPath, deps, resolveArtifact, contentHash);
   }
 
   if (isSpreadsheetFile(absPath)) {
@@ -461,9 +513,10 @@ async function extractDocument(
 async function extractOfficeDocument(
   absPath: string,
   deps: IngestDeps,
-  resolveArtifact: ResolveArtifact
+  resolveArtifact: ResolveArtifact,
+  contentHash: string
 ): Promise<ExtractedDocument> {
-  const outcome = await resolveArtifact(absPath);
+  const outcome = await resolveArtifact(absPath, contentHash);
 
   if (outcome.status === "infrastructure") {
     // The converter never got to judge this document (out of memory, timed
@@ -631,7 +684,7 @@ async function ingestFile(
     // to zero chunks again — the write result, not the branch, is what tells
     // the two apart.
     const { chunks } = await fileStep(absPath, () =>
-      extractDocument(absPath, deps, resolveArtifact)
+      extractDocument(absPath, deps, resolveArtifact, contentHash)
     );
     const written = await writeChunks(existing.id, orgId, absPath, chunks, deps, onChunkProgress);
     return written > 0 ? "indexed" : "unsearchable";
@@ -641,7 +694,9 @@ async function ingestFile(
   // something unparseable throws here and stays a `failed` update, with the
   // last good document and its chunks still searchable. Deleting first would
   // turn that same failure into silent data loss on a success response.
-  const extracted = await fileStep(absPath, () => extractDocument(absPath, deps, resolveArtifact));
+  const extracted = await fileStep(absPath, () =>
+    extractDocument(absPath, deps, resolveArtifact, contentHash)
+  );
 
   if (existing) {
     // Content changed since the last ingest: replace wholesale. Deleting

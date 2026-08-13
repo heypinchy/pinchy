@@ -56,7 +56,7 @@ import { mkdir, rm, stat, symlink } from "node:fs/promises";
 import { extname, join } from "node:path";
 
 import { getOfficeArtifactStore, hashFileContents, OfficeArtifactStore } from "./office-artifacts";
-import { OFFICE_EXTENSIONS, isOfficeFile } from "./office-formats";
+import { OFFICE_CONVERT_BATCH_SIZE, OFFICE_EXTENSIONS, isOfficeFile } from "./office-formats";
 import { extractPdfPages } from "./pdf-extract";
 
 /**
@@ -85,12 +85,12 @@ export { OFFICE_EXTENSIONS, isOfficeFile, hashFileContents };
 export const OFFICE_VERIFY_EPSILON = 0.1;
 
 /**
- * Files per converter process. Big enough that startup is amortised (the whole
- * 17-file reference corpus fits in one batch), small enough that an OOM kill —
- * which fails the WHOLE batch as infrastructure — costs a bounded amount of
- * re-work, and that progress is reported more than once on a large corpus.
+ * Files per converter process — the shared number, not a second spelling of it.
+ * The ingest slices its queue against the same constant (office-formats.ts says
+ * why it lives there), so the size the converter was measured at cannot be
+ * capped by a slicer that disagrees.
  */
-export const DEFAULT_BATCH_SIZE = 20;
+export const DEFAULT_BATCH_SIZE = OFFICE_CONVERT_BATCH_SIZE;
 
 /** Per-batch wall-clock budget. The slowest single real file took 1.46 s; this is deliberately far above that. */
 export function batchTimeoutMs(fileCount: number): number {
