@@ -94,3 +94,9 @@ What that means in practice depends on who replaced the file:
 ## Security
 
 Pinchy validates every uploaded file against its actual content, not just the browser-reported MIME type. A file renamed to `.pdf` that contains executable code will be rejected. Filenames are also sanitized before being written to disk.
+
+### Files your browser doesn't name
+
+Paste a screenshot, or drag a PDF straight out of a viewer, and the browser hands us `blob` — no name, no extension. Pinchy gives those a dated name instead, based on what the file actually turned out to be: `upload-2026-08-20.pdf`. A file you named yourself keeps its name; if it arrived without an extension, it gains the right one so it opens.
+
+This is why a pasted file can appear in `uploads/` under a different name than the one you saw on your desktop — the agent and the chip both use the stored name, so they always agree.
