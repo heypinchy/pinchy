@@ -409,6 +409,10 @@ export class ClientRouter {
             attachmentIds: parsedIds.data,
             messageId,
             agentName: agent.name,
+            // A retry carries the original message's attachment ids (#1195).
+            // Whether the first attempt already promoted them decides between
+            // attaching and re-referencing, and only the pipeline can tell.
+            isRetry: message.isRetry === true,
           });
           chatAttachments = result.chatAttachments;
           workspaceRefs = result.workspaceRefs;

@@ -65,6 +65,16 @@ export interface WsMessage {
    * agent's workspace and don't need to be replayed in client memory.
    */
   files?: WsFileMeta[];
+  /**
+   * Server-side upload ids for this message's attachments, kept so a retry can
+   * re-send them (#1195). `files` above is display metadata and cannot stand in
+   * — without the ids, a retry delivered the text with the attachments silently
+   * dropped, and the agent answered about files it had never been given.
+   *
+   * Only ever set on user messages this client sent; a message rebuilt from
+   * history has no ids, which is correct — there is nothing to retry there.
+   */
+  attachmentIds?: string[];
   timestamp?: string;
   error?: ChatError;
   /** Delivery status — only set for user messages managed by the reducer */
@@ -1907,6 +1917,7 @@ export function useWsRuntime(
                 mimeType: u.file.type,
               })),
             }),
+            ...(attachmentIds.length > 0 && { attachmentIds }),
           },
           // In-flight assistant placeholder: keeps the list ending in an
           // assistant for the whole run, so assistant-ui never injects its
@@ -2059,6 +2070,12 @@ export function useWsRuntime(
         agentId,
         ...(chatId && { chatId }),
         content: lastUserMsg.content,
+        // Re-send the attachments with the message they belong to (#1195).
+        // Without this the retry delivered the text alone and the agent was
+        // asked about files it had never been handed.
+        ...(lastUserMsg.attachmentIds?.length && {
+          attachmentIds: lastUserMsg.attachmentIds,
+        }),
         clientMessageId: lastUserMsg.id,
         isRetry: true,
         retryReason: reason,
@@ -2098,6 +2115,12 @@ export function useWsRuntime(
         agentId,
         ...(chatId && { chatId }),
         content: failedMsg.content,
+        // Same reason as onRetryContinue (#1195). This path matters more, not
+        // less: the message never reached the server, so its uploads are still
+        // `staged` and the agent has never seen them at all.
+        ...(failedMsg.attachmentIds?.length && {
+          attachmentIds: failedMsg.attachmentIds,
+        }),
         clientMessageId: messageId,
         isRetry: true,
       });
