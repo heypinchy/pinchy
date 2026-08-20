@@ -30,6 +30,24 @@ stage_llama_cpp_provider() {
         mkdir -p "$OPENCLAW_NPM_ROOT"
         cp -r "$LLAMA_CPP_DEPS_ROOT"/npm/. "$OPENCLAW_NPM_ROOT"/
     fi
+    # OpenClaw's plugin loader refuses a candidate whose files are not root-owned
+    # ("blocked plugin candidate: suspicious ownership … uid=999, expected uid=0
+    # or root"), and the openclaw-config volume is uid 999 nearly throughout
+    # because Pinchy shares it. start-openclaw.sh already force-chowns
+    # extensions/ for exactly this reason; npm/ holds a plugin too and was
+    # missed, so on production the provider sat blocked and every memory_search
+    # answered "Unknown memory embedding provider: local." (#1196).
+    #
+    # OUTSIDE the staging guard on purpose. The copy above runs at most once per
+    # volume, so a tree staged by an earlier release is never rewritten — if the
+    # repair rode along with the copy, an upgraded deployment would stay blocked
+    # forever. That is the state #1196 was found in.
+    #
+    # Warn rather than swallow, same contract as the registry refresh below: a
+    # silent failure here means recall regresses to 0 chunks with nothing said.
+    if ! chown -R root:root "$OPENCLAW_NPM_ROOT" 2>/dev/null; then
+        echo "[llama-cpp] WARNING: could not chown ${OPENCLAW_NPM_ROOT} to root — OpenClaw will block the embedding provider as 'suspicious ownership' and memory_search will return 0 chunks"
+    fi
     # Idempotent, offline: rescans on-disk source roots (incl. the staged
     # provider) to rebuild the persisted registry so it loads. A silent failure
     # here means the provider never loads and recall regresses to 0 chunks — so

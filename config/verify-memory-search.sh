@@ -57,6 +57,35 @@ openclaw plugins list 2>&1 | grep -qiE 'llama.?cpp.*enabled' || {
   exit 1
 }
 
+# Second pass, against the state an UPGRADE produces rather than an install.
+#
+# Everything above ran in a fresh container, where /root/.openclaw is created
+# root-owned and the staged provider inherits that. Production does not look
+# like this: the openclaw-config volume is uid 999 nearly throughout, because
+# Pinchy (uid 999) shares it. On production the provider was therefore 999-owned
+# and OpenClaw blocked it — "suspicious ownership … expected uid=0" — so
+# memory_search answered "Unknown memory embedding provider: local." for every
+# call, while THIS test stayed green the whole time (#1196).
+#
+# So re-create that state deliberately and run the real boot function against
+# it. The copy is guarded and will not re-run (the provider is already there),
+# which is the point: the ownership repair has to stand on its own.
+NPM_ROOT="${OPENCLAW_NPM_ROOT:-/root/.openclaw/npm}"
+chown -R 999:999 "$NPM_ROOT"
+stage_llama_cpp_provider
+
+BAD_OWNER="$(find "$NPM_ROOT" ! -uid 0 -print -quit)"
+if [ -n "$BAD_OWNER" ]; then
+  echo "::error::staged provider is still not root-owned after re-staging: $BAD_OWNER"
+  exit 1
+fi
+
+openclaw plugins list 2>&1 | grep -qiE 'llama.?cpp.*enabled' || {
+  echo "::error::llama-cpp provider did not load after a 999-owned (upgrade-shaped) stage"
+  openclaw plugins list 2>&1 | grep -i llama || true
+  exit 1
+}
+
 openclaw memory index --agent "$AGENT"
 
 STATUS="$(openclaw memory status --agent "$AGENT" 2>&1)"
