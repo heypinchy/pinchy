@@ -552,6 +552,16 @@ export function relationHasCompanyId(fields: OdooField[]): boolean {
   return findCompanyIdField(fields) !== undefined;
 }
 
+/**
+ * Does this relation carry a `code` column — the natural key a user actually
+ * quotes (account.account, account.journal, account.tax)? Decides both whether
+ * the lookup searches it and whether a numeric string may be a code rather than
+ * an illegal raw id (heypinchy/pinchy#1197).
+ */
+export function relationHasCode(fields: OdooField[]): boolean {
+  return fields.some((f) => f.name === "code");
+}
+
 export function augmentFieldsWithCompanyId(
   requested: string[] | undefined,
   modelFields: OdooField[]
@@ -823,6 +833,26 @@ function parseLookup(field: OdooField, value: unknown): RelationLookup | null {
   };
 }
 
+/**
+ * The natural-key token of a lookup string (heypinchy/pinchy#1197).
+ *
+ * Accountants address a GL account by its number, and a chart of accounts
+ * prints `"7660 Entertainment expenses"` — which is also what Odoo renders in
+ * most account pickers. Both forms have to resolve, so the leading whitespace-
+ * delimited token is what gets compared against `code`.
+ *
+ * An explicit `{lookup: {code}}` wins outright; otherwise the first token of
+ * the name is tried. A plain name simply yields a token that matches no code
+ * and falls through to the existing name matching.
+ */
+function codeTokenOf(lookup: RelationLookup): string | null {
+  if (lookup.code) return lookup.code;
+  const name = lookup.name?.trim();
+  if (!name) return null;
+  const [head] = name.split(/\s+/, 1);
+  return head || null;
+}
+
 function resolveReferenceFromRecords(
   field: OdooField,
   lookup: RelationLookup,
@@ -840,6 +870,21 @@ function resolveReferenceFromRecords(
     if (ids.length > 1) {
       throw new Error(
         `Could not resolve ${field.name}: multiple countries match code "${lookup.code}".`
+      );
+    }
+  }
+
+  // Natural-key match, before the name match so an exact code beats a record
+  // that merely turned up in the `ilike` half of the search (#1197).
+  const codeToken = codeTokenOf(lookup);
+  if (codeToken) {
+    const codeMatches = records.filter((record) => recordText(record, "code") === codeToken);
+    const codeIds = uniqueIds(codeMatches);
+    if (codeIds.length === 1) return codeIds[0];
+    if (codeIds.length > 1) {
+      throw new Error(
+        `Could not resolve ${field.name}: multiple ${label} records share the code "${codeToken}".` +
+          `${formatSuggestions(codeMatches)} Pass the ref returned by odoo_read instead.`
       );
     }
   }
@@ -1226,11 +1271,19 @@ async function searchRelationByName(
 ): Promise<unknown> {
   const relation = field.relation as string;
   const relationFields = await loadFields(client, relation, fieldsCache);
-  const lookupFields = augmentFieldsWithCompanyId(
-    ["id", "name", "display_name"],
-    relationFields
-  ) ?? ["id", "name", "display_name"];
-  const domain: OdooDomain = [["name", "ilike", lookup.name ?? ""]];
+  // Relations with a natural key (account.account.code, account.journal.code,
+  // product.product.default_code) are addressed by that key in practice, so ask
+  // for the column and search it alongside the name (#1197). Relations without
+  // one are untouched — same fields, same domain as before.
+  const hasCode = relationHasCode(relationFields);
+  const baseFields = hasCode
+    ? ["id", "name", "display_name", "code"]
+    : ["id", "name", "display_name"];
+  const lookupFields = augmentFieldsWithCompanyId(baseFields, relationFields) ?? baseFields;
+  const codeToken = hasCode ? codeTokenOf(lookup) : null;
+  const domain: OdooDomain = codeToken
+    ? ["|", ["name", "ilike", lookup.name ?? ""], ["code", "=", codeToken]]
+    : [["name", "ilike", lookup.name ?? ""]];
   if (scopeCompanyId !== null && relationHasCompanyId(relationFields)) {
     // Mirror Odoo's `_check_company_domain`: include SHARED records
     // (company_id = false), not just the target company. A strict
@@ -1351,9 +1404,20 @@ async function resolveRelationValue(
   if (!lookup) return value;
   if (lookup.name === "") return false;
   if (lookup.name && /^\d+$/.test(lookup.name)) {
-    throw new Error(
-      `Raw numeric IDs are not accepted for ${field.name}. Use an opaque ref or lookup.`
-    );
+    // A GL account code IS numeric ("7660"), so refusing every numeric string
+    // left an accountant's most natural input with no route at all — and the
+    // ref-corruption workaround the model reached for next hit this same wall
+    // (#1197, #1193). Relaxed ONLY where the relation declares a `code`, and
+    // even then the value is matched against `code`, never against `id`: "an
+    // agent cannot address a record by its primary key" still holds.
+    const relationHasCodeColumn = field.relation
+      ? relationHasCode(await loadFields(client, field.relation, fieldsCache))
+      : false;
+    if (!relationHasCodeColumn) {
+      throw new Error(
+        `Raw numeric IDs are not accepted for ${field.name}. Use an opaque ref or lookup.`
+      );
+    }
   }
   if (!field.relation) return value;
 
