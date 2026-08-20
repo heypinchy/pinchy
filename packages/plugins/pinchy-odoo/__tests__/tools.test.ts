@@ -7340,3 +7340,189 @@ describe("odoo_set_approval", () => {
     expect(mockCallMethod).not.toHaveBeenCalled();
   });
 });
+
+// ---------------------------------------------------------------------------
+// heypinchy/pinchy#1197 — many2one lookup by natural-key code.
+//
+// `resolveReferenceFromRecords` matched `name`/`display_name` only, and codes
+// were special-cased for exactly one relation (res.country). So an accounting
+// agent could not address a GL account the way accountants do: by its number.
+//
+// Production, 2026-08-17: five consecutive odoo_create failures, all
+// "Could not resolve account_id from '<code> <name>'. Provide an exact Account
+// name or ref." — the string a human reads off a chart of accounts, and the one
+// Odoo itself renders in most account pickers. The model then tried a bare code
+// and hit "Raw numeric IDs are not accepted", which closed the last route.
+// ---------------------------------------------------------------------------
+describe("many2one lookup by natural-key code (#1197)", () => {
+  const accountingConfig = {
+    connectionId: "conn-test-1",
+    permissions: {
+      "account.move.line": ["read", "create", "write"],
+      "account.account": ["read"],
+    },
+  } as unknown as AgentOdooConfig;
+
+  const ACCOUNT = { id: 91, name: "Entertainment expenses", code: "7660" };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubEnv("PINCHY_REF_TOKEN_KEY", "a".repeat(64));
+  });
+
+  function mockAccountingSchema() {
+    mockFields.mockImplementation(async (model: string) => {
+      if (model === "account.move.line") {
+        return [
+          { name: "name", string: "Label", type: "char" },
+          {
+            name: "account_id",
+            string: "Account",
+            type: "many2one",
+            relation: "account.account",
+          },
+        ];
+      }
+      if (model === "account.account") {
+        return [
+          { name: "name", string: "Name", type: "char" },
+          { name: "code", string: "Code", type: "char" },
+        ];
+      }
+      return [];
+    });
+  }
+
+  /**
+   * `searchRead` is called twice per create here and the two calls want
+   * different answers: once against account.account to find the m2o candidates,
+   * and once against account.move.line for the post-write read-back
+   * verification (#720). One blanket mockResolvedValue serves the account rows
+   * to the read-back too, which then reports the created label as mismatched —
+   * a fixture artefact that looks exactly like a product failure.
+   */
+  function mockAccountCandidates(records: Array<Record<string, unknown>>) {
+    mockSearchRead.mockImplementation(async (model: string) => {
+      if (model === "account.account") {
+        return { records, total: records.length, limit: 20, offset: 0 };
+      }
+      // read-back: the row as written
+      return {
+        records: [{ id: 1234, name: "Business lunch", account_id: [91, "Entertainment expenses"] }],
+        total: 1,
+        limit: 1,
+        offset: 0,
+      };
+    });
+  }
+
+  async function createWithAccount(accountValue: unknown) {
+    mockAccountingSchema();
+    mockCreate.mockResolvedValue(1234);
+    const tool = findTool(createApi({ [agentId]: accountingConfig }), "odoo_create", agentId)!;
+    return tool.execute("call-1", {
+      model: "account.move.line",
+      values: { name: "Business lunch", account_id: accountValue },
+    });
+  }
+
+  it("resolves an account from its bare code", async () => {
+    mockAccountCandidates([ACCOUNT]);
+
+    const result = await createWithAccount("7660");
+
+    expect(result.isError).toBeFalsy();
+    expect(mockCreate).toHaveBeenCalledWith(
+      "account.move.line",
+      expect.objectContaining({ account_id: 91 })
+    );
+  });
+
+  it("resolves the '<code> <name>' form a chart of accounts prints", async () => {
+    mockAccountCandidates([ACCOUNT]);
+
+    const result = await createWithAccount("7660 Entertainment expenses");
+
+    expect(result.isError).toBeFalsy();
+    expect(mockCreate).toHaveBeenCalledWith(
+      "account.move.line",
+      expect.objectContaining({ account_id: 91 })
+    );
+  });
+
+  it("still resolves by name alone", async () => {
+    mockAccountCandidates([ACCOUNT]);
+
+    const result = await createWithAccount("Entertainment expenses");
+
+    expect(result.isError).toBeFalsy();
+    expect(mockCreate).toHaveBeenCalledWith(
+      "account.move.line",
+      expect.objectContaining({ account_id: 91 })
+    );
+  });
+
+  it("asks Odoo for the code column and searches on it", async () => {
+    mockAccountCandidates([ACCOUNT]);
+
+    await createWithAccount("7660");
+
+    const call = mockSearchRead.mock.calls.find((c) => c[0] === "account.account")!;
+    expect(call[0]).toBe("account.account");
+    expect((call[2] as { fields: string[] }).fields).toContain("code");
+    expect(JSON.stringify(call[1])).toContain("code");
+  });
+
+  // The guard that refuses a raw database id has to survive this. It is
+  // relaxed ONLY where the relation actually declares a `code`, and a numeric
+  // string is then matched against `code` — never against `id` — so "an agent
+  // cannot address a record by its primary key" still holds.
+  it("still refuses a numeric string for a relation that has no code column", async () => {
+    mockFields.mockImplementation(async (model: string) => {
+      if (model === "account.move.line") {
+        return [
+          { name: "name", string: "Label", type: "char" },
+          {
+            name: "partner_id",
+            string: "Partner",
+            type: "many2one",
+            relation: "res.partner",
+          },
+        ];
+      }
+      return [{ name: "name", string: "Name", type: "char" }];
+    });
+    const tool = findTool(createApi({ [agentId]: accountingConfig }), "odoo_create", agentId)!;
+
+    const result = await tool.execute("call-1", {
+      model: "account.move.line",
+      values: { name: "x", partner_id: "42" },
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("Raw numeric IDs are not accepted");
+    expect(mockCreate).not.toHaveBeenCalled();
+  });
+
+  it("prefers an exact code match over a name that merely matched the search", async () => {
+    mockAccountCandidates([{ id: 55, name: "7660 reclass suspense", code: "9999" }, ACCOUNT]);
+
+    const result = await createWithAccount("7660");
+
+    expect(result.isError).toBeFalsy();
+    expect(mockCreate).toHaveBeenCalledWith(
+      "account.move.line",
+      expect.objectContaining({ account_id: 91 })
+    );
+  });
+
+  it("reports an ambiguity rather than guessing when two accounts share the code", async () => {
+    mockAccountCandidates([ACCOUNT, { id: 92, name: "Entertainment (branch)", code: "7660" }]);
+
+    const result = await createWithAccount("7660");
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/Could not resolve account_id/);
+    expect(mockCreate).not.toHaveBeenCalled();
+  });
+});
