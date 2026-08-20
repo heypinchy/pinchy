@@ -226,6 +226,113 @@ describe("odoo_read — {item: …} array-wrapping", () => {
   });
 });
 
+// heypinchy/pinchy#1198. Some models emit `<` and `>` in their JSON-escaped
+// form, and when the escape is not decoded on the way in the six-character
+// literal `<=` arrives as the operator. Odoo then rejects the whole
+// domain: `Invalid operator in condition ('date', '<=', '2026-06-30')`.
+// Observed twice on production in one booking session — the date-bounded query
+// the agent needed simply never ran.
+//
+// The escaping happens inside the provider's own tool-argument serialization,
+// not in anything the agent controls, so a prompt cannot suppress it — and the
+// error tells the model nothing it can act on, because the operator looks
+// correct in its own output.
+describe("odoo_read — unicode-escaped domain operators", () => {
+  const ESCAPED: Array<[string, string]> = [
+    ["\\u003c", "<"],
+    ["\\u003c=", "<="],
+    ["\\u003e", ">"],
+    ["\\u003e=", ">="],
+    ["\\u0021=", "!="],
+  ];
+
+  it.each(ESCAPED)("decodes %s to %s before querying Odoo", async (escaped, decoded) => {
+    mockSearchRead.mockResolvedValue({ records: [], length: 0 });
+    const tool = findTool(createApi({ [agentId]: cfg() }), "odoo_read", agentId)!;
+
+    const result = await tool.execute("c", {
+      model: "account.move",
+      filters: [["date", escaped, "2026-06-30"]],
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(mockSearchRead).toHaveBeenCalledWith(
+      "account.move",
+      [["date", decoded, "2026-06-30"]],
+      expect.anything()
+    );
+  });
+
+  it("decodes uppercase-hex escapes too", async () => {
+    mockSearchRead.mockResolvedValue({ records: [], length: 0 });
+    const tool = findTool(createApi({ [agentId]: cfg() }), "odoo_read", agentId)!;
+
+    await tool.execute("c", {
+      model: "account.move",
+      filters: [["date", "\\u003C=", "2026-06-30"]],
+    });
+
+    expect(mockSearchRead).toHaveBeenCalledWith(
+      "account.move",
+      [["date", "<=", "2026-06-30"]],
+      expect.anything()
+    );
+  });
+
+  // Decoding without validating just moves the dead end one step: the next
+  // escape variant would still reach Odoo. An operator that is not one Odoo
+  // accepts is refused HERE, with the list, so the model can correct itself
+  // instead of reading a server error about a string it believes it never sent.
+  it("refuses an operator Odoo does not accept, before querying", async () => {
+    const tool = findTool(createApi({ [agentId]: cfg() }), "odoo_read", agentId)!;
+
+    const result = await tool.execute("c", {
+      model: "account.move",
+      filters: [["date", "=<", "2026-06-30"]],
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/=</);
+    expect(result.content[0].text).toMatch(/<=/); // names a valid one
+    expect(mockSearchRead).not.toHaveBeenCalled();
+  });
+
+  it("leaves logical operators and well-formed conditions untouched", async () => {
+    mockSearchRead.mockResolvedValue({ records: [], length: 0 });
+    const tool = findTool(createApi({ [agentId]: cfg() }), "odoo_read", agentId)!;
+
+    const domain = [
+      "&",
+      ["state", "=", "posted"],
+      "|",
+      ["date", ">=", "2026-06-01"],
+      ["partner_id", "ilike", "acme"],
+    ];
+    await tool.execute("c", { model: "account.move", filters: domain });
+
+    expect(mockSearchRead).toHaveBeenCalledWith("account.move", domain, expect.anything());
+  });
+
+  // A value that happens to contain a backslash-u sequence is legitimate; only
+  // the OPERATOR position is normalized. Rewriting values would corrupt a
+  // genuine search string, and no operator can ever legitimately be one.
+  it("does not rewrite escape sequences in the value position", async () => {
+    mockSearchRead.mockResolvedValue({ records: [], length: 0 });
+    const tool = findTool(createApi({ [agentId]: cfg() }), "odoo_read", agentId)!;
+
+    await tool.execute("c", {
+      model: "account.move",
+      filters: [["ref", "=", "\\u003cliteral\\u003e"]],
+    });
+
+    expect(mockSearchRead).toHaveBeenCalledWith(
+      "account.move",
+      [["ref", "=", "\\u003cliteral\\u003e"]],
+      expect.anything()
+    );
+  });
+});
+
 describe("odoo_write — {item: …} array-wrapping", () => {
   it("refuses item-wrapped values with an actionable message, before touching Odoo", async () => {
     const tool = findTool(createApi({ [agentId]: cfg() }), "odoo_write", agentId)!;

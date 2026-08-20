@@ -379,12 +379,89 @@ export function sortFieldsByPriority(fields: OdooField[]): OdooField[] {
  * garbage to Odoo, where it surfaces as an opaque server error. Individual
  * tuple shapes are left to Odoo to validate.
  */
+/**
+ * Every comparison operator Odoo accepts in a search domain. Used to refuse an
+ * operator here, with the list, rather than letting Odoo reject the whole
+ * domain with a message the model cannot act on.
+ */
+const ODOO_DOMAIN_OPERATORS = new Set([
+  "=",
+  "!=",
+  ">",
+  ">=",
+  "<",
+  "<=",
+  "=?",
+  "=like",
+  "=ilike",
+  "like",
+  "not like",
+  "ilike",
+  "not ilike",
+  "in",
+  "not in",
+  "child_of",
+  "parent_of",
+  "any",
+  "not any",
+]);
+
+/**
+ * Turn a literal `\uXXXX` sequence back into the character it denotes.
+ *
+ * Not a JSON parse — the input has already been through one. Some models emit
+ * `<` and `>` in escaped form (the habit that stops you emitting markup), and
+ * when that escape survives the provider's tool-argument serialization the
+ * six-character string `<=` arrives where an operator belongs.
+ */
+function decodeUnicodeEscapes(value: string): string {
+  return value.replace(/\\u([0-9a-fA-F]{4})/g, (_match, hex: string) =>
+    String.fromCharCode(parseInt(hex, 16))
+  );
+}
+
+/**
+ * Normalize the operator of one domain condition (heypinchy/pinchy#1198).
+ *
+ * Decoding alone would only move the dead end — the next escape variant would
+ * still reach Odoo — so the decoded operator is validated against
+ * `ODOO_DOMAIN_OPERATORS` and refused here if it is not one. The model then
+ * gets a message naming what it sent and what it could send instead, at the
+ * point where it can still fix it.
+ *
+ * Only the OPERATOR position is touched. A value may legitimately contain a
+ * backslash-u sequence — rewriting it would corrupt a genuine search string —
+ * while an operator never can.
+ */
+function normalizeDomainCondition(condition: unknown[]): unknown[] {
+  const [field, rawOperator, value] = condition;
+  if (typeof rawOperator !== "string") {
+    throw new Error(
+      `Invalid operator in condition ${JSON.stringify(condition)}: the operator must be a string, e.g. "=", "in", "ilike".`
+    );
+  }
+
+  const operator = decodeUnicodeEscapes(rawOperator);
+  if (!ODOO_DOMAIN_OPERATORS.has(operator)) {
+    throw new Error(
+      `Unsupported operator ${JSON.stringify(rawOperator)} in condition ${JSON.stringify(condition)}. ` +
+        `Use one of: ${[...ODOO_DOMAIN_OPERATORS].join(", ")}.`
+    );
+  }
+
+  return operator === rawOperator ? condition : [field, operator, value];
+}
+
 function asDomain(value: unknown): OdooDomain {
   if (value === undefined || value === null) return [];
   if (!Array.isArray(value)) {
     throw new Error("`filters` must be an array (an Odoo search domain).");
   }
-  return value as OdooDomain;
+  // A domain is a flat list of logical operators ("&", "|", "!") and 3-element
+  // conditions. Leave the former alone; normalize the operator of the latter.
+  return value.map((entry) =>
+    Array.isArray(entry) && entry.length === 3 ? normalizeDomainCondition(entry) : entry
+  ) as OdooDomain;
 }
 
 interface CompactSchemaOptions {
