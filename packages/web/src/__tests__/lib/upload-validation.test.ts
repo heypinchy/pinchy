@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   sanitizeFilename,
+  meaningfulUploadName,
   validateUploadBuffer,
   ALLOWED_ATTACHMENT_MIMES,
   ALLOWED_TEXT_MIMES,
@@ -262,5 +263,68 @@ describe("vCard support", () => {
     await expect(validateUploadBuffer(lowercaseVcard, "text/x-vcard")).resolves.toBe(
       "text/x-vcard"
     );
+  });
+});
+
+// heypinchy/pinchy#1199. Browsers hand us `blob` for anything pasted from the
+// clipboard or dragged out of a viewer — no extension, no hint of content. One
+// production agent's workspace held 68 such files out of 253, and identifying
+// each one costs a `pinchy_read` against a vision model on a context that is
+// already under pressure. `pinchy_ls` is close to useless on that listing, and
+// so is asking the user "did you send me the receipt".
+describe("meaningfulUploadName", () => {
+  const day = new Date("2026-08-20T09:15:00Z");
+
+  it("leaves a real filename alone", () => {
+    expect(meaningfulUploadName("Rechnung_919278810726.pdf", "application/pdf", day)).toBe(
+      "Rechnung_919278810726.pdf"
+    );
+    expect(meaningfulUploadName("2026-02-20_nara_33.00.pdf", "application/pdf", day)).toBe(
+      "2026-02-20_nara_33.00.pdf"
+    );
+  });
+
+  it("gives a generic name a dated stem and the real extension", () => {
+    expect(meaningfulUploadName("blob", "application/pdf", day)).toBe("upload-2026-08-20.pdf");
+    expect(meaningfulUploadName("blob (17)", "image/png", day)).toBe("upload-2026-08-20.png");
+    expect(meaningfulUploadName("upload (3)", "application/pdf", day)).toBe(
+      "upload-2026-08-20.pdf"
+    );
+  });
+
+  // A pasted screenshot arrives as "image.png": the extension is right, the
+  // stem says nothing. The date is strictly more informative.
+  it("renames a generic stem that already carries an extension", () => {
+    expect(meaningfulUploadName("image.png", "image/png", day)).toBe("upload-2026-08-20.png");
+  });
+
+  // A stem the user chose is information — keep it, just make the file
+  // openable by giving it the extension its bytes say it has.
+  it("keeps a real stem and only adds the missing extension", () => {
+    expect(meaningfulUploadName("Scan001", "application/pdf", day)).toBe("Scan001.pdf");
+  });
+
+  it("does not double an extension that is already correct", () => {
+    expect(meaningfulUploadName("invoice.pdf", "application/pdf", day)).toBe("invoice.pdf");
+  });
+
+  // The sniffed MIME is the truth about the bytes; a wrong extension the
+  // sender attached is not something to preserve.
+  it("leaves a mismatched but present extension alone", () => {
+    // Deliberately NOT rewritten: renaming a user-named file on a MIME
+    // mismatch is a different decision (and a lossy one) from naming a file
+    // that has no name at all.
+    expect(meaningfulUploadName("invoice.txt", "application/pdf", day)).toBe("invoice.txt");
+  });
+
+  it("falls back to .bin for a MIME with no known extension", () => {
+    expect(meaningfulUploadName("blob", "application/octet-stream", day)).toBe(
+      "upload-2026-08-20.bin"
+    );
+  });
+
+  it("is case-insensitive about the generic stem", () => {
+    expect(meaningfulUploadName("Blob", "image/jpeg", day)).toBe("upload-2026-08-20.jpg");
+    expect(meaningfulUploadName("DOWNLOAD", "image/jpeg", day)).toBe("upload-2026-08-20.jpg");
   });
 });

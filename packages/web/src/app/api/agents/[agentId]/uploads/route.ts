@@ -2,7 +2,11 @@ import { NextResponse } from "next/server";
 import { withAuth } from "@/lib/api-auth";
 import { getAgentWithAccess } from "@/lib/agent-access";
 import { getWorkspacePath } from "@/lib/workspace";
-import { sanitizeFilename, validateUploadBuffer } from "@/lib/upload-validation";
+import {
+  sanitizeFilename,
+  meaningfulUploadName,
+  validateUploadBuffer,
+} from "@/lib/upload-validation";
 import { persistStagedUpload } from "@/lib/uploads";
 import { appendAuditLog } from "@/lib/audit";
 import { draftIdSchema } from "@/lib/schemas/uploads";
@@ -112,11 +116,17 @@ export const POST = withAuth<Params>(async (req, { params }, session) => {
     return NextResponse.json({ error: message }, { status: 415 });
   }
 
+  // Name a file the browser did not name (#1199). Runs here, after
+  // validation, because the VALIDATED mime is what makes the extension
+  // trustworthy — and before staging, so the reserved slot, the DB row, the
+  // preview URL and the path the agent is handed all carry the same name.
+  const storedName = meaningfulUploadName(safeName, validatedMime, new Date());
+
   // Persist to staging. The returned `filename` is the slot reserved in
   // uploads/ — collision-suffixed up front so the client's preview URL is
   // already correct when the upload completes.
   const workspaceRoot = getWorkspacePath(agentId);
-  const staged = await persistStagedUpload({ workspaceRoot, filename: safeName, buffer });
+  const staged = await persistStagedUpload({ workspaceRoot, filename: storedName, buffer });
 
   // DB insert. If it fails after the FS write, we roll back both the
   // staging file AND the uploads/ placeholder so the disk doesn't leak.
