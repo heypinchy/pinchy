@@ -143,6 +143,31 @@ function findTool(
 
 const agentId = "agent-1";
 
+/**
+ * Hand back a tool whose grant has been revoked since it was handed out.
+ *
+ * Since #1194 the factory withholds a tool the agent has no grant for, so a
+ * denied tool can no longer be obtained the ordinary way — which is the point.
+ * The execute-time check is still load-bearing though, for exactly the state
+ * this builds: config can change under a LIVE session, and the tool object the
+ * model is holding does not evaporate when it does.
+ *
+ * `config.permissions` is the same object the factory captured, so mutating it
+ * in place is what a config regenerate looks like from inside a running
+ * session. Nothing is stubbed; the real gate runs against real config.
+ */
+function toolAfterGrantRevoked(name: string, granted: string[], remaining: string[]): AgentTool {
+  const config: PluginConfig = {
+    ...testConfig,
+    agents: { [agentId]: { connectionId: "conn-1", permissions: { email: [...granted] } } },
+  };
+  const tools = createApi(config);
+  const tool = findTool(tools, name, agentId);
+  if (!tool) throw new Error(`${name} was withheld even with grants ${granted.join(",")}`);
+  config.agents[agentId].permissions.email = [...remaining];
+  return tool;
+}
+
 // Mock global fetch for credential API calls
 const mockFetch = vi.fn();
 vi.stubGlobal("fetch", mockFetch);
@@ -204,6 +229,79 @@ describe("tool registration", () => {
     }
   });
 
+  // heypinchy/pinchy#1194. `computeAllowedTools()` emits the full superset as
+  // `tools.allow` and states the invariant that makes that safe: "the plugin
+  // only registers the tools that agent is permitted, so listing a tool an
+  // agent lacks is a harmless no-match". This plugin did not hold up its end —
+  // every tool was registered for any agent with an email connection and the
+  // grant was only checked inside execute().
+  //
+  // On production a bookkeeper agent with `email:read` was offered email_send,
+  // announced it was sending the user's documents, called it twice, and was
+  // refused both times. A denied call is not a no-op: it costs a turn and
+  // makes the agent state something untrue.
+  describe("per-agent grant gating at registration time (#1194)", () => {
+    // testConfig grants read + draft, never send.
+    const READ_AND_DRAFT_ONLY = ["email_list", "email_read", "email_search", "email_draft"];
+
+    it.each(READ_AND_DRAFT_ONLY)("still offers %s to a read+draft agent", (name) => {
+      expect(findTool(createApi(), name, agentId)).not.toBeNull();
+    });
+
+    it("withholds email_send from an agent without the send grant", () => {
+      expect(findTool(createApi(), "email_send", agentId)).toBeNull();
+    });
+
+    it("offers email_send once the agent has the send grant", () => {
+      const tools = createApi({
+        ...testConfig,
+        agents: {
+          "agent-1": { connectionId: "conn-1", permissions: { email: ["read", "send"] } },
+        },
+      });
+      expect(findTool(tools, "email_send", agentId)).not.toBeNull();
+    });
+
+    it("withholds the read tools from an agent granted only send", () => {
+      const tools = createApi({
+        ...testConfig,
+        agents: {
+          "agent-1": { connectionId: "conn-1", permissions: { email: ["send"] } },
+        },
+      });
+      for (const name of ["email_list", "email_read", "email_search", "email_get_attachment"]) {
+        expect(findTool(tools, name, agentId)).toBeNull();
+      }
+      expect(findTool(tools, "email_send", agentId)).not.toBeNull();
+    });
+
+    // The gate reuses checkPermission, so the pre-#328 legacy alias keeps
+    // working: an agent whose stored rows say "search" but never "read" must
+    // still be OFFERED the read tools, not just permitted at execute time.
+    // Gating on a raw `.includes("read")` would silently unregister them.
+    it("offers the read tools for a legacy search-only grant", () => {
+      const tools = createApi({
+        ...testConfig,
+        agents: {
+          "agent-1": { connectionId: "conn-1", permissions: { email: ["search"] } },
+        },
+      });
+      expect(findTool(tools, "email_list", agentId)).not.toBeNull();
+      expect(findTool(tools, "email_read", agentId)).not.toBeNull();
+      expect(findTool(tools, "email_draft", agentId)).toBeNull();
+      expect(findTool(tools, "email_send", agentId)).toBeNull();
+    });
+
+    // The probe path must stay unaffected: OpenClaw calls the factory with no
+    // session context at registration time, and returning null there
+    // permanently unregisters the tool for everyone.
+    it("still returns the probe stub for email_send when there is no agentId", () => {
+      const tools = createApi();
+      const entry = tools.find((t) => t.name === "email_send")!;
+      expect(entry.factory({})).not.toBeNull();
+    });
+  });
+
   it("returns tool for agent with matching permission", () => {
     const tools = createApi();
     const tool = findTool(tools, "email_list", agentId);
@@ -211,12 +309,15 @@ describe("tool registration", () => {
     expect(tool!.name).toBe("email_list");
   });
 
-  it("returns tool even without specific permission (permission checked at execute time)", () => {
-    // Agent has read+draft but not send — tool factory still returns the tool
-    // because permission is checked at execution time, not registration time
+  it("withholds a tool the agent has no grant for, rather than deferring to execute time", () => {
+    // This test used to assert the opposite — "returns tool even without
+    // specific permission (permission checked at execution time)". That was
+    // the behaviour #1194 is about: the agent was offered email_send, believed
+    // it, and only learned otherwise by calling it. The execute-time check is
+    // still there and still tested (see "permission checks at execution"), it
+    // is just no longer the FIRST line of defence.
     const tools = createApi();
-    const tool = findTool(tools, "email_send", agentId);
-    expect(tool).not.toBeNull();
+    expect(findTool(tools, "email_send", agentId)).toBeNull();
   });
 });
 
@@ -225,9 +326,8 @@ describe("permission checks at execution", () => {
     vi.clearAllMocks();
   });
 
-  it("email_send returns permission denied when agent lacks send permission", async () => {
-    const tools = createApi();
-    const tool = findTool(tools, "email_send", agentId)!;
+  it("email_send returns permission denied when the send grant is revoked mid-session", async () => {
+    const tool = toolAfterGrantRevoked("email_send", ["read", "send"], ["read"]);
 
     const result = await tool.execute("call-1", {
       to: "test@example.com",
@@ -240,18 +340,8 @@ describe("permission checks at execution", () => {
     expect(mockFetch).not.toHaveBeenCalled();
   });
 
-  it("email_draft returns permission denied when agent lacks draft permission", async () => {
-    const configNoDraft: PluginConfig = {
-      ...testConfig,
-      agents: {
-        "agent-1": {
-          connectionId: "conn-1",
-          permissions: { email: ["read"] },
-        },
-      },
-    };
-    const tools = createApi(configNoDraft);
-    const tool = findTool(tools, "email_draft", agentId)!;
+  it("email_draft returns permission denied when the draft grant is revoked mid-session", async () => {
+    const tool = toolAfterGrantRevoked("email_draft", ["read", "draft"], ["read"]);
 
     const result = await tool.execute("call-1", {
       to: "test@example.com",
@@ -349,9 +439,13 @@ describe("legacy 'search'-only permissions (pre-#328 rows without a 'read' row)"
     expect(mockGetAttachment).toHaveBeenCalledWith("msg-1", "att-1");
   });
 
-  it("email_draft still returns permission denied for a legacy search-only grant (search must not unlock draft)", async () => {
-    const tools = createApi(legacySearchOnlyConfig);
-    const tool = findTool(tools, "email_draft", agentId)!;
+  // Since #1194 a search-only grant means email_draft/email_send are never
+  // handed out at all — asserted in "per-agent grant gating at registration
+  // time". These two keep the EXECUTE-layer half of the same guarantee: the
+  // legacy alias widens "search" into "read" and must never widen further, not
+  // even for a tool a session is already holding.
+  it("email_draft still returns permission denied once the grant falls back to legacy search-only", async () => {
+    const tool = toolAfterGrantRevoked("email_draft", ["draft"], ["search"]);
 
     const result = await tool.execute("call-1", {
       to: "test@example.com",
@@ -363,9 +457,8 @@ describe("legacy 'search'-only permissions (pre-#328 rows without a 'read' row)"
     expect(result.content[0].text).toContain("Permission denied");
   });
 
-  it("email_send still returns permission denied for a legacy search-only grant (search must not unlock send)", async () => {
-    const tools = createApi(legacySearchOnlyConfig);
-    const tool = findTool(tools, "email_send", agentId)!;
+  it("email_send still returns permission denied once the grant falls back to legacy search-only", async () => {
+    const tool = toolAfterGrantRevoked("email_send", ["send"], ["search"]);
 
     const result = await tool.execute("call-1", {
       to: "test@example.com",
@@ -1553,8 +1646,8 @@ describe("audit PII curation for email_send / email_draft", () => {
   });
 
   it("email_send curates details on permission denial (raw recipient/body never reach the audit)", async () => {
-    const tools = createApi(); // testConfig agent-1 has no "send" grant
-    const tool = findTool(tools, "email_send", agentId)!;
+    // Grant revoked mid-session (#1194) — the tool exists, the grant does not.
+    const tool = toolAfterGrantRevoked("email_send", ["read", "send"], ["read"]);
 
     const result = await tool.execute("call-1", {
       to: "recipient@test.com",
@@ -1735,17 +1828,7 @@ describe("audit PII curation for email_search", () => {
   });
 
   it("curates details on permission denial", async () => {
-    const configNoRead: PluginConfig = {
-      ...testConfig,
-      agents: {
-        "agent-1": {
-          connectionId: "conn-1",
-          permissions: { email: [] },
-        },
-      },
-    };
-    const tools = createApi(configNoRead);
-    const tool = findTool(tools, "email_search", agentId)!;
+    const tool = toolAfterGrantRevoked("email_search", ["read"], []);
 
     const result = await tool.execute("call-1", { from: "sender@test.com" });
 
@@ -1838,8 +1921,7 @@ describe("error handling", () => {
   });
 
   it("attaches details.error on a permission-denied result", async () => {
-    const tools = createApi();
-    const tool = findTool(tools, "email_send", agentId)!;
+    const tool = toolAfterGrantRevoked("email_send", ["read", "send"], ["read"]);
 
     const result = await tool.execute("call-1", {
       to: "test@example.com",
@@ -1867,17 +1949,7 @@ describe("email_get_attachment", () => {
   });
 
   it("is gated on email.read permission and never touches the filesystem when denied", async () => {
-    const configNoRead: PluginConfig = {
-      ...testConfig,
-      agents: {
-        "agent-1": {
-          connectionId: "conn-1",
-          permissions: { email: [] },
-        },
-      },
-    };
-    const tools = createApi(configNoRead);
-    const tool = findTool(tools, "email_get_attachment", agentId)!;
+    const tool = toolAfterGrantRevoked("email_get_attachment", ["read"], []);
 
     const result = await tool.execute("call-1", {
       messageId: "msg-1",

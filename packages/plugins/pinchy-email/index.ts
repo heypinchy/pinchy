@@ -233,6 +233,33 @@ function getAgentConfig(
 }
 
 /**
+ * True when this agent has no grant for `operation`, so the tool must be
+ * WITHHELD at registration rather than registered and refused at call time
+ * (heypinchy/pinchy#1194).
+ *
+ * `computeAllowedTools()` on the web side emits the full superset of plugin
+ * tools as `tools.allow`, and the comment there states the invariant that makes
+ * that safe: per-agent gating happens inside the plugin, "so listing a tool an
+ * agent lacks is a harmless no-match". That is only true if the plugin actually
+ * withholds it. This plugin used to register all six tools for any agent with an
+ * email connection, so a read-only agent was offered `email_send` — complete
+ * with "Send an email immediately" in its description — and only found out on
+ * use. A denied call is not a no-op: it costs a turn, and the agent has usually
+ * told the user it is doing the thing by then.
+ *
+ * Deliberately the SAME `checkPermission` the execute-time gates call, not a
+ * raw `.includes()`, so the pre-#328 legacy "search"/"list" → "read" alias keeps
+ * working. Gating on the raw array would silently unregister the read tools for
+ * every agent whose stored rows were never regenerated.
+ *
+ * The execute-time checks stay where they are — config can change under a live
+ * session, and defence in depth is the point.
+ */
+function lacksGrant(config: AgentEmailConfig, operation: string): boolean {
+  return !checkPermission(config.permissions, "email", operation);
+}
+
+/**
  * Audit-integrity contract (see packages/web/src/app/api/internal/audit/tool-use/route.ts
  * lines ~116-122, issue #404): OpenClaw's tool-use hook strips the MCP
  * `isError` flag before forwarding results to the audit route, so
@@ -852,6 +879,7 @@ const plugin = {
         if (!agentId) return probeStub("email_list");
         const config = getAgentConfig(agentConfigs, agentId);
         if (!config) return null;
+        if (lacksGrant(config, "read")) return null;
 
         return {
           name: "email_list",
@@ -912,6 +940,7 @@ const plugin = {
         if (!agentId) return probeStub("email_read");
         const config = getAgentConfig(agentConfigs, agentId);
         if (!config) return null;
+        if (lacksGrant(config, "read")) return null;
 
         return {
           name: "email_read",
@@ -999,6 +1028,7 @@ const plugin = {
         if (!agentId) return probeStub("email_search");
         const config = getAgentConfig(agentConfigs, agentId);
         if (!config) return null;
+        if (lacksGrant(config, "read")) return null;
 
         return {
           name: "email_search",
@@ -1110,6 +1140,7 @@ const plugin = {
         if (!agentId) return probeStub("email_draft");
         const config = getAgentConfig(agentConfigs, agentId);
         if (!config) return null;
+        if (lacksGrant(config, "draft")) return null;
 
         return {
           name: "email_draft",
@@ -1189,6 +1220,7 @@ const plugin = {
         if (!agentId) return probeStub("email_send");
         const config = getAgentConfig(agentConfigs, agentId);
         if (!config) return null;
+        if (lacksGrant(config, "send")) return null;
 
         return {
           name: "email_send",
@@ -1274,6 +1306,7 @@ const plugin = {
         if (!agentId) return probeStub("email_get_attachment");
         const config = getAgentConfig(agentConfigs, agentId);
         if (!config) return null;
+        if (lacksGrant(config, "read")) return null;
 
         return {
           name: "email_get_attachment",
