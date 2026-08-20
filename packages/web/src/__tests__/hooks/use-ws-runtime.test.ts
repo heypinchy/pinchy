@@ -3645,6 +3645,9 @@ describe("useWsRuntime", () => {
       expect(messageFrames[1].retryReason).toBe("send_failure");
     });
 
+    // Attachment round-trip on this path is covered in the "Two-phase upload"
+    // describe below, which already has the upload-endpoint harness (#1195).
+
     it("retrying a 'partial_stream_failure' resends the original user message with retryReason", async () => {
       const { result } = renderHook(() => useWsRuntime("agent-42"));
 
@@ -3888,11 +3891,21 @@ describe("useWsRuntime", () => {
       expect(result.current.isRunning).toBe(true);
     });
 
-    // "preserves image attachments when retrying" was removed together with
-    // the legacy base64-over-WS flow. The two-phase upload pipeline doesn't
-    // round-trip attachmentIds on retry (they materialize at send time and
-    // the row is already in `attached` state). Retry just re-sends text.
-    // See src/__tests__/hooks/use-pending-uploads.test.ts for the new shape.
+    // Retry DOES round-trip attachmentIds (#1195).
+    //
+    // It used not to, on the reasoning recorded here when the legacy
+    // base64-over-WS flow was removed: "they materialize at send time and the
+    // row is already in `attached` state". That holds only when the first
+    // attempt reached the server. A `send_failure` retry is the case where it
+    // did not — the rows are still `staged`, nothing was materialized, and
+    // re-sending text alone hands the agent a message about files it has never
+    // been given. Production hit exactly that: a message with five invoices
+    // arrived a second time with the attachment block gone.
+    //
+    // The server tells the two states apart (`isRetry` in
+    // attachment-pipeline.ts): staged rows are attached, already-attached rows
+    // are re-referenced rather than refused. Both retry paths are covered in
+    // the "Two-phase upload" describe below, which has the upload harness.
 
     it("restarts the 10s ack timer after retry", async () => {
       const { result } = renderHook(() => useWsRuntime("agent-1"));
@@ -4435,6 +4448,82 @@ describe("Two-phase upload: attachmentIds in WS payload", () => {
     const sentMessage = JSON.parse(ws.send.mock.calls[1][0]);
     expect(sentMessage.type).toBe("message");
     expect(sentMessage.attachmentIds).toEqual(["upload-id-1"]);
+  });
+
+  // #1195: a retry re-sends the message it retries, attachments included.
+  //
+  // Both retry paths used to send `content` alone. That was reasoned from "the
+  // row is already in `attached` state" — true only when the first attempt
+  // reached the server, which is precisely not the case a `send_failure` retry
+  // covers. Production hit it: a message carrying five invoices arrived a
+  // second time with the attachment block gone, and the agent was left
+  // answering about files it had never been handed.
+  async function sendWithOneAttachment(agentId: string) {
+    vi.mocked(uploadModule.uploadAttachment).mockResolvedValue({
+      id: "upload-id-retry",
+      filename: "invoice.pdf",
+      mimeType: "application/pdf",
+      sizeBytes: 4,
+    });
+
+    const { result } = renderHook(() => useWsRuntime(agentId));
+    const ws = wsInstances[0];
+
+    act(() => {
+      ws.simulateOpen();
+    });
+
+    await act(async () => {
+      result.current.addPendingUpload(
+        new File(["data"], "invoice.pdf", { type: "application/pdf" })
+      );
+    });
+    expect(result.current.pendingUploads[0]?.state).toBe("ready");
+
+    act(() => {
+      store(result.current.runtime).onNew({
+        content: [{ type: "text", text: "here are the invoices" }],
+        parentId: "root",
+      });
+    });
+
+    const firstSend = JSON.parse(ws.send.mock.calls.at(-1)![0]);
+    expect(firstSend.attachmentIds).toEqual(["upload-id-retry"]);
+    return { result, ws, firstSend };
+  }
+
+  it("onRetryContinue re-sends the original message's attachment ids", async () => {
+    const { result, ws, firstSend } = await sendWithOneAttachment("agent-retry-1");
+
+    act(() => {
+      ws.simulateMessage({ type: "error", message: "Agent runtime not available" });
+    });
+
+    act(() => {
+      result.current.onRetryContinue("send_failure");
+    });
+
+    const retry = JSON.parse(ws.send.mock.calls.at(-1)![0]);
+    expect(retry.isRetry).toBe(true);
+    expect(retry.attachmentIds).toEqual(firstSend.attachmentIds);
+  });
+
+  it("onRetryResend re-sends the original message's attachment ids", async () => {
+    const { result, ws, firstSend } = await sendWithOneAttachment("agent-retry-2");
+
+    // Let the 10s ack timer fire so the message is in `failed` state, which is
+    // the only state onRetryResend acts on.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10_000);
+    });
+
+    act(() => {
+      result.current.onRetryResend(firstSend.clientMessageId);
+    });
+
+    const retry = JSON.parse(ws.send.mock.calls.at(-1)![0]);
+    expect(retry.isRetry).toBe(true);
+    expect(retry.attachmentIds).toEqual(firstSend.attachmentIds);
   });
 
   it("clears ready pendingUploads after send", async () => {

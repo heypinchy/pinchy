@@ -97,6 +97,7 @@ async function seedStagedUpload(
     expiresAt?: Date | null;
     status?: "staged" | "attached";
     draftId?: string;
+    messageId?: string;
   } = {}
 ) {
   const filename = opts.filename ?? "test.png";
@@ -122,6 +123,7 @@ async function seedStagedUpload(
       status,
       stagingPath: `.staging/${draftId}/${filename}`,
       expiresAt,
+      ...(opts.messageId !== undefined && { messageId: opts.messageId }),
     })
     .returning();
 
@@ -129,6 +131,41 @@ async function seedStagedUpload(
   const stagingDir = join(tmpRoot, agentId, ".staging", draftId);
   mkdirSync(stagingDir, { recursive: true });
   writeFileSync(join(stagingDir, filename), buffer);
+
+  return row;
+}
+
+/**
+ * The state a message leaves behind once its attachments have been
+ * materialized: the row is `attached` and stamped with the message id, and the
+ * bytes sit in `uploads/<filename>` rather than `.staging/`.
+ *
+ * This is what a RETRY of that message meets (heypinchy/pinchy#1195), so it
+ * needs its own seeder — `seedStagedUpload({ status: "attached" })` leaves the
+ * file in `.staging/`, which is a state no real attach produces.
+ */
+async function seedAttachedUpload(
+  userId: string,
+  agentId: string,
+  messageId: string,
+  opts: { filename?: string; mimeType?: string; buffer?: Buffer; writeFile?: boolean } = {}
+) {
+  const filename = opts.filename ?? "test.png";
+  const buffer = opts.buffer ?? PNG;
+  const row = await seedStagedUpload(userId, agentId, {
+    filename,
+    mimeType: opts.mimeType,
+    buffer,
+    status: "attached",
+    expiresAt: null,
+    messageId,
+  });
+
+  if (opts.writeFile !== false) {
+    const uploadsDir = join(tmpRoot, agentId, "uploads");
+    mkdirSync(uploadsDir, { recursive: true });
+    writeFileSync(join(uploadsDir, filename), buffer);
+  }
 
   return row;
 }
@@ -314,6 +351,96 @@ describe("materializeAttachments", () => {
     const detail = entries[0].detail as Record<string, unknown>;
     expect(detail.reason).toBe("already_attached");
     expect(detail.uploadId).toBe(row.id);
+  });
+
+  // #1195. A retry re-sends the message it retries, attachment ids and all, so
+  // the rows it names are already `attached` from the first attempt. Treating
+  // that as the "you cannot reuse an upload" error would reject the retry
+  // outright, which is worse than the bug it replaced.
+  //
+  // Note the correlation is `isRetry`, NOT the message id: client-router mints
+  // a fresh `messageId` per frame (`crypto.randomUUID()`), so a retry never
+  // carries the id its first attempt was stored under. Keying on messageId
+  // equality looks right and matches nothing in production.
+  it("re-references a retry's already-attached uploads instead of refusing them", async () => {
+    const { materializeAttachments } = await import("@/server/attachment-pipeline");
+
+    const user = await seedUser();
+    const agent = await seedAgent(user.id);
+    const row = await seedAttachedUpload(user.id, agent.id, "msg-first-attempt");
+
+    const result = await materializeAttachments({
+      agentId: agent.id,
+      userId: user.id,
+      attachmentIds: [row.id],
+      messageId: "msg-a-different-id-than-the-first-attempt",
+      agentName: agent.name,
+      isRetry: true,
+    });
+
+    // The workspace ref the agent is handed must be the durable uploads/ path,
+    // identical to the one the first attempt produced.
+    expect(result.workspaceRefs).toHaveLength(1);
+    expect(result.workspaceRefs[0].relativePath).toBe("uploads/test.png");
+    expect(result.workspaceRefs[0].absolutePath).toMatch(/\/uploads\/test\.png$/);
+    // Vision has to keep working on a retry too, so an image is re-encoded.
+    expect(result.chatAttachments).toHaveLength(1);
+    expect(result.chatAttachments[0].fileName).toBe("test.png");
+    expect(result.chatAttachments[0].content.length).toBeGreaterThan(0);
+  });
+
+  it("refuses to hand back a ref when the retried message's file is gone from uploads/", async () => {
+    // The ref is rebuilt from the row rather than read back from a column, so
+    // the one thing this must never do is emit a path that resolves to
+    // nothing: the agent would be told to read a file that is not there and
+    // would report the attachment as unreadable. Fail loud instead.
+    const { materializeAttachments, AttachmentAlreadyAttachedError } =
+      await import("@/server/attachment-pipeline");
+
+    const user = await seedUser();
+    const agent = await seedAgent(user.id);
+    const row = await seedAttachedUpload(user.id, agent.id, "msg-first-attempt", {
+      writeFile: false,
+    });
+
+    // Assert on the REASON, not just that something threw: before the retry
+    // path existed this rejected with AttachmentAlreadyAttachedError, so a bare
+    // `.rejects.toThrow()` here would have passed against the old code and
+    // proved nothing about the missing file.
+    const err = await materializeAttachments({
+      agentId: agent.id,
+      userId: user.id,
+      attachmentIds: [row.id],
+      messageId: "msg-retry",
+      agentName: agent.name,
+      isRetry: true,
+    }).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(Error);
+    expect(err).not.toBeInstanceOf(AttachmentAlreadyAttachedError);
+    expect((err as Error).message).toMatch(/uploads\/test\.png/);
+  });
+
+  it("still refuses an already-attached upload on an ordinary send", async () => {
+    // The negative control for the test above, on the SAME fixture: the only
+    // difference is `isRetry`. Without it, re-referencing an attached upload
+    // stays an error — otherwise the guard would be gone rather than gated.
+    const { materializeAttachments, AttachmentAlreadyAttachedError } =
+      await import("@/server/attachment-pipeline");
+
+    const user = await seedUser();
+    const agent = await seedAgent(user.id);
+    const row = await seedAttachedUpload(user.id, agent.id, "msg-first-attempt");
+
+    await expect(
+      materializeAttachments({
+        agentId: agent.id,
+        userId: user.id,
+        attachmentIds: [row.id],
+        messageId: "msg-fresh-send",
+        agentName: agent.name,
+      })
+    ).rejects.toBeInstanceOf(AttachmentAlreadyAttachedError);
   });
 
   it("base64-encodes the promoted image file in chatAttachments content", async () => {
