@@ -38,15 +38,29 @@ stage_llama_cpp_provider() {
     # missed, so on production the provider sat blocked and every memory_search
     # answered "Unknown memory embedding provider: local." (#1196).
     #
+    # This is the MIGRATION half of that fix, not the whole of it. What put the
+    # tree at uid 999 is the pinchy container's entrypoint, which used to run a
+    # blanket `chown -R pinchy:pinchy /openclaw-config` over the same volume on
+    # every boot; config/fix-volume-ownership.sh now prunes npm/ out of it, so
+    # nothing re-breaks the tree between OpenClaw restarts. Repairing it only
+    # here would not have held: this runs at OpenClaw CONTAINER boot and
+    # `openclaw` depends_on pinchy, so a pinchy-only restart (an OOM, a redeploy,
+    # `restart: unless-stopped` after a crash) would undo it with nothing left to
+    # repair it until the openclaw container itself restarts.
+    #
     # OUTSIDE the staging guard on purpose. The copy above runs at most once per
     # volume, so a tree staged by an earlier release is never rewritten — if the
-    # repair rode along with the copy, an upgraded deployment would stay blocked
-    # forever. That is the state #1196 was found in.
+    # repair rode along with the copy, a deployment upgrading from a release that
+    # carried the entrypoint bug would stay blocked forever. That is the state
+    # #1196 was found in.
     #
     # Warn rather than swallow, same contract as the registry refresh below: a
     # silent failure here means recall regresses to 0 chunks with nothing said.
-    if ! chown -R root:root "$OPENCLAW_NPM_ROOT" 2>/dev/null; then
-        echo "[llama-cpp] WARNING: could not chown ${OPENCLAW_NPM_ROOT} to root — OpenClaw will block the embedding provider as 'suspicious ownership' and memory_search will return 0 chunks"
+    # And quote what the kernel said — "could not chown" alone leaves an operator
+    # to reproduce the call by hand to learn whether it was EPERM, a read-only
+    # mount, or a missing path, which are three different answers.
+    if ! chown_err="$(chown -R root:root "$OPENCLAW_NPM_ROOT" 2>&1 >/dev/null)"; then
+        echo "[llama-cpp] WARNING: could not chown ${OPENCLAW_NPM_ROOT} to root (${chown_err%%$'\n'*}) — OpenClaw will block the embedding provider as 'suspicious ownership' and memory_search will return 0 chunks"
     fi
     # Idempotent, offline: rescans on-disk source roots (incl. the staged
     # provider) to rebuild the persisted registry so it loads. A silent failure
