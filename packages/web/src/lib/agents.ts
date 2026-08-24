@@ -36,7 +36,10 @@ import { getDefaultModel } from "@/lib/provider-models";
 import { TemplateCapabilityUnavailableError } from "@/lib/model-resolver";
 import { resolveAvailableModelForTemplate } from "@/lib/model-resolver/resolve-available";
 import type { ModelCapability, ModelHint } from "@/lib/model-resolver/types";
-import { validateOdooTemplate } from "@/lib/integrations/odoo-template-validation";
+import {
+  validateOdooTemplate,
+  type DeniedModelOperations,
+} from "@/lib/integrations/odoo-template-validation";
 import { detectEmailOperations } from "@/lib/tool-registry";
 import type { CreateAgentInput } from "@/lib/schemas/agents";
 
@@ -260,25 +263,47 @@ export type OnPermissionsConfigured = (
  * simply not in it, and every bookkeeper agent — including ones created after
  * the feature shipped — came out without the grant with nothing said anywhere.
  *
- * `missingModels` is the actionable set (non-optional and ungrantable).
+ * A connection falls short in three ways, and all three produce the identical
+ * runtime symptom — `Permission denied: <op> on <model>` at first use:
+ *
+ * - `missingModels` — non-optional required models the catalogue has never
+ *   been probed for. The stale-snapshot case that cost the reconciliation
+ *   feature.
+ * - `deniedOperations` — non-optional required models the connection HAS, but
+ *   on which its Odoo API user may not perform every operation the template
+ *   needs. `validateOdooTemplate` leaves `valid` true for these, so keying the
+ *   report on `missingModels` alone said nothing at all.
+ * - a `connectionId` naming no row, which makes every required model missing.
+ *
  * `warnings` is everything the validation had to say, optional models
- * included, kept for the record rather than for a decision.
+ * included, kept for the record rather than for a decision. `connectionName`
+ * is the snapshot: the row may be gone by the time anyone reads the trail,
+ * and an audit row is immutable, so the name cannot be filled in later.
  */
 export interface IncompleteConnectionPermissions {
   connectionId: string;
-  missingModels: Array<{ model: string; name: string }>;
+  connectionName: string | null;
+  missingModels: string[];
+  deniedOperations: DeniedModelOperations[];
   warnings: string[];
 }
 
 /**
- * Called by `createAgent` once a connection's grants are committed and at
- * least one non-optional required model could not be granted.
+ * Called by `createAgent` once a connection's model catalogue has been
+ * validated and it cannot grant everything the template requires.
  *
- * Same timing contract as `onPermissionsConfigured`, for the same reason: the
- * agent row and its partial grants are already committed, and the tail can
- * still throw. The agent is deliberately still created — a partly-capable
- * agent beats a failed create, and an admin can grant the rest by hand. What
- * is not acceptable is doing it quietly.
+ * Timing: BEFORE the grant rows are inserted, and therefore before everything
+ * that can still throw — one step earlier than `onPermissionsConfigured`,
+ * which cannot fire until the rows it describes exist. The gap is the one fact
+ * worth keeping even when the insert or the tail fails, so it is recorded
+ * first. The trade-off is real and deliberate: a hook that throws takes the
+ * grant insert down with it, so a caller must not let one escape —
+ * `deferAuditLog` never throws, which is why both routes use it.
+ *
+ * The agent is deliberately still created — a partly-capable agent beats a
+ * failed create, and an admin can grant the rest by hand. What is not
+ * acceptable is doing it quietly, so both routes also fold the gap into the
+ * 201's `warning` field.
  */
 export type OnPermissionsIncomplete = (
   agent: typeof agents.$inferSelect,
@@ -301,8 +326,9 @@ export type OnPermissionsIncomplete = (
  * actor (`user` vs `api_key`) and its own writer — which is how `createAgent`
  * stays audit-agnostic without giving up correct timing.
  *
- * Both hooks are pinned by ordering tests in create-agent-service.test.ts; the
- * route-level consequence is pinned in agents-create.test.ts.
+ * All three hooks are pinned by ordering tests in create-agent-service.test.ts;
+ * the route-level consequence is pinned in agents-create.test.ts and
+ * v1/agents-create.test.ts.
  */
 export type CreateAgentHooks = {
   onCreated?: OnAgentCreated;
@@ -327,7 +353,9 @@ export type CreateAgentHooks = {
  * already delivered, kept here for the return contract. Audit from the hook,
  * not from this field: this field only exists on the path where nothing threw.
  * `incompletePermissions` mirrors `onPermissionsIncomplete` the same way, and
- * carries the same caveat.
+ * carries the same caveat. Unlike the other two it is also read on the success
+ * path proper: both routes fold it into the 201's `warning` string, so a
+ * provisioning script that checks that one field still sees everything.
  */
 export type CreateAgentResult =
   | {
@@ -553,58 +581,67 @@ export async function createAgent(
 
   // Auto-configure Odoo permissions when template has odooConfig
   if (template.odooConfig && connectionId) {
-    const connRows = await db
+    const [connRow] = await db
       .select()
       .from(integrationConnections)
       .where(eq(integrationConnections.id, connectionId));
 
-    if (connRows.length > 0) {
-      const connectionData = connRows[0].data as {
-        models?: Array<{
-          model: string;
-          name: string;
-          access?: { read: boolean; create: boolean; write: boolean; delete: boolean };
-        }>;
-      } | null;
-      const models = connectionData?.models ?? [];
+    const connectionData = (connRow?.data ?? null) as {
+      models?: Array<{
+        model: string;
+        name: string;
+        access?: { read: boolean; create: boolean; write: boolean; delete: boolean };
+      }>;
+    } | null;
+    const models = connectionData?.models ?? [];
 
-      const validation = validateOdooTemplate(template.odooConfig, models);
+    // A connectionId naming no row used to skip this whole block, so the agent
+    // came out with zero Odoo permissions and a clean 201 — the loudest case
+    // of exactly the silence #1208 is about. Validating against the empty
+    // catalogue instead makes every required model report itself, through the
+    // one code path rather than a special case bolted beside it.
+    const validation = validateOdooTemplate(template.odooConfig, models);
 
-      // A required model the connection cannot grant is the single most
-      // important fact about the agent that was just created, and it used to
-      // be computed here and discarded (#1208). Recorded before the grants
-      // below, so a throw in the tail cannot lose it.
-      if (validation.missingModels.length > 0) {
-        const gap: IncompleteConnectionPermissions = {
+    // What the connection cannot grant is the single most important fact about
+    // the agent that was just created, and it used to be computed here and
+    // discarded (#1208). Recorded before the grants below, so a throw in the
+    // insert or the tail cannot lose it — see OnPermissionsIncomplete.
+    if (validation.missingModels.length > 0 || validation.deniedOperations.length > 0) {
+      const gap: IncompleteConnectionPermissions = {
+        connectionId,
+        connectionName: connRow?.name ?? null,
+        missingModels: validation.missingModels,
+        deniedOperations: validation.deniedOperations,
+        // Said out loud, because "model not available" for every model reads
+        // as a stale catalogue rather than as a connection that isn't there.
+        warnings: connRow
+          ? validation.warnings
+          : ["connection not found — no model catalogue to grant from", ...validation.warnings],
+      };
+      incompletePermissions.push(gap);
+      hooks?.onPermissionsIncomplete?.(agent, gap);
+    }
+
+    if (validation.availableModels.length > 0) {
+      const permissionRows = validation.availableModels.flatMap((m) =>
+        m.operations.map((op) => ({
+          agentId: agent.id,
           connectionId,
-          missingModels: validation.missingModels,
-          warnings: validation.warnings,
-        };
-        incompletePermissions.push(gap);
-        hooks?.onPermissionsIncomplete?.(agent, gap);
-      }
+          model: m.model,
+          operation: op,
+        }))
+      );
 
-      if (validation.availableModels.length > 0) {
-        const permissionRows = validation.availableModels.flatMap((m) =>
-          m.operations.map((op) => ({
-            agentId: agent.id,
-            connectionId,
-            model: m.model,
-            operation: op,
-          }))
-        );
+      await db.insert(agentConnectionPermissions).values(permissionRows);
 
-        await db.insert(agentConnectionPermissions).values(permissionRows);
-
-        // Committed, and the tail below can still throw — record it now, for
-        // the same reason onCreated fires early. See CreateAgentHooks.
-        const entry: AutoConfiguredConnection = {
-          connectionId,
-          permissions: permissionRows.map((p) => ({ model: p.model, operation: p.operation })),
-        };
-        autoConfiguredPermissions.push(entry);
-        hooks?.onPermissionsConfigured?.(agent, entry);
-      }
+      // Committed, and the tail below can still throw — record it now, for
+      // the same reason onCreated fires early. See CreateAgentHooks.
+      const entry: AutoConfiguredConnection = {
+        connectionId,
+        permissions: permissionRows.map((p) => ({ model: p.model, operation: p.operation })),
+      };
+      autoConfiguredPermissions.push(entry);
+      hooks?.onPermissionsConfigured?.(agent, entry);
     }
   }
 

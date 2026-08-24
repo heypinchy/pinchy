@@ -245,28 +245,45 @@ describe("createAgent() service", () => {
   // and the admin can grant the rest by hand. What is not acceptable is doing
   // it quietly.
 
-  function mockOdooConnectionRow() {
+  function mockOdooConnectionRow(name = "My Odoo") {
     vi.mocked(db.select).mockReturnValueOnce({
       from: vi.fn().mockReturnValue({
-        where: vi.fn().mockResolvedValue([{ data: { models: [{ model: "account.move" }] } }]),
+        where: vi
+          .fn()
+          .mockResolvedValue([
+            { id: "conn-1", name, data: { models: [{ model: "account.move" }] } },
+          ]),
       }),
     } as unknown as ReturnType<typeof db.select>);
+  }
+
+  /** The shape `validateOdooTemplate` really returns, with the gap filled in. */
+  function validationWith(
+    gap: Partial<ReturnType<typeof validateOdooTemplate>> = {}
+  ): ReturnType<typeof validateOdooTemplate> {
+    return {
+      valid: true,
+      warnings: [],
+      availableModels: [{ model: "account.move", operations: ["read"] }],
+      missingModels: [],
+      deniedOperations: [],
+      ...gap,
+    };
   }
 
   it("reports required models the connection could not grant", async () => {
     const onPermissionsIncomplete = vi.fn();
     mockOdooConnectionRow();
-    vi.mocked(validateOdooTemplate).mockReturnValue({
-      valid: false,
-      warnings: [
-        "account.bank.statement.line: model not available",
-        "sale.subscription.plan: model not available",
-      ],
-      availableModels: [{ model: "account.move", operations: ["read"] }],
-      missingModels: [
-        { model: "account.bank.statement.line", name: "account.bank.statement.line" },
-      ],
-    });
+    vi.mocked(validateOdooTemplate).mockReturnValue(
+      validationWith({
+        valid: false,
+        warnings: [
+          "account.bank.statement.line: model not available",
+          "sale.subscription.plan: model not available",
+        ],
+        missingModels: ["account.bank.statement.line"],
+      })
+    );
 
     const result = await createAgent(
       { name: "Books", templateId: "odoo-bookkeeper", connectionId: "conn-1" },
@@ -280,9 +297,9 @@ describe("createAgent() service", () => {
       expect.objectContaining({ id: "new-agent-id" }),
       {
         connectionId: "conn-1",
-        missingModels: [
-          { model: "account.bank.statement.line", name: "account.bank.statement.line" },
-        ],
+        connectionName: "My Odoo",
+        missingModels: ["account.bank.statement.line"],
+        deniedOperations: [],
         warnings: [
           "account.bank.statement.line: model not available",
           "sale.subscription.plan: model not available",
@@ -291,16 +308,121 @@ describe("createAgent() service", () => {
     );
   });
 
+  // The sibling hole, and the one the first cut of #1208 left open: a model
+  // the connection HAS, but may not write. Same runtime symptom ("Permission
+  // denied: write on account.bank.statement.line"), and `missingModels` is
+  // empty, so keying the report on that alone reported nothing.
+  it("reports required operations the connection denied on a model it does have", async () => {
+    const onPermissionsIncomplete = vi.fn();
+    mockOdooConnectionRow();
+    vi.mocked(validateOdooTemplate).mockReturnValue(
+      validationWith({
+        warnings: ["account.bank.statement.line: write not available"],
+        availableModels: [{ model: "account.bank.statement.line", operations: ["read"] }],
+        deniedOperations: [{ model: "account.bank.statement.line", operations: ["write"] }],
+      })
+    );
+
+    const result = await createAgent(
+      { name: "Books", templateId: "odoo-bookkeeper", connectionId: "conn-1" },
+      "user-1",
+      { onPermissionsIncomplete }
+    );
+
+    expect(result.ok).toBe(true);
+    expect(onPermissionsIncomplete).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "new-agent-id" }),
+      {
+        connectionId: "conn-1",
+        connectionName: "My Odoo",
+        missingModels: [],
+        deniedOperations: [{ model: "account.bank.statement.line", operations: ["write"] }],
+        warnings: ["account.bank.statement.line: write not available"],
+      }
+    );
+  });
+
+  // A connectionId naming no row is the loudest instance of the same class:
+  // NOTHING is grantable. The guard used to skip the whole block, so the agent
+  // came out with zero Odoo permissions and a clean 201. Validating against an
+  // empty catalogue makes every required model report itself.
+  it("reports every required model when the connection row is gone", async () => {
+    const onPermissionsIncomplete = vi.fn();
+    // No mockOdooConnectionRow() — the default db.select resolves to [].
+    vi.mocked(validateOdooTemplate).mockReturnValue(
+      validationWith({
+        valid: false,
+        warnings: ["account.move: model not available"],
+        availableModels: [],
+        missingModels: ["account.move"],
+      })
+    );
+
+    const result = await createAgent(
+      { name: "Books", templateId: "odoo-bookkeeper", connectionId: "gone" },
+      "user-1",
+      { onPermissionsIncomplete }
+    );
+
+    expect(result.ok).toBe(true);
+    // Validated against an empty catalogue rather than skipped.
+    expect(vi.mocked(validateOdooTemplate)).toHaveBeenCalledWith(expect.anything(), []);
+    expect(onPermissionsIncomplete).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "new-agent-id" }),
+      expect.objectContaining({
+        connectionId: "gone",
+        connectionName: null,
+        missingModels: ["account.move"],
+        // The trail must not read as "the connection lacks these models" when
+        // the connection is not there at all.
+        warnings: [
+          "connection not found — no model catalogue to grant from",
+          "account.move: model not available",
+        ],
+      })
+    );
+  });
+
+  // The timing IS the contract, exactly as for the other two hooks: the gap is
+  // recorded before the grants commit and before the tail that can throw, so a
+  // failing insert or a failing regen cannot lose the one fact worth keeping.
+  it("fires onPermissionsIncomplete BEFORE the grants commit and before the regen", async () => {
+    const calls: string[] = [];
+    mockOdooConnectionRow();
+    vi.mocked(validateOdooTemplate).mockReturnValue(
+      validationWith({
+        valid: false,
+        warnings: ["account.bank.statement.line: model not available"],
+        missingModels: ["account.bank.statement.line"],
+      })
+    );
+    vi.mocked(regenerateOpenClawConfig).mockImplementationOnce(async () => {
+      calls.push("regen");
+    });
+
+    await createAgent(
+      { name: "Books", templateId: "odoo-bookkeeper", connectionId: "conn-1" },
+      "user-1",
+      {
+        onPermissionsIncomplete: () => void calls.push("incomplete"),
+        // Fires the instant the grant rows commit, so it stands in for the
+        // insert itself.
+        onPermissionsConfigured: () => void calls.push("grants"),
+      }
+    );
+
+    expect(calls).toEqual(["incomplete", "grants", "regen"]);
+  });
+
   it("carries the same data on the result, for callers that do not use hooks", async () => {
     mockOdooConnectionRow();
-    vi.mocked(validateOdooTemplate).mockReturnValue({
-      valid: false,
-      warnings: ["account.bank.statement.line: model not available"],
-      availableModels: [{ model: "account.move", operations: ["read"] }],
-      missingModels: [
-        { model: "account.bank.statement.line", name: "account.bank.statement.line" },
-      ],
-    });
+    vi.mocked(validateOdooTemplate).mockReturnValue(
+      validationWith({
+        valid: false,
+        warnings: ["account.bank.statement.line: model not available"],
+        missingModels: ["account.bank.statement.line"],
+      })
+    );
 
     const result = await createAgent(
       { name: "Books", templateId: "odoo-bookkeeper", connectionId: "conn-1" },
@@ -312,23 +434,18 @@ describe("createAgent() service", () => {
     expect(result.incompletePermissions).toEqual([
       {
         connectionId: "conn-1",
-        missingModels: [
-          { model: "account.bank.statement.line", name: "account.bank.statement.line" },
-        ],
+        connectionName: "My Odoo",
+        missingModels: ["account.bank.statement.line"],
+        deniedOperations: [],
         warnings: ["account.bank.statement.line: model not available"],
       },
     ]);
   });
 
-  it("stays quiet when every required model was granted", async () => {
+  it("stays quiet when every required model and operation was granted", async () => {
     const onPermissionsIncomplete = vi.fn();
     mockOdooConnectionRow();
-    vi.mocked(validateOdooTemplate).mockReturnValue({
-      valid: true,
-      warnings: [],
-      availableModels: [{ model: "account.move", operations: ["read"] }],
-      missingModels: [],
-    });
+    vi.mocked(validateOdooTemplate).mockReturnValue(validationWith());
 
     const result = await createAgent(
       { name: "Books", templateId: "odoo-bookkeeper", connectionId: "conn-1" },
@@ -343,18 +460,16 @@ describe("createAgent() service", () => {
   });
 
   // An OPTIONAL required model that is unavailable is an ordinary fact, not a
-  // hole — `validateOdooTemplate` keeps it out of `missingModels` for exactly
-  // that reason. Reporting those too would train an admin to ignore the
-  // signal, which is how a warning becomes decoration.
-  it("does not report a warning that names no missing model", async () => {
+  // hole — `validateOdooTemplate` keeps it out of both `missingModels` and
+  // `deniedOperations` for exactly that reason. Reporting those too would
+  // train an admin to ignore the signal, which is how a warning becomes
+  // decoration.
+  it("does not report a warning that names no missing model or denied operation", async () => {
     const onPermissionsIncomplete = vi.fn();
     mockOdooConnectionRow();
-    vi.mocked(validateOdooTemplate).mockReturnValue({
-      valid: true,
-      warnings: ["sale.subscription.plan: model not available"],
-      availableModels: [{ model: "account.move", operations: ["read"] }],
-      missingModels: [],
-    });
+    vi.mocked(validateOdooTemplate).mockReturnValue(
+      validationWith({ warnings: ["sale.subscription.plan: model not available"] })
+    );
 
     await createAgent(
       { name: "Books", templateId: "odoo-bookkeeper", connectionId: "conn-1" },

@@ -6,6 +6,10 @@ import { createAgent, listAgents } from "@/lib/agents";
 import { createAgentSchema } from "@/lib/schemas/agents";
 import { appendAuditLog } from "@/lib/audit";
 import { deferAuditLog } from "@/lib/audit-deferred";
+import {
+  incompletePermissionsDetail,
+  incompletePermissionsWarning,
+} from "@/lib/agent-permission-gaps";
 
 /**
  * List every non-deleted shared agent. Key-authenticated counterpart to the
@@ -88,7 +92,8 @@ export const POST = withApiKey(["agents:write"], async (req, _ctx, key) => {
         },
         outcome: "success",
       }),
-    // #1208 — same reason as the session route, different actor.
+    // #1208 — same reason as the session route, different actor. The detail
+    // body itself is shared, so the two audit surfaces cannot drift.
     onPermissionsIncomplete: (agent, entry) =>
       deferAuditLog({
         actorType: "api_key",
@@ -96,12 +101,7 @@ export const POST = withApiKey(["agents:write"], async (req, _ctx, key) => {
         eventType: "config.changed",
         resource: `agent:${agent.id}`,
         detail: {
-          action: "agent_integration_permissions_incomplete",
-          agentId: agent.id,
-          name: agent.name,
-          connectionId: entry.connectionId,
-          missingModels: entry.missingModels.map((m) => m.model),
-          warnings: entry.warnings,
+          ...incompletePermissionsDetail(agent, entry),
           apiKey: { id: key.keyId, name: key.name },
         },
         outcome: "failure",
@@ -127,7 +127,7 @@ export const POST = withApiKey(["agents:write"], async (req, _ctx, key) => {
     return NextResponse.json(result.error.body, { status: result.error.status });
   }
 
-  const { agent, runtimeWarning, runtimeApplyError } = result;
+  const { agent, runtimeWarning, runtimeApplyError, incompletePermissions } = result;
 
   // The agent row is committed (audited success above) but never reached the
   // runtime (#880). Record a distinct failure event so the trail shows "created
@@ -155,5 +155,15 @@ export const POST = withApiKey(["agents:write"], async (req, _ctx, key) => {
   // session-created one.
   revalidatePath("/", "layout");
 
-  return NextResponse.json({ ...agent, warning: runtimeWarning }, { status: 201 });
+  // One `warning` field, every reason a 201 is not a clean create — the
+  // reference tells callers its presence is the whole check, and this route
+  // has no UI in front of it to catch what the field leaves out. A script
+  // that treats 201 as done would otherwise record a clean create for an
+  // agent whose Odoo tools fail at first use.
+  const warning =
+    [runtimeWarning, incompletePermissionsWarning(incompletePermissions)]
+      .filter(Boolean)
+      .join(" ") || undefined;
+
+  return NextResponse.json({ ...agent, warning }, { status: 201 });
 });
