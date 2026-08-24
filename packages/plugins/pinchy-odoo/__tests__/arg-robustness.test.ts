@@ -27,7 +27,7 @@ vi.mock("odoo-node", () => {
 
 vi.mock("../io", () => ({ readFile: vi.fn(), stat: vi.fn() }));
 
-import { hasItemWrappedArray } from "../index";
+import { asDomain, decodeUnicodeEscapes, hasItemWrappedArray } from "../index";
 import plugin from "../index";
 
 // Pattern B: the plugin lazily fetches credentials, so a stubbed endpoint is
@@ -226,6 +226,111 @@ describe("odoo_read — {item: …} array-wrapping", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Unit: the domain normalizer itself. Driving it through a tool proves the
+// wiring; driving it directly is how the shapes below stay cheap to state —
+// the same split `hasItemWrappedArray` already has above.
+// ---------------------------------------------------------------------------
+describe("decodeUnicodeEscapes", () => {
+  it("turns a literal \\uXXXX sequence back into its character", () => {
+    expect(decodeUnicodeEscapes("\\u003c=")).toBe("<=");
+    expect(decodeUnicodeEscapes("\\u0026")).toBe("&");
+  });
+
+  it("accepts uppercase hex", () => {
+    expect(decodeUnicodeEscapes("\\u003C=")).toBe("<=");
+  });
+
+  it("leaves a string with no escape untouched", () => {
+    expect(decodeUnicodeEscapes("ilike")).toBe("ilike");
+    expect(decodeUnicodeEscapes("")).toBe("");
+  });
+});
+
+describe("asDomain", () => {
+  it("treats an omitted filter as match-everything", () => {
+    expect(asDomain(undefined)).toEqual([]);
+    expect(asDomain(null)).toEqual([]);
+  });
+
+  it("refuses a non-array, naming the parameter", () => {
+    expect(() => asDomain("account_id = 5")).toThrow(/`filters` must be an array/);
+  });
+
+  // Odoo lower-cases the operator and still accepts the legacy `<>` for `!=`,
+  // so refusing either spelling here would reject a domain Odoo runs happily.
+  // Sending the canonical form is never worse than sending the alias.
+  it("accepts the spellings Odoo normalizes away", () => {
+    expect(asDomain([["name", "ILIKE", "acme"]])).toEqual([["name", "ilike", "acme"]]);
+    expect(asDomain([["partner_id", "In", [1, 2]]])).toEqual([["partner_id", "in", [1, 2]]]);
+    expect(asDomain([["state", "<>", "draft"]])).toEqual([["state", "!=", "draft"]]);
+  });
+
+  // `&` is the character a model escapes most reflexively of all, so the
+  // operator position of a CONDITION is not the only place #1198 lands.
+  it("decodes an escaped logical operator", () => {
+    expect(
+      asDomain(["\\u0026", ["state", "=", "posted"], ["date", "\\u003e=", "2026-06-01"]])
+    ).toEqual(["&", ["state", "=", "posted"], ["date", ">=", "2026-06-01"]]);
+  });
+
+  it("refuses a bare string that is not a logical operator", () => {
+    expect(() => asDomain(["AND", ["state", "=", "posted"]])).toThrow(
+      /Unsupported domain term "AND"/
+    );
+  });
+
+  // `any` / `not any` carry a domain as their value, and the escape lands one
+  // level in as readily as at the top.
+  it("normalizes the sub-domain of any / not any", () => {
+    expect(asDomain([["invoice_line_ids", "any", [["date", "\\u003c=", "2026-06-30"]]]])).toEqual([
+      ["invoice_line_ids", "any", [["date", "<=", "2026-06-30"]]],
+    ]);
+  });
+
+  it("leaves a non-array `any` value alone rather than inventing a refusal", () => {
+    expect(asDomain([["invoice_line_ids", "any", 5]])).toEqual([["invoice_line_ids", "any", 5]]);
+  });
+
+  // A domain one level too deep is a shape models produce as readily as the
+  // {item: …} artifact. Reading the middle element of such an entry yields the
+  // honest-but-useless "the operator must be a string"; name the nesting.
+  it.each([
+    [[["&", ["state", "=", "posted"], ["date", ">=", "2026-06-01"]]]],
+    [
+      [
+        [
+          ["state", "=", "posted"],
+          ["date", ">=", "2026-06-01"],
+        ],
+      ],
+    ],
+    [[[["state", "=", "posted"]]]],
+  ])("refuses a domain nested one level too deep (%#)", (nested) => {
+    expect(() => asDomain(nested)).toThrow(/nested one level too deep/);
+  });
+
+  it("refuses a non-string operator without echoing the value", () => {
+    expect(() => asDomain([["date", 5, "2026-06-30"]])).toThrow(
+      /Invalid condition on field "date": the operator must be a string/
+    );
+  });
+
+  // The refusal names the field and the operator and NOT the value. The value
+  // is the caller's own search text; echoing it back into an error message is
+  // how caller-supplied prose ends up being read as a diagnosis downstream —
+  // `isAuthError` matches on words, and "unauthorized" is an ordinary thing to
+  // search an accounting database for.
+  it("does not echo the value into the refusal", () => {
+    expect(() => asDomain([["name", "contains", "Unauthorized charge dispute"]])).toThrow(
+      /Unsupported operator "contains" on field "name"/
+    );
+    expect(() => asDomain([["name", "contains", "Unauthorized charge dispute"]])).not.toThrow(
+      /Unauthorized/
+    );
+  });
+});
+
 // heypinchy/pinchy#1198. Some models emit `<` and `>` in their JSON-escaped
 // form, and when the escape is not decoded on the way in the six-character
 // literal `<=` arrives as the operator. Odoo then rejects the whole
@@ -283,7 +388,12 @@ describe("odoo_read — unicode-escaped domain operators", () => {
   // escape variant would still reach Odoo. An operator that is not one Odoo
   // accepts is refused HERE, with the list, so the model can correct itself
   // instead of reading a server error about a string it believes it never sent.
-  it("refuses an operator Odoo does not accept, before querying", async () => {
+  //
+  // "Before querying" has to mean before the FIRST call, not before
+  // search_read: odoo_read reads `fields_get` on the way in, so asserting only
+  // that search_read was skipped would leave a real Odoo round trip — and a
+  // credentials fetch — unaccounted for.
+  it("refuses an operator Odoo does not accept, before any Odoo call", async () => {
     const tool = findTool(createApi({ [agentId]: cfg() }), "odoo_read", agentId)!;
 
     const result = await tool.execute("c", {
@@ -295,6 +405,59 @@ describe("odoo_read — unicode-escaped domain operators", () => {
     expect(result.content[0].text).toMatch(/=</);
     expect(result.content[0].text).toMatch(/<=/); // names a valid one
     expect(mockSearchRead).not.toHaveBeenCalled();
+    expect(mockFields).not.toHaveBeenCalled();
+  });
+
+  it("refuses before querying in odoo_count too", async () => {
+    const tool = findTool(createApi({ [agentId]: cfg() }), "odoo_count", agentId)!;
+
+    const result = await tool.execute("c", {
+      model: "account.move",
+      filters: [["date", "=<", "2026-06-30"]],
+    });
+
+    expect(result.isError).toBe(true);
+    expect(mockSearchCount).not.toHaveBeenCalled();
+  });
+
+  it("refuses before querying in odoo_aggregate too", async () => {
+    const tool = findTool(createApi({ [agentId]: cfg() }), "odoo_aggregate", agentId)!;
+
+    const result = await tool.execute("c", {
+      model: "account.move",
+      filters: [["date", "=<", "2026-06-30"]],
+      fields: ["amount_total:sum"],
+      groupby: ["partner_id"],
+    });
+
+    expect(result.isError).toBe(true);
+    expect(mockReadGroup).not.toHaveBeenCalled();
+  });
+
+  it("decodes the domain for odoo_count and odoo_aggregate as well", async () => {
+    mockSearchCount.mockResolvedValue(3);
+    mockReadGroup.mockResolvedValue([]);
+    const tools = createApi({ [agentId]: cfg() });
+
+    await findTool(tools, "odoo_count", agentId)!.execute("c", {
+      model: "account.move",
+      filters: [["date", "\\u003c=", "2026-06-30"]],
+    });
+    expect(mockSearchCount).toHaveBeenCalledWith("account.move", [["date", "<=", "2026-06-30"]]);
+
+    await findTool(tools, "odoo_aggregate", agentId)!.execute("c", {
+      model: "account.move",
+      filters: [["date", "\\u003c=", "2026-06-30"]],
+      fields: ["amount_total:sum"],
+      groupby: ["partner_id"],
+    });
+    expect(mockReadGroup).toHaveBeenCalledWith(
+      "account.move",
+      [["date", "<=", "2026-06-30"]],
+      ["amount_total:sum"],
+      ["partner_id"],
+      expect.anything()
+    );
   });
 
   it("leaves logical operators and well-formed conditions untouched", async () => {
@@ -316,6 +479,11 @@ describe("odoo_read — unicode-escaped domain operators", () => {
   // A value that happens to contain a backslash-u sequence is legitimate; only
   // the OPERATOR position is normalized. Rewriting values would corrupt a
   // genuine search string, and no operator can ever legitimately be one.
+  //
+  // The value half of #1198 is NOT closed by that asymmetry — an escaped value
+  // matches nothing and the agent reads the empty result as "there is nothing
+  // there", which is worse than the loud failure this file fixes. Tracked in
+  // #1213; this test pins today's behaviour, not the desired end state.
   it("does not rewrite escape sequences in the value position", async () => {
     mockSearchRead.mockResolvedValue({ records: [], length: 0 });
     const tool = findTool(createApi({ [agentId]: cfg() }), "odoo_read", agentId)!;
