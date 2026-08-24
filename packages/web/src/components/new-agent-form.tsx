@@ -103,6 +103,31 @@ function PermissionPreview({ template }: { template?: Template }) {
   );
 }
 
+/**
+ * Report a background load that failed — unless it was merely cancelled.
+ *
+ * Nothing awaits the promises the effects below start, so an uncaught rejection
+ * has nowhere to land: in the browser it is a silent dead end, and in a test run
+ * it surfaces as a suite-level unhandled rejection that ends `pnpm test` with
+ * `Errors 1 error` and exit 1 while every test passes. Catching it is the fix.
+ *
+ * Catching it BLINDLY would be the next bug. An aborted request is the expected
+ * outcome of every unmount and every template switch, not something to tell the
+ * user about, so the abort is matched specifically and everything else is
+ * surfaced. Both directions are covered by tests.
+ */
+function reportLoadFailure(err: unknown, signal: AbortSignal, message: string): void {
+  if (signal.aborted) return;
+  // Read the `name`, never the prototype chain. What a real abort rejects with
+  // is a DOMException, and whether that is an `instanceof Error` depends on the
+  // environment rather than on the error: node's AbortController reason is one,
+  // jsdom's own DOMException is not (measured, not assumed). An `instanceof`
+  // gate therefore classifies the same abort differently in a browser and in a
+  // test, which is the quiet half of this bug rather than a fix for it.
+  if ((err as { name?: unknown } | null | undefined)?.name === "AbortError") return;
+  toast.error(message);
+}
+
 export function NewAgentForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -173,22 +198,26 @@ export function NewAgentForm() {
     }
   });
 
-  const fetchData = useCallback(async () => {
-    const templatesRes = await fetch("/api/templates");
-    if (templatesRes.ok) {
-      const data = await templatesRes.json();
-      setTemplates(data.templates);
+  const fetchData = useCallback(async (signal: AbortSignal) => {
+    try {
+      const templatesRes = await fetch("/api/templates", { signal });
+      if (templatesRes.ok) {
+        const data = await templatesRes.json();
+        if (!signal.aborted) setTemplates(data.templates);
+      }
+    } catch (err) {
+      reportLoadFailure(err, signal, "Failed to load agent templates");
     }
   }, []);
 
   useEffect(() => {
-    let cancelled = false;
+    const controller = new AbortController();
     void Promise.resolve().then(() => {
-      if (!cancelled) void fetchData();
+      // The signal is the only cancellation flag here — a separate boolean
+      // would be a second mechanism answering the same question.
+      if (!controller.signal.aborted) void fetchData(controller.signal);
     });
-    return () => {
-      cancelled = true;
-    };
+    return () => controller.abort();
   }, [fetchData]);
 
   const selectedTemplateObj = templates.find((t) => t.id === selectedTemplate);
@@ -199,16 +228,27 @@ export function NewAgentForm() {
   // Fetch directories when a template requiring them is selected
   useEffect(() => {
     if (!requiresDirectories) return;
+    const controller = new AbortController();
+    const { signal } = controller;
 
     async function fetchDirectories() {
-      const res = await fetch("/api/data-directories");
-      if (res.ok) {
-        const data = await res.json();
-        setDirectories(data.directories || []);
+      try {
+        const res = await fetch("/api/data-directories", { signal });
+        if (res.ok) {
+          const data = await res.json();
+          // The signal doubles as the cancellation flag: a response that lost
+          // the race against an unmount or a template switch must not write
+          // itself into the new state.
+          if (!signal.aborted) setDirectories(data.directories || []);
+        }
+      } catch (err) {
+        reportLoadFailure(err, signal, "Failed to load directories");
       }
     }
 
-    fetchDirectories();
+    void fetchDirectories();
+
+    return () => controller.abort();
   }, [requiresDirectories]);
 
   // Reset Odoo state immediately when leaving an Odoo template — uses
@@ -238,12 +278,13 @@ export function NewAgentForm() {
   // Fetch Odoo connections when an Odoo template is selected
   useEffect(() => {
     if (!requiresOdooConnection) return;
-    let cancelled = false;
-    (async () => {
+    const controller = new AbortController();
+    const { signal } = controller;
+    void (async () => {
       setLoadingConnections(true);
       try {
-        const res = await fetch("/api/integrations");
-        if (cancelled) return;
+        const res = await fetch("/api/integrations", { signal });
+        if (signal.aborted) return;
         if (res.ok) {
           const data = await res.json();
           // Hide unreadable rows from the agent-creation flow — they can't be used
@@ -251,7 +292,7 @@ export function NewAgentForm() {
           const odoo = (data as OdooConnection[]).filter(
             (c: OdooConnection) => c.type === "odoo" && !c.cannotDecrypt
           );
-          if (!cancelled) {
+          if (!signal.aborted) {
             setOdooConnections(odoo);
             // Auto-select if only one connection
             const autoSelected = autoSelectConnection(odoo);
@@ -260,24 +301,25 @@ export function NewAgentForm() {
             }
           }
         }
+      } catch (err) {
+        reportLoadFailure(err, signal, "Failed to load Odoo connections");
       } finally {
-        if (!cancelled) setLoadingConnections(false);
+        if (!signal.aborted) setLoadingConnections(false);
       }
     })();
-    return () => {
-      cancelled = true;
-    };
+    return () => controller.abort();
   }, [requiresOdooConnection]);
 
   // Fetch email connections when an email template is selected
   useEffect(() => {
     if (!requiresEmailConnection) return;
-    let cancelled = false;
-    (async () => {
+    const controller = new AbortController();
+    const { signal } = controller;
+    void (async () => {
       setLoadingConnections(true);
       try {
-        const res = await fetch("/api/integrations");
-        if (cancelled) return;
+        const res = await fetch("/api/integrations", { signal });
+        if (signal.aborted) return;
         if (res.ok) {
           const data = await res.json();
           // Count every email provider (Google and Microsoft alike) and hide
@@ -285,7 +327,7 @@ export function NewAgentForm() {
           const email = (data as OdooConnection[]).filter(
             (c: OdooConnection) => EMAIL_CONNECTION_TYPE_SET.has(c.type) && !c.cannotDecrypt
           );
-          if (!cancelled) {
+          if (!signal.aborted) {
             setEmailConnections(email);
             // Auto-select if only one mailbox
             const autoSelected = autoSelectConnection(email);
@@ -294,13 +336,13 @@ export function NewAgentForm() {
             }
           }
         }
+      } catch (err) {
+        reportLoadFailure(err, signal, "Failed to load mailboxes");
       } finally {
-        if (!cancelled) setLoadingConnections(false);
+        if (!signal.aborted) setLoadingConnections(false);
       }
     })();
-    return () => {
-      cancelled = true;
-    };
+    return () => controller.abort();
   }, [requiresEmailConnection]);
 
   // Validate template against selected connection

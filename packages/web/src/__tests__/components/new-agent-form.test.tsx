@@ -982,3 +982,149 @@ describe("NewAgentForm — optional Odoo models do not block creation", () => {
     expect(screen.queryByText(/Missing Odoo modules/i)).not.toBeInTheDocument();
   });
 });
+
+/**
+ * Every background load in this form is fire-and-forget from React's point of
+ * view: nothing awaits the promise the effect starts. A rejection therefore has
+ * nowhere to go — it surfaces as a suite-level unhandled rejection that ends a
+ * full `pnpm test` run with `Errors 1 error` and exit 1 while every test passes,
+ * which is very expensive to read off a CI log. It is nondeterministic too: the
+ * effect has to fire after the test's fetch mock was restored, so it reproduces
+ * in a full run and not in isolation.
+ *
+ * Two claims per loader, then: the request is cancelled when the form goes away,
+ * and a genuine failure reaches the user instead of the void. A cancellation is
+ * not a failure and must stay quiet — which is why the catch matches AbortError
+ * rather than swallowing everything.
+ */
+describe("NewAgentForm — background loads are cancelled, their failures surfaced", () => {
+  // `ReturnType<typeof vi.spyOn>` erases the concrete `fetch` signature
+  // (spyOn is generic/overloaded), leaving every mock-callback parameter
+  // implicitly `any`. Annotate with the real global `fetch` signature instead.
+  let fetchSpy: Mock<typeof fetch>;
+
+  /** The signal the component passed with each URL it fetched. */
+  let signals: Map<string, AbortSignal | undefined>;
+
+  const allTemplates = [
+    ...mockTemplates,
+    {
+      id: "odoo-sales-analyst",
+      name: "Sales Analyst",
+      description: "Analyze revenue",
+      requiresDirectories: false,
+      requiresOdooConnection: true,
+      odooAccessLevel: "read-only",
+      defaultTagline: "Analyze revenue",
+    },
+    {
+      id: "email-assistant",
+      name: "Email Assistant",
+      description: "Read, search, and draft emails",
+      requiresDirectories: false,
+      requiresEmailConnection: true,
+      defaultTagline: "Read, search, and draft emails from your inbox",
+    },
+  ];
+
+  /**
+   * Answer every route the form loads. `overrides` replaces one URL's response
+   * — with a rejection, or with a promise that never settles so a test can
+   * unmount while the request is still in flight.
+   */
+  function mockApis(overrides: Map<string, () => Promise<Response>> = new Map()) {
+    fetchSpy.mockImplementation(async (url, init) => {
+      const key = String(url);
+      signals.set(key, init?.signal ?? undefined);
+      const override = overrides.get(key);
+      if (override) return override();
+      if (key === "/api/templates") return jsonResponse({ templates: allTemplates });
+      if (key === "/api/integrations") return jsonResponse([]);
+      if (key === "/api/agents") return jsonResponse([]);
+      if (key === "/api/data-directories") return jsonResponse({ directories: [] });
+      return jsonResponse({}, { status: 400 });
+    });
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    signals = new Map();
+    fetchSpy = vi.spyOn(global, "fetch");
+    mockApis();
+  });
+
+  afterEach(() => {
+    fetchSpy.mockRestore();
+  });
+
+  const LOADERS = [
+    {
+      what: "the template list",
+      url: "/api/templates",
+      template: null,
+      failureText: /templates/i,
+    },
+    {
+      what: "the directory list",
+      url: "/api/data-directories",
+      template: "knowledge-base",
+      failureText: /directories/i,
+    },
+    {
+      what: "the Odoo connection list",
+      url: "/api/integrations",
+      template: "odoo-sales-analyst",
+      failureText: /odoo connections/i,
+    },
+    {
+      what: "the mailbox list",
+      url: "/api/integrations",
+      template: "email-assistant",
+      failureText: /mailboxes/i,
+    },
+  ] as const;
+
+  describe.each(LOADERS)("$what", ({ url, template, failureText }) => {
+    beforeEach(() => {
+      mockSearchParams.current = new URLSearchParams(template ? `template=${template}` : "");
+    });
+
+    it("aborts the request that is still in flight when the form unmounts", async () => {
+      mockApis(new Map([[url, () => new Promise<Response>(() => {})]]));
+
+      const { unmount } = render(<NewAgentForm />);
+      await waitFor(() => expect(signals.has(url)).toBe(true));
+
+      unmount();
+
+      expect(signals.get(url)?.aborted).toBe(true);
+    });
+
+    it("tells the user when the load fails", async () => {
+      mockApis(new Map([[url, () => Promise.reject(new TypeError("fetch failed"))]]));
+
+      render(<NewAgentForm />);
+
+      await waitFor(() =>
+        expect(toast.error).toHaveBeenCalledWith(expect.stringMatching(failureText))
+      );
+    });
+
+    it("says nothing when the request was merely cancelled", async () => {
+      mockApis(
+        new Map([
+          [
+            url,
+            () => Promise.reject(new DOMException("The user aborted a request.", "AbortError")),
+          ],
+        ])
+      );
+
+      render(<NewAgentForm />);
+      await waitFor(() => expect(signals.has(url)).toBe(true));
+      await flushPendingRenders();
+
+      expect(toast.error).not.toHaveBeenCalled();
+    });
+  });
+});
