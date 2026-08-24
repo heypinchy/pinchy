@@ -1,6 +1,6 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import {
   mkdirSync,
   mkdtempSync,
@@ -20,6 +20,7 @@ import {
   shouldBypassLock,
   MAX_LOCK_AGE_MS,
   MAX_WAIT_MS,
+  POLL_MS,
 } from "./test-lock.mjs";
 
 const WRAPPER = join(
@@ -289,17 +290,70 @@ describe("the wrapper, run for real", () => {
     assert.deepEqual(sequence, ["in", "out", "in", "out"]);
   });
 
+  /**
+   * The waiter is seeded rather than raced for. Two wrappers started together
+   * and one of them holding briefly LOOKS like contention and is not: whichever
+   * boots first takes the lock, so the run that is supposed to wait only ever
+   * waits if it arrives while the other still holds — two process spawns and two
+   * node boots inside that window. Locally that is ~100ms and it passes; on a CI
+   * runner also running vitest it does not, nobody waits, nothing is printed,
+   * and the assertion sees the empty string. Observed on PR #1201, on a step
+   * whose PR cannot reach this wrapper at all.
+   *
+   * Seeding an owner that is unambiguously alive — this test process — removes
+   * the window: the owner file exists before the wrapper starts, so its `wx`
+   * create cannot win and it MUST announce. Nothing here is timing-dependent.
+   */
   test("waiting prints the test:related alternative", PROBE, async () => {
     const lock = freshLockPath();
-    const slow = [process.execPath, "-e", "setTimeout(()=>{},600)"];
-    const both = await Promise.all([
-      runWrapper(lock, slow),
-      runWrapper(lock, ["true"]),
-    ]);
-    // Which of the two wins the mkdir is a race, so assert on the pair: exactly
-    // one of them waited, and whichever it was must have been told what to do
-    // with the wait instead of just being told to sit still.
-    assert.match(both.map((r) => r.stderr).join(""), /test:related/);
+    mkdirSync(lock, { recursive: true, mode: 0o700 });
+    writeFileSync(
+      join(lock, OWNER),
+      formatLockRecord({
+        pid: process.pid,
+        startedAtMs: Date.now(),
+        label: "the probe itself",
+      }),
+      { mode: 0o600 },
+    );
+
+    const waiter = spawn(process.execPath, [WRAPPER, "true"], {
+      env: { ...cleanEnv, PINCHY_TEST_LOCK_DIR: lock },
+    });
+
+    let stderr = "";
+    // A regression that stops announcing would otherwise queue for MAX_WAIT_MS —
+    // twenty minutes of a leaked process, and a probe that fails by timing out
+    // rather than by saying what is wrong. Stated as a MULTIPLE of the poll
+    // interval because that is the real constraint: the healthy path is
+    // announce, sleep one poll, acquire, run, exit, so any bound below POLL_MS
+    // would kill a passing run mid-sleep. The factor is the slack for two node
+    // boots on a loaded runner — generous on purpose, since firing early is a
+    // false red while firing late costs seconds we only pay when it is red.
+    const giveUp = setTimeout(() => waiter.kill("SIGKILL"), POLL_MS * 10);
+    let exitCode;
+    try {
+      exitCode = await new Promise((resolve, reject) => {
+        waiter.stderr.on("data", (chunk) => {
+          stderr += chunk;
+          // Release the moment the hint lands, so the waiter finishes on its
+          // next poll instead of sitting out the whole allowance.
+          if (/test:related/.test(stderr))
+            rmSync(join(lock, OWNER), { force: true });
+        });
+        waiter.on("error", reject);
+        waiter.on("close", resolve);
+      });
+    } finally {
+      clearTimeout(giveUp);
+      rmSync(lock, { recursive: true, force: true });
+    }
+
+    assert.match(stderr, /test:related/);
+    // The wait must also END when the lock frees. A hint printed by a run that
+    // then never proceeds is not the behaviour this promises, and asserting only
+    // on the text cannot tell the two apart.
+    assert.equal(exitCode, 0);
   });
 
   test("does not queue behind a lock whose owner is gone", PROBE, async () => {

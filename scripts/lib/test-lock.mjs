@@ -48,6 +48,17 @@ export const MAX_LOCK_AGE_MS = 20 * 60 * 1000;
  */
 export const MAX_WAIT_MS = 20 * 60 * 1000;
 
+/**
+ * How long a waiter sleeps between two looks at the lock.
+ *
+ * It lives here rather than next to the loop that uses it because it is a
+ * timing contract two other places have to reason about: the wrapper's wait
+ * loop, and the probe in test-lock.test.mjs that has to outlast a poll to
+ * observe a waiter at all. A copy of the number in either of those is a number
+ * that drifts silently — the probe would simply stop testing contention.
+ */
+export const POLL_MS = 2_000;
+
 /** Tab-separated: a label may contain spaces, the other two fields cannot. */
 export function formatLockRecord({ pid, startedAtMs, label }) {
   return `${pid}\t${startedAtMs}\t${label ?? ""}\n`;
