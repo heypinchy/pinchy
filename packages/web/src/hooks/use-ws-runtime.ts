@@ -42,6 +42,13 @@ import { attachmentAdapter } from "@/lib/attachment-adapters";
 export interface WsFileMeta {
   filename: string;
   mimeType: string;
+  /**
+   * Server-side upload id, present only on user turns rebuilt from history
+   * (#1195) — the server recovers it from `uploaded_files` so a retry after a
+   * reload can still name the files. Display code ignores it; the hook lifts it
+   * into the message's `attachmentIds`.
+   */
+  uploadId?: string;
 }
 
 /** Tracks a file dropped in the composer while it uploads to the server. */
@@ -71,8 +78,10 @@ export interface WsMessage {
    * — without the ids, a retry delivered the text with the attachments silently
    * dropped, and the agent answered about files it had never been given.
    *
-   * Only ever set on user messages this client sent; a message rebuilt from
-   * history has no ids, which is correct — there is nothing to retry there.
+   * Set both on user messages this client sent and on user turns rebuilt from
+   * history, where the server recovers the ids from `uploaded_files` — the
+   * retry affordance outlives a reload (ChatErrorBanner), so the ids have to
+   * as well.
    */
   attachmentIds?: string[];
   timestamp?: string;
@@ -328,6 +337,28 @@ export function preserveRicherLocalOverOversizedHistory(
     const localHasContent = local.content.length > 0 || (local.files?.length ?? 0) > 0;
     return localHasContent ? local : serverMsg;
   });
+}
+
+/**
+ * Lift the upload ids the server recovered for a history-rebuilt user turn
+ * (#1195) into the message's `attachmentIds`, so the retry affordance that
+ * survives a reload can re-send the files with the text.
+ *
+ * All-or-nothing on purpose. A partially-resolved set would send a manifest
+ * naming SOME of the user's files — the agent then answers about three of five
+ * invoices with nothing to say which two are missing, which is worse than the
+ * old behaviour of sending none and leaving the first attempt's block in the
+ * transcript as the only reference. An id goes unresolved when the row is gone
+ * (an operator cleaned the workspace) or the filename is ambiguous, and neither
+ * is something to paper over.
+ */
+export function historyAttachmentIds(msg: { role: string; files?: WsFileMeta[] }): {
+  attachmentIds?: string[];
+} {
+  if (msg.role !== "user" || !msg.files || msg.files.length === 0) return {};
+  const ids = msg.files.map((f) => f.uploadId);
+  if (ids.some((id) => id === undefined)) return {};
+  return { attachmentIds: ids as string[] };
 }
 
 export function useWsRuntime(
@@ -1222,6 +1253,7 @@ export function useWsRuntime(
             // here so the file chip renders on reload.
             ...(msg.files && msg.files.length > 0 ? { files: msg.files } : {}),
             ...(msg.oversized ? { oversized: true } : {}),
+            ...historyAttachmentIds(msg),
           }));
 
           // Prefer a richer LOCAL copy over an oversized-history placeholder
@@ -1691,11 +1723,15 @@ export function useWsRuntime(
           // All attachment-related server error codes map onto the dedicated
           // "Invalid file" UI so the user sees the server's actionable message
           // instead of a generic "unknown error" fallback (issue #324).
+          //
+          // Matched by prefix rather than enumerated: the list was a
+          // hand-maintained mirror of client-router's `code:` literals, and a
+          // new one added there (`attachment_file_missing`, #1195) would
+          // silently fall through to "An unknown error occurred." — the exact
+          // fallback #324 removed. Every code Pinchy emits for this family is
+          // namespaced `attachment_`, and nothing else in the protocol is.
           const isAttachmentErrorCode =
-            data.code === "attachment_invalid" ||
-            data.code === "attachment_not_found" ||
-            data.code === "attachment_expired" ||
-            data.code === "attachment_already_attached";
+            typeof data.code === "string" && data.code.startsWith("attachment_");
 
           const error: ChatError = data.providerError
             ? {
@@ -2073,7 +2109,7 @@ export function useWsRuntime(
         // Re-send the attachments with the message they belong to (#1195).
         // Without this the retry delivered the text alone and the agent was
         // asked about files it had never been handed.
-        ...(lastUserMsg.attachmentIds?.length && {
+        ...((lastUserMsg.attachmentIds?.length ?? 0) > 0 && {
           attachmentIds: lastUserMsg.attachmentIds,
         }),
         clientMessageId: lastUserMsg.id,
@@ -2118,7 +2154,7 @@ export function useWsRuntime(
         // Same reason as onRetryContinue (#1195). This path matters more, not
         // less: the message never reached the server, so its uploads are still
         // `staged` and the agent has never seen them at all.
-        ...(failedMsg.attachmentIds?.length && {
+        ...((failedMsg.attachmentIds?.length ?? 0) > 0 && {
           attachmentIds: failedMsg.attachmentIds,
         }),
         clientMessageId: messageId,

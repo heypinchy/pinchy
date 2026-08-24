@@ -948,6 +948,84 @@ describe("useWsRuntime", () => {
     expect(messages[1].content[0].text).toBe("Hi!");
   });
 
+  // #1195: the retry affordance outlives a reload — ChatErrorBanner re-surfaces
+  // the session's last un-resolved agent error on mount and offers Retry for
+  // it. The client's `attachmentIds` do NOT outlive a reload (nothing persists
+  // the message list), so without the ids on the history frame that Retry sends
+  // the text alone: exactly the production symptom, one layer further out than
+  // the in-tab path the rest of this fix covers.
+  it("re-sends the attachments of a user turn rebuilt from history", () => {
+    const { result } = renderHook(() => useWsRuntime("agent-1"));
+    const ws = wsInstances[0];
+
+    act(() => {
+      ws.simulateOpen();
+    });
+
+    act(() => {
+      ws.simulateMessage({
+        type: "history",
+        messages: [
+          {
+            role: "user",
+            content: "here are the invoices",
+            timestamp: "2026-01-01T00:00:00Z",
+            files: [
+              { filename: "a.pdf", mimeType: "application/pdf", uploadId: "upload-a" },
+              { filename: "b.pdf", mimeType: "application/pdf", uploadId: "upload-b" },
+            ],
+          },
+          { role: "assistant", content: "…", timestamp: "2026-01-01T00:00:01Z" },
+        ],
+      });
+    });
+
+    act(() => {
+      result.current.onRetryContinue("partial_stream_failure");
+    });
+
+    const retry = JSON.parse(ws.send.mock.calls.at(-1)![0]);
+    expect(retry.isRetry).toBe(true);
+    expect(retry.attachmentIds).toEqual(["upload-a", "upload-b"]);
+  });
+
+  it("sends no attachment ids when the server could resolve only some of them", () => {
+    // All-or-nothing: a partial manifest would have the agent answer about
+    // three of five invoices with nothing naming the missing two.
+    const { result } = renderHook(() => useWsRuntime("agent-1"));
+    const ws = wsInstances[0];
+
+    act(() => {
+      ws.simulateOpen();
+    });
+
+    act(() => {
+      ws.simulateMessage({
+        type: "history",
+        messages: [
+          {
+            role: "user",
+            content: "here are the invoices",
+            timestamp: "2026-01-01T00:00:00Z",
+            files: [
+              { filename: "a.pdf", mimeType: "application/pdf", uploadId: "upload-a" },
+              { filename: "gone.pdf", mimeType: "application/pdf" },
+            ],
+          },
+          { role: "assistant", content: "…", timestamp: "2026-01-01T00:00:01Z" },
+        ],
+      });
+    });
+
+    act(() => {
+      result.current.onRetryContinue("partial_stream_failure");
+    });
+
+    const retry = JSON.parse(ws.send.mock.calls.at(-1)![0]);
+    expect(retry.isRetry).toBe(true);
+    expect("attachmentIds" in retry).toBe(false);
+  });
+
   it("should map system role to assistant in history messages", () => {
     const { result } = renderHook(() => useWsRuntime("agent-1"));
     const ws = wsInstances[0];
