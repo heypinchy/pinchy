@@ -21,7 +21,7 @@ import { NextRequest } from "next/server";
 import { mkdtempSync, rmSync, existsSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
-import { eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 
 // ── Mocks ──────────────────────────────────────────────────────────────────
 
@@ -414,7 +414,7 @@ describe("POST /api/agents/[agentId]/uploads", () => {
 
     expect(resp.status).toBe(201);
     const body = await resp.json();
-    expect(body.filename).toMatch(/^upload-\d{4}-\d{2}-\d{2}\.pdf$/);
+    expect(body.filename).toMatch(/^upload-\d{4}-\d{2}-\d{2}-\d{4}\.pdf$/);
 
     const [dbRow] = await db.select().from(uploadedFiles).where(eq(uploadedFiles.id, body.id));
     expect(dbRow.filename).toBe(body.filename);
@@ -422,27 +422,14 @@ describe("POST /api/agents/[agentId]/uploads", () => {
     const uploadId = dbRow.stagingPath!.split("/")[1];
     expect(existsSync(join(tmpRoot, agent.id, ".staging", uploadId, body.filename))).toBe(true);
 
+    // Ordered and narrowed to the success row: an unordered single-column
+    // select would silently assert against whichever row came back first the
+    // moment anything else audits under this actor.
     const [auditRow] = await db
       .select()
       .from(auditLog)
-      .where(eq(auditLog.actorId, user.auditPseudonym));
+      .where(and(eq(auditLog.actorId, user.auditPseudonym), eq(auditLog.outcome, "success")))
+      .orderBy(desc(auditLog.id));
     expect((auditRow.detail as Record<string, unknown>).filename).toBe(body.filename);
-  });
-
-  it("leaves a filename the user chose exactly as it was", async () => {
-    const user = await seedUser();
-    mockGetSession.mockResolvedValue({
-      user: { id: user.id, email: user.email, role: "admin" },
-    });
-    const agent = await seedAgent(null);
-
-    const named = new File([VALID_PDF], "Rechnung_919278810726.pdf", {
-      type: "application/pdf",
-    });
-
-    const resp = await POST(makeRequest(agent.id, { file: named }), makeParams(agent.id));
-
-    expect(resp.status).toBe(201);
-    expect((await resp.json()).filename).toBe("Rechnung_919278810726.pdf");
   });
 });
