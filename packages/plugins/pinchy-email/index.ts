@@ -233,6 +233,14 @@ function getAgentConfig(
 }
 
 /**
+ * The three operations this plugin gates on. Narrow on purpose: `lacksGrant`
+ * runs at REGISTRATION time, where a typo cannot produce a visible denial the
+ * way the execute-time gate does — it just makes the tool vanish from every
+ * agent's tool list, quietly. A union turns that into a compile error.
+ */
+type EmailOperation = "read" | "draft" | "send";
+
+/**
  * True when this agent has no grant for `operation`, so the tool must be
  * WITHHELD at registration rather than registered and refused at call time
  * (heypinchy/pinchy#1194).
@@ -255,7 +263,7 @@ function getAgentConfig(
  * The execute-time checks stay where they are — config can change under a live
  * session, and defence in depth is the point.
  */
-function lacksGrant(config: AgentEmailConfig, operation: string): boolean {
+function lacksGrant(config: AgentEmailConfig, operation: EmailOperation): boolean {
   return !checkPermission(config.permissions, "email", operation);
 }
 

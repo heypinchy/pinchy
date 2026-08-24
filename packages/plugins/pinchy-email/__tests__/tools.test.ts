@@ -241,10 +241,21 @@ describe("tool registration", () => {
   // refused both times. A denied call is not a no-op: it costs a turn and
   // makes the agent state something untrue.
   describe("per-agent grant gating at registration time (#1194)", () => {
-    // testConfig grants read + draft, never send.
-    const READ_AND_DRAFT_ONLY = ["email_list", "email_read", "email_search", "email_draft"];
+    // testConfig grants read + draft, never send. Exhaustive on purpose: this
+    // is the only place that asserts a tool is still OFFERED, so a name left
+    // out here is a tool whose gate could be moved to a wrong operation with
+    // nothing in this block going red. email_get_attachment rides on "read"
+    // (EMAIL_READ_TOOLS), which is easy to forget because the UI has no
+    // checkbox of its own for it.
+    const OFFERED_TO_READ_AND_DRAFT = [
+      "email_list",
+      "email_read",
+      "email_search",
+      "email_get_attachment",
+      "email_draft",
+    ];
 
-    it.each(READ_AND_DRAFT_ONLY)("still offers %s to a read+draft agent", (name) => {
+    it.each(OFFERED_TO_READ_AND_DRAFT)("still offers %s to a read+draft agent", (name) => {
       expect(findTool(createApi(), name, agentId)).not.toBeNull();
     });
 
@@ -279,15 +290,20 @@ describe("tool registration", () => {
     // working: an agent whose stored rows say "search" but never "read" must
     // still be OFFERED the read tools, not just permitted at execute time.
     // Gating on a raw `.includes("read")` would silently unregister them.
-    it("offers the read tools for a legacy search-only grant", () => {
+    // Both legacy spellings, because hasLegacyReadAlias accepts either and a
+    // list-only agent losing its read tools would be a silent capability loss,
+    // not a denial anyone would report.
+    it.each(["search", "list"])("offers the read tools for a legacy %s-only grant", (legacyOp) => {
       const tools = createApi({
         ...testConfig,
         agents: {
-          "agent-1": { connectionId: "conn-1", permissions: { email: ["search"] } },
+          "agent-1": { connectionId: "conn-1", permissions: { email: [legacyOp] } },
         },
       });
       expect(findTool(tools, "email_list", agentId)).not.toBeNull();
       expect(findTool(tools, "email_read", agentId)).not.toBeNull();
+      expect(findTool(tools, "email_search", agentId)).not.toBeNull();
+      expect(findTool(tools, "email_get_attachment", agentId)).not.toBeNull();
       expect(findTool(tools, "email_draft", agentId)).toBeNull();
       expect(findTool(tools, "email_send", agentId)).toBeNull();
     });
@@ -296,9 +312,8 @@ describe("tool registration", () => {
     // session context at registration time, and returning null there
     // permanently unregisters the tool for everyone.
     it("still returns the probe stub for email_send when there is no agentId", () => {
-      const tools = createApi();
-      const entry = tools.find((t) => t.name === "email_send")!;
-      expect(entry.factory({})).not.toBeNull();
+      // findTool with no agentId IS the probe call — same lookup, one spelling.
+      expect(findTool(createApi(), "email_send")).not.toBeNull();
     });
   });
 
