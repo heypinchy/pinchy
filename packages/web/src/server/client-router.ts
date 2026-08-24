@@ -27,9 +27,15 @@ import { SessionCache } from "@/server/session-cache";
 import { resolveUserPlaceholder } from "@/server/user-placeholder";
 import { classifyAgentError } from "@/server/agent-error-classifier";
 import { db } from "@/db";
-import { agents, users, models, agentDeliveredFiles } from "@/db/schema";
+import { agents, users, models, agentDeliveredFiles, uploadedFiles } from "@/db/schema";
 import { attachDeliveredFilesToHistory } from "@/server/delivered-file-history";
-import { eq } from "drizzle-orm";
+import {
+  type HistoryFileMeta,
+  collectAttachmentFilenames,
+  indexUploadIdsByFilename,
+  attachUploadIdsToHistory,
+} from "@/server/history-upload-ids";
+import { and, eq, inArray } from "drizzle-orm";
 import { isModelVisionCapable } from "@/lib/model-vision";
 import { resolveImageTurnModel, type VisionCandidate } from "@/lib/image-fallback";
 import { readExistingConfig } from "@/lib/openclaw-config/write";
@@ -42,6 +48,7 @@ import {
   AttachmentNotFoundError,
   AttachmentExpiredError,
   AttachmentAlreadyAttachedError,
+  AttachmentFileMissingError,
 } from "@/server/attachment-pipeline";
 import { attachmentIdsSchema } from "@/lib/schemas/uploads";
 import { chatIdSchema } from "@/lib/schemas/sessions";
@@ -433,6 +440,15 @@ export class ClientRouter {
             this.sendToClient(clientWs, {
               type: "error",
               code: "attachment_already_attached",
+              message: err.message,
+            });
+          } else if (err instanceof AttachmentFileMissingError) {
+            // Distinct from the generic branch below on purpose: that one says
+            // "Please try again", and nothing about a file that is not on disk
+            // changes between attempts (#1195).
+            this.sendToClient(clientWs, {
+              type: "error",
+              code: "attachment_file_missing",
               message: err.message,
             });
           } else {
@@ -867,7 +883,10 @@ export class ClientRouter {
           // OpenClaw's session JSONL — we round-trip its metadata into the
           // wire-level `files` field so the browser can render the chip
           // without ever seeing the markup.
-          let files: Array<{ filename: string; mimeType: string }> | undefined;
+          // `HistoryFileMeta`, not an inline pair: the upload id is stamped on
+          // below (#1195) and an inline type would drop it from the frame's
+          // static shape while it rode along at runtime.
+          let files: HistoryFileMeta[] | undefined;
           if (isOversizedPlaceholder) {
             // The original content (and any attachment block it carried) is
             // gone for good — OpenClaw already discarded it server-side.
@@ -923,6 +942,34 @@ export class ClientRouter {
           ...(oversized ? { oversized: true as const } : {}),
         }));
 
+      // Recover the upload id behind each user chip (#1195). The client keeps
+      // `attachmentIds` in message state so a retry can re-send the files, and
+      // that state dies on reload — while the retry affordance does not
+      // (ChatErrorBanner re-surfaces the session's last agent error on mount).
+      // Without this, a retry clicked after a reload sends the text alone,
+      // which is the very symptom #1195 exists to fix.
+      //
+      // Runs BEFORE attachDeliveredFilesToHistory: that one adds chips to
+      // ASSISTANT turns from the delivery grant table, and those have no upload
+      // row to name.
+      const attachmentFilenames = collectAttachmentFilenames(mapped);
+      let uploadIdsByFilename = new Map<string, string>();
+      if (attachmentFilenames.length > 0) {
+        const uploadRows = await db
+          .select({ id: uploadedFiles.id, filename: uploadedFiles.filename })
+          .from(uploadedFiles)
+          .where(
+            and(
+              eq(uploadedFiles.agentId, agent.id),
+              eq(uploadedFiles.userId, this.userId),
+              eq(uploadedFiles.status, "attached"),
+              inArray(uploadedFiles.filename, attachmentFilenames)
+            )
+          );
+        uploadIdsByFilename = indexUploadIdsByFilename(uploadRows);
+      }
+      const withUploadIds = attachUploadIdsToHistory(mapped, uploadIdsByFilename);
+
       // Re-attach agent-delivered files (#703). Delivered-file chips are not
       // recoverable from the transcript on reload (chat.history drops the
       // tool_result that carried the marker), so we read them from the durable
@@ -939,7 +986,7 @@ export class ClientRouter {
         .where(eq(agentDeliveredFiles.sessionKey, sessionKey));
 
       return attachDeliveredFilesToHistory(
-        mapped,
+        withUploadIds,
         grants.map((g) => ({
           filename: g.filename,
           mimeType: g.mimeType,

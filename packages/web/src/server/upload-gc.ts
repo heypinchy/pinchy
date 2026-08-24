@@ -6,6 +6,7 @@ import { uploadedFiles } from "@/db/schema";
 import { appendAuditLog } from "@/lib/audit";
 import { recordAuditFailure } from "@/lib/audit-deferred";
 import { getWorkspacePath } from "@/lib/workspace";
+import { attachedRelativePath } from "@/lib/uploads";
 
 export interface SweepResult {
   swept: number;
@@ -114,8 +115,16 @@ export async function sweepExpiredUploads(): Promise<SweepResult> {
     // ENOENT (someone removed it out-of-band) — non-ENOENT errors leave the
     // slot orphaned, but the DB row gets deleted regardless so the orphan
     // surfaces only as a manual cleanup, not as a permanent failure loop.
+    //
+    // Through `attachedRelativePath` rather than a hand-built join, so this is
+    // byte-for-byte the path `promoteStagedToAttached` writes and
+    // `materializeAttachments` re-references. A hand-built one also skips
+    // sanitizeFilename's NFC normalization, so a decomposed macOS name (the
+    // 2026-07-14 incident) would leave the reservation behind forever while
+    // the DB row disappeared — every later upload of that name would then be
+    // suffixed " (1)" against a placeholder nobody owns.
     try {
-      await rm(join(workspaceRoot, "uploads", row.filename), { force: true });
+      await rm(join(workspaceRoot, attachedRelativePath(row.filename)), { force: true });
     } catch {
       // Best-effort: see comment above.
     }

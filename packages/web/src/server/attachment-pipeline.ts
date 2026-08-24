@@ -46,6 +46,29 @@ export class AttachmentAlreadyAttachedError extends Error {
   }
 }
 
+/**
+ * A retry named an upload whose row says `attached` but whose bytes are no
+ * longer in `uploads/`.
+ *
+ * Its own class rather than a bare `Error` for the same reason the three above
+ * have one: `client-router` maps each to a specific error code, and anything
+ * unrecognised falls into the generic "Could not process attachment. Please
+ * try again." — advice that can only ever fail again, because nothing about
+ * the missing file changes between attempts.
+ */
+export class AttachmentFileMissingError extends Error {
+  constructor(
+    public readonly ids: string[],
+    public readonly relativePaths: string[]
+  ) {
+    super(
+      `Attachment file(s) missing from the agent workspace: ${relativePaths.join(", ")}. ` +
+        `The upload record still exists but the file does not — it cannot be re-sent.`
+    );
+    this.name = "AttachmentFileMissingError";
+  }
+}
+
 export interface MaterializeParams {
   agentId: string;
   userId: string;
@@ -73,11 +96,18 @@ export interface MaterializeParams {
  * `file.upload.attached` audit events, and returns the same
  * `ProcessAttachmentsResult` shape used by the WS send-path.
  *
+ * The returned `workspaceRefs` and `chatAttachments` follow the caller's own
+ * `attachmentIds` order, with repeats collapsed — so the manifest the agent
+ * reads lists the files in the order the user attached them, whether each one
+ * was promoted this turn or re-referenced from an earlier attempt.
+ *
  * Throws:
  *   `AttachmentNotFoundError`        — id missing or owned by another user/agent
  *   `AttachmentExpiredError`         — staged file has passed `expiresAt`
  *   `AttachmentAlreadyAttachedError` — row is already `attached`, and this is
  *                                      not a retry (see `isRetry`)
+ *   `AttachmentFileMissingError`     — a retry named an `attached` row whose
+ *                                      file is gone from `uploads/`
  *
  * **Note on partial failure:** If `promoteStagedToAttached` or the subsequent
  * FS read throws for file N after files 0..N-1 have already been promoted,
@@ -88,20 +118,39 @@ export interface MaterializeParams {
  *
  * Before #1195 the already-promoted rows were then unreachable: retries carried
  * no attachment ids, so nothing ever named them again and they sat in
- * `uploads/` as durable orphans. That is no longer the shape — a retry re-sends
- * the ids, and step 6 re-references those rows instead of orphaning them, which
- * makes the partial-failure case recover rather than leak. What still cannot be
- * recovered automatically is a row whose file never landed on disk; step 6
- * refuses to emit a ref for it rather than pointing the agent at nothing.
+ * `uploads/` as durable orphans. A retry now re-sends the ids and step 6
+ * re-references those rows instead of orphaning them — but only for as long as
+ * something still knows the ids. They live in the client's message state and in
+ * the `files` metadata the history frame carries (`history-upload-ids.ts`), so
+ * a user who instead clears the composer and rewrites the message leaves the
+ * same durable orphan behind as before. That residue is
+ * bounded and rare (it needs an FS or DB error mid-loop) and is reclaimed by an
+ * operator or a future workspace-GC pass, not automatically. What is never
+ * recovered is a row whose file is not on disk at all: step 6 refuses to emit a
+ * ref for it rather than pointing the agent at nothing.
  */
 export async function materializeAttachments(
   params: MaterializeParams
 ): Promise<ProcessAttachmentsResult> {
   const { agentId, userId, attachmentIds, messageId, agentName, isRetry = false } = params;
 
-  if (attachmentIds.length === 0) {
+  // Deduplicate up front. `attachmentIdsSchema` bounds the frame to 10 UUIDs
+  // but does not require them to be distinct, and every list below is derived
+  // from this one — so a repeated id would otherwise reach step 6 as a
+  // repeated ref AND, for an image, as a second base64 copy of the same bytes
+  // in the model request. The staged path never had this shape because its
+  // `inArray` query collapses repeats on its own.
+  const requestedIds = [...new Set(attachmentIds)];
+
+  if (requestedIds.length === 0) {
     return { chatAttachments: [], workspaceRefs: [] };
   }
+
+  // Position of each id in the caller's list — the order the user attached the
+  // files, and therefore the order the manifest must list them in.
+  const requestedOrder = new Map(requestedIds.map((id, i) => [id, i]));
+  const byRequestedOrder = (a: { id: string }, b: { id: string }) =>
+    requestedOrder.get(a.id)! - requestedOrder.get(b.id)!;
 
   // Step 1: fetch rows owned by (userId, agentId) with the requested IDs
   // that are still in `staged` status.
@@ -110,7 +159,7 @@ export async function materializeAttachments(
     .from(uploadedFiles)
     .where(
       and(
-        inArray(uploadedFiles.id, attachmentIds),
+        inArray(uploadedFiles.id, requestedIds),
         eq(uploadedFiles.userId, userId),
         eq(uploadedFiles.agentId, agentId),
         eq(uploadedFiles.status, "staged")
@@ -125,7 +174,7 @@ export async function materializeAttachments(
 
   // Step 2: check for IDs not returned by the staged query — could be
   // not-found/wrong-owner, or already attached (different status).
-  const unseenIds = attachmentIds.filter((id) => !foundIds.has(id));
+  const unseenIds = requestedIds.filter((id) => !foundIds.has(id));
   if (unseenIds.length > 0) {
     // Secondary lookup: check if any unseen IDs are already-attached rows
     // owned by the same (userId, agentId). If so, surface a specific error.
@@ -156,10 +205,12 @@ export async function materializeAttachments(
     // widest this reaches is a user re-referencing their own file in their own
     // agent's workspace — which that agent can `pinchy_ls` regardless.
     retriedRows = isRetry ? attachedRows : [];
-    const retriedIds = new Set(retriedRows.map((r) => r.id));
 
-    // Rows that exist as attached, on a send that is not a retry.
-    const alreadyAttachedIds = unseenIds.filter((id) => attachedIds.has(id) && !retriedIds.has(id));
+    // Rows that exist as attached, on a send that is not a retry. On a retry
+    // every one of them is in `retriedRows` above, so this is empty by
+    // construction — spelled as the flag rather than as a set difference,
+    // which only restates it.
+    const alreadyAttachedIds = isRetry ? [] : unseenIds.filter((id) => attachedIds.has(id));
     if (alreadyAttachedIds.length > 0) {
       for (const uploadId of alreadyAttachedIds) {
         await appendAuditLog({
@@ -212,8 +263,12 @@ export async function materializeAttachments(
   const workspaceRoot = getWorkspacePath(agentId);
   const openClawWorkspaceRoot = getOpenClawWorkspacePath(agentId);
 
-  const chatAttachments: ChatAttachment[] = [];
-  const workspaceRefs: ProcessedWorkspaceRef[] = [];
+  // Keyed by upload id, assembled into the caller's order at the end. Both
+  // loops below emit their audit rows in that same order, so "file-0's audit
+  // precedes file-1's" is a statement about the user's own selection rather
+  // than about whatever order Postgres happened to return.
+  const refById = new Map<string, ProcessedWorkspaceRef>();
+  const chatAttachmentById = new Map<string, ChatAttachment>();
 
   // Process sequentially. Filename collisions are already resolved at stage
   // time (`persistStagedUpload` reserves `uploads/<filename>` via
@@ -224,7 +279,7 @@ export async function materializeAttachments(
   // partial-failure surface is easier to reason about (Promise.all would
   // leave in-flight renames running after the first rejection, broadening
   // the orphan set documented in the jsdoc above).
-  for (const row of rows) {
+  for (const row of [...rows].sort(byRequestedOrder)) {
     if (!row.stagingPath) {
       throw new Error(
         `Uploaded file ${row.id} has status='staged' but missing stagingPath — data integrity error`
@@ -255,12 +310,16 @@ export async function materializeAttachments(
       const durablePath = join(workspaceRoot, promoted.relativePath);
       const fileBuffer = await readFile(durablePath);
       const content = fileBuffer.toString("base64");
-      chatAttachments.push({ mimeType: row.mimeType, fileName: row.filename, content });
+      chatAttachmentById.set(row.id, {
+        mimeType: row.mimeType,
+        fileName: row.filename,
+        content,
+      });
     }
 
     // 5d/5e: build workspace ref
     const absolutePath = join(openClawWorkspaceRoot, promoted.relativePath);
-    workspaceRefs.push({
+    refById.set(row.id, {
       relativePath: promoted.relativePath,
       absolutePath,
       mimeType: row.mimeType,
@@ -284,21 +343,20 @@ export async function materializeAttachments(
     });
   }
 
-  // Step 6: rebuild refs for rows this same message already attached — a retry.
+  // Step 6: rebuild refs for rows an earlier attempt at this message already
+  // attached — a retry.
   //
   // Nothing here promotes or writes: the bytes have been sitting in `uploads/`
-  // since the first attempt, and the DB row is already `attached` with this
-  // messageId. All that is missing is the ref the caller needs in order to
-  // rebuild the attachment manifest, so the agent is handed the same paths it
-  // was handed the first time.
+  // since that attempt, and the DB row is already `attached`. All that is
+  // missing is the ref the caller needs in order to rebuild the attachment
+  // manifest, so the agent is handed the same paths it was handed before.
   //
-  // Deliberately no `file.upload.attached` audit row: nothing was attached.
-  // The retry itself is already on the record as `chat.retry_triggered`, and a
-  // second success row per file would inflate the attach count on every retry.
-  for (const rowId of attachmentIds) {
-    const row = retriedRows.find((r) => r.id === rowId);
-    if (!row) continue;
-
+  // The row is stamped with the FIRST attempt's `messageId`, not this frame's —
+  // client-router mints a fresh UUID per frame, which is exactly why the gate
+  // is `isRetry` and not message-id equality. Nothing here re-stamps it: the
+  // column is a write-only traceability record of when the bytes were promoted,
+  // and rewriting it would erase that.
+  for (const row of [...retriedRows].sort(byRequestedOrder)) {
     const relativePath = attachedRelativePath(row.filename);
     const durablePath = join(workspaceRoot, relativePath);
 
@@ -315,15 +373,23 @@ export async function materializeAttachments(
     try {
       handle = await open(durablePath, "r");
     } catch {
-      throw new Error(
-        `Uploaded file ${row.id} is attached to message ${messageId} but ${relativePath} is missing from the workspace`
-      );
+      // Audited like every other refusal in this function: without a row, a
+      // user retrying into a permanently-failing send leaves no trace on the
+      // Pinchy side at all.
+      await appendAuditLog({
+        eventType: "file.upload.attached",
+        actorType: "user",
+        actorId: userId,
+        outcome: "failure",
+        detail: { uploadId: row.id, messageId, filename: row.filename, reason: "file_missing" },
+      });
+      throw new AttachmentFileMissingError([row.id], [relativePath]);
     }
 
     try {
       if (row.mimeType.startsWith("image/")) {
         const fileBuffer = await handle.readFile();
-        chatAttachments.push({
+        chatAttachmentById.set(row.id, {
           mimeType: row.mimeType,
           fileName: row.filename,
           content: fileBuffer.toString("base64"),
@@ -333,7 +399,7 @@ export async function materializeAttachments(
       await handle.close();
     }
 
-    workspaceRefs.push({
+    refById.set(row.id, {
       relativePath,
       absolutePath: join(openClawWorkspaceRoot, relativePath),
       mimeType: row.mimeType,
@@ -341,7 +407,35 @@ export async function materializeAttachments(
       contentHash: row.contentHash,
       reused: true,
     });
+
+    // A re-reference is still a delivery of this file to the agent on this
+    // turn, so it belongs in the trail — `chat.retry_triggered` names the agent
+    // and the reason but no filenames, and without a row here the question
+    // "which files did this turn hand over?" has no answer. `reason` marks it
+    // so a query counting real attaches can exclude it; a separate event type
+    // would have been the cleaner spelling but is not worth widening the
+    // catalogue for a variant of the same fact.
+    await appendAuditLog({
+      eventType: "file.upload.attached",
+      actorType: "user",
+      actorId: userId,
+      outcome: "success",
+      detail: {
+        uploadId: row.id,
+        messageId,
+        filename: row.filename,
+        reason: "retry_reference",
+        agent: { id: agentId, name: agentName },
+      },
+    });
   }
+
+  const workspaceRefs = requestedIds
+    .map((id) => refById.get(id))
+    .filter((ref): ref is ProcessedWorkspaceRef => ref !== undefined);
+  const chatAttachments = requestedIds
+    .map((id) => chatAttachmentById.get(id))
+    .filter((att): att is ChatAttachment => att !== undefined);
 
   return { chatAttachments, workspaceRefs };
 }
