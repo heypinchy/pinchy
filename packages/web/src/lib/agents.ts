@@ -250,6 +250,42 @@ export type OnPermissionsConfigured = (
 ) => void;
 
 /**
+ * The required models a connection could NOT grant, so the agent came out
+ * unable to do part of what its template describes (heypinchy/pinchy#1208).
+ *
+ * `validateOdooTemplate` has always computed this; `createAgent` used to read
+ * `availableModels` and drop the rest on the floor. On production that silence
+ * cost the entire reconciliation feature: the connection's model catalogue is
+ * only ever synced by hand, so a model a later release added to a template was
+ * simply not in it, and every bookkeeper agent — including ones created after
+ * the feature shipped — came out without the grant with nothing said anywhere.
+ *
+ * `missingModels` is the actionable set (non-optional and ungrantable).
+ * `warnings` is everything the validation had to say, optional models
+ * included, kept for the record rather than for a decision.
+ */
+export interface IncompleteConnectionPermissions {
+  connectionId: string;
+  missingModels: Array<{ model: string; name: string }>;
+  warnings: string[];
+}
+
+/**
+ * Called by `createAgent` once a connection's grants are committed and at
+ * least one non-optional required model could not be granted.
+ *
+ * Same timing contract as `onPermissionsConfigured`, for the same reason: the
+ * agent row and its partial grants are already committed, and the tail can
+ * still throw. The agent is deliberately still created — a partly-capable
+ * agent beats a failed create, and an admin can grant the rest by hand. What
+ * is not acceptable is doing it quietly.
+ */
+export type OnPermissionsIncomplete = (
+  agent: typeof agents.$inferSelect,
+  entry: IncompleteConnectionPermissions
+) => void;
+
+/**
  * The auditable moments inside `createAgent`, handed to the caller as they
  * happen rather than reported once the function returns.
  *
@@ -271,6 +307,7 @@ export type OnPermissionsConfigured = (
 export type CreateAgentHooks = {
   onCreated?: OnAgentCreated;
   onPermissionsConfigured?: OnPermissionsConfigured;
+  onPermissionsIncomplete?: OnPermissionsIncomplete;
 };
 
 /**
@@ -289,6 +326,8 @@ export type CreateAgentHooks = {
  * `autoConfiguredPermissions` is the same data `onPermissionsConfigured`
  * already delivered, kept here for the return contract. Audit from the hook,
  * not from this field: this field only exists on the path where nothing threw.
+ * `incompletePermissions` mirrors `onPermissionsIncomplete` the same way, and
+ * carries the same caveat.
  */
 export type CreateAgentResult =
   | {
@@ -296,6 +335,8 @@ export type CreateAgentResult =
       agent: typeof agents.$inferSelect;
       audit: CreateAgentAuditInfo;
       autoConfiguredPermissions: AutoConfiguredConnection[];
+      /** Required models no connection could grant — empty on a clean create. */
+      incompletePermissions: IncompleteConnectionPermissions[];
       // Best-effort OpenClaw runtime apply (#880): the agent row is committed
       // regardless. On regen/runtime-wait failure the create still succeeds
       // (201 at the route); the caller surfaces `runtimeWarning` to the user and
@@ -508,6 +549,7 @@ export async function createAgent(
   hooks?.onCreated?.(agent, auditInfo);
 
   const autoConfiguredPermissions: AutoConfiguredConnection[] = [];
+  const incompletePermissions: IncompleteConnectionPermissions[] = [];
 
   // Auto-configure Odoo permissions when template has odooConfig
   if (template.odooConfig && connectionId) {
@@ -527,6 +569,20 @@ export async function createAgent(
       const models = connectionData?.models ?? [];
 
       const validation = validateOdooTemplate(template.odooConfig, models);
+
+      // A required model the connection cannot grant is the single most
+      // important fact about the agent that was just created, and it used to
+      // be computed here and discarded (#1208). Recorded before the grants
+      // below, so a throw in the tail cannot lose it.
+      if (validation.missingModels.length > 0) {
+        const gap: IncompleteConnectionPermissions = {
+          connectionId,
+          missingModels: validation.missingModels,
+          warnings: validation.warnings,
+        };
+        incompletePermissions.push(gap);
+        hooks?.onPermissionsIncomplete?.(agent, gap);
+      }
 
       if (validation.availableModels.length > 0) {
         const permissionRows = validation.availableModels.flatMap((m) =>
@@ -631,6 +687,7 @@ export async function createAgent(
     agent,
     audit: auditInfo,
     autoConfiguredPermissions,
+    incompletePermissions,
     runtimeWarning,
     runtimeApplyError,
   };
