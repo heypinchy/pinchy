@@ -217,6 +217,16 @@ If the Odoo admin changes the API user's permissions after you've set up the con
 
 To re-sync: go to **Settings → Integrations**, open the connection's `…` menu, and click **Sync Schema**. Pinchy probes the available models again and updates the connection accordingly.
 
+### Re-sync after upgrading Pinchy, too
+
+The other reason to re-sync has nothing to do with your Odoo: **a new Pinchy release can teach an agent template to use a model your connection has never been asked about.** The bank-reconciliation tools, for example, need `account.bank.statement.line`, which older connections were never probed for.
+
+The model list is a snapshot taken when you last synced. A template can only be granted models that are in it — so until you re-sync, an agent created from that template comes out missing the permission, and the capability it belongs to simply never works. That applies to agents you create _after_ the upgrade as well, not only to the ones you already had.
+
+When that happens, Pinchy records it: an `agent_integration_permissions_incomplete` entry in the [audit trail](/concepts/audit-trail/) naming the models it could not grant. The agent is still created — a partly-capable agent is more useful than a failed setup — and you can grant the rest yourself in **Agent Settings → Permissions** once the model is in the list.
+
+So after any Pinchy upgrade, one **Sync Schema** is worth the click.
+
 :::caution
 Syncing the schema may remove models that are no longer accessible. Agents that were configured to use those models will lose access to them.
 :::
