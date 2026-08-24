@@ -65,6 +65,26 @@ export const POST = withAdmin(async (request, _ctx, session) => {
         },
         outcome: "success",
       }),
+    // #1208: a required model the connection could not grant used to be
+    // computed and discarded, so an agent came out unable to do part of what
+    // its template describes with nothing said anywhere. `failure` is the
+    // honest outcome — the agent exists, the capability does not.
+    onPermissionsIncomplete: (agent, entry) =>
+      deferAuditLog({
+        actorType: "user",
+        actorId: session.user.id!,
+        eventType: "config.changed",
+        resource: `agent:${agent.id}`,
+        detail: {
+          action: "agent_integration_permissions_incomplete",
+          agentId: agent.id,
+          name: agent.name,
+          connectionId: entry.connectionId,
+          missingModels: entry.missingModels.map((m) => m.model),
+          warnings: entry.warnings,
+        },
+        outcome: "failure",
+      }),
   });
 
   if (!result.ok) {

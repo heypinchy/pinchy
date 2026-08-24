@@ -88,6 +88,24 @@ export const POST = withApiKey(["agents:write"], async (req, _ctx, key) => {
         },
         outcome: "success",
       }),
+    // #1208 — same reason as the session route, different actor.
+    onPermissionsIncomplete: (agent, entry) =>
+      deferAuditLog({
+        actorType: "api_key",
+        actorId: key.keyId,
+        eventType: "config.changed",
+        resource: `agent:${agent.id}`,
+        detail: {
+          action: "agent_integration_permissions_incomplete",
+          agentId: agent.id,
+          name: agent.name,
+          connectionId: entry.connectionId,
+          missingModels: entry.missingModels.map((m) => m.model),
+          warnings: entry.warnings,
+          apiKey: { id: key.keyId, name: key.name },
+        },
+        outcome: "failure",
+      }),
   });
 
   if (!result.ok) {
