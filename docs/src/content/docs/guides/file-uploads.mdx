@@ -97,6 +97,8 @@ Pinchy validates every uploaded file against its actual content, not just the br
 
 ### Files your browser doesn't name
 
-Paste a screenshot, or drag a PDF straight out of a viewer, and the browser hands us `blob` — no name, no extension. Pinchy gives those a dated name instead, based on what the file actually turned out to be: `upload-2026-08-20.pdf`. A file you named yourself keeps its name; if it arrived without an extension, it gains the right one so it opens.
+Paste a screenshot, or drag a PDF straight out of a viewer, and the browser hands us `blob` — no name, no extension. Pinchy names those itself, from the moment you sent the file and what it actually turned out to be: `upload-2026-08-20-1432.pdf`. The time of day is in there because a working day produces a lot of these, and a date alone would leave you with a list you still can't tell apart.
 
-This is why a pasted file can appear in `uploads/` under a different name than the one you saw on your desktop — the agent and the chip both use the stored name, so they always agree.
+A name you chose is kept as it is. The exception is a name that says nothing either: `image.png`, `download.pdf`, `untitled.pdf` and the like are treated exactly like `blob`, because the stem tells you no more than the browser's own placeholder does. And a name you chose that arrived **without** an extension keeps its stem and gains the extension its contents call for — `Scan001` becomes `Scan001.pdf`, so it opens.
+
+This is why a pasted file can appear in `uploads/` under a different name than the one you saw on your desktop. The chat chip, the agent and the workspace all use the stored name, so they always agree.
