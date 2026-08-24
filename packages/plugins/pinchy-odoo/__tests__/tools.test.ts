@@ -51,6 +51,7 @@ import plugin, {
   findInvalidSelectionValues,
   formatInvalidSelectionError,
   PRODUCT_REF_DISAMBIGUATION_HINT,
+  MANY2ONE_VALUE_HINT,
   enforceReadResultBudget,
   ODOO_READ_RESULT_BUDGET_CHARS,
   ODOO_READ_TRUNCATION_HINT,
@@ -7462,19 +7463,22 @@ describe("many2one lookup by natural-key code (#1197)", () => {
     );
   });
 
+  // Asserted as the exact domain, not as a substring of the serialised one: a
+  // `JSON.stringify(...).toContain("code")` is green for `["code", "ilike", …]`,
+  // for a `code` that only appears in the field list, and for a domain missing
+  // the `"|"` operator — which is an implicit AND and a different query.
   it("asks Odoo for the code column and searches on it", async () => {
     mockAccountCandidates([ACCOUNT]);
 
     await createWithAccount("7660");
 
     const call = mockSearchRead.mock.calls.find((c) => c[0] === "account.account")!;
-    expect(call[0]).toBe("account.account");
     expect((call[2] as { fields: string[] }).fields).toContain("code");
-    expect(JSON.stringify(call[1])).toContain("code");
+    expect(call[1]).toEqual(["|", ["code", "=", "7660"], ["name", "ilike", "7660"]]);
   });
 
   // The guard that refuses a raw database id has to survive this. It is
-  // relaxed ONLY where the relation actually declares a `code`, and a numeric
+  // relaxed ONLY where the relation declares a searchable `code`, and a numeric
   // string is then matched against `code` — never against `id` — so "an agent
   // cannot address a record by its primary key" still holds.
   it("still refuses a numeric string for a relation that has no code column", async () => {
@@ -7504,6 +7508,9 @@ describe("many2one lookup by natural-key code (#1197)", () => {
     expect(mockCreate).not.toHaveBeenCalled();
   });
 
+  // The decoy's *name* starts with the code being looked up, so it is the
+  // `ilike` half of the search that produced it — nothing about it is an exact
+  // name, which is what the code token is allowed to outrank (#1206 review).
   it("prefers an exact code match over a name that merely matched the search", async () => {
     mockAccountCandidates([{ id: 55, name: "7660 reclass suspense", code: "9999" }, ACCOUNT]);
 
@@ -7524,5 +7531,368 @@ describe("many2one lookup by natural-key code (#1197)", () => {
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toMatch(/Could not resolve account_id/);
     expect(mockCreate).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Review of #1206 — the natural-key lookup, at the edges the first pass missed.
+//
+// Five of these are red without the follow-up: a `code` column that Odoo
+// cannot search (`product.product.code` is a non-stored compute aliasing
+// `default_code`), a derived code token outranking an exact name, a code-only
+// lookup still OR-ing `name ilike ""` (every row) into its domain, a duplicate
+// code aborting before the name that disambiguates it, and `parseLookup`'s
+// res.country upper-casing leaking onto every other relation.
+// ---------------------------------------------------------------------------
+describe("many2one natural-key lookup, edge cases (#1206 review)", () => {
+  const config = {
+    connectionId: "conn-test-1",
+    permissions: {
+      "account.move.line": ["read", "create", "write"],
+      "account.account": ["read"],
+      "account.journal": ["read"],
+      "product.product": ["read"],
+      "res.partner": ["read"],
+      "res.country": ["read"],
+    },
+  } as unknown as AgentOdooConfig;
+
+  const LINE_FIELDS = [
+    { name: "name", string: "Label", type: "char" },
+    { name: "account_id", string: "Account", type: "many2one", relation: "account.account" },
+    { name: "journal_id", string: "Journal", type: "many2one", relation: "account.journal" },
+    { name: "product_id", string: "Product", type: "many2one", relation: "product.product" },
+    { name: "partner_id", string: "Partner", type: "many2one", relation: "res.partner" },
+    { name: "country_id", string: "Country", type: "many2one", relation: "res.country" },
+  ];
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubEnv("PINCHY_REF_TOKEN_KEY", "a".repeat(64));
+  });
+
+  const NAME_ONLY = [{ name: "name", string: "Name", type: "char" }];
+  const NAME_AND_CODE = [...NAME_ONLY, { name: "code", string: "Code", type: "char" }];
+
+  /**
+   * Schema per relation, keyed by model. The defaults mirror Odoo: accounts,
+   * journals and countries carry a `code`; partners and products do not
+   * (a product's human-readable key is `default_code`, and its `code` is the
+   * unsearchable compute these tests exist for). `relations` overrides one.
+   */
+  function mockSchema(relations: Record<string, Array<Record<string, unknown>>>) {
+    const defaults: Record<string, Array<Record<string, unknown>>> = {
+      "account.account": NAME_AND_CODE,
+      "account.journal": NAME_AND_CODE,
+      "res.country": NAME_AND_CODE,
+    };
+    mockFields.mockImplementation(async (model: string) => {
+      if (model === "account.move.line") return LINE_FIELDS;
+      return relations[model] ?? defaults[model] ?? NAME_ONLY;
+    });
+  }
+
+  /**
+   * Candidate rows per relation. Anything else is the post-write read-back
+   * (#720), which compares the verbatim scalars it was sent — so it has to
+   * echo the label every `create` below writes, not the relation's rows. One
+   * blanket `mockResolvedValue` serves the relation rows to the read-back too
+   * and reports a mismatch that reads exactly like a product failure.
+   */
+  const WRITTEN_LABEL = "x";
+  function mockCandidates(byModel: Record<string, Array<Record<string, unknown>>>) {
+    mockSearchRead.mockImplementation(async (model: string) => {
+      const records = byModel[model];
+      if (records) return { records, total: records.length, limit: 20, offset: 0 };
+      return { records: [{ id: 1234, name: WRITTEN_LABEL }], total: 1, limit: 1, offset: 0 };
+    });
+  }
+
+  function create(values: Record<string, unknown>) {
+    mockCreate.mockResolvedValue(1234);
+    const tool = findTool(createApi({ [agentId]: config }), "odoo_create", agentId)!;
+    return tool.execute("call-1", { model: "account.move.line", values });
+  }
+
+  function domainFor(model: string): unknown {
+    return mockSearchRead.mock.calls.find((c) => c[0] === model)?.[1];
+  }
+
+  function fieldsFor(model: string): string[] | undefined {
+    const call = mockSearchRead.mock.calls.find((c) => c[0] === model);
+    return call ? (call[2] as { fields: string[] }).fields : undefined;
+  }
+
+  // `product.product.code` exists in every Odoo — a non-stored compute with no
+  // `search` method, mirroring `default_code`. `fields_get` reports it
+  // `searchable: false`, and a `["code", "=", …]` leaf on it is either refused
+  // outright or silently widened to every row, which would put 20 arbitrary
+  // products in front of a lookup that resolved by name before.
+  it("does not search a `code` column Odoo reports as unsearchable", async () => {
+    mockSchema({
+      "product.product": [
+        { name: "name", string: "Name", type: "char" },
+        { name: "code", string: "Reference", type: "char", searchable: false },
+        { name: "default_code", string: "Internal Reference", type: "char" },
+      ],
+    });
+    mockCandidates({ "product.product": [{ id: 8, name: "Office Chair" }] });
+
+    const result = await create({ name: WRITTEN_LABEL, product_id: "Office Chair" });
+
+    expect(result.isError).toBeFalsy();
+    expect(domainFor("product.product")).toEqual([["name", "ilike", "Office Chair"]]);
+    expect(fieldsFor("product.product")).not.toContain("code");
+  });
+
+  it("still refuses a numeric string when the `code` column is unsearchable", async () => {
+    mockSchema({
+      "product.product": [
+        { name: "name", string: "Name", type: "char" },
+        { name: "code", string: "Reference", type: "char", searchable: false },
+      ],
+    });
+
+    const result = await create({ name: "x", product_id: "42" });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("Raw numeric IDs are not accepted");
+    expect(mockCreate).not.toHaveBeenCalled();
+  });
+
+  // The payload above is the one Odoo WOULD send; the one it actually sends
+  // today omits `searchable`, because odoo-node's `fields_get` does not ask for
+  // it. This is that payload — `code` beside `default_code`, which is the shape
+  // that says the stored natural key is `default_code` and `code` mirrors it.
+  it("declines a `code` that shadows a stored `default_code`", async () => {
+    mockSchema({
+      "product.product": [
+        { name: "name", string: "Name", type: "char" },
+        { name: "code", string: "Reference", type: "char" },
+        { name: "default_code", string: "Internal Reference", type: "char" },
+      ],
+    });
+    mockCandidates({ "product.product": [{ id: 8, name: "Office Chair" }] });
+
+    const byName = await create({ name: WRITTEN_LABEL, product_id: "Office Chair" });
+    expect(byName.isError).toBeFalsy();
+    expect(domainFor("product.product")).toEqual([["name", "ilike", "Office Chair"]]);
+
+    vi.clearAllMocks();
+    mockSchema({
+      "product.product": [
+        { name: "name", string: "Name", type: "char" },
+        { name: "code", string: "Reference", type: "char" },
+        { name: "default_code", string: "Internal Reference", type: "char" },
+      ],
+    });
+    const byNumber = await create({ name: "x", product_id: "42" });
+    expect(byNumber.isError).toBe(true);
+    expect(byNumber.content[0].text).toContain("Raw numeric IDs are not accepted");
+  });
+
+  // Same question one attribute over: `findCompanyIdField` has always checked
+  // the field TYPE as well as the name, and a `code` that is not a char column
+  // is not a natural key either.
+  it("still refuses a numeric string when `code` is not a char column", async () => {
+    mockSchema({
+      "product.product": [
+        { name: "name", string: "Name", type: "char" },
+        { name: "code", string: "Code", type: "selection", selection: [["a", "A"]] },
+      ],
+    });
+
+    const result = await create({ name: "x", product_id: "42" });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("Raw numeric IDs are not accepted");
+  });
+
+  // The claim "relations without a code are untouched — same fields, same
+  // domain as before" was a comment. Here it is a checked one.
+  it("leaves the domain and field list of a code-less relation untouched", async () => {
+    mockSchema({ "res.partner": [{ name: "name", string: "Name", type: "char" }] });
+    mockCandidates({ "res.partner": [{ id: 5, name: "Acme GmbH" }] });
+
+    const result = await create({ name: "x", partner_id: "Acme GmbH" });
+
+    expect(result.isError).toBeFalsy();
+    expect(domainFor("res.partner")).toEqual([["name", "ilike", "Acme GmbH"]]);
+    expect(fieldsFor("res.partner")).toEqual(["id", "name", "display_name"]);
+  });
+
+  // An exact name is a fact about the input; a leading token is a guess about
+  // its shape. Analytic-style codes ("IT", "HR", "R&D") collide with the first
+  // word of ordinary names, and picking the code match writes to the wrong
+  // record with no error at all.
+  it("resolves an exact name ahead of a record whose code is its leading word", async () => {
+    mockSchema({});
+    mockCandidates({
+      "account.account": [
+        { id: 70, name: "IT Infrastructure", code: "INFRA" },
+        { id: 71, name: "Support", code: "IT" },
+      ],
+    });
+
+    const result = await create({ name: "x", account_id: "IT Infrastructure" });
+
+    expect(result.isError).toBeFalsy();
+    expect(mockCreate).toHaveBeenCalledWith(
+      "account.move.line",
+      expect.objectContaining({ account_id: 70 })
+    );
+  });
+
+  // `ilike ""` is `LIKE '%%'` — every row. OR-ed against the code leaf it puts
+  // the whole table in front of the one record that was asked for, and
+  // `limit: 20` then decides whether the answer is in the window.
+  it("queries the code alone when the lookup carries no name", async () => {
+    mockSchema({});
+    mockCandidates({
+      "account.account": [{ id: 91, name: "Entertainment expenses", code: "7660" }],
+    });
+
+    const result = await create({ name: "x", account_id: { lookup: { code: "7660" } } });
+
+    expect(result.isError).toBeFalsy();
+    expect(domainFor("account.account")).toEqual([["code", "=", "7660"]]);
+    expect(mockCreate).toHaveBeenCalledWith(
+      "account.move.line",
+      expect.objectContaining({ account_id: 91 })
+    );
+  });
+
+  // A duplicate code is the multi-company case, and the composite form carries
+  // exactly what tells the two apart. Throwing on the code discards it.
+  it("falls through to the name when the code alone is ambiguous", async () => {
+    mockSchema({});
+    mockCandidates({
+      "account.account": [
+        { id: 40, name: "Bank Helmcraft", display_name: "1800 Bank Helmcraft", code: "1800" },
+        { id: 41, name: "Bank Clemens", display_name: "1800 Bank Clemens", code: "1800" },
+      ],
+    });
+
+    const result = await create({ name: "x", account_id: "1800 Bank Helmcraft" });
+
+    expect(result.isError).toBeFalsy();
+    expect(mockCreate).toHaveBeenCalledWith(
+      "account.move.line",
+      expect.objectContaining({ account_id: 40 })
+    );
+  });
+
+  // When nothing tells them apart, the message has to be the one the codebase
+  // already writes for this: name the companies and the `company_id` remedy,
+  // not a deduplicated suggestion list of one.
+  it("explains a duplicate code across companies as a multi-company collision", async () => {
+    mockSchema({
+      "account.account": [
+        { name: "name", string: "Name", type: "char" },
+        { name: "code", string: "Code", type: "char" },
+        { name: "company_id", string: "Company", type: "many2one", relation: "res.company" },
+      ],
+    });
+    mockCandidates({
+      "account.account": [
+        { id: 40, name: "Bank", code: "1800", company_id: [1, "Helmcraft GmbH"] },
+        { id: 41, name: "Bank", code: "1800", company_id: [2, "Clemens Helm"] },
+      ],
+    });
+
+    const result = await create({ name: "x", account_id: "1800" });
+
+    expect(result.isError).toBe(true);
+    const text = result.content[0].text;
+    expect(text).toContain("multi-company collision");
+    expect(text).toContain("Helmcraft GmbH");
+    expect(text).toContain("Clemens Helm");
+    expect(mockCreate).not.toHaveBeenCalled();
+  });
+
+  // `parseLookup` upper-cases `lookup.code` because ISO 3166-1 alpha-2 is
+  // upper-case. Journal and account codes are not, and `=` on a char column is
+  // case-sensitive in Postgres — so the normalisation has to stay where the
+  // fact it encodes is true.
+  it("passes an explicit code to Odoo verbatim on a non-country relation", async () => {
+    mockSchema({});
+    mockCandidates({ "account.journal": [{ id: 17, name: "Bank", code: "bnk1" }] });
+
+    const result = await create({ name: "x", journal_id: { lookup: { code: "bnk1" } } });
+
+    expect(result.isError).toBeFalsy();
+    expect(domainFor("account.journal")).toEqual([["code", "=", "bnk1"]]);
+    expect(mockCreate).toHaveBeenCalledWith(
+      "account.move.line",
+      expect.objectContaining({ journal_id: 17 })
+    );
+  });
+
+  it("still normalises a country code to upper case", async () => {
+    mockSchema({});
+    mockCandidates({ "res.country": [{ id: 14, name: "Austria", code: "AT" }] });
+
+    const result = await create({ name: "x", country_id: { lookup: { code: "at" } } });
+
+    expect(result.isError).toBeFalsy();
+    expect(domainFor("res.country")).toEqual([["code", "=", "AT"]]);
+    expect(mockCreate).toHaveBeenCalledWith(
+      "account.move.line",
+      expect.objectContaining({ country_id: 14 })
+    );
+  });
+
+  // The candidate arrived through the NAME leg, so the case difference is real
+  // rather than a fixture: only the client-side comparison can close it.
+  it("matches an explicit code against a record whose code differs only in case", async () => {
+    mockSchema({});
+    mockCandidates({
+      "account.journal": [{ id: 17, name: "Miscellaneous Operations", code: "BNK1" }],
+    });
+
+    const result = await create({
+      name: "x",
+      journal_id: { lookup: { code: "bnk1", name: "Miscellaneous" } },
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(mockCreate).toHaveBeenCalledWith(
+      "account.move.line",
+      expect.objectContaining({ journal_id: 17 })
+    );
+  });
+
+  // A country code is ISO 3166-1 alpha-2 and never numeric, so a numeric
+  // country value is a raw database id and nothing else. Relaxing the guard
+  // there traded a precise refusal for a generic "could not resolve" — and an
+  // Odoo round trip to reach it.
+  it("refuses a numeric country value outright, without querying Odoo", async () => {
+    mockSchema({});
+
+    const result = await create({ name: "x", country_id: "42" });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("Raw numeric IDs are not accepted");
+    expect(mockSearchRead.mock.calls.filter((c) => c[0] === "res.country")).toHaveLength(0);
+  });
+});
+
+// The route the resolver gained is worth nothing until the model is told about
+// it — and the description it reads said the opposite: "do not pass raw numeric
+// IDs", which is exactly what a bare GL account code looks like. One shared
+// constant so the two tools cannot drift, mirroring
+// PRODUCT_REF_DISAMBIGUATION_HINT.
+describe("MANY2ONE_VALUE_HINT (#1206 review)", () => {
+  it("names the code route the resolver now supports", () => {
+    expect(MANY2ONE_VALUE_HINT).toContain("code");
+    expect(MANY2ONE_VALUE_HINT).toContain("7660 Entertainment expenses");
+  });
+
+  it("is spliced into both writing tools", () => {
+    const tools = createApi({ [agentId]: agentConfig });
+    for (const name of ["odoo_create", "odoo_write"]) {
+      const tool = findTool(tools, name, agentId)!;
+      expect(tool.description).toContain(MANY2ONE_VALUE_HINT);
+    }
   });
 });

@@ -156,6 +156,39 @@ If your Odoo database hosts more than one `res.company`, Pinchy adds two layers 
 
 The stock **Finance Controller** and **Bookkeeper** templates also include guidance that teaches the agent to disambiguate multi-company records up front. (Finance Controller suggests **Penny** as one of its agent names, so you may see this agent under that name.) Newly-created agents pick this up automatically; existing agents keep their stored `AGENTS.md` until you recreate them, but the runtime cross-company guard applies regardless.
 
+## How an agent names a record
+
+Every `odoo_create` and `odoo_write` has to turn what the agent knows into an
+Odoo record. Four forms resolve, and none of them is a database id:
+
+- **An opaque reference** returned by `odoo_read` (`_pinchy_ref`), passed back
+  verbatim. It names one record exactly, including the company it belongs to,
+  so it is the form that never collides.
+- **An exact name**, matched against the record's name or the display name Odoo
+  itself renders.
+- **A code**, where the relation has one. A GL account or a journal resolves
+  from its code alone — `"7660"` — or from the `"7660 Entertainment expenses"`
+  form a chart of accounts prints and most Odoo account pickers show. This is
+  how accountants address an account, and it is the one route a bare number
+  takes.
+- **A country code**, for `res.country`: `"AT"`, or a name Pinchy recognises.
+
+**A raw database id is refused**, and the refusal says so. An agent that has
+seen an id in a URL will try it, and a write that lands on whatever record
+happens to carry that id is worse than a failed one. The single exception is the
+code route above: on a relation that has a code, a number is matched against
+that column and never against the id.
+
+**An exact name wins over a code.** If the value matches a record's name
+outright, that record is used, even when its first word happens to be another
+record's code — so an analytic account called "IT Infrastructure" is never
+mistaken for whatever carries the code "IT".
+
+**A code that two companies share reports the collision** rather than picking
+one, and names both companies. Adding `company_id` to the same create scopes the
+lookup and resolves it; so does the fully qualified `"<code> <name>"` form, when
+the names differ.
+
 ## Duplicate vendor bills
 
 Filing the same supplier invoice twice is double payment — one of the failure modes teams fear most from an autonomous agent. So before an agent creates a vendor bill or vendor credit note (`account.move` with `move_type` `in_invoice` or `in_refund`), the `pinchy-odoo` plugin checks whether a bill with the same reference (`ref` — the supplier's invoice number) is already on file, scoped to the company and partner when the create supplies them.
