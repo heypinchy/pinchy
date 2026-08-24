@@ -1,4 +1,5 @@
-import { readFile, stat } from "fs/promises";
+import { readFile, open } from "fs/promises";
+import type { FileHandle } from "fs/promises";
 import { join } from "path";
 import type { ChatAttachment } from "openclaw-node";
 import { eq, and, inArray } from "drizzle-orm";
@@ -305,21 +306,31 @@ export async function materializeAttachments(
     // ref that resolves to nothing would send the agent to read a file that is
     // not there and have it report the attachment as unreadable — a silent
     // wrong answer in place of a loud failure.
+    //
+    // Proved by OPENING it, not by stat-ing it and reading later: a separate
+    // check and use is a TOCTOU window (CodeQL js/file-system-race), and the
+    // read below would then be operating on a path whose state was established
+    // by an earlier, unrelated syscall. One handle answers both questions.
+    let handle: FileHandle;
     try {
-      await stat(durablePath);
+      handle = await open(durablePath, "r");
     } catch {
       throw new Error(
         `Uploaded file ${row.id} is attached to message ${messageId} but ${relativePath} is missing from the workspace`
       );
     }
 
-    if (row.mimeType.startsWith("image/")) {
-      const fileBuffer = await readFile(durablePath);
-      chatAttachments.push({
-        mimeType: row.mimeType,
-        fileName: row.filename,
-        content: fileBuffer.toString("base64"),
-      });
+    try {
+      if (row.mimeType.startsWith("image/")) {
+        const fileBuffer = await handle.readFile();
+        chatAttachments.push({
+          mimeType: row.mimeType,
+          fileName: row.filename,
+          content: fileBuffer.toString("base64"),
+        });
+      }
+    } finally {
+      await handle.close();
     }
 
     workspaceRefs.push({
