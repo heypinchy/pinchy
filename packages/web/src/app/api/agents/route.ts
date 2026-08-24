@@ -6,6 +6,10 @@ import { createAgent } from "@/lib/agents";
 import { createAgentSchema } from "@/lib/schemas/agents";
 import { appendAuditLog } from "@/lib/audit";
 import { deferAuditLog } from "@/lib/audit-deferred";
+import {
+  incompletePermissionsDetail,
+  incompletePermissionsWarning,
+} from "@/lib/agent-permission-gaps";
 import { getVisibleAgents } from "@/lib/visible-agents";
 
 export const GET = withAuth(async (_req, _ctx, session) => {
@@ -65,24 +69,18 @@ export const POST = withAdmin(async (request, _ctx, session) => {
         },
         outcome: "success",
       }),
-    // #1208: a required model the connection could not grant used to be
-    // computed and discarded, so an agent came out unable to do part of what
-    // its template describes with nothing said anywhere. `failure` is the
-    // honest outcome — the agent exists, the capability does not.
+    // #1208: what the connection could not grant used to be computed and
+    // discarded, so an agent came out unable to do part of what its template
+    // describes with nothing said anywhere. `failure` is the honest outcome —
+    // the agent exists, the capability does not. The detail is built by the
+    // shared helper so this route and the key-authenticated one cannot drift.
     onPermissionsIncomplete: (agent, entry) =>
       deferAuditLog({
         actorType: "user",
         actorId: session.user.id!,
         eventType: "config.changed",
         resource: `agent:${agent.id}`,
-        detail: {
-          action: "agent_integration_permissions_incomplete",
-          agentId: agent.id,
-          name: agent.name,
-          connectionId: entry.connectionId,
-          missingModels: entry.missingModels.map((m) => m.model),
-          warnings: entry.warnings,
-        },
+        detail: incompletePermissionsDetail(agent, entry),
         outcome: "failure",
       }),
   });
@@ -105,7 +103,7 @@ export const POST = withAdmin(async (request, _ctx, session) => {
     return NextResponse.json(result.error.body, { status: result.error.status });
   }
 
-  const { agent, runtimeWarning, runtimeApplyError } = result;
+  const { agent, runtimeWarning, runtimeApplyError, incompletePermissions } = result;
 
   // The agent row is committed (audited success above) but never reached the
   // runtime (#880). Record a distinct failure event so the trail shows "created
@@ -129,5 +127,14 @@ export const POST = withAdmin(async (request, _ctx, session) => {
 
   revalidatePath("/", "layout");
 
-  return NextResponse.json({ ...agent, warning: runtimeWarning }, { status: 201 });
+  // One `warning` field, every reason a 201 is not a clean create. The audit
+  // row above is the durable record; this is what reaches the admin who is
+  // standing right there — the form raises it as a toast. Absent when nothing
+  // went wrong, so its presence stays the whole check.
+  const warning =
+    [runtimeWarning, incompletePermissionsWarning(incompletePermissions)]
+      .filter(Boolean)
+      .join(" ") || undefined;
+
+  return NextResponse.json({ ...agent, warning }, { status: 201 });
 });
