@@ -256,7 +256,11 @@ The other reason to re-sync has nothing to do with your Odoo: **a new Pinchy rel
 
 The model list is a snapshot taken when you last synced. A template can only be granted models that are in it — so until you re-sync, an agent created from that template comes out missing the permission, and the capability it belongs to simply never works. That applies to agents you create _after_ the upgrade as well, not only to the ones you already had.
 
-When that happens, Pinchy records it: an `agent_integration_permissions_incomplete` entry in the [audit trail](/concepts/audit-trail/) naming the models it could not grant. The agent is still created — a partly-capable agent is more useful than a failed setup — and you can grant the rest yourself in **Agent Settings → Permissions** once the model is in the list.
+Pinchy says so **as an agent is created**: the create returns a warning naming what the connection could not grant, and writes an `agent_integration_permissions_incomplete` entry to the [audit trail](/concepts/audit-trail/#when-an-agent-came-out-only-partly-capable) alongside it. The agent is still created — a partly-capable agent is more useful than a failed setup — and you can grant the rest yourself in **Agent Settings → Permissions** once the model is in the list.
+
+That warning is written at creation time and nowhere else, so it says nothing about the agents you **already had** when you upgraded. Those are the ones to check by hand: re-sync, then open each Odoo agent's Permissions tab and confirm the models its template needs are ticked.
+
+The same warning covers the other way a connection can fall short: a model it _does_ know about, but on which the Odoo API user may not perform an operation the template needs — read-only access to `account.bank.statement.line`, say, where reconciliation has to write. **Create New Agent** flags that one before you press Create, as **Limited Odoo access**, and lets you create the agent anyway — the rest of its work is unaffected. That gap is an Odoo permission rather than a stale snapshot, so the fix is in Odoo, followed by a re-sync.
 
 So after any Pinchy upgrade, one **Sync Schema** is worth the click.
 
