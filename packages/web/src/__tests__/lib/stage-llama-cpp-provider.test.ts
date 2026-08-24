@@ -57,11 +57,13 @@ function stubOpenclaw(exitCode: number): void {
   chmodSync(bin, 0o755);
 }
 
-// Install a stub `chown` on PATH that appends its argv to chownLog and returns
-// the given exit code (0 = chown succeeds, non-zero = chown fails).
-function stubChown(exitCode: number): void {
+// Install a stub `chown` on PATH that appends its argv to chownLog, writes the
+// given text to stderr, and returns the given exit code (0 = chown succeeds,
+// non-zero = chown fails).
+function stubChown(exitCode: number, stderr = ""): void {
   const bin = join(binDir, "chown");
-  writeFileSync(bin, `#!/bin/bash\necho "$@" >> '${chownLog}'\nexit ${exitCode}\n`);
+  const emit = stderr ? `echo ${JSON.stringify(stderr)} >&2\n` : "";
+  writeFileSync(bin, `#!/bin/bash\necho "$@" >> '${chownLog}'\n${emit}exit ${exitCode}\n`);
   chmodSync(bin, 0o755);
 }
 
@@ -128,6 +130,11 @@ describe("stage_llama_cpp_provider", () => {
     // No depsRoot/npm — e.g. a build that didn't bundle the provider.
     expect(() => runStage()).not.toThrow();
     expect(existsSync(join(npmRoot, "projects"))).toBe(false);
+    // …and the ownership repair stays on the far side of the early return.
+    // Hoisted above it, this would chown a path that does not exist on every
+    // boot of an image built without the bundle, and warn that memory_search
+    // will return 0 chunks on a deployment where nothing is wrong.
+    expect(chownCalls()).toEqual([]);
   });
 
   it("warns but stays non-fatal when the registry refresh fails", () => {
@@ -143,7 +150,10 @@ describe("stage_llama_cpp_provider", () => {
     expect(() => {
       output = runStage();
     }).not.toThrow(); // non-fatal: boot continues
-    expect(output).toMatch(/WARNING/);
+    // Name the branch, not just the word WARNING: the function has two
+    // warn-and-continue paths with near-identical wording, and a bare /WARNING/
+    // stays green when the wrong one fires.
+    expect(output).toMatch(/registry --refresh/);
     // Staging still happened despite the refresh failure.
     expect(existsSync(join(npmRoot, "projects", "openclaw-llama-cpp-provider-abc123"))).toBe(true);
   });
@@ -199,6 +209,22 @@ describe("stage_llama_cpp_provider", () => {
     expect(() => {
       output = runStage();
     }).not.toThrow();
-    expect(output).toMatch(/WARNING/);
+    expect(output).toMatch(/could not chown/);
+  });
+
+  // A warning that says "could not" without saying why leaves the operator to
+  // reproduce the chown by hand to learn whether it was EPERM, a read-only
+  // mount, or a missing path — the three causes that need three different
+  // answers. Quote what the kernel said.
+  it("quotes the reason the chown failed", () => {
+    mkdirSync(join(depsRoot, "npm", "projects", "openclaw-llama-cpp-provider-abc123"), {
+      recursive: true,
+    });
+    stubChown(1, "chown: changing ownership of '/root/.openclaw/npm': Read-only file system");
+
+    const output = runStage();
+
+    expect(output).toMatch(/could not chown/);
+    expect(output).toContain("Read-only file system");
   });
 });
