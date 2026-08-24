@@ -32,7 +32,7 @@ You can verify the conversion worked: the agent's response should reference what
 Each image you attach travels two routes simultaneously:
 
 1. **Inline to the model** — the resized version is sent with the message itself, so a vision-capable model can "see" the image immediately without an extra step.
-2. **Saved to the agent's [workspace](/concepts/workspaces/)** — the **original** file lands in `uploads/<filename>` so the agent can re-read it later (e.g. when you ask follow-up questions about details, or when a sub-agent needs the full-resolution version). A pasted screenshot arrives without a real name, so it is stored under a dated one — see [Files your browser doesn't name](/guides/file-uploads/#files-your-browser-doesnt-name).
+2. **Saved to the agent's [workspace](/concepts/workspaces/)** — the **original** file lands in `uploads/<filename>` so the agent can re-read it later (e.g. when you ask follow-up questions about details, or when a sub-agent needs the full-resolution version). A pasted screenshot arrives without a real name, so it is stored under a generated one — see [Files your browser doesn't name](/guides/file-uploads/#files-your-browser-doesnt-name).
 
 Most of the time you don't need to think about this — the agent picks the right path. The workspace copy matters mainly for shared agents, where it's visible to anyone with access to the agent.
 
