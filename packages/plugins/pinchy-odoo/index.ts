@@ -372,17 +372,20 @@ export function sortFieldsByPriority(fields: OdooField[]): OdooField[] {
 }
 
 /**
- * Narrow an untrusted, tool-supplied `filters` value into an Odoo search
- * domain. A domain is always an array of `[field, op, value]` tuples plus
- * `&`/`|`/`!` operators; an omitted filter means "match everything" (`[]`).
- * Reject non-array input early with a clear message instead of forwarding
- * garbage to Odoo, where it surfaces as an opaque server error. Individual
- * tuple shapes are left to Odoo to validate.
+ * The logical operators an Odoo domain carries between its conditions, in the
+ * Polish notation Odoo expects.
  */
+const ODOO_LOGICAL_OPERATORS = new Set(["&", "|", "!"]);
+
 /**
  * Every comparison operator Odoo accepts in a search domain. Used to refuse an
  * operator here, with the list, rather than letting Odoo reject the whole
  * domain with a message the model cannot act on.
+ *
+ * This is also the ONE list the `filters` tool description is built from, so
+ * what the model is told and what it is held to cannot drift apart. It is
+ * hand-maintained against Odoo's condition-operator set; if a future Odoo adds
+ * one, it has to be added here.
  */
 const ODOO_DOMAIN_OPERATORS = new Set([
   "=",
@@ -407,61 +410,155 @@ const ODOO_DOMAIN_OPERATORS = new Set([
 ]);
 
 /**
+ * The operators whose VALUE is itself a domain. Their sub-domain gets exactly
+ * the same treatment as the top level: the #1198 escape lands one level in as
+ * readily as at the top, and nothing below here would decode it.
+ */
+const ODOO_NESTED_DOMAIN_OPERATORS = new Set(["any", "not any"]);
+
+/**
+ * Spellings Odoo normalizes away before matching its own operator set: it
+ * lower-cases the operator, and still accepts the legacy `<>` for `!=`.
+ * Refusing those here would reject a domain Odoo runs happily — and sending
+ * the canonical form is never worse than sending the alias, so this stays
+ * correct even if a future Odoo drops the leniency.
+ */
+const ODOO_OPERATOR_ALIASES = new Map([["<>", "!="]]);
+
+/**
  * Turn a literal `\uXXXX` sequence back into the character it denotes.
  *
  * Not a JSON parse — the input has already been through one. Some models emit
- * `<` and `>` in escaped form (the habit that stops you emitting markup), and
- * when that escape survives the provider's tool-argument serialization the
- * six-character string `<=` arrives where an operator belongs.
+ * `<`, `>` and `&` in escaped form (the habit that stops you emitting markup),
+ * and when that escape survives the provider's tool-argument serialization a
+ * six-character literal like `\u003c` arrives where an operator belongs.
  */
-function decodeUnicodeEscapes(value: string): string {
+export function decodeUnicodeEscapes(value: string): string {
   return value.replace(/\\u([0-9a-fA-F]{4})/g, (_match, hex: string) =>
     String.fromCharCode(parseInt(hex, 16))
   );
 }
 
+/** The operator Odoo will see, from the one the model actually sent. */
+function canonicalOperator(rawOperator: string): string {
+  const decoded = decodeUnicodeEscapes(rawOperator).toLowerCase();
+  return ODOO_OPERATOR_ALIASES.get(decoded) ?? decoded;
+}
+
 /**
- * Normalize the operator of one domain condition (heypinchy/pinchy#1198).
+ * Does this entry look like a domain that arrived one level too deep?
  *
- * Decoding alone would only move the dead end — the next escape variant would
- * still reach Odoo — so the decoded operator is validated against
- * `ODOO_DOMAIN_OPERATORS` and refused here if it is not one. The model then
- * gets a message naming what it sent and what it could send instead, at the
- * point where it can still fix it.
+ * `[["&", cond, cond]]` and `[[cond, cond]]` are shapes models produce as
+ * readily as the `{item: …}` artifact `hasItemWrappedArray` catches. Every
+ * element of a domain is either a condition (an array) or a logical operator;
+ * a real condition's first element is a field name, which is neither — so the
+ * two shapes are told apart without guessing. Saying "this is nested" beats
+ * the honest-but-useless "the operator must be a string" that reading the
+ * middle element of such an entry would otherwise produce.
+ */
+function looksLikeNestedDomain(entry: unknown[]): boolean {
+  return (
+    entry.length > 0 &&
+    entry.every(
+      (element) =>
+        Array.isArray(element) ||
+        (typeof element === "string" && ODOO_LOGICAL_OPERATORS.has(element))
+    )
+  );
+}
+
+/**
+ * Decode and validate a bare string entry — a domain's `&`, `|` or `!`.
  *
- * Only the OPERATOR position is touched. A value may legitimately contain a
- * backslash-u sequence — rewriting it would corrupt a genuine search string —
- * while an operator never can.
+ * `&` is the character a model escapes most reflexively of all, so the
+ * operator position of a CONDITION is not the only place #1198 lands.
+ */
+function normalizeLogicalOperator(entry: string): string {
+  const decoded = decodeUnicodeEscapes(entry);
+  if (!ODOO_LOGICAL_OPERATORS.has(decoded)) {
+    throw new Error(
+      `Unsupported domain term ${JSON.stringify(entry)}. A bare string in a domain must be one of ` +
+        `${[...ODOO_LOGICAL_OPERATORS].map((op) => JSON.stringify(op)).join(", ")}; anything else ` +
+        `has to be a [field, operator, value] condition.`
+    );
+  }
+  return decoded;
+}
+
+/**
+ * Normalize the operator of one domain condition, and recurse into the
+ * sub-domain of `any` / `not any`.
+ *
+ * The refusal names the field and the operator and NOT the value: the value is
+ * the model's own search text, it adds nothing to a message about the
+ * operator, and echoing it back into an error message is how caller-supplied
+ * prose ends up being read as a diagnosis by something downstream.
  */
 function normalizeDomainCondition(condition: unknown[]): unknown[] {
   const [field, rawOperator, value] = condition;
   if (typeof rawOperator !== "string") {
     throw new Error(
-      `Invalid operator in condition ${JSON.stringify(condition)}: the operator must be a string, e.g. "=", "in", "ilike".`
+      `Invalid condition on field ${JSON.stringify(field)}: the operator must be a string, ` +
+        `e.g. "=", "in", "ilike" — got ${rawOperator === null ? "null" : typeof rawOperator}.`
     );
   }
 
-  const operator = decodeUnicodeEscapes(rawOperator);
+  const operator = canonicalOperator(rawOperator);
   if (!ODOO_DOMAIN_OPERATORS.has(operator)) {
     throw new Error(
-      `Unsupported operator ${JSON.stringify(rawOperator)} in condition ${JSON.stringify(condition)}. ` +
+      `Unsupported operator ${JSON.stringify(rawOperator)} on field ${JSON.stringify(field)}. ` +
         `Use one of: ${[...ODOO_DOMAIN_OPERATORS].join(", ")}.`
     );
   }
 
-  return operator === rawOperator ? condition : [field, operator, value];
+  const normalizedValue =
+    ODOO_NESTED_DOMAIN_OPERATORS.has(operator) && Array.isArray(value)
+      ? asDomain(value, `the sub-domain of \`${operator}\``)
+      : value;
+
+  return operator === rawOperator && normalizedValue === value
+    ? condition
+    : [field, operator, normalizedValue];
 }
 
-function asDomain(value: unknown): OdooDomain {
+/**
+ * Narrow an untrusted, tool-supplied `filters` value into an Odoo search
+ * domain: a flat list of `&`/`|`/`!` operators and `[field, operator, value]`
+ * conditions, where an omitted filter means "match everything" (`[]`).
+ *
+ * Every OPERATOR position — logical and comparison alike — is decoded and then
+ * validated (heypinchy/pinchy#1198). Decoding alone would only move the dead
+ * end one variant along, so an operator that is still not one Odoo accepts is
+ * refused here, naming what was sent and what could be sent instead, at the
+ * point where the model can still fix it.
+ *
+ * Only operator positions are rewritten. A VALUE may legitimately contain a
+ * backslash-u sequence and rewriting it would corrupt a genuine search string,
+ * while an operator never can. The value half of #1198 is still open (#1213).
+ *
+ * Call this BEFORE `withAuthRetry`: a bad domain is the model's mistake and
+ * not the connection's, and an error raised inside that closure is put through
+ * `isAuthError` — which reads prose, and would spend a credential refresh and
+ * a `report-auth-failure` POST on it.
+ */
+export function asDomain(value: unknown, label = "`filters`"): OdooDomain {
   if (value === undefined || value === null) return [];
   if (!Array.isArray(value)) {
-    throw new Error("`filters` must be an array (an Odoo search domain).");
+    throw new Error(`${label} must be an array (an Odoo search domain).`);
   }
-  // A domain is a flat list of logical operators ("&", "|", "!") and 3-element
-  // conditions. Leave the former alone; normalize the operator of the latter.
-  return value.map((entry) =>
-    Array.isArray(entry) && entry.length === 3 ? normalizeDomainCondition(entry) : entry
-  ) as OdooDomain;
+  return value.map((entry) => {
+    if (typeof entry === "string") return normalizeLogicalOperator(entry);
+    if (Array.isArray(entry)) {
+      if (looksLikeNestedDomain(entry)) {
+        throw new Error(
+          `${label} is nested one level too deep: an entry is itself a list of conditions. ` +
+            `Pass a FLAT list of "&"/"|"/"!" operators and [field, operator, value] conditions.`
+        );
+      }
+      if (entry.length === 3) return normalizeDomainCondition(entry);
+    }
+    return entry;
+  }) as OdooDomain;
 }
 
 interface CompactSchemaOptions {
@@ -3368,7 +3465,8 @@ const plugin = {
                   description: "A [field, operator, value] tuple, e.g. ['state', '=', 'sale']",
                 },
                 description:
-                  'Odoo domain filter. A plain array of [field, operator, value] tuples, e.g. [["state", "=", "posted"]] — never wrap it as {"item": …}. Operators: =, !=, >, >=, <, <=, in, not in, like, ilike. Optional — omit or pass [] to match all records.',
+                  `Odoo domain filter. A plain array of [field, operator, value] tuples, e.g. [["state", "=", "posted"]] — never wrap it as {"item": …}. ` +
+                  `Operators: ${[...ODOO_DOMAIN_OPERATORS].join(", ")}. Optional — omit or pass [] to match all records.`,
               },
               fields: {
                 type: "array",
@@ -3406,13 +3504,20 @@ const plugin = {
                 throw itemWrappedError("fields");
               }
 
+              // Decode and validate the domain HERE, before a client exists (#1198).
+              // A bad operator is the model's mistake, not the connection's — and an
+              // error raised inside withAuthRetry is put through isAuthError, which
+              // reads prose and would spend a credential refresh plus a
+              // report-auth-failure POST on it.
+              const domain = asDomain(params.filters);
+
               const result = await withAuthRetry(agentId, config, async (client) => {
                 const modelFields = normalizeFields(await client.fields(model));
                 const effectiveFields = augmentFieldsWithCompanyId(
                   stripSyntheticFields(params.fields as string[] | undefined),
                   modelFields
                 );
-                const records = await client.searchRead(model, asDomain(params.filters), {
+                const records = await client.searchRead(model, domain, {
                   fields: effectiveFields,
                   limit: clampReadLimit(params.limit),
                   offset: params.offset as number | undefined,
@@ -3476,8 +3581,11 @@ const plugin = {
                 throw itemWrappedError("filters");
               }
 
+              // Decode and validate the domain before querying (see asDomain / odoo_read).
+              const domain = asDomain(params.filters);
+
               const count = await withAuthRetry(agentId, config, (client) =>
-                client.searchCount(model, asDomain(params.filters))
+                client.searchCount(model, domain)
               );
 
               return {
@@ -3556,11 +3664,14 @@ const plugin = {
                 throw itemWrappedError("filters");
               }
 
+              // Decode and validate the domain before querying (see asDomain / odoo_read).
+              const domain = asDomain(params.filters);
+
               const fields = prepareAggregateFields(params.fields, "fields");
               const groupby = prepareAggregateFields(params.groupby, "groupby");
 
               const result = await withAuthRetry(agentId, config, (client) =>
-                client.readGroup(model, asDomain(params.filters), fields, groupby, {
+                client.readGroup(model, domain, fields, groupby, {
                   limit: clampOptionalLimit(params.limit),
                   offset: params.offset as number | undefined,
                   orderby: params.orderby as string | undefined,
