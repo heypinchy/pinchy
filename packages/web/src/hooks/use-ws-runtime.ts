@@ -51,6 +51,18 @@ export interface PendingUpload {
   objectUrl: string; // URL.createObjectURL — local preview, revoked on remove/send
   state: "uploading" | "ready" | "failed";
   uploadId?: string; // server-assigned, set when state = "ready"
+  /**
+   * Name the file was actually stored under, set when state = "ready" (#1199).
+   *
+   * NOT `file.name`: the route renames a file the browser did not name, so a
+   * pasted screenshot lands in `uploads/` as `upload-<stamp>.png` while
+   * `file.name` still says `image.png`. The chip builds
+   * `/api/agents/<id>/uploads/<filename>` from the name in the message, so
+   * sending the local one probes a path that does not exist — five HEAD
+   * retries, then a chip with no preview and the wrong label, until a history
+   * frame swaps the name under the user.
+   */
+  storedFilename?: string;
   progress: number; // 0-100
   error?: string; // set when state = "failed"
 }
@@ -1903,7 +1915,10 @@ export function useWsRuntime(
             status: "sending",
             ...(readyUploads.length > 0 && {
               files: readyUploads.map((u) => ({
-                filename: u.file.name,
+                // The name on disk (#1199) — see PendingUpload.storedFilename.
+                // The fallback only covers a chip that reached "ready" before
+                // this field existed; a live upload always carries it.
+                filename: u.storedFilename ?? u.file.name,
                 mimeType: u.file.type,
               })),
             }),
@@ -2212,6 +2227,7 @@ export function useWsRuntime(
                     ...u,
                     state: "ready",
                     uploadId: response.id,
+                    storedFilename: response.filename,
                     progress: 100,
                   }
                 : u
@@ -2319,6 +2335,7 @@ export function useWsRuntime(
                     ...u,
                     state: "ready",
                     uploadId: response.id,
+                    storedFilename: response.filename,
                     progress: 100,
                   }
                 : u

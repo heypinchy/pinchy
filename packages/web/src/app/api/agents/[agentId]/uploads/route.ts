@@ -116,11 +116,16 @@ export const POST = withAuth<Params>(async (req, { params }, session) => {
     return NextResponse.json({ error: message }, { status: 415 });
   }
 
+  // One clock reading for the whole request: it stamps the generated filename
+  // AND starts the staging TTL, and two readings could straddle midnight —
+  // dating the file on one day and expiring it relative to the next.
+  const now = new Date();
+
   // Name a file the browser did not name (#1199). Runs here, after
   // validation, because the VALIDATED mime is what makes the extension
   // trustworthy — and before staging, so the reserved slot, the DB row, the
   // preview URL and the path the agent is handed all carry the same name.
-  const storedName = meaningfulUploadName(safeName, validatedMime, new Date());
+  const storedName = meaningfulUploadName(safeName, validatedMime, now);
 
   // Persist to staging. The returned `filename` is the slot reserved in
   // uploads/ — collision-suffixed up front so the client's preview URL is
@@ -130,7 +135,6 @@ export const POST = withAuth<Params>(async (req, { params }, session) => {
 
   // DB insert. If it fails after the FS write, we roll back both the
   // staging file AND the uploads/ placeholder so the disk doesn't leak.
-  const now = new Date();
   const expiresAt = new Date(now.getTime() + STAGED_TTL_MS);
   let row: typeof uploadedFiles.$inferSelect;
   try {

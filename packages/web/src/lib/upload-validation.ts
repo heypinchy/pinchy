@@ -80,78 +80,6 @@ export function sanitizeFilename(raw: string): string {
 //
 // text/vcard is ALSO listed in ALLOWED_TEXT_MIMES below; see isKnownMimeAlias
 // for why vCard lives in both allowlists.
-/**
- * Extension for each MIME the upload path accepts. Only used to NAME a file
- * that arrived without a usable name — never to re-type one that has an
- * extension already.
- */
-const EXT_BY_MIME = new Map<string, string>([
-  ["application/pdf", "pdf"],
-  ["image/jpeg", "jpg"],
-  ["image/png", "png"],
-  ["image/webp", "webp"],
-  ["image/gif", "gif"],
-  ["image/heic", "heic"],
-  ["image/heif", "heif"],
-  ["text/vcard", "vcf"],
-  ["text/x-vcard", "vcf"],
-  ["text/plain", "txt"],
-  ["text/csv", "csv"],
-  ["text/markdown", "md"],
-  ["application/json", "json"],
-  ["text/yaml", "yaml"],
-]);
-
-/**
- * Stems that carry no information about the file. Browsers produce these for
- * anything pasted from the clipboard or dragged out of a viewer.
- */
-const GENERIC_STEMS = new Set(["blob", "upload", "image", "download", "file", "untitled"]);
-
-/** Strip a trailing " (n)" collision suffix: "blob (17)" -> "blob". */
-function stripCollisionSuffix(stem: string): string {
-  return stem.replace(/ \(\d+\)$/, "");
-}
-
-/**
- * Give an upload a name worth having (heypinchy/pinchy#1199).
- *
- * A browser hands us `blob` for a pasted or dragged file — no extension, no
- * hint of content. On one production agent's workspace that was 68 of 253
- * files, and identifying each one costs a `pinchy_read` against a vision model
- * on a context that is already under pressure. `pinchy_ls` is close to useless
- * on such a listing, and so is asking the user "did you send me that receipt".
- *
- * Two narrow rules, both driven by the VALIDATED mime (the truth about the
- * bytes, known by the time this runs):
- *
- *  - a generic stem is replaced with a dated one, so a listing sorts and reads
- *    meaningfully;
- *  - a missing extension is filled in, so the file opens.
- *
- * A stem the user chose is information and is kept. A present-but-wrong
- * extension is left alone: renaming a user-named file on a MIME mismatch is a
- * different (and lossy) decision from naming a file that has no name at all.
- *
- * `now` is a parameter rather than read here so the behaviour is testable
- * without freezing the clock.
- */
-export function meaningfulUploadName(safeName: string, validatedMime: string, now: Date): string {
-  const dot = safeName.lastIndexOf(".");
-  const hasExtension = dot > 0;
-  const rawStem = hasExtension ? safeName.slice(0, dot) : safeName;
-  const extension = hasExtension ? safeName.slice(dot + 1) : "";
-
-  const isGeneric = GENERIC_STEMS.has(stripCollisionSuffix(rawStem).toLowerCase());
-  if (!isGeneric && hasExtension) return safeName;
-
-  const mimeExtension = EXT_BY_MIME.get(validatedMime) ?? "bin";
-  if (!isGeneric) return `${rawStem}.${mimeExtension}`;
-
-  const day = now.toISOString().slice(0, 10);
-  return `upload-${day}.${hasExtension ? extension : mimeExtension}`;
-}
-
 export const ALLOWED_ATTACHMENT_MIMES = new Set<string>([
   "application/pdf",
   "image/jpeg",
@@ -173,6 +101,8 @@ export const ALLOWED_ATTACHMENT_MIMES = new Set<string>([
 // would silently accept uploads the agent cannot read. If a future task wires
 // an xlsx reader (mirroring docx-extract.ts), add the MIME here too and it
 // will automatically also become servable via SERVABLE_DELIVERED_MIMES.
+// It also needs an entry in EXT_BY_MIME below — the drift guard in
+// __tests__/lib/upload-validation.test.ts fails until it has one.
 
 // Text formats have no magic bytes, so fileTypeFromBuffer returns undefined.
 // These are validated by UTF-8 null-byte guard instead.
@@ -242,4 +172,127 @@ export async function validateUploadBuffer(buffer: Buffer, claimedMime: string):
     return claimedMime; // preserve legacy spelling only for the alias case
   }
   return detected.mime;
+}
+
+/**
+ * Extension for each MIME the upload path accepts. Only used to NAME a file
+ * that arrived without a usable name — never to re-type one that has an
+ * extension already.
+ *
+ * This mirrors ALLOWED_ATTACHMENT_MIMES ∪ ALLOWED_TEXT_MIMES, which is the
+ * shape AGENTS.md § "A Hand-Maintained List That Mirrors Code Will Be Wrong"
+ * is about — so the drift guard in __tests__/lib/upload-validation.test.ts
+ * pins it in both directions. That guard is what keeps the `?? "bin"` fallback
+ * in `meaningfulUploadName` unreachable from the route: without it, a MIME
+ * added to an allowlist and forgotten here would silently store every such
+ * upload as `upload-….bin`, with nothing red.
+ */
+export const EXT_BY_MIME = new Map<string, string>([
+  ["application/pdf", "pdf"],
+  ["image/jpeg", "jpg"],
+  ["image/png", "png"],
+  ["image/webp", "webp"],
+  ["image/gif", "gif"],
+  ["image/heic", "heic"],
+  ["image/heif", "heif"],
+  ["text/vcard", "vcf"],
+  ["text/x-vcard", "vcf"],
+  ["text/plain", "txt"],
+  ["text/csv", "csv"],
+  ["text/markdown", "md"],
+  ["application/json", "json"],
+  ["text/yaml", "yaml"],
+]);
+
+/**
+ * Stems that carry no information about the file. Browsers produce these for
+ * anything pasted from the clipboard or dragged out of a viewer.
+ */
+const GENERIC_STEMS = new Set(["blob", "upload", "image", "download", "file", "untitled"]);
+
+/** Strip a trailing " (n)" collision suffix: "blob (17)" -> "blob". */
+function stripCollisionSuffix(stem: string): string {
+  return stem.replace(/ \(\d+\)$/, "");
+}
+
+/**
+ * Local wall-clock stamp for a generated name: `2026-08-20-1432`.
+ *
+ * Local, not UTC: the date is the only information a generated name carries,
+ * and `toISOString()` files an evening upload under tomorrow east of UTC —
+ * 23:30 in Vienna is already the next day in Zulu. The stamp should read like
+ * the day the person remembers sending the file.
+ *
+ * Minute-granular, not day-granular: the workspace in #1199 took 36 such
+ * uploads on one working day. A day-only stem collides for every one of them,
+ * so `buildNextFreeFilename` would hand back `upload-2026-08-20 (35).pdf` —
+ * structurally the `blob (17)` listing this exists to remove. Two uploads
+ * inside the same minute still collide; that is rare enough to leave to the
+ * collision suffix.
+ */
+function localStamp(now: Date): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const date = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+  return `${date}-${pad(now.getHours())}${pad(now.getMinutes())}`;
+}
+
+/**
+ * Keep a generated name inside the limit `sanitizeFilename` enforces on the
+ * name it was built from. Adding an extension to an already-maximal stem would
+ * otherwise push the stored name past NAME_MAX and fail the `O_CREAT | O_EXCL`
+ * probe with ENAMETOOLONG — a 500 on a filename the route accepted before.
+ */
+function capLength(name: string): string {
+  if (name.length <= MAX_FILENAME_LEN) return name;
+  const dot = name.lastIndexOf(".");
+  const ext = dot > 0 ? name.slice(dot) : "";
+  return name.slice(0, MAX_FILENAME_LEN - ext.length) + ext;
+}
+
+/**
+ * Give an upload a name worth having (heypinchy/pinchy#1199).
+ *
+ * A browser hands us `blob` for a pasted or dragged file — no extension, no
+ * hint of content. On one production agent's workspace that was 68 of 253
+ * files, and identifying each one costs a `pinchy_read` against a vision model
+ * on a context that is already under pressure. `pinchy_ls` is close to useless
+ * on such a listing, and so is asking the user "did you send me that receipt".
+ *
+ * Two narrow rules, both driven by the VALIDATED mime (the truth about the
+ * bytes, known by the time this runs):
+ *
+ *  - a generic stem is replaced with a stamped one, so a listing sorts
+ *    chronologically and its entries can be told apart;
+ *  - a missing extension is filled in, so the file opens.
+ *
+ * A stem the user chose is information and is kept. A present-but-wrong
+ * extension on such a name is left alone: renaming a user-named file on a MIME
+ * mismatch is a different (and lossy) decision from naming a file that has no
+ * name at all. A GENERIC stem gets no such benefit of the doubt — its
+ * extension is taken from the validated MIME too, because the whole premise of
+ * that branch is that nothing the client sent about this name is worth
+ * keeping.
+ *
+ * `now` is a parameter rather than read here so the behaviour is testable
+ * without freezing the clock.
+ */
+export function meaningfulUploadName(safeName: string, validatedMime: string, now: Date): string {
+  const dot = safeName.lastIndexOf(".");
+  // A leading dot is a dotfile, not an extension; a trailing one leaves the
+  // extension empty. Treating either as an extension stores `upload-….` —
+  // a file with no extension, which is what this function exists to prevent.
+  const hasExtension = dot > 0 && dot < safeName.length - 1;
+  // Trailing dots are not part of a stem, and a name that is nothing but dots
+  // leaves an empty one — which is as uninformative as `blob` and is treated
+  // the same way.
+  const rawStem = (hasExtension ? safeName.slice(0, dot) : safeName).replace(/\.+$/, "");
+
+  const isGeneric =
+    rawStem === "" || GENERIC_STEMS.has(stripCollisionSuffix(rawStem).toLowerCase());
+  if (!isGeneric && hasExtension) return safeName;
+
+  const mimeExtension = EXT_BY_MIME.get(validatedMime) ?? "bin";
+  if (!isGeneric) return capLength(`${rawStem}.${mimeExtension}`);
+
+  return `upload-${localStamp(now)}.${mimeExtension}`;
 }
