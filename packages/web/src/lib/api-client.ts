@@ -54,11 +54,17 @@ export function errorMessage(e: unknown, fallback: string): string {
   return fallback;
 }
 
-async function send<R>(url: string, method: string, body?: unknown): Promise<R> {
+async function send<R>(
+  url: string,
+  method: string,
+  body?: unknown,
+  signal?: AbortSignal
+): Promise<R> {
   const res = await fetch(url, {
     method,
     headers: body !== undefined ? { "Content-Type": "application/json" } : undefined,
     body: body !== undefined ? JSON.stringify(body) : undefined,
+    signal,
   });
 
   // Read the body as text so we can handle empty responses (204, or 2xx with no
@@ -107,7 +113,20 @@ export const apiPut = <R = unknown, B = unknown>(url: string, body: B): Promise<
 // body (e.g. the OpenAI-compatible provider delete, which validates `{ id }`).
 export const apiDelete = <R = void, B = unknown>(url: string, body?: B): Promise<R> =>
   send<R>(url, "DELETE", body);
-export const apiGet = <R = unknown>(url: string): Promise<R> => send<R>(url, "GET");
+/**
+ * `signal` is the reason this one takes options at all: a GET started from a
+ * `useEffect` has to be cancellable, and without it every such caller drops back
+ * to a raw `fetch` and hand-rolls the error contract again — the drift this
+ * module exists to stop. `new-agent-form.tsx` alone carried four copies of that
+ * hand-rolled contract, and every one of them ignored a non-2xx response, so a
+ * 500 rendered as an empty list with nothing said.
+ *
+ * Deliberately not offered on the mutating helpers. Aborting a POST does not
+ * un-apply it server-side, so a caller that wants to cancel a mutation has to
+ * say what it means to do about that rather than inherit a parameter.
+ */
+export const apiGet = <R = unknown>(url: string, opts?: { signal?: AbortSignal }): Promise<R> =>
+  send<R>(url, "GET", undefined, opts?.signal);
 
 /**
  * Unwrap a `parseRequestBody` validation failure into a flat
