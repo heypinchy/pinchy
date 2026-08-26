@@ -21,6 +21,7 @@ import {
   MAX_LOCK_AGE_MS,
   MAX_WAIT_MS,
   POLL_MS,
+  OWNER_FILE,
 } from "./test-lock.mjs";
 
 const WRAPPER = join(
@@ -214,8 +215,19 @@ describe("the wrapper, run for real", () => {
    */
   const scratchDirs = [];
   after(() => {
-    for (const dir of scratchDirs)
-      rmSync(dir, { recursive: true, force: true });
+    for (const dir of scratchDirs) {
+      // Per directory, because one that cannot be removed must not take the
+      // rest of the list with it. `force` covers a path that is already gone,
+      // not a busy or unreadable one — and a hook that throws halfway leaks
+      // every entry after it while burying whatever the suite itself found
+      // under a teardown error, which is the leak this exists to stop wearing
+      // a different hat.
+      try {
+        rmSync(dir, { recursive: true, force: true });
+      } catch {
+        // Nothing useful to do from here; the next run's mkdtemp is unaffected.
+      }
+    }
   });
 
   function freshScratchDir(prefix) {
@@ -228,22 +240,18 @@ describe("the wrapper, run for real", () => {
     return join(freshScratchDir("pinchy-lock-probe-"), "lock.d");
   }
 
-  /** Must match OWNER_FILE in with-test-lock.mjs — these probes seed it directly. */
-  const OWNER = "owner";
-
   /**
    * Writes the owner file a live holder would have written.
    *
-   * One place, because the alternative was four hand-rolled copies of it and two
-   * had already drifted to a literal "owner" instead of the constant above — so
-   * renaming OWNER_FILE would have broken those two silently while the constant
-   * that exists to prevent exactly that stayed correct. The modes mirror
+   * One place, because the alternative was four hand-rolled copies of it — and
+   * two of those had already drifted off the shared constant, which is why
+   * OWNER_FILE is imported here rather than restated. The modes mirror
    * tryAcquire's: a probe should seed the lock the wrapper actually makes.
    */
   function seedOwner(lock, { pid, label }) {
     mkdirSync(lock, { recursive: true, mode: 0o700 });
     writeFileSync(
-      join(lock, OWNER),
+      join(lock, OWNER_FILE),
       formatLockRecord({ pid, startedAtMs: Date.now(), label }),
       { mode: 0o600 },
     );
@@ -274,14 +282,26 @@ describe("the wrapper, run for real", () => {
   const GIVE_UP_MS = POLL_MS * 10;
 
   /**
-   * That bound is only a BETTER failure than the runner timeout while it fires
-   * FIRST, and its two numbers now live in different files. Raise POLL_MS to 10s
-   * — a plausible edit for a lock nobody wants polling hard — and the bound lands
-   * at 100s against a 60s timeout: node:test kills the test first, and there is
-   * no message, no signal, and the leaked wrapper back again, with the guard
-   * still in place and still looking intact.
+   * The bound has to sit BETWEEN two numbers, one of which now lives in another
+   * file, and both ends fail silently.
+   *
+   * Too high and it stops being the better failure it was added to be: raise
+   * POLL_MS to 10s — a plausible edit for a lock nobody wants polling hard — and
+   * the bound lands at 100s against a 60s timeout, so node:test kills the test
+   * first and there is no message, no signal, and the leaked wrapper back again,
+   * with the guard still in place and still looking intact.
+   *
+   * Too low and it kills runs that are working: the healthy path sleeps a whole
+   * poll before it looks again, so any bound under POLL_MS SIGKILLs a passing
+   * waiter mid-sleep and reports it as one that never finished. Both ends are
+   * stated in the docblock above; only checking one of them is how the unchecked
+   * end gets edited.
    */
-  test("the give-up bound fires before the runner's own timeout", () => {
+  test("the give-up bound sits between one poll and the runner's timeout", () => {
+    assert.ok(
+      GIVE_UP_MS >= POLL_MS,
+      `a ${GIVE_UP_MS}ms give-up bound kills a healthy waiter mid-sleep — it sleeps ${POLL_MS}ms`,
+    );
     assert.ok(
       GIVE_UP_MS < PROBE.timeout,
       `a ${GIVE_UP_MS}ms give-up bound is useless against a ${PROBE.timeout}ms test timeout`,
@@ -298,6 +318,24 @@ describe("the wrapper, run for real", () => {
     `const {appendFileSync}=require("fs");
      appendFileSync(process.env.PROBE_LOG,"in\\n");
      setTimeout(()=>{appendFileSync(process.env.PROBE_LOG,"out\\n")},700);`,
+  ];
+
+  /**
+   * Writes back the owner record that was in force while it ran.
+   *
+   * `true` proved only that the wrapper exited. The wrapper stamps its own pid
+   * into the owner file and does not release until this command has finished, so
+   * reading it from in here answers "was the lock actually held?" directly,
+   * where elapsed time only ever supported a guess about it.
+   */
+  const reportOwner = [
+    process.execPath,
+    "-e",
+    `const fs=require("fs");
+     let seen="";
+     try{seen=fs.readFileSync(
+       process.env.PINCHY_TEST_LOCK_DIR+"/${OWNER_FILE}","utf8")}catch{}
+     fs.writeFileSync(process.env.PROBE_OWNER_SEEN,seen);`,
   ];
 
   test("passes a successful command's exit code through", async () => {
@@ -339,7 +377,7 @@ describe("the wrapper, run for real", () => {
       `const {statSync}=require("fs");
        const d=process.env.PINCHY_TEST_LOCK_DIR;
        console.log((statSync(d).mode & 0o777).toString(8),
-                   (statSync(d+"/owner").mode & 0o777).toString(8));`,
+                   (statSync(d+"/${OWNER_FILE}").mode & 0o777).toString(8));`,
     ];
 
     const { stdout } = await runWrapper(lock, modes);
@@ -385,15 +423,21 @@ describe("the wrapper, run for real", () => {
    */
   test("waiting prints the test:related alternative", PROBE, async () => {
     const lock = freshLockPath();
+    const ownerSeen = join(freshScratchDir("pinchy-probe-owner-"), "seen");
     seedOwner(lock, { pid: process.pid, label: "the probe itself" });
 
     // stdout is DROPPED rather than piped: nothing here would drain it, and a
     // full stdout pipe stops `close` from ever firing. Measured — a child
     // writing 500KB to an unread pipe never closes, where the same child writing
-    // 100 bytes does. `true` is silent today, but the wrapper hands its own
-    // stdio to the command it runs, so a probe command's output lands here.
-    const waiter = spawn(process.execPath, [WRAPPER, "true"], {
-      env: { ...cleanEnv, PINCHY_TEST_LOCK_DIR: lock },
+    // 100 bytes does. The wrapper hands its own stdio to the command it runs, so
+    // the command's output lands here — which is also why stderr stays piped: a
+    // command that throws puts its stack where a failing run can print it.
+    const waiter = spawn(process.execPath, [WRAPPER, ...reportOwner], {
+      env: {
+        ...cleanEnv,
+        PINCHY_TEST_LOCK_DIR: lock,
+        PROBE_OWNER_SEEN: ownerSeen,
+      },
       stdio: ["ignore", "ignore", "pipe"],
     });
     // Decoded as a stream rather than per chunk: the announcement opens with a
@@ -418,7 +462,7 @@ describe("the wrapper, run for real", () => {
           // third session would be free to take while the run is still inside.
           if (!released && /test:related/.test(stderr)) {
             released = true;
-            rmSync(join(lock, OWNER), { force: true });
+            rmSync(join(lock, OWNER_FILE), { force: true });
           }
         });
         waiter.on("error", reject);
@@ -426,26 +470,43 @@ describe("the wrapper, run for real", () => {
       });
     } finally {
       clearTimeout(giveUp);
-      rmSync(lock, { recursive: true, force: true });
     }
 
-    assert.match(stderr, /test:related/);
-    // Asserted apart from the exit code, because `close` reports a killed
-    // process as code null — so asserting on the code alone says `null !== 0`,
-    // which is the uninformative failure the give-up bound exists to replace.
+    // FIRST, because it is the only assertion that can explain an empty stderr,
+    // and apart from the exit code, because `close` reports a killed process as
+    // code null. Put the text match ahead of it and the run that never announced
+    // — the exact regression this probe exists for — fails with `Input: ''` and
+    // no hint that it was killed at all: the CI output that started all of this,
+    // reproduced by the guard meant to replace it.
     assert.equal(
       closed.signal,
       null,
-      `the waiter never finished — killed at the ${GIVE_UP_MS}ms give-up bound`,
+      `the waiter never finished — killed at the ${GIVE_UP_MS}ms give-up bound. ` +
+        `stderr: ${stderr || "(nothing)"}`,
     );
+    assert.match(stderr, /test:related/);
     // The wait must also END when the lock frees. A hint printed by a run that
     // then never proceeds is not the behaviour this promises, and asserting only
     // on the text cannot tell the two apart.
-    assert.equal(closed.code, 0);
-    // Nor can it tell a real queue from a wrapper that announced and then FAILED
-    // OPEN, running unserialized — the very pile-up this lock exists to prevent.
-    // Both exit 0 with the hint on stderr; only the clock separates them, since
-    // a genuine wait sleeps a whole poll before it looks again.
+    assert.equal(
+      closed.code,
+      0,
+      `the waiter exited ${closed.code}:\n${stderr}`,
+    );
+    // Nor can the text tell a real queue from a wrapper that announced and then
+    // FAILED OPEN, running unserialized — the very pile-up this lock exists to
+    // prevent. So ask the command what it saw instead of inferring it: the
+    // wrapper writes its own pid into the owner file and does not release until
+    // the command has exited, which makes this a direct observation.
+    const heldBy = parseLockRecord(readFileSync(ownerSeen, "utf8"));
+    assert.equal(
+      heldBy?.pid,
+      waiter.pid,
+      `the command ran without the waiter (pid ${waiter.pid}) holding the lock`,
+    );
+    // And the wait has to be a SLEEP rather than a spin. A poll loop rewritten
+    // to retry immediately would still acquire, still hold, and still satisfy
+    // everything above, while burning a core for the length of the wait.
     const waited = Date.now() - startedAt;
     assert.ok(
       waited >= POLL_MS,
@@ -466,7 +527,6 @@ describe("the wrapper, run for real", () => {
       Date.now() - started < 10_000,
       "should have cleared the stale lock immediately, not waited it out",
     );
-    rmSync(lock, { recursive: true, force: true });
   });
 
   /**
@@ -481,9 +541,12 @@ describe("the wrapper, run for real", () => {
     ["no owner file at all", () => {}],
     [
       "a corrupt owner file",
-      (lock) => writeFileSync(join(lock, OWNER), "??\n"),
+      (lock) => writeFileSync(join(lock, OWNER_FILE), "??\n"),
     ],
-    ["an empty owner file", (lock) => writeFileSync(join(lock, OWNER), "")],
+    [
+      "an empty owner file",
+      (lock) => writeFileSync(join(lock, OWNER_FILE), ""),
+    ],
   ]) {
     // An explicit timeout, because the regression this guards against is a
     // HANG: node:test waits forever by default, so without it a reintroduced
@@ -500,7 +563,6 @@ describe("the wrapper, run for real", () => {
         Date.now() - started < 10_000,
         "should have cleared the unowned lock immediately",
       );
-      rmSync(lock, { recursive: true, force: true });
     });
   }
 
@@ -544,7 +606,6 @@ describe("the wrapper, run for real", () => {
       );
     }
     assert.equal(sequence.length, 8, `every run must report in and out`);
-    rmSync(lock, { recursive: true, force: true });
   });
 
   /**
@@ -567,7 +628,7 @@ describe("the wrapper, run for real", () => {
       ];
 
       const { code } = await runWrapper(lock, hijack, {
-        OWNER_PATH: join(lock, OWNER),
+        OWNER_PATH: join(lock, OWNER_FILE),
       });
 
       assert.equal(code, 0);
@@ -576,7 +637,6 @@ describe("the wrapper, run for real", () => {
         true,
         "the successor's lock must survive our release",
       );
-      rmSync(lock, { recursive: true, force: true });
     },
   );
 
@@ -594,7 +654,6 @@ describe("the wrapper, run for real", () => {
       });
       assert.equal(code, 0);
       assert.ok(Date.now() - started < 10_000, "should not have queued at all");
-      rmSync(lock, { recursive: true, force: true });
     },
   );
 });

@@ -59,6 +59,19 @@ export const MAX_WAIT_MS = 20 * 60 * 1000;
  */
 export const POLL_MS = 2_000;
 
+/**
+ * The name of the owner file inside the lock directory.
+ *
+ * Here for the same reason POLL_MS is: with-test-lock.mjs builds the lock path
+ * out of it and the probes in test-lock.test.mjs seed that same path directly,
+ * so a copy in either is a copy that drifts — and this one already had, with
+ * two seed sites carrying a literal "owner" while the constant that exists to
+ * prevent exactly that stayed correct. Rename the file with a copy still in the
+ * tree and those probes seed a path the wrapper never reads: the lock reads as
+ * free, and every serialization assertion passes by doing nothing.
+ */
+export const OWNER_FILE = "owner";
+
 /** Tab-separated: a label may contain spaces, the other two fields cannot. */
 export function formatLockRecord({ pid, startedAtMs, label }) {
   return `${pid}\t${startedAtMs}\t${label ?? ""}\n`;
