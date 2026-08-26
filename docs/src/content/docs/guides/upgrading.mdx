@@ -199,6 +199,16 @@ So after upgrading, a Knowledge Base agent finds nothing until you reindex it: o
 
 The `ollama pull bge-m3` step from the v0.9.0 notes no longer applies. If nothing else on your machine uses that model, you can remove it.
 
+#### The reindex takes more file types now — and scans go to your model provider
+
+The same run picks up four things it couldn't read before: **Word documents** (`.doc` and `.docx`), **slide decks** (`.ppt`, `.pptx`), **Excel workbooks** (`.xlsx`, `.xlsm`), and **scanned PDFs**. Citations land where each format actually has an anchor — a slide number, a heading, a sheet and row range — and open in the viewer like a PDF page does. Older `.xls` workbooks, plain text and Markdown are still out; [Supported file types](/guides/mount-data-directories/#supported-file-types) has the full split.
+
+Scans are the part worth a look before you click. A page with no text layer is rendered and handed to a vision model — the same one that already reads a scan when an agent opens it in chat — so **indexing now sends document content to your model provider**. It happens once per document, for every scanned page in the corpus, including documents nobody ever asks about. That's a wider statement than "only the question and the retrieved snippets leave the building", so it's worth deciding rather than discovering.
+
+If that isn't right for your instance, set `PINCHY_KB_OCR=off` in your `.env` and restart before you reindex. Scans are then reported as `unsearchable` — listed by name, not quietly skipped — and nothing leaves the building. On an air-gapped install there's nothing to do either way: Pinchy picks the vision model from your configured cloud providers, so a local-only stack has none and never sends anything.
+
+These calls run on your own API key and show up in the Usage Dashboard, and the reindex entry in the audit trail records how many documents and pages were sent, and to which model. [What indexing sends to your provider](/guides/mount-data-directories/#what-indexing-sends-to-your-provider) has the rest, including the 200-page-per-document limit.
+
 #### Deleting in Odoo now requires reading the record first
 
 `odoo_delete` no longer takes record IDs. It takes the opaque references (`_pinchy_ref`) that `odoo_read` and `odoo_create` hand back, so an agent can only delete a record it actually retrieved — from this connection, on the model it says it is deleting. Every other Odoo write tool already worked this way; delete, the one that cannot be undone, was the exception.
