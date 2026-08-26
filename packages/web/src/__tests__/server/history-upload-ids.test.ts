@@ -3,6 +3,7 @@ import {
   collectAttachmentFilenames,
   indexUploadIdsByFilename,
   attachUploadIdsToHistory,
+  type HistoryFileMeta,
 } from "@/server/history-upload-ids";
 
 describe("collectAttachmentFilenames", () => {
@@ -65,7 +66,10 @@ describe("indexUploadIdsByFilename", () => {
 describe("attachUploadIdsToHistory", () => {
   it("stamps the id onto a user turn's chips", () => {
     const messages = [
-      { role: "user" as const, files: [{ filename: "a.pdf", mimeType: "application/pdf" }] },
+      {
+        role: "user" as const,
+        files: [{ filename: "a.pdf", mimeType: "application/pdf" }] as HistoryFileMeta[],
+      },
     ];
     const out = attachUploadIdsToHistory(messages, new Map([["a.pdf", "id-a"]]));
     expect(out[0].files?.[0].uploadId).toBe("id-a");
@@ -78,7 +82,7 @@ describe("attachUploadIdsToHistory", () => {
         files: [
           { filename: "a.pdf", mimeType: "application/pdf" },
           { filename: "gone.pdf", mimeType: "application/pdf" },
-        ],
+        ] as HistoryFileMeta[],
       },
     ];
     const out = attachUploadIdsToHistory(messages, new Map([["a.pdf", "id-a"]]));
@@ -88,7 +92,10 @@ describe("attachUploadIdsToHistory", () => {
 
   it("never stamps an assistant turn", () => {
     const messages = [
-      { role: "assistant" as const, files: [{ filename: "a.pdf", mimeType: "application/pdf" }] },
+      {
+        role: "assistant" as const,
+        files: [{ filename: "a.pdf", mimeType: "application/pdf" }] as HistoryFileMeta[],
+      },
     ];
     const out = attachUploadIdsToHistory(messages, new Map([["a.pdf", "id-a"]]));
     expect(out[0].files?.[0].uploadId).toBeUndefined();
