@@ -1,6 +1,6 @@
-import { test, describe } from "node:test";
+import { test, describe, after } from "node:test";
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import {
   mkdirSync,
   mkdtempSync,
@@ -20,6 +20,8 @@ import {
   shouldBypassLock,
   MAX_LOCK_AGE_MS,
   MAX_WAIT_MS,
+  POLL_MS,
+  OWNER_FILE,
 } from "./test-lock.mjs";
 
 const WRAPPER = join(
@@ -201,12 +203,59 @@ describe("the wrapper, run for real", () => {
     });
   }
 
-  function freshLockPath() {
-    return join(mkdtempSync(join(tmpdir(), "pinchy-lock-probe-")), "lock.d");
+  /**
+   * Every scratch directory this suite makes, removed when it finishes.
+   *
+   * Each probe used to leak the mkdtemp PARENT of its lock: the cleanups all
+   * name the `lock.d` inside it and nothing removed the directory holding that.
+   * Measured before this hook existed — 1089 empty `pinchy-lock-probe-*`
+   * directories, the oldest twelve days old, in a temp dir macOS sweeps only on
+   * reboot. Registering at CREATION is what keeps this true for the next probe;
+   * a list of paths to clean at the bottom is the thing that drifts.
+   */
+  const scratchDirs = [];
+  after(() => {
+    for (const dir of scratchDirs) {
+      // Per directory, because one that cannot be removed must not take the
+      // rest of the list with it. `force` covers a path that is already gone,
+      // not a busy or unreadable one — and a hook that throws halfway leaks
+      // every entry after it while burying whatever the suite itself found
+      // under a teardown error, which is the leak this exists to stop wearing
+      // a different hat.
+      try {
+        rmSync(dir, { recursive: true, force: true });
+      } catch {
+        // Nothing useful to do from here; the next run's mkdtemp is unaffected.
+      }
+    }
+  });
+
+  function freshScratchDir(prefix) {
+    const dir = mkdtempSync(join(tmpdir(), prefix));
+    scratchDirs.push(dir);
+    return dir;
   }
 
-  /** Must match OWNER_FILE in with-test-lock.mjs — these probes seed it directly. */
-  const OWNER = "owner";
+  function freshLockPath() {
+    return join(freshScratchDir("pinchy-lock-probe-"), "lock.d");
+  }
+
+  /**
+   * Writes the owner file a live holder would have written.
+   *
+   * One place, because the alternative was four hand-rolled copies of it — and
+   * two of those had already drifted off the shared constant, which is why
+   * OWNER_FILE is imported here rather than restated. The modes mirror
+   * tryAcquire's: a probe should seed the lock the wrapper actually makes.
+   */
+  function seedOwner(lock, { pid, label }) {
+    mkdirSync(lock, { recursive: true, mode: 0o700 });
+    writeFileSync(
+      join(lock, OWNER_FILE),
+      formatLockRecord({ pid, startedAtMs: Date.now(), label }),
+      { mode: 0o600 },
+    );
+  }
 
   /**
    * Every probe that could regress into a WAIT needs a bound. node:test has no
@@ -215,6 +264,49 @@ describe("the wrapper, run for real", () => {
    * than read. Generous enough for a loaded machine, far below any real queue.
    */
   const PROBE = { timeout: 60_000 };
+
+  /**
+   * How long a probe may wait on the wrapper itself before killing it.
+   *
+   * A regression that stops announcing would otherwise queue for MAX_WAIT_MS —
+   * twenty minutes of a leaked process, because node:test fails a test at PROBE's
+   * timeout but does not kill what that test spawned — and the probe would fail
+   * by timing out rather than by naming what went wrong.
+   *
+   * A MULTIPLE of the poll interval, because that is the real constraint: the
+   * healthy path is announce, sleep one poll, acquire, run, exit, so any bound
+   * below POLL_MS would kill a passing run mid-sleep. The factor is slack for a
+   * node boot on a loaded runner — generous on purpose, since firing early is a
+   * false red while firing late costs seconds we only pay when it is red.
+   */
+  const GIVE_UP_MS = POLL_MS * 10;
+
+  /**
+   * The bound has to sit BETWEEN two numbers, one of which now lives in another
+   * file, and both ends fail silently.
+   *
+   * Too high and it stops being the better failure it was added to be: raise
+   * POLL_MS to 10s — a plausible edit for a lock nobody wants polling hard — and
+   * the bound lands at 100s against a 60s timeout, so node:test kills the test
+   * first and there is no message, no signal, and the leaked wrapper back again,
+   * with the guard still in place and still looking intact.
+   *
+   * Too low and it kills runs that are working: the healthy path sleeps a whole
+   * poll before it looks again, so any bound under POLL_MS SIGKILLs a passing
+   * waiter mid-sleep and reports it as one that never finished. Both ends are
+   * stated in the docblock above; only checking one of them is how the unchecked
+   * end gets edited.
+   */
+  test("the give-up bound sits between one poll and the runner's timeout", () => {
+    assert.ok(
+      GIVE_UP_MS >= POLL_MS,
+      `a ${GIVE_UP_MS}ms give-up bound kills a healthy waiter mid-sleep — it sleeps ${POLL_MS}ms`,
+    );
+    assert.ok(
+      GIVE_UP_MS < PROBE.timeout,
+      `a ${GIVE_UP_MS}ms give-up bound is useless against a ${PROBE.timeout}ms test timeout`,
+    );
+  });
 
   /**
    * Appends a marker on entry and on exit. Two of these under a working lock
@@ -226,6 +318,24 @@ describe("the wrapper, run for real", () => {
     `const {appendFileSync}=require("fs");
      appendFileSync(process.env.PROBE_LOG,"in\\n");
      setTimeout(()=>{appendFileSync(process.env.PROBE_LOG,"out\\n")},700);`,
+  ];
+
+  /**
+   * Writes back the owner record that was in force while it ran.
+   *
+   * `true` proved only that the wrapper exited. The wrapper stamps its own pid
+   * into the owner file and does not release until this command has finished, so
+   * reading it from in here answers "was the lock actually held?" directly,
+   * where elapsed time only ever supported a guess about it.
+   */
+  const reportOwner = [
+    process.execPath,
+    "-e",
+    `const fs=require("fs");
+     let seen="";
+     try{seen=fs.readFileSync(
+       process.env.PINCHY_TEST_LOCK_DIR+"/${OWNER_FILE}","utf8")}catch{}
+     fs.writeFileSync(process.env.PROBE_OWNER_SEEN,seen);`,
   ];
 
   test("passes a successful command's exit code through", async () => {
@@ -267,7 +377,7 @@ describe("the wrapper, run for real", () => {
       `const {statSync}=require("fs");
        const d=process.env.PINCHY_TEST_LOCK_DIR;
        console.log((statSync(d).mode & 0o777).toString(8),
-                   (statSync(d+"/owner").mode & 0o777).toString(8));`,
+                   (statSync(d+"/${OWNER_FILE}").mode & 0o777).toString(8));`,
     ];
 
     const { stdout } = await runWrapper(lock, modes);
@@ -277,7 +387,7 @@ describe("the wrapper, run for real", () => {
 
   test("two runs take turns instead of overlapping", PROBE, async () => {
     const lock = freshLockPath();
-    const log = join(mkdtempSync(join(tmpdir(), "pinchy-probe-log-")), "seq");
+    const log = join(freshScratchDir("pinchy-probe-log-"), "seq");
     writeFileSync(log, "");
 
     await Promise.all([
@@ -289,31 +399,125 @@ describe("the wrapper, run for real", () => {
     assert.deepEqual(sequence, ["in", "out", "in", "out"]);
   });
 
+  /**
+   * The waiter is seeded rather than raced for. Two wrappers started together
+   * and one of them holding briefly LOOKS like contention and is not: whichever
+   * boots first takes the lock, so the run that is supposed to wait only ever
+   * waits if it arrives while the other still holds — two process spawns and two
+   * node boots inside that window. Locally that is ~100ms and it passes; on a CI
+   * runner also running vitest it does not, nobody waits, nothing is printed,
+   * and the assertion sees the empty string. Observed on PR #1201, on a step
+   * whose PR cannot reach this wrapper at all.
+   *
+   * Seeding an owner that is unambiguously alive — this test process — removes
+   * the window: the owner file exists before the wrapper starts, so its `wx`
+   * create cannot win, and which process boots first stops deciding whether
+   * anything is announced at all. What stays timing-dependent is the second
+   * half, and only loosely: once the lock frees, the waiter has GIVE_UP_MS to
+   * notice and finish.
+   *
+   * It costs one real POLL_MS of wall clock (~2.3s), deliberately. The cheaper
+   * shape is an env override for the poll interval — ~2s per PR, against a
+   * production knob that would exist only for this test, and a probe that no
+   * longer exercises the interval the wrapper actually sleeps.
+   */
   test("waiting prints the test:related alternative", PROBE, async () => {
     const lock = freshLockPath();
-    const slow = [process.execPath, "-e", "setTimeout(()=>{},600)"];
-    const both = await Promise.all([
-      runWrapper(lock, slow),
-      runWrapper(lock, ["true"]),
-    ]);
-    // Which of the two wins the mkdir is a race, so assert on the pair: exactly
-    // one of them waited, and whichever it was must have been told what to do
-    // with the wait instead of just being told to sit still.
-    assert.match(both.map((r) => r.stderr).join(""), /test:related/);
+    const ownerSeen = join(freshScratchDir("pinchy-probe-owner-"), "seen");
+    seedOwner(lock, { pid: process.pid, label: "the probe itself" });
+
+    // stdout is DROPPED rather than piped: nothing here would drain it, and a
+    // full stdout pipe stops `close` from ever firing. Measured — a child
+    // writing 500KB to an unread pipe never closes, where the same child writing
+    // 100 bytes does. The wrapper hands its own stdio to the command it runs, so
+    // the command's output lands here — which is also why stderr stays piped: a
+    // command that throws puts its stack where a failing run can print it.
+    const waiter = spawn(process.execPath, [WRAPPER, ...reportOwner], {
+      env: {
+        ...cleanEnv,
+        PINCHY_TEST_LOCK_DIR: lock,
+        PROBE_OWNER_SEEN: ownerSeen,
+      },
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+    // Decoded as a stream rather than per chunk: the announcement opens with a
+    // three-byte `ℹ`, and a chunk boundary inside it would put U+FFFD into the
+    // one diagnostic a failing run has to offer.
+    waiter.stderr.setEncoding("utf8");
+
+    let stderr = "";
+    let released = false;
+    const startedAt = Date.now();
+    const giveUp = setTimeout(() => waiter.kill("SIGKILL"), GIVE_UP_MS);
+    let closed;
+    try {
+      closed = await new Promise((resolve, reject) => {
+        waiter.stderr.on("data", (chunk) => {
+          stderr += chunk;
+          // Release the moment the hint lands, so the waiter finishes on its
+          // next poll instead of sitting out the whole allowance. LATCHED: an
+          // unlatched check re-fires on every later chunk, and one arriving
+          // after the waiter has acquired would delete the waiter's OWN owner
+          // file — which its release then declines to clean up, and which a
+          // third session would be free to take while the run is still inside.
+          if (!released && /test:related/.test(stderr)) {
+            released = true;
+            rmSync(join(lock, OWNER_FILE), { force: true });
+          }
+        });
+        waiter.on("error", reject);
+        waiter.on("close", (code, signal) => resolve({ code, signal }));
+      });
+    } finally {
+      clearTimeout(giveUp);
+    }
+
+    // FIRST, because it is the only assertion that can explain an empty stderr,
+    // and apart from the exit code, because `close` reports a killed process as
+    // code null. Put the text match ahead of it and the run that never announced
+    // — the exact regression this probe exists for — fails with `Input: ''` and
+    // no hint that it was killed at all: the CI output that started all of this,
+    // reproduced by the guard meant to replace it.
+    assert.equal(
+      closed.signal,
+      null,
+      `the waiter never finished — killed at the ${GIVE_UP_MS}ms give-up bound. ` +
+        `stderr: ${stderr || "(nothing)"}`,
+    );
+    assert.match(stderr, /test:related/);
+    // The wait must also END when the lock frees. A hint printed by a run that
+    // then never proceeds is not the behaviour this promises, and asserting only
+    // on the text cannot tell the two apart.
+    assert.equal(
+      closed.code,
+      0,
+      `the waiter exited ${closed.code}:\n${stderr}`,
+    );
+    // Nor can the text tell a real queue from a wrapper that announced and then
+    // FAILED OPEN, running unserialized — the very pile-up this lock exists to
+    // prevent. So ask the command what it saw instead of inferring it: the
+    // wrapper writes its own pid into the owner file and does not release until
+    // the command has exited, which makes this a direct observation.
+    const heldBy = parseLockRecord(readFileSync(ownerSeen, "utf8"));
+    assert.equal(
+      heldBy?.pid,
+      waiter.pid,
+      `the command ran without the waiter (pid ${waiter.pid}) holding the lock`,
+    );
+    // And the wait has to be a SLEEP rather than a spin. A poll loop rewritten
+    // to retry immediately would still acquire, still hold, and still satisfy
+    // everything above, while burning a core for the length of the wait.
+    const waited = Date.now() - startedAt;
+    assert.ok(
+      waited >= POLL_MS,
+      `finished in ${waited}ms, less than one ${POLL_MS}ms poll — it never queued`,
+    );
   });
 
   test("does not queue behind a lock whose owner is gone", PROBE, async () => {
     const lock = freshLockPath();
-    mkdirSync(lock, { recursive: true });
     // pid 0x7FFFFFFF is beyond any real pid on macOS/Linux, so liveness fails.
-    writeFileSync(
-      join(lock, "owner"),
-      formatLockRecord({
-        pid: 2147483647,
-        startedAtMs: Date.now(),
-        label: "a session that died",
-      }),
-    );
+    seedOwner(lock, { pid: 2147483647, label: "a session that died" });
 
     const started = Date.now();
     const { code, stderr } = await runWrapper(lock, ["true"]);
@@ -323,7 +527,6 @@ describe("the wrapper, run for real", () => {
       Date.now() - started < 10_000,
       "should have cleared the stale lock immediately, not waited it out",
     );
-    rmSync(lock, { recursive: true, force: true });
   });
 
   /**
@@ -338,9 +541,12 @@ describe("the wrapper, run for real", () => {
     ["no owner file at all", () => {}],
     [
       "a corrupt owner file",
-      (lock) => writeFileSync(join(lock, OWNER), "??\n"),
+      (lock) => writeFileSync(join(lock, OWNER_FILE), "??\n"),
     ],
-    ["an empty owner file", (lock) => writeFileSync(join(lock, OWNER), "")],
+    [
+      "an empty owner file",
+      (lock) => writeFileSync(join(lock, OWNER_FILE), ""),
+    ],
   ]) {
     // An explicit timeout, because the regression this guards against is a
     // HANG: node:test waits forever by default, so without it a reintroduced
@@ -357,7 +563,6 @@ describe("the wrapper, run for real", () => {
         Date.now() - started < 10_000,
         "should have cleared the unowned lock immediately",
       );
-      rmSync(lock, { recursive: true, force: true });
     });
   }
 
@@ -378,17 +583,9 @@ describe("the wrapper, run for real", () => {
    */
   test("runs facing one dead holder still take turns", PROBE, async () => {
     const lock = freshLockPath();
-    mkdirSync(lock, { recursive: true });
-    writeFileSync(
-      join(lock, OWNER),
-      formatLockRecord({
-        pid: 2147483647,
-        startedAtMs: Date.now(),
-        label: "a session that died",
-      }),
-    );
+    seedOwner(lock, { pid: 2147483647, label: "a session that died" });
 
-    const log = join(mkdtempSync(join(tmpdir(), "pinchy-probe-log-")), "seq");
+    const log = join(freshScratchDir("pinchy-probe-log-"), "seq");
     writeFileSync(log, "");
     await Promise.all(
       Array.from({ length: 4 }, () =>
@@ -409,7 +606,6 @@ describe("the wrapper, run for real", () => {
       );
     }
     assert.equal(sequence.length, 8, `every run must report in and out`);
-    rmSync(lock, { recursive: true, force: true });
   });
 
   /**
@@ -432,7 +628,7 @@ describe("the wrapper, run for real", () => {
       ];
 
       const { code } = await runWrapper(lock, hijack, {
-        OWNER_PATH: join(lock, OWNER),
+        OWNER_PATH: join(lock, OWNER_FILE),
       });
 
       assert.equal(code, 0);
@@ -441,7 +637,6 @@ describe("the wrapper, run for real", () => {
         true,
         "the successor's lock must survive our release",
       );
-      rmSync(lock, { recursive: true, force: true });
     },
   );
 
@@ -450,15 +645,7 @@ describe("the wrapper, run for real", () => {
     PROBE,
     async () => {
       const lock = freshLockPath();
-      mkdirSync(lock, { recursive: true });
-      writeFileSync(
-        join(lock, "owner"),
-        formatLockRecord({
-          pid: process.pid,
-          startedAtMs: Date.now(),
-          label: "this very test",
-        }),
-      );
+      seedOwner(lock, { pid: process.pid, label: "this very test" });
 
       // A live holder — without the bypass this call would queue for 20 minutes.
       const started = Date.now();
@@ -467,7 +654,6 @@ describe("the wrapper, run for real", () => {
       });
       assert.equal(code, 0);
       assert.ok(Date.now() - started < 10_000, "should not have queued at all");
-      rmSync(lock, { recursive: true, force: true });
     },
   );
 });
