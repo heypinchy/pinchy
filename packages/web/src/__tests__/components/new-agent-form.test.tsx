@@ -981,4 +981,55 @@ describe("NewAgentForm — optional Odoo models do not block creation", () => {
     // not gating, and the alert is only for blocking (non-optional) misses.
     expect(screen.queryByText(/Missing Odoo modules/i)).not.toBeInTheDocument();
   });
+
+  // #1208's sibling case. The model IS in the catalogue, so nothing blocks and
+  // nothing used to be said — the admin found out from a "Permission denied"
+  // mid-conversation. Reported, not blocked: the agent is still useful for
+  // everything else, which is why `validateOdooTemplate` leaves `valid` true.
+  it("warns about operations the connection denies, without blocking the create", async () => {
+    fetchSpy.mockImplementation(async (url) => {
+      if (String(url) === "/api/templates") {
+        return jsonResponse({ templates: approvalManagerInList });
+      }
+      if (String(url) === "/api/data-directories") {
+        return jsonResponse({ directories: [] });
+      }
+      if (String(url) === "/api/integrations") {
+        return jsonResponse([
+          {
+            id: "conn-readonly",
+            name: "Odoo Read-Only",
+            type: "odoo",
+            data: {
+              models: communityConnectionModels.map((m) =>
+                // The template needs write on hr.expense.sheet to approve.
+                m.model === "hr.expense.sheet" ? { ...m, access: readAccess() } : m
+              ),
+            },
+          },
+        ]);
+      }
+      if (String(url) === "/api/agents") {
+        return jsonResponse([]);
+      }
+      return jsonResponse({}, { status: 400 });
+    });
+
+    render(<NewAgentForm />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Approval Manager")).toBeInTheDocument();
+    });
+    await userEvent.click(screen.getByText("Approval Manager"));
+
+    expect(await screen.findByText(/Limited Odoo access/i)).toBeInTheDocument();
+    expect(await screen.findByText(/hr\.expense\.sheet \(write\)/)).toBeInTheDocument();
+
+    // Reported, not blocked.
+    expect(screen.queryByText(/Missing Odoo modules/i)).not.toBeInTheDocument();
+    const createButton = await screen.findByRole("button", { name: /create/i });
+    await waitFor(() => {
+      expect(createButton).not.toBeDisabled();
+    });
+  });
 });

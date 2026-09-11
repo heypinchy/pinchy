@@ -156,6 +156,39 @@ If your Odoo database hosts more than one `res.company`, Pinchy adds two layers 
 
 The stock **Finance Controller** and **Bookkeeper** templates also include guidance that teaches the agent to disambiguate multi-company records up front. (Finance Controller suggests **Penny** as one of its agent names, so you may see this agent under that name.) Newly-created agents pick this up automatically; existing agents keep their stored `AGENTS.md` until you recreate them, but the runtime cross-company guard applies regardless.
 
+## How an agent names a record
+
+Every `odoo_create` and `odoo_write` has to turn what the agent knows into an
+Odoo record. Four forms resolve, and none of them is a database id:
+
+- **An opaque reference** returned by `odoo_read` (`_pinchy_ref`), passed back
+  verbatim. It names one record exactly, including the company it belongs to,
+  so it is the form that never collides.
+- **An exact name**, matched against the record's name or the display name Odoo
+  itself renders.
+- **A code**, where the relation has one. A GL account or a journal resolves
+  from its code alone — `"7660"` — or from the `"7660 Entertainment expenses"`
+  form a chart of accounts prints and most Odoo account pickers show. This is
+  how accountants address an account, and it is the one route a bare number
+  takes.
+- **A country code**, for `res.country`: `"AT"`, or a name Pinchy recognises.
+
+**A raw database id is refused**, and the refusal says so. An agent that has
+seen an id in a URL will try it, and a write that lands on whatever record
+happens to carry that id is worse than a failed one. The single exception is the
+code route above: on a relation that has a code, a number is matched against
+that column and never against the id.
+
+**An exact name wins over a code.** If the value matches a record's name
+outright, that record is used, even when its first word happens to be another
+record's code — so an analytic account called "IT Infrastructure" is never
+mistaken for whatever carries the code "IT".
+
+**A code that two companies share reports the collision** rather than picking
+one, and names both companies. Adding `company_id` to the same create scopes the
+lookup and resolves it; so does the fully qualified `"<code> <name>"` form, when
+the names differ.
+
 ## Duplicate vendor bills
 
 Filing the same supplier invoice twice is double payment — one of the failure modes teams fear most from an autonomous agent. So before an agent creates a vendor bill or vendor credit note (`account.move` with `move_type` `in_invoice` or `in_refund`), the `pinchy-odoo` plugin checks whether a bill with the same reference (`ref` — the supplier's invoice number) is already on file, scoped to the company and partner when the create supplies them.
@@ -216,6 +249,20 @@ The same check runs everywhere a URL is accepted, not only on the first connect:
 If the Odoo admin changes the API user's permissions after you've set up the connection, agents may lose access to certain models. When this happens, the agent gets a clear error message explaining that access was denied.
 
 To re-sync: go to **Settings → Integrations**, open the connection's `…` menu, and click **Sync Schema**. Pinchy probes the available models again and updates the connection accordingly.
+
+### Re-sync after upgrading Pinchy, too
+
+The other reason to re-sync has nothing to do with your Odoo: **a new Pinchy release can teach an agent template to use a model your connection has never been asked about.** The bank-reconciliation tools, for example, need `account.bank.statement.line`, which older connections were never probed for.
+
+The model list is a snapshot taken when you last synced. A template can only be granted models that are in it — so until you re-sync, an agent created from that template comes out missing the permission, and the capability it belongs to simply never works. That applies to agents you create _after_ the upgrade as well, not only to the ones you already had.
+
+Pinchy says so **as an agent is created**: the create returns a warning naming what the connection could not grant, and writes an `agent_integration_permissions_incomplete` entry to the [audit trail](/concepts/audit-trail/#when-an-agent-came-out-only-partly-capable) alongside it. The agent is still created — a partly-capable agent is more useful than a failed setup — and you can grant the rest yourself in **Agent Settings → Permissions** once the model is in the list.
+
+That warning is written at creation time and nowhere else, so it says nothing about the agents you **already had** when you upgraded. Those are the ones to check by hand: re-sync, then open each Odoo agent's Permissions tab and confirm the models its template needs are ticked.
+
+The same warning covers the other way a connection can fall short: a model it _does_ know about, but on which the Odoo API user may not perform an operation the template needs — read-only access to `account.bank.statement.line`, say, where reconciliation has to write. **Create New Agent** flags that one before you press Create, as **Limited Odoo access**, and lets you create the agent anyway — the rest of its work is unaffected. That gap is an Odoo permission rather than a stale snapshot, so the fix is in Odoo, followed by a re-sync.
+
+So after any Pinchy upgrade, one **Sync Schema** is worth the click.
 
 :::caution
 Syncing the schema may remove models that are no longer accessible. Agents that were configured to use those models will lose access to them.

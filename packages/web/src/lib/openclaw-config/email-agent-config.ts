@@ -93,15 +93,23 @@ export function buildEmailAgentConfigs(
     for (const [model, ops] of data.ops) {
       permissions[model] = ops;
     }
-    // Derive tool names from granted email operations. OpenClaw uses this
-    // array to know which plugin-registered tool factories to call for this
-    // agent — without it, no factory is called and no tools are available.
-    // Delegated to tool-registry's getEmailToolsForOperations — the same
-    // ops→tools mapping the permission UI uses, where "read" includes
-    // email_search (matching the plugin's own gate: email_search checks the
-    // "read" permission). A hand-rolled mapping here previously required a
-    // separate "search" operation the UI never writes, silently stripping
-    // email_search from every UI-configured agent.
+    // Derive tool names from granted email operations, via tool-registry's
+    // getEmailToolsForOperations — the same ops→tools mapping the permission UI
+    // uses, where "read" includes email_search (matching the plugin's own gate:
+    // email_search checks the "read" permission). A hand-rolled mapping here
+    // previously required a separate "search" operation the UI never writes,
+    // silently stripping email_search from every UI-configured agent.
+    //
+    // NOT a gate. This comment used to claim "OpenClaw uses this array to know
+    // which plugin-registered tool factories to call — without it, no factory is
+    // called and no tools are available", and #1194 disproved it: OpenClaw
+    // called every pinchy-email factory and the plugin registered all six tools
+    // for any agent with a connection, whatever this array said. OpenClaw does
+    // not read a plugin's config shape; only the plugin can. pinchy-email gates
+    // on `permissions` (which survives a pre-upgrade config entry that carries
+    // no `tools` field at all), so for that plugin this array is emitted and
+    // read by nobody — kept because its manifest declares it. pinchy-web DOES
+    // read its own `tools` array; the two plugins genuinely differ.
     const emailOps = data.ops.get("email") ?? [];
     const tools = getEmailToolsForOperations(emailOps);
     emailAgentConfigs[agentId] = {

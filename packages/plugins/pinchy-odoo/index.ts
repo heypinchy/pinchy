@@ -119,6 +119,16 @@ export interface OdooField {
   selection?: Array<[string, string]>;
   readonly?: boolean;
   required?: boolean;
+  /**
+   * `fields_get`'s own verdict on whether a domain may reference this field:
+   * `bool(field.store or field.search)`. Carried because `store` alone answers
+   * the wrong question — `account.account.code` is non-stored from Odoo 18 (the
+   * value lives in `account.code.mapping`) yet declares `_search_code`, while
+   * `product.product.code` is a non-stored compute with no search method at
+   * all. Absent from a payload means "unknown", which is treated as searchable
+   * so an older `fields_get` behaves as it always did.
+   */
+  searchable?: boolean;
 }
 
 type OdooRecord = Record<string, unknown>;
@@ -362,19 +372,193 @@ export function sortFieldsByPriority(fields: OdooField[]): OdooField[] {
 }
 
 /**
- * Narrow an untrusted, tool-supplied `filters` value into an Odoo search
- * domain. A domain is always an array of `[field, op, value]` tuples plus
- * `&`/`|`/`!` operators; an omitted filter means "match everything" (`[]`).
- * Reject non-array input early with a clear message instead of forwarding
- * garbage to Odoo, where it surfaces as an opaque server error. Individual
- * tuple shapes are left to Odoo to validate.
+ * The logical operators an Odoo domain carries between its conditions, in the
+ * Polish notation Odoo expects.
  */
-function asDomain(value: unknown): OdooDomain {
+const ODOO_LOGICAL_OPERATORS = new Set(["&", "|", "!"]);
+
+/**
+ * Every comparison operator Odoo accepts in a search domain. Used to refuse an
+ * operator here, with the list, rather than letting Odoo reject the whole
+ * domain with a message the model cannot act on.
+ *
+ * This is also the ONE list the `filters` tool description is built from, so
+ * what the model is told and what it is held to cannot drift apart. It is
+ * hand-maintained against Odoo's condition-operator set; if a future Odoo adds
+ * one, it has to be added here.
+ */
+const ODOO_DOMAIN_OPERATORS = new Set([
+  "=",
+  "!=",
+  ">",
+  ">=",
+  "<",
+  "<=",
+  "=?",
+  "=like",
+  "=ilike",
+  "like",
+  "not like",
+  "ilike",
+  "not ilike",
+  "in",
+  "not in",
+  "child_of",
+  "parent_of",
+  "any",
+  "not any",
+]);
+
+/**
+ * The operators whose VALUE is itself a domain. Their sub-domain gets exactly
+ * the same treatment as the top level: the #1198 escape lands one level in as
+ * readily as at the top, and nothing below here would decode it.
+ */
+const ODOO_NESTED_DOMAIN_OPERATORS = new Set(["any", "not any"]);
+
+/**
+ * Spellings Odoo normalizes away before matching its own operator set: it
+ * lower-cases the operator, and still accepts the legacy `<>` for `!=`.
+ * Refusing those here would reject a domain Odoo runs happily — and sending
+ * the canonical form is never worse than sending the alias, so this stays
+ * correct even if a future Odoo drops the leniency.
+ */
+const ODOO_OPERATOR_ALIASES = new Map([["<>", "!="]]);
+
+/**
+ * Turn a literal `\uXXXX` sequence back into the character it denotes.
+ *
+ * Not a JSON parse — the input has already been through one. Some models emit
+ * `<`, `>` and `&` in escaped form (the habit that stops you emitting markup),
+ * and when that escape survives the provider's tool-argument serialization a
+ * six-character literal like `\u003c` arrives where an operator belongs.
+ */
+export function decodeUnicodeEscapes(value: string): string {
+  return value.replace(/\\u([0-9a-fA-F]{4})/g, (_match, hex: string) =>
+    String.fromCharCode(parseInt(hex, 16))
+  );
+}
+
+/** The operator Odoo will see, from the one the model actually sent. */
+function canonicalOperator(rawOperator: string): string {
+  const decoded = decodeUnicodeEscapes(rawOperator).toLowerCase();
+  return ODOO_OPERATOR_ALIASES.get(decoded) ?? decoded;
+}
+
+/**
+ * Does this entry look like a domain that arrived one level too deep?
+ *
+ * `[["&", cond, cond]]` and `[[cond, cond]]` are shapes models produce as
+ * readily as the `{item: …}` artifact `hasItemWrappedArray` catches. Every
+ * element of a domain is either a condition (an array) or a logical operator;
+ * a real condition's first element is a field name, which is neither — so the
+ * two shapes are told apart without guessing. Saying "this is nested" beats
+ * the honest-but-useless "the operator must be a string" that reading the
+ * middle element of such an entry would otherwise produce.
+ */
+function looksLikeNestedDomain(entry: unknown[]): boolean {
+  return (
+    entry.length > 0 &&
+    entry.every(
+      (element) =>
+        Array.isArray(element) ||
+        (typeof element === "string" && ODOO_LOGICAL_OPERATORS.has(element))
+    )
+  );
+}
+
+/**
+ * Decode and validate a bare string entry — a domain's `&`, `|` or `!`.
+ *
+ * `&` is the character a model escapes most reflexively of all, so the
+ * operator position of a CONDITION is not the only place #1198 lands.
+ */
+function normalizeLogicalOperator(entry: string): string {
+  const decoded = decodeUnicodeEscapes(entry);
+  if (!ODOO_LOGICAL_OPERATORS.has(decoded)) {
+    throw new Error(
+      `Unsupported domain term ${JSON.stringify(entry)}. A bare string in a domain must be one of ` +
+        `${[...ODOO_LOGICAL_OPERATORS].map((op) => JSON.stringify(op)).join(", ")}; anything else ` +
+        `has to be a [field, operator, value] condition.`
+    );
+  }
+  return decoded;
+}
+
+/**
+ * Normalize the operator of one domain condition, and recurse into the
+ * sub-domain of `any` / `not any`.
+ *
+ * The refusal names the field and the operator and NOT the value: the value is
+ * the model's own search text, it adds nothing to a message about the
+ * operator, and echoing it back into an error message is how caller-supplied
+ * prose ends up being read as a diagnosis by something downstream.
+ */
+function normalizeDomainCondition(condition: unknown[]): unknown[] {
+  const [field, rawOperator, value] = condition;
+  if (typeof rawOperator !== "string") {
+    throw new Error(
+      `Invalid condition on field ${JSON.stringify(field)}: the operator must be a string, ` +
+        `e.g. "=", "in", "ilike" — got ${rawOperator === null ? "null" : typeof rawOperator}.`
+    );
+  }
+
+  const operator = canonicalOperator(rawOperator);
+  if (!ODOO_DOMAIN_OPERATORS.has(operator)) {
+    throw new Error(
+      `Unsupported operator ${JSON.stringify(rawOperator)} on field ${JSON.stringify(field)}. ` +
+        `Use one of: ${[...ODOO_DOMAIN_OPERATORS].join(", ")}.`
+    );
+  }
+
+  const normalizedValue =
+    ODOO_NESTED_DOMAIN_OPERATORS.has(operator) && Array.isArray(value)
+      ? asDomain(value, `the sub-domain of \`${operator}\``)
+      : value;
+
+  return operator === rawOperator && normalizedValue === value
+    ? condition
+    : [field, operator, normalizedValue];
+}
+
+/**
+ * Narrow an untrusted, tool-supplied `filters` value into an Odoo search
+ * domain: a flat list of `&`/`|`/`!` operators and `[field, operator, value]`
+ * conditions, where an omitted filter means "match everything" (`[]`).
+ *
+ * Every OPERATOR position — logical and comparison alike — is decoded and then
+ * validated (heypinchy/pinchy#1198). Decoding alone would only move the dead
+ * end one variant along, so an operator that is still not one Odoo accepts is
+ * refused here, naming what was sent and what could be sent instead, at the
+ * point where the model can still fix it.
+ *
+ * Only operator positions are rewritten. A VALUE may legitimately contain a
+ * backslash-u sequence and rewriting it would corrupt a genuine search string,
+ * while an operator never can. The value half of #1198 is still open (#1213).
+ *
+ * Call this BEFORE `withAuthRetry`: a bad domain is the model's mistake and
+ * not the connection's, and an error raised inside that closure is put through
+ * `isAuthError` — which reads prose, and would spend a credential refresh and
+ * a `report-auth-failure` POST on it.
+ */
+export function asDomain(value: unknown, label = "`filters`"): OdooDomain {
   if (value === undefined || value === null) return [];
   if (!Array.isArray(value)) {
-    throw new Error("`filters` must be an array (an Odoo search domain).");
+    throw new Error(`${label} must be an array (an Odoo search domain).`);
   }
-  return value as OdooDomain;
+  return value.map((entry) => {
+    if (typeof entry === "string") return normalizeLogicalOperator(entry);
+    if (Array.isArray(entry)) {
+      if (looksLikeNestedDomain(entry)) {
+        throw new Error(
+          `${label} is nested one level too deep: an entry is itself a list of conditions. ` +
+            `Pass a FLAT list of "&"/"|"/"!" operators and [field, operator, value] conditions.`
+        );
+      }
+      if (entry.length === 3) return normalizeDomainCondition(entry);
+    }
+    return entry;
+  }) as OdooDomain;
 }
 
 interface CompactSchemaOptions {
@@ -404,6 +588,21 @@ const DEFAULT_FIELD_LIMIT = 40;
 const ID_DISAMBIGUATION_NOTE = "Odoo's internal numeric primary key. NOT the SKU.";
 const DEFAULT_CODE_DISAMBIGUATION_NOTE =
   "Human-readable internal reference / SKU. NOT the database id.";
+
+/**
+ * Shared many2one guidance for the two writing tools (`odoo_create`,
+ * `odoo_write`). Spliced verbatim into both so the wording cannot drift, and
+ * so a test can pin it in one place — same contract as
+ * {@link PRODUCT_REF_DISAMBIGUATION_HINT}.
+ *
+ * The code half is not decoration. #1197 gave the resolver a natural-key route,
+ * and the description the model actually reads still said "do not pass raw
+ * numeric IDs" and named country codes as the only supported lookup — which is
+ * precisely what a bare GL account code looks like from the outside. A route
+ * the caller is told not to take is not a route.
+ */
+export const MANY2ONE_VALUE_HINT =
+  'For many2one fields, do not pass raw database IDs; use an opaque ref from odoo_read, an exact display name, or the record\'s own code where it has one. A GL account or journal resolves from its code alone ("7660") or from the "<code> <name>" form a chart of accounts prints ("7660 Entertainment expenses"), and a country from its ISO code.';
 
 /**
  * Shared hint for tool descriptions whose tools accept domain filters
@@ -552,6 +751,52 @@ export function relationHasCompanyId(fields: OdooField[]): boolean {
   return findCompanyIdField(fields) !== undefined;
 }
 
+/**
+ * The relation's natural-key column: a `code` a lookup may actually search —
+ * the number a user quotes for a GL account or a journal (heypinchy/pinchy#1197).
+ *
+ * The name alone is not the question, and neither is storage. Every Odoo
+ * defines `product.product.code`, a non-stored compute mirroring `default_code`
+ * with no `search` method, so a `["code", "=", …]` leaf on it is either refused
+ * or silently widened to every row — and `product_id` is one of the most-used
+ * many2one lookups there is. `account.account.code` is *also* non-stored from
+ * Odoo 18 (the value moved to `account.code.mapping`) but declares
+ * `_search_code`. `fields_get` collapses exactly that distinction into
+ * `searchable`, so that is the question to ask. The type check mirrors
+ * {@link findCompanyIdField}: a `code` that is not a char column is not a
+ * natural key either.
+ *
+ * Two readings, because today only one of them can fire. `odoo-node`'s
+ * `client.fields()` asks `fields_get` for a fixed attribute list — string,
+ * type, required, readonly, relation, selection — and Odoo returns only what is
+ * asked for, so `searchable` never arrives. Adding it there is a one-line change
+ * in that package and this function honours it the moment it does. Until then
+ * the schema still answers the question for the case that matters: a relation
+ * exposing `default_code` has its stored natural key in THAT column, and its
+ * `code` is the compute mirroring it. That is `product.product` exactly, and
+ * nothing else in Odoo's core carries both.
+ *
+ * Getting it wrong is silent in the worst direction: Odoo answers a domain leaf
+ * on an unsearchable field by substituting a TRUE leaf and logging
+ * `Non-stored field … cannot be searched` server-side. The caller sees no
+ * error — just a search that matched every row, with `limit` deciding the
+ * answer.
+ */
+function findCodeField(fields: OdooField[]): OdooField | undefined {
+  const code = fields.find((f) => f.name === "code" && f.type === "char");
+  if (!code || code.searchable === false) return undefined;
+  return fields.some((f) => f.name === "default_code") ? undefined : code;
+}
+
+/**
+ * Boolean form of {@link findCodeField}. Decides both whether the lookup
+ * searches the code column and whether a numeric string may be a code rather
+ * than an illegal raw id.
+ */
+export function relationHasCode(fields: OdooField[]): boolean {
+  return findCodeField(fields) !== undefined;
+}
+
 export function augmentFieldsWithCompanyId(
   requested: string[] | undefined,
   modelFields: OdooField[]
@@ -654,6 +899,7 @@ export function normalizeFields(fields: unknown): OdooField[] {
             : undefined,
           readonly: typeof field.readonly === "boolean" ? field.readonly : undefined,
           required: typeof field.required === "boolean" ? field.required : undefined,
+          searchable: typeof field.searchable === "boolean" ? field.searchable : undefined,
         },
       ];
     });
@@ -674,6 +920,7 @@ export function normalizeFields(fields: unknown): OdooField[] {
           : undefined,
         readonly: typeof field.readonly === "boolean" ? field.readonly : undefined,
         required: typeof field.required === "boolean" ? field.required : undefined,
+        searchable: typeof field.searchable === "boolean" ? field.searchable : undefined,
       },
     ];
   });
@@ -819,10 +1066,86 @@ function parseLookup(field: OdooField, value: unknown): RelationLookup | null {
   const lookup = value.lookup;
   return {
     name: typeof lookup.name === "string" ? lookup.name.trim() : undefined,
-    code: typeof lookup.code === "string" ? lookup.code.trim().toUpperCase() : undefined,
+    // Upper-cased for `res.country` only, because that is the one relation
+    // where it states a fact: ISO 3166-1 alpha-2 is upper-case, and the domain
+    // leaf is a case-sensitive `=` on a char column. Journal and account codes
+    // are not upper-case by rule, so normalising them here turned a correctly
+    // typed `{lookup: {code: "bnk1"}}` into a query for "BNK1" that matches
+    // nothing (#1206 review).
+    code:
+      typeof lookup.code === "string"
+        ? field.relation === "res.country"
+          ? lookup.code.trim().toUpperCase()
+          : lookup.code.trim()
+        : undefined,
   };
 }
 
+/**
+ * The natural-key token of a lookup string (heypinchy/pinchy#1197).
+ *
+ * Accountants address a GL account by its number, and a chart of accounts
+ * prints `"7660 Entertainment expenses"` — which is also what Odoo renders in
+ * most account pickers. Both forms have to resolve, so the leading whitespace-
+ * delimited token is what gets compared against `code`. A bare code is that
+ * same form with the name left off.
+ *
+ * An explicit `{lookup: {code}}` is returned as-is. Otherwise the token is a
+ * *guess* about the input's shape, which is why {@link resolveReferenceFromRecords}
+ * only reaches for it once an exact name has failed: "IT Infrastructure" must
+ * not resolve to whatever record happens to carry the code "IT".
+ */
+function codeTokenOf(lookup: RelationLookup): string | null {
+  if (lookup.code) return lookup.code;
+  const name = lookup.name?.trim();
+  if (!name) return null;
+  const [head] = name.split(/\s+/, 1);
+  return head || null;
+}
+
+/**
+ * The single record whose `code` equals `code`, or `null` when none does.
+ * Compared case-insensitively, like every other text match here — the domain
+ * leaf that fetched these candidates is a case-sensitive `=`, but a record
+ * pulled in by the *name* leg can still differ in case from the code it was
+ * asked for.
+ *
+ * Throws on more than one, through the shared multi-match formatter: duplicate
+ * codes are the multi-company case, and that message names the `company_id`
+ * remedy instead of leaving the caller to guess.
+ */
+function matchByCode(
+  field: OdooField,
+  lookup: RelationLookup,
+  code: string,
+  records: OdooRecord[]
+): number | null {
+  const wanted = normalizeLookupText(code);
+  const matches = records.filter((record) => {
+    const value = recordText(record, "code");
+    return value !== null && normalizeLookupText(value) === wanted;
+  });
+  const ids = uniqueIds(matches);
+  if (ids.length === 1) return ids[0];
+  if (ids.length > 1) throw new Error(formatMultiMatchError(field, { ...lookup, code }, matches));
+  return null;
+}
+
+/**
+ * Pick the one record a lookup names, in order of how much the caller actually
+ * told us (heypinchy/pinchy#1197, precedence corrected in the #1206 review):
+ *
+ * 1. An explicit `{lookup: {code}}` names the column it means. Nothing beats it.
+ * 2. An exact `name`/`display_name` match. This sits ABOVE the derived code
+ *    token on purpose: the token is a guess about the input's shape, an exact
+ *    name is not. With the order reversed, `"IT Infrastructure"` resolves to
+ *    whatever record carries the code `"IT"` — a write to the wrong record,
+ *    with no error anywhere.
+ * 3. The leading token, which is the `"<code> <name>"` form a chart of accounts
+ *    prints, and a bare code. Reached only once an exact name has failed, so
+ *    the composite form that carries a disambiguating name still resolves when
+ *    two companies share a code.
+ */
 function resolveReferenceFromRecords(
   field: OdooField,
   lookup: RelationLookup,
@@ -831,17 +1154,9 @@ function resolveReferenceFromRecords(
   const label = field.string ?? field.name;
   const input = lookup.code ?? lookup.name ?? "";
 
-  if (field.relation === "res.country" && lookup.code) {
-    const codeMatches = records.filter(
-      (record) => recordText(record, "code")?.toUpperCase() === lookup.code
-    );
-    const ids = uniqueIds(codeMatches);
-    if (ids.length === 1) return ids[0];
-    if (ids.length > 1) {
-      throw new Error(
-        `Could not resolve ${field.name}: multiple countries match code "${lookup.code}".`
-      );
-    }
+  if (lookup.code) {
+    const byExplicitCode = matchByCode(field, lookup, lookup.code, records);
+    if (byExplicitCode !== null) return byExplicitCode;
   }
 
   if (!lookup.name) {
@@ -863,6 +1178,12 @@ function resolveReferenceFromRecords(
   if (ids.length === 1) return ids[0];
   if (ids.length > 1) {
     throw new Error(formatMultiMatchError(field, lookup, exactMatches));
+  }
+
+  const codeToken = codeTokenOf(lookup);
+  if (codeToken) {
+    const byCodeToken = matchByCode(field, lookup, codeToken, records);
+    if (byCodeToken !== null) return byCodeToken;
   }
 
   throw new Error(
@@ -1226,11 +1547,18 @@ async function searchRelationByName(
 ): Promise<unknown> {
   const relation = field.relation as string;
   const relationFields = await loadFields(client, relation, fieldsCache);
-  const lookupFields = augmentFieldsWithCompanyId(
-    ["id", "name", "display_name"],
-    relationFields
-  ) ?? ["id", "name", "display_name"];
-  const domain: OdooDomain = [["name", "ilike", lookup.name ?? ""]];
+  // A relation with a searchable natural key (account.account.code,
+  // account.journal.code) is addressed by that key in practice, so ask for the
+  // column and search it alongside the name (#1197). Relations without one are
+  // untouched — same fields, same domain as before, which the test named
+  // "leaves the domain and field list of a code-less relation untouched" pins.
+  const hasCode = relationHasCode(relationFields);
+  const baseFields = hasCode
+    ? ["id", "name", "display_name", "code"]
+    : ["id", "name", "display_name"];
+  const lookupFields = augmentFieldsWithCompanyId(baseFields, relationFields) ?? baseFields;
+  const domain = relationLookupDomain(lookup, hasCode ? codeTokenOf(lookup) : null);
+  if (!domain) return { records: [] };
   if (scopeCompanyId !== null && relationHasCompanyId(relationFields)) {
     // Mirror Odoo's `_check_company_domain`: include SHARED records
     // (company_id = false), not just the target company. A strict
@@ -1248,42 +1576,50 @@ async function searchRelationByName(
 }
 
 /**
- * Domain for the `res.country` lookup, scoped to the parsed
- * {@link RelationLookup} instead of matching every row — or `null` when the
- * lookup carries nothing to scope on.
- *
- * `res.country` is excluded from {@link searchRelationByName} only because
- * that helper's field list omits `code` (it always requests `["id", "name",
- * "display_name"]`) — but that made every unresolved country value fetch the
- * *entire* table (empty domain, `limit: 1000`) on every call.
+ * Search domain for a many2one lookup: the OR of the legs it actually carries,
+ * or `null` when it carries none.
  *
  * Three shapes, and each one exists because of how
  * {@link resolveReferenceFromRecords} consumes the result:
  *
- * - A `code` (explicit `{lookup:{code}}`, or a recognized alias/ISO input via
- *   `countryCodeForInput`) narrows to an exact `code` match.
- * - A `name` narrows to an `ilike` match, mirroring `searchRelationByName`'s
- *   domain. `name` only, deliberately: no other search domain in this plugin
- *   touches `display_name`, which is a computed non-stored field whose
- *   searchability depends on the Odoo version — and for `res.country`
- *   (`_rec_name` is `name`) it would match nothing `name` doesn't. The
- *   client-side matcher still compares both.
+ * - A `code` narrows to an exact `code` match — an explicit `{lookup:{code}}`,
+ *   a recognized alias/ISO country input via `countryCodeForInput`, or the
+ *   leading token of the `"<code> <name>"` form a chart of accounts prints.
+ * - A `name` narrows to an `ilike` match. `name` only, deliberately: no other
+ *   search domain in this plugin touches `display_name`, which is a computed
+ *   non-stored field whose searchability depends on the Odoo version — and for
+ *   `res.country` (`_rec_name` is `name`) it would match nothing `name`
+ *   doesn't. The client-side matcher still compares both.
  * - BOTH are OR-ed rather than letting `code` win, because
- *   `resolveReferenceFromRecords` falls through from its code branch to its
- *   exact-name branch. A code-only domain never fetches the records that
+ *   `resolveReferenceFromRecords` falls through from a failed code match to
+ *   its exact-name branch. A code-only domain never fetches the records that
  *   fallback needs, so a wrong code would make a correct name unresolvable.
  *
  * `null` is the neither case (`{lookup: {}}`, or a non-string `name` that
  * `parseLookup` drops). An `ilike ""` there is `LIKE '%%'`, i.e. every row —
- * the full-table scan this function exists to remove, reached through the one
- * input that carries no information to scan for. The caller resolves against
- * no records instead, which produces the identical error unqueried.
+ * a full-table scan reached through the one input that carries no information
+ * to scan for, with `limit` deciding whether the answer is in the window. The
+ * caller resolves against no records instead, which produces the identical
+ * error unqueried. `res.country` had this right since the P3 fix; the #1197
+ * generic path reintroduced it by keeping `["name", "ilike", lookup.name ?? ""]`
+ * unconditionally, which is why both callers now share this one builder.
  */
-function countryLookupDomain(lookup: RelationLookup): OdooDomain | null {
-  const byCode: OdooDomain | null = lookup.code ? [["code", "=", lookup.code]] : null;
+function relationLookupDomain(lookup: RelationLookup, codeToken: string | null): OdooDomain | null {
+  const byCode: OdooDomain | null = codeToken ? [["code", "=", codeToken]] : null;
   const byName: OdooDomain | null = lookup.name ? [["name", "ilike", lookup.name]] : null;
   if (byCode && byName) return ["|", ...byCode, ...byName];
   return byCode ?? byName;
+}
+
+/**
+ * The `res.country` case of {@link relationLookupDomain}. Countries take their
+ * own search path rather than {@link searchRelationByName} because they need a
+ * far larger `limit` and no company scoping; only an EXPLICIT code is searched,
+ * since a country name's leading token ("United" of "United States") is never
+ * an ISO code.
+ */
+function countryLookupDomain(lookup: RelationLookup): OdooDomain | null {
+  return relationLookupDomain(lookup, lookup.code ?? null);
 }
 
 /**
@@ -1351,9 +1687,28 @@ async function resolveRelationValue(
   if (!lookup) return value;
   if (lookup.name === "") return false;
   if (lookup.name && /^\d+$/.test(lookup.name)) {
-    throw new Error(
-      `Raw numeric IDs are not accepted for ${field.name}. Use an opaque ref or lookup.`
-    );
+    // A GL account code IS numeric ("7660"), so refusing every numeric string
+    // left an accountant's most natural input with no route at all — and the
+    // ref-corruption workaround the model reached for next hit this same wall
+    // (#1197, #1193). Relaxed ONLY where the relation declares a SEARCHABLE
+    // `code` the lookup will really search, and even then the value is matched
+    // against `code`, never against `id`: "an agent cannot address a record by
+    // its primary key" still holds.
+    //
+    // `res.country` is excluded outright rather than by its schema. Its `code`
+    // is ISO 3166-1 alpha-2 and can never be numeric, so a numeric country
+    // value is a raw database id and nothing else — relaxing there bought a
+    // vaguer error and an Odoo round trip to reach it (#1206 review). The
+    // check short-circuits before the `fields_get`, so that trip is not paid.
+    const codeIsAddressable =
+      field.relation !== undefined &&
+      field.relation !== "res.country" &&
+      relationHasCode(await loadFields(client, field.relation, fieldsCache));
+    if (!codeIsAddressable) {
+      throw new Error(
+        `Raw numeric IDs are not accepted for ${field.name}. Use an opaque ref or lookup.`
+      );
+    }
   }
   if (!field.relation) return value;
 
@@ -3110,7 +3465,8 @@ const plugin = {
                   description: "A [field, operator, value] tuple, e.g. ['state', '=', 'sale']",
                 },
                 description:
-                  'Odoo domain filter. A plain array of [field, operator, value] tuples, e.g. [["state", "=", "posted"]] — never wrap it as {"item": …}. Operators: =, !=, >, >=, <, <=, in, not in, like, ilike. Optional — omit or pass [] to match all records.',
+                  `Odoo domain filter. A plain array of [field, operator, value] tuples, e.g. [["state", "=", "posted"]] — never wrap it as {"item": …}. ` +
+                  `Operators: ${[...ODOO_DOMAIN_OPERATORS].join(", ")}. Optional — omit or pass [] to match all records.`,
               },
               fields: {
                 type: "array",
@@ -3148,13 +3504,20 @@ const plugin = {
                 throw itemWrappedError("fields");
               }
 
+              // Decode and validate the domain HERE, before a client exists (#1198).
+              // A bad operator is the model's mistake, not the connection's — and an
+              // error raised inside withAuthRetry is put through isAuthError, which
+              // reads prose and would spend a credential refresh plus a
+              // report-auth-failure POST on it.
+              const domain = asDomain(params.filters);
+
               const result = await withAuthRetry(agentId, config, async (client) => {
                 const modelFields = normalizeFields(await client.fields(model));
                 const effectiveFields = augmentFieldsWithCompanyId(
                   stripSyntheticFields(params.fields as string[] | undefined),
                   modelFields
                 );
-                const records = await client.searchRead(model, asDomain(params.filters), {
+                const records = await client.searchRead(model, domain, {
                   fields: effectiveFields,
                   limit: clampReadLimit(params.limit),
                   offset: params.offset as number | undefined,
@@ -3218,8 +3581,11 @@ const plugin = {
                 throw itemWrappedError("filters");
               }
 
+              // Decode and validate the domain before querying (see asDomain / odoo_read).
+              const domain = asDomain(params.filters);
+
               const count = await withAuthRetry(agentId, config, (client) =>
-                client.searchCount(model, asDomain(params.filters))
+                client.searchCount(model, domain)
               );
 
               return {
@@ -3298,11 +3664,14 @@ const plugin = {
                 throw itemWrappedError("filters");
               }
 
+              // Decode and validate the domain before querying (see asDomain / odoo_read).
+              const domain = asDomain(params.filters);
+
               const fields = prepareAggregateFields(params.fields, "fields");
               const groupby = prepareAggregateFields(params.groupby, "groupby");
 
               const result = await withAuthRetry(agentId, config, (client) =>
-                client.readGroup(model, asDomain(params.filters), fields, groupby, {
+                client.readGroup(model, domain, fields, groupby, {
                   limit: clampOptionalLimit(params.limit),
                   offset: params.offset as number | undefined,
                   orderby: params.orderby as string | undefined,
@@ -3348,7 +3717,9 @@ const plugin = {
           name: "odoo_create",
           label: "Odoo Create",
           description:
-            'Create a new record in Odoo. Returns `{id, _pinchy_ref}` — pass the `_pinchy_ref` verbatim to any tool that takes an opaque reference (e.g. `odoo_attach_file.targetRef`). For many2one fields, do not pass raw numeric IDs; use an opaque ref from odoo_read, an exact display name, or a supported lookup such as a country code. One2many and many2many fields use Odoo command tuples emitted as plain JSON arrays: a new line is invoice_line_ids: [[0, 0, {…}]] and a tag link is tax_ids: [[6, 0, [<taxId>]]] — never wrap arrays as {"item": …}. Note: in invoice/order line models (e.g. `account.move.line`, `sale.order.line`, `purchase.order.line`), `price_unit` is tax-exclusive (net); Odoo computes gross totals from `tax_ids`. Convert receipt gross amounts to net before writing. Vendor bills and vendor credit notes (account.move `in_invoice` / `in_refund`) are duplicate-guarded: a create whose `ref` already exists on file is BLOCKED and the existing bill returned so you can relay it to the user instead of double-booking. Set `allow_duplicate: true` only to deliberately re-file a bill you have confirmed should exist twice.',
+            "Create a new record in Odoo. Returns `{id, _pinchy_ref}` — pass the `_pinchy_ref` verbatim to any tool that takes an opaque reference (e.g. `odoo_attach_file.targetRef`). " +
+            MANY2ONE_VALUE_HINT +
+            ' One2many and many2many fields use Odoo command tuples emitted as plain JSON arrays: a new line is invoice_line_ids: [[0, 0, {…}]] and a tag link is tax_ids: [[6, 0, [<taxId>]]] — never wrap arrays as {"item": …}. Note: in invoice/order line models (e.g. `account.move.line`, `sale.order.line`, `purchase.order.line`), `price_unit` is tax-exclusive (net); Odoo computes gross totals from `tax_ids`. Convert receipt gross amounts to net before writing. Vendor bills and vendor credit notes (account.move `in_invoice` / `in_refund`) are duplicate-guarded: a create whose `ref` already exists on file is BLOCKED and the existing bill returned so you can relay it to the user instead of double-booking. Set `allow_duplicate: true` only to deliberately re-file a bill you have confirmed should exist twice.',
           parameters: {
             type: "object",
             properties: {
@@ -4687,7 +5058,9 @@ const plugin = {
           name: "odoo_write",
           label: "Odoo Write",
           description:
-            'Update an existing record in Odoo. For many2one fields, do not pass raw numeric IDs; use an opaque ref from odoo_read, an exact display name, or a supported lookup such as a country code. One2many and many2many fields use Odoo command tuples emitted as plain JSON arrays: a new line is invoice_line_ids: [[0, 0, {…}]] and a tag link is tax_ids: [[6, 0, [<taxId>]]] — never wrap arrays as {"item": …}. Note: in invoice/order line models (e.g. `account.move.line`, `sale.order.line`, `purchase.order.line`), `price_unit` is tax-exclusive (net); Odoo computes gross totals from `tax_ids`. Convert receipt gross amounts to net before writing.',
+            "Update an existing record in Odoo. " +
+            MANY2ONE_VALUE_HINT +
+            ' One2many and many2many fields use Odoo command tuples emitted as plain JSON arrays: a new line is invoice_line_ids: [[0, 0, {…}]] and a tag link is tax_ids: [[6, 0, [<taxId>]]] — never wrap arrays as {"item": …}. Note: in invoice/order line models (e.g. `account.move.line`, `sale.order.line`, `purchase.order.line`), `price_unit` is tax-exclusive (net); Odoo computes gross totals from `tax_ids`. Convert receipt gross amounts to net before writing.',
           parameters: {
             type: "object",
             properties: {

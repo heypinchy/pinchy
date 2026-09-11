@@ -1,15 +1,18 @@
 #!/bin/sh
 set -e
 
-# Fix permissions on shared OpenClaw config volume.
+# Fix permissions on the shared OpenClaw config volume.
 # OpenClaw runs as root and owns these files; Pinchy needs write access
 # to update openclaw.json when providers or agents change.
-chown -R pinchy:pinchy /openclaw-config
-# Belt-and-suspenders: ensure pinchy can stat AND write the directory itself.
-# The Dockerfile mkdir -p creates /openclaw-config as root:0755; chown -R fixes
-# ownership but the directory mode is not always 0755 in fresh CI volumes.
-chmod 0755 /openclaw-config
-echo "[entrypoint] /openclaw-config: $(stat -c '%U:%G %a' /openclaw-config)"
+#
+# Extracted to config/fix-volume-ownership.sh (same pattern as
+# config/sync-plugins.sh) so the one path it must NOT repair is unit-testable:
+# /openclaw-config/npm is OpenClaw's plugin store, and a plugin candidate that
+# is not root-owned is blocked as "suspicious ownership" — which is how the
+# blanket `chown -R pinchy:pinchy /openclaw-config` that used to live here took
+# the bundled embedding provider down on production (#1196). See the reasoning
+# in that file.
+sh /fix-volume-ownership.sh
 
 # Seed a minimal openclaw.json if the volume doesn't have one yet.
 # On main, openclaw started first and Docker copied the seed from the image.

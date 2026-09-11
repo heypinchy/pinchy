@@ -18,6 +18,7 @@
 // plays for contracts.tools vs registerTool() in a single plugin.
 import { describe, it, expect } from "vitest";
 import { checkPermission, type Permissions } from "../../../../plugins/pinchy-email/permissions";
+import plugin from "../../../../plugins/pinchy-email/index";
 import { getEmailToolsForOperations, EMAIL_READ_TOOLS } from "@/lib/tool-registry";
 
 // Legacy + current email operation vocabulary. "search" and "list" are the
@@ -82,5 +83,115 @@ describe("email-legacy-alias-drift", () => {
       const tools = getEmailToolsForOperations(operations);
       expect(tools).not.toContain("email_send");
     });
+  });
+});
+
+// ── The set the plugin actually REGISTERS (heypinchy/pinchy#1194) ───────────
+//
+// Since #1194 the alias rule above decides more than whether a call is
+// refused: it decides whether the tool is handed to the model at all. That
+// makes a second, stronger equivalence load-bearing — the tool NAMES the
+// plugin registers for a grant set must be exactly the names the web side
+// derives for it, because `tools.allow` is emitted as the full superset and
+// the plugin is the only thing narrowing it per agent.
+//
+// The check above compares two implementations of one predicate. This one
+// compares the plugin's SIX hand-written `lacksGrant(config, "<op>")` lines
+// against the one web mapping, so the failure modes that predicate check
+// cannot see are covered too:
+//
+//   - a seventh email tool registered with the factory preamble copy-pasted
+//     and no grant check at all: it shows up for every grant set, including
+//     the empty one, and #1194 is back;
+//   - a tool gated on the WRONG operation (email_draft behind "read"),
+//     offered to agents who cannot use it or withheld from agents who can;
+//   - a legacy alias that stops widening — `["list"]` losing the read tools
+//     is a silent capability loss, not a denial anyone would notice.
+//
+// It has to live on the web side: the assertion needs BOTH packages, and the
+// plugin cannot import web code — hence the `plugin` import at the top.
+interface RegisteredTool {
+  name: string;
+}
+
+interface RegisteredEntry {
+  name: string;
+  factory: (ctx: { agentId?: string }) => RegisteredTool | null;
+}
+
+/**
+ * Run the plugin's real `register()` against a config carrying `agents`, and
+ * return the factories it handed to OpenClaw, name and all.
+ */
+function registerPlugin(agents: Record<string, unknown>): RegisteredEntry[] {
+  const entries: RegisteredEntry[] = [];
+  const api = {
+    pluginConfig: {
+      apiBaseUrl: "http://pinchy:7777",
+      gatewayToken: "drift-guard-token",
+      agents,
+    },
+    registerTool: (
+      factory: (ctx: { agentId?: string }) => RegisteredTool | null,
+      opts?: { name?: string }
+    ) => {
+      entries.push({ name: opts?.name ?? "", factory });
+    },
+  };
+  plugin.register(api as unknown as Parameters<typeof plugin.register>[0]);
+  return entries;
+}
+
+/**
+ * The tool names the plugin hands out for an agent holding exactly
+ * `operations` — the same path OpenClaw takes when it snapshots an agent's
+ * tool list for a run.
+ */
+function registeredToolNames(operations: string[]): string[] {
+  return registerPlugin({
+    "agent-1": { connectionId: "conn-1", permissions: { email: operations } },
+  })
+    .filter((entry) => entry.factory({ agentId: "agent-1" }) !== null)
+    .map((entry) => entry.name)
+    .sort();
+}
+
+describe("email registration-time gating matches the web-derived toolset (#1194)", () => {
+  // Corpus floor. Every assertion below is an equality between two sets, and
+  // two empty sets are equal — a harness that stopped registering anything
+  // (a renamed `register`, a factory that throws) would agree with
+  // getEmailToolsForOperations([]) on most rows and read as a clean pass.
+  it("hands out every email tool to an agent granted all three operations", () => {
+    expect(registeredToolNames(["read", "draft", "send"])).toEqual(
+      [
+        "email_draft",
+        "email_get_attachment",
+        "email_list",
+        "email_read",
+        "email_search",
+        "email_send",
+      ].sort()
+    );
+  });
+
+  it.each(OPERATION_SETS.map((operations) => [operations]))(
+    "operations=%j registers exactly the web-derived tools",
+    (operations) => {
+      expect(registeredToolNames(operations)).toEqual(
+        [...getEmailToolsForOperations(operations)].sort()
+      );
+    }
+  );
+
+  // The probe path is not a grant decision: OpenClaw calls the factory with no
+  // session context at tool-discovery time, and returning null there
+  // unregisters the tool for EVERYONE, not just for one unpermitted agent.
+  it("still offers every tool to a session-less probe call", () => {
+    const entries = registerPlugin({});
+
+    expect(entries.length).toBeGreaterThan(0);
+    for (const entry of entries) {
+      expect(entry.factory({})).not.toBeNull();
+    }
   });
 });

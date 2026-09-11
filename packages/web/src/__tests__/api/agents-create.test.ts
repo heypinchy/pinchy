@@ -572,6 +572,7 @@ describe("POST /api/agents", () => {
       warnings: [],
       availableModels: [],
       missingModels: [],
+      deniedOperations: [],
     });
 
     const request = new NextRequest("http://localhost:7777/api/agents", {
@@ -867,6 +868,129 @@ describe("POST /api/agents", () => {
     );
   });
 
+  // #1208. The grants that COULD be made are audited as a success above. The
+  // ones that could not used to be computed and dropped, so an agent came out
+  // unable to do part of what its template describes and nothing anywhere said
+  // so. On production that silence cost the whole reconciliation feature.
+  //
+  // Asserted at the route because that is where the actor and the writer live —
+  // the service only hands over the moment.
+  it("audits a config.changed failure naming the required models it could not grant", async () => {
+    const { appendAuditLog } = await import("@/lib/audit");
+    const spy = vi.mocked(appendAuditLog);
+
+    dbSelectFromMock.mockReturnValueOnce({
+      where: vi.fn().mockResolvedValue([
+        {
+          id: "conn-1",
+          name: "My Odoo",
+          type: "odoo",
+          // The catalogue a stale sync leaves behind: no bank statement line.
+          data: { models: [{ model: "sale.order", name: "Sales Order" }] },
+        },
+      ]),
+    });
+
+    mockValidateOdooTemplate.mockReturnValue({
+      valid: false,
+      warnings: ["account.bank.statement.line: model not available"],
+      availableModels: [{ model: "sale.order", operations: ["read"] }],
+      missingModels: ["account.bank.statement.line"],
+      deniedOperations: [],
+    });
+
+    const request = new NextRequest("http://localhost:7777/api/agents", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "Sales Analyst",
+        templateId: "odoo-sales-analyst",
+        connectionId: "conn-1",
+      }),
+    });
+
+    // The agent is still created — a partly-capable agent beats a failed
+    // create, and an admin can grant the rest by hand.
+    const response = await POST(request, routeContext());
+    expect(response.status).toBe(201);
+
+    expect(spy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: "config.changed",
+        outcome: "failure",
+        detail: expect.objectContaining({
+          action: "agent_integration_permissions_incomplete",
+          connectionId: "conn-1",
+          // Snapshotted beside the id: the row may be deleted long before
+          // anyone reads this, and the audit row cannot be rewritten.
+          connectionName: "My Odoo",
+          missingModels: ["account.bank.statement.line"],
+          deniedOperations: [],
+          warnings: ["account.bank.statement.line: model not available"],
+        }),
+      })
+    );
+
+    // An audit row nobody opens is not "being told". The admin who pressed
+    // Create is standing right there, and the form raises `warning` as a
+    // toast — so the 201 has to carry it.
+    const body = await response.json();
+    expect(body.warning).toContain("account.bank.statement.line");
+    expect(body.warning).toContain("My Odoo");
+  });
+
+  // The sibling hole: `missingModels` only ever names a model the catalogue
+  // has never heard of. A model it HAS, but may not write, produces the same
+  // "Permission denied: write on …" at first use and left `valid` true — so
+  // keying the report on missing models alone reported nothing at all.
+  it("audits and warns when the connection denies an operation on a model it does have", async () => {
+    const { appendAuditLog } = await import("@/lib/audit");
+    const spy = vi.mocked(appendAuditLog);
+
+    dbSelectFromMock.mockReturnValueOnce({
+      where: vi.fn().mockResolvedValue([
+        {
+          id: "conn-1",
+          name: "My Odoo",
+          type: "odoo",
+          data: { models: [{ model: "account.bank.statement.line", name: "Bank Transactions" }] },
+        },
+      ]),
+    });
+
+    mockValidateOdooTemplate.mockReturnValue({
+      valid: true,
+      warnings: ["account.bank.statement.line: write not available"],
+      availableModels: [{ model: "account.bank.statement.line", operations: ["read"] }],
+      missingModels: [],
+      deniedOperations: [{ model: "account.bank.statement.line", operations: ["write"] }],
+    });
+
+    const request = new NextRequest("http://localhost:7777/api/agents", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "Books",
+        templateId: "odoo-sales-analyst",
+        connectionId: "conn-1",
+      }),
+    });
+
+    const response = await POST(request, routeContext());
+    expect(response.status).toBe(201);
+
+    expect(spy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: "config.changed",
+        outcome: "failure",
+        detail: expect.objectContaining({
+          action: "agent_integration_permissions_incomplete",
+          missingModels: [],
+          deniedOperations: [{ model: "account.bank.statement.line", operations: ["write"] }],
+        }),
+      })
+    );
+    expect((await response.json()).warning).toContain("account.bank.statement.line (write)");
+  });
+
   it("creates Odoo permissions when using Odoo template with connectionId", async () => {
     // Mock connection lookup: select().from().where() returns a connection
     const connectionData = {
@@ -906,6 +1030,8 @@ describe("POST /api/agents", () => {
 
     mockValidateOdooTemplate.mockReturnValue({
       valid: true,
+      missingModels: [],
+      deniedOperations: [],
       warnings: [],
       availableModels: [
         { model: "sale.order", operations: ["read"] },
@@ -1116,6 +1242,7 @@ describe("POST /api/agents", () => {
       warnings: [],
       availableModels: [],
       missingModels: [],
+      deniedOperations: [],
     });
     dbSelectFromMock.mockReturnValueOnce({
       where: vi.fn().mockResolvedValue([{ id: "conn-1", name: "Odoo", type: "odoo", data: {} }]),

@@ -30,7 +30,10 @@ import { DirectoryPicker } from "@/components/directory-picker";
 import { DocsLink } from "@/components/docs-link";
 import { ArrowLeft, Check, ExternalLink, Info, AlertTriangle, X } from "lucide-react";
 import { useRestart } from "@/components/restart-provider";
-import { validateOdooTemplate } from "@/lib/integrations/odoo-template-validation";
+import {
+  validateOdooTemplate,
+  type ValidationResult,
+} from "@/lib/integrations/odoo-template-validation";
 import { getTemplate, pickSuggestedName, type OdooTemplateConfig } from "@/lib/agent-templates";
 import { autoSelectConnection, type OdooConnection } from "@/lib/odoo-connection-selection";
 import { EMAIL_CONNECTION_TYPES } from "@/lib/integrations/oauth-providers";
@@ -55,13 +58,6 @@ interface Template {
 interface Directory {
   path: string;
   name: string;
-}
-
-interface ValidationResult {
-  valid: boolean;
-  warnings: string[];
-  availableModels: Array<{ model: string; operations: string[] }>;
-  missingModels: Array<{ model: string; name: string }>;
 }
 
 import { AGENT_NAME_MAX_LENGTH } from "@/lib/agent-constants";
@@ -428,6 +424,12 @@ export function NewAgentForm() {
   }
 
   const hasMissingModels = validationResult !== null && validationResult.missingModels.length > 0;
+  // A model the connection HAS but may not write is not a reason to refuse the
+  // create — `validateOdooTemplate` deliberately leaves `valid` true for it, so
+  // the agent is still useful for everything else. It IS a reason to say so
+  // before the admin finds out from a "Permission denied" mid-conversation
+  // (#1208), which is the same thing the create's audit row records.
+  const deniedOperations = validationResult?.deniedOperations ?? [];
 
   const createDisabled =
     submitting ||
@@ -551,8 +553,30 @@ export function NewAgentForm() {
                               template.
                             </p>
                             <ul className="list-disc pl-4 space-y-0.5 text-xs">
-                              {validationResult!.missingModels.map((m) => (
-                                <li key={m.model}>{m.name}</li>
+                              {validationResult!.missingModels.map((model) => (
+                                <li key={model}>{model}</li>
+                              ))}
+                            </ul>
+                          </AlertDescription>
+                        </Alert>
+                      )}
+
+                      {!hasMissingModels && deniedOperations.length > 0 && (
+                        <Alert>
+                          <AlertTriangle className="h-4 w-4" />
+                          <AlertDescription>
+                            <p className="font-medium mb-1">Limited Odoo access</p>
+                            <p className="mb-2">
+                              This connection has the models this template needs, but its Odoo user
+                              may not perform every operation on them. You can still create the
+                              agent — the rest of its work is unaffected. To close the gap, widen
+                              the API user&apos;s rights in Odoo and re-sync the schema.
+                            </p>
+                            <ul className="list-disc pl-4 space-y-0.5 text-xs">
+                              {deniedOperations.map((denied) => (
+                                <li key={denied.model}>
+                                  {denied.model} ({denied.operations.join(", ")})
+                                </li>
                               ))}
                             </ul>
                           </AlertDescription>

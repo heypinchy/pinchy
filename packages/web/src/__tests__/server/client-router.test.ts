@@ -25,6 +25,7 @@ const {
   mockRecordChatSessionError,
   mockSupersedeChatSessionErrors,
   mockAgentRanToolSince,
+  mockUploadedFileRows,
 } = vi.hoisted(() => ({
   mockChat: vi.fn(),
   mockSessionsHistory: vi.fn(),
@@ -45,6 +46,10 @@ const {
   mockRecordChatSessionError: vi.fn().mockResolvedValue(undefined),
   mockSupersedeChatSessionErrors: vi.fn().mockResolvedValue(undefined),
   mockAgentRanToolSince: vi.fn().mockResolvedValue(false),
+  // Rows the #1195 upload-id recovery reads back for history user turns.
+  // Empty by default: every other history test asserts `files` without an
+  // `uploadId`, which is what "no matching upload row" produces.
+  mockUploadedFileRows: vi.fn().mockResolvedValue([]),
 }));
 
 vi.mock("@/lib/agent-access", async (importOriginal) => {
@@ -94,7 +99,19 @@ vi.mock("@/db", () => ({
     // turns AND by the #703 delivery glue's grant-existence lookup (both resolve
     // to an array; [] means "no rows", which the delivery path reads as "no
     // pre-existing grant").
-    select: () => ({ from: () => ({ where: () => mockListVisionModels() }) }),
+    //
+    // Routed by table for `uploaded_files` (#1195 upload-id recovery), via the
+    // `__table` marker on the schema mock below: it runs on the SAME history
+    // path as the grants lookup, so a single shared resolver would make a test
+    // that seeds upload rows depend on which of the two queries fires first.
+    select: () => ({
+      from: (table: unknown) => ({
+        where: () =>
+          (table as { __table?: string } | undefined)?.__table === "uploaded_files"
+            ? mockUploadedFileRows()
+            : mockListVisionModels(),
+      }),
+    }),
     // db.insert(agentDeliveredFiles).values(...) — the #703 delivery grant write.
     insert: () => ({ values: vi.fn().mockResolvedValue(undefined) }),
   },
@@ -110,6 +127,14 @@ vi.mock("@/db/schema", () => ({
     createdAt: "created_at",
     sessionKey: "session_key",
   },
+  uploadedFiles: {
+    __table: "uploaded_files",
+    id: "id",
+    filename: "filename",
+    agentId: "agent_id",
+    userId: "user_id",
+    status: "status",
+  },
 }));
 
 vi.mock("@/lib/model-vision", () => ({
@@ -124,6 +149,7 @@ vi.mock("@/lib/openclaw-config/write", () => ({
 vi.mock("drizzle-orm", () => ({
   eq: vi.fn((col, val) => ({ col, val })),
   and: vi.fn((...conds) => ({ and: conds })),
+  inArray: vi.fn((col, vals) => ({ col, vals })),
 }));
 
 vi.mock("@/lib/audit", async (importOriginal) => {
@@ -1774,6 +1800,61 @@ describe("ClientRouter", () => {
     );
   });
 
+  it("tells materializeAttachments that a retry frame is a retry", async () => {
+    // The one line connecting the client half of #1195 to the server half. The
+    // client tests assert only the outgoing frame and the pipeline integration
+    // tests set `isRetry` by hand, so without this the wiring can be deleted
+    // with every other test still green — and the regression that returns is
+    // the whole bug: a retry of a message whose first attempt materialized is
+    // refused outright with AttachmentAlreadyAttachedError.
+    const attachmentId = "550e8400-e29b-41d4-a716-446655440000";
+    mockMaterializeAttachments.mockResolvedValue({ chatAttachments: [], workspaceRefs: [] });
+
+    async function* fakeStream() {
+      yield { type: "text" as const, text: "ok" };
+      yield { type: "done" as const, text: "" };
+    }
+    mockChat.mockReturnValue(fakeStream());
+
+    await router.handleMessage(createMockClientWs() as any, {
+      type: "message",
+      content: "Analyze this file",
+      agentId: "agent-1",
+      attachmentIds: [attachmentId],
+      isRetry: true,
+      retryReason: "send_failure",
+    });
+
+    expect(mockMaterializeAttachments).toHaveBeenCalledWith(
+      expect.objectContaining({ attachmentIds: [attachmentId], isRetry: true })
+    );
+  });
+
+  it("does not claim a retry on an ordinary send", async () => {
+    // The negative control: `isRetry` is what gates the already-attached
+    // exemption, so a send that reports itself as a retry would hand any of
+    // the user's own earlier uploads back into a fresh message.
+    const attachmentId = "550e8400-e29b-41d4-a716-446655440001";
+    mockMaterializeAttachments.mockResolvedValue({ chatAttachments: [], workspaceRefs: [] });
+
+    async function* fakeStream() {
+      yield { type: "text" as const, text: "ok" };
+      yield { type: "done" as const, text: "" };
+    }
+    mockChat.mockReturnValue(fakeStream());
+
+    await router.handleMessage(createMockClientWs() as any, {
+      type: "message",
+      content: "Analyze this file",
+      agentId: "agent-1",
+      attachmentIds: [attachmentId],
+    });
+
+    expect(mockMaterializeAttachments).toHaveBeenCalledWith(
+      expect.objectContaining({ isRetry: false })
+    );
+  });
+
   it("rejects attachmentIds with more than the configured maximum (10)", async () => {
     // Clients are bounded by attachmentIdsSchema to 10 ids/message. A frame
     // that exceeds this is almost certainly malicious (or a buggy client) and
@@ -1895,6 +1976,37 @@ describe("ClientRouter", () => {
     expect(userMsg.role).toBe("user");
     expect(userMsg.content).toBe("Was steht in dieser Datei?");
     expect(userMsg.files).toEqual([{ filename: "invoice.pdf", mimeType: "application/pdf" }]);
+  });
+
+  it("surfaces the upload id behind each history file chip so a retry can re-send it", async () => {
+    // #1195. The client keeps `attachmentIds` in message state, which dies on
+    // reload — while the retry affordance does not (ChatErrorBanner
+    // re-surfaces the session's last agent error on mount). Without the id on
+    // the history frame, that Retry sends the text alone: the production
+    // symptom, one layer out from the in-tab path the client fix covers.
+    const clientWs = createMockClientWs();
+    mockUploadedFileRows.mockResolvedValueOnce([{ id: "upload-42", filename: "invoice.pdf" }]);
+    mockSessionsHistory.mockResolvedValue({
+      messages: [
+        {
+          role: "user",
+          content:
+            "Was steht in dieser Datei?\n\n<pinchy:attachments>\n" +
+            "The user attached these files (already saved into your workspace). Read each file with the listed tool, using the exact absolute path:\n" +
+            "- `/root/.openclaw/workspaces/agent-1/uploads/invoice.pdf` (application/pdf, 240 KB) — analyze with `pinchy_read`\n" +
+            "\nIf you delegate this task to a sub-agent or another tool, pass these exact paths verbatim — do not retype from memory.\n" +
+            "</pinchy:attachments>",
+          timestamp: 1708460000000,
+        },
+      ],
+    });
+
+    await router.handleMessage(clientWs as any, { type: "history", agentId: "agent-1" });
+
+    const sent = clientWs.sent.map((s) => JSON.parse(s));
+    expect(sent[0].messages[0].files).toEqual([
+      { filename: "invoice.pdf", mimeType: "application/pdf", uploadId: "upload-42" },
+    ]);
   });
 
   it("should preserve user messages that contain ONLY an attachment block (no accompanying text)", async () => {

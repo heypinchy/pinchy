@@ -21,7 +21,7 @@ import { NextRequest } from "next/server";
 import { mkdtempSync, rmSync, existsSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
-import { eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 
 // ── Mocks ──────────────────────────────────────────────────────────────────
 
@@ -394,5 +394,42 @@ describe("POST /api/agents/[agentId]/uploads", () => {
     expect(detail.sizeBytes).toBe(VALID_PDF.length);
     expect(detail.contentHash).toMatch(/^[a-f0-9]{64}$/);
     expect((detail.agent as { id: string }).id).toBe(agent.id);
+  });
+
+  // #1199 — the naming rule is unit-tested in upload-validation.test.ts; this
+  // pins the WIRING, which is the half that can silently come undone: the
+  // stored file, the DB row, the response body and the audit row all have to
+  // agree, because the agent is handed one of them and the user sees another.
+  it("gives a browser-named 'blob' a real filename everywhere it is recorded", async () => {
+    const user = await seedUser();
+    mockGetSession.mockResolvedValue({
+      user: { id: user.id, email: user.email, role: "admin" },
+    });
+    const agent = await seedAgent(null);
+
+    // What a paste or a drag out of a PDF viewer actually sends.
+    const blob = new File([VALID_PDF], "blob", { type: "application/pdf" });
+
+    const resp = await POST(makeRequest(agent.id, { file: blob }), makeParams(agent.id));
+
+    expect(resp.status).toBe(201);
+    const body = await resp.json();
+    expect(body.filename).toMatch(/^upload-\d{4}-\d{2}-\d{2}-\d{4}\.pdf$/);
+
+    const [dbRow] = await db.select().from(uploadedFiles).where(eq(uploadedFiles.id, body.id));
+    expect(dbRow.filename).toBe(body.filename);
+
+    const uploadId = dbRow.stagingPath!.split("/")[1];
+    expect(existsSync(join(tmpRoot, agent.id, ".staging", uploadId, body.filename))).toBe(true);
+
+    // Ordered and narrowed to the success row: an unordered single-column
+    // select would silently assert against whichever row came back first the
+    // moment anything else audits under this actor.
+    const [auditRow] = await db
+      .select()
+      .from(auditLog)
+      .where(and(eq(auditLog.actorId, user.auditPseudonym), eq(auditLog.outcome, "success")))
+      .orderBy(desc(auditLog.id));
+    expect((auditRow.detail as Record<string, unknown>).filename).toBe(body.filename);
   });
 });
