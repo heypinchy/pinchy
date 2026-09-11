@@ -32,8 +32,9 @@
  * otherwise falsely fail this gate.
  *
  * Mechanism for production-dependency isolation: for each plugin with at
- * least one entry in `dependencies` (package.json), copy its manifest
- * (+ lockfile, if present) into an isolated temp directory, run `npm install
+ * least one entry in `dependencies` (package.json), write its manifest
+ * without devDependencies (+ lockfile, if present) into an isolated temp
+ * directory, run `npm install
  * --omit=dev --no-audit --no-fund` there, copy the plugin's own non-test
  * source files alongside the resulting `node_modules`, then run a small
  * generated harness through `tsx` from that directory. Node's module
@@ -70,6 +71,7 @@ import {
   hasIndexEntry,
   readDeclaredTools,
   hasProdDependencies,
+  productionManifest,
   discoverReachableModules,
   compareToolSets,
 } from "./lib/smoke-load-plugins.mjs";
@@ -255,9 +257,11 @@ async function smokeLoadPlugin(pluginDir) {
     }
 
     if (hasProdDependencies(pkg)) {
-      copyFileSync(
-        join(pluginDir, "package.json"),
+      // Written, not copied: the install resolves the production tree only —
+      // see productionManifest for the npm crash a dev tree can cause.
+      writeFileSync(
         join(tempDir, "package.json"),
+        JSON.stringify(productionManifest(pkg), null, 2),
       );
       const lockPath = join(pluginDir, "package-lock.json");
       if (existsSync(lockPath))

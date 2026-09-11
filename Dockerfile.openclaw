@@ -124,29 +124,36 @@ RUN mkdir -p /opt/embedding-models \
 # Each bundle's node_modules is copied into /opt/<plugin>-deps so the runtime
 # stage can grab a clean, fully-built tree. The npm download cache stays in this
 # builder stage (it lives in /root/.npm, which is never copied to runtime).
+#
+# Every bundle drops its devDependencies before installing. `--omit=dev` keeps
+# the dev tree off disk but still resolves it, and since vitest 5 that tree
+# holds an optional peer chain (vite -> @vitejs/devtools -> ... -> vitest@*)
+# that crashes npm's arborist with "Cannot read properties of null (reading
+# 'edgesOut')". scripts/smoke-load-plugins.mjs resolves bundles the same way;
+# scripts/lib/smoke-load-plugins.test.mjs pins both halves.
 COPY packages/plugins/pinchy-files/package.json /tmp/pinchy-files/package.json
-RUN cd /tmp/pinchy-files && npm install --omit=dev && \
+RUN cd /tmp/pinchy-files && npm pkg delete devDependencies && npm install --omit=dev && \
     mkdir -p /opt/pinchy-files-deps && \
     cp -r /tmp/pinchy-files/node_modules /opt/pinchy-files-deps/ && \
     rm -rf /tmp/pinchy-files
 
 # Install pinchy-odoo plugin dependencies
 COPY packages/plugins/pinchy-odoo/package.json /tmp/pinchy-odoo/package.json
-RUN cd /tmp/pinchy-odoo && npm install --omit=dev && \
+RUN cd /tmp/pinchy-odoo && npm pkg delete devDependencies && npm install --omit=dev && \
     mkdir -p /opt/pinchy-odoo-deps && \
     cp -r /tmp/pinchy-odoo/node_modules /opt/pinchy-odoo-deps/ && \
     rm -rf /tmp/pinchy-odoo
 
 # Install pinchy-web plugin dependencies
 COPY packages/plugins/pinchy-web/package.json /tmp/pinchy-web/package.json
-RUN cd /tmp/pinchy-web && npm install --omit=dev && \
+RUN cd /tmp/pinchy-web && npm pkg delete devDependencies && npm install --omit=dev && \
     mkdir -p /opt/pinchy-web-deps && \
     cp -r /tmp/pinchy-web/node_modules /opt/pinchy-web-deps/ && \
     rm -rf /tmp/pinchy-web
 
 # Install pinchy-email plugin dependencies
 COPY packages/plugins/pinchy-email/package.json /tmp/pinchy-email/package.json
-RUN cd /tmp/pinchy-email && npm install --omit=dev && \
+RUN cd /tmp/pinchy-email && npm pkg delete devDependencies && npm install --omit=dev && \
     mkdir -p /opt/pinchy-email-deps && \
     cp -r /tmp/pinchy-email/node_modules /opt/pinchy-email-deps/ && \
     rm -rf /tmp/pinchy-email
