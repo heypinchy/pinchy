@@ -10,7 +10,7 @@
   "devDependencies": {
     "@types/node": "^26.1.2",
     "typescript": "^6.0.3",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.11"
   },
   "dependencies": {
     "@mozilla/readability": "^0.6.0",
