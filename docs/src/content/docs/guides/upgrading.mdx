@@ -199,6 +199,18 @@ So after upgrading, a Knowledge Base agent finds nothing until you reindex it: o
 
 The `ollama pull bge-m3` step from the v0.9.0 notes no longer applies. If nothing else on your machine uses that model, you can remove it.
 
+#### Scanned documents are indexed now — and indexing sends their pages to your model provider
+
+Until this release a scanned PDF went into the knowledge base as an empty page. There was no text to take, so an agent asked about it answered "I found nothing" — which sounds like a statement about your company rather than about the index, and nobody thinks to check.
+
+Pinchy now reads those pages with the same vision model that already reads a scan when you open one in chat, so scanned binders become searchable and citable like anything else.
+
+That changes what leaves your server, and you should hear it from us rather than notice it later: **with this on, every scanned document in a granted folder is sent to your configured model provider once, at index time** — including documents nobody ever asks about. The rest of the knowledge base still holds to "only the question and the retrieved snippets leave the building"; this one step doesn't.
+
+It's on by default, because a knowledge base that quietly can't read half its shelf is the worse failure. To keep index-time reading off, set `PINCHY_KB_OCR=off` in your `.env` **before** the reindex you're doing anyway. Scans then stay unsearchable — and they show up in the agent's list of documents the index can't read, so the gap is visible instead of silent.
+
+An instance whose only models are local sends nothing either way: the vision chain deliberately skips local Ollama, so those scans stay unsearchable until a provider that can read them is configured. [What indexing sends to your provider](/guides/mount-data-directories/#what-indexing-sends-to-your-provider) has the full data flow.
+
 #### Deleting in Odoo now requires reading the record first
 
 `odoo_delete` no longer takes record IDs. It takes the opaque references (`_pinchy_ref`) that `odoo_read` and `odoo_create` hand back, so an agent can only delete a record it actually retrieved — from this connection, on the model it says it is deleting. Every other Odoo write tool already worked this way; delete, the one that cannot be undone, was the exception.
@@ -238,6 +250,16 @@ Memory is now a permission of its own, in its own section of the **Permissions**
 An agent created from **Custom Agent — Start from scratch** gains nothing on that count alone — though most of them qualify under the first rule anyway, because the New Agent form ticked **Write files** for every agent it created. A from-scratch agent that genuinely holds no permissions stays that way, which is what starting from scratch is supposed to mean; turn memory on for it in **Agent Settings → Permissions → Memory** if you want it.
 
 **Write files** keeps its own checkbox, now labelled **Create files**, and it no longer covers the `uploads/` directory. That is where your chat attachments live; agents can still read it, but nothing can overwrite what you uploaded. If you wrote a custom instruction telling an agent to save files into `uploads/`, point it at `workbench/` instead.
+
+#### An agent can pause and ask before it acts
+
+Some actions are worth a second look — sending an email, writing to Odoo, deleting a record. You can now mark those per agent, and the agent stops and asks the person in the chat before it runs them. It doesn't hand the work back and make you start over: it waits mid-turn, and picks the turn straight up again once you approve.
+
+Set it in the agent's **Settings → Permissions**, under **Require confirmation before**. **Use recommended** ticks the tools that change things and leaves read-only ones alone, so the agent keeps feeling fast.
+
+For Odoo the model table on the same page carries three states per cell — **Not allowed**, **Ask first**, **Allowed** — because "ask before deleting" is usually too broad: an invoice deserves a second look, a note doesn't, and an agent that stops for both teaches people to click through without reading. A cell you've never touched inherits the tool setting above it, so gating deletion covers models you add next month, and setting one cell to **Allowed** stays an exception.
+
+Nothing changes for your existing agents on upgrade — no tool is gated until you gate one. Worth knowing before you do: a confirmation expires after 10 minutes and the action stays blocked, an approval is per person and good for exactly one action, there's no "always allow", and confirmations can only be answered in the Pinchy app — so a gated tool stays blocked on other channels and in scheduled runs, which have nobody to ask. [Require confirmation before a tool runs](/guides/tool-confirmation/) walks through the rest.
 
 #### `AUDIT_HMAC_SECRET` in `.env` now actually does something
 
@@ -280,9 +302,25 @@ Re-verified against the live API. `nemotron-3-nano:30b` is **no longer offered**
 
 `kimi-k2.7-code` and `qwen3.5:397b` can now **accept images**. Both previously could not — `qwen3.5:397b` was the model an [earlier release note](#ollama-cloud-model-catalog-refreshed-against-the-live-api) marked text-only for hallucinating image contents — and both read test images correctly now. They become selectable for image work; the default image model is unchanged, so nothing re-routes on its own.
 
+#### The AI Provider settings are one grid
+
+**Settings → AI Provider** used to spread providers across separate sections. They're one grid of tiles now, each with its own logo, sorted so your default comes first and marked so you can see at a glance which one that is. Making a different provider the default is a click on its tile.
+
+Connecting an OpenAI-compatible endpoint lost a step as well: Pinchy discovers the models live and works out what they can do, instead of asking you to pick from a list and then activate what you picked.
+
+Your existing providers, keys and default carry over untouched.
+
 #### Documents in archive folders drop out of everyday answers
 
 A knowledge-base document now counts as archived if any **folder** on its path is called `old`, `archive`, `archived` or `archiv` — matched whole and case-insensitively, so `OLD/` counts and `Goldakte/` does not. The rule reads directories only: a file named `archive.pdf` is not archived. Archived documents are still fully indexed, and the agent can still reach them when a question asks it to; they are simply left out of an ordinary answer. Year and quarter folders (`2013/`, `Q3/`) are never archives. See [Current documents first](/guides/create-knowledge-base-agent/#current-documents-first). If you keep superseded files in a folder named something else, rename it to one of those four to get the same treatment.
+
+#### The knowledge base reads Word, PowerPoint and Excel
+
+PDFs are no longer the only thing an agent can search. Word documents (`.doc`, `.docx`), slide decks (`.ppt`, `.pptx`) and Excel workbooks (`.xlsx`, `.xlsm`) are indexed too. Older `.xls` workbooks, plain text and Markdown still aren't — [Supported file types](/guides/mount-data-directories/#supported-file-types) has the full split, including where the agent's file tools disagree with the index.
+
+A citation points at something you can actually find, and what that is depends on the file: a PDF is cited by page, a slide deck by slide, a Word document by its heading path, and a spreadsheet by sheet and row range — `Suppliers, rows 5-12`. Clicking a spreadsheet citation shows you exactly those rows, with the sheet's own column headers above them and its own row numbers beside them, so the row you're reading is the row you'd scroll to in Excel. Word documents and slide decks open in the PDF viewer, showing the converted copy the index actually read — no browser renders a `.doc`. Your originals are never modified and never replaced.
+
+Nothing to configure. The reindex you already need for the [embedding change](#knowledge-base-agents-need-one-reindex-after-upgrading) is what picks these up.
 
 #### Stopping a reply keeps what it already said
 
@@ -328,6 +366,14 @@ Four admin-only management endpoints were still answering, and they are the last
 Nothing in Pinchy's own screens reaches those agents, so day-to-day admin work is unchanged: shared agents, and your own Smithers during Telegram setup, work exactly as before. Two smaller answers changed along with it — `GET`/`DELETE /api/agents/:agentId/integrations` and `GET /api/agents/:agentId/channels/telegram` used to answer `200` for an agent ID that belongs to nothing at all, and now answer `404`. Only a script calling those endpoints directly would notice.
 
 Nothing to configure, and nothing changes in the UI.
+
+#### Provision agents from a script, with an API key
+
+Agents can be created, listed and deleted over `/api/v1/*` with an API key now, instead of a browser session. It's built for CI/CD and infrastructure-as-code — the case that prompted it is resetting a demo or staging instance to a known state on every release, without leaning on database snapshots that break across schema migrations.
+
+Admins issue and revoke keys in **Settings → API Keys**. Keys carry a `pinchy_` prefix so they're easy to spot in logs, shell history and secret scanners, and they're scoped: `agents:read`, `agents:write` and `agents:delete` are separate grants, with deletion deliberately its own — it's irreversible and the highest-impact thing a leaked key could do. A key can't issue or revoke other keys, so a leaked one can never escalate itself, and everything it does lands in the audit trail.
+
+Nothing to do on upgrade: no keys exist until an admin creates one. [Agent Provisioning API](/reference/agent-provisioning-api/) has the endpoints and the scope rules.
 
 #### Changing your password now signs you out on every other device
 
