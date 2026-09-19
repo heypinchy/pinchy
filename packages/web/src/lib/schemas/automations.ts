@@ -90,6 +90,24 @@ export const updateAutomationSchema = z.object({
 export type UpdateAutomationInput = z.infer<typeof updateAutomationSchema>;
 
 /**
+ * Request schema for PUT /api/automations/[id] — edit a workflow's editable
+ * representation in place (the Automations edit form). Derived from
+ * {@link createAutomationSchema} by dropping `agentId` (a workflow never changes
+ * agents), so the two write paths validate every shared field identically and
+ * can't drift. Notably absent: `enabled`/`status`. Activation stays the PATCH
+ * toggle's sole concern — editing a workflow's substance never implicitly flips
+ * it on or off (propose, don't self-activate; the editor holds the same
+ * manage-scope as the enabler, but activation remains a separate, explicit act).
+ *
+ * A PUT (not PATCH): the edit form always submits the FULL current field set
+ * pre-filled from the row, so it replaces the editable representation rather than
+ * patching a subset — the narrow `enabled`-only PATCH keeps its distinct job.
+ */
+export const editAutomationSchema = createAutomationSchema.omit({ agentId: true });
+
+export type EditAutomationInput = z.infer<typeof editAutomationSchema>;
+
+/**
  * Client-side contract for one row of GET /api/automations?agentId — the shape
  * the Automations tab (#139) renders. `createdAt` is a string here (JSON has no
  * Date), whereas the route works with a `Date` before serialization; that is the

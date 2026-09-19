@@ -255,4 +255,55 @@ describe("AgentSettingsAutomations", () => {
     // onCreated → load(): the list is re-fetched after a successful create.
     await waitFor(() => expect(listCalls).toBeGreaterThan(listCallsAfterLoad));
   });
+
+  it("opens the edit dialog prefilled from the row and reloads the list after saving", async () => {
+    let listCalls = 0;
+    vi.mocked(global.fetch).mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = (init as RequestInit)?.method ?? "GET";
+      if (url.startsWith("/api/automations/connections")) {
+        return jsonResponse([{ id: "conn-a", name: "Invoices mailbox" }]);
+      }
+      if (url.startsWith("/api/automations?")) {
+        listCalls++;
+        return jsonResponse(mockAutomations);
+      }
+      if (url === "/api/automations/wf-1" && method === "PUT") {
+        return jsonResponse({ id: "wf-1", name: "Renamed" });
+      }
+      return jsonResponse({ ok: true });
+    });
+
+    const user = userEvent.setup();
+    render(<AgentSettingsAutomations agentId={AGENT_ID} />);
+    await waitFor(() => expect(screen.getByText("File supplier invoices")).toBeInTheDocument());
+    const listCallsAfterLoad = listCalls;
+
+    const row1 = screen.getByRole("row", { name: /File supplier invoices/ });
+    await user.click(within(row1).getByRole("button", { name: /edit/i }));
+
+    // Dialog opens in edit mode, prefilled from the row it was opened on.
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /save changes/i })).toBeInTheDocument()
+    );
+    expect(screen.getByLabelText(/^Name/i)).toHaveValue("File supplier invoices");
+    await waitFor(() =>
+      expect(screen.getByRole("checkbox", { name: /Invoices mailbox/i })).toBeChecked()
+    );
+
+    const nameInput = screen.getByLabelText(/^Name/i);
+    await user.clear(nameInput);
+    await user.type(nameInput, "Renamed");
+    await user.click(screen.getByRole("button", { name: /save changes/i }));
+
+    await waitFor(() => {
+      const put = fetchSpy.mock.calls.find(
+        (c: unknown[]) =>
+          String(c[0]) === "/api/automations/wf-1" && (c[1] as RequestInit)?.method === "PUT"
+      );
+      expect(put).toBeTruthy();
+    });
+    // onSaved → load(): the list is re-fetched after a successful edit.
+    await waitFor(() => expect(listCalls).toBeGreaterThan(listCallsAfterLoad));
+  });
 });
