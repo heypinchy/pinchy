@@ -18,12 +18,16 @@ reason = "Transitive devDep via openclaw (test tool only — not in production b
 
 # astro (docs/pnpm-lock.yaml) is the static-site generator that builds the
 # documentation site AT BUILD TIME. It ships in no runtime image and reaches no
-# Pinchy user. Beyond that, all three residual advisories are XSS bugs the
-# upstream reports scope to on-demand SSR / the dev server only — statically
-# prerendered output, which is all Starlight emits, is explicitly unaffected, so
-# the built-and-deployed docs site carries no residual risk regardless of the
-# deferred bump. They fix only in astro 7.x, which @astrojs/starlight 0.38 does
-# not support (its peer is astro ^6); clearing them needs a coordinated
+# Pinchy user. Beyond that, none of the residual advisories reaches the site we
+# ship: three are XSS bugs and one an authorization bypass in base-path
+# stripping, all scoped upstream to on-demand SSR / the dev server — statically
+# prerendered output, which is all Starlight emits, is explicitly unaffected.
+# The fifth (GHSA-26w7, RCE through AVIF optimization) is a libheif bug inside
+# sharp: the build only ever optimizes images committed to this repository, and
+# the vulnerable code is patched regardless, because docs/package.json forces
+# sharp >=0.35.4, the version the upstream fix itself requires. All five fix
+# only in astro 7.x, which @astrojs/starlight 0.38 does not support (its peer
+# is astro ^6); clearing them needs a coordinated
 # Starlight major upgrade, tracked in #851. The one High-severity astro advisory
 # (GHSA-vj59-8hwv-xxmv, 8.2) IS fixed here — astro is bumped to 6.4.8, resolved
 # within the ^6 range. ignoreUntil forces a re-triage on 2026-10-21 so the
@@ -43,6 +47,16 @@ reason = "astro — docs static-site build tooling (docs/pnpm-lock.yaml), not sh
 id = "GHSA-f48w-9m4c-m7f5"
 ignoreUntil = 2026-10-21
 reason = "astro — docs static-site build tooling (docs/pnpm-lock.yaml), not shipped to users; XSS via unescaped attribute names, needs an SSR runtime with a global HTMLElement — not reachable in static output. Fixes only in astro 7.x, which Starlight 0.38 blocks. Tracked: #851"
+
+[[IgnoredVulns]]
+id = "GHSA-26w7-cxv4-gfx2"
+ignoreUntil = 2026-10-21
+reason = "astro — docs static-site build tooling (docs/pnpm-lock.yaml), not shipped to users; RCE via libheif in sharp when Astro optimizes an untrusted AVIF. The docs build only optimizes images committed to this repository, and the vulnerable decoder is patched anyway: docs/package.json forces sharp >=0.35.4, the version the upstream fix requires. The astro-side fix ships only in 7.2.8, which Starlight 0.38 blocks. Tracked: #851"
+
+[[IgnoredVulns]]
+id = "GHSA-376h-93r7-7g6f"
+ignoreUntil = 2026-10-21
+reason = "astro — docs static-site build tooling (docs/pnpm-lock.yaml), not shipped to users; authorization bypass when stripping the configured base from a request path, which needs an on-demand server routing requests — Starlight emits static HTML served by a plain file host. Fixes only in astro 7.2.4, which Starlight 0.38 blocks. Tracked: #851"
 
 # brace-expansion OOM DoS (unbounded brace expansion). The advisory patches ONLY
 # 5.0.8 (range <=5.0.7), and the 5.x line IS fixed here — the override forces

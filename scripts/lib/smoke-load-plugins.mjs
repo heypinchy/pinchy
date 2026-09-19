@@ -110,6 +110,24 @@ export function hasProdDependencies(pkg) {
 }
 
 /**
+ * The manifest a production install should resolve: `pkg` without its
+ * devDependencies. `npm install --omit=dev` keeps the dev tree off disk but
+ * still resolves it first, so a conflict anywhere in the test tooling breaks
+ * an install that never uses a byte of it. Since vitest 5 (2026-09-03) that
+ * happens: an optional peer chain — vite -> @vitejs/devtools ->
+ * @vitejs/devtools-vitest -> vitest@* — pulls vitest 5 into the peer set
+ * beside the plugins' vitest 4, and npm's arborist crashes in #loadPeerSet
+ * ("Cannot read properties of null (reading 'edgesOut')") instead of
+ * reporting a conflict. Dockerfile.openclaw drops the same field with
+ * `npm pkg delete devDependencies`; the test file pins both halves.
+ */
+export function productionManifest(pkg) {
+  const production = { ...pkg };
+  delete production.devDependencies;
+  return production;
+}
+
+/**
  * Compare the set of tool names a plugin actually registered (captured by the
  * smoke-load harness's `registerTool` stub) against the set it declares in
  * `contracts.tools`. Set semantics: order and duplicate registrations don't
