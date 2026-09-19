@@ -1,6 +1,6 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import {
   mkdirSync,
   mkdtempSync,
@@ -290,16 +290,49 @@ describe("the wrapper, run for real", () => {
   });
 
   test("waiting prints the test:related alternative", PROBE, async () => {
+    // Deterministic on purpose. The first version ran a 600 ms holder and a
+    // second wrapper side by side and hoped they overlapped: when the two node
+    // startups together took longer than 600 ms — a loaded CI runner — the
+    // holder had released before the second wrapper ever looked, nobody
+    // waited, and stderr came back empty. So the holder now keeps the lock
+    // until this test releases it, and releases only once the waiter has
+    // either printed the hint or exited without it.
     const lock = freshLockPath();
-    const slow = [process.execPath, "-e", "setTimeout(()=>{},600)"];
-    const both = await Promise.all([
-      runWrapper(lock, slow),
-      runWrapper(lock, ["true"]),
+    const release = join(dirname(lock), "release");
+    const holder = runWrapper(lock, [
+      process.execPath,
+      "-e",
+      `const fs = require("fs");
+       const t = setInterval(() => {
+         if (fs.existsSync(${JSON.stringify(release)})) clearInterval(t);
+       }, 20);`,
     ]);
-    // Which of the two wins the mkdir is a race, so assert on the pair: exactly
-    // one of them waited, and whichever it was must have been told what to do
-    // with the wait instead of just being told to sit still.
-    assert.match(both.map((r) => r.stderr).join(""), /test:related/);
+    while (!existsSync(join(lock, OWNER))) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+
+    const waiter = spawn(process.execPath, [WRAPPER, "true"], {
+      env: { ...cleanEnv, PINCHY_TEST_LOCK_DIR: lock },
+    });
+    let stderr = "";
+    const waiterExited = new Promise((resolve) => waiter.on("close", resolve));
+    await Promise.race([
+      new Promise((resolve) =>
+        waiter.stderr.on("data", (chunk) => {
+          stderr += chunk;
+          if (/test:related/.test(stderr)) resolve();
+        }),
+      ),
+      waiterExited,
+      // Bounds only the failure path: a wrapper that stops printing the hint
+      // keeps waiting on a holder that waits on us, and without this the
+      // test would die on PROBE's timeout instead of on the assertion.
+      new Promise((resolve) => setTimeout(resolve, 10_000).unref()),
+    ]);
+
+    writeFileSync(release, "");
+    await Promise.all([holder, waiterExited]);
+    assert.match(stderr, /test:related/);
   });
 
   test("does not queue behind a lock whose owner is gone", PROBE, async () => {
