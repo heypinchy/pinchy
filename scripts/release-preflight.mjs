@@ -42,6 +42,7 @@ import {
   isReleasableBranch,
   stagingPinAdvice,
 } from "./lib/release-logic.mjs";
+import { newestFrozenRelease } from "./lib/version-identity.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, "..");
@@ -103,8 +104,23 @@ try {
 }
 const tag = buildTagName(version);
 
-const prevTag = tryExec("git describe --tags --abbrev=0");
-const prevVersion = prevTag.ok ? prevTag.out.replace(/^v/, "") : null;
+// Read the notes once, here: they are both the source of the previous version
+// and the thing the gate below checks. `git describe` is deliberately NOT used
+// — it answers the newest tag REACHABLE from HEAD, and a release cut from
+// release/X.Y never merges back, so on main it names a release two minors old.
+// See scripts/lib/release-prev-version.mjs.
+const upgradingMdxPath = resolve(
+  ROOT,
+  "docs/src/content/docs/guides/upgrading.mdx",
+);
+let upgradingMdx = null;
+let mdxReadError = "";
+try {
+  upgradingMdx = readFileSync(upgradingMdxPath, "utf8");
+} catch (e) {
+  mdxReadError = `cannot read upgrading.mdx (${e.message})`;
+}
+const prevVersion = upgradingMdx ? newestFrozenRelease(upgradingMdx) : null;
 
 out(
   `\nRelease preflight — ${tag}${prevVersion ? ` (from v${prevVersion})` : ""}\n`,
@@ -121,17 +137,15 @@ let upgradeNotesOk = false;
 let upgradeNotesMsg = "";
 if (prevVersion) {
   try {
-    const mdx = readFileSync(
-      resolve(ROOT, "docs/src/content/docs/guides/upgrading.mdx"),
-      "utf8",
-    );
-    assertUpgradingSectionExists(mdx, prevVersion, version);
+    assertUpgradingSectionExists(upgradingMdx, prevVersion, version);
     upgradeNotesOk = true;
   } catch (e) {
     upgradeNotesMsg = e.message.split("\n")[0];
   }
 } else {
-  upgradeNotesMsg = "no previous tag found (cannot resolve the 'from' version)";
+  upgradeNotesMsg =
+    mdxReadError ||
+    "upgrading.mdx records no frozen release section (cannot resolve the 'from' version)";
 }
 
 const onReleasableBranch = isReleasableBranch(branch.out);
@@ -206,11 +220,7 @@ out("  Release-specific (from this release's upgrade notes):");
 let checklist = [];
 if (prevVersion) {
   try {
-    const mdx = readFileSync(
-      resolve(ROOT, "docs/src/content/docs/guides/upgrading.mdx"),
-      "utf8",
-    );
-    checklist = deriveStagingChecklist(mdx, prevVersion, version);
+    checklist = deriveStagingChecklist(upgradingMdx, prevVersion, version);
   } catch {
     // handled below by the empty-list branch
   }
