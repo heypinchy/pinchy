@@ -17,6 +17,7 @@ Status: early development. The core is working: setup wizard, authentication, pr
 - `marketplace/` - 1-Click deploy templates (DigitalOcean Packer image, CapRover one-click). Version-pinned to the release and guarded by `scripts/lib/marketplace-version.test.mjs` + `marketplace-lint.test.mjs`.
 - `docker-compose*.yml` - Development, production, integration, and E2E stack definitions.
 - `PERSONALITY.md` - Brand voice guide. Read before writing user-facing UI or docs copy.
+- `.claude/skills/designing-pinchy-features/` - Interaction design playbook. Read before building a create form, config dialog, wizard, settings tab, or onboarding step — it decides what the UI asks versus what Pinchy derives.
 
 ## Tech Stack
 
@@ -676,6 +677,16 @@ Two smaller rules the first review of this change turned up, both of which every
 
 - **A catch that surfaces text to the user takes `errorMessage(e, "<fallback>")`, never `e.message`.** Migrating a call site changes what its catch can _see_: before, the handler threw its own `new Error(<curated copy>)`, so `e.message` was always copy; afterwards the same catch also receives a network `TypeError`, whose message is `"Failed to fetch"`. `setup-form.tsx` shipped that string onto the first screen a new install shows. `errorMessage` is unit-tested directly (`__tests__/lib/api-client.test.ts`) rather than only through its callers.
 - **Typing a payload is not licence to invent a value for it.** `uid: connectionResult?.uid ?? 0` type-checks and can only ever produce a 400, because the route requires `.positive()` — a 400 that reads as a credential problem. Guard, or narrow the source; `??` at the call site is the boundary cast this section exists to remove.
+
+## User-Facing Flow Design
+
+Before building a create form, config dialog, wizard, settings tab, or onboarding step, invoke the **`designing-pinchy-features`** skill. It is the interaction authority the way `PERSONALITY.md` is the voice authority.
+
+The rule it enforces: **smart defaults on create, overrides in settings, everything else hidden until needed.** A create flow asks only for what cannot be derived. There is no "Advanced Mode" toggle — that admits the UI is too complex and then makes the user configure the configurator.
+
+Count before you build: `R` = fields the zod schema truly requires (`.optional()`/`.default()` do not count), `D` = required fields you can derive (one readable mailbox → pick it; a name → generate it), `S` = fields the form shows on open. Ship when `S ≈ R − D`. The Automations create form shipped at `R = 3`, `D ≥ 1`, `S = 9` — which is the failure the skill exists to prevent. The integrations connect flows (`add-integration-dialog.tsx`, `imap-connect-step.tsx`) are the reference implementation.
+
+Simplify the question, never the guarantee: deriving a default is a UI affordance, and the server still validates. Hiding a field is never hiding an authorization.
 
 ## Error And Notification UI
 
