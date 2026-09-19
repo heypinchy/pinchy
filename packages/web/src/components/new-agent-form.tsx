@@ -61,7 +61,7 @@ interface Directory {
 }
 
 import { AGENT_NAME_MAX_LENGTH } from "@/lib/agent-constants";
-import { apiPost, errorMessage } from "@/lib/api-client";
+import { apiGet, apiPost, errorMessage } from "@/lib/api-client";
 import type { CreateAgentInput } from "@/lib/schemas/agents";
 
 const agentFormSchema = z.object({
@@ -97,6 +97,46 @@ function PermissionPreview({ template }: { template?: Template }) {
       <p className="text-xs text-muted-foreground">You can adjust permissions after creation.</p>
     </div>
   );
+}
+
+/**
+ * Report a background load that failed — unless it was merely cancelled.
+ *
+ * Nothing awaits the promises the effects below start, so an uncaught rejection
+ * has nowhere to land: in the browser it is a silent dead end, and in a test run
+ * it surfaces as a suite-level unhandled rejection that ends `pnpm test` with
+ * `Errors 1 error` and exit 1 while every test passes. Catching it is the fix.
+ *
+ * Catching it BLINDLY would be the next bug. An aborted request is the expected
+ * outcome of every unmount and every template switch, not something to tell the
+ * user about. The signal is the whole test: `controller.abort()` sets `aborted`
+ * synchronously before the request rejects, and that controller is the only
+ * abort source these requests have, so a real cancellation always arrives with
+ * it already true. Matching on `err.name === "AbortError"` as well reads like
+ * defence in depth and is not: it is unreachable for our own aborts, and the
+ * only errors it can actually catch are AbortError-named failures from some
+ * other layer — precisely the ones the user needs to hear about. Same reading
+ * as `attachment-preview.tsx` and `knowledge/embeddings.ts`.
+ */
+function reportLoadFailure(err: unknown, signal: AbortSignal, fallback: string): void {
+  if (signal.aborted) return;
+  toast.error(errorMessage(err, fallback));
+}
+
+/**
+ * Load the integrations list and hand back the rows a picker can actually use.
+ *
+ * Shared by the Odoo and the mailbox effect, which differ only in which `type`
+ * they accept and what they call the result. Unreadable rows are dropped from
+ * the agent-creation flow in both: they can't be selected and would render as
+ * "undefined URL". Admins clean them up in Settings.
+ */
+async function loadUsableConnections(
+  signal: AbortSignal,
+  accepts: (type: string) => boolean
+): Promise<OdooConnection[]> {
+  const rows = await apiGet<OdooConnection[]>("/api/integrations", { signal });
+  return (rows ?? []).filter((c) => accepts(c.type) && !c.cannotDecrypt);
 }
 
 export function NewAgentForm() {
@@ -169,22 +209,25 @@ export function NewAgentForm() {
     }
   });
 
-  const fetchData = useCallback(async () => {
-    const templatesRes = await fetch("/api/templates");
-    if (templatesRes.ok) {
-      const data = await templatesRes.json();
-      setTemplates(data.templates);
+  const fetchData = useCallback(async (signal: AbortSignal) => {
+    try {
+      const data = await apiGet<{ templates?: Template[] }>("/api/templates", { signal });
+      // The signal doubles as the cancellation flag: a response that lost the
+      // race against an unmount must not write itself into the new state.
+      if (!signal.aborted) setTemplates(data?.templates ?? []);
+    } catch (err) {
+      reportLoadFailure(err, signal, "Couldn't load the agent templates. Try refreshing the page.");
     }
   }, []);
 
   useEffect(() => {
-    let cancelled = false;
+    const controller = new AbortController();
     void Promise.resolve().then(() => {
-      if (!cancelled) void fetchData();
+      // The signal is the only cancellation flag here — a separate boolean
+      // would be a second mechanism answering the same question.
+      if (!controller.signal.aborted) void fetchData(controller.signal);
     });
-    return () => {
-      cancelled = true;
-    };
+    return () => controller.abort();
   }, [fetchData]);
 
   const selectedTemplateObj = templates.find((t) => t.id === selectedTemplate);
@@ -195,16 +238,26 @@ export function NewAgentForm() {
   // Fetch directories when a template requiring them is selected
   useEffect(() => {
     if (!requiresDirectories) return;
+    const controller = new AbortController();
+    const { signal } = controller;
 
     async function fetchDirectories() {
-      const res = await fetch("/api/data-directories");
-      if (res.ok) {
-        const data = await res.json();
-        setDirectories(data.directories || []);
+      try {
+        const data = await apiGet<{ directories?: Directory[] }>("/api/data-directories", {
+          signal,
+        });
+        // The signal doubles as the cancellation flag: a response that lost
+        // the race against an unmount or a template switch must not write
+        // itself into the new state.
+        if (!signal.aborted) setDirectories(data?.directories ?? []);
+      } catch (err) {
+        reportLoadFailure(err, signal, "Couldn't load the directories. Try refreshing the page.");
       }
     }
 
-    fetchDirectories();
+    void fetchDirectories();
+
+    return () => controller.abort();
   }, [requiresDirectories]);
 
   // Reset Odoo state immediately when leaving an Odoo template — uses
@@ -234,68 +287,69 @@ export function NewAgentForm() {
   // Fetch Odoo connections when an Odoo template is selected
   useEffect(() => {
     if (!requiresOdooConnection) return;
-    let cancelled = false;
-    (async () => {
+    const controller = new AbortController();
+    const { signal } = controller;
+    void (async () => {
       setLoadingConnections(true);
       try {
-        const res = await fetch("/api/integrations");
-        if (cancelled) return;
-        if (res.ok) {
-          const data = await res.json();
-          // Hide unreadable rows from the agent-creation flow — they can't be used
-          // and would show as "undefined URL". Admins clean them up in Settings.
-          const odoo = (data as OdooConnection[]).filter(
-            (c: OdooConnection) => c.type === "odoo" && !c.cannotDecrypt
-          );
-          if (!cancelled) {
-            setOdooConnections(odoo);
-            // Auto-select if only one connection
-            const autoSelected = autoSelectConnection(odoo);
-            if (autoSelected) {
-              setSelectedConnectionId(autoSelected);
-            }
-          }
+        const odoo = await loadUsableConnections(signal, (type) => type === "odoo");
+        if (signal.aborted) return;
+        setOdooConnections(odoo);
+        // Auto-select if only one connection
+        const autoSelected = autoSelectConnection(odoo);
+        if (autoSelected) {
+          setSelectedConnectionId(autoSelected);
         }
+      } catch (err) {
+        reportLoadFailure(
+          err,
+          signal,
+          "Couldn't load the Odoo connections. Try refreshing the page."
+        );
       } finally {
-        if (!cancelled) setLoadingConnections(false);
+        if (!signal.aborted) setLoadingConnections(false);
       }
     })();
+    // `loadingConnections` is one flag shared by this effect and the mailbox
+    // one, so clearing it here — rather than only in the `finally`, which an
+    // abort deliberately skips — is what keeps it owned by whichever effect is
+    // currently mounted. React runs every cleanup before any setup, so the
+    // successor's `true` always lands after this `false`.
     return () => {
-      cancelled = true;
+      controller.abort();
+      setLoadingConnections(false);
     };
   }, [requiresOdooConnection]);
 
   // Fetch email connections when an email template is selected
   useEffect(() => {
     if (!requiresEmailConnection) return;
-    let cancelled = false;
-    (async () => {
+    const controller = new AbortController();
+    const { signal } = controller;
+    void (async () => {
       setLoadingConnections(true);
       try {
-        const res = await fetch("/api/integrations");
-        if (cancelled) return;
-        if (res.ok) {
-          const data = await res.json();
-          // Count every email provider (Google and Microsoft alike) and hide
-          // unreadable rows — same reasoning as the Odoo filter above.
-          const email = (data as OdooConnection[]).filter(
-            (c: OdooConnection) => EMAIL_CONNECTION_TYPE_SET.has(c.type) && !c.cannotDecrypt
-          );
-          if (!cancelled) {
-            setEmailConnections(email);
-            // Auto-select if only one mailbox
-            const autoSelected = autoSelectConnection(email);
-            if (autoSelected) {
-              setSelectedConnectionId(autoSelected);
-            }
-          }
+        // Every email provider counts, Google and Microsoft alike.
+        const email = await loadUsableConnections(signal, (type) =>
+          EMAIL_CONNECTION_TYPE_SET.has(type)
+        );
+        if (signal.aborted) return;
+        setEmailConnections(email);
+        // Auto-select if only one mailbox
+        const autoSelected = autoSelectConnection(email);
+        if (autoSelected) {
+          setSelectedConnectionId(autoSelected);
         }
+      } catch (err) {
+        reportLoadFailure(err, signal, "Couldn't load the mailboxes. Try refreshing the page.");
       } finally {
-        if (!cancelled) setLoadingConnections(false);
+        if (!signal.aborted) setLoadingConnections(false);
       }
     })();
+    // Same shared-flag reasoning as the Odoo effect above.
     return () => {
-      cancelled = true;
+      controller.abort();
+      setLoadingConnections(false);
     };
   }, [requiresEmailConnection]);
 
@@ -323,9 +377,13 @@ export function NewAgentForm() {
 
   // Reset directory selection and pre-fill tagline/name when switching templates
   useEffect(() => {
-    let cancelled = false;
+    // One cancellation mechanism for the whole effect: the microtasks below read
+    // the same signal the request is given, so there is no boolean answering the
+    // question a second time and no way for the two to disagree.
+    const controller = new AbortController();
+    const { signal } = controller;
     void Promise.resolve().then(() => {
-      if (cancelled) return;
+      if (signal.aborted) return;
       setSelectedPaths([]);
       setDirectories([]);
       setOdooConnections([]);
@@ -340,33 +398,34 @@ export function NewAgentForm() {
 
     // Pre-fill name with a suggested name (except for custom template)
     if (selectedTemplate && selectedTemplate !== "custom") {
-      (async () => {
+      void (async () => {
+        // The one load here that stays silent when it fails, and deliberately:
+        // the worst an unreadable agent list costs is a suggestion that repeats
+        // a name, which the user is about to overtype anyway. Silence is not a
+        // reason to skip the cancellation — this result lands in the form
+        // itself, so a late one would overwrite a name already being typed.
+        let existingNames: string[] = [];
         try {
-          const res = await fetch("/api/agents");
-          if (cancelled) return;
-          const existingNames: string[] = res.ok
-            ? ((await res.json()) as Array<{ name: string }>).map((a) => a.name)
-            : [];
-          if (cancelled) return;
-          const suggested = pickSuggestedName(selectedTemplate, existingNames);
-          if (suggested && !cancelled) {
-            form.setValue("name", suggested);
-            // Select all text so users can overtype immediately. The layout
-            // effect performs the selection after the value is committed.
-            selectNameAfterCommitRef.current = true;
-          }
+          const agents = await apiGet<Array<{ name: string }>>("/api/agents", { signal });
+          existingNames = (agents ?? []).map((a) => a.name);
         } catch {
-          // Ignore — user can still type a name manually
+          // Suggest from an empty list — see above.
+        }
+        if (signal.aborted) return;
+        const suggested = pickSuggestedName(selectedTemplate, existingNames);
+        if (suggested) {
+          form.setValue("name", suggested);
+          // Select all text so users can overtype immediately. The layout
+          // effect performs the selection after the value is committed.
+          selectNameAfterCommitRef.current = true;
         }
       })();
     } else if (selectedTemplate === "custom") {
       void Promise.resolve().then(() => {
-        if (!cancelled) form.setValue("name", "");
+        if (!signal.aborted) form.setValue("name", "");
       });
     }
-    return () => {
-      cancelled = true;
-    };
+    return () => controller.abort();
   }, [selectedTemplate]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function onSubmit(values: AgentFormValues) {
