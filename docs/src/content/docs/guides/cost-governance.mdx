@@ -42,7 +42,7 @@ Click **Save**. The change applies right away.
 
 - **The sidebar** no longer lists their Smithers. The **Agents** page tells them their admin has turned personal agents off, and that their chats are kept.
 - **An open chat tab** that tries to send a message gets a short explanation instead of an answer — without a Retry button, because retrying can't help until you change the setting.
-- **On Telegram,** messages to the personal-agent bot go unanswered. Bots connected to shared agents keep working.
+- **On Telegram,** the main bot (the one connected to an admin's Smithers) stops passing their messages to an agent and replies with a pairing code instead. They can still use it to link their account, and bots connected to shared agents keep working.
 - **In the Automations tab** of their Smithers, a note explains that automations are paused. **New automation** and **Enable** are disabled; **Disable** and **Delete** still work.
 
 Every refused message is recorded in the [audit trail](/concepts/audit-trail/) as `chat.policy_refused`, and every change to the switches as `settings.updated`.
@@ -92,4 +92,4 @@ Budgets are built on the [Usage & Costs dashboard](/guides/usage-dashboard/) est
 
 ### Without a license
 
-If your license expires, existing budgets keep being enforced — an expired license never quietly lifts a limit you set. You can still remove a budget, so you're never stuck with paused chats, but setting a new one needs an active license again.
+If your license expires, existing budgets keep being enforced — an expired license never quietly lifts a limit you set. You can still remove a budget, so you're never stuck with paused chats, but setting or changing one needs an active license again.
