@@ -234,6 +234,11 @@ async function auditOutcome(args: {
     outcome: args.outcome,
     pathCount: args.job.paths.length,
     jobId: args.job.id,
+    // Copied from the job rather than inferred: the worker runs a scheduled
+    // job exactly like a manual one, so the row is the only place the
+    // difference survives.
+    trigger: args.job.trigger,
+    ...(args.job.sweepId !== null ? { sweepId: args.job.sweepId } : {}),
     counts: args.counts,
     reason: args.reason,
     // Omitted entirely when the run OCR'd nothing, so an absent field means

@@ -76,6 +76,8 @@ function makeJob(overrides: Partial<KbIndexJob> = {}): KbIndexJob {
     requestedBy: "admin-1",
     paths: ["/data/hr", "/data/legal"],
     status: "pending",
+    trigger: "manual",
+    sweepId: null,
     total: null,
     processed: 0,
     totalBytes: null,
@@ -290,6 +292,39 @@ describe("POST /api/agents/[agentId]/knowledge/reindex", () => {
     expect(serialized).not.toContain("/data/hr");
     expect(serialized).not.toContain("/data/legal");
     expect(serialized).not.toMatch(/[^\s@]+@[^\s@]+\.[^\s@]+/); // no email-shaped strings
+  });
+
+  // The nightly schedule writes `knowledge.reindex` rows too. Every row this
+  // route writes is an admin's request — accepted, refused or failed — and has
+  // to say so, or the trail could not tell the two kinds of run apart.
+  it("marks every row it writes, on every path, as a manual run", async () => {
+    // 202
+    await POST(makeRequest(), ctx as never);
+    // 409
+    mockEnqueueIndexJob.mockResolvedValueOnce({
+      status: "busy",
+      job: makeJob({ id: "job-running", status: "running" }),
+    });
+    await POST(makeRequest(), ctx as never);
+    // 503
+    mockKbEmbedderAvailable.mockReturnValueOnce(false);
+    await POST(makeRequest(), ctx as never);
+    // 500
+    mockEnqueueIndexJob.mockRejectedValueOnce(new Error("db exploded"));
+    await POST(makeRequest(), ctx as never);
+    // no-op
+    mockGetAgentWithAccess.mockResolvedValueOnce({
+      id: "agent-1",
+      name: "Smithers",
+      pluginConfig: null,
+    });
+    await POST(makeRequest(), ctx as never);
+
+    const triggers = mockDeferAuditLog.mock.calls.map(([entry]) => entry.detail.trigger);
+    expect(triggers).toEqual(["manual", "manual", "manual", "manual", "manual"]);
+    for (const [entry] of mockDeferAuditLog.mock.calls) {
+      expect(entry.detail).not.toHaveProperty("sweepId");
+    }
   });
 });
 

@@ -39,9 +39,11 @@ import {
   type NotificationStatus,
   KB_INDEX_JOB_STATUSES,
   KB_INDEX_JOB_ACTIVE_STATUSES,
+  KB_INDEX_JOB_TRIGGERS,
   type KbIndexJobStatus,
   BUDGET_ACTIONS,
   type BudgetAction,
+  type KbIndexJobTrigger,
 } from "./enums";
 import type { EmailWorkflowFilter, ProcessedEmailOutcome } from "@/lib/email-workflows/types";
 import type { IngestResult } from "@/lib/knowledge/ingest";
@@ -1329,6 +1331,14 @@ export const kbIndexJobs = pgTable(
     requestedBy: text("requested_by").notNull(),
     paths: jsonb("paths").$type<string[]>().notNull(),
     status: text("status").$type<KbIndexJobStatus>().notNull().default("pending"),
+    // `manual` for an admin's request, `scheduled` for the nightly sweep. The
+    // default is what every job that predates the schedule was.
+    trigger: text("trigger").$type<KbIndexJobTrigger>().notNull().default("manual"),
+    // The nightly sweep this job belongs to; null for a manual job. Ties one
+    // night's per-agent jobs together in the audit trail (the sweepId rule for
+    // batched maintenance), and is how a restarted scheduler recognises an
+    // agent it already queued that night.
+    sweepId: uuid("sweep_id"),
     // Progress, in documents. `total` stays null until discovery has walked
     // every root — a total that grew as we went would make the progress bar
     // run backwards, so it is written once, upfront.
@@ -1369,5 +1379,6 @@ export const kbIndexJobs = pgTable(
     index("idx_kb_index_jobs_status_created").on(t.status, t.createdAt),
     index("idx_kb_index_jobs_agent_created").on(t.agentId, t.createdAt),
     check("kb_index_jobs_status_check", sql`${t.status} ${inEnum(KB_INDEX_JOB_STATUSES)}`),
+    check("kb_index_jobs_trigger_check", sql`${t.trigger} ${inEnum(KB_INDEX_JOB_TRIGGERS)}`),
   ]
 );

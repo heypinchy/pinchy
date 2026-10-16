@@ -8,12 +8,16 @@
  * handler's source text for a literal call, so the send stays inline at each
  * call site rather than hiding behind a second indirection.
  */
+import type { KbIndexJobTrigger } from "@/db/enums";
 import type { AuditLogEntry, EntityRef } from "@/lib/audit";
 
 import type { IngestResult } from "./types";
 
 /** The audit actorId the index worker signs its completion rows with (house pattern: actorType "system" + the job's name, cf. upload-gc). */
 export const KB_INDEX_WORKER_ACTOR = "kb-index-worker";
+
+/** The audit actorId — and the job's `requestedBy` — for a run the nightly schedule asked for. */
+export const KB_INDEX_SCHEDULER_ACTOR = "kb-index-scheduler";
 
 export interface ReindexAuditArgs {
   /** "user" for the admin's request, "system" for the worker's outcome row. */
@@ -25,6 +29,14 @@ export interface ReindexAuditArgs {
   pathCount: number;
   /** Correlates the request row with the outcome row. Omitted where no job exists: nothing granted, or rejected before enqueue. */
   jobId?: string;
+  /**
+   * Who decided this run should happen: an admin (`manual`) or the nightly
+   * schedule (`scheduled`). Required, so no call site can leave the question
+   * open — `actorId` answers it only by spelling convention.
+   */
+  trigger: KbIndexJobTrigger;
+  /** The nightly sweep the run belongs to, so one night's rows correlate from one query. Scheduled runs only. */
+  sweepId?: string;
   /** The run's findings. Omitted on a request row — it has counted nothing yet, and zeros would report an empty corpus for every reindex ever started. */
   counts?: IngestResult;
   /** Scrubbed failure summary. Failure rows only. */
@@ -53,6 +65,8 @@ export function reindexAuditEntry(args: ReindexAuditArgs): AuditLogEntry {
       agent: args.agent,
       pathCount: args.pathCount,
       ...(args.jobId !== undefined ? { jobId: args.jobId } : {}),
+      trigger: args.trigger,
+      ...(args.sweepId !== undefined ? { sweepId: args.sweepId } : {}),
       // Copied field by field rather than spread from `counts`: a spread would
       // put whatever IngestResult grows into onto an HMAC-signed row, and the
       // obvious next counter to want is a list of the paths that failed —

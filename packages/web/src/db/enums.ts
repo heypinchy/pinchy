@@ -82,3 +82,10 @@ export type KbIndexJobStatus = (typeof KB_INDEX_JOB_STATUSES)[number];
 
 /** The states in which a job still owns the org's index — see the partial unique index `uq_kb_index_jobs_active`. */
 export const KB_INDEX_JOB_ACTIVE_STATUSES = ["pending", "running"] as const;
+
+// What started a kb_index_jobs row: an admin's "Reindex now" (or the API), or
+// the nightly schedule (src/server/kb-index-scheduler.ts). The audit rows and
+// the status projection both carry it, so "who decided to run this?" has an
+// answer on the record rather than only in `requested_by`'s spelling.
+export const KB_INDEX_JOB_TRIGGERS = ["manual", "scheduled"] as const;
+export type KbIndexJobTrigger = (typeof KB_INDEX_JOB_TRIGGERS)[number];

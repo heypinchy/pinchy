@@ -139,6 +139,48 @@ describe("kb index worker", () => {
     expect(JSON.stringify(row.detail)).not.toContain(tmpRoot);
   });
 
+  // The outcome row is written hours after the request by a worker that does
+  // not care who asked. It still has to say: a reader filtering the trail for
+  // last night's automatic runs finds the outcome rows, not only the requests.
+  it("carries the job's trigger onto the outcome row", async () => {
+    const agent = await makeAgent();
+    writePdf(tmpRoot, "handbook.pdf");
+    await enqueueIndexJob({
+      orgId: ORG_ID,
+      agentId: agent.id,
+      agentName: agent.name,
+      requestedBy: "admin-1",
+      paths: [tmpRoot],
+    });
+
+    await runNextIndexJob({ deps: fakeDeps() });
+
+    const [row] = await reindexAuditRows();
+    expect(row.detail).toMatchObject({ trigger: "manual" });
+    expect(row.detail).not.toHaveProperty("sweepId");
+  });
+
+  it("carries a scheduled job's trigger and sweep onto the outcome row", async () => {
+    const agent = await makeAgent();
+    writePdf(tmpRoot, "handbook.pdf");
+    const sweepId = "0d6c1a3e-6a1f-4c55-9b55-2f4b6f0a9e11";
+    await enqueueIndexJob({
+      orgId: ORG_ID,
+      agentId: agent.id,
+      agentName: agent.name,
+      requestedBy: "kb-index-scheduler",
+      paths: [tmpRoot],
+      trigger: "scheduled",
+      sweepId,
+    });
+
+    await runNextIndexJob({ deps: fakeDeps() });
+
+    const [row] = await reindexAuditRows();
+    expect(row.actorType).toBe("system");
+    expect(row.detail).toMatchObject({ trigger: "scheduled", sweepId });
+  });
+
   // A renamed or deleted agent must not cost us the name on the audit row: the
   // job snapshotted it at enqueue precisely so the outcome row can still say
   // who it was for.
