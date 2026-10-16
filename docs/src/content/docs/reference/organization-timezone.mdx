@@ -1,9 +1,9 @@
 ---
 title: Organization Timezone
-description: The org-wide timezone setting used for scheduled jobs and briefing delivery times.
+description: The org-wide timezone that scheduled work, such as the nightly knowledge-base reindex, runs in.
 ---
 
-Pinchy stores a single, org-wide IANA timezone. Background jobs — scheduled briefings, automations, and anything else that runs on a clock — use this value to decide _when_ to fire.
+Pinchy stores a single, org-wide IANA timezone. Work that runs at a time of day — today, the nightly knowledge-base reindex — uses this value to decide _when_ to fire.
 
 The setting is shared across the whole organization. Individual users don't have their own timezone; everyone sees scheduled events anchored to the same wall-clock time.
 

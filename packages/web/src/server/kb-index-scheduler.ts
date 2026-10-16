@@ -236,8 +236,12 @@ async function advance(now: Date): Promise<void> {
   }
 
   if (sweep.pending.length === 0) {
-    const { pending: _done, ...finished } = sweep;
-    await saveIndexScheduleState({ ...state, sweep: null, lastSweep: finished });
+    const { id, slot, startedAt, agentCount } = sweep;
+    await saveIndexScheduleState({
+      ...state,
+      sweep: null,
+      lastSweep: { id, slot, startedAt, agentCount },
+    });
   }
 }
 

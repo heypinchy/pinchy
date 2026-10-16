@@ -89,7 +89,7 @@ export function TimezoneSettings() {
       </CardHeader>
       <CardContent className="space-y-4">
         <p className="text-sm text-muted-foreground">
-          Set the timezone used for scheduled jobs and briefing delivery times.
+          Set the timezone scheduled work runs in, such as the nightly knowledge-base reindex.
         </p>
 
         <div className="space-y-2">
