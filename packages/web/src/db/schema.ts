@@ -15,6 +15,7 @@ import {
   pgView,
   primaryKey,
   check,
+  unique,
 } from "drizzle-orm/pg-core";
 import { isNull, sql, relations } from "drizzle-orm";
 import {
@@ -39,6 +40,8 @@ import {
   KB_INDEX_JOB_STATUSES,
   KB_INDEX_JOB_ACTIVE_STATUSES,
   type KbIndexJobStatus,
+  BUDGET_ACTIONS,
+  type BudgetAction,
 } from "./enums";
 import type { EmailWorkflowFilter, ProcessedEmailOutcome } from "@/lib/email-workflows/types";
 import type { IngestResult } from "@/lib/knowledge/ingest";
@@ -950,6 +953,38 @@ export const usageRecords = pgTable(
     // pre-#767 gauge rows (also run_id NULL) never collide with a real run id.
     // onConflictDoNothing(target [sessionKey, runId]) relies on this index.
     uniqueIndex("uq_usage_session_run").on(table.sessionKey, table.runId),
+  ]
+);
+
+// ── Cost Budgets (#36) ───────────────────────────────────────────────
+
+// A monthly USD limit on what usage_records says an agent — or, with agent_id
+// NULL, the whole instance — has spent this calendar month (org timezone).
+// Design of record: plans/2026-10-16-cost-governance-design.md.
+//
+// `warned_period` / `exceeded_period` hold the 'YYYY-MM' an alert last fired
+// for. They are claimed with a conditional UPDATE (… WHERE period IS DISTINCT
+// FROM $p RETURNING), so a restart or two overlapping sweeps can never write
+// the same alert twice — the reason budgets are a table and not settings keys.
+export const costBudgets = pgTable(
+  "cost_budgets",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    agentId: text("agent_id").references(() => agents.id, { onDelete: "cascade" }),
+    monthlyLimitUsd: numeric("monthly_limit_usd", { precision: 12, scale: 2 }).notNull(),
+    onExceeded: text("on_exceeded").$type<BudgetAction>().notNull(),
+    warnedPeriod: text("warned_period"),
+    exceededPeriod: text("exceeded_period"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (table) => [
+    // One instance budget (agent_id NULL) and one per agent. NULLS NOT
+    // DISTINCT is what makes the first half true: by default Postgres would
+    // accept any number of NULL rows.
+    unique("cost_budgets_agent_id_unique").on(table.agentId).nullsNotDistinct(),
+    check("cost_budgets_on_exceeded_check", sql`${table.onExceeded} ${inEnum(BUDGET_ACTIONS)}`),
+    check("cost_budgets_limit_positive_check", sql`${table.monthlyLimitUsd} > 0`),
   ]
 );
 

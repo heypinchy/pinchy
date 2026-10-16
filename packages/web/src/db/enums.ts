@@ -63,6 +63,14 @@ export type ProcessedEmailStatus = (typeof PROCESSED_EMAIL_STATUSES)[number];
 export const NOTIFICATION_STATUSES = ["success", "failure"] as const;
 export type NotificationStatus = (typeof NOTIFICATION_STATUSES)[number];
 
+// Cost budgets (#36). What happens when a budget's month is used up: `notify`
+// warns admins and keeps everything running; `block` refuses new web-chat
+// turns and pauses email automations until the month rolls over. Enforced at
+// the DB with a CHECK constraint so no caller can store an action the
+// enforcement code does not know.
+export const BUDGET_ACTIONS = ["notify", "block"] as const;
+export type BudgetAction = (typeof BUDGET_ACTIONS)[number];
+
 // Knowledge-base async reindex (#714). Lifecycle of one kb_index_jobs row.
 // `pending` and `running` are the ACTIVE states: the partial unique index in
 // schema.ts is defined over exactly this pair, so adding a state here without

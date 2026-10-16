@@ -91,7 +91,9 @@ export type AuditResource =
   // email_workflows table; yields email_workflow.created/.updated/.deleted for
   // the whole Automations CRUD lifecycle (the create path lands first).
   | "email_workflow"
-  | "api_key";
+  | "api_key"
+  // Monthly cost budgets (#36): budget.created / .updated / .deleted.
+  | "budget";
 
 export type AuditEventType =
   | `tool.${string}`
@@ -200,7 +202,14 @@ export type AuditEventType =
   | "approval.denied"
   | "approval.consumed"
   | "approval.expired"
-  | "approval.gc";
+  | "approval.gc"
+  // Cost budgets (#36). Written once per budget and month by the budget
+  // monitor when spend crosses 80% (threshold_reached) and 100% (exceeded).
+  | "budget.created"
+  | "budget.updated"
+  | "budget.deleted"
+  | "budget.threshold_reached"
+  | "budget.exceeded";
 
 interface HmacFieldsV1 {
   timestamp: Date;
@@ -509,6 +518,22 @@ export type AuditLogEntry =
         /** Set on sweep-emitted rows (approval.expired) so analysts can
          * correlate one sweep run (AGENTS.md §"Audit logging rules"). */
         sweepId?: string;
+      };
+    })
+  | (AuditLogBase & {
+      // Cost budgets (#36): a budget crossed its warning line (80%) or its
+      // limit (100%) this month. One row per budget, crossing and month — the
+      // monitor claims each before writing it (lib/budgets.ts).
+      eventType: "budget.threshold_reached" | "budget.exceeded";
+      detail: {
+        budget:
+          | { id: string; scope: "agent"; agent: { id: string; name: string } }
+          | { id: string; scope: "instance" };
+        period: string;
+        thresholdPercent: 80 | 100;
+        spentUsd: number;
+        limitUsd: number;
+        onExceeded: "notify" | "block";
       };
     })
   | (AuditLogBase & {

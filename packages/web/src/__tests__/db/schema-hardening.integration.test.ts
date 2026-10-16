@@ -17,6 +17,7 @@ import {
   EMAIL_WORKFLOW_STATUSES,
   PROCESSED_EMAIL_STATUSES,
   NOTIFICATION_STATUSES,
+  BUDGET_ACTIONS,
 } from "@/db/enums";
 
 const suffix = Math.random().toString(36).slice(2);
@@ -249,6 +250,7 @@ describe("CHECK constraints match db/enums.ts (drift guard, #259)", () => {
     ["email_workflows_status_check", EMAIL_WORKFLOW_STATUSES],
     ["processed_emails_status_check", PROCESSED_EMAIL_STATUSES],
     ["notifications_status_check", NOTIFICATION_STATUSES],
+    ["cost_budgets_on_exceeded_check", BUDGET_ACTIONS],
   ] as const)("%s enforces exactly its const's values", async (constraintName, values) => {
     expect(await enforcedValues(constraintName)).toEqual(new Set(values));
   });

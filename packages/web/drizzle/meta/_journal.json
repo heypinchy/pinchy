@@ -512,6 +512,13 @@
       "when": 1785961481652,
       "tag": "0072_secret_supernaut",
       "breakpoints": true
+    },
+    {
+      "idx": 73,
+      "version": "7",
+      "when": 1792163728510,
+      "tag": "0073_cost_budgets",
+      "breakpoints": true
     }
   ]
 }
