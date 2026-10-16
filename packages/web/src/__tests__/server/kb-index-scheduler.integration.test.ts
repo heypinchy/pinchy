@@ -420,6 +420,24 @@ describe("kb index scheduler", () => {
       await runKbIndexSchedulerTick({ now: vienna("2026-10-21", "09:00") });
       expect(await jobs()).toHaveLength(1);
     });
+
+    // The org timezone moves the clock the slot is read on. Moved from UTC to
+    // UTC+14 just after midnight UTC, it is already 14:30 tomorrow there — a
+    // date whose 02:00 has passed and was never taken. Still not a reason to
+    // start a full walk mid-afternoon.
+    it("applies a timezone change from the next occurrence, not retroactively", async () => {
+      await makeAgent("Handbook");
+      await setSetting("org.timezone", "UTC");
+      await runKbIndexSchedulerTick({ now: new Date("2026-10-20T00:00:00Z") });
+
+      await setSetting("org.timezone", "Pacific/Kiritimati");
+      await runKbIndexSchedulerTick({ now: new Date("2026-10-20T00:30:00Z") });
+      expect(await jobs()).toHaveLength(0);
+
+      // 02:00 on 21 Oct in Kiritimati.
+      await runKbIndexSchedulerTick({ now: new Date("2026-10-20T12:00:00Z") });
+      expect(await jobs()).toHaveLength(1);
+    });
   });
 
   // Same precheck as the admin's route: queueing a job that can only fail,

@@ -183,15 +183,21 @@ async function queueSweepAgent(sweep: IndexSweep, agentId: string): Promise<Queu
  */
 async function advance(now: Date): Promise<void> {
   const schedule = await getIndexSchedule();
-  const clock = localClock(now, await getOrgTimezone());
+  const timezone = await getOrgTimezone();
+  const clock = localClock(now, timezone);
   let state: IndexScheduleState = await getIndexScheduleState();
 
-  // First tick ever, a corrupt state row, or a schedule the admin changed
-  // since the slot was taken: the slot that has ALREADY passed counts as
-  // taken. Otherwise an upgrade at 10:00, or switching the schedule back on at
-  // 14:00, would start a full walk of every knowledge base mid-day.
-  if (state.lastSlot === null || !sameSchedule(state.schedule, schedule)) {
-    state = { ...state, lastSlot: latestPassedSlot(clock, schedule), schedule };
+  // First tick ever, a corrupt state row, or a schedule or org timezone the
+  // admin changed since the slot was taken: the slot that has ALREADY passed
+  // counts as taken. Otherwise an upgrade at 10:00, switching the schedule
+  // back on at 14:00, or moving the org to a zone where it is already
+  // afternoon would start a full walk of every knowledge base mid-day.
+  if (
+    state.lastSlot === null ||
+    !sameSchedule(state.schedule, schedule) ||
+    state.timezone !== timezone
+  ) {
+    state = { ...state, lastSlot: latestPassedSlot(clock, schedule), schedule, timezone };
     // Switching the schedule off also drops the agents still waiting tonight.
     // The job already running finishes; an interrupted run is worth less.
     if (!schedule.enabled) state = { ...state, sweep: null };

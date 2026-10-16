@@ -52,6 +52,8 @@ export interface IndexScheduleState {
    * back on, or moving its time, from firing a run on the spot.
    */
   schedule: IndexSchedule | null;
+  /** The org timezone `lastSlot` was read in. A change re-takes the passed slot, for the same reason as `schedule`. */
+  timezone: string | null;
   /** The sweep in progress, if any. */
   sweep: IndexSweep | null;
   /** The most recent sweep that queued all its agents. Shown to admins; never read back by the scheduler. */
@@ -61,6 +63,7 @@ export interface IndexScheduleState {
 const EMPTY_STATE: IndexScheduleState = {
   lastSlot: null,
   schedule: null,
+  timezone: null,
   sweep: null,
   lastSweep: null,
 };
@@ -94,6 +97,7 @@ export async function getIndexScheduleState(): Promise<IndexScheduleState> {
         value.schedule && typeof value.schedule === "object"
           ? parseIndexSchedule(JSON.stringify(value.schedule))
           : null,
+      timezone: typeof value.timezone === "string" ? value.timezone : null,
       sweep: isSweep(value.sweep) ? value.sweep : null,
       lastSweep: value.lastSweep && typeof value.lastSweep === "object" ? value.lastSweep : null,
     };

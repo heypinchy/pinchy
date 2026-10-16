@@ -85,6 +85,7 @@ describe("GET /api/settings/knowledge-index-schedule", () => {
     await saveIndexScheduleState({
       lastSlot: "2026-10-16",
       schedule: { enabled: true, time: "02:00" },
+      timezone: "Europe/Vienna",
       sweep: {
         id: "sweep-2",
         slot: "2026-10-16",
