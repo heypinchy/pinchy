@@ -32,11 +32,11 @@ Pinchy validates the value against `Intl.DateTimeFormat` before saving. Invalid 
 
 ## What uses the timezone today
 
-No feature consumes this value yet.
+- **The nightly knowledge-base reindex.** Its time — 02:00 unless you change it under **Settings → Organization → Knowledge Base Indexing** — is read in this timezone, so "every night at 02:00" means 02:00 where your organization is, through both daylight-saving changes. See [Keeping the index current](/guides/create-knowledge-base-agent/#keeping-the-index-current).
 
-[Automations](/concepts/agent-settings/#automations-tab) have shipped since this page was written, and they deliberately don't read it: the reconciliation sweep runs on a short, fixed cadence rather than at a time of day, so there is no clock for a timezone to sit on.
+[Automations](/concepts/agent-settings/#automations-tab) deliberately don't read it: the reconciliation sweep runs on a short, fixed cadence rather than at a time of day, so there is no clock for a timezone to sit on.
 
-The value is the foundation for background work that genuinely runs at a time — [Scheduled Briefings, #138](https://github.com/heypinchy/pinchy/issues/138), on the [Background Jobs foundation, #704](https://github.com/heypinchy/pinchy/issues/704). Setting the timezone now means those pick up the correct value from day one.
+Changing the timezone moves the nightly reindex with it. The new setting applies from the next occurrence of the time, so a change never starts a run on the spot.
 
 ## Audit trail
 

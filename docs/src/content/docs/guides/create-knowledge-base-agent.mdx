@@ -52,9 +52,9 @@ Click **Save** to apply the permissions.
 
 ## 6. Index the documents
 
-Granting a directory doesn't index it automatically — an admin has to trigger indexing. The simplest way is right where you granted the directories: in the agent's **Permissions** tab, the **Knowledge Base** section has an **Index** control. Click **Reindex now** and the section shows the run inline — discovery, a live progress bar, how long the run has been going, an estimate of how much longer, and the last run's outcome — so you never have to leave the page or read a log. The estimate is deliberately shy: it appears only once the run has produced enough readings to support one, and it disappears again if progress stalls. On a real corpus a single large document can dominate the work, so a countdown that always shows a number would mislead more than it helps.
+Granting a directory doesn't index it on the spot — the first index takes long enough that you'll want to start it yourself rather than wait for the [nightly reindex](#keeping-the-index-current) to get to it. The simplest way is right where you granted the directories: in the agent's **Permissions** tab, the **Knowledge Base** section has an **Index** control. Click **Reindex now** and the section shows the run inline — discovery, a live progress bar, how long the run has been going, an estimate of how much longer, and the last run's outcome — so you never have to leave the page or read a log. The estimate is deliberately shy: it appears only once the run has produced enough readings to support one, and it disappears again if progress stalls. On a real corpus a single large document can dominate the work, so a countdown that always shows a number would mislead more than it helps.
 
-The same action is available over the API, which is what you'd script for scheduled re-indexing:
+The same action is available over the API:
 
 ```bash
 curl -X POST -b session_cookie "https://pinchy.example.com/api/agents/<agentId>/knowledge/reindex"
@@ -62,7 +62,7 @@ curl -X POST -b session_cookie "https://pinchy.example.com/api/agents/<agentId>/
 
 This reads the agent's granted folders, extracts text from each PDF and reads the cells of each Excel workbook, splits the result into overlapping chunks, embeds every chunk with a bundled local model (`embeddinggemma`), and stores the result in Pinchy's own Postgres database (using `pgvector`) so it can be searched later.
 
-Indexing is idempotent — unchanged files are skipped on the next run, changed files are re-indexed, and files removed from disk are dropped from the index. **Re-run reindex whenever documents change** — new files, edits, or deletions. Pinchy does not watch the directory and does not sweep it on a schedule: a reindex happens because somebody asked for one.
+Indexing is idempotent — unchanged files are skipped on the next run, changed files are re-indexed, and files removed from disk are dropped from the index. After this first run you don't have to come back: Pinchy reindexes the agent [every night](#keeping-the-index-current), so new files, edits and deletions are picked up on their own.
 
 The request comes back immediately with a job to watch:
 
@@ -118,6 +118,26 @@ curl -b session_cookie "https://pinchy.example.com/api/agents/<agentId>/knowledg
 A `status` of `failed` is a different thing from a `failed` file: it means something systemic stopped the whole run — the embedding model failed to load, or the database did — and `error` says what. A broken file never gets that far; it's counted and stepped over.
 
 If Pinchy restarts mid-run, the run resumes on the next start. Nothing is lost and nothing is done twice: everything already indexed is skipped on the way back through.
+
+## Keeping the index current
+
+Once a night — at **02:00 in your [organization timezone](/reference/organization-timezone/)** unless you change it — Pinchy reindexes every knowledge-base agent on its own. A document someone drops into the folder during the day is searchable the next morning, an edited one answers with its new content, and a deleted one stops being cited. Nobody has to press anything.
+
+A night is cheap after the first run. Every file is read once to check whether it changed, and only what changed is extracted and embedded again; the rest is `skipped`. On a large share the reading is most of the work, so the run takes about as long as copying the folder once — on a slow network share that can be an hour or more, which is why it runs at night.
+
+What's covered: every shared agent that has the `knowledge_search` permission and at least one granted folder. Those are the agents that search the index, and between them their folders are everything a search can reach. An agent that only reads files isn't swept, and neither is a personal agent. The **Index** section in each agent's **Permissions** tab says which applies, and when the next run is.
+
+How it runs:
+
+- **One agent at a time.** The nightly run queues the agents one after another, behind the same one-run-at-a-time rule as **Reindex now**. If a run is already going at 02:00 — say you started a big one at half past one — the night waits for it rather than cancelling it.
+- **A missed night is caught up.** If Pinchy wasn't running at 02:00, the night runs when it starts again. Once, not once per missed night.
+- **A restart doesn't lose it.** An interrupted run resumes on the next start, and agents still waiting for their turn keep their place.
+- **It's on the record.** Each run is audited like any other reindex, with `trigger: "scheduled"` and a `sweepId` shared by every agent reindexed that night — see [Audit trail](/concepts/audit-trail/).
+- **Scans are read like any other run's.** A new scanned PDF is sent to your vision model the night it first appears. Once its text is in the index it's `skipped` like any unchanged file, so it isn't sent again. The exception is a scan the model found no text in at all: it stays `unsearchable` and is tried again on every run — which is how a provider outage heals by itself, and also means a genuinely blank scan is sent again each night. The **Index** section lists those documents by name. `PINCHY_KB_OCR=off` stops all of it exactly as it stops a manual run; see [What indexing sends to your provider](/guides/mount-data-directories/#what-indexing-sends-to-your-provider).
+
+To change the time or switch it off, go to **Settings → Organization → Knowledge Base Indexing**. A new setting applies from its next occurrence: switching it back on in the afternoon doesn't start a run then and there. With it switched off, new documents show up only when someone clicks **Reindex now**.
+
+Pinchy doesn't watch the folder for changes. File-change notifications don't arrive from network shares (SMB/CIFS), which is where knowledge bases usually live, and polling a large share every few minutes would mean reading it all day. A nightly run is the mechanism, not a stopgap. If a document needs to be searchable before tomorrow, click **Reindex now** — it takes the same route through the index and costs the same.
 
 ## 8. Chat with the agent
 
@@ -194,7 +214,7 @@ What the knowledge base does is deliberately narrow:
 
 - **PDFs**, **Excel workbooks** (`.xlsx`, `.xlsm`), **Word documents** (`.doc`, `.docx`) and **slide decks** (`.ppt`, `.pptx`) are indexed and searchable via `knowledge_search`. Older `.xls` workbooks, plain text and Markdown are not. The two sides also do not line up in the other direction: pointed at a file directly, the agent's file tools read Markdown and plain text the index never takes, and cannot open the legacy `.doc` the index reads fine. [Supported file types](/guides/mount-data-directories/#supported-file-types) has the full split.
 - **Scanned PDFs are indexed by sending their pages to a vision model**, the same one that reads a scan when you open it in chat. That is the one step of indexing that transmits document content to your model provider, and it applies to every scanned page in the corpus rather than only the ones somebody asks about. [What indexing sends to your provider](/guides/mount-data-directories/#what-indexing-sends-to-your-provider) states the data flow, how to turn it off, and why an air-gapped instance cannot use it yet.
-- Indexing is a manual admin action (step 6). It runs in the background and reports its progress in the app, but you still have to ask for it: nothing watches the directory and nothing sweeps it on a schedule.
+- Indexing runs in the background and reports its progress in the app. You start the first run (step 6); after that the [nightly reindex](#keeping-the-index-current) keeps the index current. Nothing watches the folder in between, so a document added at 10:00 is searchable the next morning, or straight away if you click **Reindex now**.
 
 ### Documents that can't be searched
 
@@ -222,7 +242,7 @@ To add organization-specific context like team structure or terminology, go to *
 
 ## Changing permissions later
 
-You can update an agent's permissions at any time by returning to the **Permissions** tab. Add or remove directories, then re-run the reindex step so the index matches the new folder set. Changes take effect after clicking **Save**.
+You can update an agent's permissions at any time by returning to the **Permissions** tab. Add or remove directories and click **Save**. The next nightly run indexes a newly granted folder; click **Reindex now** if the agent should search it today.
 
 ## How it works
 

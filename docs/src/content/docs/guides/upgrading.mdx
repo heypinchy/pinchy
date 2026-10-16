@@ -195,7 +195,7 @@ The knowledge base no longer embeds through Ollama. The embedding model now runs
 
 The two models produce vectors that cannot be compared, and Postgres cannot change a vector column's width in place, so the old embeddings can be neither kept nor converted. Migration `0056` clears `kb_documents` and `kb_chunks` and recreates the index column at the new width. **Your documents are not touched** — those tables are derived entirely from the files on disk, and the files stay where they are.
 
-So after upgrading, a Knowledge Base agent finds nothing until you reindex it: open the agent's **Permissions** tab, and in the **Knowledge Base** section click **Reindex now**. The run reports its progress inline. If you never set up a Knowledge Base agent, there is nothing to do — the tables were already empty.
+So after upgrading, a Knowledge Base agent finds nothing until it has been reindexed. The [nightly reindex](#knowledge-bases-now-keep-themselves-current) does that on its own the first night after the upgrade; to have it back sooner, open the agent's **Permissions** tab, and in the **Knowledge Base** section click **Reindex now**. The run reports its progress inline. If you never set up a Knowledge Base agent, there is nothing to do — the tables were already empty.
 
 The `ollama pull bge-m3` step from the v0.9.0 notes no longer applies. If nothing else on your machine uses that model, you can remove it.
 
@@ -296,6 +296,19 @@ Three things you may notice:
 
 A knowledge-base document now counts as archived if any **folder** on its path is called `old`, `archive`, `archived` or `archiv` — matched whole and case-insensitively, so `OLD/` counts and `Goldakte/` does not. The rule reads directories only: a file named `archive.pdf` is not archived. Archived documents are still fully indexed, and the agent can still reach them when a question asks it to; they are simply left out of an ordinary answer. Year and quarter folders (`2013/`, `Q3/`) are never archives. See [Current documents first](/guides/create-knowledge-base-agent/#current-documents-first). If you keep superseded files in a folder named something else, rename it to one of those four to get the same treatment.
 
+#### Knowledge bases now keep themselves current
+
+Until now a knowledge base was as current as its last **Reindex now**: a document dropped into the folder stayed unsearchable until an admin remembered to click. Pinchy now reindexes every knowledge-base agent **once a night, at 02:00 in your organization timezone**, so new, changed and deleted documents are reflected the next morning without anyone doing anything. Only what changed is extracted and embedded again; the rest of the run is reading each file once to see whether it did.
+
+It's on after the upgrade, and the first run is the first night after it — the upgrade itself never starts one. It covers shared agents that have the `knowledge_search` permission and at least one granted folder. To move it out of a backup window or switch it off, go to **Settings → Organization → Knowledge Base Indexing**; each agent's **Index** section says when its next run is.
+
+Two things worth knowing before the first night:
+
+- **A large share is read in full every night.** Unchanged files are skipped, but only after they've been read to see that they're unchanged, so on a big network share the run takes about as long as copying the folder once. That's why it runs at night — pick a time your file server is quiet.
+- **New scans are sent to your vision model during the night they arrive**, exactly as a manual reindex would send them, and recorded the same way in the audit trail and the Usage Dashboard. `PINCHY_KB_OCR=off` stops that for nightly runs too.
+
+[Keeping the index current](/guides/create-knowledge-base-agent/#keeping-the-index-current) has the details, including how a missed night is caught up.
+
 #### Stopping a reply keeps what it already said
 
 The chat composer's **stop** button has always promised to keep the words already on screen and only stop paying for the rest. It did not always keep them: pressing stop could clear the partial reply a moment later and leave a banner reading _"The model provider timed out."_ for something you did on purpose.
@@ -376,7 +389,7 @@ Blocked-request entries in the audit trail now carry `clientAddress` beside `rem
 
 ### Database migrations
 
-Seventeen migrations (`0056`–`0072`) run automatically on startup — no manual steps. Only `0056` is destructive, and only for the Knowledge Base tables (see the breaking change above); the rest are additive.
+Eighteen migrations (`0056`–`0073`) run automatically on startup — no manual steps. Only `0056` is destructive, and only for the Knowledge Base tables (see the breaking change above); the rest are additive.
 
 - `0056` — recreates `kb_chunks.embedding` at 768 dimensions for the bundled in-process `embeddinggemma` embedder and clears the two Knowledge Base tables.
 - `0057` — backfills `kb_documents.status` so documents ingested before the archive rule existed are classified by it too.
@@ -392,6 +405,7 @@ Seventeen migrations (`0056`–`0072`) run automatically on startup — no manua
 - `0069` — memory becomes a permission of its own rather than a side effect of file-write access (see the breaking change above).
 - `0070`, `0071` — `tool_call_id` and `openclaw_approval_id` on `tool_approval`, so a pending confirmation is tied to the call it is holding up and to the approval OpenClaw raised for it.
 - `0072` — `zone` and `content_hash` on `agent_delivered_files`, so a download link serves the file it was given rather than the name.
+- `0073` — `trigger` and `sweep_id` on `kb_index_jobs`, telling a run the nightly reindex started from one an admin asked for. Existing jobs are marked `manual`, which is what they were.
 
 ## Upgrading from v0.9.0 to v0.9.1
 
