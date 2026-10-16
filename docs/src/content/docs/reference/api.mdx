@@ -629,7 +629,7 @@ Create a workflow. It is always created **disabled** and `pending`, whatever the
 
 - `400` — the body fails validation, or a requested connection is one the agent has no email **read** access to. The response names those connection ids; an id that doesn't exist lands here too, since it has no permission row either
 - `401` — not authenticated
-- `403` — you can see the agent but may not create a workflow on it (same scope rule as the list)
+- `403` — you can see the agent but may not create a workflow on it (same scope rule as the list). Also answered with `code: "member_automations_disabled"` when an admin has turned off automations on members' personal agents (see [Cost governance](/guides/cost-governance/)), and with `code: "personal_agent_disabled"` when they have turned off members' personal agents altogether
 - `404` — no agent has that id, **or** you may not see the one that does
 
 ### `PATCH /api/automations/:id`
@@ -646,6 +646,7 @@ Toggling to the state it already has is a no-op: still `200`, no audit entry —
 
 - `400` — the body has no boolean `enabled`
 - `401` — not authenticated
+- `403` — `code: "member_automations_disabled"`: you asked to **enable** a workflow on a member's personal agent while automations there are turned off. Admins get this too, because the workflow would read "enabled" and never run. Disabling is always allowed
 - `404` — no workflow has that id, **or** its agent is outside your scope. This endpoint addresses a workflow, not an agent, so a malformed id lands here as well: it definitionally matches nothing
 
 ### `DELETE /api/automations/:id`
@@ -747,9 +748,84 @@ Update a setting.
 | `key`   | string | Yes      | Setting key   |
 | `value` | string | Yes      | Setting value |
 
-Settings with `api_key` in the key name are automatically encrypted at rest.
+Settings with `api_key` in the key name are automatically encrypted at rest. Keys starting with `policy.` are refused with `400`: the member-access switches go through `PUT /api/settings/governance` below, which audits what changed and updates Telegram routing.
 
 **Response:** `{ "success": true }`
+
+### `GET /api/settings/governance`
+
+The two member-access switches from **Settings → Organization → Member access**. Any signed-in user may read them, so the app can explain to a member why their personal agent or automations are paused. See [Cost governance](/guides/cost-governance/).
+
+**Response:**
+
+```json
+{ "memberPersonalAgents": true, "memberAutomations": false }
+```
+
+### `PUT /api/settings/governance`
+
+Set both switches (admin only). Both fields are required. Writes a `settings.updated` audit entry listing what changed, and nothing for a save that changed nothing. Changing `memberPersonalAgents` also rebuilds the Telegram routing, so members can't reach their personal agent there either.
+
+**Request body:**
+
+| Field                  | Type    | Required | Description                                                    |
+| ---------------------- | ------- | -------- | -------------------------------------------------------------- |
+| `memberPersonalAgents` | boolean | Yes      | Members can use their personal agent (Smithers)                |
+| `memberAutomations`    | boolean | Yes      | Members can create and run automations on their personal agent |
+
+**Response:** the stored switches, same shape as `GET`.
+
+**Errors:** `400` (invalid body), `401`, `403` (not an admin).
+
+## Budgets (admin only)
+
+Monthly cost budgets for the whole instance or a single agent. See [Cost governance](/guides/cost-governance/#monthly-budgets).
+
+### `GET /api/budgets`
+
+Every budget with this month's spend, in the organization timezone.
+
+**Response:**
+
+```json
+[
+  {
+    "id": "6f1c…",
+    "agent": null,
+    "monthlyLimitUsd": 100,
+    "onExceeded": "block",
+    "spentUsd": 84.1,
+    "period": "2026-10",
+    "state": "warning"
+  }
+]
+```
+
+`agent` is `null` for the instance budget, otherwise `{ "id", "name" }`. `state` is `ok`, `warning` (80% or more) or `exceeded` (100% or more).
+
+### `PUT /api/budgets`
+
+Create or replace a budget. Requires an Enterprise license. There is at most one instance budget and one per agent, so saving again for the same scope updates it. Changing the limit or the action re-arms this month's alerts. Writes `budget.created` or `budget.updated`.
+
+**Request body:**
+
+| Field             | Type           | Required | Description                                              |
+| ----------------- | -------------- | -------- | -------------------------------------------------------- |
+| `agentId`         | string \| null | Yes      | The agent to cap, or `null` for the whole instance       |
+| `monthlyLimitUsd` | number         | Yes      | USD per calendar month, at least `0.01`; stored in cents |
+| `onExceeded`      | string         | Yes      | `notify` or `block`                                      |
+
+**Response:** `{ "id": "…" }`
+
+**Errors:** `400` (invalid body), `401`, `403` (not an admin, or no Enterprise license), `404` (no agent you can see has that id — a colleague's personal agent included).
+
+### `DELETE /api/budgets/:id`
+
+Remove a budget. Works without a license, so an expired one never leaves an instance with chats paused and no way to lift it. Writes `budget.deleted`.
+
+**Response:** `{ "id": "…" }`
+
+**Errors:** `401`, `403` (not an admin), `404` (no budget has that id).
 
 ## LLM Providers (admin only)
 

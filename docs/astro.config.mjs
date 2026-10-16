@@ -188,6 +188,10 @@ export default defineConfig({
               label: "Usage & Costs Dashboard",
               slug: "guides/usage-dashboard",
             },
+            {
+              label: "Keep Costs Predictable",
+              slug: "guides/cost-governance",
+            },
             { label: "Enterprise Setup", slug: "guides/enterprise-setup" },
             { label: "VPS Deployment", slug: "guides/vps-deployment" },
             { label: "Deploy on Hetzner Cloud", slug: "guides/deploy-hetzner" },

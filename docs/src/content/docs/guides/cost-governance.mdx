@@ -1,0 +1,95 @@
+---
+title: Keep Costs Predictable
+description: Turn off members' personal agents or their automations, and cap monthly spend with budgets for the whole instance or a single agent.
+---
+
+import { Badge } from "@astrojs/starlight/components";
+
+Pinchy runs on whatever model provider you connect, and every message costs a little. When you know how your team uses Pinchy — a knowledge base people ask questions, a handful of shared agents — that cost is easy to predict. It stops being predictable when people start using Pinchy in ways nobody planned for: chatting freely with their personal Smithers all day, or setting up automations that answer every incoming email on their own.
+
+This guide covers the two controls you have for that:
+
+- **Member access** — decide whether members get a personal agent, and whether they can run automations on it.
+- **Monthly budgets** <Badge text="Enterprise" variant="note" /> — a spending limit for the whole instance or for one agent, with a warning at 80% and your choice of what happens at 100%.
+
+Both are admin-only. Neither ever deletes anything.
+
+## Prerequisites
+
+- You are logged in as an admin
+- For budgets: an active Enterprise license (see [Enterprise Setup](/guides/enterprise-setup/))
+
+## Member access
+
+Go to **Settings → Organization → Member access**. Two switches, both on by default:
+
+| Switch                                                     | When you turn it off                                                                                                                                                            |
+| ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Members can use a personal agent (Smithers)**            | Members no longer see or reach their Smithers — not in the sidebar, not by link, not over Telegram. They keep every shared agent you've given them access to.                   |
+| **Members can create automations on their personal agent** | Members can't create new [automations](/guides/email-automations/) on their Smithers, and the ones they already have are paused. They can still switch them off or delete them. |
+
+Click **Save**. The change applies right away.
+
+### What "off" means
+
+**Off pauses. It never deletes.** A member's Smithers keeps its chats, memory and files; their automations keep their settings. Turn the switch back on and everything comes back exactly as it was. Paused automations pick up where they left off, including mail that arrived in the meantime, within each automation's look-back window.
+
+**Admins aren't affected.** Both switches apply to members only. Your own Smithers and its automations keep working, and promoting a member to admin gives them theirs back.
+
+**Turning off personal agents also pauses their automations.** An automation runs as its agent, so it can't keep going while the agent is off.
+
+### What members see
+
+- **The sidebar** no longer lists their Smithers. The **Agents** page tells them their admin has turned personal agents off, and that their chats are kept.
+- **An open chat tab** that tries to send a message gets a short explanation instead of an answer — without a Retry button, because retrying can't help until you change the setting.
+- **On Telegram,** messages to the personal-agent bot go unanswered. Bots connected to shared agents keep working.
+- **In the Automations tab** of their Smithers, a note explains that automations are paused. **New automation** and **Enable** are disabled; **Disable** and **Delete** still work.
+
+Every refused message is recorded in the [audit trail](/concepts/audit-trail/) as `chat.policy_refused`, and every change to the switches as `settings.updated`.
+
+## Monthly budgets
+
+<Badge text="Enterprise" variant="note" />
+
+A budget is a limit on what Pinchy estimates the instance — or one agent — has spent this calendar month. Months follow your [organization timezone](/reference/organization-timezone/).
+
+### Set a budget
+
+1. Open **Usage** from the sidebar and scroll to **Budgets**.
+2. In **Applies to**, pick **Whole instance** or one agent.
+3. Enter the **Monthly limit (USD)**.
+4. Choose what happens when it's used up:
+   - **Just tell me** — you're warned, everything keeps running.
+   - **Pause chats and automations** — new chat messages to the affected agents are refused, and their automations pause, until the month rolls over or you raise the limit.
+5. Click **Save budget**.
+
+You can have one budget for the whole instance and one per agent. Saving again for the same choice updates it. **Remove** deletes a budget.
+
+### Warnings
+
+From 80% of a budget, admins see a banner at the top of every page, with the amount spent and a link back to the budgets. When a budget is used up, the banner says so — and, for a pausing budget, that chats are paused. You can dismiss it; it comes back when the budget moves from 80% to 100%, and again next month.
+
+Each crossing is also written to the audit trail once per month: `budget.threshold_reached` at 80% and `budget.exceeded` at 100%.
+
+### What happens at 100%
+
+With **Pause chats and automations**:
+
+- A message sent to an affected agent in the web app gets a short explanation instead of an answer. Reading the chat history still works.
+- The agent's [automations](/guides/email-automations/) pause and pick up again next month.
+- An instance budget affects every agent, admins' included. To lift it, raise the limit or remove the budget.
+
+The message that pushes spend over the limit still finishes — spend is recorded after each reply, so it's the next message that's refused.
+
+### Limits worth knowing
+
+Budgets are built on the [Usage & Costs dashboard](/guides/usage-dashboard/) estimate, so they share its caveats:
+
+- **It's an estimate,** based on the prices in your provider's model configuration. Your provider's invoice is the source of truth.
+- **Some spend isn't counted.** Reading scanned PDFs while indexing a knowledge base, and the vision model a plugin calls to read a scanned attachment, record tokens but no price. Local and Ollama Cloud models are priced at zero.
+- **Telegram isn't paused.** Telegram messages go straight to the agent, so a used-up budget doesn't stop them. Their cost still counts toward every budget.
+- **A turn counts in the month it was recorded.** If Pinchy was down when a turn finished, it lands in the month Pinchy recorded it.
+
+### Without a license
+
+If your license expires, existing budgets keep being enforced — an expired license never quietly lifts a limit you set. You can still remove a budget, so you're never stuck with paused chats, but setting a new one needs an active license again.

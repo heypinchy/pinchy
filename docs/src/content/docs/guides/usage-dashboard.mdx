@@ -64,6 +64,10 @@ A few honest caveats:
 - **Local Ollama shows "—" for cost.** Local models record token counts but have no pricing config. The dashboard shows a dash instead of $0.00 to make this clear.
 - **Tool execution time isn't tracked here.** Only the LLM tokens count. The Audit Trail at `/audit` is where you go for tool-use details.
 
+## Budgets <Badge text="Enterprise" variant="note" />
+
+Below the dashboard, **Budgets** lets you set a monthly spending limit for the whole instance or a single agent, built on the same estimate. You're warned at 80%, and at 100% a budget either just tells you or pauses new chats and automations until the month is over. See [Keep Costs Predictable](/guides/cost-governance/#monthly-budgets).
+
 ## Export <Badge text="Enterprise" variant="note" />
 
 With an active Enterprise license, the **Export CSV** button (top-right) downloads the current view — period and agent filter applied — as a CSV file. The export includes cache read and write tokens alongside the regular token columns. Useful for finance hand-offs or feeding the data into your own dashboards.
