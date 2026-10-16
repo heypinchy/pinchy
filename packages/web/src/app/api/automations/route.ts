@@ -10,6 +10,10 @@ import { scrubEmails } from "@/lib/audit";
 import { deferAuditLog } from "@/lib/audit-deferred";
 import { EMAIL_READ_OPERATIONS } from "@/lib/tool-registry";
 import {
+  arePersonalAutomationsPausedFor,
+  MEMBER_AUTOMATIONS_DISABLED,
+} from "@/lib/instance-policy";
+import {
   resolveWorkflowAgent,
   resolveWorkflowAgentFromQuery,
 } from "@/lib/email-workflows/resolve-agent";
@@ -99,6 +103,12 @@ export const POST = withAuth(async (request, _ctx, session) => {
   );
   if ("error" in resolved) return resolved.error;
   const { agent } = resolved;
+
+  // Settings → Organization → Member access. For a personal agent the caller
+  // past the visibility gate IS its owner, so their role is the owner's role.
+  if (await arePersonalAutomationsPausedFor(agent, session.user.role)) {
+    return NextResponse.json(MEMBER_AUTOMATIONS_DISABLED, { status: 403 });
+  }
 
   // Every requested mailbox must be one the agent is allowed to READ — a
   // workflow's trigger lists and reads mail, so a draft/send-only grant is not

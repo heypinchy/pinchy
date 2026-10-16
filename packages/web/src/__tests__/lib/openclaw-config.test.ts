@@ -6771,6 +6771,89 @@ describe("restart-state integration", () => {
     expect(genericBinding).toBeUndefined();
   });
 
+  it("binds no member to a personal-agent bot while members may not use a personal agent", async () => {
+    // Settings → Organization → Member access. user-a is the admin who owns
+    // the bot's Smithers; user-b is a member. Skipping only user-b's OWN
+    // binding is not enough: the routing falls back to the bot owner's agent,
+    // which would hand a member the admin's private Smithers.
+    let callCount = 0;
+    mockedDb.select.mockReturnValue({
+      from: vi.fn().mockImplementation(() => {
+        callCount++;
+        if (callCount === 1) {
+          return Object.assign(
+            Promise.resolve([
+              {
+                id: "admin-smithers",
+                name: "Smithers",
+                model: "m",
+                allowedTools: [],
+                isPersonal: true,
+                ownerId: "user-a",
+              },
+              {
+                id: "user-b-smithers",
+                name: "Smithers",
+                model: "m",
+                allowedTools: [],
+                isPersonal: true,
+                ownerId: "user-b",
+              },
+            ]),
+            { innerJoin: mockInnerJoin([]), where: vi.fn().mockResolvedValue([]) }
+          );
+        }
+        if (callCount === 5) {
+          return Object.assign(
+            Promise.resolve([
+              { userId: "user-a", channel: "telegram", channelUserId: "111222333" },
+              { userId: "user-b", channel: "telegram", channelUserId: "444555666" },
+            ]),
+            { innerJoin: mockInnerJoin([]), where: vi.fn().mockResolvedValue([]) }
+          );
+        }
+        if (callCount === 6) {
+          // users: who is an admin (read only because the switch is off)
+          return Object.assign(
+            Promise.resolve([
+              { id: "user-a", role: "admin" },
+              { id: "user-b", role: "member" },
+            ]),
+            { innerJoin: mockInnerJoin([]), where: vi.fn().mockResolvedValue([]) }
+          );
+        }
+        return Object.assign(Promise.resolve([]), {
+          innerJoin: mockInnerJoin([]),
+          where: vi.fn().mockResolvedValue([]),
+        });
+      }),
+    } as never);
+
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "telegram_bot_token:admin-smithers") return "123456:ABC-token";
+      return null;
+    });
+    const realPrefix = mockGetSettingsByPrefix.getMockImplementation()!;
+    mockGetSettingsByPrefix.mockImplementation(async (prefix: string) =>
+      prefix === "policy."
+        ? new Map([["policy.member_personal_agents", "false"]])
+        : realPrefix(prefix)
+    );
+
+    try {
+      await regenerateOpenClawConfig();
+    } finally {
+      mockGetSettingsByPrefix.mockImplementation(realPrefix);
+    }
+
+    const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
+    const peerIds = config.bindings.map(
+      (b: { match: { peer?: { id: string } } }) => b.match.peer?.id
+    );
+    expect(peerIds).toContain("111222333");
+    expect(peerIds).not.toContain("444555666");
+  });
+
   it("should not include Telegram config when no bot token is configured", async () => {
     mockedDb.select.mockReturnValue({
       from: mockFrom([

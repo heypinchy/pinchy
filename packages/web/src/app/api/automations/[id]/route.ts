@@ -2,13 +2,17 @@ import { NextResponse } from "next/server";
 import { eq } from "drizzle-orm";
 
 import { db } from "@/db";
-import { agents, emailWorkflows } from "@/db/schema";
+import { agents, emailWorkflows, users } from "@/db/schema";
 import { withAuth } from "@/lib/api-auth";
 import { parseRequestBody } from "@/lib/api-validation";
 import { updateAutomationSchema } from "@/lib/schemas/automations";
 import { scrubEmails } from "@/lib/audit";
 import { deferAuditLog } from "@/lib/audit-deferred";
 import { canManageAgentWorkflows } from "@/lib/email-workflows/authz";
+import {
+  arePersonalAutomationsPausedFor,
+  MEMBER_AUTOMATIONS_DISABLED,
+} from "@/lib/instance-policy";
 
 type RouteContext = { params: Promise<{ id: string }> };
 
@@ -69,9 +73,13 @@ async function loadWorkflowWithAgent(id: string) {
       agentName: agents.name,
       isPersonal: agents.isPersonal,
       ownerId: agents.ownerId,
+      // The OWNER's role, not the caller's: an admin stopping a member's
+      // runaway automation acts on a workflow the member policy still governs.
+      ownerRole: users.role,
     })
     .from(emailWorkflows)
     .innerJoin(agents, eq(agents.id, emailWorkflows.agentId))
+    .leftJoin(users, eq(users.id, agents.ownerId))
     .where(eq(emailWorkflows.id, id));
   return row;
 }
@@ -104,6 +112,14 @@ export const PATCH = withAuth<RouteContext>(async (request, { params }, session)
   // without an audit row — an unchanged state is not an event.
   if (workflow.enabled === enabled) {
     return NextResponse.json({ id, enabled });
+  }
+
+  // Switching OFF is always allowed — stopping is never what the policy is
+  // against. Switching ON is refused while the policy pauses this agent's
+  // automations, for an admin too: the loader would still skip it, so the
+  // answer would be a workflow that reads "enabled" and never runs.
+  if (enabled && (await arePersonalAutomationsPausedFor(workflow, workflow.ownerRole))) {
+    return NextResponse.json(MEMBER_AUTOMATIONS_DISABLED, { status: 403 });
   }
 
   await db

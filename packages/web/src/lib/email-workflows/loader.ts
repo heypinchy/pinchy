@@ -1,6 +1,7 @@
 import { eq } from "drizzle-orm";
 import { db } from "@/db";
-import { agents, emailWorkflows, emailWorkflowConnections } from "@/db/schema";
+import { agents, emailWorkflows, emailWorkflowConnections, users } from "@/db/schema";
+import { getInstancePolicy, arePersonalAutomationsPaused } from "@/lib/instance-policy";
 import type { WorkflowForDispatch } from "@/lib/email-workflows/dispatch";
 
 /**
@@ -95,8 +96,16 @@ export interface WorkflowLoadResult {
  * workflow with no connections before this function can see it at all — not in
  * `units`, not in `unrunnable`, and therefore not in the set of ids the sweep
  * writes `status` for, so it went on displaying `active` while doing nothing.
+ *
+ * A workflow the instance policy pauses (Settings → Organization → Member
+ * access: a member's personal agent, with member automations or personal
+ * agents switched off) is skipped and NOT reported. Nothing is wrong with it —
+ * `unrunnable` would turn it into an `error` badge — and it resumes, `enabled`
+ * untouched, the moment the switch is turned back on. The Automations tab says
+ * why it is not running.
  */
 export async function loadDispatchableWorkflows(): Promise<WorkflowLoadResult> {
+  const policy = await getInstancePolicy();
   const rows = await db
     .select({
       workflowId: emailWorkflows.id,
@@ -108,11 +117,13 @@ export async function loadDispatchableWorkflows(): Promise<WorkflowLoadResult> {
       createdBy: emailWorkflows.createdBy,
       isPersonal: agents.isPersonal,
       ownerId: agents.ownerId,
+      ownerRole: users.role,
       connectionId: emailWorkflowConnections.connectionId,
       sinceTs: emailWorkflowConnections.sinceTs,
     })
     .from(emailWorkflows)
     .innerJoin(agents, eq(agents.id, emailWorkflows.agentId))
+    .leftJoin(users, eq(users.id, agents.ownerId))
     .leftJoin(emailWorkflowConnections, eq(emailWorkflowConnections.workflowId, emailWorkflows.id))
     .where(eq(emailWorkflows.enabled, true));
 
@@ -130,6 +141,8 @@ export async function loadDispatchableWorkflows(): Promise<WorkflowLoadResult> {
     });
   };
   for (const row of rows) {
+    // Paused by policy — not broken, so neither a unit nor `unrunnable`.
+    if (arePersonalAutomationsPaused(row, row.ownerRole, policy)) continue;
     // The LEFT join's unmatched row: an enabled workflow with no connections at
     // all. Checked first because it is the row-shape question — the recipient
     // is moot for a workflow with nothing to read. A workflow that has lost both

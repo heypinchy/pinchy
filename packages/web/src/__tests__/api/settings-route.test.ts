@@ -157,6 +157,27 @@ describe("POST /api/settings", () => {
     expect(setSetting).toHaveBeenCalledWith("default_provider", "openai", false);
   });
 
+  it("refuses a member-access policy key — those go through /api/settings/governance", async () => {
+    // Written here, a switch would get a value-less `config.changed` row and
+    // skip the OpenClaw/Telegram refresh that closes a member's Telegram door.
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
+      user: { id: "admin-1", role: "admin" },
+      expires: "",
+    } as any);
+    const { setSetting } = await import("@/lib/settings");
+
+    const request = new NextRequest("http://localhost/api/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key: "policy.member_personal_agents", value: "false" }),
+    });
+    const response = await POST(request);
+
+    expect(response.status).toBe(400);
+    expect((await response.json()).error).toMatch(/\/api\/settings\/governance/);
+    expect(setSetting).not.toHaveBeenCalled();
+  });
+
   it("returns 400 on missing key (no longer crashes with 500)", async () => {
     vi.mocked(auth.api.getSession).mockResolvedValueOnce({
       user: { id: "admin-1", role: "admin" },

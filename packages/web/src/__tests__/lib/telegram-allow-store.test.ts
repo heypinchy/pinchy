@@ -637,6 +637,53 @@ describe("telegram-allow-store", () => {
       expect(written.allowFrom).toContain("111222333");
     });
 
+    it("leaves members off a personal-agent bot while members may not use a personal agent", async () => {
+      // The personal-agent bot routes each linked user's DMs to THEIR OWN
+      // Smithers. With that switched off, a member must not get through at all
+      // — the routing fallback would otherwise hand them the bot owner's agent.
+      setupDbMocks({
+        agents: [
+          {
+            id: "smithers-1",
+            visibility: "restricted",
+            isPersonal: true,
+            deletedAt: null,
+            avatarSeed: "__smithers__",
+          },
+          {
+            id: "shared-1",
+            visibility: "all",
+            isPersonal: false,
+            deletedAt: null,
+            avatarSeed: null,
+          },
+        ],
+        channelLinks: [
+          { userId: "member-1", channelUserId: "111" },
+          { userId: "admin-1", channelUserId: "222" },
+        ],
+        users: [
+          { id: "member-1", role: "member", banned: false },
+          { id: "admin-1", role: "admin", banned: false },
+        ],
+      });
+      mockSettings.set("telegram_bot_token:smithers-1", "token-1");
+      mockSettings.set("telegram_bot_token:shared-1", "token-2");
+      mockSettings.set("policy.member_personal_agents", "false");
+
+      await recalculateTelegramAllowStores();
+
+      const storeFor = (account: string) =>
+        JSON.parse(
+          mockWriteFileSync.mock.calls.find((c: unknown[]) =>
+            (c[0] as string).includes(`telegram-${account}-allowFrom.json`)
+          )![1] as string
+        ).allowFrom;
+      expect(storeFor("smithers-1")).toEqual(["222"]);
+      // A shared agent's bot is not a personal agent; the switch leaves it alone.
+      expect(storeFor("shared-1")).toEqual(["111", "222"]);
+    });
+
     it("excludes banned users", async () => {
       setupDbMocks({
         agents: [

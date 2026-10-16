@@ -21,6 +21,7 @@ import {
 } from "@/db/schema";
 import { makeNextRequest, routeContext } from "@/test-helpers/route";
 import type { AgentVisibility } from "@/db/enums";
+import { setInstancePolicy } from "@/lib/instance-policy";
 
 const { getSessionMock, deferAuditLogMock, licenseStateMock } = vi.hoisted(() => ({
   getSessionMock: vi.fn(),
@@ -352,6 +353,62 @@ describe("Automations management API", () => {
         routeContext({ id: "ghost" })
       );
       expect(res.status).toBe(404);
+    });
+  });
+
+  describe("PATCH while members may not run automations on a personal agent", () => {
+    beforeEach(async () => {
+      await setInstancePolicy({ memberPersonalAgents: true, memberAutomations: false });
+    });
+
+    function patch(id: string, enabled: boolean) {
+      return PATCH(
+        req(`http://localhost/api/automations/${id}`, { method: "PATCH", body: { enabled } }),
+        routeContext({ id })
+      );
+    }
+
+    it("refuses to switch a member's paused automation on", async () => {
+      asMember(OWNER);
+      const agent = await seedAgent({ isPersonal: true, ownerId: OWNER });
+      const wf = await seedWorkflow(agent.id, { enabled: false, createdBy: OWNER });
+
+      const res = await patch(wf.id, true);
+
+      expect(res.status).toBe(403);
+      expect(await res.json()).toMatchObject({ code: "member_automations_disabled" });
+      expect((await loadWorkflow(wf.id)).enabled).toBe(false);
+    });
+
+    it("refuses an admin too — it would be switched on and still never run", async () => {
+      asAdmin(ADMIN);
+      const agent = await seedAgent({ isPersonal: true, ownerId: OWNER });
+      const wf = await seedWorkflow(agent.id, { enabled: false, createdBy: OWNER });
+
+      const res = await patch(wf.id, true);
+
+      expect(res.status).toBe(403);
+    });
+
+    it("still lets the member switch one off — stopping is never what the policy is against", async () => {
+      asMember(OWNER);
+      const agent = await seedAgent({ isPersonal: true, ownerId: OWNER });
+      const wf = await seedWorkflow(agent.id, { enabled: true, createdBy: OWNER });
+
+      const res = await patch(wf.id, false);
+
+      expect(res.status).toBe(200);
+      expect((await loadWorkflow(wf.id)).enabled).toBe(false);
+    });
+
+    it("leaves an admin's own personal-agent automation alone", async () => {
+      asAdmin(ADMIN);
+      const agent = await seedAgent({ isPersonal: true, ownerId: ADMIN });
+      const wf = await seedWorkflow(agent.id, { enabled: false, createdBy: ADMIN });
+
+      const res = await patch(wf.id, true);
+
+      expect(res.status).toBe(200);
     });
   });
 

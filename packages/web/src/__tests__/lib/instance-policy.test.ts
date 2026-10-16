@@ -16,6 +16,7 @@ import {
   isPolicyKey,
   isPausedPersonalAgent,
   arePersonalAutomationsPaused,
+  arePersonalAutomationsPausedFor,
   POLICY_KEYS,
 } from "@/lib/instance-policy";
 
@@ -130,5 +131,26 @@ describe("arePersonalAutomationsPaused", () => {
 
   it("pauses nothing while both switches are on", () => {
     expect(arePersonalAutomationsPaused(personal, "member", ON)).toBe(false);
+  });
+});
+
+describe("arePersonalAutomationsPausedFor", () => {
+  beforeEach(() => getSettingsByPrefixMock.mockReset());
+
+  it("reads the policy for a member's personal agent", async () => {
+    getSettingsByPrefixMock.mockResolvedValue(new Map([[POLICY_KEYS.memberAutomations, "false"]]));
+    await expect(arePersonalAutomationsPausedFor({ isPersonal: true }, "member")).resolves.toBe(
+      true
+    );
+  });
+
+  it("answers a shared agent or an admin without reading anything", async () => {
+    await expect(arePersonalAutomationsPausedFor({ isPersonal: false }, "member")).resolves.toBe(
+      false
+    );
+    await expect(arePersonalAutomationsPausedFor({ isPersonal: true }, "admin")).resolves.toBe(
+      false
+    );
+    expect(getSettingsByPrefixMock).not.toHaveBeenCalled();
   });
 });

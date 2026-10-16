@@ -99,3 +99,23 @@ export function arePersonalAutomationsPaused(
     (!policy.memberPersonalAgents || !policy.memberAutomations)
   );
 }
+
+/**
+ * `arePersonalAutomationsPaused` with the policy read only when it can change
+ * the answer — a member's personal agent — so the shared-agent and admin paths
+ * cost no query.
+ */
+export async function arePersonalAutomationsPausedFor(
+  agent: { isPersonal: boolean },
+  ownerRole: string | null | undefined
+): Promise<boolean> {
+  if (!isMemberPersonalAgent(agent, ownerRole)) return false;
+  return arePersonalAutomationsPaused(agent, ownerRole, await getInstancePolicy());
+}
+
+/** The 403 for creating or switching on an automation the policy pauses. */
+export const MEMBER_AUTOMATIONS_DISABLED = {
+  error:
+    "Automations on personal agents are turned off on this instance. Existing ones are paused until your admin turns them back on.",
+  code: "member_automations_disabled",
+} as const;

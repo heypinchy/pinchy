@@ -22,12 +22,13 @@ import {
 } from "@/db/schema";
 import type { EmailWorkflowStatus } from "@/db/enums";
 import { loadDispatchableWorkflows } from "@/lib/email-workflows/loader";
+import { setInstancePolicy } from "@/lib/instance-policy";
 
 let userCounter = 0;
-async function seedUser() {
+async function seedUser(role: "member" | "admin" = "member") {
   const [row] = await db
     .insert(users)
-    .values({ email: `loader-${userCounter++}@test.local`, name: "Owner" })
+    .values({ email: `loader-${userCounter++}@test.local`, name: "Owner", role })
     .returning();
   return row;
 }
@@ -358,5 +359,54 @@ describe("email workflow loader — loadDispatchableWorkflows", () => {
     const mine = onlyWorkflow(await loadDispatchableWorkflows(), wf.id);
 
     expect(mine).toHaveLength(1);
+  });
+
+  describe("paused by Settings → Organization → Member access", () => {
+    async function enabledWorkflowOn(agentId: string, createdBy: string | null) {
+      const wf = await seedWorkflow({ agentId, enabled: true, createdBy });
+      const conn = await seedConnection();
+      await linkConnection(wf.id, conn.id, new Date());
+      return wf;
+    }
+
+    it("skips a member's personal-agent automation while member automations are off — paused, not broken", async () => {
+      await setInstancePolicy({ memberPersonalAgents: true, memberAutomations: false });
+      const member = await seedUser();
+      const agent = await seedAgent({ isPersonal: true, ownerId: member.id });
+      const wf = await enabledWorkflowOn(agent.id, member.id);
+
+      const result = await loadDispatchableWorkflows();
+
+      expect(onlyWorkflow(result, wf.id)).toHaveLength(0);
+      // Not `unrunnable`: the sweep turns that into the `error` status, and
+      // nothing is wrong with this automation. It resumes when the switch does.
+      expect(onlyUnrunnable(result, wf.id)).toHaveLength(0);
+    });
+
+    it("skips it too while members' personal agents are off — an automation runs as its agent", async () => {
+      await setInstancePolicy({ memberPersonalAgents: false, memberAutomations: true });
+      const member = await seedUser();
+      const agent = await seedAgent({ isPersonal: true, ownerId: member.id });
+      const wf = await enabledWorkflowOn(agent.id, member.id);
+
+      const result = await loadDispatchableWorkflows();
+
+      expect(onlyWorkflow(result, wf.id)).toHaveLength(0);
+      expect(onlyUnrunnable(result, wf.id)).toHaveLength(0);
+    });
+
+    it("keeps running an admin's personal-agent automation and a shared agent's", async () => {
+      await setInstancePolicy({ memberPersonalAgents: false, memberAutomations: false });
+      const admin = await seedUser("admin");
+      const adminSmithers = await seedAgent({ isPersonal: true, ownerId: admin.id });
+      const adminWf = await enabledWorkflowOn(adminSmithers.id, admin.id);
+      const shared = await seedAgent({ isPersonal: false });
+      const sharedWf = await enabledWorkflowOn(shared.id, admin.id);
+
+      const result = await loadDispatchableWorkflows();
+
+      expect(onlyWorkflow(result, adminWf.id)).toHaveLength(1);
+      expect(onlyWorkflow(result, sharedWf.id)).toHaveLength(1);
+    });
   });
 });
