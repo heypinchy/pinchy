@@ -16,6 +16,7 @@ import {
 import { directSessionKey } from "@/lib/session-key";
 import { getUserGroupIds, getAgentGroupIds } from "@/lib/groups";
 import { getLicenseState } from "@/lib/enterprise";
+import { getExhaustedBlockingBudget } from "@/lib/budgets";
 import { buildMemoryPromptBlock } from "@/lib/memory-prompt";
 import { appendAuditLog } from "@/lib/audit";
 import { recordAuditFailure } from "@/lib/audit-deferred";
@@ -307,14 +308,15 @@ export class ClientRouter {
    */
   private async auditPolicyRefusal(
     agent: { id: string; name: string },
-    reason: "personal_agent_disabled"
+    reason: "personal_agent_disabled" | "budget_exhausted",
+    extra: Record<string, unknown> = {}
   ): Promise<void> {
     const auditEntry = {
       actorType: "user" as const,
       actorId: this.userId,
       eventType: "chat.policy_refused" as const,
       resource: `agent:${agent.id}`,
-      detail: { reason, agent: { id: agent.id, name: agent.name } },
+      detail: { reason, agent: { id: agent.id, name: agent.name }, ...extra },
       outcome: "failure" as const,
     };
     try {
@@ -414,6 +416,25 @@ export class ClientRouter {
       message.content.some((part) => part.type === "image_url")
     ) {
       this.sendToClient(clientWs, { type: "error", code: "PROTOCOL_OUTDATED" });
+      return;
+    }
+
+    // A blocking cost budget (#36) used up for this month — the agent's own or
+    // the instance's. Checked for sends only: history and abort cost nothing.
+    // Spend is recorded after a turn, so the turn that crossed the line has
+    // finished; this is the next one.
+    const budget = await getExhaustedBlockingBudget(agent.id);
+    if (budget) {
+      this.sendToClient(clientWs, {
+        type: "error",
+        code: "policy_budget_exhausted",
+        message: budget.agent
+          ? `${agent.name} has used its monthly budget. It's available again next month, or sooner if your admin raises the budget.`
+          : "This Pinchy has used its monthly budget. Agents are available again next month, or sooner if your admin raises the budget.",
+      });
+      await this.auditPolicyRefusal(agent, "budget_exhausted", {
+        budget: { id: budget.id, period: budget.period },
+      });
       return;
     }
 

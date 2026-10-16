@@ -19,6 +19,8 @@ import {
   emailWorkflows,
   emailWorkflowConnections,
   integrationConnections,
+  usageRecords,
+  costBudgets,
 } from "@/db/schema";
 import type { EmailWorkflowStatus } from "@/db/enums";
 import { loadDispatchableWorkflows } from "@/lib/email-workflows/loader";
@@ -407,6 +409,67 @@ describe("email workflow loader — loadDispatchableWorkflows", () => {
 
       expect(onlyWorkflow(result, adminWf.id)).toHaveLength(1);
       expect(onlyWorkflow(result, sharedWf.id)).toHaveLength(1);
+    });
+  });
+
+  describe("paused by a blocking cost budget used up this month", () => {
+    async function spendNow(agentId: string, usd: string) {
+      await db.insert(usageRecords).values({
+        userId: "system",
+        agentId,
+        agentName: "Penny",
+        sessionKey: `agent:${agentId}:inbox:x`,
+        inputTokens: 1,
+        outputTokens: 1,
+        estimatedCostUsd: usd,
+      });
+    }
+
+    async function enabledWorkflowOn(agentId: string, createdBy: string | null) {
+      const wf = await seedWorkflow({ agentId, enabled: true, createdBy });
+      const conn = await seedConnection();
+      await linkConnection(wf.id, conn.id, new Date());
+      return wf;
+    }
+
+    it("skips the agent's automations, without reporting them broken", async () => {
+      const admin = await seedUser("admin");
+      const agent = await seedAgent();
+      const wf = await enabledWorkflowOn(agent.id, admin.id);
+      await spendNow(agent.id, "6.000000");
+      await db
+        .insert(costBudgets)
+        .values({ agentId: agent.id, monthlyLimitUsd: "5.00", onExceeded: "block" });
+
+      const result = await loadDispatchableWorkflows();
+
+      expect(onlyWorkflow(result, wf.id)).toHaveLength(0);
+      expect(onlyUnrunnable(result, wf.id)).toHaveLength(0);
+    });
+
+    it("keeps running them when the used-up budget only notifies", async () => {
+      const admin = await seedUser("admin");
+      const agent = await seedAgent();
+      const wf = await enabledWorkflowOn(agent.id, admin.id);
+      await spendNow(agent.id, "6.000000");
+      await db
+        .insert(costBudgets)
+        .values({ agentId: agent.id, monthlyLimitUsd: "5.00", onExceeded: "notify" });
+
+      expect(onlyWorkflow(await loadDispatchableWorkflows(), wf.id)).toHaveLength(1);
+    });
+
+    it("skips every agent's automations when the instance budget blocks", async () => {
+      const admin = await seedUser("admin");
+      const spender = await seedAgent();
+      const other = await seedAgent();
+      const wf = await enabledWorkflowOn(other.id, admin.id);
+      await spendNow(spender.id, "11.000000");
+      await db
+        .insert(costBudgets)
+        .values({ agentId: null, monthlyLimitUsd: "10.00", onExceeded: "block" });
+
+      expect(onlyWorkflow(await loadDispatchableWorkflows(), wf.id)).toHaveLength(0);
     });
   });
 });

@@ -65,7 +65,9 @@ async function currentPeriod(now: Date): Promise<{ period: string; start: Date; 
   return { period: row.period, start: new Date(row.start), end: new Date(row.end) };
 }
 
-const spentSql = sql<string>`coalesce(sum(${usageRecords.estimatedCostUsd}), 0)`;
+// A function, not a module-level constant: evaluating it at import would make
+// every module that imports this one depend on the usage schema being loadable.
+const spentSql = () => sql<string>`coalesce(sum(${usageRecords.estimatedCostUsd}), 0)`;
 
 export async function getBudgetStatuses({ now = new Date() }: BudgetClock = {}): Promise<
   BudgetStatus[]
@@ -88,7 +90,7 @@ export async function getBudgetStatuses({ now = new Date() }: BudgetClock = {}):
   const agentIds = rows.flatMap((r) => (r.agentId ? [r.agentId] : []));
   const perAgent = agentIds.length
     ? await db
-        .select({ agentId: usageRecords.agentId, spent: spentSql })
+        .select({ agentId: usageRecords.agentId, spent: spentSql() })
         .from(usageRecords)
         .where(and(inPeriod, inArray(usageRecords.agentId, agentIds)))
         .groupBy(usageRecords.agentId)
@@ -96,7 +98,7 @@ export async function getBudgetStatuses({ now = new Date() }: BudgetClock = {}):
   const spentByAgent = new Map(perAgent.map((r) => [r.agentId, Number(r.spent)]));
 
   const instanceSpent = rows.some((r) => r.agentId === null)
-    ? Number((await db.select({ spent: spentSql }).from(usageRecords).where(inPeriod))[0].spent)
+    ? Number((await db.select({ spent: spentSql() }).from(usageRecords).where(inPeriod))[0].spent)
     : 0;
 
   return rows.map((r) => {

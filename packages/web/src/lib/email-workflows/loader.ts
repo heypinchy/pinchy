@@ -2,6 +2,7 @@ import { eq } from "drizzle-orm";
 import { db } from "@/db";
 import { agents, emailWorkflows, emailWorkflowConnections, users } from "@/db/schema";
 import { getInstancePolicy, arePersonalAutomationsPaused } from "@/lib/instance-policy";
+import { getBlockedByBudgets } from "@/lib/budgets";
 import type { WorkflowForDispatch } from "@/lib/email-workflows/dispatch";
 
 /**
@@ -103,9 +104,13 @@ export interface WorkflowLoadResult {
  * `unrunnable` would turn it into an `error` badge — and it resumes, `enabled`
  * untouched, the moment the switch is turned back on. The Automations tab says
  * why it is not running.
+ *
+ * The same goes for an agent a blocking cost budget (#36) has stopped this
+ * month — its own budget or the instance's. It resumes when the month rolls
+ * over or an admin raises the budget.
  */
 export async function loadDispatchableWorkflows(): Promise<WorkflowLoadResult> {
-  const policy = await getInstancePolicy();
+  const [policy, blocked] = await Promise.all([getInstancePolicy(), getBlockedByBudgets()]);
   const rows = await db
     .select({
       workflowId: emailWorkflows.id,
@@ -141,8 +146,9 @@ export async function loadDispatchableWorkflows(): Promise<WorkflowLoadResult> {
     });
   };
   for (const row of rows) {
-    // Paused by policy — not broken, so neither a unit nor `unrunnable`.
+    // Paused by policy or budget — not broken, so neither a unit nor `unrunnable`.
     if (arePersonalAutomationsPaused(row, row.ownerRole, policy)) continue;
+    if (blocked.instance || blocked.agentIds.has(row.agentId)) continue;
     // The LEFT join's unmatched row: an enabled workflow with no connections at
     // all. Checked first because it is the row-shape question — the recipient
     // is moot for a workflow with nothing to read. A workflow that has lost both

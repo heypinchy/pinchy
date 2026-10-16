@@ -69,6 +69,10 @@ vi.mock("@/db", () => ({
 vi.mock("@/db/schema", () => ({ agents: { id: "id" }, users: { id: "id" } }));
 vi.mock("drizzle-orm", () => ({ eq: vi.fn((col, val) => ({ col, val })) }));
 
+vi.mock("@/lib/budgets", () => ({
+  getExhaustedBlockingBudget: vi.fn().mockResolvedValue(null),
+}));
+
 vi.mock("@/lib/agent-access", () => ({
   assertAgentAccess: vi.fn(),
   effectiveVisibility: (v: string) => v,

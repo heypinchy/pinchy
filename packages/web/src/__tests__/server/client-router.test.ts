@@ -85,8 +85,12 @@ vi.mock("@/lib/enterprise", () => ({
   getLicenseState: vi.fn().mockResolvedValue("paid"),
 }));
 
-const { mockGetInstancePolicy } = vi.hoisted(() => ({
+const { mockGetInstancePolicy, mockGetExhaustedBlockingBudget } = vi.hoisted(() => ({
   mockGetInstancePolicy: vi.fn(),
+  mockGetExhaustedBlockingBudget: vi.fn(),
+}));
+vi.mock("@/lib/budgets", () => ({
+  getExhaustedBlockingBudget: mockGetExhaustedBlockingBudget,
 }));
 vi.mock("@/lib/instance-policy", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/instance-policy")>();
@@ -281,6 +285,8 @@ describe("ClientRouter", () => {
       memberPersonalAgents: true,
       memberAutomations: true,
     });
+    // Default: no budget has stopped anything.
+    mockGetExhaustedBlockingBudget.mockResolvedValue(null);
     // Default: user has no context
     mockUserFindFirst.mockResolvedValue({ id: "user-1", context: null });
     // Default: empty history for history-mode requests
@@ -2851,6 +2857,84 @@ describe("ClientRouter", () => {
       } finally {
         vi.useRealTimers();
       }
+    });
+  });
+
+  describe("an agent a blocking budget has stopped this month", () => {
+    const exhausted = {
+      id: "budget-1",
+      agent: { id: "agent-1", name: "Smithers" },
+      monthlyLimitUsd: 50,
+      onExceeded: "block",
+      spentUsd: 51.2,
+      period: "2026-10",
+      state: "exceeded",
+    };
+
+    it("refuses a send with a policy code instead of forwarding it to OpenClaw", async () => {
+      mockGetExhaustedBlockingBudget.mockResolvedValue(exhausted);
+      const clientWs = createMockClientWs();
+
+      await router.handleMessage(clientWs as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+      });
+
+      expect(mockChat).not.toHaveBeenCalled();
+      expect(mockGetExhaustedBlockingBudget).toHaveBeenCalledWith("agent-1");
+      const messages = clientWs.sent.map((s) => JSON.parse(s));
+      expect(messages).toHaveLength(1);
+      expect(messages[0]).toMatchObject({ type: "error", code: "policy_budget_exhausted" });
+      expect(messages[0].message).toMatch(/monthly budget/i);
+    });
+
+    it("says so when it is the whole instance's budget, not this agent's", async () => {
+      mockGetExhaustedBlockingBudget.mockResolvedValue({ ...exhausted, agent: null });
+      const clientWs = createMockClientWs();
+
+      await router.handleMessage(clientWs as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+      });
+
+      const [frame] = clientWs.sent.map((s) => JSON.parse(s));
+      expect(frame.message).toMatch(/this Pinchy/i);
+    });
+
+    it("audits the refused send with the budget it hit", async () => {
+      mockGetExhaustedBlockingBudget.mockResolvedValue(exhausted);
+      const clientWs = createMockClientWs();
+
+      await router.handleMessage(clientWs as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+      });
+
+      expect(mockAppendAuditLog).toHaveBeenCalledWith({
+        actorType: "user",
+        actorId: "user-1",
+        eventType: "chat.policy_refused",
+        resource: "agent:agent-1",
+        detail: {
+          reason: "budget_exhausted",
+          agent: { id: "agent-1", name: "Smithers" },
+          budget: { id: "budget-1", period: "2026-10" },
+        },
+        outcome: "failure",
+      });
+    });
+
+    it("still serves history — reading what was said costs nothing", async () => {
+      mockGetExhaustedBlockingBudget.mockResolvedValue(exhausted);
+      const clientWs = createMockClientWs();
+
+      await router.handleMessage(clientWs as any, { type: "history", agentId: "agent-1" });
+
+      expect(mockSessionsHistory).toHaveBeenCalled();
+      expect(mockGetExhaustedBlockingBudget).not.toHaveBeenCalled();
     });
   });
 
