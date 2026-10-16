@@ -10,8 +10,8 @@
   "dependencies": {
     "googleapis": "^173.0.0",
     "imapflow": "^1.6.5",
-    "mailparser": "^3.9.20",
-    "nodemailer": "^9.1.1"
+    "mailparser": "^3.9.40",
+    "nodemailer": "^10.1.2"
   },
   "devDependencies": {
     "@types/mailparser": "^3.4.6",

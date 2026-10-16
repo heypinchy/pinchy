@@ -101,3 +101,33 @@ reason = "astro — docs static-site build tooling (docs/pnpm-lock.yaml), not sh
 id = "GHSA-mh99-v99m-4gvg"
 ignoreUntil = 2026-10-25
 reason = "brace-expansion OOM — 5.x line IS fixed (override forces >=5.0.8); residual 1.1.16/2.1.2 come via three routes: archiver@5 (exceljs/pinchy-files), googleapis>googleapis-common>gaxios>rimraf (pinchy-email), and @eslint/config-array (dev toolchain). None has a compatible upstream fix (5.0.8's changed CJS export breaks minimatch@3/@5), and none is reachable: archiver walks fixed internal globs, rimraf deletes gaxios' own temp paths, eslint matches code-authored config globs — no attacker-controlled brace pattern reaches expand(). Re-triage when archiver depends on brace-expansion >=5.0.8."
+
+# Two advisories published in the 2026-10 wave have NO fixed release at all —
+# both ranges are "through the latest version" — so no bump or override can
+# clear them. Neither reaches Pinchy at runtime, and neither is in the range
+# `pnpm audit --audit-level=high --prod` fails on (braces is dev-only, sprintf-js
+# is moderate), so neither needs an `ignoreGhsas` mirror. ignoreUntil forces a
+# re-triage in three months, by which time either upstream ships a fix or the
+# consuming chain has moved.
+#
+# braces (GHSA-vfj7, stack-exhaustion DoS through deeply nested patterns):
+# reached only via eslint-config-next > @next/eslint-plugin-next > fast-glob >
+# micromatch — the lint toolchain, a devDependency absent from every image. The
+# patterns it expands are the code-authored globs in our eslint config.
+#
+# sprintf-js 1.0.3 (GHSA-hp3w, DoS through unbounded precision specifiers in an
+# attacker-controlled FORMAT string): reached via mammoth > argparse@1, a
+# production dependency of pinchy-files and web. argparse is required only by
+# mammoth's `bin/mammoth` CLI; `lib/index.js`, which is what Pinchy imports to
+# read DOCX files, never loads it. And argparse's own sprintf calls use format
+# strings written in argparse, never document content.
+
+[[IgnoredVulns]]
+id = "GHSA-vfj7-8cjw-p6xm"
+ignoreUntil = 2027-01-15
+reason = "braces <=3.0.3, no fixed release exists. Reached only via eslint-config-next > @next/eslint-plugin-next > fast-glob > micromatch (lint toolchain, devDependency, in no image); the patterns expanded are code-authored eslint config globs, never attacker input."
+
+[[IgnoredVulns]]
+id = "GHSA-hp3w-g68c-fv3c"
+ignoreUntil = 2027-01-15
+reason = "sprintf-js <=1.1.3, no fixed release exists. Reached via mammoth > argparse@1 (pinchy-files, web), but argparse is loaded only by mammoth's bin/mammoth CLI — lib/index.js, which Pinchy imports, never requires it — and argparse's sprintf format strings are its own literals, never document content."
