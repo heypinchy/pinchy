@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 
 import {
   DEFAULT_INDEX_SCHEDULE,
+  isScheduledIndexAgent,
   isSlotDue,
   latestPassedSlot,
   localClock,
@@ -141,5 +142,41 @@ describe("parseIndexSchedule", () => {
       DEFAULT_INDEX_SCHEDULE
     );
     expect(parseIndexSchedule(JSON.stringify({ time: "03:00" }))).toEqual(DEFAULT_INDEX_SCHEDULE);
+  });
+});
+
+describe("isScheduledIndexAgent", () => {
+  const kbAgent = {
+    deletedAt: null,
+    isPersonal: false,
+    allowedTools: ["knowledge_search"],
+    pluginConfig: { "pinchy-files": { allowed_paths: ["/data/handbook"] } },
+  };
+
+  it("includes a shared agent that searches the index and has folders granted", () => {
+    expect(isScheduledIndexAgent(kbAgent)).toBe(true);
+  });
+
+  // It never reads the index, so keeping the index current for it is work
+  // nobody uses — the folders it can read are reindexed on demand only.
+  it("leaves out an agent that reads files but never searches", () => {
+    expect(isScheduledIndexAgent({ ...kbAgent, allowedTools: ["pinchy_read"] })).toBe(false);
+  });
+
+  it("leaves out an agent with nothing granted", () => {
+    expect(isScheduledIndexAgent({ ...kbAgent, pluginConfig: null })).toBe(false);
+    expect(
+      isScheduledIndexAgent({ ...kbAgent, pluginConfig: { "pinchy-files": { allowed_paths: [] } } })
+    ).toBe(false);
+  });
+
+  // No admin can start a reindex for someone's personal agent; the schedule
+  // must not be a way round that.
+  it("leaves out a personal agent", () => {
+    expect(isScheduledIndexAgent({ ...kbAgent, isPersonal: true })).toBe(false);
+  });
+
+  it("leaves out a deleted agent", () => {
+    expect(isScheduledIndexAgent({ ...kbAgent, deletedAt: new Date() })).toBe(false);
   });
 });

@@ -21,6 +21,8 @@
  * question is "is the index current?", not "did every night run?".
  */
 
+import type { AgentPluginConfig } from "@/db/schema";
+
 export interface IndexSchedule {
   /** Whether Pinchy reindexes on its own. */
   enabled: boolean;
@@ -137,4 +139,36 @@ export function nextIndexRun(clock: LocalClock, schedule: IndexSchedule): NextIn
     time: schedule.time,
     day: today ? "today" : "tomorrow",
   };
+}
+
+/** The fields of an agent row that decide whether the nightly sweep reindexes it. */
+export interface ScheduledIndexCandidate {
+  deletedAt: Date | null;
+  isPersonal: boolean;
+  allowedTools: string[];
+  pluginConfig: AgentPluginConfig | null;
+}
+
+/** The folders an agent is granted — the same source the reindex route and the search route scope by. */
+export function grantedKnowledgePaths(pluginConfig: AgentPluginConfig | null): string[] {
+  return pluginConfig?.["pinchy-files"]?.allowed_paths ?? [];
+}
+
+/**
+ * Whether the nightly sweep reindexes this agent.
+ *
+ * Only agents that SEARCH the index: retrieval is scoped by the searching
+ * agent's grants, so the folders of agents with `knowledge_search` are exactly
+ * the folders any search can reach. An agent that only reads files never looks
+ * at the index, and embedding its folders every night would be work nobody
+ * uses. Personal agents are left out for parity with the manual route, which
+ * no admin can call for one.
+ */
+export function isScheduledIndexAgent(agent: ScheduledIndexCandidate): boolean {
+  return (
+    agent.deletedAt === null &&
+    !agent.isPersonal &&
+    agent.allowedTools.includes("knowledge_search") &&
+    grantedKnowledgePaths(agent.pluginConfig).length > 0
+  );
 }

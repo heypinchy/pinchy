@@ -18,6 +18,7 @@ export interface ShutdownDeps {
   stopChatErrorGc: ShutdownStopFn;
   stopApprovalSweep: ShutdownStopFn;
   stopAuditVerifyJob: ShutdownStopFn;
+  stopKbIndexScheduler: ShutdownStopFn;
   stopKbIndexWorker: ShutdownStopFn;
   stopUsagePoller: ShutdownStopFn;
   stopMemoryAuditWatcher: ShutdownStopFn;
@@ -39,6 +40,10 @@ export function buildShutdownSteps(deps: ShutdownDeps): ShutdownStopFn[] {
     () => deps.stopChatErrorGc(),
     () => deps.stopApprovalSweep(),
     () => deps.stopAuditVerifyJob(),
+    // Before the worker: the nightly schedule must not queue a job into a
+    // worker that has already stopped. Nothing is lost by stopping it — its
+    // sweep is persisted and the next boot carries on with it.
+    () => deps.stopKbIndexScheduler(),
     // Stops the poll for NEW index jobs. A run already in flight is not
     // awaited: it can have hours left, which is far past any container's
     // kill-grace period. It dies with the process and its job row stays
