@@ -6,6 +6,8 @@ import { parseRequestBody } from "@/lib/api-validation";
 import { knowledgeReindexSchema } from "@/lib/schemas/knowledge-base";
 import { type AgentPluginConfig } from "@/db/schema";
 import { enqueueIndexJob, getLatestIndexJobForAgent } from "@/lib/knowledge/index-jobs";
+import { isScheduledIndexAgent } from "@/lib/knowledge/index-schedule";
+import { getIndexScheduleStatus } from "@/lib/knowledge/index-schedule-store";
 import { reindexAuditEntry } from "@/lib/knowledge/reindex-audit";
 import { DEFAULT_ORG_ID } from "@/lib/knowledge/constants";
 import { kbEmbedderAvailable } from "@/lib/knowledge/kb-embedder";
@@ -218,13 +220,35 @@ export const GET = withAdmin<RouteContext>(async (_request, { params }, session)
   const agentOrError = await getAgentWithAccess(agentId, session.user.id!, session.user.role);
   if (agentOrError instanceof NextResponse) return agentOrError;
 
-  const job = await getLatestIndexJobForAgent(agentId);
-  if (!job) return NextResponse.json({ job: null });
+  const [job, status] = await Promise.all([
+    getLatestIndexJobForAgent(agentId),
+    getIndexScheduleStatus(),
+  ]);
+
+  /**
+   * Whether the nightly reindex keeps THIS agent current, and when it next
+   * runs. The setting is instance-wide; `included` is the per-agent half —
+   * only agents that search the index are swept, so an agent that merely
+   * reads files is reindexed on demand only. The answer to "do I still have
+   * to press the button?".
+   */
+  const schedule = {
+    enabled: status.enabled,
+    time: status.time,
+    timezone: status.timezone,
+    nextRun: status.nextRun,
+    included: isScheduledIndexAgent(agentOrError),
+  };
+
+  if (!job) return NextResponse.json({ job: null, schedule });
 
   return NextResponse.json({
+    schedule,
     job: {
       id: job.id,
       status: job.status,
+      /** `manual` for an admin's request, `scheduled` for the nightly run. */
+      trigger: job.trigger,
       /** Documents behind the run, and how many discovery found. `total` is null until discovery has walked every root. */
       processed: job.processed,
       total: job.total,

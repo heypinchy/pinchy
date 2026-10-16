@@ -911,17 +911,28 @@ export type AuditLogEntry =
       // purpose: the obvious next counter to want is a list of the paths that
       // failed, which is precisely what this HMAC-signed row must never carry.
       // Adding a counter here has to stay a decision, not a side effect.
+      //
+      // `trigger` says who decided the run should happen: `manual` for an
+      // admin's request, `scheduled` for the nightly reindex. Rows written
+      // before the schedule existed carry no trigger and were all manual.
+      // `sweepId` correlates one night's rows across agents (scheduled only).
+      //
+      // `ocr` is present only when the run sent scanned pages to a vision
+      // model: the model and how much was sent, never which files.
       eventType: "knowledge.reindex";
       detail: {
         agent: EntityRef;
         pathCount: number;
         jobId?: string;
+        trigger?: "manual" | "scheduled";
+        sweepId?: string;
         indexed?: number;
         skipped?: number;
         removed?: number;
         unsearchable?: number;
         failed?: number;
         archived?: number;
+        ocr?: { model: string; documents: number; pages: number; skippedPages: number };
         reason?: string;
       };
     })

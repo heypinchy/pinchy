@@ -130,6 +130,21 @@ export interface NextIndexRun {
   day: "today" | "tomorrow";
 }
 
+/**
+ * What an admin is shown about the nightly reindex: the setting, when it runs
+ * next, and what the last nights did. Times are org-local wall-clock values
+ * with the zone beside them — the same anchoring every scheduled thing in
+ * Pinchy uses — so two admins in different places read the same answer.
+ */
+export interface IndexScheduleStatus extends IndexSchedule {
+  timezone: string;
+  nextRun: NextIndexRun | null;
+  /** The sweep still queueing agents; `waiting` counts the agents not yet queued. */
+  currentSweep: { slot: string; startedAt: string; agentCount: number; waiting: number } | null;
+  /** The most recent sweep that queued all its agents. Their outcomes are on each agent's Index section. */
+  lastSweep: { slot: string; startedAt: string; agentCount: number } | null;
+}
+
 /** The next slot ahead of `clock`, or null while the schedule is off. */
 export function nextIndexRun(clock: LocalClock, schedule: IndexSchedule): NextIndexRun | null {
   if (!schedule.enabled) return null;

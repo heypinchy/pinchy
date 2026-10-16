@@ -43,6 +43,20 @@ vi.mock("@/lib/knowledge/index-jobs", () => ({
   getLatestIndexJobForAgent: (...args: unknown[]) => mockGetLatestIndexJobForAgent(...args),
 }));
 
+const mockGetIndexScheduleStatus = vi.fn();
+vi.mock("@/lib/knowledge/index-schedule-store", () => ({
+  getIndexScheduleStatus: () => mockGetIndexScheduleStatus(),
+}));
+
+const scheduleStatus = {
+  enabled: true,
+  time: "02:00",
+  timezone: "Europe/Vienna",
+  nextRun: { date: "2026-10-17", time: "02:00", day: "tomorrow" },
+  currentSweep: null,
+  lastSweep: null,
+};
+
 const mockDeferAuditLog = vi.fn();
 vi.mock("@/lib/audit-deferred", () => ({
   deferAuditLog: (...args: unknown[]) => mockDeferAuditLog(...args),
@@ -97,6 +111,9 @@ const agentRow = {
   id: "agent-1",
   name: "Smithers",
   pluginConfig: { "pinchy-files": { allowed_paths: ["/data/hr", "/data/legal"] } },
+  allowedTools: ["knowledge_search"],
+  isPersonal: false,
+  deletedAt: null,
 };
 
 describe("POST /api/agents/[agentId]/knowledge/reindex", () => {
@@ -335,6 +352,7 @@ describe("GET /api/agents/[agentId]/knowledge/reindex", () => {
     vi.clearAllMocks();
     mockGetSession.mockResolvedValue({ user: { id: "admin-1", role: "admin" } });
     mockGetAgentWithAccess.mockResolvedValue(agentRow);
+    mockGetIndexScheduleStatus.mockResolvedValue(scheduleStatus);
     GET = (await import("@/app/api/agents/[agentId]/knowledge/reindex/route")).GET;
   });
 
@@ -373,7 +391,51 @@ describe("GET /api/agents/[agentId]/knowledge/reindex", () => {
     mockGetLatestIndexJobForAgent.mockResolvedValueOnce(null);
     const res = await GET(makeGetRequest(), ctx as never);
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ job: null });
+    expect(await res.json()).toMatchObject({ job: null });
+  });
+
+  // "Do I still have to press the button?" is the question an admin brings to
+  // this section. The answer depends on the instance-wide setting AND on this
+  // agent: only agents that search the index are swept.
+  it("says the nightly run covers this agent, and when it runs next", async () => {
+    mockGetLatestIndexJobForAgent.mockResolvedValueOnce(null);
+
+    const body = await (await GET(makeGetRequest(), ctx as never)).json();
+
+    expect(body.schedule).toEqual({
+      enabled: true,
+      time: "02:00",
+      timezone: "Europe/Vienna",
+      nextRun: { date: "2026-10-17", time: "02:00", day: "tomorrow" },
+      included: true,
+    });
+  });
+
+  it("says the nightly run leaves out an agent that never searches the index", async () => {
+    mockGetAgentWithAccess.mockResolvedValueOnce({ ...agentRow, allowedTools: ["pinchy_read"] });
+    mockGetLatestIndexJobForAgent.mockResolvedValueOnce(null);
+
+    const body = await (await GET(makeGetRequest(), ctx as never)).json();
+
+    expect(body.schedule).toMatchObject({ enabled: true, included: false });
+  });
+
+  it("says whether the last run was the nightly one or an admin's", async () => {
+    mockGetLatestIndexJobForAgent.mockResolvedValueOnce(
+      makeJob({
+        status: "succeeded",
+        trigger: "scheduled",
+        sweepId: "sweep-1",
+        counts: ingestResult({ indexed: 1, skipped: 40 }),
+        finishedAt: new Date("2026-10-17T00:14:00Z"),
+      })
+    );
+
+    const body = await (await GET(makeGetRequest(), ctx as never)).json();
+
+    expect(body.job.trigger).toBe("scheduled");
+    // The sweep id is bookkeeping for the audit trail, not something to show.
+    expect(body.job).not.toHaveProperty("sweepId");
   });
 
   it("reports progress while a run is in flight", async () => {

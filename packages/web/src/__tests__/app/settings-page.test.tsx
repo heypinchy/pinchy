@@ -86,6 +86,12 @@ vi.mock("@/components/member-access-settings", () => ({
   MemberAccessSettings: () => <div data-testid="mock-member-access-settings">Member access</div>,
 }));
 
+vi.mock("@/components/knowledge-index-schedule-settings", () => ({
+  KnowledgeIndexScheduleSettings: () => (
+    <div data-testid="mock-knowledge-index-schedule">Knowledge Base Indexing</div>
+  ),
+}));
+
 vi.mock("@/components/settings-context", () => ({
   SettingsContext: ({
     userContext,
@@ -196,6 +202,17 @@ describe("Settings Page", () => {
 
   afterEach(() => {
     fetchSpy.mockRestore();
+  });
+
+  // The nightly reindex is read in the org timezone, so it lives next to it.
+  it("shows the nightly knowledge-base reindex on the Organization tab, beside the timezone", async () => {
+    vi.mocked(useSearchParams).mockReturnValue(readonlySearchParams("tab=organization"));
+    setupAdminFetchMocks();
+
+    render(<SettingsPage isAdmin={isCurrentTestAdmin} />);
+
+    expect(await screen.findByTestId("mock-knowledge-index-schedule")).toBeInTheDocument();
+    expect(screen.getByTestId("mock-timezone-settings")).toBeInTheDocument();
   });
 
   it("should render the page title", async () => {

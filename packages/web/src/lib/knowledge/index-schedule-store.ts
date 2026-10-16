@@ -16,8 +16,15 @@
  * makes), so read-modify-write on this row needs no lock.
  */
 import { getSetting, setSetting } from "@/lib/settings";
+import { getOrgTimezone } from "@/lib/settings-timezone";
 
-import { parseIndexSchedule, type IndexSchedule } from "./index-schedule";
+import {
+  localClock,
+  nextIndexRun,
+  parseIndexSchedule,
+  type IndexSchedule,
+  type IndexScheduleStatus,
+} from "./index-schedule";
 
 const SCHEDULE_KEY = "knowledge.index_schedule";
 const STATE_KEY = "knowledge.index_schedule_state";
@@ -110,4 +117,32 @@ function isSweep(value: unknown): value is IndexSweep {
     Array.isArray(sweep.pending) &&
     sweep.pending.every((id) => typeof id === "string")
   );
+}
+
+export async function getIndexScheduleStatus(now: Date = new Date()): Promise<IndexScheduleStatus> {
+  const [schedule, timezone, state] = await Promise.all([
+    getIndexSchedule(),
+    getOrgTimezone(),
+    getIndexScheduleState(),
+  ]);
+  return {
+    ...schedule,
+    timezone,
+    nextRun: nextIndexRun(localClock(now, timezone), schedule),
+    currentSweep: state.sweep
+      ? {
+          slot: state.sweep.slot,
+          startedAt: state.sweep.startedAt,
+          agentCount: state.sweep.agentCount,
+          waiting: state.sweep.pending.length,
+        }
+      : null,
+    lastSweep: state.lastSweep
+      ? {
+          slot: state.lastSweep.slot,
+          startedAt: state.lastSweep.startedAt,
+          agentCount: state.lastSweep.agentCount,
+        }
+      : null,
+  };
 }
