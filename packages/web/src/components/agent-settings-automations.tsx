@@ -5,12 +5,14 @@ import { toast } from "sonner";
 
 import { apiGet, apiPatch, apiDelete, errorMessage } from "@/lib/api-client";
 import type { AutomationListItem } from "@/lib/schemas/automations";
+import type { InstancePolicyInput } from "@/lib/schemas/governance";
 import type { EmailWorkflowFilter } from "@/lib/email-workflows/types";
 import type { EmailWorkflowStatus } from "@/db/enums";
 import { AgentSettingsAutomationCreateDialog } from "@/components/agent-settings-automation-create-dialog";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import {
   Table,
   TableBody,
@@ -71,8 +73,23 @@ const STATUS_VARIANT: Record<EmailWorkflowStatus, "default" | "secondary" | "des
  * flow. The management API enforces the same scope gate that hides this tab from
  * users who cannot manage the agent.
  */
-export function AgentSettingsAutomations({ agentId }: { agentId: string }) {
+export function AgentSettingsAutomations({
+  agentId,
+  memberPolicyApplies = false,
+}: {
+  agentId: string;
+  /**
+   * The viewer is a member looking at their own personal agent — the one case
+   * Settings → Organization → Member access governs. Admins and shared agents
+   * never ask.
+   */
+  memberPolicyApplies?: boolean;
+}) {
   const [items, setItems] = useState<AutomationListItem[]>([]);
+  // While paused, the server refuses creating or switching on (403
+  // member_automations_disabled) and the sweep skips these workflows. Disable
+  // and Delete stay: stopping is never what the policy is against.
+  const [paused, setPaused] = useState(false);
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<AutomationListItem | null>(null);
@@ -95,6 +112,21 @@ export function AgentSettingsAutomations({ agentId }: { agentId: string }) {
       setLoading(false);
     }
   }, [agentId]);
+
+  useEffect(() => {
+    if (!memberPolicyApplies) return;
+    let cancelled = false;
+    apiGet<InstancePolicyInput>("/api/settings/governance")
+      .then((policy) => {
+        if (!cancelled) setPaused(!policy.memberAutomations || !policy.memberPersonalAgents);
+      })
+      // Best effort: the routes enforce the policy either way; this only
+      // explains it ahead of a refused click.
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [memberPolicyApplies]);
 
   useEffect(() => {
     // Deferred past the effect body so the initial setState happens in a
@@ -149,10 +181,25 @@ export function AgentSettingsAutomations({ agentId }: { agentId: string }) {
             when you&apos;re ready — nothing runs until you enable it.
           </p>
         </div>
-        <Button size="sm" className="shrink-0" onClick={() => setCreateOpen(true)}>
+        <Button
+          size="sm"
+          className="shrink-0"
+          disabled={paused}
+          onClick={() => setCreateOpen(true)}
+        >
           New automation
         </Button>
       </div>
+
+      {paused && (
+        <Alert>
+          <AlertDescription>
+            Your admin has turned off automations on personal agents. The ones below are paused and
+            pick up where they left off if it&apos;s turned back on. You can still switch them off
+            or delete them.
+          </AlertDescription>
+        </Alert>
+      )}
 
       <AgentSettingsAutomationCreateDialog
         agentId={agentId}
@@ -217,7 +264,7 @@ export function AgentSettingsAutomations({ agentId }: { agentId: string }) {
                       <Button
                         size="sm"
                         variant={item.enabled ? "outline" : "default"}
-                        disabled={busyId === item.id}
+                        disabled={busyId === item.id || (paused && !item.enabled)}
                         onClick={() => handleToggle(item)}
                       >
                         {item.enabled ? "Disable" : "Enable"}

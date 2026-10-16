@@ -19,6 +19,7 @@ import { SettingsLicense } from "@/components/settings-license";
 import { TelegramLinkSettings } from "@/components/telegram-link-settings";
 import { SettingsSecurity } from "@/components/settings-security";
 import { TimezoneSettings } from "@/components/timezone-settings";
+import { MemberAccessSettings } from "@/components/member-access-settings";
 import { SecretsProvenanceCard } from "@/components/secrets-provenance-card";
 import { SettingsSupport } from "@/components/settings-support";
 import { useIntegrationHealth } from "@/hooks/use-integration-health";
@@ -343,7 +344,10 @@ export function SettingsPageContent({
 
             {isAdmin && (
               <TabsContent value="organization" keepMounted>
-                <TimezoneSettings />
+                <div className="space-y-6">
+                  <TimezoneSettings />
+                  <MemberAccessSettings />
+                </div>
               </TabsContent>
             )}
 

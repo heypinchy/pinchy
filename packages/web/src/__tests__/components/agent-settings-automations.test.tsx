@@ -255,4 +255,46 @@ describe("AgentSettingsAutomations", () => {
     // onCreated → load(): the list is re-fetched after a successful create.
     await waitFor(() => expect(listCalls).toBeGreaterThan(listCallsAfterLoad));
   });
+
+  describe("on a member's own personal agent while member automations are off", () => {
+    function mockPaused(list: unknown[] = mockAutomations) {
+      vi.mocked(global.fetch).mockImplementation(async (input) => {
+        const url = String(input);
+        if (url.startsWith("/api/automations?")) return jsonResponse(list);
+        if (url === "/api/settings/governance")
+          return jsonResponse({ memberPersonalAgents: true, memberAutomations: false });
+        return jsonResponse({ ok: true });
+      });
+    }
+
+    it("says the automations are paused and why", async () => {
+      mockPaused();
+      render(<AgentSettingsAutomations agentId={AGENT_ID} memberPolicyApplies />);
+
+      expect(
+        await screen.findByText(/turned off automations on personal agents/i)
+      ).toBeInTheDocument();
+    });
+
+    it("offers no way to create or switch one on, but keeps Disable and Delete", async () => {
+      mockPaused();
+      render(<AgentSettingsAutomations agentId={AGENT_ID} memberPolicyApplies />);
+      await screen.findByText(/turned off automations on personal agents/i);
+
+      expect(screen.getByRole("button", { name: "New automation" })).toBeDisabled();
+      expect(screen.getByRole("button", { name: "Enable" })).toBeDisabled();
+      expect(screen.getByRole("button", { name: "Disable" })).toBeEnabled();
+      expect(screen.getAllByRole("button", { name: "Delete" })[0]).toBeEnabled();
+    });
+
+    it("asks nothing about the policy where it cannot apply — an admin, or a shared agent", async () => {
+      mockList();
+      render(<AgentSettingsAutomations agentId={AGENT_ID} />);
+      await screen.findByText("File supplier invoices");
+
+      const urls = vi.mocked(global.fetch).mock.calls.map(([u]) => String(u));
+      expect(urls).not.toContain("/api/settings/governance");
+      expect(screen.getByRole("button", { name: "New automation" })).toBeEnabled();
+    });
+  });
 });

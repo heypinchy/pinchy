@@ -82,6 +82,10 @@ vi.mock("@/components/timezone-settings", () => ({
   TimezoneSettings: () => <div data-testid="mock-timezone-settings">Timezone</div>,
 }));
 
+vi.mock("@/components/member-access-settings", () => ({
+  MemberAccessSettings: () => <div data-testid="mock-member-access-settings">Member access</div>,
+}));
+
 vi.mock("@/components/settings-context", () => ({
   SettingsContext: ({
     userContext,
@@ -207,6 +211,16 @@ describe("Settings Page", () => {
   describe("Admin user", () => {
     beforeEach(() => {
       mockUseSession.mockReturnValue(adminSession);
+    });
+
+    it("puts Member access in the Organization tab, beside the timezone", async () => {
+      setupAdminFetchMocks();
+
+      render(<SettingsPage isAdmin={isCurrentTestAdmin} />);
+      await userEvent.click(await screen.findByRole("tab", { name: "Organization" }));
+
+      expect(screen.getByTestId("mock-member-access-settings")).toBeInTheDocument();
+      expect(screen.getByTestId("mock-timezone-settings")).toBeInTheDocument();
     });
 
     it("should render AI Provider, Users, Context, and Profile tabs", async () => {
@@ -513,6 +527,14 @@ describe("Settings Page", () => {
     beforeEach(() => {
       isCurrentTestAdmin = false;
       mockUseSession.mockReturnValue(userSession);
+    });
+
+    it("never renders the Member access switches for a member", () => {
+      vi.mocked(global.fetch).mockImplementation(async () => mockContextFetches());
+
+      render(<SettingsPage isAdmin={isCurrentTestAdmin} />);
+
+      expect(screen.queryByTestId("mock-member-access-settings")).not.toBeInTheDocument();
     });
 
     it("should show Context and Profile tabs but not Provider or Users", () => {

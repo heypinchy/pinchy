@@ -1745,6 +1745,13 @@ export function useWsRuntime(
           const isAttachmentErrorCode =
             typeof data.code === "string" && data.code.startsWith("attachment_");
 
+          // `policy_` codes are refusals by an instance policy (a member's
+          // personal agent switched off, a budget used up). Nothing the user
+          // can retry will change the answer — only an admin can — so the
+          // bubble carries the server's explanation and no Retry button.
+          // Matched by prefix for the same reason as `attachment_` above.
+          const isPolicyRefusal = typeof data.code === "string" && data.code.startsWith("policy_");
+
           const error: ChatError = data.providerError
             ? {
                 agentName: data.agentName,
@@ -1770,10 +1777,14 @@ export function useWsRuntime(
                   role: "assistant",
                   content: "",
                   error,
-                  retryable: true,
-                  retryReason: hasReceivedChunkRef.current
-                    ? ("partial_stream_failure" as const)
-                    : ("send_failure" as const),
+                  ...(isPolicyRefusal
+                    ? {}
+                    : {
+                        retryable: true,
+                        retryReason: hasReceivedChunkRef.current
+                          ? ("partial_stream_failure" as const)
+                          : ("send_failure" as const),
+                      }),
                 }
               )
             )
