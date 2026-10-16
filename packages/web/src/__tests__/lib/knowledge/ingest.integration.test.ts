@@ -668,6 +668,74 @@ it("removes a root's documents when the root is readable and its files are gone"
   expect(await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID))).toHaveLength(0);
 });
 
+// Skipping an unreadable root is right, but silent skipping is how an
+// unmounted share reports "0 indexed, success" night after night. The caller
+// decides what a skipped root means for its run; ingest just has to say.
+it("tells the caller about a root it could not read", async () => {
+  const onSkippedRoot = vi.fn();
+  const missing = join(tmpRoot, "not-mounted");
+
+  await ingestPaths(ORG_ID, [missing], fakeDeps().deps, { onSkippedRoot });
+
+  expect(onSkippedRoot).toHaveBeenCalledWith(missing, "unreadable");
+});
+
+// A failed network mount under Docker is not an error, it is an EMPTY
+// directory: the bind mount shows the bare mountpoint. From inside the
+// container that is indistinguishable from a folder someone emptied, and
+// taking it at its word deletes every document indexed from it. A caller that
+// runs unattended can ask ingest not to.
+it("keeps an emptied root's documents when asked to, and says it skipped the root", async () => {
+  const share = join(tmpRoot, "share");
+  writePdf(share, "handbook.pdf");
+  writePdf(share, "policy.pdf", "policy");
+  const { deps } = fakeDeps();
+  await ingestPaths(ORG_ID, [share], deps);
+  rmSync(join(share, "handbook.pdf"));
+  rmSync(join(share, "policy.pdf"));
+  const onSkippedRoot = vi.fn();
+
+  const result = await ingestPaths(ORG_ID, [share], deps, {
+    keepEmptiedRoots: true,
+    onSkippedRoot,
+  });
+
+  expect(result).toEqual(counts());
+  expect(onSkippedRoot).toHaveBeenCalledWith(share, "emptied");
+  expect(await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID))).toHaveLength(2);
+});
+
+// Only a folder that HAD documents is suspicious when it comes up empty. A
+// freshly granted empty folder is just empty.
+it("treats a root that never held documents as simply empty, even when asked to keep emptied roots", async () => {
+  const fresh = join(tmpRoot, "fresh");
+  mkdirSync(fresh, { recursive: true });
+  const onSkippedRoot = vi.fn();
+
+  const result = await ingestPaths(ORG_ID, [fresh], fakeDeps().deps, {
+    keepEmptiedRoots: true,
+    onSkippedRoot,
+  });
+
+  expect(result).toEqual(counts());
+  expect(onSkippedRoot).not.toHaveBeenCalled();
+});
+
+// The guard is about a folder that is empty as a WHOLE. A folder that still
+// holds files reconciles as always: a deleted document leaves the index.
+it("still removes a deleted document from a root that keeps other files, when asked to keep emptied roots", async () => {
+  const share = join(tmpRoot, "share");
+  writePdf(share, "handbook.pdf");
+  writePdf(share, "policy.pdf", "policy");
+  const { deps } = fakeDeps();
+  await ingestPaths(ORG_ID, [share], deps);
+  rmSync(join(share, "handbook.pdf"));
+
+  const result = await ingestPaths(ORG_ID, [share], deps, { keepEmptiedRoots: true });
+
+  expect(result).toEqual(counts({ skipped: 1, removed: 1 }));
+});
+
 it("still reports a total of zero for roots with nothing to ingest", async () => {
   const { deps } = fakeDeps();
   const { seen, onProgress } = progressRecorder();

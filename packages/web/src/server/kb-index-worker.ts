@@ -107,6 +107,14 @@ async function resolveIngestDeps(tally: { current: OcrTally | null }): Promise<I
   };
 }
 
+/**
+ * Why a run that found none of its folders failed. Shown to the admin as the
+ * run's error and recorded as the audit reason, so it names what to check and
+ * never a path.
+ */
+export const FOLDERS_UNAVAILABLE_ERROR =
+  "None of the granted folders could be read — they were missing, unreadable, or came up empty while the index still holds their documents — so the index was left as it was. If they live on a network share, check that it is mounted.";
+
 export interface RunIndexJobOptions {
   /** Test seam: injects a deterministic embedder/extractor. Production resolves them from the bundled in-process embeddinggemma GGUF. */
   deps?: IngestDeps;
@@ -132,6 +140,9 @@ export async function runNextIndexJob(opts: RunIndexJobOptions = {}): Promise<Kb
   // than returned, for the same reason as `counts`: a run that dies partway
   // still sent whatever it sent, and that has to reach the audit row.
   const ocrTally: { current: OcrTally | null } = { current: null };
+  // Roots ingest left out. Counted onto the outcome row; the paths themselves
+  // go to the server log only, like every other path ingest reports.
+  let unavailableFolders = 0;
 
   try {
     // Resolved per run, not per process: the route's precheck only covers the
@@ -144,7 +155,23 @@ export async function runNextIndexJob(opts: RunIndexJobOptions = {}): Promise<Kb
         counts = progress.counts;
         return recordIndexJobProgress(job.id, progress);
       },
+      onSkippedRoot: (rootDir, reason) => {
+        unavailableFolders++;
+        console.warn(
+          `[kb-index-worker] job ${job.id}: skipped ${rootDir} (${reason}); nothing under it was indexed or removed`
+        );
+      },
+      // Nobody watches a nightly run, and a share that failed to mount is an
+      // empty directory under Docker. An admin's own run reads it literally.
+      keepEmptiedRoots: job.trigger === "scheduled",
     });
+
+    // Every folder skipped is not a run that found nothing — it is a run that
+    // could not look. Reporting it as a success is how an unmounted share
+    // would read "Last indexed automatically today" for weeks.
+    if (job.paths.length > 0 && unavailableFolders === job.paths.length) {
+      throw new Error(FOLDERS_UNAVAILABLE_ERROR);
+    }
   } catch (err) {
     // Ingest already absorbs a single unreadable file (counting it `failed`),
     // so reaching here means something systemic — the embedder (a missing GGUF
@@ -162,7 +189,15 @@ export async function runNextIndexJob(opts: RunIndexJobOptions = {}): Promise<Kb
     const reason = safeProviderError(err instanceof Error ? err.message : "reindex_failed");
     await finishIndexJob(job.id, { outcome: "failed", counts, error: reason });
     await recordOcrUsage(job, ocrTally.current);
-    await auditOutcome({ job, agent, outcome: "failure", counts, reason, ocr: ocrTally.current });
+    await auditOutcome({
+      job,
+      agent,
+      outcome: "failure",
+      counts,
+      reason,
+      ocr: ocrTally.current,
+      unavailableFolders,
+    });
     return { ...job, status: "failed", counts, error: reason };
   }
 
@@ -171,7 +206,14 @@ export async function runNextIndexJob(opts: RunIndexJobOptions = {}): Promise<Kb
   // Burying them would be the failure.
   await finishIndexJob(job.id, { outcome: "succeeded", counts });
   await recordOcrUsage(job, ocrTally.current);
-  await auditOutcome({ job, agent, outcome: "success", counts, ocr: ocrTally.current });
+  await auditOutcome({
+    job,
+    agent,
+    outcome: "success",
+    counts,
+    ocr: ocrTally.current,
+    unavailableFolders,
+  });
   return { ...job, status: "succeeded", counts };
 }
 
@@ -226,6 +268,7 @@ async function auditOutcome(args: {
   counts: IngestResult;
   reason?: string;
   ocr: OcrTally | null;
+  unavailableFolders: number;
 }): Promise<void> {
   const entry = reindexAuditEntry({
     actorType: "system",
@@ -244,6 +287,7 @@ async function auditOutcome(args: {
     // Omitted entirely when the run OCR'd nothing, so an absent field means
     // "nothing was sent" rather than "we did not look".
     ocr: args.ocr && args.ocr.documents > 0 ? args.ocr : undefined,
+    unavailableFolders: args.unavailableFolders > 0 ? args.unavailableFolders : undefined,
   });
   try {
     await appendAuditLog(entry);

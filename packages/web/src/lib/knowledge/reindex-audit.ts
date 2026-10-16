@@ -52,6 +52,13 @@ export interface ReindexAuditArgs {
    * was sent", not "we did not look".
    */
   ocr?: { model: string; documents: number; pages: number; skippedPages: number };
+  /**
+   * How many granted folders the run had to leave out: missing, unreadable,
+   * or (nightly runs) empty while the index still held their documents. A
+   * count, never the folders — see `pathCount`. Absent when every folder was
+   * read.
+   */
+  unavailableFolders?: number;
 }
 
 export function reindexAuditEntry(args: ReindexAuditArgs): AuditLogEntry {
@@ -95,6 +102,9 @@ export function reindexAuditEntry(args: ReindexAuditArgs): AuditLogEntry {
               skippedPages: args.ocr.skippedPages,
             },
           }
+        : {}),
+      ...(args.unavailableFolders !== undefined
+        ? { unavailableFolders: args.unavailableFolders }
         : {}),
       ...(args.reason !== undefined ? { reason: args.reason } : {}),
     },

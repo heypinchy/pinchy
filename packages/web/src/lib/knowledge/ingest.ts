@@ -141,6 +141,30 @@ export interface IngestOptions {
    * write is known.
    */
   onProgress?: (progress: IngestProgress) => void | Promise<void>;
+  /**
+   * Called for every root the run left out: `unreadable` (it could not be
+   * looked at — missing, unmounted, a read error mid-walk) or `emptied` (see
+   * `keepEmptiedRoots`). Such a root contributes no files AND no removal pass.
+   *
+   * Ingest only reports; what a skipped root means for the run is the
+   * caller's call. Without this, a run whose every root was skipped reads as
+   * "0 indexed, success", which is exactly what an unmounted share looks like
+   * night after night.
+   */
+  onSkippedRoot?: (rootDir: string, reason: "unreadable" | "emptied") => void;
+  /**
+   * Treat a root that turns up with no files at all, while the index still
+   * holds documents from it, as unavailable rather than emptied: nothing under
+   * it is removed.
+   *
+   * For a caller nobody is watching. A network share that failed to mount is
+   * not an error under Docker but an EMPTY directory — the bare mountpoint the
+   * bind mount shows instead — and from inside the container that cannot be
+   * told apart from a folder somebody emptied. Taking it at its word deletes
+   * every document indexed from it, and getting them back is a full
+   * re-embed. An admin running a reindex by hand gets the literal reading.
+   */
+  keepEmptiedRoots?: boolean;
 }
 
 export interface IngestProgress {
@@ -766,6 +790,15 @@ async function removeVanishedDocuments(
   return vanishedIds.length;
 }
 
+/** Whether the index holds any document from under `rootDir` — what makes an empty root suspicious rather than merely empty. */
+async function hasDocumentsUnder(orgId: string, rootDir: string): Promise<boolean> {
+  const docs = await db
+    .select({ sourcePath: kbDocuments.sourcePath })
+    .from(kbDocuments)
+    .where(eq(kbDocuments.orgId, orgId));
+  return docs.some((doc) => isUnderRoot(doc.sourcePath, rootDir));
+}
+
 /**
  * Ingests every root in one run, reporting progress against a single total.
  *
@@ -794,7 +827,18 @@ export async function ingestPaths(
   const perRoot: Array<{ rootDir: string; discovered: Map<string, number> }> = [];
   for (const rootDir of rootDirs) {
     const discovered = await discoverFiles(rootDir, allowedExtensions);
-    if (discovered === null) continue;
+    if (discovered === null) {
+      opts.onSkippedRoot?.(rootDir, "unreadable");
+      continue;
+    }
+    if (
+      opts.keepEmptiedRoots &&
+      discovered.size === 0 &&
+      (await hasDocumentsUnder(orgId, rootDir))
+    ) {
+      opts.onSkippedRoot?.(rootDir, "emptied");
+      continue;
+    }
     perRoot.push({ rootDir, discovered });
   }
 

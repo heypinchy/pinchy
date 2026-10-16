@@ -919,6 +919,10 @@ export type AuditLogEntry =
       //
       // `ocr` is present only when the run sent scanned pages to a vision
       // model: the model and how much was sent, never which files.
+      //
+      // `unavailableFolders` counts the granted folders the run had to leave
+      // out (missing, unreadable, or emptied under a nightly run); absent
+      // when every folder was read.
       eventType: "knowledge.reindex";
       detail: {
         agent: EntityRef;
@@ -933,6 +937,7 @@ export type AuditLogEntry =
         failed?: number;
         archived?: number;
         ocr?: { model: string; documents: number; pages: number; skippedPages: number };
+        unavailableFolders?: number;
         reason?: string;
       };
     })
