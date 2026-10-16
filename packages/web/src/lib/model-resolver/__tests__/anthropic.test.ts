@@ -2,20 +2,22 @@ import { describe, expect, it } from "vitest";
 import { resolveAnthropic } from "../providers/anthropic";
 
 describe("resolveAnthropic", () => {
-  it("maps tier=fast to haiku", () => {
+  it("maps tier=fast to haiku 5.5", () => {
     const r = resolveAnthropic({ tier: "fast" });
-    expect(r.model).toBe("anthropic/claude-haiku-4-5-20251001");
+    expect(r.model).toBe("anthropic/claude-haiku-5-5");
     expect(r.fallbackUsed).toBe(false);
   });
 
-  it("maps tier=balanced to sonnet", () => {
+  it("maps tier=balanced to sonnet 5.5", () => {
     const r = resolveAnthropic({ tier: "balanced" });
-    expect(r.model).toMatch(/sonnet/);
+    expect(r.model).toBe("anthropic/claude-sonnet-5-5");
   });
 
-  it("maps tier=reasoning to opus 4.7 (latest)", () => {
+  // Fable 5.1 ($10/$50) stays opt-in: it is 2.5× Opus 5.5 per token, and a
+  // template's tier is a default nobody chose deliberately.
+  it("maps tier=reasoning to opus 5.5, not the Fable tier", () => {
     const r = resolveAnthropic({ tier: "reasoning" });
-    expect(r.model).toBe("anthropic/claude-opus-4-7");
+    expect(r.model).toBe("anthropic/claude-opus-5-5");
   });
 
   it("ignores taskType — cloud providers cover all tasks within a tier", () => {

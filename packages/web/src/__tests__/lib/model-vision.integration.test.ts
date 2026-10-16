@@ -32,6 +32,19 @@ describe("full-vision providers (all models in DB)", () => {
     expect(isModelVisionCapable("google/gemini-2.5-flash")).toBe(true);
   });
 
+  // Each provider's balanced model is what the pdf/image tools and the
+  // knowledge-base OCR are routed to, and that routing only happens when this
+  // returns true — a balanced default missing from the seeded table left its
+  // provider out of PDF reading entirely.
+  it.each([
+    "anthropic/claude-sonnet-5-5",
+    "anthropic/claude-haiku-5-5",
+    "openai/gpt-6.1-sol",
+    "google/gemini-3.8-flash",
+  ])("returns true for the current-generation model %s", (model) => {
+    expect(isModelVisionCapable(model)).toBe(true);
+  });
+
   it("returns false for a known-provider model NOT in the DB (not treated as vision by default)", () => {
     // The old hardcoded implementation would return true for any anthropic model.
     // The cache-backed implementation must return false for models not in the DB.

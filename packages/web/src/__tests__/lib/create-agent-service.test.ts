@@ -114,6 +114,8 @@ import { db } from "@/db";
 import { validateOdooTemplate } from "@/lib/integrations/odoo-template-validation";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { TemplateCapabilityUnavailableError } from "@/lib/model-resolver";
+import { getSetting } from "@/lib/settings";
+import { BALANCED_ANCHORS } from "@/lib/provider-model-constants";
 
 describe("createAgent() service", () => {
   beforeEach(() => {
@@ -497,6 +499,26 @@ describe("createAgent() service", () => {
   it("works without any hooks (they're optional)", async () => {
     const result = await createAgent({ name: "Test Agent", templateId: "custom" }, "user-1");
     expect(result.ok).toBe(true);
+  });
+
+  // Before the setup wizard has stored a provider there is nothing to resolve
+  // against, so the agent gets Anthropic's default — which has to be a model
+  // the curated catalog declares, or OpenClaw is handed an id it has no
+  // definition for.
+  it("falls back to Anthropic's balanced model when no default provider is configured", async () => {
+    vi.mocked(getSetting).mockImplementation(async (key: string) =>
+      key === "default_provider" ? null : "anthropic"
+    );
+    try {
+      const result = await createAgent({ name: "Test Agent", templateId: "custom" }, "user-1");
+
+      expect(result.ok).toBe(true);
+      expect(insertValuesMock).toHaveBeenCalledWith(
+        expect.objectContaining({ model: BALANCED_ANCHORS.anthropic })
+      );
+    } finally {
+      vi.mocked(getSetting).mockResolvedValue("anthropic");
+    }
   });
 
   it("accepts a null ownerId, for agents created by an org-owned API key", async () => {

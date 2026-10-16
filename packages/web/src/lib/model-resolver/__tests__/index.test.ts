@@ -55,7 +55,7 @@ describe("resolveModelForTemplate", () => {
       hint: { tier: "fast" },
       provider: "openai",
     });
-    expect(r.model).toMatch(/4o-mini|mini/);
+    expect(r.model).toMatch(/^openai\/.*luna/);
   });
 
   it("routes google hints to google resolver", async () => {

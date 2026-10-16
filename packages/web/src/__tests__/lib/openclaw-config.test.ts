@@ -2622,12 +2622,11 @@ describe("regenerateOpenClawConfig", () => {
     expect(google["gemini-2.5-pro"].contextTokens).toBe(262144);
     expect(google["gemini-2.5-flash"].contextTokens).toBe(262144);
 
-    // Providers already under the ceiling keep an honest, unchanged budget.
-    const anthropic = providers.anthropic?.models ?? [];
-    expect(anthropic.length).toBeGreaterThan(0);
-    for (const m of anthropic) {
-      expect(m.contextTokens).toBe(m.contextWindow);
-    }
+    // Models already under the ceiling keep an honest, unchanged budget —
+    // Haiku 4.5's 200K window is the one built-in Anthropic model still below it.
+    const anthropic = Object.fromEntries((providers.anthropic?.models ?? []).map((m) => [m.id, m]));
+    expect(anthropic["claude-haiku-4-5-20251001"].contextTokens).toBe(200000);
+    expect(anthropic["claude-sonnet-5-5"].contextTokens).toBe(262144);
 
     // The invariant that matters, across the ENTIRE emitted tree: no model
     // anywhere may budget compaction above the ceiling or above its own window.
@@ -7745,6 +7744,38 @@ describe("regenerateOpenClawConfig — env secrets", () => {
       id: "/providers/anthropic/apiKey",
     });
     expect(config?.env?.ANTHROPIC_API_KEY).toBeUndefined();
+  });
+
+  // OpenClaw resolves an agent's model from this inline list first. A model
+  // missing here only reaches the runtime through OpenClaw's own guesswork —
+  // which, for the pinned version, sends the Claude 5.5 models a thinking
+  // configuration the API rejects.
+  it("declares the current Claude generation in models.providers.anthropic.models", async () => {
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "anthropic_api_key") return "sk-ant-the-real-key";
+      return null;
+    });
+
+    await regenerateOpenClawConfig();
+
+    const written = findOpenClawConfigWrite(mockedWriteFileSync);
+    const config = JSON.parse(written![1] as string);
+    const models =
+      (config.models.providers.anthropic.models as Array<Record<string, unknown>>) ?? [];
+    const haiku = models.find((m) => m.id === "claude-haiku-5-5");
+    expect(models.map((m) => m.id)).toEqual(
+      expect.arrayContaining([
+        "claude-fable-5-1",
+        "claude-opus-5-5",
+        "claude-sonnet-5-5",
+        "claude-haiku-5-5",
+      ])
+    );
+    expect(haiku).toMatchObject({
+      contextWindow: 1000000,
+      input: ["text", "image"],
+      cost: { input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite: 0.125 },
+    });
   });
 
   it("writes the actual plaintext key to secrets.json under /providers/anthropic/apiKey", async () => {

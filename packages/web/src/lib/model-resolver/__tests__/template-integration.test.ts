@@ -14,44 +14,44 @@ const CASES: Array<{ templateId: string; provider: ProviderName; expected: strin
   {
     templateId: "odoo-sales-analyst",
     provider: "anthropic",
-    expected: "anthropic/claude-opus-4-7",
+    expected: "anthropic/claude-opus-5-5",
   },
-  { templateId: "odoo-sales-analyst", provider: "openai", expected: "openai/gpt-5.5" },
+  { templateId: "odoo-sales-analyst", provider: "openai", expected: "openai/gpt-6.1-sol" },
   {
     templateId: "odoo-sales-analyst",
     provider: "google",
-    expected: "google/gemini-2.5-pro",
+    expected: "google/gemini-4-argon",
   },
 
   // Fast tier
   {
     templateId: "odoo-inventory-scout",
     provider: "anthropic",
-    expected: "anthropic/claude-haiku-4-5-20251001",
+    expected: "anthropic/claude-haiku-5-5",
   },
-  { templateId: "odoo-inventory-scout", provider: "openai", expected: "openai/gpt-5.4-mini" },
+  { templateId: "odoo-inventory-scout", provider: "openai", expected: "openai/gpt-6-luna" },
   {
     templateId: "odoo-inventory-scout",
     provider: "google",
-    expected: "google/gemini-2.5-flash-lite",
+    expected: "google/gemini-3.5-flash-lite",
   },
 
   // Balanced tier
   {
     templateId: "odoo-crm-assistant",
     provider: "anthropic",
-    expected: "anthropic/claude-sonnet-4-6",
+    expected: "anthropic/claude-sonnet-5-5",
   },
-  { templateId: "knowledge-base", provider: "anthropic", expected: "anthropic/claude-sonnet-4-6" },
+  { templateId: "knowledge-base", provider: "anthropic", expected: "anthropic/claude-sonnet-5-5" },
 
   // Balanced + vision/long-context/tools — all Anthropic tiers satisfy these capabilities
   {
     templateId: "contract-analyzer",
     provider: "anthropic",
-    expected: "anthropic/claude-sonnet-4-6",
+    expected: "anthropic/claude-sonnet-5-5",
   },
-  { templateId: "contract-analyzer", provider: "openai", expected: "openai/gpt-5.5" },
-  { templateId: "contract-analyzer", provider: "google", expected: "google/gemini-2.5-pro" },
+  { templateId: "contract-analyzer", provider: "openai", expected: "openai/gpt-6.1-sol" },
+  { templateId: "contract-analyzer", provider: "google", expected: "google/gemini-3.8-flash" },
 ];
 
 describe("template + provider resolves to expected model", () => {

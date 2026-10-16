@@ -201,3 +201,67 @@ export const MODEL_PRICING: PricingSnapshot = {
     },
   },
 };
+
+/** USD per 1,000,000 tokens, as the vendor bills them. */
+export interface FirstPartyRates {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+}
+
+export interface FirstPartyPriceEntry {
+  /** The rates every request pays — or, with `longPrompt`, every request up to its threshold. */
+  standard: FirstPartyRates;
+  /**
+   * Rates for a request whose WHOLE prompt (input + cache reads + cache writes)
+   * exceeds `aboveTokens`. Billed per request, so one long request does not
+   * reprice the short ones around it.
+   */
+  longPrompt?: FirstPartyRates & { aboveTokens: number };
+  note: string;
+}
+
+/**
+ * List prices for models their own vendor bills per token — Anthropic's, for
+ * the knowledge-base eval candidates (`pnpm kb-eval:models`).
+ *
+ * Unlike MODEL_PRICING above this is not a proxy: the list price IS what the
+ * run costs, so each entry is a point, not a hoster range. `standard` must
+ * equal the `cost` the curated catalog (src/lib/openclaw-builtin-models.ts)
+ * hands OpenClaw for usage metering — the test fails when the two drift, so the
+ * eval cannot publish a price the product does not bill.
+ */
+export const FIRST_PARTY_PRICING: {
+  asOf: string;
+  source: string;
+  entries: Record<string, FirstPartyPriceEntry>;
+} = {
+  asOf: "2026-10-16",
+  source: "https://platform.claude.com/docs/en/about-claude/pricing",
+  entries: {
+    "anthropic/claude-haiku-5-5": {
+      standard: { input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite: 0.125 },
+      longPrompt: {
+        aboveTokens: 100000,
+        input: 0.5,
+        output: 2.5,
+        cacheRead: 0.05,
+        cacheWrite: 0.625,
+      },
+      note: "Priced by prompt length: 5x for a request whose prompt exceeds 100K tokens.",
+    },
+    "anthropic/claude-sonnet-5-5": {
+      standard: { input: 2, output: 10, cacheRead: 0.1, cacheWrite: 2.5 },
+      note: "Flat across the 1M window. Cache hits at 5% of input (10% on older models).",
+    },
+    "anthropic/claude-sonnet-5": {
+      standard: { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 },
+      note: "Flat across the 1M window.",
+    },
+    "anthropic/claude-opus-5-5": {
+      standard: { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5 },
+      note: "Flat across the 1M window. Cache hits at 5% of input.",
+    },
+  },
+};

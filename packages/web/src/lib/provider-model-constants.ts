@@ -14,9 +14,9 @@ import type { ProviderName } from "@/lib/providers";
  * success screen) without a live model fetch.
  */
 export const BALANCED_ANCHORS: Record<ProviderName, string> = {
-  anthropic: "anthropic/claude-sonnet-4-6",
-  openai: "openai/gpt-5.5",
-  google: "google/gemini-2.5-pro",
+  anthropic: "anthropic/claude-sonnet-5-5",
+  openai: "openai/gpt-6.1-sol",
+  google: "google/gemini-3.8-flash",
   "ollama-cloud": "ollama-cloud/kimi-k2.6",
   "ollama-local": "",
 };

@@ -280,6 +280,16 @@ Re-verified against the live API. `nemotron-3-nano:30b` is **no longer offered**
 
 `kimi-k2.7-code` and `qwen3.5:397b` can now **accept images**. Both previously could not — `qwen3.5:397b` was the model an [earlier release note](#ollama-cloud-model-catalog-refreshed-against-the-live-api) marked text-only for hallucinating image contents — and both read test images correctly now. They become selectable for image work; the default image model is unchanged, so nothing re-routes on its own.
 
+#### New agents get Claude 5.5, GPT-6 and Gemini 4
+
+Pinchy now knows the current model generations — Claude Haiku 5.5, Sonnet 5.5, Opus 5.5 and Fable 5.1; GPT-6 Luna, GPT-6.1 Sol and GPT-6 Astra; Gemini 3.5 Flash-Lite, 3.8 Flash and Gemini 4 Argon — with their context windows, vision support and prices. Agents created from now on get them; [Which model Pinchy picks](/guides/llm-providers/#which-model-pinchy-picks) has the table. **Existing agents keep the model they're on.** Switch one in its settings if you want it on the newer model.
+
+Three things you may notice:
+
+- **PDFs and images on an Anthropic key are read by Claude Sonnet 5.5.** Until now Pinchy settled on a Claude model it had no capability record for, judged it unable to see, and left Anthropic out of PDF and image reading — an install whose only provider is Anthropic had no PDF tool at all. That model also reads the scanned pages of the knowledge-base reindex this release asks for.
+- **Google's defaults moved off Gemini 2.5.** Google now serves the 2.5 models only to accounts that used them before, so a new key couldn't reach the old picks. Agents already on a 2.5 model keep it as long as your key does.
+- **Cost estimates on the Usage Dashboard changed for older models**, because their prices in Pinchy's catalog were out of date: Claude Opus 4.7 now reads $5 / $25 per million tokens instead of $15 / $75, and Claude Haiku 4.5 ($1 / $5), GPT-5.5 ($5 / $30), GPT-5.4 Mini ($0.75 / $4.50) and Gemini 2.5 Flash ($0.30 / $2.50) moved to their current list prices too. Past records keep the estimate they were stored with.
+
 #### Documents in archive folders drop out of everyday answers
 
 A knowledge-base document now counts as archived if any **folder** on its path is called `old`, `archive`, `archived` or `archiv` — matched whole and case-insensitively, so `OLD/` counts and `Goldakte/` does not. The rule reads directories only: a file named `archive.pdf` is not archived. Archived documents are still fully indexed, and the agent can still reach them when a question asks it to; they are simply left out of an ordinary answer. Year and quarter folders (`2013/`, `Q3/`) are never archives. See [Current documents first](/guides/create-knowledge-base-agent/#current-documents-first). If you keep superseded files in a folder named something else, rename it to one of those four to get the same treatment.

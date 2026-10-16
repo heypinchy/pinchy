@@ -2,20 +2,22 @@ import { describe, expect, it } from "vitest";
 import { resolveGoogle } from "../providers/google";
 
 describe("resolveGoogle", () => {
-  it("maps tier=fast to gemini-2.5-flash-lite (Google's fastest stable)", () => {
+  it("maps tier=fast to gemini-3.5-flash-lite (Google's fastest stable)", () => {
     const r = resolveGoogle({ tier: "fast" });
-    expect(r.model).toBe("google/gemini-2.5-flash-lite");
+    expect(r.model).toBe("google/gemini-3.5-flash-lite");
     expect(r.fallbackUsed).toBe(false);
   });
 
-  it("maps tier=balanced to gemini-2.5-pro (Google's balanced stable, matches BALANCED_ANCHORS)", () => {
+  // Gemini 2.5 is "access limited to users who used it previously" on the
+  // Gemini API, so a new install could not reach the old balanced pick at all.
+  it("maps tier=balanced to gemini-3.8-flash (Google's balanced stable, matches BALANCED_ANCHORS)", () => {
     const r = resolveGoogle({ tier: "balanced" });
-    expect(r.model).toBe("google/gemini-2.5-pro");
+    expect(r.model).toBe("google/gemini-3.8-flash");
   });
 
-  it("maps tier=reasoning to gemini-2.5-pro (Google's most-advanced stable)", () => {
+  it("maps tier=reasoning to gemini-4-argon (Google's most-advanced stable)", () => {
     const r = resolveGoogle({ tier: "reasoning" });
-    expect(r.model).toBe("google/gemini-2.5-pro");
+    expect(r.model).toBe("google/gemini-4-argon");
   });
 
   it("ignores taskType — cloud providers cover all tasks within a tier", () => {
