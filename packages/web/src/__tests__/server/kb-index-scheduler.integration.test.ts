@@ -239,25 +239,83 @@ describe("kb index scheduler", () => {
     expect(outcome?.detail).toMatchObject({ trigger: "scheduled", sweepId: ran?.sweepId });
   });
 
-  // An admin started a big reindex at 01:30. The night's run is delayed by it,
-  // not lost to it — and the admin's run is not interrupted either.
+  /** Finishes a job as of a given wall-clock moment — finishIndexJob stamps the real clock, and these cases run on an injected one. */
+  async function finishAt(jobId: string, at: Date) {
+    await finishIndexJob(jobId, { outcome: "succeeded", counts: zeroIngestResult() });
+    await db.update(kbIndexJobs).set({ finishedAt: at }).where(eq(kbIndexJobs.id, jobId));
+  }
+
+  // An admin started a big reindex of another agent at 01:30. The night's run
+  // is delayed by it, not lost to it — and the admin's run is not interrupted.
   it("waits behind a run already in progress instead of dropping the night", async () => {
-    const agent = await makeAgent("Handbook");
+    const handbook = await makeAgent("Handbook");
+    const contracts = await makeAgent("Contracts");
     await settleBefore("2026-10-20");
     const manual = await enqueueIndexJob({
       orgId: DEFAULT_ORG_ID,
-      agentId: agent.id,
-      agentName: agent.name,
+      agentId: contracts.id,
+      agentName: contracts.name,
       requestedBy: "admin-1",
-      paths: [join(tmpRoot, "Handbook")],
+      paths: [join(tmpRoot, "Contracts")],
     });
     await claimNextIndexJob();
 
     await runKbIndexSchedulerTick({ now: vienna("2026-10-20", "02:00") });
     expect((await jobs()).map((j) => j.trigger)).toEqual(["manual"]);
 
-    await finishIndexJob(manual.job.id, { outcome: "succeeded", counts: zeroIngestResult() });
+    await finishAt(manual.job.id, vienna("2026-10-20", "05:11"));
     await runKbIndexSchedulerTick({ now: vienna("2026-10-20", "05:12") });
+
+    const all = await jobs();
+    expect(all.map((j) => [j.agentId, j.trigger])).toEqual([
+      [contracts.id, "manual"],
+      [handbook.id, "scheduled"],
+    ]);
+  });
+
+  // The go-live shape: the first full index of a large share runs from 10:00
+  // into the next morning. Re-walking that same share the moment it finishes —
+  // mid-morning, holding the one job slot for an hour while admins get 409s —
+  // buys almost nothing. That run already read the folder; the next night
+  // picks up whatever it missed.
+  it("skips an agent whose own run finished after the night began", async () => {
+    const handbook = await makeAgent("Handbook");
+    await settleBefore("2026-10-20");
+    const manual = await enqueueIndexJob({
+      orgId: DEFAULT_ORG_ID,
+      agentId: handbook.id,
+      agentName: handbook.name,
+      requestedBy: "admin-1",
+      paths: [join(tmpRoot, "Handbook")],
+    });
+    await claimNextIndexJob();
+    await runKbIndexSchedulerTick({ now: vienna("2026-10-20", "02:00") });
+
+    await finishAt(manual.job.id, vienna("2026-10-20", "11:00"));
+    await runKbIndexSchedulerTick({ now: vienna("2026-10-20", "11:01") });
+
+    expect((await jobs()).map((j) => j.trigger)).toEqual(["manual"]);
+    expect((await getIndexScheduleState()).sweep).toBeNull();
+
+    await runKbIndexSchedulerTick({ now: vienna("2026-10-21", "02:00") });
+    expect((await jobs()).map((j) => j.trigger)).toEqual(["manual", "scheduled"]);
+  });
+
+  // The other side of the same rule: a run that finished BEFORE the night
+  // began says nothing about what arrived since.
+  it("still reindexes an agent whose last run finished before the night began", async () => {
+    const handbook = await makeAgent("Handbook");
+    await settleBefore("2026-10-20");
+    const manual = await enqueueIndexJob({
+      orgId: DEFAULT_ORG_ID,
+      agentId: handbook.id,
+      agentName: handbook.name,
+      requestedBy: "admin-1",
+      paths: [join(tmpRoot, "Handbook")],
+    });
+    await finishAt(manual.job.id, vienna("2026-10-19", "18:00"));
+
+    await runKbIndexSchedulerTick({ now: vienna("2026-10-20", "02:00") });
 
     expect((await jobs()).map((j) => j.trigger)).toEqual(["manual", "scheduled"]);
   });
@@ -405,6 +463,21 @@ describe("kb index scheduler", () => {
       expect(await jobs()).toHaveLength(1);
     });
 
+    // The usual way to try the feature out: set it a minute ahead and wait.
+    // The scheduler only notices the change on its next tick, which can land
+    // after the new time — and must not count today's run as taken because of
+    // that, when the screen says "Next run: today at 15:00".
+    it("runs today when the time was set just ahead of now, even if the tick that notices lands after it", async () => {
+      await makeAgent("Handbook");
+      await runKbIndexSchedulerTick({ now: vienna("2026-10-20", "14:59") });
+
+      await saveIndexSchedule({ enabled: true, time: "15:00" });
+      const tickAfterTheTime = new Date(vienna("2026-10-20", "15:00").getTime() + 15_000);
+      await runKbIndexSchedulerTick({ now: tickAfterTheTime });
+
+      expect(await jobs()).toHaveLength(1);
+    });
+
     // Moved from 23:00 to 09:00 at 14:00. Today's 09:00 has passed, and today
     // has had no run — but the new time applies from its next occurrence.
     it("applies a new time from its next occurrence, not retroactively", async () => {
@@ -460,6 +533,32 @@ describe("kb index scheduler", () => {
       reason: "embedding_model_missing",
     });
     expect((await getIndexScheduleState()).sweep).toBeNull();
+  });
+
+  // A malformed value that sorts after every real date would make `isSlotDue`
+  // answer "not yet" forever; one that sorts before would make the night due
+  // mid-morning. A date in the future — what a host clock that was briefly
+  // wrong (a VM restored from a snapshot) leaves behind — is the first kind.
+  // All three are re-taken: no run now, the next night runs.
+  it.each([
+    ["a malformed last slot that sorts high", "corrupt"],
+    ["a malformed last slot that sorts low", "0"],
+    ["a last slot in the future", "2027-01-01"],
+  ])("recovers from %s instead of waiting for it", async (_label, lastSlot) => {
+    await makeAgent("Handbook");
+    await saveIndexScheduleState({
+      lastSlot,
+      schedule: { enabled: true, time: "02:00" },
+      timezone: "Europe/Vienna",
+      sweep: null,
+      lastSweep: null,
+    });
+
+    await runKbIndexSchedulerTick({ now: vienna("2026-10-20", "10:00") });
+    expect(await jobs()).toHaveLength(0);
+
+    await runKbIndexSchedulerTick({ now: vienna("2026-10-21", "02:00") });
+    expect(await jobs()).toHaveLength(1);
   });
 
   // A corrupt state value must cost one night at most — never a mid-day run,

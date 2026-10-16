@@ -572,7 +572,7 @@ The agent's most recent index run — in flight or last finished — and whether
 
 `unsearchable` and `failed` can be non-zero on a `succeeded` run: the reindex itself worked, and these are its findings about the corpus.
 
-`status: "failed"` means something systemic stopped the run — the embedding endpoint or the database — not that a file was broken. A broken file is a `counts.failed`, and the run keeps going. Failed runs keep the counts they reached before dying.
+`status: "failed"` means something systemic stopped the run — the embedding endpoint or the database, or none of the agent's folders could be read — not that a file was broken. A broken file is a `counts.failed`, and the run keeps going. Failed runs keep the counts they reached before dying.
 
 A run interrupted by a restart is picked up again automatically: indexing is idempotent, so the resumed run skips everything already done.
 

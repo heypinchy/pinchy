@@ -29,7 +29,7 @@
  */
 import { randomUUID } from "node:crypto";
 
-import { and, asc, eq, isNull } from "drizzle-orm";
+import { and, asc, eq, gte, isNull, ne, or } from "drizzle-orm";
 
 import { db } from "@/db";
 import { agents, kbIndexJobs } from "@/db/schema";
@@ -110,6 +110,25 @@ async function queueSweepAgent(sweep: IndexSweep, agentId: string): Promise<Queu
     .limit(1);
   if (already) return "skipped";
 
+  // A run of this agent that FINISHED after the night began already read its
+  // folders — typically a first full index that started the day before and ran
+  // into the morning. Re-walking the same share the moment it finishes holds
+  // the one job slot through working hours for almost nothing; whatever that
+  // run missed, the next night picks up.
+  const sweepStart = new Date(sweep.startedAt);
+  const [recent] = await db
+    .select({ id: kbIndexJobs.id })
+    .from(kbIndexJobs)
+    .where(
+      and(
+        eq(kbIndexJobs.agentId, agentId),
+        gte(kbIndexJobs.finishedAt, sweepStart),
+        or(isNull(kbIndexJobs.sweepId), ne(kbIndexJobs.sweepId, sweep.id))
+      )
+    )
+    .limit(1);
+  if (recent) return "skipped";
+
   // Re-read rather than trusting the snapshot: an agent deleted, renamed or
   // stripped of its folders since the sweep started is indexed as it is now.
   const [agent] = await db
@@ -186,18 +205,31 @@ async function advance(now: Date): Promise<void> {
   const timezone = await getOrgTimezone();
   const clock = localClock(now, timezone);
   let state: IndexScheduleState = await getIndexScheduleState();
+  // The clock a re-take is read on: the previous tick's, not this one's. A
+  // change is noticed on the first tick AFTER it, which can land past the new
+  // time — set at 14:59:20 to 15:00, noticed at 15:00:15. Read on this tick's
+  // clock, today's 15:00 would count as already taken while the screen says
+  // "Next run: today at 15:00".
+  const retakeClock = localClock(new Date(now.getTime() - TICK_INTERVAL_MS), timezone);
+  const passed = latestPassedSlot(clock, schedule);
 
   // First tick ever, a corrupt state row, or a schedule or org timezone the
   // admin changed since the slot was taken: the slot that has ALREADY passed
   // counts as taken. Otherwise an upgrade at 10:00, switching the schedule
   // back on at 14:00, or moving the org to a zone where it is already
   // afternoon would start a full walk of every knowledge base mid-day.
+  //
+  // A last slot that is not a plain date, or lies in the future, is re-taken
+  // too: either would sort after every real slot and keep the night from ever
+  // being due — a malformed row, or a host clock that was briefly wrong.
   if (
     state.lastSlot === null ||
+    !SLOT_PATTERN.test(state.lastSlot) ||
+    state.lastSlot > passed ||
     !sameSchedule(state.schedule, schedule) ||
     state.timezone !== timezone
   ) {
-    state = { ...state, lastSlot: latestPassedSlot(clock, schedule), schedule, timezone };
+    state = { ...state, lastSlot: latestPassedSlot(retakeClock, schedule), schedule, timezone };
     // Switching the schedule off also drops the agents still waiting tonight.
     // The job already running finishes; an interrupted run is worth less.
     if (!schedule.enabled) state = { ...state, sweep: null };
@@ -211,16 +243,21 @@ async function advance(now: Date): Promise<void> {
     const agentIds = await listScheduledIndexAgentIds();
     state = {
       ...state,
-      lastSlot: latestPassedSlot(clock, schedule),
+      lastSlot: passed,
       sweep: {
         id: randomUUID(),
-        slot: latestPassedSlot(clock, schedule),
+        slot: passed,
         startedAt: now.toISOString(),
         agentCount: agentIds.length,
         pending: agentIds,
       },
     };
     await saveIndexScheduleState(state);
+    // The per-agent rows are in the audit trail; this line is what says a
+    // night started at all — including one with nobody to reindex.
+    console.log(
+      `[kb-index-scheduler] nightly reindex for ${passed}: ${agentIds.length} knowledge-base agent(s) to queue`
+    );
   }
 
   const sweep = state.sweep;
@@ -237,6 +274,7 @@ async function advance(now: Date): Promise<void> {
 
   if (sweep.pending.length === 0) {
     const { id, slot, startedAt, agentCount } = sweep;
+    console.log(`[kb-index-scheduler] nightly reindex for ${slot}: every agent has had its turn`);
     await saveIndexScheduleState({
       ...state,
       sweep: null,
@@ -244,6 +282,9 @@ async function advance(now: Date): Promise<void> {
     });
   }
 }
+
+/** A slot as the state stores it: an org-local "YYYY-MM-DD". */
+const SLOT_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
 /**
  * How often to look at the clock. A minute is the schedule's resolution, and

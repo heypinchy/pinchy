@@ -195,7 +195,7 @@ The knowledge base no longer embeds through Ollama. The embedding model now runs
 
 The two models produce vectors that cannot be compared, and Postgres cannot change a vector column's width in place, so the old embeddings can be neither kept nor converted. Migration `0056` clears `kb_documents` and `kb_chunks` and recreates the index column at the new width. **Your documents are not touched** — those tables are derived entirely from the files on disk, and the files stay where they are.
 
-So after upgrading, a Knowledge Base agent finds nothing until it has been reindexed. The [nightly reindex](#knowledge-bases-now-keep-themselves-current) does that on its own the first night after the upgrade; to have it back sooner, open the agent's **Permissions** tab, and in the **Knowledge Base** section click **Reindex now**. The run reports its progress inline. If you never set up a Knowledge Base agent, there is nothing to do — the tables were already empty.
+So after upgrading, a Knowledge Base agent finds nothing until it has been reindexed. The [nightly reindex](#knowledge-bases-now-keep-themselves-current) does that on its own the first night after the upgrade; to have it back sooner, open the agent's **Permissions** tab, and in the **Knowledge Base** section click **Reindex now**. Either way that first run is a full index, and on a large corpus it can last well into the next working day — while it runs, **Reindex now** for any agent answers that a run is already in progress. The run reports its progress inline. If you never set up a Knowledge Base agent, there is nothing to do — the tables were already empty.
 
 The `ollama pull bge-m3` step from the v0.9.0 notes no longer applies. If nothing else on your machine uses that model, you can remove it.
 
@@ -302,9 +302,10 @@ Until now a knowledge base was as current as its last **Reindex now**: a documen
 
 It's on after the upgrade, and the first run is the first night after it — the upgrade itself never starts one. It covers shared agents that have the `knowledge_search` permission and at least one granted folder. To move it out of a backup window or switch it off, go to **Settings → Organization → Knowledge Base Indexing**; each agent's **Index** section says when its next run is.
 
-Two things worth knowing before the first night:
+Three things worth knowing before the first night:
 
 - **A large share is read in full every night.** Unchanged files are skipped, but only after they've been read to see that they're unchanged, so on a big network share the run takes about as long as copying the folder once. That's why it runs at night — pick a time your file server is quiet.
+- **A share that isn't mounted doesn't empty the index.** A nightly run leaves alone the documents of a folder that is missing, unreadable, or suddenly empty while the index still holds documents from it. A run started with **Reindex now** still takes an empty folder at its word. And any reindex — nightly or not — that could read none of an agent's folders is now marked failed, saying what to check, instead of reporting "0 indexed".
 - **New scans are sent to your vision model during the night they arrive**, exactly as a manual reindex would send them, and recorded the same way in the audit trail and the Usage Dashboard. `PINCHY_KB_OCR=off` stops that for nightly runs too.
 
 [Keeping the index current](/guides/create-knowledge-base-agent/#keeping-the-index-current) has the details, including how a missed night is caught up.
