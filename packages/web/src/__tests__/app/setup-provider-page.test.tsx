@@ -118,7 +118,7 @@ describe("Setup Provider Page", () => {
       expect(screen.getByTestId("smithers-model-info")).toBeInTheDocument();
     });
     expect(screen.getByTestId("smithers-model-info")).toHaveTextContent(
-      "anthropic/claude-sonnet-4-6"
+      "anthropic/claude-sonnet-5"
     );
   });
 

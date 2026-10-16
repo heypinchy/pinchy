@@ -79,6 +79,29 @@ const RULES: BlockRule[] = [
   // evidence about it, and this blocklist is an evidence-based denylist — every
   // model not named here is allowed. Blocking an unseen model by guessing at its
   // name would be a different policy than the other two rules follow.
+  // TEMPORARY — lift together with the OpenClaw update that knows these models
+  // (2026.9.33 or later; the catalog entries wait on branch
+  // claude/claude-55-catalog-after-openclaw-bump). Unlike the rules above this
+  // is about the runtime, not the model: OpenClaw 2026.7.1 predates the Claude
+  // 5.5 request contract. Its model regexes do not recognise Opus 5.5 or Haiku
+  // 5.5, so it sends them `thinking: {type: "disabled"}` or a `budget_tokens`
+  // budget — Opus 5.5 rejects both with HTTP 400 at every effort level, Haiku
+  // 5.5 rejects the budget. Sonnet 5.5 and Fable 5.1 it mistakes for Sonnet 5
+  // and Fable 5, which misses the "preserved thinking" check those models run
+  // for Anthropic accounts created on or after 2026-08-31: a thinking block
+  // whose conversation prefix changed is a 400, and only the newer runtime
+  // has handling to keep that prefix append-only. Evidence: OpenClaw's model contracts
+  // (packages/llm-core/src/model-contracts/anthropic.ts) at 2026.7.1 vs
+  // 2026.9.33, and Anthropic's API docs for each model.
+  //
+  // The models reach the picker anyway, because it lists the provider's live
+  // catalog; this rule is what disables them there.
+  {
+    modelPattern: /claude-(?:opus|sonnet|haiku)-5-5|claude-fable-5-1/i,
+    forbiddenWhen: ["tools"],
+    reason:
+      "Claude Opus, Sonnet and Haiku 5.5 and Fable 5.1 need a newer agent runtime than this Pinchy release ships — their requests are rejected. Claude Sonnet 5 works today.",
+  },
   {
     modelPattern: /minimax-m3/i,
     forbiddenWhen: ["tools"],

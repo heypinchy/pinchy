@@ -63,7 +63,7 @@ The `models` table is seeded automatically at boot from Pinchy's built-in model 
 Whether the agent can actually see an image depends on the underlying LLM. As of today:
 
 - **OpenAI** GPT-5.x — full vision support
-- **Anthropic** Claude 4.x (Opus/Sonnet/Haiku) — full vision support
+- **Anthropic** Claude Sonnet 5 and Claude 4.x (Opus/Sonnet/Haiku) — full vision support
 - **Google** Gemini Pro/Flash — full vision support
 - **Local Ollama** — only models marked as vision-capable (e.g. `llama3.2-vision`, `gemma3`)
 
@@ -77,8 +77,8 @@ The only time this can't work is when **no** image-capable model is configured a
 
 ## How templates declare required capabilities
 
-When you create an agent from a template, Pinchy automatically picks a model that meets the template's capability requirements. Each template declares the capabilities it needs — for example, a document-analyzer template requires `vision` and `long-context`. Pinchy's model resolver searches your configured providers for a model that satisfies both.
+When you create an agent from a template, Pinchy automatically picks a model that meets the template's capability requirements. Each template declares the capabilities it needs — for example, a document-analyzer template requires `vision` and `long-context`. Pinchy picks the template's model from your default provider (see [Which model Pinchy picks](/guides/llm-providers/#which-model-pinchy-picks)) and checks that it satisfies both.
 
 If no configured model meets the requirements, Pinchy shows a warning at agent-creation time and offers to proceed with the best available match. Adding a vision-capable provider (Anthropic, OpenAI, Google, or Ollama Cloud with a vision model) gives the resolver more options to work with.
 
-Custom agents created from the "Custom Agent" template have no required capabilities — you choose the model manually in **Agent Settings → General**.
+Custom agents created from the "Custom Agent" template have no required capabilities. They start on your default provider's balanced model; change it anytime in **Agent Settings → General**.

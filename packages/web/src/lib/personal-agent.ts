@@ -9,6 +9,7 @@ import {
 import { getContextForAgent } from "@/lib/context-sync";
 import { getSetting } from "@/lib/settings";
 import { type ProviderName } from "@/lib/providers";
+import { BALANCED_ANCHORS } from "@/lib/provider-model-constants";
 import { resolveAvailableModelForTemplate } from "@/lib/model-resolver/resolve-available";
 import type { ModelHint } from "@/lib/model-resolver/types";
 import { TemplateCapabilityUnavailableError } from "@/lib/model-resolver/types";
@@ -97,13 +98,13 @@ export async function seedPersonalAgent(userId: string, isAdmin = false) {
       model = resolved.model;
     } catch (err) {
       if (err instanceof TemplateCapabilityUnavailableError) {
-        model = "anthropic/claude-sonnet-4-6";
+        model = BALANCED_ANCHORS.anthropic;
       } else {
         throw err;
       }
     }
   } else {
-    model = "anthropic/claude-sonnet-4-6";
+    model = BALANCED_ANCHORS.anthropic;
   }
 
   return createSmithersAgent({ model, ownerId: userId, isPersonal: true, isAdmin });

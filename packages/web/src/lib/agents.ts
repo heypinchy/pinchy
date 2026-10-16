@@ -32,6 +32,7 @@ import { getContextForAgent } from "@/lib/context-sync";
 import { waitForAgentInRuntime } from "@/lib/wait-for-agent-in-runtime";
 import { getOpenClawClient } from "@/server/openclaw-client";
 import { type ProviderName } from "@/lib/providers";
+import { BALANCED_ANCHORS } from "@/lib/provider-model-constants";
 import { getDefaultModel } from "@/lib/provider-models";
 import { TemplateCapabilityUnavailableError } from "@/lib/model-resolver";
 import { resolveAvailableModelForTemplate } from "@/lib/model-resolver/resolve-available";
@@ -524,9 +525,7 @@ export async function createAgent(
       throw err;
     }
   } else {
-    model = defaultProvider
-      ? await getDefaultModel(defaultProvider)
-      : "anthropic/claude-haiku-4-5-20251001";
+    model = defaultProvider ? await getDefaultModel(defaultProvider) : BALANCED_ANCHORS.anthropic;
     modelSelectionReason = `provider-default (${defaultProvider ?? "anthropic fallback"})`;
   }
 

@@ -1,6 +1,8 @@
 import { PROVIDERS, resolveProviderBaseUrl, type ProviderName } from "@/lib/providers";
 import { getSetting } from "@/lib/settings";
 import { TOOL_CAPABLE_OLLAMA_CLOUD_MODEL_IDS } from "@/lib/ollama-cloud-models";
+import { getModelCatalogForProvider } from "@/lib/openclaw-builtin-models";
+import { getAgentModelBlockReason } from "@/lib/model-resolver/blocklist";
 import { listProvidersForModelFetch } from "@/lib/openai-compatible-providers";
 import {
   resolveCustomProviderModels,
@@ -75,22 +77,23 @@ export interface ProviderModels {
   models: ModelInfo[];
 }
 
+/**
+ * The models a built-in API provider is known to serve, as qualified ids — i.e.
+ * the curated catalog build.ts hands to OpenClaw. Offline, this is what the
+ * model picker lists; online, it is what the balanced default prefers. Empty
+ * for the Ollama providers, which have no such catalog.
+ */
+function curatedModels(provider: ProviderName): ModelInfo[] {
+  return getModelCatalogForProvider(provider).map((m) => ({
+    id: `${provider}/${m.id}`,
+    name: m.name,
+  }));
+}
+
 const FALLBACK_MODELS: Record<ProviderName, ModelInfo[]> = {
-  anthropic: [
-    { id: "anthropic/claude-opus-4-7", name: "Claude Opus 4.7" },
-    { id: "anthropic/claude-sonnet-4-6", name: "Claude Sonnet 4.6" },
-    { id: "anthropic/claude-haiku-4-5-20251001", name: "Claude Haiku 4.5" },
-  ],
-  openai: [
-    { id: "openai/gpt-5.5", name: "GPT-5.5" },
-    { id: "openai/gpt-5.4", name: "GPT-5.4" },
-    { id: "openai/gpt-5.4-mini", name: "GPT-5.4 Mini" },
-  ],
-  google: [
-    { id: "google/gemini-2.5-pro", name: "Gemini 2.5 Pro" },
-    { id: "google/gemini-2.5-flash", name: "Gemini 2.5 Flash" },
-    { id: "google/gemini-2.5-flash-lite", name: "Gemini 2.5 Flash Lite" },
-  ],
+  anthropic: curatedModels("anthropic"),
+  openai: curatedModels("openai"),
+  google: curatedModels("google"),
   "ollama-cloud": TOOL_CAPABLE_OLLAMA_CLOUD_MODEL_IDS.map((id) => ({
     id: `ollama-cloud/${id}`,
     name: id,
@@ -214,7 +217,8 @@ async function fetchModelsForProvider(
 }
 
 export const BALANCED_PATTERNS: Record<ProviderName, RegExp> = {
-  anthropic: /^anthropic\/claude-sonnet-\d+-\d+(?:-\d{8})?$/,
+  // The minor version is optional: Sonnet 5 is plain `claude-sonnet-5`.
+  anthropic: /^anthropic\/claude-sonnet-\d+(?:-\d+)?(?:-\d{8})?$/,
   openai: /^openai\/gpt-([5-9]|\d{2,})(\.\d+)?(?:-\d{4}-\d{2}-\d{2})?$/,
   google: /^google\/gemini-[2-9](?:\.\d+)?-pro(?:-\d{3})?$/,
   "ollama-cloud": /^ollama-cloud\/kimi-k2\.6$/,
@@ -425,9 +429,27 @@ export function extractModelDate(modelId: string): number {
 
 export function selectDefaultModel(provider: ProviderName, models: ModelInfo[]): string {
   const pattern = BALANCED_PATTERNS[provider];
-  const candidates = models.filter(
-    (m) => pattern.test(m.id) && !PREVIEW_PATTERN.test(m.id) && !isRejectedVariant(m.id)
+  // A tools-blocked model is never a default: every agent drives tools.
+  const matching = models.filter(
+    (m) =>
+      pattern.test(m.id) &&
+      !PREVIEW_PATTERN.test(m.id) &&
+      !isRejectedVariant(m.id) &&
+      !getAgentModelBlockReason(m.id)
   );
+
+  // Curated models first. This default feeds the pdf/image vision chain and
+  // the knowledge-base OCR, and both gate on the capability table — seeded from
+  // the curated catalog only. A live model newer than this release has no row,
+  // reads as "no vision", and silently takes its provider out of the chain. The
+  // date-first ordering below made that the normal case: a real Anthropic
+  // catalog lists the dated `claude-sonnet-4-5-20250929` next to the dateless
+  // 4.6+ ids, and the dated (older) one won. An uncurated model still wins when
+  // no curated one is live — the provider retired them all, and a model Pinchy
+  // cannot vouch for beats one the provider no longer serves.
+  const curated = new Set(curatedModels(provider).map((m) => m.id));
+  const curatedMatching = matching.filter((m) => curated.has(m.id));
+  const candidates = curatedMatching.length > 0 ? curatedMatching : matching;
 
   if (candidates.length > 0) {
     // Pick the most recent model by date suffix (YYYYMMDD), with lexicographic

@@ -97,6 +97,19 @@ import { getSetting } from "@/lib/settings";
 import { listProvidersForModelFetch } from "@/lib/openai-compatible-providers";
 import type { ProviderModelFetchSource } from "@/lib/openai-compatible-providers";
 import { resolveCustomProviderModels } from "@/lib/openai-compatible-discovery";
+import { getModelCatalogForProvider } from "@/lib/openclaw-builtin-models";
+
+/**
+ * What the model picker lists for a built-in provider when its live catalog is
+ * unreachable: the curated catalog, i.e. exactly the models OpenClaw is told
+ * about. A hand-kept second list here drifted the moment the catalog moved on.
+ */
+function curatedFallback(provider: "anthropic" | "openai" | "google") {
+  return getModelCatalogForProvider(provider).map((m) => ({
+    id: `${provider}/${m.id}`,
+    name: m.name,
+  }));
+}
 
 /**
  * Build a typed custom-provider model-fetch source. Only `slug`,
@@ -191,11 +204,7 @@ describe("fetchProviderModels", () => {
 
     expect(result).toHaveLength(1);
     expect(result[0].id).toBe("anthropic");
-    expect(result[0].models).toEqual([
-      { id: "anthropic/claude-opus-4-7", name: "Claude Opus 4.7" },
-      { id: "anthropic/claude-sonnet-4-6", name: "Claude Sonnet 4.6" },
-      { id: "anthropic/claude-haiku-4-5-20251001", name: "Claude Haiku 4.5" },
-    ]);
+    expect(result[0].models).toEqual(curatedFallback("anthropic"));
   });
 
   it("bounds a hanging provider fetch instead of pinning the request", async () => {
@@ -225,11 +234,7 @@ describe("fetchProviderModels", () => {
       const result = await pending;
 
       expect(result).toHaveLength(1);
-      expect(result[0].models).toEqual([
-        { id: "anthropic/claude-opus-4-7", name: "Claude Opus 4.7" },
-        { id: "anthropic/claude-sonnet-4-6", name: "Claude Sonnet 4.6" },
-        { id: "anthropic/claude-haiku-4-5-20251001", name: "Claude Haiku 4.5" },
-      ]);
+      expect(result[0].models).toEqual(curatedFallback("anthropic"));
     } finally {
       vi.useRealTimers();
       // `beforeEach` runs `clearAllMocks`, which clears calls but keeps
@@ -584,11 +589,7 @@ describe("fetchProviderModels", () => {
     const result = await fetchProviderModels();
     const openai = result.find((p) => p.id === "openai");
     expect(openai).toBeDefined();
-    expect(openai!.models).toEqual([
-      { id: "openai/gpt-5.5", name: "GPT-5.5" },
-      { id: "openai/gpt-5.4", name: "GPT-5.4" },
-      { id: "openai/gpt-5.4-mini", name: "GPT-5.4 Mini" },
-    ]);
+    expect(openai!.models).toEqual(curatedFallback("openai"));
   });
 
   it("falls back to every tool-capable cloud model when Ollama Cloud API fails", async () => {
@@ -979,7 +980,7 @@ describe("selectDefaultModel", () => {
     const { selectDefaultModel } = await import("@/lib/provider-models");
     const models = [{ id: "anthropic/claude-opus-4-7", name: "Claude Opus 4.7" }];
     // No sonnet in the list — falls back to BALANCED_ANCHORS
-    expect(selectDefaultModel("anthropic", models)).toBe("anthropic/claude-sonnet-4-6");
+    expect(selectDefaultModel("anthropic", models)).toBe("anthropic/claude-sonnet-5");
   });
 
   it("falls back to BALANCED_ANCHORS when model list is empty", async () => {
@@ -1517,7 +1518,7 @@ describe("selectDefaultModel — balanced-tier defaults", () => {
 
   it("falls back to BALANCED_ANCHORS when no candidate matches", () => {
     const models = [{ id: "anthropic/claude-experimental-foo", name: "x" }];
-    expect(selectDefaultModel("anthropic", models)).toBe("anthropic/claude-sonnet-4-6");
+    expect(selectDefaultModel("anthropic", models)).toBe("anthropic/claude-sonnet-5");
   });
 });
 

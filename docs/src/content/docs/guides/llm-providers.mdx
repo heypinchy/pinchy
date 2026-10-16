@@ -13,7 +13,7 @@ For the very first provider during the setup wizard, see [Installation](/install
 
 | Provider              | Auth          | What you get                                                                                                                   |
 | --------------------- | ------------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| **Anthropic**         | API key       | Claude family — strongest tool calling and reasoning                                                                           |
+| **Anthropic**         | API key       | Claude family (Haiku, Sonnet, Opus, Fable) — strongest tool calling and reasoning                                              |
 | **OpenAI**            | API key       | GPT-5 family, o-series reasoning models                                                                                        |
 | **Google**            | API key       | Gemini family — long context, fast and cheap                                                                                   |
 | **Ollama Cloud**      | API key       | Hosted open-source models (Kimi, Qwen, Mistral, Gemini Flash) via ollama.com                                                   |
@@ -74,6 +74,24 @@ The dropdown shows every model from every configured provider. Models are groupe
 The "default provider" is the one Pinchy reaches for when creating new agents. In the grid, the default tile carries a **star** in its top-right corner; every other configured tile — built-in or custom — carries a small check. The grid lists the default first, then the other configured providers, then the rest.
 
 The **very first** provider you configure — built-in or custom — automatically becomes the default. After that, adding more providers never changes the default: you switch it explicitly. To switch the default, click the tile you want, then click **Set as default** in its panel (shown whenever that provider is configured and isn't already the default). Existing agents keep their current model — only newly created agents pick up the new default.
+
+## Which model Pinchy picks
+
+When you create an agent from a template, Pinchy doesn't ask you for a model. Each template says how much model it needs — **fast**, **balanced** or **reasoning** — and Pinchy picks that model from your default provider:
+
+| Provider  | Fast                  | Balanced        | Reasoning       |
+| --------- | --------------------- | --------------- | --------------- |
+| Anthropic | Claude Haiku 4.5      | Claude Sonnet 5 | Claude Opus 4.7 |
+| OpenAI    | GPT-5.4 Mini          | GPT-5.5         | GPT-5.5         |
+| Google    | Gemini 2.5 Flash-Lite | Gemini 2.5 Pro  | Gemini 2.5 Pro  |
+
+For these three providers, the balanced model is also what a **Custom Agent** starts on, and it's the model behind Pinchy's **PDF and image tools** — which also read the scanned pages your knowledge base sends out at index time (see [What indexing sends to your provider](/guides/mount-data-directories/#what-indexing-sends-to-your-provider)). With several providers configured, that reading goes to Anthropic first, then Google, then OpenAI, then Ollama Cloud.
+
+The pick is a starting point: [changing an agent's model](#change-an-agents-model) takes a few clicks.
+
+The model dropdown lists everything the provider serves, so a model released after your Pinchy version shows up there too. You can select it, but Pinchy doesn't know its capabilities yet: it isn't picked automatically while a model Pinchy knows is available, and Pinchy treats it as text-only until an update adds it to the [capability catalog](#model-capability-catalog).
+
+**Claude Opus 5.5, Sonnet 5.5, Haiku 5.5 and Fable 5.1** are listed too, but disabled. They need a newer agent runtime than this Pinchy release ships, and their requests would be rejected — so the dropdown says so instead of letting a chat fail. Use Claude Sonnet 5 in the meantime.
 
 ## Remove a provider
 
@@ -159,7 +177,7 @@ For local Ollama, capabilities depend on which model you've pulled. Pinchy reads
 
 Capability data drives two things in practice:
 
-1. **Template model selection** — when you create an agent from a template, Pinchy picks the first model from your configured providers that meets the template's required capabilities (e.g. vision for a document-analyzer). If no model qualifies, you see a warning.
+1. **Template model selection** — the model Pinchy [picks for a template](#which-model-pinchy-picks) has to have the capabilities the template requires (e.g. vision for a document-analyzer). If it doesn't, you see a warning instead of getting an agent that can't do the job.
 2. **Pre-send checks** — if you attach an image and the agent's current model doesn't support vision, Pinchy warns you before sending and shows you how to switch to a capable model. PDFs are never blocked: they are analyzed by a dedicated PDF tool whose model Pinchy picks from your configured providers, independent of the agent's chat model (see [Upload Files in Chat](/guides/file-uploads/)).
 
 Admins can inspect raw capability data by querying the `models` table directly:

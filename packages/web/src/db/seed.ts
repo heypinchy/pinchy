@@ -2,6 +2,7 @@ import { db } from "@/db";
 import { createSmithersAgent } from "@/lib/personal-agent";
 import { getSetting } from "@/lib/settings";
 import { PROVIDERS, type ProviderName } from "@/lib/providers";
+import { BALANCED_ANCHORS } from "@/lib/provider-model-constants";
 
 /**
  * Creates the admin's Smithers during the setup wizard. Called exactly once,
@@ -25,7 +26,7 @@ export async function seedAdminSmithers(ownerId: string) {
   // when no provider is configured yet (cold start before setup wizard runs).
   const defaultProvider = (await getSetting("default_provider")) as ProviderName | null;
   const model =
-    (defaultProvider && PROVIDERS[defaultProvider]?.defaultModel) || "anthropic/claude-sonnet-4-6";
+    (defaultProvider && PROVIDERS[defaultProvider]?.defaultModel) || BALANCED_ANCHORS.anthropic;
 
   return createSmithersAgent({
     model,

@@ -1,5 +1,12 @@
 import { describe, it, expect } from "vitest";
 import { getModelCatalogForProvider } from "@/lib/openclaw-builtin-models";
+import snapshot from "@/lib/model-catalog-snapshot.json";
+
+const BUILT_IN_PROVIDERS = ["anthropic", "openai", "google"] as const;
+
+function idsOf(provider: (typeof BUILT_IN_PROVIDERS)[number]): string[] {
+  return getModelCatalogForProvider(provider).map((m) => m.id);
+}
 
 describe("getModelCatalogForProvider", () => {
   it("returns anthropic models with required OpenClaw ModelDefinitionConfig shape", () => {
@@ -110,5 +117,85 @@ describe("getModelCatalogForProvider", () => {
         expect(typeof m.cost.cacheWrite, `${provider}/${m.id} cost.cacheWrite`).toBe("number");
       }
     }
+  });
+});
+
+// This catalog is the ONLY place a built-in provider's model reaches OpenClaw
+// (build.ts emits it as models.providers.<name>.models) and the only source of
+// the capability rows (vision/tools/long-context) Pinchy decides with. A model
+// the provider serves but this list omits is therefore half-supported: it shows
+// up in the agent model picker (that list is live), but Pinchy treats it as
+// "not vision-capable" and OpenClaw falls back to guessing its limits.
+describe("current model generations", () => {
+  it("anthropic carries Claude Sonnet 5", () => {
+    expect(idsOf("anthropic")).toContain("claude-sonnet-5");
+  });
+
+  // Not yet: the pinned OpenClaw (2026.7.1) predates their request contract, so
+  // declaring them would hand the runtime models it sends rejected requests
+  // for. They are tools-blocked instead (model-resolver/blocklist.ts) and come
+  // into this catalog with the OpenClaw update.
+  it("does not carry the Claude 5.5 family or Fable 5.1 yet", () => {
+    for (const id of [
+      "claude-opus-5-5",
+      "claude-sonnet-5-5",
+      "claude-haiku-5-5",
+      "claude-fable-5-1",
+    ]) {
+      expect(idsOf("anthropic")).not.toContain(id);
+    }
+  });
+
+  // Models existing agents are pinned to stay declared: dropping one would take
+  // its definition out of openclaw.json and its row out of the capability table
+  // (seedBuiltinModels deletes builtin rows the catalog no longer lists).
+  it("keeps the previously curated models for agents already pinned to them", () => {
+    expect(idsOf("anthropic")).toEqual(
+      expect.arrayContaining(["claude-opus-4-7", "claude-sonnet-4-6", "claude-haiku-4-5-20251001"])
+    );
+    expect(idsOf("openai")).toEqual(expect.arrayContaining(["gpt-5.5", "gpt-5.4", "gpt-5.4-mini"]));
+    expect(idsOf("google")).toEqual(
+      expect.arrayContaining(["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite"])
+    );
+  });
+
+  // Anthropic publishes separate cache tiers, so this catalog carries them
+  // (openai/google stay at 0 — see the comment in openclaw-builtin-models.ts).
+  // Source: platform.claude.com/docs/en/about-claude/pricing, read 2026-10-16.
+  it.each([
+    ["claude-sonnet-5", { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 }],
+    ["claude-opus-4-7", { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 }],
+    ["claude-sonnet-4-6", { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 }],
+    ["claude-haiku-4-5-20251001", { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 }],
+  ])("anthropic/%s carries the published list price", (id, cost) => {
+    const model = getModelCatalogForProvider("anthropic").find((m) => m.id === id);
+    expect(model?.cost).toEqual(cost);
+  });
+});
+
+// The vendored models.dev snapshot (scripts/update-model-catalog.mjs) is the
+// project's machine-readable record of each model's limits. Hand-typed limits
+// here drifted from it before: Opus 4.7 and Sonnet 4.6 were declared with a
+// 200K window long after both shipped with 1M.
+describe("agreement with the vendored models.dev snapshot", () => {
+  const catalog = snapshot as Record<
+    string,
+    { contextWindow: number; maxTokens: number; vision: boolean }
+  >;
+
+  it.each(
+    BUILT_IN_PROVIDERS.flatMap((provider) =>
+      getModelCatalogForProvider(provider).map((m) => [`${provider}/${m.id}`, m] as const)
+    )
+  )("%s exists there, with the same context window and vision flag", (qualifiedId, model) => {
+    // A missing entry is usually a typo in the id — the one mistake that makes
+    // OpenClaw send a model name the provider answers with a 404.
+    expect(Object.hasOwn(catalog, qualifiedId), qualifiedId).toBe(true);
+    const reference = catalog[qualifiedId];
+    expect(model.contextWindow).toBe(reference.contextWindow);
+    expect(model.vision).toBe(reference.vision);
+    // maxTokens becomes the request's output cap. Above the model's own limit
+    // the provider rejects every request, so it may be lower, never higher.
+    expect(model.maxTokens).toBeLessThanOrEqual(reference.maxTokens);
   });
 });

@@ -7,6 +7,29 @@ import {
 } from "../blocklist";
 
 describe("isBlocked", () => {
+  // The pinned OpenClaw (2026.7.1) predates the Claude 5.5 request contract.
+  // These models already show up in the agent model picker, because that list
+  // is the provider's live catalog — so without a block an admin can pick one
+  // and only learn from a failed chat. Lift together with the OpenClaw update.
+  it.each([
+    "anthropic/claude-opus-5-5",
+    "anthropic/claude-sonnet-5-5",
+    "anthropic/claude-haiku-5-5",
+    "anthropic/claude-fable-5-1",
+  ])("blocks %s for tool use until the agent runtime knows it", (model) => {
+    expect(isBlocked(model, ["tools"])).toBe(true);
+  });
+
+  it.each([
+    "anthropic/claude-sonnet-5",
+    "anthropic/claude-fable-5",
+    "anthropic/claude-opus-4-7",
+    "anthropic/claude-sonnet-4-6",
+    "anthropic/claude-haiku-4-5-20251001",
+  ])("does not block %s, which the pinned runtime drives correctly", (model) => {
+    expect(isBlocked(model, ["tools"])).toBe(false);
+  });
+
   it("blocks deepseek-r1 when tools capability is required", () => {
     expect(isBlocked("deepseek-r1:32b", ["tools"])).toBe(true);
   });
