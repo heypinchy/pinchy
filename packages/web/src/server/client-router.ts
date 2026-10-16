@@ -8,7 +8,11 @@ import type {
 import { chatWithDispatchRaceRetry } from "@/server/chat-dispatch-retry";
 import { waitForAgentInRuntime } from "@/server/agent-readiness";
 import type { WebSocket } from "ws";
-import { assertAgentAccess, effectiveVisibility } from "@/lib/agent-access";
+import {
+  assertAgentAccess,
+  effectiveVisibility,
+  isPersonalAgentPausedFor,
+} from "@/lib/agent-access";
 import { directSessionKey } from "@/lib/session-key";
 import { getUserGroupIds, getAgentGroupIds } from "@/lib/groups";
 import { getLicenseState } from "@/lib/enterprise";
@@ -296,6 +300,30 @@ export class ClientRouter {
     }
   }
 
+  /**
+   * A send refused by an instance policy rather than by access: the member may
+   * see the agent, the admin has switched its use off. `chat.policy_refused`
+   * names which rule answered, with the agent snapshotted by name.
+   */
+  private async auditPolicyRefusal(
+    agent: { id: string; name: string },
+    reason: "personal_agent_disabled"
+  ): Promise<void> {
+    const auditEntry = {
+      actorType: "user" as const,
+      actorId: this.userId,
+      eventType: "chat.policy_refused" as const,
+      resource: `agent:${agent.id}`,
+      detail: { reason, agent: { id: agent.id, name: agent.name } },
+      outcome: "failure" as const,
+    };
+    try {
+      await appendAuditLog(auditEntry);
+    } catch (err) {
+      recordAuditFailure(err, auditEntry);
+    }
+  }
+
   async handleMessage(clientWs: WebSocket, message: BrowserMessage): Promise<void> {
     // Look up agent and check access
     const agent = await db.query.agents.findFirst({
@@ -344,6 +372,23 @@ export class ClientRouter {
         await appendAuditLog(auditEntry);
       } catch (err) {
         recordAuditFailure(err, auditEntry);
+      }
+      return;
+    }
+
+    // The caller's own personal agent while members may not use one. Answered
+    // for every frame type, so an open tab can neither read nor send; audited
+    // only for a send, because a tab re-requests history on every reconnect and
+    // those rows would say nothing the first one did not.
+    if (await isPersonalAgentPausedFor(agent, this.userRole)) {
+      this.sendToClient(clientWs, {
+        type: "error",
+        code: "policy_personal_agent_disabled",
+        message:
+          "Personal agents are turned off on this instance. Ask your admin if you need yours back.",
+      });
+      if (message.type === "message") {
+        await this.auditPolicyRefusal(agent, "personal_agent_disabled");
       }
       return;
     }

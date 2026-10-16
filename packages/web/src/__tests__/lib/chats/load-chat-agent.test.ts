@@ -19,7 +19,13 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const notFoundMock = vi.fn(() => {
   throw new Error("NEXT_NOT_FOUND");
 });
-vi.mock("next/navigation", () => ({ notFound: () => notFoundMock() }));
+const redirectMock = vi.fn((to: string) => {
+  throw new Error(`NEXT_REDIRECT ${to}`);
+});
+vi.mock("next/navigation", () => ({
+  notFound: () => notFoundMock(),
+  redirect: (to: string) => redirectMock(to),
+}));
 
 const whereMock = vi.fn();
 vi.mock("@/db", () => ({
@@ -32,6 +38,10 @@ vi.mock("@/lib/groups", () => ({
   getAgentGroupIds: vi.fn().mockResolvedValue([]),
 }));
 vi.mock("@/lib/enterprise", () => ({ getLicenseState: vi.fn().mockResolvedValue("paid") }));
+vi.mock("@/lib/instance-policy", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/instance-policy")>();
+  return { ...actual, getInstancePolicy: vi.fn() };
+});
 vi.mock("@/lib/avatar", () => ({
   getAgentAvatarSvg: vi.fn(
     (agent: { avatarSeed: string | null; name: string }) =>
@@ -42,6 +52,7 @@ vi.mock("@/lib/avatar", () => ({
 import { requireAuth } from "@/lib/require-auth";
 import { getUserGroupIds, getAgentGroupIds } from "@/lib/groups";
 import { getLicenseState } from "@/lib/enterprise";
+import { getInstancePolicy } from "@/lib/instance-policy";
 import { loadChatAgentName, loadChatPageAgent } from "@/lib/chats/load-chat-agent";
 
 const agentRow = (overrides: Record<string, unknown> = {}) => ({
@@ -68,6 +79,10 @@ beforeEach(() => {
   vi.mocked(getUserGroupIds).mockResolvedValue([]);
   vi.mocked(getAgentGroupIds).mockResolvedValue([]);
   vi.mocked(getLicenseState).mockResolvedValue("paid");
+  vi.mocked(getInstancePolicy).mockResolvedValue({
+    memberPersonalAgents: true,
+    memberAutomations: true,
+  });
 });
 
 describe("loadChatAgentName", () => {
@@ -165,5 +180,39 @@ describe("loadChatPageAgent", () => {
 
     expect(getUserGroupIds).not.toHaveBeenCalled();
     expect(getAgentGroupIds).not.toHaveBeenCalled();
+  });
+});
+
+describe("loadChatPageAgent when members may not use a personal agent", () => {
+  beforeEach(() => {
+    vi.mocked(getInstancePolicy).mockResolvedValue({
+      memberPersonalAgents: false,
+      memberAutomations: true,
+    });
+  });
+
+  it("sends the owning member to the agents page, which says why, instead of a bare 404", async () => {
+    signedInAs("user-1", "member");
+    dbReturns([agentRow({ isPersonal: true, ownerId: "user-1" })]);
+
+    await expect(loadChatPageAgent("agent-1")).rejects.toThrow("NEXT_REDIRECT /agents");
+    expect(notFoundMock).not.toHaveBeenCalled();
+  });
+
+  it("still opens an admin's own Smithers", async () => {
+    signedInAs("admin-1", "admin");
+    dbReturns([agentRow({ isPersonal: true, ownerId: "admin-1" })]);
+
+    await expect(loadChatPageAgent("agent-1")).resolves.toMatchObject({
+      agent: { id: "agent-1" },
+    });
+  });
+
+  it("still answers a stranger 404 — the redirect is for the owner only", async () => {
+    signedInAs("user-2", "member");
+    dbReturns([agentRow({ isPersonal: true, ownerId: "user-1" })]);
+
+    await expect(loadChatPageAgent("agent-1")).rejects.toThrow("NEXT_NOT_FOUND");
+    expect(redirectMock).not.toHaveBeenCalled();
   });
 });

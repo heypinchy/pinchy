@@ -72,6 +72,7 @@ vi.mock("drizzle-orm", () => ({ eq: vi.fn((col, val) => ({ col, val })) }));
 vi.mock("@/lib/agent-access", () => ({
   assertAgentAccess: vi.fn(),
   effectiveVisibility: (v: string) => v,
+  isPersonalAgentPausedFor: vi.fn().mockResolvedValue(false),
 }));
 
 vi.mock("@/lib/enterprise", () => ({

@@ -154,6 +154,10 @@ export type AuditEventType =
   | "chat.run_aborted"
   | "chat.run_completed_after_disconnect"
   | "chat.image_model_fallback"
+  // A send refused by an instance policy (Settings → Organization → Member
+  // access, cost budgets) rather than by access. `detail.reason` names the
+  // rule, `detail.agent` snapshots the agent.
+  | "chat.policy_refused"
   | "agent.model_unavailable"
   | "agent.memory_changed"
   // A person edited an agent's SOUL.md (Personality) or AGENTS.md

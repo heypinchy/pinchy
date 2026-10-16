@@ -85,6 +85,14 @@ vi.mock("@/lib/enterprise", () => ({
   getLicenseState: vi.fn().mockResolvedValue("paid"),
 }));
 
+const { mockGetInstancePolicy } = vi.hoisted(() => ({
+  mockGetInstancePolicy: vi.fn(),
+}));
+vi.mock("@/lib/instance-policy", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/instance-policy")>();
+  return { ...actual, getInstancePolicy: mockGetInstancePolicy };
+});
+
 vi.mock("@/db", () => ({
   db: {
     query: {
@@ -268,6 +276,11 @@ describe("ClientRouter", () => {
 
     // Default: agent exists and is accessible
     mockFindFirst.mockResolvedValue(defaultAgent);
+    // Default: members may use their personal agent and its automations.
+    mockGetInstancePolicy.mockResolvedValue({
+      memberPersonalAgents: true,
+      memberAutomations: true,
+    });
     // Default: user has no context
     mockUserFindFirst.mockResolvedValue({ id: "user-1", context: null });
     // Default: empty history for history-mode requests
@@ -2838,6 +2851,91 @@ describe("ClientRouter", () => {
       } finally {
         vi.useRealTimers();
       }
+    });
+  });
+
+  describe("a member's personal agent while members may not use one", () => {
+    const ownSmithers = {
+      id: "agent-1",
+      name: "Smithers",
+      ownerId: "user-1",
+      isPersonal: true,
+      greetingMessage: "Hello.",
+    };
+
+    beforeEach(() => {
+      mockGetInstancePolicy.mockResolvedValue({
+        memberPersonalAgents: false,
+        memberAutomations: true,
+      });
+      mockFindFirst.mockResolvedValue(ownSmithers);
+    });
+
+    it("refuses the send with a policy code instead of forwarding it to OpenClaw", async () => {
+      const clientWs = createMockClientWs();
+
+      await router.handleMessage(clientWs as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+      });
+
+      expect(mockChat).not.toHaveBeenCalled();
+      const messages = clientWs.sent.map((s) => JSON.parse(s));
+      expect(messages).toHaveLength(1);
+      // `policy_` is the family the client renders without a Retry button —
+      // retrying cannot succeed until an admin changes the setting.
+      expect(messages[0]).toMatchObject({
+        type: "error",
+        code: "policy_personal_agent_disabled",
+      });
+      expect(messages[0].message).toMatch(/turned off/i);
+    });
+
+    it("audits the refused send with the agent snapshotted by name", async () => {
+      const clientWs = createMockClientWs();
+
+      await router.handleMessage(clientWs as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+      });
+
+      expect(mockAppendAuditLog).toHaveBeenCalledWith({
+        actorType: "user",
+        actorId: "user-1",
+        eventType: "chat.policy_refused",
+        resource: "agent:agent-1",
+        detail: { reason: "personal_agent_disabled", agent: { id: "agent-1", name: "Smithers" } },
+        outcome: "failure",
+      });
+    });
+
+    it("refuses history as well, without an audit row per reconnect", async () => {
+      const clientWs = createMockClientWs();
+
+      await router.handleMessage(clientWs as any, { type: "history", agentId: "agent-1" });
+
+      expect(mockSessionsHistory).not.toHaveBeenCalled();
+      const messages = clientWs.sent.map((s) => JSON.parse(s));
+      expect(messages[0]).toMatchObject({ type: "error", code: "policy_personal_agent_disabled" });
+      expect(mockAppendAuditLog).not.toHaveBeenCalled();
+    });
+
+    it("lets an admin keep using their own Smithers", async () => {
+      const adminRouter = new ClientRouter(
+        mockOpenClawClient as any,
+        "admin-1",
+        "admin",
+        sessionCache
+      );
+      mockFindFirst.mockResolvedValue({ ...ownSmithers, ownerId: "admin-1" });
+      const clientWs = createMockClientWs();
+
+      await adminRouter.handleMessage(clientWs as any, { type: "history", agentId: "agent-1" });
+
+      const messages = clientWs.sent.map((s) => JSON.parse(s));
+      expect(messages.some((m) => m.code === "policy_personal_agent_disabled")).toBe(false);
     });
   });
 

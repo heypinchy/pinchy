@@ -25,9 +25,20 @@ vi.mock("@/lib/enterprise", () => ({
   getLicenseState: vi.fn().mockResolvedValue("paid"),
 }));
 
+vi.mock("@/lib/instance-policy", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/instance-policy")>();
+  return {
+    ...actual,
+    getInstancePolicy: vi
+      .fn()
+      .mockResolvedValue({ memberPersonalAgents: true, memberAutomations: true }),
+  };
+});
+
 import { db } from "@/db";
 import { getUserGroupIds, getAgentGroupIds, getAllAgentGroupIds } from "@/lib/groups";
 import { getLicenseState } from "@/lib/enterprise";
+import { getInstancePolicy } from "@/lib/instance-policy";
 
 function mockSelectChain(resolvedValue: unknown) {
   vi.mocked(db.select).mockReturnValueOnce({
@@ -200,5 +211,36 @@ describe("getVisibleAgents", () => {
     const result = await getVisibleAgents("user-1", "member");
 
     expect(result).toContainEqual(sharedAgentRestricted);
+  });
+});
+
+describe("getVisibleAgents when members may not use a personal agent", () => {
+  const off = { memberPersonalAgents: false, memberAutomations: true };
+
+  it("leaves a member's own Smithers out of their list, and keeps their shared agents", async () => {
+    vi.mocked(getInstancePolicy).mockResolvedValueOnce(off);
+    vi.mocked(getUserGroupIds).mockResolvedValue([]);
+    vi.mocked(getAllAgentGroupIds).mockResolvedValue(new Map());
+    mockSelectChain(allAgents);
+
+    const result = await getVisibleAgents("user-1", "member");
+
+    expect(result).not.toContainEqual(personalAgentOwned);
+    expect(result).toContainEqual(sharedAgentAll);
+  });
+
+  it("keeps an admin's own Smithers in their list", async () => {
+    vi.mocked(getInstancePolicy).mockResolvedValue(off);
+    vi.mocked(getAllAgentGroupIds).mockResolvedValue(new Map());
+    const adminSmithers = { ...personalAgentOwned, ownerId: "admin-user" };
+    mockSelectChain([adminSmithers, sharedAgentAll]);
+
+    const result = await getVisibleAgents("admin-user", "admin");
+
+    expect(result).toContainEqual(adminSmithers);
+    vi.mocked(getInstancePolicy).mockResolvedValue({
+      memberPersonalAgents: true,
+      memberAutomations: true,
+    });
   });
 });

@@ -5,6 +5,7 @@ import { eq } from "drizzle-orm";
 import { getUserGroupIds, getAgentGroupIds } from "@/lib/groups";
 import { getLicenseState } from "@/lib/enterprise";
 import type { LicenseState } from "@/lib/license-state";
+import { getInstancePolicy, isPausedPersonalAgent } from "@/lib/instance-policy";
 
 interface AgentForAccess {
   id: string;
@@ -70,6 +71,36 @@ export function assertAgentAccess(
       throw new Error("Access denied");
   }
 }
+
+/**
+ * Whether `agent` is the caller's own personal agent while members may not use
+ * one (Settings → Organization → Member access). Callers run it only AFTER
+ * `assertAgentAccess` passed, so for a personal agent the caller is its owner
+ * and `userRole` is the owner's role.
+ *
+ * The policy is read only when it can change the answer — a member's personal
+ * agent — so a shared agent or an admin costs no query.
+ *
+ * Kept beside `assertAgentAccess` rather than inside it: that predicate is
+ * synchronous and its inputs are loaded by its callers, and the answer here is
+ * a different one. A stranger is told the agent does not exist; the owner is
+ * told it is switched off, which is true and is what makes the empty sidebar
+ * explicable. `__tests__/security/personal-agent-policy-gate.test.ts` fails on
+ * any caller of `assertAgentAccess` that does not consult this as well.
+ */
+export async function isPersonalAgentPausedFor(
+  agent: { isPersonal: boolean },
+  userRole: string | null | undefined
+): Promise<boolean> {
+  if (!agent.isPersonal || userRole === "admin") return false;
+  return isPausedPersonalAgent(agent, userRole, await getInstancePolicy());
+}
+
+/** The 403 an owner gets for their own paused personal agent. */
+export const PERSONAL_AGENT_DISABLED = {
+  error: "Personal agents are turned off on this instance. Ask your admin if you need yours back.",
+  code: "personal_agent_disabled",
+} as const;
 
 /**
  * Check if a user has WRITE access to an agent. Throws if access is denied.
@@ -226,6 +257,10 @@ export async function getAgentWithAccess(agentId: string, userId: string, userRo
     // two literals identical; a divergent body re-opens the oracle that equal
     // statuses close.
     return NextResponse.json({ error: "Agent not found" }, { status: 404 });
+  }
+
+  if (await isPersonalAgentPausedFor(agent, userRole)) {
+    return NextResponse.json(PERSONAL_AGENT_DISABLED, { status: 403 });
   }
 
   return agent;
