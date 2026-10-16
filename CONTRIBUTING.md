@@ -265,6 +265,7 @@ The release script and CI enforce image builds, GHCR visibility, end-user instal
 **Model catalog** (every release)
 
 - [ ] Refresh the Ollama Cloud model catalog by running the `update-ollama-cloud-models` skill. The upstream catalog changes independently of Pinchy releases, so do this on every release — not only when our models or templates changed.
+- [ ] Refresh the vendored models.dev snapshot (`node scripts/update-model-catalog.mjs`), then check that `packages/web/src/lib/openclaw-builtin-models.ts` carries each of Anthropic's, OpenAI's and Google's current models. That list is all Pinchy knows about those providers: a model it lacks still shows up in the model dropdown, but reads as text-only and is never a default. The snapshot sat untouched for four months after it was added, while two model generations shipped.
 
 **Documentation**
 
