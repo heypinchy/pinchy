@@ -1,4 +1,4 @@
-import { getSettingsByPrefix, setSetting } from "@/lib/settings";
+import { getSettingsByKeys, setSetting } from "@/lib/settings";
 
 /**
  * Instance-wide limits on what **members** may do with a personal agent — the
@@ -43,7 +43,9 @@ function readSwitch(value: string | undefined): boolean {
 }
 
 export async function getInstancePolicy(): Promise<InstancePolicy> {
-  const stored = await getSettingsByPrefix(POLICY_PREFIX);
+  // Its own two keys, not the prefix: this runs on every member navigation,
+  // API call and socket frame to a personal agent.
+  const stored = await getSettingsByKeys(Object.values(POLICY_KEYS));
   return {
     memberPersonalAgents: readSwitch(stored.get(POLICY_KEYS.memberPersonalAgents)),
     memberAutomations: readSwitch(stored.get(POLICY_KEYS.memberAutomations)),

@@ -62,7 +62,7 @@ vi.mock("@/db", () => ({
 // every existing telegram-bot-token test working unchanged while letting the
 // production bot-token loop switch from per-agent getSetting calls to one
 // batched prefix query (#261).
-const { mockGetSetting, mockGetSettingsByPrefix } = vi.hoisted(() => {
+const { mockGetSetting, mockGetSettingsByPrefix, mockGetSettingsByKeys } = vi.hoisted(() => {
   const TELEGRAM_BOT_TOKEN_TEST_AGENT_IDS = [
     "agent-1",
     "agent-2",
@@ -82,12 +82,16 @@ const { mockGetSetting, mockGetSettingsByPrefix } = vi.hoisted(() => {
       }
       return map;
     }),
+    // The member-access policy reads its keys by name. Default: nothing
+    // stored, so both switches read as on.
+    mockGetSettingsByKeys: vi.fn(async () => new Map<string, string>()),
   };
 });
 
 vi.mock("@/lib/settings", () => ({
   getSetting: mockGetSetting,
   getSettingsByPrefix: mockGetSettingsByPrefix,
+  getSettingsByKeys: mockGetSettingsByKeys,
   setSetting: vi.fn().mockResolvedValue(undefined),
 }));
 
@@ -6833,18 +6837,11 @@ describe("restart-state integration", () => {
       if (key === "telegram_bot_token:admin-smithers") return "123456:ABC-token";
       return null;
     });
-    const realPrefix = mockGetSettingsByPrefix.getMockImplementation()!;
-    mockGetSettingsByPrefix.mockImplementation(async (prefix: string) =>
-      prefix === "policy."
-        ? new Map([["policy.member_personal_agents", "false"]])
-        : realPrefix(prefix)
+    mockGetSettingsByKeys.mockResolvedValueOnce(
+      new Map([["policy.member_personal_agents", "false"]])
     );
 
-    try {
-      await regenerateOpenClawConfig();
-    } finally {
-      mockGetSettingsByPrefix.mockImplementation(realPrefix);
-    }
+    await regenerateOpenClawConfig();
 
     const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
     const peerIds = config.bindings.map(

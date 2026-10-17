@@ -64,7 +64,10 @@ describe("MemberAccessSettings", () => {
     expect(await screen.findByRole("checkbox", { name: /create automations/i })).toBeDisabled();
   });
 
-  it("shows the server's error inline when saving fails", async () => {
+  // Neither failure is tied to a field the admin could correct — two checkboxes
+  // cannot be "wrong" — so both are system errors, which AGENTS.md § "Error And
+  // Notification UI" routes to a toast.
+  it("reports a failed save with a toast carrying the server's reason", async () => {
     vi.mocked(global.fetch)
       .mockResolvedValueOnce(jsonResponse({ memberPersonalAgents: true, memberAutomations: true }))
       .mockResolvedValueOnce(jsonResponse({ error: "Forbidden" }, { status: 403 }));
@@ -74,7 +77,19 @@ describe("MemberAccessSettings", () => {
     await user.click(await screen.findByRole("checkbox", { name: /create automations/i }));
     await user.click(screen.getByRole("button", { name: "Save" }));
 
-    expect(await screen.findByText("Forbidden")).toBeInTheDocument();
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith("Forbidden"));
+    expect(screen.queryByText("Forbidden")).not.toBeInTheDocument();
     expect(toast.success).not.toHaveBeenCalled();
+  });
+
+  it("reports a failed load with a toast", async () => {
+    vi.mocked(global.fetch).mockResolvedValueOnce(
+      jsonResponse({ error: "Database unavailable" }, { status: 500 })
+    );
+
+    render(<MemberAccessSettings />);
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith("Database unavailable"));
+    expect(screen.queryByText("Database unavailable")).not.toBeInTheDocument();
   });
 });

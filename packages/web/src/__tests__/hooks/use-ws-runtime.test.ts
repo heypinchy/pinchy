@@ -3058,6 +3058,30 @@ describe("useWsRuntime", () => {
     }
   );
 
+  it("ends the history wait when the history request itself is refused by a policy", () => {
+    const { result } = renderHook(() => useWsRuntime("agent-1"));
+    const ws = wsInstances[0];
+
+    act(() => {
+      ws.simulateOpen();
+    });
+    expect(result.current.isHistoryLoaded).toBe(false);
+
+    // An open tab reconnects after the admin switched personal agents off: the
+    // server answers the history request with the refusal, not with history.
+    act(() => {
+      ws.simulateMessage({
+        type: "error",
+        code: "policy_personal_agent_disabled",
+        message: "Personal agents are turned off on this instance.",
+      });
+    });
+
+    // Waiting on would end in the history timeout, which reads as a network
+    // fault instead of the explanation the bubble carries.
+    expect(result.current.isHistoryLoaded).toBe(true);
+  });
+
   // ── status reducer ───────────────────────────────────────────────────────────
   describe("status reducer", () => {
     it("includes clientMessageId in the outgoing WS frame", async () => {

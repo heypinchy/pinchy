@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { uuid } from "@/lib/uuid";
+import { isUuid, uuid } from "@/lib/uuid";
 
 describe("uuid", () => {
   const originalCrypto = globalThis.crypto;
@@ -57,5 +57,18 @@ describe("uuid", () => {
   it("should generate unique IDs on repeated calls", () => {
     const ids = new Set(Array.from({ length: 100 }, () => uuid()));
     expect(ids.size).toBe(100);
+  });
+});
+
+describe("isUuid", () => {
+  it("accepts a canonical uuid in either case", () => {
+    expect(isUuid("3f2b8c1e-4d5a-4b6c-8d7e-9f0a1b2c3d4e")).toBe(true);
+    expect(isUuid("3F2B8C1E-4D5A-4B6C-8D7E-9F0A1B2C3D4E")).toBe(true);
+  });
+
+  it("rejects anything a uuid column would answer with a cast error", () => {
+    expect(isUuid("not-a-uuid")).toBe(false);
+    expect(isUuid("3f2b8c1e-4d5a-4b6c-8d7e-9f0a1b2c3d4e-extra")).toBe(false);
+    expect(isUuid("")).toBe(false);
   });
 });

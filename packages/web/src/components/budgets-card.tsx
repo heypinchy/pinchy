@@ -11,15 +11,13 @@ import { EnterpriseFeatureCard } from "@/components/enterprise-feature-card";
 import { apiDelete, apiGet, apiPut, errorMessage } from "@/lib/api-client";
 import type { UpsertBudgetInput } from "@/lib/schemas/budgets";
 import type { BudgetStatus } from "@/lib/budgets";
+import { budgetPercent, formatUsd } from "@/lib/budget-format";
 import type { LicenseState } from "@/lib/license-state";
 
 const INSTANCE = "__instance__";
 
-const usd = (n: number) =>
-  n.toLocaleString("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2 });
-
 function stateLabel(budget: BudgetStatus): string {
-  const percent = Math.floor((budget.spentUsd / budget.monthlyLimitUsd) * 100);
+  const percent = budgetPercent(budget.spentUsd, budget.monthlyLimitUsd);
   if (budget.state === "exceeded") {
     return budget.onExceeded === "block"
       ? `${percent}% — new chats paused until next month`
@@ -131,7 +129,7 @@ export function BudgetsCard({
                 />
                 <div className="flex items-center justify-between gap-4 text-xs text-muted-foreground">
                   <span>
-                    {usd(budget.spentUsd)} of {usd(budget.monthlyLimitUsd)} this month
+                    {formatUsd(budget.spentUsd)} of {formatUsd(budget.monthlyLimitUsd)} this month
                   </span>
                   <Button size="sm" variant="ghost" onClick={() => handleRemove(budget)}>
                     Remove

@@ -5,22 +5,20 @@ import Link from "next/link";
 import { X } from "lucide-react";
 import { apiGet } from "@/lib/api-client";
 import type { BudgetStatus } from "@/lib/budgets";
+import { budgetPercent, formatUsd } from "@/lib/budget-format";
 
 const REFETCH_INTERVAL_MS = 5 * 60 * 1000;
 const DISMISS_PREFIX = "pinchy-banner-dismissed:";
 
-const usd = (n: number) =>
-  n.toLocaleString("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2 });
-
 function message(budget: BudgetStatus): string {
   const who = budget.agent?.name ?? "This Pinchy";
-  const amounts = `(${usd(budget.spentUsd)} of ${usd(budget.monthlyLimitUsd)})`;
+  const amounts = `(${formatUsd(budget.spentUsd)} of ${formatUsd(budget.monthlyLimitUsd)})`;
   if (budget.state === "exceeded") {
     return budget.onExceeded === "block"
       ? `${who} has used its monthly budget ${amounts}. New chats and automations are paused until next month.`
       : `${who} has used its monthly budget ${amounts}.`;
   }
-  const percent = Math.floor((budget.spentUsd / budget.monthlyLimitUsd) * 100);
+  const percent = budgetPercent(budget.spentUsd, budget.monthlyLimitUsd);
   return `${who} has used ${percent}% of its monthly budget ${amounts}.`;
 }
 

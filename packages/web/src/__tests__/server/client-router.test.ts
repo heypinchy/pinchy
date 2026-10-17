@@ -3006,6 +3006,20 @@ describe("ClientRouter", () => {
       expect(mockAppendAuditLog).not.toHaveBeenCalled();
     });
 
+    it("still lets the member stop a run that is already going — stopping is never what the policy is against", async () => {
+      const chatAbort = vi.fn().mockResolvedValue({ ok: true, aborted: true });
+      Object.assign(mockOpenClawClient, { chatAbort });
+      const clientWs = createMockClientWs();
+
+      await router.handleMessage(clientWs as any, { type: "abort", agentId: "agent-1" });
+
+      // The admin switched personal agents off mid-run. Refusing the stop
+      // would leave the run spending until it finished on its own.
+      expect(chatAbort).toHaveBeenCalledTimes(1);
+      const messages = clientWs.sent.map((s) => JSON.parse(s));
+      expect(messages.some((m) => m.code === "policy_personal_agent_disabled")).toBe(false);
+    });
+
     it("lets an admin keep using their own Smithers", async () => {
       const adminRouter = new ClientRouter(
         mockOpenClawClient as any,

@@ -130,12 +130,34 @@ describe("PUT /api/settings/governance", () => {
     expect(recalculateTelegramAllowStores).not.toHaveBeenCalled();
   });
 
-  it("writes no audit row and refreshes nothing for a save that changed nothing", async () => {
+  it("writes no audit row for a save that changed nothing", async () => {
     signedInAs("admin");
     const res = await put(ON);
 
     expect(res.status).toBe(200);
     expect(appendAuditLog).not.toHaveBeenCalled();
-    expect(regenerateOpenClawConfig).not.toHaveBeenCalled();
+    expect(setInstancePolicy).not.toHaveBeenCalled();
+  });
+
+  it("re-runs the OpenClaw and Telegram refresh on an unchanged save, so a failed one can be retried", async () => {
+    signedInAs("admin");
+    // First save: the switch is stored, then the refresh fails.
+    vi.mocked(regenerateOpenClawConfig).mockRejectedValueOnce(new Error("OpenClaw restarting"));
+    await expect(put({ memberPersonalAgents: false, memberAutomations: true })).rejects.toThrow();
+
+    // The admin saves again. The stored value already matches, so nothing is
+    // audited — but the refresh that never happened must happen now, or
+    // members keep reaching Smithers over Telegram while the switch reads off.
+    vi.mocked(getInstancePolicy).mockResolvedValue({
+      memberPersonalAgents: false,
+      memberAutomations: true,
+    });
+    vi.mocked(regenerateOpenClawConfig).mockClear();
+    vi.mocked(recalculateTelegramAllowStores).mockClear();
+    const res = await put({ memberPersonalAgents: false, memberAutomations: true });
+
+    expect(res.status).toBe(200);
+    expect(regenerateOpenClawConfig).toHaveBeenCalledTimes(1);
+    expect(recalculateTelegramAllowStores).toHaveBeenCalledTimes(1);
   });
 });

@@ -63,6 +63,8 @@ vi.mock("@/db/schema", async (importOriginal) => {
 
 import { auth } from "@/lib/auth";
 import { appendAuditLog } from "@/lib/audit";
+import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
+import { recalculateTelegramAllowStores } from "@/lib/telegram-allow-store";
 
 // ── PATCH /api/users/[userId] ────────────────────────────────────────────
 
@@ -202,5 +204,30 @@ describe("PATCH /api/users/[userId]", () => {
         detail: { changes: { role: { from: "member", to: "admin" } }, userName: "Max" },
       })
     );
+  });
+
+  it("rebuilds the OpenClaw config as well as the allow stores, because Telegram routing depends on the role", async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
+      user: { id: "admin-1", role: "admin" },
+      expires: "",
+    } as any);
+    mockSelectWhere.mockResolvedValueOnce([{ id: "user-1", name: "Max", role: "member" }]);
+    mockUpdateReturning.mockResolvedValueOnce([{ id: "user-1", name: "Max", role: "admin" }]);
+
+    const response = await PATCH(
+      new NextRequest("http://localhost:7777/api/users/user-1", {
+        method: "PATCH",
+        body: JSON.stringify({ role: "admin" }),
+      }),
+      { params: Promise.resolve({ userId: "user-1" }) }
+    );
+
+    expect(response.status).toBe(200);
+    // While members may not use a personal agent, a member gets no Telegram
+    // peer binding (openclaw-config/build.ts). Promoted without a regen, they
+    // would be in the allow store with no binding, and OpenClaw would route
+    // them to whatever agent it picks for an unbound peer.
+    expect(regenerateOpenClawConfig).toHaveBeenCalledTimes(1);
+    expect(recalculateTelegramAllowStores).toHaveBeenCalledTimes(1);
   });
 });

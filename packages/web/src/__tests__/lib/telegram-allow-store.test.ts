@@ -86,6 +86,10 @@ const { mockGetSettingsByPrefix } = vi.hoisted(() => ({
 vi.mock("@/lib/settings", () => ({
   getSetting: (key: string) => Promise.resolve(mockSettings.get(key) ?? null),
   getSettingsByPrefix: (prefix: string) => mockGetSettingsByPrefix(prefix, mockSettings),
+  getSettingsByKeys: (keys: string[]) =>
+    Promise.resolve(
+      new Map(keys.flatMap((k) => (mockSettings.has(k) ? [[k, mockSettings.get(k)!]] : [])))
+    ),
 }));
 
 import {

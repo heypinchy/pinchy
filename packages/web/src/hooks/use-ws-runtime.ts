@@ -1222,6 +1222,24 @@ export function useWsRuntime(
         // either a server bug (history frame never arrives) or an
         // adversarial server flooding chunks. Log + drop oldest so we
         // don't OOM the tab.
+        // A policy refusal can be the server's answer to the history request
+        // itself (an open tab reconnecting after the admin switched personal
+        // agents off). No history is coming, so end the wait here instead of
+        // buffering the refusal behind a history frame that never arrives —
+        // that would end in the history timeout, which reads as a network
+        // fault. Nothing buffered can be applied without history either.
+        if (
+          pendingHistoryRef.current &&
+          data.type === "error" &&
+          typeof data.code === "string" &&
+          data.code.startsWith("policy_")
+        ) {
+          clearHistoryWatchdog();
+          pendingHistoryRef.current = false;
+          frameBufferRef.current = [];
+          setIsHistoryLoaded(true);
+        }
+
         if (pendingHistoryRef.current && data.type !== "history") {
           if (frameBufferRef.current.length >= FRAME_BUFFER_MAX) {
             console.warn(

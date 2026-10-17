@@ -12,6 +12,7 @@ import {
   assertAgentAccess,
   effectiveVisibility,
   isPersonalAgentPausedFor,
+  PERSONAL_AGENT_DISABLED,
 } from "@/lib/agent-access";
 import { directSessionKey } from "@/lib/session-key";
 import { getUserGroupIds, getAgentGroupIds } from "@/lib/groups";
@@ -379,15 +380,16 @@ export class ClientRouter {
     }
 
     // The caller's own personal agent while members may not use one. Answered
-    // for every frame type, so an open tab can neither read nor send; audited
+    // for history and sends, so an open tab can neither read nor send; audited
     // only for a send, because a tab re-requests history on every reconnect and
-    // those rows would say nothing the first one did not.
-    if (await isPersonalAgentPausedFor(agent, this.userRole)) {
+    // those rows would say nothing the first one did not. An abort goes
+    // through: a run that was already going when the switch flipped must stay
+    // stoppable — stopping is never what the policy is against.
+    if (message.type !== "abort" && (await isPersonalAgentPausedFor(agent, this.userRole))) {
       this.sendToClient(clientWs, {
         type: "error",
         code: "policy_personal_agent_disabled",
-        message:
-          "Personal agents are turned off on this instance. Ask your admin if you need yours back.",
+        message: PERSONAL_AGENT_DISABLED.error,
       });
       if (message.type === "message") {
         await this.auditPolicyRefusal(agent, "personal_agent_disabled");

@@ -1,12 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-const { getSettingsByPrefixMock, setSettingMock } = vi.hoisted(() => ({
-  getSettingsByPrefixMock: vi.fn(),
+const { getSettingsByKeysMock, setSettingMock } = vi.hoisted(() => ({
+  getSettingsByKeysMock: vi.fn(),
   setSettingMock: vi.fn(),
 }));
 
 vi.mock("@/lib/settings", () => ({
-  getSettingsByPrefix: getSettingsByPrefixMock,
+  getSettingsByKeys: getSettingsByKeysMock,
   setSetting: setSettingMock,
 }));
 
@@ -24,18 +24,24 @@ const ON = { memberPersonalAgents: true, memberAutomations: true };
 
 describe("getInstancePolicy", () => {
   beforeEach(() => {
-    getSettingsByPrefixMock.mockReset();
+    getSettingsByKeysMock.mockReset();
     setSettingMock.mockReset();
   });
 
   it("reads both switches as on when no key was ever written, so an upgrade changes nothing", async () => {
-    getSettingsByPrefixMock.mockResolvedValue(new Map());
+    getSettingsByKeysMock.mockResolvedValue(new Map());
     await expect(getInstancePolicy()).resolves.toEqual(ON);
-    expect(getSettingsByPrefixMock).toHaveBeenCalledWith("policy.");
+    // Exactly its own two keys: this runs on every member navigation, API call
+    // and socket frame to a personal agent, so it must not read (and ship
+    // across the wire) the whole settings table with every secret in it.
+    expect(getSettingsByKeysMock).toHaveBeenCalledWith([
+      POLICY_KEYS.memberPersonalAgents,
+      POLICY_KEYS.memberAutomations,
+    ]);
   });
 
   it("reads an explicit 'false' as off", async () => {
-    getSettingsByPrefixMock.mockResolvedValue(
+    getSettingsByKeysMock.mockResolvedValue(
       new Map([
         [POLICY_KEYS.memberPersonalAgents, "false"],
         [POLICY_KEYS.memberAutomations, "false"],
@@ -48,7 +54,7 @@ describe("getInstancePolicy", () => {
   });
 
   it("reads a value it does not recognise as off — a restriction must not fail open", async () => {
-    getSettingsByPrefixMock.mockResolvedValue(new Map([[POLICY_KEYS.memberPersonalAgents, "no"]]));
+    getSettingsByKeysMock.mockResolvedValue(new Map([[POLICY_KEYS.memberPersonalAgents, "no"]]));
     await expect(getInstancePolicy()).resolves.toEqual({
       memberPersonalAgents: false,
       memberAutomations: true,
@@ -135,10 +141,10 @@ describe("arePersonalAutomationsPaused", () => {
 });
 
 describe("arePersonalAutomationsPausedFor", () => {
-  beforeEach(() => getSettingsByPrefixMock.mockReset());
+  beforeEach(() => getSettingsByKeysMock.mockReset());
 
   it("reads the policy for a member's personal agent", async () => {
-    getSettingsByPrefixMock.mockResolvedValue(new Map([[POLICY_KEYS.memberAutomations, "false"]]));
+    getSettingsByKeysMock.mockResolvedValue(new Map([[POLICY_KEYS.memberAutomations, "false"]]));
     await expect(arePersonalAutomationsPausedFor({ isPersonal: true }, "member")).resolves.toBe(
       true
     );
@@ -151,6 +157,6 @@ describe("arePersonalAutomationsPausedFor", () => {
     await expect(arePersonalAutomationsPausedFor({ isPersonal: true }, "admin")).resolves.toBe(
       false
     );
-    expect(getSettingsByPrefixMock).not.toHaveBeenCalled();
+    expect(getSettingsByKeysMock).not.toHaveBeenCalled();
   });
 });

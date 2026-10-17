@@ -24,7 +24,8 @@ export const GET = withAuth(async () => {
  * Pinchy: Telegram routes a member's DMs straight to their Smithers inside
  * OpenClaw. So when it moves, the OpenClaw config (routing bindings) and the
  * Telegram allow stores are rebuilt — after the audit row, so a failing refresh
- * never leaves the change without a trail.
+ * never leaves the change without a trail. An unchanged save rebuilds them as
+ * well, which is how a refresh that failed last time gets retried.
  */
 export const PUT = withAdmin(async (request, _ctx, session) => {
   const parsed = await parseRequestBody(instancePolicySchema, request);
@@ -36,20 +37,26 @@ export const PUT = withAdmin(async (request, _ctx, session) => {
   for (const key of Object.keys(next) as (keyof InstancePolicy)[]) {
     if (previous[key] !== next[key]) changes[key] = { from: previous[key], to: next[key] };
   }
-  if (Object.keys(changes).length === 0) return NextResponse.json(next);
+  const unchanged = Object.keys(changes).length === 0;
 
-  await setInstancePolicy(next);
+  if (!unchanged) {
+    await setInstancePolicy(next);
 
-  await appendAuditLog({
-    actorType: "user",
-    actorId: session.user.id!,
-    eventType: "settings.updated",
-    resource: "settings",
-    detail: { changes },
-    outcome: "success",
-  });
+    await appendAuditLog({
+      actorType: "user",
+      actorId: session.user.id!,
+      eventType: "settings.updated",
+      resource: "settings",
+      detail: { changes },
+      outcome: "success",
+    });
+  }
 
-  if (changes.memberPersonalAgents) {
+  // An unchanged save refreshes too. If the refresh failed after the switch
+  // was stored, saving again is the admin's only retry — and without it the
+  // Telegram door stays open while the setting reads off. Both refreshes are
+  // idempotent, so a redundant one costs a no-op write at most.
+  if (unchanged || changes.memberPersonalAgents) {
     await regenerateOpenClawConfig();
     await recalculateTelegramAllowStores();
   }

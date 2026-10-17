@@ -17,33 +17,31 @@ import type { InstancePolicyInput } from "@/lib/schemas/governance";
 export function MemberAccessSettings() {
   const [policy, setPolicy] = useState<InstancePolicyInput | null>(null);
   const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     apiGet<InstancePolicyInput>("/api/settings/governance")
       .then(setPolicy)
-      .catch((e) => setError(errorMessage(e, "Couldn't load member access settings")));
+      // A system error, not a field the admin could correct — a toast
+      // (AGENTS.md § "Error And Notification UI"), and the card stays away.
+      .catch((e) => toast.error(errorMessage(e, "Couldn't load member access settings")));
   }, []);
 
   async function handleSave() {
     if (!policy) return;
     setSaving(true);
-    setError(null);
     try {
       setPolicy(
         await apiPut<InstancePolicyInput, InstancePolicyInput>("/api/settings/governance", policy)
       );
       toast.success("Member access saved");
     } catch (e) {
-      setError(errorMessage(e, "Couldn't save member access settings"));
+      toast.error(errorMessage(e, "Couldn't save member access settings"));
     } finally {
       setSaving(false);
     }
   }
 
-  if (!policy) {
-    return error ? <p className="text-sm text-destructive">{error}</p> : null;
-  }
+  if (!policy) return null;
 
   return (
     <Card>
@@ -98,8 +96,6 @@ export function MemberAccessSettings() {
         <Button onClick={handleSave} disabled={saving}>
           {saving ? "Saving..." : "Save"}
         </Button>
-
-        {error && <p className="text-sm text-destructive">{error}</p>}
       </CardContent>
     </Card>
   );

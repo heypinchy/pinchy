@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { isUuid } from "@/lib/uuid";
 import { eq } from "drizzle-orm";
 import { db } from "@/db";
 import { agents, costBudgets } from "@/db/schema";
@@ -6,10 +7,6 @@ import { withAdmin } from "@/lib/api-auth";
 import { appendAuditLog } from "@/lib/audit";
 
 type RouteContext = { params: Promise<{ id: string }> };
-
-// cost_budgets.id is a uuid column: a malformed id would be a cast error (500)
-// rather than "no such budget".
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
  * DELETE /api/budgets/[id] — remove a budget. Deliberately NOT license-gated:
@@ -20,7 +17,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 export const DELETE = withAdmin<RouteContext>(async (_request, { params }, session) => {
   const { id } = await params;
   const notFound = NextResponse.json({ error: "Budget not found" }, { status: 404 });
-  if (!UUID_RE.test(id)) return notFound;
+  if (!isUuid(id)) return notFound;
 
   const [row] = await db
     .select({
