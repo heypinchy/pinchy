@@ -438,6 +438,12 @@ jobs:
         # pages — in both directions. Reads docs/dist/, so same ordering rule.
         run: cd docs && pnpm check:llms
 
+      - name: Docs Mermaid diagram check (built output)
+        # A ```mermaid block must ship as a diagram, not as its own source in a
+        # code block — which is what the astro 7 upgrade first produced, with
+        # every other check green (#851). Reads docs/dist/, same ordering rule.
+        run: cd docs && pnpm check:diagrams
+
       - name: Squawk migration lint (changed files only)
         if: github.event_name == 'pull_request'
         run: |

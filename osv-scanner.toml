@@ -21,61 +21,6 @@
 # no lockfile package matches them anymore. Re-add with a fresh reason if
 # osv-scanner flags any of them again.
 
-# astro (docs/pnpm-lock.yaml) is the static-site generator that builds the
-# documentation site AT BUILD TIME. It ships in no runtime image and reaches no
-# Pinchy user. Beyond that, none of the residual advisories reaches the site we
-# ship: three are XSS bugs and one an authorization bypass in base-path
-# stripping, all scoped upstream to on-demand SSR / the dev server — statically
-# prerendered output, which is all Starlight emits, is explicitly unaffected.
-# The fifth (GHSA-26w7, RCE through AVIF optimization) is a libheif bug inside
-# sharp: the build never optimizes an image (passthroughImageService, below),
-# and the vulnerable code is patched regardless, because docs/package.json
-# forces sharp >=0.35.5, past the version the upstream fix itself requires. All five fix
-# only in astro 7.x — 6.4.8 is still the newest 6.x, with no backport.
-# The one High-severity astro advisory (GHSA-vj59-8hwv-xxmv, 8.2) IS fixed
-# here — astro is bumped to 6.4.8, resolved within the ^6 range.
-#
-# Re-triaged 2026-10-17 (#851). Starlight no longer blocks: 0.42 peers
-# astro ^7.2.10. A trial upgrade (astro 7.4.0 + Starlight 0.42.6) builds, and
-# check:anchors / check:rendered / check:llms all pass — which is precisely the
-# problem, because the regression it ships is one none of them reads.
-# @pasqal-io/starlight-client-mermaid 0.1.0 (still the newest) peers
-# @astrojs/markdown-remark ^6, and under astro 7 its transform is not applied:
-# the architecture diagram, emitted as <div class="mermaid"> on astro 6, comes
-# out as an expressive-code block of raw Mermaid source. Astro 7 also raises the
-# Node floor to >=22.22.0. Both belong in the #851 PR, not in a release-week
-# dependency fix. Reachability is unchanged and re-checked against the current
-# config: astro.config.mjs sets no `output` and no adapter, so every page is
-# prerendered static HTML, and `image.service` is passthroughImageService, so
-# the build never decodes an image through sharp at all. ignoreUntil is
-# 2026-11-30 — past the v0.10.0 cut and the Noack go-live, so the #851 upgrade
-# lands as its own build-verified change instead of under a deadline.
-
-[[IgnoredVulns]]
-id = "GHSA-4g3v-8h47-v7g6"
-ignoreUntil = 2026-11-30
-reason = "astro — docs static-site build tooling (docs/pnpm-lock.yaml), not shipped to users; reflected XSS in View Transitions, on-demand SSR / dev-server only — Starlight emits static HTML. Fixes only in astro 7.x; the upgrade is blocked by starlight-client-mermaid 0.1.0, which does not render diagrams under astro 7. Tracked: #851"
-
-[[IgnoredVulns]]
-id = "GHSA-7pw4-f3q4-r2p2"
-ignoreUntil = 2026-11-30
-reason = "astro — docs static-site build tooling (docs/pnpm-lock.yaml), not shipped to users; reflected XSS in transition directives, on-demand SSR / dev-server only — statically prerendered output unaffected. Fixes only in astro 7.x; the upgrade is blocked by starlight-client-mermaid 0.1.0, which does not render diagrams under astro 7. Tracked: #851"
-
-[[IgnoredVulns]]
-id = "GHSA-f48w-9m4c-m7f5"
-ignoreUntil = 2026-11-30
-reason = "astro — docs static-site build tooling (docs/pnpm-lock.yaml), not shipped to users; XSS via unescaped attribute names, needs an SSR runtime with a global HTMLElement — not reachable in static output. Fixes only in astro 7.x; the upgrade is blocked by starlight-client-mermaid 0.1.0, which does not render diagrams under astro 7. Tracked: #851"
-
-[[IgnoredVulns]]
-id = "GHSA-26w7-cxv4-gfx2"
-ignoreUntil = 2026-11-30
-reason = "astro — docs static-site build tooling (docs/pnpm-lock.yaml), not shipped to users; RCE via libheif in sharp when Astro optimizes an untrusted AVIF. The docs build optimizes no image at all (astro.config.mjs uses passthroughImageService), and the vulnerable decoder is patched anyway: docs/package.json forces sharp >=0.35.5, past the version the upstream fix requires. The astro-side fix ships only in 7.2.8; the upgrade is blocked by starlight-client-mermaid 0.1.0, which does not render diagrams under astro 7. Tracked: #851"
-
-[[IgnoredVulns]]
-id = "GHSA-376h-93r7-7g6f"
-ignoreUntil = 2026-11-30
-reason = "astro — docs static-site build tooling (docs/pnpm-lock.yaml), not shipped to users; authorization bypass when stripping the configured base from a request path, which needs an on-demand server routing requests — Starlight emits static HTML served by a plain file host. Fixes only in astro 7.2.4; the upgrade is blocked by starlight-client-mermaid 0.1.0, which does not render diagrams under astro 7. Tracked: #851"
-
 # GHSA-mh99-v99m-4gvg (brace-expansion OOM) was retired 2026-10-17. The
 # root package.json overrides now lift every line past its fix (1.x >=1.1.21,
 # 2.x >=2.1.7, 5.x >=5.0.12), osv-scanner reported the entry as UNUSED, and

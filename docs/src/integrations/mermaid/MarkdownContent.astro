@@ -1,0 +1,50 @@
+---
+// Starlight's MarkdownContent, plus the client-side renderer for the
+// `<div class="mermaid">` containers that ./index.mjs emits. Mermaid is loaded
+// only on pages that have a diagram, and re-renders when the theme switches.
+// Adapted from @pasqal-io/starlight-client-mermaid (Apache-2.0).
+import Default from "@astrojs/starlight/components/MarkdownContent.astro";
+---
+
+<Default>
+  <slot />
+</Default>
+
+<script>
+  async function renderDiagrams(graphs: HTMLCollectionOf<Element>) {
+    const { default: mermaid } = await import("mermaid");
+
+    function render() {
+      const theme =
+        document.documentElement.getAttribute("data-theme") === "dark"
+          ? "dark"
+          : "default";
+      mermaid.initialize({ startOnLoad: false, theme });
+
+      for (const graph of graphs) {
+        const content = graph.getAttribute("data-content");
+        if (!content) continue;
+        const id = `mermaid-${Math.round(Math.random() * 100000)}`;
+        mermaid
+          .render(id, content)
+          .then(({ svg }) => {
+            graph.innerHTML = svg;
+            graph.setAttribute("data-status", "rendered");
+          })
+          .catch((error) => {
+            graph.textContent = String(error);
+            graph.setAttribute("data-status", "error");
+          });
+      }
+    }
+
+    render();
+    new MutationObserver(render).observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["data-theme"],
+    });
+  }
+
+  const graphs = document.getElementsByClassName("mermaid");
+  if (graphs.length > 0) renderDiagrams(graphs);
+</script>
