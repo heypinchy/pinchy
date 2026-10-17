@@ -89,9 +89,9 @@ For these three providers, the balanced model is also what a **Custom Agent** st
 
 The pick is a starting point: [changing an agent's model](#change-an-agents-model) takes a few clicks.
 
-The model dropdown lists everything the provider serves, so a model released after your Pinchy version shows up there too. You can select it, but Pinchy doesn't know its capabilities yet: it isn't picked automatically while a model Pinchy knows is available, and Pinchy treats it as text-only until an update adds it to the [capability catalog](#model-capability-catalog).
+The model dropdown lists everything the provider serves, so a model released after your Pinchy version shows up there too. You can select it, but it isn't picked automatically while a model in Pinchy's [capability catalog](#model-capability-catalog) is available. Whether it can see images comes from the model list Pinchy ships with; a model too new for that list is treated as text-only until an update adds it.
 
-**Claude Opus 5.5, Sonnet 5.5, Haiku 5.5 and Fable 5.1** are listed too, but disabled. They need a newer agent runtime than this Pinchy release ships, and their requests would be rejected — so the dropdown says so instead of letting a chat fail. Use Claude Sonnet 5 in the meantime.
+**Claude Opus 5, Opus 5.5, Sonnet 5.5, Haiku 5.5 and Fable 5.1** are listed too, but disabled. They need a newer agent runtime than this Pinchy release ships, and their requests would be rejected — so the dropdown says so instead of letting a chat fail. Use Claude Sonnet 5 in the meantime; enabling them is tracked in [#1225](https://github.com/heypinchy/pinchy/issues/1225).
 
 ## Remove a provider
 

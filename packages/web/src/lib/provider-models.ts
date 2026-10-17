@@ -109,7 +109,11 @@ interface ProviderFetchConfig {
 
 const PROVIDER_FETCH_CONFIG: Record<ProviderName, ProviderFetchConfig> = {
   anthropic: {
-    url: () => `${resolveProviderBaseUrl("anthropic", "https://api.anthropic.com")}/v1/models`,
+    // The list is paged, 20 per page by default, newest first. The curated
+    // models are the oldest live ones, so the first page alone would lose them
+    // as Anthropic ships more models — and the balanced default with them.
+    url: () =>
+      `${resolveProviderBaseUrl("anthropic", "https://api.anthropic.com")}/v1/models?limit=1000`,
     headers: (apiKey) => ({
       "x-api-key": apiKey,
       "anthropic-version": "2023-06-01",

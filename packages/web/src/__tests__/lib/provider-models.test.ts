@@ -183,6 +183,23 @@ describe("fetchProviderModels", () => {
     });
   });
 
+  // Anthropic pages the list (20 by default, newest first). The curated models
+  // are the oldest live ones, so reading one default page would drop them as
+  // Anthropic ships more — and the balanced default would fall back to a model
+  // Pinchy has no definition for.
+  it("asks Anthropic for the whole model list, not its first page", async () => {
+    vi.mocked(getSetting).mockImplementation(async (key: string) =>
+      key === "anthropic_api_key" ? "sk-ant-test-key" : null
+    );
+    vi.mocked(fetch).mockResolvedValue(new Response(JSON.stringify({ data: [] }), { status: 200 }));
+
+    await fetchProviderModels();
+
+    const url = new URL(String(vi.mocked(fetch).mock.calls[0][0]));
+    expect(url.pathname).toBe("/v1/models");
+    expect(url.searchParams.get("limit")).toBe("1000");
+  });
+
   it("skips providers without stored keys", async () => {
     vi.mocked(getSetting).mockResolvedValue(null);
 

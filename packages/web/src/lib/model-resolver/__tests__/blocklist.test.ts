@@ -12,6 +12,8 @@ describe("isBlocked", () => {
   // is the provider's live catalog — so without a block an admin can pick one
   // and only learn from a failed chat. Lift together with the OpenClaw update.
   it.each([
+    "anthropic/claude-opus-5",
+    "anthropic/claude-opus-5-20260901",
     "anthropic/claude-opus-5-5",
     "anthropic/claude-sonnet-5-5",
     "anthropic/claude-haiku-5-5",
@@ -23,6 +25,7 @@ describe("isBlocked", () => {
   it.each([
     "anthropic/claude-sonnet-5",
     "anthropic/claude-fable-5",
+    "anthropic/claude-opus-4-8",
     "anthropic/claude-opus-4-7",
     "anthropic/claude-sonnet-4-6",
     "anthropic/claude-haiku-4-5-20251001",

@@ -46,6 +46,12 @@ export interface OpenClawModelDefinition {
 // (guarded in openclaw-builtin-models.test.ts); `maxTokens` may sit below the
 // model's own output cap, never above it.
 //
+// Anthropic `maxTokens` stays at 32K or below although the models allow up to
+// 128K: it becomes every request's `max_tokens`, and Anthropic reserves that
+// much of the output-tokens-per-minute limit when a request starts. On a new,
+// low-tier account a 128K reservation can exceed the whole limit, so every
+// turn would be answered 429 however short the reply.
+//
 // A model only belongs here once the pinned OpenClaw can drive it. The Claude
 // 5.5 family and Fable 5.1 cannot yet: OpenClaw 2026.7.1 predates their request
 // contract: it sends Opus 5.5 a thinking setting the API rejects, and has none
@@ -60,7 +66,7 @@ const ANTHROPIC_MODELS: OpenClawModelDefinition[] = [
     id: "claude-sonnet-5",
     name: "Claude Sonnet 5",
     contextWindow: 1000000,
-    maxTokens: 128000,
+    maxTokens: 32000,
     reasoning: true,
     vision: true,
     input: ["text", "image"],
@@ -106,8 +112,7 @@ const ANTHROPIC_MODELS: OpenClawModelDefinition[] = [
 // present; accurate, refreshable provider pricing is tracked in #677.
 //
 // Input/output: developers.openai.com/api/docs/pricing, read 2026-10-16, the
-// tier for prompts up to 272K tokens. GPT-5.4's row was not re-read and keeps
-// its earlier price.
+// tier for prompts up to 272K tokens.
 const OPENAI_MODELS: OpenClawModelDefinition[] = [
   {
     id: "gpt-5.5",
@@ -127,7 +132,7 @@ const OPENAI_MODELS: OpenClawModelDefinition[] = [
     reasoning: false,
     vision: true,
     input: ["text", "image"],
-    cost: { input: 2.5, output: 10, cacheRead: 0, cacheWrite: 0 },
+    cost: { input: 2.5, output: 15, cacheRead: 0, cacheWrite: 0 },
   },
   {
     id: "gpt-5.4-mini",

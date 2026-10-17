@@ -29,6 +29,45 @@ describe("describePageImage", () => {
     );
   });
 
+  // Claude Sonnet 5 — the default reading model on Anthropic — thinks by
+  // default, and its thinking spends out of the same max_tokens. A page cut off
+  // at the cap must not be indexed as if it were the whole page.
+  it("treats an Anthropic answer cut off at max_tokens as a failed read", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        content: [{ type: "text", text: "Werkszeugnis 3.1 nach EN 10204, Charge 4" }],
+        stop_reason: "max_tokens",
+        usage: { input_tokens: 1500, output_tokens: 8192 },
+      }),
+    });
+
+    const result = await describePageImage("base64data", {
+      model: "anthropic/claude-sonnet-5",
+      resolveApiKey: async () => "test-key",
+    });
+
+    expect(result).toBeNull();
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining("max_tokens"));
+    errorSpy.mockRestore();
+  });
+
+  it("leaves Anthropic room for thinking on top of a dense page's text", async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ content: [{ type: "text", text: "x" }], stop_reason: "end_turn" }),
+    });
+
+    await describePageImage("base64data", {
+      model: "anthropic/claude-sonnet-5",
+      resolveApiKey: async () => "test-key",
+    });
+
+    const body = JSON.parse(vi.mocked(globalThis.fetch).mock.calls[0][1]!.body as string);
+    expect(body.max_tokens).toBeGreaterThanOrEqual(8192);
+  });
+
   it("returns null when API key is not available", async () => {
     const result = await describePageImage("base64data", {
       model: "anthropic/claude-haiku-4-5-20251001",
@@ -208,7 +247,7 @@ describe("describePageImage", () => {
 
   it("bounds a hosted vision call well above a dense page's real decode time", async () => {
     // The bound exists to make a blackhole terminate, not to enforce a latency
-    // budget. 4096 max_tokens of extracted text at typical decode rates is tens
+    // budget. Several thousand output tokens at typical decode rates is tens
     // of seconds, so a bound anywhere near that turns working page reads into
     // failures indistinguishable from a broken PDF.
     const timeoutSpy = vi.spyOn(AbortSignal, "timeout");

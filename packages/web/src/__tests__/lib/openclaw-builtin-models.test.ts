@@ -159,6 +159,16 @@ describe("current model generations", () => {
     );
   });
 
+  // maxTokens is sent as every request's max_tokens, and Anthropic reserves
+  // that much of the output-tokens-per-minute limit up front. A 128K
+  // reservation can exceed a new low-tier account's whole limit, so each turn
+  // would 429 regardless of how short the reply is.
+  it("no Anthropic model asks for more than 32K output tokens per request", () => {
+    for (const m of getModelCatalogForProvider("anthropic")) {
+      expect(m.maxTokens, m.id).toBeLessThanOrEqual(32000);
+    }
+  });
+
   // Anthropic publishes separate cache tiers, so this catalog carries them
   // (openai/google stay at 0 — see the comment in openclaw-builtin-models.ts).
   // Source: platform.claude.com/docs/en/about-claude/pricing, read 2026-10-16.
@@ -170,6 +180,20 @@ describe("current model generations", () => {
   ])("anthropic/%s carries the published list price", (id, cost) => {
     const model = getModelCatalogForProvider("anthropic").find((m) => m.id === id);
     expect(model?.cost).toEqual(cost);
+  });
+});
+
+// Source: developers.openai.com/api/docs/pricing, read 2026-10-17, the tier
+// for prompts up to 272K tokens. Cache prices stay 0 on purpose (see the
+// comment in openclaw-builtin-models.ts).
+describe("openai list prices", () => {
+  it.each([
+    ["gpt-5.5", { input: 5, output: 30 }],
+    ["gpt-5.4", { input: 2.5, output: 15 }],
+    ["gpt-5.4-mini", { input: 0.75, output: 4.5 }],
+  ])("openai/%s carries the published list price", (id, cost) => {
+    const model = getModelCatalogForProvider("openai").find((m) => m.id === id);
+    expect(model?.cost).toMatchObject(cost);
   });
 });
 

@@ -25,14 +25,17 @@ describe("balanced default — drift resistance", () => {
     });
   });
 
+  // The winners here are deliberately NOT curated models: a curated one wins
+  // through the curated-first rule regardless, and the case would pass without
+  // the variant filters ever being consulted.
   describe("rejected variants never win", () => {
     it.each([
-      ["anthropic", "anthropic/claude-sonnet-5-0-preview", "anthropic/claude-sonnet-4-6"],
-      ["anthropic", "anthropic/claude-sonnet-5-0-beta", "anthropic/claude-sonnet-4-6"],
-      ["openai", "openai/gpt-6-thinking", "openai/gpt-5.5"],
-      ["openai", "openai/gpt-6-instant", "openai/gpt-5.5"],
-      ["openai", "openai/gpt-6-nano", "openai/gpt-5.5"],
-      ["google", "google/gemini-3-pro-exp", "google/gemini-2.5-pro"],
+      ["anthropic", "anthropic/claude-sonnet-6-0-preview", "anthropic/claude-sonnet-5-9"],
+      ["anthropic", "anthropic/claude-sonnet-6-0-beta", "anthropic/claude-sonnet-5-9"],
+      ["openai", "openai/gpt-7-thinking", "openai/gpt-6.9"],
+      ["openai", "openai/gpt-7-instant", "openai/gpt-6.9"],
+      ["openai", "openai/gpt-7-nano", "openai/gpt-6.9"],
+      ["google", "google/gemini-4-pro-exp", "google/gemini-3.9-pro"],
     ] as const)("%s: %s does not beat %s", (provider, rejected, expected) => {
       const models = [
         { id: rejected, name: "x" },
@@ -114,12 +117,13 @@ describe("balanced default — drift resistance", () => {
       "vision-only",
     ];
     it.each(requiredSuffixes)("rejects -%s suffix", (suffix) => {
-      const id = `openai/gpt-6-${suffix}`;
+      // gpt-6.9 is not curated, so only the variant filters can keep it ahead.
+      const id = `openai/gpt-7-${suffix}`;
       const models = [
         { id, name: "x" },
-        { id: "openai/gpt-5.5", name: "x" },
+        { id: "openai/gpt-6.9", name: "x" },
       ];
-      expect(selectDefaultModel("openai", models)).toBe("openai/gpt-5.5");
+      expect(selectDefaultModel("openai", models)).toBe("openai/gpt-6.9");
     });
   });
 });

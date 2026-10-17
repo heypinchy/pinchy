@@ -25,6 +25,34 @@ const RULES: BlockRule[] = [
     reason:
       "Preview models (e.g. gemini-3-flash-preview) are unstable for tools+vision: silent hangs and schema-rejection errors observed in production (pinchy#344, pinchy#338)",
   },
+  // TEMPORARY — lift together with the OpenClaw update that knows these models
+  // (2026.9.33 or later), tracked in #1225. Unlike the other rules this is
+  // about the runtime, not the model: OpenClaw 2026.7.1 predates the request
+  // contract of the newest Claude models. Its adaptive-thinking regex
+  // (`supportsClaudeAdaptiveThinking`: fable-5, mythos-5, opus-4-6/7/8,
+  // sonnet-5, sonnet-4-6) does not recognise Opus 5, Opus 5.5 or Haiku 5.5, so
+  // it treats them as legacy Claude and sends `thinking: {type: "disabled"}` or
+  // a `budget_tokens` budget. Opus 5.5 rejects both with HTTP 400 at every
+  // effort level; Opus 5 and Haiku 5.5 reject the budget. Sonnet 5.5 and Fable
+  // 5.1 it mistakes for Sonnet 5 and Fable 5, which misses the "preserved
+  // thinking" check those models run for Anthropic accounts created on or
+  // after 2026-08-31: a thinking block whose conversation prefix changed is a
+  // 400, and only the newer runtime keeps that prefix append-only. Evidence:
+  // OpenClaw's dist (src-*.js, the regex above) and model contracts
+  // (packages/llm-core/src/model-contracts/anthropic.ts) at 2026.7.1 vs
+  // 2026.9.33, and Anthropic's API docs for each model.
+  //
+  // `claude-opus-5` is anchored (a date snapshot allowed) so it names that one
+  // model, not every id that starts with it.
+  //
+  // The models reach the picker anyway, because it lists the provider's live
+  // catalog; this rule is what disables them there.
+  {
+    modelPattern: /claude-(?:opus|sonnet|haiku)-5-5|claude-fable-5-1|claude-opus-5(?=$|-\d{8}$)/i,
+    forbiddenWhen: ["tools"],
+    reason:
+      "Claude Opus 5, Opus 5.5, Sonnet 5.5, Haiku 5.5 and Fable 5.1 need a newer agent runtime than this Pinchy release ships — their requests are rejected. Claude Sonnet 5 works today.",
+  },
   // Observed in production 2026-07-15 (agent "Penny", ollama-cloud stack). The
   // model emits structurally broken tool arguments: every NESTED array collapses
   // into an {"item": ...} object, and some arrays arrive stringified ("[10, 20]").
@@ -78,30 +106,7 @@ const RULES: BlockRule[] = [
   // A new major line (`minimax-m4`) deliberately does NOT match. There is no
   // evidence about it, and this blocklist is an evidence-based denylist — every
   // model not named here is allowed. Blocking an unseen model by guessing at its
-  // name would be a different policy than the other two rules follow.
-  // TEMPORARY — lift together with the OpenClaw update that knows these models
-  // (2026.9.33 or later; the catalog entries wait on branch
-  // claude/claude-55-catalog-after-openclaw-bump). Unlike the rules above this
-  // is about the runtime, not the model: OpenClaw 2026.7.1 predates the Claude
-  // 5.5 request contract. Its model regexes do not recognise Opus 5.5 or Haiku
-  // 5.5, so it sends them `thinking: {type: "disabled"}` or a `budget_tokens`
-  // budget — Opus 5.5 rejects both with HTTP 400 at every effort level, Haiku
-  // 5.5 rejects the budget. Sonnet 5.5 and Fable 5.1 it mistakes for Sonnet 5
-  // and Fable 5, which misses the "preserved thinking" check those models run
-  // for Anthropic accounts created on or after 2026-08-31: a thinking block
-  // whose conversation prefix changed is a 400, and only the newer runtime
-  // has handling to keep that prefix append-only. Evidence: OpenClaw's model contracts
-  // (packages/llm-core/src/model-contracts/anthropic.ts) at 2026.7.1 vs
-  // 2026.9.33, and Anthropic's API docs for each model.
-  //
-  // The models reach the picker anyway, because it lists the provider's live
-  // catalog; this rule is what disables them there.
-  {
-    modelPattern: /claude-(?:opus|sonnet|haiku)-5-5|claude-fable-5-1/i,
-    forbiddenWhen: ["tools"],
-    reason:
-      "Claude Opus, Sonnet and Haiku 5.5 and Fable 5.1 need a newer agent runtime than this Pinchy release ships — their requests are rejected. Claude Sonnet 5 works today.",
-  },
+  // name would be a different policy than the other rules follow.
   {
     modelPattern: /minimax-m3/i,
     forbiddenWhen: ["tools"],

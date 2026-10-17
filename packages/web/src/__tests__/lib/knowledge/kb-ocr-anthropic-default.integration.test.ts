@@ -57,7 +57,8 @@ beforeEach(async () => {
   vi.stubGlobal(
     "fetch",
     vi.fn(async (url: string | URL | Request) => {
-      if (!String(url).endsWith("/v1/models")) throw new Error(`unexpected fetch: ${url}`);
+      if (new URL(String(url)).pathname !== "/v1/models")
+        throw new Error(`unexpected fetch: ${url}`);
       return new Response(JSON.stringify(ANTHROPIC_MODELS_RESPONSE), { status: 200 });
     })
   );
