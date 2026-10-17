@@ -26,6 +26,8 @@ interface ReindexJob {
   status: JobStatus;
   /** Who started the run: an admin, or the nightly reindex. Absent on a run this component just started itself. */
   trigger?: "manual" | "scheduled";
+  /** Folders the run left as they were: unreadable, or empty while the index still held their documents. */
+  unavailableFolders?: number;
   processed: number;
   total: number | null;
   /** The same progress weighted by bytes of the corpus — the work-proportional measure the bar and the estimate are built on (#907). `totalBytes` is null until discovery has walked every root. */
@@ -107,7 +109,7 @@ export function KnowledgeReindexSection({
   const fetchStatus = useCallback(async () => {
     const seq = ++fetchSeq.current;
     try {
-      const res = await apiGet<{ job: ReindexJob | null; schedule?: ReindexSchedule }>(url);
+      const res = await apiGet<{ job: ReindexJob | null; schedule?: ReindexSchedule | null }>(url);
       if (seq === fetchSeq.current) {
         setJob(res.job);
         if (res.schedule) setSchedule(res.schedule);
@@ -372,6 +374,20 @@ function ScheduleNote({ schedule }: { schedule: ReindexSchedule }) {
   return <p className="text-sm text-muted-foreground">{text}</p>;
 }
 
+/**
+ * A success with a hole in it: some folders could not be read (a share that
+ * failed to mount, most likely) and their documents were kept as they were.
+ * Without this line the run reads as a plain "Last indexed …" for as long as
+ * the share stays down.
+ */
+function UnavailableFoldersNote({ count }: { count: number }) {
+  const text =
+    count === 1
+      ? "One folder couldn't be read, so its documents were left as they were. If it lives on a network share, check that it is mounted."
+      : `${count} folders couldn't be read, so their documents were left as they were. If they live on a network share, check that it is mounted.`;
+  return <p className="text-sm text-amber-600 dark:text-amber-500">{text}</p>;
+}
+
 function SucceededState({ job }: { job: ReindexJob }) {
   const how = job.trigger === "scheduled" ? "automatically " : "";
   return (
@@ -381,6 +397,9 @@ function SucceededState({ job }: { job: ReindexJob }) {
         {formatWhen(job.finishedAt)}.
       </p>
       {job.counts && <CountsSummary counts={job.counts} />}
+      {(job.unavailableFolders ?? 0) > 0 && (
+        <UnavailableFoldersNote count={job.unavailableFolders!} />
+      )}
     </div>
   );
 }

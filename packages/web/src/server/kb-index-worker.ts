@@ -140,9 +140,13 @@ export async function runNextIndexJob(opts: RunIndexJobOptions = {}): Promise<Kb
   // than returned, for the same reason as `counts`: a run that dies partway
   // still sent whatever it sent, and that has to reach the audit row.
   const ocrTally: { current: OcrTally | null } = { current: null };
-  // Roots ingest left out. Counted onto the outcome row; the paths themselves
-  // go to the server log only, like every other path ingest reports.
+  // Folders ingest left as they were: granted roots it could not read or that
+  // came up emptied, and emptied folders below a root. Counted onto the job and
+  // the outcome row; the paths themselves go to the server log only, like
+  // every other path ingest reports. `skippedRoots` alone decides whether the
+  // run read anything at all.
   let unavailableFolders = 0;
+  let skippedRoots = 0;
 
   try {
     // Resolved per run, not per process: the route's precheck only covers the
@@ -157,19 +161,28 @@ export async function runNextIndexJob(opts: RunIndexJobOptions = {}): Promise<Kb
       },
       onSkippedRoot: (rootDir, reason) => {
         unavailableFolders++;
+        skippedRoots++;
         console.warn(
           `[kb-index-worker] job ${job.id}: skipped ${rootDir} (${reason}); nothing under it was indexed or removed`
         );
       },
-      // Nobody watches a nightly run, and a share that failed to mount is an
-      // empty directory under Docker. An admin's own run reads it literally.
-      keepEmptiedRoots: job.trigger === "scheduled",
+      onKeptFolder: (folder) => {
+        unavailableFolders++;
+        console.warn(
+          `[kb-index-worker] job ${job.id}: ${folder} came up empty while the index still holds documents from it; they were kept`
+        );
+      },
+      // A share that failed to mount is an empty directory under Docker, and
+      // that holds for every run: the nightly one nobody watches, and the
+      // admin's retry after it failed saying "check that it is mounted" —
+      // which, read literally, would delete the folder's whole index.
+      keepEmptiedFolders: true,
     });
 
     // Every folder skipped is not a run that found nothing — it is a run that
     // could not look. Reporting it as a success is how an unmounted share
     // would read "Last indexed automatically today" for weeks.
-    if (job.paths.length > 0 && unavailableFolders === job.paths.length) {
+    if (job.paths.length > 0 && skippedRoots === job.paths.length) {
       throw new Error(FOLDERS_UNAVAILABLE_ERROR);
     }
   } catch (err) {
@@ -187,7 +200,7 @@ export async function runNextIndexJob(opts: RunIndexJobOptions = {}): Promise<Kb
     // sweep) that the single-container design does not otherwise need — and a
     // database outage is already an operator's problem, not a queue's.
     const reason = safeProviderError(err instanceof Error ? err.message : "reindex_failed");
-    await finishIndexJob(job.id, { outcome: "failed", counts, error: reason });
+    await finishIndexJob(job.id, { outcome: "failed", counts, error: reason, unavailableFolders });
     await recordOcrUsage(job, ocrTally.current);
     await auditOutcome({
       job,
@@ -198,13 +211,13 @@ export async function runNextIndexJob(opts: RunIndexJobOptions = {}): Promise<Kb
       ocr: ocrTally.current,
       unavailableFolders,
     });
-    return { ...job, status: "failed", counts, error: reason };
+    return { ...job, status: "failed", counts, error: reason, unavailableFolders };
   }
 
   // `unsearchable` and `failed` files do not make this a failed run: the
   // reindex did its job, and those counts are findings about the corpus.
   // Burying them would be the failure.
-  await finishIndexJob(job.id, { outcome: "succeeded", counts });
+  await finishIndexJob(job.id, { outcome: "succeeded", counts, unavailableFolders });
   await recordOcrUsage(job, ocrTally.current);
   await auditOutcome({
     job,
@@ -214,7 +227,7 @@ export async function runNextIndexJob(opts: RunIndexJobOptions = {}): Promise<Kb
     ocr: ocrTally.current,
     unavailableFolders,
   });
-  return { ...job, status: "succeeded", counts };
+  return { ...job, status: "succeeded", counts, unavailableFolders };
 }
 
 /**

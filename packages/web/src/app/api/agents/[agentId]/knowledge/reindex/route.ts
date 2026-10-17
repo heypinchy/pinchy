@@ -222,7 +222,13 @@ export const GET = withAdmin<RouteContext>(async (_request, { params }, session)
 
   const [job, status] = await Promise.all([
     getLatestIndexJobForAgent(agentId),
-    getIndexScheduleStatus(),
+    // Best effort: the schedule is a footnote to this route, the job is what
+    // it is for. A run in flight keeps showing its progress even when the
+    // schedule half cannot be computed.
+    getIndexScheduleStatus().catch((err: unknown) => {
+      console.error("[knowledge-reindex] could not read the nightly schedule:", err);
+      return null;
+    }),
   ]);
 
   /**
@@ -232,7 +238,7 @@ export const GET = withAdmin<RouteContext>(async (_request, { params }, session)
    * reads files is reindexed on demand only. The answer to "do I still have
    * to press the button?".
    */
-  const schedule = {
+  const schedule = status && {
     enabled: status.enabled,
     time: status.time,
     timezone: status.timezone,
@@ -249,6 +255,8 @@ export const GET = withAdmin<RouteContext>(async (_request, { params }, session)
       status: job.status,
       /** `manual` for an admin's request, `scheduled` for the nightly run. */
       trigger: job.trigger,
+      /** Folders the run had to leave as they were — unreadable, or empty while the index still held their documents. Counted, never named. */
+      unavailableFolders: job.unavailableFolders,
       /** Documents behind the run, and how many discovery found. `total` is null until discovery has walked every root. */
       processed: job.processed,
       total: job.total,

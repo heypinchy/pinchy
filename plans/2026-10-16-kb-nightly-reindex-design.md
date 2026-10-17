@@ -66,16 +66,32 @@ naming the scheduled run. Before enqueueing, the scheduler checks whether a
 job for `(sweepId, agentId)` already exists — that closes the one crash window
 (job inserted, state not yet saved) without a second unique index.
 
-A sweep that is still pending at the next slot is not restarted; the next
-sweep begins when it drains. Disabling the schedule drops the pending rest
-(the running job finishes).
+A sweep that is still pending at the next slot is not restarted, and when it
+drains it takes that slot with it: the agents were just walked, and starting
+the next night right behind it would re-read every share mid-day. Disabling
+the schedule drops the pending rest (the running job finishes).
 
-**Eligible agent** = not deleted, not personal, `knowledge_search` in
-`allowedTools`, at least one granted folder. The index is corpus-wide and
-retrieval is scoped by the _searching_ agent's grants, so these agents' grants
-are exactly the folders any search can reach. Non-KB agents with folders are
-not swept (they never read the index). Personal agents are excluded for parity
-with the manual route, which no admin can call for one. Paths are resolved at
+An agent whose own run _succeeded_ after the sweep began, over all of its
+current folders, is skipped for that night. A failed run or one an admin
+narrowed to some folders does not count.
+
+**Unmounted shares (added after review).** Under Docker a CIFS mount that
+failed is an empty directory. Every worker run (manual too — the obvious
+response to a failed night is to click Reindex now while the share is still
+down) passes `keepEmptiedFolders`: a folder that comes up empty while the index
+holds documents under it — a granted root or any folder below one — keeps
+those documents. A folder deleted outright is gone, not empty, and its
+documents are removed as before. The job records `unavailable_folders` so the
+Index section can say a successful run had a hole in it; a run that could read
+none of its roots fails.
+
+**Eligible agent** = not deleted, `knowledge_search` in `allowedTools`, at
+least one granted folder. The index is corpus-wide and retrieval is scoped by
+the _searching_ agent's grants, so these agents' grants are exactly the folders
+any search can reach. Non-KB agents with folders are not swept (they never read
+the index). Personal or shared makes no difference (a first draft excluded
+personal agents "for parity with the manual route", but an admin can reindex
+their own personal agent by hand, so the parity did not exist). Paths are resolved at
 enqueue time, like the route — a job still snapshots what was authorized when
 it was queued.
 

@@ -170,10 +170,12 @@ describe("isScheduledIndexAgent", () => {
     ).toBe(false);
   });
 
-  // No admin can start a reindex for someone's personal agent; the schedule
-  // must not be a way round that.
-  it("leaves out a personal agent", () => {
-    expect(isScheduledIndexAgent({ ...kbAgent, isPersonal: true })).toBe(false);
+  // What decides it is whether the agent's answers come from the index.
+  // Personal or shared makes no difference to that, and a special case for
+  // it would only be one more rule for the UI to explain.
+  it("covers a personal agent like any other", () => {
+    const personal = { ...kbAgent, isPersonal: true };
+    expect(isScheduledIndexAgent(personal)).toBe(true);
   });
 
   it("leaves out a deleted agent", () => {

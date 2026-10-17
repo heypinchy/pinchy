@@ -240,8 +240,8 @@ describe("kb index scheduler", () => {
   });
 
   /** Finishes a job as of a given wall-clock moment — finishIndexJob stamps the real clock, and these cases run on an injected one. */
-  async function finishAt(jobId: string, at: Date) {
-    await finishIndexJob(jobId, { outcome: "succeeded", counts: zeroIngestResult() });
+  async function finishAt(jobId: string, at: Date, outcome: "succeeded" | "failed" = "succeeded") {
+    await finishIndexJob(jobId, { outcome, counts: zeroIngestResult() });
     await db.update(kbIndexJobs).set({ finishedAt: at }).where(eq(kbIndexJobs.id, jobId));
   }
 
@@ -320,23 +320,99 @@ describe("kb index scheduler", () => {
     expect((await jobs()).map((j) => j.trigger)).toEqual(["manual", "scheduled"]);
   });
 
+  // The skip is for a run that READ the folders. One that failed at 02:10 on a
+  // passing fault read nothing worth trusting, and leaving the agent out would
+  // turn one bad minute into a lost night.
+  it("still reindexes an agent whose run after the night began failed", async () => {
+    const handbook = await makeAgent("Handbook");
+    await settleBefore("2026-10-20");
+    const manual = await enqueueIndexJob({
+      orgId: DEFAULT_ORG_ID,
+      agentId: handbook.id,
+      agentName: handbook.name,
+      requestedBy: "admin-1",
+      paths: [join(tmpRoot, "Handbook")],
+    });
+    await claimNextIndexJob();
+    await runKbIndexSchedulerTick({ now: vienna("2026-10-20", "02:00") });
+
+    await finishAt(manual.job.id, vienna("2026-10-20", "02:10"), "failed");
+    await runKbIndexSchedulerTick({ now: vienna("2026-10-20", "02:11") });
+
+    expect((await jobs()).map((j) => j.trigger)).toEqual(["manual", "scheduled"]);
+  });
+
+  // Reindex now can be narrowed to some of an agent's folders. That run read
+  // those folders only; the others still need their night.
+  it("still reindexes an agent whose run after the night began covered only some of its folders", async () => {
+    const hr = folder("hr");
+    const legal = folder("legal");
+    const handbook = await makeAgent("Handbook", { paths: [hr, legal] });
+    await settleBefore("2026-10-20");
+    const manual = await enqueueIndexJob({
+      orgId: DEFAULT_ORG_ID,
+      agentId: handbook.id,
+      agentName: handbook.name,
+      requestedBy: "admin-1",
+      paths: [hr],
+    });
+    await claimNextIndexJob();
+    await runKbIndexSchedulerTick({ now: vienna("2026-10-20", "02:00") });
+
+    await finishAt(manual.job.id, vienna("2026-10-20", "03:00"));
+    await runKbIndexSchedulerTick({ now: vienna("2026-10-20", "03:01") });
+
+    expect((await jobs()).map((j) => j.trigger)).toEqual(["manual", "scheduled"]);
+  });
+
+  // The go-live shape at full size: the first index of a large share runs
+  // past the NEXT night's slot too. When it finally finishes mid-morning, the
+  // night it held up is done — and the night it ran through must not start
+  // right behind it, re-walking the same share through the working day.
+  it("does not start the next night mid-day when the one before drained after its slot", async () => {
+    const handbook = await makeAgent("Handbook");
+    await settleBefore("2026-10-20");
+    const manual = await enqueueIndexJob({
+      orgId: DEFAULT_ORG_ID,
+      agentId: handbook.id,
+      agentName: handbook.name,
+      requestedBy: "admin-1",
+      paths: [join(tmpRoot, "Handbook")],
+    });
+    await claimNextIndexJob();
+    await runKbIndexSchedulerTick({ now: vienna("2026-10-20", "02:00") });
+    await runKbIndexSchedulerTick({ now: vienna("2026-10-21", "02:00") });
+
+    await finishAt(manual.job.id, vienna("2026-10-21", "11:00"));
+    await runKbIndexSchedulerTick({ now: vienna("2026-10-21", "11:01") });
+    await runKbIndexSchedulerTick({ now: vienna("2026-10-21", "11:02") });
+
+    expect((await jobs()).map((j) => j.trigger)).toEqual(["manual"]);
+
+    await runKbIndexSchedulerTick({ now: vienna("2026-10-22", "02:00") });
+    expect((await jobs()).map((j) => j.trigger)).toEqual(["manual", "scheduled"]);
+  });
+
   // Only an agent that searches the index needs it current, and retrieval is
   // scoped by the SEARCHING agent's grants — so these agents' folders are
   // exactly the ones any search can reach.
-  it("sweeps only shared knowledge-base agents that have folders to index", async () => {
+  it("sweeps every knowledge-base agent that has folders to index", async () => {
     const kb = await makeAgent("Handbook");
     await makeAgent("No folders", { paths: [] });
     await makeAgent("Reads files, never searches", { tools: [] });
-    // No admin can start a reindex for a personal agent; the schedule doesn't either.
-    await makeAgent("Someone's own", { isPersonal: true });
+    // Personal or shared makes no difference: an agent that searches the
+    // index needs it current either way.
+    const own = await makeAgent("Someone's own", { isPersonal: true });
     await makeAgent("Deleted", { deleted: true });
     await settleBefore("2026-10-20");
 
     await runKbIndexSchedulerTick({ now: vienna("2026-10-20", "02:00") });
     await runNextIndexJob({ deps: fakeDeps() });
     await runKbIndexSchedulerTick({ now: vienna("2026-10-20", "02:30") });
+    await runNextIndexJob({ deps: fakeDeps() });
+    await runKbIndexSchedulerTick({ now: vienna("2026-10-20", "03:00") });
 
-    expect((await jobs()).map((j) => j.agentId)).toEqual([kb.id]);
+    expect((await jobs()).map((j) => j.agentId)).toEqual([kb.id, own.id]);
     expect((await getIndexScheduleState()).sweep).toBeNull();
   });
 

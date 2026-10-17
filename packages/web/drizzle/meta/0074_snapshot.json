@@ -1,5 +1,5 @@
 {
-  "id": "41d79db0-daa2-41d9-bebd-08fcb9861799",
+  "id": "185ddf39-3563-4b4e-8157-2d12e8272a8d",
   "prevId": "f87e20fc-681a-4c4c-8b36-6674ae11bb14",
   "version": "7",
   "dialect": "postgresql",
@@ -2519,6 +2519,13 @@
           "type": "uuid",
           "primaryKey": false,
           "notNull": false
+        },
+        "unavailable_folders": {
+          "name": "unavailable_folders",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
         },
         "total": {
           "name": "total",

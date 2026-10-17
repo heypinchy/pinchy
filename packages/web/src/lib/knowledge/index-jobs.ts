@@ -165,6 +165,8 @@ export interface FinishIndexJobArgs {
   counts: IngestResult;
   /** Scrubbed failure summary (safeProviderError). Omitted on success. */
   error?: string;
+  /** Folders the run left as they were (unreadable, or emptied while still indexed). */
+  unavailableFolders?: number;
 }
 
 /** Moves a job to its terminal state, recording what it found. Releases the org's active-job slot. */
@@ -175,6 +177,7 @@ export async function finishIndexJob(jobId: string, args: FinishIndexJobArgs): P
       status: args.outcome,
       counts: args.counts,
       error: args.error ?? null,
+      unavailableFolders: args.unavailableFolders ?? 0,
       finishedAt: new Date(),
     })
     .where(eq(kbIndexJobs.id, jobId));

@@ -92,6 +92,7 @@ function makeJob(overrides: Partial<KbIndexJob> = {}): KbIndexJob {
     status: "pending",
     trigger: "manual",
     sweepId: null,
+    unavailableFolders: 0,
     total: null,
     processed: 0,
     totalBytes: null,
@@ -418,6 +419,53 @@ describe("GET /api/agents/[agentId]/knowledge/reindex", () => {
     const body = await (await GET(makeGetRequest(), ctx as never)).json();
 
     expect(body.schedule).toMatchObject({ enabled: true, included: false });
+  });
+
+  // Personal or shared makes no difference to whether the night covers it.
+  it("says the nightly run covers a personal knowledge-base agent too", async () => {
+    mockGetAgentWithAccess.mockResolvedValueOnce({ ...agentRow, isPersonal: true });
+    mockGetLatestIndexJobForAgent.mockResolvedValueOnce(null);
+
+    const body = await (await GET(makeGetRequest(), ctx as never)).json();
+
+    expect(body.schedule).toMatchObject({ included: true });
+  });
+
+  // The schedule is a footnote to this route; the job is what it is for. A
+  // run in flight must keep showing its progress even when the schedule half
+  // cannot be computed (a settings read failing, a stored timezone the
+  // runtime rejects).
+  it("still reports the job when the schedule cannot be read", async () => {
+    mockGetIndexScheduleStatus.mockRejectedValueOnce(new RangeError("Invalid time zone"));
+    mockGetLatestIndexJobForAgent.mockResolvedValueOnce(
+      makeJob({ status: "running", processed: 3, total: 10 })
+    );
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const res = await GET(makeGetRequest(), ctx as never);
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.job).toMatchObject({ status: "running", processed: 3 });
+    expect(body.schedule).toBeNull();
+    errorSpy.mockRestore();
+  });
+
+  // A success with a hole in it: one share indexed, another could not be read.
+  // The Index section says so, which it can only do if the route passes it on.
+  it("says how many folders the last run had to leave as they were", async () => {
+    mockGetLatestIndexJobForAgent.mockResolvedValueOnce(
+      makeJob({
+        status: "succeeded",
+        unavailableFolders: 1,
+        counts: ingestResult({ indexed: 3 }),
+        finishedAt: new Date("2026-10-17T00:14:00Z"),
+      })
+    );
+
+    const body = await (await GET(makeGetRequest(), ctx as never)).json();
+
+    expect(body.job.unavailableFolders).toBe(1);
   });
 
   it("says whether the last run was the nightly one or an admin's", async () => {

@@ -159,7 +159,6 @@ export function nextIndexRun(clock: LocalClock, schedule: IndexSchedule): NextIn
 /** The fields of an agent row that decide whether the nightly sweep reindexes it. */
 export interface ScheduledIndexCandidate {
   deletedAt: Date | null;
-  isPersonal: boolean;
   allowedTools: string[];
   pluginConfig: AgentPluginConfig | null;
 }
@@ -176,13 +175,13 @@ export function grantedKnowledgePaths(pluginConfig: AgentPluginConfig | null): s
  * agent's grants, so the folders of agents with `knowledge_search` are exactly
  * the folders any search can reach. An agent that only reads files never looks
  * at the index, and embedding its folders every night would be work nobody
- * uses. Personal agents are left out for parity with the manual route, which
- * no admin can call for one.
+ * uses. Nothing else decides it — personal or shared makes no difference: an
+ * agent whose answers come from the index needs the index current either way,
+ * and indexing reveals nothing a search could not already reach.
  */
 export function isScheduledIndexAgent(agent: ScheduledIndexCandidate): boolean {
   return (
     agent.deletedAt === null &&
-    !agent.isPersonal &&
     agent.allowedTools.includes("knowledge_search") &&
     grantedKnowledgePaths(agent.pluginConfig).length > 0
   );

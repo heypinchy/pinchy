@@ -37,7 +37,7 @@ import { appendAuditLog, safeProviderError, type EntityRef } from "@/lib/audit";
 import { recordAuditFailure } from "@/lib/audit-deferred";
 import { getOrgTimezone } from "@/lib/settings-timezone";
 import { DEFAULT_ORG_ID } from "@/lib/knowledge/constants";
-import { enqueueIndexJob } from "@/lib/knowledge/index-jobs";
+import { enqueueIndexJob, findActiveIndexJob } from "@/lib/knowledge/index-jobs";
 import { kbEmbedderAvailable } from "@/lib/knowledge/kb-embedder";
 import {
   grantedKnowledgePaths,
@@ -67,12 +67,11 @@ async function listScheduledIndexAgentIds(): Promise<string[]> {
     .select({
       id: agents.id,
       deletedAt: agents.deletedAt,
-      isPersonal: agents.isPersonal,
       allowedTools: agents.allowedTools,
       pluginConfig: agents.pluginConfig,
     })
     .from(agents)
-    .where(and(isNull(agents.deletedAt), eq(agents.isPersonal, false)))
+    .where(isNull(agents.deletedAt))
     .orderBy(asc(agents.createdAt));
   return rows.filter(isScheduledIndexAgent).map((row) => row.id);
 }
@@ -99,6 +98,11 @@ type QueueOutcome = "queued" | "busy" | "skipped";
  * `busy` leaves it at the head of the list.
  */
 async function queueSweepAgent(sweep: IndexSweep, agentId: string): Promise<QueueOutcome> {
+  // The instance runs one job at a time. While one runs — for hours, on a first
+  // index — every tick would otherwise re-ask everything below just to have
+  // the enqueue answer "busy"; one read answers it.
+  if (await findActiveIndexJob(DEFAULT_ORG_ID)) return "busy";
+
   // A job for this agent in this sweep is the evidence that it was queued —
   // even if the bookkeeping that should have recorded it never got written
   // because the process died in between. Without this check that crash would
@@ -110,25 +114,6 @@ async function queueSweepAgent(sweep: IndexSweep, agentId: string): Promise<Queu
     .limit(1);
   if (already) return "skipped";
 
-  // A run of this agent that FINISHED after the night began already read its
-  // folders — typically a first full index that started the day before and ran
-  // into the morning. Re-walking the same share the moment it finishes holds
-  // the one job slot through working hours for almost nothing; whatever that
-  // run missed, the next night picks up.
-  const sweepStart = new Date(sweep.startedAt);
-  const [recent] = await db
-    .select({ id: kbIndexJobs.id })
-    .from(kbIndexJobs)
-    .where(
-      and(
-        eq(kbIndexJobs.agentId, agentId),
-        gte(kbIndexJobs.finishedAt, sweepStart),
-        or(isNull(kbIndexJobs.sweepId), ne(kbIndexJobs.sweepId, sweep.id))
-      )
-    )
-    .limit(1);
-  if (recent) return "skipped";
-
   // Re-read rather than trusting the snapshot: an agent deleted, renamed or
   // stripped of its folders since the sweep started is indexed as it is now.
   const [agent] = await db
@@ -136,7 +121,6 @@ async function queueSweepAgent(sweep: IndexSweep, agentId: string): Promise<Queu
       id: agents.id,
       name: agents.name,
       deletedAt: agents.deletedAt,
-      isPersonal: agents.isPersonal,
       allowedTools: agents.allowedTools,
       pluginConfig: agents.pluginConfig,
     })
@@ -147,6 +131,26 @@ async function queueSweepAgent(sweep: IndexSweep, agentId: string): Promise<Queu
 
   const agentRef: EntityRef = { id: agent.id, name: agent.name };
   const paths = grantedKnowledgePaths(agent.pluginConfig);
+
+  // A run of this agent that SUCCEEDED after the night began, over every
+  // folder it is granted now, already read them — typically a first full index
+  // that started the day before and ran into the morning. Re-walking the same
+  // share the moment it finishes holds the one job slot through working hours
+  // for almost nothing; whatever that run missed, the next night picks up. A
+  // run that failed, or that an admin narrowed to some of the folders, read
+  // less than tonight would, so it does not count.
+  const recent = await db
+    .select({ paths: kbIndexJobs.paths })
+    .from(kbIndexJobs)
+    .where(
+      and(
+        eq(kbIndexJobs.agentId, agentId),
+        eq(kbIndexJobs.status, "succeeded"),
+        gte(kbIndexJobs.finishedAt, new Date(sweep.startedAt)),
+        or(isNull(kbIndexJobs.sweepId), ne(kbIndexJobs.sweepId, sweep.id))
+      )
+    );
+  if (recent.some((job) => paths.every((path) => job.paths.includes(path)))) return "skipped";
   const base = {
     actorType: "system" as const,
     actorId: KB_INDEX_SCHEDULER_ACTOR,
@@ -277,6 +281,11 @@ async function advance(now: Date): Promise<void> {
     console.log(`[kb-index-scheduler] nightly reindex for ${slot}: every agent has had its turn`);
     await saveIndexScheduleState({
       ...state,
+      // A night held up behind a long run can finish queueing after the NEXT
+      // slot has passed. That slot is spent too: the agents were just walked,
+      // and starting another full night right behind it — mid-morning, on a
+      // working day — would re-read every share for nothing.
+      lastSlot: passed > state.lastSlot! ? passed : state.lastSlot,
       sweep: null,
       lastSweep: { id, slot, startedAt, agentCount },
     });

@@ -44,9 +44,9 @@
  */
 import { createHash } from "node:crypto";
 import { readdir, readFile, stat } from "node:fs/promises";
-import { basename, join, sep } from "node:path";
+import { basename, dirname, join, sep } from "node:path";
 
-import { and, count, eq, inArray } from "drizzle-orm";
+import { and, count, eq, inArray, sql } from "drizzle-orm";
 
 import { db } from "@/db";
 import { kbChunks, kbDocuments } from "@/db/schema";
@@ -59,6 +59,7 @@ import {
   isHiddenSegment,
 } from "./exclude-globs";
 import { isArchivedPath, statusForPath } from "./archive-paths";
+import { buildPathFilter } from "./path-filter";
 import { chunkPages } from "./chunk";
 import { DEFAULT_BATCH_SIZE } from "./embeddings";
 import { detectLang } from "./lid";
@@ -144,7 +145,7 @@ export interface IngestOptions {
   /**
    * Called for every root the run left out: `unreadable` (it could not be
    * looked at — missing, unmounted, a read error mid-walk) or `emptied` (see
-   * `keepEmptiedRoots`). Such a root contributes no files AND no removal pass.
+   * `keepEmptiedFolders`). Such a root contributes no files AND no removal pass.
    *
    * Ingest only reports; what a skipped root means for the run is the
    * caller's call. Without this, a run whose every root was skipped reads as
@@ -153,18 +154,25 @@ export interface IngestOptions {
    */
   onSkippedRoot?: (rootDir: string, reason: "unreadable" | "emptied") => void;
   /**
-   * Treat a root that turns up with no files at all, while the index still
-   * holds documents from it, as unavailable rather than emptied: nothing under
-   * it is removed.
+   * Treat a folder that turns up with nothing in it at all, while the index
+   * still holds documents from under it, as unavailable rather than emptied:
+   * nothing under it is removed. Applies to a root (reported through
+   * `onSkippedRoot`) and to any folder below one (`onKeptFolder`).
    *
-   * For a caller nobody is watching. A network share that failed to mount is
-   * not an error under Docker but an EMPTY directory — the bare mountpoint the
-   * bind mount shows instead — and from inside the container that cannot be
-   * told apart from a folder somebody emptied. Taking it at its word deletes
-   * every document indexed from it, and getting them back is a full
-   * re-embed. An admin running a reindex by hand gets the literal reading.
+   * A network share that failed to mount is not an error under Docker but an
+   * EMPTY directory — the bare mountpoint the bind mount shows instead — and
+   * from inside the container that cannot be told apart from a folder somebody
+   * emptied. Taking it at its word deletes every document indexed from it, and
+   * getting them back is a full re-embed. The mountpoint need not be the
+   * granted folder: grant /data with a share mounted at /data/contracts and a
+   * failed mount is an empty folder INSIDE a root that is anything but empty.
+   *
+   * A folder that was deleted outright is gone rather than empty, and its
+   * documents are removed as usual.
    */
-  keepEmptiedRoots?: boolean;
+  keepEmptiedFolders?: boolean;
+  /** Called once per folder below a root whose documents `keepEmptiedFolders` kept. */
+  onKeptFolder?: (folder: string) => void;
 }
 
 export interface IngestProgress {
@@ -772,7 +780,8 @@ async function ingestFile(
 async function removeVanishedDocuments(
   orgId: string,
   rootDir: string,
-  discovered: ReadonlyMap<string, number>
+  discovered: ReadonlyMap<string, number>,
+  emptyFolders: EmptyFolderCheck | null
 ): Promise<number> {
   const existingForOrg = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, orgId));
 
@@ -780,6 +789,7 @@ async function removeVanishedDocuments(
   for (const doc of existingForOrg) {
     if (!isUnderRoot(doc.sourcePath, rootDir)) continue;
     if (discovered.has(doc.sourcePath)) continue;
+    if (emptyFolders && (await emptyFolders.keeps(doc.sourcePath, rootDir))) continue;
     vanishedIds.push(doc.id);
   }
 
@@ -792,11 +802,66 @@ async function removeVanishedDocuments(
 
 /** Whether the index holds any document from under `rootDir` — what makes an empty root suspicious rather than merely empty. */
 async function hasDocumentsUnder(orgId: string, rootDir: string): Promise<boolean> {
-  const docs = await db
-    .select({ sourcePath: kbDocuments.sourcePath })
+  const [doc] = await db
+    .select({ id: kbDocuments.id })
     .from(kbDocuments)
-    .where(eq(kbDocuments.orgId, orgId));
-  return docs.some((doc) => isUnderRoot(doc.sourcePath, rootDir));
+    .where(
+      and(eq(kbDocuments.orgId, orgId), buildPathFilter([rootDir], sql`${kbDocuments.sourcePath}`))
+    )
+    .limit(1);
+  return doc !== undefined;
+}
+
+/**
+ * Decides, for a document whose file has vanished, whether it vanished into an
+ * EMPTY folder — the signature of a share that failed to mount below a root.
+ *
+ * Walks up from the document's folder to the nearest one that still exists
+ * (stopping at the root, which was already found readable and non-empty): if
+ * that folder holds nothing at all, the document is kept. Folders are looked
+ * at once per run however many documents sit under them.
+ */
+interface EmptyFolderCheck {
+  keeps(sourcePath: string, rootDir: string): Promise<boolean>;
+}
+
+function emptyFolderCheck(onKeptFolder?: (folder: string) => void): EmptyFolderCheck {
+  // null = the folder does not exist; otherwise whether it has any entry.
+  const listings = new Map<string, boolean | null>();
+  const reported = new Set<string>();
+
+  async function isEmpty(folder: string): Promise<boolean | null> {
+    const cached = listings.get(folder);
+    if (cached !== undefined) return cached;
+    let answer: boolean | null;
+    try {
+      answer = (await readdir(folder)).length === 0;
+    } catch {
+      answer = null;
+    }
+    listings.set(folder, answer);
+    return answer;
+  }
+
+  return {
+    async keeps(sourcePath, rootDir) {
+      let folder = dirname(sourcePath);
+      while (isUnderRoot(folder, rootDir) && folder !== rootDir) {
+        const empty = await isEmpty(folder);
+        if (empty === null) {
+          folder = dirname(folder);
+          continue;
+        }
+        if (!empty) return false;
+        if (!reported.has(folder)) {
+          reported.add(folder);
+          onKeptFolder?.(folder);
+        }
+        return true;
+      }
+      return false;
+    },
+  };
 }
 
 /**
@@ -832,7 +897,7 @@ export async function ingestPaths(
       continue;
     }
     if (
-      opts.keepEmptiedRoots &&
+      opts.keepEmptiedFolders &&
       discovered.size === 0 &&
       (await hasDocumentsUnder(orgId, rootDir))
     ) {
@@ -929,8 +994,25 @@ export async function ingestPaths(
     await report();
   }
 
+  // One check shared by every root, so overlapping roots (/data and /data/hr)
+  // look at each folder once and report it once. An emptied ROOT counts here
+  // too: /data/hr was skipped as a root, and /data's pass must not delete what
+  // was under it either.
+  const emptyFolders = opts.keepEmptiedFolders ? emptyFolderCheck(opts.onKeptFolder) : null;
+  const skippedEmptiedRoots = new Set(
+    rootDirs.filter((root) => !perRoot.some((kept) => kept.rootDir === root))
+  );
   for (const { rootDir, discovered } of perRoot) {
-    removed += await removeVanishedDocuments(orgId, rootDir, discovered);
+    removed += await removeVanishedDocuments(
+      orgId,
+      rootDir,
+      discovered,
+      emptyFolders && {
+        keeps: async (sourcePath, root) =>
+          [...skippedEmptiedRoots].some((skipped) => isUnderRoot(sourcePath, skipped)) ||
+          (await emptyFolders.keeps(sourcePath, root)),
+      }
+    );
   }
 
   return snapshot();

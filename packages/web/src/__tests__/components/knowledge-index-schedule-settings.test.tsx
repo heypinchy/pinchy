@@ -46,6 +46,22 @@ describe("KnowledgeIndexScheduleSettings", () => {
     expect(mockGet).toHaveBeenCalledWith(URL);
   });
 
+  // The timezone card sits right above this one. When the admin saves a new
+  // zone there, "Time (UTC)" and "Next run … (UTC)" here would be wrong until
+  // a reload — and a time picked against the stale label lands hours off.
+  it("reloads when the page says the org timezone changed", async () => {
+    const { rerender } = render(<KnowledgeIndexScheduleSettings refreshKey={0} />);
+    await screen.findByText("Next run: tomorrow at 02:00 (Europe/Vienna).");
+    mockGet.mockResolvedValue({ ...status, timezone: "America/New_York" });
+
+    rerender(<KnowledgeIndexScheduleSettings refreshKey={1} />);
+
+    expect(
+      await screen.findByText("Next run: tomorrow at 02:00 (America/New_York).")
+    ).toBeInTheDocument();
+    expect(screen.getByLabelText("Time (America/New_York)")).toBeInTheDocument();
+  });
+
   it("saves a new time and shows what happens next", async () => {
     const user = userEvent.setup();
     mockPut.mockResolvedValue({

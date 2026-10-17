@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, waitFor, act } from "@testing-library/react";
+import { render, screen, waitFor, act, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -79,17 +79,24 @@ vi.mock("@/components/settings-groups", () => ({
 }));
 
 vi.mock("@/components/timezone-settings", () => ({
-  TimezoneSettings: () => <div data-testid="mock-timezone-settings">Timezone</div>,
+  TimezoneSettings: ({ onSaved }: { onSaved?: (timezone: string) => void }) => (
+    <div data-testid="mock-timezone-settings">
+      Timezone
+      <button onClick={() => onSaved?.("America/New_York")}>mock-save-timezone</button>
+    </div>
+  ),
+}));
+
+vi.mock("@/components/knowledge-index-schedule-settings", () => ({
+  KnowledgeIndexScheduleSettings: ({ refreshKey }: { refreshKey?: number }) => (
+    <div data-testid="mock-knowledge-index-schedule" data-refresh-key={refreshKey}>
+      Knowledge Base Indexing
+    </div>
+  ),
 }));
 
 vi.mock("@/components/member-access-settings", () => ({
   MemberAccessSettings: () => <div data-testid="mock-member-access-settings">Member access</div>,
-}));
-
-vi.mock("@/components/knowledge-index-schedule-settings", () => ({
-  KnowledgeIndexScheduleSettings: () => (
-    <div data-testid="mock-knowledge-index-schedule">Knowledge Base Indexing</div>
-  ),
 }));
 
 vi.mock("@/components/settings-context", () => ({
@@ -213,6 +220,25 @@ describe("Settings Page", () => {
 
     expect(await screen.findByTestId("mock-knowledge-index-schedule")).toBeInTheDocument();
     expect(screen.getByTestId("mock-timezone-settings")).toBeInTheDocument();
+  });
+
+  // The reindex card shows its time in the org timezone; saving a new zone in
+  // the card above must make it read again rather than keep the old label.
+  it("has the nightly reindex card reload after the timezone is saved", async () => {
+    vi.mocked(useSearchParams).mockReturnValue(readonlySearchParams("tab=organization"));
+    setupAdminFetchMocks();
+
+    render(<SettingsPage isAdmin={isCurrentTestAdmin} />);
+    const card = await screen.findByTestId("mock-knowledge-index-schedule");
+    const before = card.getAttribute("data-refresh-key");
+
+    fireEvent.click(screen.getByText("mock-save-timezone"));
+
+    await waitFor(() =>
+      expect(
+        screen.getByTestId("mock-knowledge-index-schedule").getAttribute("data-refresh-key")
+      ).not.toBe(before)
+    );
   });
 
   it("should render the page title", async () => {

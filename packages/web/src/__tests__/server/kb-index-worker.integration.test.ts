@@ -422,6 +422,59 @@ describe("kb index worker", () => {
     expect(row.detail).toMatchObject({ indexed: 1, unavailableFolders: 1 });
   });
 
+  // The audit row is not where an admin looks. A run that indexed one share and
+  // could not read the other is a success with a hole in it, and the Index
+  // section has to be able to say so — from the job, not the trail.
+  it("records on the job how many folders it had to leave out", async () => {
+    const agent = await makeAgent();
+    writePdf(join(tmpRoot, "present"), "handbook.pdf");
+    await enqueueIndexJob({
+      orgId: ORG_ID,
+      agentId: agent.id,
+      agentName: agent.name,
+      requestedBy: "admin-1",
+      paths: [join(tmpRoot, "present"), join(tmpRoot, "not-mounted")],
+    });
+
+    await runNextIndexJob({ deps: fakeDeps() });
+
+    const job = await getLatestIndexJobForAgent(agent.id);
+    expect(job).toMatchObject({ status: "succeeded", unavailableFolders: 1 });
+  });
+
+  // A share mounted BELOW a granted folder fails as an empty folder inside a
+  // root that still has files. The run succeeds on the rest, keeps that
+  // folder's documents, and counts it like a root it could not read.
+  it("keeps an emptied folder below a granted folder and counts it", async () => {
+    const agent = await makeAgent();
+    writePdf(tmpRoot, "readme.pdf");
+    writePdf(join(tmpRoot, "contracts"), "contract.pdf");
+    await enqueueIndexJob({
+      orgId: ORG_ID,
+      agentId: agent.id,
+      agentName: agent.name,
+      requestedBy: "admin-1",
+      paths: [tmpRoot],
+    });
+    await runNextIndexJob({ deps: fakeDeps() });
+    rmSync(join(tmpRoot, "contracts", "contract.pdf"));
+    await enqueueIndexJob({
+      orgId: ORG_ID,
+      agentId: agent.id,
+      agentName: agent.name,
+      requestedBy: "admin-1",
+      paths: [tmpRoot],
+    });
+
+    const ran = await runNextIndexJob({ deps: fakeDeps() });
+
+    expect(ran).toMatchObject({ status: "succeeded", unavailableFolders: 1 });
+    expect(ran?.counts).toMatchObject({ removed: 0 });
+    expect(await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID))).toHaveLength(
+      2
+    );
+  });
+
   describe("a folder that comes up empty while the index still holds its documents", () => {
     async function indexThenEmpty(agentId: string, agentName: string) {
       const share = join(tmpRoot, "share");
@@ -463,8 +516,11 @@ describe("kb index worker", () => {
       );
     });
 
-    // An admin who clicks Reindex now on a folder they emptied means it.
-    it("is taken at its word by a run an admin started", async () => {
+    // The admin's own run gets the same protection. The run that failed above
+    // says "check that it is mounted" — and the obvious next move is to click
+    // Reindex now to retry. With the share still down, a literal reading of
+    // the empty mountpoint would delete the whole folder's index right then.
+    it("is left alone by a run an admin started, too", async () => {
       const agent = await makeAgent();
       const share = await indexThenEmpty(agent.id, agent.name);
       await enqueueIndexJob({
@@ -477,10 +533,10 @@ describe("kb index worker", () => {
 
       const ran = await runNextIndexJob({ deps: fakeDeps() });
 
-      expect(ran?.status).toBe("succeeded");
-      expect(ran?.counts).toMatchObject({ removed: 1 });
+      expect(ran?.status).toBe("failed");
+      expect(ran?.error).toMatch(/None of the granted folders could be read/);
       expect(await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID))).toHaveLength(
-        0
+        1
       );
     });
   });

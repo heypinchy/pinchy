@@ -696,7 +696,7 @@ it("keeps an emptied root's documents when asked to, and says it skipped the roo
   const onSkippedRoot = vi.fn();
 
   const result = await ingestPaths(ORG_ID, [share], deps, {
-    keepEmptiedRoots: true,
+    keepEmptiedFolders: true,
     onSkippedRoot,
   });
 
@@ -707,13 +707,13 @@ it("keeps an emptied root's documents when asked to, and says it skipped the roo
 
 // Only a folder that HAD documents is suspicious when it comes up empty. A
 // freshly granted empty folder is just empty.
-it("treats a root that never held documents as simply empty, even when asked to keep emptied roots", async () => {
+it("treats a root that never held documents as simply empty, even when asked to keep emptied folders", async () => {
   const fresh = join(tmpRoot, "fresh");
   mkdirSync(fresh, { recursive: true });
   const onSkippedRoot = vi.fn();
 
   const result = await ingestPaths(ORG_ID, [fresh], fakeDeps().deps, {
-    keepEmptiedRoots: true,
+    keepEmptiedFolders: true,
     onSkippedRoot,
   });
 
@@ -723,7 +723,7 @@ it("treats a root that never held documents as simply empty, even when asked to 
 
 // The guard is about a folder that is empty as a WHOLE. A folder that still
 // holds files reconciles as always: a deleted document leaves the index.
-it("still removes a deleted document from a root that keeps other files, when asked to keep emptied roots", async () => {
+it("still removes a deleted document from a root that keeps other files, when asked to keep emptied folders", async () => {
   const share = join(tmpRoot, "share");
   writePdf(share, "handbook.pdf");
   writePdf(share, "policy.pdf", "policy");
@@ -731,9 +731,74 @@ it("still removes a deleted document from a root that keeps other files, when as
   await ingestPaths(ORG_ID, [share], deps);
   rmSync(join(share, "handbook.pdf"));
 
-  const result = await ingestPaths(ORG_ID, [share], deps, { keepEmptiedRoots: true });
+  const result = await ingestPaths(ORG_ID, [share], deps, { keepEmptiedFolders: true });
 
   expect(result).toEqual(counts({ skipped: 1, removed: 1 }));
+});
+
+// A failed mount does not have to BE the granted folder. Grant /data, mount
+// a share at /data/contracts, and a failed mount leaves an empty /data/contracts
+// inside a /data that still holds plenty — the whole-root check never fires,
+// and the removal pass would delete every document the share held.
+it("keeps the documents of an emptied folder below a root that still holds files", async () => {
+  const data = join(tmpRoot, "data");
+  writePdf(data, "readme.pdf", "readme");
+  writePdf(join(data, "contracts"), "contract.pdf", "contract");
+  writePdf(join(data, "contracts", "2024"), "invoice.pdf", "invoice");
+  const { deps } = fakeDeps();
+  await ingestPaths(ORG_ID, [data], deps);
+  // The mount fails: the mountpoint is there, and empty.
+  rmSync(join(data, "contracts"), { recursive: true, force: true });
+  mkdirSync(join(data, "contracts"));
+  const onKeptFolder = vi.fn();
+
+  const result = await ingestPaths(ORG_ID, [data], deps, {
+    keepEmptiedFolders: true,
+    onKeptFolder,
+  });
+
+  expect(result).toEqual(counts({ skipped: 1 }));
+  expect(onKeptFolder).toHaveBeenCalledWith(join(data, "contracts"));
+  expect(onKeptFolder).toHaveBeenCalledTimes(1);
+  expect(await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID))).toHaveLength(3);
+});
+
+// Overlapping grants are the same shape from the other side: /data/hr is its
+// own root AND a folder inside /data. Skipping the /data/hr root is not
+// enough if /data's removal pass then deletes what was under it.
+it("keeps an emptied root's documents when an overlapping root also covers them", async () => {
+  const data = join(tmpRoot, "data");
+  const hr = join(data, "hr");
+  writePdf(data, "readme.pdf", "readme");
+  writePdf(hr, "policy.pdf", "policy");
+  const { deps } = fakeDeps();
+  await ingestPaths(ORG_ID, [data, hr], deps);
+  rmSync(join(hr, "policy.pdf"));
+
+  const result = await ingestPaths(ORG_ID, [data, hr], deps, { keepEmptiedFolders: true });
+
+  expect(result.removed).toBe(0);
+  expect(await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID))).toHaveLength(2);
+});
+
+// What the guard must NOT swallow: a folder somebody deleted is gone, not
+// empty, and its documents leave the index like any deleted file's.
+it("still removes the documents of a folder that was deleted outright", async () => {
+  const data = join(tmpRoot, "data");
+  writePdf(data, "readme.pdf", "readme");
+  writePdf(join(data, "old-project"), "plan.pdf", "plan");
+  const { deps } = fakeDeps();
+  await ingestPaths(ORG_ID, [data], deps);
+  rmSync(join(data, "old-project"), { recursive: true, force: true });
+  const onKeptFolder = vi.fn();
+
+  const result = await ingestPaths(ORG_ID, [data], deps, {
+    keepEmptiedFolders: true,
+    onKeptFolder,
+  });
+
+  expect(result).toEqual(counts({ skipped: 1, removed: 1 }));
+  expect(onKeptFolder).not.toHaveBeenCalled();
 });
 
 it("still reports a total of zero for roots with nothing to ingest", async () => {

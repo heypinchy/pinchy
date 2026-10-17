@@ -23,7 +23,18 @@ const URL = "/api/settings/knowledge-index-schedule";
  * when it runs, to move it out of somebody's backup window, and to switch it
  * off where nightly OCR of new scans is not wanted.
  */
-export function KnowledgeIndexScheduleSettings() {
+interface KnowledgeIndexScheduleSettingsProps {
+  /**
+   * Changes whenever the org timezone was saved elsewhere on the page. The
+   * card shows its time and next run in that zone, so it re-reads rather than
+   * keep a label that is now hours off.
+   */
+  refreshKey?: number;
+}
+
+export function KnowledgeIndexScheduleSettings({
+  refreshKey,
+}: KnowledgeIndexScheduleSettingsProps = {}) {
   const [status, setStatus] = useState<IndexScheduleStatus | null>(null);
   const [enabled, setEnabled] = useState(true);
   const [time, setTime] = useState("02:00");
@@ -46,7 +57,7 @@ export function KnowledgeIndexScheduleSettings() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [refreshKey]);
 
   async function handleSave() {
     setSaving(true);

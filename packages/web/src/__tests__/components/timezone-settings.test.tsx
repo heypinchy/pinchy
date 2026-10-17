@@ -144,6 +144,43 @@ describe("TimezoneSettings", { timeout: 30_000 }, () => {
     });
   });
 
+  // Other cards read the timezone (the nightly reindex shows its time in it),
+  // so a save has to be announced, not only toasted.
+  it("tells the page which timezone it saved", async () => {
+    vi.mocked(global.fetch).mockResolvedValueOnce(
+      jsonResponse([{ key: "org.timezone", value: "Europe/Vienna" }])
+    );
+    const onSaved = vi.fn();
+
+    render(<TimezoneSettings onSaved={onSaved} />);
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Save" })).toBeInTheDocument();
+    });
+    vi.mocked(global.fetch).mockResolvedValueOnce(jsonResponse({ ok: true }));
+
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(onSaved).toHaveBeenCalledWith("Europe/Vienna"));
+  });
+
+  it("does not announce a save that failed", async () => {
+    vi.mocked(global.fetch).mockResolvedValueOnce(
+      jsonResponse([{ key: "org.timezone", value: "Europe/Vienna" }])
+    );
+    const onSaved = vi.fn();
+
+    render(<TimezoneSettings onSaved={onSaved} />);
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Save" })).toBeInTheDocument();
+    });
+    vi.mocked(global.fetch).mockResolvedValueOnce(jsonResponse({ error: "nope" }, { status: 500 }));
+
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(screen.getByText(/nope/)).toBeInTheDocument());
+    expect(onSaved).not.toHaveBeenCalled();
+  });
+
   it("shows inline error when save fails", async () => {
     vi.mocked(global.fetch).mockResolvedValueOnce(
       jsonResponse([{ key: "org.timezone", value: "UTC" }])

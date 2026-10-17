@@ -46,6 +46,7 @@ type Job = {
   id: string;
   status: "pending" | "running" | "succeeded" | "failed";
   trigger?: "manual" | "scheduled";
+  unavailableFolders?: number;
   processed: number;
   total: number | null;
   processedBytes: number;
@@ -701,6 +702,46 @@ describe("KnowledgeReindexSection", () => {
       render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} />);
 
       expect(await screen.findByText(/^Last indexed automatically /)).toBeInTheDocument();
+    });
+
+    // A share that failed to mount shows up as a success with a hole in it:
+    // the other folders were indexed. Saying only "Last indexed automatically
+    // today" there is how the hole goes unnoticed for weeks.
+    it("says when a finished run had to leave folders as they were", async () => {
+      mockGet.mockResolvedValue({
+        schedule: nightly,
+        job: job({
+          status: "succeeded",
+          trigger: "scheduled",
+          unavailableFolders: 2,
+          counts: { indexed: 1, skipped: 40, removed: 0, unsearchable: 0, failed: 0 },
+        }),
+      });
+
+      render(<KnowledgeReindexSection agentId="a1" allowedPathCount={3} />);
+
+      expect(
+        await screen.findByText(
+          "2 folders couldn't be read, so their documents were left as they were. If they live on a network share, check that it is mounted."
+        )
+      ).toBeInTheDocument();
+    });
+
+    it("says nothing about unread folders when every folder was read", async () => {
+      mockGet.mockResolvedValue({
+        schedule: nightly,
+        job: job({
+          status: "succeeded",
+          trigger: "scheduled",
+          unavailableFolders: 0,
+          counts: { indexed: 1, skipped: 40, removed: 0, unsearchable: 0, failed: 0 },
+        }),
+      });
+
+      render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} />);
+
+      await waitFor(() => expect(screen.getByText(/^Last indexed /)).toBeInTheDocument());
+      expect(screen.queryByText(/couldn't be read/)).not.toBeInTheDocument();
     });
 
     it("keeps the plain wording for an admin's run", async () => {

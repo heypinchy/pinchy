@@ -41,9 +41,9 @@ import {
   KB_INDEX_JOB_ACTIVE_STATUSES,
   KB_INDEX_JOB_TRIGGERS,
   type KbIndexJobStatus,
+  type KbIndexJobTrigger,
   BUDGET_ACTIONS,
   type BudgetAction,
-  type KbIndexJobTrigger,
 } from "./enums";
 import type { EmailWorkflowFilter, ProcessedEmailOutcome } from "@/lib/email-workflows/types";
 import type { IngestResult } from "@/lib/knowledge/ingest";
@@ -1339,6 +1339,12 @@ export const kbIndexJobs = pgTable(
     // batched maintenance), and is how a restarted scheduler recognises an
     // agent it already queued that night.
     sweepId: uuid("sweep_id"),
+    // How many folders the run had to leave as they were — granted folders it
+    // could not read, and folders that came up empty while the index still
+    // held their documents (a share that failed to mount). Written when the
+    // run finishes. On the job rather than only the audit row so the Index
+    // section can say a successful run had a hole in it.
+    unavailableFolders: integer("unavailable_folders").notNull().default(0),
     // Progress, in documents. `total` stays null until discovery has walked
     // every root — a total that grew as we went would make the progress bar
     // run backwards, so it is written once, upfront.
