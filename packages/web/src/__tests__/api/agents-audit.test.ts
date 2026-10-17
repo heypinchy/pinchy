@@ -108,6 +108,8 @@ vi.mock("@/lib/settings", () => ({
   // recalculateTelegramAllowStores (triggered as a side effect) batches
   // bot-token lookups via getSettingsByPrefix now — no bots in this test (#261).
   getSettingsByPrefix: vi.fn().mockResolvedValue(new Map()),
+  // The member-access policy reads its keys by name; nothing stored = on.
+  getSettingsByKeys: vi.fn().mockResolvedValue(new Map()),
 }));
 
 vi.mock("@/lib/provider-models", () => ({
