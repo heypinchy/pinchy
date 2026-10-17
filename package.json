@@ -36,11 +36,6 @@
     "prettier": "^3.9.6"
   },
   "pnpm": {
-    "auditConfig": {
-      "ignoreGhsas": [
-        "GHSA-mh99-v99m-4gvg"
-      ]
-    },
     "overrides": {
       "rollup@>=4.0.0 <4.59.0": ">=4.59.0",
       "esbuild@<0.28.1": ">=0.28.1",

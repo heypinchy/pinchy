@@ -16,14 +16,10 @@
 # for those is an openclaw bump (update-openclaw skill).
 #
 # MAL-2026-3432, GHSA-w5hq-g745-h8pq (uuid) and GHSA-q8mj-m7cp-5q26 (qs) were
-# dropped 2026-07-21: osv-scanner reported them as UNUSED (fail-on-unused) — no
-# lockfile package matches them anymore. GHSA-v2v4-37r5-5v8g stays (still used;
-# MAL-2026-3432 is one of its aliases, so it remains covered). Re-add with a
-# fresh reason if osv-scanner flags any of them again.
-
-[[IgnoredVulns]]
-id = "GHSA-v2v4-37r5-5v8g"
-reason = "Transitive devDep via openclaw (test tool only — not in production build)"
+# dropped 2026-07-21, and GHSA-v2v4-37r5-5v8g (with MAL-2026-3432 as its alias)
+# on 2026-10-17: osv-scanner reported each of them as UNUSED (fail-on-unused) —
+# no lockfile package matches them anymore. Re-add with a fresh reason if
+# osv-scanner flags any of them again.
 
 # astro (docs/pnpm-lock.yaml) is the static-site generator that builds the
 # documentation site AT BUILD TIME. It ships in no runtime image and reaches no
@@ -32,84 +28,64 @@ reason = "Transitive devDep via openclaw (test tool only — not in production b
 # stripping, all scoped upstream to on-demand SSR / the dev server — statically
 # prerendered output, which is all Starlight emits, is explicitly unaffected.
 # The fifth (GHSA-26w7, RCE through AVIF optimization) is a libheif bug inside
-# sharp: the build only ever optimizes images committed to this repository, and
-# the vulnerable code is patched regardless, because docs/package.json forces
-# sharp >=0.35.4, the version the upstream fix itself requires. All five fix
-# only in astro 7.x, which @astrojs/starlight 0.38 does not support (its peer
-# is astro ^6); clearing them needs a coordinated
-# Starlight major upgrade, tracked in #851. The one High-severity astro advisory
-# (GHSA-vj59-8hwv-xxmv, 8.2) IS fixed here — astro is bumped to 6.4.8, resolved
-# within the ^6 range. ignoreUntil forces a re-triage on 2026-10-21 so the
-# exception cannot outlive #851 silently.
+# sharp: the build never optimizes an image (passthroughImageService, below),
+# and the vulnerable code is patched regardless, because docs/package.json
+# forces sharp >=0.35.5, past the version the upstream fix itself requires. All five fix
+# only in astro 7.x — 6.4.8 is still the newest 6.x, with no backport.
+# The one High-severity astro advisory (GHSA-vj59-8hwv-xxmv, 8.2) IS fixed
+# here — astro is bumped to 6.4.8, resolved within the ^6 range.
+#
+# Re-triaged 2026-10-17 (#851). Starlight no longer blocks: 0.42 peers
+# astro ^7.2.10. A trial upgrade (astro 7.4.0 + Starlight 0.42.6) builds, and
+# check:anchors / check:rendered / check:llms all pass — which is precisely the
+# problem, because the regression it ships is one none of them reads.
+# @pasqal-io/starlight-client-mermaid 0.1.0 (still the newest) peers
+# @astrojs/markdown-remark ^6, and under astro 7 its transform is not applied:
+# the architecture diagram, emitted as <div class="mermaid"> on astro 6, comes
+# out as an expressive-code block of raw Mermaid source. Astro 7 also raises the
+# Node floor to >=22.22.0. Both belong in the #851 PR, not in a release-week
+# dependency fix. Reachability is unchanged and re-checked against the current
+# config: astro.config.mjs sets no `output` and no adapter, so every page is
+# prerendered static HTML, and `image.service` is passthroughImageService, so
+# the build never decodes an image through sharp at all. ignoreUntil is
+# 2026-11-30 — past the v0.10.0 cut and the Noack go-live, so the #851 upgrade
+# lands as its own build-verified change instead of under a deadline.
 
 [[IgnoredVulns]]
 id = "GHSA-4g3v-8h47-v7g6"
-ignoreUntil = 2026-10-21
-reason = "astro — docs static-site build tooling (docs/pnpm-lock.yaml), not shipped to users; reflected XSS in View Transitions, on-demand SSR / dev-server only — Starlight emits static HTML. Fixes only in astro 7.x, which Starlight 0.38 blocks. Tracked: #851"
+ignoreUntil = 2026-11-30
+reason = "astro — docs static-site build tooling (docs/pnpm-lock.yaml), not shipped to users; reflected XSS in View Transitions, on-demand SSR / dev-server only — Starlight emits static HTML. Fixes only in astro 7.x; the upgrade is blocked by starlight-client-mermaid 0.1.0, which does not render diagrams under astro 7. Tracked: #851"
 
 [[IgnoredVulns]]
 id = "GHSA-7pw4-f3q4-r2p2"
-ignoreUntil = 2026-10-21
-reason = "astro — docs static-site build tooling (docs/pnpm-lock.yaml), not shipped to users; reflected XSS in transition directives, on-demand SSR / dev-server only — statically prerendered output unaffected. Fixes only in astro 7.x, which Starlight 0.38 blocks. Tracked: #851"
+ignoreUntil = 2026-11-30
+reason = "astro — docs static-site build tooling (docs/pnpm-lock.yaml), not shipped to users; reflected XSS in transition directives, on-demand SSR / dev-server only — statically prerendered output unaffected. Fixes only in astro 7.x; the upgrade is blocked by starlight-client-mermaid 0.1.0, which does not render diagrams under astro 7. Tracked: #851"
 
 [[IgnoredVulns]]
 id = "GHSA-f48w-9m4c-m7f5"
-ignoreUntil = 2026-10-21
-reason = "astro — docs static-site build tooling (docs/pnpm-lock.yaml), not shipped to users; XSS via unescaped attribute names, needs an SSR runtime with a global HTMLElement — not reachable in static output. Fixes only in astro 7.x, which Starlight 0.38 blocks. Tracked: #851"
+ignoreUntil = 2026-11-30
+reason = "astro — docs static-site build tooling (docs/pnpm-lock.yaml), not shipped to users; XSS via unescaped attribute names, needs an SSR runtime with a global HTMLElement — not reachable in static output. Fixes only in astro 7.x; the upgrade is blocked by starlight-client-mermaid 0.1.0, which does not render diagrams under astro 7. Tracked: #851"
 
 [[IgnoredVulns]]
 id = "GHSA-26w7-cxv4-gfx2"
-ignoreUntil = 2026-10-21
-reason = "astro — docs static-site build tooling (docs/pnpm-lock.yaml), not shipped to users; RCE via libheif in sharp when Astro optimizes an untrusted AVIF. The docs build only optimizes images committed to this repository, and the vulnerable decoder is patched anyway: docs/package.json forces sharp >=0.35.4, the version the upstream fix requires. The astro-side fix ships only in 7.2.8, which Starlight 0.38 blocks. Tracked: #851"
+ignoreUntil = 2026-11-30
+reason = "astro — docs static-site build tooling (docs/pnpm-lock.yaml), not shipped to users; RCE via libheif in sharp when Astro optimizes an untrusted AVIF. The docs build optimizes no image at all (astro.config.mjs uses passthroughImageService), and the vulnerable decoder is patched anyway: docs/package.json forces sharp >=0.35.5, past the version the upstream fix requires. The astro-side fix ships only in 7.2.8; the upgrade is blocked by starlight-client-mermaid 0.1.0, which does not render diagrams under astro 7. Tracked: #851"
 
 [[IgnoredVulns]]
 id = "GHSA-376h-93r7-7g6f"
-ignoreUntil = 2026-10-21
-reason = "astro — docs static-site build tooling (docs/pnpm-lock.yaml), not shipped to users; authorization bypass when stripping the configured base from a request path, which needs an on-demand server routing requests — Starlight emits static HTML served by a plain file host. Fixes only in astro 7.2.4, which Starlight 0.38 blocks. Tracked: #851"
+ignoreUntil = 2026-11-30
+reason = "astro — docs static-site build tooling (docs/pnpm-lock.yaml), not shipped to users; authorization bypass when stripping the configured base from a request path, which needs an on-demand server routing requests — Starlight emits static HTML served by a plain file host. Fixes only in astro 7.2.4; the upgrade is blocked by starlight-client-mermaid 0.1.0, which does not render diagrams under astro 7. Tracked: #851"
 
-# brace-expansion OOM DoS (unbounded brace expansion). The advisory patches ONLY
-# 5.0.8 (range <=5.0.7), and the 5.x line IS fixed here — the override forces
-# brace-expansion>=5.0.8 <6, so every modern minimatch@9/10 consumer is patched.
-# The residual flags are the 1.1.16 (minimatch@3 → glob@7) and 2.1.2
-# (minimatch@5 → readdir-glob) instances, reached by THREE routes — two of them
-# production dependencies:
-#   1. archiver@5 → archiver-utils → glob@7  (exceljs, in pinchy-files)
-#   2. googleapis → googleapis-common → gaxios → rimraf → glob@7  (pinchy-email)
-#      — missing from this rationale until v0.9.0's release audit reported it.
-#      The argument below always covered it, but an acceptance that does not
-#      name a path it accepts is not an acceptance of that path.
-#   3. @eslint/config-array, in the dev toolchain
-# Those lines have NO upstream fix: 5.0.8 changed the CommonJS export from a
-# default-exported function to a named export, which breaks `require(...)()` in
-# minimatch@3/@5 (and crashes eslint), so bumping them to the fix is not possible
-# without breaking archiver and the linter. Not reachable regardless: the OOM
-# requires an attacker-controlled brace PATTERN passed to expand(); archiver
-# walks the filesystem with fixed internal globs, rimraf deletes gaxios' own
-# temp paths, and eslint matches code-authored config globs — none of the three
-# passes an untrusted pattern string. ignoreUntil forces a re-triage once
-# archiver/minimatch ships a major depending on brace-expansion >=5.0.8 (or
-# exceljs drops archiver@5).
-#
-# `pnpm audit` has to be told the same thing separately: it does not read this
-# file, and `pnpm release` gates on `pnpm audit --audit-level=high --prod`. So
-# the root package.json carries a matching `pnpm.auditConfig.ignoreGhsas` entry
-# for this GHSA. Keep the two in lockstep — dropping either one leaves a release
-# that cannot be cut, or a scanner that says nothing while the other says high.
-# Ignoring the id wholesale is bounded by the override above: the 5.x line cannot
-# regress below 5.0.8, and a future 6.x advisory would carry a different id.
-#
-# That lockstep is CHECKED, not merely requested: scripts/lib/audit-ignore-parity
-# .test.mjs (`pnpm test:scripts`) fails if an id in `ignoreGhsas` has no entry
-# here, or if the entry it has is missing a reason, missing an ignoreUntil, or
-# EXPIRED. The expiry rule is the load-bearing one — `ignoreGhsas` has no
-# ignoreUntil of its own and never will, so on 2026-10-25 osv-scanner re-opens
-# this question while `pnpm audit` goes on ignoring it silently. The guard is
-# how the pnpm-side silence inherits the deadline written down here.
-
-[[IgnoredVulns]]
-id = "GHSA-mh99-v99m-4gvg"
-ignoreUntil = 2026-10-25
-reason = "brace-expansion OOM — 5.x line IS fixed (override forces >=5.0.8); residual 1.1.16/2.1.2 come via three routes: archiver@5 (exceljs/pinchy-files), googleapis>googleapis-common>gaxios>rimraf (pinchy-email), and @eslint/config-array (dev toolchain). None has a compatible upstream fix (5.0.8's changed CJS export breaks minimatch@3/@5), and none is reachable: archiver walks fixed internal globs, rimraf deletes gaxios' own temp paths, eslint matches code-authored config globs — no attacker-controlled brace pattern reaches expand(). Re-triage when archiver depends on brace-expansion >=5.0.8."
+# GHSA-mh99-v99m-4gvg (brace-expansion OOM) was retired 2026-10-17. The
+# root package.json overrides now lift every line past its fix (1.x >=1.1.21,
+# 2.x >=2.1.7, 5.x >=5.0.12), osv-scanner reported the entry as UNUSED, and
+# `pnpm audit --audit-level=high --prod` passes without its `ignoreGhsas`
+# mirror. The OpenClaw image's plugin installs (`npm install`, no lockfile, no
+# overrides) are fixed too, because each line's newest patch is the fixed one
+# and the consumers' ranges reach it. Should brace-expansion be flagged again,
+# the acceptance needs both halves back — an entry here AND in
+# `pnpm.auditConfig.ignoreGhsas` — which scripts/lib/audit-ignore-parity
+# .test.mjs (`pnpm test:scripts`) enforces.
 
 # Two advisories published in the 2026-10 wave have NO fixed release at all —
 # both ranges are "through the latest version" — so no bump or override can
