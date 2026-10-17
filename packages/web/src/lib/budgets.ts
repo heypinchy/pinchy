@@ -40,6 +40,17 @@ export interface BudgetClock {
   now?: Date;
 }
 
+export interface BudgetQuery extends BudgetClock {
+  /** Only the budgets that can apply to this agent: its own and the instance's. */
+  agentId?: string;
+  /**
+   * Leave out budgets on another user's personal agent. An admin cannot set
+   * one (PUT runs the agent read gate), so reading one would confirm a
+   * colleague's private agent, its name and its spend.
+   */
+  viewerId?: string;
+}
+
 export function budgetState(spentUsd: number, limitUsd: number): BudgetState {
   if (spentUsd >= limitUsd) return "exceeded";
   if (spentUsd >= limitUsd * WARNING_RATIO) return "warning";
@@ -69,19 +80,27 @@ async function currentPeriod(now: Date): Promise<{ period: string; start: Date; 
 // every module that imports this one depend on the usage schema being loadable.
 const spentSql = () => sql<string>`coalesce(sum(${usageRecords.estimatedCostUsd}), 0)`;
 
-export async function getBudgetStatuses({ now = new Date() }: BudgetClock = {}): Promise<
-  BudgetStatus[]
-> {
-  const rows = await db
+export async function getBudgetStatuses({
+  now = new Date(),
+  agentId,
+  viewerId,
+}: BudgetQuery = {}): Promise<BudgetStatus[]> {
+  const loaded = await db
     .select({
       id: costBudgets.id,
       agentId: costBudgets.agentId,
       agentName: agents.name,
+      agentIsPersonal: agents.isPersonal,
+      agentOwnerId: agents.ownerId,
       monthlyLimitUsd: costBudgets.monthlyLimitUsd,
       onExceeded: costBudgets.onExceeded,
     })
     .from(costBudgets)
-    .leftJoin(agents, eq(agents.id, costBudgets.agentId));
+    .leftJoin(agents, eq(agents.id, costBudgets.agentId))
+    .where(agentId ? or(isNull(costBudgets.agentId), eq(costBudgets.agentId, agentId)) : undefined);
+  const rows = viewerId
+    ? loaded.filter((r) => !(r.agentIsPersonal && r.agentOwnerId !== viewerId))
+    : loaded;
   if (rows.length === 0) return [];
 
   const { period, start, end } = await currentPeriod(now);
@@ -140,11 +159,18 @@ export async function getExhaustedBlockingBudget(
     );
   if (applicable.length === 0) return null;
 
-  const statuses = await getBudgetStatuses(clock);
-  return (
-    statuses.find((s) => isBlocking(s) && (s.agent === null || s.agent.id === agentId)) ?? null
-  );
+  // Scoped to this agent: the check runs on every send, and every other
+  // agent's spend would be computed only to be thrown away.
+  const statuses = await getBudgetStatuses({ ...clock, agentId });
+  return statuses.find(isBlocking) ?? null;
 }
+
+/** The 403 for switching on an automation a used-up blocking budget has paused. */
+export const BUDGET_EXHAUSTED_AUTOMATION = {
+  error:
+    "This agent has used its monthly budget, so its automations are paused until next month or until an admin raises the budget.",
+  code: "budget_exhausted",
+} as const;
 
 /** Which agents blocking budgets have stopped this month — for the automation sweep. */
 export async function getBlockedByBudgets(

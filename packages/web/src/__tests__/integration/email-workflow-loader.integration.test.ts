@@ -397,6 +397,21 @@ describe("email workflow loader — loadDispatchableWorkflows", () => {
       expect(onlyUnrunnable(result, wf.id)).toHaveLength(0);
     });
 
+    it("still reports a paused automation that is broken anyway — the pause must not hide a fault", async () => {
+      await setInstancePolicy({ memberPersonalAgents: true, memberAutomations: false });
+      const member = await seedUser();
+      const agent = await seedAgent({ isPersonal: true, ownerId: member.id });
+      // Enabled, but watching no mailbox: it could not run even with the
+      // switch on, and the operator should hear about it now, not after.
+      const wf = await seedWorkflow({ agentId: agent.id, enabled: true, createdBy: member.id });
+
+      const result = await loadDispatchableWorkflows();
+
+      expect(onlyUnrunnable(result, wf.id)).toEqual([
+        expect.objectContaining({ reason: "watches-no-mailbox" }),
+      ]);
+    });
+
     it("keeps running an admin's personal-agent automation and a shared agent's", async () => {
       await setInstancePolicy({ memberPersonalAgents: false, memberAutomations: false });
       const admin = await seedUser("admin");

@@ -13,9 +13,11 @@ import { upsertBudgetSchema } from "@/lib/schemas/budgets";
 /**
  * GET /api/budgets — every budget with this month's spend and state. Admin-only;
  * readable without a license so a lapsed one still shows what is enforced.
+ * Budgets on another user's personal agent are left out, for the same reason
+ * PUT runs the agent read gate.
  */
-export const GET = withAdmin(async () => {
-  return NextResponse.json(await getBudgetStatuses());
+export const GET = withAdmin(async (_request, _ctx, session) => {
+  return NextResponse.json(await getBudgetStatuses({ viewerId: session.user.id! }));
 });
 
 /**
@@ -26,8 +28,8 @@ export const GET = withAdmin(async () => {
  * admin cannot budget — and thereby confirm — a colleague's private Smithers.
  * The instance budget already covers it.
  *
- * Changing the limit or the action re-arms this month's alerts: a warning about
- * the old line says nothing about the new one.
+ * Changing the limit re-arms this month's alerts: a warning about the old line
+ * says nothing about the new one. Changing only the action keeps them.
  */
 export const PUT = withAdmin(async (request, _ctx, session) => {
   if (!(await isEnterprise())) {
@@ -49,16 +51,15 @@ export const PUT = withAdmin(async (request, _ctx, session) => {
       ? { id, scope: "agent" as const, agent: agentRef }
       : { id, scope: "instance" as const };
 
-  const [existing] = await db
-    .select()
-    .from(costBudgets)
-    .where(agentId ? eq(costBudgets.agentId, agentId) : isNull(costBudgets.agentId));
+  // Insert-or-nothing first, so two saves racing for one scope cannot both
+  // insert: the loser hits the unique constraint quietly and updates instead.
+  const [created] = await db
+    .insert(costBudgets)
+    .values({ agentId, monthlyLimitUsd: monthlyLimitUsd.toFixed(2), onExceeded })
+    .onConflictDoNothing({ target: costBudgets.agentId })
+    .returning();
 
-  if (!existing) {
-    const [created] = await db
-      .insert(costBudgets)
-      .values({ agentId, monthlyLimitUsd: monthlyLimitUsd.toFixed(2), onExceeded })
-      .returning();
+  if (created) {
     await appendAuditLog({
       actorType: "user",
       actorId: session.user.id!,
@@ -68,6 +69,18 @@ export const PUT = withAdmin(async (request, _ctx, session) => {
       detail: { budget: budgetRef(created.id), monthlyLimitUsd, onExceeded },
     });
     return NextResponse.json({ id: created.id });
+  }
+
+  const [existing] = await db
+    .select()
+    .from(costBudgets)
+    .where(agentId ? eq(costBudgets.agentId, agentId) : isNull(costBudgets.agentId));
+  // Deleted between the conflict and this read: nothing left to update.
+  if (!existing) {
+    return NextResponse.json(
+      { error: "The budget changed meanwhile. Try again." },
+      { status: 409 }
+    );
   }
 
   const changes: Record<string, { from: unknown; to: unknown }> = {};
@@ -85,8 +98,9 @@ export const PUT = withAdmin(async (request, _ctx, session) => {
     .set({
       monthlyLimitUsd: monthlyLimitUsd.toFixed(2),
       onExceeded,
-      warnedPeriod: null,
-      exceededPeriod: null,
+      // A new limit is a new line and earns its own alerts; a new action on
+      // the same line does not — those alerts were about exactly this line.
+      ...(changes.monthlyLimitUsd ? { warnedPeriod: null, exceededPeriod: null } : {}),
       updatedAt: new Date(),
     })
     .where(eq(costBudgets.id, existing.id));

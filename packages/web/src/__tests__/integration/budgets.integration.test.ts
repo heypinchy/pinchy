@@ -158,6 +158,22 @@ describe("getExhaustedBlockingBudget", () => {
   });
 });
 
+describe("getBudgetStatuses scoped to one agent", () => {
+  it("loads only the budgets that can apply to that agent — its own and the instance's", async () => {
+    const kb = await seedAgent("Knowledge Base");
+    const other = await seedAgent("Other");
+    await budget(null, "100.00", "block");
+    await budget(kb.id, "10.00", "block");
+    await budget(other.id, "10.00", "block");
+
+    const statuses = await getBudgetStatuses({ now: NOW, agentId: kb.id });
+
+    // The per-send check runs this on every message; the other agent's spend
+    // is work it would only throw away.
+    expect(statuses.map((s) => s.agent?.id ?? null).sort()).toEqual([kb.id, null].sort());
+  });
+});
+
 describe("getBlockedByBudgets", () => {
   it("lists the agents a blocking budget has stopped, and whether the instance is stopped", async () => {
     const a = await seedAgent("Ava");

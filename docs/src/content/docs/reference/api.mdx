@@ -599,6 +599,8 @@ Being keyed by workflow id also gives these two a reach the `agentId` endpoints 
 
 List the agent's email workflows.
 
+Each item carries `pausedByBudget: true` while a used-up blocking [cost budget](/guides/cost-governance/) pauses the agent's automations for this month. The sweep skips them without changing `status`, so read `pausedByBudget` rather than `status` to tell whether one is actually running.
+
 **Errors:**
 
 - `400` — `agentId` is missing from the query string
@@ -647,6 +649,7 @@ Toggling to the state it already has is a no-op: still `200`, no audit entry —
 - `400` — the body has no boolean `enabled`
 - `401` — not authenticated
 - `403` — `code: "member_automations_disabled"`: you asked to **enable** a workflow on a member's personal agent while automations there are turned off. Admins get this too, because the workflow would read "enabled" and never run. Disabling is always allowed
+- `403` — `code: "budget_exhausted"`: you asked to **enable** a workflow on an agent that a used-up blocking [cost budget](/guides/cost-governance/) has paused for this month. Same reason, same rule: disabling is always allowed
 - `404` — no workflow has that id, **or** its agent is outside your scope. This endpoint addresses a workflow, not an agent, so a malformed id lands here as well: it definitionally matches nothing
 
 ### `DELETE /api/automations/:id`
@@ -803,9 +806,11 @@ Every budget with this month's spend, in the organization timezone.
 
 `agent` is `null` for the instance budget, otherwise `{ "id", "name" }`. `state` is `ok`, `warning` (80% or more) or `exceeded` (100% or more).
 
+A budget on another user's personal agent is left out of the list. You cannot set one there either (see `PUT` below), and listing it would reveal a colleague's private agent, its name and its spend.
+
 ### `PUT /api/budgets`
 
-Create or replace a budget. Requires an Enterprise license. There is at most one instance budget and one per agent, so saving again for the same scope updates it. Changing the limit or the action re-arms this month's alerts. Writes `budget.created` or `budget.updated`.
+Create or replace a budget. Requires an Enterprise license. There is at most one instance budget and one per agent, so saving again for the same scope updates it. Changing the limit re-arms this month's alerts, because a warning about the old line says nothing about the new one. Changing only the action keeps them. Writes `budget.created` or `budget.updated`.
 
 **Request body:**
 
@@ -825,7 +830,7 @@ Remove a budget. Works without a license, so an expired one never leaves an inst
 
 **Response:** `{ "id": "…" }`
 
-**Errors:** `401`, `403` (not an admin), `404` (no budget has that id).
+**Errors:** `401`, `403` (not an admin), `404` (no budget has that id, or it is on another user's personal agent).
 
 ## LLM Providers (admin only)
 
@@ -1938,6 +1943,7 @@ A failed delivery is still a `200`: the decision itself is persisted, and retryi
 **Errors:**
 
 - `403` — you are not the requester. Only the person who triggered the action can confirm it (four-eyes approval by a different admin is a planned extension, [#124](https://github.com/heypinchy/pinchy/issues/124))
+- `403` — `code: "personal_agent_disabled"`: you asked to **approve** a confirmation on your own personal agent while an admin has turned members' personal agents off. Approving would resume the run. Denying is always allowed
 - `404` — no such request
 - `409` — the request is no longer pending: already decided, already consumed, or expired
 

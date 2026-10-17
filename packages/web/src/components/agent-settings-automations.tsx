@@ -91,6 +91,9 @@ export function AgentSettingsAutomations({
   // and Delete stay: stopping is never what the policy is against.
   const [paused, setPaused] = useState(false);
   const [loading, setLoading] = useState(true);
+  // The list route marks every item when a used-up blocking budget pauses the
+  // agent (#36); one is enough to know.
+  const budgetPaused = items.some((item) => item.pausedByBudget);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<AutomationListItem | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
@@ -201,6 +204,15 @@ export function AgentSettingsAutomations({
         </Alert>
       )}
 
+      {budgetPaused && (
+        <Alert>
+          <AlertDescription>
+            This agent has used its monthly budget, so its automations are paused until next month
+            or until an admin raises the budget. You can still switch them off or delete them.
+          </AlertDescription>
+        </Alert>
+      )}
+
       <AgentSettingsAutomationCreateDialog
         agentId={agentId}
         open={createOpen}
@@ -258,13 +270,22 @@ export function AgentSettingsAutomations({
                       {mailboxCount} {mailboxCount === 1 ? "mailbox" : "mailboxes"}
                     </TableCell>
                     <TableCell>
-                      <Badge variant={STATUS_VARIANT[item.status]}>{item.status}</Badge>
+                      {/* The sweep skips a budget-paused automation without
+                          writing `status`, so the stored value would still
+                          read "active" for one that is not running. */}
+                      {item.pausedByBudget ? (
+                        <Badge variant="secondary">paused</Badge>
+                      ) : (
+                        <Badge variant={STATUS_VARIANT[item.status]}>{item.status}</Badge>
+                      )}
                     </TableCell>
                     <TableCell className="text-right whitespace-nowrap">
                       <Button
                         size="sm"
                         variant={item.enabled ? "outline" : "default"}
-                        disabled={busyId === item.id || (paused && !item.enabled)}
+                        disabled={
+                          busyId === item.id || ((paused || item.pausedByBudget) && !item.enabled)
+                        }
                         onClick={() => handleToggle(item)}
                       >
                         {item.enabled ? "Disable" : "Enable"}

@@ -33,6 +33,7 @@ const { GET, PUT } = await import("@/app/api/budgets/route");
 const { DELETE } = await import("@/app/api/budgets/[id]/route");
 
 const ADMIN = "budget-admin";
+const OTHER_ADMIN = "budget-admin-2";
 const MEMBER = "budget-member";
 
 function as(id: string, role: "admin" | "member") {
@@ -74,6 +75,7 @@ beforeEach(async () => {
   isEnterpriseMock.mockResolvedValue(true);
   await db.insert(users).values([
     { id: ADMIN, name: "Admin", email: `${ADMIN}@test.com`, role: "admin" },
+    { id: OTHER_ADMIN, name: "Other", email: `${OTHER_ADMIN}@test.com`, role: "admin" },
     { id: MEMBER, name: "Member", email: `${MEMBER}@test.com`, role: "member" },
   ]);
 });
@@ -143,6 +145,31 @@ describe("PUT /api/budgets", () => {
     expect(row.exceededPeriod).toBeNull();
   });
 
+  it("keeps this month's alerts when only the action changes — the line did not move", async () => {
+    as(ADMIN, "admin");
+    await put({ agentId: null, monthlyLimitUsd: 50, onExceeded: "notify" });
+    await db.update(costBudgets).set({ warnedPeriod: "2026-10", exceededPeriod: "2026-10" });
+
+    await put({ agentId: null, monthlyLimitUsd: 50, onExceeded: "block" });
+
+    const [row] = await allBudgets();
+    expect(row.onExceeded).toBe("block");
+    expect(row.warnedPeriod).toBe("2026-10");
+    expect(row.exceededPeriod).toBe("2026-10");
+  });
+
+  it("answers two simultaneous saves for the same scope with one budget, not a 500", async () => {
+    as(ADMIN, "admin");
+
+    const [a, b] = await Promise.all([
+      put({ agentId: null, monthlyLimitUsd: 50, onExceeded: "notify" }),
+      put({ agentId: null, monthlyLimitUsd: 60, onExceeded: "notify" }),
+    ]);
+
+    expect([a.status, b.status]).toEqual([200, 200]);
+    expect(await allBudgets()).toHaveLength(1);
+  });
+
   it("writes no audit row for a save that changed nothing", async () => {
     as(ADMIN, "admin");
     await put({ agentId: null, monthlyLimitUsd: 50, onExceeded: "notify" });
@@ -203,6 +230,25 @@ describe("GET /api/budgets", () => {
     ]);
   });
 
+  it("leaves out a budget on another admin's personal agent — the PUT gate's rule, on the read side", async () => {
+    as(OTHER_ADMIN, "admin");
+    const theirs = await seedAgent({ isPersonal: true, ownerId: OTHER_ADMIN });
+    await put({ agentId: theirs.id, monthlyLimitUsd: 10, onExceeded: "notify" });
+    await put({ agentId: null, monthlyLimitUsd: 50, onExceeded: "notify" });
+
+    as(ADMIN, "admin");
+    const forAdmin = await (
+      await GET(makeNextRequest("http://localhost/api/budgets"), routeContext())
+    ).json();
+    as(OTHER_ADMIN, "admin");
+    const forOwner = await (
+      await GET(makeNextRequest("http://localhost/api/budgets"), routeContext())
+    ).json();
+
+    expect(forAdmin.map((b: { agent: unknown }) => b.agent)).toEqual([null]);
+    expect(forOwner).toHaveLength(2);
+  });
+
   it("answers a member 403", async () => {
     as(MEMBER, "member");
     const res = await GET(makeNextRequest("http://localhost/api/budgets"), routeContext());
@@ -251,6 +297,23 @@ describe("DELETE /api/budgets/[id]", () => {
 
     expect(res.status).toBe(200);
     expect(await allBudgets()).toHaveLength(0);
+  });
+
+  it("answers 404 for a budget on another admin's personal agent, and leaves it alone", async () => {
+    as(OTHER_ADMIN, "admin");
+    const theirs = await seedAgent({ isPersonal: true, ownerId: OTHER_ADMIN });
+    const { id } = await (
+      await put({ agentId: theirs.id, monthlyLimitUsd: 10, onExceeded: "notify" })
+    ).json();
+
+    as(ADMIN, "admin");
+    const res = await DELETE(
+      makeNextRequest(`http://localhost/api/budgets/${id}`, { method: "DELETE" }),
+      routeContext({ id })
+    );
+
+    expect(res.status).toBe(404);
+    expect(await allBudgets()).toHaveLength(1);
   });
 
   it("answers 404 for an unknown or malformed id", async () => {

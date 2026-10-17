@@ -146,9 +146,6 @@ export async function loadDispatchableWorkflows(): Promise<WorkflowLoadResult> {
     });
   };
   for (const row of rows) {
-    // Paused by policy or budget — not broken, so neither a unit nor `unrunnable`.
-    if (arePersonalAutomationsPaused(row, row.ownerRole, policy)) continue;
-    if (blocked.instance || blocked.agentIds.has(row.agentId)) continue;
     // The LEFT join's unmatched row: an enabled workflow with no connections at
     // all. Checked first because it is the row-shape question — the recipient
     // is moot for a workflow with nothing to read. A workflow that has lost both
@@ -163,6 +160,11 @@ export async function loadDispatchableWorkflows(): Promise<WorkflowLoadResult> {
       report(row, row.isPersonal ? "personal-agent-has-no-owner" : "shared-agent-has-no-creator");
       continue;
     }
+    // Paused by policy or budget — not broken, so neither a unit nor
+    // `unrunnable`. Checked after the faults above, so a pause never hides an
+    // automation that could not run anyway.
+    if (arePersonalAutomationsPaused(row, row.ownerRole, policy)) continue;
+    if (blocked.instance || blocked.agentIds.has(row.agentId)) continue;
     units.push({
       workflow: {
         id: row.workflowId,

@@ -24,13 +24,17 @@ export const DELETE = withAdmin<RouteContext>(async (_request, { params }, sessi
       id: costBudgets.id,
       agentId: costBudgets.agentId,
       agentName: agents.name,
+      agentIsPersonal: agents.isPersonal,
+      agentOwnerId: agents.ownerId,
       monthlyLimitUsd: costBudgets.monthlyLimitUsd,
       onExceeded: costBudgets.onExceeded,
     })
     .from(costBudgets)
     .leftJoin(agents, eq(agents.id, costBudgets.agentId))
     .where(eq(costBudgets.id, id));
-  if (!row) return notFound;
+  // Another user's personal agent: answered exactly like a budget that does
+  // not exist — GET leaves it out and PUT cannot reach it, for the same reason.
+  if (!row || (row.agentIsPersonal && row.agentOwnerId !== session.user.id)) return notFound;
 
   await db.delete(costBudgets).where(eq(costBudgets.id, id));
 

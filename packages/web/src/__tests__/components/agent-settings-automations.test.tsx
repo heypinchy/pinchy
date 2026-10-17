@@ -32,6 +32,7 @@ const mockAutomations = [
     createdBy: "u1",
     createdAt: "2026-07-20T10:00:00.000Z",
     connectionIds: ["conn-a"],
+    pausedByBudget: false,
   },
   {
     id: "wf-2",
@@ -44,6 +45,7 @@ const mockAutomations = [
     createdBy: "u1",
     createdAt: "2026-07-21T10:00:00.000Z",
     connectionIds: ["conn-a", "conn-b"],
+    pausedByBudget: false,
   },
 ];
 
@@ -295,6 +297,30 @@ describe("AgentSettingsAutomations", () => {
       const urls = vi.mocked(global.fetch).mock.calls.map(([u]) => String(u));
       expect(urls).not.toContain("/api/settings/governance");
       expect(screen.getByRole("button", { name: "New automation" })).toBeEnabled();
+    });
+  });
+
+  describe("while a used-up blocking budget pauses the agent's automations", () => {
+    const paused = mockAutomations.map((a) => ({ ...a, pausedByBudget: true }));
+
+    it("says they are paused by the budget instead of showing them as running", async () => {
+      mockList(paused);
+      render(<AgentSettingsAutomations agentId={AGENT_ID} />);
+
+      expect(await screen.findByText(/used its monthly budget/i)).toBeInTheDocument();
+      // The sweep leaves `status` alone, so the badge would still say active.
+      expect(screen.queryByText("active")).not.toBeInTheDocument();
+      expect(screen.getAllByText("paused").length).toBeGreaterThan(0);
+    });
+
+    it("offers no Enable — the server would refuse it — but keeps Disable and Delete", async () => {
+      mockList(paused);
+      render(<AgentSettingsAutomations agentId={AGENT_ID} />);
+      await screen.findByText(/used its monthly budget/i);
+
+      expect(screen.getByRole("button", { name: "Enable" })).toBeDisabled();
+      expect(screen.getByRole("button", { name: "Disable" })).toBeEnabled();
+      expect(screen.getAllByRole("button", { name: "Delete" })[0]).toBeEnabled();
     });
   });
 });

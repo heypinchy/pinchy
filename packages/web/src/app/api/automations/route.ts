@@ -13,6 +13,7 @@ import {
   arePersonalAutomationsPausedFor,
   MEMBER_AUTOMATIONS_DISABLED,
 } from "@/lib/instance-policy";
+import { getExhaustedBlockingBudget } from "@/lib/budgets";
 import {
   resolveWorkflowAgent,
   resolveWorkflowAgentFromQuery,
@@ -67,8 +68,14 @@ export const GET = withAuth(async (request, _ctx, session) => {
     byWorkflow.set(row.workflowId, list);
   }
 
+  // A used-up blocking budget pauses every automation on the agent. The sweep
+  // skips them without writing `status`, so without this the list would keep
+  // saying "active" for automations that are not running.
+  const pausedByBudget =
+    workflows.length > 0 && (await getExhaustedBlockingBudget(agentId)) !== null;
+
   return NextResponse.json(
-    workflows.map((w) => ({ ...w, connectionIds: byWorkflow.get(w.id) ?? [] }))
+    workflows.map((w) => ({ ...w, connectionIds: byWorkflow.get(w.id) ?? [], pausedByBudget }))
   );
 });
 

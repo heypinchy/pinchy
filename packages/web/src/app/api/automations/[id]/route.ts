@@ -14,6 +14,7 @@ import {
   arePersonalAutomationsPausedFor,
   MEMBER_AUTOMATIONS_DISABLED,
 } from "@/lib/instance-policy";
+import { BUDGET_EXHAUSTED_AUTOMATION, getExhaustedBlockingBudget } from "@/lib/budgets";
 
 type RouteContext = { params: Promise<{ id: string }> };
 
@@ -117,6 +118,11 @@ export const PATCH = withAuth<RouteContext>(async (request, { params }, session)
   // answer would be a workflow that reads "enabled" and never runs.
   if (enabled && (await arePersonalAutomationsPausedFor(workflow, workflow.ownerRole))) {
     return NextResponse.json(MEMBER_AUTOMATIONS_DISABLED, { status: 403 });
+  }
+  // The same holds for a used-up blocking budget: the sweep skips the agent
+  // until the month rolls over or an admin raises the budget.
+  if (enabled && (await getExhaustedBlockingBudget(workflow.agentId))) {
+    return NextResponse.json(BUDGET_EXHAUSTED_AUTOMATION, { status: 403 });
   }
 
   await db
