@@ -55,6 +55,10 @@
  * no TOML dependency at the root, and this reads exactly one table-array whose
  * shape is fixed by osv-scanner's own schema (`id`, `reason`, `ignoreUntil`).
  *
+ * A header or entry it cannot read throws rather than being skipped: an
+ * acceptance osv-scanner honours but this parser drops is invisible to every
+ * rule below, which is a silent green, not a parse error.
+ *
  * Known limits, so nobody reads a green check as more than it is: values are
  * matched as single-line basic strings / bare date literals, which is how
  * osv-scanner documents them and how every entry in this repo is written. A
@@ -66,17 +70,37 @@
  * @returns {Array<{ id: string, reason: string | null, ignoreUntil: string | null }>}
  */
 export function parseOsvIgnoredVulns(toml) {
+  const text = String(toml);
+
+  // A header the split below cannot read must not be skipped: osv-scanner
+  // still honours the entry, and every rule in this file would be blind to it.
+  // TOML allows a quoted key (`[["IgnoredVulns"]]`); nothing here writes one,
+  // so refuse it loudly rather than learn a second spelling.
+  for (const line of text.split("\n")) {
+    if (/^\s*\[\[[^\]]*IgnoredVulns/.test(line) && !HEADER.test(line)) {
+      throw new Error(
+        `osv-scanner.toml: cannot read the table header ${line.trim()}. ` +
+          `Write it as [[IgnoredVulns]] so the acceptance parity guard can see the entry.`,
+      );
+    }
+  }
+
   const entries = [];
   // Split on the table-array header, keeping only what follows each one. A
-  // later `[SomethingElse]` header ends the entry.
-  const blocks = String(toml)
-    .split(/^\s*\[\[IgnoredVulns\]\]\s*$/m)
-    .slice(1);
+  // later `[SomethingElse]` header ends the entry. The header may carry inner
+  // whitespace and a trailing comment — both valid TOML, both honoured by
+  // osv-scanner, and both once skipped here along with their whole entry.
+  const blocks = text.split(new RegExp(HEADER.source, "m")).slice(1);
 
   for (const block of blocks) {
     const body = block.split(/^\s*\[/m)[0];
     const id = matchValue(body, "id");
-    if (!id) continue;
+    if (!id) {
+      throw new Error(
+        `osv-scanner.toml: an [[IgnoredVulns]] entry has no readable id ` +
+          `(expected id = "…" on its own line): ${JSON.stringify(body.trim().slice(0, 120))}`,
+      );
+    }
     entries.push({
       id,
       reason: matchValue(body, "reason"),
@@ -86,6 +110,8 @@ export function parseOsvIgnoredVulns(toml) {
 
   return entries;
 }
+
+const HEADER = /^[ \t]*\[\[[ \t]*IgnoredVulns[ \t]*\]\][ \t]*(?:#.*)?$/;
 
 /**
  * @param {string} body
@@ -220,4 +246,210 @@ export function validateAuditIgnoreParity({ osvEntries, ghsaIgnores, today }) {
  */
 export function todayIso(now = new Date()) {
   return now.toISOString().slice(0, 10);
+}
+
+// ─── The reason names every route it accepts ─────────────────────────────────
+
+/**
+ * Read a pnpm v9 lockfile into the two facts the route check needs: which
+ * packages an importer declares directly, and, for every package, which
+ * packages depend on it.
+ *
+ * Hand-rolled for the same reason as the TOML parser: no YAML dependency at the
+ * root, and the lockfile's shape is fixed by pnpm. It reads the `importers:`
+ * and `snapshots:` sections only, by indentation. A file without a
+ * `snapshots:` section throws — an empty graph would make every reason look
+ * complete.
+ *
+ * @param {string} text
+ * @returns {{ direct: Set<string>, dependents: Map<string, Set<string>> }}
+ */
+export function parseLockfileGraph(text) {
+  const lines = String(text).split("\n");
+  const direct = new Set();
+  const dependents = new Map();
+  let section = null;
+  let sawSnapshots = false;
+  let inDeps = false;
+  let parent = null;
+
+  for (const line of lines) {
+    if (/^\S/.test(line)) {
+      section = line.replace(/:.*$/, "");
+      if (section === "snapshots") sawSnapshots = true;
+      inDeps = false;
+      continue;
+    }
+    if (!line.trim()) continue;
+
+    if (section === "importers") {
+      // "    dependencies:" opens a block; "      name:" is a declared dep.
+      if (/^ {4}\S/.test(line)) {
+        inDeps =
+          /^ {4}(dependencies|devDependencies|optionalDependencies):\s*$/.test(
+            line,
+          );
+      } else if (inDeps && /^ {6}\S/.test(line)) {
+        direct.add(unquote(line.trim().replace(/:\s*$/, "")));
+      }
+    } else if (section === "snapshots") {
+      if (/^ {2}\S/.test(line)) {
+        parent = packageName(unquote(line.trim().replace(/:\s*(\{\})?$/, "")));
+        inDeps = false;
+      } else if (/^ {4}\S/.test(line)) {
+        inDeps = /^ {4}(dependencies|optionalDependencies):\s*$/.test(line);
+      } else if (inDeps && parent && /^ {6}\S/.test(line)) {
+        const child = unquote(line.trim().replace(/:\s.*$/, ""));
+        if (!dependents.has(child)) dependents.set(child, new Set());
+        dependents.get(child).add(parent);
+      }
+    }
+  }
+
+  if (!sawSnapshots) {
+    throw new Error(
+      "not a pnpm v9 lockfile: no snapshots: section, so no dependency edge can be read",
+    );
+  }
+  return { direct, dependents };
+}
+
+/** @param {string} s */
+function unquote(s) {
+  return s.replace(/^'(.*)'$/, "$1").replace(/^"(.*)"$/, "$1");
+}
+
+/**
+ * `@scope/name@1.2.3(peer@4)` → `@scope/name`.
+ *
+ * @param {string} key
+ */
+function packageName(key) {
+  const at = key.indexOf("@", key.startsWith("@") ? 1 : 0);
+  return at === -1 ? key : key.slice(0, at);
+}
+
+/**
+ * The lockfiles CI's vuln-scan job hands osv-scanner, read from ci.yml so the
+ * route check reads exactly what the scanner reads.
+ *
+ * @param {string} ciYaml
+ * @returns {string[]}
+ */
+export function scannedLockfiles(ciYaml) {
+  return [...String(ciYaml).matchAll(/--lockfile=\.\/(\S+)/g)].map((m) => m[1]);
+}
+
+/**
+ * Check that every acceptance's reason names each package that pulls the
+ * vulnerable one in.
+ *
+ * AGENTS.md: "an acceptance that does not name a path it accepts is not an
+ * acceptance of that path". The reason is the only record osv-scanner prints,
+ * so that is where the routes have to be — and they are derived from the
+ * lockfiles rather than listed per advisory, so a NEW route (a second package
+ * starting to depend on braces, say) turns this red until the reason says why
+ * that path is acceptable too.
+ *
+ * Convention this relies on, and enforces: a reason begins with the affected
+ * package's name (`braces <=3.0.3, …`, `astro — …`). That is how every entry
+ * here is written, and it is the only link from an advisory id to a lockfile
+ * package that needs no network.
+ *
+ * A package an importer declares directly is accepted through its own
+ * declaration, so only transitive packages need their dependents named — the
+ * immediate ones, which is the edge that decides whether the package is
+ * installed at all.
+ *
+ * @param {{
+ *   osvEntries: Array<{ id: string, reason: string | null }>,
+ *   lockfiles: Array<{ path: string, text: string }>,
+ * }} input
+ * @returns {string[]}
+ */
+export function findUnnamedRoutes({ osvEntries, lockfiles }) {
+  const graphs = lockfiles.map(({ path, text }) => ({
+    path,
+    ...parseLockfileGraph(text),
+  }));
+  const errors = [];
+
+  for (const entry of osvEntries) {
+    const reason = entry.reason ?? "";
+    const pkg = reason.match(
+      /^\s*(@?[a-z0-9][a-z0-9._-]*(?:\/[a-z0-9._-]+)?)/i,
+    )?.[1];
+    const hits = pkg
+      ? graphs.filter((g) => g.direct.has(pkg) || g.dependents.has(pkg))
+      : [];
+
+    if (hits.length === 0) {
+      errors.push(
+        `${entry.id}: the reason must begin with the affected package's name, and ` +
+          `that package must resolve in a lockfile vuln-scan scans ` +
+          `(${graphs.map((g) => g.path).join(", ")}). Got ${JSON.stringify(reason.slice(0, 60))}.`,
+      );
+      continue;
+    }
+
+    for (const g of hits) {
+      if (g.direct.has(pkg)) continue;
+      const missing = [...(g.dependents.get(pkg) ?? [])]
+        .filter((dep) => !namesPackage(reason, dep))
+        .sort();
+      if (missing.length > 0) {
+        errors.push(
+          `${entry.id}: ${pkg} is pulled in by ${missing.join(", ")} in ${g.path}, ` +
+            `but the reason does not name ${missing.length === 1 ? "that route" : "those routes"}. ` +
+            `Say why each path is acceptable, or the acceptance does not cover it.`,
+        );
+      }
+    }
+  }
+
+  return errors;
+}
+
+/**
+ * Whole-name match: `argparse` is named by "argparse@1" or "> argparse," but
+ * not by "argparse-ng".
+ *
+ * @param {string} text
+ * @param {string} name
+ */
+function namesPackage(text, name) {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(^|[^\\w@/.-])${escaped}(?![\\w/-])`).test(text);
+}
+
+// ─── The release gate's own command runs in CI ───────────────────────────────
+
+/**
+ * The ci.yml jobs with a step that runs exactly `command` — as a one-line
+ * `run:` or as a line of a `run: |` block. Exact on purpose: `pnpm audit
+ * --prod` is not the gate `pnpm audit --audit-level=high --prod` is, and a
+ * trailing `|| true` would make it no gate at all.
+ *
+ * @param {string} ciYaml
+ * @param {string} command
+ * @returns {string[]}
+ */
+export function findAuditJobs(ciYaml, command) {
+  const jobs = [];
+  let current = null;
+  for (const line of String(ciYaml).split("\n")) {
+    const job = line.match(/^ {2}([A-Za-z0-9_-]+):\s*$/);
+    if (job) {
+      current = job[1];
+      continue;
+    }
+    const body = line
+      .trim()
+      .replace(/^-\s*/, "")
+      .replace(/^run:\s*/, "");
+    if (current && body === command && !jobs.includes(current)) {
+      jobs.push(current);
+    }
+  }
+  return jobs;
 }

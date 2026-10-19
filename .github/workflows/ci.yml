@@ -2946,11 +2946,11 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  # Vulnerability scan via osv-scanner — replaces the old `pnpm audit` step
-  # that broke when npm retired the /security/audits/quick endpoint (returns
-  # 410 unconditionally). osv-scanner reads pnpm-lock.yaml directly and
-  # queries the OSV database, so we don't need an npm install and don't
-  # depend on npm's legacy audit API.
+  # Vulnerability scan via osv-scanner — replaced the old `pnpm audit` step
+  # when npm retired the /security/audits/quick endpoint (410 unconditionally).
+  # osv-scanner reads pnpm-lock.yaml directly and queries the OSV database, so
+  # it needs no npm install. pnpm 10's audit works again; it runs alongside in
+  # `prod-audit` below, because the two read different acceptance files.
   # No `timeout-minutes` here, deliberately: a job that calls a reusable
   # workflow accepts only name/uses/with/secrets/needs/if/permissions, and
   # GitHub rejects the whole FILE — no job runs, no required check reports —
@@ -2971,6 +2971,32 @@ jobs:
       actions: read
       security-events: write
       contents: read
+
+  # The release gate's own audit, run where a PR can see it (#993). osv-scanner
+  # reads osv-scanner.toml; `pnpm audit` reads only pnpm.auditConfig in
+  # package.json. An acceptance written to the first alone keeps vuln-scan green
+  # and fails `pnpm release` on the day of the cut — which is how v0.9.0 was
+  # blocked. The command must stay byte-identical to scripts/release.mjs's;
+  # scripts/lib/audit-ignore-parity.test.mjs reads both and fails if they
+  # drift. Not a required check: a freshly published advisory turns it red
+  # with no commit behind it, and that should inform a PR, not block it.
+  prod-audit:
+    name: Release audit (pnpm audit --prod)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      # `pnpm audit` reads the lockfile and asks the registry; it needs no
+      # node_modules.
+      - uses: ./.github/actions/setup-pnpm
+        with:
+          install: "false"
+
+      - name: Audit production dependencies (high/critical)
+        run: pnpm audit --audit-level=high --prod
 
   repo-hygiene:
     name: Repo hygiene
