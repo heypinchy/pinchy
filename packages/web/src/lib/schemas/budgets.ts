@@ -15,3 +15,18 @@ export const upsertBudgetSchema = z
   })
   .strict();
 export type UpsertBudgetInput = z.infer<typeof upsertBudgetSchema>;
+
+/**
+ * `POST /api/internal/budgets/check` — asked by pinchy-audit's
+ * `before_agent_run` gate before every OpenClaw run, on every channel. The
+ * fields beside `agentId` come from OpenClaw's hook context and only shape the
+ * audit row of a refusal.
+ */
+export const budgetCheckSchema = z.object({
+  agentId: z.string().min(1).max(200),
+  sessionKey: z.string().max(500).optional(),
+  channel: z.string().max(100).optional(),
+  senderId: z.string().max(200).optional(),
+  trigger: z.string().max(100).optional(),
+});
+export type BudgetCheckInput = z.infer<typeof budgetCheckSchema>;

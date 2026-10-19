@@ -165,6 +165,17 @@ export async function getExhaustedBlockingBudget(
   return statuses.find(isBlocking) ?? null;
 }
 
+/**
+ * What a person is told when a used-up blocking budget refuses their message —
+ * the same sentence in the browser chat and, through the OpenClaw runtime gate
+ * (`/api/internal/budgets/check`), on Telegram and every other channel.
+ */
+export function budgetExhaustedMessage(agentName: string, budget: BudgetStatus): string {
+  return budget.agent
+    ? `${agentName} has used its monthly budget. It's available again next month, or sooner if your admin raises the budget.`
+    : "This Pinchy has used its monthly budget. Agents are available again next month, or sooner if your admin raises the budget.";
+}
+
 /** The 403 for switching on an automation a used-up blocking budget has paused. */
 export const BUDGET_EXHAUSTED_AUTOMATION = {
   error:

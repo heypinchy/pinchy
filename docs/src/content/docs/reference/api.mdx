@@ -832,6 +832,42 @@ Remove a budget. Works without a license, so an expired one never leaves an inst
 
 **Errors:** `401`, `403` (not an admin), `404` (no budget has that id, or it is on another user's personal agent).
 
+### `POST /api/internal/budgets/check`
+
+**Internal** — authenticated with the shared OpenClaw gateway token, not a user session. Called by the `pinchy-audit` plugin's `before_agent_run` hook before every agent run, on every channel (web, Telegram, automations), never by the browser.
+
+Answers whether a used-up blocking budget — the agent's own or the instance's — stops this run. When it does, the plugin refuses the run before the model reads the prompt, and the sender gets `message` as the reply.
+
+**Request body:**
+
+| Field        | Type   | Required | Description                                                                   |
+| ------------ | ------ | -------- | ----------------------------------------------------------------------------- |
+| `agentId`    | string | Yes      | The agent about to run                                                        |
+| `sessionKey` | string | No       | The OpenClaw session; a web-chat session names the Pinchy user                |
+| `channel`    | string | No       | Where the run came from, e.g. `telegram`; recorded on a refusal               |
+| `senderId`   | string | No       | The sender's account on that channel, mapped to the Pinchy user who linked it |
+| `trigger`    | string | No       | What started the run, as OpenClaw names it (`user`, `cron`, `heartbeat`, …)   |
+
+The plugin never sends the prompt, the conversation or the system prompt — only who is asking and where.
+
+**Response:**
+
+```json
+{
+  "blocked": true,
+  "message": "Knowledge Base has used its monthly budget. It's available again next month, or sooner if your admin raises the budget."
+}
+```
+
+`{ "blocked": false }` when nothing stops the run; that answer writes nothing. A refusal writes `chat.policy_refused` with `reason: "budget_exhausted"` and the `channel`, attributed to the Pinchy user when the session or a linked channel account names one, otherwise to the agent.
+
+The plugin reuses a `blocked: false` answer for the same agent for 15 seconds and never reuses a block, so raising a budget reopens the agent on the next message. When this endpoint can't be reached or answers with an error, the plugin lets the run through — unless its last answer for that agent was a block, which then stands.
+
+**Errors:**
+
+- `400` — no `agentId`
+- `401` — gateway token missing or wrong
+
 ## LLM Providers (admin only)
 
 ### `GET /api/settings/providers`

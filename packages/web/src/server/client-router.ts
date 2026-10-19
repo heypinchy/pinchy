@@ -17,7 +17,7 @@ import {
 import { directSessionKey } from "@/lib/session-key";
 import { getUserGroupIds, getAgentGroupIds } from "@/lib/groups";
 import { getLicenseState } from "@/lib/enterprise";
-import { getExhaustedBlockingBudget } from "@/lib/budgets";
+import { budgetExhaustedMessage, getExhaustedBlockingBudget } from "@/lib/budgets";
 import { buildMemoryPromptBlock } from "@/lib/memory-prompt";
 import { appendAuditLog } from "@/lib/audit";
 import { recordAuditFailure } from "@/lib/audit-deferred";
@@ -430,9 +430,7 @@ export class ClientRouter {
       this.sendToClient(clientWs, {
         type: "error",
         code: "policy_budget_exhausted",
-        message: budget.agent
-          ? `${agent.name} has used its monthly budget. It's available again next month, or sooner if your admin raises the budget.`
-          : "This Pinchy has used its monthly budget. Agents are available again next month, or sooner if your admin raises the budget.",
+        message: budgetExhaustedMessage(agent.name, budget),
       });
       await this.auditPolicyRefusal(agent, "budget_exhausted", {
         budget: { id: budget.id, period: budget.period },

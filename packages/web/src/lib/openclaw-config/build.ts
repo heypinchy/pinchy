@@ -970,9 +970,14 @@ export async function regenerateOpenClawConfig() {
   }
 
   // Always include pinchy-audit and keep it enabled. It logs tool usage from
-  // OpenClaw hooks so built-in and custom tools are captured at source.
+  // OpenClaw hooks so built-in and custom tools are captured at source, and its
+  // before_agent_run gate enforces blocking cost budgets on every channel.
   entries["pinchy-audit"] = {
     enabled: true,
+    // before_agent_run is a conversation hook: OpenClaw silently skips it for
+    // a non-bundled plugin unless the entry opts in. The gate reads only the
+    // agent and channel from it and sends Pinchy nothing of the conversation.
+    hooks: { allowConversationAccess: true },
     config: {
       apiBaseUrl: process.env.PINCHY_INTERNAL_URL || `http://pinchy:${process.env.PORT || "7777"}`,
       gatewayToken: gatewayTokenString,
