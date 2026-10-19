@@ -40,7 +40,7 @@
  * osv entry, never the reverse. Most `[[IgnoredVulns]]` entries here are things
  * `pnpm audit --prod` at the repo root cannot see anyway — the astro advisories
  * live in `docs/pnpm-lock.yaml` (a separate, non-workspace lockfile) and the
- * openclaw one is a devDependency. Mirroring those into `ignoreGhsas` would
+ * braces one is a devDependency. Mirroring those into `ignoreGhsas` would
  * silence a scanner about findings it never reports, which is a lie in the
  * config rather than a safety property.
  *

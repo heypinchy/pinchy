@@ -164,7 +164,7 @@ test("a duplicate ignoreGhsas entry fails", () => {
 });
 
 test("osv-only acceptances are NOT required to appear in ignoreGhsas", () => {
-  // The astro advisories live in docs/pnpm-lock.yaml and the openclaw one is a
+  // The astro advisories live in docs/pnpm-lock.yaml and the braces one is a
   // devDependency; `pnpm audit --prod` at the root reports neither. Mirroring
   // them would silence a scanner about findings it never emits.
   assert.deepEqual(
@@ -190,28 +190,40 @@ test("the repo's own osv-scanner.toml and package.json agree, today", () => {
   assert.deepEqual(errors, [], errors.join("\n"));
 });
 
-test("the repo's ignoreGhsas is not empty — the release gate needs the entry", () => {
-  // Guards the pinchy#993 regression directly: dropping the entry makes
-  // `pnpm audit --audit-level=high --prod` fail and no release can be cut,
-  // which is a state nothing else in CI reports (osv-scanner stays green).
-  const pkg = JSON.parse(readFileSync(join(REPO_ROOT, "package.json"), "utf8"));
-  assert.ok(
-    parseAuditIgnoreGhsas(pkg).includes(GHSA),
-    `${GHSA} must stay in pnpm.auditConfig.ignoreGhsas until the residual ` +
-      `minimatch@3/@5 lines have a compatible upstream fix — without it the ` +
-      `release audit gate fails on an advisory osv-scanner.toml accepts.`,
+test("an empty ignoreGhsas is clean — retiring the last pnpm-side acceptance is allowed", () => {
+  // The repo's state since GHSA-mh99-v99m-4gvg was retired: osv-scanner still
+  // accepts advisories pnpm audit never reports, and nothing is mirrored. The
+  // check is one-directional, so this must not read as drift — a guard that
+  // demanded a non-empty list would push someone to keep a stale silencer of
+  // the release gate alive, which is the failure this file exists to stop.
+  assert.deepEqual(
+    validateAuditIgnoreParity({
+      osvEntries: [osvEntry({ id: "GHSA-4g3v-8h47-v7g6" })],
+      ghsaIgnores: [],
+      today: "2026-10-17",
+    }),
+    [],
   );
 });
 
-test("the brace-expansion reason names every route it accepts", () => {
-  // The reason string is what osv-scanner prints; the rationale comment above
-  // it is printed nowhere. pinchy#993's own argument — "an acceptance that
-  // does not name a path it accepts is not an acceptance of that path" —
-  // applies to the machine-readable record first.
+test("parseOsvIgnoredVulns reads every entry of the repo's own osv-scanner.toml", () => {
+  // The "agree today" test above can only be as good as this parse. An entry
+  // the parser skipped — a reason written in a TOML form it does not read, say
+  // — would be invisible to every rule here, so count the table headers
+  // independently and require that each one came back with an id and a reason.
   const toml = readFileSync(join(REPO_ROOT, "osv-scanner.toml"), "utf8");
-  const entry = parseOsvIgnoredVulns(toml).find((e) => e.id === GHSA);
-  assert.ok(entry, `${GHSA} entry missing from osv-scanner.toml`);
-  for (const route of ["archiver", "gaxios", "config-array"]) {
-    assert.match(entry.reason ?? "", new RegExp(route));
+  const headers = toml.match(/^\[\[IgnoredVulns\]\]\s*$/gm) ?? [];
+  const entries = parseOsvIgnoredVulns(toml);
+  assert.ok(
+    headers.length > 0,
+    "osv-scanner.toml has no [[IgnoredVulns]] entries",
+  );
+  assert.equal(entries.length, headers.length);
+  for (const entry of entries) {
+    assert.match(entry.id, /^(GHSA|CVE|MAL)-/);
+    assert.ok(
+      (entry.reason ?? "").trim().length > 0,
+      `${entry.id} has no reason`,
+    );
   }
 });
