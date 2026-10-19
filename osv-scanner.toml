@@ -21,6 +21,11 @@
 # no lockfile package matches them anymore. Re-add with a fresh reason if
 # osv-scanner flags any of them again.
 
+# The five astro advisories (GHSA-4g3v-8h47-v7g6, GHSA-7pw4-f3q4-r2p2,
+# GHSA-f48w-9m4c-m7f5, GHSA-26w7-cxv4-gfx2, GHSA-376h-93r7-7g6f) were retired
+# 2026-10-19 by the docs' move to astro 7 + Starlight 0.42 (#851), which ships
+# every fix; osv-scanner reports none of them against docs/pnpm-lock.yaml.
+
 # GHSA-mh99-v99m-4gvg (brace-expansion OOM) was retired 2026-10-17. The
 # root package.json overrides now lift every line past its fix (1.x >=1.1.21,
 # 2.x >=2.1.7, 5.x >=5.0.12), osv-scanner reported the entry as UNUSED, and

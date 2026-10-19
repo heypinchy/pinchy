@@ -38,9 +38,9 @@
  *
  * The check is deliberately ONE-DIRECTIONAL: every `ignoreGhsas` id needs an
  * osv entry, never the reverse. Most `[[IgnoredVulns]]` entries here are things
- * `pnpm audit --prod` at the repo root cannot see anyway — the astro advisories
- * live in `docs/pnpm-lock.yaml` (a separate, non-workspace lockfile) and the
- * braces one is a devDependency. Mirroring those into `ignoreGhsas` would
+ * `pnpm audit --prod` at the repo root cannot see anyway — the braces one is a
+ * devDependency, and anything accepted in `docs/pnpm-lock.yaml` (a separate,
+ * non-workspace lockfile; the astro advisories, until #851) is out of reach. Mirroring those into `ignoreGhsas` would
  * silence a scanner about findings it never reports, which is a lie in the
  * config rather than a safety property.
  *

@@ -164,9 +164,10 @@ test("a duplicate ignoreGhsas entry fails", () => {
 });
 
 test("osv-only acceptances are NOT required to appear in ignoreGhsas", () => {
-  // The astro advisories live in docs/pnpm-lock.yaml and the braces one is a
-  // devDependency; `pnpm audit --prod` at the root reports neither. Mirroring
-  // them would silence a scanner about findings it never emits.
+  // A docs/pnpm-lock.yaml finding (the id below is one of the astro advisories
+  // accepted there until #851) and a devDependency like braces are both
+  // invisible to `pnpm audit --prod` at the root. Mirroring them would silence
+  // a scanner about findings it never emits.
   assert.deepEqual(
     validateAuditIgnoreParity({
       osvEntries: [osvEntry(), osvEntry({ id: "GHSA-4g3v-8h47-v7g6" })],

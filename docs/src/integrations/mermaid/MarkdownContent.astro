@@ -11,8 +11,23 @@ import Default from "@astrojs/starlight/components/MarkdownContent.astro";
 </Default>
 
 <script>
+  // A failed render must say so in the page: the diagram's source lives only in
+  // an attribute, so an untouched container is a blank gap with no clue why.
+  function showFailure(graph: Element, error: unknown) {
+    graph.textContent = `Diagram could not be rendered: ${String(error)}`;
+    graph.setAttribute("data-status", "error");
+  }
+
+  let renders = 0;
+
   async function renderDiagrams(graphs: HTMLCollectionOf<Element>) {
-    const { default: mermaid } = await import("mermaid");
+    let mermaid: typeof import("mermaid").default;
+    try {
+      ({ default: mermaid } = await import("mermaid"));
+    } catch (error) {
+      for (const graph of graphs) showFailure(graph, error);
+      return;
+    }
 
     function render() {
       const theme =
@@ -24,17 +39,16 @@ import Default from "@astrojs/starlight/components/MarkdownContent.astro";
       for (const graph of graphs) {
         const content = graph.getAttribute("data-content");
         if (!content) continue;
-        const id = `mermaid-${Math.round(Math.random() * 100000)}`;
+        // A counter, not Math.random(): two diagrams on one page must never
+        // share the id mermaid scopes their SVG and CSS by.
+        const id = `mermaid-${++renders}`;
         mermaid
           .render(id, content)
           .then(({ svg }) => {
             graph.innerHTML = svg;
             graph.setAttribute("data-status", "rendered");
           })
-          .catch((error) => {
-            graph.textContent = String(error);
-            graph.setAttribute("data-status", "error");
-          });
+          .catch((error) => showFailure(graph, error));
       }
     }
 

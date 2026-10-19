@@ -77,8 +77,15 @@ export default function starlightMermaid() {
         addIntegration({
           name: "pinchy-mermaid-markdown",
           hooks: {
-            "astro:config:setup": ({ config: astroConfig }) => {
+            "astro:config:setup": ({ config: astroConfig, updateConfig }) => {
               registerMermaidTransform(astroConfig.markdown.processor);
+              // The client reaches mermaid only through a dynamic import. In
+              // dev, Vite would discover it mid-session (forcing a reload) and
+              // trip ESM interop on its CJS dependencies; pre-bundling it
+              // avoids both. The plugin this replaces set the same hint.
+              updateConfig({
+                vite: { optimizeDeps: { include: ["mermaid"] } },
+              });
             },
           },
         });

@@ -185,6 +185,22 @@ export function extractDockerfileNodeVersions(dockerfileText) {
 }
 
 /**
+ * A standalone package may state a higher floor inside the pinned major —
+ * docs/ needs `>=22.22.0` for astro 7 — but must stay bounded to that major.
+ *
+ * @param {{ file: string, enginesNode: string | undefined }} pkg
+ * @param {number} major
+ * @returns {string[]}
+ */
+function checkPackageEngines({ file, enginesNode }, major) {
+  const shape = new RegExp(`^>=${major}(?:\\.\\d+){0,2} <${major + 1}$`);
+  if (enginesNode && shape.test(enginesNode.trim())) return [];
+  return [
+    `${file} engines.node is ${JSON.stringify(enginesNode)}, expected "${expectedEnginesRange(major)}" (a higher floor inside major ${major}, like ">=${major}.22.0 <${major + 1}", is fine) to match .nvmrc (${major}).`,
+  ];
+}
+
+/**
  * Check one file's declared versions against the pinned major.
  *
  * @param {{ file: string, versions: string[] }} declared
@@ -217,6 +233,8 @@ function checkDeclaredVersions({ file, versions }, major, what) {
  * @param {string | undefined} input.enginesNode root package.json `engines.node`
  * @param {Array<{ file: string, versions: string[], versionFiles?: string[] }>} input.workflows
  * @param {Array<{ file: string, versions: string[] }>} [input.dockerfiles]
+ * @param {Array<{ file: string, enginesNode: string | undefined }>} [input.packages]
+ *   standalone packages (own lockfile, not workspace members) with their own engines
  * @returns {string[]} one message per problem; empty means the pin is coherent
  */
 export function validateNodeVersionPin({
@@ -224,6 +242,7 @@ export function validateNodeVersionPin({
   enginesNode,
   workflows,
   dockerfiles = [],
+  packages = [],
 }) {
   const errors = [];
 
@@ -267,6 +286,10 @@ export function validateNodeVersionPin({
 
   for (const dockerfile of dockerfiles) {
     errors.push(...checkDeclaredVersions(dockerfile, major, "FROM node:"));
+  }
+
+  for (const pkg of packages) {
+    errors.push(...checkPackageEngines(pkg, major));
   }
 
   return errors;
