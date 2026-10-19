@@ -12,6 +12,7 @@ import {
   findUnnamedRoutes,
   scannedLockfiles,
   findAuditJobs,
+  satisfies,
 } from "./audit-ignore-parity.mjs";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -244,6 +245,36 @@ test("parseOsvIgnoredVulns throws on an IgnoredVulns header it cannot read", () 
   assert.throws(() => parseOsvIgnoredVulns(toml), /\[\["IgnoredVulns"\]\]/);
 });
 
+test("parseOsvIgnoredVulns reads a CRLF file like an LF one", () => {
+  // A Windows checkout with core.autocrlf=true hands the parser \r\n. That is
+  // a checkout setting, not a different file — the first header regex
+  // rejected it with an error quoting the very header it asked for.
+  const toml = [
+    "[[IgnoredVulns]]",
+    'id = "GHSA-aaaa-bbbb-cccc"',
+    "ignoreUntil = 2099-01-01",
+    'reason = "crlf"',
+  ].join("\r\n");
+  assert.deepEqual(parseOsvIgnoredVulns(toml), [
+    {
+      id: "GHSA-aaaa-bbbb-cccc",
+      reason: "crlf",
+      ignoreUntil: "2099-01-01",
+    },
+  ]);
+});
+
+test("parseOsvIgnoredVulns throws on spellings osv-scanner honours and it cannot read", () => {
+  // osv-scanner decodes with a case-insensitive key match, and TOML has an
+  // inline-array form. Both are live acceptances the split would never see.
+  for (const toml of [
+    '[[ignoredvulns]]\nid = "GHSA-aaaa-bbbb-cccc"',
+    'IgnoredVulns = [{ id = "GHSA-aaaa-bbbb-cccc", reason = "x" }]',
+  ]) {
+    assert.throws(() => parseOsvIgnoredVulns(toml), /cannot read/, toml);
+  }
+});
+
 test("parseOsvIgnoredVulns throws on an entry with no readable id", () => {
   // `continue` here used to drop the entry without a word. An entry osv-scanner
   // honours under an id this parser cannot read is still an acceptance.
@@ -289,10 +320,13 @@ test("the loose header reading in the test above sees what the strict one missed
     'id = "GHSA-aaaa-bbbb-cccc"',
     '[[ "IgnoredVulns" ]]',
     "id = 'GHSA-dddd-eeee-ffff'",
+    "[[ignoredvulns]]",
+    'id = "GHSA-gggg-hhhh-iiii"',
   ].join("\n");
   assert.deepEqual(looseIgnoredVulnIds(toml), [
     "GHSA-aaaa-bbbb-cccc",
     "GHSA-dddd-eeee-ffff",
+    "GHSA-gggg-hhhh-iiii",
   ]);
 });
 
@@ -306,7 +340,7 @@ test("the loose header reading in the test above sees what the strict one missed
  */
 function looseIgnoredVulnIds(toml) {
   return toml
-    .split(/^[ \t]*\[\[[^\]\n]*IgnoredVulns[^\]\n]*\]\]/m)
+    .split(/^[ \t]*\[\[[^\]\n]*IgnoredVulns[^\]\n]*\]\]/im)
     .slice(1)
     .map(
       (block) =>
@@ -317,77 +351,137 @@ function looseIgnoredVulnIds(toml) {
 
 // ─── The reason names every route it accepts ─────────────────────────────────
 
-const ROOT_LOCK = [
-  "lockfileVersion: '9.0'",
-  "",
-  "importers:",
-  "",
-  "  .:",
-  "    devDependencies:",
-  "      eslint-config-next:",
-  "        specifier: ^16.0.0",
-  "        version: 16.0.0",
-  "  packages/web:",
-  "    dependencies:",
-  "      mammoth:",
-  "        specifier: ^1.0.0",
-  "        version: 1.12.0",
-  "      '@scope/direct':",
-  "        specifier: ^1.0.0",
-  "        version: 1.0.0",
-  "",
-  "packages:",
-  "",
-  "  braces@3.0.3:",
-  "    resolution: {integrity: sha512-x}",
-  "",
-  "snapshots:",
-  "",
-  "  micromatch@4.0.8:",
-  "    dependencies:",
-  "      braces: 3.0.3",
-  "      picomatch: 4.0.5",
-  "",
-  "  chokidar@3.6.0:",
-  "    optionalDependencies:",
-  "      braces: 3.0.3",
-  "",
-  "  mammoth@1.12.0:",
-  "    dependencies:",
-  "      argparse: 1.0.10",
-  "",
-  "  argparse@1.0.10:",
-  "    dependencies:",
-  "      sprintf-js: 1.0.3",
-  "",
-  "  '@scope/direct@1.0.0':",
-  "    dependencies:",
-  "      '@scope/leaf': 2.0.0(react@19.0.0)",
-  "",
-  "  braces@3.0.3: {}",
-  "  sprintf-js@1.0.3: {}",
-  "  '@scope/leaf@2.0.0(react@19.0.0)': {}",
-].join("\n");
+/**
+ * A small pnpm v9 lockfile: eslint-config-next > fast-glob > micromatch >
+ * braces (dev), chokidar > braces (orphan), mammoth > argparse@1 > sprintf-js,
+ * js-yaml > argparse@2 (no sprintf-js), a peer edge, and an npm alias.
+ *
+ * @param {{ importer?: string[], snapshots?: string[] }} [extra]
+ */
+function rootLock({ importer = [], snapshots = [] } = {}) {
+  return [
+    "lockfileVersion: '9.0'",
+    "",
+    "importers:",
+    "",
+    "  .:",
+    "    devDependencies:",
+    "      eslint-config-next:",
+    "        specifier: ^16.0.0",
+    "        version: 16.0.0",
+    "  packages/web:",
+    "    dependencies:",
+    "      mammoth:",
+    "        specifier: ^1.0.0",
+    "        version: 1.12.0",
+    "      js-yaml:",
+    "        specifier: ^4.0.0",
+    "        version: 4.1.0",
+    "      '@scope/direct':",
+    "        specifier: ^1.0.0",
+    "        version: 1.0.0(react@19.0.0)",
+    ...importer,
+    "",
+    "packages:",
+    "",
+    "  '@scope/direct@1.0.0':",
+    "    resolution: {integrity: sha512-x}",
+    "    peerDependencies:",
+    "      react: ^19",
+    "",
+    "snapshots:",
+    "",
+    "  eslint-config-next@16.0.0:",
+    "    dependencies:",
+    "      fast-glob: 3.3.3",
+    "",
+    "  fast-glob@3.3.3:",
+    "    dependencies:",
+    "      micromatch: 4.0.8",
+    "",
+    "  micromatch@4.0.8:",
+    "    dependencies:",
+    "      braces: 3.0.3",
+    "      picomatch: 4.0.5",
+    "",
+    "  chokidar@3.6.0:",
+    "    optionalDependencies:",
+    "      braces: 3.0.3",
+    "",
+    "  mammoth@1.12.0:",
+    "    dependencies:",
+    "      argparse: 1.0.10",
+    "",
+    "  js-yaml@4.1.0:",
+    "    dependencies:",
+    "      argparse: 2.0.1",
+    "",
+    "  argparse@1.0.10:",
+    "    dependencies:",
+    "      sprintf-js: 1.0.3",
+    "",
+    "  '@scope/direct@1.0.0(react@19.0.0)':",
+    "    dependencies:",
+    "      '@scope/leaf': 2.0.0",
+    "      react: 19.0.0",
+    "      string-width-cjs: string-width@4.2.3",
+    "",
+    ...snapshots,
+    "  argparse@2.0.1: {}",
+    "  braces@3.0.3: {}",
+    "  picomatch@4.0.5: {}",
+    "  sprintf-js@1.0.3: {}",
+    "  '@scope/leaf@2.0.0': {}",
+    "  react@19.0.0: {}",
+    "  string-width@4.2.3: {}",
+  ].join("\n");
+}
 
-test("parseLockfileGraph reads direct dependencies and every dependent edge", () => {
-  const graph = parseLockfileGraph(ROOT_LOCK);
-  assert.deepEqual([...graph.direct].sort(), [
-    "@scope/direct",
-    "eslint-config-next",
-    "mammoth",
+/** A runtime dependency the reasons below have never heard of. */
+const CLI_THING = {
+  importer: [
+    "      cli-thing:",
+    "        specifier: ^1.0.0",
+    "        version: 1.0.0",
+  ],
+  snapshots: [
+    "  cli-thing@1.0.0:",
+    "    dependencies:",
+    "      fast-glob: 3.3.3",
+    "      mammoth: 1.12.0",
+    "",
+  ],
+};
+
+const lockfiles = (text = rootLock()) => [{ path: "pnpm-lock.yaml", text }];
+
+const BRACES_REASON =
+  "braces <=3.0.3, reached via eslint-config-next > fast-glob > micromatch and chokidar";
+
+test("parseLockfileGraph reads a versioned graph: roots, parents, aliases, peers", () => {
+  const graph = parseLockfileGraph(rootLock());
+  assert.deepEqual([...graph.roots].sort(), [
+    "@scope/direct@1.0.0(react@19.0.0)",
+    "eslint-config-next@16.0.0",
+    "js-yaml@4.1.0",
+    "mammoth@1.12.0",
   ]);
-  assert.deepEqual([...(graph.dependents.get("braces") ?? [])].sort(), [
-    "chokidar",
-    "micromatch",
-  ]);
+  // Two versions are two nodes: only argparse@1 pulls sprintf-js.
   assert.deepEqual(
-    [...(graph.dependents.get("sprintf-js") ?? [])],
-    ["argparse"],
+    [...(graph.parents.get("argparse@1.0.10") ?? [])],
+    ["mammoth@1.12.0"],
   );
   assert.deepEqual(
-    [...(graph.dependents.get("@scope/leaf") ?? [])],
-    ["@scope/direct"],
+    [...(graph.parents.get("argparse@2.0.1") ?? [])],
+    ["js-yaml@4.1.0"],
   );
+  // An alias resolves to the real package's node.
+  assert.deepEqual(
+    [...(graph.parents.get("string-width@4.2.3") ?? [])],
+    ["@scope/direct@1.0.0(react@19.0.0)"],
+  );
+  // A peer is the consumer's own pick, not a route.
+  assert.equal(graph.parents.get("react@19.0.0"), undefined);
 });
 
 test("parseLockfileGraph throws on a file that is not a v9 lockfile", () => {
@@ -396,32 +490,30 @@ test("parseLockfileGraph throws on a file that is not a v9 lockfile", () => {
   assert.throws(() => parseLockfileGraph("hello: world\n"), /snapshots/);
 });
 
-test("a reason naming every package that pulls the vulnerable one in is clean", () => {
-  assert.deepEqual(
-    findUnnamedRoutes({
-      osvEntries: [
-        osvEntry({
-          id: "GHSA-hp3w-g68c-fv3c",
-          reason: "sprintf-js <=1.1.3, reached via mammoth > argparse@1",
-        }),
-      ],
-      lockfiles: [{ path: "pnpm-lock.yaml", text: ROOT_LOCK }],
-    }),
-    [],
-  );
+test("a reason naming every route that pulls the vulnerable version in is clean", () => {
+  // js-yaml depends on argparse@2, which never reaches sprintf-js, so it is
+  // not a route and need not be named.
+  const result = findUnnamedRoutes({
+    osvEntries: [
+      osvEntry({
+        id: "GHSA-hp3w-g68c-fv3c",
+        reason: "sprintf-js <=1.1.3, reached via mammoth > argparse@1",
+      }),
+    ],
+    lockfiles: lockfiles(),
+  });
+  assert.deepEqual(result, { errors: [], checked: ["GHSA-hp3w-g68c-fv3c"] });
 });
 
-test("a reason that omits a route fails and names the missing dependent", () => {
-  // The rationale used to name micromatch only. A second dependent in the
-  // lockfile is a second way in, and the acceptance says nothing about it.
-  const errors = findUnnamedRoutes({
+test("a reason that omits a direct dependent fails and names it", () => {
+  const { errors } = findUnnamedRoutes({
     osvEntries: [
       osvEntry({
         id: "GHSA-vfj7-8cjw-p6xm",
-        reason: "braces <=3.0.3, reached via fast-glob > micromatch",
+        reason: "braces <=3.0.3, reached via eslint-config-next > micromatch",
       }),
     ],
-    lockfiles: [{ path: "pnpm-lock.yaml", text: ROOT_LOCK }],
+    lockfiles: lockfiles(),
   });
   assert.equal(errors.length, 1);
   assert.match(errors[0], /GHSA-vfj7-8cjw-p6xm/);
@@ -429,54 +521,119 @@ test("a reason that omits a route fails and names the missing dependent", () => 
   assert.doesNotMatch(errors[0], /micromatch/);
 });
 
+test("a new consumer arriving through an intermediate the reason already names fails", () => {
+  // The reason names micromatch, the only package that depends on braces, so
+  // a one-hop check stays green. But cli-thing is a runtime dependency that
+  // now reaches braces through fast-glob — the "dev toolchain only" claim is
+  // false, and the importer-level root is what says so.
+  const { errors } = findUnnamedRoutes({
+    osvEntries: [osvEntry({ reason: BRACES_REASON })],
+    lockfiles: lockfiles(rootLock(CLI_THING)),
+  });
+  assert.equal(errors.length, 1);
+  assert.match(errors[0], /cli-thing/);
+});
+
+test("a package an importer declares is still checked on its other routes", () => {
+  // Declaring mammoth directly is one route; cli-thing pulling it is another,
+  // and the declaration says nothing about that one.
+  assert.deepEqual(
+    findUnnamedRoutes({
+      osvEntries: [osvEntry({ reason: "mammoth <=1.12.0 — direct" })],
+      lockfiles: lockfiles(),
+    }).errors,
+    [],
+  );
+  const { errors } = findUnnamedRoutes({
+    osvEntries: [osvEntry({ reason: "mammoth <=1.12.0 — direct" })],
+    lockfiles: lockfiles(rootLock(CLI_THING)),
+  });
+  assert.equal(errors.length, 1);
+  assert.match(errors[0], /cli-thing/);
+});
+
 test("a dependent named only as a prefix of another word does not count", () => {
   // `argparse-ng` is not `argparse`.
-  const errors = findUnnamedRoutes({
+  const { errors } = findUnnamedRoutes({
     osvEntries: [
-      osvEntry({ reason: "sprintf-js <=1.1.3, reached via argparse-ng" }),
+      osvEntry({
+        reason: "sprintf-js <=1.1.3, reached via mammoth > argparse-ng",
+      }),
     ],
-    lockfiles: [{ path: "pnpm-lock.yaml", text: ROOT_LOCK }],
+    lockfiles: lockfiles(),
   });
   assert.equal(errors.length, 1);
   assert.match(errors[0], /argparse/);
 });
 
-test("a direct dependency is accepted through its own declaration", () => {
-  // astro is declared by docs itself; the route IS the declaration. Its other
-  // dependents (Starlight and friends) are peers of the same direct pick.
-  assert.deepEqual(
-    findUnnamedRoutes({
-      osvEntries: [osvEntry({ reason: "mammoth — whatever the story is" })],
-      lockfiles: [{ path: "pnpm-lock.yaml", text: ROOT_LOCK }],
-    }),
-    [],
-  );
+test("a reason that does not open with a package and its affected range fails", () => {
+  // The range is what ties the first word to the advisory: "mammoth pulls
+  // sprintf-js in" names a package, but claims nothing about which versions
+  // are affected, and would otherwise pass as mammoth's own acceptance.
+  for (const reason of [
+    "Reached only via the lint toolchain",
+    "mammoth pulls sprintf-js in via argparse",
+  ]) {
+    const { errors, checked } = findUnnamedRoutes({
+      osvEntries: [osvEntry({ reason })],
+      lockfiles: lockfiles(),
+    });
+    assert.equal(errors.length, 1, reason);
+    assert.match(errors[0], /affected package and the versions/);
+    assert.deepEqual(checked, []);
+  }
 });
 
-test("a reason whose first word resolves in no scanned lockfile fails", () => {
-  // The leading package name is what ties a reason to the lockfile. A reason
-  // that starts with prose cannot be checked, so it must not pass as checked.
-  const errors = findUnnamedRoutes({
-    osvEntries: [osvEntry({ reason: "Reached only via the lint toolchain" })],
-    lockfiles: [{ path: "pnpm-lock.yaml", text: ROOT_LOCK }],
+test("a range no resolved version satisfies fails and quotes the resolved versions", () => {
+  const { errors } = findUnnamedRoutes({
+    osvEntries: [osvEntry({ reason: "braces <3.0.0, dev toolchain" })],
+    lockfiles: lockfiles(),
   });
   assert.equal(errors.length, 1);
-  assert.match(errors[0], /must begin with the affected package/);
+  assert.match(errors[0], /claims braces <3\.0\.0/);
+  assert.match(errors[0], /3\.0\.3/);
 });
 
-test("scannedLockfiles reads the lockfiles vuln-scan hands osv-scanner", () => {
+test("an acceptance for a package no scanned lockfile contains is reported as stale", () => {
+  // The bump that removes the vulnerable package must not be told its reason
+  // is misspelled.
+  const { errors } = findUnnamedRoutes({
+    osvEntries: [osvEntry({ id: GHSA, reason: "uuid <14.0.0, gone" })],
+    lockfiles: lockfiles(),
+  });
+  assert.equal(errors.length, 1);
+  assert.match(errors[0], /uuid is in no lockfile/);
+  assert.match(errors[0], /stale/);
+});
+
+test("satisfies reads an exact version, one comparator or two", () => {
+  assert.ok(satisfies("1.0.3", "<=1.1.3"));
+  assert.ok(!satisfies("1.1.4", "<=1.1.3"));
+  assert.ok(satisfies("6.4.8", ">=6.0.0 <7.0.0"));
+  assert.ok(!satisfies("7.0.0", ">=6.0.0 <7.0.0"));
+  assert.ok(satisfies("3.0.3", "3.0.3"));
+  assert.ok(satisfies("0.16.47", "<0.18.2"));
+  assert.ok(!satisfies("not-a-version", "<1.0.0"));
+});
+
+test("scannedLockfiles reads only what the vuln-scan job hands osv-scanner", () => {
   const ci = [
+    "jobs:",
     "  vuln-scan:",
     "    with:",
     "      scan-args: |-",
     "        --config=./osv-scanner.toml",
     "        --lockfile=./pnpm-lock.yaml",
     "        --lockfile=./docs/pnpm-lock.yaml",
+    "  other:",
+    "    steps:",
+    "      - run: osv-scanner --lockfile=./elsewhere/pnpm-lock.yaml",
   ].join("\n");
   assert.deepEqual(scannedLockfiles(ci), [
     "pnpm-lock.yaml",
     "docs/pnpm-lock.yaml",
   ]);
+  assert.throws(() => scannedLockfiles("jobs:\n  other:\n"), /vuln-scan/);
 });
 
 test("every acceptance in the repo names each route that pulls its package in", () => {
@@ -484,37 +641,35 @@ test("every acceptance in the repo names each route that pulls its package in", 
   // name a path it accepts is not an acceptance of that path. The reason is
   // what osv-scanner prints; the comment above it is printed nowhere. The
   // routes are read from the lockfiles osv-scanner actually scans, so a new
-  // dependent of braces or sprintf-js turns this red until the reason says
-  // why that path is acceptable too.
+  // way in turns this red until the reason says why that path is acceptable.
   const ci = readFileSync(join(REPO_ROOT, ".github/workflows/ci.yml"), "utf8");
   const paths = scannedLockfiles(ci);
   assert.ok(paths.length >= 2, `vuln-scan scans ${paths.length} lockfiles`);
   const toml = readFileSync(join(REPO_ROOT, "osv-scanner.toml"), "utf8");
-  const errors = findUnnamedRoutes({
-    osvEntries: parseOsvIgnoredVulns(toml),
+  const entries = parseOsvIgnoredVulns(toml);
+  const { errors, checked } = findUnnamedRoutes({
+    osvEntries: entries,
     lockfiles: paths.map((path) => ({
       path,
       text: readFileSync(join(REPO_ROOT, path), "utf8"),
     })),
   });
   assert.deepEqual(errors, [], errors.join("\n"));
-});
-
-test("the transitive acceptances really are checked against a route", () => {
-  // The rule above is silent for a direct dependency. If the lockfile parse
-  // ever stopped seeing edges, every package would look direct-or-absent and
-  // the rule would pass on nothing — so pin the two transitive entries #1223
-  // wrote down, against the routes their reasons name.
-  const read = (p) => readFileSync(join(REPO_ROOT, p), "utf8");
-  const graph = parseLockfileGraph(read("pnpm-lock.yaml"));
-  assert.ok(graph.dependents.get("braces")?.has("micromatch"));
-  assert.ok(graph.dependents.get("sprintf-js")?.has("argparse"));
-  assert.ok(!graph.direct.has("braces") && !graph.direct.has("sprintf-js"));
+  // The rule must have evaluated every entry, not passed some by skipping
+  // them — a lockfile parse that stopped seeing packages would otherwise read
+  // as a clean result.
+  assert.deepEqual(
+    checked,
+    entries.map((e) => e.id),
+    "findUnnamedRoutes skipped an entry without reporting it",
+  );
 });
 
 // ─── The release gate's own command runs in CI ───────────────────────────────
 
-test("findAuditJobs finds the jobs that run a given command", () => {
+const AUDIT = "pnpm audit --audit-level=high --prod";
+
+test("findAuditJobs finds the jobs that run a command, one-line or in a block", () => {
   const ci = [
     "jobs:",
     "  quality:",
@@ -524,12 +679,57 @@ test("findAuditJobs finds the jobs that run a given command", () => {
     "    timeout-minutes: 10",
     "    steps:",
     "      - name: Audit",
-    "        run: pnpm audit --audit-level=high --prod",
+    `        run: ${AUDIT}`,
+    "  block:",
+    "    steps:",
+    "      - run: |",
+    "          pnpm install",
+    `          ${AUDIT}`,
   ].join("\n");
-  assert.deepEqual(findAuditJobs(ci, "pnpm audit --audit-level=high --prod"), [
-    "prod-audit",
-  ]);
-  assert.deepEqual(findAuditJobs(ci, "pnpm audit --prod"), []);
+  assert.deepEqual(findAuditJobs(ci, AUDIT), {
+    jobs: ["prod-audit", "block"],
+    defused: [],
+  });
+  assert.deepEqual(findAuditJobs(ci, "pnpm audit --prod").jobs, []);
+});
+
+test("findAuditJobs does not count a job that can never fail on the audit", () => {
+  // Each of these runs the exact command and stays green on any finding.
+  const defusers = {
+    "continue-on-error": ["    continue-on-error: true"],
+    "set +e": ["      - run: |", "          set +e", `          ${AUDIT}`],
+    "exit 0": ["      - run: |", `          ${AUDIT}`, "          exit 0"],
+    "|| true": [`      - run: ${AUDIT}`, "      - run: echo done || true"],
+    "if: false": ["    if: false"],
+  };
+  for (const [by, lines] of Object.entries(defusers)) {
+    const runsItself = lines.some((l) => l.includes(AUDIT));
+    const ci = [
+      "jobs:",
+      "  prod-audit:",
+      ...(runsItself
+        ? lines
+        : [...lines, "    steps:", `      - run: ${AUDIT}`]),
+    ].join("\n");
+    assert.deepEqual(
+      findAuditJobs(ci, AUDIT),
+      { jobs: [], defused: [{ job: "prod-audit", by }] },
+      by,
+    );
+  }
+  // Saying so in a comment defuses nothing.
+  assert.deepEqual(
+    findAuditJobs(
+      [
+        "jobs:",
+        "  prod-audit:",
+        "    # a trailing || true would defuse this",
+        `    run: ${AUDIT}`,
+      ].join("\n"),
+      AUDIT,
+    ).jobs,
+    ["prod-audit"],
+  );
 });
 
 test("CI runs the exact audit command the release gate runs (#993)", () => {
@@ -543,8 +743,14 @@ test("CI runs the exact audit command the release gate runs (#993)", () => {
   const command = release.match(/execSync\("(pnpm audit [^"]+)"/)?.[1];
   assert.ok(command, "scripts/release.mjs no longer runs a pnpm audit command");
   const ci = readFileSync(join(REPO_ROOT, ".github/workflows/ci.yml"), "utf8");
+  const { jobs, defused } = findAuditJobs(ci, command);
+  assert.deepEqual(
+    defused,
+    [],
+    `these jobs run \`${command}\` but can never fail on it`,
+  );
   assert.ok(
-    findAuditJobs(ci, command).length > 0,
+    jobs.length > 0,
     `no ci.yml job runs \`${command}\` — the release gate's audit is checked nowhere before a tag is cut`,
   );
 });

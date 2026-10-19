@@ -48,6 +48,8 @@
  * guards (see AGENTS.md).
  */
 
+import { splitWorkflowTextIntoJobs } from "./workflow-jobs.mjs";
+
 /**
  * Extract the `[[IgnoredVulns]]` entries from an osv-scanner.toml.
  *
@@ -70,17 +72,22 @@
  * @returns {Array<{ id: string, reason: string | null, ignoreUntil: string | null }>}
  */
 export function parseOsvIgnoredVulns(toml) {
-  const text = String(toml);
+  // CRLF is a checkout setting, not a different file.
+  const text = String(toml).replace(/\r\n?/g, "\n");
 
-  // A header the split below cannot read must not be skipped: osv-scanner
+  // A spelling the split below cannot read must not be skipped: osv-scanner
   // still honours the entry, and every rule in this file would be blind to it.
-  // TOML allows a quoted key (`[["IgnoredVulns"]]`); nothing here writes one,
-  // so refuse it loudly rather than learn a second spelling.
+  // TOML allows a quoted key (`[["IgnoredVulns"]]`) and an inline array
+  // (`IgnoredVulns = [{ … }]`), and osv-scanner's TOML decoder matches keys
+  // case-insensitively (`[[ignoredvulns]]`). Nothing here writes any of them,
+  // so refuse them loudly rather than learn a second spelling.
   for (const line of text.split("\n")) {
-    if (/^\s*\[\[[^\]]*IgnoredVulns/.test(line) && !HEADER.test(line)) {
+    const header = /^\s*\[\[[^\]]*IgnoredVulns/i.test(line);
+    const inline = /^\s*["']?IgnoredVulns["']?\s*=/i.test(line);
+    if ((header && !HEADER.test(line)) || inline) {
       throw new Error(
-        `osv-scanner.toml: cannot read the table header ${line.trim()}. ` +
-          `Write it as [[IgnoredVulns]] so the acceptance parity guard can see the entry.`,
+        `osv-scanner.toml: cannot read ${line.trim()}. ` +
+          `Write each entry under its own [[IgnoredVulns]] header so the acceptance parity guard can see it.`,
       );
     }
   }
@@ -251,57 +258,86 @@ export function todayIso(now = new Date()) {
 // ─── The reason names every route it accepts ─────────────────────────────────
 
 /**
- * Read a pnpm v9 lockfile into the two facts the route check needs: which
- * packages an importer declares directly, and, for every package, which
- * packages depend on it.
+ * Read a pnpm v9 lockfile into a versioned dependency graph.
+ *
+ * Nodes are snapshot keys (`name@version(peers)`), so two versions of one
+ * package are two nodes: argparse@1 (which pulls sprintf-js) and argparse@2
+ * (which does not) must not be confused. An npm alias
+ * (`string-width-cjs: string-width@4.2.3`) resolves to the real package's
+ * node. An edge to a package the parent declares as a PEER is dropped: a peer
+ * is the consumer's own pick (Starlight → astro), not a second way in.
  *
  * Hand-rolled for the same reason as the TOML parser: no YAML dependency at the
- * root, and the lockfile's shape is fixed by pnpm. It reads the `importers:`
- * and `snapshots:` sections only, by indentation. A file without a
- * `snapshots:` section throws — an empty graph would make every reason look
- * complete.
+ * root, and the lockfile's shape is fixed by pnpm. It reads the `importers:`,
+ * `packages:` (peers only) and `snapshots:` sections, by indentation. A file
+ * without a `snapshots:` section throws — an empty graph would make every
+ * reason look complete.
  *
  * @param {string} text
- * @returns {{ direct: Set<string>, dependents: Map<string, Set<string>> }}
+ * @returns {{
+ *   roots: Set<string>,
+ *   parents: Map<string, Set<string>>,
+ *   nodes: Set<string>,
+ * }} `roots` are the nodes an importer declares directly; `parents` maps a
+ *   node to the nodes that depend on it (peer edges excluded).
  */
 export function parseLockfileGraph(text) {
-  const lines = String(text).split("\n");
-  const direct = new Set();
-  const dependents = new Map();
+  const lines = String(text).replace(/\r\n?/g, "\n").split("\n");
+  const roots = new Set();
+  const nodes = new Set();
+  const peers = new Map();
+  /** @type {Array<[string, string]>} parent node → child node */
+  const edges = [];
   let section = null;
   let sawSnapshots = false;
   let inDeps = false;
-  let parent = null;
+  let current = null;
+  let depName = null;
 
   for (const line of lines) {
     if (/^\S/.test(line)) {
       section = line.replace(/:.*$/, "");
       if (section === "snapshots") sawSnapshots = true;
       inDeps = false;
+      current = null;
       continue;
     }
     if (!line.trim()) continue;
 
     if (section === "importers") {
-      // "    dependencies:" opens a block; "      name:" is a declared dep.
+      // "    dependencies:" opens a block; "      name:" names a declared dep
+      // and "        version: …" says which node it resolved to.
       if (/^ {4}\S/.test(line)) {
         inDeps =
           /^ {4}(dependencies|devDependencies|optionalDependencies):\s*$/.test(
             line,
           );
       } else if (inDeps && /^ {6}\S/.test(line)) {
-        direct.add(unquote(line.trim().replace(/:\s*$/, "")));
+        depName = keyOf(line);
+      } else if (inDeps && depName && /^ {8}version:\s/.test(line)) {
+        const node = resolveRef(depName, valueOf(line));
+        if (node) roots.add(node);
+      }
+    } else if (section === "packages") {
+      if (/^ {2}\S/.test(line)) {
+        current = keyOf(line);
+        inDeps = false;
+      } else if (/^ {4}\S/.test(line)) {
+        inDeps = /^ {4}peerDependencies:\s*$/.test(line);
+      } else if (inDeps && current && /^ {6}\S/.test(line)) {
+        if (!peers.has(current)) peers.set(current, new Set());
+        peers.get(current).add(keyOf(line));
       }
     } else if (section === "snapshots") {
       if (/^ {2}\S/.test(line)) {
-        parent = packageName(unquote(line.trim().replace(/:\s*(\{\})?$/, "")));
+        current = keyOf(line);
+        nodes.add(current);
         inDeps = false;
       } else if (/^ {4}\S/.test(line)) {
         inDeps = /^ {4}(dependencies|optionalDependencies):\s*$/.test(line);
-      } else if (inDeps && parent && /^ {6}\S/.test(line)) {
-        const child = unquote(line.trim().replace(/:\s.*$/, ""));
-        if (!dependents.has(child)) dependents.set(child, new Set());
-        dependents.get(child).add(parent);
+      } else if (inDeps && current && /^ {6}\S/.test(line)) {
+        const child = resolveRef(keyOf(line), valueOf(line));
+        if (child) edges.push([current, child]);
       }
     }
   }
@@ -311,12 +347,61 @@ export function parseLockfileGraph(text) {
       "not a pnpm v9 lockfile: no snapshots: section, so no dependency edge can be read",
     );
   }
-  return { direct, dependents };
+
+  const parents = new Map();
+  for (const [parent, child] of edges) {
+    const declaredPeers = peers.get(withoutPeers(parent));
+    if (declaredPeers?.has(packageName(child))) continue;
+    if (!parents.has(child)) parents.set(child, new Set());
+    parents.get(child).add(parent);
+  }
+  return { roots, parents, nodes };
+}
+
+/** `      'name': value` → `name` */
+function keyOf(line) {
+  return unquote(
+    line
+      .trim()
+      .replace(/:\s.*$/, "")
+      .replace(/:\s*(\{\})?$/, ""),
+  );
+}
+
+/** `      name: value` → `value` */
+function valueOf(line) {
+  return unquote(
+    line
+      .trim()
+      .replace(/^('[^']*'|"[^"]*"|[^:]+):\s*/, "")
+      .trim(),
+  );
+}
+
+/**
+ * A dependency reference to the snapshot key it points at. `link:` is a
+ * workspace package, which has no snapshot and is read as an importer instead.
+ *
+ * @param {string} name
+ * @param {string} ref `1.2.3(peer@4)` or, for an alias, `real@1.2.3`
+ * @returns {string | null}
+ */
+function resolveRef(name, ref) {
+  if (!ref || ref.startsWith("link:")) return null;
+  const bare = withoutPeers(ref);
+  const isAlias = bare.indexOf("@", bare.startsWith("@") ? 1 : 0) > 0;
+  return isAlias ? ref : `${name}@${ref}`;
 }
 
 /** @param {string} s */
 function unquote(s) {
   return s.replace(/^'(.*)'$/, "$1").replace(/^"(.*)"$/, "$1");
+}
+
+/** `@scope/name@1.2.3(peer@4)` → `@scope/name@1.2.3` */
+function withoutPeers(key) {
+  const paren = key.indexOf("(");
+  return paren === -1 ? key : key.slice(0, paren);
 }
 
 /**
@@ -329,73 +414,132 @@ function packageName(key) {
   return at === -1 ? key : key.slice(0, at);
 }
 
+/** `@scope/name@1.2.3(peer@4)` → `1.2.3` */
+function packageVersion(key) {
+  return withoutPeers(key).slice(packageName(key).length + 1);
+}
+
 /**
- * The lockfiles CI's vuln-scan job hands osv-scanner, read from ci.yml so the
- * route check reads exactly what the scanner reads.
+ * The lockfiles CI's vuln-scan job hands osv-scanner, read from that job's own
+ * body so the route check reads exactly what the scanner reads.
  *
  * @param {string} ciYaml
  * @returns {string[]}
  */
 export function scannedLockfiles(ciYaml) {
-  return [...String(ciYaml).matchAll(/--lockfile=\.\/(\S+)/g)].map((m) => m[1]);
+  const vulnScan = splitWorkflowTextIntoJobs(String(ciYaml)).find(
+    (job) => job.jobName === "vuln-scan",
+  );
+  if (!vulnScan) throw new Error("ci.yml defines no vuln-scan job");
+  return [...vulnScan.body.matchAll(/--lockfile=\.\/(\S+)/g)].map((m) => m[1]);
 }
 
 /**
- * Check that every acceptance's reason names each package that pulls the
- * vulnerable one in.
+ * The start of a reason: the affected package, then the versions the
+ * acceptance claims are affected — an exact version or up to two comparators.
+ * `braces <=3.0.3, …`, `katex >=0.16.0 <0.18.2 …`.
+ */
+const REASON_HEAD =
+  /^\s*(@?[a-z0-9][a-z0-9._-]*(?:\/[a-z0-9._-]+)?)\s+((?:[<>]=?|=)?\d+\.\d+\.\d+(?:\s+(?:[<>]=?)\d+\.\d+\.\d+)?)(?=[\s,;:]|$)/i;
+
+/**
+ * Check that every acceptance's reason names each route that pulls the
+ * vulnerable package in.
  *
  * AGENTS.md: "an acceptance that does not name a path it accepts is not an
  * acceptance of that path". The reason is the only record osv-scanner prints,
  * so that is where the routes have to be — and they are derived from the
- * lockfiles rather than listed per advisory, so a NEW route (a second package
- * starting to depend on braces, say) turns this red until the reason says why
- * that path is acceptable too.
+ * lockfiles rather than listed per advisory, so a NEW route turns this red
+ * until the reason says why that path is acceptable too.
  *
  * Convention this relies on, and enforces: a reason begins with the affected
- * package's name (`braces <=3.0.3, …`, `astro — …`). That is how every entry
- * here is written, and it is the only link from an advisory id to a lockfile
- * package that needs no network.
+ * package and the versions it claims are affected (`braces <=3.0.3, …`). The
+ * range is what ties the name to the advisory without a network call: a reason
+ * that opens with some other package ("mammoth pulls sprintf-js in …") has no
+ * range, and one whose range matches no resolved version describes a package
+ * the lockfile does not contain in an affected version. Nothing offline can
+ * prove the range is the advisory's own; it can prove it is a claim about the
+ * package the lockfile actually has.
  *
- * A package an importer declares directly is accepted through its own
- * declaration, so only transitive packages need their dependents named — the
- * immediate ones, which is the edge that decides whether the package is
- * installed at all.
+ * A route is named when the reason names, for every affected version:
+ *
+ *   - each package that depends on it directly (the edge that installs it), and
+ *   - each importer-declared dependency it is reached through (the edge that
+ *     decides whether it is a runtime or a dev dependency).
+ *
+ * The second is what catches a new consumer arriving through an intermediate
+ * the reason already names — a runtime package that starts using fast-glob, or
+ * js-yaml@3 pulling argparse@1.
  *
  * @param {{
  *   osvEntries: Array<{ id: string, reason: string | null }>,
  *   lockfiles: Array<{ path: string, text: string }>,
  * }} input
- * @returns {string[]}
+ * @returns {{ errors: string[], checked: string[] }} `checked` lists the ids
+ *   whose routes were actually evaluated, so a caller can assert the rule ran.
  */
 export function findUnnamedRoutes({ osvEntries, lockfiles }) {
   const graphs = lockfiles.map(({ path, text }) => ({
     path,
     ...parseLockfileGraph(text),
   }));
+  const where = graphs.map((g) => g.path).join(", ");
   const errors = [];
+  const checked = [];
 
   for (const entry of osvEntries) {
     const reason = entry.reason ?? "";
-    const pkg = reason.match(
-      /^\s*(@?[a-z0-9][a-z0-9._-]*(?:\/[a-z0-9._-]+)?)/i,
-    )?.[1];
-    const hits = pkg
-      ? graphs.filter((g) => g.direct.has(pkg) || g.dependents.has(pkg))
-      : [];
-
-    if (hits.length === 0) {
+    const head = reason.match(REASON_HEAD);
+    if (!head) {
       errors.push(
-        `${entry.id}: the reason must begin with the affected package's name, and ` +
-          `that package must resolve in a lockfile vuln-scan scans ` +
-          `(${graphs.map((g) => g.path).join(", ")}). Got ${JSON.stringify(reason.slice(0, 60))}.`,
+        `${entry.id}: the reason must begin with the affected package and the ` +
+          `versions it claims are affected (e.g. "braces <=3.0.3, …"). ` +
+          `Got ${JSON.stringify(reason.slice(0, 60))}.`,
+      );
+      continue;
+    }
+    const [, pkg, range] = head;
+
+    const present = graphs.filter((g) =>
+      [...g.nodes].some((n) => packageName(n) === pkg),
+    );
+    if (present.length === 0) {
+      errors.push(
+        `${entry.id}: ${pkg} is in no lockfile vuln-scan scans (${where}). ` +
+          `The acceptance is stale — osv-scanner reports it as UNUSED. Remove it.`,
       );
       continue;
     }
 
-    for (const g of hits) {
-      if (g.direct.has(pkg)) continue;
-      const missing = [...(g.dependents.get(pkg) ?? [])]
-        .filter((dep) => !namesPackage(reason, dep))
+    const affected = present.flatMap((g) =>
+      [...g.nodes]
+        .filter(
+          (n) => packageName(n) === pkg && satisfies(packageVersion(n), range),
+        )
+        .map((node) => ({ g, node })),
+    );
+    if (affected.length === 0) {
+      const versions = present
+        .flatMap((g) => [...g.nodes].filter((n) => packageName(n) === pkg))
+        .map(packageVersion);
+      errors.push(
+        `${entry.id}: the reason claims ${pkg} ${range}, but the lockfiles resolve ` +
+          `${pkg} to ${[...new Set(versions)].join(", ")}. Either the range is not ` +
+          `the advisory's, or the acceptance is stale.`,
+      );
+      continue;
+    }
+    checked.push(entry.id);
+
+    for (const g of present) {
+      const required = new Set();
+      for (const { node } of affected.filter((a) => a.g === g)) {
+        for (const p of g.parents.get(node) ?? []) required.add(packageName(p));
+        for (const root of rootsReaching(g, node)) required.add(root);
+      }
+      required.delete(pkg);
+      const missing = [...required]
+        .filter((name) => !namesPackage(reason, name))
         .sort();
       if (missing.length > 0) {
         errors.push(
@@ -407,7 +551,71 @@ export function findUnnamedRoutes({ osvEntries, lockfiles }) {
     }
   }
 
-  return errors;
+  return { errors, checked };
+}
+
+/**
+ * The names of the importer-declared dependencies `node` is reached through,
+ * itself included when an importer declares it.
+ *
+ * @param {{ roots: Set<string>, parents: Map<string, Set<string>> }} g
+ * @param {string} node
+ */
+function rootsReaching(g, node) {
+  const found = new Set();
+  const seen = new Set([node]);
+  const queue = [node];
+  while (queue.length > 0) {
+    const n = queue.shift();
+    if (g.roots.has(n)) found.add(packageName(n));
+    for (const p of g.parents.get(n) ?? []) {
+      if (!seen.has(p)) {
+        seen.add(p);
+        queue.push(p);
+      }
+    }
+  }
+  return found;
+}
+
+/**
+ * `1.0.3` against `<=1.1.3`, `>=1.0.0 <2.0.0` or an exact `1.0.3`. Prerelease
+ * tags are ignored: a lockfile pin like `1.0.0-rc.1` is compared as `1.0.0`.
+ *
+ * @param {string} version
+ * @param {string} range
+ */
+export function satisfies(version, range) {
+  const v = triple(version);
+  if (!v) return false;
+  return range
+    .trim()
+    .split(/\s+/)
+    .every((comparator) => {
+      const [, op = "=", want] = comparator.match(/^([<>]=?|=)?(.+)$/) ?? [];
+      const w = triple(want);
+      if (!w) return false;
+      const c = compare(v, w);
+      return {
+        "<": c < 0,
+        "<=": c <= 0,
+        ">": c > 0,
+        ">=": c >= 0,
+        "=": c === 0,
+      }[op];
+    });
+}
+
+/** @param {string | undefined} s */
+function triple(s) {
+  const m = s?.match(/^(\d+)\.(\d+)\.(\d+)/);
+  return m ? m.slice(1).map(Number) : null;
+}
+
+/** @param {number[]} a @param {number[]} b */
+function compare(a, b) {
+  for (let i = 0; i < 3; i++) if (a[i] !== b[i]) return a[i] - b[i];
+  return 0;
 }
 
 /**
@@ -425,31 +633,50 @@ function namesPackage(text, name) {
 // ─── The release gate's own command runs in CI ───────────────────────────────
 
 /**
+ * What turns a failing step green without changing the command it runs.
+ * Same list the issue-triage wiring guard rejects, plus `set +e` and a job
+ * that never runs.
+ */
+const DEFUSERS = [
+  [/^\s*continue-on-error:\s*(true|\$\{\{)/m, "continue-on-error"],
+  [/\|\|\s*(true|:)\s*$/m, "|| true"],
+  [/^\s*set \+e\s*$/m, "set +e"],
+  [/^\s*exit 0\s*$/m, "exit 0"],
+  [/^ {4}if:\s*false\s*$/m, "if: false"],
+];
+
+/**
  * The ci.yml jobs with a step that runs exactly `command` — as a one-line
- * `run:` or as a line of a `run: |` block. Exact on purpose: `pnpm audit
- * --prod` is not the gate `pnpm audit --audit-level=high --prod` is, and a
- * trailing `|| true` would make it no gate at all.
+ * `run:` or as a line of a `run: |` block — and that nothing defuses. Exact on
+ * purpose: `pnpm audit --prod` is not the gate `pnpm audit --audit-level=high
+ * --prod` is. A job running the command under `continue-on-error`, `|| true`,
+ * `set +e` or `exit 0` is reported in `defused`, not in `jobs`: it runs the
+ * gate and can never fail on it.
  *
  * @param {string} ciYaml
  * @param {string} command
- * @returns {string[]}
+ * @returns {{ jobs: string[], defused: Array<{ job: string, by: string }> }}
  */
 export function findAuditJobs(ciYaml, command) {
   const jobs = [];
-  let current = null;
-  for (const line of String(ciYaml).split("\n")) {
-    const job = line.match(/^ {2}([A-Za-z0-9_-]+):\s*$/);
-    if (job) {
-      current = job[1];
-      continue;
-    }
-    const body = line
-      .trim()
-      .replace(/^-\s*/, "")
-      .replace(/^run:\s*/, "");
-    if (current && body === command && !jobs.includes(current)) {
-      jobs.push(current);
-    }
+  const defused = [];
+  for (const { jobName, body } of splitWorkflowTextIntoJobs(String(ciYaml))) {
+    const runs = body.split("\n").some(
+      (line) =>
+        line
+          .trim()
+          .replace(/^-\s*/, "")
+          .replace(/^run:\s*/, "") === command,
+    );
+    if (!runs) continue;
+    // Comments say what a step does not do; only the YAML itself defuses.
+    const code = body
+      .split("\n")
+      .filter((line) => !line.trim().startsWith("#"))
+      .join("\n");
+    const by = DEFUSERS.find(([pattern]) => pattern.test(code))?.[1];
+    if (by) defused.push({ job: jobName, by });
+    else jobs.push(jobName);
   }
-  return jobs;
+  return { jobs, defused };
 }

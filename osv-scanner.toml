@@ -85,9 +85,9 @@ reason = "sprintf-js <=1.1.3, no fixed release exists. Reached via mammoth > arg
 [[IgnoredVulns]]
 id = "GHSA-238p-pmpm-9mq7"
 ignoreUntil = 2027-01-15
-reason = "katex <0.18.2 prototype-pollution trust bypass (low), docs/pnpm-lock.yaml only, via mermaid (declares katex ^0.16.45). mermaid loads katex lazily in the browser only to render $$ math in diagram labels; the docs' single Mermaid diagram has none, so katex never runs. Fix exists only in 0.18.x, outside mermaid's declared range."
+reason = "katex <0.18.2 prototype-pollution trust bypass (low), docs/pnpm-lock.yaml only, via @pasqal-io/starlight-client-mermaid > mermaid (declares katex ^0.16.45). mermaid loads katex lazily in the browser only to render $$ math in diagram labels; the docs' single Mermaid diagram has none, so katex never runs. Fix exists only in 0.18.x, outside mermaid's declared range."
 
 [[IgnoredVulns]]
 id = "GHSA-rj75-hqrm-r3gf"
 ignoreUntil = 2027-01-15
-reason = "postcss-selector-parser <7.1.6 quadratic selector parsing (medium), docs/pnpm-lock.yaml only, via @expressive-code/core > postcss-nested@6 (declares ^6.1.1). It parses expressive-code's own code-block theme CSS at docs build time; no untrusted selector reaches it and nothing ships it to a user. Fix exists only in 7.x, outside postcss-nested's declared range."
+reason = "postcss-selector-parser <7.1.6 quadratic selector parsing (medium), docs/pnpm-lock.yaml only, via @astrojs/starlight > astro-expressive-code > @expressive-code/core > postcss-nested@6 (declares ^6.1.1). It parses expressive-code's own code-block theme CSS at docs build time; no untrusted selector reaches it and nothing ships it to a user. Fix exists only in 7.x, outside postcss-nested's declared range."
