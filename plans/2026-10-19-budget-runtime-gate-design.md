@@ -79,3 +79,19 @@ Each refusal is one inbound message from a sender who already passed the
 channel's own access control (a paired Telegram account), the same as a browser
 refusal, which is not throttled either. The bound AGENTS.md asks for applies to
 rows an _anonymous_ caller can mint.
+
+## Known limit: a message steered into a turn that is then blocked
+
+Found by the first CI run of the Telegram E2E. A second message that arrives
+while a turn is still being prepared is _steered_ into that turn, and OpenClaw
+waits for it to appear in the transcript (`DEFAULT_QUEUE_TRANSCRIPT_COMMIT_TIMEOUT_MS`,
+120 s). When `before_agent_run` then blocks the turn, the steered message is
+never committed, so the turn — and the refusal reply — is held for the full
+120 s, and later messages in that session queue behind it.
+
+The window is the time between a run starting and the gate answering: usually
+milliseconds, a few seconds on a loaded host. It does not lift the block — the
+refusal still arrives, late. It is OpenClaw's behaviour (block × steering), not
+something the hook can avoid, so it belongs upstream rather than in a
+workaround here. The E2E sends a new message only after the previous turn
+answered, which keeps it out of the window.
