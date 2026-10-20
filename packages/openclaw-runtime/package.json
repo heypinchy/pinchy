@@ -1,0 +1,8 @@
+{
+  "name": "@pinchy/openclaw-runtime",
+  "private": true,
+  "description": "The OpenClaw runtime the pinchy-openclaw image ships, resolved through this workspace's lockfile and overrides.",
+  "dependencies": {
+    "openclaw": "2026.7.1-2"
+  }
+}

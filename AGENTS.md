@@ -10,6 +10,7 @@ Status: early development. The core is working: setup wizard, authentication, pr
 
 - `packages/web/` - Next.js app, API routes, WebSocket bridge, Drizzle schema/migrations, tests.
 - `packages/plugins/` - OpenClaw plugins. Current Pinchy plugins: `pinchy-files`, `pinchy-context`, `pinchy-docs`, `pinchy-audit`, `pinchy-email`, `pinchy-odoo`, `pinchy-transcript`, `pinchy-web`, `pinchy-knowledge`, `pinchy-approvals`. Guarded against the directory listing by `scripts/lib/agents-md-repository-map.test.mjs`.
+- `packages/openclaw-runtime/` - Manifest-only workspace package: the OpenClaw version the `pinchy-openclaw` image ships. `Dockerfile.openclaw` installs it from `pnpm-lock.yaml` with `--frozen-lockfile`, so the image carries exactly the tree `vuln-scan` checks and the root `pnpm.overrides` apply to it. Never `npm install -g openclaw` — that honours OpenClaw's own npm-shrinkwrap.json and bypasses both. `openclaw-version-pin-drift.test.ts` pins the install shape and keeps the version in lockstep with `packages/web`.
 - `config/` - OpenClaw config support, startup scripts, mock services for integration/E2E tests.
 - `docs/` - Astro Starlight documentation. It is standalone and has its own `package.json` and lockfile.
 - `plans/` - Design and implementation records for larger features, committed on purpose: the reasoning behind a decision outlives the PR that carried it, and a review that revisits one needs it. Not to be confused with `docs/plans/`, which `.gitignore` drops — those are scratch, these are the record.

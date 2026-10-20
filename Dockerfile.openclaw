@@ -48,11 +48,38 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-# The drift guard (openclaw-version-pin-drift.test.ts) greps for this exact
-# `npm install -g openclaw@<version>` line to keep the runtime version in
-# lockstep with packages/web/package.json (which feeds /api/version). Keep the
-# literal form unchanged.
-RUN npm install -g openclaw@2026.7.1-2
+# OpenClaw comes from the workspace lockfile, not from the registry directly.
+#
+# This used to be `npm install -g openclaw@<version>`. That honours the
+# npm-shrinkwrap.json OpenClaw publishes — 309 exact pins — and reads neither
+# pnpm-lock.yaml nor the root `pnpm.overrides`. So the runtime shipped ten
+# packages below the overrides' fix versions (undici 8.5.0, MCP SDK 1.29.0, tar,
+# hono, …) while osv-scanner, which reads pnpm-lock.yaml, reported a clean
+# tree. Installing packages/openclaw-runtime with --frozen-lockfile makes the
+# image ship exactly the tree vuln-scan checks, overrides included — pnpm
+# ignores a dependency's shrinkwrap. The version lives in that package's
+# package.json; openclaw-version-pin-drift.test.ts keeps it in lockstep with
+# packages/web/package.json (which feeds /api/version) and pins this install
+# shape. Only the manifests the filtered install reads are copied: like
+# Dockerfile.pinchy, a frozen install tolerates absent workspace members.
+#
+# pnpm skips dependency lifecycle scripts unless allow-listed, and allowing
+# openclaw in the root onlyBuiltDependencies would run its postinstall on every
+# developer machine too (it prunes state under ~/.openclaw). So the one script
+# that matters — OpenClaw's own postinstall (dist-inventory prune, plugin
+# registry migration, bundled-plugin hotfixes) — runs explicitly here, as npm
+# ran it before. tree-sitter-bash ships prebuilds for linux-x64/arm64 and needs
+# no install step.
+WORKDIR /opt/openclaw
+COPY pnpm-workspace.yaml package.json pnpm-lock.yaml .npmrc ./
+COPY patches/ ./patches/
+COPY packages/openclaw-runtime/package.json packages/openclaw-runtime/
+RUN corepack enable \
+    && COREPACK_ENABLE_DOWNLOAD_PROMPT=0 pnpm install --prod --frozen-lockfile --filter @pinchy/openclaw-runtime \
+    && node packages/openclaw-runtime/node_modules/openclaw/scripts/postinstall-bundled-plugins.mjs \
+    && ln -s /opt/openclaw/packages/openclaw-runtime/node_modules/openclaw/openclaw.mjs /usr/local/bin/openclaw \
+    && openclaw --version
+WORKDIR /
 
 # Bundle the external llama.cpp embedding provider (manifest id `llama-cpp`) plus
 # the EmbeddingGemma GGUF it serves. Together they give memory-core a key-less,
@@ -74,7 +101,13 @@ RUN npm install -g openclaw@2026.7.1-2
 # stage (the GGUF download); they never reach the runtime image.
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
-RUN openclaw plugins install @openclaw/llama-cpp-provider \
+#
+# Pinned to the OpenClaw release it ships with (the provider is published in
+# lockstep and peers `openclaw >=<its own version>`; a `-N` suffix on the
+# OpenClaw pin is a repack of the same release). OpenClaw's installer already
+# picks a compatible version when unpinned — the pin makes the build
+# reproducible and is checked by openclaw-version-pin-drift.test.ts.
+RUN openclaw plugins install @openclaw/llama-cpp-provider@2026.7.1 \
     && mkdir -p /opt/llama-cpp-deps \
     && cp -r /root/.openclaw/npm /opt/llama-cpp-deps/npm
 # Download pinned to an immutable commit revision (not the moving `main` ref) and
@@ -189,21 +222,24 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       procps \
     && rm -rf /var/lib/apt/lists/*
 
-# The global openclaw install (built in the builder stage). Its native modules
-# ship as prebuilt .node binaries, so no toolchain is needed to run them — we
-# copy the install verbatim instead of re-running `npm install -g` here. That
-# keeps the ~300 MB npm download cache out of this stage entirely.
-#   - /usr/local/lib/node_modules/openclaw is the package tree.
-COPY --from=builder /usr/local/lib/node_modules /usr/local/lib/node_modules
+# The OpenClaw install (built in the builder stage from the workspace
+# lockfile). Its native modules ship as prebuilt .node binaries, so no
+# toolchain is needed to run them — we copy the install verbatim instead of
+# re-running pnpm here, which keeps the pnpm store out of this stage entirely.
+# The tree is pnpm's isolated layout: packages/openclaw-runtime/node_modules/
+# openclaw is a symlink into node_modules/.pnpm, and a directory COPY keeps
+# those internal symlinks as symlinks.
+COPY --from=builder /opt/openclaw /opt/openclaw
 
 # Recreate the CLI symlink rather than COPYing it. `COPY --from` DEREFERENCES
-# symlinks, so `COPY .../bin/openclaw` would copy openclaw.mjs's *contents* to
-# /usr/local/bin/openclaw — turning the launcher into a plain file. The loader
-# resolves its build output via `new URL("./dist/entry.js", import.meta.url)`,
-# which would then point at /usr/local/bin/dist/entry.js (nonexistent) and the
-# gateway would die at boot with "missing dist/entry.(m)js (build output)".
-# A symlink keeps import.meta.url anchored at the package dir, where dist/ lives.
-RUN ln -s ../lib/node_modules/openclaw/openclaw.mjs /usr/local/bin/openclaw
+# a symlink given as the source path, so copying /usr/local/bin/openclaw would
+# copy openclaw.mjs's *contents* — turning the launcher into a plain file. The
+# loader resolves its build output via `new URL("./dist/entry.js",
+# import.meta.url)`, which would then point at /usr/local/bin/dist/entry.js
+# (nonexistent) and the gateway would die at boot with "missing
+# dist/entry.(m)js (build output)". Through a symlink Node resolves the main
+# module to its real path inside .pnpm, where dist/ lives.
+RUN ln -s /opt/openclaw/packages/openclaw-runtime/node_modules/openclaw/openclaw.mjs /usr/local/bin/openclaw
 
 # Pre-built plugin runtime dependency bundles from the builder stage. These
 # carry the already-compiled native .node binaries (better-sqlite3 +
