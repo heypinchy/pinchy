@@ -104,6 +104,7 @@ async function resolveIngestDeps(tally: { current: OcrTally | null }): Promise<I
       }),
     extractXlsx,
     convertOffice: (sources) => convertOfficeFiles(sources),
+    ocrModel: ocr?.model ?? null,
   };
 }
 

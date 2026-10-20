@@ -19,6 +19,8 @@ import { db } from "@/db";
 import { kbChunks, kbDocuments } from "@/db/schema";
 import {
   EMBED_PROGRESS_BATCH,
+  EXTRACTION_VERSION,
+  MAX_INCOMPLETE_READS,
   ingestDirectory,
   ingestPaths,
   type IngestDeps,
@@ -28,6 +30,7 @@ import {
 } from "@/lib/knowledge/ingest";
 import type { XlsxExtraction } from "@/lib/knowledge/xlsx-extract";
 import type { ConversionOutcome } from "@/lib/knowledge/office-convert";
+import { listUnsearchableDocuments } from "@/lib/knowledge/unsearchable";
 
 const ORG_ID = "org-kb-ingest-test";
 
@@ -74,7 +77,7 @@ const neverCalledConvert = async (): Promise<ConversionOutcome[]> => {
 };
 
 function fakeDeps(
-  pages = [
+  pages: IngestPage[] = [
     { page: 1, text: PAGE_1_TEXT },
     { page: 2, text: PAGE_2_TEXT },
   ],
@@ -96,7 +99,7 @@ function fakeDeps(
   const extractPdf = vi.fn(async () => pages);
   const extractXlsx = vi.fn(async () => xlsx);
   return {
-    deps: { embed, extractPdf, extractXlsx, convertOffice: neverCalledConvert },
+    deps: { embed, extractPdf, extractXlsx, convertOffice: neverCalledConvert, ocrModel: null },
     embed,
     extractPdf,
     extractXlsx,
@@ -384,12 +387,12 @@ it("returns a zero result for a root path that does not exist, without throwing"
 // `indexed` tells an admin the corpus is complete while a slice of it can
 // never answer a question — the count exists to mean "findable", so a
 // zero-chunk document gets its own honest bucket instead.
-it("reports a text-less scan as unsearchable rather than indexed, on the first run and every run after", async () => {
+it("reports a text-less scan as unsearchable rather than indexed, and leaves it alone while nothing changed", async () => {
   const pdfPath = join(tmpRoot, "scan.pdf");
   writeFileSync(pdfPath, "fake-scanned-pdf-bytes");
 
   // What pdfjs returns for an image-only scan: pages exist, text layer empty.
-  const { deps, embed } = fakeDeps([
+  const { deps, embed, extractPdf } = fakeDeps([
     { page: 1, text: "" },
     { page: 2, text: "   " },
   ]);
@@ -406,15 +409,368 @@ it("reports a text-less scan as unsearchable rather than indexed, on the first r
   expect(docs[0].sourcePath).toBe(pdfPath);
   expect(await chunksFor(docs[0].id)).toHaveLength(0);
 
-  // Every subsequent run reports the same honest number. The zero-chunk
-  // recovery branch re-extracts this file forever (its hash never changes and
-  // it never gains chunks), which is exactly why it must not re-report itself
-  // as freshly `indexed` each time.
+  // A run with the same extractor would read the same nothing, so the next
+  // one skips it like any unchanged file instead of parsing it again — every
+  // night, under the nightly reindex. It is still on the unreadable list,
+  // which reads the chunks, not the run's counts.
   const second = await ingestDirectory(ORG_ID, tmpRoot, deps);
-  expect(second).toEqual(counts({ unsearchable: 1 }));
+  expect(second).toEqual(counts({ skipped: 1 }));
+  expect(extractPdf).toHaveBeenCalledTimes(1);
   const docsAfter = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
   expect(docsAfter).toHaveLength(1);
   expect(docsAfter[0].id).toBe(docs[0].id);
+  const listed = await listUnsearchableDocuments(ORG_ID, [tmpRoot]);
+  expect(listed.documents.map((doc) => doc.sourcePath)).toEqual([pdfPath]);
+});
+
+// ---------------------------------------------------------------------------
+// An unchanged document that read as empty
+// ---------------------------------------------------------------------------
+//
+// The zero-chunk recovery branch used to re-extract such a document on every
+// run, because a crash leftover and a blank scan both look like "a row with no
+// chunks". Under the nightly reindex that meant every blank scan was rendered
+// and sent to the vision model again each night. The row now records which
+// extractor setup read it as empty (`emptyExtractionBy`), and the branch reads
+// it again only when the answer could differ.
+
+const VISION_MODEL = "anthropic/claude-haiku-5-5";
+const BLANK_SCAN: IngestPage[] = [{ page: 1, text: "" }];
+const FAILED_SCAN: IngestPage[] = [{ page: 1, text: "", ocrFailed: true }];
+
+/** The `emptyExtractionBy` value the current extractor writes for `setup`. */
+function marker(setup: string) {
+  return `${EXTRACTION_VERSION}|${setup}`;
+}
+
+async function onlyDocument() {
+  const docs = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
+  expect(docs).toHaveLength(1);
+  return docs[0];
+}
+
+it("does not send an unchanged blank scan to the vision model again", async () => {
+  writeFileSync(join(tmpRoot, "blank.pdf"), "fake-blank-scan");
+  const { deps, extractPdf } = fakeDeps(BLANK_SCAN);
+  const withOcr = { ...deps, ocrModel: VISION_MODEL };
+
+  expect(await ingestDirectory(ORG_ID, tmpRoot, withOcr)).toEqual(counts({ unsearchable: 1 }));
+  expect((await onlyDocument()).emptyExtractionBy).toBe(marker(`ocr:${VISION_MODEL}`));
+
+  expect(await ingestDirectory(ORG_ID, tmpRoot, withOcr)).toEqual(counts({ skipped: 1 }));
+  expect(extractPdf).toHaveBeenCalledTimes(1);
+});
+
+it("reads a blank scan again once OCR becomes available, and indexes what it finds", async () => {
+  // The guarantee the docs give an operator who turns OCR on: reindex, and
+  // the scans that were unsearchable without it are read.
+  writeFileSync(join(tmpRoot, "certificate.pdf"), "fake-certificate-scan");
+  const { deps, extractPdf } = fakeDeps(BLANK_SCAN);
+
+  expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ unsearchable: 1 }));
+  const before = await onlyDocument();
+  expect(before.emptyExtractionBy).toBe(marker("no-ocr"));
+
+  extractPdf.mockResolvedValue([{ page: 1, text: PAGE_1_TEXT }]);
+  const rerun = await ingestDirectory(ORG_ID, tmpRoot, { ...deps, ocrModel: VISION_MODEL });
+
+  expect(rerun).toEqual(counts({ indexed: 1 }));
+  const after = await onlyDocument();
+  expect(after.id).toBe(before.id);
+  expect(after.emptyExtractionBy).toBeNull();
+  expect(await chunksFor(after.id)).not.toHaveLength(0);
+});
+
+it("reads a blank scan again when a different vision model is configured", async () => {
+  writeFileSync(join(tmpRoot, "blank.pdf"), "fake-blank-scan");
+  const { deps, extractPdf } = fakeDeps(BLANK_SCAN);
+
+  await ingestDirectory(ORG_ID, tmpRoot, { ...deps, ocrModel: VISION_MODEL });
+  const rerun = await ingestDirectory(ORG_ID, tmpRoot, {
+    ...deps,
+    ocrModel: "openai/gpt-5.5-mini",
+  });
+
+  expect(rerun).toEqual(counts({ unsearchable: 1 }));
+  expect(extractPdf).toHaveBeenCalledTimes(2);
+  expect((await onlyDocument()).emptyExtractionBy).toBe(marker("ocr:openai/gpt-5.5-mini"));
+});
+
+it("does not read a blank scan again when OCR was turned off since", async () => {
+  // Without a vision model the text layer is all there is, and a vision model
+  // already found nothing on top of it.
+  writeFileSync(join(tmpRoot, "blank.pdf"), "fake-blank-scan");
+  const { deps, extractPdf } = fakeDeps(BLANK_SCAN);
+
+  await ingestDirectory(ORG_ID, tmpRoot, { ...deps, ocrModel: VISION_MODEL });
+  expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ skipped: 1 }));
+  expect(extractPdf).toHaveBeenCalledTimes(1);
+});
+
+it("tries a scan again on every run while its vision call keeps failing, and indexes it once one answers", async () => {
+  // How a provider outage heals by itself: a failed call is not an answer, so
+  // nothing is recorded that would let the next run skip the document.
+  writeFileSync(join(tmpRoot, "certificate.pdf"), "fake-certificate-scan");
+  const { deps, extractPdf } = fakeDeps([{ page: 1, text: "", ocrFailed: true }]);
+  const withOcr = { ...deps, ocrModel: VISION_MODEL };
+
+  expect(await ingestDirectory(ORG_ID, tmpRoot, withOcr)).toEqual(counts({ unsearchable: 1 }));
+  expect((await onlyDocument()).emptyExtractionBy).toBeNull();
+  expect(await ingestDirectory(ORG_ID, tmpRoot, withOcr)).toEqual(counts({ unsearchable: 1 }));
+  expect(extractPdf).toHaveBeenCalledTimes(2);
+
+  extractPdf.mockResolvedValue([{ page: 1, text: PAGE_1_TEXT }]);
+  expect(await ingestDirectory(ORG_ID, tmpRoot, withOcr)).toEqual(counts({ indexed: 1 }));
+});
+
+it("still recovers a row a crash left without chunks", async () => {
+  // The case the zero-chunk branch was written for: the document row was
+  // inserted, the run died before its chunks were written. Such a row never
+  // got an extraction on record, so it must not be mistaken for an empty one.
+  const pdfPath = join(tmpRoot, "handbook.pdf");
+  writeFileSync(pdfPath, "fake-pdf-bytes-crash");
+  const contentHash = createHash("sha256").update("fake-pdf-bytes-crash").digest("hex");
+  const [leftover] = await db
+    .insert(kbDocuments)
+    .values({ orgId: ORG_ID, contentHash, sourcePath: pdfPath })
+    .returning();
+
+  const { deps } = fakeDeps();
+  expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ indexed: 1 }));
+  expect((await onlyDocument()).id).toBe(leftover.id);
+  expect(await chunksFor(leftover.id)).not.toHaveLength(0);
+});
+
+it("reads an empty document indexed before the marker existed once, then leaves it alone", async () => {
+  // AGENTS.md § Test Migrations Against Pre-Existing Data. A row the previous
+  // pipeline wrote for a blank scan has zero chunks and, after the migration,
+  // no `emptyExtractionBy` — the same shape as a crash leftover. It is read
+  // once more (the new code cannot know what found it empty), and from then
+  // on it is skipped like a row written today.
+  const pdfPath = join(tmpRoot, "legacy-scan.pdf");
+  writeFileSync(pdfPath, "fake-legacy-scan");
+  const contentHash = createHash("sha256").update("fake-legacy-scan").digest("hex");
+  await db.insert(kbDocuments).values({ orgId: ORG_ID, contentHash, sourcePath: pdfPath });
+
+  const { deps, extractPdf } = fakeDeps(BLANK_SCAN);
+  const withOcr = { ...deps, ocrModel: VISION_MODEL };
+
+  expect(await ingestDirectory(ORG_ID, tmpRoot, withOcr)).toEqual(counts({ unsearchable: 1 }));
+  expect(await ingestDirectory(ORG_ID, tmpRoot, withOcr)).toEqual(counts({ skipped: 1 }));
+  expect(extractPdf).toHaveBeenCalledTimes(1);
+});
+
+it("records nothing on a document that has text, so losing its chunks is still recovered", async () => {
+  // Only an EMPTY extraction is recorded. A row that had chunks and lost them
+  // (an operator deleted kb_chunks rows) must keep coming back, which the
+  // recovery test above pins; this pins why it can.
+  writeFileSync(join(tmpRoot, "handbook.pdf"), "fake-pdf-bytes");
+  await ingestDirectory(ORG_ID, tmpRoot, fakeDeps().deps);
+
+  expect((await onlyDocument()).emptyExtractionBy).toBeNull();
+});
+
+function failedConversion(sources: readonly { absPath: string }[]): ConversionOutcome[] {
+  return sources.map((source) => ({
+    sourcePath: source.absPath,
+    status: "failed",
+    reason: "no artifact produced",
+  }));
+}
+
+it("converts an Office document again after a failed conversion, so a passing hiccup heals", async () => {
+  // `failed` also covers causes that are not about the document: a source
+  // that was briefly unreadable on a network share, or LibreOffice exiting
+  // without writing a PDF. Recording such a verdict would freeze the document
+  // as unsearchable until somebody edits it.
+  writeFileSync(join(tmpRoot, "angebot.docx"), "fake-docx-bytes");
+  let converts = false;
+  const { deps } = officeDeps(
+    (absPath) =>
+      converts
+        ? convertedTo("/artifacts/an/gebot.pdf")(absPath)
+        : failedConversion([{ absPath }])[0],
+    () => [{ page: 1, text: PAGE_1_TEXT }]
+  );
+
+  expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ unsearchable: 1 }));
+  expect((await onlyDocument()).emptyExtractionBy).toBeNull();
+
+  converts = true;
+  expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ indexed: 1 }));
+});
+
+it("stops converting an Office document again once it has failed on every one of its retries", async () => {
+  writeFileSync(join(tmpRoot, "kaputt.doc"), "fake-doc-bytes");
+  const convertOffice = vi.fn(async (sources: readonly { absPath: string }[]) =>
+    failedConversion(sources)
+  );
+  const deps: IngestDeps = { ...fakeDeps().deps, convertOffice };
+
+  for (let run = 1; run <= MAX_INCOMPLETE_READS; run++) {
+    expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ unsearchable: 1 }));
+  }
+  expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ skipped: 1 }));
+  expect(convertOffice).toHaveBeenCalledTimes(MAX_INCOMPLETE_READS);
+  // OCR cannot change what a converter could not convert.
+  expect(await ingestDirectory(ORG_ID, tmpRoot, { ...deps, ocrModel: VISION_MODEL })).toEqual(
+    counts({ skipped: 1 })
+  );
+  expect(convertOffice).toHaveBeenCalledTimes(MAX_INCOMPLETE_READS);
+});
+
+it("stops sending a scan whose vision call fails on every run once its retries are spent", async () => {
+  // A page the provider rejects every time (an image over its size limit, a
+  // render pdfjs cannot do) is not an outage that heals. Without a bound,
+  // every other page of the document would be sent again every night.
+  writeFileSync(join(tmpRoot, "oversized.pdf"), "fake-oversized-scan");
+  const { deps, extractPdf } = fakeDeps(FAILED_SCAN);
+  const withOcr = { ...deps, ocrModel: VISION_MODEL };
+
+  for (let run = 1; run <= MAX_INCOMPLETE_READS; run++) {
+    expect(await ingestDirectory(ORG_ID, tmpRoot, withOcr)).toEqual(counts({ unsearchable: 1 }));
+  }
+  expect(await ingestDirectory(ORG_ID, tmpRoot, withOcr)).toEqual(counts({ skipped: 1 }));
+  expect(extractPdf).toHaveBeenCalledTimes(MAX_INCOMPLETE_READS);
+
+  // A different model is a different reader, and gets its own try.
+  await ingestDirectory(ORG_ID, tmpRoot, { ...deps, ocrModel: "openai/gpt-5.5-mini" });
+  expect(extractPdf).toHaveBeenCalledTimes(MAX_INCOMPLETE_READS + 1);
+});
+
+it("reads the failed pages of a partly indexed scan again, and keeps the document's id", async () => {
+  // A typed cover sheet gives the document text of its own, so it has chunks
+  // even when every vision call behind it failed. Those pages must come back
+  // like a fully failed scan does, or an outage leaves them out for good.
+  writeFileSync(join(tmpRoot, "report.pdf"), "fake-report-scan");
+  const { deps, extractPdf } = fakeDeps([
+    { page: 1, text: PAGE_1_TEXT },
+    { page: 2, text: "", ocrFailed: true },
+  ]);
+  const withOcr = { ...deps, ocrModel: VISION_MODEL };
+
+  expect(await ingestDirectory(ORG_ID, tmpRoot, withOcr)).toEqual(counts({ indexed: 1 }));
+  const before = await onlyDocument();
+
+  extractPdf.mockResolvedValue([
+    { page: 1, text: PAGE_1_TEXT },
+    { page: 2, text: PAGE_2_TEXT },
+  ]);
+  expect(await ingestDirectory(ORG_ID, tmpRoot, withOcr)).toEqual(counts({ indexed: 1 }));
+
+  const after = await onlyDocument();
+  expect(after.id).toBe(before.id);
+  const texts = (await chunksFor(after.id)).map((chunk) => chunk.chunkText).join("\n");
+  expect(texts).toContain("Benefits enrollment");
+  expect(texts.match(/This handbook explains/g)).toHaveLength(1);
+
+  // Complete now, so the next run leaves it alone.
+  expect(await ingestDirectory(ORG_ID, tmpRoot, withOcr)).toEqual(counts({ skipped: 1 }));
+  expect(extractPdf).toHaveBeenCalledTimes(2);
+});
+
+it("does not trade a partly indexed scan's text for less on a retry that fails worse", async () => {
+  // Page 1 was read by the vision model the first time; on the retries the
+  // provider is down altogether. What the first read found stays searchable.
+  writeFileSync(join(tmpRoot, "report.pdf"), "fake-report-scan");
+  const { deps, extractPdf } = fakeDeps([
+    { page: 1, text: PAGE_1_TEXT },
+    { page: 2, text: "", ocrFailed: true },
+  ]);
+  const withOcr = { ...deps, ocrModel: VISION_MODEL };
+  await ingestDirectory(ORG_ID, tmpRoot, withOcr);
+  const doc = await onlyDocument();
+  const stored = await chunksFor(doc.id);
+  expect(stored).not.toHaveLength(0);
+
+  extractPdf.mockResolvedValue([
+    { page: 1, text: "", ocrFailed: true },
+    { page: 2, text: "", ocrFailed: true },
+  ]);
+  for (let run = 2; run <= MAX_INCOMPLETE_READS; run++) {
+    await ingestDirectory(ORG_ID, tmpRoot, withOcr);
+  }
+
+  expect(await chunksFor(doc.id)).toEqual(stored);
+  // Out of retries, but not empty: it has the text the first read found.
+  expect((await onlyDocument()).emptyExtractionBy).toBeNull();
+});
+
+it("keeps a partly indexed scan's chunks when the embedder goes down during its retry", async () => {
+  writeFileSync(join(tmpRoot, "report.pdf"), "fake-report-scan");
+  const { deps, extractPdf, embed } = fakeDeps([
+    { page: 1, text: PAGE_1_TEXT },
+    { page: 2, text: "", ocrFailed: true },
+  ]);
+  const withOcr = { ...deps, ocrModel: VISION_MODEL };
+  await ingestDirectory(ORG_ID, tmpRoot, withOcr);
+  const doc = await onlyDocument();
+  const stored = await chunksFor(doc.id);
+
+  extractPdf.mockResolvedValue([
+    { page: 1, text: PAGE_1_TEXT },
+    { page: 2, text: PAGE_2_TEXT },
+  ]);
+  embed.mockRejectedValueOnce(new Error("connect ECONNREFUSED"));
+  await expect(ingestDirectory(ORG_ID, tmpRoot, withOcr)).rejects.toThrow(/ECONNREFUSED/);
+
+  expect(await chunksFor(doc.id)).toEqual(stored);
+  // And the retry is still owed: nothing recorded the read as done.
+  expect(await ingestDirectory(ORG_ID, tmpRoot, withOcr)).toEqual(counts({ indexed: 1 }));
+});
+
+it("changes a scan's record and its chunks together, so a re-read that dies is still owed", async () => {
+  // The record and the chunks are written in one transaction. A model that
+  // finds text on a scan the previous one read as empty must not leave a
+  // record behind that claims its read happened when its chunks never landed
+  // — nor chunks under a record that still says "empty".
+  writeFileSync(join(tmpRoot, "certificate.pdf"), "fake-certificate-scan");
+  const { deps, extractPdf, embed } = fakeDeps(BLANK_SCAN);
+  await ingestDirectory(ORG_ID, tmpRoot, { ...deps, ocrModel: VISION_MODEL });
+
+  extractPdf.mockResolvedValue([{ page: 1, text: PAGE_1_TEXT }]);
+  embed.mockRejectedValueOnce(new Error("connect ECONNREFUSED"));
+  const otherModel = { ...deps, ocrModel: "openai/gpt-5.5-mini" };
+  await expect(ingestDirectory(ORG_ID, tmpRoot, otherModel)).rejects.toThrow(/ECONNREFUSED/);
+  expect((await onlyDocument()).emptyExtractionBy).toBe(marker(`ocr:${VISION_MODEL}`));
+
+  expect(await ingestDirectory(ORG_ID, tmpRoot, otherModel)).toEqual(counts({ indexed: 1 }));
+  const doc = await onlyDocument();
+  expect(doc.emptyExtractionBy).toBeNull();
+  expect(await chunksFor(doc.id)).not.toHaveLength(0);
+});
+
+it("reads an empty document again once the extractor itself has changed", async () => {
+  // A better scan heuristic, a higher page cap, a new pdfjs: none of them
+  // changes the model's name, and all of them can find text the last read
+  // missed. The record names the extractor version so they reach the
+  // documents already on record.
+  const pdfPath = join(tmpRoot, "legacy-scan.pdf");
+  writeFileSync(pdfPath, "fake-old-extractor-scan");
+  const contentHash = createHash("sha256").update("fake-old-extractor-scan").digest("hex");
+  await db.insert(kbDocuments).values({
+    orgId: ORG_ID,
+    contentHash,
+    sourcePath: pdfPath,
+    emptyExtractionBy: `${EXTRACTION_VERSION - 1}|no-ocr`,
+  });
+
+  const { deps, extractPdf } = fakeDeps(BLANK_SCAN);
+  expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ unsearchable: 1 }));
+  expect(extractPdf).toHaveBeenCalledTimes(1);
+  expect((await onlyDocument()).emptyExtractionBy).toBe(marker("no-ocr"));
+});
+
+it("does not read an empty workbook again when a vision model appears", async () => {
+  // OCR reads scanned pages; it has nothing to say about hidden sheets.
+  writeFileSync(join(tmpRoot, "internal.xlsx"), "fake-xlsx-bytes");
+  const { deps, extractXlsx } = fakeDeps(undefined, EMPTY_XLSX);
+
+  await ingestDirectory(ORG_ID, tmpRoot, deps);
+  expect(await ingestDirectory(ORG_ID, tmpRoot, { ...deps, ocrModel: VISION_MODEL })).toEqual(
+    counts({ skipped: 1 })
+  );
+  expect(extractXlsx).toHaveBeenCalledTimes(1);
 });
 
 // A corpus is not a curated fixture: one corrupt or unreadable PDF is normal.
@@ -438,6 +794,7 @@ it("keeps ingesting the rest of the corpus when one file's extraction throws", a
       extractPdf,
       extractXlsx: neverCalledXlsx,
       convertOffice: neverCalledConvert,
+      ocrModel: null,
     });
 
     expect(result).toEqual(counts({ indexed: 1, failed: 1 }));
@@ -479,6 +836,7 @@ it("surfaces an embedding outage as a run failure instead of blaming every file"
       extractPdf,
       extractXlsx: neverCalledXlsx,
       convertOffice: neverCalledConvert,
+      ocrModel: null,
     })
   ).rejects.toThrow(/ECONNREFUSED/);
   // Bailed on the first file rather than walking the rest of the corpus.
@@ -514,6 +872,7 @@ it("keeps the last indexed version searchable when a file changes into one that 
     extractPdf,
     extractXlsx: neverCalledXlsx,
     convertOffice: neverCalledConvert,
+    ocrModel: null,
   });
   expect(result).toEqual(counts({ failed: 1 }));
 
@@ -1127,7 +1486,13 @@ function officeDeps(
     sources.map((source) => outcomes(source.absPath))
   );
   return {
-    deps: { embed, extractPdf, extractXlsx: neverCalledXlsx, convertOffice } as IngestDeps,
+    deps: {
+      embed,
+      extractPdf,
+      extractXlsx: neverCalledXlsx,
+      convertOffice,
+      ocrModel: null,
+    } as IngestDeps,
     extractPdf,
     convertOffice,
   };
@@ -1375,7 +1740,13 @@ it("spends one converter attempt per batch when the converter never answers at a
   const convertOffice = vi.fn(async () => {
     throw new Error("artifact volume is not mounted");
   });
-  const deps = { embed, extractPdf, extractXlsx: neverCalledXlsx, convertOffice } as IngestDeps;
+  const deps = {
+    embed,
+    extractPdf,
+    extractXlsx: neverCalledXlsx,
+    convertOffice,
+    ocrModel: null,
+  } as IngestDeps;
 
   const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
   try {

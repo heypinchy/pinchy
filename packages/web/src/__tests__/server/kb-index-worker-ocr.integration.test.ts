@@ -164,6 +164,40 @@ describe("with a vision model resolved", () => {
   });
 });
 
+describe("a scan the vision model reads as empty", () => {
+  it("is sent once, and again only once a different model is resolved", async () => {
+    // The ingest skips an unchanged blank scan by comparing the model that
+    // read it with the one this run reads with. That second name comes from
+    // the worker; were it to pass the wrong one, every ingest test would stay
+    // green while production re-sent, or never re-read, every blank scan.
+    let model = OCR_MODEL;
+    const ocrPage = vi.fn(async () => "");
+    mockResolveKbOcr.mockImplementation(async () => ({ model, ocrPage }));
+
+    const agent = await makeAgent();
+    const dir = join(tmpRoot, "docs");
+    seedScanPdf(dir);
+    const run = async () => {
+      await enqueueIndexJob({
+        orgId: ORG_ID,
+        agentId: agent.id,
+        agentName: agent.name,
+        requestedBy: "admin-1",
+        paths: [dir],
+      });
+      expect(await runNextIndexJob()).not.toBeNull();
+    };
+
+    await run();
+    await run();
+    expect(ocrPage).toHaveBeenCalledTimes(1);
+
+    model = "openai/gpt-5.5-mini";
+    await run();
+    expect(ocrPage).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe("without a vision model", () => {
   beforeEach(() => {
     mockResolveKbOcr.mockResolvedValue(null);

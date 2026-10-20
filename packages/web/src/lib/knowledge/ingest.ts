@@ -4,9 +4,12 @@
  *
  * Idempotent on (orgId, sourcePath, contentHash):
  *   - unchanged file (same content hash) with chunks already present -> skip.
- *   - unchanged file whose document row has zero chunks (partial/legacy
- *     state — see the doc comment on the zero-chunk branch below) -> rebuild
- *     chunks in place.
+ *   - unchanged file whose last read did not finish (a vision call failed, a
+ *     conversion gave up) -> read again and rebuild its chunks in place, for
+ *     at most MAX_INCOMPLETE_READS reads in a row.
+ *   - unchanged file whose document row has zero chunks -> rebuild chunks in
+ *     place, unless the row records an empty read that nothing available to
+ *     this run could improve on (see the zero-chunk branch below).
  *   - changed file (different content hash) -> replace: delete the old
  *     document row (cascades to its chunks) and re-ingest.
  *   - a previously-indexed file that's gone from disk -> delete its document
@@ -121,6 +124,17 @@ export interface IngestDeps {
    * time.
    */
   convertOffice: (sources: readonly OfficeSource[]) => Promise<ConversionOutcome[]>;
+  /**
+   * The vision model `extractPdf` reads scanned pages with this run, or null
+   * when it reads the text layer only (no vision model, or `PINCHY_KB_OCR=off`).
+   *
+   * The extractor does the reading; this only NAMES it, so the ingest can tell
+   * whether an unchanged document that came out empty last time could come out
+   * differently now (`emptyExtractionBy`). Required for the same reason the
+   * extractors are: a caller that forgot it would describe a run with OCR as
+   * one without, and the blank scans it reads would be read again every run.
+   */
+  ocrModel: string | null;
 }
 
 export interface IngestOptions {
@@ -342,6 +356,28 @@ function isUnderRoot(sourcePath: string, rootDir: string): boolean {
  */
 export const EMBED_PROGRESS_BATCH = DEFAULT_BATCH_SIZE;
 
+/**
+ * The extractor's own version, recorded with every empty read
+ * (`kb_documents.empty_extraction_by`).
+ *
+ * The reader's name says which model looked; it says nothing about the code
+ * around it. Bump this whenever a change to extraction could find text a past
+ * read missed — the scan heuristic, the OCR page cap or prompt, a pdfjs or
+ * LibreOffice upgrade — and every document on record as empty is read once more.
+ */
+export const EXTRACTION_VERSION = 1;
+
+/**
+ * How many reads in a row may fail to finish before the document is left alone.
+ *
+ * A failed vision call is retried because an outage heals; a page the provider
+ * rejects every time (an image over its size limit) does not, and without a
+ * bound every other page of that document would be sent again every night.
+ * Five runs is a working week of nightly reindexes — long enough to outlast a
+ * provider outage or a weekend with the share unmounted.
+ */
+export const MAX_INCOMPLETE_READS = 5;
+
 /** Reports that `embedded` of `total` chunks of the CURRENT document are done. */
 export type ChunkProgressCallback = (embedded: number, total: number) => void | Promise<void>;
 
@@ -376,6 +412,26 @@ interface ExtractedDocument {
   pageCount: number | null;
   /** Everything the document says, concatenated — read only for language detection. */
   text: string;
+  /**
+   * Whether the read did not finish its job: a vision call failed on one of
+   * its pages (`IngestPage.ocrFailed`), or the converter gave up on it. The
+   * result is then not this document's last word, so it is read again.
+   */
+  incomplete: boolean;
+  /**
+   * What read it, for the record of an empty read: OCR can change what a PDF
+   * page yields, and nothing about a spreadsheet's hidden sheets or a document
+   * the converter could not convert.
+   */
+  reader: "pdf" | "sheets" | "converter";
+}
+
+/** The fields every page-shaped extraction derives from its pages alike. */
+function fromPages(pages: readonly IngestPage[]): Pick<ExtractedDocument, "text" | "incomplete"> {
+  return {
+    text: pages.map((page) => page.text).join("\n"),
+    incomplete: pages.some((page) => page.ocrFailed),
+  };
 }
 
 /**
@@ -512,6 +568,8 @@ async function extractDocument(
       })),
       pageCount: null,
       text: extraction.chunks.map((chunk) => chunk.text).join("\n"),
+      incomplete: false,
+      reader: "sheets",
     };
   }
 
@@ -522,7 +580,8 @@ async function extractDocument(
       locator: { kind: "page", page: chunk.page },
     })),
     pageCount: pages.length,
-    text: pages.map((page) => page.text).join("\n"),
+    ...fromPages(pages),
+    reader: "pdf",
   };
 }
 
@@ -559,11 +618,16 @@ async function extractOfficeDocument(
   }
 
   if (outcome.status !== "converted" || !outcome.artifactPath) {
-    // A final verdict about THIS document: it cannot be converted, so there is
+    // A verdict about THIS document: it cannot be converted, so there is
     // nothing to index. Returning an empty extraction — rather than throwing —
     // is what gives it a row with no chunks, which is exactly how the
     // unreadable list finds it (unsearchable.ts), with nothing to wire up.
-    return { chunks: [], pageCount: null, text: "" };
+    //
+    // Incomplete all the same: `failed` also covers causes that are not about
+    // the document — a source briefly unreadable on a network share,
+    // LibreOffice exiting without a PDF — so it is retried a few runs before
+    // it is taken as final.
+    return { chunks: [], pageCount: null, text: "", incomplete: true, reader: "converter" };
   }
 
   const word = isWordFile(absPath);
@@ -582,7 +646,8 @@ async function extractOfficeDocument(
     // pagination is not the reader's Word — so the row says nothing rather
     // than something false, the same call `ChunkLocator` makes one level down.
     pageCount: isPresentationFile(absPath) ? pages.length : null,
-    text: pages.map((page) => page.text).join("\n"),
+    ...fromPages(pages),
+    reader: "pdf",
   };
 }
 
@@ -599,9 +664,13 @@ async function writeChunks(
   sourcePath: string,
   chunks: LocatedChunk[],
   deps: IngestDeps,
-  onChunkProgress?: ChunkProgressCallback
+  onChunkProgress?: ChunkProgressCallback,
+  rewrite?: ChunkRewrite
 ): Promise<number> {
-  if (chunks.length === 0) return 0;
+  if (chunks.length === 0) {
+    if (rewrite) await db.transaction((tx) => applyRewrite(tx, documentId, rewrite));
+    return 0;
+  }
 
   const vectors: number[][] = [];
   for (let i = 0; i < chunks.length; i += EMBED_PROGRESS_BATCH) {
@@ -613,24 +682,45 @@ async function writeChunks(
     if (vectors.length < chunks.length) await onChunkProgress?.(vectors.length, chunks.length);
   }
 
-  await db.insert(kbChunks).values(
-    chunks.map((chunk, i) => ({
-      documentId,
-      orgId,
-      sourcePath,
-      chunkText: chunk.text,
-      // Decided by `extractDocument`, per format, against the closed union in
-      // locator.ts (#933): a page for a PDF, a sheet + row range for a
-      // spreadsheet. This function no longer knows which, which is the point —
-      // adding the heading and slide producers (#938) touches the dispatch and
-      // not the write.
-      locator: chunk.locator,
-      lang: detectLang(chunk.text),
-      embedding: vectors[i],
-    }))
-  );
+  // Embedded first, written in one transaction: an embedder that goes down
+  // halfway leaves the stored chunks — and the record that says what they
+  // are — exactly as they were.
+  const rows = chunks.map((chunk, i) => ({
+    documentId,
+    orgId,
+    sourcePath,
+    chunkText: chunk.text,
+    // Decided by `extractDocument`, per format, against the closed union in
+    // locator.ts (#933): a page for a PDF, a sheet + row range for a
+    // spreadsheet. This function no longer knows which, which is the point —
+    // adding the heading and slide producers (#938) touches the dispatch and
+    // not the write.
+    locator: chunk.locator,
+    lang: detectLang(chunk.text),
+    embedding: vectors[i],
+  }));
+  await db.transaction(async (tx) => {
+    if (rewrite) await applyRewrite(tx, documentId, rewrite);
+    await tx.insert(kbChunks).values(rows);
+  });
 
   return chunks.length;
+}
+
+/**
+ * What a re-read of an existing document changes besides adding chunks: the
+ * record of the read, and whether the chunks already stored make way first.
+ */
+interface ChunkRewrite {
+  record: ExtractionRecord;
+  replaceStored: boolean;
+}
+
+type Transaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+async function applyRewrite(tx: Transaction, documentId: string, rewrite: ChunkRewrite) {
+  if (rewrite.replaceStored) await tx.delete(kbChunks).where(eq(kbChunks.documentId, documentId));
+  await tx.update(kbDocuments).set(rewrite.record).where(eq(kbDocuments.id, documentId));
 }
 
 /**
@@ -661,6 +751,58 @@ async function fileStep<T>(sourcePath: string, step: () => Promise<T>): Promise<
 
 /** How one file ended up, mapping 1:1 onto the IngestResult counters of the same name. */
 type FileOutcome = "indexed" | "skipped" | "unsearchable";
+
+/** Which OCR a run reads PDF pages with, in the spelling the record stores. */
+function ocrSetup(deps: IngestDeps): string {
+  return deps.ocrModel ? `ocr:${deps.ocrModel}` : "no-ocr";
+}
+
+/** What a read leaves on its document row (`kb_documents`). */
+type ExtractionRecord = { emptyExtractionBy: string | null; incompleteReads: number };
+
+/**
+ * What to record about a read, given how many reads before it in a row did
+ * not finish.
+ *
+ * An empty read is recorded once it is settled — finished, or out of retries —
+ * as "<extractor version>|<reader>", and only an EMPTY one, which is what keeps
+ * the zero-chunk branch's other guarantee: a document that had chunks and lost
+ * them (a crash mid-write, a hand-deleted kb_chunks row) carries no record, so
+ * it is still rebuilt.
+ */
+function extractionRecord(
+  extracted: ExtractedDocument,
+  deps: IngestDeps,
+  previousIncompleteReads: number
+): ExtractionRecord {
+  const incompleteReads = extracted.incomplete ? previousIncompleteReads + 1 : 0;
+  const settled = incompleteReads === 0 || incompleteReads >= MAX_INCOMPLETE_READS;
+  const reader = extracted.reader === "pdf" ? ocrSetup(deps) : extracted.reader;
+  return {
+    emptyExtractionBy:
+      extracted.chunks.length === 0 && settled ? `${EXTRACTION_VERSION}|${reader}` : null,
+    incompleteReads,
+  };
+}
+
+/**
+ * Whether reading this content again could find text the recorded empty read
+ * did not.
+ *
+ * Yes when the extractor itself has changed since. Otherwise only for a PDF
+ * read, and only when OCR has become available or the model changed: a
+ * different reader may well read a scan the first one could not. No when this
+ * run has no vision model while the last read had one — the text layer is all
+ * a run without OCR sees, and a vision model already looked past it.
+ */
+function couldReadDifferently(recorded: string, deps: IngestDeps): boolean {
+  const separator = recorded.indexOf("|");
+  if (separator < 0 || recorded.slice(0, separator) !== String(EXTRACTION_VERSION)) return true;
+  const reader = recorded.slice(separator + 1);
+  if (reader !== "no-ocr" && !reader.startsWith("ocr:")) return false;
+  const current = ocrSetup(deps);
+  return current !== "no-ocr" && current !== reader;
+}
 
 /**
  * Ingests one file: hash it, decide skip/recover/replace/insert, and write its
@@ -697,28 +839,63 @@ async function ingestFile(
       await db.update(kbDocuments).set({ status }).where(eq(kbDocuments.id, existing.id));
     }
 
-    const [{ value: chunkCount }] = await db
+    // A read that did not finish is owed another one, chunks or not: a scan
+    // with a typed cover sheet has chunks of its own even when every vision
+    // call behind it failed.
+    const retryOwed =
+      existing.incompleteReads > 0 && existing.incompleteReads < MAX_INCOMPLETE_READS;
+
+    // A file with no text at all: the last read found nothing. Reading it
+    // again with the same setup would find the same nothing — and under the
+    // nightly reindex, a blank scan would be rendered and sent to the vision
+    // model again every night. So it is skipped like any unchanged file unless
+    // this run could read it differently. Checked before the chunk count: on a
+    // corpus of thousands of blank scans that is a query per document per night.
+    if (
+      !retryOwed &&
+      existing.emptyExtractionBy !== null &&
+      !couldReadDifferently(existing.emptyExtractionBy, deps)
+    ) {
+      return "skipped";
+    }
+
+    const [{ value: storedChunks }] = await db
       .select({ value: count() })
       .from(kbChunks)
       .where(eq(kbChunks.documentId, existing.id));
 
-    if (chunkCount > 0) return "skipped";
+    if (!retryOwed && storedChunks > 0) return "skipped";
 
-    // Robustness case: a document row survives with zero chunks (e.g. a
-    // prior ingest crashed after the document insert but before chunk
-    // writes, or an operator hand-deleted kb_chunks rows). The content
-    // hash still matches the file on disk, so a naive "hash matches ->
-    // skip" would leave this document permanently unsearchable while
-    // silently reporting success. We recover instead: rebuild chunks for
-    // the existing document (same id, no duplicate row).
-    //
-    // A file with no text at all lands here too, on every run, and rebuilds
-    // to zero chunks again — the write result, not the branch, is what tells
-    // the two apart.
-    const { chunks } = await fileStep(absPath, () =>
+    // Robustness case: a document row survives with zero chunks and no
+    // empty read on record (a prior ingest crashed after the document insert
+    // but before chunk writes, an operator hand-deleted kb_chunks rows, or
+    // the row predates the record), or its last read is owed a retry. The
+    // content hash still matches the file on disk, so a naive "hash matches ->
+    // skip" would leave this document unsearchable while silently reporting
+    // success. We read it again instead and rebuild its chunks in place (same
+    // id, no duplicate row).
+    const extracted = await fileStep(absPath, () =>
       extractDocument(absPath, deps, resolveArtifact, contentHash)
     );
-    const written = await writeChunks(existing.id, orgId, absPath, chunks, deps, onChunkProgress);
+    // A retry that fails worse than the read before it must not cost the text
+    // that read found: an outage that returned keeps what is stored.
+    const keepStored =
+      storedChunks > 0 && extracted.incomplete && extracted.chunks.length < storedChunks;
+    const record = extractionRecord(extracted, deps, existing.incompleteReads);
+    const written = await writeChunks(
+      existing.id,
+      orgId,
+      absPath,
+      keepStored ? [] : extracted.chunks,
+      deps,
+      onChunkProgress,
+      {
+        // A document that keeps its chunks is not an empty one.
+        record: keepStored ? { ...record, emptyExtractionBy: null } : record,
+        replaceStored: storedChunks > 0 && !keepStored,
+      }
+    );
+    if (keepStored) return "skipped";
     return written > 0 ? "indexed" : "unsearchable";
   }
 
@@ -747,6 +924,12 @@ async function ingestFile(
       pageCount: extracted.pageCount,
       mtime: fileStat.mtime,
       lang: detectLang(extracted.text),
+      // Written with the row rather than after the chunks: an empty read is
+      // only ever recorded when there are NO chunks to write, so there is no
+      // window in which a crash could leave it claiming a read that did not
+      // finish. A crash before the chunks leaves a row the zero-chunk branch
+      // rebuilds.
+      ...extractionRecord(extracted, deps, 0),
     })
     .returning();
 

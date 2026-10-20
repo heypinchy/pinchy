@@ -132,6 +132,7 @@ function fakeDeps(): IngestDeps {
     convertOffice: async () => {
       throw new Error("convertOffice must not be called for a PDF");
     },
+    ocrModel: null,
   };
 }
 

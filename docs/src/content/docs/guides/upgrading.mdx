@@ -390,7 +390,7 @@ Blocked-request entries in the audit trail now carry `clientAddress` beside `rem
 
 ### Database migrations
 
-Nineteen migrations (`0056`–`0074`) run automatically on startup — no manual steps. Only `0056` is destructive, and only for the Knowledge Base tables (see the breaking change above); the rest are additive.
+Twenty migrations (`0056`–`0075`) run automatically on startup — no manual steps. Only `0056` is destructive, and only for the Knowledge Base tables (see the breaking change above); the rest are additive.
 
 - `0056` — recreates `kb_chunks.embedding` at 768 dimensions for the bundled in-process `embeddinggemma` embedder and clears the two Knowledge Base tables.
 - `0057` — backfills `kb_documents.status` so documents ingested before the archive rule existed are classified by it too.
@@ -406,8 +406,9 @@ Nineteen migrations (`0056`–`0074`) run automatically on startup — no manual
 - `0069` — memory becomes a permission of its own rather than a side effect of file-write access (see the breaking change above).
 - `0070`, `0071` — `tool_call_id` and `openclaw_approval_id` on `tool_approval`, so a pending confirmation is tied to the call it is holding up and to the approval OpenClaw raised for it.
 - `0072` — `zone` and `content_hash` on `agent_delivered_files`, so a download link serves the file it was given rather than the name.
-- `0073` — `cost_budgets`, the monthly spending limits for the whole instance or one agent (see [Cost governance](/guides/cost-governance/)).
+- `0073` — the `cost_budgets` table, holding the monthly spending limits described in [Cost governance](/guides/cost-governance/). It starts empty, so nothing is limited until an admin sets a budget.
 - `0074` — `trigger` and `sweep_id` on `kb_index_jobs`, telling a run the nightly reindex started from one an admin asked for, and `unavailable_folders`, how many folders a run had to leave as they were. Existing jobs are marked `manual`, which is what they were.
+- `0075` — `empty_extraction_by` and `incomplete_reads` on `kb_documents`. The first records which extractor found no text in a document, so the nightly reindex stops reading an unchanged blank scan again — and sending it to your vision model again — every night. The second counts reads that didn't finish (a failed vision call, a failed conversion), so those are retried for up to five runs rather than forever. Rows that predate them carry nothing, so each empty document is read once more on the next run and recorded from then on.
 
 ## Upgrading from v0.9.0 to v0.9.1
 
