@@ -190,14 +190,36 @@ app.post("/openai/v1/chat/completions", (req, res) => {
 });
 
 // ---- Anthropic ----
+// Shaped like the real list (October 2026), because Pinchy picks its default
+// from it: models newer than Pinchy's curated catalog (the 5.5 line), and an
+// older dated snapshot that a date-first sort used to promote over every
+// dateless id. A list holding only curated models cannot catch either.
 app.get("/anthropic/v1/models", (req, res) => {
   if (!requireXApiKey(req, res)) return;
   res.json({
     data: [
       {
+        id: "claude-haiku-5-5",
+        type: "model",
+        display_name: "Claude Haiku 5.5",
+      },
+      {
+        id: "claude-sonnet-5-5",
+        type: "model",
+        display_name: "Claude Sonnet 5.5",
+      },
+      { id: "claude-opus-5-5", type: "model", display_name: "Claude Opus 5.5" },
+      { id: "claude-sonnet-5", type: "model", display_name: "Claude Sonnet 5" },
+      { id: "claude-opus-4-7", type: "model", display_name: "Claude Opus 4.7" },
+      {
         id: "claude-sonnet-4-6",
         type: "model",
         display_name: "Claude Sonnet 4.6",
+      },
+      {
+        id: "claude-sonnet-4-5-20250929",
+        type: "model",
+        display_name: "Claude Sonnet 4.5",
       },
       {
         id: "claude-haiku-4-5-20251001",

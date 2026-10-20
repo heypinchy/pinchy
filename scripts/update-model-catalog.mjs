@@ -5,6 +5,7 @@
 import { writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import * as prettier from "prettier";
 import { validateModelCatalogSnapshot } from "./lib/model-catalog-shape.mjs";
 
 const OUT = join(
@@ -55,5 +56,13 @@ if (problems.length > 0) {
   );
 }
 
-writeFileSync(OUT, JSON.stringify(out, null, 2) + "\n");
+// Written in the format gate's own style, so a refresh commits as-is instead
+// of failing `pnpm format:check` on 10,000 lines of whitespace. Formatted from
+// the indented form, not a one-liner: prettier keeps an object expanded when its
+// input already was, so the input shape decides the layout of `cost`.
+const formatted = await prettier.format(JSON.stringify(out, null, 2), {
+  ...(await prettier.resolveConfig(OUT)),
+  filepath: OUT,
+});
+writeFileSync(OUT, formatted);
 console.log(`Wrote ${Object.keys(out).length} models to ${OUT}`);

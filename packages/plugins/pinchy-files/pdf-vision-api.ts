@@ -16,7 +16,7 @@ const MAX_RETRIES = 3;
 // reads into failures nobody can distinguish from a broken PDF.
 //
 // A hosted vision call on a dense scanned page routinely runs tens of seconds
-// (4096 max_tokens of extracted text at typical decode rates), so a 30s bound
+// (several thousand output tokens at typical decode rates), so a 30s bound
 // would abort real work.
 const CLOUD_VISION_TIMEOUT_MS = 120_000;
 
@@ -168,6 +168,12 @@ export function createVisionConfig(internal: VisionApiInternalConfig): VisionApi
   };
 }
 
+// Claude Sonnet 5 — the reading model Pinchy picks on Anthropic — thinks by
+// default, and its thinking spends out of the same budget as the transcription.
+// 8192 leaves room for both on a dense page; an answer that still hits the cap
+// is reported as a failed read rather than indexed as the whole page.
+const ANTHROPIC_MAX_TOKENS = 8192;
+
 async function describeViaAnthropic(
   imageBase64: string,
   modelId: string,
@@ -185,7 +191,7 @@ async function describeViaAnthropic(
     },
     body: JSON.stringify({
       model: modelId,
-      max_tokens: 4096,
+      max_tokens: ANTHROPIC_MAX_TOKENS,
       messages: [
         {
           role: "user",
@@ -213,8 +219,15 @@ async function describeViaAnthropic(
 
   const data = (await response.json()) as {
     content: Array<{ type: string; text?: string }>;
+    stop_reason?: string;
     usage?: { input_tokens?: number; output_tokens?: number };
   };
+  if (data.stop_reason === "max_tokens") {
+    console.error(
+      `[pinchy-files] Anthropic vision answer for ${modelId} stopped at max_tokens (${ANTHROPIC_MAX_TOKENS}) — page not read`
+    );
+    return null;
+  }
   const text =
     data.content
       ?.filter((b) => b.type === "text" && b.text)

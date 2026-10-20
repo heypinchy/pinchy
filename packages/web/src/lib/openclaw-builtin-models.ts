@@ -35,21 +35,57 @@ export interface OpenClawModelDefinition {
   };
 }
 
+// This list is the whole of what Pinchy knows about a built-in provider's
+// models: build.ts emits it to OpenClaw, and seedBuiltinModels turns it into the
+// capability rows (vision/tools/long-context) every model decision reads. The
+// agent model picker lists the provider's LIVE catalog instead, so a model the
+// provider serves but this list omits is selectable yet half-supported — it
+// reads as "not vision-capable" and drops out of the pdf/image chain.
+//
+// Newest first. Limits must agree with the vendored models.dev snapshot
+// (guarded in openclaw-builtin-models.test.ts); `maxTokens` may sit below the
+// model's own output cap, never above it.
+//
+// Anthropic `maxTokens` stays at 32K or below although the models allow up to
+// 128K: it becomes every request's `max_tokens`, and Anthropic reserves that
+// much of the output-tokens-per-minute limit when a request starts. On a new,
+// low-tier account a 128K reservation can exceed the whole limit, so every
+// turn would be answered 429 however short the reply.
+//
+// A model only belongs here once the pinned OpenClaw can drive it. The Claude
+// 5.5 family and Fable 5.1 cannot yet: OpenClaw 2026.7.1 predates their request
+// contract: it sends Opus 5.5 a thinking setting the API rejects, and has none
+// of the append-only context handling the newer runtime adds for the thinking
+// blocks of Sonnet 5.5, Haiku 5.5 and Fable 5.1. They arrive with the OpenClaw
+// update and are tools-blocked until then (model-resolver/blocklist.ts).
+//
+// Anthropic prices: platform.claude.com/docs/en/about-claude/pricing, read
+// 2026-10-16 — input / output / cache hits / 5-minute cache writes.
 const ANTHROPIC_MODELS: OpenClawModelDefinition[] = [
   {
-    id: "claude-opus-4-7",
-    name: "Claude Opus 4.7",
-    contextWindow: 200000,
+    id: "claude-sonnet-5",
+    name: "Claude Sonnet 5",
+    contextWindow: 1000000,
     maxTokens: 32000,
     reasoning: true,
     vision: true,
     input: ["text", "image"],
-    cost: { input: 15, output: 75, cacheRead: 1.5, cacheWrite: 18.75 },
+    cost: { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 },
+  },
+  {
+    id: "claude-opus-4-7",
+    name: "Claude Opus 4.7",
+    contextWindow: 1000000,
+    maxTokens: 32000,
+    reasoning: true,
+    vision: true,
+    input: ["text", "image"],
+    cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
   },
   {
     id: "claude-sonnet-4-6",
     name: "Claude Sonnet 4.6",
-    contextWindow: 200000,
+    contextWindow: 1000000,
     maxTokens: 16000,
     reasoning: true,
     vision: true,
@@ -64,7 +100,7 @@ const ANTHROPIC_MODELS: OpenClawModelDefinition[] = [
     reasoning: false,
     vision: true,
     input: ["text", "image"],
-    cost: { input: 0.8, output: 4, cacheRead: 0.08, cacheWrite: 1 },
+    cost: { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 },
   },
 ];
 
@@ -74,39 +110,43 @@ const ANTHROPIC_MODELS: OpenClawModelDefinition[] = [
 // synthetic OpenAI/Google cache discount, because a hardcoded price silently
 // goes stale between releases. The schema only requires the fields to be
 // present; accurate, refreshable provider pricing is tracked in #677.
+//
+// Input/output: developers.openai.com/api/docs/pricing, read 2026-10-16, the
+// tier for prompts up to 272K tokens.
 const OPENAI_MODELS: OpenClawModelDefinition[] = [
   {
     id: "gpt-5.5",
     name: "GPT-5.5",
-    contextWindow: 128000,
+    contextWindow: 1050000,
     maxTokens: 32000,
     reasoning: false,
     vision: true,
     input: ["text", "image"],
-    cost: { input: 2.5, output: 10, cacheRead: 0, cacheWrite: 0 },
+    cost: { input: 5, output: 30, cacheRead: 0, cacheWrite: 0 },
   },
   {
     id: "gpt-5.4",
     name: "GPT-5.4",
-    contextWindow: 128000,
+    contextWindow: 1050000,
     maxTokens: 16384,
     reasoning: false,
     vision: true,
     input: ["text", "image"],
-    cost: { input: 2.5, output: 10, cacheRead: 0, cacheWrite: 0 },
+    cost: { input: 2.5, output: 15, cacheRead: 0, cacheWrite: 0 },
   },
   {
     id: "gpt-5.4-mini",
     name: "GPT-5.4 Mini",
-    contextWindow: 128000,
+    contextWindow: 400000,
     maxTokens: 16384,
     reasoning: false,
     vision: true,
     input: ["text", "image"],
-    cost: { input: 0.15, output: 0.6, cacheRead: 0, cacheWrite: 0 },
+    cost: { input: 0.75, output: 4.5, cacheRead: 0, cacheWrite: 0 },
   },
 ];
 
+// Prices: ai.google.dev/gemini-api/docs/pricing, read 2026-10-16.
 const GOOGLE_MODELS: OpenClawModelDefinition[] = [
   {
     id: "gemini-2.5-pro",
@@ -126,7 +166,7 @@ const GOOGLE_MODELS: OpenClawModelDefinition[] = [
     reasoning: true,
     vision: true,
     input: ["text", "image"],
-    cost: { input: 0.15, output: 0.6, cacheRead: 0, cacheWrite: 0 },
+    cost: { input: 0.3, output: 2.5, cacheRead: 0, cacheWrite: 0 },
   },
   {
     id: "gemini-2.5-flash-lite",
