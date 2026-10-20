@@ -107,23 +107,54 @@ async function waitForReplies(since: string, timeoutMs: number) {
 }
 
 /**
- * Send the peer's message until a reply contains `needle`. Re-sends only after
- * the previous turn answered, or after a window long enough that no turn is
- * still running (see the steering note at the call site).
+ * Wait until the peer's chat has gone quiet: no new bot reply for `quietMs`.
+ * A reply carries nothing that ties it to the message it answers, and one turn
+ * can send more than one message (the E2E model's error reply does). Sending
+ * only into a quiet chat is what makes "the first reply after my send" mean
+ * "the answer to my send" — and keeps the previous test's late replies out of
+ * the next one.
+ */
+async function waitForQuietChat(quietMs = 5_000, timeoutMs = 180_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  let count = (await getBotResponses(TG_PEER_ID)).length;
+  let quietSince = Date.now();
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 1000));
+    const now = (await getBotResponses(TG_PEER_ID)).length;
+    if (now !== count) {
+      count = now;
+      quietSince = Date.now();
+    } else if (Date.now() - quietSince >= quietMs) {
+      return;
+    }
+  }
+  throw new Error(`Chat ${TG_PEER_ID} never went quiet within ${timeoutMs}ms`);
+}
+
+/** Send once into a quiet chat and return the first reply's text ("" if none came). */
+async function sendAndReadAnswer(text: string, timeoutMs = 150_000): Promise<string> {
+  await waitForQuietChat();
+  const sentAt = new Date().toISOString();
+  await sendTelegramMessage({ ...PEER_MESSAGE, text });
+  const [first] = await waitForReplies(sentAt, timeoutMs);
+  return first?.text ?? "";
+}
+
+/**
+ * Send the peer's message until the answer contains `needle`. Each send waits
+ * for the previous turn to finish answering (see the steering note at the call
+ * site), so the turns never overlap.
  */
 async function sendUntilReplyMatches(needle: string, { deadlineMs }: { deadlineMs: number }) {
   const deadline = Date.now() + deadlineMs;
-  let seen: string[] = [];
+  const seen: string[] = [];
   while (Date.now() < deadline) {
-    const sentAt = new Date(Date.now() - 500).toISOString();
-    await sendTelegramMessage(PEER_MESSAGE);
-    const replies = await waitForReplies(sentAt, Math.min(150_000, deadline - Date.now()));
-    seen = replies.map((r) => r.text);
-    const match = seen.find((t) => t.includes(needle));
-    if (match) return match;
+    const answer = await sendAndReadAnswer(PEER_MESSAGE.text);
+    if (answer.includes(needle)) return answer;
+    seen.push(answer);
   }
   throw new Error(
-    `No reply containing "${needle}" before the deadline; last replies: ${JSON.stringify(seen)}`
+    `No reply containing "${needle}" before the deadline; answers: ${JSON.stringify(seen)}`
   );
 }
 
@@ -176,7 +207,7 @@ test.describe.serial("Blocking budget — Telegram", () => {
   });
 
   test("a used-up blocking budget stops a linked user's Telegram turn and says why", async ({}, testInfo) => {
-    testInfo.setTimeout(420000);
+    testInfo.setTimeout(480000);
 
     // Link the peer. A message injected while the channel restarts after
     // connectBot can be lost, so re-send until the pairing reply lands.
@@ -201,7 +232,7 @@ test.describe.serial("Blocking budget — Telegram", () => {
     // is running is steered into it, and OpenClaw waits up to 120 s for a
     // steered message that a blocked turn will never commit. The exit
     // condition is the assertion itself.
-    const reply = await sendUntilReplyMatches(BLOCK_TEXT, { deadlineMs: 240_000 });
+    const reply = await sendUntilReplyMatches(BLOCK_TEXT, { deadlineMs: 300_000 });
 
     // OpenClaw wraps the gate's message: "Your message could not be sent: …".
     expect(reply).toContain(BLOCK_TEXT);
@@ -213,16 +244,15 @@ test.describe.serial("Blocking budget — Telegram", () => {
     expect(row.detail.channel).toBe("telegram");
   });
 
-  test("raising the budget reopens the agent on the next Telegram message", async () => {
+  test("raising the budget reopens the agent on the next Telegram message", async ({}, testInfo) => {
+    testInfo.setTimeout(300000);
     await removeBudgetSeed(agentId);
 
     // A block is never cached while Pinchy answers, so the very next turn is
     // asked afresh and reaches the model. The E2E model answers with an error
     // reply, and that reply arriving at all is the proof a turn ran.
-    const sentAt = new Date(Date.now() - 500).toISOString();
-    await sendTelegramMessage({ ...PEER_MESSAGE, text: "And now?" });
-    const replies = await waitForReplies(sentAt, 90_000);
-    expect(replies.length).toBeGreaterThan(0);
-    expect(replies.some((r) => r.text.includes(BLOCK_TEXT))).toBe(false);
+    const answer = await sendAndReadAnswer("And now?", 90_000);
+    expect(answer, "the unblocked turn should answer").not.toBe("");
+    expect(answer).not.toContain(BLOCK_TEXT);
   });
 });
