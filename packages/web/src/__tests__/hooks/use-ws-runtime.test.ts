@@ -3022,6 +3022,66 @@ describe("useWsRuntime", () => {
     }
   );
 
+  it.each([
+    [
+      "policy_personal_agent_disabled",
+      "Personal agents are turned off on this instance. Ask your admin if you need yours back.",
+    ],
+    ["policy_budget_exhausted", "This agent has used its monthly budget."],
+  ])(
+    "shows a %s refusal without a Retry button — retrying cannot succeed until an admin acts",
+    (code, message) => {
+      const { result } = renderHook(() => useWsRuntime("agent-1"));
+      const ws = wsInstances[0];
+
+      act(() => {
+        ws.simulateOpen();
+      });
+      act(() => {
+        store(result.current.runtime).onNew({
+          content: [{ type: "text", text: "Hello" }],
+          parentId: "root",
+        });
+      });
+      act(() => {
+        ws.simulateMessage({ type: "error", code, message });
+      });
+
+      const messages = store(result.current.runtime).messages;
+      const errorMsg = messages.find(
+        (m: any) => m.role === "assistant" && m.metadata?.custom?.error
+      );
+      expect(errorMsg).toBeDefined();
+      expect(errorMsg!.metadata!.custom.error).toEqual({ message });
+      expect(errorMsg!.metadata!.custom.retryable).toBeUndefined();
+      expect(result.current.isRunning).toBe(false);
+    }
+  );
+
+  it("ends the history wait when the history request itself is refused by a policy", () => {
+    const { result } = renderHook(() => useWsRuntime("agent-1"));
+    const ws = wsInstances[0];
+
+    act(() => {
+      ws.simulateOpen();
+    });
+    expect(result.current.isHistoryLoaded).toBe(false);
+
+    // An open tab reconnects after the admin switched personal agents off: the
+    // server answers the history request with the refusal, not with history.
+    act(() => {
+      ws.simulateMessage({
+        type: "error",
+        code: "policy_personal_agent_disabled",
+        message: "Personal agents are turned off on this instance.",
+      });
+    });
+
+    // Waiting on would end in the history timeout, which reads as a network
+    // fault instead of the explanation the bubble carries.
+    expect(result.current.isHistoryLoaded).toBe(true);
+  });
+
   // ── status reducer ───────────────────────────────────────────────────────────
   describe("status reducer", () => {
     it("includes clientMessageId in the outgoing WS frame", async () => {

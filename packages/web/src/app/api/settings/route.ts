@@ -5,6 +5,7 @@ import { getOrgTimezone, setOrgTimezone, isValidIanaTimezone } from "@/lib/setti
 import { appendAuditLog } from "@/lib/audit";
 import { parseRequestBody } from "@/lib/api-validation";
 import { orgSettingSchema } from "@/lib/schemas/settings";
+import { isPolicyKey } from "@/lib/instance-policy";
 
 export async function GET() {
   const sessionOrError = await requireAdmin();
@@ -25,6 +26,15 @@ export async function POST(request: NextRequest) {
   const parsed = await parseRequestBody(orgSettingSchema, request);
   if ("error" in parsed) return parsed.error;
   const { key, value } = parsed.data;
+
+  // The member-access switches have their own route: it audits a from/to diff
+  // and refreshes OpenClaw and Telegram, neither of which happens here.
+  if (isPolicyKey(key)) {
+    return NextResponse.json(
+      { error: `${key} is set through PUT /api/settings/governance` },
+      { status: 400 }
+    );
+  }
 
   if (key === "org.timezone") {
     // Validate client input first (400). Persistence failures below are NOT

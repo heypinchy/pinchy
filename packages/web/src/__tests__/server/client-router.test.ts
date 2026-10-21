@@ -85,6 +85,18 @@ vi.mock("@/lib/enterprise", () => ({
   getLicenseState: vi.fn().mockResolvedValue("paid"),
 }));
 
+const { mockGetInstancePolicy, mockGetExhaustedBlockingBudget } = vi.hoisted(() => ({
+  mockGetInstancePolicy: vi.fn(),
+  mockGetExhaustedBlockingBudget: vi.fn(),
+}));
+vi.mock("@/lib/budgets", () => ({
+  getExhaustedBlockingBudget: mockGetExhaustedBlockingBudget,
+}));
+vi.mock("@/lib/instance-policy", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/instance-policy")>();
+  return { ...actual, getInstancePolicy: mockGetInstancePolicy };
+});
+
 vi.mock("@/db", () => ({
   db: {
     query: {
@@ -268,6 +280,13 @@ describe("ClientRouter", () => {
 
     // Default: agent exists and is accessible
     mockFindFirst.mockResolvedValue(defaultAgent);
+    // Default: members may use their personal agent and its automations.
+    mockGetInstancePolicy.mockResolvedValue({
+      memberPersonalAgents: true,
+      memberAutomations: true,
+    });
+    // Default: no budget has stopped anything.
+    mockGetExhaustedBlockingBudget.mockResolvedValue(null);
     // Default: user has no context
     mockUserFindFirst.mockResolvedValue({ id: "user-1", context: null });
     // Default: empty history for history-mode requests
@@ -2838,6 +2857,183 @@ describe("ClientRouter", () => {
       } finally {
         vi.useRealTimers();
       }
+    });
+  });
+
+  describe("an agent a blocking budget has stopped this month", () => {
+    const exhausted = {
+      id: "budget-1",
+      agent: { id: "agent-1", name: "Smithers" },
+      monthlyLimitUsd: 50,
+      onExceeded: "block",
+      spentUsd: 51.2,
+      period: "2026-10",
+      state: "exceeded",
+    };
+
+    it("refuses a send with a policy code instead of forwarding it to OpenClaw", async () => {
+      mockGetExhaustedBlockingBudget.mockResolvedValue(exhausted);
+      const clientWs = createMockClientWs();
+
+      await router.handleMessage(clientWs as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+      });
+
+      expect(mockChat).not.toHaveBeenCalled();
+      expect(mockGetExhaustedBlockingBudget).toHaveBeenCalledWith("agent-1");
+      const messages = clientWs.sent.map((s) => JSON.parse(s));
+      expect(messages).toHaveLength(1);
+      expect(messages[0]).toMatchObject({ type: "error", code: "policy_budget_exhausted" });
+      expect(messages[0].message).toMatch(/monthly budget/i);
+    });
+
+    it("says so when it is the whole instance's budget, not this agent's", async () => {
+      mockGetExhaustedBlockingBudget.mockResolvedValue({ ...exhausted, agent: null });
+      const clientWs = createMockClientWs();
+
+      await router.handleMessage(clientWs as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+      });
+
+      const [frame] = clientWs.sent.map((s) => JSON.parse(s));
+      expect(frame.message).toMatch(/this Pinchy/i);
+    });
+
+    it("audits the refused send with the budget it hit", async () => {
+      mockGetExhaustedBlockingBudget.mockResolvedValue(exhausted);
+      const clientWs = createMockClientWs();
+
+      await router.handleMessage(clientWs as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+      });
+
+      expect(mockAppendAuditLog).toHaveBeenCalledWith({
+        actorType: "user",
+        actorId: "user-1",
+        eventType: "chat.policy_refused",
+        resource: "agent:agent-1",
+        detail: {
+          reason: "budget_exhausted",
+          agent: { id: "agent-1", name: "Smithers" },
+          budget: { id: "budget-1", period: "2026-10" },
+        },
+        outcome: "failure",
+      });
+    });
+
+    it("still serves history — reading what was said costs nothing", async () => {
+      mockGetExhaustedBlockingBudget.mockResolvedValue(exhausted);
+      const clientWs = createMockClientWs();
+
+      await router.handleMessage(clientWs as any, { type: "history", agentId: "agent-1" });
+
+      expect(mockSessionsHistory).toHaveBeenCalled();
+      expect(mockGetExhaustedBlockingBudget).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("a member's personal agent while members may not use one", () => {
+    const ownSmithers = {
+      id: "agent-1",
+      name: "Smithers",
+      ownerId: "user-1",
+      isPersonal: true,
+      greetingMessage: "Hello.",
+    };
+
+    beforeEach(() => {
+      mockGetInstancePolicy.mockResolvedValue({
+        memberPersonalAgents: false,
+        memberAutomations: true,
+      });
+      mockFindFirst.mockResolvedValue(ownSmithers);
+    });
+
+    it("refuses the send with a policy code instead of forwarding it to OpenClaw", async () => {
+      const clientWs = createMockClientWs();
+
+      await router.handleMessage(clientWs as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+      });
+
+      expect(mockChat).not.toHaveBeenCalled();
+      const messages = clientWs.sent.map((s) => JSON.parse(s));
+      expect(messages).toHaveLength(1);
+      // `policy_` is the family the client renders without a Retry button —
+      // retrying cannot succeed until an admin changes the setting.
+      expect(messages[0]).toMatchObject({
+        type: "error",
+        code: "policy_personal_agent_disabled",
+      });
+      expect(messages[0].message).toMatch(/turned off/i);
+    });
+
+    it("audits the refused send with the agent snapshotted by name", async () => {
+      const clientWs = createMockClientWs();
+
+      await router.handleMessage(clientWs as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+      });
+
+      expect(mockAppendAuditLog).toHaveBeenCalledWith({
+        actorType: "user",
+        actorId: "user-1",
+        eventType: "chat.policy_refused",
+        resource: "agent:agent-1",
+        detail: { reason: "personal_agent_disabled", agent: { id: "agent-1", name: "Smithers" } },
+        outcome: "failure",
+      });
+    });
+
+    it("refuses history as well, without an audit row per reconnect", async () => {
+      const clientWs = createMockClientWs();
+
+      await router.handleMessage(clientWs as any, { type: "history", agentId: "agent-1" });
+
+      expect(mockSessionsHistory).not.toHaveBeenCalled();
+      const messages = clientWs.sent.map((s) => JSON.parse(s));
+      expect(messages[0]).toMatchObject({ type: "error", code: "policy_personal_agent_disabled" });
+      expect(mockAppendAuditLog).not.toHaveBeenCalled();
+    });
+
+    it("still lets the member stop a run that is already going — stopping is never what the policy is against", async () => {
+      const chatAbort = vi.fn().mockResolvedValue({ ok: true, aborted: true });
+      Object.assign(mockOpenClawClient, { chatAbort });
+      const clientWs = createMockClientWs();
+
+      await router.handleMessage(clientWs as any, { type: "abort", agentId: "agent-1" });
+
+      // The admin switched personal agents off mid-run. Refusing the stop
+      // would leave the run spending until it finished on its own.
+      expect(chatAbort).toHaveBeenCalledTimes(1);
+      const messages = clientWs.sent.map((s) => JSON.parse(s));
+      expect(messages.some((m) => m.code === "policy_personal_agent_disabled")).toBe(false);
+    });
+
+    it("lets an admin keep using their own Smithers", async () => {
+      const adminRouter = new ClientRouter(
+        mockOpenClawClient as any,
+        "admin-1",
+        "admin",
+        sessionCache
+      );
+      mockFindFirst.mockResolvedValue({ ...ownSmithers, ownerId: "admin-1" });
+      const clientWs = createMockClientWs();
+
+      await adminRouter.handleMessage(clientWs as any, { type: "history", agentId: "agent-1" });
+
+      const messages = clientWs.sent.map((s) => JSON.parse(s));
+      expect(messages.some((m) => m.code === "policy_personal_agent_disabled")).toBe(false);
     });
   });
 

@@ -1,10 +1,15 @@
 import { eq } from "drizzle-orm";
-import { notFound } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
 
 import { db } from "@/db";
 import { activeAgents } from "@/db/schema";
 import { requireAuth } from "@/lib/require-auth";
-import { assertAgentAccess, canWriteAgent, effectiveVisibility } from "@/lib/agent-access";
+import {
+  assertAgentAccess,
+  canWriteAgent,
+  effectiveVisibility,
+  isPersonalAgentPausedFor,
+} from "@/lib/agent-access";
 import { getUserGroupIds, getAgentGroupIds } from "@/lib/groups";
 import { getLicenseState } from "@/lib/enterprise";
 import { getAgentAvatarSvg } from "@/lib/avatar";
@@ -78,6 +83,11 @@ export async function loadChatPageAgent(agentId: string) {
   } catch {
     notFound();
   }
+
+  // The owner of a personal agent members may not use right now. Not a 404:
+  // it is their own agent and they know it exists. `/agents` says why it is
+  // gone from their sidebar.
+  if (await isPersonalAgentPausedFor(agent, userRole)) redirect("/agents");
 
   const avatarUrl = getAgentAvatarSvg({ avatarSeed: agent.avatarSeed, name: agent.name });
   // The same predicate the write routes enforce, not a second spelling of it:

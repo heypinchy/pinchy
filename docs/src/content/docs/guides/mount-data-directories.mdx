@@ -185,9 +185,9 @@ Three consequences worth stating plainly:
 
 - It happens at index time, for **every** scanned page in the corpus, whether or not anyone ever asks about that document. A Word document or slide deck counts here too: it is indexed through its converted PDF, so a page of it that holds only an image is read the same way a scan is.
 - It uses the same vision model Pinchy already picks for reading PDFs in chat, so a scan reads the same way whether the index read it or an agent did. On Anthropic, Google and OpenAI that's the provider's balanced model — see [Which model Pinchy picks](/guides/llm-providers/#which-model-pinchy-picks).
-- It happens once per document, not once per question.
+- It happens once per document, not once per question. With the [nightly reindex](/guides/create-knowledge-base-agent/#keeping-the-index-current) that means the night a scan first lands in a granted folder; an unchanged scan is skipped before anything is extracted. The exception is a scan the vision model found no text in: it stays `unsearchable` and is read again on every run, the nightly one included — which is how a provider outage heals by itself, and also means a blank scan is sent again each night.
 
-If that is not acceptable for your instance, set `PINCHY_KB_OCR=off` in your environment and restart. Indexing then skips scanned pages entirely, nothing leaves the building, and those documents are reported as `unsearchable` instead — visible, not silent.
+If that is not acceptable for your instance, set `PINCHY_KB_OCR=off` in your environment and restart. Indexing — manual and nightly alike — then skips scanned pages entirely, nothing leaves the building, and those documents are reported as `unsearchable` instead — visible, not silent.
 
 Two limits to know:
 

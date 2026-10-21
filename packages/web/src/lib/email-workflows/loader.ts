@@ -1,6 +1,8 @@
 import { eq } from "drizzle-orm";
 import { db } from "@/db";
-import { agents, emailWorkflows, emailWorkflowConnections } from "@/db/schema";
+import { agents, emailWorkflows, emailWorkflowConnections, users } from "@/db/schema";
+import { getInstancePolicy, arePersonalAutomationsPaused } from "@/lib/instance-policy";
+import { getBlockedByBudgets } from "@/lib/budgets";
 import type { WorkflowForDispatch } from "@/lib/email-workflows/dispatch";
 
 /**
@@ -95,8 +97,20 @@ export interface WorkflowLoadResult {
  * workflow with no connections before this function can see it at all — not in
  * `units`, not in `unrunnable`, and therefore not in the set of ids the sweep
  * writes `status` for, so it went on displaying `active` while doing nothing.
+ *
+ * A workflow the instance policy pauses (Settings → Organization → Member
+ * access: a member's personal agent, with member automations or personal
+ * agents switched off) is skipped and NOT reported. Nothing is wrong with it —
+ * `unrunnable` would turn it into an `error` badge — and it resumes, `enabled`
+ * untouched, the moment the switch is turned back on. The Automations tab says
+ * why it is not running.
+ *
+ * The same goes for an agent a blocking cost budget (#36) has stopped this
+ * month — its own budget or the instance's. It resumes when the month rolls
+ * over or an admin raises the budget.
  */
 export async function loadDispatchableWorkflows(): Promise<WorkflowLoadResult> {
+  const [policy, blocked] = await Promise.all([getInstancePolicy(), getBlockedByBudgets()]);
   const rows = await db
     .select({
       workflowId: emailWorkflows.id,
@@ -108,11 +122,13 @@ export async function loadDispatchableWorkflows(): Promise<WorkflowLoadResult> {
       createdBy: emailWorkflows.createdBy,
       isPersonal: agents.isPersonal,
       ownerId: agents.ownerId,
+      ownerRole: users.role,
       connectionId: emailWorkflowConnections.connectionId,
       sinceTs: emailWorkflowConnections.sinceTs,
     })
     .from(emailWorkflows)
     .innerJoin(agents, eq(agents.id, emailWorkflows.agentId))
+    .leftJoin(users, eq(users.id, agents.ownerId))
     .leftJoin(emailWorkflowConnections, eq(emailWorkflowConnections.workflowId, emailWorkflows.id))
     .where(eq(emailWorkflows.enabled, true));
 
@@ -144,6 +160,11 @@ export async function loadDispatchableWorkflows(): Promise<WorkflowLoadResult> {
       report(row, row.isPersonal ? "personal-agent-has-no-owner" : "shared-agent-has-no-creator");
       continue;
     }
+    // Paused by policy or budget — not broken, so neither a unit nor
+    // `unrunnable`. Checked after the faults above, so a pause never hides an
+    // automation that could not run anyway.
+    if (arePersonalAutomationsPaused(row, row.ownerRole, policy)) continue;
+    if (blocked.instance || blocked.agentIds.has(row.agentId)) continue;
     units.push({
       workflow: {
         id: row.workflowId,

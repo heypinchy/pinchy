@@ -45,6 +45,8 @@ const mockPost = vi.mocked(apiPost);
 type Job = {
   id: string;
   status: "pending" | "running" | "succeeded" | "failed";
+  trigger?: "manual" | "scheduled";
+  unavailableFolders?: number;
   processed: number;
   total: number | null;
   processedBytes: number;
@@ -609,6 +611,153 @@ describe("KnowledgeReindexSection", () => {
       await tick(30);
 
       expect(screen.queryByText(/left/i)).not.toBeInTheDocument();
+    });
+  });
+
+  // "Do I still have to press the button?" — the question an admin brings to
+  // this section. The answer is the nightly reindex, so the section says
+  // whether it covers this agent and when it runs next.
+  describe("the nightly reindex", () => {
+    const nightly = {
+      enabled: true,
+      time: "02:00",
+      timezone: "Europe/Vienna",
+      nextRun: { date: "2026-10-17", time: "02:00", day: "tomorrow" },
+      included: true,
+    };
+
+    it("says the index updates itself every night, and when next", async () => {
+      mockGet.mockResolvedValue({ job: null, schedule: nightly });
+
+      render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} />);
+
+      expect(
+        await screen.findByText(
+          "New and changed documents are picked up every night at 02:00 (Europe/Vienna). Next run: tomorrow at 02:00."
+        )
+      ).toBeInTheDocument();
+    });
+
+    it("says today when the next run is still ahead today", async () => {
+      mockGet.mockResolvedValue({
+        job: null,
+        schedule: { ...nightly, nextRun: { date: "2026-10-17", time: "02:00", day: "today" } },
+      });
+
+      render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} />);
+
+      expect(await screen.findByText(/Next run: today at 02:00\./)).toBeInTheDocument();
+    });
+
+    it("says so when the nightly reindex is off, and where to turn it on", async () => {
+      mockGet.mockResolvedValue({
+        job: null,
+        schedule: { ...nightly, enabled: false, nextRun: null },
+      });
+
+      render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} />);
+
+      expect(
+        await screen.findByText(
+          "The nightly reindex is off, so new documents show up only when you reindex. You can turn it on in Settings → Organization."
+        )
+      ).toBeInTheDocument();
+    });
+
+    // An agent that reads files but never searches is not swept — saying
+    // "every night" under it would be a promise the schedule does not keep.
+    it("says the nightly reindex leaves out an agent that doesn't search the knowledge base", async () => {
+      mockGet.mockResolvedValue({ job: null, schedule: { ...nightly, included: false } });
+
+      render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} />);
+
+      expect(
+        await screen.findByText(
+          "The nightly reindex skips this agent because it doesn't use knowledge search. Reindex it here when its documents change."
+        )
+      ).toBeInTheDocument();
+      expect(screen.queryByText(/every night at/)).not.toBeInTheDocument();
+    });
+
+    it("says nothing about it while no directory is granted", async () => {
+      mockGet.mockResolvedValue({ job: null, schedule: { ...nightly, included: false } });
+
+      render(<KnowledgeReindexSection agentId="a1" allowedPathCount={0} />);
+
+      await waitFor(() => expect(screen.getByText(/grant.*director/i)).toBeInTheDocument());
+      expect(screen.queryByText(/nightly reindex/i)).not.toBeInTheDocument();
+      expect(screen.queryByText(/every night/i)).not.toBeInTheDocument();
+    });
+
+    it("says when the last run was the nightly one", async () => {
+      mockGet.mockResolvedValue({
+        schedule: nightly,
+        job: job({
+          status: "succeeded",
+          trigger: "scheduled",
+          counts: { indexed: 1, skipped: 40, removed: 0, unsearchable: 0, failed: 0 },
+        }),
+      });
+
+      render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} />);
+
+      expect(await screen.findByText(/^Last indexed automatically /)).toBeInTheDocument();
+    });
+
+    // A share that failed to mount shows up as a success with a hole in it:
+    // the other folders were indexed. Saying only "Last indexed automatically
+    // today" there is how the hole goes unnoticed for weeks.
+    it("says when a finished run had to leave folders as they were", async () => {
+      mockGet.mockResolvedValue({
+        schedule: nightly,
+        job: job({
+          status: "succeeded",
+          trigger: "scheduled",
+          unavailableFolders: 2,
+          counts: { indexed: 1, skipped: 40, removed: 0, unsearchable: 0, failed: 0 },
+        }),
+      });
+
+      render(<KnowledgeReindexSection agentId="a1" allowedPathCount={3} />);
+
+      expect(
+        await screen.findByText(
+          "2 folders couldn't be read, so their documents were left as they were. If they live on a network share, check that it is mounted."
+        )
+      ).toBeInTheDocument();
+    });
+
+    it("says nothing about unread folders when every folder was read", async () => {
+      mockGet.mockResolvedValue({
+        schedule: nightly,
+        job: job({
+          status: "succeeded",
+          trigger: "scheduled",
+          unavailableFolders: 0,
+          counts: { indexed: 1, skipped: 40, removed: 0, unsearchable: 0, failed: 0 },
+        }),
+      });
+
+      render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} />);
+
+      await waitFor(() => expect(screen.getByText(/^Last indexed /)).toBeInTheDocument());
+      expect(screen.queryByText(/couldn't be read/)).not.toBeInTheDocument();
+    });
+
+    it("keeps the plain wording for an admin's run", async () => {
+      mockGet.mockResolvedValue({
+        schedule: nightly,
+        job: job({
+          status: "succeeded",
+          trigger: "manual",
+          counts: { indexed: 1, skipped: 40, removed: 0, unsearchable: 0, failed: 0 },
+        }),
+      });
+
+      render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} />);
+
+      await waitFor(() => expect(screen.getByText(/^Last indexed /)).toBeInTheDocument());
+      expect(screen.queryByText(/automatically/)).not.toBeInTheDocument();
     });
   });
 

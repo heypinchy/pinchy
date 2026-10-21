@@ -28,6 +28,21 @@ async function makeAgent(name = "Smithers") {
   return agent;
 }
 
+/** Matches a Postgres constraint violation by name, wherever the driver put it. */
+function violates(pattern: RegExp) {
+  return (err: unknown) => {
+    const e = err as {
+      message?: unknown;
+      cause?: { message?: unknown; constraint?: unknown };
+      constraint?: unknown;
+    };
+    const text = [e?.message, e?.cause?.message, e?.cause?.constraint, e?.constraint]
+      .filter((v): v is string => typeof v === "string")
+      .join(" ");
+    return pattern.test(text);
+  };
+}
+
 function enqueueArgs(
   agentId: string,
   overrides: Partial<Parameters<typeof enqueueIndexJob>[0]> = {}
@@ -64,6 +79,49 @@ describe("kb index job store", () => {
     expect(result.job.processed).toBe(0);
     expect(result.job.total).toBeNull();
     expect(result.job.startedAt).toBeNull();
+  });
+
+  // An admin's click is the default: every job that existed before the nightly
+  // schedule was one, and the column's default says so for those rows too.
+  it("records a job as manual unless the caller says otherwise", async () => {
+    const agent = await makeAgent();
+
+    const { job } = await enqueueIndexJob(enqueueArgs(agent.id));
+
+    expect(job.trigger).toBe("manual");
+    expect(job.sweepId).toBeNull();
+  });
+
+  // The nightly sweep queues one job per agent; the sweep id is what ties them
+  // back together, and what keeps a restarted scheduler from queueing an agent
+  // twice for the same night.
+  it("records a scheduled job with the sweep it belongs to", async () => {
+    const agent = await makeAgent();
+    const sweepId = "6f1c2b64-6c3e-4a2f-9c19-5c1d3a1f2e77";
+
+    const { job } = await enqueueIndexJob(
+      enqueueArgs(agent.id, { requestedBy: "kb-index-scheduler", trigger: "scheduled", sweepId })
+    );
+
+    expect(job.trigger).toBe("scheduled");
+    expect(job.sweepId).toBe(sweepId);
+  });
+
+  // Asserted by constraint name, not by "it threw": an insert into a column
+  // that does not exist throws too, and would pass a bare toThrow().
+  it("refuses a trigger the schema does not know", async () => {
+    const agent = await makeAgent();
+
+    await expect(
+      db.insert(kbIndexJobs).values({
+        orgId: ORG_ID,
+        agentId: agent.id,
+        agentName: "Smithers",
+        requestedBy: "admin-1",
+        paths: ["/data/hr"],
+        trigger: "cron" as never,
+      })
+    ).rejects.toSatisfy(violates(/kb_index_jobs_trigger_check/));
   });
 
   // The index is corpus-wide and embedding is CPU-bound on a 1.5-core

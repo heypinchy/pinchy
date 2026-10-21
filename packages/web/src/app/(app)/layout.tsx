@@ -9,6 +9,7 @@ import { AppShell } from "@/components/app-shell";
 import { AgentsProvider } from "@/components/agents-provider";
 import { SidebarProvider, SidebarInset } from "@/components/ui/sidebar";
 import { EnterpriseBanner } from "@/components/enterprise-banner";
+import { BudgetBanner } from "@/components/budget-banner";
 import { InsecureBanner } from "@/components/insecure-banner";
 import { DevToolbar } from "@/components/dev-toolbar";
 import { ChatSessionProvider } from "@/components/chat-session-provider";
@@ -45,6 +46,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
           <SidebarInset className="h-dvh overflow-hidden">
             <InsecureBanner isAdmin={isAdmin} />
             <EnterpriseBanner isAdmin={isAdmin} />
+            <BudgetBanner isAdmin={isAdmin} />
             <AppShell isAdmin={isAdmin}>{children}</AppShell>
           </SidebarInset>
         </SidebarProvider>

@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 import { headers } from "next/headers";
 import { requireAuth } from "@/lib/require-auth";
 import { getVisibleAgents } from "@/lib/visible-agents";
+import { getInstancePolicy } from "@/lib/instance-policy";
 import { AgentsPageContent } from "./agents-page-content";
 
 export const metadata: Metadata = {
@@ -22,9 +23,14 @@ export default async function AgentsPage() {
   const userAgent = headerStore.get("user-agent") ?? "";
   const isMobile = MOBILE_UA_PATTERN.test(userAgent);
 
-  if (!isMobile && visibleAgents.length > 0) {
+  // A member whose personal agent is switched off is sent here from its chat
+  // URL. Stay and say why it is gone, instead of jumping on to a shared agent.
+  const personalAgentsOff =
+    userRole !== "admin" && !(await getInstancePolicy()).memberPersonalAgents;
+
+  if (!isMobile && visibleAgents.length > 0 && !personalAgentsOff) {
     redirect(`/chat/${visibleAgents[0].id}`);
   }
 
-  return <AgentsPageContent agents={visibleAgents} />;
+  return <AgentsPageContent agents={visibleAgents} personalAgentsOff={personalAgentsOff} />;
 }

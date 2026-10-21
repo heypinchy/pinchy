@@ -32,6 +32,7 @@ describe("the ocr detail", () => {
       outcome: "success",
       pathCount: 1,
       jobId: "job-1",
+      trigger: "manual",
       ocr: workerTally,
     });
 
@@ -53,8 +54,47 @@ describe("the ocr detail", () => {
       outcome: "success",
       pathCount: 1,
       jobId: "job-1",
+      trigger: "manual",
     });
 
     expect(entry.detail).not.toHaveProperty("ocr");
+  });
+});
+
+describe("the trigger", () => {
+  // A run nobody asked for is still a run on the record. Whether an admin
+  // clicked or the nightly schedule fired is the first question anyone reading
+  // the trail asks, and `actorId` only answers it by spelling convention.
+  it("says an admin's request was manual", () => {
+    const entry = reindexAuditEntry({
+      actorType: "user",
+      actorId: "admin-1",
+      agent,
+      outcome: "success",
+      pathCount: 1,
+      jobId: "job-1",
+      trigger: "manual",
+    });
+
+    expect(entry.detail).toMatchObject({ trigger: "manual" });
+    expect(entry.detail).not.toHaveProperty("sweepId");
+  });
+
+  // One night is one sweep across every knowledge-base agent. The sweepId
+  // correlates its rows from a single drill-down query, the same contract
+  // every batched maintenance operation keeps (AGENTS.md).
+  it("ties a scheduled run to the sweep it belongs to", () => {
+    const entry = reindexAuditEntry({
+      actorType: "system",
+      actorId: KB_INDEX_WORKER_ACTOR,
+      agent,
+      outcome: "success",
+      pathCount: 1,
+      jobId: "job-1",
+      trigger: "scheduled",
+      sweepId: "sweep-1",
+    });
+
+    expect(entry.detail).toMatchObject({ trigger: "scheduled", sweepId: "sweep-1" });
   });
 });

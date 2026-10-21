@@ -11,8 +11,10 @@ import {
   agentConnectionPermissions,
   integrationConnections,
   channelLinks,
+  users,
 } from "@/db/schema";
 import { getSetting, getSettingsByPrefix } from "@/lib/settings";
+import { getInstancePolicy, isPausedPersonalAgent } from "@/lib/instance-policy";
 import { computeAllowedTools, EMAIL_OPERATION_DISPLAY_ORDER } from "@/lib/tool-registry";
 import type { AgentPluginConfig } from "@/db/schema";
 import {
@@ -1541,8 +1543,29 @@ export async function regenerateOpenClawConfig() {
         liveAgents.filter((a) => a.isPersonal).map((a) => [a.ownerId, a.id])
       );
 
+      // Members may be barred from personal agents (Settings → Organization →
+      // Member access). Then a member gets no binding at all — skipping only
+      // their own would hand them the fallback below, the bot owner's private
+      // agent. The allow store leaves them out as well (telegram-allow-store).
+      // Roles are read only when the switch is off.
+      const policy = await getInstancePolicy();
+      const roleByUser = policy.memberPersonalAgents
+        ? null
+        : new Map(
+            (await db.select({ id: users.id, role: users.role }).from(users)).map((u) => [
+              u.id,
+              u.role,
+            ])
+          );
+
       for (const { accountId } of personalBotsAccountIds) {
         for (const link of telegramLinks) {
+          if (
+            roleByUser &&
+            isPausedPersonalAgent({ isPersonal: true }, roleByUser.get(link.userId), policy)
+          ) {
+            continue;
+          }
           // Route to user's own personal agent, or fall back to the bot owner's agent
           const targetAgentId = personalAgentsByOwner.get(link.userId) || accountId;
           bindings.push({

@@ -3,6 +3,7 @@ import { isNull } from "drizzle-orm";
 import { recordSessionTurnsUsage } from "@/lib/usage-per-turn";
 import { db } from "@/db";
 import { agents, users } from "@/db/schema";
+import { evaluateBudgetAlerts } from "@/lib/budgets";
 
 const DEFAULT_POLL_INTERVAL_MS = 60_000;
 // Never poll faster than once per second, regardless of the override —
@@ -244,9 +245,17 @@ export function startUsagePoller(openclawClient: OpenClawClient): void {
   if (pollInterval) return;
 
   pollInterval = setInterval(() => {
-    pollAllSessions(openclawClient).catch((err) => {
-      console.error("[usage-poller] Unexpected error:", err);
-    });
+    pollAllSessions(openclawClient)
+      .catch((err) => {
+        console.error("[usage-poller] Unexpected error:", err);
+      })
+      // Cost budgets (#36): spend only moves when usage is recorded, so the
+      // sweep is the natural moment to look for a crossed 80%/100% line. Runs
+      // even after a failed poll — web-chat turns are recorded outside it.
+      .then(() => evaluateBudgetAlerts())
+      .catch((err) => {
+        console.error("[usage-poller] Budget check failed:", err);
+      });
   }, getPollIntervalMs());
 }
 

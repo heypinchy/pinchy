@@ -20,6 +20,7 @@ import { and, eq, like } from "drizzle-orm";
 import { db } from "@/db";
 import { agents, auditLog, kbIndexJobs, usageRecords } from "@/db/schema";
 import { enqueueIndexJob } from "@/lib/knowledge/index-jobs";
+import { setSetting } from "@/lib/settings";
 import { runNextIndexJob, _resetKbIndexWorkerForTest } from "@/server/kb-index-worker";
 
 vi.mock("@/lib/knowledge/kb-embedder", () => ({
@@ -32,6 +33,11 @@ vi.mock("@/lib/knowledge/embeddings", async (importOriginal) => ({
 }));
 vi.mock("@/lib/knowledge/kb-ocr", () => ({ resolveKbOcr: vi.fn() }));
 vi.mock("@/lib/knowledge/pdf-extract", () => ({ extractPdfPages: vi.fn() }));
+// Only reached by the case that runs the REAL resolveKbOcr: a vision model is
+// available, so the operator's switch is the only thing that can stop OCR.
+vi.mock("@/lib/openclaw-config/default-media-models", () => ({
+  resolveDefaultVisionModelChain: vi.fn(async () => ["anthropic/claude-haiku-4-5-20251001"]),
+}));
 
 const { resolveKbOcr } = await import("@/lib/knowledge/kb-ocr");
 const { extractPdfPages } = await import("@/lib/knowledge/pdf-extract");
@@ -175,5 +181,83 @@ describe("without a vision model", () => {
     // Absent, not zeroed: a missing field reads as "nothing was sent".
     const detail = await outcomeAuditDetail(job.id);
     expect(detail).not.toHaveProperty("ocr");
+  });
+});
+
+// The nightly schedule queues ordinary jobs and this worker runs them; there is
+// no scheduled indexing path of its own. These two cases pin that for the one
+// step that sends document content off the machine: a night OCRs new scans
+// exactly as an admin's run would — and an operator's "off" stops it exactly
+// as it stops an admin's run.
+describe("a scheduled run", () => {
+  async function enqueueScheduledAndRun() {
+    const agent = await makeAgent();
+    const dir = join(tmpRoot, "docs");
+    seedScanPdf(dir);
+    const { job } = await enqueueIndexJob({
+      orgId: ORG_ID,
+      agentId: agent.id,
+      agentName: agent.name,
+      requestedBy: "kb-index-scheduler",
+      paths: [dir],
+      trigger: "scheduled",
+      sweepId: "4b0c8a52-1f5e-4f7e-9d0e-6a2b8f3c1d77",
+    });
+    const ran = await runNextIndexJob();
+    expect(ran).not.toBeNull();
+    return { job };
+  }
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("honours PINCHY_KB_OCR=off exactly as an admin's run does", async () => {
+    // The real resolver, not a stand-in: the switch lives inside it, and the
+    // claim is that a scheduled run reaches it like any other.
+    const actual =
+      await vi.importActual<typeof import("@/lib/knowledge/kb-ocr")>("@/lib/knowledge/kb-ocr");
+    mockResolveKbOcr.mockImplementation(actual.resolveKbOcr);
+    // Everything OCR needs is in place — a vision model in the chain and its
+    // key — so the switch is the only thing left that can stop it.
+    await setSetting("anthropic_api_key", "sk-ant-test-not-a-real-key");
+    // Records what the worker asked for without ever calling the vision model:
+    // if the switch fails, the assertion below says so instead of a request
+    // leaving the test.
+    mockExtractPdfPages.mockImplementation(async () => [{ page: 1, text: "" }]);
+    vi.stubEnv("PINCHY_KB_OCR", "off");
+
+    const { job } = await enqueueScheduledAndRun();
+
+    expect(mockExtractPdfPages).toHaveBeenCalled();
+    for (const [, opts] of mockExtractPdfPages.mock.calls) {
+      expect(opts?.ocr).toBeUndefined();
+    }
+    const usage = await db
+      .select()
+      .from(usageRecords)
+      .where(eq(usageRecords.sessionKey, `kb-index:${job.id}`));
+    expect(usage).toHaveLength(0);
+    const detail = await outcomeAuditDetail(job.id);
+    expect(detail).toMatchObject({ trigger: "scheduled" });
+    expect(detail).not.toHaveProperty("ocr");
+  });
+
+  it("sends new scans to the vision model and says so on the record", async () => {
+    mockResolveKbOcr.mockImplementation(async (deps) => ({
+      model: OCR_MODEL,
+      ocrPage: async () => {
+        deps?.onUsage?.({ inputTokens: 900, outputTokens: 40 });
+        return "AFNOR VALIDATION";
+      },
+    }));
+
+    const { job } = await enqueueScheduledAndRun();
+
+    const detail = await outcomeAuditDetail(job.id);
+    expect(detail).toMatchObject({
+      trigger: "scheduled",
+      ocr: { model: OCR_MODEL, documents: 1, pages: 1, skippedPages: 2 },
+    });
   });
 });
