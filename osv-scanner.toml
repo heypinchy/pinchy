@@ -1,19 +1,17 @@
 # OSV Scanner configuration
 # https://google.github.io/osv-scanner/configuration/
 
-# Vulnerabilities in devDependencies that do not ship in the production Docker
-# image. These packages are only present in the lockfile because
-# openclaw (added as a devDependency for the schema-validation
-# integration test) pulls them in.
-#
-# Careful: the SAME openclaw version is also the runtime of the OpenClaw image,
-# which installs it with `npm install -g` (Dockerfile.openclaw). That install
-# reads neither this lockfile nor the root `pnpm.overrides`, and openclaw pins
-# several dependencies exactly. A root override therefore clears the scanner for
-# openclaw's dev tree only; the image keeps whatever openclaw pins. Before
-# accepting or overriding a finding that routes through openclaw, check its
-# pinned version (`npm view openclaw@<version> dependencies`) — the real fix
-# for those is an openclaw bump (update-openclaw skill).
+# openclaw is in the lockfile twice over: as a devDependency of packages/web
+# (the schema-validation integration test) and as the only dependency of
+# packages/openclaw-runtime, which IS the runtime of the OpenClaw image —
+# Dockerfile.openclaw installs it from this lockfile with --frozen-lockfile. So
+# a finding routed through openclaw ships in production, and a root
+# `pnpm.overrides` entry is a real fix for it: the image gets the overridden
+# version. Bound such an override to the dependent's major
+# (openclaw-runtime-closure.test.ts fails otherwise). Still outside the lockfile
+# in that image: the llama-cpp provider (`openclaw plugins install`, npm) and
+# the /opt/pinchy-*-deps bundles (npm install of each plugin's package.json) —
+# a scan here says nothing about those.
 #
 # MAL-2026-3432, GHSA-w5hq-g745-h8pq (uuid) and GHSA-q8mj-m7cp-5q26 (qs) were
 # dropped 2026-07-21, and GHSA-v2v4-37r5-5v8g (with MAL-2026-3432 as its alias)

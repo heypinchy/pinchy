@@ -172,6 +172,14 @@ openclaw/openclaw --json state,closedAt`). But **"issue closed" is
    - `packages/web/package.json` → `devDependencies.openclaw`
    - `packages/openclaw-runtime/package.json` → `dependencies.openclaw`
    - `Dockerfile.openclaw` → `@openclaw/llama-cpp-provider@<release>`
+   - Run `pnpm install` and read the "Ignored build scripts" box: every new
+     entry is a dependency install script the image build will now REFUSE
+     (`strict-dep-builds`). Read the script, then either allow it
+     (`pnpm.onlyBuiltDependencies`) or record that skipping it is safe
+     (`pnpm.ignoredBuiltDependencies`).
+   - `openclaw-runtime-closure.test.ts` fails if a root override now pushes a
+     dependency of the new tree outside its declared major; bound the
+     override rather than accepting it.
    - Check `npm view openclaw@<target> engines.node` against `.nvmrc` —
      2026.9.x requires Node >=24.16, which means a repo-wide Node bump
      (`scripts/lib/node-version-pin.mjs`) before the OpenClaw bump.
