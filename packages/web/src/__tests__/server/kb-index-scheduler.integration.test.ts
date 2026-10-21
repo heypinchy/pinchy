@@ -34,7 +34,7 @@ import { zeroIngestResult } from "@/lib/knowledge/types";
 import type { IngestDeps } from "@/lib/knowledge/ingest";
 import { runNextIndexJob, _resetKbIndexWorkerForTest } from "@/server/kb-index-worker";
 import {
-  runKbIndexSchedulerTick,
+  runKbIndexSchedulerTick as tickScheduler,
   _resetKbIndexSchedulerForTest,
 } from "@/server/kb-index-scheduler";
 
@@ -47,6 +47,11 @@ vi.mock("@/lib/knowledge/kb-embedder", async (importOriginal) => ({
 let tmpRoot: string;
 
 beforeEach(async () => {
+  // A fixed clock before every date the cases simulate, so a row written
+  // before the first tick does not land on the day the suite happens to run
+  // (see runKbIndexSchedulerTick below).
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date("2026-10-01T00:00:00Z"));
   tmpRoot = mkdtempSync(join(tmpdir(), "pinchy-kb-scheduler-test-"));
   _resetKbIndexSchedulerForTest();
   _resetKbIndexWorkerForTest();
@@ -57,8 +62,26 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   rmSync(tmpRoot, { recursive: true, force: true });
 });
+
+/**
+ * One scheduler tick at `now`, with the process clock moved there too.
+ *
+ * The scheduler takes its time from `now`, but the rows it reads were written
+ * by code that asks the real clock — the worker stamps `finishedAt` with
+ * `new Date()`. Left on the real clock, a job "finished" on the day the suite
+ * runs, and once that day passed a simulated slot every sweep after it read
+ * the previous night's job as a run of THIS night and skipped the agent: the
+ * suite went red on 2026-10-21 with no code change. Moving the clock with the
+ * tick keeps every timestamp in the test on one timeline.
+ */
+async function runKbIndexSchedulerTick(opts: { now: Date }) {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(opts.now);
+  await tickScheduler(opts);
+}
 
 /** A UTC instant for a Vienna wall-clock time in October 2026 (CEST, UTC+2). */
 function vienna(date: string, time: string): Date {
