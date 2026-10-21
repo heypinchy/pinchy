@@ -57,6 +57,23 @@ budget, so the last known answer stands.
 The runtime's own fail-closed policy is never reached: the handler catches its
 own errors and bounds its own fetch (3 s, below the 15 s hook timeout).
 
+After a failed check the gate answers from what it knows for 10 s before it asks
+again, and warns once per outage: during one, every run of every agent would
+otherwise pay the 3 s timeout and write a log line. A definitive rejection (a
+4xx such as a rotated gateway token) is logged as "blocking budgets are not
+enforced", because it does not heal on its own.
+
+The last answer lives in the plugin's memory. It survives a Pinchy restart, but
+not an OpenClaw restart or a re-run of `register()`: when both containers
+restart together, paused agents answer until Pinchy is up. Persisting it would
+need storage on the OpenClaw side for one bounded window, so the guide says so
+instead.
+
+The fields beside `agentId` are audit detail only, so the route drops a
+malformed one rather than answering 400 — a 400 reads as "unreachable" here and
+would switch the budget off for every run. For the same reason the lookups that
+only shape the audit row (agent name, actor) fall back instead of throwing.
+
 ## Shape
 
 - `POST /api/internal/budgets/check` (gateway token): `{ agentId, sessionKey?,
@@ -72,6 +89,11 @@ message }`. On a block it writes `chat.policy_refused` with
   same in the browser and on Telegram.
 - The browser door in `client-router.ts` stays: it refuses before a run exists
   and shows the message in the chat UI rather than as a failed run.
+- Inbox workflows: the loader skips a paused workflow when a batch starts, but a
+  budget crossed mid-batch is refused by the gate. The run adapter asks the
+  budget before each run and again after a failed one, and defers
+  (`RunDeferredError`) instead of finalizing the email `failed` — a budget
+  pauses a workflow, it does not break it.
 
 ## Not throttled
 

@@ -21,12 +21,18 @@ export type UpsertBudgetInput = z.infer<typeof upsertBudgetSchema>;
  * `before_agent_run` gate before every OpenClaw run, on every channel. The
  * fields beside `agentId` come from OpenClaw's hook context and only shape the
  * audit row of a refusal.
+ *
+ * Those fields are dropped, not rejected, when they arrive malformed (`null`,
+ * a number, too long): the plugin lets a run through on any error answer, so
+ * a 400 over an audit detail would switch the budget off for every run.
  */
+const optionalDetail = (max: number) => z.string().max(max).optional().catch(undefined);
+
 export const budgetCheckSchema = z.object({
   agentId: z.string().min(1).max(200),
-  sessionKey: z.string().max(500).optional(),
-  channel: z.string().max(100).optional(),
-  senderId: z.string().max(200).optional(),
-  trigger: z.string().max(100).optional(),
+  sessionKey: optionalDetail(500),
+  channel: optionalDetail(100),
+  senderId: optionalDetail(200),
+  trigger: optionalDetail(100),
 });
 export type BudgetCheckInput = z.infer<typeof budgetCheckSchema>;

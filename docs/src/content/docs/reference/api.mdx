@@ -861,12 +861,14 @@ The plugin never sends the prompt, the conversation or the system prompt — onl
 
 `{ "blocked": false }` when nothing stops the run; that answer writes nothing. A refusal writes `chat.policy_refused` with `reason: "budget_exhausted"` and the `channel`, attributed to the Pinchy user when the session or a linked channel account names one, otherwise to the agent.
 
-The plugin reuses a `blocked: false` answer for the same agent for 15 seconds and never reuses a block, so raising a budget reopens the agent on the next message. When this endpoint can't be reached or answers with an error, the plugin lets the run through — unless its last answer for that agent was a block, which then stands.
+The plugin reuses a `blocked: false` answer for the same agent for 15 seconds and never reuses a block, so raising a budget reopens the agent on the next message. When this endpoint can't be reached or answers with an error, the plugin lets the run through — unless its last answer for that agent was a block, which then stands — and waits 10 seconds before asking again. It logs one warning per outage in the agent runtime's log, and says so when the endpoint answers again.
+
+`sessionKey`, `channel`, `senderId` and `trigger` only shape the audit row. One that isn't a string or is too long (500, 100, 200 and 100 characters) is dropped, not rejected: an error answer lets the run through, so rejecting an audit detail would switch the budget off.
 
 **Errors:**
 
-- `400` — no `agentId`
-- `401` — gateway token missing or wrong
+- `400` — `agentId` missing, empty, or longer than 200 characters
+- `401` — gateway token missing or wrong. The plugin lets every run through until the token matches again and says in its log that blocking budgets are not enforced.
 
 ## LLM Providers (admin only)
 

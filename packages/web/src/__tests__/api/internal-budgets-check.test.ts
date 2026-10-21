@@ -28,11 +28,11 @@ vi.mock("@/db", () => ({
   db: {
     query: {
       agents: { findFirst: agentsFindFirst },
-      users: { findFirst: usersFindFirst },
       channelLinks: { findFirst: channelLinksFindFirst },
     },
   },
 }));
+vi.mock("@/lib/user-id-case", () => ({ findUserIdIgnoringCase: usersFindFirst }));
 
 import { validateGatewayToken } from "@/lib/gateway-auth";
 import { POST } from "@/app/api/internal/budgets/check/route";
@@ -144,7 +144,7 @@ describe("POST /api/internal/budgets/check", () => {
   it("attributes a direct-session refusal to the user in the session key, in their real case", async () => {
     getExhaustedBlockingBudgetMock.mockResolvedValue(agentBudget());
     // OpenClaw lowercases session keys; users.id is mixed case.
-    usersFindFirst.mockResolvedValue({ id: "User-Abc" });
+    usersFindFirst.mockResolvedValue("User-Abc");
     await POST(
       makeRequest({ agentId: AGENT.id, sessionKey: `agent:${AGENT.id}:direct:user-abc:chat-1` })
     );
@@ -172,5 +172,73 @@ describe("POST /api/internal/budgets/check", () => {
     const res = await POST(makeRequest({ agentId: AGENT.id }));
     expect((await res.json()).blocked).toBe(true);
     expect(recordAuditFailureMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("still blocks when the actor lookup fails, attributing the refusal to the agent", async () => {
+    // The plugin lets a run through on any error answer, so a lookup that only
+    // shapes the audit row must never turn a block into a 500.
+    getExhaustedBlockingBudgetMock.mockResolvedValue(agentBudget());
+    channelLinksFindFirst.mockRejectedValue(new Error("pool timeout"));
+    const res = await POST(
+      makeRequest({ agentId: AGENT.id, channel: "telegram", senderId: "999888777" })
+    );
+    expect(res.status).toBe(200);
+    expect((await res.json()).blocked).toBe(true);
+    expect(appendAuditLogMock).toHaveBeenCalledWith(
+      expect.objectContaining({ actorType: "agent", actorId: AGENT.id })
+    );
+  });
+
+  it("still blocks when the agent lookup fails, naming the agent by its id", async () => {
+    getExhaustedBlockingBudgetMock.mockResolvedValue(agentBudget());
+    agentsFindFirst.mockRejectedValue(new Error("pool timeout"));
+    const res = await POST(makeRequest({ agentId: AGENT.id }));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      blocked: true,
+      message: `${AGENT.id} has used its monthly budget. It's available again next month, or sooner if your admin raises the budget.`,
+    });
+  });
+
+  it("drops malformed audit details instead of refusing the check", async () => {
+    // A 400 would read as "Pinchy unreachable" in the plugin and let every
+    // run through — a budget switched off by an audit detail.
+    getExhaustedBlockingBudgetMock.mockResolvedValue(agentBudget());
+    const res = await POST(
+      makeRequest({
+        agentId: AGENT.id,
+        sessionKey: "x".repeat(600),
+        channel: null,
+        senderId: 999888777,
+        trigger: "user",
+      })
+    );
+    expect(res.status).toBe(200);
+    expect((await res.json()).blocked).toBe(true);
+    expect(appendAuditLogMock.mock.calls[0][0].detail).toEqual({
+      reason: "budget_exhausted",
+      agent: { id: AGENT.id, name: AGENT.name },
+      budget: { id: "budget-1", period: "2026-10" },
+      trigger: "user",
+    });
+  });
+
+  it("prefers the linked channel account over a direct-looking session key", async () => {
+    // dmScope "per-peer" gives a Telegram DM a key shaped like a direct one,
+    // but its last segment is the Telegram peer, not a Pinchy user.
+    getExhaustedBlockingBudgetMock.mockResolvedValue(agentBudget());
+    channelLinksFindFirst.mockResolvedValue({ userId: "User-Abc" });
+    await POST(
+      makeRequest({
+        agentId: AGENT.id,
+        sessionKey: `agent:${AGENT.id}:direct:999888777`,
+        channel: "telegram",
+        senderId: "999888777",
+      })
+    );
+    expect(usersFindFirst).not.toHaveBeenCalled();
+    expect(appendAuditLogMock).toHaveBeenCalledWith(
+      expect.objectContaining({ actorType: "user", actorId: "User-Abc" })
+    );
   });
 });

@@ -408,6 +408,12 @@ const PASS: GateDecision = { outcome: "pass" };
 const BUDGET_PASS_CACHE_MS = 15_000;
 // Same Docker network, one indexed query: a healthy answer takes milliseconds.
 const BUDGET_CHECK_TIMEOUT_MS = 3_000;
+// After a failed check, answer from what is known for this long before asking
+// again: a down Pinchy must not add a 3s timeout to every run of every agent.
+const BUDGET_FAILURE_PAUSE_MS = 10_000;
+
+/** Pinchy answered, and will answer an identical request the same way. */
+class BudgetCheckRejected extends Error {}
 
 type BudgetAnswer = { blocked: false } | { blocked: true; message: string };
 
@@ -437,48 +443,77 @@ async function askBudget(cfg: PluginConfig, body: Record<string, unknown>): Prom
   });
   if (!res.ok) {
     const reason = await readErrorBody(res);
-    throw new Error(`budget check returned ${res.status}${reason ? `: ${reason}` : ""}`);
+    const message = `budget check returned ${res.status}${reason ? `: ${reason}` : ""}`;
+    throw isDefinitiveRejection(res.status) ? new BudgetCheckRejected(message) : new Error(message);
   }
   const answer = parseBudgetAnswer(await res.json());
   if (!answer) throw new Error("budget check returned an answer it could not read");
   return answer;
 }
 
+/** Only real strings: OpenClaw's context fields are typed, not guaranteed. */
+function stringField(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
 function createBudgetGate(cfg: PluginConfig, logger: PluginLogger | undefined) {
   // The last answer per agent, and when it came.
   const lastAnswer = new Map<string, { answer: BudgetAnswer; at: number }>();
+  // Pinchy-wide, not per agent: when one check fails, they all would.
+  let lastFailureAt: number | undefined;
+  let failing = false;
+
+  // What to do without an answer: keep a block, otherwise let the run through.
+  const fallback = (agentId: string): GateDecision => {
+    const last = lastAnswer.get(agentId);
+    return last?.answer.blocked ? budgetBlock(last.answer.message) : PASS;
+  };
 
   return async (_event: unknown, ctx: AgentRunContext): Promise<GateDecision> => {
-    const agentId = ctx.agentId ?? extractAgentIdFromSessionKey(ctx.sessionKey);
+    const agentId = stringField(ctx.agentId) ?? extractAgentIdFromSessionKey(ctx.sessionKey);
     if (!agentId) return PASS;
 
     const last = lastAnswer.get(agentId);
     if (last && !last.answer.blocked && Date.now() - last.at < BUDGET_PASS_CACHE_MS) return PASS;
+    if (lastFailureAt !== undefined && Date.now() - lastFailureAt < BUDGET_FAILURE_PAUSE_MS) {
+      return fallback(agentId);
+    }
 
     try {
       // Who and where only — never the prompt, the history or the system
       // prompt the hook is handed.
       const answer = await askBudget(cfg, {
         agentId,
-        sessionKey: ctx.sessionKey,
-        channel: ctx.channel ?? ctx.messageProvider,
-        senderId: ctx.senderId,
-        trigger: ctx.trigger,
+        sessionKey: stringField(ctx.sessionKey),
+        channel: stringField(ctx.channel) ?? stringField(ctx.messageProvider),
+        senderId: stringField(ctx.senderId),
+        trigger: stringField(ctx.trigger),
       });
       lastAnswer.set(agentId, { answer, at: Date.now() });
+      lastFailureAt = undefined;
+      if (failing) {
+        failing = false;
+        logger?.warn?.("[pinchy-audit] budget check answers again; blocking budgets are enforced");
+      }
       return answer.blocked ? budgetBlock(answer.message) : PASS;
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (last?.answer.blocked) {
+      lastFailureAt = Date.now();
+      const decision = fallback(agentId);
+      // Once per outage: during one, every run of every agent lands here.
+      if (!failing) {
+        failing = true;
+        const message = error instanceof Error ? error.message : String(error);
+        const effect =
+          error instanceof BudgetCheckRejected
+            ? "Pinchy rejected it, so blocking budgets are not enforced until this is fixed"
+            : decision.outcome === "block"
+              ? "keeping the last answer for paused agents and letting the others through"
+              : "letting runs through until Pinchy answers";
         logger?.warn?.(
-          `[pinchy-audit] budget check failed for agent ${agentId}, keeping the last answer (blocked): ${message}`
+          `[pinchy-audit] budget check failed for agent ${agentId}: ${message} — ${effect}`
         );
-        return budgetBlock(last.answer.message);
       }
-      logger?.warn?.(
-        `[pinchy-audit] budget check failed for agent ${agentId}, letting the run through: ${message}`
-      );
-      return PASS;
+      return decision;
     }
   };
 }

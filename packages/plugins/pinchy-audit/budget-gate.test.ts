@@ -193,4 +193,66 @@ describe("pinchy-audit before_agent_run budget gate", () => {
       expect(timeout.mock.calls[0][0]).toBeLessThanOrEqual(5_000);
     });
   });
+
+  it("sends only context fields that are strings", async () => {
+    const { gate } = await registerGate();
+    await gate(EVENT, { ...CTX, senderId: 999888777, trigger: null });
+    const body = JSON.parse((vi.mocked(fetch).mock.calls[0][1] as RequestInit).body as string);
+    expect(body).not.toHaveProperty("senderId");
+    expect(body).not.toHaveProperty("trigger");
+    expect(body.channel).toBe("telegram");
+  });
+
+  describe("during an outage", () => {
+    it("pauses before asking again, so a down Pinchy does not cost every run 3s", async () => {
+      vi.mocked(fetch).mockRejectedValue(new Error("connect ECONNREFUSED"));
+      const { gate } = await registerGate();
+      await gate(EVENT, CTX);
+      await gate(EVENT, { ...CTX, agentId: "agent-2", sessionKey: undefined });
+      expect(fetch).toHaveBeenCalledTimes(1);
+
+      vi.setSystemTime(new Date("2026-10-19T10:00:11Z"));
+      await gate(EVENT, CTX);
+      expect(fetch).toHaveBeenCalledTimes(2);
+    });
+
+    it("keeps a block through the pause", async () => {
+      vi.mocked(fetch)
+        .mockResolvedValueOnce(answer({ blocked: true, message: BLOCK_MESSAGE }) as never)
+        .mockRejectedValue(new Error("connect ECONNREFUSED"));
+      const { gate } = await registerGate();
+      await gate(EVENT, CTX);
+      await gate(EVENT, CTX);
+      expect(await gate(EVENT, CTX)).toMatchObject({ outcome: "block", message: BLOCK_MESSAGE });
+      expect(fetch).toHaveBeenCalledTimes(2);
+    });
+
+    it("warns once per outage, and says when Pinchy answers again", async () => {
+      vi.mocked(fetch).mockRejectedValue(new Error("connect ECONNREFUSED"));
+      const { gate, logger } = await registerGate();
+      await gate(EVENT, CTX);
+      vi.setSystemTime(new Date("2026-10-19T10:00:11Z"));
+      await gate(EVENT, CTX);
+      vi.setSystemTime(new Date("2026-10-19T10:00:22Z"));
+      await gate(EVENT, CTX);
+      expect(logger.warn).toHaveBeenCalledTimes(1);
+
+      vi.mocked(fetch).mockResolvedValue(answer({ blocked: false }) as never);
+      vi.setSystemTime(new Date("2026-10-19T10:00:33Z"));
+      await gate(EVENT, CTX);
+      expect(logger.warn).toHaveBeenCalledTimes(2);
+      expect(logger.warn).toHaveBeenLastCalledWith(expect.stringContaining("answers again"));
+    });
+
+    it("names a rejection Pinchy will repeat as budgets not being enforced", async () => {
+      // A 401 is not an outage that heals: a rotated token switches the gate
+      // off until someone looks, so the log must say exactly that.
+      vi.mocked(fetch).mockResolvedValue(answer({ error: "Unauthorized" }, 401) as never);
+      const { gate, logger } = await registerGate();
+      expect(await gate(EVENT, CTX)).toEqual({ outcome: "pass" });
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.stringContaining("blocking budgets are not enforced")
+      );
+    });
+  });
 });
