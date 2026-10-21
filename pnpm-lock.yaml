@@ -27,7 +27,7 @@ overrides:
   '@typescript-eslint/typescript-estree@>=8.0.0 <8.58.2': '>=8.58.2'
   postcss@<8.5.23: '>=8.5.23'
   fast-uri@<3.1.4: '>=3.1.4'
-  ajv>fast-uri: '>=4.1.5 <5'
+  ajv>fast-uri@<4.1.5: '>=4.1.5 <5'
   ip-address@>=10.0.0 <10.7.1: '>=10.7.1 <11'
   protobufjs@<7.5.8: '>=7.5.8'
   protobufjs@>=8.0.0 <8.6.6: '>=8.6.6 <9'
@@ -47,7 +47,7 @@ overrides:
   '@humanfs/node@<0.16.8': '>=0.16.8 <0.17'
   html-to-text@<10.0.1: '>=10.0.1 <11'
   source-map-js@<1.2.2: '>=1.2.2 <2'
-  node-llama-cpp>simple-git: '>=4.0.2 <5'
+  node-llama-cpp>simple-git@<4.0.2: '>=4.0.2 <5'
   '@modelcontextprotocol/sdk@<1.31.0': '>=1.31.0 <2'
   proxy-addr@<2.0.8: '>=2.0.8 <3'
 
@@ -139,9 +139,6 @@ importers:
       '@types/node':
         specifier: ^26.1.2
         version: 26.1.2
-      '@types/nodemailer':
-        specifier: ^8.0.1
-        version: 8.0.1
       typescript:
         specifier: ^6.0.3
         version: 6.0.3
@@ -446,9 +443,6 @@ importers:
       '@types/node':
         specifier: ^26.1.2
         version: 26.1.2
-      '@types/nodemailer':
-        specifier: ^8.0.1
-        version: 8.0.1
       '@types/prismjs':
         specifier: ^1.26.6
         version: 1.26.6
@@ -3375,9 +3369,6 @@ packages:
 
   '@types/node@26.1.2':
     resolution: {integrity: sha512-Vu4a5UFA9rIIFJ7rB/Vaafh9lrCQszopTCx6KjFboXTGQbPNasehVR5TEiithSDGyd1DEiUByggTZsg8jukeIg==}
-
-  '@types/nodemailer@8.0.1':
-    resolution: {integrity: sha512-PxpaInm8V1JQDd4j0ds5HfvWQk8JupS1C0Picb96QJsrrRDjBH+DlK7L4ZdNSqNULhiZRQHc40nLVShaGxXAMw==}
 
   '@types/pdfkit@0.17.6':
     resolution: {integrity: sha512-tIwzxk2uWKp0Cq9JIluQXJid77lYhF52EsIOwhsMF4iWLA6YneoBR1xVKYYdAysHuepUB0OX4tdwMiUDdGKmig==}
@@ -10680,10 +10671,6 @@ snapshots:
   '@types/node@26.1.2':
     dependencies:
       undici-types: 8.3.0
-
-  '@types/nodemailer@8.0.1':
-    dependencies:
-      '@types/node': 26.1.2
 
   '@types/pdfkit@0.17.6':
     dependencies:
