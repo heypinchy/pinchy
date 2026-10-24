@@ -14,7 +14,6 @@
     "nodemailer": "^10.1.4"
   },
   "devDependencies": {
-    "@types/mailparser": "^3.4.6",
     "@types/node": "^26.1.2",
     "typescript": "^6.0.3",
     "vitest": "^4.1.12"

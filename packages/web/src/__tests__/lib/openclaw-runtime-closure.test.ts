@@ -34,10 +34,7 @@ type Manifest = {
 };
 
 /** `<dependent name>><dependency name>` → why crossing the major is intended. */
-const ACCEPTED_CROSS_MAJOR: Record<string, string> = {
-  "ajv>fast-uri":
-    "Root override `ajv>fast-uri` (3b7278ddb) moves ajv@8's fast-uri to 4.x on purpose to clear the 4.x advisory line. Measured 2026-10-21: ajv 8.20.0's $ref resolution works on fast-uri 4.2.2.",
-};
+const ACCEPTED_CROSS_MAJOR: Record<string, string> = {};
 
 function readManifest(dir: string): Manifest {
   return JSON.parse(readFileSync(join(dir, "package.json"), "utf8")) as Manifest;
