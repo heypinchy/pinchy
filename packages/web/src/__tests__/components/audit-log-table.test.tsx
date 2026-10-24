@@ -5,6 +5,14 @@ import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
 import { toast } from "sonner";
 import { AuditLogTable } from "@/components/audit-log-table";
+import { jsonResponse } from "@/test-helpers/fetch";
+
+// The list and the event-type loads go through apiGet with an abort signal
+// (#1216), so fetch sees the init object as well as the URL.
+const CANCELLABLE_GET = expect.objectContaining({
+  method: "GET",
+  signal: expect.any(AbortSignal),
+});
 
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn() } }));
 
@@ -96,14 +104,12 @@ describe("AuditLogTable", () => {
    *   2. GET /api/audit?...          (useEffect depending on fetchEntries)
    */
   function mockEventTypesThenEntries(eventTypesOverride?: object, entriesOverride?: object) {
-    vi.mocked(global.fetch).mockResolvedValueOnce({
-      ok: true,
-      json: async () => eventTypesOverride ?? mockEventTypesResponse,
-    } as Response);
-    vi.mocked(global.fetch).mockResolvedValueOnce({
-      ok: true,
-      json: async () => entriesOverride ?? mockAuditResponse,
-    } as Response);
+    vi.mocked(global.fetch).mockResolvedValueOnce(
+      jsonResponse(eventTypesOverride ?? mockEventTypesResponse)
+    );
+    vi.mocked(global.fetch).mockResolvedValueOnce(
+      jsonResponse(entriesOverride ?? mockAuditResponse)
+    );
   }
 
   function renderWithEntriesLoaded() {
@@ -291,16 +297,16 @@ describe("AuditLogTable", () => {
       expect(screen.getAllByText("auth.login").length).toBeGreaterThan(0);
     });
 
-    vi.mocked(global.fetch).mockResolvedValueOnce({
-      ok: true,
-      json: async () => mockAuditResponse,
-    } as Response);
+    vi.mocked(global.fetch).mockResolvedValueOnce(jsonResponse(mockAuditResponse));
 
     const user = userEvent.setup();
     await user.type(screen.getByLabelText("From"), "2026-02-01");
 
     await waitFor(() => {
-      expect(global.fetch).toHaveBeenCalledWith(expect.stringContaining("from=2026-02-01"));
+      expect(global.fetch).toHaveBeenCalledWith(
+        expect.stringContaining("from=2026-02-01"),
+        CANCELLABLE_GET
+      );
     });
 
     vi.mocked(global.fetch).mockResolvedValueOnce({
@@ -338,10 +344,9 @@ describe("AuditLogTable", () => {
       expect(screen.getAllByText("auth.login").length).toBeGreaterThan(0);
     });
 
-    vi.mocked(global.fetch).mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ valid: true, totalChecked: 3, invalidIds: [] }),
-    } as Response);
+    vi.mocked(global.fetch).mockResolvedValueOnce(
+      jsonResponse({ valid: true, totalChecked: 3, invalidIds: [] })
+    );
 
     const user = userEvent.setup();
     await user.click(screen.getByRole("button", { name: "Verify Integrity" }));
@@ -366,16 +371,15 @@ describe("AuditLogTable", () => {
       expect(screen.getAllByText("auth.login").length).toBeGreaterThan(0);
     });
 
-    vi.mocked(global.fetch).mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({
+    vi.mocked(global.fetch).mockResolvedValueOnce(
+      jsonResponse({
         valid: true,
         totalChecked: 3,
         invalidIds: [],
         chainBreakIds: [],
         previousKeyIds: [1, 2],
-      }),
-    } as Response);
+      })
+    );
 
     const user = userEvent.setup();
     await user.click(screen.getByRole("button", { name: "Verify Integrity" }));
@@ -394,10 +398,9 @@ describe("AuditLogTable", () => {
       expect(screen.getAllByText("auth.login").length).toBeGreaterThan(0);
     });
 
-    vi.mocked(global.fetch).mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ valid: false, totalChecked: 3, invalidIds: [3, 17] }),
-    } as Response);
+    vi.mocked(global.fetch).mockResolvedValueOnce(
+      jsonResponse({ valid: false, totalChecked: 3, invalidIds: [3, 17] })
+    );
 
     const user = userEvent.setup();
     await user.click(screen.getByRole("button", { name: "Verify Integrity" }));
@@ -418,16 +421,15 @@ describe("AuditLogTable", () => {
       expect(screen.getAllByText("auth.login").length).toBeGreaterThan(0);
     });
 
-    vi.mocked(global.fetch).mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({
+    vi.mocked(global.fetch).mockResolvedValueOnce(
+      jsonResponse({
         valid: false,
         totalChecked: 9,
         invalidIds: [3],
         chainBreakIds: [],
         previousKeyIds: [1, 2],
-      }),
-    } as Response);
+      })
+    );
 
     const user = userEvent.setup();
     await user.click(screen.getByRole("button", { name: "Verify Integrity" }));
@@ -486,21 +488,20 @@ describe("AuditLogTable", () => {
     expect(nextButton).not.toBeDisabled();
 
     // Click Next
-    vi.mocked(global.fetch).mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({
+    vi.mocked(global.fetch).mockResolvedValueOnce(
+      jsonResponse({
         entries: mockEntries,
         total: 120,
         page: 2,
         limit: 50,
-      }),
-    } as Response);
+      })
+    );
 
     const user = userEvent.setup();
     await user.click(nextButton);
 
     await waitFor(() => {
-      expect(global.fetch).toHaveBeenCalledWith(expect.stringContaining("page=2"));
+      expect(global.fetch).toHaveBeenCalledWith(expect.stringContaining("page=2"), CANCELLABLE_GET);
     });
   });
 
@@ -524,21 +525,20 @@ describe("AuditLogTable", () => {
 
     const nextButton = screen.getByRole("button", { name: "Next" });
 
-    vi.mocked(global.fetch).mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({
+    vi.mocked(global.fetch).mockResolvedValueOnce(
+      jsonResponse({
         entries: mockEntries,
         // No `total` field — the page > 1 contract.
         page: 2,
         limit: 50,
-      }),
-    } as Response);
+      })
+    );
 
     const user = userEvent.setup();
     await user.click(nextButton);
 
     await waitFor(() => {
-      expect(global.fetch).toHaveBeenCalledWith(expect.stringContaining("page=2"));
+      expect(global.fetch).toHaveBeenCalledWith(expect.stringContaining("page=2"), CANCELLABLE_GET);
     });
     // Still "of 3" — the total from page 1 was retained, not reset.
     expect(screen.getByText("Page 2 of 3")).toBeInTheDocument();
@@ -566,7 +566,7 @@ describe("AuditLogTable", () => {
     render(<AuditLogTable />);
 
     await waitFor(() => {
-      expect(global.fetch).toHaveBeenCalledWith("/api/audit/event-types");
+      expect(global.fetch).toHaveBeenCalledWith("/api/audit/event-types", CANCELLABLE_GET);
     });
   });
 
@@ -601,7 +601,7 @@ describe("AuditLogTable", () => {
     renderWithEntriesLoaded();
 
     await waitFor(() => {
-      expect(global.fetch).toHaveBeenCalledWith("/api/audit?page=1&limit=50");
+      expect(global.fetch).toHaveBeenCalledWith("/api/audit?page=1&limit=50", CANCELLABLE_GET);
     });
   });
 
@@ -613,10 +613,7 @@ describe("AuditLogTable", () => {
     });
 
     // Mock the next fetch that will be triggered by changing the date inputs
-    vi.mocked(global.fetch).mockResolvedValueOnce({
-      ok: true,
-      json: async () => mockAuditResponse,
-    } as Response);
+    vi.mocked(global.fetch).mockResolvedValueOnce(jsonResponse(mockAuditResponse));
 
     const user = userEvent.setup();
     const fromInput = screen.getByLabelText("From");
@@ -627,21 +624,24 @@ describe("AuditLogTable", () => {
     await user.type(fromInput, "2026-02-01");
 
     await waitFor(() => {
-      expect(global.fetch).toHaveBeenCalledWith(expect.stringContaining("from=2026-02-01"));
+      expect(global.fetch).toHaveBeenCalledWith(
+        expect.stringContaining("from=2026-02-01"),
+        CANCELLABLE_GET
+      );
     });
 
     // Mock the next fetch for the "To" date change
-    vi.mocked(global.fetch).mockResolvedValueOnce({
-      ok: true,
-      json: async () => mockAuditResponse,
-    } as Response);
+    vi.mocked(global.fetch).mockResolvedValueOnce(jsonResponse(mockAuditResponse));
 
     // Set the "To" date
     await user.clear(toInput);
     await user.type(toInput, "2026-02-28");
 
     await waitFor(() => {
-      expect(global.fetch).toHaveBeenCalledWith(expect.stringContaining("to=2026-02-28"));
+      expect(global.fetch).toHaveBeenCalledWith(
+        expect.stringContaining("to=2026-02-28"),
+        CANCELLABLE_GET
+      );
     });
   });
 
@@ -892,10 +892,9 @@ describe("AuditLogTable", () => {
       expect(screen.getAllByText("auth.login").length).toBeGreaterThan(0);
     });
 
-    vi.mocked(global.fetch).mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ valid: false, totalChecked: 3, invalidIds: [1, 3] }),
-    } as Response);
+    vi.mocked(global.fetch).mockResolvedValueOnce(
+      jsonResponse({ valid: false, totalChecked: 3, invalidIds: [1, 3] })
+    );
 
     const user = userEvent.setup();
     await user.click(screen.getByRole("button", { name: "Verify Integrity" }));
@@ -918,10 +917,9 @@ describe("AuditLogTable", () => {
       expect(screen.getAllByText("auth.login").length).toBeGreaterThan(0);
     });
 
-    vi.mocked(global.fetch).mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ valid: false, totalChecked: 3, invalidIds: [1, 3] }),
-    } as Response);
+    vi.mocked(global.fetch).mockResolvedValueOnce(
+      jsonResponse({ valid: false, totalChecked: 3, invalidIds: [1, 3] })
+    );
 
     const user = userEvent.setup();
     await user.click(screen.getByRole("button", { name: "Verify Integrity" }));
@@ -960,10 +958,9 @@ describe("AuditLogTable", () => {
       expect(screen.getAllByText("auth.login").length).toBeGreaterThan(0);
     });
 
-    vi.mocked(global.fetch).mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ valid: false, totalChecked: 3, invalidIds: [1, 3] }),
-    } as Response);
+    vi.mocked(global.fetch).mockResolvedValueOnce(
+      jsonResponse({ valid: false, totalChecked: 3, invalidIds: [1, 3] })
+    );
 
     const user = userEvent.setup();
     await user.click(screen.getByRole("button", { name: "Verify Integrity" }));
@@ -1101,17 +1098,17 @@ describe("AuditLogTable", () => {
       expect(screen.getAllByText("auth.login").length).toBeGreaterThan(0);
     });
 
-    vi.mocked(global.fetch).mockResolvedValueOnce({
-      ok: true,
-      json: async () => mockAuditResponse,
-    } as Response);
+    vi.mocked(global.fetch).mockResolvedValueOnce(jsonResponse(mockAuditResponse));
 
     const user = userEvent.setup();
     await user.click(screen.getByRole("combobox", { name: "Status" }));
     await user.click(await screen.findByRole("option", { name: "Failures only" }));
 
     await waitFor(() => {
-      expect(global.fetch).toHaveBeenCalledWith(expect.stringContaining("status=failure"));
+      expect(global.fetch).toHaveBeenCalledWith(
+        expect.stringContaining("status=failure"),
+        CANCELLABLE_GET
+      );
     });
   });
 
@@ -1179,4 +1176,204 @@ describe("AuditLogTable", () => {
       expect(screen.getAllByText("user-abc…").length).toBeGreaterThan(0);
     });
   });
+});
+
+// #1216: both loaders used to run without a catch and without an abort, so a
+// failed audit query rendered "No entries found." — a failed lookup reading as
+// "nothing was logged" on the compliance surface — and a rejection that landed
+// after the test's fetch mock was restored ended the suite with exit 1.
+describe("AuditLogTable background loads (#1216)", () => {
+  const LIST = /^\/api\/audit\?/;
+  const EVENT_TYPES = "/api/audit/event-types";
+  type Route = "list" | "eventTypes";
+  let signals: Record<Route, Array<AbortSignal | undefined>>;
+  let fetchSpy: ReturnType<typeof vi.spyOn>;
+
+  function routeOf(url: string): Route | null {
+    if (url === EVENT_TYPES) return "eventTypes";
+    if (LIST.test(url)) return "list";
+    return null;
+  }
+
+  // Settles only by rejecting on abort, the way a real fetch does — so an
+  // unmount mid-flight exercises the abort path, not a hang.
+  function pendingUntilAbort(init?: RequestInit) {
+    return new Promise<Response>((_, reject) => {
+      init?.signal?.addEventListener("abort", () =>
+        reject(new DOMException("The operation was aborted.", "AbortError"))
+      );
+    });
+  }
+
+  function stubFetch(
+    overrides: Partial<Record<Route, "pending" | ((init?: RequestInit) => Promise<Response>)>> = {}
+  ) {
+    signals = { list: [], eventTypes: [] };
+    fetchSpy = vi.spyOn(global, "fetch").mockImplementation(((
+      input: string,
+      init?: RequestInit
+    ) => {
+      const route = routeOf(String(input));
+      if (!route) return Promise.resolve(jsonResponse({}));
+      signals[route].push(init?.signal ?? undefined);
+      const override = overrides[route];
+      if (override === "pending") return pendingUntilAbort(init);
+      if (override) return override(init);
+      return Promise.resolve(
+        jsonResponse(
+          route === "eventTypes"
+            ? { eventTypes: ["auth.login"] }
+            : { entries: [], total: 0, page: 1, limit: 50 }
+        )
+      );
+    }) as typeof fetch);
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    fetchSpy.mockRestore();
+  });
+
+  it("aborts both loads when the table unmounts", async () => {
+    stubFetch();
+    const { unmount } = render(<AuditLogTable />);
+    await waitFor(() => {
+      expect(signals.list).toHaveLength(1);
+      expect(signals.eventTypes).toHaveLength(1);
+    });
+    unmount();
+    expect(signals.list[0]?.aborted).toBe(true);
+    expect(signals.eventTypes[0]?.aborted).toBe(true);
+  });
+
+  it("says nothing when it unmounts mid-flight", async () => {
+    stubFetch({ list: "pending", eventTypes: "pending" });
+    const { unmount } = render(<AuditLogTable />);
+    await waitFor(() => expect(signals.list).toHaveLength(1));
+    unmount();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(toast.error).not.toHaveBeenCalled();
+  });
+
+  it("aborts the previous query when a filter changes", async () => {
+    let calls = 0;
+    stubFetch({
+      list: (init) => {
+        calls += 1;
+        // The first query lands so the filters render; every later one hangs
+        // until it is superseded.
+        return calls === 1
+          ? Promise.resolve(jsonResponse({ entries: [makeEntry()], total: 1, page: 1, limit: 50 }))
+          : pendingUntilAbort(init);
+      },
+    });
+    render(<AuditLogTable />);
+    await waitFor(() => expect(screen.getAllByText("auth.login").length).toBeGreaterThan(0));
+
+    const user = userEvent.setup();
+    const status = screen.getByRole("combobox", { name: "Status" });
+    await user.click(status);
+    await user.click(await screen.findByRole("option", { name: "Failures only" }));
+    await waitFor(() => expect(signals.list).toHaveLength(2));
+
+    await user.click(status);
+    await user.click(await screen.findByRole("option", { name: "Success only" }));
+    await waitFor(() => expect(signals.list).toHaveLength(3));
+
+    expect(signals.list[1]?.aborted).toBe(true);
+    expect(signals.list[2]?.aborted).toBe(false);
+    expect(toast.error).not.toHaveBeenCalled();
+  });
+
+  it("reports a rejected audit query instead of claiming nothing was logged", async () => {
+    stubFetch({ list: () => Promise.reject(new TypeError("Failed to fetch")) });
+    render(<AuditLogTable />);
+
+    await waitFor(() => {
+      expect(toast.error).toHaveBeenCalledWith(
+        "Couldn't load the audit log. Try refreshing the page."
+      );
+    });
+    expect(screen.queryByText("No entries found.")).not.toBeInTheDocument();
+    expect(screen.getByText("The audit log could not be loaded.")).toBeInTheDocument();
+  });
+
+  it("reports a 500 from the audit query with the server's own wording", async () => {
+    stubFetch({
+      list: () =>
+        Promise.resolve(jsonResponse({ error: "Audit query timed out" }, { status: 500 })),
+    });
+    render(<AuditLogTable />);
+
+    await waitFor(() => {
+      expect(toast.error).toHaveBeenCalledWith("Audit query timed out");
+    });
+    expect(screen.queryByText("No entries found.")).not.toBeInTheDocument();
+  });
+
+  it("drops the previous page's entries when a later query fails", async () => {
+    let calls = 0;
+    stubFetch({
+      list: () => {
+        calls += 1;
+        return calls === 1
+          ? Promise.resolve(jsonResponse({ entries: [makeEntry()], total: 1, page: 1, limit: 50 }))
+          : Promise.resolve(jsonResponse({ error: "Audit query timed out" }, { status: 500 }));
+      },
+    });
+    render(<AuditLogTable />);
+    await waitFor(() => expect(screen.getAllByText("auth.login").length).toBeGreaterThan(0));
+
+    const user = userEvent.setup();
+    await user.type(screen.getByLabelText("From"), "2026-02-01");
+
+    await waitFor(() => {
+      expect(screen.getByText("The audit log could not be loaded.")).toBeInTheDocument();
+    });
+    // The rows still on screen would belong to a different filter than the one
+    // the admin just set — stale evidence is worse than none.
+    expect(screen.queryAllByText("Alice Admin")).toHaveLength(0);
+  });
+
+  it("reports a failed event-type load for the filter", async () => {
+    stubFetch({
+      eventTypes: () => Promise.resolve(jsonResponse({ error: "Forbidden" }, { status: 403 })),
+    });
+    render(<AuditLogTable />);
+
+    await waitFor(() => {
+      expect(toast.error).toHaveBeenCalledWith("Forbidden");
+    });
+  });
+
+  it("reports a rejected event-type load with the fallback wording", async () => {
+    stubFetch({ eventTypes: () => Promise.reject(new TypeError("Failed to fetch")) });
+    render(<AuditLogTable />);
+
+    await waitFor(() => {
+      expect(toast.error).toHaveBeenCalledWith(
+        "Couldn't load the event types for the filter. Try refreshing the page."
+      );
+    });
+  });
+
+  function makeEntry() {
+    return {
+      id: 1,
+      timestamp: "2026-02-21T10:00:00.000Z",
+      actorType: "user",
+      actorId: "user-1",
+      actorName: "Alice Admin",
+      actorDeleted: false,
+      eventType: "auth.login",
+      resource: null,
+      resourceName: null,
+      resourceDeleted: false,
+      detail: {},
+      rowHmac: "abc123",
+    };
+  }
 });

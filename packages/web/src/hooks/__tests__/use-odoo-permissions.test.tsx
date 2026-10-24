@@ -1,8 +1,14 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { renderHook, act } from "@testing-library/react";
+import { render, renderHook, act, screen, waitFor } from "@testing-library/react";
+import "@testing-library/jest-dom";
+import { toast } from "sonner";
 import { flushPendingRenders } from "@/test-helpers/react";
+import { jsonResponse } from "@/test-helpers/fetch";
+import { OdooPermissionSection } from "@/components/odoo-permission-section";
 import { useOdooPermissions, type Connection } from "../use-odoo-permissions";
+
+vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn() } }));
 
 // Mock fetch — only used for /api/agents/:id/integrations (per-agent permissions)
 const mockFetch = vi.fn();
@@ -51,12 +57,9 @@ const CONNECTIONS: Connection[] = [
 function mockAgentPerms(agentPerms: unknown[] = []) {
   mockFetch.mockImplementation((url: string) => {
     if (url.match(/\/api\/agents\/.*\/integrations/)) {
-      return Promise.resolve({
-        ok: true,
-        json: () => Promise.resolve(agentPerms),
-      });
+      return Promise.resolve(jsonResponse(agentPerms));
     }
-    return Promise.resolve({ ok: false, json: () => Promise.resolve({}) });
+    return Promise.resolve(jsonResponse({}, { status: 404 }));
   });
 }
 
@@ -756,5 +759,125 @@ describe("useOdooPermissions", () => {
 
     const calls = mockFetch.mock.calls.map((c) => c[0] as string);
     expect(calls).not.toContain("/api/integrations");
+  });
+});
+
+// #1216: the load ran without a catch and without an abort. A failure left the
+// matrix rendered empty — "this agent has no Odoo access" — and a save from
+// that state would have replaced the real grants with whatever was clicked.
+describe("useOdooPermissions background load (#1216)", () => {
+  const ODOO = makeConnection("odoo-1", "Odoo Prod", [
+    { model: "sale.order", name: "Sales Order" },
+  ]);
+  const GRANTED = [
+    {
+      connectionId: "odoo-1",
+      connectionName: "Odoo Prod",
+      connectionType: "odoo",
+      permissions: [{ model: "sale.order", operation: "read" }],
+    },
+  ];
+  let signals: Array<AbortSignal | undefined>;
+
+  function stubLoad(answer: "pending" | (() => Promise<Response>)) {
+    signals = [];
+    mockFetch.mockImplementation((_url: string, init?: RequestInit) => {
+      signals.push(init?.signal ?? undefined);
+      if (answer !== "pending") return answer();
+      // Settles only by rejecting on abort, the way a real fetch does.
+      return new Promise<Response>((_, reject) => {
+        init?.signal?.addEventListener("abort", () =>
+          reject(new DOMException("The operation was aborted.", "AbortError"))
+        );
+      });
+    });
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("adopts the agent's saved grants", async () => {
+    stubLoad(() => Promise.resolve(jsonResponse(GRANTED)));
+    const { result } = renderHook(() => useOdooPermissions("agent-1", [ODOO]));
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.loadFailed).toBe(false);
+    expect(result.current.connectionId).toBe("odoo-1");
+    expect(result.current.getPermissions()).toEqual([{ model: "sale.order", operation: "read" }]);
+  });
+
+  it("aborts the load on unmount", async () => {
+    stubLoad(() => Promise.resolve(jsonResponse(GRANTED)));
+    const { unmount } = renderHook(() => useOdooPermissions("agent-1", [ODOO]));
+    await waitFor(() => expect(signals).toHaveLength(1));
+    unmount();
+    expect(signals[0]?.aborted).toBe(true);
+  });
+
+  it("aborts a superseded load when the connections change", async () => {
+    stubLoad("pending");
+    const { rerender } = renderHook(({ conns }) => useOdooPermissions("agent-1", conns), {
+      initialProps: { conns: [ODOO] },
+    });
+    await waitFor(() => expect(signals).toHaveLength(1));
+    rerender({ conns: [{ ...ODOO }] });
+    await waitFor(() => expect(signals).toHaveLength(2));
+    expect(signals[0]?.aborted).toBe(true);
+    expect(toast.error).not.toHaveBeenCalled();
+  });
+
+  it("says nothing when it unmounts mid-flight", async () => {
+    stubLoad("pending");
+    const { unmount } = renderHook(() => useOdooPermissions("agent-1", [ODOO]));
+    await waitFor(() => expect(signals).toHaveLength(1));
+    unmount();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(toast.error).not.toHaveBeenCalled();
+  });
+
+  it("reports a rejected load and flags it", async () => {
+    stubLoad(() => Promise.reject(new TypeError("Failed to fetch")));
+    const { result } = renderHook(() => useOdooPermissions("agent-1", [ODOO]));
+
+    await waitFor(() => {
+      expect(toast.error).toHaveBeenCalledWith(
+        "Couldn't load this agent's Odoo permissions. Try refreshing the page."
+      );
+    });
+    expect(result.current.loading).toBe(false);
+    expect(result.current.loadFailed).toBe(true);
+  });
+
+  it("reports a 500 with the server's own wording", async () => {
+    stubLoad(() => Promise.resolve(jsonResponse({ error: "Agent not found" }, { status: 500 })));
+    const { result } = renderHook(() => useOdooPermissions("agent-1", [ODOO]));
+
+    await waitFor(() => {
+      expect(toast.error).toHaveBeenCalledWith("Agent not found");
+    });
+    expect(result.current.loadFailed).toBe(true);
+  });
+
+  it("shows no matrix and reports nothing to the parent after a failed load", async () => {
+    stubLoad(() => Promise.reject(new TypeError("Failed to fetch")));
+    const onChange = vi.fn();
+    render(
+      <OdooPermissionSection
+        agentId="agent-1"
+        connections={[ODOO]}
+        onChange={onChange}
+        confirm={{}}
+        onConfirmChange={vi.fn()}
+      />
+    );
+
+    await waitFor(() => {
+      expect(
+        screen.getByText("This agent's Odoo permissions could not be loaded.")
+      ).toBeInTheDocument();
+    });
+    // Reporting "no config" here is what would let a save revoke real grants.
+    expect(onChange).not.toHaveBeenCalled();
   });
 });

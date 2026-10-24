@@ -1,5 +1,7 @@
 import { useState, useEffect, useMemo, useCallback } from "react";
+import { toast } from "sonner";
 import type { OdooAccessLevel } from "@/lib/tool-registry";
+import { apiGet, errorMessage } from "@/lib/api-client";
 
 const OPERATIONS = ["read", "create", "write", "delete"] as const;
 export type Operation = (typeof OPERATIONS)[number];
@@ -69,6 +71,12 @@ export function detectAccessLevelFromModels(models: Map<string, OperationFlags>)
   return "custom";
 }
 
+/** One row of `GET /api/agents/:id/integrations`. */
+interface AgentIntegrationEntry {
+  connectionId: string;
+  permissions: Array<{ model: string; operation: string }>;
+}
+
 export interface UseOdooPermissionsReturn {
   connections: Connection[];
   connectionId: string;
@@ -76,6 +84,8 @@ export interface UseOdooPermissionsReturn {
   addedModels: Map<string, OperationFlags>;
   availableModels: OdooModel[];
   loading: boolean;
+  /** The saved grants could not be read; offering an editor would invite a save that overwrites them. */
+  loadFailed: boolean;
 
   setConnectionId: (id: string) => void;
   setAccessLevel: (level: OdooAccessLevel) => void;
@@ -97,6 +107,7 @@ export function useOdooPermissions(
   const [accessLevel, setAccessLevelState] = useState<OdooAccessLevel>("read-only");
   const [addedModels, setAddedModels] = useState<Map<string, OperationFlags>>(new Map());
   const [loading, setLoading] = useState(true);
+  const [loadFailed, setLoadFailed] = useState(false);
 
   // Track initial state for dirty detection
   const [initialConnectionId, setInitialConnectionId] = useState("");
@@ -104,54 +115,62 @@ export function useOdooPermissions(
 
   // Load existing per-agent permissions
   useEffect(() => {
-    async function load() {
+    const controller = new AbortController();
+    const { signal } = controller;
+    void (async () => {
       try {
-        const permsRes = await fetch(`/api/agents/${agentId}/integrations`);
+        const data = await apiGet<AgentIntegrationEntry[]>(`/api/agents/${agentId}/integrations`, {
+          signal,
+        });
+        if (signal.aborted) return;
+        setLoadFailed(false);
+        // Only adopt permissions for the odoo connections we were given.
+        // Without this filter, the hook would pick up non-odoo entries
+        // (e.g. email) and cause the parent to send duplicate PUTs.
+        const odooConnectionIds = new Set(connections.map((c) => c.id));
+        const odooEntry = data.find((entry) => odooConnectionIds.has(entry.connectionId));
+        if (odooEntry) {
+          const connId = odooEntry.connectionId;
+          setConnectionIdState(connId);
+          setInitialConnectionId(connId);
 
-        if (permsRes.ok) {
-          const data = await permsRes.json();
-          // Only adopt permissions for the odoo connections we were given.
-          // Without this filter, the hook would pick up non-odoo entries
-          // (e.g. email) and cause the parent to send duplicate PUTs.
-          const odooConnectionIds = new Set(connections.map((c) => c.id));
-          const odooEntry = data.find((entry: { connectionId: string }) =>
-            odooConnectionIds.has(entry.connectionId)
-          );
-          if (odooEntry) {
-            const connId = odooEntry.connectionId;
-            setConnectionIdState(connId);
-            setInitialConnectionId(connId);
+          // Build models map from existing permissions
+          const models = new Map<string, OperationFlags>();
+          const permSet = new Set<string>();
 
-            // Build models map from existing permissions
-            const models = new Map<string, OperationFlags>();
-            const permSet = new Set<string>();
-
-            for (const perm of odooEntry.permissions) {
-              permSet.add(`${perm.model}:${perm.operation}`);
-              if (!models.has(perm.model)) {
-                models.set(perm.model, {
-                  read: false,
-                  create: false,
-                  write: false,
-                  delete: false,
-                });
-              }
-              const flags = models.get(perm.model)!;
-              if (OPERATIONS.includes(perm.operation as Operation)) {
-                flags[perm.operation as Operation] = true;
-              }
+          for (const perm of odooEntry.permissions) {
+            permSet.add(`${perm.model}:${perm.operation}`);
+            if (!models.has(perm.model)) {
+              models.set(perm.model, {
+                read: false,
+                create: false,
+                write: false,
+                delete: false,
+              });
             }
-
-            setInitialPermissions(permSet);
-            setAddedModels(models);
-            setAccessLevelState(detectAccessLevelFromModels(models));
+            const flags = models.get(perm.model)!;
+            if (OPERATIONS.includes(perm.operation as Operation)) {
+              flags[perm.operation as Operation] = true;
+            }
           }
+
+          setInitialPermissions(permSet);
+          setAddedModels(models);
+          setAccessLevelState(detectAccessLevelFromModels(models));
         }
+      } catch (err) {
+        if (signal.aborted) return;
+        // An empty matrix here would read as "no Odoo access", and saving from
+        // it would replace the real grants — so the section shows no matrix.
+        setLoadFailed(true);
+        toast.error(
+          errorMessage(err, "Couldn't load this agent's Odoo permissions. Try refreshing the page.")
+        );
       } finally {
-        setLoading(false);
+        if (!signal.aborted) setLoading(false);
       }
-    }
-    load();
+    })();
+    return () => controller.abort();
   }, [agentId, connections]);
 
   // Get the selected connection object
@@ -328,6 +347,7 @@ export function useOdooPermissions(
     addedModels,
     availableModels,
     loading,
+    loadFailed,
 
     setConnectionId,
     setAccessLevel,
