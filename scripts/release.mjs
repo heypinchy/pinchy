@@ -54,6 +54,7 @@ import {
   bumpMarketplaceVersion,
   bumpCaproverVersion,
 } from "./lib/marketplace-version.mjs";
+import { newestFrozenRelease } from "./lib/version-identity.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, "..");
@@ -106,20 +107,24 @@ log(`\nReleasing Pinchy ${tag}\n`);
 // ─── Upgrade notes gate ───────────────────────────────────────────────────────
 
 log("Checking upgrading.mdx has section for target version...");
-let prevVersion;
-try {
-  prevVersion = exec("git describe --tags --abbrev=0").replace(/^v/, "");
-} catch {
-  fail(
-    "No previous git tag found — cannot determine the 'from' version for upgrade notes.\n" +
-      "If this is the first release, create the initial tag manually before running this script.",
-  );
-}
 const upgradingMdxPath = resolve(
   ROOT,
   "docs/src/content/docs/guides/upgrading.mdx",
 );
 const upgradingMdx = readFileSync(upgradingMdxPath, "utf8");
+// Which release came before this one is answered by upgrading.mdx's newest
+// frozen section, never by `git describe` — that reports the newest tag
+// REACHABLE from HEAD, and a release cut from release/X.Y never merges back.
+// On main after v0.9.1 it answers v0.8.0, so the gate below would look for a
+// section nobody wrote for this release and finalizeUpgradeSection would freeze
+// the wrong one. See scripts/lib/release-prev-version.mjs.
+const prevVersion = newestFrozenRelease(upgradingMdx);
+if (!prevVersion) {
+  fail(
+    "upgrading.mdx records no frozen release section — cannot determine the 'from' version for upgrade notes.\n" +
+      "If this is the first release, add its section to upgrading.mdx before running this script.",
+  );
+}
 try {
   assertUpgradingSectionExists(upgradingMdx, prevVersion, version);
   // …and it must say something. The previous release opened this section from a
