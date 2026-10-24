@@ -27,9 +27,9 @@ overrides:
   '@typescript-eslint/typescript-estree@>=8.0.0 <8.58.2': '>=8.58.2'
   postcss@<8.5.23: '>=8.5.23'
   fast-uri@<3.1.4: '>=3.1.4'
-  ajv>fast-uri: '>=4.1.5 <5'
+  ajv>fast-uri@<4.1.5: '>=4.1.5 <5'
   ip-address@>=10.0.0 <10.7.1: '>=10.7.1 <11'
-  protobufjs@<7.5.8: '>=7.5.8'
+  protobufjs@<7.5.8: '>=7.5.8 <8'
   protobufjs@>=8.0.0 <8.6.6: '>=8.6.6 <9'
   ws@>=8.0.0 <8.20.1: '>=8.20.1'
   qs@<6.16.0: '>=6.16.0 <7'
@@ -47,7 +47,7 @@ overrides:
   '@humanfs/node@<0.16.8': '>=0.16.8 <0.17'
   html-to-text@<10.0.1: '>=10.0.1 <11'
   source-map-js@<1.2.2: '>=1.2.2 <2'
-  node-llama-cpp>simple-git: '>=4.0.2 <5'
+  node-llama-cpp>simple-git@<4.0.2: '>=4.0.2 <5'
   '@modelcontextprotocol/sdk@<1.31.0': '>=1.31.0 <2'
   proxy-addr@<2.0.8: '>=2.0.8 <3'
 
@@ -69,6 +69,12 @@ importers:
       prettier:
         specifier: ^3.9.6
         version: 3.9.6
+
+  packages/openclaw-runtime:
+    dependencies:
+      openclaw:
+        specifier: 2026.7.1-2
+        version: 2026.7.1-2(@aws-sdk/credential-provider-node@3.972.60)(@opentelemetry/api@1.9.1)(@smithy/hash-node@4.4.5)(@smithy/signature-v4@5.6.1)
 
   packages/plugins/pinchy-approvals:
     devDependencies:
@@ -139,9 +145,6 @@ importers:
       '@types/node':
         specifier: ^26.1.2
         version: 26.1.2
-      '@types/nodemailer':
-        specifier: ^8.0.1
-        version: 8.0.1
       typescript:
         specifier: ^6.0.3
         version: 6.0.3
@@ -446,9 +449,6 @@ importers:
       '@types/node':
         specifier: ^26.1.2
         version: 26.1.2
-      '@types/nodemailer':
-        specifier: ^8.0.1
-        version: 8.0.1
       '@types/prismjs':
         specifier: ^1.26.6
         version: 1.26.6
@@ -458,6 +458,9 @@ importers:
       '@types/react-dom':
         specifier: ^19.2.3
         version: 19.2.3(@types/react@19.2.17)
+      '@types/semver':
+        specifier: ^7.8.0
+        version: 7.8.0
       '@types/turndown':
         specifier: ^5.0.5
         version: 5.0.6
@@ -485,6 +488,9 @@ importers:
       openclaw:
         specifier: 2026.7.1-2
         version: 2026.7.1-2(@aws-sdk/credential-provider-node@3.972.60)(@opentelemetry/api@1.9.1)(@smithy/hash-node@4.4.5)(@smithy/signature-v4@5.6.1)
+      semver:
+        specifier: 7.8.5
+        version: 7.8.5
       tailwindcss:
         specifier: ^4.3.3
         version: 4.3.3
@@ -1893,6 +1899,33 @@ packages:
     resolution: {integrity: sha512-9zOJ6ZQRAena31MpOH9VSzIz8Ou3YJ/wtY/eQm5T2uhfhG7/U3COrMS8xOtUrZrp9OgdmzEnIYODye3nY1VqzA==}
     engines: {node: '>=20'}
     hasBin: true
+
+  '@protobufjs/aspromise@1.1.2':
+    resolution: {integrity: sha512-j+gKExEuLmKwvz3OgROXtrJ2UG2x8Ch2YZUxahh+s1F2HZ+wAceUNLkvy6zKCPVRkU++ZWQrdxsUeQXmcg4uoQ==}
+
+  '@protobufjs/base64@1.1.2':
+    resolution: {integrity: sha512-AZkcAA5vnN/v4PDqKyMR5lx7hZttPDgClv83E//FMNhR2TMcLUhfRUBHCmSl0oi9zMgDDqRUJkSxO3wm85+XLg==}
+
+  '@protobufjs/codegen@2.0.5':
+    resolution: {integrity: sha512-zgXFLzW3Ap33e6d0Wlj4MGIm6Ce8O89n/apUaGNB/jx+hw+ruWEp7EwGUshdLKVRCxZW12fp9r40E1mQrf/34g==}
+
+  '@protobufjs/eventemitter@1.1.1':
+    resolution: {integrity: sha512-vW1GmwMZNnL+gMRaovlh9yZX74kc+TTU3FObkkurpMaRtBfLP3ldjS9KQWlwZgraRE0+dheEEoAxdzcJQ8eXZg==}
+
+  '@protobufjs/fetch@1.1.1':
+    resolution: {integrity: sha512-GpptLrs57adMSuHi3VNj0mAF8dwh36LMaYF6XyJ6JMWlVsc+t42tm1HSEDmOs3A8fC9yyeisgLhsTVQokOZ0zw==}
+
+  '@protobufjs/float@1.0.2':
+    resolution: {integrity: sha512-Ddb+kVXlXst9d+R9PfTIxh1EdNkgoRe5tOX6t01f1lYWOvJnSPDBlG241QLzcyPdoNTsblLUdujGSE4RzrTZGQ==}
+
+  '@protobufjs/path@1.1.2':
+    resolution: {integrity: sha512-6JOcJ5Tm08dOHAbdR3GrvP+yUUfkjG5ePsHYczMFLq3ZmMkAD98cDgcT2iA1lJ9NVwFd4tH/iSSoe44YWkltEA==}
+
+  '@protobufjs/pool@1.1.0':
+    resolution: {integrity: sha512-0kELaGSIDBKvcgS4zkjz1PeddatrjYcmMWOlAuAPwAeccUrPHdUqo/J6LiymHHEiJT5NrF1UVwxY14f+fy4WQw==}
+
+  '@protobufjs/utf8@1.1.2':
+    resolution: {integrity: sha512-b1UQwcEZ4yCnMCD8DAL1VlbvBJE9/IX4FTIp7BG1xYpf29SLazLSrqUkj4w7Y5y7cCVP6E5tcqqcI0xemPkHug==}
 
   '@radix-ui/number@1.1.3':
     resolution: {integrity: sha512-Road2bidD0uu/1BGDOWNdPI06g0lIRy6IF9GZcIrDK2KGItfor8IQwQa+yM2ERgHM1MmHxaxpTzk0/Jp42lNfA==}
@@ -3376,9 +3409,6 @@ packages:
   '@types/node@26.1.2':
     resolution: {integrity: sha512-Vu4a5UFA9rIIFJ7rB/Vaafh9lrCQszopTCx6KjFboXTGQbPNasehVR5TEiithSDGyd1DEiUByggTZsg8jukeIg==}
 
-  '@types/nodemailer@8.0.1':
-    resolution: {integrity: sha512-PxpaInm8V1JQDd4j0ds5HfvWQk8JupS1C0Picb96QJsrrRDjBH+DlK7L4ZdNSqNULhiZRQHc40nLVShaGxXAMw==}
-
   '@types/pdfkit@0.17.6':
     resolution: {integrity: sha512-tIwzxk2uWKp0Cq9JIluQXJid77lYhF52EsIOwhsMF4iWLA6YneoBR1xVKYYdAysHuepUB0OX4tdwMiUDdGKmig==}
 
@@ -3395,6 +3425,9 @@ packages:
 
   '@types/retry@0.12.0':
     resolution: {integrity: sha512-wWKOClTTiizcZhXnPY4wikVAwmdYHp8q6DmC+EJUzAMsycb7HB32Kh9RN4+0gExjmPmZSAQjgURXIGATPegAvA==}
+
+  '@types/semver@7.8.0':
+    resolution: {integrity: sha512-1mAINjtQCXXeLkJ9ehXkwOcBpqtLxiVtKhpUf83DdRNdQKV0iXZpaHYqRr7nj+wvxuJzoAmAwXI+sCNMv1CzLQ==}
 
   '@types/turndown@5.0.6':
     resolution: {integrity: sha512-ru00MoyeeouE5BX4gRL+6m/BsDfbRayOskWqUvh7CLGW+UXxHQItqALa38kKnOiZPqJrtzJUgAC2+F0rL1S4Pg==}
@@ -6594,8 +6627,8 @@ packages:
   property-information@7.2.0:
     resolution: {integrity: sha512-IAtzIB6sUiWaJYrX9smp3V46pBGbBeLFRGdh25kg1334VcBlD8HzhPeNIWQH9zhGmo2itIe25EHt9dQP7G5hmg==}
 
-  protobufjs@8.7.1:
-    resolution: {integrity: sha512-agdGHrXNTv0IrYscJPDou/PlEJk1c/hBZ9o/B5NH2i/nSPtPqacNxzgwf1CebXxFMjMrZH5sqv9uQuw96aGt/A==}
+  protobufjs@7.6.6:
+    resolution: {integrity: sha512-dYDWdjSl5RNb7SgPxGQcRU+GtvP7s2fpkrY0r432PcOIaZ0/rBcxEZnQN67iJhFuQiVw754JDoPruPCNdGsbjg==}
     engines: {node: '>=12.0.0'}
 
   proxy-addr@2.0.8:
@@ -8748,7 +8781,7 @@ snapshots:
     dependencies:
       google-auth-library: 10.9.0
       p-retry: 4.6.2
-      protobufjs: 8.7.1
+      protobufjs: 7.6.6
       ws: 8.21.1
     optionalDependencies:
       '@modelcontextprotocol/sdk': 1.32.1(zod@4.4.3)
@@ -9220,6 +9253,26 @@ snapshots:
   '@playwright/test@1.62.0':
     dependencies:
       playwright: 1.62.0
+
+  '@protobufjs/aspromise@1.1.2': {}
+
+  '@protobufjs/base64@1.1.2': {}
+
+  '@protobufjs/codegen@2.0.5': {}
+
+  '@protobufjs/eventemitter@1.1.1': {}
+
+  '@protobufjs/fetch@1.1.1':
+    dependencies:
+      '@protobufjs/aspromise': 1.1.2
+
+  '@protobufjs/float@1.0.2': {}
+
+  '@protobufjs/path@1.1.2': {}
+
+  '@protobufjs/pool@1.1.0': {}
+
+  '@protobufjs/utf8@1.1.2': {}
 
   '@radix-ui/number@1.1.3': {}
 
@@ -10681,10 +10734,6 @@ snapshots:
     dependencies:
       undici-types: 8.3.0
 
-  '@types/nodemailer@8.0.1':
-    dependencies:
-      '@types/node': 26.1.2
-
   '@types/pdfkit@0.17.6':
     dependencies:
       '@types/node': 26.1.2
@@ -10700,6 +10749,8 @@ snapshots:
       csstype: 3.2.3
 
   '@types/retry@0.12.0': {}
+
+  '@types/semver@7.8.0': {}
 
   '@types/turndown@5.0.6': {}
 
@@ -14315,8 +14366,18 @@ snapshots:
 
   property-information@7.2.0: {}
 
-  protobufjs@8.7.1:
+  protobufjs@7.6.6:
     dependencies:
+      '@protobufjs/aspromise': 1.1.2
+      '@protobufjs/base64': 1.1.2
+      '@protobufjs/codegen': 2.0.5
+      '@protobufjs/eventemitter': 1.1.1
+      '@protobufjs/fetch': 1.1.1
+      '@protobufjs/float': 1.0.2
+      '@protobufjs/path': 1.1.2
+      '@protobufjs/pool': 1.1.0
+      '@protobufjs/utf8': 1.1.2
+      '@types/node': 26.1.2
       long: 5.3.2
 
   proxy-addr@2.0.8:

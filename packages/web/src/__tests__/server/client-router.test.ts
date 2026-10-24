@@ -89,7 +89,8 @@ const { mockGetInstancePolicy, mockGetExhaustedBlockingBudget } = vi.hoisted(() 
   mockGetInstancePolicy: vi.fn(),
   mockGetExhaustedBlockingBudget: vi.fn(),
 }));
-vi.mock("@/lib/budgets", () => ({
+vi.mock("@/lib/budgets", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/budgets")>()),
   getExhaustedBlockingBudget: mockGetExhaustedBlockingBudget,
 }));
 vi.mock("@/lib/instance-policy", async (importOriginal) => {

@@ -1258,6 +1258,20 @@ export const kbDocuments = pgTable(
     lang: text("lang"),
     pageCount: integer("page_count"),
     mtime: timestamp("mtime"),
+    // Which extractor last read this content and found no text in it, as
+    // "<extractor version>|<reader>" — the reader being "ocr:<model>",
+    // "no-ocr", "sheets" or "converter". Null when the document has chunks,
+    // when its last read is still owed a retry (`incompleteReads`), and on a
+    // row a crash left before its chunks were written or that predates the
+    // column — every case where reading it again could turn out differently.
+    // It is what lets the ingest skip an unchanged blank scan instead of
+    // sending it to the vision model on every run (ingest.ts).
+    emptyExtractionBy: text("empty_extraction_by"),
+    // How many reads in a row did not finish their job: a vision call that
+    // failed, or a conversion that gave up. Such a document is read again on
+    // the next run — chunks or not — until a read finishes or the retries run
+    // out (MAX_INCOMPLETE_READS in ingest.ts). 0 for a read that finished.
+    incompleteReads: integer("incomplete_reads").notNull().default(0),
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
   (t) => [

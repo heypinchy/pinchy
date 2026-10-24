@@ -11,7 +11,7 @@
 # benefit.
 #
 # Split it: a `builder` stage carries the toolchain and produces the compiled
-# artifacts (the global openclaw install + four /opt/*-deps bundles, all with
+# artifacts (the lockfile-resolved openclaw install + the /opt/*-deps bundles, all with
 # their native .node binaries already built). The `runtime` stage starts from a
 # clean node:22-slim and copies ONLY those artifacts, installing just the few
 # apt packages the gateway actually uses at runtime (git, inotify-tools,
@@ -24,59 +24,19 @@
 # extension dirs, scanning /data) and `openclaw gateway`. OpenClaw 5.x dropped
 # the per-boot `npm install` of plugin runtime deps (symlink model — see
 # config/prewarm-openclaw.sh), so nothing the gateway runs at boot fetches from
-# the network. The global openclaw install is copied verbatim with its deps and
+# the network. The openclaw install is copied verbatim with its deps and
 # prebuilt .node binaries, so the CLI is fully self-contained. The build-time
 # prewarm boot below additionally proves the gateway starts inside this slim
 # stage before the image is ever published.
 
 # ---------------------------------------------------------------------------
-# Stage: builder — toolchain + global openclaw + compiled plugin deps.
+# Stage: embedding-model — the EmbeddingGemma GGUF the llama.cpp provider serves.
 # ---------------------------------------------------------------------------
-# Pull node:22-slim via Google's Docker Hub mirror to avoid Docker Hub
-# anonymous-pull rate limits in CI. mirror.gcr.io is a free, no-auth
-# pull-through cache for `library/*` images on Docker Hub.
-FROM mirror.gcr.io/library/node:22-slim AS builder
-
-# python3 + build-essential are needed for native npm modules (better-sqlite3
-# in pinchy-files) to compile from source when the prebuilt binary doesn't
-# match the current node:22-slim point release. They live ONLY in this builder
-# stage and never reach the runtime image, which is the whole point of the
-# split. Without them the build fails intermittently whenever the upstream base
-# image bumps Node.js.
-RUN apt-get update && apt-get install -y --no-install-recommends \
-      python3 \
-      build-essential \
-    && rm -rf /var/lib/apt/lists/*
-
-# The drift guard (openclaw-version-pin-drift.test.ts) greps for this exact
-# `npm install -g openclaw@<version>` line to keep the runtime version in
-# lockstep with packages/web/package.json (which feeds /api/version). Keep the
-# literal form unchanged.
-RUN npm install -g openclaw@2026.7.1-2
-
-# Bundle the external llama.cpp embedding provider (manifest id `llama-cpp`) plus
-# the EmbeddingGemma GGUF it serves. Together they give memory-core a key-less,
-# OFFLINE `local` embedding provider — the backend Pinchy pins in
-# agents.defaults.memorySearch (see build.ts MEMORY_EMBEDDING_MODEL_PATH +
-# REQUIRED_BUNDLED_PLUGINS). Without a working embedding provider, memory_search
-# returns 0 chunks and every recall silently fails; memory-core's default
-# `openai` provider needs a key Pinchy never has, and ollama-cloud/Anthropic
-# expose no embeddings — so a bundled local model is the only option that works
-# on every install.
+# A stage of its own (like Dockerfile.pinchy's), so its cache depends on
+# nothing but this download. Inside `builder` it sat after the workspace
+# lockfile COPY, and any dependency change anywhere in the repo re-fetched
+# 329 MB from HuggingFace — the host whose 429s/504s the flags below exist for.
 #
-# `openclaw plugins install` writes the provider (with its node-llama-cpp native
-# runtime — prebuilt .node/.so for this arch, no compile) into
-# ~/.openclaw/npm/projects/. That dir lives under the `openclaw-config` volume in
-# production, which shadows any image-baked content on upgrade, so we stage the
-# whole npm tree to /opt (non-volume). start-openclaw.sh copies it into
-# ~/.openclaw on boot and refreshes the plugin registry — same pattern as the
-# /opt/*-deps bundles below. ca-certificates + curl live only in this builder
-# stage (the GGUF download); they never reach the runtime image.
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \
-    && rm -rf /var/lib/apt/lists/*
-RUN openclaw plugins install @openclaw/llama-cpp-provider \
-    && mkdir -p /opt/llama-cpp-deps \
-    && cp -r /root/.openclaw/npm /opt/llama-cpp-deps/npm
 # Download pinned to an immutable commit revision (not the moving `main` ref) and
 # verified against its sha256 — a corrupt or tampered 329 MB blob fails the build
 # LOUD instead of silently shipping in the image. Bump the revision + digest
@@ -114,13 +74,40 @@ RUN openclaw plugins install @openclaw/llama-cpp-provider \
 # milliseconds and the sleeping is the whole cost. A transfer that stalls
 # mid-flight is a different failure needing different flags (-m /
 # --speed-limit); this bound does not pretend to cover it.
+FROM mirror.gcr.io/library/node:22-slim AS embedding-model
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/*
 RUN mkdir -p /opt/embedding-models \
     && curl -fsSL --retry 8 --retry-all-errors --retry-max-time 600 \
        -o /opt/embedding-models/embeddinggemma-300m-qat-Q8_0.gguf \
        https://huggingface.co/ggml-org/embeddinggemma-300m-qat-q8_0-GGUF/resolve/66f974f8cd48cc3b9c41c516b95508e75b4bee64/embeddinggemma-300m-qat-Q8_0.gguf \
     && echo "6fa0c02a9c302be6f977521d399b4de3a46310a4f2621ee0063747881b673f67  /opt/embedding-models/embeddinggemma-300m-qat-Q8_0.gguf" | sha256sum -c -
 
+# ---------------------------------------------------------------------------
+# Stage: builder — toolchain + lockfile-resolved openclaw + compiled plugin deps.
+# ---------------------------------------------------------------------------
+# Pull node:22-slim via Google's Docker Hub mirror to avoid Docker Hub
+# anonymous-pull rate limits in CI. mirror.gcr.io is a free, no-auth
+# pull-through cache for `library/*` images on Docker Hub.
+FROM mirror.gcr.io/library/node:22-slim AS builder
+
+# python3 + build-essential are needed for native npm modules (better-sqlite3
+# in pinchy-files) to compile from source when the prebuilt binary doesn't
+# match the current node:22-slim point release. They live ONLY in this builder
+# stage and never reach the runtime image, which is the whole point of the
+# split. Without them the build fails intermittently whenever the upstream base
+# image bumps Node.js. ca-certificates is for the installs below that fetch
+# outside npm (prebuilt binaries downloaded by install scripts).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      python3 \
+      build-essential \
+      ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
 # Install pinchy-files plugin dependencies (native modules must be built here).
+# These four bundles read only their own package.json, so they come BEFORE the
+# workspace-lockfile COPY below: a dependency change elsewhere in the repo must
+# not re-run them (better-sqlite3 may compile from source here).
 # Each bundle's node_modules is copied into /opt/<plugin>-deps so the runtime
 # stage can grab a clean, fully-built tree. The npm download cache stays in this
 # builder stage (it lives in /root/.npm, which is never copied to runtime).
@@ -158,6 +145,86 @@ RUN cd /tmp/pinchy-email && npm pkg delete devDependencies && npm install --omit
     cp -r /tmp/pinchy-email/node_modules /opt/pinchy-email-deps/ && \
     rm -rf /tmp/pinchy-email
 
+# OpenClaw comes from the workspace lockfile, not from the registry directly.
+#
+# This used to be `npm install -g openclaw@<version>`. That honours the
+# npm-shrinkwrap.json OpenClaw publishes — 309 exact pins — and reads neither
+# pnpm-lock.yaml nor the root `pnpm.overrides`. So the runtime shipped ten
+# packages below the overrides' fix versions (undici 8.5.0, MCP SDK 1.29.0, tar,
+# hono, …) while osv-scanner, which reads pnpm-lock.yaml, reported a clean
+# tree. Installing packages/openclaw-runtime with --frozen-lockfile makes the
+# image ship exactly the tree vuln-scan checks, overrides included — pnpm
+# ignores a dependency's shrinkwrap. The version lives in that package's
+# package.json; openclaw-version-pin-drift.test.ts keeps it in lockstep with
+# packages/web/package.json (which feeds /api/version) and pins this install
+# shape. Only the manifests the filtered install reads are copied: like
+# Dockerfile.pinchy, a frozen install tolerates absent workspace members.
+#
+# This copies only the manifests the filtered install reads (so this layer and
+# everything after it rebuild whenever pnpm-lock.yaml or the root package.json
+# change — keep lockfile-independent work above it).
+#
+# pnpm skips dependency lifecycle scripts unless allow-listed; npm ran them
+# all. Which ones may be skipped is a reviewed decision recorded in the root
+# `pnpm.ignoredBuiltDependencies`, and `strict-dep-builds` turns any script NOT
+# on either list into a failed build. So an OpenClaw bump that brings a new
+# install script (a native binary without a prebuild, say) stops here instead
+# of shipping without it. Reviewed so far: @google/genai (no-op preinstall),
+# protobufjs (a version-scheme warning), tree-sitter-bash (prebuilds for
+# linux-x64/arm64) — and openclaw itself, below.
+#
+# Allowing openclaw in onlyBuiltDependencies would run its postinstall on every
+# developer machine too (it prunes state under ~/.openclaw). So its postinstall
+# (dist-inventory prune, plugin registry migration, bundled-plugin hotfixes)
+# runs here, through `npm run` in the package dir: that executes whatever the
+# installed package.json DECLARES, so a bump that changes the script cannot be
+# silently half-run. Its preinstall only prints a package-manager warning.
+# Caveat: the script assumes npm's nested layout in one place — the Baileys
+# hotfix looks for <package>/node_modules/baileys, which pnpm's isolated layout
+# never has, and it returns "missing" silently. Nothing in 2026.7.1-2's tree
+# depends on baileys; re-check if a bump adds it (`grep baileys` in the
+# installed tree).
+WORKDIR /opt/openclaw
+COPY pnpm-workspace.yaml package.json pnpm-lock.yaml .npmrc ./
+COPY patches/ ./patches/
+COPY packages/openclaw-runtime/package.json packages/openclaw-runtime/
+RUN corepack enable \
+    && COREPACK_ENABLE_DOWNLOAD_PROMPT=0 pnpm install --prod --frozen-lockfile --config.strict-dep-builds=true --filter @pinchy/openclaw-runtime \
+    && (cd packages/openclaw-runtime/node_modules/openclaw && npm run postinstall) \
+    && ln -s /opt/openclaw/packages/openclaw-runtime/node_modules/openclaw/openclaw.mjs /usr/local/bin/openclaw \
+    && openclaw --version
+WORKDIR /
+
+# Bundle the external llama.cpp embedding provider (manifest id `llama-cpp`) plus
+# the EmbeddingGemma GGUF it serves. Together they give memory-core a key-less,
+# OFFLINE `local` embedding provider — the backend Pinchy pins in
+# agents.defaults.memorySearch (see build.ts MEMORY_EMBEDDING_MODEL_PATH +
+# REQUIRED_BUNDLED_PLUGINS). Without a working embedding provider, memory_search
+# returns 0 chunks and every recall silently fails; memory-core's default
+# `openai` provider needs a key Pinchy never has, and ollama-cloud/Anthropic
+# expose no embeddings — so a bundled local model is the only option that works
+# on every install.
+#
+# `openclaw plugins install` writes the provider (with its node-llama-cpp native
+# runtime — prebuilt .node/.so for this arch, no compile) into
+# ~/.openclaw/npm/projects/. That dir lives under the `openclaw-config` volume in
+# production, which shadows any image-baked content on upgrade, so we stage the
+# whole npm tree to /opt (non-volume). start-openclaw.sh copies it into
+# ~/.openclaw on boot and refreshes the plugin registry — same pattern as the
+# /opt/*-deps bundles. The EmbeddingGemma GGUF it serves comes from the
+# `embedding-model` stage above.
+#
+# Pinned to the OpenClaw release it ships with (the provider is published in
+# lockstep and peers `openclaw >=<its own version>`; a `-N` suffix on the
+# OpenClaw pin is a repack of the same release). OpenClaw's installer already
+# picks a compatible version when unpinned — the pin makes the build
+# reproducible and is checked by openclaw-version-pin-drift.test.ts. An upgraded
+# config volume picks up a changed pin too: stage-llama-cpp-provider.sh
+# re-stages when the bundled release differs from the staged one.
+RUN openclaw plugins install @openclaw/llama-cpp-provider@2026.7.1 \
+    && mkdir -p /opt/llama-cpp-deps \
+    && cp -r /root/.openclaw/npm /opt/llama-cpp-deps/npm
+
 # ---------------------------------------------------------------------------
 # Stage: runtime — slim image with only what the gateway runs.
 # ---------------------------------------------------------------------------
@@ -167,7 +234,8 @@ FROM mirror.gcr.io/library/node:22-slim AS runtime
 
 # Build-time metadata. CI passes --build-arg PINCHY_VERSION + PINCHY_BUILD_SHA;
 # local builds without --build-arg get "dev". OpenClaw's own version is the
-# `openclaw@…` pin above and surfaces via Pinchy's /api/version response.
+# pin in packages/openclaw-runtime/package.json and surfaces via Pinchy's
+# /api/version response.
 ARG PINCHY_VERSION=dev
 ARG PINCHY_BUILD_SHA=dev
 
@@ -189,21 +257,28 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       procps \
     && rm -rf /var/lib/apt/lists/*
 
-# The global openclaw install (built in the builder stage). Its native modules
-# ship as prebuilt .node binaries, so no toolchain is needed to run them — we
-# copy the install verbatim instead of re-running `npm install -g` here. That
-# keeps the ~300 MB npm download cache out of this stage entirely.
-#   - /usr/local/lib/node_modules/openclaw is the package tree.
-COPY --from=builder /usr/local/lib/node_modules /usr/local/lib/node_modules
+# The OpenClaw install (built in the builder stage from the workspace
+# lockfile). Its native modules ship as prebuilt .node binaries, so no
+# toolchain is needed to run them — we copy the install verbatim instead of
+# re-running pnpm here, which keeps the pnpm store out of this stage entirely.
+# The tree is pnpm's isolated layout: packages/openclaw-runtime/node_modules/
+# openclaw is a symlink into node_modules/.pnpm, and a directory COPY keeps
+# those internal symlinks as symlinks. Only the two node_modules dirs come
+# across — the install inputs (the whole workspace's pnpm-lock.yaml, root
+# package.json, patches/) are not runtime files, and a rootfs scan would read
+# that lockfile as a manifest and report Pinchy's web/dev tree as present here.
+COPY --from=builder /opt/openclaw/node_modules /opt/openclaw/node_modules
+COPY --from=builder /opt/openclaw/packages/openclaw-runtime/node_modules /opt/openclaw/packages/openclaw-runtime/node_modules
 
 # Recreate the CLI symlink rather than COPYing it. `COPY --from` DEREFERENCES
-# symlinks, so `COPY .../bin/openclaw` would copy openclaw.mjs's *contents* to
-# /usr/local/bin/openclaw — turning the launcher into a plain file. The loader
-# resolves its build output via `new URL("./dist/entry.js", import.meta.url)`,
-# which would then point at /usr/local/bin/dist/entry.js (nonexistent) and the
-# gateway would die at boot with "missing dist/entry.(m)js (build output)".
-# A symlink keeps import.meta.url anchored at the package dir, where dist/ lives.
-RUN ln -s ../lib/node_modules/openclaw/openclaw.mjs /usr/local/bin/openclaw
+# a symlink given as the source path, so copying /usr/local/bin/openclaw would
+# copy openclaw.mjs's *contents* — turning the launcher into a plain file. The
+# loader resolves its build output via `new URL("./dist/entry.js",
+# import.meta.url)`, which would then point at /usr/local/bin/dist/entry.js
+# (nonexistent) and the gateway would die at boot with "missing
+# dist/entry.(m)js (build output)". Through a symlink Node resolves the main
+# module to its real path inside .pnpm, where dist/ lives.
+RUN ln -s /opt/openclaw/packages/openclaw-runtime/node_modules/openclaw/openclaw.mjs /usr/local/bin/openclaw
 
 # Pre-built plugin runtime dependency bundles from the builder stage. These
 # carry the already-compiled native .node binaries (better-sqlite3 +
@@ -221,7 +296,7 @@ COPY --from=builder /opt/pinchy-email-deps /opt/pinchy-email-deps
 # the model is read straight from /opt (never volume-mounted) via
 # MEMORY_EMBEDDING_MODEL_PATH. See the builder stage for why this is bundled.
 COPY --from=builder /opt/llama-cpp-deps /opt/llama-cpp-deps
-COPY --from=builder /opt/embedding-models /opt/embedding-models
+COPY --from=embedding-model /opt/embedding-models /opt/embedding-models
 
 # Pinchy-shipped OpenClaw internal-hook packages, loaded via the generated
 # config's hooks.internal.load.extraDirs = ["/opt/pinchy-hooks"] (see build.ts).

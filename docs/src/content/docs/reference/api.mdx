@@ -556,7 +556,7 @@ The agent's most recent index run — in flight or last finished — and whether
 | `processedBytes` / `totalBytes` | The same progress weighed by the bytes of the files involved. This is the pair to build a progress bar or a time-to-completion estimate on: documents are not equal units of work — one compilation PDF can be a third of a corpus — while bytes track the actual work and are known in full before the first document is read. `totalBytes` is `null` until discovery has finished, and `processedBytes` moves _inside_ a long document as its pages are embedded, so a slow document still shows movement. |
 | `counts`                        | The run's findings **so far**, updated as it goes. `null` before the first document.                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | `counts.indexed`                | Documents added, updated, or rebuilt — and searchable afterwards.                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| `counts.skipped`                | Unchanged content hash, chunks already present.                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `counts.skipped`                | Unchanged content hash, and either chunks already present or it already came out empty and nothing has changed that could read it differently (see [Keeping the index current](/guides/create-knowledge-base-agent/#keeping-the-index-current)).                                                                                                                                                                                                                                                             |
 | `counts.removed`                | Source file no longer on disk; the document and its chunks were deleted. Stays `0` until the run's final pass.                                                                                                                                                                                                                                                                                                                                                                                               |
 | `counts.unsearchable`           | Parsed without error but yielded no text, so the document exists in the index yet can never be retrieved — a workbook whose sheets are all hidden, or a scan that no vision model was available to read.                                                                                                                                                                                                                                                                                                     |
 | `counts.failed`                 | The file could not be read or parsed. The run continues — one bad file never aborts the reindex — and a previously indexed version of the file stays searchable.                                                                                                                                                                                                                                                                                                                                             |
@@ -903,6 +903,44 @@ Remove a budget. Works without a license, so an expired one never leaves an inst
 **Response:** `{ "id": "…" }`
 
 **Errors:** `401`, `403` (not an admin), `404` (no budget has that id, or it is on another user's personal agent).
+
+### `POST /api/internal/budgets/check`
+
+**Internal** — authenticated with the shared OpenClaw gateway token, not a user session. Called by the `pinchy-audit` plugin's `before_agent_run` hook before every agent run, on every channel (web, Telegram, automations), never by the browser.
+
+Answers whether a used-up blocking budget — the agent's own or the instance's — stops this run. When it does, the plugin refuses the run before the model reads the prompt, and the sender gets `message` as the reply.
+
+**Request body:**
+
+| Field        | Type   | Required | Description                                                                   |
+| ------------ | ------ | -------- | ----------------------------------------------------------------------------- |
+| `agentId`    | string | Yes      | The agent about to run                                                        |
+| `sessionKey` | string | No       | The OpenClaw session; a web-chat session names the Pinchy user                |
+| `channel`    | string | No       | Where the run came from, e.g. `telegram`; recorded on a refusal               |
+| `senderId`   | string | No       | The sender's account on that channel, mapped to the Pinchy user who linked it |
+| `trigger`    | string | No       | What started the run, as OpenClaw names it (`user`, `cron`, `heartbeat`, …)   |
+
+The plugin never sends the prompt, the conversation or the system prompt — only who is asking and where.
+
+**Response:**
+
+```json
+{
+  "blocked": true,
+  "message": "Knowledge Base has used its monthly budget. It's available again next month, or sooner if your admin raises the budget."
+}
+```
+
+`{ "blocked": false }` when nothing stops the run; that answer writes nothing. A refusal writes `chat.policy_refused` with `reason: "budget_exhausted"` and the `channel`, attributed to the Pinchy user when the session or a linked channel account names one, otherwise to the agent.
+
+The plugin reuses a `blocked: false` answer for the same agent for 15 seconds and never reuses a block, so raising a budget reopens the agent on the next message. When this endpoint can't be reached or answers with an error, the plugin lets the run through — unless its last answer for that agent was a block, which then stands — and waits 10 seconds before asking again. It logs one warning per outage in the agent runtime's log, and says so when the endpoint answers again.
+
+`sessionKey`, `channel`, `senderId` and `trigger` only shape the audit row. One that isn't a string or is too long (500, 100, 200 and 100 characters) is dropped, not rejected: an error answer lets the run through, so rejecting an audit detail would switch the budget off.
+
+**Errors:**
+
+- `400` — `agentId` missing, empty, or longer than 200 characters
+- `401` — gateway token missing or wrong. The plugin lets every run through until the token matches again and says in its log that blocking budgets are not enforced.
 
 ## LLM Providers (admin only)
 

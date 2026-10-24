@@ -199,17 +199,15 @@ So after upgrading, a Knowledge Base agent finds nothing until it has been reind
 
 The `ollama pull bge-m3` step from the v0.9.0 notes no longer applies. If nothing else on your machine uses that model, you can remove it.
 
-#### Scanned documents are indexed now — and indexing sends their pages to your model provider
+#### The reindex takes more file types now — and scans go to your model provider
 
-Until this release a scanned PDF went into the knowledge base as an empty page. There was no text to take, so an agent asked about it answered "I found nothing" — which sounds like a statement about your company rather than about the index, and nobody thinks to check.
+The same run picks up four things it couldn't read before: **Word documents** (`.doc` and `.docx`), **slide decks** (`.ppt`, `.pptx`), **Excel workbooks** (`.xlsx`, `.xlsm`), and **scanned PDFs**. Citations land where each format actually has an anchor — a slide number, a heading, a sheet and row range — and open in the viewer like a PDF page does. Older `.xls` workbooks, plain text and Markdown are still out; [Supported file types](/guides/mount-data-directories/#supported-file-types) has the full split.
 
-Pinchy now reads those pages with the same vision model that already reads a scan when you open one in chat, so scanned binders become searchable and citable like anything else.
+Scans are the part worth a look before you upgrade. A page with no text layer is rendered and handed to a vision model — the same one that already reads a scan when an agent opens it in chat — so **indexing now sends document content to your model provider**. It happens once per document, for every scanned page in the corpus, including documents nobody ever asks about. That's a wider statement than "only the question and the retrieved snippets leave the building", so it's worth deciding rather than discovering.
 
-That changes what leaves your server, and you should hear it from us rather than notice it later: **with this on, every scanned document in a granted folder is sent to your configured model provider once, at index time** — including documents nobody ever asks about. The rest of the knowledge base still holds to "only the question and the retrieved snippets leave the building"; this one step doesn't.
+If that isn't right for your instance, set `PINCHY_KB_OCR=off` in your `.env` **before you upgrade** — in the same edit as `PINCHY_VERSION`. Waiting until you click **Reindex now** is too late: the upgrade empties the index, and the [nightly reindex](#knowledge-bases-now-keep-themselves-current) rebuilds it on its own the first night after the upgrade, scans included. Scans are then reported as `unsearchable` — listed by name, not quietly skipped — and nothing leaves the building. On an air-gapped install there's nothing to do either way: Pinchy picks the vision model from your configured cloud providers, so a local-only stack has none and never sends anything.
 
-It's on by default, because a knowledge base that quietly can't read half its shelf is the worse failure. To keep index-time reading off, set `PINCHY_KB_OCR=off` in your `.env` **before** the reindex you're doing anyway. Scans then stay unsearchable — and they show up in the agent's list of documents the index can't read, so the gap is visible instead of silent.
-
-An instance whose only models are local sends nothing either way: the vision chain deliberately skips local Ollama, so those scans stay unsearchable until a provider that can read them is configured. [What indexing sends to your provider](/guides/mount-data-directories/#what-indexing-sends-to-your-provider) has the full data flow.
+These calls run on your own API key and show up in the Usage Dashboard, and the reindex entry in the audit trail records how many documents and pages were sent, and to which model. [What indexing sends to your provider](/guides/mount-data-directories/#what-indexing-sends-to-your-provider) has the rest, including the 200-page-per-document limit.
 
 #### Deleting in Odoo now requires reading the record first
 
@@ -326,14 +324,6 @@ Your existing providers, keys and default carry over untouched.
 
 A knowledge-base document now counts as archived if any **folder** on its path is called `old`, `archive`, `archived` or `archiv` — matched whole and case-insensitively, so `OLD/` counts and `Goldakte/` does not. The rule reads directories only: a file named `archive.pdf` is not archived. Archived documents are still fully indexed, and the agent can still reach them when a question asks it to; they are simply left out of an ordinary answer. Year and quarter folders (`2013/`, `Q3/`) are never archives. See [Current documents first](/guides/create-knowledge-base-agent/#current-documents-first). If you keep superseded files in a folder named something else, rename it to one of those four to get the same treatment.
 
-#### The knowledge base reads Word, PowerPoint and Excel
-
-PDFs are no longer the only thing an agent can search. Word documents (`.doc`, `.docx`), slide decks (`.ppt`, `.pptx`) and Excel workbooks (`.xlsx`, `.xlsm`) are indexed too. Older `.xls` workbooks, plain text and Markdown still aren't — [Supported file types](/guides/mount-data-directories/#supported-file-types) has the full split, including where the agent's file tools disagree with the index.
-
-A citation points at something you can actually find, and what that is depends on the file: a PDF is cited by page, a slide deck by slide, a Word document by its heading path, and a spreadsheet by sheet and row range — `Suppliers, rows 5-12`. Clicking a spreadsheet citation shows you exactly those rows, with the sheet's own column headers above them and its own row numbers beside them, so the row you're reading is the row you'd scroll to in Excel. Word documents and slide decks open in the PDF viewer, showing the converted copy the index actually read — no browser renders a `.doc`. Your originals are never modified and never replaced.
-
-Nothing to configure. The reindex you already need for the [embedding change](#knowledge-base-agents-need-one-reindex-after-upgrading) is what picks these up.
-
 #### Knowledge bases now keep themselves current
 
 Until now a knowledge base was as current as its last **Reindex now**: a document dropped into the folder stayed unsearchable until an admin remembered to click. Pinchy now reindexes every knowledge-base agent **once a night, at 02:00 in your organization timezone**, so new, changed and deleted documents are reflected the next morning without anyone doing anything. Only what changed is extracted and embedded again; the rest of the run is reading each file once to see whether it did.
@@ -436,7 +426,7 @@ Blocked-request entries in the audit trail now carry `clientAddress` beside `rem
 
 ### Database migrations
 
-Nineteen migrations (`0056`–`0074`) run automatically on startup — no manual steps. Only `0056` is destructive, and only for the Knowledge Base tables (see the breaking change above); the rest are additive.
+Twenty migrations (`0056`–`0075`) run automatically on startup — no manual steps. Only `0056` is destructive, and only for the Knowledge Base tables (see the breaking change above); the rest are additive.
 
 - `0056` — recreates `kb_chunks.embedding` at 768 dimensions for the bundled in-process `embeddinggemma` embedder and clears the two Knowledge Base tables.
 - `0057` — backfills `kb_documents.status` so documents ingested before the archive rule existed are classified by it too.
@@ -452,8 +442,9 @@ Nineteen migrations (`0056`–`0074`) run automatically on startup — no manual
 - `0069` — memory becomes a permission of its own rather than a side effect of file-write access (see the breaking change above).
 - `0070`, `0071` — `tool_call_id` and `openclaw_approval_id` on `tool_approval`, so a pending confirmation is tied to the call it is holding up and to the approval OpenClaw raised for it.
 - `0072` — `zone` and `content_hash` on `agent_delivered_files`, so a download link serves the file it was given rather than the name.
-- `0073` — `cost_budgets`, the monthly spending limits for the whole instance or one agent (see [Cost governance](/guides/cost-governance/)).
+- `0073` — the `cost_budgets` table, holding the monthly spending limits described in [Cost governance](/guides/cost-governance/). It starts empty, so nothing is limited until an admin sets a budget.
 - `0074` — `trigger` and `sweep_id` on `kb_index_jobs`, telling a run the nightly reindex started from one an admin asked for, and `unavailable_folders`, how many folders a run had to leave as they were. Existing jobs are marked `manual`, which is what they were.
+- `0075` — `empty_extraction_by` and `incomplete_reads` on `kb_documents`. The first records which extractor found no text in a document, so the nightly reindex stops reading an unchanged blank scan again — and sending it to your vision model again — every night. The second counts reads that didn't finish (a failed vision call, a failed conversion), so those are retried for up to five runs rather than forever. Rows that predate them carry nothing, so each empty document is read once more on the next run and recorded from then on.
 
 ## Upgrading from v0.9.0 to v0.9.1
 

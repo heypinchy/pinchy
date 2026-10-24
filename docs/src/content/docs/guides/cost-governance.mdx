@@ -77,11 +77,11 @@ Each crossing is also written to the audit trail once per month: `budget.thresho
 
 With **Pause chats and automations**:
 
-- A message sent to an affected agent in the web app gets a short explanation instead of an answer. Reading the chat history still works.
+- A message sent to an affected agent gets a short explanation instead of an answer — in the web app, on Telegram and on any other channel. Reading the chat history still works. On Telegram the reply reads "Your message could not be sent: …" followed by the same explanation.
 - The agent's [automations](/guides/email-automations/) pause and pick up again next month. Its **Automations** tab marks them as paused and says why, and **Enable** stays off until the budget allows them to run.
 - An instance budget affects every agent, admins' included. To lift it, raise the limit or remove the budget.
 
-The message that pushes spend over the limit still finishes — spend is recorded after each reply, so it's the next message that's refused.
+The message that pushes spend over the limit still finishes — spend is recorded after each reply, so it's a following message that's refused. An agent that was just answering may take up to a minute to pause: spend is recorded within a minute of each reply, and a recent all-clear is reused for a few seconds.
 
 ### Limits worth knowing
 
@@ -89,7 +89,7 @@ Budgets are built on the [Usage & Costs dashboard](/guides/usage-dashboard/) est
 
 - **It's an estimate,** based on the prices in your provider's model configuration. Your provider's invoice is the source of truth.
 - **Some spend isn't counted.** Reading scanned PDFs while indexing a knowledge base, and the vision model a plugin calls to read a scanned attachment, record tokens but no price. Local and Ollama Cloud models are priced at zero.
-- **Telegram isn't paused.** Telegram messages go straight to the agent, so a used-up budget doesn't stop them. Their cost still counts toward every budget.
+- **A restart lets messages through.** Every message is checked with Pinchy just before the agent answers. While Pinchy is restarting or can't be reached, messages go through rather than every agent going silent. An agent that was already paused stays paused — as long as the agent runtime keeps running. When the runtime restarts too (an upgrade restarts both), it has nothing to remember, so until Pinchy answers again every agent's messages go through. What slips through still counts toward every budget.
 - **A turn counts in the month it was recorded.** If Pinchy was down when a turn finished, it lands in the month Pinchy recorded it.
 
 ### Without a license

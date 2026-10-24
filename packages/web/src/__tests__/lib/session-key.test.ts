@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 
-import { directSessionKey, inboxSessionKey } from "@/lib/session-key";
+import { directSessionKey, directSessionUserId, inboxSessionKey } from "@/lib/session-key";
 
 describe("directSessionKey", () => {
   it("builds the legacy per-user direct key", () => {
@@ -25,5 +25,21 @@ describe("inboxSessionKey", () => {
     // Never collides with the user-chat namespace: `:direct:` must not appear,
     // so chat listing (which keys on `:direct:`) can never surface an inbox run.
     expect(key).not.toContain(":direct:");
+  });
+});
+
+describe("directSessionUserId", () => {
+  it("reads the user from a direct key", () => {
+    expect(directSessionUserId("agent:a:direct:user-9")).toBe("user-9");
+  });
+
+  it("stops at the chat segment", () => {
+    expect(directSessionUserId("agent:a:direct:user-9:chat-7")).toBe("user-9");
+  });
+
+  it("names no user for a channel, inbox or missing key", () => {
+    expect(directSessionUserId("agent:a:telegram:direct:999")).toBeUndefined();
+    expect(directSessionUserId(inboxSessionKey("a", "l"))).toBeUndefined();
+    expect(directSessionUserId(undefined)).toBeUndefined();
   });
 });

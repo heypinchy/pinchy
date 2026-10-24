@@ -52,6 +52,7 @@ function fakeDeps(): IngestDeps {
     convertOffice: vi.fn(async () => {
       throw new Error("convertOffice must not be called for a PDF");
     }),
+    ocrModel: null,
   };
 }
 

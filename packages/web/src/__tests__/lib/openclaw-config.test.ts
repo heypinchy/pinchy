@@ -2312,6 +2312,25 @@ describe("regenerateOpenClawConfig", () => {
     expect(typeof config.plugins.entries["pinchy-audit"].config.gatewayToken).toBe("string");
   });
 
+  it("grants pinchy-audit conversation access, without which OpenClaw drops its budget gate", async () => {
+    // before_agent_run is a conversation hook: OpenClaw silently skips it for a
+    // non-bundled plugin (one warn diagnostic, no error) unless the entry opts
+    // in. Without this the blocking budgets stop nothing outside the browser.
+    mockedReadFileSync.mockReturnValue(
+      JSON.stringify({ gateway: { mode: "local", bind: "lan", auth: { token: "gw-token-123" } } })
+    );
+
+    await regenerateOpenClawConfig();
+
+    const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
+    expect(config.plugins.entries["pinchy-audit"].hooks).toEqual({ allowConversationAccess: true });
+    // Only the plugin that needs it: the grant hands over prompts and history.
+    for (const [id, entry] of Object.entries(config.plugins.entries)) {
+      if (id === "pinchy-audit") continue;
+      expect((entry as { hooks?: unknown }).hooks, id).toBeUndefined();
+    }
+  });
+
   it("should use PORT env var in plugin apiBaseUrl when set", async () => {
     const existingConfig = {
       gateway: { mode: "local", bind: "lan", auth: { token: "gw-token-123" } },

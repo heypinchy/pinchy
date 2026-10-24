@@ -61,6 +61,7 @@ function makeAdapter(
   overrides: {
     loadAgentModel?: (agentId: string) => Promise<string | null>;
     waitForAgentReady?: (agentId: string) => Promise<boolean>;
+    isBudgetBlocked?: (agentId: string) => Promise<boolean>;
     timeoutMs?: number;
   } = {}
 ) {
@@ -70,6 +71,7 @@ function makeAdapter(
     client: client as never,
     loadAgentModel: overrides.loadAgentModel ?? (async () => "ollama-cloud/gemini-3-flash"),
     waitForAgentReady: overrides.waitForAgentReady ?? (async () => true),
+    isBudgetBlocked: overrides.isBudgetBlocked ?? (async () => false),
     ...(overrides.timeoutMs !== undefined ? { timeoutMs: overrides.timeoutMs } : {}),
   });
 }
@@ -268,5 +270,86 @@ describe("createOpenClawRunAgent — watchdog", () => {
     await expectation;
 
     expect(client.chatAbort).toHaveBeenCalledWith(inboxSessionKey("agent-1", "l"), "run-hung");
+  });
+});
+
+describe("createOpenClawRunAgent — blocking budget", () => {
+  // A used-up blocking budget pauses an inbox workflow; it does not break it.
+  // The run must defer (row stays `processing`, the sweep retries once the
+  // budget reopens), never finalize `failed` with a failure notification.
+  it("defers without starting a run while the agent's blocking budget is used up", async () => {
+    const client = makeClient();
+    const promise = makeAdapter(client, { isBudgetBlocked: async () => true })({
+      workflow,
+      email,
+      ledgerId: "l",
+    });
+    await expect(promise).rejects.toBeInstanceOf(RunDeferredError);
+    expect(client.chat).not.toHaveBeenCalled();
+  });
+
+  it("defers a run the runtime budget gate refused mid-batch", async () => {
+    // The budget was open when the batch started; the gate refused the turn,
+    // which reaches the adapter as an error chunk.
+    const client = makeClient();
+    client.chat.mockReturnValue(
+      stream(
+        {
+          type: "error",
+          text: "Your message could not be sent: Knowledge Base has used its monthly budget.",
+          runId: "r",
+        },
+        { type: "done", text: "", runId: "r" }
+      )
+    );
+    const blocked = vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true);
+    const promise = makeAdapter(client, { isBudgetBlocked: blocked })({
+      workflow,
+      email,
+      ledgerId: "l",
+    });
+    await expect(promise).rejects.toBeInstanceOf(RunDeferredError);
+  });
+
+  it("defers when the refusal came back as plain text with no report", async () => {
+    const client = makeClient();
+    client.chat.mockImplementation(() =>
+      stream({
+        type: "text",
+        text: "Your message could not be sent: This Pinchy has used its monthly budget.",
+        runId: "r",
+      })
+    );
+    const blocked = vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true);
+    const promise = makeAdapter(client, { isBudgetBlocked: blocked })({
+      workflow,
+      email,
+      ledgerId: "l",
+    });
+    await expect(promise).rejects.toBeInstanceOf(RunDeferredError);
+  });
+
+  it("still fails a run that failed for another reason while the budget is open", async () => {
+    const client = makeClient();
+    client.chat.mockReturnValue(
+      stream(
+        { type: "error", text: "provider exploded", runId: "r" },
+        { type: "done", text: "", runId: "r" }
+      )
+    );
+    const promise = makeAdapter(client)({ workflow, email, ledgerId: "l" });
+    await expect(promise).rejects.toThrow("provider exploded");
+    await expect(promise).rejects.not.toBeInstanceOf(RunDeferredError);
+  });
+
+  it("treats a budget lookup that fails as an open budget", async () => {
+    const client = makeClient();
+    client.chat.mockReturnValueOnce(stream({ type: "text", text: reportText(), runId: "r" }));
+    const result = await makeAdapter(client, {
+      isBudgetBlocked: async () => {
+        throw new Error("db down");
+      },
+    })({ workflow, email, ledgerId: "l" });
+    expect(result.status).toBe("done");
   });
 });
