@@ -9,6 +9,7 @@ import noPiiInAuditDetail from "./eslint-rules/no-pii-in-audit-detail.js";
 import noUntrackedSkips from "./eslint-rules/no-untracked-skips.js";
 import noUntrackedSleeps from "./eslint-rules/no-untracked-sleeps.js";
 import noRawFetchMutation from "./eslint-rules/no-raw-fetch-mutation.js";
+import noUnguardedEffectFetch from "./eslint-rules/no-unguarded-effect-fetch.js";
 
 const pinchyPlugin = {
   rules: {
@@ -19,6 +20,7 @@ const pinchyPlugin = {
     "no-untracked-skips": noUntrackedSkips,
     "no-untracked-sleeps": noUntrackedSleeps,
     "no-raw-fetch-mutation": noRawFetchMutation,
+    "no-unguarded-effect-fetch": noUnguardedEffectFetch,
   },
 };
 
@@ -138,11 +140,17 @@ const eslintConfig = defineConfig([
   //   instead of a generic toast (#1075). The rule's own scope check lives
   //   inside the rule so it stays honest under RuleTester; this glob is the
   //   outer bound. Opt out per statement with `// raw-fetch-exempt: <reason>`.
+  // - no-unguarded-effect-fetch: a load awaited from a useEffect has a catch
+  //   around it. Nothing awaits the promise an effect starts, so without one a
+  //   failure renders as an empty result and ends a test run with an unhandled
+  //   rejection (#1216). Opt out per statement with
+  //   `// unguarded-load-exempt: <reason>`.
   {
     files: ["src/components/**/*.{ts,tsx}", "src/hooks/**/*.{ts,tsx}", "src/app/**/*.tsx"],
     plugins: { pinchy: pinchyPlugin },
     rules: {
       "pinchy/no-raw-fetch-mutation": "error",
+      "pinchy/no-unguarded-effect-fetch": "error",
     },
   },
   // Override default ignores of eslint-config-next.

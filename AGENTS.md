@@ -684,6 +684,24 @@ Two smaller rules the first review of this change turned up, both of which every
 - **A catch that surfaces text to the user takes `errorMessage(e, "<fallback>")`, never `e.message`.** Migrating a call site changes what its catch can _see_: before, the handler threw its own `new Error(<curated copy>)`, so `e.message` was always copy; afterwards the same catch also receives a network `TypeError`, whose message is `"Failed to fetch"`. `setup-form.tsx` shipped that string onto the first screen a new install shows. `errorMessage` is unit-tested directly (`__tests__/lib/api-client.test.ts`) rather than only through its callers.
 - **Typing a payload is not licence to invent a value for it.** `uid: connectionResult?.uid ?? 0` type-checks and can only ever produce a 400, because the route requires `.positive()` — a 400 that reads as a credential problem. Guard, or narrow the source; `??` at the call site is the boundary cast this section exists to remove.
 
+### A load started from an effect catches its own failure
+
+Nothing awaits the promise a `useEffect` starts, so a load there without a `catch` fails in two bad ways at once. In the browser, the list stays empty and reads exactly like an empty result. On the audit table that was "nothing was logged". On the agent permission sections it was "this agent has no access", and a save from that state replaced the real grants. In a test run, the rejection surfaces as a suite-level unhandled error. It ends `pnpm test` with exit 1 while every test passes, and only when the effect outlives its test's fetch mock, so it shows up in a full run and not in isolation. #1212 fixed four of these by hand and left three. #1216 fixed those three and added the guard.
+
+`pinchy/no-unguarded-effect-fetch` reports an `await fetch(...)` / `await apiGet(...)` (or another api-client helper) in a function that runs from a `useEffect` body, unless a `try` **in that same function** has a `catch` around it. The shape to copy is in `audit-log-table.tsx`:
+
+- An `AbortController` that the cleanup aborts.
+- `apiGet(url, { signal })`.
+- A catch that stays silent when `signal.aborted` and otherwise calls `toast.error(errorMessage(err, …))`.
+
+Decide whether something is an abort from `signal.aborted` alone, never from `err.name`. When the failed load backs an editor, don't render the editor and don't report "no config" upward.
+
+- **The exemption is per statement, with a written reason**: `// unguarded-load-exempt: <reason>` directly above the awaited statement. It is the same contract as `raw-fetch-exempt`, and for the same reason: the marker asserts a fact rather than deferring work.
+- **It has three limits:**
+  - It follows only functions _defined_ inside the effect. An async `useCallback` that the effect merely calls is not followed, because an event handler that awaits the same function may catch at the call site.
+  - It reads `await`, so a `.then()` chain with no `.catch` slips through.
+  - It checks that a catch exists, never what the catch does. An empty `catch {}` passes, and review owns that case.
+
 ## User-Facing Flow Design
 
 Before building a create form, config dialog, wizard, settings tab, or onboarding step, invoke the **`designing-pinchy-features`** skill. It is the interaction authority the way `PERSONALITY.md` is the voice authority.
