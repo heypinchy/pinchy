@@ -26,10 +26,13 @@
 # `openclaw>zod@<4.6.6` still matters — @modelcontextprotocol/sdk and
 # @agentclientprotocol/sdk, which openclaw imports rather than inlines, resolve
 # zod through openclaw and loaded 4.4.3 before it — but it cannot reach the
-# inlined copy, and no scanner can see that copy. No OpenClaw release fixes it
-# yet: 2026.10.7 (latest on 2026-10-24) pins zod 4.6.5. Exposure is bounded:
-# the gateway is reachable only on the Docker-internal network, and the config
-# it validates is written by Pinchy. Re-check on every OpenClaw bump
+# inlined copy, and no scanner can see that copy. Upstream has fixed it:
+# openclaw main pins zod 4.6.7, and 2026.9.34 (extended-stable, 2026-10-24)
+# inlines 4.6.7 — but that line requires Node >=24.22.1, so adopting it is the
+# repo-wide Node bump, not a routine pin move. 2026.10.7 (latest) and
+# 2026.10.10-beta.3 still pin 4.6.5. Exposure meanwhile is bounded: the gateway
+# is reachable only on the Docker-internal network, and the config it
+# validates is written by Pinchy. Re-check on every OpenClaw bump
 # (update-openclaw): this note retires when the inlined version is >= 4.6.6. Still outside the lockfile
 # in that image: the llama-cpp provider (`openclaw plugins install`, npm) and
 # the /opt/pinchy-*-deps bundles (npm install of each plugin's package.json) —
