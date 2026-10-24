@@ -6,9 +6,34 @@
 # packages/openclaw-runtime, which IS the runtime of the OpenClaw image —
 # Dockerfile.openclaw installs it from this lockfile with --frozen-lockfile. So
 # a finding routed through openclaw ships in production, and a root
-# `pnpm.overrides` entry is a real fix for it: the image gets the overridden
-# version. Bound such an override to the dependent's major
-# (openclaw-runtime-closure.test.ts fails otherwise). Still outside the lockfile
+# `pnpm.overrides` entry is a real fix for what openclaw IMPORTS: the image gets
+# the overridden version. Bound such an override to the dependent's major
+# (openclaw-runtime-closure.test.ts fails otherwise).
+#
+# It is NOT a fix for what openclaw BUNDLES. openclaw's dist/ is a rolldown
+# bundle that inlines some of its dependencies (`//#region node_modules/<pkg>/`
+# in dist/*.js) — zod, protobufjs, semver, qs, @smithy/core and others. The
+# lockfile still lists them, so an override turns this scanner green, but the
+# inlined copy is the code the gateway runs and no override reaches it. Check
+# `grep -rho '^//#region node_modules/[^/]*' <openclaw>/dist | sort -u` before
+# reading a green scan as a fixed gateway.
+#
+# Known open case, zod GHSA-mrhx-c7xc-m3w5 (high, memory exhaustion while
+# validating oversized constrained collections; fixed in 4.6.6), triaged
+# 2026-10-24: openclaw@2026.7.1-2 inlines zod 4.4.3
+# (dist/schemas-*.js, `version = { major: 4, minor: 4, patch: 3 }`), and that
+# copy validates openclaw's own config and plugin schemas. The root override
+# `openclaw>zod@<4.6.6` still matters — @modelcontextprotocol/sdk and
+# @agentclientprotocol/sdk, which openclaw imports rather than inlines, resolve
+# zod through openclaw and loaded 4.4.3 before it — but it cannot reach the
+# inlined copy, and no scanner can see that copy. Upstream has fixed it:
+# openclaw main pins zod 4.6.7, and 2026.9.34 (extended-stable, 2026-10-24)
+# inlines 4.6.7 — but that line requires Node >=24.22.1, so adopting it is the
+# repo-wide Node bump, not a routine pin move. 2026.10.7 (latest) and
+# 2026.10.10-beta.3 still pin 4.6.5. Exposure meanwhile is bounded: the gateway
+# is reachable only on the Docker-internal network, and the config it
+# validates is written by Pinchy. Re-check on every OpenClaw bump
+# (update-openclaw): this note retires when the inlined version is >= 4.6.6. Still outside the lockfile
 # in that image: the llama-cpp provider (`openclaw plugins install`, npm) and
 # the /opt/pinchy-*-deps bundles (npm install of each plugin's package.json) —
 # a scan here says nothing about those.
