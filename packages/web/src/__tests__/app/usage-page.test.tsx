@@ -20,11 +20,19 @@ vi.mock("@/components/usage-dashboard", () => ({
   UsageDashboard: () => <div data-testid="usage-dashboard">Usage Dashboard</div>,
 }));
 
+vi.mock("@/components/budgets-card", () => ({
+  BudgetsCard: ({ isEnterprise }: { isEnterprise: boolean }) => (
+    <div data-testid="budgets-card" data-enterprise={String(isEnterprise)} />
+  ),
+}));
+
 vi.mock("@/lib/enterprise", () => ({
   isEnterprise: vi.fn().mockResolvedValue(false),
   getLicenseStatus: vi.fn().mockResolvedValue({ active: false, features: [], ver: 1, maxUsers: 0 }),
 }));
 
+import { render, screen } from "@testing-library/react";
+import "@testing-library/jest-dom";
 import UsagePage from "@/app/(app)/usage/page";
 
 describe("UsagePage (server component)", () => {
@@ -53,5 +61,14 @@ describe("UsagePage (server component)", () => {
 
     const result = await UsagePage();
     expect(result).toBeDefined();
+  });
+
+  it("shows the budgets beside the numbers they are measured against", async () => {
+    mockGetSession.mockResolvedValue({ user: { id: "admin-1", role: "admin" } });
+
+    render(await UsagePage());
+
+    expect(screen.getByTestId("usage-dashboard")).toBeInTheDocument();
+    expect(screen.getByTestId("budgets-card")).toHaveAttribute("data-enterprise", "false");
   });
 });

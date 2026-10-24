@@ -186,3 +186,37 @@ it("keeps the page's own text when the vision call comes back empty", async () =
 
   expect(pages[0].text).toBe("");
 });
+
+it("marks a page whose vision call failed, so the next run knows to try again", async () => {
+  // The text alone cannot carry this: a provider error and a blank page both
+  // index as "". The ingest skips an unchanged document that read as empty,
+  // so without the mark a provider outage would leave every scan it hit
+  // unsearchable until the file itself changes.
+  const path = await writePdf("certificate.pdf", ["scan"]);
+
+  const pages = await extractPdfPages(path, { ocr: { ocrPage: async () => null } });
+
+  expect(pages[0].ocrFailed).toBe(true);
+});
+
+it("marks a page whose vision call threw", async () => {
+  const path = await writePdf("certificate.pdf", ["scan"]);
+  const ocrPage = vi.fn(async (): Promise<string | null> => {
+    throw new Error("socket hang up");
+  });
+
+  const pages = await extractPdfPages(path, { ocr: { ocrPage } });
+
+  expect(pages[0].text).toBe("");
+  expect(pages[0].ocrFailed).toBe(true);
+});
+
+it("does not mark a page the vision model read as empty, or one the budget left out", async () => {
+  // Both are answers, not failures: the same setup would answer the same way
+  // tomorrow, so reading the document again would only spend the call again.
+  const path = await writePdf("blank.pdf", ["scan", "scan"]);
+
+  const pages = await extractPdfPages(path, { ocr: { ocrPage: async () => "", maxPages: 1 } });
+
+  expect(pages.map((page) => page.ocrFailed)).toEqual([undefined, undefined]);
+});

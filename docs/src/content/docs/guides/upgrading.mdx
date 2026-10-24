@@ -195,9 +195,19 @@ The knowledge base no longer embeds through Ollama. The embedding model now runs
 
 The two models produce vectors that cannot be compared, and Postgres cannot change a vector column's width in place, so the old embeddings can be neither kept nor converted. Migration `0056` clears `kb_documents` and `kb_chunks` and recreates the index column at the new width. **Your documents are not touched** — those tables are derived entirely from the files on disk, and the files stay where they are.
 
-So after upgrading, a Knowledge Base agent finds nothing until you reindex it: open the agent's **Permissions** tab, and in the **Knowledge Base** section click **Reindex now**. The run reports its progress inline. If you never set up a Knowledge Base agent, there is nothing to do — the tables were already empty.
+So after upgrading, a Knowledge Base agent finds nothing until it has been reindexed. The [nightly reindex](#knowledge-bases-now-keep-themselves-current) does that on its own the first night after the upgrade; to have it back sooner, open the agent's **Permissions** tab, and in the **Knowledge Base** section click **Reindex now**. Either way that first run is a full index, and on a large corpus it can last well into the next working day — while it runs, **Reindex now** for any agent answers that a run is already in progress. The run reports its progress inline. If you never set up a Knowledge Base agent, there is nothing to do — the tables were already empty.
 
 The `ollama pull bge-m3` step from the v0.9.0 notes no longer applies. If nothing else on your machine uses that model, you can remove it.
+
+#### The reindex takes more file types now — and scans go to your model provider
+
+The same run picks up four things it couldn't read before: **Word documents** (`.doc` and `.docx`), **slide decks** (`.ppt`, `.pptx`), **Excel workbooks** (`.xlsx`, `.xlsm`), and **scanned PDFs**. Citations land where each format actually has an anchor — a slide number, a heading, a sheet and row range — and open in the viewer like a PDF page does. Older `.xls` workbooks, plain text and Markdown are still out; [Supported file types](/guides/mount-data-directories/#supported-file-types) has the full split.
+
+Scans are the part worth a look before you click. A page with no text layer is rendered and handed to a vision model — the same one that already reads a scan when an agent opens it in chat — so **indexing now sends document content to your model provider**. It happens once per document, for every scanned page in the corpus, including documents nobody ever asks about. That's a wider statement than "only the question and the retrieved snippets leave the building", so it's worth deciding rather than discovering.
+
+If that isn't right for your instance, set `PINCHY_KB_OCR=off` in your `.env` and restart before you reindex. Scans are then reported as `unsearchable` — listed by name, not quietly skipped — and nothing leaves the building. On an air-gapped install there's nothing to do either way: Pinchy picks the vision model from your configured cloud providers, so a local-only stack has none and never sends anything.
+
+These calls run on your own API key and show up in the Usage Dashboard, and the reindex entry in the audit trail records how many documents and pages were sent, and to which model. [What indexing sends to your provider](/guides/mount-data-directories/#what-indexing-sends-to-your-provider) has the rest, including the 200-page-per-document limit.
 
 #### Deleting in Odoo now requires reading the record first
 
@@ -280,9 +290,35 @@ Re-verified against the live API. `nemotron-3-nano:30b` is **no longer offered**
 
 `kimi-k2.7-code` and `qwen3.5:397b` can now **accept images**. Both previously could not — `qwen3.5:397b` was the model an [earlier release note](#ollama-cloud-model-catalog-refreshed-against-the-live-api) marked text-only for hallucinating image contents — and both read test images correctly now. They become selectable for image work; the default image model is unchanged, so nothing re-routes on its own.
 
+#### On Anthropic, PDFs and scans are read again — by Claude Sonnet 5
+
+Until now Pinchy chose its default Anthropic model from Anthropic's live model list without checking that it knew the model. It settled on one it had no capability record for, judged it unable to see, and left Anthropic out of PDF and image reading altogether: **an install whose only provider is Anthropic had no PDF tool**, and the knowledge-base reindex this release asks for would have indexed every scanned page as empty. Pinchy now picks from the models it knows, so on an Anthropic key the default is **Claude Sonnet 5** — for new agents, for reading PDFs and images, and for the scanned pages of the reindex. [Which model Pinchy picks](/guides/llm-providers/#which-model-pinchy-picks) has the table. **Existing agents keep the model they're on.**
+
+Three things you may notice:
+
+- **A Custom Agent created on Anthropic before this release may sit on Claude Sonnet 4.5** — the model that old pick landed on. It keeps working, and Pinchy now recognises that it can see images. To move it to the newer default, pick Claude Sonnet 5 in **Agent Settings → General**.
+- **Claude Opus 5, Opus 5.5, Sonnet 5.5, Haiku 5.5 and Fable 5.1 show up in the model dropdown, disabled.** They need a newer agent runtime than this release ships, and their requests would be rejected. An agent already set to one of them keeps the setting and shows a warning in its settings — move it to Claude Sonnet 5. Enabling them is tracked in [#1225](https://github.com/heypinchy/pinchy/issues/1225).
+- **Cost estimates on the Usage Dashboard changed for older models**, because their prices in Pinchy's catalog were out of date: Claude Opus 4.7 now reads $5 / $25 per million tokens instead of $15 / $75, and Claude Haiku 4.5 ($1 / $5), GPT-5.5 ($5 / $30), GPT-5.4 ($2.50 / $15), GPT-5.4 Mini ($0.75 / $4.50) and Gemini 2.5 Flash ($0.30 / $2.50) moved to their current list prices too. Past records keep the estimate they were stored with.
+- **Conversations on Claude Opus 4.7, Claude Sonnet 4.6, GPT-5.5, GPT-5.4 and GPT-5.4 Mini are compacted later.** Pinchy's catalog listed them with context windows of 128K or 200K tokens; they hold 400K to about 1M. Pinchy still caps the working context at 256K tokens, so these agents now compact at about 246K tokens instead of about 112K (GPT) or 184K (Claude). Long conversations keep more history, and their largest turns cost and take correspondingly more.
+- **Custom OpenAI-compatible providers may report different capabilities.** Pinchy fills in context windows and image support for their models from a bundled model list, which this release refreshes from 259 to 542 models. A model that list now marks as able to see — for example `qwen3.5-9b` — becomes eligible for image work. If your server runs such a model without image support, images sent to it will fail — give agents that receive images a different model. See [Where capabilities come from](/guides/llm-providers/#where-capabilities-come-from).
+
 #### Documents in archive folders drop out of everyday answers
 
 A knowledge-base document now counts as archived if any **folder** on its path is called `old`, `archive`, `archived` or `archiv` — matched whole and case-insensitively, so `OLD/` counts and `Goldakte/` does not. The rule reads directories only: a file named `archive.pdf` is not archived. Archived documents are still fully indexed, and the agent can still reach them when a question asks it to; they are simply left out of an ordinary answer. Year and quarter folders (`2013/`, `Q3/`) are never archives. See [Current documents first](/guides/create-knowledge-base-agent/#current-documents-first). If you keep superseded files in a folder named something else, rename it to one of those four to get the same treatment.
+
+#### Knowledge bases now keep themselves current
+
+Until now a knowledge base was as current as its last **Reindex now**: a document dropped into the folder stayed unsearchable until an admin remembered to click. Pinchy now reindexes every knowledge-base agent **once a night, at 02:00 in your organization timezone**, so new, changed and deleted documents are reflected the next morning without anyone doing anything. Only what changed is extracted and embedded again; the rest of the run is reading each file once to see whether it did.
+
+It's on after the upgrade, and the first run is the first night after it — the upgrade itself never starts one. It covers every agent that has the `knowledge_search` permission and at least one granted folder. To move it out of a backup window or switch it off, go to **Settings → Organization → Knowledge Base Indexing**; each agent's **Index** section says when its next run is.
+
+Three things worth knowing before the first night:
+
+- **A large share is read in full every night.** Unchanged files are skipped, but only after they've been read to see that they're unchanged, so on a big network share the run takes about as long as copying the folder once. That's why it runs at night — pick a time your file server is quiet.
+- **A share that isn't mounted doesn't empty the index.** Any reindex — nightly or **Reindex now** — leaves alone the documents of a folder that is missing, unreadable, or suddenly empty while the index still holds documents from it, including a folder inside a granted one. Before, emptying a folder and reindexing removed its documents; now an empty folder looks exactly like a share that failed to mount, so to drop a folder's documents, delete the folder or take it out of the agent's grants. A run that had to leave folders out says how many in the **Index** section, and one that could read none of an agent's folders is marked failed, saying what to check, instead of reporting "0 indexed".
+- **New scans are sent to your vision model during the night they arrive**, exactly as a manual reindex would send them, and recorded the same way in the audit trail and the Usage Dashboard. `PINCHY_KB_OCR=off` stops that for nightly runs too.
+
+[Keeping the index current](/guides/create-knowledge-base-agent/#keeping-the-index-current) has the details, including how a missed night is caught up.
 
 #### Stopping a reply keeps what it already said
 
@@ -312,7 +348,7 @@ Two things to know. Links handed out **before** this upgrade cannot be checked �
 
 #### Automations move into the agent
 
-Email workflows now have their own **Automations** tab in an agent's settings, where you can review, create, enable, disable and delete them. It is visible to admins on any shared agent, and to the owner of a personal agent. Existing workflows are listed as-is; nothing changes on upgrade until you edit one.
+Email workflows now have their own **Automations** tab in an agent's settings, where you can review, create, enable, disable and delete them. It is visible to admins on shared agents — the same place email access is granted, since a workflow needs a mailbox the agent may read. Existing workflows are listed as-is; nothing changes on upgrade until you edit one.
 
 #### An agent you may not see now answers "not found"
 
@@ -364,7 +400,7 @@ Blocked-request entries in the audit trail now carry `clientAddress` beside `rem
 
 ### Database migrations
 
-Seventeen migrations (`0056`–`0072`) run automatically on startup — no manual steps. Only `0056` is destructive, and only for the Knowledge Base tables (see the breaking change above); the rest are additive.
+Twenty migrations (`0056`–`0075`) run automatically on startup — no manual steps. Only `0056` is destructive, and only for the Knowledge Base tables (see the breaking change above); the rest are additive.
 
 - `0056` — recreates `kb_chunks.embedding` at 768 dimensions for the bundled in-process `embeddinggemma` embedder and clears the two Knowledge Base tables.
 - `0057` — backfills `kb_documents.status` so documents ingested before the archive rule existed are classified by it too.
@@ -380,6 +416,9 @@ Seventeen migrations (`0056`–`0072`) run automatically on startup — no manua
 - `0069` — memory becomes a permission of its own rather than a side effect of file-write access (see the breaking change above).
 - `0070`, `0071` — `tool_call_id` and `openclaw_approval_id` on `tool_approval`, so a pending confirmation is tied to the call it is holding up and to the approval OpenClaw raised for it.
 - `0072` — `zone` and `content_hash` on `agent_delivered_files`, so a download link serves the file it was given rather than the name.
+- `0073` — the `cost_budgets` table, holding the monthly spending limits described in [Cost governance](/guides/cost-governance/). It starts empty, so nothing is limited until an admin sets a budget.
+- `0074` — `trigger` and `sweep_id` on `kb_index_jobs`, telling a run the nightly reindex started from one an admin asked for, and `unavailable_folders`, how many folders a run had to leave as they were. Existing jobs are marked `manual`, which is what they were.
+- `0075` — `empty_extraction_by` and `incomplete_reads` on `kb_documents`. The first records which extractor found no text in a document, so the nightly reindex stops reading an unchanged blank scan again — and sending it to your vision model again — every night. The second counts reads that didn't finish (a failed vision call, a failed conversion), so those are retried for up to five runs rather than forever. Rows that predate them carry nothing, so each empty document is read once more on the next run and recorded from then on.
 
 ## Upgrading from v0.9.0 to v0.9.1
 

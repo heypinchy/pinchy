@@ -28,12 +28,24 @@ export interface IngestPage {
    * that merely continues an earlier section.
    */
   headings?: HeadingMark[];
+  /**
+   * Set when this page is a scan the vision model was asked to read and did
+   * not answer — a provider error, a timeout, a render that threw. Absent when
+   * it answered, even with nothing: an empty answer is the page's text, a
+   * failed call is not.
+   *
+   * The ingest reads it to decide whether an unchanged document is owed
+   * another read (`incompleteReads` on kb_documents) — whether it came out
+   * empty or found text on its other pages. The text alone cannot say: both
+   * cases index as "".
+   */
+  ocrFailed?: true;
 }
 
 export interface IngestResult {
   /** Documents newly indexed, replaced due to a content change, or recovered from a zero-chunk state — and searchable afterwards (at least one chunk). */
   indexed: number;
-  /** Documents left untouched: unchanged content hash, chunks already present. */
+  /** Documents left untouched: unchanged content hash, and either chunks already present or an empty read on record that this run could not improve on — or a retry that found less than is stored (ingest.ts). */
   skipped: number;
   /** Documents deleted because their source file is no longer on disk. */
   removed: number;

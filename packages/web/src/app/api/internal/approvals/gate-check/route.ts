@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { eq, sql } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { validateGatewayToken } from "@/lib/gateway-auth";
 import { parseRequestBody } from "@/lib/api-validation";
 import { gateCheckSchema } from "@/lib/schemas/approvals";
@@ -12,6 +12,8 @@ import { collectCallModels } from "@/lib/approvals/call-models";
 import { readPluginSecret } from "@/lib/plugin-secrets-source";
 import { appendAuditLog, type AuditLogEntry } from "@/lib/audit";
 import { recordAuditFailure } from "@/lib/audit-deferred";
+import { directSessionUserId } from "@/lib/session-key";
+import { findUserIdIgnoringCase } from "@/lib/user-id-case";
 import { db } from "@/db";
 import { agents, users } from "@/db/schema";
 
@@ -34,28 +36,7 @@ function deriveRequesterPrincipal(
   sessionKey: string | undefined
 ): string | undefined {
   if (senderId) return senderId;
-  if (!sessionKey) return undefined;
-  // Non-greedy: a userId never contains a colon, but a `:<chatId>` segment can
-  // follow it. Mirrors extractUserIdFromSessionKey in the tool-use audit route —
-  // a greedy `(.+)$` would swallow `<userId>:<chatId>` and mis-attribute.
-  return /^agent:[^:]+:direct:([^:]+)/.exec(sessionKey)?.[1];
-}
-
-/**
- * OpenClaw normalizes session keys to lowercase, so the principal we read back
- * from `ctx.sessionKey` is `lower(user.id)` — it never equals the mixed-case
- * `session.user.id` the decision route and the inbox compare against. (Same
- * reason `audit_log` logs "no user found for actorId" and falls back to the raw
- * value.) Resolve it case-insensitively to the real, case-preserved user id so
- * requester and approver compare equal.
- */
-async function resolveRequesterUserId(principal: string): Promise<string | undefined> {
-  const [row] = await db
-    .select({ id: users.id })
-    .from(users)
-    .where(sql`lower(${users.id}) = ${principal.toLowerCase()}`)
-    .limit(1);
-  return row?.id;
+  return directSessionUserId(sessionKey);
 }
 
 export async function POST(request: NextRequest) {
@@ -89,7 +70,7 @@ export async function POST(request: NextRequest) {
   }
 
   const principal = deriveRequesterPrincipal(senderId, sessionKey);
-  const requesterId = principal ? await resolveRequesterUserId(principal) : undefined;
+  const requesterId = principal ? await findUserIdIgnoringCase(principal) : undefined;
   if (!requesterId || !sessionKey) {
     // Fail closed: a gated tool must not run for an unidentifiable user — only
     // a real Pinchy user can confirm it.

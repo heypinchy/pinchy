@@ -27,6 +27,7 @@ import { db } from "@/db";
 import { agents, channelLinks, agentGroups, userGroups, users } from "@/db/schema";
 import { eq, and, isNull } from "drizzle-orm";
 import { getSettingsByPrefix } from "@/lib/settings";
+import { getInstancePolicy, isPausedPersonalAgent } from "@/lib/instance-policy";
 
 const CONFIG_PATH = process.env.OPENCLAW_CONFIG_PATH || "/openclaw-config/openclaw.json";
 const CREDENTIALS_DIR = join(dirname(CONFIG_PATH), "credentials");
@@ -180,6 +181,11 @@ async function recalculateTelegramAllowStoresImpl(): Promise<void> {
     userGroupMap.get(ug.userId)!.add(ug.groupId);
   }
 
+  // Members may be barred from personal agents (Settings → Organization →
+  // Member access). Read once, and only when a personal-agent bot exists — it
+  // narrows that branch below and nothing else.
+  const policy = agentsWithBots.some((a) => a.isPersonal) ? await getInstancePolicy() : null;
+
   // 7. For each agent with a bot, compute allowed Telegram user IDs
   for (const agent of agentsWithBots) {
     const allowedTelegramIds: string[] = [];
@@ -190,7 +196,11 @@ async function recalculateTelegramAllowStoresImpl(): Promise<void> {
 
       if (agent.isPersonal) {
         // Personal agents (e.g. Smithers): all linked users get access.
-        // Smithers is personal but the Telegram bot serves everyone.
+        // Smithers is personal but the Telegram bot serves everyone — each
+        // user's DMs are routed to their OWN personal agent (build.ts). A
+        // member whose personal agent is paused is left out entirely: the
+        // routing would otherwise fall back to the bot owner's agent.
+        if (policy && isPausedPersonalAgent(agent, user.role, policy)) continue;
         allowedTelegramIds.push(link.channelUserId);
       } else if (agent.visibility === "all") {
         // All non-banned linked users get access

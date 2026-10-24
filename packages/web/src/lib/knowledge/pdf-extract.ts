@@ -49,6 +49,8 @@ export interface ExtractedPdfPage {
    * heading across the page break is the caller's job.
    */
   headings?: HeadingMark[];
+  /** See `IngestPage.ocrFailed`. */
+  ocrFailed?: true;
 }
 
 /**
@@ -297,25 +299,33 @@ export async function extractPdfPages(
    * scan indexes as an empty page, which #935 surfaces — and never a thrown
    * error, because one unreadable page must not cost the whole document.
    */
-  async function ocrIfScanned(page: PDFPageProxy, text: string): Promise<string> {
-    if (!ocr || !hasSparseText(text)) return text;
+  async function ocrIfScanned(
+    page: PDFPageProxy,
+    text: string
+  ): Promise<{ text: string; failed?: true }> {
+    if (!ocr || !hasSparseText(text)) return { text };
 
     const imageSizeUnknown = await paintsAnyImage(page as unknown as PageWithOperatorList);
     if (!isScannedPage({ sparseText: true, hasLargeImages: false, imageSizeUnknown })) {
-      return text;
+      return { text };
     }
 
+    // Not a failure: the same budget drops the same pages tomorrow.
     if (rendered >= maxOcrPages) {
       skipped++;
-      return text;
+      return { text };
     }
 
+    // A failed render counts as a failed read too. It costs no provider call,
+    // and erring this way means a transient render failure (a memory squeeze)
+    // is retried rather than taken as the document's last word.
     try {
       const image = await renderPageToImage(page);
       rendered++;
-      return (await ocr.ocrPage(image)) ?? text;
+      const read = await ocr.ocrPage(image);
+      return read === null ? { text, failed: true } : { text: read };
     } catch {
-      return text;
+      return { text, failed: true };
     }
   }
 
@@ -359,10 +369,9 @@ export async function extractPdfPages(
 
         // The OCR decision, and the render, must happen while the page proxy
         // is still alive — `page.cleanup()` in the finally below releases it.
-        const extracted: ExtractedPdfPage = {
-          page: i,
-          text: ocr ? await ocrIfScanned(page, text) : text,
-        };
+        const read = ocr ? await ocrIfScanned(page, text) : { text };
+        const extracted: ExtractedPdfPage = { page: i, text: read.text };
+        if (read.failed) extracted.ocrFailed = true;
         // Offsets into the text as extracted. OCR replaces that text wholesale
         // when it fires, and a scanned page has no outline to speak of, so the
         // marks are attached to the text they were measured against.

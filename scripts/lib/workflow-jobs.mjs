@@ -18,7 +18,21 @@ import { readFileSync } from "node:fs";
  * @returns {Array<{ jobName: string, body: string, path: string }>}
  */
 export function splitWorkflowIntoJobs(workflowPath) {
-  const lines = readFileSync(workflowPath, "utf8").split("\n");
+  return splitWorkflowTextIntoJobs(
+    readFileSync(workflowPath, "utf8"),
+    workflowPath,
+  );
+}
+
+/**
+ * {@link splitWorkflowIntoJobs} for workflow text already in hand.
+ *
+ * @param {string} text - the workflow file's contents
+ * @param {string} [workflowPath] - carried into each job for error messages
+ * @returns {Array<{ jobName: string, body: string, path: string | undefined }>}
+ */
+export function splitWorkflowTextIntoJobs(text, workflowPath) {
+  const lines = text.replace(/\r\n?/g, "\n").split("\n");
 
   let inJobs = false;
   let jobName = null;

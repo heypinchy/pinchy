@@ -99,7 +99,7 @@ function openClawLogsSince(sinceIso: string): string {
  * stops issuing applies, and the heuristic interpreted that as a hang.
  *
  * Implementation note: probe via the OpenClaw container's bundled `node`
- * (always present in the openclaw image — `npm install -g openclaw@…`).
+ * (always present in the openclaw image — OpenClaw is a Node program).
  * Don't reach for `sh -c 'echo > /dev/tcp/...'` — Debian/Ubuntu base images
  * symlink `/bin/sh` to `dash`, which does NOT implement bash's `/dev/tcp`
  * pseudo-device, so the redirect would silently fail with "No such file or

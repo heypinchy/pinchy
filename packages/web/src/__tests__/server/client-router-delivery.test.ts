@@ -24,6 +24,10 @@ const { mockInsertValues, mockAppendAuditLog, mockRecordAuditFailure, mockGrantS
     mockGrantSelect: vi.fn().mockReturnValue([]),
   }));
 
+vi.mock("@/lib/budgets", () => ({
+  getExhaustedBlockingBudget: vi.fn().mockResolvedValue(null),
+}));
+
 vi.mock("@/db", () => ({
   db: {
     query: { agents: { findFirst: vi.fn() }, users: { findFirst: vi.fn() } },

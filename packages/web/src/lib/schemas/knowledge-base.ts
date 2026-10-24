@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { INDEX_SCHEDULE_TIME_PATTERN } from "@/lib/knowledge/index-schedule";
+
 /**
  * Body for `POST /api/internal/knowledge/search` — the retrieval endpoint the
  * (thin) `pinchy-knowledge` OpenClaw plugin's `knowledge_search` tool calls,
@@ -39,3 +41,17 @@ export const knowledgeReindexSchema = z.object({
 });
 
 export type KnowledgeReindexRequest = z.infer<typeof knowledgeReindexSchema>;
+
+/**
+ * Body for `PUT /api/settings/knowledge-index-schedule` — whether Pinchy
+ * reindexes every knowledge-base agent on its own once a night, and at what
+ * org-local time. The whole schedule, not a patch: it is two fields, and a
+ * partial update would make "what is the schedule now?" depend on the order
+ * two admins saved in.
+ */
+export const knowledgeIndexScheduleSchema = z.object({
+  enabled: z.boolean(),
+  time: z.string().regex(INDEX_SCHEDULE_TIME_PATTERN, "Use a 24-hour time such as 02:00 or 23:30."),
+});
+
+export type KnowledgeIndexScheduleRequest = z.infer<typeof knowledgeIndexScheduleSchema>;

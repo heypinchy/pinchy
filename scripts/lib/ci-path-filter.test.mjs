@@ -4,6 +4,7 @@ import { join, dirname, resolve } from "node:path";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { splitWorkflowIntoJobs } from "./workflow-jobs.mjs";
+import { scannedLockfiles } from "./audit-ignore-parity.mjs";
 import {
   hasCodeChanges,
   UNGATED_JOBS,
@@ -170,14 +171,7 @@ test("every other job is gated on the changes job", () => {
 // fires if someone adds a --lockfile under an ignored path (e.g. a second docs
 // site) without teaching the filter about it.
 test("every lockfile vuln-scan reads counts as a code change", () => {
-  const vulnScan = splitWorkflowIntoJobs(CI_WORKFLOW).find(
-    (j) => j.jobName === "vuln-scan",
-  );
-  assert.ok(vulnScan, "ci.yml must define the vuln-scan job");
-
-  const lockfiles = [...vulnScan.body.matchAll(/--lockfile=\.\/(\S+)/g)].map(
-    (m) => m[1],
-  );
+  const lockfiles = scannedLockfiles(readFileSync(CI_WORKFLOW, "utf8"));
   assert.ok(
     lockfiles.length > 0,
     "expected vuln-scan to scan at least one lockfile",

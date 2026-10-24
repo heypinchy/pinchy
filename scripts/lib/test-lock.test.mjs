@@ -422,6 +422,13 @@ describe("the wrapper, run for real", () => {
    * longer exercises the interval the wrapper actually sleeps.
    */
   test("waiting prints the test:related alternative", PROBE, async () => {
+    // Deterministic on purpose. The first version ran a 600 ms holder and a
+    // second wrapper side by side and hoped they overlapped: when the two node
+    // startups together took longer than 600 ms — a loaded CI runner — the
+    // holder had released before the second wrapper ever looked, nobody
+    // waited, and stderr came back empty. So the holder now keeps the lock
+    // until this test releases it, and releases only once the waiter has
+    // either printed the hint or exited without it.
     const lock = freshLockPath();
     const ownerSeen = join(freshScratchDir("pinchy-probe-owner-"), "seen");
     seedOwner(lock, { pid: process.pid, label: "the probe itself" });

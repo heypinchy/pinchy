@@ -24,3 +24,17 @@ export function directSessionKey(agentId: string, userId: string, chatId?: strin
 export function inboxSessionKey(agentId: string, ledgerId: string): string {
   return `agent:${agentId}:inbox:${ledgerId}`;
 }
+
+/**
+ * The Pinchy user id a direct session key names, or undefined for any other
+ * key. Captures only the userId segment: a `:<chatId>` can follow it (#508),
+ * and the userId itself never contains a colon — a greedy `(.+)$` once
+ * swallowed `<userId>:<chatId>` and mis-attributed audit rows.
+ *
+ * OpenClaw lowercases session keys, so for a key read back from the runtime
+ * this is `lower(users.id)`; resolve it with `findUserIdIgnoringCase`.
+ */
+export function directSessionUserId(sessionKey: string | undefined): string | undefined {
+  if (!sessionKey) return undefined;
+  return /^agent:[^:]+:direct:([^:]+)/.exec(sessionKey)?.[1];
+}

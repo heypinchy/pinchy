@@ -33,16 +33,37 @@ interface PluginLogger {
   warn?: (message: string) => void;
 }
 
+/** The fields of OpenClaw's agent hook context the budget gate reads. */
+interface AgentRunContext {
+  agentId?: string;
+  sessionKey?: string;
+  /** Channel/plugin id for channel-originated runs, e.g. `telegram`. */
+  channel?: string;
+  messageProvider?: string;
+  senderId?: string;
+  trigger?: string;
+}
+
+/** OpenClaw's input-gate decision. `reason` is internal; `message` is shown. */
+type GateDecision =
+  { outcome: "pass" } | { outcome: "block"; reason: string; message?: string; category?: string };
+
 interface PluginApi {
   pluginConfig?: PluginConfig;
   logger?: PluginLogger;
-  on: (
-    hookName: "before_tool_call" | "after_tool_call",
-    handler: (
-      event: BeforeToolCallEvent | AfterToolCallEvent,
-      ctx: ToolHookContext
-    ) => Promise<void>
-  ) => void;
+  on: {
+    (
+      hookName: "before_tool_call" | "after_tool_call",
+      handler: (
+        event: BeforeToolCallEvent | AfterToolCallEvent,
+        ctx: ToolHookContext
+      ) => Promise<void>
+    ): void;
+    (
+      hookName: "before_agent_run",
+      handler: (event: unknown, ctx: AgentRunContext) => Promise<GateDecision>
+    ): void;
+  };
 }
 
 interface ToolAuditPayload {
@@ -365,10 +386,143 @@ async function postToolAuditEvent(
   throw lastError;
 }
 
+// ── Budget gate (before_agent_run) ──────────────────────────────────
+//
+// Pinchy's blocking cost budgets (#36), enforced where every run passes: here,
+// before the model reads the prompt, on every channel. Design of record:
+// plans/2026-10-19-budget-runtime-gate-design.md.
+//
+// Two runtime facts shape this code (OpenClaw 2026.7.1):
+//   - returning `undefined` is a BLOCK, not a pass — always return a decision;
+//   - a throw or the 15s hook timeout is a block too — never throw, and bound
+//     the fetch well inside that window.
+//
+// When Pinchy cannot be asked, the gate fails OPEN, unless the last answer for
+// that agent was a block: failing closed would turn every Pinchy restart into
+// a refused message on every channel of every instance, budgets or not.
+
+const PASS: GateDecision = { outcome: "pass" };
+// A pass is reused for this long, so a busy agent asks Pinchy at most a few
+// times a minute. A block is never reused while Pinchy answers: every refused
+// turn is audited, and a raised budget reopens on the very next message.
+const BUDGET_PASS_CACHE_MS = 15_000;
+// Same Docker network, one indexed query: a healthy answer takes milliseconds.
+const BUDGET_CHECK_TIMEOUT_MS = 3_000;
+// After a failed check, answer from what is known for this long before asking
+// again: a down Pinchy must not add a 3s timeout to every run of every agent.
+const BUDGET_FAILURE_PAUSE_MS = 10_000;
+
+/** Pinchy answered, and will answer an identical request the same way. */
+class BudgetCheckRejected extends Error {}
+
+type BudgetAnswer = { blocked: false } | { blocked: true; message: string };
+
+function parseBudgetAnswer(body: unknown): BudgetAnswer | null {
+  if (typeof body !== "object" || body === null) return null;
+  const b = body as { blocked?: unknown; message?: unknown };
+  if (b.blocked === false) return { blocked: false };
+  if (b.blocked === true && typeof b.message === "string" && b.message.trim()) {
+    return { blocked: true, message: b.message };
+  }
+  return null;
+}
+
+function budgetBlock(message: string): GateDecision {
+  return { outcome: "block", reason: "budget_exhausted", message, category: "cost_limit" };
+}
+
+async function askBudget(cfg: PluginConfig, body: Record<string, unknown>): Promise<BudgetAnswer> {
+  const res = await fetch(`${normalizeBaseUrl(cfg.apiBaseUrl)}/api/internal/budgets/check`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${cfg.gatewayToken}`,
+    },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(BUDGET_CHECK_TIMEOUT_MS),
+  });
+  if (!res.ok) {
+    const reason = await readErrorBody(res);
+    const message = `budget check returned ${res.status}${reason ? `: ${reason}` : ""}`;
+    throw isDefinitiveRejection(res.status) ? new BudgetCheckRejected(message) : new Error(message);
+  }
+  const answer = parseBudgetAnswer(await res.json());
+  if (!answer) throw new Error("budget check returned an answer it could not read");
+  return answer;
+}
+
+/** Only real strings: OpenClaw's context fields are typed, not guaranteed. */
+function stringField(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
+function createBudgetGate(cfg: PluginConfig, logger: PluginLogger | undefined) {
+  // The last answer per agent, and when it came.
+  const lastAnswer = new Map<string, { answer: BudgetAnswer; at: number }>();
+  // Pinchy-wide, not per agent: when one check fails, they all would.
+  let lastFailureAt: number | undefined;
+  let failing = false;
+
+  // What to do without an answer: keep a block, otherwise let the run through.
+  const fallback = (agentId: string): GateDecision => {
+    const last = lastAnswer.get(agentId);
+    return last?.answer.blocked ? budgetBlock(last.answer.message) : PASS;
+  };
+
+  return async (_event: unknown, ctx: AgentRunContext): Promise<GateDecision> => {
+    const agentId = stringField(ctx.agentId) ?? extractAgentIdFromSessionKey(ctx.sessionKey);
+    if (!agentId) return PASS;
+
+    const last = lastAnswer.get(agentId);
+    if (last && !last.answer.blocked && Date.now() - last.at < BUDGET_PASS_CACHE_MS) return PASS;
+    if (lastFailureAt !== undefined && Date.now() - lastFailureAt < BUDGET_FAILURE_PAUSE_MS) {
+      return fallback(agentId);
+    }
+
+    try {
+      // Who and where only — never the prompt, the history or the system
+      // prompt the hook is handed.
+      const answer = await askBudget(cfg, {
+        agentId,
+        sessionKey: stringField(ctx.sessionKey),
+        channel: stringField(ctx.channel) ?? stringField(ctx.messageProvider),
+        senderId: stringField(ctx.senderId),
+        trigger: stringField(ctx.trigger),
+      });
+      lastAnswer.set(agentId, { answer, at: Date.now() });
+      lastFailureAt = undefined;
+      if (failing) {
+        failing = false;
+        logger?.warn?.("[pinchy-audit] budget check answers again; blocking budgets are enforced");
+      }
+      return answer.blocked ? budgetBlock(answer.message) : PASS;
+    } catch (error) {
+      lastFailureAt = Date.now();
+      const decision = fallback(agentId);
+      // Once per outage: during one, every run of every agent lands here.
+      if (!failing) {
+        failing = true;
+        const message = error instanceof Error ? error.message : String(error);
+        const effect =
+          error instanceof BudgetCheckRejected
+            ? "Pinchy rejected it, so blocking budgets are not enforced until this is fixed"
+            : decision.outcome === "block"
+              ? "keeping the last answer for paused agents and letting the others through"
+              : "letting runs through until Pinchy answers";
+        logger?.warn?.(
+          `[pinchy-audit] budget check failed for agent ${agentId}: ${message} — ${effect}`
+        );
+      }
+      return decision;
+    }
+  };
+}
+
 const plugin = {
   id: "pinchy-audit",
   name: "Pinchy Audit",
-  description: "Source-level tool execution audit logging for all OpenClaw tools.",
+  description:
+    "Source-level tool execution audit logging for all OpenClaw tools, and the runtime gate for Pinchy's blocking cost budgets.",
   configSchema: {
     validate: (value: unknown) => {
       if (value && typeof value === "object" && "apiBaseUrl" in value && "gatewayToken" in value) {
@@ -386,6 +540,8 @@ const plugin = {
     }
 
     const recentStarts = new Map<string, RecentToolStart>();
+
+    api.on("before_agent_run", createBudgetGate(cfg, api.logger));
 
     api.on("before_tool_call", async (event, ctx) => {
       cleanupRecentToolStarts(recentStarts);

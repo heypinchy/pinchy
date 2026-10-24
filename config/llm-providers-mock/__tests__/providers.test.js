@@ -70,6 +70,22 @@ test("GET /anthropic/v1/models with x-api-key returns Anthropic shape", async ()
   assert.ok(body.data.find((m) => m.id === "claude-sonnet-4-6"));
 });
 
+test("GET /anthropic/v1/models lists models outside Pinchy's catalog and a dated decoy", async () => {
+  // The list is only a useful fixture while it carries what a real one does:
+  // newer models than Pinchy curates, and an older dated snapshot.
+  const res = await fetch(`http://localhost:${PORT}/anthropic/v1/models`, {
+    headers: { "x-api-key": "sk-ant-mock", "anthropic-version": "2023-06-01" },
+  });
+  const ids = (await res.json()).data.map((m) => m.id);
+  for (const id of [
+    "claude-sonnet-5",
+    "claude-sonnet-5-5",
+    "claude-sonnet-4-5-20250929",
+  ]) {
+    assert.ok(ids.includes(id), `missing ${id}`);
+  }
+});
+
 test("POST /anthropic/v1/messages returns Anthropic message shape", async () => {
   const res = await fetch(`http://localhost:${PORT}/anthropic/v1/messages`, {
     method: "POST",

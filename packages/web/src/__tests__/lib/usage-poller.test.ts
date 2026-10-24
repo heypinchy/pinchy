@@ -22,6 +22,11 @@ vi.mock("@/lib/usage-per-turn", () => ({
   recordSessionTurnsUsage: (...args: unknown[]) => mockRecordSessionTurns(...args),
 }));
 
+const { mockEvaluateBudgetAlerts } = vi.hoisted(() => ({ mockEvaluateBudgetAlerts: vi.fn() }));
+vi.mock("@/lib/budgets", () => ({
+  evaluateBudgetAlerts: (...args: unknown[]) => mockEvaluateBudgetAlerts(...args),
+}));
+
 const mockWhere = vi.fn();
 
 vi.mock("@/db", () => ({
@@ -761,5 +766,42 @@ describe("startUsagePoller / stopUsagePoller", () => {
     await vi.advanceTimersByTimeAsync(60_000);
     // Three start calls but only one interval — one tick = 1
     expect(mockRecordSessionTurns).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("budget alerts ride on the usage sweep", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    _resetSessionActivity();
+    mockRecordSessionTurns.mockResolvedValue(undefined);
+    mockEvaluateBudgetAlerts.mockResolvedValue(undefined);
+    stopUsagePoller();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    stopUsagePoller();
+    vi.useRealTimers();
+  });
+
+  it("checks the budgets after every sweep, so an alert lands within one interval", async () => {
+    startUsagePoller(makeOpenClawClient([]));
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(mockEvaluateBudgetAlerts).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(mockEvaluateBudgetAlerts).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps sweeping when a budget check throws", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    mockEvaluateBudgetAlerts.mockRejectedValue(new Error("db down"));
+    const client = makeOpenClawClient([]);
+    startUsagePoller(client);
+
+    await vi.advanceTimersByTimeAsync(120_000);
+
+    expect(client.sessions.list).toHaveBeenCalledTimes(2);
   });
 });

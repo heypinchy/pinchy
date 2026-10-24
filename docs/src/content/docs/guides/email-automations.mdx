@@ -88,6 +88,9 @@ The same rule as the underlying API:
 
 - **Members** can manage automations on a personal agent they own.
 - **Admins** can manage them on any **shared** agent. A colleague's personal agent is not included: personal agents stay private to their owner, admins included.
+- **Admins can turn members' automations off** under **Settings → Organization → Member access**. Members then can't create or switch on automations on their personal agent, and existing ones are paused — not deleted — until the switch is turned back on. Switching one off or deleting it still works. See [Keep Costs Predictable](/guides/cost-governance/#member-access).
+
+An automation also pauses while a [monthly budget](/guides/cost-governance/#monthly-budgets) that pauses chats is used up for its agent, and resumes next month.
 
 There's one deliberate exception, and it only goes one way. An admin who already has a workflow's ID — from the [audit trail](/concepts/audit-trail/), where a runaway automation shows up — can disable or delete that workflow even on a personal agent. Standing autonomous authority has to stay stoppable. It gives them no way to _find_ an automation on an agent they can't see, only to stop one they already know about. See the [API reference](/reference/api/#automations).
 

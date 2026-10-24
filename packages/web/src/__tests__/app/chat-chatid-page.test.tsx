@@ -45,6 +45,7 @@ vi.mock("@/lib/agent-access", async (importOriginal) => {
   return {
     ...actual,
     assertAgentAccess: vi.fn(),
+    isPersonalAgentPausedFor: vi.fn().mockResolvedValue(false),
   };
 });
 

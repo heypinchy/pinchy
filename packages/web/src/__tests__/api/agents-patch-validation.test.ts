@@ -34,6 +34,14 @@ vi.mock("@/lib/enterprise", () => ({
   isEnterprise: vi.fn().mockResolvedValue(false),
   getLicenseState: vi.fn().mockResolvedValue("community"),
 }));
+// Members may use their personal agent here: the cases below are about what a
+// member may PATCH on one, not about whether the agent is switched off.
+vi.mock("@/lib/instance-policy", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/instance-policy")>()),
+  getInstancePolicy: vi
+    .fn()
+    .mockResolvedValue({ memberPersonalAgents: true, memberAutomations: true }),
+}));
 vi.mock("@/lib/provider-models", () => ({
   fetchProviderModels: vi.fn().mockResolvedValue([
     {

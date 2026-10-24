@@ -11,8 +11,10 @@ import {
   agentConnectionPermissions,
   integrationConnections,
   channelLinks,
+  users,
 } from "@/db/schema";
 import { getSetting, getSettingsByPrefix } from "@/lib/settings";
+import { getInstancePolicy, isPausedPersonalAgent } from "@/lib/instance-policy";
 import { computeAllowedTools, EMAIL_OPERATION_DISPLAY_ORDER } from "@/lib/tool-registry";
 import type { AgentPluginConfig } from "@/db/schema";
 import {
@@ -968,9 +970,14 @@ export async function regenerateOpenClawConfig() {
   }
 
   // Always include pinchy-audit and keep it enabled. It logs tool usage from
-  // OpenClaw hooks so built-in and custom tools are captured at source.
+  // OpenClaw hooks so built-in and custom tools are captured at source, and its
+  // before_agent_run gate enforces blocking cost budgets on every channel.
   entries["pinchy-audit"] = {
     enabled: true,
+    // before_agent_run is a conversation hook: OpenClaw silently skips it for
+    // a non-bundled plugin unless the entry opts in. The gate reads only the
+    // agent and channel from it and sends Pinchy nothing of the conversation.
+    hooks: { allowConversationAccess: true },
     config: {
       apiBaseUrl: process.env.PINCHY_INTERNAL_URL || `http://pinchy:${process.env.PORT || "7777"}`,
       gatewayToken: gatewayTokenString,
@@ -1541,8 +1548,29 @@ export async function regenerateOpenClawConfig() {
         liveAgents.filter((a) => a.isPersonal).map((a) => [a.ownerId, a.id])
       );
 
+      // Members may be barred from personal agents (Settings → Organization →
+      // Member access). Then a member gets no binding at all — skipping only
+      // their own would hand them the fallback below, the bot owner's private
+      // agent. The allow store leaves them out as well (telegram-allow-store).
+      // Roles are read only when the switch is off.
+      const policy = await getInstancePolicy();
+      const roleByUser = policy.memberPersonalAgents
+        ? null
+        : new Map(
+            (await db.select({ id: users.id, role: users.role }).from(users)).map((u) => [
+              u.id,
+              u.role,
+            ])
+          );
+
       for (const { accountId } of personalBotsAccountIds) {
         for (const link of telegramLinks) {
+          if (
+            roleByUser &&
+            isPausedPersonalAgent({ isPersonal: true }, roleByUser.get(link.userId), policy)
+          ) {
+            continue;
+          }
           // Route to user's own personal agent, or fall back to the bot owner's agent
           const targetAgentId = personalAgentsByOwner.get(link.userId) || accountId;
           bindings.push({
