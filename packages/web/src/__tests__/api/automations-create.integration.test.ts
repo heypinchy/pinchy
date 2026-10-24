@@ -35,6 +35,7 @@ import {
 } from "@/db/schema";
 import { makeNextRequest, routeContext } from "@/test-helpers/route";
 import type { AgentVisibility } from "@/db/enums";
+import { setInstancePolicy } from "@/lib/instance-policy";
 
 const { getSessionMock, deferAuditLogMock, licenseStateMock } = vi.hoisted(() => ({
   getSessionMock: vi.fn(),
@@ -397,5 +398,60 @@ describe("POST /api/automations — create email workflow", () => {
     getSessionMock.mockResolvedValue(null);
     const res = await POST(postBody(validBody("a", "c")), routeContext());
     expect(res.status).toBe(401);
+  });
+
+  describe("while members may not create automations on a personal agent", () => {
+    beforeEach(async () => {
+      await setInstancePolicy({ memberPersonalAgents: true, memberAutomations: false });
+    });
+
+    it("refuses a member on their own Smithers with a code the form can explain, and writes nothing", async () => {
+      asMember(OWNER);
+      const agent = await seedAgent({ isPersonal: true, ownerId: OWNER });
+      await seedConnection("conn-own");
+      await grantEmailPermission(agent.id, "conn-own");
+
+      const res = await POST(postBody(validBody(agent.id, "conn-own")), routeContext());
+
+      expect(res.status).toBe(403);
+      expect(await res.json()).toMatchObject({ code: "member_automations_disabled" });
+      expect(await loadWorkflows(agent.id)).toHaveLength(0);
+      expect(deferAuditLogMock).not.toHaveBeenCalled();
+    });
+
+    it("still lets an admin create one on their own Smithers", async () => {
+      asAdmin(ADMIN);
+      const agent = await seedAgent({ isPersonal: true, ownerId: ADMIN });
+      await seedConnection("conn-admin");
+      await grantEmailPermission(agent.id, "conn-admin");
+
+      const res = await POST(postBody(validBody(agent.id, "conn-admin")), routeContext());
+
+      expect(res.status).toBe(201);
+    });
+
+    it("still lets an admin create one on a shared agent", async () => {
+      asAdmin(ADMIN);
+      const agent = await seedAgent({ isPersonal: false, ownerId: null, visibility: "all" });
+      await seedConnection("conn-shared");
+      await grantEmailPermission(agent.id, "conn-shared");
+
+      const res = await POST(postBody(validBody(agent.id, "conn-shared")), routeContext());
+
+      expect(res.status).toBe(201);
+    });
+  });
+
+  it("refuses a member whose personal agent is switched off, before any automation rule is asked", async () => {
+    await setInstancePolicy({ memberPersonalAgents: false, memberAutomations: true });
+    asMember(OWNER);
+    const agent = await seedAgent({ isPersonal: true, ownerId: OWNER });
+    await seedConnection("conn-own");
+    await grantEmailPermission(agent.id, "conn-own");
+
+    const res = await POST(postBody(validBody(agent.id, "conn-own")), routeContext());
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toMatchObject({ code: "personal_agent_disabled" });
   });
 });

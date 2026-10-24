@@ -439,6 +439,14 @@ const startup = app.prepare().then(async () => {
   const { startKbIndexWorker, stopKbIndexWorker } = await import("./src/server/kb-index-worker");
   startKbIndexWorker();
 
+  // Queue a reindex of every knowledge-base agent once a night (default 02:00,
+  // org timezone), so documents dropped into the mounted folders during the
+  // day are searchable the next morning without an admin asking. It only
+  // queues; the worker above runs the jobs. See kb-index-scheduler.ts.
+  const { startKbIndexScheduler, stopKbIndexScheduler } =
+    await import("./src/server/kb-index-scheduler");
+  startKbIndexScheduler();
+
   // Graceful shutdown: stop the upload GC + usage poller intervals, close the
   // memory-audit watcher, disconnect from OpenClaw, drain browser WebSockets,
   // then close the HTTP server and DB pool. Without this, a SIGTERM (e.g.
@@ -459,6 +467,7 @@ const startup = app.prepare().then(async () => {
       stopChatErrorGc: () => stopChatErrorGc(),
       stopApprovalSweep: () => stopApprovalSweep(),
       stopAuditVerifyJob: () => stopAuditVerifyJob(),
+      stopKbIndexScheduler: () => stopKbIndexScheduler(),
       stopKbIndexWorker: () => stopKbIndexWorker(),
       stopUsagePoller: () => stopUsagePoller(),
       stopMemoryAuditWatcher: () =>

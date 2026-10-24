@@ -61,6 +61,7 @@ import { GET as listApprovals } from "@/app/api/approvals/route";
 import { POST as decide } from "@/app/api/approvals/[id]/decision/route";
 import { POST as reportResolution } from "@/app/api/internal/approvals/resolution/route";
 import { MAX_PENDING_PER_REQUESTER, linkApproval } from "@/lib/approvals/service";
+import { setInstancePolicy } from "@/lib/instance-policy";
 
 const GW = "test-gw-token";
 beforeAll(() => {
@@ -381,6 +382,39 @@ describe("approval routes (integration, real DB)", () => {
     setSession(other);
     const res = await decide(decideReq({ decision: "approve" }), ctx(blocked.requestId));
     expect(res.status).toBe(403);
+  });
+
+  describe("on a member's personal agent while members may not use one", () => {
+    beforeEach(async () => {
+      await db.update(agents).set({ isPersonal: true }).where(eq(agents.id, agent.id));
+    });
+
+    it("refuses an approval — it would resume a run on an agent the admin switched off", async () => {
+      const blocked = await (await gateCheck(gateReq(gateBody()))).json();
+      await setInstancePolicy({ memberPersonalAgents: false, memberAutomations: true });
+      setSession(user);
+
+      const res = await decide(decideReq({ decision: "approve" }), ctx(blocked.requestId));
+
+      expect(res.status).toBe(403);
+      expect((await res.json()).code).toBe("personal_agent_disabled");
+      const [row] = await db
+        .select()
+        .from(toolApproval)
+        .where(eq(toolApproval.id, blocked.requestId));
+      expect(row.status).toBe("pending");
+      expect(gatewayRequest).not.toHaveBeenCalled();
+    });
+
+    it("still takes a denial — stopping is never what the policy is against", async () => {
+      const blocked = await (await gateCheck(gateReq(gateBody()))).json();
+      await setInstancePolicy({ memberPersonalAgents: false, memberAutomations: true });
+      setSession(user);
+
+      const res = await decide(decideReq({ decision: "deny" }), ctx(blocked.requestId));
+
+      expect(res.status).toBe(200);
+    });
   });
 
   it("returns 404 for an unknown request id", async () => {

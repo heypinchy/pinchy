@@ -64,6 +64,11 @@ export async function PATCH(
     })
   );
 
+  // Telegram routing depends on the role while members may not use a personal
+  // agent: a member gets no peer binding (openclaw-config/build.ts). Rebuild
+  // the bindings with the allow stores, or a promoted member is allowed in
+  // with no binding and lands on whatever agent OpenClaw picks for them.
+  await regenerateOpenClawConfig();
   await recalculateTelegramAllowStores();
 
   return NextResponse.json({ success: true });

@@ -41,13 +41,13 @@ describe("seedAdminSmithers", () => {
     expect(createSmithersAgentMock).not.toHaveBeenCalled();
   });
 
-  it("falls back to anthropic/claude-sonnet-4-6 when no default_provider is configured", async () => {
+  it("falls back to anthropic/claude-sonnet-5 when no default_provider is configured", async () => {
     findFirstMock.mockResolvedValue(undefined);
     getSettingMock.mockResolvedValue(null);
     const fakeAgent = {
       id: "agent-new",
       name: "Smithers",
-      model: "anthropic/claude-sonnet-4-6",
+      model: "anthropic/claude-sonnet-5",
       ownerId: "admin-1",
       isPersonal: true,
       createdAt: new Date(),
@@ -59,7 +59,7 @@ describe("seedAdminSmithers", () => {
 
     expect(agent.name).toBe("Smithers");
     expect(createSmithersAgentMock).toHaveBeenCalledWith(
-      expect.objectContaining({ model: "anthropic/claude-sonnet-4-6" })
+      expect.objectContaining({ model: "anthropic/claude-sonnet-5" })
     );
   });
 
@@ -92,7 +92,7 @@ describe("seedAdminSmithers", () => {
     const fakeAgent = {
       id: "agent-owned",
       name: "Smithers",
-      model: "anthropic/claude-sonnet-4-6",
+      model: "anthropic/claude-sonnet-5",
       ownerId: "admin-1",
       isPersonal: true,
       createdAt: new Date(),
@@ -104,7 +104,7 @@ describe("seedAdminSmithers", () => {
 
     expect(agent.ownerId).toBe("admin-1");
     expect(createSmithersAgentMock).toHaveBeenCalledWith({
-      model: "anthropic/claude-sonnet-4-6",
+      model: "anthropic/claude-sonnet-5",
       ownerId: "admin-1",
       isPersonal: true,
       isAdmin: true,

@@ -8,10 +8,16 @@ import type {
 import { chatWithDispatchRaceRetry } from "@/server/chat-dispatch-retry";
 import { waitForAgentInRuntime } from "@/server/agent-readiness";
 import type { WebSocket } from "ws";
-import { assertAgentAccess, effectiveVisibility } from "@/lib/agent-access";
+import {
+  assertAgentAccess,
+  effectiveVisibility,
+  isPersonalAgentPausedFor,
+  PERSONAL_AGENT_DISABLED,
+} from "@/lib/agent-access";
 import { directSessionKey } from "@/lib/session-key";
 import { getUserGroupIds, getAgentGroupIds } from "@/lib/groups";
 import { getLicenseState } from "@/lib/enterprise";
+import { budgetExhaustedMessage, getExhaustedBlockingBudget } from "@/lib/budgets";
 import { buildMemoryPromptBlock } from "@/lib/memory-prompt";
 import { appendAuditLog } from "@/lib/audit";
 import { recordAuditFailure } from "@/lib/audit-deferred";
@@ -296,6 +302,31 @@ export class ClientRouter {
     }
   }
 
+  /**
+   * A send refused by an instance policy rather than by access: the member may
+   * see the agent, the admin has switched its use off. `chat.policy_refused`
+   * names which rule answered, with the agent snapshotted by name.
+   */
+  private async auditPolicyRefusal(
+    agent: { id: string; name: string },
+    reason: "personal_agent_disabled" | "budget_exhausted",
+    extra: Record<string, unknown> = {}
+  ): Promise<void> {
+    const auditEntry = {
+      actorType: "user" as const,
+      actorId: this.userId,
+      eventType: "chat.policy_refused" as const,
+      resource: `agent:${agent.id}`,
+      detail: { reason, agent: { id: agent.id, name: agent.name }, ...extra },
+      outcome: "failure" as const,
+    };
+    try {
+      await appendAuditLog(auditEntry);
+    } catch (err) {
+      recordAuditFailure(err, auditEntry);
+    }
+  }
+
   async handleMessage(clientWs: WebSocket, message: BrowserMessage): Promise<void> {
     // Look up agent and check access
     const agent = await db.query.agents.findFirst({
@@ -348,6 +379,24 @@ export class ClientRouter {
       return;
     }
 
+    // The caller's own personal agent while members may not use one. Answered
+    // for history and sends, so an open tab can neither read nor send; audited
+    // only for a send, because a tab re-requests history on every reconnect and
+    // those rows would say nothing the first one did not. An abort goes
+    // through: a run that was already going when the switch flipped must stay
+    // stoppable — stopping is never what the policy is against.
+    if (message.type !== "abort" && (await isPersonalAgentPausedFor(agent, this.userRole))) {
+      this.sendToClient(clientWs, {
+        type: "error",
+        code: "policy_personal_agent_disabled",
+        message: PERSONAL_AGENT_DISABLED.error,
+      });
+      if (message.type === "message") {
+        await this.auditPolicyRefusal(agent, "personal_agent_disabled");
+      }
+      return;
+    }
+
     if (message.type === "history") {
       const resolved = this.resolveChatId(clientWs, message.chatId);
       if (!resolved.ok) return;
@@ -369,6 +418,23 @@ export class ClientRouter {
       message.content.some((part) => part.type === "image_url")
     ) {
       this.sendToClient(clientWs, { type: "error", code: "PROTOCOL_OUTDATED" });
+      return;
+    }
+
+    // A blocking cost budget (#36) used up for this month — the agent's own or
+    // the instance's. Checked for sends only: history and abort cost nothing.
+    // Spend is recorded after a turn, so the turn that crossed the line has
+    // finished; this is the next one.
+    const budget = await getExhaustedBlockingBudget(agent.id);
+    if (budget) {
+      this.sendToClient(clientWs, {
+        type: "error",
+        code: "policy_budget_exhausted",
+        message: budgetExhaustedMessage(agent.name, budget),
+      });
+      await this.auditPolicyRefusal(agent, "budget_exhausted", {
+        budget: { id: budget.id, period: budget.period },
+      });
       return;
     }
 

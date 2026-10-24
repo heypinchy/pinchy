@@ -14,6 +14,7 @@ import {
   formatEta,
   type ProgressSample,
 } from "@/lib/knowledge/index-eta";
+import type { NextIndexRun } from "@/lib/knowledge/index-schedule";
 import type { IngestResult } from "@/lib/knowledge/types";
 import type { KnowledgeReindexRequest } from "@/lib/schemas/knowledge-base";
 
@@ -23,6 +24,10 @@ type JobStatus = "pending" | "running" | "succeeded" | "failed";
 interface ReindexJob {
   id: string;
   status: JobStatus;
+  /** Who started the run: an admin, or the nightly reindex. Absent on a run this component just started itself. */
+  trigger?: "manual" | "scheduled";
+  /** Folders the run left as they were: unreadable, or empty while the index still held their documents. */
+  unavailableFolders?: number;
   processed: number;
   total: number | null;
   /** The same progress weighted by bytes of the corpus — the work-proportional measure the bar and the estimate are built on (#907). `totalBytes` is null until discovery has walked every root. */
@@ -33,6 +38,16 @@ interface ReindexJob {
   createdAt: string;
   startedAt: string | null;
   finishedAt: string | null;
+}
+
+/** The nightly reindex as it applies to this agent (GET …/knowledge/reindex → `schedule`). */
+interface ReindexSchedule {
+  enabled: boolean;
+  time: string;
+  timezone: string;
+  nextRun: NextIndexRun | null;
+  /** Whether the nightly sweep covers this agent — only agents that search the index are. */
+  included: boolean;
 }
 
 /** POST …/knowledge/reindex: 202 carries a jobId; the no-op path carries jobId=null. */
@@ -80,6 +95,7 @@ export function KnowledgeReindexSection({
   pollIntervalMs = 3000,
 }: KnowledgeReindexSectionProps) {
   const [job, setJob] = useState<ReindexJob | null>(null);
+  const [schedule, setSchedule] = useState<ReindexSchedule | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const url = `/api/agents/${agentId}/knowledge/reindex`;
 
@@ -93,8 +109,11 @@ export function KnowledgeReindexSection({
   const fetchStatus = useCallback(async () => {
     const seq = ++fetchSeq.current;
     try {
-      const res = await apiGet<{ job: ReindexJob | null }>(url);
-      if (seq === fetchSeq.current) setJob(res.job);
+      const res = await apiGet<{ job: ReindexJob | null; schedule?: ReindexSchedule | null }>(url);
+      if (seq === fetchSeq.current) {
+        setJob(res.job);
+        if (res.schedule) setSchedule(res.schedule);
+      }
     } catch {
       // A failed status read is non-fatal: keep the last-known state and let the
       // next poll (or the user) retry. Deliberately no toast — a polling error
@@ -214,6 +233,8 @@ export function KnowledgeReindexSection({
         <p className="text-sm text-muted-foreground">Not yet indexed.</p>
       )}
 
+      {allowedPathCount > 0 && schedule && <ScheduleNote schedule={schedule} />}
+
       {/* Which documents the counts above mean by "unsearchable" (#935). Hidden
           while a run is in flight — the list is about to change — and hidden
           without a grant, where there is nothing to report on. Documents that
@@ -331,11 +352,54 @@ export function formatElapsed(startedAtMs: number, nowMs: number): string {
   return minutes === 0 ? `${hours} h` : `${hours} h ${minutes} min`;
 }
 
+/**
+ * Whether the nightly reindex keeps this agent current. The line that answers
+ * "do I still have to press the button?" — and, when the answer is yes, says
+ * why and where to change it.
+ */
+function ScheduleNote({ schedule }: { schedule: ReindexSchedule }) {
+  let text: string;
+  if (!schedule.enabled) {
+    text =
+      "The nightly reindex is off, so new documents show up only when you reindex. You can turn it on in Settings → Organization.";
+  } else if (!schedule.included) {
+    text =
+      "The nightly reindex skips this agent because it doesn't use knowledge search. Reindex it here when its documents change.";
+  } else {
+    const next = schedule.nextRun
+      ? ` Next run: ${schedule.nextRun.day} at ${schedule.nextRun.time}.`
+      : "";
+    text = `New and changed documents are picked up every night at ${schedule.time} (${schedule.timezone}).${next}`;
+  }
+  return <p className="text-sm text-muted-foreground">{text}</p>;
+}
+
+/**
+ * A success with a hole in it: some folders could not be read (a share that
+ * failed to mount, most likely) and their documents were kept as they were.
+ * Without this line the run reads as a plain "Last indexed …" for as long as
+ * the share stays down.
+ */
+function UnavailableFoldersNote({ count }: { count: number }) {
+  const text =
+    count === 1
+      ? "One folder couldn't be read, so its documents were left as they were. If it lives on a network share, check that it is mounted."
+      : `${count} folders couldn't be read, so their documents were left as they were. If they live on a network share, check that it is mounted.`;
+  return <p className="text-sm text-amber-600 dark:text-amber-500">{text}</p>;
+}
+
 function SucceededState({ job }: { job: ReindexJob }) {
+  const how = job.trigger === "scheduled" ? "automatically " : "";
   return (
     <div className="space-y-2">
-      <p className="text-sm text-muted-foreground">Last indexed {formatWhen(job.finishedAt)}.</p>
+      <p className="text-sm text-muted-foreground">
+        Last indexed {how}
+        {formatWhen(job.finishedAt)}.
+      </p>
       {job.counts && <CountsSummary counts={job.counts} />}
+      {(job.unavailableFolders ?? 0) > 0 && (
+        <UnavailableFoldersNote count={job.unavailableFolders!} />
+      )}
     </div>
   );
 }

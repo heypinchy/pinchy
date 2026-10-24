@@ -584,7 +584,10 @@ export function AgentSettingsPageContent({ initialTab }: { initialTab?: string }
               and its list fetch only fires when the tab is actually opened. */}
           {canManageAutomations && (
             <TabsContent value="automations">
-              <AgentSettingsAutomations agentId={agentId} />
+              <AgentSettingsAutomations
+                agentId={agentId}
+                memberPolicyApplies={!isAdmin && agent?.isPersonal === true}
+              />
             </TabsContent>
           )}
 

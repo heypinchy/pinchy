@@ -17,7 +17,7 @@ export const PROVIDERS: Record<ProviderName, ProviderConfig> = {
     authType: "api-key",
     settingsKey: "anthropic_api_key",
     envVar: "ANTHROPIC_API_KEY",
-    defaultModel: "anthropic/claude-sonnet-4-6",
+    defaultModel: "anthropic/claude-sonnet-5",
     placeholder: "sk-ant-...",
   },
   openai: {

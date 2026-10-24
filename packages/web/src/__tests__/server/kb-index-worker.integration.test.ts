@@ -52,6 +52,7 @@ function fakeDeps(): IngestDeps {
     convertOffice: vi.fn(async () => {
       throw new Error("convertOffice must not be called for a PDF");
     }),
+    ocrModel: null,
   };
 }
 
@@ -137,6 +138,48 @@ describe("kb index worker", () => {
 
     // The granted folder is a real filesystem path and can embed a username.
     expect(JSON.stringify(row.detail)).not.toContain(tmpRoot);
+  });
+
+  // The outcome row is written hours after the request by a worker that does
+  // not care who asked. It still has to say: a reader filtering the trail for
+  // last night's automatic runs finds the outcome rows, not only the requests.
+  it("carries the job's trigger onto the outcome row", async () => {
+    const agent = await makeAgent();
+    writePdf(tmpRoot, "handbook.pdf");
+    await enqueueIndexJob({
+      orgId: ORG_ID,
+      agentId: agent.id,
+      agentName: agent.name,
+      requestedBy: "admin-1",
+      paths: [tmpRoot],
+    });
+
+    await runNextIndexJob({ deps: fakeDeps() });
+
+    const [row] = await reindexAuditRows();
+    expect(row.detail).toMatchObject({ trigger: "manual" });
+    expect(row.detail).not.toHaveProperty("sweepId");
+  });
+
+  it("carries a scheduled job's trigger and sweep onto the outcome row", async () => {
+    const agent = await makeAgent();
+    writePdf(tmpRoot, "handbook.pdf");
+    const sweepId = "0d6c1a3e-6a1f-4c55-9b55-2f4b6f0a9e11";
+    await enqueueIndexJob({
+      orgId: ORG_ID,
+      agentId: agent.id,
+      agentName: agent.name,
+      requestedBy: "kb-index-scheduler",
+      paths: [tmpRoot],
+      trigger: "scheduled",
+      sweepId,
+    });
+
+    await runNextIndexJob({ deps: fakeDeps() });
+
+    const [row] = await reindexAuditRows();
+    expect(row.actorType).toBe("system");
+    expect(row.detail).toMatchObject({ trigger: "scheduled", sweepId });
   });
 
   // A renamed or deleted agent must not cost us the name on the audit row: the
@@ -311,22 +354,192 @@ describe("kb index worker", () => {
     expect(next.status).toBe("queued");
   });
 
-  // A granted folder can be empty, or gone by the time the job runs. That is a
-  // finished job reporting 0/0, not a stuck one.
+  // A granted folder can be empty. That is a finished job reporting 0/0, not a
+  // stuck one.
   it("finishes a job whose folders hold nothing to index", async () => {
     const agent = await makeAgent();
+    const empty = join(tmpRoot, "empty");
+    mkdirSync(empty, { recursive: true });
     await enqueueIndexJob({
       orgId: ORG_ID,
       agentId: agent.id,
       agentName: agent.name,
       requestedBy: "admin-1",
-      paths: [join(tmpRoot, "empty")],
+      paths: [empty],
     });
 
     await runNextIndexJob({ deps: fakeDeps() });
 
     const job = await getLatestIndexJobForAgent(agent.id);
     expect(job).toMatchObject({ status: "succeeded", processed: 0, total: 0 });
+  });
+
+  // A folder that is GONE is a different answer. Reporting it as "succeeded,
+  // 0 indexed" is what an unmounted share looks like, every night, in a UI
+  // that says "Last indexed automatically today". Still finished, not stuck —
+  // but failed, and saying why.
+  it("fails a job when none of its folders could be read, and says what to check", async () => {
+    const agent = await makeAgent();
+    await enqueueIndexJob({
+      orgId: ORG_ID,
+      agentId: agent.id,
+      agentName: agent.name,
+      requestedBy: "admin-1",
+      paths: [join(tmpRoot, "not-mounted")],
+    });
+
+    await runNextIndexJob({ deps: fakeDeps() });
+
+    const job = await getLatestIndexJobForAgent(agent.id);
+    expect(job?.status).toBe("failed");
+    expect(job?.error).toMatch(/None of the granted folders could be read/);
+    const [row] = await reindexAuditRows();
+    expect(row.outcome).toBe("failure");
+    expect((row.detail as { reason?: string }).reason).toMatch(
+      /None of the granted folders could be read/
+    );
+    // A folder path can embed a username; the server log names it, the row does not.
+    expect(JSON.stringify(row.detail)).not.toContain(tmpRoot);
+  });
+
+  // One folder of several missing is worth knowing about without failing the
+  // run that indexed the others. Counted on the outcome row, never named.
+  it("counts the folders it could not read on the outcome row", async () => {
+    const agent = await makeAgent();
+    writePdf(join(tmpRoot, "present"), "handbook.pdf");
+    await enqueueIndexJob({
+      orgId: ORG_ID,
+      agentId: agent.id,
+      agentName: agent.name,
+      requestedBy: "admin-1",
+      paths: [join(tmpRoot, "present"), join(tmpRoot, "not-mounted")],
+    });
+
+    await runNextIndexJob({ deps: fakeDeps() });
+
+    const job = await getLatestIndexJobForAgent(agent.id);
+    expect(job?.status).toBe("succeeded");
+    const [row] = await reindexAuditRows();
+    expect(row.detail).toMatchObject({ indexed: 1, unavailableFolders: 1 });
+  });
+
+  // The audit row is not where an admin looks. A run that indexed one share and
+  // could not read the other is a success with a hole in it, and the Index
+  // section has to be able to say so — from the job, not the trail.
+  it("records on the job how many folders it had to leave out", async () => {
+    const agent = await makeAgent();
+    writePdf(join(tmpRoot, "present"), "handbook.pdf");
+    await enqueueIndexJob({
+      orgId: ORG_ID,
+      agentId: agent.id,
+      agentName: agent.name,
+      requestedBy: "admin-1",
+      paths: [join(tmpRoot, "present"), join(tmpRoot, "not-mounted")],
+    });
+
+    await runNextIndexJob({ deps: fakeDeps() });
+
+    const job = await getLatestIndexJobForAgent(agent.id);
+    expect(job).toMatchObject({ status: "succeeded", unavailableFolders: 1 });
+  });
+
+  // A share mounted BELOW a granted folder fails as an empty folder inside a
+  // root that still has files. The run succeeds on the rest, keeps that
+  // folder's documents, and counts it like a root it could not read.
+  it("keeps an emptied folder below a granted folder and counts it", async () => {
+    const agent = await makeAgent();
+    writePdf(tmpRoot, "readme.pdf");
+    writePdf(join(tmpRoot, "contracts"), "contract.pdf");
+    await enqueueIndexJob({
+      orgId: ORG_ID,
+      agentId: agent.id,
+      agentName: agent.name,
+      requestedBy: "admin-1",
+      paths: [tmpRoot],
+    });
+    await runNextIndexJob({ deps: fakeDeps() });
+    rmSync(join(tmpRoot, "contracts", "contract.pdf"));
+    await enqueueIndexJob({
+      orgId: ORG_ID,
+      agentId: agent.id,
+      agentName: agent.name,
+      requestedBy: "admin-1",
+      paths: [tmpRoot],
+    });
+
+    const ran = await runNextIndexJob({ deps: fakeDeps() });
+
+    expect(ran).toMatchObject({ status: "succeeded", unavailableFolders: 1 });
+    expect(ran?.counts).toMatchObject({ removed: 0 });
+    expect(await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID))).toHaveLength(
+      2
+    );
+  });
+
+  describe("a folder that comes up empty while the index still holds its documents", () => {
+    async function indexThenEmpty(agentId: string, agentName: string) {
+      const share = join(tmpRoot, "share");
+      writePdf(share, "handbook.pdf");
+      await enqueueIndexJob({
+        orgId: ORG_ID,
+        agentId,
+        agentName,
+        requestedBy: "admin-1",
+        paths: [share],
+      });
+      await runNextIndexJob({ deps: fakeDeps() });
+      rmSync(join(share, "handbook.pdf"));
+      return share;
+    }
+
+    // Nobody is watching at 02:00, and a share that failed to mount looks
+    // exactly like this from inside the container. Wiping the folder's index
+    // would cost a full re-embed; leaving it costs one stale night.
+    it("is left alone by the nightly run, which fails and says why", async () => {
+      const agent = await makeAgent();
+      const share = await indexThenEmpty(agent.id, agent.name);
+      await enqueueIndexJob({
+        orgId: ORG_ID,
+        agentId: agent.id,
+        agentName: agent.name,
+        requestedBy: "kb-index-scheduler",
+        paths: [share],
+        trigger: "scheduled",
+        sweepId: "0d6c1a3e-6a1f-4c55-9b55-2f4b6f0a9e11",
+      });
+
+      const ran = await runNextIndexJob({ deps: fakeDeps() });
+
+      expect(ran?.status).toBe("failed");
+      expect(ran?.error).toMatch(/None of the granted folders could be read/);
+      expect(await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID))).toHaveLength(
+        1
+      );
+    });
+
+    // The admin's own run gets the same protection. The run that failed above
+    // says "check that it is mounted" — and the obvious next move is to click
+    // Reindex now to retry. With the share still down, a literal reading of
+    // the empty mountpoint would delete the whole folder's index right then.
+    it("is left alone by a run an admin started, too", async () => {
+      const agent = await makeAgent();
+      const share = await indexThenEmpty(agent.id, agent.name);
+      await enqueueIndexJob({
+        orgId: ORG_ID,
+        agentId: agent.id,
+        agentName: agent.name,
+        requestedBy: "admin-1",
+        paths: [share],
+      });
+
+      const ran = await runNextIndexJob({ deps: fakeDeps() });
+
+      expect(ran?.status).toBe("failed");
+      expect(ran?.error).toMatch(/None of the granted folders could be read/);
+      expect(await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID))).toHaveLength(
+        1
+      );
+    });
   });
 
   // The whole reason a failed run keeps counts: a 2000-PDF run that dies at

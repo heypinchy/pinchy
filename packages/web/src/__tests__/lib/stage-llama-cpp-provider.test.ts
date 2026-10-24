@@ -72,6 +72,34 @@ function chownCalls(): string[] {
   return readFileSync(chownLog, "utf8").split("\n").filter(Boolean);
 }
 
+// Lay down a provider project the way `openclaw plugins install` writes it:
+// the dir name is derived from the package NAME only, so two releases of the
+// provider land in the same `openclaw-llama-cpp-provider-<hash>` dir.
+function writeProvider(npmDir: string, version: string, marker?: string): string {
+  const project = join(npmDir, "projects", "openclaw-llama-cpp-provider-15b2d859e6");
+  const pkgDir = join(project, "node_modules", "@openclaw", "llama-cpp-provider");
+  mkdirSync(pkgDir, { recursive: true });
+  writeFileSync(
+    join(pkgDir, "package.json"),
+    JSON.stringify({ name: "@openclaw/llama-cpp-provider", version })
+  );
+  if (marker) writeFileSync(join(project, marker), "");
+  return pkgDir;
+}
+
+function stagedVersion(): string {
+  const pkg = join(
+    npmRoot,
+    "projects",
+    "openclaw-llama-cpp-provider-15b2d859e6",
+    "node_modules",
+    "@openclaw",
+    "llama-cpp-provider",
+    "package.json"
+  );
+  return JSON.parse(readFileSync(pkg, "utf8")).version;
+}
+
 function runStage(): string {
   return execFileSync("bash", ["-c", `source '${SCRIPT}'; stage_llama_cpp_provider`], {
     env: {
@@ -124,6 +152,45 @@ describe("stage_llama_cpp_provider", () => {
 
     expect(() => runStage()).not.toThrow();
     expect(existsSync(join(npmRoot, "projects", "openclaw-llama-cpp-provider-abc123"))).toBe(true);
+  });
+
+  // The copy above used to run at most once per volume, and the project dir is
+  // named after the package alone. So an upgraded deployment kept whichever
+  // provider release it staged first, forever: bumping the provider pin in
+  // Dockerfile.openclaw changed fresh installs only, and an OpenClaw bump ran
+  // the new host against the old provider.
+  it("re-stages when the image bundles a different provider release than the volume holds", () => {
+    writeProvider(join(depsRoot, "npm"), "2026.9.33");
+    writeProvider(npmRoot, "2026.7.1", "stale-file-from-old-release");
+
+    const output = runStage();
+
+    expect(stagedVersion()).toBe("2026.9.33");
+    // Replaced, not overlaid: files only the old release had must not survive.
+    expect(
+      existsSync(
+        join(
+          npmRoot,
+          "projects",
+          "openclaw-llama-cpp-provider-15b2d859e6",
+          "stale-file-from-old-release"
+        )
+      )
+    ).toBe(false);
+    expect(output).toMatch(/2026\.7\.1 -> 2026\.9\.33/);
+  });
+
+  it("leaves the staged provider alone when it is the release the image bundles", () => {
+    writeProvider(join(depsRoot, "npm"), "2026.7.1");
+    writeProvider(npmRoot, "2026.7.1", "kept-file");
+
+    const output = runStage();
+
+    expect(stagedVersion()).toBe("2026.7.1");
+    expect(
+      existsSync(join(npmRoot, "projects", "openclaw-llama-cpp-provider-15b2d859e6", "kept-file"))
+    ).toBe(true);
+    expect(output).not.toMatch(/staging bundled embedding provider/);
   });
 
   it("is a safe no-op when the /opt bundle is missing (nothing to stage)", () => {

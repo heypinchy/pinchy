@@ -510,15 +510,24 @@ The request returns as soon as the job is queued — indexing runs in the backgr
 
 ### `GET /api/agents/:agentId/knowledge/reindex`
 
-The agent's most recent index run — in flight or last finished. **Admin only.** Returns `{ "job": null }` if the agent has never been reindexed.
+The agent's most recent index run — in flight or last finished — and whether the nightly reindex keeps this agent current. **Admin only.** `job` is `null` if the agent has never been reindexed.
 
 **Response:**
 
 ```json
 {
+  "schedule": {
+    "enabled": true,
+    "time": "02:00",
+    "timezone": "Europe/Vienna",
+    "nextRun": { "date": "2026-07-18", "time": "02:00", "day": "tomorrow" },
+    "included": true
+  },
   "job": {
     "id": "6f1c2b64-6c3e-4a2f-9c19-5c1d3a1f2e77",
     "status": "succeeded",
+    "trigger": "scheduled",
+    "unavailableFolders": 0,
     "processed": 18,
     "total": 18,
     "processedBytes": 41902137,
@@ -541,29 +550,92 @@ The agent's most recent index run — in flight or last finished. **Admin only.*
 | Field                           | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `status`                        | `pending`, `running`, `succeeded`, or `failed`.                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `trigger`                       | `manual` when an admin started the run, `scheduled` when the [nightly reindex](#get-apisettingsknowledge-index-schedule) did.                                                                                                                                                                                                                                                                                                                                                                                |
+| `unavailableFolders`            | Folders the run had to leave as they were: ones it could not read, and ones that came up empty while the index still held their documents (a network share that failed to mount looks like that). Their documents are kept, not removed. Counted, never named; `0` when every folder was read.                                                                                                                                                                                                               |
 | `processed` / `total`           | Documents done, and documents found. `total` is `null` until discovery has walked every folder; it never changes after that. `processed` advances per whole document, so a long one can hold it still for minutes.                                                                                                                                                                                                                                                                                           |
 | `processedBytes` / `totalBytes` | The same progress weighed by the bytes of the files involved. This is the pair to build a progress bar or a time-to-completion estimate on: documents are not equal units of work — one compilation PDF can be a third of a corpus — while bytes track the actual work and are known in full before the first document is read. `totalBytes` is `null` until discovery has finished, and `processedBytes` moves _inside_ a long document as its pages are embedded, so a slow document still shows movement. |
 | `counts`                        | The run's findings **so far**, updated as it goes. `null` before the first document.                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | `counts.indexed`                | Documents added, updated, or rebuilt — and searchable afterwards.                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| `counts.skipped`                | Unchanged content hash, chunks already present.                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `counts.skipped`                | Unchanged content hash, and either chunks already present or it already came out empty and nothing has changed that could read it differently (see [Keeping the index current](/guides/create-knowledge-base-agent/#keeping-the-index-current)).                                                                                                                                                                                                                                                             |
 | `counts.removed`                | Source file no longer on disk; the document and its chunks were deleted. Stays `0` until the run's final pass.                                                                                                                                                                                                                                                                                                                                                                                               |
 | `counts.unsearchable`           | Parsed without error but yielded no text, so the document exists in the index yet can never be retrieved — a workbook whose sheets are all hidden, or a scan that no vision model was available to read.                                                                                                                                                                                                                                                                                                     |
 | `counts.failed`                 | The file could not be read or parsed. The run continues — one bad file never aborts the reindex — and a previously indexed version of the file stays searchable.                                                                                                                                                                                                                                                                                                                                             |
 | `error`                         | Why the run failed. `null` unless `status` is `failed`.                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 
+`schedule` answers "do I still have to press the button?" for this agent. It is `null` if the schedule could not be read; the job is reported either way.
+
+| Field               | Description                                                                                                                                                                                              |
+| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `schedule.enabled`  | Whether the instance reindexes knowledge-base agents on its own every night. Set with [`PUT /api/settings/knowledge-index-schedule`](#put-apisettingsknowledge-index-schedule).                          |
+| `schedule.time`     | The time of day it runs, in the organization timezone.                                                                                                                                                   |
+| `schedule.timezone` | The organization timezone `time` is read in.                                                                                                                                                             |
+| `schedule.nextRun`  | The next run as `date`, `time` and `day` (`today` or `tomorrow`), all in the organization timezone. `null` while the nightly reindex is off.                                                             |
+| `schedule.included` | Whether the nightly run covers **this** agent. Only agents that have the `knowledge_search` permission and at least one granted folder are swept; an agent that only reads files is reindexed on demand. |
+
 `unsearchable` and `failed` can be non-zero on a `succeeded` run: the reindex itself worked, and these are its findings about the corpus.
 
-`status: "failed"` means something systemic stopped the run — the embedding endpoint or the database — not that a file was broken. A broken file is a `counts.failed`, and the run keeps going. Failed runs keep the counts they reached before dying.
+`status: "failed"` means something systemic stopped the run — the embedding endpoint or the database, or none of the agent's folders could be read — not that a file was broken. A broken file is a `counts.failed`, and the run keeps going. Failed runs keep the counts they reached before dying.
 
 A run interrupted by a restart is picked up again automatically: indexing is idempotent, so the resumed run skips everything already done.
 
-Every run writes two `knowledge.reindex` audit entries, correlated by `jobId`: the admin's request, and the outcome (recorded by the background worker, with the counts).
+Every run writes two `knowledge.reindex` audit entries, correlated by `jobId`: the request — the admin's, or the nightly scheduler's — and the outcome (recorded by the background worker, with the counts). Both carry `trigger`.
 
 **Errors:**
 
 - `401` — not authenticated
 - `403` — not an admin
 - `404` — agent not found, or it is another user's personal agent (admins cannot reach those either)
+
+### `GET /api/settings/knowledge-index-schedule`
+
+The nightly reindex: whether it's on, when it runs, and what the last nights did. **Admin only.**
+
+Once a night, at `time` in the [organization timezone](/reference/organization-timezone/), Pinchy queues a reindex of every agent that has the `knowledge_search` permission and at least one granted folder — one agent after another, behind the [one-run-at-a-time rule](#post-apiagentsagentidknowledgereindex). A run already in progress, yours or the previous agent's, delays the next one rather than cancelling it. If Pinchy wasn't running at that time, the night runs as soon as it starts again — once, not once per missed night.
+
+**Response:**
+
+```json
+{
+  "enabled": true,
+  "time": "02:00",
+  "timezone": "Europe/Vienna",
+  "nextRun": { "date": "2026-10-18", "time": "02:00", "day": "tomorrow" },
+  "currentSweep": null,
+  "lastSweep": {
+    "slot": "2026-10-17",
+    "startedAt": "2026-10-17T00:00:12.000Z",
+    "agentCount": 2
+  }
+}
+```
+
+| Field          | Description                                                                                                                                                                                 |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `enabled`      | Whether the nightly reindex runs. On by default.                                                                                                                                            |
+| `time`         | 24-hour `HH:MM`, in the organization timezone. Defaults to `02:00`.                                                                                                                         |
+| `timezone`     | The organization timezone `time` is read in.                                                                                                                                                |
+| `nextRun`      | `date`, `time` and `day` (`today` or `tomorrow`) of the next run, in the organization timezone. `null` while `enabled` is `false`.                                                          |
+| `currentSweep` | The night still queueing its agents: `slot` (the date it's for), `startedAt`, `agentCount`, and `waiting` — how many agents haven't had their turn yet. `null` when nothing is in progress. |
+| `lastSweep`    | The most recent night that queued all its agents: `slot`, `startedAt`, `agentCount`. Each agent's own outcome is on [`GET …/knowledge/reindex`](#get-apiagentsagentidknowledgereindex).     |
+
+**Errors:** `401` not authenticated, `403` not an admin.
+
+### `PUT /api/settings/knowledge-index-schedule`
+
+Turn the nightly reindex on or off, or move it. **Admin only.** Send the whole schedule; the response is the same as `GET`.
+
+**Request body:**
+
+| Field     | Type    | Required | Description                                                 |
+| --------- | ------- | -------- | ----------------------------------------------------------- |
+| `enabled` | boolean | Yes      | Whether Pinchy reindexes knowledge-base agents on its own.  |
+| `time`    | string  | Yes      | 24-hour `HH:MM` in the organization timezone, e.g. `02:00`. |
+
+A new setting applies from its next occurrence. Switching the reindex back on at 14:00, or moving it from 23:00 to 09:00 in the afternoon, never starts a run on the spot; the next run is the next time the clock reaches `time`.
+
+A change is recorded as a `settings.updated` audit entry with the old and new schedule. Saving the same values again records nothing.
+
+**Errors:** `400` invalid body (for example `time` not in `HH:MM`), `401` not authenticated, `403` not an admin.
 
 ### `POST /api/internal/knowledge/search`
 
@@ -599,11 +671,13 @@ Being keyed by workflow id also gives these two a reach the `agentId` endpoints 
 
 List the agent's email workflows.
 
+Each item carries `pausedByBudget: true` while a used-up blocking [cost budget](/guides/cost-governance/) pauses the agent's automations for this month. The sweep skips them without changing `status`, so read `pausedByBudget` rather than `status` to tell whether one is actually running.
+
 **Errors:**
 
 - `400` — `agentId` is missing from the query string
 - `401` — not authenticated
-- `403` — you can see the agent, but its automations are outside your scope: a shared agent is admin-only, and a personal agent's automations belong to its owner
+- `403` — you can see the agent, but its automations are outside your scope: a shared agent is admin-only, and a personal agent's automations belong to its owner. Also answered with `code: "personal_agent_disabled"` when an admin has turned members' personal agents off
 - `404` — no agent has that id, **or** you may not see the one that does
 
 ### `POST /api/automations`
@@ -629,7 +703,7 @@ Create a workflow. It is always created **disabled** and `pending`, whatever the
 
 - `400` — the body fails validation, or a requested connection is one the agent has no email **read** access to. The response names those connection ids; an id that doesn't exist lands here too, since it has no permission row either
 - `401` — not authenticated
-- `403` — you can see the agent but may not create a workflow on it (same scope rule as the list)
+- `403` — you can see the agent but may not create a workflow on it (same scope rule as the list). Also answered with `code: "member_automations_disabled"` when an admin has turned off automations on members' personal agents (see [Cost governance](/guides/cost-governance/)), and with `code: "personal_agent_disabled"` when they have turned off members' personal agents altogether
 - `404` — no agent has that id, **or** you may not see the one that does
 
 ### `PATCH /api/automations/:id`
@@ -646,6 +720,8 @@ Toggling to the state it already has is a no-op: still `200`, no audit entry —
 
 - `400` — the body has no boolean `enabled`
 - `401` — not authenticated
+- `403` — `code: "member_automations_disabled"`: you asked to **enable** a workflow on a member's personal agent while automations there are turned off. Admins get this too, because the workflow would read "enabled" and never run. Disabling is always allowed
+- `403` — `code: "budget_exhausted"`: you asked to **enable** a workflow on an agent that a used-up blocking [cost budget](/guides/cost-governance/) has paused for this month. Same reason, same rule: disabling is always allowed
 - `404` — no workflow has that id, **or** its agent is outside your scope. This endpoint addresses a workflow, not an agent, so a malformed id lands here as well: it definitionally matches nothing
 
 ### `DELETE /api/automations/:id`
@@ -747,9 +823,124 @@ Update a setting.
 | `key`   | string | Yes      | Setting key   |
 | `value` | string | Yes      | Setting value |
 
-Settings with `api_key` in the key name are automatically encrypted at rest.
+Settings with `api_key` in the key name are automatically encrypted at rest. Keys starting with `policy.` are refused with `400`: the member-access switches go through `PUT /api/settings/governance` below, which audits what changed and updates Telegram routing.
 
 **Response:** `{ "success": true }`
+
+### `GET /api/settings/governance`
+
+The two member-access switches from **Settings → Organization → Member access**. Any signed-in user may read them, so the app can explain to a member why their personal agent or automations are paused. See [Cost governance](/guides/cost-governance/).
+
+**Response:**
+
+```json
+{ "memberPersonalAgents": true, "memberAutomations": false }
+```
+
+### `PUT /api/settings/governance`
+
+Set both switches (admin only). Both fields are required. Writes a `settings.updated` audit entry listing what changed, and nothing for a save that changed nothing. Changing `memberPersonalAgents` also rebuilds the Telegram routing, so members can't reach their personal agent there either.
+
+**Request body:**
+
+| Field                  | Type    | Required | Description                                                    |
+| ---------------------- | ------- | -------- | -------------------------------------------------------------- |
+| `memberPersonalAgents` | boolean | Yes      | Members can use their personal agent (Smithers)                |
+| `memberAutomations`    | boolean | Yes      | Members can create and run automations on their personal agent |
+
+**Response:** the stored switches, same shape as `GET`.
+
+**Errors:** `400` (invalid body), `401`, `403` (not an admin).
+
+## Budgets (admin only)
+
+Monthly cost budgets for the whole instance or a single agent. See [Cost governance](/guides/cost-governance/#monthly-budgets).
+
+### `GET /api/budgets`
+
+Every budget with this month's spend, in the organization timezone.
+
+**Response:**
+
+```json
+[
+  {
+    "id": "6f1c…",
+    "agent": null,
+    "monthlyLimitUsd": 100,
+    "onExceeded": "block",
+    "spentUsd": 84.1,
+    "period": "2026-10",
+    "state": "warning"
+  }
+]
+```
+
+`agent` is `null` for the instance budget, otherwise `{ "id", "name" }`. `state` is `ok`, `warning` (80% or more) or `exceeded` (100% or more).
+
+A budget on another user's personal agent is left out of the list. You cannot set one there either (see `PUT` below), and listing it would reveal a colleague's private agent, its name and its spend.
+
+### `PUT /api/budgets`
+
+Create or replace a budget. Requires an Enterprise license. There is at most one instance budget and one per agent, so saving again for the same scope updates it. Changing the limit re-arms this month's alerts, because a warning about the old line says nothing about the new one. Changing only the action keeps them. Writes `budget.created` or `budget.updated`.
+
+**Request body:**
+
+| Field             | Type           | Required | Description                                              |
+| ----------------- | -------------- | -------- | -------------------------------------------------------- |
+| `agentId`         | string \| null | Yes      | The agent to cap, or `null` for the whole instance       |
+| `monthlyLimitUsd` | number         | Yes      | USD per calendar month, at least `0.01`; stored in cents |
+| `onExceeded`      | string         | Yes      | `notify` or `block`                                      |
+
+**Response:** `{ "id": "…" }`
+
+**Errors:** `400` (invalid body), `401`, `403` (not an admin, or no Enterprise license), `404` (no agent you can see has that id — a colleague's personal agent included).
+
+### `DELETE /api/budgets/:id`
+
+Remove a budget. Works without a license, so an expired one never leaves an instance with chats paused and no way to lift it. Writes `budget.deleted`.
+
+**Response:** `{ "id": "…" }`
+
+**Errors:** `401`, `403` (not an admin), `404` (no budget has that id, or it is on another user's personal agent).
+
+### `POST /api/internal/budgets/check`
+
+**Internal** — authenticated with the shared OpenClaw gateway token, not a user session. Called by the `pinchy-audit` plugin's `before_agent_run` hook before every agent run, on every channel (web, Telegram, automations), never by the browser.
+
+Answers whether a used-up blocking budget — the agent's own or the instance's — stops this run. When it does, the plugin refuses the run before the model reads the prompt, and the sender gets `message` as the reply.
+
+**Request body:**
+
+| Field        | Type   | Required | Description                                                                   |
+| ------------ | ------ | -------- | ----------------------------------------------------------------------------- |
+| `agentId`    | string | Yes      | The agent about to run                                                        |
+| `sessionKey` | string | No       | The OpenClaw session; a web-chat session names the Pinchy user                |
+| `channel`    | string | No       | Where the run came from, e.g. `telegram`; recorded on a refusal               |
+| `senderId`   | string | No       | The sender's account on that channel, mapped to the Pinchy user who linked it |
+| `trigger`    | string | No       | What started the run, as OpenClaw names it (`user`, `cron`, `heartbeat`, …)   |
+
+The plugin never sends the prompt, the conversation or the system prompt — only who is asking and where.
+
+**Response:**
+
+```json
+{
+  "blocked": true,
+  "message": "Knowledge Base has used its monthly budget. It's available again next month, or sooner if your admin raises the budget."
+}
+```
+
+`{ "blocked": false }` when nothing stops the run; that answer writes nothing. A refusal writes `chat.policy_refused` with `reason: "budget_exhausted"` and the `channel`, attributed to the Pinchy user when the session or a linked channel account names one, otherwise to the agent.
+
+The plugin reuses a `blocked: false` answer for the same agent for 15 seconds and never reuses a block, so raising a budget reopens the agent on the next message. When this endpoint can't be reached or answers with an error, the plugin lets the run through — unless its last answer for that agent was a block, which then stands — and waits 10 seconds before asking again. It logs one warning per outage in the agent runtime's log, and says so when the endpoint answers again.
+
+`sessionKey`, `channel`, `senderId` and `trigger` only shape the audit row. One that isn't a string or is too long (500, 100, 200 and 100 characters) is dropped, not rejected: an error answer lets the run through, so rejecting an audit detail would switch the budget off.
+
+**Errors:**
+
+- `400` — `agentId` missing, empty, or longer than 200 characters
+- `401` — gateway token missing or wrong. The plugin lets every run through until the token matches again and says in its log that blocking budgets are not enforced.
 
 ## LLM Providers (admin only)
 
@@ -789,7 +980,7 @@ What a removal would do, without doing it — the confirmation dialog uses this 
 {
   "targetProvider": "anthropic",
   "targetProviderLabel": "Anthropic",
-  "targetModel": "anthropic/claude-sonnet-4-6",
+  "targetModel": "anthropic/claude-sonnet-5",
   "affectedAgents": [{ "id": "…", "name": "Hermes" }]
 }
 ```
@@ -1862,6 +2053,7 @@ A failed delivery is still a `200`: the decision itself is persisted, and retryi
 **Errors:**
 
 - `403` — you are not the requester. Only the person who triggered the action can confirm it (four-eyes approval by a different admin is a planned extension, [#124](https://github.com/heypinchy/pinchy/issues/124))
+- `403` — `code: "personal_agent_disabled"`: you asked to **approve** a confirmation on your own personal agent while an admin has turned members' personal agents off. Approving would resume the run. Denying is always allowed
 - `404` — no such request
 - `409` — the request is no longer pending: already decided, already consumed, or expired
 

@@ -160,6 +160,8 @@ The Automations tab is where an agent's **email workflows** live — standing ru
 
 You'll see this tab on your personal Smithers and, as an admin, on shared agents that can read email. It's gated the same way the underlying API is: you can manage automations on a personal agent you own, and admins can manage them on any shared agent. A colleague's personal agent is nobody else's to manage — personal agents stay private to their owner, admins included. One thing survives that rule, and it lives in the API rather than in this tab: an admin who already has a workflow's ID can still stop it, so a runaway automation is never unstoppable. See the [API reference](/reference/api/#automations).
 
+If an admin has turned off automations on members' personal agents ([Member access](/guides/cost-governance/#member-access)), a member sees a note here instead: their automations are paused, **New automation** and **Enable** are disabled, and **Disable** and **Delete** still work.
+
 ### Create an automation
 
 Click **New automation** and fill in:

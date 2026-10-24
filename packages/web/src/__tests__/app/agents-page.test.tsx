@@ -35,6 +35,16 @@ describe("AgentsPageContent", () => {
     vi.clearAllMocks();
   });
 
+  it("explains a missing Smithers when the admin has turned personal agents off", () => {
+    render(<AgentsPageContent agents={[]} personalAgentsOff />);
+    expect(screen.getByText(/turned off personal agents/i)).toBeInTheDocument();
+  });
+
+  it("says nothing about personal agents otherwise", () => {
+    render(<AgentsPageContent agents={[]} />);
+    expect(screen.queryByText(/turned off personal agents/i)).not.toBeInTheDocument();
+  });
+
   it("renders the Agents heading", () => {
     render(<AgentsPageContent agents={[]} />);
     expect(screen.getByRole("heading", { name: "Agents" })).toBeInTheDocument();

@@ -96,9 +96,11 @@ async function resolveVisionModelChain(preference: readonly ProviderName[]): Pro
     }
     const model = await getDefaultModel(provider);
     if (!model) continue;
-    // Native PDF/vision providers (anthropic, google) are always vision-capable,
-    // so the check is a no-op there; for the openai fallback tier it guards a
-    // future text-only default from winning the slot.
+    // Not a no-op, even for providers whose every model can see: the answer
+    // comes from the capability table (and the models.dev snapshot behind it),
+    // so a default neither knows reads as text-only and drops its provider out
+    // of the chain. That is how an Anthropic-only install once lost its pdf
+    // tool. For the openai tier it also keeps a text-only default out.
     if (isModelVisionCapable(model) && !chain.includes(model)) chain.push(model);
   }
   return chain;

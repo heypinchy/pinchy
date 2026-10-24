@@ -2,7 +2,13 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
+import {
+  mkdtempSync,
+  writeFileSync,
+  mkdirSync,
+  rmSync,
+  readFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import {
   PLUGIN_DIR_PREFIX,
@@ -10,6 +16,7 @@ import {
   hasIndexEntry,
   readDeclaredTools,
   hasProdDependencies,
+  productionManifest,
   compareToolSets,
   extractImportSpecifiers,
   resolveSiblingModulePath,
@@ -389,6 +396,57 @@ test("discoverReachableModules runs cleanly against every real plugin package", 
     assert.ok(
       modules.some((m) => m.endsWith("/index.ts")),
       `expected index.ts to be included for ${dir}`,
+    );
+  }
+});
+
+test("productionManifest drops devDependencies and keeps everything a production install reads", () => {
+  const pkg = {
+    name: "pinchy-example",
+    type: "module",
+    dependencies: { "odoo-node": "^0.3.0" },
+    peerDependencies: { openclaw: "*" },
+    devDependencies: { vitest: "^4.1.11", typescript: "^6.0.3" },
+  };
+  assert.deepEqual(productionManifest(pkg), {
+    name: "pinchy-example",
+    type: "module",
+    dependencies: { "odoo-node": "^0.3.0" },
+    peerDependencies: { openclaw: "*" },
+  });
+});
+
+test("productionManifest leaves the manifest it was given untouched", () => {
+  const pkg = { dependencies: { a: "1" }, devDependencies: { b: "2" } };
+  productionManifest(pkg);
+  assert.deepEqual(pkg.devDependencies, { b: "2" });
+});
+
+// This gate claims to mirror Dockerfile.openclaw's per-plugin installs, so the
+// two must resolve a production bundle the same way: without the dev tree.
+// `npm install --omit=dev` still RESOLVES devDependencies before omitting them,
+// and since vitest 5 (2026-09-03) that tree carries an optional peer chain —
+// vite -> @vitejs/devtools -> @vitejs/devtools-vitest -> vitest@* — on which
+// npm's arborist crashes in #loadPeerSet ("Cannot read properties of null
+// (reading 'edgesOut')"). Stripping the dev tree first makes the production
+// install independent of test-tooling drift; this pins the Dockerfile half.
+test("every production npm install in Dockerfile.openclaw drops devDependencies first", () => {
+  const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
+  const statements = readFileSync(join(repoRoot, "Dockerfile.openclaw"), "utf8")
+    .replace(/\\\n/g, " ")
+    .split("\n")
+    .filter(
+      (line) => /^RUN\b/.test(line) && line.includes("npm install --omit=dev"),
+    );
+  assert.ok(
+    statements.length >= 4,
+    `expected the four plugin bundle installs, found ${statements.length}`,
+  );
+  for (const run of statements) {
+    const strip = run.indexOf("npm pkg delete devDependencies");
+    assert.ok(
+      strip !== -1 && strip < run.indexOf("npm install --omit=dev"),
+      `must drop devDependencies before installing:\n${run}`,
     );
   }
 });

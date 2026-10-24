@@ -28,7 +28,12 @@ export function getSupportedTimezones(): string[] {
 
 const TIMEZONES: string[] = getSupportedTimezones();
 
-export function TimezoneSettings() {
+interface TimezoneSettingsProps {
+  /** Called with the zone after a successful save, so cards that show times in it can re-read. */
+  onSaved?: (timezone: string) => void;
+}
+
+export function TimezoneSettings({ onSaved }: TimezoneSettingsProps = {}) {
   const [timezone, setTimezone] = useState("UTC");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -73,6 +78,7 @@ export function TimezoneSettings() {
         value: timezone,
       });
       toast.success("Settings saved");
+      onSaved?.(timezone);
     } catch (e) {
       setError(errorMessage(e, "Failed to save timezone"));
     } finally {
@@ -89,7 +95,7 @@ export function TimezoneSettings() {
       </CardHeader>
       <CardContent className="space-y-4">
         <p className="text-sm text-muted-foreground">
-          Set the timezone used for scheduled jobs and briefing delivery times.
+          Set the timezone scheduled work runs in, such as the nightly knowledge-base reindex.
         </p>
 
         <div className="space-y-2">

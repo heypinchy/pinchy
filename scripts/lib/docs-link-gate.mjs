@@ -19,6 +19,11 @@
  * option. The build was green, the anchors were fine, and 41 of 69 live pages
  * were unreadable.
  *
+ * And for `check:diagrams` (`check-rendered-diagrams.mjs`): the astro 7 upgrade
+ * (#851) shipped the architecture diagram as a block of raw Mermaid source,
+ * because the Mermaid plugin hooked a remark pipeline astro 7 no longer runs.
+ * Build green, anchors fine, tables fine.
+ *
  * All of which holds only as long as four things stay true per check, and each
  * of them can be undone while every check stays green:
  *   1. docs/package.json keeps declaring the script,
@@ -40,6 +45,7 @@ const BUILT_OUTPUT_CHECKS = [
   { script: "check:anchors", file: "check-anchors.mjs" },
   { script: "check:rendered", file: "check-rendered-tables.mjs" },
   { script: "check:llms", file: "check-llms-txt.mjs" },
+  { script: "check:diagrams", file: "check-rendered-diagrams.mjs" },
 ];
 const BUILD_COMMAND = "cd docs && pnpm build";
 const checkCommand = (script) => `cd docs && pnpm ${script}`;

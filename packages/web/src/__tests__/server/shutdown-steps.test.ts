@@ -16,10 +16,10 @@ function makeFakeClient(readyState: number) {
 // these four have no `calls` entry of their own, so they are driven by index.
 // Named here so inserting a step is one edit rather than a hunt for magic
 // numbers.
-const STEP_OPENCLAW_DISCONNECT = 7;
-const STEP_WS_DRAIN = 8;
-const STEP_CLOSE_HTTP_SERVER = 9;
-const STEP_CLOSE_DB = 10;
+const STEP_OPENCLAW_DISCONNECT = 8;
+const STEP_WS_DRAIN = 9;
+const STEP_CLOSE_HTTP_SERVER = 10;
+const STEP_CLOSE_DB = 11;
 
 function makeDeps(overrides: Partial<ShutdownDeps> = {}, calls: string[] = []): ShutdownDeps {
   const wssClose = vi.fn((cb: () => void) => cb());
@@ -35,6 +35,9 @@ function makeDeps(overrides: Partial<ShutdownDeps> = {}, calls: string[] = []): 
     }),
     stopAuditVerifyJob: vi.fn(async () => {
       calls.push("stopAuditVerifyJob");
+    }),
+    stopKbIndexScheduler: vi.fn(async () => {
+      calls.push("stopKbIndexScheduler");
     }),
     stopKbIndexWorker: vi.fn(async () => {
       calls.push("stopKbIndexWorker");
@@ -61,12 +64,12 @@ function makeDeps(overrides: Partial<ShutdownDeps> = {}, calls: string[] = []): 
 }
 
 describe("buildShutdownSteps (#263)", () => {
-  it("returns exactly 11 steps in the documented order", async () => {
+  it("returns exactly 12 steps in the documented order", async () => {
     const calls: string[] = [];
     const deps = makeDeps({}, calls);
     const steps = buildShutdownSteps(deps);
 
-    expect(steps).toHaveLength(11);
+    expect(steps).toHaveLength(12);
 
     for (const step of steps) {
       await step();
@@ -77,6 +80,9 @@ describe("buildShutdownSteps (#263)", () => {
       "stopChatErrorGc",
       "stopApprovalSweep",
       "stopAuditVerifyJob",
+      // Scheduler before worker: a sweep must not queue a job into a worker
+      // that is already gone.
+      "stopKbIndexScheduler",
       "stopKbIndexWorker",
       "stopUsagePoller",
       "stopMemoryAuditWatcher",
