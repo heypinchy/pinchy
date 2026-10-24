@@ -25,6 +25,7 @@ import {
   agentConnectionPermissions,
 } from "@/db/schema";
 import { makeNextRequest, routeContext } from "@/test-helpers/route";
+import { setInstancePolicy } from "@/lib/instance-policy";
 
 const { getSessionMock, deferAuditLogMock, licenseStateMock } = vi.hoisted(() => ({
   getSessionMock: vi.fn(),
@@ -402,5 +403,66 @@ describe("PUT /api/automations/[id]", () => {
     // The kept connection's watermark is left alone on a no-op too.
     const conns = await loadConnections(wf.id);
     expect(conns[0].sinceTs.getTime()).toBe(new Date("2020-01-01T00:00:00Z").getTime());
+  });
+
+  // Editing is authoring, so it answers to the same instance policy as creating
+  // (POST /api/automations). A newly created workflow is born switched off and
+  // POST still refuses it while member automations are turned off — the policy
+  // pauses the AUTHORING of automations on a member's personal agent, not only
+  // their running. An edit that slipped past it would be the one way left to
+  // shape one.
+  describe("while members may not use automations on a personal agent", () => {
+    beforeEach(async () => {
+      await setInstancePolicy({ memberPersonalAgents: true, memberAutomations: false });
+    });
+
+    it("refuses a member editing their own Smithers' workflow, and changes nothing", async () => {
+      asMember(OWNER);
+      const agent = await seedAgent({ isPersonal: true, ownerId: OWNER });
+      await seedConnection("conn-a");
+      await grantEmailRead(agent.id, "conn-a");
+      const wf = await seedWorkflow(agent.id, { name: "Before", createdBy: OWNER });
+      await linkConnection(wf.id, "conn-a", new Date("2020-01-01T00:00:00Z"));
+
+      const res = await PUT(put(wf.id, editBody({ name: "After" })), routeContext({ id: wf.id }));
+
+      expect(res.status).toBe(403);
+      expect(await res.json()).toMatchObject({ code: "member_automations_disabled" });
+      expect((await loadWorkflow(wf.id)).name).toBe("Before");
+      expect(deferAuditLogMock).not.toHaveBeenCalled();
+    });
+
+    it("still lets an admin edit a workflow on their own Smithers", async () => {
+      asAdmin(ADMIN);
+      const agent = await seedAgent({ isPersonal: true, ownerId: ADMIN });
+      await seedConnection("conn-a");
+      await grantEmailRead(agent.id, "conn-a");
+      const wf = await seedWorkflow(agent.id, { name: "Before", createdBy: ADMIN });
+      await linkConnection(wf.id, "conn-a", new Date("2020-01-01T00:00:00Z"));
+
+      const res = await PUT(put(wf.id, editBody({ name: "After" })), routeContext({ id: wf.id }));
+
+      expect(res.status).toBe(200);
+    });
+  });
+
+  // The owner of a switched-off personal agent can SEE it, so the access gate's
+  // explanatory 403 is no oracle and must reach them — collapsing it into the
+  // workflow 404 (right for an agent the caller cannot see) would turn "your
+  // admin switched this off" into "this does not exist".
+  it("tells a member whose personal agent is switched off why, instead of answering 404", async () => {
+    await setInstancePolicy({ memberPersonalAgents: false, memberAutomations: true });
+    asMember(OWNER);
+    const agent = await seedAgent({ isPersonal: true, ownerId: OWNER });
+    await seedConnection("conn-a");
+    await grantEmailRead(agent.id, "conn-a");
+    const wf = await seedWorkflow(agent.id, { name: "Before", createdBy: OWNER });
+    await linkConnection(wf.id, "conn-a", new Date("2020-01-01T00:00:00Z"));
+
+    const res = await PUT(put(wf.id, editBody({ name: "After" })), routeContext({ id: wf.id }));
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toMatchObject({ code: "personal_agent_disabled" });
+    expect((await loadWorkflow(wf.id)).name).toBe("Before");
   });
 });

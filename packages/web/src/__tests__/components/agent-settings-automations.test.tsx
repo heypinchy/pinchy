@@ -289,6 +289,18 @@ describe("AgentSettingsAutomations", () => {
       expect(screen.getAllByRole("button", { name: "Delete" })[0]).toBeEnabled();
     });
 
+    // The server refuses an edit here exactly as it refuses a create — editing
+    // is authoring — so the tab must not offer a button that can only fail.
+    it("offers no Edit either, since the server would refuse it", async () => {
+      mockPaused();
+      render(<AgentSettingsAutomations agentId={AGENT_ID} memberPolicyApplies />);
+      await screen.findByText(/turned off automations on personal agents/i);
+
+      for (const edit of screen.getAllByRole("button", { name: "Edit" })) {
+        expect(edit).toBeDisabled();
+      }
+    });
+
     it("asks nothing about the policy where it cannot apply — an admin, or a shared agent", async () => {
       mockList();
       render(<AgentSettingsAutomations agentId={AGENT_ID} />);

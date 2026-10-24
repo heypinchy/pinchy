@@ -742,6 +742,7 @@ An edit that changes nothing is still `200` and writes no audit entry.
 
 - `400` — the body fails validation, or the agent has no read access to a requested connection (the message names the ids)
 - `401` — not authenticated
+- `403` — with `code: "member_automations_disabled"` when an admin has turned off automations on members' personal agents (see [Cost governance](/guides/cost-governance/)): editing is authoring, so it follows the same rule as `POST`, while switching a workflow off or deleting it still works. With `code: "personal_agent_disabled"` when they have turned off members' personal agents altogether
 - `404` — no workflow has that id, **or** its agent is one you cannot see, **or** its agent is outside your scope. All three answer identically, on purpose (a malformed id matches nothing either). Unlike `PATCH` and `DELETE`, this includes an admin on someone else's personal agent: editing carries no emergency-stop warrant
 
 ### `DELETE /api/automations/:id`

@@ -222,10 +222,25 @@ export const PUT = withAuth<RouteContext>(async (request, { params }, session) =
     session.user.id!,
     session.user.role
   );
-  if (agentOrError instanceof NextResponse) return workflowNotFound();
+  //
+  // Only the 404 is collapsed. The gate's other refusal — a 403 for a personal
+  // agent its admin has switched off — is only ever reached by the agent's
+  // OWNER, who can see it, so it confirms nothing and says why. Turning it into
+  // "workflow not found" would tell them the thing does not exist.
+  if (agentOrError instanceof NextResponse) {
+    return agentOrError.status === 404 ? workflowNotFound() : agentOrError;
+  }
 
   if (!canManageAgentWorkflows(workflow, { id: session.user.id!, role: session.user.role })) {
     return workflowNotFound();
+  }
+
+  // Editing is authoring, so it answers to the same policy as creating
+  // (POST /api/automations): while member automations are off, a member may
+  // switch theirs off or delete them, not reshape them. No budget check here —
+  // that gates switching ON (PATCH), and an edit never changes `enabled`.
+  if (await arePersonalAutomationsPausedFor(workflow, workflow.ownerRole)) {
+    return NextResponse.json(MEMBER_AUTOMATIONS_DISABLED, { status: 403 });
   }
 
   const requestedConnectionIds = [...new Set(connectionIds)];

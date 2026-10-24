@@ -88,6 +88,7 @@ describe("AgentSettingsAutomationDialog", () => {
     createdBy: "user-1",
     createdAt: "2026-01-01T00:00:00.000Z",
     connectionIds: ["conn-a"],
+    pausedByBudget: false,
   };
 
   /** GET connections → options; PUT edit → 200. */

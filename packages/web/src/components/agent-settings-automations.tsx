@@ -214,7 +214,7 @@ export function AgentSettingsAutomations({
         </Alert>
       )}
 
-            <AgentSettingsAutomationDialog
+      <AgentSettingsAutomationDialog
         agentId={agentId}
         open={createOpen}
         onOpenChange={setCreateOpen}
@@ -309,7 +309,10 @@ export function AgentSettingsAutomations({
                         size="sm"
                         variant="ghost"
                         className="ml-2"
-                        disabled={busyId === item.id}
+                        // Editing is authoring: the server refuses it under the
+                        // same member-automations pause that refuses a create.
+                        // A budget pause does not apply — it only gates Enable.
+                        disabled={busyId === item.id || paused}
                         onClick={() => setEditTarget(item)}
                       >
                         Edit
