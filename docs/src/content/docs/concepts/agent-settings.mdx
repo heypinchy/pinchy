@@ -5,17 +5,18 @@ description: Reference for all agent configuration options — general settings,
 
 import { Aside, Badge } from "@astrojs/starlight/components";
 
-Every agent in Pinchy is configured through a settings page. To open it, navigate to an agent's chat and click the **gear icon** in the top bar. Which tabs you see depends on your role and the agent type.
+Every agent in Pinchy is configured through a settings page. To open it, navigate to an agent's chat and click the **gear icon** in the top bar. The tabs are listed down the left side, in groups, the same way as the global **Settings** page. Which tabs you see depends on your role and the agent type, and a group with nothing in it for you is left out.
 
-| Tab                                                   | What it controls                      | Who can see it             |
-| ----------------------------------------------------- | ------------------------------------- | -------------------------- |
-| **General**                                           | Name, tagline, model, agent type      | Everyone who can edit      |
-| **Personality**                                       | Avatar, personality preset, SOUL.md   | Everyone who can edit      |
-| **Instructions**                                      | AGENTS.md operating instructions      | Everyone who can edit      |
-| **Permissions**                                       | Tool allow-list, directory access     | Admins only, shared agents |
-| **Access** <Badge text="Enterprise" variant="note" /> | Visibility mode, group assignment     | Admins only, shared agents |
-| **Telegram**                                          | Connect a Telegram bot to this agent  | Admins only                |
-| **Automations**                                       | Email workflows the agent runs itself | Admins only, shared agents |
+| Group                 | Tab                                                   | What it controls                      | Who can see it                            |
+| --------------------- | ----------------------------------------------------- | ------------------------------------- | ----------------------------------------- |
+| Agent                 | **General**                                           | Name, tagline, model, agent type      | Everyone who can edit                     |
+| Agent                 | **Personality**                                       | Avatar, personality preset, SOUL.md   | Everyone who can edit                     |
+| Agent                 | **Instructions**                                      | AGENTS.md operating instructions      | Everyone who can edit                     |
+| Governance            | **Permissions**                                       | Tool allow-list, directory access     | Admins only, shared agents                |
+| Governance            | **Access** <Badge text="Enterprise" variant="note" /> | Visibility mode, group assignment     | Admins only, shared agents                |
+| Channels & Automation | **Telegram**                                          | Connect a Telegram bot to this agent  | Admins, and the owner of a personal agent |
+| Channels & Automation | **Automations**                                       | Email workflows the agent runs itself | Admins only, shared agents                |
+| Support               | **Diagnostics**                                       | Export a diagnostics file for support | Everyone who can edit                     |
 
 The Permissions, Access and Automations tabs exist only for shared agents. Personal agents (the auto-created Smithers each user gets) don't show Permissions or Access because there's nothing to share — and Automations follows them, because an automation needs a mailbox the agent may read, and email access is granted on the Permissions tab. A personal agent has no way to hold one, so the tab would only ever offer an empty mailbox list. Admins still see the Telegram tab on Smithers, but the main Smithers bot is managed centrally via **Settings → Telegram** rather than per-agent.
 
@@ -214,7 +215,9 @@ After creation, all settings can be changed at any time through the settings pag
 
 ## Save behavior
 
-Changes across all tabs are tracked independently. A small amber dot appears on any tab with unsaved changes, and the bottom bar shows "Unsaved changes."
+The tabs in **Agent** and **Governance** are drafts: changes across them are tracked independently and saved together from the bar at the bottom. A small amber dot appears on any tab with unsaved changes, and the bar shows "Unsaved changes."
+
+The tabs in **Channels & Automation** and **Support** act the moment you click, so there is nothing to save and the bar is hidden there. The one exception: while another tab still has unsaved changes, the bar stays visible wherever you are, so a pending edit never drops out of sight.
 
 The save button behavior depends on what changed:
 

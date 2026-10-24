@@ -5,6 +5,7 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { authClient } from "@/lib/auth-client";
 import { useTabParam, SETTINGS_TABS, type SettingsTab } from "@/hooks/use-tab-param";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { SettingsNavGroupLabel } from "@/components/settings-nav-group-label";
 import { cn } from "@/lib/utils";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ProviderKeyForm } from "@/components/provider-key-form";
@@ -52,20 +53,22 @@ function ErrorDot() {
 // Display labels for the mobile drill-down back header. Kept in sync with
 // the TabsTrigger labels below (the "AI Provider" label disambiguates the
 // LLM provider tab from OAuth "providers" like Google/Microsoft).
-const TAB_LABELS: Record<SettingsTab, string> = {
-  context: "Context",
-  profile: "Profile",
-  telegram: "Telegram",
-  support: "Support",
-  provider: "AI Provider",
-  users: "Users",
-  groups: "Groups",
-  apikeys: "API Keys",
-  integrations: "Integrations",
-  organization: "Organization",
-  license: "License",
-  security: "Security",
-};
+// A Map, not an object indexed by the tab: a computed member access on an
+// object literal is what `security/detect-object-injection` reports.
+const TAB_LABELS = new Map<SettingsTab, string>([
+  ["context", "Context"],
+  ["profile", "Profile"],
+  ["telegram", "Telegram"],
+  ["support", "Support"],
+  ["provider", "AI Provider"],
+  ["users", "Users"],
+  ["groups", "Groups"],
+  ["apikeys", "API Keys"],
+  ["integrations", "Integrations"],
+  ["organization", "Organization"],
+  ["license", "License"],
+  ["security", "Security"],
+]);
 
 export function SettingsPageContent({
   initialTab,
@@ -208,7 +211,7 @@ export function SettingsPageContent({
               >
                 &lsaquo; Settings
               </button>
-              <span className="text-sm font-medium">{TAB_LABELS[activeTab]}</span>
+              <span className="text-sm font-medium">{TAB_LABELS.get(activeTab)}</span>
             </div>
           )}
 
@@ -219,24 +222,14 @@ export function SettingsPageContent({
               isTabExplicit ? "hidden md:flex" : "flex md:flex"
             )}
           >
-            <div
-              role="presentation"
-              className="text-muted-foreground/70 px-2 pt-1 pb-1 text-[0.6875rem] font-semibold tracking-[0.08em] uppercase"
-            >
-              Personal
-            </div>
+            <SettingsNavGroupLabel first>Personal</SettingsNavGroupLabel>
             <TabsTrigger value="context">Context {contextDirty && <DirtyDot />}</TabsTrigger>
             <TabsTrigger value="profile">Profile {profileDirty && <DirtyDot />}</TabsTrigger>
             <TabsTrigger value="telegram">Telegram</TabsTrigger>
             <TabsTrigger value="support">Support</TabsTrigger>
             {isAdmin && (
               <>
-                <div
-                  role="presentation"
-                  className="text-muted-foreground/70 px-2 pt-6 pb-1 text-[0.6875rem] font-semibold tracking-[0.08em] uppercase"
-                >
-                  Administration
-                </div>
+                <SettingsNavGroupLabel>Administration</SettingsNavGroupLabel>
                 <TabsTrigger value="provider">
                   AI Provider {providerDirty && <DirtyDot />}
                 </TabsTrigger>
@@ -247,12 +240,7 @@ export function SettingsPageContent({
                   Integrations {needsAttentionCount > 0 && <ErrorDot />}
                 </TabsTrigger>
                 <TabsTrigger value="organization">Organization</TabsTrigger>
-                <div
-                  role="presentation"
-                  className="text-muted-foreground/70 px-2 pt-6 pb-1 text-[0.6875rem] font-semibold tracking-[0.08em] uppercase"
-                >
-                  Security &amp; Compliance
-                </div>
+                <SettingsNavGroupLabel>Security &amp; Compliance</SettingsNavGroupLabel>
                 <TabsTrigger value="security">Security</TabsTrigger>
                 <TabsTrigger value="license">License</TabsTrigger>
               </>
