@@ -342,6 +342,16 @@ PINCHY_VERSION=latest DB_PASSWORD=eval_dev_pw docker compose -p pinchy-eval \
 DB_PASSWORD=eval_dev_pw pnpm -C packages/web eval:selftest
 ```
 
+The `--build` is **not optional**. `odoo-mock` is image-built with no volume
+mount, so a plain `docker compose up` reuses whatever mock image exists — which
+can be staler than the source. A mock predating the #615 many2one validation
+silently credits invalid `account_id` writes and contaminates the scorecard;
+that is exactly how the 2026-07-13 line-items baseline shipped (pinchy#1165). As
+a backstop, both eval specs run a **fidelity guard** (`eval/odoo-mock-fidelity.ts`,
+`MOCK_ODOO_JSONRPC_URL`) right after `waitForOdooMock()`: it POSTs one
+deliberately-invalid `account.move.line` create and aborts unless the mock
+rejects it. `eval:selftest` runs it too, so CI enforces the contract on every PR.
+
 ## Running the real model sweep
 
 Requires `OLLAMA_CLOUD_API_KEY`. Dispatches the same scenario against each
