@@ -121,7 +121,17 @@ export const pluginConfigSchema = z
       .optional(),
     "pinchy-approvals": z
       .object({
-        confirmTools: z.array(z.string()),
+        /** Per tool, optionally per resource — see lib/approvals/policy.ts. */
+        confirm: z.record(z.string(), z.enum(["confirm", "allow"])).optional(),
+        /**
+         * Pre-#1133. Still accepted because this schema is `.strict()`: an
+         * agent configured before the switch carries this key, and dropping it
+         * would REJECT that agent's next save rather than ignore the field —
+         * an admin editing anything else on the page would get a validation
+         * error about a policy they never touched. Nothing writes it; the
+         * agent converges to `confirm` the first time it is saved.
+         */
+        confirmTools: z.array(z.string()).optional(),
       })
       .strict()
       .optional(),

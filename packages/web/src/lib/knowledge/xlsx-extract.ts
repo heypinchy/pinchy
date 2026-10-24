@@ -81,10 +81,37 @@ export class XlsxExtractionError extends Error {
 const CHARS_PER_TOKEN = 4;
 const DEFAULT_TARGET_TOKENS = 512;
 
-/** One kept row: its Excel row number and its rendered single-line key-value block. */
+/**
+ * One visible cell of a row: the sheet column it sits in, the label that
+ * column's header gives it (or its letter), and its rendered text. The column
+ * NUMBER stays on the cell because labels are not identities — two columns
+ * legitimately share a header ("Price" twice), and only the number can keep
+ * them apart when the preview lays cells under columns.
+ */
+interface SheetCell {
+  column: number;
+  label: string;
+  text: string;
+}
+
+/** One kept row: its Excel row number and its visible cells. */
 interface SheetRow {
   number: number;
-  text: string;
+  cells: SheetCell[];
+}
+
+/**
+ * The indexed rendering of one row: `Header: value; Header2: value2`.
+ *
+ * Split out from `readSheet` so the SAME traversal feeds two consumers — the
+ * chunk text the index embeds, and the table the citation preview renders
+ * (#940). A second traversal for the preview would be free to disagree with
+ * the index about hidden rows, hidden columns or which row is the header, and
+ * a preview that shows a reader something the index never read is worse than
+ * no preview at all.
+ */
+function rowText(cells: SheetCell[]): string {
+  return cells.map((cell) => `${cell.label}: ${cell.text}`).join("; ");
 }
 
 interface SheetContent {
@@ -239,10 +266,14 @@ function readSheet(worksheet: ExcelJS.Worksheet): { rows: SheetRow[]; hiddenRows
       }
     }
 
-    const text = cells
-      .map((cell) => `${headers?.get(cell.column) ?? cell.letter}: ${cell.text}`)
-      .join("; ");
-    rows.push({ number: rowNumber, text });
+    rows.push({
+      number: rowNumber,
+      cells: cells.map((cell) => ({
+        column: cell.column,
+        label: headers?.get(cell.column) ?? cell.letter,
+        text: cell.text,
+      })),
+    });
   });
 
   return { rows, hiddenRows };
@@ -273,17 +304,18 @@ function chunkSheet(sheet: SheetContent, targetChars: number): XlsxChunk[] {
   };
 
   for (const row of sheet.rows) {
-    if (rows.length > 0 && length + 1 + row.text.length <= targetChars) {
-      rows.push(row.text);
+    const text = rowText(row.cells);
+    if (rows.length > 0 && length + 1 + text.length <= targetChars) {
+      rows.push(text);
       endRow = row.number;
-      length += 1 + row.text.length;
+      length += 1 + text.length;
       continue;
     }
     flush();
-    rows = [row.text];
+    rows = [text];
     startRow = row.number;
     endRow = row.number;
-    length = prefix.length + 1 + row.text.length;
+    length = prefix.length + 1 + text.length;
   }
   flush();
 
@@ -359,4 +391,94 @@ export async function extractXlsx(
   }
 
   return { chunks, sheets, hiddenSheets, hiddenRows };
+}
+
+/** The slice of a workbook one citation points at. */
+export interface SheetRange {
+  sheet: string;
+  /**
+   * Column labels in the sheet's own left-to-right order, restricted to the
+   * columns the selected rows actually fill (a 40-column sheet whose cited
+   * rows fill four should render four columns, not 36 empty ones). Labels may
+   * repeat — two columns headed "Price" are two columns — which is why rows
+   * align to columns by POSITION, not by label.
+   */
+  columns: string[];
+  /** Each row's cell texts, index-aligned to `columns`; "" where the row has no cell there. */
+  rows: Array<{ number: number; cells: string[] }>;
+}
+
+/** How many rows one preview may return, however wide a range a citation names. */
+export const SHEET_RANGE_MAX_ROWS = 200;
+
+/**
+ * Reads the rows one citation names, for the preview a `.xlsx` citation opens.
+ *
+ * Goes through the SAME `readSheet` traversal the index uses, which is the
+ * point: hidden rows, hidden columns and the header decision are made once, so
+ * the preview cannot show a reader a row the index never read — or hide one it
+ * did. A preview that disagrees with the index is worse than none, because it
+ * makes a correct citation look fabricated.
+ *
+ * The range is INCLUSIVE and clamped rather than validated: a citation is model
+ * output, so a range running past the end of the sheet is an ordinary thing to
+ * receive, not an error to raise at the reader. An empty result is a legitimate
+ * answer and the caller renders it as such.
+ *
+ * `sheetName: null` means no sheet was named at all — a bare workbook mention —
+ * and resolves to the first VISIBLE sheet, where the workbook itself would
+ * open. It never falls back to a hidden sheet: the index skipped those, and
+ * the preview must not show what the index never read.
+ *
+ * @throws XlsxExtractionError if the file cannot be read as a workbook.
+ */
+export async function readSheetRange(
+  absPath: string,
+  sheetName: string | null,
+  startRow: number,
+  endRow: number
+): Promise<SheetRange | null> {
+  const workbook = new ExcelJS.Workbook();
+  try {
+    await workbook.xlsx.readFile(absPath);
+  } catch (err) {
+    throw new XlsxExtractionError(absPath, "the file could not be opened as a workbook", {
+      cause: err,
+    });
+  }
+
+  // Hidden sheets are skipped here exactly as they are during indexing, so a
+  // citation naming one resolves to nothing rather than to content the index
+  // deliberately never read.
+  const worksheet = workbook.worksheets.find(
+    (candidate) =>
+      (sheetName === null || candidate.name === sheetName) &&
+      candidate.state !== "hidden" &&
+      candidate.state !== "veryHidden"
+  );
+  if (!worksheet) return null;
+
+  const { rows } = readSheet(worksheet);
+  const selected = rows
+    .filter((row) => row.number >= startRow && row.number <= endRow)
+    .slice(0, SHEET_RANGE_MAX_ROWS);
+
+  // The columns the selected rows fill, in the sheet's own left-to-right
+  // order, keyed on the column NUMBER: labels may repeat, so they cannot
+  // identify a column (see the test with two "Price" headers).
+  const columnNumbers = [
+    ...new Set(selected.flatMap((row) => row.cells.map((c) => c.column))),
+  ].sort((a, b) => a - b);
+  const labelFor = new Map(selected.flatMap((row) => row.cells.map((c) => [c.column, c.label])));
+
+  return {
+    sheet: worksheet.name,
+    columns: columnNumbers.map((column) => labelFor.get(column)!),
+    rows: selected.map((row) => ({
+      number: row.number,
+      cells: columnNumbers.map(
+        (column) => row.cells.find((cell) => cell.column === column)?.text ?? ""
+      ),
+    })),
+  };
 }

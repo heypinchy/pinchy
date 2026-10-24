@@ -22,6 +22,9 @@ const WIRED_JOB = [
   "      - name: Docs llms.txt check (built output)",
   "        run: cd docs && pnpm check:llms",
   "",
+  "      - name: Docs Mermaid diagram check (built output)",
+  "        run: cd docs && pnpm check:diagrams",
+  "",
   "      - name: Docs script tests",
   "        run: cd docs && pnpm test",
 ].join("\n");
@@ -33,6 +36,7 @@ const WIRED_SCRIPTS = {
   "check:anchors": "node scripts/check-anchors.mjs",
   "check:rendered": "node scripts/check-rendered-tables.mjs",
   "check:llms": "node scripts/check-llms-txt.mjs",
+  "check:diagrams": "node scripts/check-rendered-diagrams.mjs",
 };
 
 // ── docs/package.json ─────────────────────────────────────────────────────
@@ -75,6 +79,33 @@ test("validateDocsPackage flags the rendered-table script pointed elsewhere", ()
     },
   });
   assert.ok(problems.some((p) => /check-rendered-tables\.mjs/.test(p)));
+});
+
+test("validateDocsPackage flags a missing or repointed diagram check", () => {
+  // astro 7 shipped the architecture diagram as a code block with every other
+  // check green (#851); this script is the only thing that reads for it.
+  const { "check:diagrams": _omitted, ...withoutDiagrams } = WIRED_SCRIPTS;
+  assert.ok(
+    validateDocsPackage({ scripts: withoutDiagrams }).some((p) =>
+      /check:diagrams/.test(p),
+    ),
+  );
+  assert.ok(
+    validateDocsPackage({
+      scripts: {
+        ...WIRED_SCRIPTS,
+        "check:diagrams": "node scripts/check-rendered-tables.mjs",
+      },
+    }).some((p) => /check-rendered-diagrams\.mjs/.test(p)),
+  );
+});
+
+test("validateCiWiring flags a quality job that never runs the diagram check", () => {
+  const job = WIRED_JOB.replace(
+    "        run: cd docs && pnpm check:diagrams",
+    "        run: echo skipped",
+  );
+  assert.ok(validateCiWiring(job).some((p) => /pnpm check:diagrams/.test(p)));
 });
 
 test("validateDocsPackage flags a missing llms.txt check", () => {
@@ -178,7 +209,7 @@ test("validateCiWiring flags steps that are only present as comments", () => {
     .join("\n");
   assert.equal(
     validateCiWiring(commented).length,
-    5,
+    6,
     "a commented-out step must not satisfy the guard",
   );
 });
@@ -191,6 +222,7 @@ test("validateCiWiring does not treat a '#' inside a command as a comment", () =
     "      - run: cd docs && pnpm check:anchors\n" +
     "      - run: cd docs && pnpm check:rendered\n" +
     "      - run: cd docs && pnpm check:llms\n" +
+    "      - run: cd docs && pnpm check:diagrams\n" +
     "      - run: cd docs && pnpm test\n";
   assert.deepEqual(validateCiWiring(withHash), []);
 });

@@ -15,7 +15,8 @@ import { resolveAllowedFile } from "@/lib/agent-file-access";
 import { contentTypeForFile } from "@/lib/agent-file-content-type";
 import { parseRangeHeader } from "@/lib/http-range";
 import { getOfficeArtifactStore, hashFileContents } from "@/lib/knowledge/office-artifacts";
-import { convertedPdfName, isOfficeFile } from "@/lib/knowledge/office-formats";
+import { convertedPdfName, isOfficeFile, isSpreadsheetFile } from "@/lib/knowledge/office-formats";
+import { readSheetRange, SHEET_RANGE_MAX_ROWS } from "@/lib/knowledge/xlsx-extract";
 import type { AgentPluginConfig } from "@/db/schema";
 
 type Params = { params: Promise<{ agentId: string }> };
@@ -35,7 +36,7 @@ type Params = { params: Promise<{ agentId: string }> };
  * already rendered — unchanged: a viewer asks for the document, not for a
  * representation of it.
  */
-type Variant = "original" | "converted";
+type Variant = "original" | "converted" | "rows";
 
 /**
  * Three answers, not two: the variant itself, `null` for "not named" (serve
@@ -46,7 +47,41 @@ type Variant = "original" | "converted";
  */
 function parseVariant(raw: string | null): Variant | null | undefined {
   if (raw === null) return null;
-  return raw === "original" || raw === "converted" ? raw : undefined;
+  return raw === "original" || raw === "converted" || raw === "rows" ? raw : undefined;
+}
+
+/**
+ * The row range a spreadsheet preview asks for — and `undefined` when the
+ * request is malformed, which is a 400 for the same reason an unknown
+ * `variant=` is: a client with a typo must learn it had one rather than
+ * silently receive a different slice.
+ *
+ * Naming NOTHING is not a typo: a bare workbook citation carries no sheet and
+ * no rows, and asks for the top of the workbook — `sheet: null` resolves to
+ * the first visible sheet (see `readSheetRange`). A PARTIAL range, in
+ * contrast, is a typo and stays a 400.
+ */
+function parseSheetRange(
+  params: URLSearchParams
+): { sheet: string | null; startRow: number; endRow: number } | undefined {
+  const sheet = params.get("sheet");
+  const from = params.get("from");
+  const to = params.get("to");
+  if (sheet === null && from === null && to === null) {
+    return { sheet: null, startRow: 1, endRow: SHEET_RANGE_MAX_ROWS };
+  }
+  if (sheet === null || sheet === "" || from === null || to === null) return undefined;
+  const startRow = Number(from);
+  const endRow = Number(to);
+  if (
+    !Number.isInteger(startRow) ||
+    !Number.isInteger(endRow) ||
+    startRow < 1 ||
+    endRow < startRow
+  ) {
+    return undefined;
+  }
+  return { sheet, startRow, endRow };
 }
 
 /**
@@ -190,7 +225,7 @@ export const GET = withAuth<Params>(async (req, { params }, session) => {
   const variant = parseVariant(req.nextUrl.searchParams.get("variant"));
   if (variant === undefined) {
     return NextResponse.json(
-      { error: "variant must be 'original' or 'converted'" },
+      { error: "variant must be 'original', 'converted' or 'rows'" },
       { status: 400 }
     );
   }
@@ -248,6 +283,58 @@ export const GET = withAuth<Params>(async (req, { params }, session) => {
       })
     );
   };
+
+  // A spreadsheet preview answers with the cited ROWS rather than with bytes.
+  //
+  // It rides this route rather than getting its own for the reason the variant
+  // parameter exists at all: one access check, one audit row, one place where
+  // "which document may this reader see" is decided. Reading rows IS looking at
+  // the document, so it writes the same `knowledge.source_viewed` row as any
+  // other view — a second event type would split one act across two filters.
+  if (variant === "rows") {
+    const range = parseSheetRange(req.nextUrl.searchParams);
+    if (!range) {
+      return NextResponse.json(
+        {
+          error:
+            "rows takes sheet, from and to together (from >= 1, to >= from) — or none of them, for the top of the workbook",
+        },
+        { status: 400 }
+      );
+    }
+    if (!isSpreadsheetFile(realPath)) {
+      // Asking for rows of a PDF is a client defect, not a missing document.
+      return NextResponse.json({ error: "not a spreadsheet" }, { status: 400 });
+    }
+
+    let sheetRange;
+    try {
+      sheetRange = await readSheetRange(realPath, range.sheet, range.startRow, range.endRow);
+    } catch {
+      // The workbook is on disk and inside the grant but will not open. That is
+      // a fact about the document, so it is audited like one.
+      auditFailure("unreadable_document");
+      return NextResponse.json({ error: "The workbook could not be read" }, { status: 422 });
+    }
+
+    deferAuditLog(
+      sourceAccessAuditEntry({
+        eventType,
+        userId: session.user.id!,
+        agentId: agent.id,
+        agentName: agent.name,
+        documentName,
+        outcome: "success",
+        // "Which representation left" is a separate question from "did one" —
+        // same field the byte-serving path answers with original/converted.
+        representation: "rows",
+      })
+    );
+    // A named sheet the workbook does not have answers 200 with an empty range
+    // rather than 404: the DOCUMENT was found and shown, and the citation
+    // pointing into a sheet that is not there is what the reader needs to see.
+    return NextResponse.json(sheetRange ?? { sheet: range.sheet ?? "", columns: [], rows: [] });
+  }
 
   // Which representation is actually served. `converted` is asked for
   // explicitly by the second download control, and implicitly by any viewer

@@ -26,3 +26,19 @@ export async function getOrCreatePluginSecret(name: string): Promise<string> {
   await setSetting(key, secret);
   return secret;
 }
+
+/**
+ * Read a plugin secret without minting one.
+ *
+ * The get-or-create form above belongs on the config-generation path, which
+ * runs once and owns the value. A read path must not write: the approvals gate
+ * calls this on tool calls, where creating a key would mean an encryption key
+ * appears in the settings DB as a side effect of an agent using a tool — and a
+ * key generated there is not the key anything was encrypted under anyway.
+ * Returns null when no usable secret is stored, which callers read as "nothing
+ * here can be decoded" rather than as an error.
+ */
+export async function readPluginSecret(name: string): Promise<string | null> {
+  const stored = await getSetting(`${SETTING_PREFIX}${name}`);
+  return stored && HEX_64.test(stored) ? stored : null;
+}

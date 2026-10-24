@@ -8,8 +8,6 @@ import {
 } from "@/lib/providers";
 import { getSetting, setSetting } from "@/lib/settings";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
-import { waitForAgentInRuntime } from "@/lib/wait-for-agent-in-runtime";
-import { getOpenClawClient } from "@/server/openclaw-client";
 import {
   resetCache,
   fetchOllamaLocalModelsFromUrl,
@@ -168,22 +166,22 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  // Only update agent model when adding the first provider
-  if (isFirstProvider) {
-    const smithers = await db.query.agents.findFirst();
-    if (smithers) {
-      try {
-        const resolved = await resolveAvailableModelForTemplate({
-          hint: SMITHERS_MODEL_HINT,
-          provider: provider as ProviderName,
-        });
-        await db.update(agents).set({ model: resolved.model }).where(eq(agents.id, smithers.id));
-      } catch (err) {
-        if (!(err instanceof TemplateCapabilityUnavailableError)) {
-          throw err;
-        }
-        // Provider has no model matching Smithers' hint — keep existing model.
+  // Only update agent model when adding the first provider. Looked up once:
+  // the readiness id further down means this same agent, and an unfiltered
+  // `findFirst()` only names Smithers on the first-provider path — see there.
+  const smithers = isFirstProvider ? await db.query.agents.findFirst() : undefined;
+  if (smithers) {
+    try {
+      const resolved = await resolveAvailableModelForTemplate({
+        hint: SMITHERS_MODEL_HINT,
+        provider: provider as ProviderName,
+      });
+      await db.update(agents).set({ model: resolved.model }).where(eq(agents.id, smithers.id));
+    } catch (err) {
+      if (!(err instanceof TemplateCapabilityUnavailableError)) {
+        throw err;
       }
+      // Provider has no model matching Smithers' hint — keep existing model.
     }
   }
 
@@ -205,39 +203,41 @@ export async function POST(request: NextRequest) {
   }
   resetCache();
 
-  // Wait until OC's runtime has Smithers visible in `agents.list`. Same race
-  // as POST /api/agents (see wait-for-agent-in-runtime.ts): Pinchy's
-  // regenerate is fire-and-forget via pushConfigInBackground, and OC applies
-  // the hot reload asynchronously. Without this gate the wizard's
-  // "Continue to Pinchy" navigates to /chat/:smithersId and the first
-  // chat dispatch races OC's reload, hitting "invalid agent params:
-  // unknown agent id" — the message never reaches the LLM and the user
-  // sees the chat hang on a fresh install.
+  // Runtime readiness is the WIZARD's wait, not this request's (#1150).
   //
-  // 30 s cap (vs the 5 s default used by POST /api/agents): on a fresh
-  // wizard the Layer 1 bootstrap pkill in start-openclaw.sh can fire
-  // mid-regenerate, taking the gateway down for ~10–40 s before respawn.
-  // Within that window the config.get poll waitForAgentInRuntime uses
-  // gets WS errors and the 5 s budget elapses while OC is still
-  // restarting — wizard returns 200, browser navigates to /chat, dispatch
-  // races, "unknown agent id". 30 s comfortably covers one restart cycle
-  // while still failing fast if OC is genuinely broken. PR #445 CI showed
-  // 23 s pass / 1.7 m fail on the same commit on the 5 s default —
-  // textbook timing flake.
-  // Only worth waiting when the config actually regenerated — if it threw,
-  // OC's runtime won't be reloading and the poll would just burn its budget.
-  if (!runtimeWarning) {
-    const smithersForWait = await db.query.agents.findFirst();
-    if (smithersForWait) {
-      let client = null;
-      try {
-        client = getOpenClawClient();
-      } catch {
-        // OC client not initialised (rare in tests / pre-setup). Skip the wait.
-      }
-      await waitForAgentInRuntime(client, smithersForWait.id, 30000);
-    }
-  }
+  // The race is real and unchanged: `regenerateOpenClawConfig()` pushes to
+  // OpenClaw in the background, so Smithers reaches OC's `agents.list` some
+  // time AFTER this handler answers. Reach /chat/:smithersId before that and
+  // the first dispatch fails with "invalid agent params: unknown agent id" —
+  // the message never gets to the LLM and the chat looks hung (#445).
+  //
+  // What changed is who absorbs the gap. This route used to poll `agents.list`
+  // for up to 30 s before answering, which is the wrong shape for a route a
+  // human is watching: on a fresh install the gap is not small. Writing the
+  // first secrets.json restarts the gateway, the restarts spend OC's
+  // ~3-per-45 s `config.apply` budget, and Pinchy's push is then parked for the
+  // advertised retry-after — 49 s in the run this was measured on. Nothing
+  // crashed and no timeout fired; the request simply stayed open while the
+  // wizard sat on a disabled "Validating..." button, a spinner indistinguishable
+  // from a hang.
+  //
+  // So the wait moved to where it can be rendered. The id below lets the wizard
+  // poll `GET /api/health/openclaw?agentId=…` — which already answers exactly
+  // this question via `agentDispatchable` — show it as a named step, and time
+  // out of it into an honest note instead of holding a connection open.
+  //
+  // Omitted in two cases. When the regenerate threw: nothing was pushed, so
+  // OC's runtime is not about to change and polling it would only delay the
+  // user past a gap that `warning` already describes. And when this is not the
+  // instance's first provider: despite the path, this route also serves
+  // Settings → AI Provider, where the instance has many agents and the
+  // unfiltered `findFirst()` above answers whichever row comes back first. An
+  // id chosen that way names nobody in particular, and this one is documented
+  // as the agent a caller should poll — so it is only sent where it is true.
+  // A Settings save that wants to know when its change landed has
+  // `configPushesPending` on the same health endpoint, which is the question
+  // it is actually asking.
+  const agentId = runtimeWarning ? undefined : smithers?.id;
 
   // Build a CLAUDE.md-compliant audit detail: snapshot the human-readable
   // provider name alongside its id, and never log secrets. For URL-based
@@ -275,5 +275,5 @@ export async function POST(request: NextRequest) {
     })
   );
 
-  return NextResponse.json({ success: true, warning: runtimeWarning });
+  return NextResponse.json({ success: true, warning: runtimeWarning, agentId });
 }

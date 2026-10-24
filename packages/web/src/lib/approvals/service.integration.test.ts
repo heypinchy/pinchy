@@ -12,6 +12,7 @@ import {
   resolveDecision,
   expireStale,
   linkApproval,
+  awaitApprovalLink,
   recordResolution,
   MAX_PENDING_PER_REQUESTER,
 } from "./service";
@@ -115,18 +116,127 @@ describe("approvals gate decision service", () => {
       expect(rows.every((r) => r.openclawApprovalId === null)).toBe(true);
     });
 
-    // A row the user already decided must not be re-armed by a late broadcast:
-    // it would make a settled confirmation look resolvable again.
-    it("leaves an already-decided confirmation alone", async () => {
+    // A tool call id is only as unique as the model provider makes it, and
+    // Pinchy explicitly supports self-hosted OpenAI-compatible servers — several
+    // of which number tool calls per response (`call_0`, `call_1`). Two people
+    // can then hold pending confirmations under one id at the same moment, and
+    // matching on the id alone would arm BOTH rows with one approval: the second
+    // person's Approve resumes the first person's call, which nobody confirmed.
+    // The session is what OpenClaw already carries to tell them apart.
+    it("arms only the confirmation from the session the approval names", async () => {
+      const mine = await decideGate({ ...base(), toolCallId: "call_0" });
+      const theirs = await decideGate({
+        ...base(),
+        sessionKey: "agent:a:direct:someone-else",
+        toolCallId: "call_0",
+      });
+
+      const linked = await linkApproval({
+        approvalId: "plugin:mine",
+        toolCallId: "call_0",
+        sessionKey: "agent:a:direct:u",
+      });
+
+      expect(linked?.id).toBe(mine.requestId);
+      const [other] = await db
+        .select()
+        .from(toolApproval)
+        .where(eq(toolApproval.id, theirs.requestId));
+      expect(other.openclawApprovalId).toBeNull();
+    });
+
+    // Narrowing must never cost a link that works today: a broadcast without a
+    // session still resolves by call id alone.
+    it("still links when the broadcast names no session", async () => {
+      const r = await decideGate({ ...base(), toolCallId: "call_9" });
+      const linked = await linkApproval({ approvalId: "plugin:xyz", toolCallId: "call_9" });
+      expect(linked?.id).toBe(r.requestId);
+    });
+
+    /**
+     * A broadcast that arrives AFTER the user decided still has to be recorded,
+     * and this is the case that made the approvals E2E flake: the decision
+     * route flips the row before it resolves, so by the time the broadcast
+     * lands the row is already `approved`. Rejecting it there does not merely
+     * lose a race — it makes the link permanently impossible, and the user is
+     * told "the agent is no longer waiting" about a run that is still parked.
+     *
+     * Recording the id is not re-arming anything: the inbox lists on
+     * `status = pending`, so a decided confirmation stays gone from it whether
+     * or not it carries an approval id. What the id buys is the ability to
+     * deliver the decision that was already made.
+     */
+    it("records the id on a confirmation the user just decided, without reopening it", async () => {
       const r = await decideGate({ ...base(), toolCallId: "call_done" });
       await resolveDecision({ id: r.requestId, approverId: requesterId, decision: "deny" });
 
       const linked = await linkApproval({ approvalId: "plugin:late", toolCallId: "call_done" });
 
-      expect(linked).toBeNull();
+      expect(linked?.id).toBe(r.requestId);
+      const [row] = await db.select().from(toolApproval).where(eq(toolApproval.id, r.requestId));
+      expect(row.openclawApprovalId).toBe("plugin:late");
+      // The decision itself is untouched — this adds an address, not a state.
+      expect(row.status).toBe("denied");
+    });
+
+    // Two approvals for one call cannot both be live, and the first one is the
+    // one the run is actually waiting on. Overwriting it would point the
+    // decision at an approval OpenClaw has already discarded.
+    it("never overwrites an approval id already on the row", async () => {
+      const r = await decideGate({ ...base(), toolCallId: "call_two" });
+      await linkApproval({ approvalId: "plugin:first", toolCallId: "call_two" });
+
+      expect(
+        await linkApproval({ approvalId: "plugin:second", toolCallId: "call_two" })
+      ).toBeNull();
+      const [row] = await db.select().from(toolApproval).where(eq(toolApproval.id, r.requestId));
+      expect(row.openclawApprovalId).toBe("plugin:first");
+    });
+
+    // A finished confirmation has nothing left to deliver, so an id on it would
+    // be an address nobody will ever write to.
+    it("ignores a confirmation that is already finished", async () => {
+      const r = await decideGate({ ...base(), toolCallId: "call_gone" });
+      await recordResolution({ toolCallId: "call_gone", decision: "timeout" });
+
+      expect(await linkApproval({ approvalId: "plugin:late", toolCallId: "call_gone" })).toBeNull();
       const [row] = await db.select().from(toolApproval).where(eq(toolApproval.id, r.requestId));
       expect(row.openclawApprovalId).toBeNull();
-      expect(row.status).toBe("denied");
+    });
+  });
+
+  /**
+   * The decision route reads the approval id once, and a decision made in the
+   * first moments of a confirmation gets there before the broadcast does — the
+   * gate writes `approval.requested` inside gate-check, so the card is
+   * actionable a full `plugin.approval.request` round trip before Pinchy learns
+   * the id. Reporting "nothing is waiting" there is simply wrong: the run IS
+   * parked, Pinchy just does not know its address yet.
+   */
+  describe("awaitApprovalLink", () => {
+    it("returns the id the moment the broadcast records it", async () => {
+      const r = await decideGate({ ...base(), toolCallId: "call_slow" });
+      setTimeout(() => {
+        void linkApproval({ approvalId: "plugin:late-but-real", toolCallId: "call_slow" });
+      }, 60);
+
+      expect(await awaitApprovalLink(r.requestId, { timeoutMs: 3000 })).toBe(
+        "plugin:late-but-real"
+      );
+    });
+
+    // The broadcast may genuinely never come — the bridge was down, Pinchy
+    // restarted, or the row predates #1132. Waiting has to end in an honest
+    // "no", not in a hung request.
+    it("gives up rather than hanging when no broadcast ever arrives", async () => {
+      const r = await decideGate({ ...base(), toolCallId: "call_never" });
+      expect(await awaitApprovalLink(r.requestId, { timeoutMs: 150 })).toBeNull();
+    });
+
+    it("returns immediately when the id is already there", async () => {
+      const r = await decideGate({ ...base(), toolCallId: "call_fast" });
+      await linkApproval({ approvalId: "plugin:early", toolCallId: "call_fast" });
+      expect(await awaitApprovalLink(r.requestId, { timeoutMs: 50 })).toBe("plugin:early");
     });
   });
 
@@ -141,6 +251,25 @@ describe("approvals gate decision service", () => {
     expect(r2.requestId).toBe(r1.requestId);
     const [row] = await db.select().from(toolApproval).where(eq(toolApproval.id, r1.requestId));
     expect(row.toolCallId).toBe("call_2");
+  });
+
+  // The approval id has to move with the call id, for exactly the reason above.
+  // OpenClaw mints one approval per attempt and discards the one before it, so
+  // an id left over from the attempt that OPENED the row addresses an approval
+  // that no longer exists — and `linkApproval` refuses to overwrite an id, so
+  // the dead one would be permanent. Clearing it is what lets the next
+  // broadcast land: it is not "the first approval wins", it is "the approval
+  // for the call this row is pointing at wins".
+  it("drops the previous attempt's approval id when a reused row is re-pointed", async () => {
+    const r1 = await decideGate({ ...base(), toolCallId: "call_1" });
+    await linkApproval({ approvalId: "plugin:1", toolCallId: "call_1" });
+
+    await decideGate({ ...base(), toolCallId: "call_2" });
+
+    const relinked = await linkApproval({ approvalId: "plugin:2", toolCallId: "call_2" });
+    expect(relinked?.id).toBe(r1.requestId);
+    const [row] = await db.select().from(toolApproval).where(eq(toolApproval.id, r1.requestId));
+    expect(row.openclawApprovalId).toBe("plugin:2");
   });
 
   it("allows and consumes exactly once after approval, then re-gates", async () => {
@@ -401,6 +530,39 @@ describe("approvals gate decision service", () => {
       expect(
         await recordResolution({ toolCallId: "call_not_ours", decision: "allow-once" })
       ).toBeNull();
+    });
+
+    // Same reason as `linkApproval` above: a provider that numbers tool calls
+    // per response lets two sessions share an id, and settling on the id alone
+    // would spend BOTH grants — writing `approval.consumed` for an action that
+    // never ran, on a row the runtime said nothing about.
+    it("spends only the grant from the session the runtime reported on", async () => {
+      const mine = await parked("call_0");
+      const theirs = await decideGate({
+        ...base(),
+        sessionKey: "agent:a:direct:someone-else",
+        toolCallId: "call_0",
+      });
+
+      const settled = await recordResolution({
+        toolCallId: "call_0",
+        sessionKey: "agent:a:direct:u",
+        decision: "allow-once",
+      });
+
+      expect(settled?.id).toBe(mine);
+      const [other] = await db
+        .select()
+        .from(toolApproval)
+        .where(eq(toolApproval.id, theirs.requestId));
+      expect(other.status).toBe("pending");
+    });
+
+    it("still settles when the report names no session", async () => {
+      const id = await parked("call_9");
+      expect(await recordResolution({ toolCallId: "call_9", decision: "timeout" })).toMatchObject({
+        id,
+      });
     });
   });
 });

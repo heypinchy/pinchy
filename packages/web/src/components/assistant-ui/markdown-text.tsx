@@ -17,12 +17,14 @@ import type { TextMessagePartProps } from "@assistant-ui/react";
 
 import { AgentIdContext } from "@/components/chat";
 import { PdfDialog } from "@/components/assistant-ui/attachment-preview";
+import { SheetDialog } from "@/components/assistant-ui/sheet-dialog";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import {
   remarkSourceLinks,
   buildSourceDownloads,
   parseSourceHref,
 } from "@/lib/knowledge/source-links";
+import { isSpreadsheetFile } from "@/lib/knowledge/office-formats";
 import { cn } from "@/lib/utils";
 
 /** Taken from the consuming component so the list below cannot drift from what it accepts. */
@@ -165,6 +167,28 @@ const defaultComponents = memoizeMarkdownComponents({
     // navigating: the point of the citation is to check a claim against the
     // answer still on screen. Every other link keeps normal anchor behaviour.
     const source = href ? parseSourceHref(href) : null;
+    // A spreadsheet opens into its cited ROWS, not into the PDF lightbox: it
+    // has no page to open at, and an <embed> of a .xlsx is a pane no browser
+    // renders. Dispatched on the PATH, not only the locator, so a workbook
+    // mentioned without rows still reaches the sheet dialog (which then opens
+    // the top of the workbook) instead of falling through to a viewer that
+    // cannot render it. See sheet-dialog.tsx.
+    if (source && href && (source.locator?.kind === "sheet" || isSpreadsheetFile(source.path))) {
+      const locator = source.locator?.kind === "sheet" ? source.locator : null;
+      return (
+        <SheetDialog
+          url={href}
+          title={source.path}
+          sheet={locator?.sheet}
+          startRow={locator?.startRow}
+          endRow={locator?.endRow}
+        >
+          <button type="button" className={cn(linkClasses, "cursor-pointer text-left")}>
+            {children}
+          </button>
+        </SheetDialog>
+      );
+    }
     if (source && href) {
       return (
         // The download list is derived from the SAME href the viewer opens, so
@@ -174,7 +198,7 @@ const defaultComponents = memoizeMarkdownComponents({
         <PdfDialog
           url={href}
           title={source.path}
-          page={source.page}
+          page={source.locator?.kind === "page" ? source.locator.page : null}
           downloads={buildSourceDownloads(href) ?? undefined}
         >
           <button type="button" className={cn(linkClasses, "cursor-pointer text-left")}>

@@ -20,6 +20,7 @@ import {
   sweepShouldAbort,
 } from "./run-kb-eval";
 import type { KbRunResult } from "../../src/lib/eval/kb/answer-graders";
+import type { KbRunResultRow } from "../../src/lib/eval/kb/types";
 import type { KnowledgeSearchAuditEntry } from "./run-kb-eval";
 
 function run(overrides: Partial<KbRunResult> = {}): KbRunResult {
@@ -109,7 +110,9 @@ describe("pendingPairs (resume filter)", () => {
     // pairs against a dead stack does not merely waste the backoff, it burns
     // every remaining pair into a row a later run will skip. A pair left
     // UNSTARTED stays pending and is simply picked up next time.
-    const burnt: KbRunResult[] = [infraErrorRun("model-a", "gqa-1", new Error("stack gone"), 0)];
+    const burnt: KbRunResult[] = [
+      infraErrorRun("model-a", "gqa-1", "happy", new Error("stack gone"), 0),
+    ];
 
     expect(pendingPairs(burnt, ["model-a"], ["gqa-1", "gqa-2"], 1)).toEqual([
       { model: "model-a", goldId: "gqa-2", alreadyDone: 0 },
@@ -267,11 +270,17 @@ describe("scorecardRuns (invalid-trial exclusion)", () => {
 
 describe("infraErrorRun", () => {
   it("builds a run-infra-error KbRunResult that scorecardRuns excludes as an invalid trial", () => {
-    const result = infraErrorRun("model-a", "gqa-happy-1", new Error("boom"), 1234);
+    const result = infraErrorRun("model-a", "gqa-happy-1", "happy", new Error("boom"), 1234);
 
-    expect(result).toEqual<KbRunResult>({
+    // `KbRunResultRow`, not `KbRunResult`: the row an invalid trial writes
+    // must carry `axis` like every other, or the exporter — which groups
+    // BEFORE it filters — cannot count it in `excludedInfraErrors`, and an
+    // axis whose runs all failed on infrastructure would read as untested
+    // rather than as unmeasured.
+    expect(result).toEqual<KbRunResultRow>({
       model: "model-a",
       scenario: "gqa-happy-1",
+      axis: "happy",
       passed: false,
       tags: ["run-infra-error"],
       notes: ["[run-infra-error] Error: boom"],
@@ -293,7 +302,7 @@ describe("infraErrorRun", () => {
       { code: "ENOTFOUND" }
     );
 
-    const result = infraErrorRun("model-a", "gqa-happy-1", err, 17_000);
+    const result = infraErrorRun("model-a", "gqa-happy-1", "happy", err, 17_000);
 
     expect(result.notes[0]).toContain("ollama.com");
     expect(result.notes[0]).toContain("ENOTFOUND");
@@ -301,7 +310,7 @@ describe("infraErrorRun", () => {
   });
 
   it("stringifies a non-Error thrown value without throwing", () => {
-    const result = infraErrorRun("model-b", "gqa-happy-2", "plain string failure", 0);
+    const result = infraErrorRun("model-b", "gqa-happy-2", "happy", "plain string failure", 0);
 
     expect(result.tags).toEqual(["run-infra-error"]);
     expect(result.notes).toEqual(["[run-infra-error] plain string failure"]);

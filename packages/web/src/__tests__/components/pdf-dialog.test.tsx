@@ -200,7 +200,7 @@ describe("PdfDialog — taking the document", () => {
     // download urls and the preview url describing one document. Rendering it
     // here proves the two halves fit — the list shape and the labels a reader
     // actually distinguishes them by.
-    const href = buildSourceHref("a1", "noack/QF_2012/Angebot.doc", 3);
+    const href = buildSourceHref("a1", "noack/QF_2012/Angebot.doc", { kind: "page", page: 3 });
     render(
       <PdfDialog
         url={href}

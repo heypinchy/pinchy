@@ -244,6 +244,41 @@ function readRepoDockerfiles() {
     .filter((entry) => entry.versions.length > 0);
 }
 
+test("a standalone package may raise the minor floor, never change the major", () => {
+  // docs/ is not part of the workspace and has its own engines: astro 7 needs
+  // >=22.22.0, a floor the root's `>=22 <23` does not state. That is a
+  // legitimate narrowing. A second MAJOR is not — and nothing read this file
+  // before, so a Node bump would have left docs/ on the old one in silence.
+  const base = {
+    nvmrc: "22",
+    enginesNode: ">=22 <23",
+    workflows: [],
+  };
+  for (const enginesNode of [">=22 <23", ">=22.22.0 <23"]) {
+    assert.deepEqual(
+      validateNodeVersionPin({
+        ...base,
+        packages: [{ file: "docs/package.json", enginesNode }],
+      }),
+      [],
+      enginesNode,
+    );
+  }
+  for (const enginesNode of [
+    ">=22.22.0",
+    ">=24 <25",
+    ">=22.22.0 <24",
+    undefined,
+  ]) {
+    const errors = validateNodeVersionPin({
+      ...base,
+      packages: [{ file: "docs/package.json", enginesNode }],
+    });
+    assert.equal(errors.length, 1, String(enginesNode));
+    assert.match(errors[0], /docs\/package\.json/);
+  }
+});
+
 // The assertion that matters: not that the validators work on fixtures, but
 // that THIS repo is pinned coherently right now.
 test("the repo pins one Node version across .nvmrc, engines, workflows, and images", () => {
@@ -266,6 +301,14 @@ test("the repo pins one Node version across .nvmrc, engines, workflows, and imag
 
   const dockerfiles = readRepoDockerfiles();
 
+  // Standalone packages with their own lockfile (not workspace members) state
+  // their own engines and are read here, or a Node bump leaves them behind.
+  const packages = ["docs/package.json"].map((file) => ({
+    file,
+    enginesNode: JSON.parse(readFileSync(join(REPO_ROOT, file), "utf8")).engines
+      ?.node,
+  }));
+
   // Guards the guard: if setup-node disappears from every workflow, or the
   // Dockerfiles stop naming a node image, the loops below have nothing to
   // compare and would pass vacuously.
@@ -283,6 +326,7 @@ test("the repo pins one Node version across .nvmrc, engines, workflows, and imag
     enginesNode: pkg.engines?.node,
     workflows,
     dockerfiles,
+    packages,
   });
   assert.deepEqual(errors, [], errors.join("\n"));
 });

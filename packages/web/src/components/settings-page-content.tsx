@@ -19,6 +19,8 @@ import { SettingsLicense } from "@/components/settings-license";
 import { TelegramLinkSettings } from "@/components/telegram-link-settings";
 import { SettingsSecurity } from "@/components/settings-security";
 import { TimezoneSettings } from "@/components/timezone-settings";
+import { KnowledgeIndexScheduleSettings } from "@/components/knowledge-index-schedule-settings";
+import { MemberAccessSettings } from "@/components/member-access-settings";
 import { SecretsProvenanceCard } from "@/components/secrets-provenance-card";
 import { SettingsSupport } from "@/components/settings-support";
 import { useIntegrationHealth } from "@/hooks/use-integration-health";
@@ -111,6 +113,9 @@ export function SettingsPageContent({
   const [loading, setLoading] = useState(true);
   const [userContext, setUserContext] = useState("");
   const [orgContext, setOrgContext] = useState("");
+  // Bumped when the org timezone is saved, so the nightly-reindex card re-reads
+  // the times it shows in that zone.
+  const [timezoneVersion, setTimezoneVersion] = useState(0);
 
   const [providerDirty, setProviderDirty] = useState(false);
   const [contextDirty, setContextDirty] = useState(false);
@@ -343,7 +348,11 @@ export function SettingsPageContent({
 
             {isAdmin && (
               <TabsContent value="organization" keepMounted>
-                <TimezoneSettings />
+                <div className="space-y-6">
+                  <TimezoneSettings onSaved={() => setTimezoneVersion((v) => v + 1)} />
+                  <KnowledgeIndexScheduleSettings refreshKey={timezoneVersion} />
+                  <MemberAccessSettings />
+                </div>
               </TabsContent>
             )}
 

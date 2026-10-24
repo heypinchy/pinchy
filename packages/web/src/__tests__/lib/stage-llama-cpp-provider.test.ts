@@ -1,6 +1,14 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, existsSync, rmSync, writeFileSync, chmodSync } from "node:fs";
+import {
+  mkdtempSync,
+  mkdirSync,
+  existsSync,
+  rmSync,
+  writeFileSync,
+  readFileSync,
+  chmodSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, delimiter } from "node:path";
 
@@ -24,6 +32,13 @@ import { join, resolve, delimiter } from "node:path";
 // environment: the real CLI may be absent, or present-and-slow, on a CI runner —
 // exactly the non-determinism that timed this test out in CI. The stub's exit
 // code also lets us exercise the warn-on-failure branch directly.
+//
+// `chown` is stubbed the same way, for a different reason: this suite runs
+// unprivileged, so a real `chown root:root` always fails here and could never
+// distinguish "the function asked" from "the function didn't". The stub records
+// its argv instead. The REAL ownership assertion lives in
+// config/verify-memory-search.sh, which runs as root inside the shipped image
+// against a deliberately 999-owned tree — see the note there.
 
 const REPO_ROOT = resolve(__dirname, "../../../../..");
 const SCRIPT = resolve(REPO_ROOT, "config/stage-llama-cpp-provider.sh");
@@ -32,6 +47,7 @@ let root: string;
 let depsRoot: string;
 let npmRoot: string;
 let binDir: string;
+let chownLog: string;
 
 // Install a stub `openclaw` on PATH whose `plugins registry --refresh` returns
 // the given exit code (0 = refresh succeeds, non-zero = refresh fails).
@@ -39,6 +55,49 @@ function stubOpenclaw(exitCode: number): void {
   const bin = join(binDir, "openclaw");
   writeFileSync(bin, `#!/bin/bash\nexit ${exitCode}\n`);
   chmodSync(bin, 0o755);
+}
+
+// Install a stub `chown` on PATH that appends its argv to chownLog, writes the
+// given text to stderr, and returns the given exit code (0 = chown succeeds,
+// non-zero = chown fails).
+function stubChown(exitCode: number, stderr = ""): void {
+  const bin = join(binDir, "chown");
+  const emit = stderr ? `echo ${JSON.stringify(stderr)} >&2\n` : "";
+  writeFileSync(bin, `#!/bin/bash\necho "$@" >> '${chownLog}'\n${emit}exit ${exitCode}\n`);
+  chmodSync(bin, 0o755);
+}
+
+function chownCalls(): string[] {
+  if (!existsSync(chownLog)) return [];
+  return readFileSync(chownLog, "utf8").split("\n").filter(Boolean);
+}
+
+// Lay down a provider project the way `openclaw plugins install` writes it:
+// the dir name is derived from the package NAME only, so two releases of the
+// provider land in the same `openclaw-llama-cpp-provider-<hash>` dir.
+function writeProvider(npmDir: string, version: string, marker?: string): string {
+  const project = join(npmDir, "projects", "openclaw-llama-cpp-provider-15b2d859e6");
+  const pkgDir = join(project, "node_modules", "@openclaw", "llama-cpp-provider");
+  mkdirSync(pkgDir, { recursive: true });
+  writeFileSync(
+    join(pkgDir, "package.json"),
+    JSON.stringify({ name: "@openclaw/llama-cpp-provider", version })
+  );
+  if (marker) writeFileSync(join(project, marker), "");
+  return pkgDir;
+}
+
+function stagedVersion(): string {
+  const pkg = join(
+    npmRoot,
+    "projects",
+    "openclaw-llama-cpp-provider-15b2d859e6",
+    "node_modules",
+    "@openclaw",
+    "llama-cpp-provider",
+    "package.json"
+  );
+  return JSON.parse(readFileSync(pkg, "utf8")).version;
 }
 
 function runStage(): string {
@@ -59,8 +118,10 @@ beforeEach(() => {
   depsRoot = join(root, "opt", "llama-cpp-deps");
   npmRoot = join(root, "home", ".openclaw", "npm");
   binDir = join(root, "bin");
+  chownLog = join(root, "chown.log");
   mkdirSync(binDir, { recursive: true });
   stubOpenclaw(0); // registry refresh succeeds by default
+  stubChown(0); // chown succeeds by default
 });
 
 afterEach(() => {
@@ -93,10 +154,54 @@ describe("stage_llama_cpp_provider", () => {
     expect(existsSync(join(npmRoot, "projects", "openclaw-llama-cpp-provider-abc123"))).toBe(true);
   });
 
+  // The copy above used to run at most once per volume, and the project dir is
+  // named after the package alone. So an upgraded deployment kept whichever
+  // provider release it staged first, forever: bumping the provider pin in
+  // Dockerfile.openclaw changed fresh installs only, and an OpenClaw bump ran
+  // the new host against the old provider.
+  it("re-stages when the image bundles a different provider release than the volume holds", () => {
+    writeProvider(join(depsRoot, "npm"), "2026.9.33");
+    writeProvider(npmRoot, "2026.7.1", "stale-file-from-old-release");
+
+    const output = runStage();
+
+    expect(stagedVersion()).toBe("2026.9.33");
+    // Replaced, not overlaid: files only the old release had must not survive.
+    expect(
+      existsSync(
+        join(
+          npmRoot,
+          "projects",
+          "openclaw-llama-cpp-provider-15b2d859e6",
+          "stale-file-from-old-release"
+        )
+      )
+    ).toBe(false);
+    expect(output).toMatch(/2026\.7\.1 -> 2026\.9\.33/);
+  });
+
+  it("leaves the staged provider alone when it is the release the image bundles", () => {
+    writeProvider(join(depsRoot, "npm"), "2026.7.1");
+    writeProvider(npmRoot, "2026.7.1", "kept-file");
+
+    const output = runStage();
+
+    expect(stagedVersion()).toBe("2026.7.1");
+    expect(
+      existsSync(join(npmRoot, "projects", "openclaw-llama-cpp-provider-15b2d859e6", "kept-file"))
+    ).toBe(true);
+    expect(output).not.toMatch(/staging bundled embedding provider/);
+  });
+
   it("is a safe no-op when the /opt bundle is missing (nothing to stage)", () => {
     // No depsRoot/npm — e.g. a build that didn't bundle the provider.
     expect(() => runStage()).not.toThrow();
     expect(existsSync(join(npmRoot, "projects"))).toBe(false);
+    // …and the ownership repair stays on the far side of the early return.
+    // Hoisted above it, this would chown a path that does not exist on every
+    // boot of an image built without the bundle, and warn that memory_search
+    // will return 0 chunks on a deployment where nothing is wrong.
+    expect(chownCalls()).toEqual([]);
   });
 
   it("warns but stays non-fatal when the registry refresh fails", () => {
@@ -112,8 +217,81 @@ describe("stage_llama_cpp_provider", () => {
     expect(() => {
       output = runStage();
     }).not.toThrow(); // non-fatal: boot continues
-    expect(output).toMatch(/WARNING/);
+    // Name the branch, not just the word WARNING: the function has two
+    // warn-and-continue paths with near-identical wording, and a bare /WARNING/
+    // stays green when the wrong one fires.
+    expect(output).toMatch(/registry --refresh/);
     // Staging still happened despite the refresh failure.
     expect(existsSync(join(npmRoot, "projects", "openclaw-llama-cpp-provider-abc123"))).toBe(true);
+  });
+
+  // OpenClaw refuses to load a plugin whose files are not root-owned
+  // ("blocked plugin candidate: suspicious ownership … uid=999, expected uid=0").
+  // The openclaw-config volume is uid 999 nearly throughout — Pinchy shares it —
+  // which is why start-openclaw.sh already force-chowns extensions/ to root. The
+  // staged provider lives under npm/ and was missed, so on production it sat
+  // blocked and every memory_search failed with "Unknown memory embedding
+  // provider: local." (heypinchy/pinchy#1196).
+  it("chowns the staged provider tree to root so OpenClaw does not block it", () => {
+    mkdirSync(join(depsRoot, "npm", "projects", "openclaw-llama-cpp-provider-abc123"), {
+      recursive: true,
+    });
+
+    runStage();
+
+    expect(chownCalls()).toContainEqual(`-R root:root ${npmRoot}`);
+  });
+
+  // The production case, and the reason the chown must sit OUTSIDE the
+  // "already staged?" guard: the copy runs at most once per volume, so a tree
+  // staged by an earlier release is never rewritten. If ownership were only
+  // repaired on the copy path, an upgraded deployment would stay blocked
+  // forever — which is exactly what happened.
+  it("repairs ownership even when the provider is already staged", () => {
+    mkdirSync(join(depsRoot, "npm", "projects", "openclaw-llama-cpp-provider-abc123"), {
+      recursive: true,
+    });
+    mkdirSync(join(npmRoot, "projects", "openclaw-llama-cpp-provider-abc123"), {
+      recursive: true,
+    });
+
+    const output = runStage();
+
+    // No copy this time…
+    expect(output).not.toMatch(/staging bundled embedding provider/);
+    // …but the ownership repair still ran.
+    expect(chownCalls()).toContainEqual(`-R root:root ${npmRoot}`);
+  });
+
+  it("warns but stays non-fatal when the chown fails", () => {
+    // Same contract as the registry refresh: a silent failure here means the
+    // provider stays blocked and recall regresses to 0 chunks, so it must warn
+    // — but boot continues, because the file-read fallback still works.
+    mkdirSync(join(depsRoot, "npm", "projects", "openclaw-llama-cpp-provider-abc123"), {
+      recursive: true,
+    });
+    stubChown(1);
+
+    let output = "";
+    expect(() => {
+      output = runStage();
+    }).not.toThrow();
+    expect(output).toMatch(/could not chown/);
+  });
+
+  // A warning that says "could not" without saying why leaves the operator to
+  // reproduce the chown by hand to learn whether it was EPERM, a read-only
+  // mount, or a missing path — the three causes that need three different
+  // answers. Quote what the kernel said.
+  it("quotes the reason the chown failed", () => {
+    mkdirSync(join(depsRoot, "npm", "projects", "openclaw-llama-cpp-provider-abc123"), {
+      recursive: true,
+    });
+    stubChown(1, "chown: changing ownership of '/root/.openclaw/npm': Read-only file system");
+
+    const output = runStage();
+
+    expect(output).toMatch(/could not chown/);
+    expect(output).toContain("Read-only file system");
   });
 });

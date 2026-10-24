@@ -8,12 +8,16 @@
  * handler's source text for a literal call, so the send stays inline at each
  * call site rather than hiding behind a second indirection.
  */
+import type { KbIndexJobTrigger } from "@/db/enums";
 import type { AuditLogEntry, EntityRef } from "@/lib/audit";
 
 import type { IngestResult } from "./types";
 
 /** The audit actorId the index worker signs its completion rows with (house pattern: actorType "system" + the job's name, cf. upload-gc). */
 export const KB_INDEX_WORKER_ACTOR = "kb-index-worker";
+
+/** The audit actorId — and the job's `requestedBy` — for a run the nightly schedule asked for. */
+export const KB_INDEX_SCHEDULER_ACTOR = "kb-index-scheduler";
 
 export interface ReindexAuditArgs {
   /** "user" for the admin's request, "system" for the worker's outcome row. */
@@ -25,10 +29,36 @@ export interface ReindexAuditArgs {
   pathCount: number;
   /** Correlates the request row with the outcome row. Omitted where no job exists: nothing granted, or rejected before enqueue. */
   jobId?: string;
+  /**
+   * Who decided this run should happen: an admin (`manual`) or the nightly
+   * schedule (`scheduled`). Required, so no call site can leave the question
+   * open — `actorId` answers it only by spelling convention.
+   */
+  trigger: KbIndexJobTrigger;
+  /** The nightly sweep the run belongs to, so one night's rows correlate from one query. Scheduled runs only. */
+  sweepId?: string;
   /** The run's findings. Omitted on a request row — it has counted nothing yet, and zeros would report an empty corpus for every reindex ever started. */
   counts?: IngestResult;
   /** Scrubbed failure summary. Failure rows only. */
   reason?: string;
+  /**
+   * What this run sent to a vision model, when it sent anything.
+   *
+   * Index-time OCR is the one part of indexing that transmits document CONTENT
+   * to a third party — every other step is local — so the trail has to record
+   * it. Counts and the model, never paths: see the note on `pathCount` below,
+   * which does not weaken because this payload would be more interesting.
+   * Absent when the run OCR'd nothing, so a missing field reads as "nothing
+   * was sent", not "we did not look".
+   */
+  ocr?: { model: string; documents: number; pages: number; skippedPages: number };
+  /**
+   * How many granted folders the run had to leave out: missing, unreadable,
+   * or (nightly runs) empty while the index still held their documents. A
+   * count, never the folders — see `pathCount`. Absent when every folder was
+   * read.
+   */
+  unavailableFolders?: number;
 }
 
 export function reindexAuditEntry(args: ReindexAuditArgs): AuditLogEntry {
@@ -42,6 +72,8 @@ export function reindexAuditEntry(args: ReindexAuditArgs): AuditLogEntry {
       agent: args.agent,
       pathCount: args.pathCount,
       ...(args.jobId !== undefined ? { jobId: args.jobId } : {}),
+      trigger: args.trigger,
+      ...(args.sweepId !== undefined ? { sweepId: args.sweepId } : {}),
       // Copied field by field rather than spread from `counts`: a spread would
       // put whatever IngestResult grows into onto an HMAC-signed row, and the
       // obvious next counter to want is a list of the paths that failed —
@@ -56,6 +88,23 @@ export function reindexAuditEntry(args: ReindexAuditArgs): AuditLogEntry {
             failed: args.counts.failed,
             archived: args.counts.archived,
           }
+        : {}),
+      // Field by field for the same reason as `counts` above: the worker's
+      // tally also carries the token counters the usage row records, and a
+      // spread would sign them onto this row too — undocumented, and
+      // unremovable once written.
+      ...(args.ocr !== undefined
+        ? {
+            ocr: {
+              model: args.ocr.model,
+              documents: args.ocr.documents,
+              pages: args.ocr.pages,
+              skippedPages: args.ocr.skippedPages,
+            },
+          }
+        : {}),
+      ...(args.unavailableFolders !== undefined
+        ? { unavailableFolders: args.unavailableFolders }
         : {}),
       ...(args.reason !== undefined ? { reason: args.reason } : {}),
     },

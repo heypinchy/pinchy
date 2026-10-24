@@ -20,6 +20,7 @@ function requested(over: Record<string, unknown> = {}) {
         description: "Odoo: write",
         toolName: "odoo_write",
         toolCallId: "call_7",
+        sessionKey: "agent:a1:direct:u1",
         ...over,
       },
     },
@@ -29,6 +30,30 @@ function requested(over: Record<string, unknown> = {}) {
 describe("readApprovalRequested", () => {
   it("reads the approval id and the call it is holding up", () => {
     expect(readApprovalRequested(requested())).toEqual({
+      approvalId: "plugin:abc-123",
+      toolCallId: "call_7",
+      sessionKey: "agent:a1:direct:u1",
+    });
+  });
+
+  // A tool call id is only as unique as the model provider makes it. Several
+  // self-hosted OpenAI-compatible servers number them per response (`call_0`,
+  // `call_1`), and Pinchy explicitly supports those deployments — so two people
+  // on two agents can hold pending confirmations under the same id at the same
+  // moment. The session is what tells those apart, and OpenClaw already carries
+  // it verbatim on the approval record (`sessionKey: p.sessionKey ?? null`,
+  // fed from the same hook ctx the gate read).
+  it("reads the session the call belongs to, so a shared call id cannot cross wires", () => {
+    const other = readApprovalRequested(requested({ sessionKey: "agent:a2:direct:u2" }));
+    expect(other?.sessionKey).toBe("agent:a2:direct:u2");
+  });
+
+  // Narrowing must never cost a link that works today: an approval without a
+  // session still resolves by call id alone, exactly as before.
+  it("still reads an approval that names no session", () => {
+    const event = requested();
+    delete (event.payload.request as Record<string, unknown>).sessionKey;
+    expect(readApprovalRequested(event)).toEqual({
       approvalId: "plugin:abc-123",
       toolCallId: "call_7",
     });

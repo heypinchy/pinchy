@@ -81,6 +81,16 @@ const IRRELEVANT_FILES = new Set([
  * `next build`. "packages/plugins/ never reaches the build" was true of the
  * plugin source and false of these, and a manifest-only push skipped anyway.
  *
+ * The second entry is the scanned-PDF reader that the knowledge-base ingest
+ * shares with `pinchy-files` (#941). Pinchy reads a scan with a vision model in
+ * two places — an agent opening a PDF, and the index reading one — and two
+ * implementations would produce two different texts for the same page, so a
+ * citation could point at a chunk the agent cannot find. The canonical copy
+ * has to sit in the plugin, which is deployed as a self-contained directory and
+ * can import nothing outside itself; web is unconstrained and reaches across.
+ * Both files are deliberately import-free, which is what makes them safe to
+ * pull into the build: see the header of pdf-scan-rule.ts.
+ *
  * This is a carve-out from IRRELEVANT_PREFIXES, checked before it. Do not extend
  * it by hand: `escapingImportTargets` + the drift guard in
  * prepush-build-gate.test.mjs derive the escapes from the source, so a new
@@ -88,6 +98,7 @@ const IRRELEVANT_FILES = new Set([
  */
 const BUILD_RELEVANT_OUTSIDE_WEB = [
   /^packages\/plugins\/[^/]+\/openclaw\.plugin\.json$/,
+  /^packages\/plugins\/pinchy-files\/pdf-(scan-rule|vision-api)\.ts$/,
 ];
 
 /**

@@ -91,7 +91,9 @@ export type AuditResource =
   // email_workflows table; yields email_workflow.created/.updated/.deleted for
   // the whole Automations CRUD lifecycle (the create path lands first).
   | "email_workflow"
-  | "api_key";
+  | "api_key"
+  // Monthly cost budgets (#36): budget.created / .updated / .deleted.
+  | "budget";
 
 export type AuditEventType =
   | `tool.${string}`
@@ -154,6 +156,10 @@ export type AuditEventType =
   | "chat.run_aborted"
   | "chat.run_completed_after_disconnect"
   | "chat.image_model_fallback"
+  // A send refused by an instance policy (Settings → Organization → Member
+  // access, cost budgets) rather than by access. `detail.reason` names the
+  // rule, `detail.agent` snapshots the agent.
+  | "chat.policy_refused"
   | "agent.model_unavailable"
   | "agent.memory_changed"
   // A person edited an agent's SOUL.md (Personality) or AGENTS.md
@@ -196,7 +202,14 @@ export type AuditEventType =
   | "approval.denied"
   | "approval.consumed"
   | "approval.expired"
-  | "approval.gc";
+  | "approval.gc"
+  // Cost budgets (#36). Written once per budget and month by the budget
+  // monitor when spend crosses 80% (threshold_reached) and 100% (exceeded).
+  | "budget.created"
+  | "budget.updated"
+  | "budget.deleted"
+  | "budget.threshold_reached"
+  | "budget.exceeded";
 
 interface HmacFieldsV1 {
   timestamp: Date;
@@ -505,6 +518,22 @@ export type AuditLogEntry =
         /** Set on sweep-emitted rows (approval.expired) so analysts can
          * correlate one sweep run (AGENTS.md §"Audit logging rules"). */
         sweepId?: string;
+      };
+    })
+  | (AuditLogBase & {
+      // Cost budgets (#36): a budget crossed its warning line (80%) or its
+      // limit (100%) this month. One row per budget, crossing and month — the
+      // monitor claims each before writing it (lib/budgets.ts).
+      eventType: "budget.threshold_reached" | "budget.exceeded";
+      detail: {
+        budget:
+          | { id: string; scope: "agent"; agent: { id: string; name: string } }
+          | { id: string; scope: "instance" };
+        period: string;
+        thresholdPercent: 80 | 100;
+        spentUsd: number;
+        limitUsd: number;
+        onExceeded: "notify" | "block";
       };
     })
   | (AuditLogBase & {
@@ -882,17 +911,33 @@ export type AuditLogEntry =
       // purpose: the obvious next counter to want is a list of the paths that
       // failed, which is precisely what this HMAC-signed row must never carry.
       // Adding a counter here has to stay a decision, not a side effect.
+      //
+      // `trigger` says who decided the run should happen: `manual` for an
+      // admin's request, `scheduled` for the nightly reindex. Rows written
+      // before the schedule existed carry no trigger and were all manual.
+      // `sweepId` correlates one night's rows across agents (scheduled only).
+      //
+      // `ocr` is present only when the run sent scanned pages to a vision
+      // model: the model and how much was sent, never which files.
+      //
+      // `unavailableFolders` counts the granted folders the run had to leave
+      // out (missing, unreadable, or emptied under a nightly run); absent
+      // when every folder was read.
       eventType: "knowledge.reindex";
       detail: {
         agent: EntityRef;
         pathCount: number;
         jobId?: string;
+        trigger?: "manual" | "scheduled";
+        sweepId?: string;
         indexed?: number;
         skipped?: number;
         removed?: number;
         unsearchable?: number;
         failed?: number;
         archived?: number;
+        ocr?: { model: string; documents: number; pages: number; skippedPages: number };
+        unavailableFolders?: number;
         reason?: string;
       };
     })

@@ -1,22 +1,22 @@
 import { NextResponse } from "next/server";
+import { isUuid } from "@/lib/uuid";
 import { eq } from "drizzle-orm";
 
 import { db } from "@/db";
-import { agents, emailWorkflows } from "@/db/schema";
+import { agents, emailWorkflows, users } from "@/db/schema";
 import { withAuth } from "@/lib/api-auth";
 import { parseRequestBody } from "@/lib/api-validation";
 import { updateAutomationSchema } from "@/lib/schemas/automations";
 import { scrubEmails } from "@/lib/audit";
 import { deferAuditLog } from "@/lib/audit-deferred";
 import { canManageAgentWorkflows } from "@/lib/email-workflows/authz";
+import {
+  arePersonalAutomationsPausedFor,
+  MEMBER_AUTOMATIONS_DISABLED,
+} from "@/lib/instance-policy";
+import { BUDGET_EXHAUSTED_AUTOMATION, getExhaustedBlockingBudget } from "@/lib/budgets";
 
 type RouteContext = { params: Promise<{ id: string }> };
-
-// email_workflows.id is a uuid column: a non-uuid path param (a typo, a probe)
-// would make the query throw a cast error (500) instead of resolving to
-// "nothing". Guarding here turns any malformed id into a clean 404 — it
-// definitionally matches no workflow.
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
  * The one answer both routes give for a workflow the caller may not have: the
@@ -27,12 +27,23 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
  * agent the caller can SEE but may not manage — a shared agent in their sidebar,
  * where "not found" would be false and would send them checking the id instead
  * of asking an admin. Here the resource is the WORKFLOW, and that middle state
- * does not exist: `GET /api/automations` is gated by the very same
- * `canManageAgentWorkflows`, so nobody who fails this gate can enumerate
- * workflows at all. Read and manage coincide, which puts every refusal squarely
- * in the oracle case of the criterion on `getAgentWithAccess` — a distinguishable
+ * does not exist: `GET /api/automations` asks this same `canManageAgentWorkflows`
+ * — behind a visibility gate, so strictly more than this route asks — and nobody
+ * refused here could have passed it there. Every caller who reaches this refusal
+ * is therefore one who cannot enumerate the workflow at all, which is squarely
+ * the oracle case of the criterion on `getAgentWithAccess`: a distinguishable
  * error is fine when the caller can already enumerate the resource, and an oracle
  * when they cannot.
+ *
+ * The implication runs one way only, and the gap is what this route is for. An
+ * ADMIN passes the scope gate on a colleague's personal agent and is still
+ * refused by `GET /api/automations`, which runs the visibility gate first — so
+ * they can stop a workflow whose id they already hold without ever being able to
+ * find one. Read and manage come apart exactly there, and it is not a hole in the
+ * reasoning above: that case describes who gets THROUGH, never who gets this 404.
+ * See `canManageAgentWorkflows` for the verdict, and
+ * `__tests__/security/workflow-scope-gate-callers.test.ts` for what keeps the
+ * split from spreading to a third caller.
  *
  * It costs nothing: a caller who gets this never sees the workflow in any list
  * either, so there is no state in which 403 would have told them something they
@@ -48,7 +59,9 @@ function workflowNotFound() {
  * undefined when the id is malformed or matches nothing.
  */
 async function loadWorkflowWithAgent(id: string) {
-  if (!UUID_RE.test(id)) return undefined;
+  // email_workflows.id is a uuid column: a malformed id (a typo, a probe) would
+  // throw a cast error (500). It definitionally matches no workflow — a 404.
+  if (!isUuid(id)) return undefined;
   const [row] = await db
     .select({
       id: emailWorkflows.id,
@@ -58,9 +71,13 @@ async function loadWorkflowWithAgent(id: string) {
       agentName: agents.name,
       isPersonal: agents.isPersonal,
       ownerId: agents.ownerId,
+      // The OWNER's role, not the caller's: an admin stopping a member's
+      // runaway automation acts on a workflow the member policy still governs.
+      ownerRole: users.role,
     })
     .from(emailWorkflows)
     .innerJoin(agents, eq(agents.id, emailWorkflows.agentId))
+    .leftJoin(users, eq(users.id, agents.ownerId))
     .where(eq(emailWorkflows.id, id));
   return row;
 }
@@ -93,6 +110,19 @@ export const PATCH = withAuth<RouteContext>(async (request, { params }, session)
   // without an audit row — an unchanged state is not an event.
   if (workflow.enabled === enabled) {
     return NextResponse.json({ id, enabled });
+  }
+
+  // Switching OFF is always allowed — stopping is never what the policy is
+  // against. Switching ON is refused while the policy pauses this agent's
+  // automations, for an admin too: the loader would still skip it, so the
+  // answer would be a workflow that reads "enabled" and never runs.
+  if (enabled && (await arePersonalAutomationsPausedFor(workflow, workflow.ownerRole))) {
+    return NextResponse.json(MEMBER_AUTOMATIONS_DISABLED, { status: 403 });
+  }
+  // The same holds for a used-up blocking budget: the sweep skips the agent
+  // until the month rolls over or an admin raises the budget.
+  if (enabled && (await getExhaustedBlockingBudget(workflow.agentId))) {
+    return NextResponse.json(BUDGET_EXHAUSTED_AUTOMATION, { status: 403 });
   }
 
   await db

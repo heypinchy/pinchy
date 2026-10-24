@@ -76,6 +76,8 @@ Useful for monitoring the WebSocket gateway separately from the web process.
 
 `configPushesPending` is the number of configuration updates Pinchy has accepted but not yet confirmed inside the OpenClaw runtime (for example while OpenClaw's config-apply rate limit defers an update). A value of `0` means the runtime reflects every change you've made — useful for automation that needs to act right after a settings or permission change. While the gateway restarts, the response is `{ "status": "restarting", "connected": false, "since": <timestamp> }` instead.
 
+With `?agentId=<uuid>`, the response additionally includes `agentDispatchable` — `true` when the OpenClaw runtime currently carries that agent, i.e. a chat sent to it right now would not be rejected as unknown. This is how a client waits out the gap between a route that changed an agent answering and the runtime having the change; the setup wizard polls it after saving the first provider. It reveals no agent metadata, so it stays public, and every failure on the OpenClaw side reports `false` rather than an error status.
+
 With `?channelHealth=1`, the response additionally includes a `channelHealth` array — the channel-health watchdog's per-account snapshot (used by the admin Telegram settings UI to show a "degraded" badge). **This mode requires an admin session** and returns `401`/`403` otherwise: entries carry `accountId` (a Pinchy agent id) and `lastError` (worker error text, passed through the same scrubbing used for the audit trail). The rest of this endpoint — the default `{ status, connected }` check and `?agentId=` — stays public.
 
 ## Setup (public)
@@ -128,13 +130,29 @@ API keys are encrypted at rest with AES-256-GCM. Only the **first** provider
 configured on an instance becomes the default automatically; afterwards the
 default is an explicit action ([`PATCH /api/settings/providers/default`](#patch-apisettingsprovidersdefault)).
 
-**Response:** `{ "success": true }`
+**Response:** `{ "success": true }`, plus:
+
+| Field     | Type   | When                                                                                                                                                                                                                               |
+| --------- | ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `warning` | string | The credential was saved but applying it to the agent runtime failed. Not an error — the runtime picks it up on its next restart.                                                                                                  |
+| `agentId` | string | This was the instance's **first** provider and the config regenerated. The id of the Smithers agent it was configured for — poll [`GET /api/health/openclaw?agentId=…`](#get-apihealthopenclaw) until `agentDispatchable` is true. |
+
+The route does not wait for the runtime itself. Pinchy hands OpenClaw the new
+config in the background, so an agent becomes dispatchable shortly after this
+call answers — and on a fresh install "shortly" can be most of a minute, because
+the first saved key also provisions the runtime's secrets store and restarts it.
+`agentId` is what lets a caller render that wait instead of holding a request
+open through it; the setup wizard uses it to gate **Continue to Pinchy**.
+
+Later provider saves send no `agentId`: they change no agent, so there is no
+particular one to wait for. To know when such a change has reached the runtime,
+poll `configPushesPending` on the same health endpoint until it is `0`.
 
 ## Agents
 
 ### `GET /api/agents`
 
-List agents visible to the current user. Admins see all agents. Non-admin users see shared agents and their own personal agents.
+List agents visible to the current user. Admins see every shared agent, of any visibility; non-admin users see shared agents their visibility setting admits them to. Everyone additionally sees their own personal Smithers, and nobody sees anyone else's — admins included.
 
 **Response:**
 
@@ -216,7 +234,9 @@ Get a single agent by ID.
 
 An agent you may not see answers `404` as well, with the same body — someone else's personal agent, or a restricted agent outside your groups, is deliberately indistinguishable from an ID that was never issued. This holds for admins too: nobody can list another user's personal agents, so nobody gets to confirm one exists.
 
-Every endpoint that gates on **your access to the agent** answers the same way, over the WebSocket chat bridge as well as over HTTP, and including the `agentId`-keyed [Automations endpoints](#automations). One group under this prefix does not, and it is worth knowing which: the admin-only management endpoints (`knowledge/*`, `integrations`, and connecting a Telegram bot) apply no visibility rule at all — they are restricted to admins and return `404` only when no agent has the ID.
+Every endpoint that gates on **your access to the agent** answers the same way, over the WebSocket chat bridge as well as over HTTP, and including the `agentId`-keyed [Automations endpoints](#automations). That now covers the admin-only management endpoints too — `knowledge/*`, `integrations`, and connecting a Telegram bot: being an admin is not a visibility rule, so those answer `404` for another user's personal agent as well. They are the surfaces that reindex an agent's documents, grant it an integration, or give it a Telegram bot, and none of that is reachable for an agent Pinchy will not show you.
+
+No endpoint under this prefix is exempt, and a test asserts it rather than this page claiming it: `agent-route-access-gate.test.ts` fails on a handler that does not run the gate, so a new one cannot quietly skip it.
 
 ### `PATCH /api/agents/:id`
 
@@ -383,6 +403,8 @@ Download a file the caller uploaded to this agent.
 
 Download a file the agent produced and delivered in chat — see [Generating files](/guides/file-uploads/#generating-files).
 
+Serves a file the caller was actually handed, not whatever currently carries that name. Each delivery records where the file was and a checksum of its contents, and the download is refused with `404` unless the file on disk still matches one of the caller's own deliveries of that name. On a shared agent that matters: everyone's chats write into the same workspace, so without it a later file of the same name — from a conversation you cannot see — would be served under your download link.
+
 ### `GET /api/agents/:agentId/files/:filename`
 
 Read a file in the agent's own workspace.
@@ -397,13 +419,18 @@ Serve a file from a directory this agent is granted under `allowed_paths` — th
 
 **Query parameters:**
 
-| Field      | Required | Description                                                                                         |
-| ---------- | -------- | --------------------------------------------------------------------------------------------------- |
-| `path`     | Yes      | The file, which must resolve inside one of the agent's granted directories                          |
-| `download` | No       | `1` marks this as taking a copy rather than reading it                                              |
-| `variant`  | No       | `original` or `converted` — the converted PDF is what previews an Office source. Anything else 400s |
+| Field      | Required | Description                                                                                                            |
+| ---------- | -------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `path`     | Yes      | The file, which must resolve inside one of the agent's granted directories                                             |
+| `download` | No       | `1` marks this as taking a copy rather than reading it                                                                 |
+| `variant`  | No       | `original`, `converted` or `rows` — the converted PDF is what previews an Office source. Anything else 400s            |
+| `sheet`    | No       | `variant=rows` only: the worksheet the cited rows live on. Pass it together with `from` and `to`, or none of the three |
+| `from`     | No       | `variant=rows` only: first cited row, 1-based inclusive                                                                |
+| `to`       | No       | `variant=rows` only: last cited row, inclusive; clamped to at most 200 returned rows                                   |
 
-`download` decides which audit row is written: `knowledge.source_viewed` without it, `knowledge.source_downloaded` with it. Reading a cited document and carrying it out of the building are different acts, so they are different rows — and the caller has to say which, because the response cannot: a `.docx` is served as an attachment either way.
+`variant=rows` is what a spreadsheet citation's preview asks for. It answers JSON instead of bytes — `{ sheet, columns, rows }`, each row carrying its sheet row number and its cell texts index-aligned to `columns` — read through the same traversal the index used, so hidden rows and hidden sheets stay excluded. With none of `sheet`/`from`/`to` it opens the top of the first visible sheet; naming a sheet the workbook does not have answers `200` with an empty range (the document was found); a workbook that will not open answers `422`.
+
+`download` decides which audit row is written: `knowledge.source_viewed` without it, `knowledge.source_downloaded` with it. Reading a cited document and carrying it out of the building are different acts, so they are different rows — and the caller has to say which, because the response cannot: a `.docx` is served as an attachment either way. A successful read also records which representation left (`original`, `converted` or `rows`).
 
 ### `GET /api/agents/:agentId/telegram-chat`
 
@@ -477,21 +504,30 @@ The request returns as soon as the job is queued — indexing runs in the backgr
 
 - `401` — not authenticated
 - `403` — not an admin
-- `404` — agent not found
+- `404` — agent not found, or it is another user's personal agent (admins cannot reach those either)
 - `409` — a reindex is already running. One index job runs at a time across the whole instance, so the run in your way may belong to a **different** agent. The response carries the running job's `jobId`, `status`, and `agent` — `GET` that agent's reindex endpoint to watch it, rather than retrying.
 - `503` — the bundled embedding model file is missing from the image (a broken build or mount, not a configuration step)
 
 ### `GET /api/agents/:agentId/knowledge/reindex`
 
-The agent's most recent index run — in flight or last finished. **Admin only.** Returns `{ "job": null }` if the agent has never been reindexed.
+The agent's most recent index run — in flight or last finished — and whether the nightly reindex keeps this agent current. **Admin only.** `job` is `null` if the agent has never been reindexed.
 
 **Response:**
 
 ```json
 {
+  "schedule": {
+    "enabled": true,
+    "time": "02:00",
+    "timezone": "Europe/Vienna",
+    "nextRun": { "date": "2026-07-18", "time": "02:00", "day": "tomorrow" },
+    "included": true
+  },
   "job": {
     "id": "6f1c2b64-6c3e-4a2f-9c19-5c1d3a1f2e77",
     "status": "succeeded",
+    "trigger": "scheduled",
+    "unavailableFolders": 0,
     "processed": 18,
     "total": 18,
     "processedBytes": 41902137,
@@ -514,29 +550,92 @@ The agent's most recent index run — in flight or last finished. **Admin only.*
 | Field                           | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `status`                        | `pending`, `running`, `succeeded`, or `failed`.                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `trigger`                       | `manual` when an admin started the run, `scheduled` when the [nightly reindex](#get-apisettingsknowledge-index-schedule) did.                                                                                                                                                                                                                                                                                                                                                                                |
+| `unavailableFolders`            | Folders the run had to leave as they were: ones it could not read, and ones that came up empty while the index still held their documents (a network share that failed to mount looks like that). Their documents are kept, not removed. Counted, never named; `0` when every folder was read.                                                                                                                                                                                                               |
 | `processed` / `total`           | Documents done, and documents found. `total` is `null` until discovery has walked every folder; it never changes after that. `processed` advances per whole document, so a long one can hold it still for minutes.                                                                                                                                                                                                                                                                                           |
 | `processedBytes` / `totalBytes` | The same progress weighed by the bytes of the files involved. This is the pair to build a progress bar or a time-to-completion estimate on: documents are not equal units of work — one compilation PDF can be a third of a corpus — while bytes track the actual work and are known in full before the first document is read. `totalBytes` is `null` until discovery has finished, and `processedBytes` moves _inside_ a long document as its pages are embedded, so a slow document still shows movement. |
 | `counts`                        | The run's findings **so far**, updated as it goes. `null` before the first document.                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | `counts.indexed`                | Documents added, updated, or rebuilt — and searchable afterwards.                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| `counts.skipped`                | Unchanged content hash, chunks already present.                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `counts.skipped`                | Unchanged content hash, and either chunks already present or it already came out empty and nothing has changed that could read it differently (see [Keeping the index current](/guides/create-knowledge-base-agent/#keeping-the-index-current)).                                                                                                                                                                                                                                                             |
 | `counts.removed`                | Source file no longer on disk; the document and its chunks were deleted. Stays `0` until the run's final pass.                                                                                                                                                                                                                                                                                                                                                                                               |
-| `counts.unsearchable`           | Parsed without error but yielded no text, so the document exists in the index yet can never be retrieved (typically a scanned PDF).                                                                                                                                                                                                                                                                                                                                                                          |
+| `counts.unsearchable`           | Parsed without error but yielded no text, so the document exists in the index yet can never be retrieved — a workbook whose sheets are all hidden, or a scan that no vision model was available to read.                                                                                                                                                                                                                                                                                                     |
 | `counts.failed`                 | The file could not be read or parsed. The run continues — one bad file never aborts the reindex — and a previously indexed version of the file stays searchable.                                                                                                                                                                                                                                                                                                                                             |
 | `error`                         | Why the run failed. `null` unless `status` is `failed`.                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 
+`schedule` answers "do I still have to press the button?" for this agent. It is `null` if the schedule could not be read; the job is reported either way.
+
+| Field               | Description                                                                                                                                                                                              |
+| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `schedule.enabled`  | Whether the instance reindexes knowledge-base agents on its own every night. Set with [`PUT /api/settings/knowledge-index-schedule`](#put-apisettingsknowledge-index-schedule).                          |
+| `schedule.time`     | The time of day it runs, in the organization timezone.                                                                                                                                                   |
+| `schedule.timezone` | The organization timezone `time` is read in.                                                                                                                                                             |
+| `schedule.nextRun`  | The next run as `date`, `time` and `day` (`today` or `tomorrow`), all in the organization timezone. `null` while the nightly reindex is off.                                                             |
+| `schedule.included` | Whether the nightly run covers **this** agent. Only agents that have the `knowledge_search` permission and at least one granted folder are swept; an agent that only reads files is reindexed on demand. |
+
 `unsearchable` and `failed` can be non-zero on a `succeeded` run: the reindex itself worked, and these are its findings about the corpus.
 
-`status: "failed"` means something systemic stopped the run — the embedding endpoint or the database — not that a file was broken. A broken file is a `counts.failed`, and the run keeps going. Failed runs keep the counts they reached before dying.
+`status: "failed"` means something systemic stopped the run — the embedding endpoint or the database, or none of the agent's folders could be read — not that a file was broken. A broken file is a `counts.failed`, and the run keeps going. Failed runs keep the counts they reached before dying.
 
 A run interrupted by a restart is picked up again automatically: indexing is idempotent, so the resumed run skips everything already done.
 
-Every run writes two `knowledge.reindex` audit entries, correlated by `jobId`: the admin's request, and the outcome (recorded by the background worker, with the counts).
+Every run writes two `knowledge.reindex` audit entries, correlated by `jobId`: the request — the admin's, or the nightly scheduler's — and the outcome (recorded by the background worker, with the counts). Both carry `trigger`.
 
 **Errors:**
 
 - `401` — not authenticated
 - `403` — not an admin
-- `404` — agent not found
+- `404` — agent not found, or it is another user's personal agent (admins cannot reach those either)
+
+### `GET /api/settings/knowledge-index-schedule`
+
+The nightly reindex: whether it's on, when it runs, and what the last nights did. **Admin only.**
+
+Once a night, at `time` in the [organization timezone](/reference/organization-timezone/), Pinchy queues a reindex of every agent that has the `knowledge_search` permission and at least one granted folder — one agent after another, behind the [one-run-at-a-time rule](#post-apiagentsagentidknowledgereindex). A run already in progress, yours or the previous agent's, delays the next one rather than cancelling it. If Pinchy wasn't running at that time, the night runs as soon as it starts again — once, not once per missed night.
+
+**Response:**
+
+```json
+{
+  "enabled": true,
+  "time": "02:00",
+  "timezone": "Europe/Vienna",
+  "nextRun": { "date": "2026-10-18", "time": "02:00", "day": "tomorrow" },
+  "currentSweep": null,
+  "lastSweep": {
+    "slot": "2026-10-17",
+    "startedAt": "2026-10-17T00:00:12.000Z",
+    "agentCount": 2
+  }
+}
+```
+
+| Field          | Description                                                                                                                                                                                 |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `enabled`      | Whether the nightly reindex runs. On by default.                                                                                                                                            |
+| `time`         | 24-hour `HH:MM`, in the organization timezone. Defaults to `02:00`.                                                                                                                         |
+| `timezone`     | The organization timezone `time` is read in.                                                                                                                                                |
+| `nextRun`      | `date`, `time` and `day` (`today` or `tomorrow`) of the next run, in the organization timezone. `null` while `enabled` is `false`.                                                          |
+| `currentSweep` | The night still queueing its agents: `slot` (the date it's for), `startedAt`, `agentCount`, and `waiting` — how many agents haven't had their turn yet. `null` when nothing is in progress. |
+| `lastSweep`    | The most recent night that queued all its agents: `slot`, `startedAt`, `agentCount`. Each agent's own outcome is on [`GET …/knowledge/reindex`](#get-apiagentsagentidknowledgereindex).     |
+
+**Errors:** `401` not authenticated, `403` not an admin.
+
+### `PUT /api/settings/knowledge-index-schedule`
+
+Turn the nightly reindex on or off, or move it. **Admin only.** Send the whole schedule; the response is the same as `GET`.
+
+**Request body:**
+
+| Field     | Type    | Required | Description                                                 |
+| --------- | ------- | -------- | ----------------------------------------------------------- |
+| `enabled` | boolean | Yes      | Whether Pinchy reindexes knowledge-base agents on its own.  |
+| `time`    | string  | Yes      | 24-hour `HH:MM` in the organization timezone, e.g. `02:00`. |
+
+A new setting applies from its next occurrence. Switching the reindex back on at 14:00, or moving it from 23:00 to 09:00 in the afternoon, never starts a run on the spot; the next run is the next time the clock reaches `time`.
+
+A change is recorded as a `settings.updated` audit entry with the old and new schedule. Saving the same values again records nothing.
+
+**Errors:** `400` invalid body (for example `time` not in `HH:MM`), `401` not authenticated, `403` not an admin.
 
 ### `POST /api/internal/knowledge/search`
 
@@ -552,13 +651,19 @@ The counter answers for the last run; this answers for everything currently in t
 
 Scoped to the folders that agent is granted, exactly like search itself, so the list never names a document the agent isn't allowed to know about.
 
+**Errors:**
+
+- `401` — not authenticated
+- `403` — not an admin
+- `404` — agent not found, or it is another user's personal agent (admins cannot reach those either)
+
 ## Automations
 
 Standing email workflows an agent runs on its own — see [the Automations tab](/concepts/agent-settings/#automations-tab). You can manage automations on a personal agent you own; admins can manage them on any agent they can see, which is every shared agent. Someone else's **personal** agent is not one of them: personal agents stay private to their owner, admins included, and that rule wins here as it does everywhere else in Pinchy.
 
 The endpoints keyed by **`agentId`** ask two questions in order, and answer differently depending on which one you fail. Can you **see** the agent at all? If not — someone else's personal agent, or a restricted one outside your groups — you get a plain `404`, identical to an ID that was never issued, because any other answer would confirm the agent exists. If you can see it but may not **manage** its automations — the everyday case of a shared agent you chat with daily — you get `403`, which tells you nothing you did not already know and points you at an admin instead of at a typo.
 
-`PATCH` and `DELETE` are keyed by **workflow** id instead, and there a scope refusal is `404` too. The middle case has no equivalent: a workflow you may not manage is one you can never list either, since `GET /api/automations` is gated by the same rule. So `403` there would be the only way to learn that a workflow id is real.
+`PATCH` and `DELETE` are keyed by **workflow** id instead, and there a scope refusal is `404` too. The middle case has no equivalent: `GET /api/automations` asks this same scope question _and_ the visibility one in front of it, so anyone refused here could never have listed the workflow in the first place. `403` would be the only way to learn that a workflow id is real.
 
 Being keyed by workflow id also gives these two a reach the `agentId` endpoints deliberately lack: an admin who already holds a workflow's id — from the [audit trail](/concepts/audit-trail/), which is where a runaway automation surfaces — can disable or delete it even on someone's personal agent. Standing autonomous authority has to stay stoppable. It grants no way to **find** such a workflow, only to act on one already known.
 
@@ -566,11 +671,13 @@ Being keyed by workflow id also gives these two a reach the `agentId` endpoints 
 
 List the agent's email workflows.
 
+Each item carries `pausedByBudget: true` while a used-up blocking [cost budget](/guides/cost-governance/) pauses the agent's automations for this month. The sweep skips them without changing `status`, so read `pausedByBudget` rather than `status` to tell whether one is actually running.
+
 **Errors:**
 
 - `400` — `agentId` is missing from the query string
 - `401` — not authenticated
-- `403` — you can see the agent, but its automations are outside your scope: a shared agent is admin-only, and a personal agent's automations belong to its owner
+- `403` — you can see the agent, but its automations are outside your scope: a shared agent is admin-only, and a personal agent's automations belong to its owner. Also answered with `code: "personal_agent_disabled"` when an admin has turned members' personal agents off
 - `404` — no agent has that id, **or** you may not see the one that does
 
 ### `POST /api/automations`
@@ -596,7 +703,7 @@ Create a workflow. It is always created **disabled** and `pending`, whatever the
 
 - `400` — the body fails validation, or a requested connection is one the agent has no email **read** access to. The response names those connection ids; an id that doesn't exist lands here too, since it has no permission row either
 - `401` — not authenticated
-- `403` — you can see the agent but may not create a workflow on it (same scope rule as the list)
+- `403` — you can see the agent but may not create a workflow on it (same scope rule as the list). Also answered with `code: "member_automations_disabled"` when an admin has turned off automations on members' personal agents (see [Cost governance](/guides/cost-governance/)), and with `code: "personal_agent_disabled"` when they have turned off members' personal agents altogether
 - `404` — no agent has that id, **or** you may not see the one that does
 
 ### `PATCH /api/automations/:id`
@@ -613,6 +720,8 @@ Toggling to the state it already has is a no-op: still `200`, no audit entry —
 
 - `400` — the body has no boolean `enabled`
 - `401` — not authenticated
+- `403` — `code: "member_automations_disabled"`: you asked to **enable** a workflow on a member's personal agent while automations there are turned off. Admins get this too, because the workflow would read "enabled" and never run. Disabling is always allowed
+- `403` — `code: "budget_exhausted"`: you asked to **enable** a workflow on an agent that a used-up blocking [cost budget](/guides/cost-governance/) has paused for this month. Same reason, same rule: disabling is always allowed
 - `404` — no workflow has that id, **or** its agent is outside your scope. This endpoint addresses a workflow, not an agent, so a malformed id lands here as well: it definitionally matches nothing
 
 ### `DELETE /api/automations/:id`
@@ -714,9 +823,124 @@ Update a setting.
 | `key`   | string | Yes      | Setting key   |
 | `value` | string | Yes      | Setting value |
 
-Settings with `api_key` in the key name are automatically encrypted at rest.
+Settings with `api_key` in the key name are automatically encrypted at rest. Keys starting with `policy.` are refused with `400`: the member-access switches go through `PUT /api/settings/governance` below, which audits what changed and updates Telegram routing.
 
 **Response:** `{ "success": true }`
+
+### `GET /api/settings/governance`
+
+The two member-access switches from **Settings → Organization → Member access**. Any signed-in user may read them, so the app can explain to a member why their personal agent or automations are paused. See [Cost governance](/guides/cost-governance/).
+
+**Response:**
+
+```json
+{ "memberPersonalAgents": true, "memberAutomations": false }
+```
+
+### `PUT /api/settings/governance`
+
+Set both switches (admin only). Both fields are required. Writes a `settings.updated` audit entry listing what changed, and nothing for a save that changed nothing. Changing `memberPersonalAgents` also rebuilds the Telegram routing, so members can't reach their personal agent there either.
+
+**Request body:**
+
+| Field                  | Type    | Required | Description                                                    |
+| ---------------------- | ------- | -------- | -------------------------------------------------------------- |
+| `memberPersonalAgents` | boolean | Yes      | Members can use their personal agent (Smithers)                |
+| `memberAutomations`    | boolean | Yes      | Members can create and run automations on their personal agent |
+
+**Response:** the stored switches, same shape as `GET`.
+
+**Errors:** `400` (invalid body), `401`, `403` (not an admin).
+
+## Budgets (admin only)
+
+Monthly cost budgets for the whole instance or a single agent. See [Cost governance](/guides/cost-governance/#monthly-budgets).
+
+### `GET /api/budgets`
+
+Every budget with this month's spend, in the organization timezone.
+
+**Response:**
+
+```json
+[
+  {
+    "id": "6f1c…",
+    "agent": null,
+    "monthlyLimitUsd": 100,
+    "onExceeded": "block",
+    "spentUsd": 84.1,
+    "period": "2026-10",
+    "state": "warning"
+  }
+]
+```
+
+`agent` is `null` for the instance budget, otherwise `{ "id", "name" }`. `state` is `ok`, `warning` (80% or more) or `exceeded` (100% or more).
+
+A budget on another user's personal agent is left out of the list. You cannot set one there either (see `PUT` below), and listing it would reveal a colleague's private agent, its name and its spend.
+
+### `PUT /api/budgets`
+
+Create or replace a budget. Requires an Enterprise license. There is at most one instance budget and one per agent, so saving again for the same scope updates it. Changing the limit re-arms this month's alerts, because a warning about the old line says nothing about the new one. Changing only the action keeps them. Writes `budget.created` or `budget.updated`.
+
+**Request body:**
+
+| Field             | Type           | Required | Description                                              |
+| ----------------- | -------------- | -------- | -------------------------------------------------------- |
+| `agentId`         | string \| null | Yes      | The agent to cap, or `null` for the whole instance       |
+| `monthlyLimitUsd` | number         | Yes      | USD per calendar month, at least `0.01`; stored in cents |
+| `onExceeded`      | string         | Yes      | `notify` or `block`                                      |
+
+**Response:** `{ "id": "…" }`
+
+**Errors:** `400` (invalid body), `401`, `403` (not an admin, or no Enterprise license), `404` (no agent you can see has that id — a colleague's personal agent included).
+
+### `DELETE /api/budgets/:id`
+
+Remove a budget. Works without a license, so an expired one never leaves an instance with chats paused and no way to lift it. Writes `budget.deleted`.
+
+**Response:** `{ "id": "…" }`
+
+**Errors:** `401`, `403` (not an admin), `404` (no budget has that id, or it is on another user's personal agent).
+
+### `POST /api/internal/budgets/check`
+
+**Internal** — authenticated with the shared OpenClaw gateway token, not a user session. Called by the `pinchy-audit` plugin's `before_agent_run` hook before every agent run, on every channel (web, Telegram, automations), never by the browser.
+
+Answers whether a used-up blocking budget — the agent's own or the instance's — stops this run. When it does, the plugin refuses the run before the model reads the prompt, and the sender gets `message` as the reply.
+
+**Request body:**
+
+| Field        | Type   | Required | Description                                                                   |
+| ------------ | ------ | -------- | ----------------------------------------------------------------------------- |
+| `agentId`    | string | Yes      | The agent about to run                                                        |
+| `sessionKey` | string | No       | The OpenClaw session; a web-chat session names the Pinchy user                |
+| `channel`    | string | No       | Where the run came from, e.g. `telegram`; recorded on a refusal               |
+| `senderId`   | string | No       | The sender's account on that channel, mapped to the Pinchy user who linked it |
+| `trigger`    | string | No       | What started the run, as OpenClaw names it (`user`, `cron`, `heartbeat`, …)   |
+
+The plugin never sends the prompt, the conversation or the system prompt — only who is asking and where.
+
+**Response:**
+
+```json
+{
+  "blocked": true,
+  "message": "Knowledge Base has used its monthly budget. It's available again next month, or sooner if your admin raises the budget."
+}
+```
+
+`{ "blocked": false }` when nothing stops the run; that answer writes nothing. A refusal writes `chat.policy_refused` with `reason: "budget_exhausted"` and the `channel`, attributed to the Pinchy user when the session or a linked channel account names one, otherwise to the agent.
+
+The plugin reuses a `blocked: false` answer for the same agent for 15 seconds and never reuses a block, so raising a budget reopens the agent on the next message. When this endpoint can't be reached or answers with an error, the plugin lets the run through — unless its last answer for that agent was a block, which then stands — and waits 10 seconds before asking again. It logs one warning per outage in the agent runtime's log, and says so when the endpoint answers again.
+
+`sessionKey`, `channel`, `senderId` and `trigger` only shape the audit row. One that isn't a string or is too long (500, 100, 200 and 100 characters) is dropped, not rejected: an error answer lets the run through, so rejecting an audit detail would switch the budget off.
+
+**Errors:**
+
+- `400` — `agentId` missing, empty, or longer than 200 characters
+- `401` — gateway token missing or wrong. The plugin lets every run through until the token matches again and says in its log that blocking budgets are not enforced.
 
 ## LLM Providers (admin only)
 
@@ -756,7 +980,7 @@ What a removal would do, without doing it — the confirmation dialog uses this 
 {
   "targetProvider": "anthropic",
   "targetProviderLabel": "Anthropic",
-  "targetModel": "anthropic/claude-sonnet-4-6",
+  "targetModel": "anthropic/claude-sonnet-5",
   "affectedAgents": [{ "id": "…", "name": "Hermes" }]
 }
 ```
@@ -1158,6 +1382,12 @@ Get the Telegram bot configuration for an agent. **Admin only.**
 
 `hint` is the last 4 characters of the bot token for visual verification. `mainBotConfigured` indicates whether the global Smithers/main bot is set up — a prerequisite before any other agent can connect to Telegram.
 
+**Errors:**
+
+- `401` — not authenticated
+- `403` — not an admin
+- `404` — agent not found, or it is another user's personal agent (admins cannot reach those either)
+
 ### `POST /api/agents/:agentId/channels/telegram`
 
 Connect an agent to a Telegram bot. **Admin only.** The main bot must be configured first (exception: the main bot itself).
@@ -1177,6 +1407,7 @@ Connect an agent to a Telegram bot. **Admin only.** The main bot must be configu
 **Errors:**
 
 - `400` — invalid or non-working bot token
+- `404` — agent not found, or it is another user's personal agent (admins cannot reach those either)
 - `409` — `telegram_not_configured` (main bot missing), or the bot token is already used by another agent
 
 ### `DELETE /api/agents/:agentId/channels/telegram`
@@ -1283,11 +1514,17 @@ Test credentials against the external system without persisting changes. Used by
 
 ### `GET /api/agents/:agentId/integrations`
 
-Get an agent's integration permissions: which connections are enabled, access level (read-only, read-write, full, custom), and which data models are allowed.
+Get an agent's integration permissions: which connections are enabled, access level (read-only, read-write, full, custom), and which data models are allowed. **Admin only.**
+
+**Errors:**
+
+- `401` — not authenticated
+- `403` — not an admin
+- `404` — agent not found, or it is another user's personal agent (admins cannot reach those either)
 
 ### `PUT /api/agents/:agentId/integrations`
 
-Replace all permissions for this agent on a connection.
+Replace all permissions for this agent on a connection. **Admin only.**
 
 **Request body:**
 
@@ -1298,9 +1535,21 @@ Replace all permissions for this agent on a connection.
 
 This is a full replace, not a merge: the previous permission rows for this agent/connection pair are deleted and the submitted `permissions` array is inserted in their place. Pass an empty array to revoke every permission on that connection without clearing the connection selection itself.
 
+**Errors:**
+
+- `401` — not authenticated
+- `403` — not an admin
+- `404` — agent not found, or it is another user's personal agent (admins cannot reach those either); or the connection does not exist
+
 ### `DELETE /api/agents/:agentId/integrations`
 
-Remove all integration permissions for this agent, across every connection. Used when a connection is cleared from the agent's Permissions tab.
+Remove all integration permissions for this agent, across every connection. Used when a connection is cleared from the agent's Permissions tab. **Admin only.**
+
+**Errors:**
+
+- `401` — not authenticated
+- `403` — not an admin
+- `404` — agent not found, or it is another user's personal agent (admins cannot reach those either)
 
 ### `GET /api/integrations/oauth/start?provider=<google|microsoft>`
 
@@ -1804,6 +2053,7 @@ A failed delivery is still a `200`: the decision itself is persisted, and retryi
 **Errors:**
 
 - `403` — you are not the requester. Only the person who triggered the action can confirm it (four-eyes approval by a different admin is a planned extension, [#124](https://github.com/heypinchy/pinchy/issues/124))
+- `403` — `code: "personal_agent_disabled"`: you asked to **approve** a confirmation on your own personal agent while an admin has turned members' personal agents off. Approving would resume the run. Denying is always allowed
 - `404` — no such request
 - `409` — the request is no longer pending: already decided, already consumed, or expired
 
@@ -1851,10 +2101,11 @@ Reports what the agent runtime finally did with a call it had held open. This is
 
 **Request body:**
 
-| Field        | Type   | Required | Description                                                    |
-| ------------ | ------ | -------- | -------------------------------------------------------------- |
-| `toolCallId` | string | Yes      | The call the confirmation was holding up                       |
-| `decision`   | string | Yes      | `allow-once`, `allow-always`, `deny`, `timeout` or `cancelled` |
+| Field        | Type   | Required | Description                                                                                                                                                                                         |
+| ------------ | ------ | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `toolCallId` | string | Yes      | The call the confirmation was holding up                                                                                                                                                            |
+| `sessionKey` | string | No       | The conversation that call belongs to. A tool call id is only unique per response on some model backends, so this is what keeps a report from closing a confirmation in someone else's conversation |
+| `decision`   | string | Yes      | `allow-once`, `allow-always`, `deny`, `timeout` or `cancelled`                                                                                                                                      |
 
 **Response:**
 

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { eq, sql } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { validateGatewayToken } from "@/lib/gateway-auth";
 import { parseRequestBody } from "@/lib/api-validation";
 import { gateCheckSchema } from "@/lib/schemas/approvals";
@@ -7,11 +7,23 @@ import { decideGate } from "@/lib/approvals/service";
 import { computeArgsDigest } from "@/lib/approvals/digest";
 import { summarizeArgs } from "@/lib/approvals/summary";
 import { buildApprovalPrompt } from "@/lib/approvals/prompt";
-import { getConfirmTools } from "@/lib/approvals/policy";
+import { resolveConfirmation, toolIsConfigured } from "@/lib/approvals/policy";
+import { collectCallModels } from "@/lib/approvals/call-models";
+import { readPluginSecret } from "@/lib/plugin-secrets-source";
 import { appendAuditLog, type AuditLogEntry } from "@/lib/audit";
 import { recordAuditFailure } from "@/lib/audit-deferred";
+import { directSessionUserId } from "@/lib/session-key";
+import { findUserIdIgnoringCase } from "@/lib/user-id-case";
 import { db } from "@/db";
 import { agents, users } from "@/db/schema";
+
+/**
+ * The AES key the opaque `_pinchy_ref` tokens are encrypted under. Pinchy
+ * generates it (`collectPluginSecrets`) and materialises it into secrets.json
+ * for the OC-side plugin, so reading it back here decodes a ref without any
+ * round trip — which is how a ref-based tool call names the model it touches.
+ */
+const REF_TOKEN_KEY = "pinchy-odoo:ref-token-key";
 
 /**
  * The pinchy-approvals gate calls this for every tool it has decided is gated.
@@ -24,28 +36,7 @@ function deriveRequesterPrincipal(
   sessionKey: string | undefined
 ): string | undefined {
   if (senderId) return senderId;
-  if (!sessionKey) return undefined;
-  // Non-greedy: a userId never contains a colon, but a `:<chatId>` segment can
-  // follow it. Mirrors extractUserIdFromSessionKey in the tool-use audit route —
-  // a greedy `(.+)$` would swallow `<userId>:<chatId>` and mis-attribute.
-  return /^agent:[^:]+:direct:([^:]+)/.exec(sessionKey)?.[1];
-}
-
-/**
- * OpenClaw normalizes session keys to lowercase, so the principal we read back
- * from `ctx.sessionKey` is `lower(user.id)` — it never equals the mixed-case
- * `session.user.id` the decision route and the inbox compare against. (Same
- * reason `audit_log` logs "no user found for actorId" and falls back to the raw
- * value.) Resolve it case-insensitively to the real, case-preserved user id so
- * requester and approver compare equal.
- */
-async function resolveRequesterUserId(principal: string): Promise<string | undefined> {
-  const [row] = await db
-    .select({ id: users.id })
-    .from(users)
-    .where(sql`lower(${users.id}) = ${principal.toLowerCase()}`)
-    .limit(1);
-  return row?.id;
+  return directSessionUserId(sessionKey);
 }
 
 export async function POST(request: NextRequest) {
@@ -65,12 +56,21 @@ export async function POST(request: NextRequest) {
     .from(agents)
     .where(eq(agents.id, agentId))
     .limit(1);
-  if (!agent || !getConfirmTools(agent.pluginConfig).includes(toolName)) {
+  if (!agent || !toolIsConfigured(agent.pluginConfig, toolName)) {
+    return NextResponse.json({ decision: "allow" });
+  }
+
+  // Which records this call touches, so a policy can be set per resource and
+  // not only per tool (#1133). Only reached for a tool the policy mentions —
+  // reading the ref key is a second settings query, and the answer for almost
+  // every tool call is already decided above.
+  const resources = collectCallModels(params, await readPluginSecret(REF_TOKEN_KEY));
+  if (resolveConfirmation(agent.pluginConfig, toolName, resources) === "allow") {
     return NextResponse.json({ decision: "allow" });
   }
 
   const principal = deriveRequesterPrincipal(senderId, sessionKey);
-  const requesterId = principal ? await resolveRequesterUserId(principal) : undefined;
+  const requesterId = principal ? await findUserIdIgnoringCase(principal) : undefined;
   if (!requesterId || !sessionKey) {
     // Fail closed: a gated tool must not run for an unidentifiable user — only
     // a real Pinchy user can confirm it.
@@ -175,6 +175,6 @@ export async function POST(request: NextRequest) {
     //
     // The plugin keys on the presence of this field to decide whether to pause
     // the run, so it is absent from every non-blocking answer.
-    approval: buildApprovalPrompt(toolName, params),
+    approval: buildApprovalPrompt(toolName, params, resources),
   });
 }

@@ -22,6 +22,13 @@ import type { RetrievedSource } from "../attribution-graders";
 import { stubNliClient } from "./stub-nli-client";
 import type { GoldQA, KbFailureTag } from "../types";
 
+/** An AbstentionJudge returning a fixed verdict — 0 = answered, 1 = declined. */
+const ANSWERED = { declines: async () => 0 };
+const DECLINED = { declines: async () => 1 };
+
+/** These three fixtures grade groundedness, not dedup — no pairs to declare. */
+const NO_DUPLICATES: string[][] = [];
+
 function src(n: number, sourcePath: string, page: number | null = 1): RetrievedSource {
   return { n, sourcePath, page };
 }
@@ -58,6 +65,13 @@ describe("groundedness pipeline self-test: gradeKbRun -> buildScorecard, end to 
   };
   // Scripted NLI: the one cited sentence is highly entailed by the cited
   // passage — a deterministic "grounded" verdict, not a real model judgment.
+  //
+  // This client answers ONE question: "is this sentence supported by the cited
+  // passages?" Abstention is a separate question put to a separate role, so it
+  // is scripted separately per fixture (the `abstention:` dep below) rather
+  // than by wording a hypothesis for this client. That separation is the whole
+  // point of the change this file guards — entailment turned out to be the
+  // wrong relation for "did this answer decline?" (see `buildAbstentionPrompt`).
   const groundedNli = stubNliClient([0.95]);
 
   // --- Fixture 2: an answer with one ungrounded sentence. ---
@@ -84,7 +98,7 @@ describe("groundedness pipeline self-test: gradeKbRun -> buildScorecard, end to 
   };
   // Scripted NLI: this sentence scores LOW against its cited passage — a
   // deterministic "not entailed" verdict (the passage says navy blue, the
-  // answer claims purple/gold).
+  // answer claims purple/gold). It is still an ANSWER, not a refusal.
   const ungroundedNli = stubNliClient([0.1]);
 
   // --- Fixture 3: a correct abstention (gold says the corpus can't answer). ---
@@ -106,20 +120,31 @@ describe("groundedness pipeline self-test: gradeKbRun -> buildScorecard, end to 
     latencyMs: 60,
     tokens: { prompt: 20, completion: 10 },
   };
-  // NLI is never consulted for a correctly-abstained answer (gradeGroundednessForGold's
-  // expectAbstention short-circuit) — any client would do; reuse groundedNli.
+  // The judge IS consulted here, once: `gradeKbRun` asks it whether this
+  // answer declines to answer, and hands the verdict to both graders that
+  // branch on it. Only the per-sentence entailment check is skipped
+  // (gradeGroundednessForGold's expectAbstention short-circuit).
 
   it("grades all three fixtures to their known KbRunResult, then buildScorecard<KbFailureTag> aggregates them correctly", async () => {
     const relevance = fixedRelevanceJudge(0.9);
 
-    const grounded = await gradeKbRun(groundedTraj, groundedGold, { nli: groundedNli, relevance });
+    const grounded = await gradeKbRun(groundedTraj, groundedGold, {
+      nli: groundedNli,
+      relevance,
+      abstention: ANSWERED,
+      nearDuplicateGroups: NO_DUPLICATES,
+    });
     const ungrounded = await gradeKbRun(ungroundedTraj, ungroundedGold, {
       nli: ungroundedNli,
       relevance,
+      abstention: ANSWERED,
+      nearDuplicateGroups: NO_DUPLICATES,
     });
     const abstained = await gradeKbRun(abstentionTraj, abstentionGold, {
       nli: groundedNli,
       relevance,
+      abstention: DECLINED,
+      nearDuplicateGroups: NO_DUPLICATES,
     });
 
     // Per-run KbRunResult assertions — the exact, scripted verdicts.

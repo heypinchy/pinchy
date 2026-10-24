@@ -124,6 +124,7 @@ Work through **every** item in **CONTRIBUTING.md § "Pre-release checklist"** �
 - `Dockerfile.openclaw` version bumped if OpenClaw was upgraded.
 - Model-resolver spot-check if models or templates changed.
 - **Ollama Cloud catalog** → run the `update-ollama-cloud-models` skill every release to refresh the catalog.
+- **Anthropic / OpenAI / Google catalog** → `node scripts/update-model-catalog.mjs`, then compare `openclaw-builtin-models.ts` against each provider's current lineup (CONTRIBUTING has the why).
 - `docs/src/content/docs/guides/upgrading.mdx` has a new `## Upgrading from v<prev> to %%PINCHY_VERSION%%` section containing `### Breaking changes` (write "None." if none) and `### Upgrade notes`. The script aborts without it, **freezes the placeholder for you** at release time, and a CI guard rejects stale placeholders — see "The upgrade-notes section auto-finalizes" above.
 - Staging click-through on this branch's candidate image (`:next` / `:rc-X.Y`) + PWA install check.
 - Security review over the whole `v<prev>..HEAD` release delta — see the section right below.

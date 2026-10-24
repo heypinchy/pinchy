@@ -9,6 +9,7 @@
  * logic that Task 6 owns.
  */
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -18,12 +19,18 @@ import { db } from "@/db";
 import { kbChunks, kbDocuments } from "@/db/schema";
 import {
   EMBED_PROGRESS_BATCH,
+  EXTRACTION_VERSION,
+  MAX_INCOMPLETE_READS,
   ingestDirectory,
   ingestPaths,
   type IngestDeps,
+  type IngestPage,
   type IngestProgress,
   type IngestResult,
 } from "@/lib/knowledge/ingest";
+import type { XlsxExtraction } from "@/lib/knowledge/xlsx-extract";
+import type { ConversionOutcome } from "@/lib/knowledge/office-convert";
+import { listUnsearchableDocuments } from "@/lib/knowledge/unsearchable";
 
 const ORG_ID = "org-kb-ingest-test";
 
@@ -44,17 +51,59 @@ afterEach(() => {
   rmSync(tmpRoot, { recursive: true, force: true });
 });
 
+const SHEET_ROWS_TEXT =
+  "Supplier: Nordwind GmbH | Material: Petrifilm plates | Lead time: 14 days. " +
+  "Supplier: Acme Labor | Material: Agar | Lead time: 5 days.";
+
+/**
+ * A spreadsheet extraction with no chunks and every sheet hidden — the shape
+ * `extractXlsx` reports for a workbook whose author hid all of it, and the one
+ * that must land as `unsearchable` rather than `indexed`.
+ */
+const EMPTY_XLSX = { chunks: [], sheets: [], hiddenSheets: ["Internal"], hiddenRows: 0 };
+
+/**
+ * For the PDF-only tests below that build their deps inline. A spreadsheet
+ * never reaches them, and a stub that THROWS says so — a silent empty
+ * extraction would let a dispatch bug route a .pdf here and still pass.
+ */
+const neverCalledXlsx = async (): Promise<XlsxExtraction> => {
+  throw new Error("extractXlsx must not be called for a PDF");
+};
+
+/** Same reasoning for the converter: no PDF-only test may reach LibreOffice. */
+const neverCalledConvert = async (): Promise<ConversionOutcome[]> => {
+  throw new Error("convertOffice must not be called for a PDF");
+};
+
 function fakeDeps(
-  pages = [
+  pages: IngestPage[] = [
     { page: 1, text: PAGE_1_TEXT },
     { page: 2, text: PAGE_2_TEXT },
-  ]
-): { deps: IngestDeps; embed: ReturnType<typeof vi.fn>; extractPdf: ReturnType<typeof vi.fn> } {
+  ],
+  xlsx: XlsxExtraction = {
+    chunks: [{ text: SHEET_ROWS_TEXT, sheet: "Suppliers", startRow: 2, endRow: 3 }],
+    sheets: ["Suppliers"],
+    hiddenSheets: [],
+    hiddenRows: 0,
+  }
+): {
+  deps: IngestDeps;
+  embed: ReturnType<typeof vi.fn>;
+  extractPdf: ReturnType<typeof vi.fn>;
+  extractXlsx: ReturnType<typeof vi.fn>;
+} {
   const embed = vi.fn(async (texts: string[]) =>
     texts.map((_, i) => Array(768).fill(0.001 * (i + 1)))
   );
   const extractPdf = vi.fn(async () => pages);
-  return { deps: { embed, extractPdf }, embed, extractPdf };
+  const extractXlsx = vi.fn(async () => xlsx);
+  return {
+    deps: { embed, extractPdf, extractXlsx, convertOffice: neverCalledConvert, ocrModel: null },
+    embed,
+    extractPdf,
+    extractXlsx,
+  };
 }
 
 async function chunksFor(documentId: string) {
@@ -338,12 +387,12 @@ it("returns a zero result for a root path that does not exist, without throwing"
 // `indexed` tells an admin the corpus is complete while a slice of it can
 // never answer a question — the count exists to mean "findable", so a
 // zero-chunk document gets its own honest bucket instead.
-it("reports a text-less scan as unsearchable rather than indexed, on the first run and every run after", async () => {
+it("reports a text-less scan as unsearchable rather than indexed, and leaves it alone while nothing changed", async () => {
   const pdfPath = join(tmpRoot, "scan.pdf");
   writeFileSync(pdfPath, "fake-scanned-pdf-bytes");
 
   // What pdfjs returns for an image-only scan: pages exist, text layer empty.
-  const { deps, embed } = fakeDeps([
+  const { deps, embed, extractPdf } = fakeDeps([
     { page: 1, text: "" },
     { page: 2, text: "   " },
   ]);
@@ -360,15 +409,368 @@ it("reports a text-less scan as unsearchable rather than indexed, on the first r
   expect(docs[0].sourcePath).toBe(pdfPath);
   expect(await chunksFor(docs[0].id)).toHaveLength(0);
 
-  // Every subsequent run reports the same honest number. The zero-chunk
-  // recovery branch re-extracts this file forever (its hash never changes and
-  // it never gains chunks), which is exactly why it must not re-report itself
-  // as freshly `indexed` each time.
+  // A run with the same extractor would read the same nothing, so the next
+  // one skips it like any unchanged file instead of parsing it again — every
+  // night, under the nightly reindex. It is still on the unreadable list,
+  // which reads the chunks, not the run's counts.
   const second = await ingestDirectory(ORG_ID, tmpRoot, deps);
-  expect(second).toEqual(counts({ unsearchable: 1 }));
+  expect(second).toEqual(counts({ skipped: 1 }));
+  expect(extractPdf).toHaveBeenCalledTimes(1);
   const docsAfter = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
   expect(docsAfter).toHaveLength(1);
   expect(docsAfter[0].id).toBe(docs[0].id);
+  const listed = await listUnsearchableDocuments(ORG_ID, [tmpRoot]);
+  expect(listed.documents.map((doc) => doc.sourcePath)).toEqual([pdfPath]);
+});
+
+// ---------------------------------------------------------------------------
+// An unchanged document that read as empty
+// ---------------------------------------------------------------------------
+//
+// The zero-chunk recovery branch used to re-extract such a document on every
+// run, because a crash leftover and a blank scan both look like "a row with no
+// chunks". Under the nightly reindex that meant every blank scan was rendered
+// and sent to the vision model again each night. The row now records which
+// extractor setup read it as empty (`emptyExtractionBy`), and the branch reads
+// it again only when the answer could differ.
+
+const VISION_MODEL = "anthropic/claude-haiku-5-5";
+const BLANK_SCAN: IngestPage[] = [{ page: 1, text: "" }];
+const FAILED_SCAN: IngestPage[] = [{ page: 1, text: "", ocrFailed: true }];
+
+/** The `emptyExtractionBy` value the current extractor writes for `setup`. */
+function marker(setup: string) {
+  return `${EXTRACTION_VERSION}|${setup}`;
+}
+
+async function onlyDocument() {
+  const docs = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
+  expect(docs).toHaveLength(1);
+  return docs[0];
+}
+
+it("does not send an unchanged blank scan to the vision model again", async () => {
+  writeFileSync(join(tmpRoot, "blank.pdf"), "fake-blank-scan");
+  const { deps, extractPdf } = fakeDeps(BLANK_SCAN);
+  const withOcr = { ...deps, ocrModel: VISION_MODEL };
+
+  expect(await ingestDirectory(ORG_ID, tmpRoot, withOcr)).toEqual(counts({ unsearchable: 1 }));
+  expect((await onlyDocument()).emptyExtractionBy).toBe(marker(`ocr:${VISION_MODEL}`));
+
+  expect(await ingestDirectory(ORG_ID, tmpRoot, withOcr)).toEqual(counts({ skipped: 1 }));
+  expect(extractPdf).toHaveBeenCalledTimes(1);
+});
+
+it("reads a blank scan again once OCR becomes available, and indexes what it finds", async () => {
+  // The guarantee the docs give an operator who turns OCR on: reindex, and
+  // the scans that were unsearchable without it are read.
+  writeFileSync(join(tmpRoot, "certificate.pdf"), "fake-certificate-scan");
+  const { deps, extractPdf } = fakeDeps(BLANK_SCAN);
+
+  expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ unsearchable: 1 }));
+  const before = await onlyDocument();
+  expect(before.emptyExtractionBy).toBe(marker("no-ocr"));
+
+  extractPdf.mockResolvedValue([{ page: 1, text: PAGE_1_TEXT }]);
+  const rerun = await ingestDirectory(ORG_ID, tmpRoot, { ...deps, ocrModel: VISION_MODEL });
+
+  expect(rerun).toEqual(counts({ indexed: 1 }));
+  const after = await onlyDocument();
+  expect(after.id).toBe(before.id);
+  expect(after.emptyExtractionBy).toBeNull();
+  expect(await chunksFor(after.id)).not.toHaveLength(0);
+});
+
+it("reads a blank scan again when a different vision model is configured", async () => {
+  writeFileSync(join(tmpRoot, "blank.pdf"), "fake-blank-scan");
+  const { deps, extractPdf } = fakeDeps(BLANK_SCAN);
+
+  await ingestDirectory(ORG_ID, tmpRoot, { ...deps, ocrModel: VISION_MODEL });
+  const rerun = await ingestDirectory(ORG_ID, tmpRoot, {
+    ...deps,
+    ocrModel: "openai/gpt-5.5-mini",
+  });
+
+  expect(rerun).toEqual(counts({ unsearchable: 1 }));
+  expect(extractPdf).toHaveBeenCalledTimes(2);
+  expect((await onlyDocument()).emptyExtractionBy).toBe(marker("ocr:openai/gpt-5.5-mini"));
+});
+
+it("does not read a blank scan again when OCR was turned off since", async () => {
+  // Without a vision model the text layer is all there is, and a vision model
+  // already found nothing on top of it.
+  writeFileSync(join(tmpRoot, "blank.pdf"), "fake-blank-scan");
+  const { deps, extractPdf } = fakeDeps(BLANK_SCAN);
+
+  await ingestDirectory(ORG_ID, tmpRoot, { ...deps, ocrModel: VISION_MODEL });
+  expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ skipped: 1 }));
+  expect(extractPdf).toHaveBeenCalledTimes(1);
+});
+
+it("tries a scan again on every run while its vision call keeps failing, and indexes it once one answers", async () => {
+  // How a provider outage heals by itself: a failed call is not an answer, so
+  // nothing is recorded that would let the next run skip the document.
+  writeFileSync(join(tmpRoot, "certificate.pdf"), "fake-certificate-scan");
+  const { deps, extractPdf } = fakeDeps([{ page: 1, text: "", ocrFailed: true }]);
+  const withOcr = { ...deps, ocrModel: VISION_MODEL };
+
+  expect(await ingestDirectory(ORG_ID, tmpRoot, withOcr)).toEqual(counts({ unsearchable: 1 }));
+  expect((await onlyDocument()).emptyExtractionBy).toBeNull();
+  expect(await ingestDirectory(ORG_ID, tmpRoot, withOcr)).toEqual(counts({ unsearchable: 1 }));
+  expect(extractPdf).toHaveBeenCalledTimes(2);
+
+  extractPdf.mockResolvedValue([{ page: 1, text: PAGE_1_TEXT }]);
+  expect(await ingestDirectory(ORG_ID, tmpRoot, withOcr)).toEqual(counts({ indexed: 1 }));
+});
+
+it("still recovers a row a crash left without chunks", async () => {
+  // The case the zero-chunk branch was written for: the document row was
+  // inserted, the run died before its chunks were written. Such a row never
+  // got an extraction on record, so it must not be mistaken for an empty one.
+  const pdfPath = join(tmpRoot, "handbook.pdf");
+  writeFileSync(pdfPath, "fake-pdf-bytes-crash");
+  const contentHash = createHash("sha256").update("fake-pdf-bytes-crash").digest("hex");
+  const [leftover] = await db
+    .insert(kbDocuments)
+    .values({ orgId: ORG_ID, contentHash, sourcePath: pdfPath })
+    .returning();
+
+  const { deps } = fakeDeps();
+  expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ indexed: 1 }));
+  expect((await onlyDocument()).id).toBe(leftover.id);
+  expect(await chunksFor(leftover.id)).not.toHaveLength(0);
+});
+
+it("reads an empty document indexed before the marker existed once, then leaves it alone", async () => {
+  // AGENTS.md § Test Migrations Against Pre-Existing Data. A row the previous
+  // pipeline wrote for a blank scan has zero chunks and, after the migration,
+  // no `emptyExtractionBy` — the same shape as a crash leftover. It is read
+  // once more (the new code cannot know what found it empty), and from then
+  // on it is skipped like a row written today.
+  const pdfPath = join(tmpRoot, "legacy-scan.pdf");
+  writeFileSync(pdfPath, "fake-legacy-scan");
+  const contentHash = createHash("sha256").update("fake-legacy-scan").digest("hex");
+  await db.insert(kbDocuments).values({ orgId: ORG_ID, contentHash, sourcePath: pdfPath });
+
+  const { deps, extractPdf } = fakeDeps(BLANK_SCAN);
+  const withOcr = { ...deps, ocrModel: VISION_MODEL };
+
+  expect(await ingestDirectory(ORG_ID, tmpRoot, withOcr)).toEqual(counts({ unsearchable: 1 }));
+  expect(await ingestDirectory(ORG_ID, tmpRoot, withOcr)).toEqual(counts({ skipped: 1 }));
+  expect(extractPdf).toHaveBeenCalledTimes(1);
+});
+
+it("records nothing on a document that has text, so losing its chunks is still recovered", async () => {
+  // Only an EMPTY extraction is recorded. A row that had chunks and lost them
+  // (an operator deleted kb_chunks rows) must keep coming back, which the
+  // recovery test above pins; this pins why it can.
+  writeFileSync(join(tmpRoot, "handbook.pdf"), "fake-pdf-bytes");
+  await ingestDirectory(ORG_ID, tmpRoot, fakeDeps().deps);
+
+  expect((await onlyDocument()).emptyExtractionBy).toBeNull();
+});
+
+function failedConversion(sources: readonly { absPath: string }[]): ConversionOutcome[] {
+  return sources.map((source) => ({
+    sourcePath: source.absPath,
+    status: "failed",
+    reason: "no artifact produced",
+  }));
+}
+
+it("converts an Office document again after a failed conversion, so a passing hiccup heals", async () => {
+  // `failed` also covers causes that are not about the document: a source
+  // that was briefly unreadable on a network share, or LibreOffice exiting
+  // without writing a PDF. Recording such a verdict would freeze the document
+  // as unsearchable until somebody edits it.
+  writeFileSync(join(tmpRoot, "angebot.docx"), "fake-docx-bytes");
+  let converts = false;
+  const { deps } = officeDeps(
+    (absPath) =>
+      converts
+        ? convertedTo("/artifacts/an/gebot.pdf")(absPath)
+        : failedConversion([{ absPath }])[0],
+    () => [{ page: 1, text: PAGE_1_TEXT }]
+  );
+
+  expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ unsearchable: 1 }));
+  expect((await onlyDocument()).emptyExtractionBy).toBeNull();
+
+  converts = true;
+  expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ indexed: 1 }));
+});
+
+it("stops converting an Office document again once it has failed on every one of its retries", async () => {
+  writeFileSync(join(tmpRoot, "kaputt.doc"), "fake-doc-bytes");
+  const convertOffice = vi.fn(async (sources: readonly { absPath: string }[]) =>
+    failedConversion(sources)
+  );
+  const deps: IngestDeps = { ...fakeDeps().deps, convertOffice };
+
+  for (let run = 1; run <= MAX_INCOMPLETE_READS; run++) {
+    expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ unsearchable: 1 }));
+  }
+  expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ skipped: 1 }));
+  expect(convertOffice).toHaveBeenCalledTimes(MAX_INCOMPLETE_READS);
+  // OCR cannot change what a converter could not convert.
+  expect(await ingestDirectory(ORG_ID, tmpRoot, { ...deps, ocrModel: VISION_MODEL })).toEqual(
+    counts({ skipped: 1 })
+  );
+  expect(convertOffice).toHaveBeenCalledTimes(MAX_INCOMPLETE_READS);
+});
+
+it("stops sending a scan whose vision call fails on every run once its retries are spent", async () => {
+  // A page the provider rejects every time (an image over its size limit, a
+  // render pdfjs cannot do) is not an outage that heals. Without a bound,
+  // every other page of the document would be sent again every night.
+  writeFileSync(join(tmpRoot, "oversized.pdf"), "fake-oversized-scan");
+  const { deps, extractPdf } = fakeDeps(FAILED_SCAN);
+  const withOcr = { ...deps, ocrModel: VISION_MODEL };
+
+  for (let run = 1; run <= MAX_INCOMPLETE_READS; run++) {
+    expect(await ingestDirectory(ORG_ID, tmpRoot, withOcr)).toEqual(counts({ unsearchable: 1 }));
+  }
+  expect(await ingestDirectory(ORG_ID, tmpRoot, withOcr)).toEqual(counts({ skipped: 1 }));
+  expect(extractPdf).toHaveBeenCalledTimes(MAX_INCOMPLETE_READS);
+
+  // A different model is a different reader, and gets its own try.
+  await ingestDirectory(ORG_ID, tmpRoot, { ...deps, ocrModel: "openai/gpt-5.5-mini" });
+  expect(extractPdf).toHaveBeenCalledTimes(MAX_INCOMPLETE_READS + 1);
+});
+
+it("reads the failed pages of a partly indexed scan again, and keeps the document's id", async () => {
+  // A typed cover sheet gives the document text of its own, so it has chunks
+  // even when every vision call behind it failed. Those pages must come back
+  // like a fully failed scan does, or an outage leaves them out for good.
+  writeFileSync(join(tmpRoot, "report.pdf"), "fake-report-scan");
+  const { deps, extractPdf } = fakeDeps([
+    { page: 1, text: PAGE_1_TEXT },
+    { page: 2, text: "", ocrFailed: true },
+  ]);
+  const withOcr = { ...deps, ocrModel: VISION_MODEL };
+
+  expect(await ingestDirectory(ORG_ID, tmpRoot, withOcr)).toEqual(counts({ indexed: 1 }));
+  const before = await onlyDocument();
+
+  extractPdf.mockResolvedValue([
+    { page: 1, text: PAGE_1_TEXT },
+    { page: 2, text: PAGE_2_TEXT },
+  ]);
+  expect(await ingestDirectory(ORG_ID, tmpRoot, withOcr)).toEqual(counts({ indexed: 1 }));
+
+  const after = await onlyDocument();
+  expect(after.id).toBe(before.id);
+  const texts = (await chunksFor(after.id)).map((chunk) => chunk.chunkText).join("\n");
+  expect(texts).toContain("Benefits enrollment");
+  expect(texts.match(/This handbook explains/g)).toHaveLength(1);
+
+  // Complete now, so the next run leaves it alone.
+  expect(await ingestDirectory(ORG_ID, tmpRoot, withOcr)).toEqual(counts({ skipped: 1 }));
+  expect(extractPdf).toHaveBeenCalledTimes(2);
+});
+
+it("does not trade a partly indexed scan's text for less on a retry that fails worse", async () => {
+  // Page 1 was read by the vision model the first time; on the retries the
+  // provider is down altogether. What the first read found stays searchable.
+  writeFileSync(join(tmpRoot, "report.pdf"), "fake-report-scan");
+  const { deps, extractPdf } = fakeDeps([
+    { page: 1, text: PAGE_1_TEXT },
+    { page: 2, text: "", ocrFailed: true },
+  ]);
+  const withOcr = { ...deps, ocrModel: VISION_MODEL };
+  await ingestDirectory(ORG_ID, tmpRoot, withOcr);
+  const doc = await onlyDocument();
+  const stored = await chunksFor(doc.id);
+  expect(stored).not.toHaveLength(0);
+
+  extractPdf.mockResolvedValue([
+    { page: 1, text: "", ocrFailed: true },
+    { page: 2, text: "", ocrFailed: true },
+  ]);
+  for (let run = 2; run <= MAX_INCOMPLETE_READS; run++) {
+    await ingestDirectory(ORG_ID, tmpRoot, withOcr);
+  }
+
+  expect(await chunksFor(doc.id)).toEqual(stored);
+  // Out of retries, but not empty: it has the text the first read found.
+  expect((await onlyDocument()).emptyExtractionBy).toBeNull();
+});
+
+it("keeps a partly indexed scan's chunks when the embedder goes down during its retry", async () => {
+  writeFileSync(join(tmpRoot, "report.pdf"), "fake-report-scan");
+  const { deps, extractPdf, embed } = fakeDeps([
+    { page: 1, text: PAGE_1_TEXT },
+    { page: 2, text: "", ocrFailed: true },
+  ]);
+  const withOcr = { ...deps, ocrModel: VISION_MODEL };
+  await ingestDirectory(ORG_ID, tmpRoot, withOcr);
+  const doc = await onlyDocument();
+  const stored = await chunksFor(doc.id);
+
+  extractPdf.mockResolvedValue([
+    { page: 1, text: PAGE_1_TEXT },
+    { page: 2, text: PAGE_2_TEXT },
+  ]);
+  embed.mockRejectedValueOnce(new Error("connect ECONNREFUSED"));
+  await expect(ingestDirectory(ORG_ID, tmpRoot, withOcr)).rejects.toThrow(/ECONNREFUSED/);
+
+  expect(await chunksFor(doc.id)).toEqual(stored);
+  // And the retry is still owed: nothing recorded the read as done.
+  expect(await ingestDirectory(ORG_ID, tmpRoot, withOcr)).toEqual(counts({ indexed: 1 }));
+});
+
+it("changes a scan's record and its chunks together, so a re-read that dies is still owed", async () => {
+  // The record and the chunks are written in one transaction. A model that
+  // finds text on a scan the previous one read as empty must not leave a
+  // record behind that claims its read happened when its chunks never landed
+  // — nor chunks under a record that still says "empty".
+  writeFileSync(join(tmpRoot, "certificate.pdf"), "fake-certificate-scan");
+  const { deps, extractPdf, embed } = fakeDeps(BLANK_SCAN);
+  await ingestDirectory(ORG_ID, tmpRoot, { ...deps, ocrModel: VISION_MODEL });
+
+  extractPdf.mockResolvedValue([{ page: 1, text: PAGE_1_TEXT }]);
+  embed.mockRejectedValueOnce(new Error("connect ECONNREFUSED"));
+  const otherModel = { ...deps, ocrModel: "openai/gpt-5.5-mini" };
+  await expect(ingestDirectory(ORG_ID, tmpRoot, otherModel)).rejects.toThrow(/ECONNREFUSED/);
+  expect((await onlyDocument()).emptyExtractionBy).toBe(marker(`ocr:${VISION_MODEL}`));
+
+  expect(await ingestDirectory(ORG_ID, tmpRoot, otherModel)).toEqual(counts({ indexed: 1 }));
+  const doc = await onlyDocument();
+  expect(doc.emptyExtractionBy).toBeNull();
+  expect(await chunksFor(doc.id)).not.toHaveLength(0);
+});
+
+it("reads an empty document again once the extractor itself has changed", async () => {
+  // A better scan heuristic, a higher page cap, a new pdfjs: none of them
+  // changes the model's name, and all of them can find text the last read
+  // missed. The record names the extractor version so they reach the
+  // documents already on record.
+  const pdfPath = join(tmpRoot, "legacy-scan.pdf");
+  writeFileSync(pdfPath, "fake-old-extractor-scan");
+  const contentHash = createHash("sha256").update("fake-old-extractor-scan").digest("hex");
+  await db.insert(kbDocuments).values({
+    orgId: ORG_ID,
+    contentHash,
+    sourcePath: pdfPath,
+    emptyExtractionBy: `${EXTRACTION_VERSION - 1}|no-ocr`,
+  });
+
+  const { deps, extractPdf } = fakeDeps(BLANK_SCAN);
+  expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ unsearchable: 1 }));
+  expect(extractPdf).toHaveBeenCalledTimes(1);
+  expect((await onlyDocument()).emptyExtractionBy).toBe(marker("no-ocr"));
+});
+
+it("does not read an empty workbook again when a vision model appears", async () => {
+  // OCR reads scanned pages; it has nothing to say about hidden sheets.
+  writeFileSync(join(tmpRoot, "internal.xlsx"), "fake-xlsx-bytes");
+  const { deps, extractXlsx } = fakeDeps(undefined, EMPTY_XLSX);
+
+  await ingestDirectory(ORG_ID, tmpRoot, deps);
+  expect(await ingestDirectory(ORG_ID, tmpRoot, { ...deps, ocrModel: VISION_MODEL })).toEqual(
+    counts({ skipped: 1 })
+  );
+  expect(extractXlsx).toHaveBeenCalledTimes(1);
 });
 
 // A corpus is not a curated fixture: one corrupt or unreadable PDF is normal.
@@ -387,7 +789,13 @@ it("keeps ingesting the rest of the corpus when one file's extraction throws", a
 
   const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
   try {
-    const result = await ingestDirectory(ORG_ID, tmpRoot, { embed, extractPdf });
+    const result = await ingestDirectory(ORG_ID, tmpRoot, {
+      embed,
+      extractPdf,
+      extractXlsx: neverCalledXlsx,
+      convertOffice: neverCalledConvert,
+      ocrModel: null,
+    });
 
     expect(result).toEqual(counts({ indexed: 1, failed: 1 }));
 
@@ -422,9 +830,15 @@ it("surfaces an embedding outage as a run failure instead of blaming every file"
   });
   const extractPdf = vi.fn(async () => [{ page: 1, text: PAGE_1_TEXT }]);
 
-  await expect(ingestDirectory(ORG_ID, tmpRoot, { embed, extractPdf })).rejects.toThrow(
-    /ECONNREFUSED/
-  );
+  await expect(
+    ingestDirectory(ORG_ID, tmpRoot, {
+      embed,
+      extractPdf,
+      extractXlsx: neverCalledXlsx,
+      convertOffice: neverCalledConvert,
+      ocrModel: null,
+    })
+  ).rejects.toThrow(/ECONNREFUSED/);
   // Bailed on the first file rather than walking the rest of the corpus.
   expect(embed).toHaveBeenCalledTimes(1);
 });
@@ -453,7 +867,13 @@ it("keeps the last indexed version searchable when a file changes into one that 
     throw new Error("Invalid PDF structure");
   });
 
-  const result = await ingestDirectory(ORG_ID, tmpRoot, { embed, extractPdf });
+  const result = await ingestDirectory(ORG_ID, tmpRoot, {
+    embed,
+    extractPdf,
+    extractXlsx: neverCalledXlsx,
+    convertOffice: neverCalledConvert,
+    ocrModel: null,
+  });
   expect(result).toEqual(counts({ failed: 1 }));
 
   // The last good version is still there, chunks and all: same document row,
@@ -605,6 +1025,139 @@ it("removes a root's documents when the root is readable and its files are gone"
 
   expect(result).toEqual(counts({ removed: 1 }));
   expect(await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID))).toHaveLength(0);
+});
+
+// Skipping an unreadable root is right, but silent skipping is how an
+// unmounted share reports "0 indexed, success" night after night. The caller
+// decides what a skipped root means for its run; ingest just has to say.
+it("tells the caller about a root it could not read", async () => {
+  const onSkippedRoot = vi.fn();
+  const missing = join(tmpRoot, "not-mounted");
+
+  await ingestPaths(ORG_ID, [missing], fakeDeps().deps, { onSkippedRoot });
+
+  expect(onSkippedRoot).toHaveBeenCalledWith(missing, "unreadable");
+});
+
+// A failed network mount under Docker is not an error, it is an EMPTY
+// directory: the bind mount shows the bare mountpoint. From inside the
+// container that is indistinguishable from a folder someone emptied, and
+// taking it at its word deletes every document indexed from it. A caller that
+// runs unattended can ask ingest not to.
+it("keeps an emptied root's documents when asked to, and says it skipped the root", async () => {
+  const share = join(tmpRoot, "share");
+  writePdf(share, "handbook.pdf");
+  writePdf(share, "policy.pdf", "policy");
+  const { deps } = fakeDeps();
+  await ingestPaths(ORG_ID, [share], deps);
+  rmSync(join(share, "handbook.pdf"));
+  rmSync(join(share, "policy.pdf"));
+  const onSkippedRoot = vi.fn();
+
+  const result = await ingestPaths(ORG_ID, [share], deps, {
+    keepEmptiedFolders: true,
+    onSkippedRoot,
+  });
+
+  expect(result).toEqual(counts());
+  expect(onSkippedRoot).toHaveBeenCalledWith(share, "emptied");
+  expect(await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID))).toHaveLength(2);
+});
+
+// Only a folder that HAD documents is suspicious when it comes up empty. A
+// freshly granted empty folder is just empty.
+it("treats a root that never held documents as simply empty, even when asked to keep emptied folders", async () => {
+  const fresh = join(tmpRoot, "fresh");
+  mkdirSync(fresh, { recursive: true });
+  const onSkippedRoot = vi.fn();
+
+  const result = await ingestPaths(ORG_ID, [fresh], fakeDeps().deps, {
+    keepEmptiedFolders: true,
+    onSkippedRoot,
+  });
+
+  expect(result).toEqual(counts());
+  expect(onSkippedRoot).not.toHaveBeenCalled();
+});
+
+// The guard is about a folder that is empty as a WHOLE. A folder that still
+// holds files reconciles as always: a deleted document leaves the index.
+it("still removes a deleted document from a root that keeps other files, when asked to keep emptied folders", async () => {
+  const share = join(tmpRoot, "share");
+  writePdf(share, "handbook.pdf");
+  writePdf(share, "policy.pdf", "policy");
+  const { deps } = fakeDeps();
+  await ingestPaths(ORG_ID, [share], deps);
+  rmSync(join(share, "handbook.pdf"));
+
+  const result = await ingestPaths(ORG_ID, [share], deps, { keepEmptiedFolders: true });
+
+  expect(result).toEqual(counts({ skipped: 1, removed: 1 }));
+});
+
+// A failed mount does not have to BE the granted folder. Grant /data, mount
+// a share at /data/contracts, and a failed mount leaves an empty /data/contracts
+// inside a /data that still holds plenty — the whole-root check never fires,
+// and the removal pass would delete every document the share held.
+it("keeps the documents of an emptied folder below a root that still holds files", async () => {
+  const data = join(tmpRoot, "data");
+  writePdf(data, "readme.pdf", "readme");
+  writePdf(join(data, "contracts"), "contract.pdf", "contract");
+  writePdf(join(data, "contracts", "2024"), "invoice.pdf", "invoice");
+  const { deps } = fakeDeps();
+  await ingestPaths(ORG_ID, [data], deps);
+  // The mount fails: the mountpoint is there, and empty.
+  rmSync(join(data, "contracts"), { recursive: true, force: true });
+  mkdirSync(join(data, "contracts"));
+  const onKeptFolder = vi.fn();
+
+  const result = await ingestPaths(ORG_ID, [data], deps, {
+    keepEmptiedFolders: true,
+    onKeptFolder,
+  });
+
+  expect(result).toEqual(counts({ skipped: 1 }));
+  expect(onKeptFolder).toHaveBeenCalledWith(join(data, "contracts"));
+  expect(onKeptFolder).toHaveBeenCalledTimes(1);
+  expect(await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID))).toHaveLength(3);
+});
+
+// Overlapping grants are the same shape from the other side: /data/hr is its
+// own root AND a folder inside /data. Skipping the /data/hr root is not
+// enough if /data's removal pass then deletes what was under it.
+it("keeps an emptied root's documents when an overlapping root also covers them", async () => {
+  const data = join(tmpRoot, "data");
+  const hr = join(data, "hr");
+  writePdf(data, "readme.pdf", "readme");
+  writePdf(hr, "policy.pdf", "policy");
+  const { deps } = fakeDeps();
+  await ingestPaths(ORG_ID, [data, hr], deps);
+  rmSync(join(hr, "policy.pdf"));
+
+  const result = await ingestPaths(ORG_ID, [data, hr], deps, { keepEmptiedFolders: true });
+
+  expect(result.removed).toBe(0);
+  expect(await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID))).toHaveLength(2);
+});
+
+// What the guard must NOT swallow: a folder somebody deleted is gone, not
+// empty, and its documents leave the index like any deleted file's.
+it("still removes the documents of a folder that was deleted outright", async () => {
+  const data = join(tmpRoot, "data");
+  writePdf(data, "readme.pdf", "readme");
+  writePdf(join(data, "old-project"), "plan.pdf", "plan");
+  const { deps } = fakeDeps();
+  await ingestPaths(ORG_ID, [data], deps);
+  rmSync(join(data, "old-project"), { recursive: true, force: true });
+  const onKeptFolder = vi.fn();
+
+  const result = await ingestPaths(ORG_ID, [data], deps, {
+    keepEmptiedFolders: true,
+    onKeptFolder,
+  });
+
+  expect(result).toEqual(counts({ skipped: 1, removed: 1 }));
+  expect(onKeptFolder).not.toHaveBeenCalled();
 });
 
 it("still reports a total of zero for roots with nothing to ingest", async () => {
@@ -801,4 +1354,450 @@ it("heals a stored status that disagrees with the archive rule on the next skip 
     .from(kbDocuments)
     .where(and(eq(kbDocuments.orgId, ORG_ID), eq(kbDocuments.sourcePath, archivedPath)));
   expect(doc.status).toBe("archived");
+});
+
+it("indexes a spreadsheet with sheet + row-range locators, and never converts it", async () => {
+  const xlsxPath = join(tmpRoot, "suppliers.xlsx");
+  writeFileSync(xlsxPath, "fake-xlsx-bytes-v1");
+
+  const { deps, extractPdf, extractXlsx } = fakeDeps();
+
+  const result = await ingestDirectory(ORG_ID, tmpRoot, deps);
+
+  expect(result).toEqual(counts({ indexed: 1 }));
+  expect(extractXlsx).toHaveBeenCalledWith(xlsxPath);
+  // The dispatch, asserted from both sides. A spreadsheet reaching the PDF
+  // extractor is the failure this whole format split exists to prevent, and it
+  // would otherwise show up only as an unreadable citation much later.
+  expect(extractPdf).not.toHaveBeenCalled();
+
+  const [doc] = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
+  expect(doc.sourcePath).toBe(xlsxPath);
+  // A sheet is not a page. Writing the sheet COUNT here would make the row
+  // state something false about the document; the column is nullable for it.
+  expect(doc.pageCount).toBeNull();
+
+  const chunks = await chunksFor(doc.id);
+  expect(chunks).toHaveLength(1);
+  expect(chunks[0].locator).toEqual({
+    kind: "sheet",
+    sheet: "Suppliers",
+    startRow: 2,
+    endRow: 3,
+  });
+  expect(chunks[0].embedding).toHaveLength(768);
+  expect(chunks[0].sourcePath).toBe(xlsxPath);
+});
+
+it("books a workbook it could read nothing out of as unsearchable, not indexed", async () => {
+  // Every sheet hidden by its author: `extractXlsx` reports the hidden sheets
+  // and no chunks. "0 chunks" is exactly what an unreadable file gives, so it
+  // must land in the same bucket a text-less scan does — visible in the
+  // unreadable list rather than counted as a successful index (#935).
+  const xlsxPath = join(tmpRoot, "internal.xlsx");
+  writeFileSync(xlsxPath, "fake-xlsx-all-hidden");
+
+  const { deps } = fakeDeps(undefined, EMPTY_XLSX);
+
+  expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ unsearchable: 1 }));
+
+  const [doc] = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
+  expect(await chunksFor(doc.id)).toHaveLength(0);
+});
+
+it("keeps PDFs indexed before spreadsheets existed working, untouched", async () => {
+  // AGENTS.md § Test Migrations Against Pre-Existing Data. Every other test
+  // here starts from a clean slate where the dispatch is live from the first
+  // write, so none of them can see what an UPGRADE produces: rows written by
+  // the PDF-only pipeline, read by code that now dispatches on extension.
+  //
+  // Simulated by ingesting the PDF alone (which is exactly what the old
+  // pipeline did), then dropping a spreadsheet beside it and re-running.
+  const pdfPath = join(tmpRoot, "handbook.pdf");
+  writeFileSync(pdfPath, "fake-pdf-bytes-v1");
+
+  const { deps } = fakeDeps();
+  expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ indexed: 1 }));
+
+  const [before] = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
+  const chunksBefore = await chunksFor(before.id);
+
+  writeFileSync(join(tmpRoot, "suppliers.xlsx"), "fake-xlsx-bytes-v1");
+  const rerun = await ingestDirectory(ORG_ID, tmpRoot, deps);
+
+  // The PDF is SKIPPED, not re-indexed: the content hash still matches, and a
+  // widened allowlist must not invalidate what was already there.
+  expect(rerun).toEqual(counts({ skipped: 1, indexed: 1 }));
+
+  const [pdfDoc] = await db
+    .select()
+    .from(kbDocuments)
+    .where(and(eq(kbDocuments.orgId, ORG_ID), eq(kbDocuments.sourcePath, pdfPath)));
+  expect(pdfDoc.id).toBe(before.id);
+  expect(pdfDoc.pageCount).toBe(2);
+  const chunksAfter = await chunksFor(pdfDoc.id);
+  expect(chunksAfter.map((c) => c.id).sort()).toEqual(chunksBefore.map((c) => c.id).sort());
+  for (const chunk of chunksAfter) {
+    expect(chunk.locator).toEqual({ kind: "page", page: expect.any(Number) });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Page-shaped Office documents (#938)
+// ---------------------------------------------------------------------------
+
+/**
+ * The Office half of the pipeline: convert with LibreOffice, index the
+ * CONVERTED PDF, but keep the original as the document's identity.
+ *
+ * The converter and the extractor are both fakes here for the same reason the
+ * PDF tests fake theirs — what is under test is the dispatch, the anchors and
+ * the failure semantics, not LibreOffice. That the real binary carries a Word
+ * outline into PDF bookmarks (and leaves comments and speaker notes out) is
+ * pinned separately, against the real thing, in
+ * `office-convert.libreoffice.test.ts`.
+ */
+const WORD_PAGES: IngestPage[] = [
+  {
+    page: 1,
+    text: "Quality management\nEvery delivery is checked against the order before storage.",
+    headings: [{ charStart: 0, headings: ["Quality management"] }],
+  },
+  { page: 2, text: "Protective equipment is mandatory in zone B at all times." },
+];
+
+const SLIDE_PAGES: IngestPage[] = [
+  { page: 1, text: "Pricing for the coming season, including the volume discounts." },
+  { page: 2, text: "Delivery windows and the lead times each supplier has committed to." },
+];
+
+/**
+ * Deps whose converter answers with an artifact path per source, and whose
+ * extractor answers per artifact. `convertOffice` records its calls so a test
+ * can assert on BATCHES — the property the conversion cost depends on.
+ */
+function officeDeps(
+  outcomes: (absPath: string) => ConversionOutcome,
+  pagesFor: (artifactPath: string) => IngestPage[]
+) {
+  const embed = vi.fn(async (texts: string[]) => texts.map(() => Array(768).fill(0.05)));
+  const extractPdf = vi.fn(async (absPath: string) => pagesFor(absPath));
+  const convertOffice = vi.fn(async (sources: readonly { absPath: string }[]) =>
+    sources.map((source) => outcomes(source.absPath))
+  );
+  return {
+    deps: {
+      embed,
+      extractPdf,
+      extractXlsx: neverCalledXlsx,
+      convertOffice,
+      ocrModel: null,
+    } as IngestDeps,
+    extractPdf,
+    convertOffice,
+  };
+}
+
+/** A converted outcome whose artifact sits beside the source, as the store's would. */
+const convertedTo =
+  (artifactPath: string) =>
+  (absPath: string): ConversionOutcome => ({
+    sourcePath: absPath,
+    status: "converted" as const,
+    artifactPath,
+  });
+
+it("indexes a Word document through its converted PDF, anchored on the heading path", async () => {
+  const docPath = join(tmpRoot, "Qualitätshandbuch.doc");
+  writeFileSync(docPath, "fake-doc-bytes");
+
+  const { deps, extractPdf } = officeDeps(convertedTo("/artifacts/ab/cd.pdf"), () => WORD_PAGES);
+  expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ indexed: 1 }));
+
+  // The outline is only asked for where it is the anchor.
+  expect(extractPdf).toHaveBeenCalledWith("/artifacts/ab/cd.pdf", { outline: true });
+
+  const [doc] = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
+  // Identity stays the ORIGINAL. A citation naming the artifact would point at
+  // a file that is not on the reader's share.
+  expect(doc.sourcePath).toBe(docPath);
+  // Word's pagination belongs to the renderer, so the row says nothing rather
+  // than something the reader's Word disagrees with.
+  expect(doc.pageCount).toBeNull();
+
+  const chunks = await chunksFor(doc.id);
+  expect(chunks).not.toHaveLength(0);
+  expect(chunks.every((chunk) => chunk.sourcePath === docPath)).toBe(true);
+  for (const chunk of chunks) {
+    expect(chunk.locator).toEqual({ kind: "heading", headings: ["Quality management"] });
+  }
+});
+
+it("gives a Word document without headings no locator at all, rather than a page", async () => {
+  // #938 says it plainly: an omitted locator beats one that does not match
+  // what the reader sees in Word. A page number would be exactly that.
+  writeFileSync(join(tmpRoot, "Notiz.docx"), "fake-docx-bytes");
+
+  const { deps } = officeDeps(convertedTo("/artifacts/no/outline.pdf"), () => [
+    { page: 1, text: "A short note with no heading styles anywhere in it." },
+  ]);
+  expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ indexed: 1 }));
+
+  const [doc] = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
+  const chunks = await chunksFor(doc.id);
+  expect(chunks).not.toHaveLength(0);
+  expect(chunks.every((chunk) => chunk.locator === null)).toBe(true);
+});
+
+it("anchors a presentation on its slide number, which the converter maps one to one", async () => {
+  const pptPath = join(tmpRoot, "Schulung.ppt");
+  writeFileSync(pptPath, "fake-ppt-bytes");
+
+  const { deps, extractPdf } = officeDeps(convertedTo("/artifacts/ee/ff.pdf"), () => SLIDE_PAGES);
+  expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ indexed: 1 }));
+
+  // No outline is asked for: a presentation's bookmarks are slide names, not
+  // a heading hierarchy, and slide N is page N without them.
+  expect(extractPdf).toHaveBeenCalledWith("/artifacts/ee/ff.pdf", { outline: false });
+
+  const [doc] = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
+  expect(doc.sourcePath).toBe(pptPath);
+  // Slides ARE the document's own units, so the count is the document's.
+  expect(doc.pageCount).toBe(2);
+
+  const chunks = await chunksFor(doc.id);
+  expect(
+    chunks
+      .map((chunk) => chunk.locator)
+      .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)))
+  ).toEqual([
+    { kind: "slide", slide: 1 },
+    { kind: "slide", slide: 2 },
+  ]);
+});
+
+it("leaves a document whose conversion failed in the index with no chunks", async () => {
+  // #936's `failed` is a FINAL verdict about this document. A row with no
+  // chunks is how the unreadable list (#935) finds it, with nothing to wire
+  // up — so the row must exist, and it must be empty.
+  const docPath = join(tmpRoot, "kaputt.doc");
+  writeFileSync(docPath, "fake-doc-bytes");
+
+  const { deps, extractPdf } = officeDeps(
+    (absPath) => ({ sourcePath: absPath, status: "failed", reason: "no artifact produced" }),
+    () => WORD_PAGES
+  );
+
+  expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ unsearchable: 1 }));
+  expect(extractPdf).not.toHaveBeenCalled();
+
+  const [doc] = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
+  expect(doc.sourcePath).toBe(docPath);
+  expect(await chunksFor(doc.id)).toHaveLength(0);
+});
+
+it("does not record a document as unreadable when the converter itself was unavailable", async () => {
+  // The distinction #936 exists for: out of memory or a missing binary says
+  // nothing about the document. Recording it would brand a perfectly good file
+  // as permanently unreadable, and nothing ever retries that.
+  writeFileSync(join(tmpRoot, "gut.doc"), "fake-doc-bytes");
+
+  const { deps } = officeDeps(
+    (absPath) => ({
+      sourcePath: absPath,
+      status: "infrastructure",
+      reason: "converter was killed — out of memory",
+    }),
+    () => WORD_PAGES
+  );
+
+  const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+  try {
+    expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ failed: 1 }));
+  } finally {
+    consoleError.mockRestore();
+  }
+
+  // No row at all, so the unreadable list does not claim this document.
+  expect(await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID))).toHaveLength(0);
+});
+
+it("keeps the last indexed version when a re-conversion of a changed file fails at the infrastructure level", async () => {
+  const docPath = join(tmpRoot, "Angebot.docx");
+  writeFileSync(docPath, "fake-docx-v1");
+
+  const good = officeDeps(convertedTo("/artifacts/v1.pdf"), () => WORD_PAGES);
+  expect(await ingestDirectory(ORG_ID, tmpRoot, good.deps)).toEqual(counts({ indexed: 1 }));
+  const [before] = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
+  const chunksBefore = await chunksFor(before.id);
+
+  writeFileSync(docPath, "fake-docx-v2");
+  const squeezed = officeDeps(
+    (absPath) => ({ sourcePath: absPath, status: "infrastructure", reason: "killed" }),
+    () => WORD_PAGES
+  );
+
+  const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+  try {
+    expect(await ingestDirectory(ORG_ID, tmpRoot, squeezed.deps)).toEqual(counts({ failed: 1 }));
+  } finally {
+    consoleError.mockRestore();
+  }
+
+  const [after] = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
+  expect(after.id).toBe(before.id);
+  expect((await chunksFor(after.id)).map((c) => c.id).sort()).toEqual(
+    chunksBefore.map((c) => c.id).sort()
+  );
+});
+
+it("converts in batches, and not at all for a document it can skip", async () => {
+  // Process startup dominates conversion, so the ingest must hand the
+  // converter a slice of its queue rather than one path at a time. And an
+  // unchanged document costs no conversion at all: the skip decision happens
+  // before anything is handed over.
+  for (let i = 0; i < 3; i++) writeFileSync(join(tmpRoot, `doc-${i}.docx`), `bytes-${i}`);
+  writeFileSync(join(tmpRoot, "handbook.pdf"), "fake-pdf-bytes");
+
+  const { deps, convertOffice } = officeDeps(convertedTo("/artifacts/batch.pdf"), (artifact) =>
+    artifact === "/artifacts/batch.pdf" ? WORD_PAGES : [{ page: 1, text: PAGE_1_TEXT }]
+  );
+
+  expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ indexed: 4 }));
+
+  // One call carrying all three Office documents — and the PDF is not among
+  // them, so a dispatch bug cannot route it through LibreOffice.
+  expect(convertOffice).toHaveBeenCalledTimes(1);
+  const converted = convertOffice.mock.calls[0][0].map((source) => source.absPath);
+  expect(converted).toHaveLength(3);
+  expect(converted.every((path: string) => path.endsWith(".docx"))).toBe(true);
+
+  const rerun = await ingestDirectory(ORG_ID, tmpRoot, deps);
+  expect(rerun).toEqual(counts({ skipped: 4 }));
+  expect(convertOffice).toHaveBeenCalledTimes(1);
+});
+
+it("batches from the document that asked, carrying the hash the ingest already computed", async () => {
+  // Two properties of the same call, because they are the same decision.
+  //
+  // A batch sliced from the HEAD of the queue drags every Office document
+  // before the changed one through the converter — and those are exactly the
+  // documents the run is about to skip, so the work is thrown away. Worse, it
+  // is not free: `convertOfficeFiles` hashes every source it is handed, a full
+  // read each, even for a cache hit.
+  //
+  // And the hash is the artifact key. The ingest computed it one step earlier
+  // for its own idempotency check; `OfficeSource.contentHash` exists so that
+  // read is not paid for twice.
+  for (let i = 0; i < 3; i++) writeFileSync(join(tmpRoot, `doc-${i}.docx`), `bytes-${i}`);
+
+  const { deps, convertOffice } = officeDeps(convertedTo("/artifacts/batch.pdf"), () => WORD_PAGES);
+  expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ indexed: 3 }));
+  expect(convertOffice).toHaveBeenCalledTimes(1);
+
+  // A first run needs every document, so the batch is still the whole queue.
+  // Only the document that ASKED carries a hash: the ingest has read exactly
+  // that one so far, and `convertOfficeFiles` hashes the rest itself when it
+  // gets to them. Claiming otherwise would mean reading them here as well,
+  // which is the read this is removing.
+  expect(convertOffice.mock.calls[0][0]).toEqual([
+    {
+      absPath: join(tmpRoot, "doc-0.docx"),
+      contentHash: createHash("sha256").update("bytes-0").digest("hex"),
+    },
+    { absPath: join(tmpRoot, "doc-1.docx") },
+    { absPath: join(tmpRoot, "doc-2.docx") },
+  ]);
+
+  // Only the LAST document changes, so the two before it are skipped and must
+  // never reach the converter again.
+  const changed = join(tmpRoot, "doc-2.docx");
+  writeFileSync(changed, "bytes-2-v2");
+  expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ skipped: 2, indexed: 1 }));
+
+  expect(convertOffice).toHaveBeenCalledTimes(2);
+  expect(convertOffice.mock.calls[1][0]).toEqual([
+    { absPath: changed, contentHash: createHash("sha256").update("bytes-2-v2").digest("hex") },
+  ]);
+});
+
+it("spends one converter attempt per batch when the converter never answers at all", async () => {
+  // `convertOfficeFiles` reports an unavailable converter as an `infrastructure`
+  // OUTCOME, but it can still reject outright — constructing the artifact store
+  // creates its directory, and a volume that is not mounted throws there.
+  //
+  // A batch consumed by a rejection with nothing recorded is the trap: every
+  // other document in it would then ask again and pull a fresh slice of the
+  // queue through LibreOffice before answering the same thing. So the batch is
+  // answered once, for all of its documents, and none of them gets a row —
+  // an unavailable converter says nothing about any document (#936).
+  for (let i = 0; i < 3; i++) writeFileSync(join(tmpRoot, `doc-${i}.docx`), `bytes-${i}`);
+
+  const embed = vi.fn(async (texts: string[]) => texts.map(() => Array(768).fill(0.05)));
+  const extractPdf = vi.fn(async () => {
+    throw new Error("extractPdf must not be called when no artifact exists");
+  });
+  const convertOffice = vi.fn(async () => {
+    throw new Error("artifact volume is not mounted");
+  });
+  const deps = {
+    embed,
+    extractPdf,
+    extractXlsx: neverCalledXlsx,
+    convertOffice,
+    ocrModel: null,
+  } as IngestDeps;
+
+  const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+  try {
+    expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ failed: 3 }));
+  } finally {
+    consoleError.mockRestore();
+  }
+
+  expect(convertOffice).toHaveBeenCalledTimes(1);
+  expect(extractPdf).not.toHaveBeenCalled();
+  expect(await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID))).toHaveLength(0);
+});
+
+it("leaves PDFs indexed before Office support was added exactly as they were", async () => {
+  // AGENTS.md § "Test Migrations Against Pre-Existing Data": the upgrade state
+  // is old rows plus new code, and every test that starts from an empty
+  // database is blind to it. Simulated by indexing the PDF alone — which is
+  // what the old pipeline did — and then dropping a Word file beside it.
+  const pdfPath = join(tmpRoot, "handbook.pdf");
+  writeFileSync(pdfPath, "fake-pdf-bytes-v1");
+
+  const { deps } = fakeDeps();
+  expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ indexed: 1 }));
+  const [before] = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
+  const chunksBefore = await chunksFor(before.id);
+
+  writeFileSync(join(tmpRoot, "Handbuch.doc"), "fake-doc-bytes");
+  const mixed = officeDeps(convertedTo("/artifacts/mixed.pdf"), (artifact) =>
+    artifact === "/artifacts/mixed.pdf"
+      ? WORD_PAGES
+      : [
+          { page: 1, text: PAGE_1_TEXT },
+          { page: 2, text: PAGE_2_TEXT },
+        ]
+  );
+
+  // The PDF is SKIPPED, not re-indexed: its content hash still matches, and a
+  // widened allowlist must not invalidate what was already there.
+  expect(await ingestDirectory(ORG_ID, tmpRoot, mixed.deps)).toEqual(
+    counts({ skipped: 1, indexed: 1 })
+  );
+
+  const [pdfDoc] = await db
+    .select()
+    .from(kbDocuments)
+    .where(and(eq(kbDocuments.orgId, ORG_ID), eq(kbDocuments.sourcePath, pdfPath)));
+  expect(pdfDoc.id).toBe(before.id);
+  expect(pdfDoc.pageCount).toBe(2);
+  const chunksAfter = await chunksFor(pdfDoc.id);
+  expect(chunksAfter.map((c) => c.id).sort()).toEqual(chunksBefore.map((c) => c.id).sort());
+  for (const chunk of chunksAfter) {
+    expect(chunk.locator).toEqual({ kind: "page", page: expect.any(Number) });
+  }
 });

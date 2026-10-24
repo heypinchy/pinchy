@@ -38,6 +38,9 @@
 import { toCitationPath } from "@/lib/knowledge/citation-path";
 
 import { matchRetrievedDocument } from "./cited-path-match";
+import { parseCitedPosition } from "./cited-position";
+
+import type { ChunkLocator } from "@/lib/knowledge/locator";
 
 import type { KbFailureTag, KbGraderResult } from "./types";
 
@@ -61,16 +64,39 @@ export interface AttributionInput {
   retrieved: RetrievedSource[];
   /**
    * Known near-duplicate path groups (each group = paths sharing a passage).
-   * Supplied by the harness (deterministic in the self-test). Empty by default.
+   *
+   * Optional here because three of the four graders composed by
+   * `gradeAttribution` never read it — but a pipeline that GRADES A RUN must
+   * supply it, and `gradeKbRun` requires it for that reason. Omitting it is
+   * not "no duplicates known": it silently disables `dedup-inflation`, which
+   * is how the published dataset carried a 0 that meant "not asked" (#1181).
+   * `nearDuplicatePathGroups()` in `eval/kb/corpus/manifest.ts` derives them
+   * from the corpus.
    */
   nearDuplicateGroups?: string[][];
 }
 
-/** One parsed `- [N] <path> — p. <page>` bullet from the Sources list. */
+/** One parsed `- [N] <path> (<position>)` line from the Sources list. */
 interface SourcesEntry {
   n: number;
   path: string;
-  page: number | null;
+  /**
+   * The position the entry cites, in whatever shape the document's format has
+   * — `parseCitedPosition` reads all four, so a slide or a sheet range no
+   * longer folds into `path` and grades as a fabricated citation (#982).
+   *
+   * The union is kept whole rather than flattened to the `page` this replaced:
+   * a slide is not a page, and the reserved position-mismatch grader must
+   * narrow on `kind` before it compares anything against `RetrievedSource.page`
+   * — which a `page: number | null` field beside this one would let it skip.
+   */
+  locator: ChunkLocator | null;
+  /** Offset of the entry's line start within `sourcesText` — read by `gradeSourcesFormat`. */
+  index: number;
+  /** Whether markdown renders this line as a list item (so it starts a line of its own). */
+  isListItem: boolean;
+  /** Whether the number came from an explicit `[N]` rather than the ordered-list position. */
+  hasMarker: boolean;
 }
 
 /**
@@ -88,6 +114,14 @@ interface SourcesEntry {
  * answer. Because these graders also run against real Layer-3 model output, a
  * false positive corrupts the scorecard.
  *
+ * The two colon-less shapes match with a LOOKAHEAD for the line end rather
+ * than consuming it, and that is not cosmetic. `**Sources**` is very often
+ * followed by two spaces — a markdown hard break, and the only thing making the
+ * first entry render on a line of its own. Consuming them moved the break into
+ * the heading match, so `gradeSourcesFormat` looked at a bare `\n`, judged the
+ * entry to be running into the heading, and charged five of `gpt-oss:120b`'s
+ * runs for a separator that was there all along.
+ *
  * Deliberately NOT `$`-anchored (heading alone on its line): the real
  * run-on-paragraph bug puts the whole list on the SAME line as the heading
  * ("**Sources:** [1] ... [4] ..."), and a `$` anchor would make that shape
@@ -97,6 +131,13 @@ interface SourcesEntry {
  * want: the run-on heading begins its line (matches, list captured, run-on
  * caught) while an embedded mid-prose "Sources:" does not (no match, no
  * phantom list).
+ *
+ * `[^\S\r\n]` rather than `[ \t]` throughout — horizontal whitespace of any
+ * kind, but never a line break. `gpt-oss:120b` separates a marker from its path
+ * with U+202F (narrow no-break space), which JS counts as `\s`: the parser
+ * skipped the marker, then refused the line for beginning with whitespace, and
+ * the entry disappeared. Same lesson as the fullwidth brackets — these models do
+ * not type ASCII punctuation, and a separator is structure, not identity.
  *
  * Deliberately case-SENSITIVE on "Sources" (capital S) — the template always
  * capitalizes it, and matching case-insensitively would trip on ordinary
@@ -134,7 +175,7 @@ interface SourcesEntry {
  * the parser rather than the model.
  */
 const SOURCES_HEADING =
-  /^[ \t]*(?:#{0,3}[ \t]*\*{0,2}[ \t]*(?:Sources|Quellen?)[ \t]*(?::[ \t]*\*{0,2}|\*{0,2}[ \t]*:)|\*{2}[ \t]*(?:Sources|Quellen?)[ \t]*\*{2}[ \t]*$|#{1,3}[ \t]*(?:Sources|Quellen?)[ \t]*$)/gm;
+  /^[^\S\r\n]*(?:#{0,3}[^\S\r\n]*\*{0,2}[^\S\r\n]*(?:Sources|Quellen?)[^\S\r\n]*(?::[^\S\r\n]*\*{0,2}|\*{0,2}[^\S\r\n]*:)|\*{2}[^\S\r\n]*(?:Sources|Quellen?)[^\S\r\n]*\*{2}(?=[^\S\r\n]*$)|#{1,3}[^\S\r\n]*(?:Sources|Quellen?)(?=[^\S\r\n]*$))/gm;
 
 /** Any `[N]` marker, inline citation or Sources-bullet citation number alike. */
 const INLINE_CITATION = /\[(\d+)\]/g;
@@ -161,6 +202,33 @@ const MARKER_BRACKETS: [RegExp, string][] = [
 ];
 
 /**
+ * Two further marker spellings, normalised AFTER the brackets are ASCII so each
+ * is written once rather than twice.
+ *
+ * - `[1†quality-file.md (undefined)]` — `gpt-oss:120b`'s labelled marker, the
+ *   OpenAI citation form. The number is there; a document label rides behind a
+ *   dagger. `INLINE_CITATION` wants the bracket to close after the digits, so it
+ *   saw no citation at all.
+ * - `[3, 4]` — `glm-5.2` groups consecutive citations into one bracket. Read
+ *   literally that is not a number, so both citations vanished.
+ *
+ * Both were invisible while the Sources parser was equally blind, and both
+ * surfaced the moment it was not: a body whose citations cannot be seen against
+ * a list that now parses reads as a list nothing cites, so every entry would
+ * have been charged `source-uncited` — "a retrieved-but-unused chunk presented
+ * as if it independently corroborates the answer", said of an answer that cited
+ * every one of them. Widening one side alone would have traded an artefact for
+ * a worse-worded artefact.
+ *
+ * The label is DISCARDED rather than read. It is the model's gloss of the
+ * document, not the Sources entry, and `path-not-cited` grades what the entry
+ * names — resolving a citation through an inline label would let a body-side
+ * mention stand in for a list a model never wrote.
+ */
+const MARKER_LABEL = /\[(\d+)†[^\]\n]*\]/g;
+const MARKER_GROUP = /\[(\d+(?:[ \t]*,[ \t]*\d+)+)\]/g;
+
+/**
  * The answer with citation-marker brackets in ASCII, and NOTHING else touched.
  *
  * The line this draws is the whole point, so it is worth stating twice:
@@ -185,50 +253,83 @@ function normalizeCitationMarkers(answer: string): string {
   for (const [pattern, replacement] of MARKER_BRACKETS) {
     normalized = normalized.replace(pattern, replacement);
   }
-  return normalized;
+  normalized = normalized.replace(MARKER_LABEL, "[$1]");
+  return normalized.replace(MARKER_GROUP, (_match, numbers: string) =>
+    numbers
+      .split(",")
+      .map((n) => `[${n.trim()}]`)
+      .join("")
+  );
 }
 
 /**
- * A Sources-list bullet: `- [N] <rest of line>` (or `*` bullets), one per
- * line. Requires the `[N]` to be the first thing on a bulleted line — this is
- * exactly what distinguishes a real markdown list from the run-on-paragraph
- * bug, where citations appear mid-line with no bullet marker at all.
+ * One line of a Sources list, in every shape the first real sweep wrote.
+ *
+ * An entry is a line that OPENS with a citation number, in one of two
+ * spellings — an explicit `[N]` marker, or an ordered-list ordinal (`3.`) whose
+ * position IS the number the reader pairs an inline `[3]` with. Either may be
+ * preceded by a list marker (`-`, `*`, or the ordinal itself), and the two may
+ * co-occur (`1. [1] onboarding-part2.md`).
+ *
+ * The predecessor of this regex required a `-`/`*` bullet AND a leading `[N]`,
+ * which is the taught shape and nothing else. Measured against the 2026-08-05
+ * sweep, 20 of 48 runs were charged `citation-unresolved` and NOT ONE of them
+ * cited a source it had not listed: every one had written its list as plain
+ * `[N]` lines or as an ordered list, parsed to zero entries, and so had every
+ * inline marker read as a dead end. A grader that reports a citation-integrity
+ * failure on a list naming exactly the right documents is measuring which
+ * bullet character the model happened to pick.
+ *
+ * What is deliberately still NOT an entry: a line carrying neither spelling.
+ * A trailing "All sources retrieved on 2026-08-05." would otherwise become an
+ * entry that no inline marker cites (`source-uncited`) and that the
+ * groundedness premise lookup would try to resolve to a document.
+ *
+ * Three capture groups, in this order — the package targets below ES2018, so
+ * NAMED groups are a compile error here (`tsc` says so; vitest transpiles them
+ * happily, which is exactly the gap `pnpm typecheck` exists to close):
+ *   1. the ordinal (`3.` form), 2. the marker (`[3]` form), 3. the rest of the
+ * line, which `PAGE_SUFFIX` and `matchRetrievedDocument` read.
+ *
+ * When both numbers are present the MARKER wins — `1. [3] c.md` is the reader's
+ * [3], and a model that renumbers its list while keeping the tool's markers
+ * must not have its citations silently reassigned by position.
  */
-const BULLET_LINE = /^[ \t]*[-*][ \t]+\[(\d+)\]\s*(.+)$/gm;
+const SOURCES_ENTRY_LINE =
+  /^[^\S\r\n]*(?:(\d+)[.)][^\S\r\n]+|[-*][^\S\r\n]+)?(?:\[(\d+)\][^\S\r\n]*)?(\S.*)$/gm;
 
 /**
- * Trailing page suffix on a Sources entry's rest-of-line text — separates the
- * PATH (group 1) from the page reference (group 2). Non-greedy path capture so
- * a hyphen inside the path itself (e.g. "/data/handbook-2012/policy.md") is not
- * mistaken for the dash separator — the required "p."/"pp." literal after the
- * dash disambiguates. Accepts a single page (`— p. 12`), a page range
- * (`— p. 12-14`), and the `pp.` plural (`— pp. 12-14`). A Sources entry with no
- * page suffix at all (a legitimate, if degraded, shape) leaves `pageMatch`
- * null and parses with `page: null` — the point of widening this is to keep a
- * range from folding into `entry.path` and spuriously failing the exact
- * path-match in `gradePathCitation`. `page` stores the FIRST page number
- * (`parseInt` of the range) — it is not asserted downstream yet.
- *
- * The SEPARATOR takes em dash, en dash and hyphen alike, for the same reason
- * the markers above take fullwidth brackets: it delimits, it does not identify.
- * `gpt-oss:120b` writes U+2013 where the template writes `—`, and an
- * unrecognised separator leaves `– p. 1` glued to `entry.path` — where the
- * whole-entry matcher in `cited-path-match.ts` still resolves the document, but
- * `gradeNoDuplicateCorroboration`, which compares `entry.path` by string
- * equality against its near-duplicate groups, silently stops matching. The
- * product's own `TRAILING_PAGE` (`source-links.ts`) already accepts all three.
- *
- * Only pages, deliberately, and only correct while only pages exist. Since
- * #933 the anchor is a `ChunkLocator` and the contract asks for a POSITION:
- * `slide 4`, `§ Quality > Incoming goods`, `Suppliers, rows 5-12`. None of
- * those match here, so the whole line would fall into `entry.path` and grade a
- * correct citation as a fabricated one. Nothing writes a non-page locator yet
- * (xlsx-extract is not wired into the ingest, the Office path produces pages),
- * so this cannot fire today — but the producer that changes that must
- * generalise this parser in the same change. #982 has the trap and the reason
- * a naive "split on any dash" fix would move committed eval numbers.
+ * Just the opening of a Sources line — list marker and/or `[N]`, nothing of the
+ * path. Matches the empty string on a line that has neither, which is what the
+ * buried-marker scan below wants: on a plain paragraph line, everything counts
+ * as "after the head".
  */
-const PAGE_SUFFIX = /^(.*?)\s*[—–-]\s*pp?\.?\s*(\d+(?:\s*[-–]\s*\d+)?)\s*$/i;
+const SOURCES_ENTRY_HEAD = /^[^\S\r\n]*(?:\d+[.)][^\S\r\n]+|[-*][^\S\r\n]+)?(?:\[\d+\][^\S\r\n]*)?/;
+
+/** True for a Sources line that markdown renders as its own list item. */
+const LIST_ITEM_PREFIX = /^[^\S\r\n]*(?:[-*][^\S\r\n]+|\d+[.)][^\S\r\n]+)/;
+
+/**
+ * A citation marker that is NOT the head of its line and still has text after
+ * it on that line — i.e. a marker introducing a source mid-paragraph, which is
+ * the run-on shape: "**Sources:** [1] a.md — p. 1 [2] b.md — p. 2".
+ *
+ * The trailing-text condition is what separates a buried entry from a trailing
+ * ANNOTATION. `glm-5.2` writes "1. handbook-2012/policy.md — passage [1]",
+ * where the marker closes the line rather than opening a source; that list
+ * renders as cleanly as any other, and charging it would repeat the mistake
+ * this rewrite is undoing one shape further in.
+ */
+const BURIED_MARKER = /\[\d+\][^\S\r\n]*\S/;
+
+/**
+ * A separation that survives markdown rendering, at the END of the text
+ * preceding an entry: a blank line (new paragraph) or a hard break (two or more
+ * trailing spaces, or a backslash, before the newline). A lone `\n` is NOT one
+ * — markdown joins those lines into a single paragraph, which is the run-on the
+ * `sources-format` axis exists to catch.
+ */
+const RENDERED_SEPARATION = /(?:\n[^\S\r\n]*\n|(?:[ \t]{2,}|\\)\n)[^\S\r\n]*$/;
 
 interface ParsedAnswer {
   /** Raw text BEFORE the Sources heading (or the whole answer if there is none). */
@@ -243,21 +344,37 @@ interface ParsedAnswer {
   sourcesText: string;
 }
 
-function countMatches(text: string, pattern: RegExp): number {
-  return [...text.matchAll(pattern)].length;
-}
-
+/**
+ * The path/position split used to live here as `PAGE_SUFFIX`, a regex that knew
+ * one position shape (`— p. 12`) and one separator. `parseCitedPosition`
+ * (`cited-position.ts`) replaced it in #982: it reads every shape
+ * `formatLocator` emits, in the parenthesised spelling the knowledge tool
+ * actually prints as well as the dashed one the older contract taught, and its
+ * round-trip pin fails when a fifth `ChunkLocator` kind arrives unparsed.
+ *
+ * The trap that governs both is unchanged and worth keeping in view from here:
+ * the split may never widen to "any dash-space separator", or
+ * `a/study.pdf – AOAC Performance Tested Method Study` starts parsing as a
+ * position and moves numbers committed under `packages/web/eval/data`.
+ */
 function parseSourcesEntries(sourcesText: string): SourcesEntry[] {
   const entries: SourcesEntry[] = [];
-  for (const match of sourcesText.matchAll(BULLET_LINE)) {
-    const n = Number(match[1]);
-    const rest = match[2].trim();
-    const pageMatch = PAGE_SUFFIX.exec(rest);
-    entries.push(
-      pageMatch
-        ? { n, path: pageMatch[1].trim(), page: Number.parseInt(pageMatch[2], 10) }
-        : { n, path: rest, page: null }
-    );
+  for (const match of sourcesText.matchAll(SOURCES_ENTRY_LINE)) {
+    const [, ordinal, marker, restRaw] = match;
+    // A line that opens with neither spelling of a number is not an entry.
+    if (marker === undefined && ordinal === undefined) continue;
+    const n = Number(marker ?? ordinal);
+    const rest = (restRaw ?? "").trim();
+    if (rest.length === 0) continue;
+    const { path, locator } = parseCitedPosition(rest);
+    entries.push({
+      n,
+      path,
+      locator,
+      index: match.index,
+      isListItem: LIST_ITEM_PREFIX.test(match[0]),
+      hasMarker: marker !== undefined,
+    });
   }
   return entries;
 }
@@ -495,42 +612,68 @@ export function gradePathCitation(input: AttributionInput): KbGraderResult {
 }
 
 /**
- * `sources-format`: the Sources list must be a markdown bullet list, one
- * entry per `- [N] ...` line — plain consecutive lines (or a single run-on
- * line) collapse into one unreadable paragraph when rendered. Detected by
- * comparing two counts within the text AFTER the "Sources:" heading: every
- * `[N]` marker found anywhere (`looseCount`) vs. only those that lead a
- * bulleted line (`bulletedCount`). A mismatch means at least one citation is
- * NOT on its own bulleted line — including the degenerate case where NONE
- * are (the real captured bug: "Sources: [1] ... p. 169 [4] ... p. 194" all on
- * one line, `bulletedCount === 0`).
+ * `sources-format`: every Sources entry must begin a line of its own IN THE
+ * RENDERED ANSWER — otherwise the list collapses into one paragraph a reader
+ * cannot walk. Two ways to fail it:
  *
- * A single source still must be bulleted: `looseCount === 1` with
- * `bulletedCount === 0` fails just as a multi-source run-on does.
+ * - **An entry does not start its own rendered line.** Markdown separates lines
+ *   in exactly three ways, and this accepts all three: a list item (`-`, `*`,
+ *   `3.`), a blank line before it, or a hard break (two trailing spaces) before
+ *   it. A lone `\n` is none of them, which is why "[1] a.md\n[2] b.md" fails
+ *   and "[1] a.md  \n[2] b.md" does not.
+ * - **A marker sits somewhere other than the head of an entry line**
+ *   (`markerCount > entries with an explicit marker`) — the captured run-on
+ *   bug, "**Sources:** [1] … p. 169 [4] … p. 194" on one line, where the second
+ *   citation is buried mid-paragraph.
+ *
+ * The predecessor compared every `[N]` in the region against those leading a
+ * `- `/`* ` bullet, and so charged the two separators that are not bullets. In
+ * the 2026-08-05 sweep 15 of 17 `sources-format` verdicts went to lists that
+ * render perfectly legibly — hard-break-separated, blank-line-separated, or
+ * ordered. The axis was reporting a typographic preference as a defect.
+ *
+ * What it still charges, unchanged, is a list whose FIRST entry runs into the
+ * heading ("**Sources:** [1] a.md"): that entry begins no line of its own, it
+ * continues the heading's. The rule below is one sentence and this case is
+ * inside it, rather than being a single-source exception bolted on.
  *
  * If the answer legitimately abstained and has NO Sources list at all, this
  * grader passes — there is no list to format-check.
  *
- * The `looseCount === 0` early return is why marker normalisation moves this
- * axis too, and in the FAILING direction: a run-on written entirely in
- * fullwidth brackets ("**Sources:** 【1】 a.md 【2】 b.md") had zero markers this
- * grader could see, so it took that return and passed — a run-on excused by the
- * same typography that emptied the premise set. It is charged now. Both
- * directions are one fix, not a regression traded for an improvement.
+ * Marker normalisation moves this axis too, in the FAILING direction: a run-on
+ * written entirely in fullwidth brackets ("**Sources:** 【1】 a.md 【2】 b.md") had
+ * no markers this grader could see and passed — a run-on excused by the same
+ * typography that emptied the premise set.
  */
 export function gradeSourcesFormat(input: AttributionInput): KbGraderResult {
-  const { hasSourcesList, sourcesText } = parseAnswer(input.answer);
+  const { hasSourcesList, sourcesText, entries } = parseAnswer(input.answer);
   if (!hasSourcesList) return passKb();
 
-  const looseCount = countMatches(sourcesText, INLINE_CITATION);
-  if (looseCount === 0) return passKb();
+  const notes: string[] = [];
 
-  const bulletedCount = countMatches(sourcesText, BULLET_LINE);
-  if (looseCount === bulletedCount) return passKb();
+  const runOn = entries.filter(
+    (entry) => !entry.isListItem && !RENDERED_SEPARATION.test(sourcesText.slice(0, entry.index))
+  );
+  if (runOn.length > 0) {
+    notes.push(
+      `Sources entry/entries [${runOn.map((entry) => entry.n).join("], [")}] do not begin a rendered line of their own — no list marker, blank line or hard break separates them from what precedes, so markdown runs them into one paragraph.`
+    );
+  }
 
-  return failKb("sources-format", [
-    `Sources list has ${looseCount} citation marker(s) but only ${bulletedCount} sit on their own "- [N] ..." bulleted line — likely a run-on paragraph instead of a markdown bullet list.`,
-  ]);
+  // Per line, and only AFTER whatever opens it: a marker at the head of an
+  // entry line is that entry, not a buried one.
+  const buried = sourcesText.split(/\r?\n/).filter((line) => {
+    const head = SOURCES_ENTRY_HEAD.exec(line);
+    return BURIED_MARKER.test(head ? line.slice(head[0].length) : line);
+  });
+  if (buried.length > 0) {
+    notes.push(
+      `Sources list carries a citation marker mid-line, with the source following it on the same line — a second entry buried in the paragraph rather than starting its own line: "${buried[0].trim()}"`
+    );
+  }
+
+  if (notes.length === 0) return passKb();
+  return failKb("sources-format", notes);
 }
 
 /**
@@ -541,14 +684,35 @@ export function gradeSourcesFormat(input: AttributionInput): KbGraderResult {
  * `retrieval-eval.ts`), but the ANSWER must present one underlying fact as
  * one claim, not stack lookalike citations to appear better-supported than it
  * is. If `nearDuplicateGroups` is empty/undefined, this grader trivially
- * passes — there is nothing to compare against.
+ * passes — there is nothing to compare against, which is a correct verdict
+ * only when the caller really knows of no duplicate pairs. It is not a safe
+ * default: the same branch is what kept this tag at 0 for the whole life of
+ * the published dataset (#1181), so a grading pipeline supplies the corpus's
+ * groups rather than relying on it.
+ *
+ * Each entry is resolved to a retrieved document through
+ * `matchRetrievedDocument`, the same way `gradePathCitation` and the
+ * groundedness lookup resolve it — NOT by comparing the entry's raw path text
+ * to a group's path. The groups name documents by their absolute corpus path
+ * (`/data/petrifilm-datasheet.md`), while an answer cites the data-root-relative
+ * form `knowledge_search` prints, usually inside a code span and followed by a
+ * quoted passage. Against every one of the 48 answers in the published sweep, a
+ * raw comparison matched nothing — so this grader would have reported a 0 that
+ * still meant "not asked", one layer below the empty-group-list branch that
+ * meant it before. An entry naming no retrieved document is skipped rather than
+ * charged: a fabricated path is `path-not-cited`'s finding, and one defect
+ * should not be counted under two tags.
  */
 export function gradeNoDuplicateCorroboration(input: AttributionInput): KbGraderResult {
   const groups = input.nearDuplicateGroups ?? [];
   if (groups.length === 0) return passKb();
 
   const { entries } = parseAnswer(input.answer);
-  const citedPaths = new Set(entries.map((entry) => entry.path));
+  const citedPaths = new Set(
+    entries
+      .map((entry) => matchRetrievedDocument(entry.path, input.retrieved)?.sourcePath)
+      .filter((sourcePath): sourcePath is string => sourcePath !== undefined)
+  );
 
   const notes: string[] = [];
   for (const group of groups) {

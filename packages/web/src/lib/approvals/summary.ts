@@ -13,8 +13,17 @@ const SECRET_KEY = /(token|secret|password|passwd|api[-_]?key|authorization|cook
 const MAX_VALUE_LEN = 200;
 const MAX_KEYS = 25;
 
+/** pinchy-odoo's opaque record handle. See `call-models.ts`. */
+const REF_PREFIX = "pinchy_ref:v1:";
+
 function summarizeValue(value: unknown): unknown {
   if (typeof value === "string") {
+    // An opaque ref is 200+ characters of base64 that mean nothing to a reader,
+    // and left in place it consumes the whole 256-character approval
+    // description — pushing out the arguments that do carry meaning. What the
+    // ref points AT reaches the reader through the card's title, which names
+    // the resolved model.
+    if (value.startsWith(REF_PREFIX)) return "(record reference)";
     return value.length > MAX_VALUE_LEN ? `${value.slice(0, MAX_VALUE_LEN)}…` : value;
   }
   if (value === null || ["number", "boolean"].includes(typeof value)) {

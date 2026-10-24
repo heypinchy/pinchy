@@ -10,8 +10,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Checkbox } from "@/components/ui/checkbox";
 import { Button } from "@/components/ui/button";
+import { AccessCell, type AccessState } from "@/components/access-cell";
 import { Label } from "@/components/ui/label";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
@@ -30,6 +30,8 @@ import {
   type Connection,
 } from "@/hooks/use-odoo-permissions";
 import type { OdooAccessLevel } from "@/lib/tool-registry";
+import type { ConfirmMap } from "@/lib/approvals/policy";
+import { cellStateFor, applyCellState } from "@/lib/approvals/matrix-cell";
 import { MODEL_CATEGORIES } from "@/lib/integrations/odoo-sync";
 
 const OPERATIONS: readonly Operation[] = ["read", "create", "write", "delete"];
@@ -76,12 +78,22 @@ interface OdooPermissionSectionProps {
     } | null,
     isDirty: boolean
   ) => void;
+  /**
+   * The agent's confirmation policy (#1133). The matrix owns the per-model
+   * half of it: a cell set to "ask" writes `<tool>:<model>` keys for every
+   * tool that column speaks for. The tool level itself is set in the
+   * confirmation section, and is what an untouched cell inherits.
+   */
+  confirm: ConfirmMap;
+  onConfirmChange: (next: ConfirmMap) => void;
 }
 
 export function OdooPermissionSection({
   agentId,
   connections,
   onChange,
+  confirm,
+  onConfirmChange,
 }: OdooPermissionSectionProps) {
   const {
     connectionId,
@@ -101,6 +113,17 @@ export function OdooPermissionSection({
   } = useOdooPermissions(agentId, connections);
 
   const [addModelOpen, setAddModelOpen] = useState(false);
+
+  const cellState = (model: string, op: Operation, granted: boolean) =>
+    cellStateFor(confirm, model, op, granted);
+
+  const setCellState = (model: string, op: Operation, granted: boolean, next: AccessState) => {
+    // The grant and the confirmation are two stores; the cell is one control.
+    // Flip the grant only when the off-ness actually changed, so moving between
+    // ask and allow does not revoke the permission underneath.
+    if ((next === "off") === granted) toggleOperation(model, op);
+    if (next !== "off") onConfirmChange(applyCellState(confirm, model, op, next));
+  };
 
   // Stable ref for onChange to avoid infinite re-render loops
   const onChangeRef = useRef(onChange);
@@ -212,7 +235,7 @@ export function OdooPermissionSection({
               {addedModels.size > 0 && (
                 <div className="rounded-md border">
                   {/* Header */}
-                  <div className="grid grid-cols-[1fr_60px_60px_60px_60px_40px] gap-2 border-b px-4 py-2 text-sm font-medium text-muted-foreground">
+                  <div className="grid grid-cols-[1fr_88px_88px_88px_88px_40px] gap-2 border-b px-4 py-2 text-sm font-medium text-muted-foreground">
                     <span>Model</span>
                     <span className="text-center">Read</span>
                     <span className="text-center">Create</span>
@@ -237,7 +260,7 @@ export function OdooPermissionSection({
                       return (
                         <div
                           key={modelId}
-                          className="grid grid-cols-[1fr_60px_60px_60px_60px_40px] gap-2 border-b px-4 py-2 last:border-b-0 items-center"
+                          className="grid grid-cols-[1fr_88px_88px_88px_88px_40px] gap-2 border-b px-4 py-2 last:border-b-0 items-center"
                         >
                           <div>
                             <div className="text-sm font-medium">
@@ -252,12 +275,12 @@ export function OdooPermissionSection({
                           </div>
                           {OPERATIONS.map((op) => {
                             const restricted = !modelAccess[op];
-                            const checkbox = (
-                              <Checkbox
-                                checked={ops[op]}
-                                onCheckedChange={() => toggleOperation(modelId, op)}
+                            const cell = (
+                              <AccessCell
+                                value={cellState(modelId, op, ops[op])}
+                                onChange={(next) => setCellState(modelId, op, ops[op], next)}
                                 disabled={restricted}
-                                aria-label={`${op} ${displayName}`}
+                                label={`${op} ${displayName}`}
                               />
                             );
 
@@ -267,7 +290,7 @@ export function OdooPermissionSection({
                                   <TooltipProvider>
                                     <Tooltip>
                                       <TooltipTrigger asChild>
-                                        <span>{checkbox}</span>
+                                        <span>{cell}</span>
                                       </TooltipTrigger>
                                       <TooltipContent>
                                         Not available — Odoo user lacks this permission
@@ -275,7 +298,7 @@ export function OdooPermissionSection({
                                     </Tooltip>
                                   </TooltipProvider>
                                 ) : (
-                                  checkbox
+                                  cell
                                 )}
                               </div>
                             );

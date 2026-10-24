@@ -85,6 +85,23 @@ export interface ActiveRun {
    * if early text streamed before the run was registered.
    */
   currentContent: string;
+  /**
+   * Set when the user pressed stop for this run (#978).
+   *
+   * OpenClaw reports a user abort to the stream as an ERROR
+   * (`decision=surface_error rawError=Request was aborted`), and an error chunk
+   * is indistinguishable from a real provider failure by its text. The pipe
+   * therefore audited `chat.agent_error`, persisted a durable banner blaming
+   * the provider, and sent the browser a terminal `error` frame — for something
+   * the user did on purpose.
+   *
+   * `handleAbort` and the stream pipe run on different sockets in the
+   * multi-tab case, so the fact lives here rather than on the router: the
+   * registry is the one thing both sides already share, and it is keyed by the
+   * same sessionKey. It needs no clearing — a new turn replaces the whole
+   * entry, which is exactly the lifetime this flag should have.
+   */
+  abortedByUser: boolean;
   listeners: Set<WebSocket>;
 }
 
@@ -115,7 +132,12 @@ export class ActiveRuns {
   register(
     input: Omit<
       ActiveRun,
-      "lastChunkAt" | "listeners" | "currentContent" | "submittedAt" | "firstChunkAt"
+      | "lastChunkAt"
+      | "listeners"
+      | "currentContent"
+      | "submittedAt"
+      | "firstChunkAt"
+      | "abortedByUser"
     > & {
       ws: WebSocket;
       currentContent?: string;
@@ -125,6 +147,8 @@ export class ActiveRuns {
     const run: ActiveRun = {
       ...rest,
       currentContent: currentContent ?? "",
+      // Nobody can have pressed stop on a run that is only now being created.
+      abortedByUser: false,
       // The legacy path registers ON the first chunk, so the run is already
       // "started": submittedAt == startedAt and firstChunkAt is set, which
       // keeps it out of `scanForUnstartedRuns` (it is not pending).
@@ -151,7 +175,12 @@ export class ActiveRuns {
   registerPending(
     input: Omit<
       ActiveRun,
-      "lastChunkAt" | "listeners" | "firstChunkAt" | "startedAt" | "currentContent"
+      | "lastChunkAt"
+      | "listeners"
+      | "firstChunkAt"
+      | "startedAt"
+      | "currentContent"
+      | "abortedByUser"
     > & {
       ws: WebSocket;
     }
@@ -162,6 +191,7 @@ export class ActiveRuns {
       // A pending run has streamed nothing yet; the resume buffer (#470) starts
       // empty and fills via `setContent` once the first chunk lands (B-1 merge).
       currentContent: "",
+      abortedByUser: false,
       startedAt: rest.submittedAt,
       firstChunkAt: null,
       lastChunkAt: rest.submittedAt,
@@ -231,6 +261,25 @@ export class ActiveRuns {
     const run = this.runs.get(sessionKey);
     if (!run) return;
     run.currentContent = content;
+  }
+
+  /**
+   * Record that the user pressed stop for this session's current run (#978).
+   *
+   * Returns the run it marked, so `handleAbort` can keep using the same lookup
+   * for its own gating instead of reading the registry twice.
+   *
+   * Deliberately marks whatever run is current rather than taking a runId: a
+   * PENDING run has no gateway-issued id yet (`handleAbort` omits it from
+   * `chatAbort` for exactly that reason), and refusing to mark it would leave
+   * the abort-before-first-chunk case reporting a provider error — the one case
+   * where there is no partial reply to soften the blow.
+   */
+  markUserAborted(sessionKey: string): ActiveRun | undefined {
+    const run = this.runs.get(sessionKey);
+    if (!run) return undefined;
+    run.abortedByUser = true;
+    return run;
   }
 
   get(sessionKey: string): ActiveRun | undefined {

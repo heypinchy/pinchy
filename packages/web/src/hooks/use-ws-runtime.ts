@@ -18,8 +18,6 @@ import { oversizeAttachmentError } from "@/lib/attachment-size-check";
 import { useDraftId } from "@/hooks/use-draft-id";
 import {
   useExternalStoreRuntime,
-  SimpleTextAttachmentAdapter,
-  CompositeAttachmentAdapter,
   type ThreadMessageLike,
   type AppendMessage,
   type AssistantRuntime,
@@ -34,18 +32,23 @@ import {
   type LivenessState,
   type LivenessEvent,
 } from "./liveness-state";
-import {
-  CLIENT_IMAGE_COMPRESSION_TARGET_BYTES,
-  CLIENT_MAX_ATTACHMENT_SIZE_BYTES,
-} from "@/lib/limits";
+import { CLIENT_IMAGE_COMPRESSION_TARGET_BYTES } from "@/lib/limits";
 import { MAX_ATTACHMENTS_PER_MESSAGE } from "@/lib/schemas/uploads";
 import { compressImageForChat } from "@/lib/image-compression";
 import { parseSlashCommand, type SlashCommand } from "@/lib/slash-commands";
+import { attachmentAdapter } from "@/lib/attachment-adapters";
 
 /** Lightweight metadata for binary file attachments shown next to user messages. */
 export interface WsFileMeta {
   filename: string;
   mimeType: string;
+  /**
+   * Server-side upload id, present only on user turns rebuilt from history
+   * (#1195) — the server recovers it from `uploaded_files` so a retry after a
+   * reload can still name the files. Display code ignores it; the hook lifts it
+   * into the message's `attachmentIds`.
+   */
+  uploadId?: string;
 }
 
 /** Tracks a file dropped in the composer while it uploads to the server. */
@@ -55,6 +58,18 @@ export interface PendingUpload {
   objectUrl: string; // URL.createObjectURL — local preview, revoked on remove/send
   state: "uploading" | "ready" | "failed";
   uploadId?: string; // server-assigned, set when state = "ready"
+  /**
+   * Name the file was actually stored under, set when state = "ready" (#1199).
+   *
+   * NOT `file.name`: the route renames a file the browser did not name, so a
+   * pasted screenshot lands in `uploads/` as `upload-<stamp>.png` while
+   * `file.name` still says `image.png`. The chip builds
+   * `/api/agents/<id>/uploads/<filename>` from the name in the message, so
+   * sending the local one probes a path that does not exist — five HEAD
+   * retries, then a chip with no preview and the wrong label, until a history
+   * frame swaps the name under the user.
+   */
+  storedFilename?: string;
   progress: number; // 0-100
   error?: string; // set when state = "failed"
 }
@@ -69,6 +84,18 @@ export interface WsMessage {
    * agent's workspace and don't need to be replayed in client memory.
    */
   files?: WsFileMeta[];
+  /**
+   * Server-side upload ids for this message's attachments, kept so a retry can
+   * re-send them (#1195). `files` above is display metadata and cannot stand in
+   * — without the ids, a retry delivered the text with the attachments silently
+   * dropped, and the agent answered about files it had never been given.
+   *
+   * Set both on user messages this client sent and on user turns rebuilt from
+   * history, where the server recovers the ids from `uploaded_files` — the
+   * retry affordance outlives a reload (ChatErrorBanner), so the ids have to
+   * as well.
+   */
+  attachmentIds?: string[];
   timestamp?: string;
   error?: ChatError;
   /** Delivery status — only set for user messages managed by the reducer */
@@ -126,176 +153,6 @@ function convertMessage(msg: WsMessage): ThreadMessageLike {
     metadata: Object.keys(custom).length > 0 ? { custom } : undefined,
   };
 }
-
-/**
- * Text-file attachment adapter — produces text content parts that get
- * concatenated into the user's message text. Kept because it's the only path
- * that doesn't go through the (removed) base64 `image_url` flow; image and
- * PDF uploads now go through the two-phase upload pipeline
- * (`addPendingUpload` → POST /uploads → `attachmentIds` on send).
- */
-/**
- * Adapter for source-code files whose content the model reads inline as text.
- *
- * The plain-text / CSV / Markdown / JSON / YAML types are deliberately NOT
- * listed here: those are workspace data files (issue #392) routed through the
- * two-phase upload pipeline (`addPendingUpload` → POST /uploads → server
- * staging), the same path used for images and PDFs. Because the assistant-ui
- * `CompositeAttachmentAdapter` would inline anything matching its `accept`
- * mask, listing those types here would short-circuit the upload and bypass
- * the agent's workspace.
- */
-class CodeTextAttachmentAdapter extends SimpleTextAttachmentAdapter {
-  public override accept =
-    "text/html,text/xml,text/css,application/javascript,application/typescript,.js,.ts,.tsx,.jsx,.py,.rs,.go,.sh,.sql,.toml";
-}
-
-/**
- * Adapter for Office documents the model needs as readable text.
- *
- * Currently: .docx only. The file is a ZIP archive of XML; reading it via
- * the plain-text adapter would ship the model the literal "PK…" bytes of
- * the archive. We convert it to Markdown with mammoth + turndown at upload
- * time — headings survive as ATX `#`/`##`, tables as GFM pipe tables, lists
- * as bullet/numbered lines, and embedded images become `[image]` placeholders.
- *
- * Mammoth and turndown are dynamically imported inside send() so they don't
- * land in the initial chat bundle for users who never attach a .docx.
- *
- * Filename is XML-escaped into the `<attachment name="…">` wrapper so the
- * agent can cite the source document even when the name contains spaces,
- * ampersands, or angle brackets.
- *
- * Exported only so the size-rejection contract and the wrapper escaping
- * can be unit-tested in isolation.
- */
-export class OfficeDocumentAttachmentAdapter {
-  public accept = "application/vnd.openxmlformats-officedocument.wordprocessingml.document,.docx";
-
-  async add(state: { file: File }) {
-    const { file } = state;
-    // Same helper, and therefore the same sentence, the composer's own picker
-    // rejects with (#1087) — this used to re-implement the check with its own
-    // wording, so one user hit two different messages for one rule.
-    //
-    // The helper exempts images; that branch is unreachable here because this
-    // adapter only ever accepts .docx (see `accept` above), and a file that did
-    // arrive claiming image/* would fail in mammoth a moment later regardless.
-    const sizeError = oversizeAttachmentError(file);
-    if (sizeError) {
-      throw new Error(sizeError);
-    }
-    return {
-      id: uuid(),
-      type: "document" as const,
-      name: file.name,
-      contentType: file.type,
-      file,
-      status: { type: "requires-action" as const, reason: "composer-send" as const },
-    };
-  }
-
-  async send(attachment: { id?: string; name: string; file: File }) {
-    const arrayBuffer = await attachment.file.arrayBuffer();
-    const { default: mammoth } = await import("mammoth");
-    const { default: TurndownService } = await import("turndown");
-    const { gfm } = await import("turndown-plugin-gfm");
-
-    const { value: html } = await mammoth.convertToHtml(
-      { arrayBuffer },
-      {
-        // Empty src skips mammoth's base64 encoding; the strip-image
-        // turndown rule below replaces <img> with [image] downstream.
-        convertImage: mammoth.images.imgElement(() => Promise.resolve({ src: "" })),
-      }
-    );
-
-    const normalizedHtml = normalizeDocxTableHtml(html);
-
-    const turndown = new TurndownService({
-      headingStyle: "atx",
-      codeBlockStyle: "fenced",
-      bulletListMarker: "-",
-    });
-    turndown.use(gfm);
-    turndown.addRule("strip-image", {
-      filter: "img",
-      replacement: () => "[image]",
-    });
-    const value = turndown.turndown(normalizedHtml);
-
-    return {
-      id: attachment.id ?? uuid(),
-      type: "document" as const,
-      name: attachment.name,
-      file: attachment.file,
-      status: { type: "complete" as const },
-      content: [
-        {
-          type: "text" as const,
-          text: `<attachment name="${escapeXmlAttribute(attachment.name)}">\n${value}\n</attachment>`,
-        },
-      ],
-    };
-  }
-
-  async remove(): Promise<void> {
-    // No-op — local files require no cleanup
-  }
-}
-
-/**
- * Normalize mammoth-generated table HTML so turndown's GFM plugin produces
- * pipe tables.
- *
- * Mammoth emits `<table><tr><td>…</td></tr></table>` — no `<thead>`, no
- * `<th>`, and cell content wrapped in `<p>`. The turndown-plugin-gfm table
- * rule only activates when the first row is a heading row (all-`<th>` or
- * inside `<thead>`). This function:
- *  1. Strips `<p>` wrappers inside cells so content is inline.
- *  2. Promotes the first `<tr>` into a `<thead>` with `<th>` cells.
- *
- * KEEP-IN-SYNC with `normalizeTableHtml` in
- * `packages/plugins/pinchy-files/docx-extract.ts`. See that file for the
- * rationale for the intentional duplication.
- */
-function normalizeDocxTableHtml(html: string): string {
-  let out = html.replace(/<(td|th)([^>]*)><p>([\s\S]*?)<\/p><\/(td|th)>/g, "<$1$2>$3</$1>");
-
-  // Mammoth emits no <tbody>, so rows sit directly under <table>.
-  out = out.replace(/<table>([\s\S]*?)<\/table>/g, (_, inner: string) => {
-    const firstRowMatch = inner.match(/^(<tr>[\s\S]*?<\/tr>)/);
-    if (!firstRowMatch) return `<table>${inner}</table>`;
-    const firstRow = firstRowMatch[1];
-    const rest = inner.slice(firstRow.length);
-    const headingRow = firstRow.replace(/<td([^>]*)>/g, "<th$1>").replace(/<\/td>/g, "</th>");
-    return `<table><thead>${headingRow}</thead><tbody>${rest}</tbody></table>`;
-  });
-
-  return out;
-}
-
-function escapeXmlAttribute(value: string): string {
-  return value
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
-
-// Image and PDF MIMEs (and the workspace-data formats CSV/JSON/YAML/MD/TXT)
-// are NOT here — they go through the two-phase upload pipeline
-// (PinchyAttachmentButton → addPendingUpload → POST /uploads), not through
-// the assistant-ui adapter chain. Code-text + .docx still go through adapters
-// because they inline extracted text into the message content (no `image_url`
-// base64 frame, no PROTOCOL_OUTDATED rejection).
-// Exported for the routing tests in `__tests__/hooks/attachment-routing.test.ts`
-// which assert which adapter accepts a given (filename, MIME) pair — see
-// issue #392.
-export const attachmentAdapter = new CompositeAttachmentAdapter([
-  new CodeTextAttachmentAdapter(),
-  new OfficeDocumentAttachmentAdapter(),
-]);
 
 const MAX_RECONNECT_ATTEMPTS = 10;
 const MAX_BUNDLED_MESSAGES = 200;
@@ -494,6 +351,28 @@ export function preserveRicherLocalOverOversizedHistory(
   });
 }
 
+/**
+ * Lift the upload ids the server recovered for a history-rebuilt user turn
+ * (#1195) into the message's `attachmentIds`, so the retry affordance that
+ * survives a reload can re-send the files with the text.
+ *
+ * All-or-nothing on purpose. A partially-resolved set would send a manifest
+ * naming SOME of the user's files — the agent then answers about three of five
+ * invoices with nothing to say which two are missing, which is worse than the
+ * old behaviour of sending none and leaving the first attempt's block in the
+ * transcript as the only reference. An id goes unresolved when the row is gone
+ * (an operator cleaned the workspace) or the filename is ambiguous, and neither
+ * is something to paper over.
+ */
+export function historyAttachmentIds(msg: { role: string; files?: WsFileMeta[] }): {
+  attachmentIds?: string[];
+} {
+  if (msg.role !== "user" || !msg.files || msg.files.length === 0) return {};
+  const ids = msg.files.map((f) => f.uploadId);
+  if (ids.some((id) => id === undefined)) return {};
+  return { attachmentIds: ids as string[] };
+}
+
 export function useWsRuntime(
   agentId: string,
   /**
@@ -657,6 +536,41 @@ export function useWsRuntime(
    */
   const inflightRunIdRef = useRef<string | null>(null);
   /**
+   * The partial reply the user pressed stop on, held only until the server's
+   * history agrees (#978).
+   *
+   * OpenClaw does not persist an aborted run's assistant text, so every history
+   * catch-up after a stop hands back a list that is one message SHORTER than
+   * what is on screen — and the reconcile's job is to adopt the server's view.
+   * Nothing distinguishes that from a genuine shrink (a compaction, a deletion
+   * on another device) except knowing the stop happened, which is what this
+   * ref is.
+   *
+   * Held in a ref rather than a message flag because it must survive the
+   * destructive reconcile that would otherwise consume it. Cleared as soon as
+   * it stops being needed — a new turn, or a history that carries the reply
+   * itself — so it can never resurrect a message the user later deleted.
+   */
+  const stoppedReplyRef = useRef<{
+    id: string;
+    content: string;
+    timestamp?: string;
+  } | null>(null);
+  /**
+   * True from a stop click until the next turn starts (#978).
+   *
+   * The server no longer turns a user abort into an error frame, but it can
+   * only do that once it KNOWS about the abort — and the error chunk may
+   * already be on its way when the click arrives. That leftover frame would
+   * put "The model provider timed out." on a turn the user ended deliberately,
+   * which `onCancel` promises not to do.
+   *
+   * Deliberately not folded into `stoppedReplyRef`: a run stopped before its
+   * first word has no partial to hold, and that is precisely the case where a
+   * spurious error banner is the ONLY thing the user would be left with.
+   */
+  const cancelledTurnRef = useRef(false);
+  /**
    * True iff at least one assistant chunk was received during the current turn.
    * Reset when a new turn starts (user sends or retry). Used to classify
    * incoming error frames: with chunks → partial_stream_failure, without
@@ -701,6 +615,10 @@ export function useWsRuntime(
     setMessages(capMessages([]));
     setIsRunning(false);
     setIsDelayed(false);
+    // #978: a stopped reply belongs to the chat it was stopped in. Carrying it
+    // across a switch would anchor it onto the next chat's history.
+    cancelledTurnRef.current = false;
+    stoppedReplyRef.current = null;
     // Reset the liveness machine for the new agent. Updating the ref
     // synchronously here (same rationale as the timer cleanup below) means any
     // frame handler that fires before the next commit sees the cleared state.
@@ -1304,6 +1222,24 @@ export function useWsRuntime(
         // either a server bug (history frame never arrives) or an
         // adversarial server flooding chunks. Log + drop oldest so we
         // don't OOM the tab.
+        // A policy refusal can be the server's answer to the history request
+        // itself (an open tab reconnecting after the admin switched personal
+        // agents off). No history is coming, so end the wait here instead of
+        // buffering the refusal behind a history frame that never arrives —
+        // that would end in the history timeout, which reads as a network
+        // fault. Nothing buffered can be applied without history either.
+        if (
+          pendingHistoryRef.current &&
+          data.type === "error" &&
+          typeof data.code === "string" &&
+          data.code.startsWith("policy_")
+        ) {
+          clearHistoryWatchdog();
+          pendingHistoryRef.current = false;
+          frameBufferRef.current = [];
+          setIsHistoryLoaded(true);
+        }
+
         if (pendingHistoryRef.current && data.type !== "history") {
           if (frameBufferRef.current.length >= FRAME_BUFFER_MAX) {
             console.warn(
@@ -1347,6 +1283,7 @@ export function useWsRuntime(
             // here so the file chip renders on reload.
             ...(msg.files && msg.files.length > 0 ? { files: msg.files } : {}),
             ...(msg.oversized ? { oversized: true } : {}),
+            ...historyAttachmentIds(msg),
           }));
 
           // Prefer a richer LOCAL copy over an oversized-history placeholder
@@ -1368,6 +1305,16 @@ export function useWsRuntime(
             historyMessages.length = 0;
             historyMessages.push(...preserved);
           }
+
+          // Read BEFORE the two anchoring blocks below, both of which APPEND an
+          // assistant to `historyMessages`. `bufferIsStale` (further down) asks
+          // whether the SERVER already holds this turn's reply; an anchored copy
+          // of a reply the server does NOT hold answers that question `true` and
+          // throws away every frame buffered during the catch-up — including the
+          // pipe's post-`done` flush, which for a stopped run carries the tail of
+          // the very reply the anchor exists to keep.
+          const serverHistoryEndsInAssistant =
+            historyMessages[historyMessages.length - 1]?.role === "assistant";
 
           // Tier 2b: if the server reports an in-flight run for this
           // session, anchor the last assistant message in the reconciled
@@ -1411,6 +1358,48 @@ export function useWsRuntime(
             isRunningRef.current = true;
             setIsRunning(true);
             inflightRunIdRef.current = activeRun.runId;
+            // A live run means a NEW turn is streaming; whatever the user
+            // stopped before it is no longer the trailing reply.
+            stoppedReplyRef.current = null;
+          } else if (stoppedReplyRef.current && historyMessages.length > 0) {
+            // The empty list is client-router's "the session exists but OpenClaw
+            // cannot answer right now" frame (`messages: [], sessionKnown: true`
+            // — a restart race, or two failed history RPCs). It is NOT a shorter
+            // view of the conversation, and `shouldReplaceLocalWithServerHistory`
+            // refuses to adopt it for exactly that reason. Anchoring into it
+            // would hand that guard a list of ONE, which then reads as a genuine
+            // shrink and stages the destructive reconcile: the whole
+            // conversation replaced by the stopped reply alone. Hold the reply
+            // and let the next catch-up, which has a real history, release it.
+            //
+            // #978: the user pressed stop and this catch-up is the first look at
+            // the server's version of the turn. An aborted run's reply is not in
+            // OpenClaw's transcript — the history therefore ends at the USER
+            // turn, is shorter than the local list, and the reconcile below
+            // adopts it wholesale. That silently deletes the words the stop was
+            // pressed to keep.
+            //
+            // Anchor them back, exactly as the activeRun branch does for a run
+            // that is still going. Same helper, same rule: if the server DOES
+            // have the reply (it persisted after all, or another device
+            // continued the conversation) it wins whenever it is longer, so this
+            // can restore text but never shrink it.
+            const stopped = stoppedReplyRef.current;
+            const last = historyMessages[historyMessages.length - 1];
+            if (last?.role === "assistant" && last.content.length >= stopped.content.length) {
+              // The server caught up. Stop holding a private copy — keeping it
+              // would resurrect this reply after a later /reset or a deletion.
+              stoppedReplyRef.current = null;
+            } else {
+              const anchored = ensureTrailingAssistant(historyMessages, {
+                id: stopped.id,
+                role: "assistant",
+                content: stopped.content,
+                timestamp: stopped.timestamp ?? new Date().toISOString(),
+              });
+              historyMessages.length = 0;
+              historyMessages.push(...anchored);
+            }
           }
           const shouldRecoverFromHistory = shouldRecoverFromHistoryRef.current;
           const prevMessages = messagesRef.current;
@@ -1457,11 +1446,11 @@ export function useWsRuntime(
             }
           };
           // Stale iff the turn is done server-side (no activeRun) and its reply
-          // is already in history. When activeRun is set, historyMessages has
-          // been re-anchored above, but `!activeRun` short-circuits before we
-          // read it, so this only inspects the unmutated server list.
-          const bufferIsStale =
-            !activeRun && historyMessages[historyMessages.length - 1]?.role === "assistant";
+          // is already in history. Reads the snapshot taken before the anchoring
+          // blocks: `!activeRun` used to short-circuit before the only mutation
+          // there was, but the stopped-reply anchor (#978) runs on the
+          // `!activeRun` side, so the mutated list is no longer a safe reading.
+          const bufferIsStale = !activeRun && serverHistoryEndsInAssistant;
 
           if (shouldStageReplace) {
             stageDestructiveHistoryReconcile(historyMessages);
@@ -1703,6 +1692,13 @@ export function useWsRuntime(
           // Tier 2b: the run finished cleanly. Drop the in-flight runId
           // so the next turn's activeRun signal (if any) replaces it.
           inflightRunIdRef.current = null;
+          // #978: the terminator BOUNDS the error suppression below. The frame
+          // it guards against is the abort's own error racing the server's
+          // knowledge of the click, and the server sends that error before this
+          // `complete` — so anything arriving after it is about a different
+          // event and must reach the user. Left unbounded, a tab that stopped a
+          // reply and was then left open would silently drop every later error.
+          cancelledTurnRef.current = false;
         }
 
         if (data.type === "error") {
@@ -1711,6 +1707,20 @@ export function useWsRuntime(
             delayTimerRef.current = null;
           }
           setIsDelayed(false);
+
+          // #978: this turn was stopped by the user. A terminal error for it is
+          // the abort itself arriving the long way round — surfacing it would
+          // blame the provider for the user's own click, and the error bubble
+          // is also what flips the destructive-reconcile predicate that then
+          // discards the partial reply. `PROTOCOL_OUTDATED` is deliberately
+          // BELOW this: it is about the bundle, not about this turn, and it
+          // stays actionable no matter what the user just pressed.
+          if (cancelledTurnRef.current && data.code !== "PROTOCOL_OUTDATED") {
+            isRunningRef.current = false;
+            setIsRunning(false);
+            inflightRunIdRef.current = null;
+            return;
+          }
 
           // PROTOCOL_OUTDATED: the server rejected a legacy frame shape.
           // Surface a persistent reload toast — the tab needs the new bundle
@@ -1743,11 +1753,22 @@ export function useWsRuntime(
           // All attachment-related server error codes map onto the dedicated
           // "Invalid file" UI so the user sees the server's actionable message
           // instead of a generic "unknown error" fallback (issue #324).
+          //
+          // Matched by prefix rather than enumerated: the list was a
+          // hand-maintained mirror of client-router's `code:` literals, and a
+          // new one added there (`attachment_file_missing`, #1195) would
+          // silently fall through to "An unknown error occurred." — the exact
+          // fallback #324 removed. Every code Pinchy emits for this family is
+          // namespaced `attachment_`, and nothing else in the protocol is.
           const isAttachmentErrorCode =
-            data.code === "attachment_invalid" ||
-            data.code === "attachment_not_found" ||
-            data.code === "attachment_expired" ||
-            data.code === "attachment_already_attached";
+            typeof data.code === "string" && data.code.startsWith("attachment_");
+
+          // `policy_` codes are refusals by an instance policy (a member's
+          // personal agent switched off, a budget used up). Nothing the user
+          // can retry will change the answer — only an admin can — so the
+          // bubble carries the server's explanation and no Retry button.
+          // Matched by prefix for the same reason as `attachment_` above.
+          const isPolicyRefusal = typeof data.code === "string" && data.code.startsWith("policy_");
 
           const error: ChatError = data.providerError
             ? {
@@ -1774,10 +1795,14 @@ export function useWsRuntime(
                   role: "assistant",
                   content: "",
                   error,
-                  retryable: true,
-                  retryReason: hasReceivedChunkRef.current
-                    ? ("partial_stream_failure" as const)
-                    : ("send_failure" as const),
+                  ...(isPolicyRefusal
+                    ? {}
+                    : {
+                        retryable: true,
+                        retryReason: hasReceivedChunkRef.current
+                          ? ("partial_stream_failure" as const)
+                          : ("send_failure" as const),
+                      }),
                 }
               )
             )
@@ -1965,10 +1990,14 @@ export function useWsRuntime(
             status: "sending",
             ...(readyUploads.length > 0 && {
               files: readyUploads.map((u) => ({
-                filename: u.file.name,
+                // The name on disk (#1199) — see PendingUpload.storedFilename.
+                // The fallback only covers a chip that reached "ready" before
+                // this field existed; a live upload always carries it.
+                filename: u.storedFilename ?? u.file.name,
                 mimeType: u.file.type,
               })),
             }),
+            ...(attachmentIds.length > 0 && { attachmentIds }),
           },
           // In-flight assistant placeholder: keeps the list ending in an
           // assistant for the whole run, so assistant-ui never injects its
@@ -1990,6 +2019,11 @@ export function useWsRuntime(
       isRunningRef.current = true;
       hasReceivedChunkRef.current = false;
       setIsRunning(true);
+      // #978: the previous turn's stopped reply is now settled history as far
+      // as this client is concerned — it sits in the local list, and the next
+      // reconcile must be free to correct it like any other message.
+      cancelledTurnRef.current = false;
+      stoppedReplyRef.current = null;
       // A new turn starts — drive the liveness machine to `responding`. This
       // clears any prior failure/slow state so a fresh send always starts clean.
       dispatchLiveness({ type: "started" });
@@ -2064,6 +2098,17 @@ export function useWsRuntime(
       delayTimerRef.current = null;
     }
     setIsDelayed(false);
+    // #978: remember the words already on screen BEFORE clearing isRunning.
+    // Clearing it is what re-opens `requestHistoryCatchup`, and the server's
+    // history for an aborted run does not contain this reply — so without a
+    // local copy the next poke or window focus adopts a shorter history and the
+    // partial disappears. That is the flake behind 19-chat-stop-button.
+    const trailing = messagesRef.current[messagesRef.current.length - 1];
+    stoppedReplyRef.current =
+      trailing?.role === "assistant" && trailing.content.length > 0 && !trailing.error
+        ? { id: trailing.id, content: trailing.content, timestamp: trailing.timestamp }
+        : null;
+    cancelledTurnRef.current = true;
     isRunningRef.current = false;
     hasReceivedChunkRef.current = false;
     setIsRunning(false);
@@ -2091,6 +2136,12 @@ export function useWsRuntime(
       hasReceivedChunkRef.current = false;
       trimTrailingOnNextChunkRef.current = true;
       setIsRunning(true);
+      // #978: a retry is a new turn, and it explicitly discards the trailing
+      // partial (`trimTrailingOnNextChunkRef`). Holding either stop-related ref
+      // past this point would re-anchor a reply the retry just replaced, and
+      // swallow the retry's own errors.
+      stoppedReplyRef.current = null;
+      cancelledTurnRef.current = false;
       // A retry starts a fresh turn — clear any prior failed/slow liveness.
       dispatchLiveness({ type: "started" });
 
@@ -2099,6 +2150,12 @@ export function useWsRuntime(
         agentId,
         ...(chatId && { chatId }),
         content: lastUserMsg.content,
+        // Re-send the attachments with the message they belong to (#1195).
+        // Without this the retry delivered the text alone and the agent was
+        // asked about files it had never been handed.
+        ...((lastUserMsg.attachmentIds?.length ?? 0) > 0 && {
+          attachmentIds: lastUserMsg.attachmentIds,
+        }),
         clientMessageId: lastUserMsg.id,
         isRetry: true,
         retryReason: reason,
@@ -2138,6 +2195,12 @@ export function useWsRuntime(
         agentId,
         ...(chatId && { chatId }),
         content: failedMsg.content,
+        // Same reason as onRetryContinue (#1195). This path matters more, not
+        // less: the message never reached the server, so its uploads are still
+        // `staged` and the agent has never seen them at all.
+        ...((failedMsg.attachmentIds?.length ?? 0) > 0 && {
+          attachmentIds: failedMsg.attachmentIds,
+        }),
         clientMessageId: messageId,
         isRetry: true,
       });
@@ -2252,6 +2315,7 @@ export function useWsRuntime(
                     ...u,
                     state: "ready",
                     uploadId: response.id,
+                    storedFilename: response.filename,
                     progress: 100,
                   }
                 : u
@@ -2359,6 +2423,7 @@ export function useWsRuntime(
                     ...u,
                     state: "ready",
                     uploadId: response.id,
+                    storedFilename: response.filename,
                     progress: 100,
                   }
                 : u

@@ -1,6 +1,9 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { EventEmitter } from "events";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
+import { join } from "path";
+import { tmpdir } from "os";
 import type { LicenseState } from "@/lib/license-state";
 
 const {
@@ -22,6 +25,7 @@ const {
   mockRecordChatSessionError,
   mockSupersedeChatSessionErrors,
   mockAgentRanToolSince,
+  mockUploadedFileRows,
 } = vi.hoisted(() => ({
   mockChat: vi.fn(),
   mockSessionsHistory: vi.fn(),
@@ -42,6 +46,10 @@ const {
   mockRecordChatSessionError: vi.fn().mockResolvedValue(undefined),
   mockSupersedeChatSessionErrors: vi.fn().mockResolvedValue(undefined),
   mockAgentRanToolSince: vi.fn().mockResolvedValue(false),
+  // Rows the #1195 upload-id recovery reads back for history user turns.
+  // Empty by default: every other history test asserts `files` without an
+  // `uploadId`, which is what "no matching upload row" produces.
+  mockUploadedFileRows: vi.fn().mockResolvedValue([]),
 }));
 
 vi.mock("@/lib/agent-access", async (importOriginal) => {
@@ -77,6 +85,19 @@ vi.mock("@/lib/enterprise", () => ({
   getLicenseState: vi.fn().mockResolvedValue("paid"),
 }));
 
+const { mockGetInstancePolicy, mockGetExhaustedBlockingBudget } = vi.hoisted(() => ({
+  mockGetInstancePolicy: vi.fn(),
+  mockGetExhaustedBlockingBudget: vi.fn(),
+}));
+vi.mock("@/lib/budgets", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/budgets")>()),
+  getExhaustedBlockingBudget: mockGetExhaustedBlockingBudget,
+}));
+vi.mock("@/lib/instance-policy", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/instance-policy")>();
+  return { ...actual, getInstancePolicy: mockGetInstancePolicy };
+});
+
 vi.mock("@/db", () => ({
   db: {
     query: {
@@ -91,7 +112,19 @@ vi.mock("@/db", () => ({
     // turns AND by the #703 delivery glue's grant-existence lookup (both resolve
     // to an array; [] means "no rows", which the delivery path reads as "no
     // pre-existing grant").
-    select: () => ({ from: () => ({ where: () => mockListVisionModels() }) }),
+    //
+    // Routed by table for `uploaded_files` (#1195 upload-id recovery), via the
+    // `__table` marker on the schema mock below: it runs on the SAME history
+    // path as the grants lookup, so a single shared resolver would make a test
+    // that seeds upload rows depend on which of the two queries fires first.
+    select: () => ({
+      from: (table: unknown) => ({
+        where: () =>
+          (table as { __table?: string } | undefined)?.__table === "uploaded_files"
+            ? mockUploadedFileRows()
+            : mockListVisionModels(),
+      }),
+    }),
     // db.insert(agentDeliveredFiles).values(...) — the #703 delivery grant write.
     insert: () => ({ values: vi.fn().mockResolvedValue(undefined) }),
   },
@@ -107,6 +140,14 @@ vi.mock("@/db/schema", () => ({
     createdAt: "created_at",
     sessionKey: "session_key",
   },
+  uploadedFiles: {
+    __table: "uploaded_files",
+    id: "id",
+    filename: "filename",
+    agentId: "agent_id",
+    userId: "user_id",
+    status: "status",
+  },
 }));
 
 vi.mock("@/lib/model-vision", () => ({
@@ -121,6 +162,7 @@ vi.mock("@/lib/openclaw-config/write", () => ({
 vi.mock("drizzle-orm", () => ({
   eq: vi.fn((col, val) => ({ col, val })),
   and: vi.fn((...conds) => ({ and: conds })),
+  inArray: vi.fn((col, vals) => ({ col, vals })),
 }));
 
 vi.mock("@/lib/audit", async (importOriginal) => {
@@ -239,6 +281,13 @@ describe("ClientRouter", () => {
 
     // Default: agent exists and is accessible
     mockFindFirst.mockResolvedValue(defaultAgent);
+    // Default: members may use their personal agent and its automations.
+    mockGetInstancePolicy.mockResolvedValue({
+      memberPersonalAgents: true,
+      memberAutomations: true,
+    });
+    // Default: no budget has stopped anything.
+    mockGetExhaustedBlockingBudget.mockResolvedValue(null);
     // Default: user has no context
     mockUserFindFirst.mockResolvedValue({ id: "user-1", context: null });
     // Default: empty history for history-mode requests
@@ -963,25 +1012,37 @@ describe("ClientRouter", () => {
     mockOpenClawClient.request = vi.fn().mockResolvedValue({
       payload: { artifacts: [{ type: "file", title: "invoice.pdf", mimeType: "application/pdf" }] },
     });
+    // A delivery is pinned to the bytes it was minted from (#903), so the file
+    // has to exist for a grant — and therefore a chip — to be produced at all.
+    const workspaceRoot = mkdtempSync(join(tmpdir(), "pinchy-client-router-delivery-"));
+    vi.stubEnv("WORKSPACE_BASE_PATH", workspaceRoot);
+    mkdirSync(join(workspaceRoot, "agent-1", "workbench"), { recursive: true });
+    writeFileSync(join(workspaceRoot, "agent-1", "workbench", "invoice.pdf"), "%PDF-1.4\n");
+
     async function* fakeStream() {
       yield { type: "text" as const, text: "Here is your invoice." };
       yield { type: "done" as const, text: "" };
     }
     mockChat.mockReturnValue(fakeStream());
 
-    await router.handleMessage(clientWs as any, {
-      type: "message",
-      content: "get the invoice",
-      agentId: "agent-1",
-    });
+    try {
+      await router.handleMessage(clientWs as any, {
+        type: "message",
+        content: "get the invoice",
+        agentId: "agent-1",
+      });
 
-    const frames = clientWs.sent.map((s) => JSON.parse(s));
-    const doneFrame = frames.find((f: any) => f.type === "done");
-    const fileFrame = frames.find((f: any) => f.type === "file");
-    expect(fileFrame).toBeTruthy();
-    expect(fileFrame.filename).toBe("invoice.pdf");
-    expect(doneFrame).toBeTruthy();
-    expect(fileFrame.messageId).toBe(doneFrame.messageId);
+      const frames = clientWs.sent.map((s) => JSON.parse(s));
+      const doneFrame = frames.find((f: any) => f.type === "done");
+      const fileFrame = frames.find((f: any) => f.type === "file");
+      expect(fileFrame).toBeTruthy();
+      expect(fileFrame.filename).toBe("invoice.pdf");
+      expect(doneFrame).toBeTruthy();
+      expect(fileFrame.messageId).toBe(doneFrame.messageId);
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(workspaceRoot, { recursive: true, force: true });
+    }
   });
 
   it("recovers from the cold-start 'Unknown model' dispatch race without surfacing an error", async () => {
@@ -1759,6 +1820,61 @@ describe("ClientRouter", () => {
     );
   });
 
+  it("tells materializeAttachments that a retry frame is a retry", async () => {
+    // The one line connecting the client half of #1195 to the server half. The
+    // client tests assert only the outgoing frame and the pipeline integration
+    // tests set `isRetry` by hand, so without this the wiring can be deleted
+    // with every other test still green — and the regression that returns is
+    // the whole bug: a retry of a message whose first attempt materialized is
+    // refused outright with AttachmentAlreadyAttachedError.
+    const attachmentId = "550e8400-e29b-41d4-a716-446655440000";
+    mockMaterializeAttachments.mockResolvedValue({ chatAttachments: [], workspaceRefs: [] });
+
+    async function* fakeStream() {
+      yield { type: "text" as const, text: "ok" };
+      yield { type: "done" as const, text: "" };
+    }
+    mockChat.mockReturnValue(fakeStream());
+
+    await router.handleMessage(createMockClientWs() as any, {
+      type: "message",
+      content: "Analyze this file",
+      agentId: "agent-1",
+      attachmentIds: [attachmentId],
+      isRetry: true,
+      retryReason: "send_failure",
+    });
+
+    expect(mockMaterializeAttachments).toHaveBeenCalledWith(
+      expect.objectContaining({ attachmentIds: [attachmentId], isRetry: true })
+    );
+  });
+
+  it("does not claim a retry on an ordinary send", async () => {
+    // The negative control: `isRetry` is what gates the already-attached
+    // exemption, so a send that reports itself as a retry would hand any of
+    // the user's own earlier uploads back into a fresh message.
+    const attachmentId = "550e8400-e29b-41d4-a716-446655440001";
+    mockMaterializeAttachments.mockResolvedValue({ chatAttachments: [], workspaceRefs: [] });
+
+    async function* fakeStream() {
+      yield { type: "text" as const, text: "ok" };
+      yield { type: "done" as const, text: "" };
+    }
+    mockChat.mockReturnValue(fakeStream());
+
+    await router.handleMessage(createMockClientWs() as any, {
+      type: "message",
+      content: "Analyze this file",
+      agentId: "agent-1",
+      attachmentIds: [attachmentId],
+    });
+
+    expect(mockMaterializeAttachments).toHaveBeenCalledWith(
+      expect.objectContaining({ isRetry: false })
+    );
+  });
+
   it("rejects attachmentIds with more than the configured maximum (10)", async () => {
     // Clients are bounded by attachmentIdsSchema to 10 ids/message. A frame
     // that exceeds this is almost certainly malicious (or a buggy client) and
@@ -1880,6 +1996,37 @@ describe("ClientRouter", () => {
     expect(userMsg.role).toBe("user");
     expect(userMsg.content).toBe("Was steht in dieser Datei?");
     expect(userMsg.files).toEqual([{ filename: "invoice.pdf", mimeType: "application/pdf" }]);
+  });
+
+  it("surfaces the upload id behind each history file chip so a retry can re-send it", async () => {
+    // #1195. The client keeps `attachmentIds` in message state, which dies on
+    // reload — while the retry affordance does not (ChatErrorBanner
+    // re-surfaces the session's last agent error on mount). Without the id on
+    // the history frame, that Retry sends the text alone: the production
+    // symptom, one layer out from the in-tab path the client fix covers.
+    const clientWs = createMockClientWs();
+    mockUploadedFileRows.mockResolvedValueOnce([{ id: "upload-42", filename: "invoice.pdf" }]);
+    mockSessionsHistory.mockResolvedValue({
+      messages: [
+        {
+          role: "user",
+          content:
+            "Was steht in dieser Datei?\n\n<pinchy:attachments>\n" +
+            "The user attached these files (already saved into your workspace). Read each file with the listed tool, using the exact absolute path:\n" +
+            "- `/root/.openclaw/workspaces/agent-1/uploads/invoice.pdf` (application/pdf, 240 KB) — analyze with `pinchy_read`\n" +
+            "\nIf you delegate this task to a sub-agent or another tool, pass these exact paths verbatim — do not retype from memory.\n" +
+            "</pinchy:attachments>",
+          timestamp: 1708460000000,
+        },
+      ],
+    });
+
+    await router.handleMessage(clientWs as any, { type: "history", agentId: "agent-1" });
+
+    const sent = clientWs.sent.map((s) => JSON.parse(s));
+    expect(sent[0].messages[0].files).toEqual([
+      { filename: "invoice.pdf", mimeType: "application/pdf", uploadId: "upload-42" },
+    ]);
   });
 
   it("should preserve user messages that contain ONLY an attachment block (no accompanying text)", async () => {
@@ -2711,6 +2858,183 @@ describe("ClientRouter", () => {
       } finally {
         vi.useRealTimers();
       }
+    });
+  });
+
+  describe("an agent a blocking budget has stopped this month", () => {
+    const exhausted = {
+      id: "budget-1",
+      agent: { id: "agent-1", name: "Smithers" },
+      monthlyLimitUsd: 50,
+      onExceeded: "block",
+      spentUsd: 51.2,
+      period: "2026-10",
+      state: "exceeded",
+    };
+
+    it("refuses a send with a policy code instead of forwarding it to OpenClaw", async () => {
+      mockGetExhaustedBlockingBudget.mockResolvedValue(exhausted);
+      const clientWs = createMockClientWs();
+
+      await router.handleMessage(clientWs as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+      });
+
+      expect(mockChat).not.toHaveBeenCalled();
+      expect(mockGetExhaustedBlockingBudget).toHaveBeenCalledWith("agent-1");
+      const messages = clientWs.sent.map((s) => JSON.parse(s));
+      expect(messages).toHaveLength(1);
+      expect(messages[0]).toMatchObject({ type: "error", code: "policy_budget_exhausted" });
+      expect(messages[0].message).toMatch(/monthly budget/i);
+    });
+
+    it("says so when it is the whole instance's budget, not this agent's", async () => {
+      mockGetExhaustedBlockingBudget.mockResolvedValue({ ...exhausted, agent: null });
+      const clientWs = createMockClientWs();
+
+      await router.handleMessage(clientWs as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+      });
+
+      const [frame] = clientWs.sent.map((s) => JSON.parse(s));
+      expect(frame.message).toMatch(/this Pinchy/i);
+    });
+
+    it("audits the refused send with the budget it hit", async () => {
+      mockGetExhaustedBlockingBudget.mockResolvedValue(exhausted);
+      const clientWs = createMockClientWs();
+
+      await router.handleMessage(clientWs as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+      });
+
+      expect(mockAppendAuditLog).toHaveBeenCalledWith({
+        actorType: "user",
+        actorId: "user-1",
+        eventType: "chat.policy_refused",
+        resource: "agent:agent-1",
+        detail: {
+          reason: "budget_exhausted",
+          agent: { id: "agent-1", name: "Smithers" },
+          budget: { id: "budget-1", period: "2026-10" },
+        },
+        outcome: "failure",
+      });
+    });
+
+    it("still serves history — reading what was said costs nothing", async () => {
+      mockGetExhaustedBlockingBudget.mockResolvedValue(exhausted);
+      const clientWs = createMockClientWs();
+
+      await router.handleMessage(clientWs as any, { type: "history", agentId: "agent-1" });
+
+      expect(mockSessionsHistory).toHaveBeenCalled();
+      expect(mockGetExhaustedBlockingBudget).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("a member's personal agent while members may not use one", () => {
+    const ownSmithers = {
+      id: "agent-1",
+      name: "Smithers",
+      ownerId: "user-1",
+      isPersonal: true,
+      greetingMessage: "Hello.",
+    };
+
+    beforeEach(() => {
+      mockGetInstancePolicy.mockResolvedValue({
+        memberPersonalAgents: false,
+        memberAutomations: true,
+      });
+      mockFindFirst.mockResolvedValue(ownSmithers);
+    });
+
+    it("refuses the send with a policy code instead of forwarding it to OpenClaw", async () => {
+      const clientWs = createMockClientWs();
+
+      await router.handleMessage(clientWs as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+      });
+
+      expect(mockChat).not.toHaveBeenCalled();
+      const messages = clientWs.sent.map((s) => JSON.parse(s));
+      expect(messages).toHaveLength(1);
+      // `policy_` is the family the client renders without a Retry button —
+      // retrying cannot succeed until an admin changes the setting.
+      expect(messages[0]).toMatchObject({
+        type: "error",
+        code: "policy_personal_agent_disabled",
+      });
+      expect(messages[0].message).toMatch(/turned off/i);
+    });
+
+    it("audits the refused send with the agent snapshotted by name", async () => {
+      const clientWs = createMockClientWs();
+
+      await router.handleMessage(clientWs as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+      });
+
+      expect(mockAppendAuditLog).toHaveBeenCalledWith({
+        actorType: "user",
+        actorId: "user-1",
+        eventType: "chat.policy_refused",
+        resource: "agent:agent-1",
+        detail: { reason: "personal_agent_disabled", agent: { id: "agent-1", name: "Smithers" } },
+        outcome: "failure",
+      });
+    });
+
+    it("refuses history as well, without an audit row per reconnect", async () => {
+      const clientWs = createMockClientWs();
+
+      await router.handleMessage(clientWs as any, { type: "history", agentId: "agent-1" });
+
+      expect(mockSessionsHistory).not.toHaveBeenCalled();
+      const messages = clientWs.sent.map((s) => JSON.parse(s));
+      expect(messages[0]).toMatchObject({ type: "error", code: "policy_personal_agent_disabled" });
+      expect(mockAppendAuditLog).not.toHaveBeenCalled();
+    });
+
+    it("still lets the member stop a run that is already going — stopping is never what the policy is against", async () => {
+      const chatAbort = vi.fn().mockResolvedValue({ ok: true, aborted: true });
+      Object.assign(mockOpenClawClient, { chatAbort });
+      const clientWs = createMockClientWs();
+
+      await router.handleMessage(clientWs as any, { type: "abort", agentId: "agent-1" });
+
+      // The admin switched personal agents off mid-run. Refusing the stop
+      // would leave the run spending until it finished on its own.
+      expect(chatAbort).toHaveBeenCalledTimes(1);
+      const messages = clientWs.sent.map((s) => JSON.parse(s));
+      expect(messages.some((m) => m.code === "policy_personal_agent_disabled")).toBe(false);
+    });
+
+    it("lets an admin keep using their own Smithers", async () => {
+      const adminRouter = new ClientRouter(
+        mockOpenClawClient as any,
+        "admin-1",
+        "admin",
+        sessionCache
+      );
+      mockFindFirst.mockResolvedValue({ ...ownSmithers, ownerId: "admin-1" });
+      const clientWs = createMockClientWs();
+
+      await adminRouter.handleMessage(clientWs as any, { type: "history", agentId: "agent-1" });
+
+      const messages = clientWs.sent.map((s) => JSON.parse(s));
+      expect(messages.some((m) => m.code === "policy_personal_agent_disabled")).toBe(false);
     });
   });
 

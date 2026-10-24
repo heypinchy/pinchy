@@ -15,12 +15,17 @@
  * the interval is a poll for NEW work, not a run cadence: the re-entrancy guard
  * keeps overlapping ticks from starting a second run.
  */
+import { db } from "@/db";
+import { usageRecords } from "@/db/schema";
 import { appendAuditLog } from "@/lib/audit";
 import { safeProviderError } from "@/lib/audit";
 import { recordAuditFailure } from "@/lib/audit-deferred";
 import { embedTexts } from "@/lib/knowledge/embeddings";
 import { kbEmbedderAvailable, kbEmbeddingConfig } from "@/lib/knowledge/kb-embedder";
+import { resolveKbOcr } from "@/lib/knowledge/kb-ocr";
 import { extractPdfPages } from "@/lib/knowledge/pdf-extract";
+import { extractXlsx } from "@/lib/knowledge/xlsx-extract";
+import { convertOfficeFiles } from "@/lib/knowledge/office-convert";
 import { ingestPaths, type IngestDeps } from "@/lib/knowledge/ingest";
 import {
   claimNextIndexJob,
@@ -32,16 +37,84 @@ import {
 import { KB_INDEX_WORKER_ACTOR, reindexAuditEntry } from "@/lib/knowledge/reindex-audit";
 import { zeroIngestResult, type IngestResult } from "@/lib/knowledge/types";
 
+/**
+ * What one run sent to a vision model, for the audit row.
+ *
+ * Counts, never paths: `reindexAuditEntry` explains why an immutable,
+ * HMAC-signed detail must not carry filesystem paths, and that reasoning does
+ * not weaken because the payload would be interesting. So the trail answers
+ * "how much of this corpus was sent, and to which model" — not "which files",
+ * which stays answerable from the index itself.
+ */
+interface OcrTally {
+  model: string;
+  documents: number;
+  pages: number;
+  skippedPages: number;
+  inputTokens: number;
+  outputTokens: number;
+}
+
 /** Resolves the production embedder + extractor, or null if the bundled embedding model is missing (a broken image, not a config choice). */
-function resolveIngestDeps(): IngestDeps | null {
+async function resolveIngestDeps(tally: { current: OcrTally | null }): Promise<IngestDeps | null> {
   if (!kbEmbedderAvailable()) return null;
 
   const cfg = kbEmbeddingConfig();
+  // Resolved once per run rather than per document: the model choice and the
+  // provider key cannot meaningfully change mid-run, and re-resolving would
+  // re-read settings once per PDF across a corpus of thousands.
+  const ocr = await resolveKbOcr({
+    onUsage: ({ inputTokens, outputTokens }) => {
+      const t = tally.current;
+      if (!t) return;
+      t.inputTokens += inputTokens;
+      t.outputTokens += outputTokens;
+    },
+  });
+  if (ocr) {
+    tally.current = {
+      model: ocr.model,
+      documents: 0,
+      pages: 0,
+      skippedPages: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+    };
+  }
+
   return {
     embed: (texts) => embedTexts(texts, cfg),
-    extractPdf: extractPdfPages,
+    extractPdf: (absPath, opts) =>
+      extractPdfPages(absPath, {
+        outline: opts?.outline,
+        ...(ocr
+          ? {
+              ocr: {
+                ocrPage: ocr.ocrPage,
+                onDocumentOcr: ({ rendered, skipped }) => {
+                  const t = tally.current;
+                  if (!t) return;
+                  t.documents++;
+                  t.pages += rendered;
+                  t.skippedPages += skipped;
+                },
+              },
+            }
+          : {}),
+      }),
+    extractXlsx,
+    convertOffice: (sources) => convertOfficeFiles(sources),
+    ocrModel: ocr?.model ?? null,
   };
 }
+
+/**
+ * Why a run that found none of its folders failed. Shown to the admin as the
+ * run's error and recorded as the audit reason, so it names what to check and
+ * never a path.
+ */
+export const FOLDERS_UNAVAILABLE_ERROR =
+  "None of the granted folders could be read — they were missing, unreadable, or came up empty while the index still holds their documents — so the index was left as it was. If they live on a network share, check that it is mounted.";
 
 export interface RunIndexJobOptions {
   /** Test seam: injects a deterministic embedder/extractor. Production resolves them from the bundled in-process embeddinggemma GGUF. */
@@ -64,11 +137,22 @@ export async function runNextIndexJob(opts: RunIndexJobOptions = {}): Promise<Kb
   // still indexed 1500 documents. Reading the tally off the last report is the
   // only way that survives the throw.
   let counts: IngestResult = zeroIngestResult();
+  // Mutated by the extractor's per-document callback. Held in a box rather
+  // than returned, for the same reason as `counts`: a run that dies partway
+  // still sent whatever it sent, and that has to reach the audit row.
+  const ocrTally: { current: OcrTally | null } = { current: null };
+  // Folders ingest left as they were: granted roots it could not read or that
+  // came up emptied, and emptied folders below a root. Counted onto the job and
+  // the outcome row; the paths themselves go to the server log only, like
+  // every other path ingest reports. `skippedRoots` alone decides whether the
+  // run read anything at all.
+  let unavailableFolders = 0;
+  let skippedRoots = 0;
 
   try {
     // Resolved per run, not per process: the route's precheck only covers the
     // moment of the request, and existsSync is cheap enough to re-check here.
-    const deps = opts.deps ?? resolveIngestDeps();
+    const deps = opts.deps ?? (await resolveIngestDeps(ocrTally));
     if (!deps) throw new Error("embedding_model_missing");
 
     counts = await ingestPaths(job.orgId, job.paths, deps, {
@@ -76,7 +160,32 @@ export async function runNextIndexJob(opts: RunIndexJobOptions = {}): Promise<Kb
         counts = progress.counts;
         return recordIndexJobProgress(job.id, progress);
       },
+      onSkippedRoot: (rootDir, reason) => {
+        unavailableFolders++;
+        skippedRoots++;
+        console.warn(
+          `[kb-index-worker] job ${job.id}: skipped ${rootDir} (${reason}); nothing under it was indexed or removed`
+        );
+      },
+      onKeptFolder: (folder) => {
+        unavailableFolders++;
+        console.warn(
+          `[kb-index-worker] job ${job.id}: ${folder} came up empty while the index still holds documents from it; they were kept`
+        );
+      },
+      // A share that failed to mount is an empty directory under Docker, and
+      // that holds for every run: the nightly one nobody watches, and the
+      // admin's retry after it failed saying "check that it is mounted" —
+      // which, read literally, would delete the folder's whole index.
+      keepEmptiedFolders: true,
     });
+
+    // Every folder skipped is not a run that found nothing — it is a run that
+    // could not look. Reporting it as a success is how an unmounted share
+    // would read "Last indexed automatically today" for weeks.
+    if (job.paths.length > 0 && skippedRoots === job.paths.length) {
+      throw new Error(FOLDERS_UNAVAILABLE_ERROR);
+    }
   } catch (err) {
     // Ingest already absorbs a single unreadable file (counting it `failed`),
     // so reaching here means something systemic — the embedder (a missing GGUF
@@ -92,17 +201,71 @@ export async function runNextIndexJob(opts: RunIndexJobOptions = {}): Promise<Kb
     // sweep) that the single-container design does not otherwise need — and a
     // database outage is already an operator's problem, not a queue's.
     const reason = safeProviderError(err instanceof Error ? err.message : "reindex_failed");
-    await finishIndexJob(job.id, { outcome: "failed", counts, error: reason });
-    await auditOutcome({ job, agent, outcome: "failure", counts, reason });
-    return { ...job, status: "failed", counts, error: reason };
+    await finishIndexJob(job.id, { outcome: "failed", counts, error: reason, unavailableFolders });
+    await recordOcrUsage(job, ocrTally.current);
+    await auditOutcome({
+      job,
+      agent,
+      outcome: "failure",
+      counts,
+      reason,
+      ocr: ocrTally.current,
+      unavailableFolders,
+    });
+    return { ...job, status: "failed", counts, error: reason, unavailableFolders };
   }
 
   // `unsearchable` and `failed` files do not make this a failed run: the
   // reindex did its job, and those counts are findings about the corpus.
   // Burying them would be the failure.
-  await finishIndexJob(job.id, { outcome: "succeeded", counts });
-  await auditOutcome({ job, agent, outcome: "success", counts });
-  return { ...job, status: "succeeded", counts };
+  await finishIndexJob(job.id, { outcome: "succeeded", counts, unavailableFolders });
+  await recordOcrUsage(job, ocrTally.current);
+  await auditOutcome({
+    job,
+    agent,
+    outcome: "success",
+    counts,
+    ocr: ocrTally.current,
+    unavailableFolders,
+  });
+  return { ...job, status: "succeeded", counts, unavailableFolders };
+}
+
+/**
+ * Writes one usage row for the vision tokens this run spent.
+ *
+ * One row per RUN, not per page: a corpus of scans is hundreds of calls, and
+ * the dashboard's question is "what did indexing cost", not "what did page 7
+ * cost". The `kb-index:` session key classifies as `system` — background work
+ * Pinchy triggered on the agent's behalf, which is exactly what a reindex is.
+ *
+ * Written inline rather than through /api/internal/usage/record: that route
+ * exists so the OpenClaw container can reach the database it has no connection
+ * to. This worker runs inside the web process and already has one.
+ */
+async function recordOcrUsage(job: KbIndexJob, ocr: OcrTally | null): Promise<void> {
+  if (!ocr || ocr.inputTokens + ocr.outputTokens === 0) return;
+
+  try {
+    await db.insert(usageRecords).values({
+      // Same sentinel the plugin's vision reporter uses: nobody typed
+      // anything, so there is no user to attribute this to.
+      userId: "system",
+      agentId: job.agentId,
+      agentName: job.agentName,
+      sessionKey: `kb-index:${job.id}`,
+      model: ocr.model,
+      inputTokens: ocr.inputTokens,
+      outputTokens: ocr.outputTokens,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      estimatedCostUsd: null,
+    });
+  } catch (err) {
+    // Telemetry must never take down a reindex that actually happened — the
+    // same call the audit write makes one line below.
+    console.error("[kb-index-worker] failed to record OCR usage:", err);
+  }
 }
 
 /**
@@ -118,6 +281,8 @@ async function auditOutcome(args: {
   outcome: "success" | "failure";
   counts: IngestResult;
   reason?: string;
+  ocr: OcrTally | null;
+  unavailableFolders: number;
 }): Promise<void> {
   const entry = reindexAuditEntry({
     actorType: "system",
@@ -126,8 +291,17 @@ async function auditOutcome(args: {
     outcome: args.outcome,
     pathCount: args.job.paths.length,
     jobId: args.job.id,
+    // Copied from the job rather than inferred: the worker runs a scheduled
+    // job exactly like a manual one, so the row is the only place the
+    // difference survives.
+    trigger: args.job.trigger,
+    ...(args.job.sweepId !== null ? { sweepId: args.job.sweepId } : {}),
     counts: args.counts,
     reason: args.reason,
+    // Omitted entirely when the run OCR'd nothing, so an absent field means
+    // "nothing was sent" rather than "we did not look".
+    ocr: args.ocr && args.ocr.documents > 0 ? args.ocr : undefined,
+    unavailableFolders: args.unavailableFolders > 0 ? args.unavailableFolders : undefined,
   });
   try {
     await appendAuditLog(entry);

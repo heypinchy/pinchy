@@ -108,6 +108,8 @@ export interface AutomationListItem {
   createdBy: string | null;
   createdAt: string;
   connectionIds: string[];
+  /** A used-up blocking cost budget pauses this agent's automations (#36). */
+  pausedByBudget: boolean;
 }
 
 /**

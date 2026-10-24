@@ -672,8 +672,35 @@ describe("AgentSettingsPermissions", () => {
           allowedPaths: [],
           integrations: [],
           webSearchConfig: {},
-          confirmTools: [],
+          confirm: {},
         },
+        false
+      );
+    });
+
+    // The read side of the #1133 storage switch, at the form. An agent whose
+    // admin ticked confirmations before the upgrade carries `confirmTools`;
+    // opening the page must show that policy rather than an empty one, because
+    // the next save persists whatever the form is holding — an empty form
+    // would silently write the policy away.
+    it("loads a pre-#1133 confirmTools policy into the form", () => {
+      const onChange = vi.fn();
+      render(
+        <AgentSettingsPermissions
+          agent={{
+            ...defaultAgent,
+            allowedTools: ["pinchy_web_search"],
+            pluginConfig: { "pinchy-approvals": { confirmTools: ["pinchy_web_search"] } },
+          }}
+          directories={defaultDirectories}
+          connections={[]}
+          isAdmin={true}
+          onChange={onChange}
+        />
+      );
+
+      expect(onChange).toHaveBeenCalledWith(
+        expect.objectContaining({ confirm: { pinchy_web_search: "confirm" } }),
         false
       );
     });

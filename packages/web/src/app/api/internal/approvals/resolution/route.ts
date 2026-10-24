@@ -40,9 +40,9 @@ export async function POST(request: NextRequest) {
 
   const parsed = await parseRequestBody(resolutionSchema, request);
   if ("error" in parsed) return parsed.error;
-  const { toolCallId, decision } = parsed.data;
+  const { toolCallId, sessionKey, decision } = parsed.data;
 
-  const settled = await recordResolution({ toolCallId, decision });
+  const settled = await recordResolution({ toolCallId, sessionKey, decision });
   // Nothing was waiting, or the user's own decision got there first — which
   // already wrote its audit row. A second one would double-count the same act.
   if (!settled) return NextResponse.json({ ok: true, settled: false });

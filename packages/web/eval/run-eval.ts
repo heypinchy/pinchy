@@ -849,14 +849,14 @@ export function requireOllamaCloudApiKey(): string {
   return key;
 }
 
-export function candidateModelsFromEnv(defaultModels: string[]): string[] {
-  const raw = process.env.EVAL_CANDIDATE_MODELS;
-  if (!raw) return defaultModels;
-  return raw
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
-}
+/**
+ * Candidate/judge resolution lives in `candidates.ts` — a Playwright-free
+ * module a vitest guard can import — and is re-exported here so both specs and
+ * `kb/run-kb-eval.ts` keep resolving through the one place they always have.
+ * See `assertCandidatesDispatchable` for what a bad id costs, and why the
+ * checks sit on the resolved value rather than on the checked-in lists.
+ */
+export { candidateModelsFromEnv, judgeModelFromEnv } from "./candidates";
 
 /**
  * A positive-integer run count from a raw env value, falling back to

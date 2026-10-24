@@ -1,9 +1,8 @@
 import { NextResponse } from "next/server";
-import { eq } from "drizzle-orm";
 
 import { withAdmin } from "@/lib/api-auth";
-import { db } from "@/db";
-import { activeAgents, type AgentPluginConfig } from "@/db/schema";
+import { getAgentWithAccess } from "@/lib/agent-access";
+import { type AgentPluginConfig } from "@/db/schema";
 import { DEFAULT_ORG_ID } from "@/lib/knowledge/constants";
 import { listUnsearchableDocuments } from "@/lib/knowledge/unsearchable";
 
@@ -29,16 +28,18 @@ type RouteContext = { params: Promise<{ agentId: string }> };
  * path parameter here would turn a diagnostics panel into a way to enumerate
  * documents the agent was never granted.
  *
- * Admin-only, like the reindex it explains.
+ * Admin-only and access-gated, like the reindex it explains: the scope comes
+ * from the agent's grants, so the caller has to be allowed to see the agent
+ * first. Another user's personal agent answers 404 — same answer as an id
+ * nobody ever issued, see getAgentWithAccess's docblock.
  */
 // audit-exempt: read-only projection of already-stored index state, no state change.
-export const GET = withAdmin<RouteContext>(async (_request, { params }) => {
+export const GET = withAdmin<RouteContext>(async (_request, { params }, session) => {
   const { agentId } = await params;
 
-  const [agent] = await db.select().from(activeAgents).where(eq(activeAgents.id, agentId)).limit(1);
-  if (!agent) {
-    return NextResponse.json({ error: "Agent not found" }, { status: 404 });
-  }
+  const agentOrError = await getAgentWithAccess(agentId, session.user.id!, session.user.role);
+  if (agentOrError instanceof NextResponse) return agentOrError;
+  const agent = agentOrError;
 
   const allowedPaths =
     (agent.pluginConfig as AgentPluginConfig | null)?.["pinchy-files"]?.allowed_paths ?? [];

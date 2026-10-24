@@ -1,4 +1,4 @@
-import { and, eq, gt, inArray, lt, sql } from "drizzle-orm";
+import { and, eq, gt, inArray, isNull, lt, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { toolApproval } from "@/db/schema";
 
@@ -97,7 +97,7 @@ export async function decideGate(input: DecideGateInput): Promise<GateDecision> 
   }
 
   const existing = await db
-    .select({ id: toolApproval.id })
+    .select({ id: toolApproval.id, toolCallId: toolApproval.toolCallId })
     .from(toolApproval)
     .where(
       and(
@@ -117,12 +117,20 @@ export async function decideGate(input: DecideGateInput): Promise<GateDecision> 
     // resolve an approval OpenClaw has already discarded: the user clicks
     // approve, gets a success toast, and the run stays stuck.
     //
-    // Only when the new attempt actually carries an id — overwriting a usable
-    // one with `undefined` trades a stale target for no target at all.
-    if (input.toolCallId) {
+    // The approval id has to go with it, and for the same reason: OpenClaw
+    // mints one approval per attempt and drops the one before it, so an id
+    // belonging to the previous call is already dead. Clearing it is what lets
+    // the next broadcast land at all — {@link linkApproval} refuses to
+    // overwrite an id, so a dead one left here would be permanent.
+    //
+    // Only when the new attempt actually carries an id, and only when that id
+    // has really changed: overwriting a usable target with `undefined` trades a
+    // stale one for none, and re-clearing on a repeated gate-check for the SAME
+    // call would throw away an approval that is still live.
+    if (input.toolCallId && input.toolCallId !== existing[0].toolCallId) {
       await db
         .update(toolApproval)
-        .set({ toolCallId: input.toolCallId })
+        .set({ toolCallId: input.toolCallId, openclawApprovalId: null })
         .where(eq(toolApproval.id, existing[0].id));
     }
     return { decision: "block", requestId: existing[0].id, created: false };
@@ -176,19 +184,104 @@ export async function decideGate(input: DecideGateInput): Promise<GateDecision> 
  * approvals (skill workshop, exec), and those name calls Pinchy never opened a
  * row for.
  *
- * Restricted to `pending`: a late broadcast must not re-arm a confirmation the
- * user has already decided, or a settled card would look resolvable again.
+ * Accepts a confirmation the user has ALREADY decided, and that is the point.
+ * The decision route flips the row before it resolves, so a broadcast arriving
+ * after a fast decision finds a row that is no longer `pending` — and rejecting
+ * it there does not lose a race, it makes the link permanently impossible while
+ * the run stays parked. Recording the id re-arms nothing: the inbox lists on
+ * `status = pending`, so a decided confirmation stays gone from it either way.
+ * What the id buys is the ability to deliver a decision already made.
+ *
+ * Never overwrites an id already on the row — two approvals for ONE call cannot
+ * both be live, and the first is the one the run is waiting on. That is a rule
+ * about the call, not about the row: a retry re-points the row at a new call,
+ * and {@link decideGate} clears the id in the same statement precisely so the
+ * new call's broadcast can land here. A finished confirmation is skipped: an
+ * address nobody will write to is noise.
+ *
+ * Scoped to the broadcast's session when it names one — see {@link sessionScope}.
  */
 export async function linkApproval(input: {
   approvalId: string;
   toolCallId: string;
+  sessionKey?: string;
 }): Promise<{ id: string } | null> {
   const [linked] = await db
     .update(toolApproval)
     .set({ openclawApprovalId: input.approvalId })
-    .where(and(eq(toolApproval.toolCallId, input.toolCallId), eq(toolApproval.status, "pending")))
+    .where(
+      and(
+        eq(toolApproval.toolCallId, input.toolCallId),
+        isNull(toolApproval.openclawApprovalId),
+        inArray(toolApproval.status, ["pending", "approved", "denied"]),
+        ...sessionScope(input.sessionKey)
+      )
+    )
     .returning({ id: toolApproval.id });
   return linked ?? null;
+}
+
+/** How long a decision waits for the broadcast that names the parked call, and
+ * how often it looks. The observed gap is one `plugin.approval.request` round
+ * trip (~125 ms on a loaded CI runner) plus the broadcast hop, so this is
+ * roughly an order of magnitude of headroom over the case it exists for. */
+const LINK_WAIT_MS = 2_000;
+const LINK_POLL_MS = 40;
+
+/**
+ * Wait for the approval broadcast to name the call this confirmation is holding.
+ *
+ * A decision made in a confirmation's first moments gets here before the
+ * broadcast does: the gate writes `approval.requested` from inside gate-check,
+ * so the card is actionable a full `plugin.approval.request` round trip before
+ * Pinchy learns OpenClaw's id. Answering "nothing is waiting" in that window is
+ * simply untrue — the run IS parked, we just do not know its address yet, and
+ * the user is told their approval did not take when it did.
+ *
+ * Bounded, because the broadcast may genuinely never come (the bridge was down,
+ * Pinchy restarted after it, or the row predates #1132). Then the honest answer
+ * is "no", and it has to arrive rather than hang.
+ */
+export async function awaitApprovalLink(
+  id: string,
+  opts: { timeoutMs?: number; pollMs?: number } = {}
+): Promise<string | null> {
+  const pollMs = opts.pollMs ?? LINK_POLL_MS;
+  const deadline = Date.now() + (opts.timeoutMs ?? LINK_WAIT_MS);
+  for (;;) {
+    const [row] = await db
+      .select({ approvalId: toolApproval.openclawApprovalId })
+      .from(toolApproval)
+      .where(eq(toolApproval.id, id))
+      .limit(1);
+    if (row?.approvalId) return row.approvalId;
+    if (Date.now() >= deadline) return null;
+    await new Promise((resolve) => setTimeout(resolve, pollMs));
+  }
+}
+
+/**
+ * Why a tool call id is not a key on its own.
+ *
+ * It is only as unique as the model provider makes it. Several self-hosted
+ * OpenAI-compatible servers number tool calls per response (`call_0`, `call_1`),
+ * and Pinchy explicitly supports those deployments, so two people can hold
+ * pending confirmations under one id at the same moment. Matching on the id
+ * alone then touches BOTH rows: one Approve resumes a call nobody confirmed,
+ * and one resolution report spends a grant the runtime said nothing about —
+ * with only one of the two rows getting an audit entry.
+ *
+ * The session is what tells them apart, and both callers already have it: the
+ * approval OpenClaw broadcasts carries `sessionKey` verbatim, and the gate's
+ * `onResolution` reports from the same hook context the gate-check read.
+ *
+ * Optional rather than required, deliberately: narrowing must never cost a
+ * match that works today. A caller that names no session falls back to the id
+ * alone, exactly as before — and a Pinchy row always has a session, because
+ * gate-check refuses to open a confirmation without one.
+ */
+function sessionScope(sessionKey: string | undefined) {
+  return sessionKey ? [eq(toolApproval.sessionKey, sessionKey)] : [];
 }
 
 /** What OpenClaw finally did with a parked call — mirrors the plugin's
@@ -222,6 +315,8 @@ export interface SettledApproval {
  */
 export async function recordResolution(input: {
   toolCallId: string;
+  /** The session the runtime reported on — see {@link sessionScope}. */
+  sessionKey?: string;
   decision: ApprovalResolution;
   now?: Date;
 }): Promise<SettledApproval | null> {
@@ -245,7 +340,8 @@ export async function recordResolution(input: {
         // An allow follows the user's approval, so `approved` is the expected
         // state — `pending` too, because a resolution can arrive from another
         // approval surface. Everything else is already settled.
-        inArray(toolApproval.status, allowed ? ["pending", "approved"] : ["pending"])
+        inArray(toolApproval.status, allowed ? ["pending", "approved"] : ["pending"]),
+        ...sessionScope(input.sessionKey)
       )
     )
     .returning({

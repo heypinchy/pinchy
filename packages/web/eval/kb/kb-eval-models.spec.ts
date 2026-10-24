@@ -64,6 +64,7 @@ import { dispatchAndScrape } from "../run-eval";
 import {
   requireOllamaCloudApiKey,
   candidateModelsFromEnv,
+  judgeModelFromEnv,
   runsPerModelFromEnv,
   pinAgentModel,
   appendRunResult,
@@ -81,8 +82,10 @@ import type { KnowledgeSearchAuditEntry } from "./run-kb-eval";
 import { getRawAssistantMessage } from "./getRawAssistantMessage";
 import { gradeKbRun } from "../../src/lib/eval/kb/answer-graders";
 import type { KbRunTrajectory, KbRunResult } from "../../src/lib/eval/kb/answer-graders";
+import type { KbRunResultRow } from "../../src/lib/eval/kb/types";
 import {
   DEFAULT_KB_JUDGE_MODEL,
+  LlmAbstentionJudge,
   LlmNliClient,
   LlmRelevanceJudge,
   createOllamaCloudChatFn,
@@ -103,8 +106,19 @@ import {
 } from "./sweep-agent";
 import { getTemplate } from "../../src/lib/agent-templates/registry";
 import { GOLD_QA } from "./corpus/gold-qa";
+import { nearDuplicatePathGroups } from "./corpus/manifest";
 
 const RESULT_LABEL = "kb-groundedness-sweep";
+
+/**
+ * Derived once, at module load, rather than per graded run: a mistyped
+ * `factGroup` makes `nearDuplicatePathGroups()` THROW, and inside the grading
+ * call that throw would arrive after the first model had already been
+ * dispatched — 48 times over, one per run, each having spent a real API call
+ * on a sweep the corpus had already invalidated. Here it fails before the
+ * stack is even asked for an answer.
+ */
+const NEAR_DUPLICATE_GROUPS = nearDuplicatePathGroups();
 
 /**
  * The (local-only, guarded) real Noack corpus path. `corpusFromEnv()` already
@@ -283,22 +297,34 @@ test.describe("KB Eval Harness Layer 3: groundedness sweep (real Ollama Cloud)",
     }
 
     const candidates = candidateModelsFromEnv(DEFAULT_KB_CANDIDATES);
-    const n = runsPerModelFromEnv(1);
-    const goldIds = GOLD_QA.map((g) => g.id);
-
-    const { agentId } = await setupKbSweepAgent(cookie);
 
     // The LLM-as-NLI judge + relevance judge (llm-nli.ts) — a pinned,
     // separate model from the candidates under test, same reasoning as
     // groundedness-grader.ts's DEFAULT_TAU comment: keep the JUDGE fixed so
     // score drift over a long sweep reflects the candidate's behavior, not
-    // the judge's. The default lives in llm-nli.ts (one literal, checked
-    // against the catalog by sweep-candidates.test.ts); override per run with
+    // the judge's. The default lives in llm-nli.ts; override per run with
     // KB_EVAL_JUDGE_MODEL.
-    const judgeModel = process.env.KB_EVAL_JUDGE_MODEL || DEFAULT_KB_JUDGE_MODEL;
+    //
+    // Resolved HERE, next to the candidates, rather than after the agent
+    // setup below: `judgeModelFromEnv` checks the pair (served, and not one of
+    // the candidates it is about to grade), and a judge that 404s fails every
+    // verdict — so no KB run is gradeable at all. That refusal is worth
+    // nothing once the corpus is seeded and the key is being spent.
+    const judgeModel = judgeModelFromEnv(DEFAULT_KB_JUDGE_MODEL, candidates);
+
+    const n = runsPerModelFromEnv(1);
+    const goldIds = GOLD_QA.map((g) => g.id);
+
+    const { agentId } = await setupKbSweepAgent(cookie);
+
     const chat = createOllamaCloudChatFn({ apiKey: ollamaKey, model: judgeModel });
     const nli = new LlmNliClient(chat);
     const relevance = new LlmRelevanceJudge(chat);
+    // Third judge role, same chat fn. NOT the NLI client with a cleverly
+    // worded hypothesis: that was tried, and entailment turned out to be the
+    // wrong relation for "did this answer decline?" on every judge model
+    // tested. See `buildAbstentionPrompt`.
+    const abstention = new LlmAbstentionJudge(chat);
 
     const withRetry = async (fn: () => Promise<void>, what: string): Promise<void> => {
       const attempts = 4;
@@ -356,7 +382,13 @@ test.describe("KB Eval Harness Layer 3: groundedness sweep (real Ollama Cloud)",
           console.warn(
             `[kb-eval] setup failed for ${model}/${goldId} after retries, recording run-infra-error: ${describeError(err)}`
           );
-          const setupErrorRun = infraErrorRun(model, goldId, err, Date.now() - setupStart);
+          const setupErrorRun = infraErrorRun(
+            model,
+            goldId,
+            gold.axis,
+            err,
+            Date.now() - setupStart
+          );
           allRuns.push(setupErrorRun);
           await appendRunResult(RESULT_LABEL, setupErrorRun);
           consecutiveInfraErrors++;
@@ -423,10 +455,16 @@ test.describe("KB Eval Harness Layer 3: groundedness sweep (real Ollama Cloud)",
         // dispatch above does — but by this point the answer is already in
         // hand and re-dispatching to recover it would be pure waste.
         const result = await withTransportRetry(
-          () => gradeKbRun(trajectory, gold, { nli, relevance }),
+          () =>
+            gradeKbRun(trajectory, gold, {
+              nli,
+              relevance,
+              abstention,
+              nearDuplicateGroups: NEAR_DUPLICATE_GROUPS,
+            }),
           { what: `judge ${model}/${goldId}` }
         );
-        const stampedResult: KbRunResult = { ...result, scenario: goldId };
+        const stampedResult: KbRunResultRow = { ...result, scenario: goldId, axis: gold.axis };
         allRuns.push(stampedResult);
         await appendRunResult(RESULT_LABEL, stampedResult);
         // A completed run — graded pass OR fail — proves the endpoints are
@@ -451,7 +489,13 @@ test.describe("KB Eval Harness Layer 3: groundedness sweep (real Ollama Cloud)",
         console.warn(
           `[kb-eval] run for ${model}/${goldId} recorded as run-infra-error: ${describeError(err)}`
         );
-        const infraErrorResult = infraErrorRun(model, goldId, err, Date.now() - runStart);
+        const infraErrorResult = infraErrorRun(
+          model,
+          goldId,
+          gold.axis,
+          err,
+          Date.now() - runStart
+        );
         allRuns.push(infraErrorResult);
         await appendRunResult(RESULT_LABEL, infraErrorResult);
         consecutiveInfraErrors++;

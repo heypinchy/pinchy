@@ -19,6 +19,7 @@ import {
 } from "./attribution-graders";
 import type { RetrievedSource } from "./attribution-graders";
 import { gradeGroundednessForGold, isAbstention } from "./groundedness-grader";
+import type { AbstentionJudge } from "./groundedness-grader";
 import type { GroundednessOptions } from "./groundedness-grader";
 import type { NliClient } from "./nli";
 import type { GoldQA, KbFailureTag, KbGraderResult, RunResult, RunTokenUsage } from "./types";
@@ -61,14 +62,21 @@ export const DEFAULT_RELEVANCE_TAU = 0.5;
  * so this passes outright without ever calling the judge. Whether the
  * abstention itself was the CORRECT behavior is `gradeGroundednessForGold`'s
  * job (`missed-abstention` / `false-abstention`), not this grader's.
+ *
+ * `abstained` is resolved once by `gradeKbRun` and passed in — see the note on
+ * `gradeGroundednessForGold`. This short-circuit is why the 2026-08-05 sweep
+ * reported `off-topic-grounded` on 7 of its 8 abstention runs: the detector
+ * did not recognise them, so each honest refusal was scored against the
+ * question it declined to answer and duly fell below τ.
  */
 export async function gradeAnswerRelevance(
   answer: string,
   query: string,
   judge: RelevanceJudge,
+  abstained: boolean,
   opts: AnswerRelevanceOptions = {}
 ): Promise<KbGraderResult> {
-  if (isAbstention(answer)) {
+  if (abstained) {
     return { passed: true, tags: [], notes: [] };
   }
 
@@ -152,14 +160,21 @@ export type KbRunResult = RunResult<KbFailureTag>;
  * `gradeAnswerRelevance` (does the answer address the query), and
  * `gradeCitationCorrectness` (fabricated-citation detection against the
  * run's real retrieved set). All four run unconditionally and are merged via
- * `composeKbGraderResults` — no manual abstention branching is needed here:
- * a correct abstention (`gold.expectAbstention` true, answer abstains)
- * naturally yields an empty Sources list, so `gradeAttribution` and
- * `gradeCitationCorrectness` pass trivially (nothing to check), and
- * `gradeAnswerRelevance` passes without ever calling the judge (its own
- * `isAbstention` short-circuit). Only `gradeGroundednessForGold` does
- * anything gold-aware; the other three simply have nothing to flag when the
- * answer is a correct, citation-free abstention.
+ * `composeKbGraderResults`.
+ *
+ * Abstention is resolved ONCE here and handed to the two graders that branch
+ * on it, so they cannot disagree about the same answer (see the note on
+ * `gradeGroundednessForGold`).
+ *
+ * The attribution axes deliberately keep grading an abstention. An earlier
+ * version of this comment asserted they had nothing to check, "since a
+ * correct abstention naturally yields an empty Sources list" — the
+ * 2026-08-05 sweep answered that empirically: every abstention in it cited
+ * the index document as proof of absence, and gpt-oss wrote a Sources list
+ * for one in a format that does not render. Abstaining changes whether
+ * declining to answer is a defect; it does not license a broken citation
+ * list. So `gradeAttribution` and `gradeCitationCorrectness` run either way,
+ * and an abstention that cites well simply passes them.
  */
 export async function gradeKbRun(
   traj: KbRunTrajectory,
@@ -167,22 +182,47 @@ export async function gradeKbRun(
   deps: {
     nli: NliClient;
     relevance: RelevanceJudge;
+    abstention: AbstentionJudge;
+    /**
+     * Path groups whose documents restate one fact, so `dedup-inflation` can
+     * charge an answer that cites both as independent corroboration.
+     *
+     * Required, not optional, and that is the whole point. It WAS optional,
+     * nobody passed it, and `gradeNoDuplicateCorroboration`'s "empty list ⇒
+     * pass" branch made the tag unreachable in every pipeline that produces a
+     * published number — the dataset printed a 0 that meant "not asked" rather
+     * than "did not happen", which is precisely the defect this harness exists
+     * to catch. A caller with no such knowledge passes `[]`, and then the
+     * decision is visible in the diff instead of absent from it.
+     *
+     * `nearDuplicatePathGroups()` in `eval/kb/corpus/manifest.ts` derives them
+     * from the corpus. This module cannot import it: `src/lib` must not reach
+     * into `eval/`, so the groups are handed in.
+     */
+    nearDuplicateGroups: string[][];
     groundedness?: GroundednessOptions;
     relevanceOpts?: AnswerRelevanceOptions;
   }
 ): Promise<KbRunResult> {
-  const attribution = gradeAttribution({ answer: traj.answer, retrieved: traj.retrieved });
+  const attribution = gradeAttribution({
+    answer: traj.answer,
+    retrieved: traj.retrieved,
+    nearDuplicateGroups: deps.nearDuplicateGroups,
+  });
+  const abstained = await isAbstention(gold.query, traj.answer, deps.abstention);
   const groundedness = await gradeGroundednessForGold(
     traj.answer,
     traj.citedPassageTexts,
     gold,
     deps.nli,
+    abstained,
     deps.groundedness
   );
   const relevance = await gradeAnswerRelevance(
     traj.answer,
     gold.query,
     deps.relevance,
+    abstained,
     deps.relevanceOpts
   );
   const citationCorrectness = gradeCitationCorrectness(traj.answer, traj.retrieved);

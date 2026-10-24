@@ -4,24 +4,22 @@
 // like the sibling uploads route. The delivery WRITE (which creates the grant)
 // is audited where it happens, in client-router.
 import { NextResponse } from "next/server";
-import { join, resolve, sep } from "path";
 import { and, eq } from "drizzle-orm";
 import { withAuth } from "@/lib/api-auth";
 import { getAgentWithAccess } from "@/lib/agent-access";
-import { getWorkspacePath } from "@/lib/workspace";
 import { db } from "@/db";
 import { agentDeliveredFiles } from "@/db/schema";
 import { sanitizeFilename } from "@/lib/upload-validation";
 import { streamWorkspaceFile } from "@/lib/serve-workspace-file";
-import { realpathWithinDir } from "@/lib/agent-file-access";
+import {
+  DELIVERY_ZONES,
+  hashFileBytes,
+  isDeliveryZone,
+  resolveInZone,
+  type DeliveryZone,
+} from "@/lib/delivered-file-location";
 
 type Params = { params: Promise<{ agentId: string; filename: string }> };
-
-// The workspace subdirectories a delivery can live in. The grant no longer
-// records which one — agent-generated files land in `workbench`, agent-fetched
-// files (e.g. an email attachment) in `uploads` — so the serving route searches
-// both, in order, and serves the first zone the file actually exists in.
-const DELIVERY_ZONES = ["workbench", "uploads"] as const;
 
 export const GET = withAuth<Params>(async (_req, { params }, session) => {
   const { agentId, filename: rawFilename } = await params;
@@ -48,7 +46,10 @@ export const GET = withAuth<Params>(async (_req, { params }, session) => {
   // filename (IDOR). Require a delivery grant owned by the caller. 404 (not 403)
   // so non-grantees can't even confirm the file exists.
   const grants = await db
-    .select({ id: agentDeliveredFiles.id })
+    .select({
+      zone: agentDeliveredFiles.zone,
+      contentHash: agentDeliveredFiles.contentHash,
+    })
     .from(agentDeliveredFiles)
     .where(
       and(
@@ -61,39 +62,79 @@ export const GET = withAuth<Params>(async (_req, { params }, session) => {
     return new NextResponse("Not found", { status: 404 });
   }
 
-  // The grant authorizes the file but no longer says which zone it lives in.
-  // Try each known zone in order; for each, re-resolve the final path and verify
-  // it stays inside <workspace>/<zone> (defence in depth, even though
-  // sanitizeFilename already rejects "/" and ".."). streamWorkspaceFile returns
-  // 404 when the file isn't there, so we serve the first zone that yields a
-  // non-404. Found in none => 404.
-  const workspace = getWorkspacePath(agentId);
-  for (const zone of DELIVERY_ZONES) {
-    const zoneDir = join(workspace, zone);
-    const fullPath = resolve(zoneDir, safeName);
-    if (!fullPath.startsWith(resolve(zoneDir) + sep)) continue;
+  // Since #903 a grant records WHAT was delivered, not just what it was called:
+  // the zone it came from and the SHA-256 of its bytes.
+  //
+  // The hash is the security property, and it is the whole of it: bytes that
+  // are not the delivered bytes are refused, whatever wrote them and whichever
+  // zone they sit in. That covers both gaps in the issue — an overwrite inside
+  // `workbench/`, and a same-named file shadowing an `uploads/` delivery —
+  // and every write path nobody has written yet. Verified by canary: removing
+  // this comparison turns the two tests named after those gaps red, while
+  // removing the zone pin alone leaves them green.
+  //
+  // The zone is not redundant, it just does a different job. It scopes a
+  // grant's authority to where its file came from, and it means the route
+  // looks in one place rather than hashing its way through a search — so a
+  // grant for `uploads/x` cannot be spent on `workbench/x` even in the one
+  // case the hash would wave through, which is when the two are byte-identical
+  // and therefore harmless anyway.
+  //
+  // The hash is read before a single byte is served, which costs one full pass
+  // over the file on top of the streaming one. That is the price of the check:
+  // verifying while streaming would mean the bytes had already left.
+  const hashesByZone = new Map<DeliveryZone, Set<string>>();
+  for (const grant of grants) {
+    if (!isDeliveryZone(grant.zone) || !grant.contentHash) continue;
+    const set = hashesByZone.get(grant.zone) ?? new Set<string>();
+    set.add(grant.contentHash);
+    hashesByZone.set(grant.zone, set);
+  }
 
-    // Real-path containment: the lexical check above only sees the requested
-    // path itself, never what a symlink at that path points at. Resolve
-    // symlinks on both sides and re-check containment — see
-    // agent-file-access.ts's realpathWithinDir. A symlink resolving outside
-    // this zone is treated the same as "not in this zone" (continue to the
-    // next), matching the lexical-miss branch above. Note this is per ZONE,
-    // not per workspace: a symlink in workbench pointing into uploads is
-    // refused here and then found on the uploads pass, or not at all.
-    //
-    // This is a check before an open, which is why what gets opened is the
-    // RESOLVED path and never `fullPath` again: re-pointing the symlink after
-    // this line changes nothing, because nothing reads that path a second
-    // time. The window that does remain — replacing the resolved, in-zone
-    // file itself between these two lines — needs the same write access the
-    // symlink did and is strictly narrower than the unchecked read this
-    // replaces.
-    const realPath = await realpathWithinDir(fullPath, zoneDir);
+  for (const [zone, hashes] of hashesByZone) {
+    // `resolveInZone` re-checks lexical containment and resolves symlinks
+    // against the zone directory — a symlink pointing out of the zone reads as
+    // "not here", exactly like a missing file, so the next grant gets a turn.
+    // What gets opened afterwards is the RESOLVED path and never the requested
+    // one, so re-pointing the link buys nothing.
+    const realPath = await resolveInZone(agentId, zone, safeName);
     if (!realPath) continue;
 
+    const hash = await hashFileBytes(realPath);
+    // Fail closed on both a mismatch and an unreadable file. A mismatch means
+    // these are not the bytes this user was handed — whoever wrote them may not
+    // even share their conversation — and there is nothing useful to say about
+    // it that does not also confirm the file exists.
+    if (!hash || !hashes.has(hash)) continue;
+
+    // The check is a read before a read, so a window remains: replacing the
+    // resolved, in-zone file between the hash and the stream serves bytes this
+    // never verified. Closing it needs a file HANDLE held across both — hash
+    // the fd, stream the fd — which `streamWorkspaceFile` (shared with the
+    // uploads route) does not take. Stated rather than implied, because what
+    // this check buys is a much larger window closed, not the absence of one:
+    // before it, every download after an overwrite served the new bytes, with
+    // no timing needed at all.
     const res = await streamWorkspaceFile(realPath, safeName);
     if (res.status !== 404) return res;
+  }
+
+  // Grants written before #903 carry no zone and no hash, and cannot be pinned
+  // after the fact: hashing whatever is on disk today would notarize exactly
+  // the swap this check exists to catch. So they keep the semantics they were
+  // written under — search both zones, serve the first hit — and the exposure
+  // they carry ends when they do.
+  //
+  // A user holding BOTH a legacy and a pinned grant for one filename therefore
+  // still gets legacy semantics for it. That is the same accepted window, not a
+  // new one: it needs a delivery that predates the upgrade.
+  if (!grants.every((g) => isDeliveryZone(g.zone) && g.contentHash)) {
+    for (const zone of DELIVERY_ZONES) {
+      const realPath = await resolveInZone(agentId, zone, safeName);
+      if (!realPath) continue;
+      const res = await streamWorkspaceFile(realPath, safeName);
+      if (res.status !== 404) return res;
+    }
   }
 
   return new NextResponse("Not found", { status: 404 });

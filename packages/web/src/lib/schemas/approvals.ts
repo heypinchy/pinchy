@@ -30,6 +30,12 @@ export type GateCheckBody = z.infer<typeof gateCheckSchema>;
  */
 export const resolutionSchema = z.object({
   toolCallId: z.string().min(1),
+  /** The session the runtime reported on. A tool call id is only as unique as
+   * the model provider makes it, so this is what keeps a report from spending a
+   * grant in someone else's session. Optional for the same reason as
+   * `sessionKey` on the gate check: narrowing must not reject a report a run
+   * context could not fully describe. */
+  sessionKey: z.string().min(1).optional(),
   decision: z.enum(["allow-once", "allow-always", "deny", "timeout", "cancelled"]),
 });
 export type ResolutionBody = z.infer<typeof resolutionSchema>;

@@ -31,6 +31,80 @@ const DOCKERFILE_OPENCLAW = readFileSync(resolve(REPO_ROOT, "Dockerfile.openclaw
 const DOCKERFILE_PINCHY = readFileSync(resolve(REPO_ROOT, "Dockerfile.pinchy"), "utf8");
 const VERIFY_SCRIPT = readFileSync(resolve(REPO_ROOT, "config/verify-memory-search.sh"), "utf8");
 
+/**
+ * Extracts the GGUF download command itself — `curl -fsSL … huggingface…gguf`.
+ *
+ * Anchoring on the first `curl` token would match `apt-get install … curl` and,
+ * worse, would let flag text in the *explanatory comment* above the command
+ * satisfy a flag assertion while the real command had lost it. The comment sits
+ * before `curl -fsSL`, so it is outside this span. The command is
+ * backslash-continued across lines, hence `[\s\S]` up to the HF URL.
+ *
+ * Throws rather than returning "" when it finds nothing: an empty string
+ * satisfies every NEGATIVE assertion below vacuously, so a Dockerfile this
+ * function can no longer read must be an error, not a pass.
+ */
+function downloadCommand(dockerfile: string): string {
+  const command = dockerfile.match(/curl -fsSL[\s\S]*?huggingface\.co\S+\.gguf/)?.[0];
+  if (!command) {
+    throw new Error(
+      "No `curl -fsSL … huggingface…gguf` download found — this guard cannot assert flags on a command it did not locate."
+    );
+  }
+  return command;
+}
+
+/**
+ * Asserts the download is willing to outlast a HuggingFace rate limit, not just
+ * a single hiccup.
+ *
+ * On 2026-08-06 the `Pre-release` image build went red on main against HF 429s.
+ * `--retry 5 --retry-all-errors --retry-delay 5` was in place and the guard
+ * below was green, because it asserted the flags were PRESENT rather than what
+ * they resolve to. curl's manual on the flag that did the damage:
+ *
+ *   "When curl is about to retry a transfer, it first waits one second and then
+ *    for all forthcoming retries it doubles the waiting time … By using
+ *    --retry-delay you disable this exponential backoff algorithm."
+ *
+ * So every attempt landed inside 25 s — six requests into a rate limit, which
+ * is closer to making it worse than to riding it out. The observed timeline was
+ * exactly that: 0.2s, 5.2s, 10.2s, 15.2s, 20.3s, 25.3s, all 429.
+ *
+ * What --retry-delay does NOT do, easy as it is to assume: it does not switch
+ * off curl's Retry-After compliance. curl takes the LARGER of the computed
+ * sleep and the header, so Retry-After is honoured either way — measured
+ * against curl 8.x with a 429-serving stub, not inferred. Which means the even
+ * 5 s spacing above is itself the evidence that HF sent no usable Retry-After,
+ * and restored exponential backoff is the entire fix.
+ *
+ * This is the same failure shape as the X-Frame-Options gate documented in
+ * AGENTS.md — assert the behaviour a command resolves to, not the flag a file
+ * asked for.
+ */
+function expectPatientBackoff(download: string): void {
+  // A fixed delay is the specific thing that broke it: it switches off the
+  // exponential backoff and leaves every retry evenly spaced.
+  expect(download).not.toMatch(/--retry-delay/);
+
+  // Without the fixed delay, backoff doubles 1,2,4,8,… so the retry COUNT is
+  // what buys patience: 8 retries sleep ~255s in total, 5 would sleep ~31s and
+  // land back where this started.
+  const retries = Number(download.match(/--retry\s+(\d+)/)?.[1]);
+  expect(retries).toBeGreaterThanOrEqual(8);
+
+  // …and the count alone is unbounded upward once doubling passes a minute, so
+  // bound how long curl may keep STARTING retries. That is what
+  // --retry-max-time caps — not the total wall clock, and not a transfer
+  // already in flight. This is the number to argue about if it ever needs
+  // changing; it is deliberately long enough to ride out a rate limit (8
+  // retries sleep ~255s, comfortably inside 300) and short enough that a
+  // genuinely gone upstream fails the same afternoon rather than occupying a
+  // runner.
+  const maxTime = Number(download.match(/--retry-max-time\s+(\d+)/)?.[1]);
+  expect(maxTime).toBeGreaterThanOrEqual(300);
+}
+
 /** Extracts the pinned HF `resolve/<40-hex-sha>/…gguf` revision from a Dockerfile's download URL. */
 function ggufRevision(dockerfile: string): string | undefined {
   return dockerfile.match(/huggingface\.co\/\S+\/resolve\/([0-9a-f]{40})\/\S+\.gguf/)?.[1];
@@ -78,17 +152,13 @@ describe("memory embedding pin drift guard", () => {
     // a passing build and a flaky-red one (PR #768 fell over twice this way on
     // 2026-07-16). --retry already covers the transient HTTP codes (incl. 504);
     // --retry-all-errors widens that to 4xx / non-HTTP errors as a safety net.
-    //
-    // Anchor on the actual download command — `curl -fsSL … huggingface…gguf` —
-    // NOT on the first `curl` token (that's `apt-get install … curl`). Anchoring
-    // loosely would let the flag text in the *explanatory comment* above satisfy
-    // these assertions and mask a real removal of the flags from the command. The
-    // comment sits before `curl -fsSL`, so it is outside this span. The curl is
-    // backslash-continued across lines, hence [\s\S] up to the HF URL.
-    const download =
-      DOCKERFILE_OPENCLAW.match(/curl -fsSL[\s\S]*?huggingface\.co\S+\.gguf/)?.[0] ?? "";
+    const download = downloadCommand(DOCKERFILE_OPENCLAW);
     expect(download).toMatch(/--retry\s+\d+/);
     expect(download).toMatch(/--retry-all-errors/);
+  });
+
+  it("waits long enough for a rate limit, with backoff left switched on", () => {
+    expectPatientBackoff(downloadCommand(DOCKERFILE_OPENCLAW));
   });
 
   it("the CI smoke test checks the same model path", () => {
@@ -135,10 +205,13 @@ describe("KB embedding pin drift guard", () => {
   });
 
   it("retries the GGUF download on transient HTTP failures", () => {
-    const download =
-      DOCKERFILE_PINCHY.match(/curl -fsSL[\s\S]*?huggingface\.co\S+\.gguf/)?.[0] ?? "";
+    const download = downloadCommand(DOCKERFILE_PINCHY);
     expect(download).toMatch(/--retry\s+\d+/);
     expect(download).toMatch(/--retry-all-errors/);
+  });
+
+  it("waits long enough for a rate limit, with backoff left switched on", () => {
+    expectPatientBackoff(downloadCommand(DOCKERFILE_PINCHY));
   });
 
   it("pins the SAME revision + checksum as the agent-memory model (both load the identical GGUF)", () => {

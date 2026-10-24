@@ -485,4 +485,83 @@ describe("PendingUpload state machine", () => {
     const uploadCall = vi.mocked(uploadModule.uploadAttachment).mock.calls[0];
     expect(uploadCall[2]).toBe(smallOriginal);
   });
+
+  // #1199. The route renames a file the browser did not name, so `file.name`
+  // and the name on disk are no longer the same string. The chip builds
+  // `/api/agents/<id>/uploads/<filename>` from whatever this hook puts in the
+  // message: read `file.name` there and the preview probes a path that does
+  // not exist, burns its five HEAD retries and falls back to a chip labelled
+  // `blob` — until a history frame silently swaps the name under the user.
+  describe("the server's stored filename", () => {
+    function mockUpload(filename: string) {
+      vi.mocked(uploadModule.uploadAttachment).mockResolvedValue({
+        id: "upload-id-123",
+        filename,
+        mimeType: "application/pdf",
+        sizeBytes: 1024,
+      });
+    }
+
+    it("is kept on the pending upload", async () => {
+      mockUpload("upload-2026-08-20-1432.pdf");
+
+      const { result } = renderHook(() => useWsRuntime("agent-1"));
+      await act(async () => {
+        result.current.addPendingUpload(makeFile("blob"));
+      });
+
+      const upload = result.current.pendingUploads[0] as PendingUpload;
+      expect(upload.state).toBe("ready");
+      expect(upload.storedFilename).toBe("upload-2026-08-20-1432.pdf");
+    });
+
+    it("survives a retry", async () => {
+      vi.mocked(uploadModule.uploadAttachment).mockRejectedValueOnce(new Error("boom"));
+
+      const { result } = renderHook(() => useWsRuntime("agent-1"));
+      await act(async () => {
+        result.current.addPendingUpload(makeFile("blob"));
+      });
+      expect(result.current.pendingUploads[0].state).toBe("failed");
+
+      mockUpload("upload-2026-08-20-1432.pdf");
+      await act(async () => {
+        result.current.retryPendingUpload(result.current.pendingUploads[0].localId);
+      });
+
+      const upload = result.current.pendingUploads[0] as PendingUpload;
+      expect(upload.state).toBe("ready");
+      expect(upload.storedFilename).toBe("upload-2026-08-20-1432.pdf");
+    });
+
+    it("is the name the sent message carries, not the browser's", async () => {
+      mockUpload("upload-2026-08-20-1432.pdf");
+
+      const { result } = renderHook(() => useWsRuntime("agent-1"));
+      await act(async () => {
+        result.current.addPendingUpload(makeFile("blob"));
+      });
+
+      type StoreConfig = {
+        messages: { role: string; content: { type: string; filename?: string }[] }[];
+        onNew(message: unknown): void | Promise<void>;
+      };
+      await act(async () => {
+        (result.current.runtime as unknown as StoreConfig).onNew({
+          content: [{ type: "text", text: "here you go" }],
+          attachments: [],
+        });
+      });
+
+      // Read the converted FilePart, not the raw WsMessage: this is the exact
+      // value `useMessagePartFile()` hands AttachmentPreview, which feeds it
+      // straight into buildFileUrl. Re-read `runtime` after the send — the
+      // store config is rebuilt each render and the pre-send snapshot holds a
+      // stale `messages` array.
+      const config = result.current.runtime as unknown as StoreConfig;
+      const sent = config.messages.filter((m) => m.role === "user").at(-1);
+      const fileParts = (sent?.content ?? []).filter((part) => part.type === "file");
+      expect(fileParts.map((part) => part.filename)).toEqual(["upload-2026-08-20-1432.pdf"]);
+    });
+  });
 });

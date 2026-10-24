@@ -4,6 +4,7 @@ import { gradeAnswerRelevance, gradeCitationCorrectness, gradeKbRun } from "../a
 import type { AnswerRelevanceOptions, KbRunTrajectory, RelevanceJudge } from "../answer-graders";
 import type { RetrievedSource } from "../attribution-graders";
 import { stubNliClient } from "./stub-nli-client";
+import type { AbstentionJudge } from "../groundedness-grader";
 import type { GoldQA, KbGraderResult } from "../types";
 
 function src(n: number, sourcePath: string, page: number | null = 1): RetrievedSource {
@@ -20,6 +21,21 @@ function highScoreNli() {
   return stubNliClient(() => ({ label: "entailment" as const, score: 0.95 }));
 }
 
+/** An AbstentionJudge returning a fixed verdict — 0 = answered, 1 = declined. */
+function fixedAbstentionJudge(score: number): AbstentionJudge {
+  return { declines: async () => score };
+}
+const ANSWERED = fixedAbstentionJudge(0);
+const DECLINED = fixedAbstentionJudge(1);
+
+/**
+ * For the runs below that grade an axis other than dedup. Spelled out rather
+ * than defaulted: `gradeKbRun` requires the groups precisely because an
+ * optional one went unpassed for the whole life of the published dataset, and
+ * a named empty list keeps that decision readable at each call site.
+ */
+const NO_DUPLICATES: string[][] = [];
+
 describe("gradeAnswerRelevance", () => {
   it("passes an on-topic answer (judge scores high)", async () => {
     const judge = fixedRelevanceJudge(0.9);
@@ -27,7 +43,8 @@ describe("gradeAnswerRelevance", () => {
     const result = await gradeAnswerRelevance(
       "The retention policy requires seven years [1].",
       "How long must records be retained?",
-      judge
+      judge,
+      false
     );
 
     expect(result).toEqual<KbGraderResult>({ passed: true, tags: [], notes: [] });
@@ -39,7 +56,8 @@ describe("gradeAnswerRelevance", () => {
     const result = await gradeAnswerRelevance(
       "Our office is open Monday through Friday [1].",
       "How long must records be retained?",
-      judge
+      judge,
+      false
     );
 
     expect(result.passed).toBe(false);
@@ -60,7 +78,8 @@ describe("gradeAnswerRelevance", () => {
     const result = await gradeAnswerRelevance(
       "I couldn't find this in the knowledge base.",
       "How long must records be retained?",
-      judge
+      judge,
+      true
     );
 
     expect(result).toEqual<KbGraderResult>({ passed: true, tags: [], notes: [] });
@@ -71,7 +90,13 @@ describe("gradeAnswerRelevance", () => {
     const judge = fixedRelevanceJudge(0.55);
     const opts: AnswerRelevanceOptions = { tau: 0.6 };
 
-    const result = await gradeAnswerRelevance("Some answer [1].", "Some query?", judge, opts);
+    const result = await gradeAnswerRelevance(
+      "Some answer [1].",
+      "Some query?",
+      judge,
+      false,
+      opts
+    );
 
     expect(result.passed).toBe(false);
     expect(result.tags).toEqual(["off-topic-grounded"]);
@@ -93,7 +118,8 @@ describe("gradeAnswerRelevance", () => {
 
 - [1] /data/handbook/policy.md — p. 12`,
       "How long must records be retained?",
-      judge
+      judge,
+      false
     );
 
     expect(seenAnswer).not.toMatch(/Sources/);
@@ -169,6 +195,8 @@ describe("gradeKbRun", () => {
     const result = await gradeKbRun(traj, baseGold, {
       nli: highScoreNli(),
       relevance: fixedRelevanceJudge(0.9),
+      abstention: ANSWERED,
+      nearDuplicateGroups: NO_DUPLICATES,
     });
 
     expect(result).toEqual({
@@ -191,6 +219,8 @@ describe("gradeKbRun", () => {
     const result = await gradeKbRun(traj, baseGold, {
       nli: highScoreNli(),
       relevance: fixedRelevanceJudge(0.1),
+      abstention: ANSWERED,
+      nearDuplicateGroups: NO_DUPLICATES,
     });
 
     expect(result.model).toBe("other-model");
@@ -218,6 +248,8 @@ describe("gradeKbRun", () => {
     const result = await gradeKbRun(traj, baseGold, {
       nli,
       relevance: fixedRelevanceJudge(0.9),
+      abstention: ANSWERED,
+      nearDuplicateGroups: NO_DUPLICATES,
     });
 
     expect(result.passed).toBe(false);
@@ -245,7 +277,12 @@ describe("gradeKbRun", () => {
       },
     };
 
-    const result = await gradeKbRun(traj, gold, { nli: highScoreNli(), relevance });
+    const result = await gradeKbRun(traj, gold, {
+      nli: highScoreNli(),
+      relevance,
+      abstention: DECLINED,
+      nearDuplicateGroups: NO_DUPLICATES,
+    });
 
     expect(result).toEqual({
       model: "test-model",
@@ -258,6 +295,63 @@ describe("gradeKbRun", () => {
     expect(relevanceJudgeCalled).toBe(false);
   });
 
+  it("charges dedup-inflation when the answer co-cites a near-duplicate pair the corpus declares", async () => {
+    // The reachability half of `dedup-inflation`. `gradeNoDuplicateCorroboration`
+    // passes unconditionally on an empty group list, and for the whole life of
+    // the published dataset `gradeKbRun` supplied none — so the tag could not
+    // fire anywhere a number came from, and `data/README.md` printed a 0 that
+    // meant "not asked". `deps.nearDuplicateGroups` is required for that
+    // reason: an optional one is what nobody passed.
+    const traj = baseTraj({
+      // The crowding pair from the eval corpus: one fact, two documents, cited
+      // as if they corroborated each other independently.
+      answer: `Aerobic plates are incubated at 32 degrees Celsius for 48 hours [1][2].
+
+**Sources:**
+
+- [1] /data/petrifilm-datasheet.md — p. 1
+- [2] /data/quality-binder.md — p. 1`,
+      retrieved: [src(1, "/data/petrifilm-datasheet.md"), src(2, "/data/quality-binder.md")],
+    });
+
+    const result = await gradeKbRun(traj, baseGold, {
+      nli: highScoreNli(),
+      relevance: fixedRelevanceJudge(0.9),
+      abstention: ANSWERED,
+      nearDuplicateGroups: [["/data/petrifilm-datasheet.md", "/data/quality-binder.md"]],
+    });
+
+    expect(result.passed).toBe(false);
+    expect(result.tags).toEqual(["dedup-inflation"]);
+    expect(result.notes[0]).toMatch(/petrifilm-datasheet\.md/);
+  });
+
+  it("leaves the same answer alone when no group pairs the two documents", async () => {
+    // The other side of the same wire: co-citing two documents is only a defect
+    // when they restate ONE fact. Without that declaration the run is clean, so
+    // a green verdict here means the corpus's marking is doing the work — not
+    // that the grader dislikes two citations.
+    const traj = baseTraj({
+      answer: `Aerobic plates are incubated at 32 degrees Celsius for 48 hours [1][2].
+
+**Sources:**
+
+- [1] /data/petrifilm-datasheet.md — p. 1
+- [2] /data/quality-binder.md — p. 1`,
+      retrieved: [src(1, "/data/petrifilm-datasheet.md"), src(2, "/data/quality-binder.md")],
+    });
+
+    const result = await gradeKbRun(traj, baseGold, {
+      nli: highScoreNli(),
+      relevance: fixedRelevanceJudge(0.9),
+      abstention: ANSWERED,
+      nearDuplicateGroups: [],
+    });
+
+    expect(result.tags).toEqual([]);
+    expect(result.passed).toBe(true);
+  });
+
   it("a missed-abstention run (gold expects abstention, model answered anyway) is flagged", async () => {
     const gold: GoldQA = { ...baseGold, expectAbstention: true };
     const traj = baseTraj();
@@ -265,6 +359,8 @@ describe("gradeKbRun", () => {
     const result = await gradeKbRun(traj, gold, {
       nli: highScoreNli(),
       relevance: fixedRelevanceJudge(0.9),
+      abstention: ANSWERED,
+      nearDuplicateGroups: NO_DUPLICATES,
     });
 
     expect(result.passed).toBe(false);

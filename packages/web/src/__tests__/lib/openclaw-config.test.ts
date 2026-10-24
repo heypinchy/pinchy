@@ -62,7 +62,7 @@ vi.mock("@/db", () => ({
 // every existing telegram-bot-token test working unchanged while letting the
 // production bot-token loop switch from per-agent getSetting calls to one
 // batched prefix query (#261).
-const { mockGetSetting, mockGetSettingsByPrefix } = vi.hoisted(() => {
+const { mockGetSetting, mockGetSettingsByPrefix, mockGetSettingsByKeys } = vi.hoisted(() => {
   const TELEGRAM_BOT_TOKEN_TEST_AGENT_IDS = [
     "agent-1",
     "agent-2",
@@ -82,12 +82,16 @@ const { mockGetSetting, mockGetSettingsByPrefix } = vi.hoisted(() => {
       }
       return map;
     }),
+    // The member-access policy reads its keys by name. Default: nothing
+    // stored, so both switches read as on.
+    mockGetSettingsByKeys: vi.fn(async () => new Map<string, string>()),
   };
 });
 
 vi.mock("@/lib/settings", () => ({
   getSetting: mockGetSetting,
   getSettingsByPrefix: mockGetSettingsByPrefix,
+  getSettingsByKeys: mockGetSettingsByKeys,
   setSetting: vi.fn().mockResolvedValue(undefined),
 }));
 
@@ -2308,6 +2312,25 @@ describe("regenerateOpenClawConfig", () => {
     expect(typeof config.plugins.entries["pinchy-audit"].config.gatewayToken).toBe("string");
   });
 
+  it("grants pinchy-audit conversation access, without which OpenClaw drops its budget gate", async () => {
+    // before_agent_run is a conversation hook: OpenClaw silently skips it for a
+    // non-bundled plugin (one warn diagnostic, no error) unless the entry opts
+    // in. Without this the blocking budgets stop nothing outside the browser.
+    mockedReadFileSync.mockReturnValue(
+      JSON.stringify({ gateway: { mode: "local", bind: "lan", auth: { token: "gw-token-123" } } })
+    );
+
+    await regenerateOpenClawConfig();
+
+    const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
+    expect(config.plugins.entries["pinchy-audit"].hooks).toEqual({ allowConversationAccess: true });
+    // Only the plugin that needs it: the grant hands over prompts and history.
+    for (const [id, entry] of Object.entries(config.plugins.entries)) {
+      if (id === "pinchy-audit") continue;
+      expect((entry as { hooks?: unknown }).hooks, id).toBeUndefined();
+    }
+  });
+
   it("should use PORT env var in plugin apiBaseUrl when set", async () => {
     const existingConfig = {
       gateway: { mode: "local", bind: "lan", auth: { token: "gw-token-123" } },
@@ -2622,12 +2645,11 @@ describe("regenerateOpenClawConfig", () => {
     expect(google["gemini-2.5-pro"].contextTokens).toBe(262144);
     expect(google["gemini-2.5-flash"].contextTokens).toBe(262144);
 
-    // Providers already under the ceiling keep an honest, unchanged budget.
-    const anthropic = providers.anthropic?.models ?? [];
-    expect(anthropic.length).toBeGreaterThan(0);
-    for (const m of anthropic) {
-      expect(m.contextTokens).toBe(m.contextWindow);
-    }
+    // Models already under the ceiling keep an honest, unchanged budget —
+    // Haiku 4.5's 200K window is the one built-in Anthropic model still below it.
+    const anthropic = Object.fromEntries((providers.anthropic?.models ?? []).map((m) => [m.id, m]));
+    expect(anthropic["claude-haiku-4-5-20251001"].contextTokens).toBe(200000);
+    expect(anthropic["claude-sonnet-5"].contextTokens).toBe(262144);
 
     // The invariant that matters, across the ENTIRE emitted tree: no model
     // anywhere may budget compaction above the ceiling or above its own window.
@@ -6771,6 +6793,82 @@ describe("restart-state integration", () => {
     expect(genericBinding).toBeUndefined();
   });
 
+  it("binds no member to a personal-agent bot while members may not use a personal agent", async () => {
+    // Settings → Organization → Member access. user-a is the admin who owns
+    // the bot's Smithers; user-b is a member. Skipping only user-b's OWN
+    // binding is not enough: the routing falls back to the bot owner's agent,
+    // which would hand a member the admin's private Smithers.
+    let callCount = 0;
+    mockedDb.select.mockReturnValue({
+      from: vi.fn().mockImplementation(() => {
+        callCount++;
+        if (callCount === 1) {
+          return Object.assign(
+            Promise.resolve([
+              {
+                id: "admin-smithers",
+                name: "Smithers",
+                model: "m",
+                allowedTools: [],
+                isPersonal: true,
+                ownerId: "user-a",
+              },
+              {
+                id: "user-b-smithers",
+                name: "Smithers",
+                model: "m",
+                allowedTools: [],
+                isPersonal: true,
+                ownerId: "user-b",
+              },
+            ]),
+            { innerJoin: mockInnerJoin([]), where: vi.fn().mockResolvedValue([]) }
+          );
+        }
+        if (callCount === 5) {
+          return Object.assign(
+            Promise.resolve([
+              { userId: "user-a", channel: "telegram", channelUserId: "111222333" },
+              { userId: "user-b", channel: "telegram", channelUserId: "444555666" },
+            ]),
+            { innerJoin: mockInnerJoin([]), where: vi.fn().mockResolvedValue([]) }
+          );
+        }
+        if (callCount === 6) {
+          // users: who is an admin (read only because the switch is off)
+          return Object.assign(
+            Promise.resolve([
+              { id: "user-a", role: "admin" },
+              { id: "user-b", role: "member" },
+            ]),
+            { innerJoin: mockInnerJoin([]), where: vi.fn().mockResolvedValue([]) }
+          );
+        }
+        return Object.assign(Promise.resolve([]), {
+          innerJoin: mockInnerJoin([]),
+          where: vi.fn().mockResolvedValue([]),
+        });
+      }),
+    } as never);
+
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "telegram_bot_token:admin-smithers") return "123456:ABC-token";
+      return null;
+    });
+    mockGetSettingsByKeys.mockResolvedValueOnce(
+      new Map([["policy.member_personal_agents", "false"]])
+    );
+
+    await regenerateOpenClawConfig();
+
+    const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
+    const peerIds = config.bindings.map(
+      (b: { match: { peer?: { id: string } } }) => b.match.peer?.id
+    );
+    expect(peerIds).toContain("111222333");
+    expect(peerIds).not.toContain("444555666");
+  });
+
   it("should not include Telegram config when no bot token is configured", async () => {
     mockedDb.select.mockReturnValue({
       from: mockFrom([
@@ -7745,6 +7843,28 @@ describe("regenerateOpenClawConfig — env secrets", () => {
       id: "/providers/anthropic/apiKey",
     });
     expect(config?.env?.ANTHROPIC_API_KEY).toBeUndefined();
+  });
+
+  // OpenClaw resolves an agent's model from this inline list first. The
+  // Anthropic balanced default must be declared here, or the runtime falls back
+  // to guessing its limits and Pinchy's capability table has no row for it.
+  it("declares the Anthropic balanced default, Claude Sonnet 5, in models.providers.anthropic.models", async () => {
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "anthropic_api_key") return "sk-ant-the-real-key";
+      return null;
+    });
+
+    await regenerateOpenClawConfig();
+
+    const written = findOpenClawConfigWrite(mockedWriteFileSync);
+    const config = JSON.parse(written![1] as string);
+    const models =
+      (config.models.providers.anthropic.models as Array<Record<string, unknown>>) ?? [];
+    expect(models.find((m) => m.id === "claude-sonnet-5")).toMatchObject({
+      contextWindow: 1000000,
+      input: ["text", "image"],
+      cost: { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 },
+    });
   });
 
   it("writes the actual plaintext key to secrets.json under /providers/anthropic/apiKey", async () => {

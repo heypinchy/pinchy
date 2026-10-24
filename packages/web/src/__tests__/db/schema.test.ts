@@ -139,9 +139,15 @@ describe("JSON column types — compile-time contracts", () => {
     expectTypeOf<NonNullable<AgentPluginConfig["pinchy-web"]>["allowedDomains"]>().toEqualTypeOf<
       string[] | undefined
     >();
+    expectTypeOf<NonNullable<AgentPluginConfig["pinchy-approvals"]>["confirm"]>().toEqualTypeOf<
+      Record<string, "confirm" | "allow"> | undefined
+    >();
+    // Pre-#1133, kept readable so an agent nobody has saved since the upgrade
+    // keeps its policy. Optional on purpose: required would make every new
+    // config object carry a key nothing writes any more.
     expectTypeOf<
       NonNullable<AgentPluginConfig["pinchy-approvals"]>["confirmTools"]
-    >().toEqualTypeOf<string[]>();
+    >().toEqualTypeOf<string[] | undefined>();
   });
 
   it("auditLog.detail is typed AuditDetail | null (not unknown)", () => {

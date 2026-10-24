@@ -6,6 +6,6 @@
   "dependencies": {
     "express": "^5.1.0",
     "imapflow": "^1.4.6",
-    "nodemailer": "^9.0.3"
+    "nodemailer": "^10.1.2"
   }
 }

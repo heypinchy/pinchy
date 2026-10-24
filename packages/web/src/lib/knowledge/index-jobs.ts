@@ -18,7 +18,7 @@ import { and, asc, desc, eq, inArray } from "drizzle-orm";
 
 import { db } from "@/db";
 import { kbIndexJobs } from "@/db/schema";
-import { KB_INDEX_JOB_ACTIVE_STATUSES } from "@/db/enums";
+import { KB_INDEX_JOB_ACTIVE_STATUSES, type KbIndexJobTrigger } from "@/db/enums";
 
 import type { IngestResult } from "./types";
 
@@ -33,6 +33,10 @@ export interface EnqueueIndexJobArgs {
   requestedBy: string;
   /** The agent's granted folders, already permission-narrowed by the caller. Snapshotted, never re-derived at run time. */
   paths: string[];
+  /** What started the run. Omitted means an admin asked — every caller that is not the nightly schedule. */
+  trigger?: KbIndexJobTrigger;
+  /** The nightly sweep this job belongs to. Scheduled jobs only. */
+  sweepId?: string;
 }
 
 export type EnqueueIndexJobResult =
@@ -65,6 +69,8 @@ export async function enqueueIndexJob(args: EnqueueIndexJobArgs): Promise<Enqueu
         agentName: args.agentName,
         requestedBy: args.requestedBy,
         paths: args.paths,
+        ...(args.trigger !== undefined ? { trigger: args.trigger } : {}),
+        ...(args.sweepId !== undefined ? { sweepId: args.sweepId } : {}),
       })
       .onConflictDoNothing()
       .returning();
@@ -159,6 +165,8 @@ export interface FinishIndexJobArgs {
   counts: IngestResult;
   /** Scrubbed failure summary (safeProviderError). Omitted on success. */
   error?: string;
+  /** Folders the run left as they were (unreadable, or emptied while still indexed). */
+  unavailableFolders?: number;
 }
 
 /** Moves a job to its terminal state, recording what it found. Releases the org's active-job slot. */
@@ -169,6 +177,7 @@ export async function finishIndexJob(jobId: string, args: FinishIndexJobArgs): P
       status: args.outcome,
       counts: args.counts,
       error: args.error ?? null,
+      unavailableFolders: args.unavailableFolders ?? 0,
       finishedAt: new Date(),
     })
     .where(eq(kbIndexJobs.id, jobId));

@@ -6,6 +6,7 @@ import {
 import { db } from "@/db";
 import { models } from "@/db/schema";
 import { seedBuiltinModels } from "@/lib/model-capabilities/seed";
+import { BALANCED_ANCHORS } from "@/lib/provider-model-constants";
 import { beforeEach, it, expect, describe } from "vitest";
 
 beforeEach(async () => {
@@ -31,6 +32,28 @@ describe("full-vision providers (all models in DB)", () => {
   it("returns true for any Google model", () => {
     expect(isModelVisionCapable("google/gemini-2.5-flash")).toBe(true);
   });
+
+  // Each provider's balanced model is what the pdf/image tools and the
+  // knowledge-base OCR are routed to, and that routing only happens when this
+  // returns true — a balanced default missing from the seeded table left its
+  // provider out of PDF reading entirely.
+  it.each([BALANCED_ANCHORS.anthropic, BALANCED_ANCHORS.openai, BALANCED_ANCHORS.google])(
+    "returns true for the balanced default %s",
+    (model) => {
+      expect(isModelVisionCapable(model)).toBe(true);
+    }
+  );
+
+  // The live model picker lists models this release does not curate. With no
+  // capability row they read as text-only, and the provider silently dropped
+  // out of the pdf/image chain; the vendored models.dev snapshot answers for
+  // them instead, by exact id.
+  it.each(["anthropic/claude-sonnet-4-5-20250929", "anthropic/claude-opus-4-8"])(
+    "returns true for %s, which only the models.dev snapshot knows",
+    (model) => {
+      expect(isModelVisionCapable(model)).toBe(true);
+    }
+  );
 
   it("returns false for a known-provider model NOT in the DB (not treated as vision by default)", () => {
     // The old hardcoded implementation would return true for any anthropic model.

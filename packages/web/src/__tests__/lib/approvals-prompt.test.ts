@@ -76,4 +76,57 @@ describe("buildApprovalPrompt", () => {
     expect(description).not.toContain("undefined");
     expect(description).not.toContain("{}");
   });
+
+  // #1133. Once deletion can be gated per model, "Delete a record in Odoo" is
+  // not a decision anyone can make — the whole point of the setting is that
+  // an invoice and a note are different answers. The resources the gate
+  // resolved are what the card has to show.
+  it("names the resource the call acts on", () => {
+    const { title } = buildApprovalPrompt("odoo_delete", { ids: [7] }, ["account.move"]);
+    expect(title).toContain("account.move");
+  });
+
+  it("names every resource of a call that spans more than one", () => {
+    const { title } = buildApprovalPrompt("odoo_reconcile", {}, [
+      "account.move",
+      "account.payment",
+    ]);
+    expect(title).toContain("account.move");
+    expect(title).toContain("account.payment");
+  });
+
+  it("says nothing about resources when the call names none", () => {
+    const bare = buildApprovalPrompt("email_send", { to: "ada@example.com" });
+    const empty = buildApprovalPrompt("email_send", { to: "ada@example.com" }, []);
+    expect(empty.title).toBe(bare.title);
+    expect(empty.title).not.toContain("—");
+  });
+
+  // A ref the model garbled resolves to `null`. Printing that would put the
+  // word "null" on a security prompt; the honest rendering is to leave the
+  // resource unstated and let the tool name carry the meaning.
+  it("does not print an unnamed resource", () => {
+    const { title } = buildApprovalPrompt("odoo_confirm_order", {}, [null]);
+    expect(title.toLowerCase()).not.toContain("null");
+  });
+
+  it("keeps the title inside the cap even with many resources", () => {
+    const { title } = buildApprovalPrompt(
+      "odoo_write",
+      {},
+      Array.from({ length: 20 }, (_, i) => `a.very.long.model.name.number.${i}`)
+    );
+    expect(title.length).toBeLessThanOrEqual(APPROVAL_TITLE_MAX);
+  });
+
+  // An opaque ref is 200+ characters of base64 and says nothing to a human.
+  // Left in the summary it also eats the entire 256-character description,
+  // pushing out the arguments that carry the meaning.
+  it("does not fill the description with an opaque ref token", () => {
+    const ref = `pinchy_ref:v1:${"A".repeat(300)}`;
+    const { description } = buildApprovalPrompt("odoo_confirm_order", { target: ref }, [
+      "sale.order",
+    ]);
+    expect(description).not.toContain("AAAA");
+  });
 });

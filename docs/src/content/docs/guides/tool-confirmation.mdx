@@ -24,6 +24,31 @@ Confirmation is set per agent, by an admin:
   always adjust the list later.
 </Aside>
 
+## Per record type, for Odoo
+
+"Ask before deleting" is often too broad. Deleting an invoice deserves a second look; deleting a note does not, and an agent that stops for both trains people to click through without reading.
+
+So for Odoo the setting also lives in the **model table** on the same page, where each cell has three states:
+
+|                 |                                                |
+| --------------- | ---------------------------------------------- |
+| **Not allowed** | The agent cannot do this at all.               |
+| **Ask first**   | The agent pauses and waits for a confirmation. |
+| **Allowed**     | The agent goes ahead on its own.               |
+
+A cell you have never touched shows what it **inherits** from the tool setting above. That is deliberate, and it is what keeps the table honest: if you gate deletion for the agent, every model is gated — including ones you add next month. Setting a single cell to **Allowed** is how you make an exception, and it stays an exception.
+
+The confirmation card names the record type, so the person deciding sees "Delete a record in Odoo — account.move" rather than a question they cannot answer.
+
+<Aside type="caution">
+  The check sees the call, not everything it sets off. Approving a write to an
+  invoice also writes that invoice's lines, and confirming a stock transfer
+  moves every line on it. Gate the operation you care about, and read the card's
+  details rather than assuming the scope is one record.
+</Aside>
+
+Where a single action touches two record types — reconciling a bill against a payment, for instance — the **stricter** of the two settings wins.
+
 ## What the person sees
 
 When the agent reaches a gated tool, it doesn't run it — it **waits**, mid-turn, holding the call open. A card appears **at the end of the conversation**, where the agent stopped, with the action and its details — for example, _"Smithers needs your confirmation: run `email_send` with to: ada@example.com?"_ — and two buttons:
@@ -47,6 +72,7 @@ Every step lands in the [audit trail](/concepts/audit-trail): the request, the d
 - **It's per person.** A confirmation you approve is yours; it never clears the same action for a teammate on a shared agent.
 - **It fails safe.** If a confirmation isn't approved within 10 minutes, it expires and the action stays blocked. The same goes for anything the agent does outside a conversation with a person — a scheduled run has nobody to ask, so a gated tool simply doesn't run there.
 - **You won't be buried in cards.** One agent can have at most 20 confirmations waiting for you at once. If an agent keeps asking, it's told to stop and to let you catch up first.
+- **There is no "always allow".** The card offers approve-once and deny, and nothing else. A member tapping "always" would permanently overturn a policy an admin set, invisibly — so a more specific decision here may be equal or stricter than the one above it, never looser. The agent runtime enforces that, not the button.
 - **Confirmations live in the Pinchy app.** On other channels (say, Telegram) there's no way to approve yet, so a gated tool stays blocked there — the safe default. If you want an agent to act freely on a channel, leave its tools un-gated; channel-side approval is on our list.
 
 <Aside type="note">

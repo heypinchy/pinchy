@@ -65,6 +65,16 @@ vi.mock("@/db", () => ({
   },
 }));
 
+// The route no longer checks the agent's existence itself: it asks the shared
+// read gate, which additionally withholds another user's personal agent from an
+// admin. Mocking the helper is what lets this file assert the delegation; the
+// helper's own rule is pinned in lib/agent-access.test.ts, and the end-to-end
+// answer against a real DB in agent-admin-routes-visibility.integration.test.ts.
+const mockGetAgentWithAccess = vi.fn();
+vi.mock("@/lib/agent-access", () => ({
+  getAgentWithAccess: (...args: unknown[]) => mockGetAgentWithAccess(...args),
+}));
+
 vi.mock("@/lib/openclaw-config", () => ({
   regenerateOpenClawConfig: vi.fn().mockResolvedValue(undefined),
 }));
@@ -78,12 +88,15 @@ vi.mock("@/lib/audit-deferred", () => ({
 }));
 
 import { GET, PUT, DELETE } from "@/app/api/agents/[agentId]/integrations/route";
-import { NextRequest } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { agentConnectionPermissions, integrationConnections } from "@/db/schema";
 
 const AGENT_ID = "agent-1";
 const CONNECTION_ID = "conn-1";
+
+/** What the read gate hands back for an agent this caller may see. */
+const agentRow = { id: AGENT_ID, name: "Support Agent" };
 
 function makeParams(agentId: string) {
   return { params: Promise.resolve({ agentId }) };
@@ -92,9 +105,27 @@ function makeParams(agentId: string) {
 describe("GET /api/agents/[agentId]/integrations", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockGetAgentWithAccess.mockResolvedValue(agentRow);
     mockSelectFrom.mockImplementation(() => ({
       where: mockSelectWhere.mockResolvedValue([]),
     }));
+  });
+
+  it("forwards the read gate's refusal and reads no permission row", async () => {
+    // An admin aiming at another user's personal agent. This route never
+    // checked existence at all, so it answered 200 with an empty list — which
+    // is the same answer a real agent with no integrations gives, and a
+    // different one from what a nonexistent id now gives.
+    mockGetAgentWithAccess.mockResolvedValueOnce(
+      NextResponse.json({ error: "Agent not found" }, { status: 404 })
+    );
+
+    const req = new NextRequest(`http://localhost:7777/api/agents/${AGENT_ID}/integrations`);
+    const res = await GET(req, makeParams(AGENT_ID));
+
+    expect(res.status).toBe(404);
+    expect(mockGetAgentWithAccess).toHaveBeenCalledWith(AGENT_ID, "admin-1", "admin");
+    expect(mockSelectWhere).not.toHaveBeenCalled();
   });
 
   it("returns 401 for unauthenticated request", async () => {
@@ -237,6 +268,7 @@ describe("GET /api/agents/[agentId]/integrations", () => {
 describe("PUT /api/agents/[agentId]/integrations", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockGetAgentWithAccess.mockResolvedValue(agentRow);
     mockSelectFrom.mockImplementation(() => ({
       where: mockSelectWhere,
     }));
@@ -320,7 +352,6 @@ describe("PUT /api/agents/[agentId]/integrations", () => {
   });
 
   it("returns 200 for a valid 'read' operation on model 'email'", async () => {
-    mockSelectWhere.mockResolvedValueOnce([{ id: AGENT_ID }]); // agent exists
     mockSelectWhere.mockResolvedValueOnce([{ id: CONNECTION_ID }]); // connection exists
     mockTxSelectWhere.mockResolvedValueOnce([]);
 
@@ -337,7 +368,6 @@ describe("PUT /api/agents/[agentId]/integrations", () => {
   });
 
   it("does not restrict operation vocabulary for non-email models (e.g. Odoo)", async () => {
-    mockSelectWhere.mockResolvedValueOnce([{ id: AGENT_ID }]); // agent exists
     mockSelectWhere.mockResolvedValueOnce([{ id: CONNECTION_ID }]); // connection exists
     mockTxSelectWhere.mockResolvedValueOnce([]);
 
@@ -354,7 +384,9 @@ describe("PUT /api/agents/[agentId]/integrations", () => {
   });
 
   it("returns 404 when agent does not exist", async () => {
-    mockSelectWhere.mockResolvedValueOnce([]); // agent not found
+    mockGetAgentWithAccess.mockResolvedValueOnce(
+      NextResponse.json({ error: "Agent not found" }, { status: 404 })
+    );
 
     const req = new NextRequest(`http://localhost:7777/api/agents/ghost-agent/integrations`, {
       method: "PUT",
@@ -367,8 +399,30 @@ describe("PUT /api/agents/[agentId]/integrations", () => {
     expect(body.error).toBe("Agent not found");
   });
 
+  it("forwards the read gate's refusal and writes no permission row", async () => {
+    // The sharpest of the four families: this is not index management, it is a
+    // permission WRITE. Granting another user's private Smithers live access to
+    // an Odoo or email connection would be invisible to its owner and to every
+    // list the admin can see. The gate runs before the transaction.
+    mockGetAgentWithAccess.mockResolvedValueOnce(
+      NextResponse.json({ error: "Agent not found" }, { status: 404 })
+    );
+
+    const req = new NextRequest(`http://localhost:7777/api/agents/${AGENT_ID}/integrations`, {
+      method: "PUT",
+      body: JSON.stringify({
+        connectionId: CONNECTION_ID,
+        permissions: [{ model: "res.partner", operation: "read" }],
+      }),
+    });
+    const res = await PUT(req, makeParams(AGENT_ID));
+
+    expect(res.status).toBe(404);
+    expect(mockTransaction).not.toHaveBeenCalled();
+    expect(mockAppendAuditLog).not.toHaveBeenCalled();
+  });
+
   it("returns 404 when connection does not exist", async () => {
-    mockSelectWhere.mockResolvedValueOnce([{ id: AGENT_ID }]); // agent exists
     mockSelectWhere.mockResolvedValueOnce([]); // connection not found
 
     const req = new NextRequest(`http://localhost:7777/api/agents/${AGENT_ID}/integrations`, {
@@ -382,7 +436,6 @@ describe("PUT /api/agents/[agentId]/integrations", () => {
 
   it("deletes existing permissions and inserts new ones", async () => {
     // Connection exists (validation query runs outside transaction)
-    mockSelectWhere.mockResolvedValueOnce([{ id: AGENT_ID }]); // agent exists
     mockSelectWhere.mockResolvedValueOnce([{ id: CONNECTION_ID }]); // connection exists
     // Existing permissions for diff (inside transaction)
     mockTxSelectWhere.mockResolvedValueOnce([{ model: "res.partner", operation: "read" }]);
@@ -405,7 +458,6 @@ describe("PUT /api/agents/[agentId]/integrations", () => {
   });
 
   it("does not call regenerateOpenClawConfig (delegated to agent PATCH)", async () => {
-    mockSelectWhere.mockResolvedValueOnce([{ id: AGENT_ID }]); // agent exists
     mockSelectWhere.mockResolvedValueOnce([{ id: CONNECTION_ID }]); // connection exists
     mockTxSelectWhere.mockResolvedValueOnce([]);
 
@@ -423,7 +475,6 @@ describe("PUT /api/agents/[agentId]/integrations", () => {
   });
 
   it("writes audit log with added/removed diff", async () => {
-    mockSelectWhere.mockResolvedValueOnce([{ id: AGENT_ID }]); // agent exists
     mockSelectWhere.mockResolvedValueOnce([{ id: CONNECTION_ID }]); // connection exists
     // Existing permissions (inside transaction)
     mockTxSelectWhere.mockResolvedValueOnce([
@@ -460,7 +511,6 @@ describe("PUT /api/agents/[agentId]/integrations", () => {
 
   it("wraps DELETE+INSERT in a database transaction", async () => {
     // Connection exists (validation query runs outside transaction)
-    mockSelectWhere.mockResolvedValueOnce([{ id: AGENT_ID }]); // agent exists
     mockSelectWhere.mockResolvedValueOnce([{ id: CONNECTION_ID }]); // connection exists
     mockTxSelectWhere.mockResolvedValueOnce([]);
 
@@ -483,7 +533,6 @@ describe("PUT /api/agents/[agentId]/integrations", () => {
   });
 
   it("handles empty permissions (clear all)", async () => {
-    mockSelectWhere.mockResolvedValueOnce([{ id: AGENT_ID }]); // agent exists
     mockSelectWhere.mockResolvedValueOnce([{ id: CONNECTION_ID }]); // connection exists
     mockTxSelectWhere.mockResolvedValueOnce([{ model: "res.partner", operation: "read" }]);
 
@@ -503,7 +552,6 @@ describe("PUT /api/agents/[agentId]/integrations", () => {
   });
 
   it("does not turn a committed change into a 500 when the audit write fails", async () => {
-    mockSelectWhere.mockResolvedValueOnce([{ id: AGENT_ID }]); // agent exists
     mockSelectWhere.mockResolvedValueOnce([{ id: CONNECTION_ID }]); // connection exists
     mockTxSelectWhere.mockResolvedValueOnce([]);
     mockAppendAuditLog.mockRejectedValueOnce(new Error("audit db unavailable"));
@@ -524,7 +572,6 @@ describe("PUT /api/agents/[agentId]/integrations", () => {
   });
 
   it("does not leak the raw DB error text when the permission write fails", async () => {
-    mockSelectWhere.mockResolvedValueOnce([{ id: AGENT_ID }]); // agent exists
     mockSelectWhere.mockResolvedValueOnce([{ id: CONNECTION_ID }]); // connection exists
     mockTransaction.mockRejectedValueOnce(
       new Error(
@@ -551,7 +598,30 @@ describe("PUT /api/agents/[agentId]/integrations", () => {
 describe("DELETE /api/agents/[agentId]/integrations", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockGetAgentWithAccess.mockResolvedValue(agentRow);
+    mockSelectFrom.mockImplementation(() => ({
+      where: mockSelectWhere.mockResolvedValue([]),
+    }));
     mockDeleteWhere.mockResolvedValue(undefined);
+  });
+
+  it("forwards the read gate's refusal and deletes nothing", async () => {
+    // This route never checked existence either: it answered 200 `{success:
+    // true}` and wrote a `config.changed` audit row claiming permissions were
+    // cleared, for an agent the caller may not see — and for ids that were
+    // never issued.
+    mockGetAgentWithAccess.mockResolvedValueOnce(
+      NextResponse.json({ error: "Agent not found" }, { status: 404 })
+    );
+
+    const req = new NextRequest(`http://localhost:7777/api/agents/${AGENT_ID}/integrations`, {
+      method: "DELETE",
+    });
+    const res = await DELETE(req, makeParams(AGENT_ID));
+
+    expect(res.status).toBe(404);
+    expect(mockDeleteWhere).not.toHaveBeenCalled();
+    expect(mockAppendAuditLog).not.toHaveBeenCalled();
   });
 
   it("returns 401 for unauthenticated request", async () => {

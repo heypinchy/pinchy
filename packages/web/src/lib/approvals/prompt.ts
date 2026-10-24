@@ -48,7 +48,15 @@ function describeArgs(params: unknown): string {
 
 export function buildApprovalPrompt(
   toolName: string,
-  params: unknown
+  params: unknown,
+  /**
+   * The resources the gate resolved this call to touch (#1133). Naming them is
+   * not decoration: once deletion can be gated per model, "Delete a record in
+   * Odoo" is not a decision anyone can make — an invoice and a note are the
+   * whole reason the setting exists. `null` entries are resources we could not
+   * name and are left unsaid rather than printed.
+   */
+  resources: (string | null)[] = []
 ): { title: string; description: string } {
   const known = TOOL_REGISTRY.find((tool) => tool.id === toolName);
 
@@ -56,7 +64,12 @@ export function buildApprovalPrompt(
   // `knowledge_search` is the standing example: it is granted by the Knowledge
   // Base template and appears in no registry, which is exactly how #865's
   // confirmation list rendered empty.
-  const title = truncate(known?.label ?? `Run ${toolName}`, APPROVAL_TITLE_MAX);
+  const action = known?.label ?? `Run ${toolName}`;
+  const named = [...new Set(resources.filter((r): r is string => r !== null))];
+  const title = truncate(
+    named.length > 0 ? `${action} — ${named.join(", ")}` : action,
+    APPROVAL_TITLE_MAX
+  );
 
   const args = describeArgs(params);
   const lead = known?.description ?? `The agent wants to run ${toolName}.`;

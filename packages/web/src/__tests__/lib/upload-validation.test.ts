@@ -1,6 +1,8 @@
 import { describe, it, expect } from "vitest";
 import {
   sanitizeFilename,
+  meaningfulUploadName,
+  EXT_BY_MIME,
   validateUploadBuffer,
   ALLOWED_ATTACHMENT_MIMES,
   ALLOWED_TEXT_MIMES,
@@ -262,5 +264,158 @@ describe("vCard support", () => {
     await expect(validateUploadBuffer(lowercaseVcard, "text/x-vcard")).resolves.toBe(
       "text/x-vcard"
     );
+  });
+});
+
+// heypinchy/pinchy#1199. Browsers hand us `blob` for anything pasted from the
+// clipboard or dragged out of a viewer — no extension, no hint of content. One
+// production agent's workspace held 68 such files out of 253, and identifying
+// each one costs a `pinchy_read` against a vision model on a context that is
+// already under pressure. `pinchy_ls` is close to useless on that listing, and
+// so is asking the user "did you send me the receipt".
+describe("meaningfulUploadName", () => {
+  // Constructed from local components on purpose: the stamp is local wall
+  // clock, so a `Z` literal would make these assertions depend on the machine's
+  // timezone — green in a UTC container, red on a laptop west of Greenwich.
+  const day = new Date(2026, 7, 20, 14, 32);
+
+  it("leaves a real filename alone", () => {
+    expect(meaningfulUploadName("Rechnung_919278810726.pdf", "application/pdf", day)).toBe(
+      "Rechnung_919278810726.pdf"
+    );
+    expect(meaningfulUploadName("2026-02-20_nara_33.00.pdf", "application/pdf", day)).toBe(
+      "2026-02-20_nara_33.00.pdf"
+    );
+  });
+
+  it("gives a generic name a stamped stem and the real extension", () => {
+    expect(meaningfulUploadName("blob", "application/pdf", day)).toBe("upload-2026-08-20-1432.pdf");
+    expect(meaningfulUploadName("blob (17)", "image/png", day)).toBe("upload-2026-08-20-1432.png");
+    expect(meaningfulUploadName("upload (3)", "application/pdf", day)).toBe(
+      "upload-2026-08-20-1432.pdf"
+    );
+  });
+
+  // The stamp carries the minute, not just the day. The workspace this issue
+  // is about took 36 generic uploads on one working day: a day-only stem
+  // collides for every one of them, and `buildNextFreeFilename` then hands back
+  // `upload-2026-08-20 (35).pdf` — the `blob (17)` listing under a new name.
+  it("distinguishes two uploads made on the same day", () => {
+    const morning = new Date(2026, 7, 20, 9, 15);
+    const afternoon = new Date(2026, 7, 20, 14, 32);
+    expect(meaningfulUploadName("blob", "application/pdf", morning)).not.toBe(
+      meaningfulUploadName("blob", "application/pdf", afternoon)
+    );
+  });
+
+  // Local wall clock, not UTC: 23:30 in Vienna is already tomorrow in Zulu, and
+  // the date is the only information the generated name carries.
+  it("stamps the local day, not the UTC one", () => {
+    const lateEvening = new Date(2026, 7, 20, 23, 30);
+    expect(meaningfulUploadName("blob", "application/pdf", lateEvening)).toBe(
+      "upload-2026-08-20-2330.pdf"
+    );
+  });
+
+  // A pasted screenshot arrives as "image.png": the extension is right, the
+  // stem says nothing. The stamp is strictly more informative.
+  it("renames a generic stem that already carries an extension", () => {
+    expect(meaningfulUploadName("image.png", "image/png", day)).toBe("upload-2026-08-20-1432.png");
+  });
+
+  // The extension on a generic name gets no benefit of the doubt either — the
+  // premise of this branch is that nothing the client sent about the name is
+  // worth keeping, and `validateUploadBuffer` compares bytes against the
+  // CLAIMED MIME, never against the extension. So `blob.txt` holding PDF bytes
+  // reaches here as (name `blob.txt`, mime `application/pdf`).
+  it("takes a generic name's extension from the validated mime, not the name", () => {
+    expect(meaningfulUploadName("blob.txt", "application/pdf", day)).toBe(
+      "upload-2026-08-20-1432.pdf"
+    );
+  });
+
+  // `dot > 0` alone is true for a trailing dot, and the extension it slices out
+  // is the empty string — storing `upload-2026-08-20-1432.`, a file with no
+  // extension, which is the outcome this function exists to prevent.
+  it("does not produce a name ending in a bare dot", () => {
+    expect(meaningfulUploadName("blob.", "application/pdf", day)).toBe(
+      "upload-2026-08-20-1432.pdf"
+    );
+    expect(meaningfulUploadName("Scan001.", "application/pdf", day)).toBe("Scan001.pdf");
+  });
+
+  // sanitizeFilename lets "..." through (only "." and ".." are reserved), and
+  // a stem of nothing but dots is as uninformative as `blob`.
+  it("treats an all-dots name as generic", () => {
+    expect(meaningfulUploadName("...", "application/pdf", day)).toBe("upload-2026-08-20-1432.pdf");
+  });
+
+  // A stem the user chose is information — keep it, just make the file
+  // openable by giving it the extension its bytes say it has.
+  it("keeps a real stem and only adds the missing extension", () => {
+    expect(meaningfulUploadName("Scan001", "application/pdf", day)).toBe("Scan001.pdf");
+  });
+
+  it("does not double an extension that is already correct", () => {
+    expect(meaningfulUploadName("invoice.pdf", "application/pdf", day)).toBe("invoice.pdf");
+  });
+
+  // The sniffed MIME is the truth about the bytes; a wrong extension the
+  // sender attached is not something to preserve.
+  it("leaves a mismatched but present extension alone", () => {
+    // Deliberately NOT rewritten: renaming a user-named file on a MIME
+    // mismatch is a different decision (and a lossy one) from naming a file
+    // that has no name at all.
+    expect(meaningfulUploadName("invoice.txt", "application/pdf", day)).toBe("invoice.txt");
+  });
+
+  // sanitizeFilename enforces a 255-character limit on the name it is handed.
+  // Appending an extension to an already-maximal stem would push the STORED
+  // name past it, and the `O_CREAT | O_EXCL` slot probe in persistStagedUpload
+  // then fails with ENAMETOOLONG — an unhandled 500 on a name the route had
+  // just accepted.
+  it("keeps an extended name within the length sanitizeFilename allows", () => {
+    const maximal = "a".repeat(255);
+    expect(sanitizeFilename(maximal)).toBe(maximal);
+
+    const named = meaningfulUploadName(maximal, "application/pdf", day);
+    expect(named.length).toBe(255);
+    expect(named.endsWith(".pdf")).toBe(true);
+  });
+
+  it("falls back to .bin for a MIME with no known extension", () => {
+    expect(meaningfulUploadName("blob", "application/octet-stream", day)).toBe(
+      "upload-2026-08-20-1432.bin"
+    );
+  });
+
+  it("is case-insensitive about the generic stem", () => {
+    expect(meaningfulUploadName("Blob", "image/jpeg", day)).toBe("upload-2026-08-20-1432.jpg");
+    expect(meaningfulUploadName("DOWNLOAD", "image/jpeg", day)).toBe("upload-2026-08-20-1432.jpg");
+  });
+});
+
+// AGENTS.md § "A Hand-Maintained List That Mirrors Code Will Be Wrong":
+// EXT_BY_MIME mirrors the two allowlists, and the `?? "bin"` fallback in
+// meaningfulUploadName makes a gap SILENT — a MIME added to an allowlist and
+// forgotten here stores every such upload as `upload-….bin`, with nothing red.
+// Both directions, because a stale entry is the same drift one level up.
+describe("EXT_BY_MIME tracks the MIMEs the upload path accepts", () => {
+  const accepted = new Set([...ALLOWED_ATTACHMENT_MIMES, ...ALLOWED_TEXT_MIMES]);
+
+  it("has an extension for every accepted MIME", () => {
+    const missing = [...accepted].filter((mime) => !EXT_BY_MIME.has(mime)).sort();
+    expect(missing).toEqual([]);
+  });
+
+  it("names no MIME the upload path does not accept", () => {
+    const stale = [...EXT_BY_MIME.keys()].filter((mime) => !accepted.has(mime)).sort();
+    expect(stale).toEqual([]);
+  });
+
+  // A corpus floor: an empty comparison passes both checks above while
+  // asserting nothing, which is how a coverage gate becomes decoration.
+  it("checks a real corpus", () => {
+    expect(accepted.size).toBeGreaterThanOrEqual(13);
   });
 });

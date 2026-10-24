@@ -1,6 +1,6 @@
 import { db } from "@/db";
 import { settings } from "@/db/schema";
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import { encrypt, decrypt } from "@/lib/encryption";
 
 export async function getSetting(key: string): Promise<string | null> {
@@ -45,5 +45,18 @@ export async function getSettingsByPrefix(prefix: string): Promise<Map<string, s
       out.set(r.key, r.encrypted ? decrypt(r.value) : r.value);
     }
   }
+  return out;
+}
+
+/**
+ * Fetch exactly the named settings, decrypted, as a Map. For a caller on a hot
+ * path that knows its keys: `getSettingsByPrefix` reads the whole table (every
+ * provider key and bot token included) and filters in JS.
+ */
+export async function getSettingsByKeys(keys: string[]): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  if (keys.length === 0) return out;
+  const rows = await db.select().from(settings).where(inArray(settings.key, keys));
+  for (const r of rows) out.set(r.key, r.encrypted ? decrypt(r.value) : r.value);
   return out;
 }

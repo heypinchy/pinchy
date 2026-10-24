@@ -221,6 +221,45 @@ describe("pluginConfigSchema — pinchy-approvals", () => {
     expect(result.success).toBe(true);
   });
 
+  it("accepts a confirm map, including a per-resource key", () => {
+    const result = pluginConfigSchema.safeParse({
+      "pinchy-approvals": {
+        confirm: { odoo_delete: "confirm", "odoo_delete:note.note": "allow" },
+      },
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("accepts an empty confirm map", () => {
+    const result = pluginConfigSchema.safeParse({ "pinchy-approvals": { confirm: {} } });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects a confirm value that is neither confirm nor allow", () => {
+    const result = pluginConfigSchema.safeParse({
+      "pinchy-approvals": { confirm: { odoo_delete: "off" } },
+    });
+    expect(result.success).toBe(false);
+  });
+
+  // The write side of the #1133 storage switch. `.strict()` means a config the
+  // schema no longer knows is REJECTED, not ignored — so an agent configured
+  // before the switch would fail its next save with a validation error until
+  // someone re-ticked its policy by hand.
+  it("still accepts a pre-#1133 config that carries only confirmTools", () => {
+    const result = pluginConfigSchema.safeParse({
+      "pinchy-approvals": { confirmTools: ["odoo_write"] },
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("accepts an agent mid-migration carrying both shapes", () => {
+    const result = pluginConfigSchema.safeParse({
+      "pinchy-approvals": { confirm: { odoo_write: "confirm" }, confirmTools: ["odoo_write"] },
+    });
+    expect(result.success).toBe(true);
+  });
+
   it("rejects unknown fields in pinchy-approvals config", () => {
     const result = pluginConfigSchema.safeParse({
       "pinchy-approvals": { confirmTools: [], evil_field: "x" },

@@ -8,15 +8,44 @@
  * email-workflows/types exists.
  */
 
+/**
+ * Where one heading's section begins, as an offset into the page text that
+ * opens it. Produced by the PDF extractor when a caller asks for the outline,
+ * consumed by the ingest to anchor a converted Word document's chunks (#938).
+ */
+export interface HeadingMark {
+  charStart: number;
+  /** The path from the outline's root, outermost first. */
+  headings: string[];
+}
+
 export interface IngestPage {
   page: number;
   text: string;
+  /**
+   * The heading sections that START on this page, ascending. Absent for a
+   * format whose citations are anchored on the page itself, and for a page
+   * that merely continues an earlier section.
+   */
+  headings?: HeadingMark[];
+  /**
+   * Set when this page is a scan the vision model was asked to read and did
+   * not answer — a provider error, a timeout, a render that threw. Absent when
+   * it answered, even with nothing: an empty answer is the page's text, a
+   * failed call is not.
+   *
+   * The ingest reads it to decide whether an unchanged document is owed
+   * another read (`incompleteReads` on kb_documents) — whether it came out
+   * empty or found text on its other pages. The text alone cannot say: both
+   * cases index as "".
+   */
+  ocrFailed?: true;
 }
 
 export interface IngestResult {
   /** Documents newly indexed, replaced due to a content change, or recovered from a zero-chunk state — and searchable afterwards (at least one chunk). */
   indexed: number;
-  /** Documents left untouched: unchanged content hash, chunks already present. */
+  /** Documents left untouched: unchanged content hash, and either chunks already present or an empty read on record that this run could not improve on — or a retry that found less than is stored (ingest.ts). */
   skipped: number;
   /** Documents deleted because their source file is no longer on disk. */
   removed: number;

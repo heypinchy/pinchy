@@ -61,6 +61,7 @@ import { GET as listApprovals } from "@/app/api/approvals/route";
 import { POST as decide } from "@/app/api/approvals/[id]/decision/route";
 import { POST as reportResolution } from "@/app/api/internal/approvals/resolution/route";
 import { MAX_PENDING_PER_REQUESTER, linkApproval } from "@/lib/approvals/service";
+import { setInstancePolicy } from "@/lib/instance-policy";
 
 const GW = "test-gw-token";
 beforeAll(() => {
@@ -383,6 +384,39 @@ describe("approval routes (integration, real DB)", () => {
     expect(res.status).toBe(403);
   });
 
+  describe("on a member's personal agent while members may not use one", () => {
+    beforeEach(async () => {
+      await db.update(agents).set({ isPersonal: true }).where(eq(agents.id, agent.id));
+    });
+
+    it("refuses an approval — it would resume a run on an agent the admin switched off", async () => {
+      const blocked = await (await gateCheck(gateReq(gateBody()))).json();
+      await setInstancePolicy({ memberPersonalAgents: false, memberAutomations: true });
+      setSession(user);
+
+      const res = await decide(decideReq({ decision: "approve" }), ctx(blocked.requestId));
+
+      expect(res.status).toBe(403);
+      expect((await res.json()).code).toBe("personal_agent_disabled");
+      const [row] = await db
+        .select()
+        .from(toolApproval)
+        .where(eq(toolApproval.id, blocked.requestId));
+      expect(row.status).toBe("pending");
+      expect(gatewayRequest).not.toHaveBeenCalled();
+    });
+
+    it("still takes a denial — stopping is never what the policy is against", async () => {
+      const blocked = await (await gateCheck(gateReq(gateBody()))).json();
+      await setInstancePolicy({ memberPersonalAgents: false, memberAutomations: true });
+      setSession(user);
+
+      const res = await decide(decideReq({ decision: "deny" }), ctx(blocked.requestId));
+
+      expect(res.status).toBe(200);
+    });
+  });
+
   it("returns 404 for an unknown request id", async () => {
     setSession(user);
     const res = await decide(
@@ -460,6 +494,35 @@ describe("approval routes (integration, real DB)", () => {
         .where(eq(auditLog.eventType, "approval.granted"));
       expect(entry.outcome).toBe("failure");
       expect(entry.detail).toMatchObject({ resumed: false });
+    });
+
+    /**
+     * The decision can beat the broadcast, and this is not a hypothetical: the
+     * gate writes `approval.requested` inside gate-check, so the card is
+     * actionable a full `plugin.approval.request` round trip before Pinchy
+     * learns OpenClaw's id. It made the approvals E2E flake — and it was not
+     * merely a lost race, because the route flips the row before resolving, so
+     * a broadcast arriving after that found a row that was no longer `pending`
+     * and could never link at all. The user got "the agent is no longer waiting
+     * for this decision" about a run that was still parked.
+     */
+    it("waits for the broadcast when the decision gets there first", async () => {
+      const blocked = await (
+        await gateCheck(gateReq({ ...gateBody(), toolCallId: "call_race" }))
+      ).json();
+      setSession(user);
+      // The broadcast lands mid-decision, exactly as it does on a loaded runner.
+      setTimeout(() => {
+        void linkApproval({ approvalId: "plugin:raced", toolCallId: "call_race" });
+      }, 80);
+
+      const res = await decide(decideReq({ decision: "approve" }), ctx(blocked.requestId));
+
+      expect(gatewayRequest).toHaveBeenCalledWith("plugin.approval.resolve", {
+        id: "plugin:raced",
+        decision: "allow-once",
+      });
+      expect(await res.json()).toMatchObject({ resumed: true });
     });
 
     it("does not call the gateway when no run is parked on that call", async () => {
@@ -577,6 +640,35 @@ describe("approval routes (integration, real DB)", () => {
       ).toHaveLength(1);
     });
 
+    // A tool call id is only as unique as the model provider makes it — several
+    // self-hosted OpenAI-compatible servers number them per response — so the
+    // gate reports the session alongside it. This is the wiring (schema field,
+    // route destructuring, service argument) that the service test sees only
+    // half of: drop it anywhere along the way and the report silently widens
+    // back to "any row with this call id".
+    it("settles only the session the runtime reported on", async () => {
+      const mine = await (await gateCheck(gateReq({ ...gateBody(), toolCallId: "call_0" }))).json();
+      const theirs = await (
+        await gateCheck(
+          gateReq({
+            ...gateBody(),
+            sessionKey: `${sessionKey()}:other-chat`,
+            toolCallId: "call_0",
+          })
+        )
+      ).json();
+      expect(theirs.requestId).not.toBe(mine.requestId);
+
+      await reportResolution(
+        resolutionReq({ toolCallId: "call_0", sessionKey: sessionKey(), decision: "timeout" })
+      );
+
+      const rows = await db.select().from(toolApproval);
+      const byId = Object.fromEntries(rows.map((r) => [r.id, r.status]));
+      expect(byId[mine.requestId]).toBe("expired");
+      expect(byId[theirs.requestId]).toBe("pending");
+    });
+
     // The same approval machinery carries OpenClaw's own requests (skill
     // workshop, exec). Those name calls Pinchy never opened a row for, so this
     // is the ordinary case rather than an error.
@@ -587,6 +679,88 @@ describe("approval routes (integration, real DB)", () => {
       expect(res.status).toBe(200);
       await flushAfter();
       expect(await db.select().from(auditLog)).toHaveLength(0);
+    });
+  });
+
+  /**
+   * #1133: the policy resolves per resource, not only per tool. These run at
+   * route level because that is where the three pieces meet — the stored
+   * config, the model read out of the call, and the resolution rule. Each unit
+   * test sees only one of them.
+   *
+   * Note that every OTHER test in this file seeds `confirmTools`, the pre-#1133
+   * shape. That is deliberate and is the migration evidence AGENTS.md § "Test
+   * Migrations Against Pre-Existing Data" asks for: the suite proves an agent
+   * configured before the switch still gets gated by the new code, using the
+   * new code's own route.
+   */
+  describe("per-resource policy", () => {
+    async function seedWithConfirm(confirm: Record<string, "confirm" | "allow">) {
+      const [a] = await db
+        .insert(agents)
+        .values({
+          name: "Per-model",
+          model: "anthropic/claude-haiku-4-5-20251001",
+          greetingMessage: "Hi",
+          ownerId: user.id,
+          pluginConfig: { "pinchy-approvals": { confirm } },
+        })
+        .returning();
+      return a;
+    }
+    const check = (agentId: string, toolName: string, params: object) =>
+      gateCheck(
+        gateReq({
+          agentId,
+          sessionKey: `agent:${agentId}:direct:${user.id}`,
+          toolName,
+          params,
+        })
+      ).then((r) => r.json());
+
+    it("exempts one model from a tool that is otherwise gated", async () => {
+      const a = await seedWithConfirm({
+        odoo_delete: "confirm",
+        "odoo_delete:note.note": "allow",
+      });
+      expect((await check(a.id, "odoo_delete", { model: "note.note", ids: [1] })).decision).toBe(
+        "allow"
+      );
+      expect((await check(a.id, "odoo_delete", { model: "account.move", ids: [1] })).decision).toBe(
+        "block"
+      );
+    });
+
+    // The rule that keeps a per-model grid from becoming an allowlist: a model
+    // nobody has ticked inherits the tool setting. If it defaulted to allow, a
+    // model added after the admin configured the agent would arrive ungated.
+    it("gates a model the admin never ticked, because it inherits the tool", async () => {
+      const a = await seedWithConfirm({
+        odoo_delete: "confirm",
+        "odoo_delete:note.note": "allow",
+      });
+      const res = await check(a.id, "odoo_delete", { model: "a.model.nobody.ticked", ids: [1] });
+      expect(res.decision).toBe("block");
+    });
+
+    it("gates a single model while leaving the tool itself open", async () => {
+      const a = await seedWithConfirm({ "odoo_write:account.move": "confirm" });
+      expect((await check(a.id, "odoo_write", { model: "res.partner", values: {} })).decision).toBe(
+        "allow"
+      );
+      expect(
+        (await check(a.id, "odoo_write", { model: "account.move", values: {} })).decision
+      ).toBe("block");
+    });
+
+    // Without the model on the card, "Delete a record in Odoo" is not a
+    // decision anyone can make — which would make the whole setting pointless
+    // for the person it exists to inform.
+    it("names the resource on the card the person reads", async () => {
+      const a = await seedWithConfirm({ odoo_delete: "confirm" });
+      const res = await check(a.id, "odoo_delete", { model: "account.move", ids: [1] });
+      expect(res.decision).toBe("block");
+      expect(res.approval.title).toContain("account.move");
     });
   });
 });

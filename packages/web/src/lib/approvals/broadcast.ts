@@ -15,6 +15,22 @@ export interface ApprovalRequested {
   approvalId: string;
   /** The tool call it is holding up — our key back to the pending row. */
   toolCallId: string;
+  /**
+   * The session that call belongs to, when OpenClaw named one.
+   *
+   * A tool call id is only as unique as the model provider makes it: several
+   * self-hosted OpenAI-compatible servers number them per response (`call_0`,
+   * `call_1`), and Pinchy explicitly supports those deployments. Two people can
+   * then hold pending confirmations under one id at the same moment, and an
+   * approval matched on the id alone would arm both — so the second person's
+   * Approve resumes the first person's call, which nobody confirmed.
+   *
+   * OpenClaw carries the session verbatim on the approval record
+   * (`sessionKey: p.sessionKey ?? null`, fed from the same hook ctx the gate
+   * read), so this costs no extra plumbing. Optional rather than required
+   * because narrowing must never cost a link that works today.
+   */
+  sessionKey?: string;
 }
 
 function nonEmptyString(value: unknown): string | undefined {
@@ -36,12 +52,14 @@ export function readApprovalRequested(event: unknown): ApprovalRequested | null 
 
   const payload = frame.payload as { id?: unknown; request?: unknown } | null | undefined;
   const approvalId = nonEmptyString(payload?.id);
-  const request = payload?.request as { toolCallId?: unknown } | null | undefined;
+  const request = payload?.request as
+    { toolCallId?: unknown; sessionKey?: unknown } | null | undefined;
   const toolCallId = nonEmptyString(request?.toolCallId);
   // An approval naming no tool call is not one of ours: every Pinchy
   // confirmation is opened from a before_tool_call hook that carries the id.
   // Matching on anything looser could resolve a call the user never saw.
   if (!approvalId || !toolCallId) return null;
 
-  return { approvalId, toolCallId };
+  const sessionKey = nonEmptyString(request?.sessionKey);
+  return { approvalId, toolCallId, ...(sessionKey ? { sessionKey } : {}) };
 }

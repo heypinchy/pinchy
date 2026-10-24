@@ -92,7 +92,7 @@ interface PermissionsValues {
     permissions: Array<{ model: string; operation: string }>;
   }>;
   webSearchConfig?: AgentPluginConfig["pinchy-web"];
-  confirmTools?: string[];
+  confirm?: Record<string, "confirm" | "allow">;
 }
 
 interface AccessValues {
@@ -162,11 +162,28 @@ export function AgentSettingsPageContent({ initialTab }: { initialTab?: string }
   // being an admin. The page is only viewable by the owner or an admin (see
   // `canEdit`), so `isPersonal` here implies the viewer owns it. (#476 gap 2)
   const canManageTelegram = isAdmin || agent?.isPersonal === true;
-  // Same scope as Telegram: a personal agent's owner (non-admin) manages its own
-  // automations; a shared agent's are admin-only. The management API enforces
-  // the exact same gate (canManageAgentWorkflows), so the tab and the routes
-  // never disagree.
-  const canManageAutomations = isAdmin || agent?.isPersonal === true;
+  // Deliberately NOT the Telegram gate above, though it used to be.
+  //
+  // Automations are email-only, and an agent's email access is granted on the
+  // Permissions tab — which exists for SHARED agents and admins alone. A
+  // personal agent has no way to hold an email connection at all, so an
+  // Automations tab there could only ever offer an empty mailbox picker and a
+  // create form that cannot be completed: a dead tab on every personal agent,
+  // Smithers included. Telegram earns its broader gate because a personal
+  // agent's owner really can manage a bot; there is no equivalent here.
+  //
+  // So the gate is the condition under which the agent can hold an email
+  // connection in the first place — one value feeding both tabs (see
+  // `showPermissions`), so the surface that configures email workflows cannot
+  // drift away from the surface that grants the access they need.
+  //
+  // The management API stays deliberately broader (`canManageAgentWorkflows`
+  // still admits a personal agent's owner) and that is not a disagreement: this
+  // is UI reachability, not an authorization boundary. The write routes refuse
+  // any workflow pointed at a mailbox the agent cannot read, so nothing here is
+  // load-bearing for security.
+  const canManageAgentConnections = isAdmin && agent?.isPersonal === false;
+  const canManageAutomations = canManageAgentConnections;
   const visibleTabs: AgentSettingsTab[] =
     isPending || isAdmin
       ? [...AGENT_SETTINGS_TABS]
@@ -354,7 +371,10 @@ export function AgentSettingsPageContent({ initialTab }: { initialTab?: string }
           ...agent?.pluginConfig,
           "pinchy-files": { allowed_paths: permissionsDraft.current.allowedPaths },
           "pinchy-web": permissionsDraft.current.webSearchConfig,
-          "pinchy-approvals": { confirmTools: permissionsDraft.current.confirmTools ?? [] },
+          // Writes only the new shape, never `confirmTools`. A saved agent is
+          // therefore migrated for good, and the read-side fallback in
+          // getConfirmMap only ever covers agents nobody has saved yet.
+          "pinchy-approvals": { confirm: permissionsDraft.current.confirm ?? {} },
         };
 
         // Save each active integration separately, or clear all if none
@@ -450,7 +470,12 @@ export function AgentSettingsPageContent({ initialTab }: { initialTab?: string }
   }
 
   const canDelete = isAdmin && !agent.isPersonal;
-  const showPermissions = isAdmin && !agent.isPersonal;
+  // Same value as the Automations gate, on purpose and by reference rather than
+  // by a second copy of the expression: this tab is where an agent's email
+  // access is granted, so the tab that configures email workflows must appear
+  // exactly where that grant is possible. Two hand-maintained copies are what
+  // let them drift apart in the first place.
+  const showPermissions = canManageAgentConnections;
 
   // Non-admins cannot edit shared agents — redirect handled by effect above
   if (!canEdit) {
@@ -573,7 +598,10 @@ export function AgentSettingsPageContent({ initialTab }: { initialTab?: string }
               and its list fetch only fires when the tab is actually opened. */}
           {canManageAutomations && (
             <TabsContent value="automations">
-              <AgentSettingsAutomations agentId={agentId} />
+              <AgentSettingsAutomations
+                agentId={agentId}
+                memberPolicyApplies={!isAdmin && agent?.isPersonal === true}
+              />
             </TabsContent>
           )}
 

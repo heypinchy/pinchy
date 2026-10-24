@@ -47,6 +47,31 @@ vi.mock("@/components/assistant-ui/attachment-preview", () => ({
   ),
 }));
 
+vi.mock("@/components/assistant-ui/sheet-dialog", () => ({
+  SheetDialog: ({
+    url,
+    sheet,
+    startRow,
+    endRow,
+    children,
+  }: {
+    url: string;
+    sheet?: string;
+    startRow?: number;
+    endRow?: number;
+    children: React.ReactNode;
+  }) => (
+    <span
+      data-testid="sheet-dialog"
+      data-url={url}
+      data-sheet={sheet ?? ""}
+      data-rows={startRow !== undefined ? `${startRow}-${endRow}` : ""}
+    >
+      {children}
+    </span>
+  ),
+}));
+
 import { MarkdownText } from "@/components/assistant-ui/markdown-text";
 import { AgentIdContext } from "@/components/chat";
 
@@ -89,5 +114,28 @@ describe("what the renderer hands the viewer for a citation", () => {
     expect(dialog.getAttribute("data-url")).toBe(
       "/api/agents/agent-1/workspace-file?path=%2Fdata%2Fnoack%2FQF_2012%2FAngebot.doc#page=3"
     );
+  });
+});
+
+describe("which dialog a citation opens", () => {
+  it("hands a spreadsheet citation to the sheet dialog, at its cited rows", async () => {
+    renderAnswer("- [1] lieferanten/preise.xlsx (Suppliers, rows 5-12)");
+
+    const dialog = await screen.findByTestId("sheet-dialog");
+    expect(dialog.getAttribute("data-sheet")).toBe("Suppliers");
+    expect(dialog.getAttribute("data-rows")).toBe("5-12");
+  });
+
+  it("hands a BARE spreadsheet mention to the sheet dialog too, not the PDF lightbox", async () => {
+    // The regression this test pins: a workbook named without rows used to fall
+    // through to PdfDialog, whose <embed type="application/pdf"> of a .xlsx is
+    // the pane that can never render — the exact thing #940 exists to replace.
+    // With no range to name, the dialog opens the top of the workbook.
+    renderAnswer("siehe lieferanten/preise.xlsx hier");
+
+    const dialog = await screen.findByTestId("sheet-dialog");
+    expect(dialog.getAttribute("data-sheet")).toBe("");
+    expect(dialog.getAttribute("data-rows")).toBe("");
+    expect(screen.queryByTestId("pdf-dialog")).not.toBeInTheDocument();
   });
 });

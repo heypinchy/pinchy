@@ -16,7 +16,12 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import ExcelJS from "exceljs";
 
-import { extractXlsx, XlsxExtractionError } from "@/lib/knowledge/xlsx-extract";
+import {
+  extractXlsx,
+  readSheetRange,
+  SHEET_RANGE_MAX_ROWS,
+  XlsxExtractionError,
+} from "@/lib/knowledge/xlsx-extract";
 
 /** The first 8 bytes of every legacy BIFF .xls: the OLE2 compound-file magic. */
 const OLE2_MAGIC = Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]);
@@ -529,4 +534,132 @@ describe.skipIf(
     // walking and rendering it afterwards costs ~0.2 s. The default 5 s test
     // timeout is not enough for a file of this size.
   }, 30_000);
+});
+
+describe("readSheetRange — what a spreadsheet citation opens", () => {
+  it("returns exactly the cited rows, with the sheet's own header labels", async () => {
+    // The acceptance criterion from #940, stated as a test: "a readable
+    // rendering of exactly those rows, with headers for context".
+    const path = await buildWorkbook("suppliers.xlsx", (workbook) => {
+      const sheet = workbook.addWorksheet("Sheet1");
+      sheet.addRow(["Supplier", "Part", "Price"]);
+      for (let i = 1; i <= 6; i++) sheet.addRow([`Acme ${i}`, `P-${i}`, i * 10]);
+    });
+
+    const range = await readSheetRange(path, "Sheet1", 3, 4);
+
+    expect(range?.columns).toEqual(["Supplier", "Part", "Price"]);
+    expect(range?.rows.map((r) => r.number)).toEqual([3, 4]);
+    expect(range?.rows[0].cells).toEqual(["Acme 2", "P-2", "20"]);
+  });
+
+  it("keeps two columns that share one header label apart", async () => {
+    // Real sheets repeat labels — a list price next to a discounted price, both
+    // headed "Price". The index renders BOTH cells of such a row, so a preview
+    // that matched cells by label would silently drop one and disagree with the
+    // index — the one thing this preview must never do. Cells are therefore
+    // aligned to columns by position, and the label is display text only.
+    const path = await buildWorkbook("dup-labels.xlsx", (workbook) => {
+      const sheet = workbook.addWorksheet("Sheet1");
+      sheet.addRow(["Supplier", "Price", "Price"]);
+      sheet.addRow(["Acme", 10, 8]);
+    });
+
+    const range = await readSheetRange(path, "Sheet1", 2, 2);
+
+    expect(range?.columns).toEqual(["Supplier", "Price", "Price"]);
+    expect(range?.rows[0].cells).toEqual(["Acme", "10", "8"]);
+  });
+
+  it("aligns a sparse row's cells under their own columns", async () => {
+    // The first cited row has no Part. Its Price must stay under Price with an
+    // empty cell under Part — not shift left — and the column order is the
+    // sheet's own left-to-right order, not the order cells happen to appear in.
+    const path = await buildWorkbook("sparse.xlsx", (workbook) => {
+      const sheet = workbook.addWorksheet("Sheet1");
+      sheet.addRow(["Supplier", "Part", "Price"]);
+      sheet.addRow(["Globex", undefined, 20]);
+      sheet.addRow(["Acme", "P-1", 10]);
+    });
+
+    const range = await readSheetRange(path, "Sheet1", 2, 3);
+
+    expect(range?.columns).toEqual(["Supplier", "Part", "Price"]);
+    expect(range?.rows.map((r) => r.cells)).toEqual([
+      ["Globex", "", "20"],
+      ["Acme", "P-1", "10"],
+    ]);
+  });
+
+  it("opens at the top of the first visible sheet when no sheet is named", async () => {
+    // A bare workbook mention carries no sheet and no rows. The preview then
+    // opens where the workbook itself would — the first VISIBLE sheet, from the
+    // top — and never on a hidden sheet the index deliberately skipped.
+    const path = await buildWorkbook("bare.xlsx", (workbook) => {
+      const internal = workbook.addWorksheet("Internal");
+      internal.addRow(["secret"]);
+      internal.state = "hidden";
+      const sheet = workbook.addWorksheet("Prices");
+      sheet.addRow(["Supplier"]);
+      sheet.addRow(["Acme"]);
+    });
+
+    const range = await readSheetRange(path, null, 1, SHEET_RANGE_MAX_ROWS);
+
+    expect(range?.sheet).toBe("Prices");
+    expect(range?.rows.map((r) => r.cells)).toEqual([["Acme"]]);
+  });
+
+  it("reads the same cells the index read, hidden rows included in the skip", async () => {
+    // The preview must not show a row the index never read: a reader who sees
+    // one and cannot find it in an answer concludes the answer is wrong.
+    const path = await buildWorkbook("hidden.xlsx", (workbook) => {
+      const sheet = workbook.addWorksheet("Sheet1");
+      sheet.addRow(["A"]);
+      sheet.addRow(["visible"]);
+      const hidden = sheet.addRow(["secret"]);
+      hidden.hidden = true;
+      sheet.addRow(["also visible"]);
+    });
+
+    const range = await readSheetRange(path, "Sheet1", 1, 4);
+
+    expect(range?.rows.flatMap((r) => r.cells)).not.toContain("secret");
+  });
+
+  it("answers null for a sheet the workbook does not have", async () => {
+    // A citation is model output, so a fabricated sheet name is an ordinary
+    // thing to receive. It resolves to nothing rather than to another sheet.
+    const path = await buildWorkbook("one.xlsx", (workbook) =>
+      workbook.addWorksheet("Sheet1").addRow(["A"])
+    );
+
+    expect(await readSheetRange(path, "Nope", 1, 5)).toBeNull();
+  });
+
+  it("clamps a range that runs past the end instead of raising", async () => {
+    const path = await buildWorkbook("short.xlsx", (workbook) => {
+      const sheet = workbook.addWorksheet("Sheet1");
+      sheet.addRow(["A"]);
+      sheet.addRow(["only data row"]);
+    });
+
+    const range = await readSheetRange(path, "Sheet1", 2, 9999);
+
+    expect(range?.rows.map((r) => r.number)).toEqual([2]);
+  });
+
+  it("bounds how much one preview may return", async () => {
+    // A citation naming rows 1-100000 must not stream a whole sheet into a
+    // dialog. The bound is on the RESPONSE, not on what the model may ask for.
+    const path = await buildWorkbook("big.xlsx", (workbook) => {
+      const sheet = workbook.addWorksheet("Sheet1");
+      sheet.addRow(["A"]);
+      for (let i = 0; i < SHEET_RANGE_MAX_ROWS + 50; i++) sheet.addRow([`row ${i}`]);
+    });
+
+    const range = await readSheetRange(path, "Sheet1", 1, 100000);
+
+    expect(range?.rows).toHaveLength(SHEET_RANGE_MAX_ROWS);
+  });
 });

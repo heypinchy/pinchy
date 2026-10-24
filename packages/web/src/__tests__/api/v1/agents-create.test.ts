@@ -119,15 +119,18 @@ const successResult = {
   agent: mockAgent,
   audit: mockAuditInfo,
   autoConfiguredPermissions: [],
+  incompletePermissions: [],
 };
 
 /**
  * Stands in for a real `createAgent`: fires the hooks in the order the real
- * service fires them (the row commits, then each connection's grants commit),
- * and resolves. Tests that assert on the audit MUST go through this rather
- * than a bare `mockResolvedValueOnce`, because the route writes every audit
- * from these callbacks — a mock that never calls them would make the audit
- * assertions vacuous.
+ * service fires them (the row commits, then the gap is recorded, then each
+ * connection's grants commit), and resolves. Tests that assert on the audit
+ * MUST go through this rather than a bare `mockResolvedValueOnce`, because the
+ * route writes every audit from these callbacks — a mock that never calls them
+ * would make the audit assertions vacuous. That is not hypothetical: this stub
+ * shipped without `onPermissionsIncomplete`, and the whole hook could have been
+ * deleted from the route with every test still green.
  */
 function createAgentSucceeds(result: unknown = successResult) {
   vi.mocked(createAgent).mockImplementationOnce((async (
@@ -136,15 +139,31 @@ function createAgentSucceeds(result: unknown = successResult) {
     hooks?: CreateAgentHooks
   ) => {
     hooks?.onCreated?.(mockAgent as never, mockAuditInfo);
-    const { autoConfiguredPermissions = [] } = result as {
+    const { autoConfiguredPermissions = [], incompletePermissions = [] } = result as {
       autoConfiguredPermissions?: { connectionId: string; permissions: unknown[] }[];
+      incompletePermissions?: unknown[];
     };
+    for (const entry of incompletePermissions) {
+      hooks?.onPermissionsIncomplete?.(mockAgent as never, entry as never);
+    }
     for (const entry of autoConfiguredPermissions) {
       hooks?.onPermissionsConfigured?.(mockAgent as never, entry as never);
     }
     return result;
   }) as never);
 }
+
+/** One connection that could not grant everything the template requires. */
+const incompleteGap = {
+  connectionId: "conn-1",
+  connectionName: "My Odoo",
+  missingModels: ["account.bank.statement.line"],
+  deniedOperations: [{ model: "account.move", operations: ["write"] }],
+  warnings: [
+    "account.bank.statement.line: model not available",
+    "account.move: write not available",
+  ],
+};
 
 const validBody = { name: "Provisioned Agent", templateId: "custom" };
 
@@ -170,11 +189,12 @@ describe("POST /api/v1/agents", () => {
       // who may since have left.
       null,
       // The audit-timing contract, asserted at the call site: the route has to
-      // hand the service BOTH hooks. Passing only onCreated is what left the
-      // permission grants unaudited on a failing tail.
+      // hand the service ALL THREE hooks. Passing only onCreated is what left
+      // the permission grants unaudited on a failing tail.
       expect.objectContaining({
         onCreated: expect.any(Function),
         onPermissionsConfigured: expect.any(Function),
+        onPermissionsIncomplete: expect.any(Function),
       })
     );
     expect(revalidatePath).toHaveBeenCalledWith("/", "layout");
@@ -380,6 +400,69 @@ describe("POST /api/v1/agents", () => {
         apiKey: { id: "key-1", name: "Provisioning Key" },
       },
     });
+  });
+
+  // #1208. The key API is the path with no UI in front of it: nothing warns
+  // the caller before the create, so the audit row and the 201's `warning` are
+  // the only two things standing between a stale connection and a provisioning
+  // script that records a clean create for an agent whose Odoo tools will fail
+  // at first use.
+  it("audits the models and operations the connection could not grant, with the key as actor", async () => {
+    mockVerifyApiKey.mockResolvedValue(verifiedKey());
+    createAgentSucceeds({ ...successResult, incompletePermissions: [incompleteGap] });
+
+    const response = await POST(postRequest(validBody), routeContext());
+    expect(response.status).toBe(201);
+
+    expect(deferAuditLog).toHaveBeenCalledWith({
+      actorType: "api_key",
+      actorId: "key-1",
+      eventType: "config.changed",
+      resource: "agent:new-agent-id",
+      // The agent exists; the capability does not. `failure` is the honest
+      // outcome for the row an analyst will read.
+      outcome: "failure",
+      detail: {
+        action: "agent_integration_permissions_incomplete",
+        agentId: "new-agent-id",
+        name: "Provisioned Agent",
+        connectionId: "conn-1",
+        connectionName: "My Odoo",
+        missingModels: ["account.bank.statement.line"],
+        deniedOperations: [{ model: "account.move", operations: ["write"] }],
+        warnings: [
+          "account.bank.statement.line: model not available",
+          "account.move: write not available",
+        ],
+        apiKey: { id: "key-1", name: "Provisioning Key" },
+      },
+    });
+  });
+
+  it("returns the gap on the 201 as well, so `warning` stays the whole check", async () => {
+    mockVerifyApiKey.mockResolvedValue(verifiedKey());
+    createAgentSucceeds({ ...successResult, incompletePermissions: [incompleteGap] });
+
+    const body = await (await POST(postRequest(validBody), routeContext())).json();
+
+    expect(body.warning).toContain("account.bank.statement.line");
+    expect(body.warning).toContain("account.move (write)");
+  });
+
+  it("joins both reasons into one warning when the runtime apply ALSO failed", async () => {
+    mockVerifyApiKey.mockResolvedValue(verifiedKey());
+    createAgentSucceeds({
+      ...successResult,
+      incompletePermissions: [incompleteGap],
+      runtimeWarning: "Agent created. Applying it to the runtime failed.",
+      runtimeApplyError: "openclaw unreachable",
+    });
+
+    const body = await (await POST(postRequest(validBody), routeContext())).json();
+
+    // Neither reason may swallow the other — a caller reads one field.
+    expect(body.warning).toContain("Applying it to the runtime failed.");
+    expect(body.warning).toContain("account.bank.statement.line");
   });
 
   it("returns 400 for an invalid body and does not write an audit entry", async () => {

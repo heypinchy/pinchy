@@ -1,7 +1,7 @@
 /**
  * Drift-guard: the table-HTML normalizer is duplicated across the plugin
  * (`packages/plugins/pinchy-files/docx-extract.ts::normalizeTableHtml`) and
- * the web composer (`packages/web/src/hooks/use-ws-runtime.ts::normalizeDocxTableHtml`).
+ * the web composer (`packages/web/src/lib/attachment-adapters.ts::normalizeDocxTableHtml`).
  *
  * The duplication is intentional (bundle isolation in the web path uses
  * dynamic imports; a shared package would complicate that). Behavioral
@@ -17,7 +17,7 @@ const PLUGIN_FILE = resolve(
   import.meta.dirname,
   "../../../../plugins/pinchy-files/docx-extract.ts"
 );
-const WEB_FILE = resolve(import.meta.dirname, "../../hooks/use-ws-runtime.ts");
+const WEB_FILE = resolve(import.meta.dirname, "../../lib/attachment-adapters.ts");
 
 function extractFunctionBody(source: string, fnName: string): string {
   const marker = `function ${fnName}(`;

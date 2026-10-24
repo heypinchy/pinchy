@@ -10,13 +10,23 @@ description: Use when bumping the pinned OpenClaw core version (openclaw npm pac
 Pinchy pins the OpenClaw core runtime version in two places that a drift
 guard keeps in lockstep:
 
-- `packages/web/package.json` → `dependencies.openclaw`
-- `Dockerfile.openclaw` → `RUN npm install -g openclaw@<version>`
+- `packages/web/package.json` → `devDependencies.openclaw` (feeds `/api/version`)
+- `packages/openclaw-runtime/package.json` → `dependencies.openclaw` — the
+  runtime the `pinchy-openclaw` image ships. `Dockerfile.openclaw` installs it
+  from `pnpm-lock.yaml` (`pnpm install --frozen-lockfile --filter
+@pinchy/openclaw-runtime`), so the image's tree is the one `vuln-scan` checks
+  and the root `pnpm.overrides` apply to it.
 
-`packages/web/src/__tests__/lib/openclaw-version-pin-drift.test.ts` greps
-`Dockerfile.openclaw` for the literal `npm install -g openclaw@` line and
-fails if it doesn't match `package.json`. Both places also feed
-`/api/version`.
+Plus the `@openclaw/llama-cpp-provider@<release>` pin in `Dockerfile.openclaw`,
+published in lockstep with OpenClaw (a `-N` repack suffix on the OpenClaw pin
+maps to the base release).
+
+`packages/web/src/__tests__/lib/openclaw-version-pin-drift.test.ts` fails if
+the two manifests disagree, if the provider pin does not match, or if the
+Dockerfile ever installs openclaw from the registry directly. Never go back to
+`npm install -g openclaw@…`: npm honours the npm-shrinkwrap.json OpenClaw
+publishes (its whole transitive tree) and ignores this repo's lockfile and
+overrides — the image then ships versions no scanner here ever sees.
 
 **Core principle: OpenClaw upgrades have repeatedly broken Pinchy in ways
 `pnpm test`/`tsc` don't catch**, because the breakage is in runtime protocol
@@ -158,9 +168,21 @@ openclaw/openclaw --json state,closedAt`). But **"issue closed" is
    the bump if small), (c)/(d) as things worth a tracked issue or a
    `spawn_task`-style follow-up rather than silently doing nothing with them.
 
-4. **Bump both pinned locations** to the same target version:
-   - `packages/web/package.json` → `dependencies.openclaw`
-   - `Dockerfile.openclaw` → the `npm install -g openclaw@...` line
+4. **Bump all pinned locations** to the same target version:
+   - `packages/web/package.json` → `devDependencies.openclaw`
+   - `packages/openclaw-runtime/package.json` → `dependencies.openclaw`
+   - `Dockerfile.openclaw` → `@openclaw/llama-cpp-provider@<release>`
+   - Run `pnpm install` and read the "Ignored build scripts" box: every new
+     entry is a dependency install script the image build will now REFUSE
+     (`strict-dep-builds`). Read the script, then either allow it
+     (`pnpm.onlyBuiltDependencies`) or record that skipping it is safe
+     (`pnpm.ignoredBuiltDependencies`).
+   - `openclaw-runtime-closure.test.ts` fails if a root override now pushes a
+     dependency of the new tree outside its declared major; bound the
+     override rather than accepting it.
+   - Check `npm view openclaw@<target> engines.node` against `.nvmrc` —
+     2026.9.x requires Node >=24.16, which means a repo-wide Node bump
+     (`scripts/lib/node-version-pin.mjs`) before the OpenClaw bump.
 
 5. **Check `openclaw-node`** (`packages/web/package.json` →
    `dependencies["openclaw-node"]`, our own client library in

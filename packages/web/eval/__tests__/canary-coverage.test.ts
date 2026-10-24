@@ -1,7 +1,7 @@
 import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { EVAL_CANARY_GUID, isCanaryLine } from "../canary";
+import { EVAL_CANARY_GUID, EVAL_CANARY_JSONL_LINE, isCanaryLine } from "../canary";
 
 /**
  * Read-side drift guard for the contamination canary (#794), a sibling of the
@@ -49,5 +49,11 @@ describe("canary coverage over published data files", () => {
     const text = readFileSync(path.join(DATA_DIR, file), "utf8");
     const firstLine = text.split("\n").find((l) => l.trim().length > 0) ?? "";
     expect(isCanaryLine(firstLine)).toBe(true);
+    // BYTE-identical to the constant, not merely canary-SHAPED. The published
+    // files are already in the wild, so the marker in a scraped copy can never
+    // be edited again — an innocuous reword of the text (or of the builder it
+    // now comes from) would leave the repo claiming a marker that differs from
+    // the one anybody actually holds. `isCanaryLine` alone waves that through.
+    expect(firstLine).toBe(EVAL_CANARY_JSONL_LINE);
   });
 });

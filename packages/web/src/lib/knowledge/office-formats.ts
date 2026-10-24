@@ -23,6 +23,49 @@
 export const OFFICE_EXTENSIONS = [".doc", ".docx", ".ppt", ".pptx"] as const;
 
 /**
+ * The two halves of that list, because they are anchored differently and the
+ * split is the whole of #938's dispatch: a presentation's slide N IS the
+ * converted PDF's page N, while a Word document's pages belong to the renderer
+ * and its citations ride the heading outline instead (locator.ts).
+ *
+ * Derived from `OFFICE_EXTENSIONS` by partition rather than re-typed, so a
+ * fifth format cannot be added to the list above and silently belong to
+ * neither anchor — `office-formats.test.ts` pins the two halves to cover it.
+ */
+export const WORD_EXTENSIONS = [".doc", ".docx"] as const;
+export const PRESENTATION_EXTENSIONS = [".ppt", ".pptx"] as const;
+
+/**
+ * Documents per converter process.
+ *
+ * Big enough that LibreOffice's startup is amortised (17 real corpus files cost
+ * 14.2 s in one process against 25.6 s one-per-file), small enough that an OOM
+ * kill — which fails the WHOLE batch as infrastructure — costs bounded re-work.
+ *
+ * It lives in this import-free module because BOTH sides of the batch need it
+ * and neither may hold its own copy: `office-convert.ts` sizes the process, and
+ * `ingest.ts` slices the queue it hands over. A second number in the slicer
+ * would silently cap the one that was measured, with nothing to notice — and
+ * the slicer cannot simply import the converter, whose module graph carries
+ * `child_process` and pdfjs.
+ */
+export const OFFICE_CONVERT_BATCH_SIZE = 20;
+
+/**
+ * The spreadsheet formats the knowledge base reads directly, cells and all,
+ * instead of converting (see `xlsx-extract.ts` for the three reasons).
+ *
+ * OOXML only, and that is a capability statement rather than a preference:
+ * `extractXlsx` reads through `workbook.xlsx.readFile`, which parses the
+ * zipped XML formats and not legacy BIFF. Listing `.xls` here would index
+ * every legacy workbook straight into the unreadable list (#935) — an
+ * allowlist that names what we cannot read is a promise the extractor breaks
+ * one file at a time. `.csv` is out for a different reason: it has no sheet,
+ * so half of the `sheet + rows` anchor would have to be invented.
+ */
+export const SPREADSHEET_EXTENSIONS = [".xlsx", ".xlsm"] as const;
+
+/**
  * The lowercased extension of `path`, or "" — `node:path`'s `extname` written
  * as string surgery, including its rule that a leading dot is a dotfile and
  * not an extension (`.doc` → "", never ".doc").
@@ -36,6 +79,21 @@ function extensionOf(path: string): string {
 /** Is this a page-shaped Office document the knowledge base converts? */
 export function isOfficeFile(path: string): boolean {
   return (OFFICE_EXTENSIONS as readonly string[]).includes(extensionOf(path));
+}
+
+/** Is this a spreadsheet the knowledge base reads directly, rather than converts? */
+export function isSpreadsheetFile(path: string): boolean {
+  return (SPREADSHEET_EXTENSIONS as readonly string[]).includes(extensionOf(path));
+}
+
+/** Is this a Word document — the format anchored on its heading outline? */
+export function isWordFile(path: string): boolean {
+  return (WORD_EXTENSIONS as readonly string[]).includes(extensionOf(path));
+}
+
+/** Is this a presentation — the format whose slide N is the converted PDF's page N? */
+export function isPresentationFile(path: string): boolean {
+  return (PRESENTATION_EXTENSIONS as readonly string[]).includes(extensionOf(path));
 }
 
 /**

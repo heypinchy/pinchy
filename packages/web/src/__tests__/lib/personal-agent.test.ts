@@ -546,7 +546,7 @@ describe("seedPersonalAgent", () => {
     const fakeAgent = {
       id: "agent-4",
       name: "Smithers",
-      model: "anthropic/claude-sonnet-4-6",
+      model: "anthropic/claude-sonnet-5",
       ownerId: "user-1",
       isPersonal: true,
       createdAt: new Date(),
@@ -558,7 +558,7 @@ describe("seedPersonalAgent", () => {
 
     expect(valuesMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        model: "anthropic/claude-sonnet-4-6",
+        model: "anthropic/claude-sonnet-5",
       })
     );
   });
@@ -641,7 +641,7 @@ describe("seedPersonalAgent", () => {
     });
   });
 
-  it("falls back to claude-sonnet-4-6 when resolveModelForTemplate throws TemplateCapabilityUnavailableError", async () => {
+  it("falls back to claude-sonnet-5 when resolveModelForTemplate throws TemplateCapabilityUnavailableError", async () => {
     vi.mocked(getSettingMock).mockResolvedValue("anthropic");
     resolveAvailableModelForTemplateMock.mockRejectedValue(
       new TemplateCapabilityUnavailableError(["tools"], "anthropic", "https://docs.heypinchy.com")
@@ -649,7 +649,7 @@ describe("seedPersonalAgent", () => {
     const fakeAgent = {
       id: "agent-fallback-1",
       name: "Smithers",
-      model: "anthropic/claude-sonnet-4-6",
+      model: "anthropic/claude-sonnet-5",
       ownerId: "user-fallback",
       isPersonal: true,
       createdAt: new Date(),
@@ -661,9 +661,9 @@ describe("seedPersonalAgent", () => {
 
     expect(valuesMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        model: "anthropic/claude-sonnet-4-6",
+        model: "anthropic/claude-sonnet-5",
       })
     );
-    expect(smithers.model).toBe("anthropic/claude-sonnet-4-6");
+    expect(smithers.model).toBe("anthropic/claude-sonnet-5");
   });
 });

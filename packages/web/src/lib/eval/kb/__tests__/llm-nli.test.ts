@@ -9,10 +9,13 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  ABSTENTION_PARSE_FALLBACK,
+  LlmAbstentionJudge,
   LlmNliClient,
   LlmRelevanceJudge,
   NLI_PARSE_FALLBACK,
   RELEVANCE_PARSE_FALLBACK,
+  parseAbstentionResponse,
   parseNliResponse,
   parseRelevanceResponse,
 } from "../llm-nli";
@@ -163,5 +166,52 @@ describe("LlmRelevanceJudge", () => {
     expect(score).toBe(0.7);
     expect(calls[0]).toContain("How often are laptops replaced?");
     expect(calls[0]).toContain("Every 3 years.");
+  });
+});
+
+describe("parseAbstentionResponse", () => {
+  it("parses a clean JSON score", () => {
+    expect(parseAbstentionResponse('{"score": 1}')).toBe(1);
+  });
+
+  it("falls back to 'did not decline' (not a throw) on a malformed reply", () => {
+    expect(parseAbstentionResponse("the model rambled")).toBe(ABSTENTION_PARSE_FALLBACK);
+  });
+
+  it("clamps an out-of-range score into [0, 1]", () => {
+    expect(parseAbstentionResponse('{"score": 4}')).toBe(1);
+  });
+});
+
+describe("LlmAbstentionJudge", () => {
+  it("shows the judge BOTH the question and the answer", async () => {
+    const calls: string[] = [];
+    const chat: LlmChatFn = async (prompt) => {
+      calls.push(prompt);
+      return '{"score": 1}';
+    };
+    const judge = new LlmAbstentionJudge(chat);
+
+    const score = await judge.declines(
+      "What is Northwind's parental leave policy?",
+      "I couldn't find the policy text in the indexed documents [1]."
+    );
+
+    expect(score).toBe(1);
+    // The question is the load-bearing half. Measured against the 48 archived
+    // answers of the 2026-08-05 sweep, asking the judge about the answer ALONE
+    // — as an NLI hypothesis, with no question in the prompt — did not
+    // separate the two classes at all, on any of three judge models. With the
+    // question present, the same 48 answers separate 0.95–1.00 (abstentions)
+    // against 0.00 (every one of the 40 answering runs).
+    expect(calls[0]).toContain("What is Northwind's parental leave policy?");
+    expect(calls[0]).toContain("I couldn't find the policy text");
+  });
+
+  it("scores an answer that states the requested fact as not declining", async () => {
+    const chat: LlmChatFn = async () => '{"score": 0}';
+    const judge = new LlmAbstentionJudge(chat);
+
+    expect(await judge.declines("How often are laptops replaced?", "Every 3 years [1].")).toBe(0);
   });
 });

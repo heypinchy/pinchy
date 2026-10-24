@@ -112,6 +112,7 @@ describe("GET /api/agents/[agentId]/channels/telegram", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockRequireAdmin.mockResolvedValue(adminSession);
+    mockGetAgentWithAccess.mockResolvedValue(mockAgent);
   });
 
   it("returns configured: false when no token exists", async () => {
@@ -226,11 +227,12 @@ describe("GET /api/agents/[agentId]/channels/telegram", () => {
   });
 
   it("returns mainBotConfigured: true for personal agent even when global main bot is missing", async () => {
+    // The personal agent this branch exists for is the ADMIN'S OWN Smithers —
+    // telegram-link-settings.tsx finds it in the admin's own `/api/agents`
+    // list, and the read gate lets an owner through. The exemption survives
+    // the gate; only somebody else's personal agent is turned away.
     mockHasMainTelegramBot.mockResolvedValueOnce(false);
-    vi.mocked(db.query.agents.findFirst).mockResolvedValueOnce({
-      id: "agent-1",
-      isPersonal: true,
-    } as any);
+    mockGetAgentWithAccess.mockResolvedValueOnce({ ...mockAgent, isPersonal: true });
     vi.mocked(getSetting).mockResolvedValueOnce(null);
 
     const response = await GET(new NextRequest("http://localhost"), {
@@ -241,13 +243,31 @@ describe("GET /api/agents/[agentId]/channels/telegram", () => {
     expect(response.status).toBe(200);
     expect(data).toEqual({ configured: false, mainBotConfigured: true });
   });
+
+  it("forwards the read gate's refusal and reads no setting for the agent", async () => {
+    // An admin aiming at another user's personal agent. This route used to
+    // answer 200 `{configured:false}` for an id nobody ever issued and 200
+    // WITH a token hint for a personal agent it had no business naming — an
+    // existence oracle over agents `getVisibleAgents` withholds from admins.
+    mockGetAgentWithAccess.mockResolvedValueOnce(
+      NextResponse.json({ error: "Agent not found" }, { status: 404 })
+    );
+
+    const response = await GET(new NextRequest("http://localhost"), {
+      params: mockParams,
+    });
+
+    expect(response.status).toBe(404);
+    expect((await response.json()).error).toBe("Agent not found");
+    expect(getSetting).not.toHaveBeenCalled();
+  });
 });
 
 describe("POST /api/agents/[agentId]/channels/telegram", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockRequireAdmin.mockResolvedValue(adminSession);
-    vi.mocked(db.query.agents.findFirst).mockResolvedValue(mockAgent as any);
+    mockGetAgentWithAccess.mockResolvedValue(mockAgent);
     mockValidateTelegramBotToken.mockResolvedValue({
       valid: true,
       botId: 123456,
@@ -353,7 +373,9 @@ describe("POST /api/agents/[agentId]/channels/telegram", () => {
   });
 
   it("returns 404 for non-existent agent", async () => {
-    vi.mocked(db.query.agents.findFirst).mockResolvedValueOnce(undefined as any);
+    mockGetAgentWithAccess.mockResolvedValueOnce(
+      NextResponse.json({ error: "Agent not found" }, { status: 404 })
+    );
 
     const response = await POST(makeRequest({ botToken: "123456:ABC-token" }), {
       params: mockParams,
@@ -362,6 +384,24 @@ describe("POST /api/agents/[agentId]/channels/telegram", () => {
 
     expect(response.status).toBe(404);
     expect(data.error).toBe("Agent not found");
+  });
+
+  it("forwards the read gate's refusal and connects nothing", async () => {
+    // Connecting a bot to another user's private Smithers is a write into an
+    // agent nobody can list. The gate answers before the token is validated,
+    // so the refusal costs no call to Telegram either.
+    mockGetAgentWithAccess.mockResolvedValueOnce(
+      NextResponse.json({ error: "Agent not found" }, { status: 404 })
+    );
+
+    const response = await POST(makeRequest({ botToken: "123456:ABC-token" }), {
+      params: mockParams,
+    });
+
+    expect(response.status).toBe(404);
+    expect(mockValidateTelegramBotToken).not.toHaveBeenCalled();
+    expect(setSetting).not.toHaveBeenCalled();
+    expect(appendAuditLog).not.toHaveBeenCalled();
   });
 
   it("returns 401 when not authenticated", async () => {
@@ -520,11 +560,10 @@ describe("POST /api/agents/[agentId]/channels/telegram", () => {
   });
 
   it("allows personal agent setup even when main bot is missing (first-time bootstrap)", async () => {
+    // The bootstrap case is the admin's OWN Smithers, which the read gate lets
+    // an owner through — the exemption survives the gate.
     mockHasMainTelegramBot.mockResolvedValueOnce(false);
-    vi.mocked(db.query.agents.findFirst).mockResolvedValueOnce({
-      ...mockAgent,
-      isPersonal: true,
-    } as any);
+    mockGetAgentWithAccess.mockResolvedValueOnce({ ...mockAgent, isPersonal: true });
 
     const response = await POST(makeRequest({ botToken: "123456:ABC-token" }), {
       params: mockParams,

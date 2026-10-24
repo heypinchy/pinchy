@@ -759,11 +759,39 @@ test.describe("Plugin behavior — pinchy-approvals", () => {
       });
       const requestId = (requested.detail as { request: { id: string } }).request.id;
 
-      // The acting user grants their own pending confirmation.
+      // The acting user grants their own pending confirmation — immediately,
+      // and deliberately so. `approval.requested` is written from inside
+      // gate-check, so this decision can reach the route before OpenClaw's
+      // approval broadcast reaches Pinchy. Do not "stabilise" this by waiting
+      // first: that window is the thing under test, and closing it is the
+      // route's job (`awaitApprovalLink`), not the test's.
       const decision = await page.request.post(`/api/approvals/${requestId}/decision`, {
         data: { decision: "approve" },
       });
-      expect(decision.status()).toBe(200);
+      // Assert the ROUTE'S OWN ANSWER first, and compare it WHOLE.
+      //
+      // The route already knows why a decision did not reach the parked call —
+      // it puts `resumeError` in this body, one sentence per branch
+      // (nothing-waiting / refused / unreachable). This probe used to throw
+      // that response away and assert only the audit row's `outcome`, so its
+      // one live failure read
+      //
+      //     Expected: "success"   Received: "failure"
+      //
+      // and named none of the three. Diagnosing it took the CI gateway log,
+      // which is only dumped on failure — so even the comparison against a
+      // green run was worthless, because that run had captured nothing.
+      //
+      // The matcher is the load-bearing part, and `toMatchObject` is the wrong
+      // one: it prints the RECEIVED object pruned to the expected keys, so an
+      // unexpected `resumeError` never reaches the diff and the failure still
+      // reads `resumed: false` and stops there — the same silence, one level
+      // down. `toEqual` prints the body as it came, which is the whole point.
+      // The status is asserted off the raw text because a non-200 body is
+      // `{ error }` and need not be JSON at all.
+      const decisionBody = await decision.text();
+      expect(decision.status(), decisionBody).toBe(200);
+      expect(JSON.parse(decisionBody)).toEqual({ ok: true, status: "approved", resumed: true });
 
       // The decision is recorded as approval.granted — and `resumed` says it
       // reached the parked call. Asserting only that the row exists would pass
@@ -774,8 +802,24 @@ test.describe("Plugin behavior — pinchy-approvals", () => {
         predicate: (e) => e.resource === `approval:${requestId}`,
         deadlineMs: 15000,
       });
-      expect(granted.outcome).toBe("success");
-      expect((granted.detail as { resumed?: boolean }).resumed).toBe(true);
+      // Same reasoning, same matcher. Named fields rather than the whole detail
+      // here, because that object also carries the request, agent, requester,
+      // approver, tool name and args digest — values this probe has no business
+      // pinning. The three below are the ones the route writes when a resume
+      // did not happen, and `toEqual` ignores a key whose value is undefined,
+      // so the happy path matches the two-field expectation while a red run
+      // prints the reason.
+      const grantedDetail = granted.detail as {
+        resumed?: boolean;
+        resumeReason?: string;
+        resumeDetail?: string;
+      };
+      expect({
+        outcome: granted.outcome,
+        resumed: grantedDetail.resumed,
+        resumeReason: grantedDetail.resumeReason,
+        resumeDetail: grantedDetail.resumeDetail,
+      }).toEqual({ outcome: "success", resumed: true });
 
       // The runtime reports back that it let the call through…
       await pollAuditForEvent(page, {

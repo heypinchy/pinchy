@@ -16,6 +16,7 @@ import type { OpenClawClient } from "openclaw-node";
 
 import { db } from "@/db";
 import { agents } from "@/db/schema";
+import { getExhaustedBlockingBudget } from "@/lib/budgets";
 import { createEmailPort } from "@/lib/email-workflows/port";
 import { createOpenClawRunAgent } from "@/lib/email-workflows/run-adapter";
 import type { SweepDeps } from "@/lib/email-workflows/sweep";
@@ -101,6 +102,7 @@ export function buildSweepDeps(client: SweepGatewayClient): SweepDeps {
       client,
       loadAgentModel,
       waitForAgentReady: createAgentReadinessGate(client),
+      isBudgetBlocked: async (agentId) => (await getExhaustedBlockingBudget(agentId)) !== null,
     }),
   };
 }

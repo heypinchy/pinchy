@@ -1,14 +1,15 @@
 import { NextResponse } from "next/server";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { withAuth } from "@/lib/api-auth";
 import { parseRequestBody } from "@/lib/api-validation";
 import { decisionSchema } from "@/lib/schemas/approvals";
-import { resolveDecision } from "@/lib/approvals/service";
+import { resolveDecision, awaitApprovalLink } from "@/lib/approvals/service";
 import { resolvePluginApproval } from "@/server/resolve-plugin-approval";
 import { type AuditLogEntry } from "@/lib/audit";
 import { deferAuditLog } from "@/lib/audit-deferred";
 import { db } from "@/db";
-import { agents, users } from "@/db/schema";
+import { agents, toolApproval, users } from "@/db/schema";
+import { isPersonalAgentPausedFor, PERSONAL_AGENT_DISABLED } from "@/lib/agent-access";
 
 type RouteContext = { params: Promise<{ id: string }> };
 
@@ -39,6 +40,23 @@ export const POST = withAuth<RouteContext>(async (request, { params }, session) 
   if ("error" in parsed) return parsed.error;
   const { decision, reason } = parsed.data;
 
+  // An approval resumes the parked run. On the caller's own personal agent
+  // while members may not use one, that is a run on an agent the admin
+  // switched off — refused, like every other door. A denial goes through:
+  // stopping is never what the policy is against. Scoped to the caller's own
+  // request, so a stranger's id still gets resolveDecision's answer.
+  if (decision === "approve") {
+    const [pending] = await db
+      .select({ isPersonal: agents.isPersonal })
+      .from(toolApproval)
+      .innerJoin(agents, eq(agents.id, toolApproval.agentId))
+      .where(and(eq(toolApproval.id, id), eq(toolApproval.requesterId, session.user.id!)))
+      .limit(1);
+    if (pending && (await isPersonalAgentPausedFor(pending, session.user.role))) {
+      return NextResponse.json(PERSONAL_AGENT_DISABLED, { status: 403 });
+    }
+  }
+
   const res = await resolveDecision({
     id,
     approverId: session.user.id!,
@@ -63,10 +81,15 @@ export const POST = withAuth<RouteContext>(async (request, { params }, session) 
     .where(eq(users.id, req.requesterId))
     .limit(1);
 
-  const resumed = await resolvePluginApproval({
-    approvalId: req.openclawApprovalId,
-    decision,
-  });
+  // A decision made in a confirmation's first moments arrives before the
+  // broadcast that names the parked call: `approval.requested` is written from
+  // inside gate-check, so the card is actionable a full `plugin.approval.request`
+  // round trip before Pinchy learns OpenClaw's id. Reading the row once and
+  // reporting "nothing is waiting" there tells the user their approval did not
+  // take when the run is in fact still parked.
+  const approvalId = req.openclawApprovalId ?? (await awaitApprovalLink(req.id));
+
+  const resumed = await resolvePluginApproval({ approvalId, decision });
 
   const entry: AuditLogEntry = {
     actorType: "user",

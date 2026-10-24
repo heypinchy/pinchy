@@ -15,6 +15,7 @@ import {
   pgView,
   primaryKey,
   check,
+  unique,
 } from "drizzle-orm/pg-core";
 import { isNull, sql, relations } from "drizzle-orm";
 import {
@@ -38,7 +39,11 @@ import {
   type NotificationStatus,
   KB_INDEX_JOB_STATUSES,
   KB_INDEX_JOB_ACTIVE_STATUSES,
+  KB_INDEX_JOB_TRIGGERS,
   type KbIndexJobStatus,
+  type KbIndexJobTrigger,
+  BUDGET_ACTIONS,
+  type BudgetAction,
 } from "./enums";
 import type { EmailWorkflowFilter, ProcessedEmailOutcome } from "@/lib/email-workflows/types";
 import type { IngestResult } from "@/lib/knowledge/ingest";
@@ -83,7 +88,18 @@ export type AgentPluginConfig = {
    * the gate (pinchy-approvals) enforces it server-side.
    */
   "pinchy-approvals"?: {
-    confirmTools: string[];
+    /**
+     * Per tool, optionally per resource: `"odoo_delete"` covers the tool,
+     * `"odoo_delete:account.move"` is an exception for one model (#1133).
+     * See `lib/approvals/policy.ts` for how the two resolve.
+     */
+    confirm?: Record<string, "confirm" | "allow">;
+    /**
+     * Pre-#1133 shape, still READ so an agent configured before the switch
+     * keeps its policy (`getConfirmMap`). Nothing writes it any more; an agent
+     * converges to `confirm` the first time it is saved.
+     */
+    confirmTools?: string[];
   };
 };
 
@@ -942,6 +958,38 @@ export const usageRecords = pgTable(
   ]
 );
 
+// ── Cost Budgets (#36) ───────────────────────────────────────────────
+
+// A monthly USD limit on what usage_records says an agent — or, with agent_id
+// NULL, the whole instance — has spent this calendar month (org timezone).
+// Design of record: plans/2026-10-16-cost-governance-design.md.
+//
+// `warned_period` / `exceeded_period` hold the 'YYYY-MM' an alert last fired
+// for. They are claimed with a conditional UPDATE (… WHERE period IS DISTINCT
+// FROM $p RETURNING), so a restart or two overlapping sweeps can never write
+// the same alert twice — the reason budgets are a table and not settings keys.
+export const costBudgets = pgTable(
+  "cost_budgets",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    agentId: text("agent_id").references(() => agents.id, { onDelete: "cascade" }),
+    monthlyLimitUsd: numeric("monthly_limit_usd", { precision: 12, scale: 2 }).notNull(),
+    onExceeded: text("on_exceeded").$type<BudgetAction>().notNull(),
+    warnedPeriod: text("warned_period"),
+    exceededPeriod: text("exceeded_period"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (table) => [
+    // One instance budget (agent_id NULL) and one per agent. NULLS NOT
+    // DISTINCT is what makes the first half true: by default Postgres would
+    // accept any number of NULL rows.
+    unique("cost_budgets_agent_id_unique").on(table.agentId).nullsNotDistinct(),
+    check("cost_budgets_on_exceeded_check", sql`${table.onExceeded} ${inEnum(BUDGET_ACTIONS)}`),
+    check("cost_budgets_limit_positive_check", sql`${table.monthlyLimitUsd} > 0`),
+  ]
+);
+
 // ── Model Catalogue ──────────────────────────────────────────────────
 
 export const models = pgTable(
@@ -1066,6 +1114,21 @@ export const agentDeliveredFiles = pgTable(
     sessionKey: text("session_key").notNull(),
     filename: text("filename").notNull(),
     mimeType: text("mime_type").notNull(),
+    // What was delivered, as opposed to what it was called (#903). A grant used
+    // to name a file, while the promise it makes is about bytes: "this user may
+    // fetch the file that was handed to them". On a shared agent every member's
+    // chats write into one workspace, so anything that changes the bytes behind
+    // a granted name serves those new bytes under the old grant — including
+    // another user's. Two reachable paths: `pinchy_write(overwrite=true)` inside
+    // `workbench/`, and plain creation of `workbench/x.pdf` shadowing an
+    // `uploads/x.pdf` delivery, since the serving route searched the zones in
+    // order.
+    //
+    // Both are closed by recording where the file was and what it contained.
+    // Nullable because grants written before this existed cannot be pinned
+    // honestly — see the serving route for what they still get.
+    zone: text("zone"),
+    contentHash: text("content_hash"),
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
   (t) => [
@@ -1195,6 +1258,20 @@ export const kbDocuments = pgTable(
     lang: text("lang"),
     pageCount: integer("page_count"),
     mtime: timestamp("mtime"),
+    // Which extractor last read this content and found no text in it, as
+    // "<extractor version>|<reader>" — the reader being "ocr:<model>",
+    // "no-ocr", "sheets" or "converter". Null when the document has chunks,
+    // when its last read is still owed a retry (`incompleteReads`), and on a
+    // row a crash left before its chunks were written or that predates the
+    // column — every case where reading it again could turn out differently.
+    // It is what lets the ingest skip an unchanged blank scan instead of
+    // sending it to the vision model on every run (ingest.ts).
+    emptyExtractionBy: text("empty_extraction_by"),
+    // How many reads in a row did not finish their job: a vision call that
+    // failed, or a conversion that gave up. Such a document is read again on
+    // the next run — chunks or not — until a read finishes or the retries run
+    // out (MAX_INCOMPLETE_READS in ingest.ts). 0 for a read that finished.
+    incompleteReads: integer("incomplete_reads").notNull().default(0),
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
   (t) => [
@@ -1268,6 +1345,20 @@ export const kbIndexJobs = pgTable(
     requestedBy: text("requested_by").notNull(),
     paths: jsonb("paths").$type<string[]>().notNull(),
     status: text("status").$type<KbIndexJobStatus>().notNull().default("pending"),
+    // `manual` for an admin's request, `scheduled` for the nightly sweep. The
+    // default is what every job that predates the schedule was.
+    trigger: text("trigger").$type<KbIndexJobTrigger>().notNull().default("manual"),
+    // The nightly sweep this job belongs to; null for a manual job. Ties one
+    // night's per-agent jobs together in the audit trail (the sweepId rule for
+    // batched maintenance), and is how a restarted scheduler recognises an
+    // agent it already queued that night.
+    sweepId: uuid("sweep_id"),
+    // How many folders the run had to leave as they were — granted folders it
+    // could not read, and folders that came up empty while the index still
+    // held their documents (a share that failed to mount). Written when the
+    // run finishes. On the job rather than only the audit row so the Index
+    // section can say a successful run had a hole in it.
+    unavailableFolders: integer("unavailable_folders").notNull().default(0),
     // Progress, in documents. `total` stays null until discovery has walked
     // every root — a total that grew as we went would make the progress bar
     // run backwards, so it is written once, upfront.
@@ -1308,5 +1399,6 @@ export const kbIndexJobs = pgTable(
     index("idx_kb_index_jobs_status_created").on(t.status, t.createdAt),
     index("idx_kb_index_jobs_agent_created").on(t.agentId, t.createdAt),
     check("kb_index_jobs_status_check", sql`${t.status} ${inEnum(KB_INDEX_JOB_STATUSES)}`),
+    check("kb_index_jobs_trigger_check", sql`${t.trigger} ${inEnum(KB_INDEX_JOB_TRIGGERS)}`),
   ]
 );

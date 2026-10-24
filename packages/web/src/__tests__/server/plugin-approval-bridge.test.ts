@@ -12,7 +12,10 @@ import { attachPluginApprovalBridge } from "@/server/plugin-approval-bridge";
 function requested(toolCallId: string, approvalId = "plugin:abc") {
   return {
     event: "plugin.approval.requested",
-    payload: { id: approvalId, request: { toolName: "odoo_write", toolCallId } },
+    payload: {
+      id: approvalId,
+      request: { toolName: "odoo_write", toolCallId, sessionKey: "agent:a1:direct:u1" },
+    },
   };
 }
 
@@ -28,7 +31,11 @@ describe("attachPluginApprovalBridge", () => {
     client.emit("event", requested("call_7"));
     await settle();
 
-    expect(link).toHaveBeenCalledWith({ approvalId: "plugin:abc", toolCallId: "call_7" });
+    expect(link).toHaveBeenCalledWith({
+      approvalId: "plugin:abc",
+      toolCallId: "call_7",
+      sessionKey: "agent:a1:direct:u1",
+    });
   });
 
   it("does not touch the database for any other gateway event", async () => {
