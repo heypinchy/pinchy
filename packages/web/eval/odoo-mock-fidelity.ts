@@ -60,7 +60,9 @@ export function buildFidelityProbeBody(): unknown {
  * (docker-compose.eval.yml). The eval npm scripts set `MOCK_ODOO_JSONRPC_URL`
  * explicitly, mirroring how they set `MOCK_ODOO_URL` for the control server.
  */
-export function resolveOdooMockJsonRpcUrl(env: NodeJS.ProcessEnv = process.env): string {
+export function resolveOdooMockJsonRpcUrl(
+  env: Record<string, string | undefined> = process.env
+): string {
   return env.MOCK_ODOO_JSONRPC_URL || "http://localhost:8169/jsonrpc";
 }
 
