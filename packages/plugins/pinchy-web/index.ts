@@ -68,6 +68,16 @@ function assertBraveCredentialsShape(creds: unknown): asserts creds is BraveCred
   }
 }
 
+const CREDENTIAL_MAX_RETRIES = 5;
+
+// Exponential backoff, base 500 ms (0.5, 1, 2, 4, 8 s). PINCHY_PLUGIN_RETRY_BASE_MS
+// overrides the base (tests set it to 0).
+function retryDelayMs(attempt: number): number {
+  const raw = Number(process.env.PINCHY_PLUGIN_RETRY_BASE_MS);
+  const base = Number.isFinite(raw) && raw >= 0 ? raw : 500;
+  return base * 2 ** attempt;
+}
+
 async function fetchBraveCredentials(
   apiBaseUrl: string,
   gatewayToken: string,
@@ -76,11 +86,28 @@ async function fetchBraveCredentials(
 ): Promise<BraveCredentials> {
   // `agentId` is required by the credentials route (#987): the gateway token
   // says "some plugin in this container", not "this agent may read this key".
-  const response = await fetch(
+  const url =
     `${apiBaseUrl}/api/internal/integrations/${connectionId}/credentials` +
-      `?agentId=${encodeURIComponent(agentId)}`,
-    { headers: { Authorization: `Bearer ${gatewayToken}` } }
-  );
+    `?agentId=${encodeURIComponent(agentId)}`;
+  const init = { headers: { Authorization: `Bearer ${gatewayToken}` } };
+  // Retry 401, 5xx and network errors with backoff (see retryDelayMs): right
+  // after a config apply the internal routes answer 401 for several seconds
+  // while OpenClaw reloads, and a single failed fetch here used to fail the
+  // whole search ("HTTP 401 Unauthorized on the Brave credentials"). Other
+  // statuses (e.g. 404 "no longer connected") are final and surface at once.
+  let response: Response | undefined;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      response = await fetch(url, init);
+      const transient = response.status === 401 || response.status >= 500;
+      if (response.ok || !transient || attempt >= CREDENTIAL_MAX_RETRIES) break;
+    } catch (error) {
+      if (attempt >= CREDENTIAL_MAX_RETRIES) throw error;
+    }
+    const delay = retryDelayMs(attempt);
+    if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
+  }
+  if (!response) throw new Error("Failed to fetch Brave credentials: no response");
   if (!response.ok) {
     // The credentials route puts an actionable message in the JSON body (e.g. a
     // 404 "This integration is no longer connected …") — surface it so the agent

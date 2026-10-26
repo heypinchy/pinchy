@@ -202,7 +202,20 @@ function toolStartKey(
   return toolName;
 }
 
-const MAX_RETRIES = 2;
+// Five retries with exponential backoff (base 500 ms: 0.5, 1, 2, 4, 8 s, ~15.5 s
+// in total). Retrying immediately was not enough: right after a config apply
+// (agent created or changed) the internal routes answer 401 for several
+// seconds while OpenClaw reloads, so three back-to-back attempts all landed in
+// that window and the before_tool_call hook blocked the tool call (fail-closed).
+// Waiting a few seconds turns those failures into a short pause instead.
+// PINCHY_PLUGIN_RETRY_BASE_MS overrides the base (tests set it to 0).
+const MAX_RETRIES = 5;
+
+function retryDelayMs(attempt: number): number {
+  const raw = Number(process.env.PINCHY_PLUGIN_RETRY_BASE_MS);
+  const base = Number.isFinite(raw) && raw >= 0 ? raw : 500;
+  return base * 2 ** attempt;
+}
 
 async function postToolAuditEvent(
   cfg: PluginConfig,
@@ -236,6 +249,8 @@ async function postToolAuditEvent(
       logger?.warn?.(
         `[pinchy-audit] audit failed (attempt ${attempt + 1}/${MAX_RETRIES + 1}), retrying: ${lastError?.message}`
       );
+      const delay = retryDelayMs(attempt);
+      if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
     }
   }
 

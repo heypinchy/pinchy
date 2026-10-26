@@ -13,6 +13,9 @@ import { braveSearch } from "./brave-search.js";
 import { webFetch } from "./web-fetch.js";
 import plugin from "./index.js";
 
+// Retries back off for seconds in production; tests run them without delay.
+process.env.PINCHY_PLUGIN_RETRY_BASE_MS = "0";
+
 const braveSearchMock = braveSearch as ReturnType<typeof vi.fn>;
 const webFetchMock = webFetch as ReturnType<typeof vi.fn>;
 
@@ -304,6 +307,61 @@ describe("pinchy-web plugin", () => {
       expect(result.isError).toBe(true);
       expect(result.content[0].text).toContain("Search failed");
       expect(result.content[0].text).toContain("API rate limit");
+    });
+
+    it("retries the credentials fetch through 401s right after a config apply, then searches", async () => {
+      braveSearchMock.mockResolvedValue({ results: [] });
+      const unauthorized = {
+        ok: false,
+        status: 401,
+        statusText: "Unauthorized",
+        json: async () => ({ error: "Unauthorized" }),
+      };
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(unauthorized)
+        .mockResolvedValueOnce(unauthorized)
+        .mockResolvedValueOnce({
+          ok: true,
+          status: 200,
+          statusText: "OK",
+          json: async () => ({ credentials: { apiKey: "brave-key-123" } }),
+        });
+      vi.stubGlobal("fetch", fetchMock);
+
+      const factories = collectFactories(
+        credentialsPluginConfig({
+          "agent-1": { tools: ["pinchy_web_search"] },
+        })
+      );
+
+      const tool = factories.pinchy_web_search({ agentId: "agent-1" })!;
+      const result = await tool.execute("call-1", { query: "test" });
+
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+      expect(braveSearchMock).toHaveBeenCalled();
+      expect(result.isError).not.toBe(true);
+    });
+
+    it("does not retry a final credentials status like 404", async () => {
+      const fetchMock = vi.fn(async () => ({
+        ok: false,
+        status: 404,
+        statusText: "Not Found",
+        json: async () => ({ error: "gone" }),
+      }));
+      vi.stubGlobal("fetch", fetchMock);
+
+      const factories = collectFactories(
+        credentialsPluginConfig({
+          "agent-1": { tools: ["pinchy_web_search"] },
+        })
+      );
+
+      await factories
+        .pinchy_web_search({ agentId: "agent-1" })!
+        .execute("call-1", { query: "test" });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
     });
 
     it("surfaces the actionable credentials-endpoint message when the connection was deleted (404)", async () => {

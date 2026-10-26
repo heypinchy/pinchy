@@ -1,6 +1,9 @@
 // @vitest-environment node
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+// Retries back off for seconds in production; tests run them without delay.
+process.env.PINCHY_PLUGIN_RETRY_BASE_MS = "0";
+
 const mockOn = vi.fn();
 
 function createMockApi(config: { apiBaseUrl: string; gatewayToken: string } | undefined) {
@@ -503,6 +506,34 @@ describe("pinchy-audit plugin", () => {
       ).resolves.toBeUndefined();
 
       expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it("keeps retrying through a burst of 401s (config-apply window) and succeeds", async () => {
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce({ ok: false, status: 401 })
+        .mockResolvedValueOnce({ ok: false, status: 401 })
+        .mockResolvedValueOnce({ ok: false, status: 401 })
+        .mockResolvedValueOnce({ ok: false, status: 401 })
+        .mockResolvedValueOnce({ ok: true, status: 200 });
+      vi.stubGlobal("fetch", fetchMock);
+
+      const { default: plugin } = await import("./index");
+      plugin.register?.(
+        createMockApi({
+          apiBaseUrl: "http://pinchy:7777",
+          gatewayToken: "gw-token",
+        }) as any
+      );
+
+      const beforeHook = mockOn.mock.calls.find((c) => c[0] === "before_tool_call")?.[1];
+      await expect(
+        beforeHook(
+          { toolName: "pinchy_read", params: {}, runId: "run-1", toolCallId: "tool-1" },
+          { toolName: "pinchy_read" }
+        )
+      ).resolves.not.toThrow();
+      expect(fetchMock).toHaveBeenCalledTimes(5);
     });
 
     it("throws after all retries are exhausted (fail-closed)", async () => {
