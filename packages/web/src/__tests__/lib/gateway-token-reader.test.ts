@@ -102,4 +102,31 @@ describe("readGatewayToken", () => {
     void mkdirSync; // silence unused import
     void chmodSync;
   });
+
+  describe("last good token", () => {
+    it("keeps serving the last token while both files are unreadable", async () => {
+      writeFileSync(configPath, JSON.stringify({ gateway: { auth: { token: "good-token" } } }));
+      const { readGatewayToken } = await import("@/lib/gateway-token-reader");
+      expect(readGatewayToken()).toBe("good-token");
+
+      // OpenClaw's config apply: openclaw.json briefly gone / root-only,
+      // secrets.json not readable either.
+      rmSync(configPath);
+      expect(readGatewayToken()).toBe("good-token");
+    });
+
+    it("picks up a rotated token on the next successful read", async () => {
+      writeFileSync(configPath, JSON.stringify({ gateway: { auth: { token: "old-token" } } }));
+      const { readGatewayToken } = await import("@/lib/gateway-token-reader");
+      expect(readGatewayToken()).toBe("old-token");
+
+      writeFileSync(configPath, JSON.stringify({ gateway: { auth: { token: "new-token" } } }));
+      expect(readGatewayToken()).toBe("new-token");
+    });
+
+    it("still returns empty when no token was ever readable", async () => {
+      const { readGatewayToken } = await import("@/lib/gateway-token-reader");
+      expect(readGatewayToken()).toBe("");
+    });
+  });
 });
