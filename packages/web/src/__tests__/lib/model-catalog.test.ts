@@ -31,6 +31,17 @@ describe("lookupModelCapabilities", () => {
     expect(caps!.contextWindow).not.toBe(DEFAULT_MODEL_CAPS.contextWindow);
   });
 
+  it("resolves claude-haiku-5-5 behind a LiteLLM gateway to its real context window", () => {
+    // TEDAI workshop: the fleet serves Haiku 5.5 through LiteLLM as the bare id
+    // `claude-haiku-5-5`. Without a catalog entry it fell back to the 32k
+    // default (≈16k effective after reserveTokens), and a single web search plus
+    // two fetched articles overflowed the context ("conversation too long").
+    const caps = lookupModelCapabilities("claude-haiku-5-5");
+    expect(caps).not.toBeNull();
+    expect(caps!.id).toBe("claude-haiku-5-5");
+    expect(caps!.contextWindow).toBe(200000);
+  });
+
   it("returns null for an ambiguous bare family id (multi-member family)", () => {
     // `qwen` has 32 members in the snapshot. A bare family-level id must NOT
     // guess a member — an arbitrary (possibly huge) context window would make

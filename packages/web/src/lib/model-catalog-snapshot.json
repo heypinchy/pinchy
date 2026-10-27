@@ -1535,6 +1535,22 @@
       "cacheWrite": 0
     }
   },
+  "anthropic/claude-haiku-5-5": {
+    "id": "anthropic/claude-haiku-5-5",
+    "name": "Claude Haiku 5.5",
+    "family": "claude-haiku",
+    "contextWindow": 200000,
+    "maxTokens": 8192,
+    "reasoning": true,
+    "vision": true,
+    "input": ["text", "image"],
+    "cost": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0
+    }
+  },
   "anthropic/claude-opus-4-0": {
     "id": "anthropic/claude-opus-4-0",
     "name": "Claude Opus 4 (latest)",
