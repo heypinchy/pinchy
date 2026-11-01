@@ -162,19 +162,28 @@ export function AgentSettingsPageContent({ initialTab }: { initialTab?: string }
   // being an admin. The page is only viewable by the owner or an admin (see
   // `canEdit`), so `isPersonal` here implies the viewer owns it. (#476 gap 2)
   const canManageTelegram = isAdmin || agent?.isPersonal === true;
-  // Same scope as Telegram: a personal agent's owner (non-admin) manages its own
-  // automations; a shared agent's are admin-only. That mirrors the scope gate the
-  // management API applies (canManageAgentWorkflows), so for a member the tab and
-  // the routes agree on every agent this page will load.
+  // Deliberately NOT the Telegram gate above, though it used to be.
   //
-  // For an admin on a COLLEAGUE'S personal agent they no longer do, and the whole
-  // page is already in that state rather than this tab alone: since #880 the
-  // agentId-keyed Automations routes run the visibility gate first, and a personal
-  // agent stays private to its owner — admins included. The agent fetch above
-  // (`GET /api/agents/[agentId]`) has answered 404 for that case since #1148, so
-  // `agent` stays null and every tab renders empty. Listing the tab grants
-  // nothing; the routes behind it answer 404 too.
-  const canManageAutomations = isAdmin || agent?.isPersonal === true;
+  // Automations are email-only, and an agent's email access is granted on the
+  // Permissions tab — which exists for SHARED agents and admins alone. A
+  // personal agent has no way to hold an email connection at all, so an
+  // Automations tab there could only ever offer an empty mailbox picker and a
+  // create form that cannot be completed: a dead tab on every personal agent,
+  // Smithers included. Telegram earns its broader gate because a personal
+  // agent's owner really can manage a bot; there is no equivalent here.
+  //
+  // So the gate is the condition under which the agent can hold an email
+  // connection in the first place — one value feeding both tabs (see
+  // `showPermissions`), so the surface that configures email workflows cannot
+  // drift away from the surface that grants the access they need.
+  //
+  // The management API stays deliberately broader (`canManageAgentWorkflows`
+  // still admits a personal agent's owner) and that is not a disagreement: this
+  // is UI reachability, not an authorization boundary. The write routes refuse
+  // any workflow pointed at a mailbox the agent cannot read, so nothing here is
+  // load-bearing for security.
+  const canManageAgentConnections = isAdmin && agent?.isPersonal === false;
+  const canManageAutomations = canManageAgentConnections;
   const visibleTabs: AgentSettingsTab[] =
     isPending || isAdmin
       ? [...AGENT_SETTINGS_TABS]
@@ -461,7 +470,12 @@ export function AgentSettingsPageContent({ initialTab }: { initialTab?: string }
   }
 
   const canDelete = isAdmin && !agent.isPersonal;
-  const showPermissions = isAdmin && !agent.isPersonal;
+  // Same value as the Automations gate, on purpose and by reference rather than
+  // by a second copy of the expression: this tab is where an agent's email
+  // access is granted, so the tab that configures email workflows must appear
+  // exactly where that grant is possible. Two hand-maintained copies are what
+  // let them drift apart in the first place.
+  const showPermissions = canManageAgentConnections;
 
   // Non-admins cannot edit shared agents — redirect handled by effect above
   if (!canEdit) {

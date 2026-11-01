@@ -4,12 +4,23 @@ import "@testing-library/jest-dom";
 import { render, screen, waitFor } from "@testing-library/react";
 
 // The Automations tab (#139) is the review-and-activate surface for an agent's
-// email workflows. It carries the same scope as managing the agent itself: a
-// personal agent's owner (a non-admin) may manage it, and an admin may manage a
-// shared agent's — mirroring the Telegram tab's gate. (A non-admin on a shared
-// agent never reaches this page at all — canEdit is false and the page
-// redirects to chat — so there is no "visible page without the tab" case to
-// assert for them.)
+// email workflows. Automations are email-only, and an agent's email access is
+// granted on the Permissions tab — which exists only for SHARED agents, and
+// only for admins (`showPermissions = isAdmin && !isPersonal`).
+//
+// This tab used to be gated the other way round (`isAdmin || isPersonal`,
+// mirroring Telegram), which put an Automations tab on every personal agent —
+// including Smithers — where there is no way to grant email access at all. The
+// tab could therefore only ever show an empty mailbox picker and a create form
+// that cannot be completed: pure confusion, zero capability.
+//
+// So the gate is now the SAME condition under which the agent can hold an email
+// connection in the first place. These tests pin both halves of that: where it
+// must not appear, and that it appears exactly alongside Permissions.
+//
+// (A non-admin on a shared agent never reaches this page at all — canEdit is
+// false and the page redirects to chat — so there is no "visible page without
+// the tab" case to assert for them.)
 
 const mockSession = vi.fn();
 vi.mock("@/lib/auth-client", () => ({
@@ -76,7 +87,28 @@ describe("AgentSettingsPageContent — Automations tab visibility (#139)", () =>
     vi.clearAllMocks();
   });
 
-  it("shows the Automations tab to a non-admin owner of a personal agent", async () => {
+  // The Smithers case, and the reason this gate changed: the very first user is
+  // an admin, and their own personal agent is the one they open first. Being an
+  // admin does not conjure a Permissions tab for a personal agent, so it must
+  // not conjure an Automations tab either.
+  it("hides the Automations tab on a personal agent, even from an admin", async () => {
+    mockSession.mockReturnValue({
+      data: { user: { id: "admin-1", role: "admin" } },
+      isPending: false,
+    });
+    mockFetchReturning({ ...baseAgent, isPersonal: true });
+
+    render(<AgentSettingsPageContent />);
+
+    // Wait for the page to actually render its tabs before asserting absence —
+    // otherwise this passes on the loading state and proves nothing.
+    await waitFor(() => {
+      expect(screen.getByRole("tab", { name: /general/i })).toBeInTheDocument();
+    });
+    expect(screen.queryByRole("tab", { name: /automations/i })).not.toBeInTheDocument();
+  });
+
+  it("hides the Automations tab from a non-admin owner of a personal agent", async () => {
     mockSession.mockReturnValue({
       data: { user: { id: "u1", role: "member" } },
       isPending: false,
@@ -86,11 +118,15 @@ describe("AgentSettingsPageContent — Automations tab visibility (#139)", () =>
     render(<AgentSettingsPageContent />);
 
     await waitFor(() => {
-      expect(screen.getByRole("tab", { name: /automations/i })).toBeInTheDocument();
+      expect(screen.getByRole("tab", { name: /general/i })).toBeInTheDocument();
     });
+    expect(screen.queryByRole("tab", { name: /automations/i })).not.toBeInTheDocument();
   });
 
-  it("shows the Automations tab to an admin on a shared agent", async () => {
+  // Pins the coupling itself, not just the outcome: Automations is offered
+  // exactly where the email access it depends on can be granted. If someone
+  // moves one gate later, this fails rather than silently re-opening the split.
+  it("shows the Automations tab to an admin on a shared agent, alongside Permissions", async () => {
     mockSession.mockReturnValue({
       data: { user: { id: "admin-1", role: "admin" } },
       isPending: false,
@@ -102,5 +138,6 @@ describe("AgentSettingsPageContent — Automations tab visibility (#139)", () =>
     await waitFor(() => {
       expect(screen.getByRole("tab", { name: /automations/i })).toBeInTheDocument();
     });
+    expect(screen.getByRole("tab", { name: /permissions/i })).toBeInTheDocument();
   });
 });

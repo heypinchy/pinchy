@@ -1033,3 +1033,215 @@ describe("NewAgentForm — optional Odoo models do not block creation", () => {
     });
   });
 });
+
+/**
+ * Every background load in this form is fire-and-forget from React's point of
+ * view: nothing awaits the promise the effect starts. A rejection therefore has
+ * nowhere to go — it surfaces as a suite-level unhandled rejection that ends a
+ * full `pnpm test` run with `Errors 1 error` and exit 1 while every test passes,
+ * which is very expensive to read off a CI log. It is nondeterministic too: the
+ * effect has to fire after the test's fetch mock was restored, so it reproduces
+ * in a full run and not in isolation.
+ *
+ * Four claims per loader. The request is cancelled when the form goes away, and
+ * that cancellation stays quiet — asserted by aborting for real rather than by
+ * handing the component an AbortError while its signal is untouched, which is a
+ * state it cannot reach and would leave the reachable branch untested. Then the
+ * two ways a load actually fails: the request rejects, and the server answers a
+ * status. Both have to reach the user, because an empty list and a failed list
+ * look identical on screen.
+ */
+describe("NewAgentForm — background loads are cancelled, their failures surfaced", () => {
+  // `ReturnType<typeof vi.spyOn>` erases the concrete `fetch` signature
+  // (spyOn is generic/overloaded), leaving every mock-callback parameter
+  // implicitly `any`. Annotate with the real global `fetch` signature instead.
+  let fetchSpy: Mock<typeof fetch>;
+
+  /**
+   * Every signal the component passed for a URL, in order.
+   *
+   * A list rather than one entry per URL: `/api/integrations` is loaded by both
+   * the Odoo and the mailbox effect, and any effect that re-runs starts a second
+   * request. Keeping only the last would let a leaked controller pass unchecked
+   * behind the one that happened to be recorded.
+   */
+  let signals: Map<string, Array<AbortSignal | undefined>>;
+
+  /** Stands in for one route's response. Receives the component's own init. */
+  type Override = (init?: RequestInit) => Promise<Response>;
+
+  /** Never settles, so the request is still in flight when the test acts. */
+  const pending: Override = () => new Promise<Response>(() => {});
+
+  /** Rejects the way a real `fetch` does once its signal is aborted. */
+  const rejectsOnAbort: Override = (init) =>
+    new Promise<Response>((_, reject) => {
+      init?.signal?.addEventListener("abort", () =>
+        reject(new DOMException("The user aborted a request.", "AbortError"))
+      );
+    });
+
+  const allTemplates = [
+    ...mockTemplates,
+    {
+      id: "odoo-sales-analyst",
+      name: "Sales Analyst",
+      description: "Analyze revenue",
+      requiresDirectories: false,
+      requiresOdooConnection: true,
+      odooAccessLevel: "read-only",
+      defaultTagline: "Analyze revenue",
+    },
+    {
+      id: "email-assistant",
+      name: "Email Assistant",
+      description: "Read, search, and draft emails",
+      requiresDirectories: false,
+      requiresEmailConnection: true,
+      defaultTagline: "Read, search, and draft emails from your inbox",
+    },
+  ];
+
+  /**
+   * Answer every route the form loads. `overrides` replaces one URL's response
+   * — with a rejection, with a status, or with a promise that only settles when
+   * the component aborts it.
+   */
+  function mockApis(overrides: Map<string, Override> = new Map()) {
+    fetchSpy.mockImplementation(async (url, init) => {
+      const key = String(url);
+      const seen = signals.get(key) ?? [];
+      seen.push(init?.signal ?? undefined);
+      signals.set(key, seen);
+
+      const override = overrides.get(key);
+      if (override) return override(init);
+      if (key === "/api/templates") return jsonResponse({ templates: allTemplates });
+      if (key === "/api/integrations") return jsonResponse([]);
+      if (key === "/api/agents") return jsonResponse([]);
+      if (key === "/api/data-directories") return jsonResponse({ directories: [] });
+      return jsonResponse({}, { status: 400 });
+    });
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    signals = new Map();
+    fetchSpy = vi.spyOn(global, "fetch");
+    mockApis();
+  });
+
+  afterEach(() => {
+    fetchSpy.mockRestore();
+  });
+
+  const LOADERS = [
+    {
+      what: "the template list",
+      url: "/api/templates",
+      template: null,
+      failureText: /templates/i,
+    },
+    {
+      what: "the directory list",
+      url: "/api/data-directories",
+      template: "knowledge-base",
+      failureText: /directories/i,
+    },
+    {
+      what: "the Odoo connection list",
+      url: "/api/integrations",
+      template: "odoo-sales-analyst",
+      failureText: /odoo connections/i,
+    },
+    {
+      what: "the mailbox list",
+      url: "/api/integrations",
+      template: "email-assistant",
+      failureText: /mailboxes/i,
+    },
+  ] as const;
+
+  describe.each(LOADERS)("$what", ({ url, template, failureText }) => {
+    beforeEach(() => {
+      mockSearchParams.current = new URLSearchParams(template ? `template=${template}` : "");
+    });
+
+    it("aborts the request that is still in flight when the form unmounts", async () => {
+      mockApis(new Map([[url, pending]]));
+
+      const { unmount } = render(<NewAgentForm />);
+      await waitFor(() => expect(signals.get(url)?.length).toBeGreaterThan(0));
+
+      unmount();
+
+      const seen = signals.get(url) ?? [];
+      expect(seen.length).toBeGreaterThan(0);
+      expect(seen.map((s) => s?.aborted)).toEqual(seen.map(() => true));
+    });
+
+    it("says nothing when the form unmounts while the request is in flight", async () => {
+      mockApis(new Map([[url, rejectsOnAbort]]));
+
+      const { unmount } = render(<NewAgentForm />);
+      await waitFor(() => expect(signals.get(url)?.length).toBeGreaterThan(0));
+
+      unmount();
+      await flushPendingRenders();
+
+      expect(toast.error).not.toHaveBeenCalled();
+    });
+
+    it("tells the user when the request fails", async () => {
+      mockApis(new Map([[url, () => Promise.reject(new TypeError("fetch failed"))]]));
+
+      render(<NewAgentForm />);
+
+      await waitFor(() =>
+        expect(toast.error).toHaveBeenCalledWith(expect.stringMatching(failureText))
+      );
+    });
+
+    it("tells the user when the server answers an error", async () => {
+      mockApis(new Map([[url, async () => jsonResponse({}, { status: 500 })]]));
+
+      render(<NewAgentForm />);
+
+      await waitFor(() =>
+        expect(toast.error).toHaveBeenCalledWith(expect.stringMatching(failureText))
+      );
+    });
+  });
+
+  it("shows the server's own wording when a failing route sends some", async () => {
+    mockSearchParams.current = new URLSearchParams("template=knowledge-base");
+    mockApis(
+      new Map([
+        [
+          "/api/data-directories",
+          async () => jsonResponse({ error: "Data root is not mounted" }, { status: 503 }),
+        ],
+      ])
+    );
+
+    render(<NewAgentForm />);
+
+    await waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith(expect.stringContaining("Data root is not mounted"))
+    );
+  });
+
+  it("cancels the suggested-name lookup when the form goes away", async () => {
+    mockSearchParams.current = new URLSearchParams("template=knowledge-base");
+    mockApis(new Map([["/api/agents", pending]]));
+
+    const { unmount } = render(<NewAgentForm />);
+    await waitFor(() => expect(signals.get("/api/agents")?.length).toBeGreaterThan(0));
+
+    unmount();
+
+    const seen = signals.get("/api/agents") ?? [];
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen.map((s) => s?.aborted)).toEqual(seen.map(() => true));
+  });
+});
