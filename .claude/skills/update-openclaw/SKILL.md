@@ -180,6 +180,11 @@ openclaw/openclaw --json state,closedAt`). But **"issue closed" is
    - `openclaw-runtime-closure.test.ts` fails if a root override now pushes a
      dependency of the new tree outside its declared major; bound the
      override rather than accepting it.
+   - A green scan does not cover what OpenClaw **inlines** into its `dist/`
+     (zod, protobufjs, semver, qs, …): overrides cannot reach those copies.
+     Re-check the open cases in `osv-scanner.toml`'s header (zod inlined at
+     4.4.3 as of 2026.7.1-2) against the new release's `dist/` and drop a
+     note once its inlined version is fixed.
    - Check `npm view openclaw@<target> engines.node` against `.nvmrc` —
      2026.9.x requires Node >=24.16, which means a repo-wide Node bump
      (`scripts/lib/node-version-pin.mjs`) before the OpenClaw bump.
