@@ -7,9 +7,9 @@ import {
   inStoredOrder,
   inStoredOrderPlain,
   isAddressShaped,
+  mailboxAddress,
   readNode,
-  splitTruncation,
-  truncationMarker,
+  readUrl,
 } from "./display";
 
 describe("displayScalar: one rendering per type, so no value passes for another", () => {
@@ -43,17 +43,62 @@ describe("displayScalar: one rendering per type, so no value passes for another"
   });
 });
 
-describe("splitTruncation", () => {
-  it("separates the stored truncation marker from the text", () => {
-    const text = `${"a".repeat(10)}${truncationMarker(812)}`;
-    expect(splitTruncation(text)).toEqual({
-      text: "a".repeat(10),
-      marker: "… [truncated: 812 more characters not shown]",
-    });
+// Sixteenth review of #1242: a URL is what the parser the tool uses accepts,
+// read the way that parser reads it.
+describe("readUrl", () => {
+  it.each([
+    ["https://firma.at/pay", "firma.at", true],
+    ["https://Firma.at:8443/pay", "firma.at", true],
+    ["http://[::1]:8080/", "[::1]", true],
+    ["https:f\u0456rma.at/x", "xn--frma-l9d.at", false],
+    ["https:/firma.at/x", "firma.at", false],
+    ["https:\\\\firma.at\\x", "firma.at", false],
+    ["https://fir%6Da.at/", "firma.at", false],
+    ["https://firma.at@evil.com/", "evil.com", false],
+    ["https://firma.at:pw@firma.at/", "firma.at", false],
+    ["https://evil.com\\@firma.at/x", "evil.com", false],
+    ["\u0001 https://firma.at/x", "firma.at", true],
+  ])("reads %j as reaching %s (host shown: %s)", (text, host, showsHost) => {
+    expect(readUrl(text)).toMatchObject({ host, showsHost });
   });
 
-  it("leaves text without a marker alone", () => {
-    expect(splitTruncation("abc")).toEqual({ text: "abc", marker: null });
+  it.each([
+    "https://firma.at\nHi team",
+    "https://firma.at — new site is live",
+    "https://firma.at, see above",
+    "mailto:boss@firma.at",
+    "urn:isbn:0451450523",
+    "Rechnung Q3",
+    "",
+  ])("does not read %j as a URL the tools fetch", (text) => {
+    expect(readUrl(text)).toBeNull();
+  });
+
+  it("tells one token from a URL followed by more text", () => {
+    expect(readUrl("https://firma.at/x")?.oneToken).toBe(true);
+    expect(readUrl("  https://firma.at/x ")?.oneToken).toBe(true);
+    expect(readUrl("https://firma.at/ is live")?.oneToken).toBe(false);
+  });
+});
+
+describe("mailboxAddress", () => {
+  it.each([
+    ["boss@firma.at", "boss@firma.at"],
+    ["  boss@firma.at\n", "boss@firma.at"],
+    ["Boss <boss@firma.at>", "boss@firma.at"],
+    ['"Huber, Boss" <boss@firma.at>', "boss@firma.at"],
+  ])("reads %j as the address %s", (text, address) => {
+    expect(mailboxAddress(text)).toBe(address);
+  });
+
+  it.each([
+    "Bitte an boss@firma.at schreiben",
+    "a@b.at, c@d.at",
+    "Huber, Boss <boss@firma.at>",
+    "boss@firma.at <attacker@evil.com>",
+    "Hi\nteam <boss@firma.at>",
+  ])("does not read %j as one address", (text) => {
+    expect(mailboxAddress(text)).toBeNull();
   });
 });
 
@@ -113,6 +158,11 @@ describe("isAddressShaped", () => {
     "billing@f\u0456rma.at",
     "https://firma.at/pay",
     "https://evil.com\\@firma.at/x",
+    // Sixteenth review of #1242: what the parser and the mail tool accept.
+    "https:firma.at/x",
+    "\u0001https://f\u0456rma.at/x",
+    " boss@firma.at",
+    "Boss <boss@f\u0456rma.at>",
   ])("treats %j as an address", (text) => {
     expect(isAddressShaped(text)).toBe(true);
   });
@@ -127,6 +177,12 @@ describe("isAddressShaped", () => {
     "a@b, c@d",
     "billing@f\u0456rma.at (xn--frma-l9d.at)",
     "billing@f\u0456rma.at (firma.at)",
+    // Sixteenth review of #1242: free text that begins with a URL is drawn
+    // as text, previewed like any other.
+    "https://firma.at\nHi team, the new site is live.",
+    "https://firma.at — new site is live",
+    "https://firma.at, see above",
+    "https://firma.at/ is live",
   ])("treats %j as text", (text) => {
     expect(isAddressShaped(text)).toBe(false);
   });

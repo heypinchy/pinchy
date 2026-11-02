@@ -12,7 +12,6 @@ import {
   quoted,
   readNode,
   secretText,
-  splitTruncation,
   type SummaryNode,
   type SummaryNote,
   WHOLE_MAX,
@@ -83,20 +82,17 @@ function Spoken({ drawn, spoken }: { drawn: ReactNode; spoken: string }) {
  * cuts (fourth review of #1242). Those are drawn whole up to WHOLE_MAX; past
  * it, the summary names the host in a note beside the preview.
  *
- * The truncation marker the summary appends to a value it cut is shown
- * OUTSIDE the preview: inside it, it sat in exactly the part the preview
- * collapses (second review of #1242).
+ * Everything in `text` is the value's own: the card reads no marker out of it.
+ * The gate refuses any call the summary would have to cut, so a value that
+ * ends in "… [truncated: …]" typed it, and it is drawn and read as the rest of
+ * the value is — inside it, inside its quotes.
  */
 function TextValue({ text, full }: { text: string; full: boolean }) {
   const [expanded, setExpanded] = useState(false);
-  const split = splitTruncation(text);
-  const shown = displayScalar(split.text);
-  const marker = split.marker ? (
-    <span className="text-muted-foreground"> {split.marker}</span>
-  ) : null;
+  const shown = displayScalar(text);
   // Counted and cut by code point, so the preview never ends in half an emoji.
   const chars = [...shown];
-  const decision = full || isAddressShaped(split.text);
+  const decision = full || isAddressShaped(text);
   if (chars.length <= PREVIEW_LEN || (decision && chars.length <= WHOLE_MAX)) {
     return (
       <span className="break-words">
@@ -106,9 +102,8 @@ function TextValue({ text, full }: { text: string; full: boolean }) {
               <StoredOrder text={shown} />
             </span>
           }
-          spoken={quoted(split.text)}
+          spoken={quoted(text)}
         />
-        {marker}
       </span>
     );
   }
@@ -120,19 +115,14 @@ function TextValue({ text, full }: { text: string; full: boolean }) {
             <StoredOrder text={expanded ? shown : `${chars.slice(0, PREVIEW_LEN).join("")}…`} />
           </span>
         }
-        spoken={
-          expanded
-            ? quoted(split.text)
-            : `${quoted([...split.text].slice(0, PREVIEW_LEN).join(""))}…`
-        }
+        spoken={expanded ? quoted(text) : `${quoted([...text].slice(0, PREVIEW_LEN).join(""))}…`}
       />
       {!expanded && (
         <span className="text-muted-foreground">
           {" "}
           ({chars.length - PREVIEW_LEN} more characters hidden)
         </span>
-      )}
-      {marker}{" "}
+      )}{" "}
       <Button
         type="button"
         variant="link"
@@ -221,6 +211,21 @@ function NodeValue({ node, full }: { node: SummaryNode; full: boolean }) {
 }
 
 /**
+ * An empty list or object, drawn as the prompt prints it — `[]`, `{}` — and
+ * read in words. Both used to be "(none)", so `values: []` and `values: {}`
+ * were one card; and a string can't draw either, since `"[]"` reads as a
+ * literal and is drawn quoted (`displayScalar`).
+ */
+function Empty({ list }: { list: boolean }) {
+  return (
+    <Spoken
+      drawn={<span className="font-mono text-muted-foreground">{list ? "[]" : "{}"}</span>}
+      spoken={list ? "empty list" : "empty object"}
+    />
+  );
+}
+
+/**
  * Renders the tool's arguments as the stored summary holds them: every value,
  * arrays one entry per line, objects as labelled fields. Nothing is collapsed
  * to a count — the person approving has to see what will run. Non-string
@@ -239,7 +244,7 @@ function ArgValue({ value, full }: { value: unknown; full: boolean }) {
   }
   if (node) return <NodeValue node={node} full={full} />;
   if (Array.isArray(value)) {
-    if (value.length === 0) return <span className="text-muted-foreground">(none)</span>;
+    if (value.length === 0) return <Empty list />;
     return (
       <ul className="list-disc space-y-0.5 pl-4">
         {value.map((item, index) => (
@@ -265,7 +270,7 @@ function ArgFields({ fields, full }: { fields: Record<string, unknown>; full: bo
   const entries = Object.entries(fields).sort(
     ([a], [b]) => Number(FULL_VIEW_KEYS.has(b)) - Number(FULL_VIEW_KEYS.has(a))
   );
-  if (entries.length === 0) return <span className="text-muted-foreground">(none)</span>;
+  if (entries.length === 0) return <Empty list={false} />;
   return (
     <dl className="space-y-1">
       {entries.map(([key, value]) => (

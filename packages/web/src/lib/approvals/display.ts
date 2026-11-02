@@ -63,10 +63,84 @@ export const FULL_VIEW_KEYS: ReadonlySet<string> = new Set([...RECIPIENT_KEYS, .
 
 /** An email address: no whitespace, one `@`, nothing that makes it a list. */
 export const EMAIL_SHAPED = /^[^\s@<>,;/]+@([^\s@<>,;/:?#]+)$/u;
-/** A URL with an authority: `scheme://[userinfo@]host[:port]…`. The captured
- * host is the one the text READS as; `summary.ts` asks the URL parser for the
- * one it resolves to. */
-export const URL_SHAPED = /^[A-Za-z][A-Za-z0-9+.-]*:\/\/(?:[^/?#\s@]*@)?(\[[^\]]*\]|[^/?#\s:]+)/u;
+
+/**
+ * A display name and the address in angle brackets after it, as the mail tool
+ * accepts one (`parseSingleRecipient` in pinchy-email): quoted, with no `@`,
+ * quote, backslash or bracket inside; or bare, with none of the characters
+ * that would make it a second mailbox, a comment or a group. No line break
+ * either way: a mailbox is one line.
+ */
+const MAILBOX = /^(?:"[^"\\@<>[\]\p{Cc}]*"\s?|[^<>"@,;:()[\]\\\p{Cc}]*)<([^<>]*)>$/u;
+
+/**
+ * The address a value names when the whole value is one mailbox, read the way
+ * the mail tool reads it: trimmed, and taken out of `Name <…>`. `null` for
+ * anything else — free text that merely holds an address included.
+ */
+export function mailboxAddress(text: string): string | null {
+  const trimmed = text.trim();
+  const named = MAILBOX.exec(trimmed);
+  const address = named ? named[1].trim() : trimmed;
+  return EMAIL_SHAPED.test(address) ? address : null;
+}
+
+/** The schemes the URL parser gives a host to, and the only ones a tool fetches. */
+const SPECIAL_SCHEMES: ReadonlySet<string> = new Set([
+  "ftp:",
+  "file:",
+  "http:",
+  "https:",
+  "ws:",
+  "wss:",
+]);
+/** What the URL parser strips from both ends of its input: C0 controls and space. */
+const URL_PADDING = /^[\u0000-\u0020]+|[\u0000-\u0020]+$/g;
+
+/** A value the URL parser accepts, as it reads it. */
+export interface UrlRead {
+  /** The host the parser resolves — the one a tool connects to. */
+  host: string;
+  /**
+   * Does the text show that host, literally, right after `scheme://`, with no
+   * userinfo in front of it? Only then does a person read the host the URL
+   * reaches.
+   */
+  showsHost: boolean;
+  /** No whitespace once the parser's own padding is stripped: the whole value is the URL. */
+  oneToken: boolean;
+}
+
+/**
+ * Reads `text` as a URL with the parser the tools use (`new URL`, WHATWG) —
+ * not with a pattern. The parser accepts far more than `scheme://host`: no
+ * slashes (`https:fіrma.at`), one, backslashes, percent-encoding, a leading
+ * control character it strips, tabs and line breaks it drops. Every one of
+ * those reaches a host the text does not show after `//`. `null` for text the
+ * parser refuses, and for a scheme without a host (`mailto:`, `urn:`), which
+ * no tool fetches.
+ */
+export function readUrl(text: string): UrlRead | null {
+  let url: URL;
+  try {
+    url = new URL(text);
+  } catch {
+    return null;
+  }
+  if (!SPECIAL_SCHEMES.has(url.protocol)) return null;
+  const stripped = text.replace(URL_PADDING, "");
+  const shown = `${url.protocol}//${url.hostname}`;
+  // ASCII case only: a non-ASCII letter that lowercases to an ASCII one (the
+  // Kelvin sign) is not the letter it imitates.
+  const head = stripped.slice(0, shown.length).replace(/[A-Z]/g, (c) => c.toLowerCase());
+  const next = stripped.charAt(shown.length);
+  return {
+    host: url.hostname,
+    showsHost:
+      !url.username && !url.password && head === shown && (next === "" || "/?#:".includes(next)),
+    oneToken: !/\s/u.test(stripped),
+  };
+}
 
 /**
  * A target or an address is drawn whole on the card up to this many
@@ -89,16 +163,21 @@ export const WHOLE_MAX = 8_192;
  * Is this value an email address or a URL — the shapes whose host is the
  * decision? The card never shortens one to a preview: a 217-character address
  * whose `@evil.com` sits past the cut reads as the familiar name its local
- * part spells (fourth review of #1242). Tested on the value's own text: the
- * note naming its host is a separate node (`SummaryNode`), never part of it.
+ * part spells (fourth review of #1242). Only when the WHOLE value is one:
+ * a URL the parser accepts with nothing after it (`readUrl`), or one mailbox
+ * (`mailboxAddress`). Free text that merely begins with a URL — "https://…
+ * — the new site is live" — is previewed like any text. Tested on the value's
+ * own text: the note naming its host is a separate node (`SummaryNode`).
  */
 export function isAddressShaped(text: string): boolean {
-  return URL_SHAPED.test(text) || EMAIL_SHAPED.test(text);
+  return readUrl(text)?.oneToken === true || mailboxAddress(text) !== null;
 }
 
 /**
  * What Pinchy says ABOUT a value, beside it: the host an address or URL really
- * reaches, that it does not parse, or the display name of a recipient.
+ * reaches, that a domain does not parse, or the display name of a recipient.
+ * `not-a-url` is no longer written — a value the URL parser refuses is not a
+ * URL, and no tool fetches it — but summaries stored before still carry it.
  */
 export type SummaryNote =
   | { kind: "host"; host: string }
@@ -342,22 +421,4 @@ export function displayScalar(value: unknown): string {
   if (typeof value === "string") return readsAsLiteral(value) ? JSON.stringify(value) : value;
   if (value === undefined) return "null";
   return JSON.stringify(value) ?? String(value);
-}
-
-/** The marker the summary appends to a string it cut at the stored limit. */
-export function truncationMarker(hidden: number): string {
-  return `… [truncated: ${hidden} more characters not shown]`;
-}
-
-const TRUNCATION_MARKER = /… \[truncated: \d+ more characters not shown\]$/;
-
-/**
- * Separates the stored truncation marker from the text, so the card can show
- * it outside the collapsible preview. A string that merely ENDS with such a
- * marker is displayed as cut too — a false warning, never a hidden one.
- */
-export function splitTruncation(text: string): { text: string; marker: string | null } {
-  const match = TRUNCATION_MARKER.exec(text);
-  if (!match) return { text, marker: null };
-  return { text: text.slice(0, match.index), marker: match[0] };
 }

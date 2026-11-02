@@ -286,7 +286,11 @@ describe("no plain string renders like an annotated value", () => {
     ["v", "boss@f\u0456rma.at"],
     ["v", "https://f\u0456rma.at\\@evil.com/x"],
     ["v", "https://fir%6Da.at/"],
-    ["v", "http://[::1/"],
+    // The parser refuses `http://[::1/`, so it is not a URL and gets no note;
+    // these shapes it accepts, and each reaches a host the text doesn't show.
+    ["v", "https:f\u0456rma.at/x"],
+    ["v", "https://firma.at@evil.com/x"],
+    ["v", "Boss <boss@f\u0456rma.at>"],
     ["to", '"Raimund Korber" <attacker@evil.com>'],
     ["to", '"Boss" <boss@f\u0456rma.at>'],
   ];

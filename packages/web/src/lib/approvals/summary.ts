@@ -74,13 +74,13 @@
  *   entry is the address, with the display name as a note beside it, so a long
  *   familiar name cannot push the real address out of view, and a non-ASCII
  *   domain is named in punycode too, so a homoglyph domain reads as the
- *   different domain it is. The same goes for ANY value that is shaped like an
- *   email address or a URL, at any key and depth — an Odoo `values.email` or
- *   `website` deceives the same way a `to` does. A URL's host is the one the
- *   WHATWG parser resolves — what the tool connects to — and it is named
- *   whenever it differs from the host the text reads as. Recipient and target keys
- *   (`FULL_VIEW_KEYS`) are
- *   rendered before anything else, so no filler in front of them can starve
+ *   different domain it is. The same goes for ANY value that is one mailbox or
+ *   a URL, at any key and depth — an Odoo `values.email` or `website` deceives
+ *   the same way a `to` does. What is a URL is decided by the WHATWG parser
+ *   the tools use, not by a pattern, and its host is the one that parser
+ *   resolves — what the tool connects to — named whenever the text does not
+ *   show exactly that host right after `scheme://`. Recipient and target keys
+ *   (`FULL_VIEW_KEYS`) are rendered before anything else, so no filler in front of them can starve
  *   them of the size budget or push them past MAX_KEYS.
  * - An opaque record reference names the record it points at — model, id and
  *   label — when it decodes. A string that does not decode is shown as the
@@ -100,15 +100,14 @@
 import { domainToASCII } from "node:url";
 import { isCanonicalRef, type RefRecord } from "./call-models";
 import {
-  EMAIL_SHAPED,
   FULL_VIEW_KEYS,
   TARGET_KEYS,
-  URL_SHAPED,
   WHOLE_MAX,
+  mailboxAddress,
   noteText,
+  readUrl,
   refText,
   secretText,
-  truncationMarker,
   type SummaryNode,
   type SummaryNote,
 } from "./display";
@@ -461,6 +460,16 @@ function noted(text: string, notes: SummaryNote[], budget: Budget): string | Sum
   return { "@": "noted", text, notes };
 }
 
+/**
+ * The marker a string cut at a bound ends in. Such a summary is `incomplete`,
+ * and the gate refuses the call instead of opening a confirmation for it, so
+ * no card or prompt ever shows one: the card reads no marker out of a value's
+ * text, and a value that types one shows it as the text it is.
+ */
+function truncationMarker(hidden: number): string {
+  return `… [truncated: ${hidden} more characters not shown]`;
+}
+
 /** Spends `text` against the budget, cutting it — and saying so — if needed. */
 function bounded(text: string, budget: Budget): string {
   let allowed = Math.max(0, budget.chars);
@@ -490,29 +499,19 @@ function punycodeNote(host: string | null, always = false): SummaryNote | null {
 
 /**
  * The host a URL really reaches, as the WHATWG parser resolves it — the
- * parser the tool's own `fetch` uses. A host the text merely reads as is not
- * it: in `https://fіrma.at\@evil.com/x` the backslash is a path separator, so
- * the host is fіrma.at, where a regex reading the `@` saw evil.com (fourth
- * review of #1242). Percent-encoding, a numeric IPv4 form and a homoglyph all
- * resolve to a host that reads differently, so that host is named whenever it
- * differs from the text's. A non-special scheme keeps an opaque,
- * percent-encoded host, which is decoded to read as the domain it names.
+ * parser the tool's own `fetch` uses — named whenever the text does not show
+ * that very host right after `scheme://` (`readUrl`). A host the text merely
+ * reads as is not it: in `https://fіrma.at\@evil.com/x` the backslash is a
+ * path separator, so the host is fіrma.at, where a regex reading the `@` saw
+ * evil.com (fourth review of #1242). Percent-encoding, a numeric IPv4 form, a
+ * homoglyph, userinfo, missing or backslashed slashes and a stripped leading
+ * control character all reach a host the text does not show. A URL with no
+ * host (`file:///…`) reaches none, and gets no note.
  */
-function urlNote(value: string, textHost: string, always: boolean): SummaryNote | null {
-  let host: string;
-  try {
-    host = new URL(value).hostname;
-  } catch {
-    return { kind: "not-a-url" };
-  }
-  if (host.includes("%")) {
-    try {
-      host = domainToASCII(decodeURIComponent(host)) || host;
-    } catch {
-      // Not decodable: show it as the parser holds it.
-    }
-  }
-  return !always && host.toLowerCase() === textHost.toLowerCase() ? null : { kind: "host", host };
+function urlNote(value: string, always: boolean): SummaryNote[] | null {
+  const url = readUrl(value);
+  if (!url) return null;
+  return url.host !== "" && (always || !url.showsHost) ? [{ kind: "host", host: url.host }] : [];
 }
 
 /**
@@ -528,16 +527,19 @@ function hidesHost(shown: string): boolean {
 }
 
 /**
- * The note that names the host a value reaches, when the whole value is an
- * email address or a URL. Free text that merely contains one is left alone:
- * rewriting the middle of a mail body is not what the card is for.
+ * The note that names the host a value reaches: for any value the URL parser
+ * accepts, since that is what decides where a tool connects, whatever else the
+ * text holds; and for a value that is one mailbox, read the way the mail tool
+ * reads it (`mailboxAddress`: trimmed, out of `Name <…>`). Free text the
+ * parser refuses — "https://firma.at, see above" — is not a URL, and text
+ * that merely holds an address is not a mailbox: both are left alone.
  */
 function hostNotes(value: string, shown: string): SummaryNote[] {
   const always = hidesHost(shown);
-  const url = URL_SHAPED.exec(value);
-  const note = url
-    ? urlNote(value, url[1], always)
-    : punycodeNote(EMAIL_SHAPED.exec(value)?.[1] ?? null, always);
+  const url = urlNote(value, always);
+  if (url) return url;
+  const address = mailboxAddress(value);
+  const note = punycodeNote(address && address.slice(address.lastIndexOf("@") + 1), always);
   return note ? [note] : [];
 }
 

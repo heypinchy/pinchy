@@ -121,21 +121,73 @@ describe("ApprovalCard shows what will actually run", () => {
     expect(screen.queryByRole("button", { name: /show full text/i })).not.toBeInTheDocument();
   });
 
-  it("keeps the truncation marker of the stored summary visible", () => {
-    renderCard({ body: "abc… [truncated: 812 more characters not shown]" });
-    expect(screen.getByText(/truncated: 812 more characters not shown/)).toBeInTheDocument();
+  // The gate refuses every call it would have to cut, so no summary the card
+  // is shown carries a real truncation marker. The card used to split one off
+  // the end of any value anyway — so an agent that TYPED "… [truncated: 9 more
+  // characters not shown]" after a path had it drawn as Pinchy's marker,
+  // outside the value, and read outside its quotes. Typed text is the value's.
+  it("keeps a typed truncation marker inside the value it was typed in", () => {
+    const { container } = renderCard({
+      path: "/data/x.md… [truncated: 9 more characters not shown]",
+    });
+    expect(
+      screen.getByText("/data/x.md… [truncated: 9 more characters not shown]")
+    ).toBeInTheDocument();
+    expect(spokenText(container)).toContain(
+      '"/data/x.md… [truncated: 9 more characters not shown]"'
+    );
+    expect(screen.queryByText("/data/x.md")).not.toBeInTheDocument();
   });
 
-  // Second review of #1242: the marker sat at the end of the stored string,
-  // i.e. inside the part the 200-character preview collapses — so a value cut
-  // at the stored limit looked like any long text.
-  it("shows the truncation marker of a long value outside the collapsed preview", () => {
+  it("previews a long value that ends in a typed marker like any long text", async () => {
     renderCard({ body: `${"a".repeat(4000)}… [truncated: 6000 more characters not shown]` });
     expect(screen.getByRole("button", { name: /show full text/i })).toHaveAttribute(
       "aria-expanded",
       "false"
     );
-    expect(screen.getByText(/truncated: 6000 more characters not shown/)).toBeInTheDocument();
+    expect(screen.queryByText(/truncated: 6000 more characters not shown/)).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: /show full text/i }));
+    expect(
+      screen.getByText(/^a+… \[truncated: 6000 more characters not shown\]$/)
+    ).toBeInTheDocument();
+  });
+
+  // An unanchored URL pattern drew free text that merely began with a URL
+  // whole, up to 8,192 characters, instead of the 200-character preview.
+  it.each([
+    `https://firma.at\n${"Hi team, the new site is live. ".repeat(10)}`,
+    `https://firma.at — ${"the new site is live. ".repeat(12)}`,
+    `https://firma.at, ${"see above. ".repeat(25)}`,
+  ])("previews free text that begins with a URL, and notes nothing: %#", (body) => {
+    renderCard(summarizeArgs({ body }));
+    expect(screen.getByRole("button", { name: /show full text/i })).toBeInTheDocument();
+    expect(document.querySelectorAll("[data-annotation]")).toHaveLength(0);
+  });
+
+  // `{values: {}}` and `{values: []}` were both drawn as "(none)". The card
+  // draws them as the prompt prints them, and says which in words.
+  it("draws an empty list and an empty object apart", () => {
+    const list = renderCard({ values: [] }).container;
+    const listDrawn = drawnText(list);
+    const listSpoken = spokenText(list);
+    cleanup();
+    const object = renderCard({ values: {} }).container;
+    expect(drawnText(object)).not.toBe(listDrawn);
+    expect(spokenText(object)).not.toBe(listSpoken);
+    expect(listDrawn).toContain("values[]");
+    expect(drawnText(object)).toContain("values{}");
+    expect(listSpoken).toContain("empty list");
+    expect(spokenText(object)).toContain("empty object");
+  });
+
+  it("draws an empty list apart from the string that reads like it", () => {
+    const list = renderCard({ values: [] }).container;
+    const drawn = drawnText(list);
+    const spoken = spokenText(list);
+    cleanup();
+    const typed = renderCard({ values: "[]" }).container;
+    expect(drawnText(typed)).not.toBe(drawn);
+    expect(spokenText(typed)).not.toBe(spoken);
   });
 
   // The probe of the second review: 180 blank-rendering characters pushed the

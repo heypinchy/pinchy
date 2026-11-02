@@ -1537,4 +1537,86 @@ describe("summarizeArgs", () => {
       expect(summarizeArgs({ url: "https://Firma.at/pay" }).url).toBe("https://Firma.at/pay");
     });
   });
+
+  // Sixteenth review of #1242: whether a value is a URL was decided by a
+  // regex that wanted `scheme://` at position 0. The WHATWG parser
+  // pinchy_web_fetch uses (`new URL(url)`) takes far more: no slashes, one
+  // slash, backslashes, and a leading control or space it strips. Each of
+  // those reached `xn--frma-l9d.at` under a card that named no host.
+  describe("a URL is what the parser accepts, not what a regex reads (sixteenth review)", () => {
+    const homoglyph = "xn--frma-l9d.at";
+
+    it.each([
+      ["no slashes", "https:fіrma.at/x", homoglyph],
+      ["one slash", "https:/fіrma.at/x", homoglyph],
+      ["backslashes", "https:\\\\fіrma.at\\x", homoglyph],
+      ["backslashes and percent-encoding", "https:\\\\fir%6Da.at\\x", "firma.at"],
+    ])("names the host of a URL written with %s", (_shape, value, host) => {
+      expect(new URL(value).hostname).toBe(host);
+      expect(summarizeArgs({ url: value }).url).toEqual(hosted(value, host));
+      expect(summarizeArgs({ website: value }).website).toEqual(hosted(value, host));
+    });
+
+    it("names the host of a URL behind a control character the parser strips", () => {
+      const value = "\u0001https://fіrma.at/x";
+      expect(new URL(value).hostname).toBe(homoglyph);
+      expect(summarizeArgs({ website: value }).website).toEqual(
+        hosted("⟨U+0001⟩https://fіrma.at/x", homoglyph)
+      );
+    });
+
+    // A person reads the text after `//` as the host; the parser reads the
+    // part after the last `@`. Any userinfo is a reason to say which.
+    it.each([
+      ["https://firma.at@evil.com/x", "evil.com"],
+      ["https://firma.at:pw@evil.com/x", "evil.com"],
+      ["https://firma.at:pw@firma.at/x", "firma.at"],
+    ])("names the host of %j, which carries userinfo", (value, host) => {
+      expect(summarizeArgs({ website: value }).website).toEqual(hosted(value, host));
+    });
+
+    it("leaves a URL alone whose text shows its host right after `//`", () => {
+      for (const value of [
+        "https://firma.at",
+        "https://firma.at/pay?x=1#y",
+        "https://firma.at:8443/pay",
+        "http://[::1]:8080/",
+      ]) {
+        expect(summarizeArgs({ website: value }).website).toBe(value);
+      }
+    });
+
+    // The old regex matched the start of a text, so free text that merely
+    // began with a URL got a false "not a valid URL" note. The parser
+    // refuses each of these, so none of them is a URL.
+    it.each([
+      "https://firma.at\nHi team, the new site is live.",
+      "https://firma.at — new site is live",
+      "https://firma.at, see above",
+      "https://exa mple.com",
+    ])("gives free text that begins with a URL no note: %j", (value) => {
+      expect(summarizeArgs({ note: value }).note).toBe(value);
+    });
+
+    // An email address is read the way the mail tool reads one
+    // (`parseSingleRecipient`): trimmed, and taken out of `Name <…>`.
+    it.each([
+      ["Boss <boss@fіrma.at>", "Boss <boss@fіrma.at>"],
+      ['"Boss" <boss@fіrma.at>', '"Boss" <boss@fіrma.at>'],
+      [" boss@fіrma.at", " boss@fіrma.at"],
+      ["boss@fіrma.at ", "boss@fіrma.at⟨U+00A0⟩"],
+    ])("names the punycode host of the address in %j", (value, shown) => {
+      expect(summarizeArgs({ email: value }).email).toEqual(hosted(shown, homoglyph));
+    });
+
+    it("leaves free text that merely holds an address alone", () => {
+      for (const value of [
+        "Bitte an <boss@fіrma.at>, danke",
+        "Schreib an boss@fіrma.at bitte",
+        "a@fіrma.at, b@fіrma.at",
+      ]) {
+        expect(summarizeArgs({ note: value }).note).toBe(value);
+      }
+    });
+  });
 });
