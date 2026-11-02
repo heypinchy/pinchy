@@ -1,7 +1,16 @@
 import { z } from "zod";
 
+/**
+ * An Odoo server URL. 2048 characters is longer than any real one, and it bounds
+ * what an edit's destination diff can put into an audit row.
+ */
+export const odooUrlSchema = z
+  .string()
+  .max(2048, "The URL is too long — 2048 characters at most.")
+  .url();
+
 export const odooCredentialsSchema = z.object({
-  url: z.string().url(),
+  url: odooUrlSchema,
   db: z.string().min(1),
   login: z.string().min(1),
   apiKey: z.string().min(1),

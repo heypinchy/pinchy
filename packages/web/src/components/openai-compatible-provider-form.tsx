@@ -9,6 +9,10 @@ import { Label } from "@/components/ui/label";
 import { apiPost, ApiError, errorMessage } from "@/lib/api-client";
 import type { OpenClawModelDefinition } from "@/lib/openclaw-builtin-models";
 import type { UpsertOpenAiCompatibleProviderInput } from "@/lib/schemas/openai-compatible-provider";
+import {
+  canonicalDestinationUrl,
+  KEY_REQUIRED_FOR_NEW_DESTINATION,
+} from "@/lib/secret-destination";
 
 // Add/Edit form for the generic "OpenAI-compatible" provider type (#894). Talks
 // to the typed api-client with shared request schemas so the client payload
@@ -61,11 +65,24 @@ export function OpenAiCompatibleProviderForm({ provider, onSaved, onCancel }: Fo
   const [manualError, setManualError] = useState("");
   const [formError, setFormError] = useState("");
 
+  // The stored key is bound to its base URL: changing it on an edit means the
+  // key must be typed again (the server enforces the same rule). Only once the
+  // new address parses, though — a half-typed or malformed URL is the server's
+  // to reject as invalid, not a reason to ask for the key.
+  const nextBaseUrl = canonicalDestinationUrl(baseUrl);
+  const needsFreshKey =
+    isEdit && nextBaseUrl !== null && nextBaseUrl !== canonicalDestinationUrl(provider.baseUrl);
+
   async function handleSubmit() {
     setKeyError("");
     setBaseUrlError("");
     setManualError("");
     setFormError("");
+
+    if (needsFreshKey && !apiKey.trim()) {
+      setKeyError(KEY_REQUIRED_FOR_NEW_DESTINATION);
+      return;
+    }
 
     // Manual ids are the fallback for an endpoint with no /v1/models; the server
     // discovers models itself otherwise, so they're only sent when the manual
@@ -170,7 +187,8 @@ export function OpenAiCompatibleProviderForm({ provider, onSaved, onCancel }: Fo
           type="password"
           value={apiKey}
           onChange={(e) => setApiKey(e.target.value)}
-          placeholder={isEdit ? "Leave blank to keep current key" : "sk-..."}
+          placeholder={isEdit && !needsFreshKey ? "Leave blank to keep current key" : "sk-..."}
+          required={needsFreshKey}
           aria-invalid={keyError ? true : undefined}
           aria-describedby={keyError ? "oai-api-key-error" : undefined}
         />
@@ -178,6 +196,8 @@ export function OpenAiCompatibleProviderForm({ provider, onSaved, onCancel }: Fo
           <p id="oai-api-key-error" className="text-sm text-destructive">
             {keyError}
           </p>
+        ) : needsFreshKey ? (
+          <p className="text-xs text-muted-foreground">{KEY_REQUIRED_FOR_NEW_DESTINATION}</p>
         ) : (
           <p className="text-xs text-muted-foreground flex items-center gap-1">
             <Lock className="size-3" />
