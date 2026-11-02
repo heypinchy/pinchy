@@ -79,6 +79,25 @@ export const auditAfterHook = createAuthMiddleware(async (ctx) => {
 });
 
 /**
+ * Better Auth endpoints that must never be reachable by an HTTP client.
+ * See the `hooks.before` guard in `auth` below for the reasoning per path.
+ */
+const CLIENT_CLOSED_PREFIXES = ["/sign-up/", "/admin/"];
+const CLIENT_CLOSED_EXACT = [
+  "/update-user",
+  "/change-password",
+  "/change-email",
+  "/delete-user",
+  "/delete-user/callback",
+];
+
+function isClientClosedPath(path: string): boolean {
+  return (
+    CLIENT_CLOSED_EXACT.includes(path) || CLIENT_CLOSED_PREFIXES.some((p) => path.startsWith(p))
+  );
+}
+
+/**
  * Hardened rate-limit config for Better Auth (see issue #239).
  *
  * Better Auth's defaults (3 req / 10s per IP on `/sign-in/*`) are too weak
@@ -332,6 +351,33 @@ export const auth = betterAuth({
       // check either. Verified empirically against the real Better Auth
       // dispatch pipeline, not just read from source.
       if (ctx.path.startsWith("/api-key/") && (ctx.request || ctx.headers)) {
+        throw new APIError("NOT_FOUND", { message: "Not found" });
+      }
+
+      // Same mounted-whole-handler problem, wider surface. Pinchy's browser
+      // client uses exactly /sign-in/email, /sign-out and /get-session; every
+      // other Better Auth endpoint a client could reach is either replaced by
+      // an audited Pinchy route or unused — and was live anyway:
+      //
+      //   /sign-up/*  open self-registration: any unauthenticated client got a
+      //               "member" account + session (invites and seat limits
+      //               bypassed). Users are created ONLY server-side
+      //               (auth.api.signUpEmail in lib/setup.ts and
+      //               app/api/invite/claim/route.ts).
+      //   /admin/*    impersonate-user, set-role, set-user-password,
+      //               remove-user, create-user, … — unaudited, and they bypass
+      //               Pinchy's guarantee that personal agents stay private
+      //               even from admins. Pinchy manages users via /api/users/*.
+      //   /update-user, /change-password, /change-email, /delete-user
+      //               unvalidated, unaudited account mutation. Pinchy has
+      //               /api/users/me, /api/users/me/password, /api/users/:id.
+      //
+      // Discriminator is `ctx.request` ONLY — not `ctx.headers` like the
+      // /api-key block above. A real HTTP call always carries `request`;
+      // /api/users/me/password calls `auth.api.changePassword({ headers })`
+      // server-side, with the caller's headers forwarded and NO request, and
+      // must keep working. 404, not 403: don't advertise the mounted route.
+      if (ctx.request && isClientClosedPath(ctx.path)) {
         throw new APIError("NOT_FOUND", { message: "Not found" });
       }
     }),

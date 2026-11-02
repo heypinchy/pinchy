@@ -235,6 +235,14 @@ sed -i 's/^PINCHY_VERSION=.*/PINCHY_VERSION=%%PINCHY_VERSION%%/' .env
 docker compose pull && docker compose up -d && docker image prune -f
 ```
 
+#### Security: open self-registration is closed — review your user list
+
+Earlier releases, v0.9.1 included, left the authentication library's sign-up endpoint reachable. Anyone who could reach your Pinchy URL could create their own account with the `member` role and see every shared agent, bypassing invites and your seat cap. This release closes it: `POST /api/auth/sign-up/*` now answers `404` to every client. Accounts are created only by the setup wizard and by claiming an invite.
+
+The same release also closes the library's own user-administration and profile endpoints (`/api/auth/admin/*`, `/update-user`, `/change-password`, `/change-email`, `/delete-user`) to direct client calls. They bypassed Pinchy's audit trail and, for admins, the rule that personal agents stay private. Everything the Pinchy UI does is unchanged — it never used them.
+
+What to do: open **Settings → Users** and look for accounts you didn't invite. Remove any you don't recognise and check the [audit trail](/concepts/audit-trail/) for what they touched. If your instance was reachable from the internet, treat unknown members as a possible exposure of shared-agent content. The API-key list in **Settings → API Keys** also now flags keys created by an admin who has since been demoted, not just one who was banned or deleted — consider rotating those.
+
 #### Memory is now its own permission — and most agents gain it on upgrade
 
 An agent's memory used to hang off the **Write files** permission. Nothing said so, no agent template granted that permission, and the New Agent form quietly ticked it for you — so whether an agent could remember anything depended on a checkbox about files, and any agent created outside that form, including your personal Smithers, had no memory at all.

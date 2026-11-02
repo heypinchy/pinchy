@@ -270,7 +270,7 @@ Rate limiting is **enabled in production only** (`NODE_ENV === "production"`). I
 | Endpoint                      | Window | Max | Threat addressed                                     |
 | ----------------------------- | ------ | --- | ---------------------------------------------------- |
 | `/sign-in/*` (incl. `/email`) | 60s    | 5   | Credential stuffing, brute force                     |
-| `/sign-up/*` (incl. `/email`) | 5 min  | 3   | Account-creation spam                                |
+| `/sign-up/*` (incl. `/email`) | 5 min  | 3   | Account-creation spam (endpoint itself is closed)    |
 | `/forget-password[/*]`        | 10 min | 3   | Password-reset email spam (DOS against user inboxes) |
 | `/reset-password[/*]`         | 10 min | 5   | Reset-token brute force                              |
 | `/request-password-reset`     | 10 min | 3   | Reset email spam                                     |
@@ -280,6 +280,17 @@ Rate limiting is **enabled in production only** (`NODE_ENV === "production"`). I
 | All other auth endpoints      | 10s    | 100 | Generic flood protection                             |
 
 The `/sign-in/*` and `/sign-up/*` wildcard entries cover any future sub-path (OAuth callbacks, magic-link, passkey) so a new sign-in mechanism added in a later release inherits the hardened threshold instead of falling back to Better Auth's weaker `/sign-in/*` default.
+
+### Endpoints closed to clients
+
+Rate limits are the second line of defence. For endpoints Pinchy never uses from the browser, the first line is that they don't answer at all: a client request to any of the following gets a `404`, identical to a path that doesn't exist.
+
+- `/api/auth/sign-up/*` — self-registration. Accounts are created only server-side, by the setup wizard and by claiming an invite.
+- `/api/auth/admin/*` — the authentication library's user-administration endpoints (impersonate, set role, set password, remove, ban, create). Pinchy manages users through its own audited `/api/users/*` routes instead.
+- `/api/auth/update-user`, `/api/auth/change-password`, `/api/auth/change-email`, `/api/auth/delete-user` — profile and credential changes go through Pinchy's `/api/users/me` and `/api/users/me/password`, which validate, rate-limit and audit them.
+- `/api/auth/api-key/*` — API keys are issued only from **Settings → API Keys**.
+
+Sign-in, sign-out and session lookup are unaffected.
 
 ### What this protects against
 

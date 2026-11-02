@@ -7,6 +7,8 @@ import { Aside, Badge } from "@astrojs/starlight/components";
 
 Pinchy uses an invite-only system for user onboarding. Admins create invite links, new users claim them by setting up their account, and then they are guided through an onboarding conversation with Smithers. This guide covers the full lifecycle: inviting, onboarding, managing, and deactivating users.
 
+An account exists only because an admin invited someone. Self-sign-up is closed: there is no public registration endpoint, and Pinchy refuses direct calls to the underlying authentication library's sign-up and user-administration endpoints (`/api/auth/sign-up/*`, `/api/auth/admin/*`) from any client — including admins. Users are created, promoted, deactivated and removed only through the flows described here, which are audited.
+
 ## Prerequisites
 
 - Pinchy is running (see [Quick Start](/getting-started/))
