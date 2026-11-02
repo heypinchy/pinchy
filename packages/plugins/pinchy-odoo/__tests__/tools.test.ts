@@ -6958,6 +6958,65 @@ describe("odoo_schedule_activity", () => {
     expect(result.content[0].text).toContain("assignee");
     expect(mockCreate).not.toHaveBeenCalled();
   });
+
+  // Sixth review of #1242: the assignee was trimmed BEFORE the ref was
+  // decoded, so `" " + ref` or `ref + "\n"` assigned the activity to the
+  // record the ref names — while the confirmation card (which shows a ref as
+  // its record only when the string IS the ref) showed opaque text, and the
+  // gate's model check never saw res.users. A padded ref is refused instead.
+  it.each([
+    ["a leading space", (ref: string) => ` ${ref}`],
+    ["a trailing line break", (ref: string) => `${ref}\n`],
+    ["a leading tab and trailing space", (ref: string) => `\t${ref} `],
+  ])("refuses an assignee ref with %s instead of acting on it", async (_label, pad) => {
+    const userRef = encodeRef({
+      integrationType: "odoo",
+      connectionId: "conn-test-1",
+      model: "res.users",
+      id: 7,
+      label: "Mallory",
+    });
+    const tools = createApi({ [agentId]: activityConfig });
+    const tool = findTool(tools, "odoo_schedule_activity", agentId)!;
+
+    const result = await tool.execute("c", {
+      target: leadRef(),
+      summary: "x",
+      dueDate: "2026-06-30",
+      assignee: pad(userRef),
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("assignee");
+    expect(result.content[0].text).toMatch(/whitespace/i);
+    expect(mockCreate).not.toHaveBeenCalled();
+  });
+
+  it("still trims the whitespace around an assignee NAME", async () => {
+    mockSearchRead.mockImplementation(async (model: string) => {
+      if (model === "res.users") return { records: [{ id: 2 }], total: 1, limit: 2, offset: 0 };
+      if (model === "ir.model") return { records: [{ id: 5 }], total: 1, limit: 1, offset: 0 };
+      return { records: [], total: 0, limit: 0, offset: 0 };
+    });
+    mockCreate.mockResolvedValue(11);
+    const tools = createApi({ [agentId]: activityConfig });
+    const tool = findTool(tools, "odoo_schedule_activity", agentId)!;
+
+    const result = await tool.execute("c", {
+      target: leadRef(),
+      summary: "x",
+      dueDate: "2026-06-30",
+      assignee: " Mitch Admin\n",
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(mockSearchRead).toHaveBeenCalledWith(
+      "res.users",
+      [["name", "=", "Mitch Admin"]],
+      expect.anything()
+    );
+    expect(mockCreate.mock.calls[0][1]).toMatchObject({ user_id: 2 });
+  });
 });
 
 describe("odoo_complete_activity", () => {
@@ -7099,6 +7158,31 @@ describe("odoo_reschedule_activity", () => {
     const tool = findTool(tools, "odoo_reschedule_activity", agentId)!;
     const result = await tool.execute("c", { target: activityRef() });
     expect(result.isError).toBe(true);
+    expect(mockWrite).not.toHaveBeenCalled();
+  });
+
+  // Sixth review of #1242 — see the matching odoo_schedule_activity test.
+  it.each([
+    ["a leading space", (ref: string) => ` ${ref}`],
+    ["a trailing line break", (ref: string) => `${ref}\n`],
+    ["a leading tab", (ref: string) => `\t${ref}`],
+  ])("refuses an assignee ref with %s instead of reassigning", async (_label, pad) => {
+    const userRef = encodeRef({
+      integrationType: "odoo",
+      connectionId: "conn-test-1",
+      model: "res.users",
+      id: 7,
+      label: "Mallory",
+    });
+    mockWrite.mockResolvedValue(true);
+    const tools = createApi({ [agentId]: cfg });
+    const tool = findTool(tools, "odoo_reschedule_activity", agentId)!;
+
+    const result = await tool.execute("c", { target: activityRef(), assignee: pad(userRef) });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("assignee");
+    expect(result.content[0].text).toMatch(/whitespace/i);
     expect(mockWrite).not.toHaveBeenCalled();
   });
 

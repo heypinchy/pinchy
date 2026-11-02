@@ -2109,6 +2109,26 @@ async function resolveActivityTypeByName(client: OdooClient, name: string): Prom
 }
 
 /**
+ * The `assignee` as the tools use it: a user NAME is trimmed (a model pads
+ * names freely, and the lookup is an exact match), a ref is taken exactly as
+ * sent. A ref with whitespace around it is refused rather than trimmed into
+ * the ref (sixth review of #1242): the confirmation card shows a string as the
+ * record it names only when the string IS the ref, so `" " + ref` was shown
+ * as opaque text while the activity went to the record the ref names.
+ */
+function assigneeParam(value: unknown): string {
+  if (typeof value !== "string") return "";
+  const trimmed = value.trim();
+  if (trimmed !== value && isIntegrationRef(trimmed)) {
+    throw new Error(
+      "`assignee` has whitespace around its _pinchy_ref. Pass the ref exactly as odoo_read " +
+        "returned it, with nothing before or after it."
+    );
+  }
+  return trimmed;
+}
+
+/**
  * Resolve an `assignee` to a res.users id. Accepts an opaque res.users ref
  * (`pinchy_ref:…`) or an exact user name. Throws a clear error on an
  * ambiguous name or a ref that does not point at res.users.
@@ -4057,6 +4077,7 @@ const plugin = {
               if (typeof dueDate !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(dueDate)) {
                 return errorResult(new Error("`dueDate` is required in YYYY-MM-DD format."));
               }
+              const assigneeRequested = assigneeParam(params.assignee);
 
               const decoded = decodeTargetRef(config.connectionId, target);
               const targetModel = decoded.model;
@@ -4079,8 +4100,6 @@ const plugin = {
                     ? await resolveActivityTypeByName(client, activityTypeRequested)
                     : await resolveDefaultActivityTypeId(client);
 
-                const assigneeRequested =
-                  typeof params.assignee === "string" ? params.assignee.trim() : "";
                 const userId =
                   assigneeRequested.length > 0
                     ? await resolveAssigneeUserId(client, config.connectionId, assigneeRequested)
@@ -4258,7 +4277,7 @@ const plugin = {
                 );
               }
               const dueDateRaw = typeof params.dueDate === "string" ? params.dueDate.trim() : "";
-              const assigneeRaw = typeof params.assignee === "string" ? params.assignee.trim() : "";
+              const assigneeRaw = assigneeParam(params.assignee);
               if (dueDateRaw.length === 0 && assigneeRaw.length === 0) {
                 return errorResult(
                   new Error(
