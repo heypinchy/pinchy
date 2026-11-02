@@ -17,6 +17,16 @@ import { InviteDialog } from "@/components/invite-dialog";
 import { SeatLimitDialog } from "@/components/seat-limit-dialog";
 import { UserDetailSheet } from "@/components/user-detail-sheet";
 import { StatusBadge } from "@/components/status-badge";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { toast } from "sonner";
 import { ShieldAlert, X } from "lucide-react";
 import { mergeUserList, type UserListItem, type UserGroup } from "@/lib/user-list";
@@ -178,6 +188,9 @@ export function SettingsUsers({ currentUserId, refreshKey }: SettingsUsersProps)
   const [isEnterprise, setIsEnterprise] = useState(false);
   const [seatInfo, setSeatInfo] = useState<{ maxUsers: number; seatsUsed: number } | null>(null);
   const [unknownOriginDismissed, setUnknownOriginDismissed] = useState(false);
+  // "Mark as known" cannot be undone — the acknowledgement is an audit row and
+  // nothing withdraws it — so it asks first, like Deactivate does.
+  const [confirmKnown, setConfirmKnown] = useState<(UserListItem & { kind: "user" }) | null>(null);
 
   // Already-deactivated accounts need no action, so they stay out of the banner.
   const unknownOriginAccounts = items.filter(
@@ -293,10 +306,33 @@ export function SettingsUsers({ currentUserId, refreshKey }: SettingsUsersProps)
         <UnknownOriginBanner
           accounts={unknownOriginAccounts}
           onReview={setSelectedUser}
-          onMarkKnown={handleMarkKnown}
+          onMarkKnown={setConfirmKnown}
           onDismiss={() => setUnknownOriginDismissed(true)}
         />
       )}
+      <AlertDialog open={!!confirmKnown} onOpenChange={(open) => !open && setConfirmKnown(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Mark {confirmKnown?.name} as known?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {confirmKnown?.name} leaves this check for good — there&apos;s no way to put an
+              account back on the list. The audit trail records that you vouched for it. Only do
+              this if you know where the account came from.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                if (confirmKnown) void handleMarkKnown(confirmKnown);
+                setConfirmKnown(null);
+              }}
+            >
+              Mark as known
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
       <Card>
         <CardHeader className="flex flex-row items-center justify-between">
           <CardTitle>Users</CardTitle>

@@ -1079,6 +1079,11 @@ describe("SettingsUsers", () => {
       await user.click(
         within(banner).getByRole("button", { name: /mark mallory stranger as known/i })
       );
+      await user.click(
+        within(await screen.findByRole("alertdialog")).getByRole("button", {
+          name: /^mark as known$/i,
+        })
+      );
 
       await waitFor(() => {
         expect(screen.queryByRole("region", { name: /nobody invited/i })).toBeNull();
@@ -1088,6 +1093,36 @@ describe("SettingsUsers", () => {
         .mock.calls.find(([url]) => String(url) === "/api/users/user-9/acknowledge-origin");
       expect(post?.[1]).toMatchObject({ method: "POST", body: "{}" });
       expect(mockToast.success).toHaveBeenCalledWith(expect.stringMatching(/mallory stranger/i));
+    });
+
+    it("asks before marking an account as known, and sends nothing on Cancel", async () => {
+      // One click used to vouch for an account for good: the acknowledgement
+      // is an audit row, and nothing withdraws it.
+      const user = userEvent.setup();
+      await renderAndWait(usersWithStranger);
+
+      const banner = screen.getByRole("region", { name: /nobody invited/i });
+      await user.click(
+        within(banner).getByRole("button", { name: /mark mallory stranger as known/i })
+      );
+
+      const dialog = await screen.findByRole("alertdialog", {
+        name: /mark mallory stranger as known/i,
+      });
+      expect(dialog).toHaveTextContent(/for good/i);
+      expect(dialog).toHaveTextContent(/audit trail/i);
+
+      await user.click(within(dialog).getByRole("button", { name: /cancel/i }));
+
+      await waitFor(() => {
+        expect(screen.queryByRole("alertdialog")).toBeNull();
+      });
+      expect(
+        vi
+          .mocked(global.fetch)
+          .mock.calls.some(([url]) => String(url).endsWith("/acknowledge-origin"))
+      ).toBe(false);
+      expect(screen.getByRole("region", { name: /nobody invited/i })).toBeInTheDocument();
     });
 
     it("offers Mark as known on the admin's own account too", async () => {
@@ -1117,6 +1152,11 @@ describe("SettingsUsers", () => {
 
       await user.click(
         within(banner).getByRole("button", { name: /mark mallory stranger as known/i })
+      );
+      await user.click(
+        within(await screen.findByRole("alertdialog")).getByRole("button", {
+          name: /^mark as known$/i,
+        })
       );
 
       await waitFor(() => {
