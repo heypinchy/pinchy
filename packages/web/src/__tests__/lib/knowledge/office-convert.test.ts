@@ -16,8 +16,18 @@
  *     other file in the same batch still converts.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { constants as fsConstants, mkdtempSync, rmSync } from "node:fs";
-import { chmod, mkdir, open, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { constants as fsConstants, existsSync, mkdtempSync, rmSync } from "node:fs";
+import {
+  chmod,
+  mkdir,
+  open,
+  readdir,
+  readFile,
+  realpath,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { basename, dirname, extname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { createHash, randomBytes } from "node:crypto";
@@ -748,6 +758,7 @@ describe("preflight before conversion (release review v0.10.0)", () => {
               relationshipsRemoved: 2,
               altChunksRemoved: 0,
               rtfGroupsRemoved: 0,
+              unpackedBytes: null,
               contentHash: "0".repeat(64),
             };
           },
@@ -779,6 +790,7 @@ describe("preflight before conversion (release review v0.10.0)", () => {
                 relationshipsRemoved: 1,
                 altChunksRemoved: 2,
                 rtfGroupsRemoved: 0,
+                unpackedBytes: null,
                 contentHash: "0".repeat(64),
               };
             },
@@ -1186,6 +1198,88 @@ describe("an output the converter could not write is infrastructure, not a verdi
     );
 
     expect(outcomes.map((o) => o.status)).toEqual(["infrastructure", "failed"]);
+  });
+
+  /** A preparer that stages `stagedBytes` and reports the archive unpacking to `unpackedBytes`. */
+  const stagedAs =
+    (stagedBytes: number, unpackedBytes: number | null) =>
+    async (_absPath: string, staged: string) => {
+      await writeFile(staged, Buffer.alloc(stagedBytes));
+      return {
+        contentHash: "0".repeat(64),
+        relationshipsRemoved: 0,
+        altChunksRemoved: 0,
+        rtfGroupsRemoved: 0,
+        unpackedBytes,
+      };
+    };
+
+  it("measures the room against the UNPACKED document, not the zipped one (eleventh review)", async () => {
+    // LibreOffice unpacks an OOXML package into scratch space while it LOADS
+    // it. When that runs out it says exactly what an unloadable document says
+    // — exit 0, no PDF, `source file could not be loaded` — and its scratch is
+    // gone again by the time the volume is asked. The review's case: a
+    // 152 KB .docx whose document.xml is 26.6 MB, on a volume left with
+    // 23.6 MiB free — far above twice the zipped size, below the unpacked one.
+    const source = await corpusFile("report.docx", "x");
+
+    const outcomes = await convertOfficeFiles(
+      [source],
+      deps(fakeConverter({ outputs: {} }), {
+        prepareSource: stagedAs(152_046, 26_600_894),
+        statfs: volumeWith({ freeBytes: 24_124 * 1024 }),
+        runConverter: converterThat({}, async () => "Error: source file could not be loaded\n"),
+      })
+    );
+
+    expect(outcomes[0].status).toBe("infrastructure");
+    expect(outcomes[0].reason).toMatch(/could not write the converted PDF: .*bytes free/);
+  });
+
+  it("asks for room for the unpacked scratch AND the PDF beside it", async () => {
+    // Scratch that fits is not enough: the PDF is written to the same volume.
+    // 12 MiB unpacked on a 24 MiB volume leaves less than the PDF's floor.
+    const [packed, legacy] = [await corpusFile("a.docx", "x"), await corpusFile("b.doc", "y")];
+
+    const outcomes = await convertOfficeFiles(
+      [packed, legacy],
+      deps(fakeConverter({ outputs: {} }), {
+        prepareSource: async (absPath, staged) =>
+          absPath.endsWith(".docx")
+            ? stagedAs(4096, 12 * 1024 * 1024)(absPath, staged)
+            : // A legacy binary is not an archive: nothing to unpack, so the
+              // PDF rule alone applies, and 24 MiB is room enough to judge it.
+              stagedAs(4096, null)(absPath, staged),
+        statfs: volumeWith({ freeBytes: 24 * 1024 * 1024 }),
+        runConverter: converterThat({}, async () => ""),
+      })
+    );
+
+    expect(outcomes.map((o) => o.status)).toEqual(["infrastructure", "failed"]);
+  });
+
+  it("gives LibreOffice its scratch space inside the batch, on the volume that is checked", async () => {
+    // Left to itself LibreOffice uses the OS temp dir — the container's /tmp,
+    // which no check here looks at. Inside the batch it lands on the volume
+    // the probe and statfs ask, and goes when the batch does.
+    const source = await corpusFile("a.doc", "x");
+    const converter = fakeConverter({ outputs: { "a.doc": "one two" } });
+    const seen: boolean[] = [];
+
+    await convertOfficeFiles(
+      [source],
+      deps(converter, {
+        runConverter: async (call) => {
+          seen.push((await stat(call.tmpDir)).isDirectory());
+          return converter.run(call);
+        },
+      })
+    );
+
+    const [call] = converter.calls;
+    expect(seen).toEqual([true]);
+    expect(dirname(call.tmpDir)).toBe(dirname(call.outDir));
+    expect(existsSync(call.tmpDir)).toBe(false);
   });
 
   it("books a missing PDF as infrastructure when the volume has bytes but no inodes left", async () => {

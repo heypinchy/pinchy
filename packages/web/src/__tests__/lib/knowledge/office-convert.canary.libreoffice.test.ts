@@ -52,6 +52,7 @@
  * the listener is on loopback. Locally, against an image that has vitest:
  *
  *   docker run --rm --network none --user root --entrypoint sh \
+ *     --tmpfs /kb-small-volume:size=24m -e KB_SMALL_VOLUME=/kb-small-volume \
  *     -v "$PWD/packages/web/src:/app/packages/web/src:ro" \
  *     -v "$PWD/packages/web/vitest.libreoffice.config.ts:/app/packages/web/vitest.libreoffice.config.ts:ro" \
  *     -v "$PWD/packages/plugins/pinchy-files:/app/packages/plugins/pinchy-files:ro" \

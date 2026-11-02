@@ -255,6 +255,15 @@ export interface PreparedSource {
   altChunksRemoved: number;
   /** Picture, object and field-instruction groups cut from an RTF file. */
   rtfGroupsRemoved: number;
+  /**
+   * What the staged package unpacks to: the sum of its entries' real sizes —
+   * or null for a file that is not an archive (`.doc`/`.ppt`, RTF), which
+   * LibreOffice reads as it is. LibreOffice unpacks a package into scratch
+   * space while LOADING it, so this, not the file's size, is what the load
+   * needs from the volume: a 152 KB `.docx` measured 26.6 MB (eleventh
+   * review). The converter sizes its free-space check from it.
+   */
+  unpackedBytes: number | null;
 }
 
 /** What staging did, without the bytes: those are on disk, where the converter reads them. */
@@ -1778,7 +1787,13 @@ async function checkedChunks(
       `the content of this ${ext} file is not a Word or PowerPoint document`
     );
   }
-  const none = { contentHash, relationshipsRemoved: 0, altChunksRemoved: 0, rtfGroupsRemoved: 0 };
+  const none = {
+    contentHash,
+    relationshipsRemoved: 0,
+    altChunksRemoved: 0,
+    rtfGroupsRemoved: 0,
+    unpackedBytes: null,
+  };
   // A legacy binary .doc/.ppt cannot be rewritten here: the locked profile is
   // its only layer, and it does NOT stop an embedded SVG picture from reading
   // a local file (the canary pins that gap).
@@ -1803,9 +1818,12 @@ async function checkedChunks(
       );
     }
     const { parts, removed, altChunksRemoved } = sanitizedParts(verified);
+    // Sizes are true here: `verified` holds only entries inflated against
+    // their declared size, and a rewritten part declares its new length.
+    const unpackedBytes = (parts ?? entries).reduce((sum, part) => sum + part.uncompressedSize, 0);
     return {
       chunks: parts ? zipChunks(parts) : [verified],
-      staged: { ...none, relationshipsRemoved: removed, altChunksRemoved },
+      staged: { ...none, relationshipsRemoved: removed, altChunksRemoved, unpackedBytes },
     };
   } catch (err) {
     if (err instanceof OfficeFileRejectedError) throw err;

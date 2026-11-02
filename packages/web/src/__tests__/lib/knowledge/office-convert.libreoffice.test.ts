@@ -19,14 +19,14 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { chmod, readFile, symlink, writeFile } from "node:fs/promises";
+import { chmod, readdir, readFile, stat, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { inflateRawSync } from "node:zlib";
 
 import { convertOfficeFiles, runSoffice } from "@/lib/knowledge/office-convert";
 import { OfficeArtifactStore } from "@/lib/knowledge/office-artifacts";
-import { rawPart, readZipEntries } from "@/lib/knowledge/office-zip";
+import { assembleZip, deflatedPart, rawPart, readZipEntries } from "@/lib/knowledge/office-zip";
 import { extractPdfPages } from "@/lib/knowledge/pdf-extract";
 
 const SOFFICE = process.env.KB_SOFFICE_BIN || "soffice";
@@ -181,6 +181,124 @@ describe.skipIf(!hasSoffice)("convertOfficeFiles against a real LibreOffice", ()
       expect(outcomes[0].reason).toMatch(/could not write the converted PDF: .*impl_store/);
     },
     180_000
+  );
+
+  // Eleventh review, PR #1243: LibreOffice unpacks a package into scratch
+  // space while LOADING it, and a load that runs out of room there says what
+  // an unloadable document says — exit 0, no PDF, "source file could not be
+  // loaded". The review's document: 152 KB zipped, 26.6 MB of document.xml —
+  // 40,000 of these paragraphs, ~665 bytes each.
+  function packageOfParagraphs(name: string, paragraphs: number): string {
+    const paragraph =
+      "<w:p><w:r><w:t>" +
+      "The quarterly report describes revenue growth across all regions and segments. ".repeat(8) +
+      "</w:t></w:r></w:p>";
+    const path = join(corpusDir, name);
+    mkdirSync(corpusDir, { recursive: true });
+    writeFileSync(
+      path,
+      assembleZip([
+        deflatedPart(
+          "[Content_Types].xml",
+          Buffer.from(
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>'
+          )
+        ),
+        deflatedPart(
+          "_rels/.rels",
+          Buffer.from(
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>'
+          )
+        ),
+        deflatedPart(
+          "word/document.xml",
+          Buffer.from(
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>' +
+              paragraph.repeat(paragraphs) +
+              "</w:body></w:document>"
+          )
+        ),
+      ])
+    );
+    return path;
+  }
+
+  /** Bytes under `dir` right now; 0 when it is not there. */
+  async function bytesUnder(dir: string): Promise<number> {
+    const entries = await readdir(dir, { recursive: true, withFileTypes: true }).catch(() => []);
+    let total = 0;
+    for (const entry of entries) {
+      if (!entry.isFile()) continue;
+      total += await stat(join(entry.parentPath, entry.name)).then(
+        (info) => info.size,
+        () => 0
+      );
+    }
+    return total;
+  }
+
+  it("loads a package with its unpacked scratch inside the batch, not in the OS temp dir (eleventh review)", async () => {
+    // Left to itself LibreOffice uses /tmp — a volume nothing here checks.
+    // Its scratch must land in the batch, on the volume the free-space check
+    // asks. Watched there while it runs: on any /tmp the scratch is seen
+    // where it belongs. A fifth of the review's document — converting all of
+    // it takes most of a minute, a single batch's time budget.
+    const source = packageOfParagraphs("scratch.docx", 8_000);
+    let peak = 0;
+
+    const outcomes = await convertOfficeFiles([{ absPath: source }], {
+      store: new OfficeArtifactStore(join(tmpRoot, "artifacts-scratch")),
+      runConverter: async (run) => {
+        let running = true;
+        const sampler = (async () => {
+          while (running) {
+            peak = Math.max(peak, await bytesUnder(run.tmpDir));
+            await new Promise((resolve) => setTimeout(resolve, 20));
+          }
+        })();
+        try {
+          return await runSoffice(run);
+        } finally {
+          running = false;
+          await sampler;
+        }
+      },
+    });
+
+    expect(outcomes[0].status, outcomes[0].reason).toBe("converted");
+    // The scratch is about the unpacked document: 5.3 MB of document.xml.
+    expect(peak).toBeGreaterThan(4 * 1024 * 1024);
+  }, 300_000);
+
+  // Needs a volume too small for the scratch: CI mounts one (`--tmpfs
+  // /kb-small-volume:size=24m`, KB_SMALL_VOLUME) — a test cannot shrink a
+  // filesystem, and faking statfs would not make LibreOffice fail.
+  it.skipIf(!process.env.KB_SMALL_VOLUME)(
+    "books a document whose scratch did not fit on the volume as infrastructure, not unreadable (eleventh review)",
+    async () => {
+      // 24 MiB cannot hold 26.6 MB of scratch. LibreOffice gives up loading,
+      // and the scratch is gone again by the time the volume is asked — the
+      // review measured 23.6 MiB free afterwards, far above twice the zipped
+      // size. Booked as unreadable, a changed document would lose the version
+      // the index holds and be listed unsearchable.
+      const source = packageOfParagraphs("unpacks-large.docx", 40_000);
+      let stderr = "";
+
+      const outcomes = await convertOfficeFiles([{ absPath: source }], {
+        store: new OfficeArtifactStore(join(process.env.KB_SMALL_VOLUME!, "artifacts")),
+        runConverter: async (run) => {
+          const result = await runSoffice(run);
+          stderr = result.stderr;
+          return result;
+        },
+      });
+
+      // The premise: the shape of an unloadable document, not a failed store.
+      expect(stderr).toMatch(/source file could not be loaded/);
+      expect(outcomes[0].status, outcomes[0].reason).toBe("infrastructure");
+      expect(outcomes[0].reason).toMatch(/bytes free/);
+    },
+    300_000
   );
 
   it("books a deck whose every slide is hidden as a document failure, though LibreOffice's store fails (tenth review)", async () => {

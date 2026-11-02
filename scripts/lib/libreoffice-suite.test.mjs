@@ -119,4 +119,19 @@ test("ci.yml runs them inside the image the pipeline built, gated like every non
   assert.match(job.body, /docker build -t \S+ -f Dockerfile\.pinchy \./);
   assert.match(job.body, /KB_REQUIRE_SOFFICE=1/);
   assert.match(job.body, /--network none/);
+  // The small staging volume the scratch test needs: without it that test
+  // skips, and a full volume is booked as an unreadable document again
+  // unnoticed (eleventh review, PR #1243).
+  const smallVolume = /--tmpfs (\/\S+):size=\S+ -e KB_SMALL_VOLUME=(\S+)/.exec(
+    job.body,
+  );
+  assert.ok(
+    smallVolume,
+    "mounts a small tmpfs and names it in KB_SMALL_VOLUME",
+  );
+  assert.equal(
+    smallVolume[1],
+    smallVolume[2],
+    "KB_SMALL_VOLUME names the tmpfs mounted",
+  );
 });

@@ -34,9 +34,10 @@
  * 3. **OOM is distinguishable, and the difference is load-bearing.** Exit
  *    **137** (or a bare SIGKILL, which is what a direct spawn sees) means the
  *    container was too small — infrastructure, retryable. Exit 0 with no
- *    artifact means THIS document is unreadable — final — unless the PDF
- *    could not be WRITTEN: the output lands on the artifact volume, and a
- *    full one gives the same exit 0 and no file. The volume is asked, not
+ *    artifact means THIS document is unreadable — final — unless the volume
+ *    got in the way: the output and LibreOffice's load-time scratch both land
+ *    on the artifact volume, and a full one gives the same exit 0 and no
+ *    file. The volume is asked, not
  *    LibreOffice's stderr (`outputVolumeFault`). Without the split,
  *    one memory squeeze brands perfectly good documents as permanently
  *    unreadable and nothing ever retries them.
@@ -117,19 +118,33 @@ export function batchTimeoutMs(fileCount: number): number {
 
 /**
  * Free space below which a missing PDF is blamed on the volume, not the
- * document: `max(MIN_FREE_OUTPUT_BYTES, 2 × the staged source)`.
+ * document: the unpacked package, plus
+ * `max(MIN_FREE_OUTPUT_BYTES, 2 × the staged source)` for the PDF.
  *
- * A PDF that did not fit needed more than was left, but its size is unknown —
- * it was never written. The staged source stands in for it. Twice the source,
- * because the export re-encodes: pictures are recompressed and fonts
- * embedded, and a PDF larger than its source is ordinary. The floor, because
- * for a small document the embedded fonts dominate and can be many times the
- * source — 16 MiB is far above any font set and far below what a volume that
- * is merely busy has left. It also catches the case the previous round
- * measured: 4 KB left, the probe's write fits, the PDF does not.
+ * Two things land on the batch's volume. First the SCRATCH LibreOffice
+ * unpacks a package into while loading it (its `TMPDIR` is inside the batch,
+ * see `runSoffice`). When that runs out it reports exactly what an unloadable
+ * document reports — exit 0, no PDF, `source file could not be loaded` — and
+ * by the time the volume is asked the scratch is gone again. Measured in the
+ * runtime image (eleventh review): a 152 KB `.docx` whose document.xml is
+ * 26.6 MB peaked at 26 MB of scratch, failed to load on a 24 MiB volume and
+ * left 23.6 MiB free behind it. So the unpacked size (`unpackedBytes` from the
+ * preflight) is demanded in full; a legacy `.doc`/`.ppt` is not an archive
+ * and adds nothing.
+ *
+ * Then the PDF, whose size is unknown — it was never written. The staged
+ * source stands in for it. Twice the source, because the export re-encodes:
+ * pictures are recompressed and fonts embedded, and a PDF larger than its
+ * source is ordinary. The floor, because for a small document the embedded
+ * fonts dominate and can be many times the source — 16 MiB is far above any
+ * font set and far below what a volume that is merely busy has left. It also
+ * catches the case the ninth round measured: 4 KB left, the probe's write
+ * fits, the PDF does not. The two are added rather than maxed: the
+ * measurement above shows the scratch released before the PDF is written,
+ * but that is one document's behaviour, not a promise for every format.
  *
  * The error that costs least is the one this leans towards: a document
- * blamed on a volume with under 16 MiB left is read again next run — and the
+ * blamed on a volume too small to load it is read again next run — and the
  * operator is told about a volume that really is about to stop taking writes.
  */
 export const MIN_FREE_OUTPUT_BYTES = 16 * 1024 * 1024;
@@ -202,6 +217,11 @@ export interface ConverterRun {
   outDir: string;
   /** A private LibreOffice profile, so concurrent runs never fight over one user installation. */
   profileDir: string;
+  /**
+   * The converter's scratch space (`TMPDIR`), inside the batch — on the volume
+   * the free-space check asks, and removed with the batch.
+   */
+  tmpDir: string;
   timeoutMs: number;
 }
 
@@ -387,16 +407,20 @@ async function convertBatch(batch: WorkItem[], deps: BatchDeps): Promise<Convers
   const inDir = join(stagingDir, "in");
   const outDir = join(stagingDir, "out");
   const profileDir = join(stagingDir, "profile");
+  const tmpDir = join(stagingDir, "tmp");
 
   try {
     await mkdir(inDir, { recursive: true });
     await mkdir(outDir, { recursive: true });
     await mkdir(profileDir, { recursive: true });
+    await mkdir(tmpDir, { recursive: true });
 
     const outcomes = new Array<ConversionOutcome>(batch.length);
     const inputs: string[] = [];
     /** What each document is stored under: the hash of the bytes the preflight actually read. */
     const keys = batch.map((item) => item.contentHash);
+    /** What each staged package unpacks to; null for one that is not an archive, or not known. */
+    const unpacked = batch.map((): number | null => null);
 
     for (const [i, item] of batch.entries()) {
       const staged = join(inDir, `${i}${extname(item.absPath).toLowerCase()}`);
@@ -416,6 +440,7 @@ async function convertBatch(batch: WorkItem[], deps: BatchDeps): Promise<Convers
           // this one can see different bytes, and the artifact must be filed
           // under the content it was converted from.
           keys[i] = prepared.contentHash;
+          unpacked[i] = prepared.unpackedBytes;
         } else await symlink(item.absPath, staged);
         inputs.push(staged);
       } catch (err) {
@@ -450,6 +475,7 @@ async function convertBatch(batch: WorkItem[], deps: BatchDeps): Promise<Convers
           inputs,
           outDir,
           profileDir,
+          tmpDir,
           timeoutMs: batchTimeoutMs(inputs.length),
         });
       } catch (err) {
@@ -483,12 +509,12 @@ async function convertBatch(batch: WorkItem[], deps: BatchDeps): Promise<Convers
           result.stderr
         );
         // Every document verdict collectOne gives is drawn from the PDF — and
-        // the PDF lands on the artifact volume the staged copies just filled.
-        // Before a missing or broken PDF is held against the document, rule
-        // out the volume: does the directory still take a write, and is
-        // there room left for a PDF of this size? Asked of the volume itself,
-        // once per batch: LibreOffice's stderr cannot answer it (see
-        // `failedStoreLine`).
+        // both the PDF and LibreOffice's scratch land on the artifact volume
+        // the staged copies just filled. Before a missing or broken PDF is
+        // held against the document, rule out the volume: does the directory
+        // still take a write, and is there room left to load this document
+        // and write its PDF? Asked of the volume itself, once per batch:
+        // LibreOffice's stderr cannot answer it (see `failedStoreLine`).
         const volumeFault =
           outcome.status === "failed"
             ? ((await (probe ??= probeWritable(outDir))) ??
@@ -497,7 +523,8 @@ async function convertBatch(batch: WorkItem[], deps: BatchDeps): Promise<Convers
                 await stat(stagedSource).then(
                   (info) => info.size,
                   () => 0
-                )
+                ),
+                unpacked[i]
               ))
             : null;
         const storeLine = volumeFault ? failedStoreLine(result.stderr, producedPdf) : null;
@@ -649,16 +676,22 @@ function readVolumeSpace(
 }
 
 /**
- * Null when the output volume had room for a PDF of a `sourceBytes` document,
- * else why not. `space` is what `statfs` said, or why it said nothing — a
- * volume that cannot report its own state is not one to blame a document on.
+ * Null when the volume had room to load a document of `sourceBytes` that
+ * unpacks to `unpackedBytes` and to write its PDF (see
+ * `MIN_FREE_OUTPUT_BYTES`), else why not. `space` is what `statfs` said, or
+ * why it said nothing — a volume that cannot report its own state is not one
+ * to blame a document on.
  */
-function outputVolumeFault(space: VolumeSpace | string, sourceBytes: number): string | null {
+function outputVolumeFault(
+  space: VolumeSpace | string,
+  sourceBytes: number,
+  unpackedBytes: number | null
+): string | null {
   if (typeof space === "string") return space;
   const free = space.bavail * space.bsize;
-  const needed = Math.max(MIN_FREE_OUTPUT_BYTES, 2 * sourceBytes);
+  const needed = (unpackedBytes ?? 0) + Math.max(MIN_FREE_OUTPUT_BYTES, 2 * sourceBytes);
   if (free < needed) {
-    return `only ${free} bytes free on the output volume, below the ${needed}-byte floor for this document`;
+    return `only ${free} bytes free on the output volume, below the ${needed} bytes this document needs to load and convert`;
   }
   // 0 total inodes is a filesystem that does not count them (btrfs, some
   // network mounts), not one that ran out.
@@ -746,10 +779,11 @@ const MAX_STDERR_BYTES = 32 * 1024;
  */
 const INHERITED_ENV = ["PATH", "LANG", "LANGUAGE", "LC_ALL", "LC_CTYPE", "TZ"] as const;
 
-function childEnv(home: string): NodeJS.ProcessEnv {
+function childEnv(home: string, tmpDir?: string): NodeJS.ProcessEnv {
   // NODE_ENV carries no secret and is what every child process here already
   // sees; it is listed explicitly because Next.js declares it non-optional.
   const env: NodeJS.ProcessEnv = { NODE_ENV: process.env.NODE_ENV, HOME: home };
+  if (tmpDir !== undefined) env.TMPDIR = tmpDir;
   for (const key of INHERITED_ENV) {
     const value = process.env[key];
     if (value !== undefined) env[key] = value;
@@ -849,18 +883,27 @@ async function writeLockedDownProfile(profileDir: string): Promise<void> {
  * installation, and a second instance — a concurrent reindex, or a leftover
  * process — refuses to start or silently reuses the other's state.
  *
+ * `TMPDIR` puts its scratch space there too. LibreOffice unpacks a package
+ * into it while loading — about the unpacked size — and left to itself uses
+ * the container's /tmp, a volume no check here looks at: a load that runs out
+ * of room there exits 0 with `source file could not be loaded`, which is what
+ * an unreadable document says. In the batch it is on the volume
+ * `outputVolumeFault` asks. Verified against the runtime image's
+ * LibreOffice 7.4: with a 20 MiB /tmp and TMPDIR on a roomy volume, a
+ * document needing 26 MB of scratch converts and /tmp stays empty.
+ *
  * The binary is resolved per call rather than at import so a test can point at
  * a stub: without that, everything below is only reachable on a machine with a
  * 422 MB LibreOffice installed, which is no machine CI runs on.
  */
-export const runSoffice: RunConverter = async ({ inputs, outDir, profileDir, timeoutMs }) => {
+export const runSoffice: RunConverter = async (run) => {
   // Before the process exists, and a failure here is a failure to convert: a
   // converter that cannot be locked down must not run at all.
-  await writeLockedDownProfile(profileDir);
-  return spawnSoffice({ inputs, outDir, profileDir, timeoutMs });
+  await writeLockedDownProfile(run.profileDir);
+  return spawnSoffice(run);
 };
 
-const spawnSoffice: RunConverter = ({ inputs, outDir, profileDir, timeoutMs }) =>
+const spawnSoffice: RunConverter = ({ inputs, outDir, profileDir, tmpDir, timeoutMs }) =>
   new Promise<ConverterResult>((resolve, reject) => {
     const child = spawn(
       process.env.KB_SOFFICE_BIN || "soffice",
@@ -877,7 +920,7 @@ const spawnSoffice: RunConverter = ({ inputs, outDir, profileDir, timeoutMs }) =
         outDir,
         ...inputs,
       ],
-      { stdio: ["ignore", "ignore", "pipe"], env: childEnv(profileDir), detached: true }
+      { stdio: ["ignore", "ignore", "pipe"], env: childEnv(profileDir, tmpDir), detached: true }
     );
 
     let stderr = "";

@@ -22,11 +22,13 @@ import { runSoffice, runTextOracle } from "@/lib/knowledge/office-convert";
 let tmpRoot: string;
 let outDir: string;
 let profileDir: string;
+let scratchDir: string;
 
 beforeEach(() => {
   tmpRoot = mkdtempSync(join(tmpdir(), "pinchy-kb-adapter-test-"));
   outDir = join(tmpRoot, "out");
   profileDir = join(tmpRoot, "profile");
+  scratchDir = join(tmpRoot, "tmp");
   process.env.KB_SOFFICE_BIN = stub("soffice-noop", "exit 0\n");
 });
 
@@ -49,7 +51,14 @@ function stub(name: string, body: string): string {
 }
 
 function run(overrides: Partial<Parameters<typeof runSoffice>[0]> = {}) {
-  return runSoffice({ inputs: [], outDir, profileDir, timeoutMs: 10_000, ...overrides });
+  return runSoffice({
+    inputs: [],
+    outDir,
+    profileDir,
+    tmpDir: scratchDir,
+    timeoutMs: 10_000,
+    ...overrides,
+  });
 }
 
 describe("runSoffice", () => {
@@ -103,6 +112,10 @@ describe("runSoffice", () => {
     // HOME must match the private profile: LibreOffice writes into $HOME too,
     // and pointing it anywhere else puts state outside the staging directory.
     expect(env.HOME).toBe(profileDir);
+    // And its scratch space goes into the batch too (eleventh review): left
+    // to the OS temp dir, a load that runs out of room there looks exactly
+    // like a document LibreOffice cannot read, on a volume nothing checks.
+    expect(env.TMPDIR).toBe(scratchDir);
   });
 
   describe("the locked-down profile (release review v0.10.0, finding 1)", () => {

@@ -328,6 +328,37 @@ describe("prepareOfficeSource", () => {
     expect(b.data.includes("10.0.0.5")).toBe(false);
   });
 
+  it("reports how large the staged package unpacks — what LibreOffice needs as scratch to load it (eleventh review)", async () => {
+    // The converter sizes the room it demands of the volume from this: a
+    // 152 KB .docx can unpack to 26.6 MB, and LibreOffice unpacks it into
+    // scratch space while loading. Counted on what is STAGED, the rewrite
+    // included, since that is what LibreOffice loads.
+    const unpacked = (data: Buffer) =>
+      readZipEntries(data).reduce((sum, entry) => sum + entry.uncompressedSize, 0);
+    const clean = docxWith({
+      documentRels: relationships(rel("rId1", REL_IMAGE, "media/a.png")),
+      parts: { "word/media/a.png": PNG_1X1, "word/big.xml": "<x>" + " ".repeat(500_000) + "</x>" },
+    });
+    const a = await prepareOfficeSource(file("clean.docx", clean));
+    expect(a.unpackedBytes).toBe(unpacked(clean));
+    expect(a.unpackedBytes).toBeGreaterThan(500_000);
+    expect(clean.length).toBeLessThan(100_000);
+
+    const dirty = docxWith({
+      documentRels: relationships(rel("rId9", REL_IMAGE, "http://10.0.0.5/p.png", "External")),
+      pictureRelId: "rId9",
+    });
+    const b = await prepareOfficeSource(file("dirty.docx", dirty));
+    expect(b.relationshipsRemoved).toBe(1);
+    expect(b.unpackedBytes).toBe(unpacked(b.data));
+    expect(b.unpackedBytes).toBeLessThan(unpacked(dirty));
+
+    // Not archives: LibreOffice reads them as they are, nothing to unpack.
+    expect((await prepareOfficeSource(file("a.doc", OLE2))).unpackedBytes).toBeNull();
+    const rtf = Buffer.from("{\\rtf1\\ansi Hello\\par}");
+    expect((await prepareOfficeSource(file("b.doc", rtf))).unpackedBytes).toBeNull();
+  });
+
   it("refuses a file past the size cap without reading it", async () => {
     const path = file("big.doc", OLE2);
     const err = await rejection(prepareOfficeSource(path, { maxBytes: 100 }));
