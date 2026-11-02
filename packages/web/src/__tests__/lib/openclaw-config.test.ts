@@ -9067,6 +9067,120 @@ describe("OpenAI-compatible custom providers (#894)", () => {
     expect(secretsAfter.providers).not.toHaveProperty("swisscom-ai");
   });
 
+  // Regenerates are serialized (third review finding on #1238). Two run
+  // concurrently, a slow one that read the OLD row could finish after a newer
+  // one and write last — stale base URL live, and with versioned slots
+  // openclaw.json and secrets.json on different key versions. Now a call made
+  // during a run waits for a run that starts after it, so the newer state is
+  // always what lands last. The queue's own rules are unit-tested in
+  // openclaw-config-regenerate-queue.test.ts.
+  describe("overlapping regenerates", () => {
+    function configWrites() {
+      return mockedWriteFileSync.mock.calls
+        .filter(isOpenClawConfigWrite)
+        .map((c) => JSON.parse(c[1] as string));
+    }
+
+    /** Hold the first run inside its discovery call until released. */
+    function holdFirstDiscovery() {
+      let release!: () => void;
+      const gate = new Promise<void>((r) => (release = r));
+      mockResolveCustomProviderModels.mockImplementationOnce(async (p: { models: unknown }) => {
+        await gate;
+        return p.models;
+      });
+      return release;
+    }
+
+    const oldState = () => [keyed(makeProvider(), "old-key", "1111111111111111")];
+    const newState = () => [
+      keyed(
+        makeProvider({ baseUrl: "https://moved.swisscom.example/v1" }),
+        "new-key",
+        "2222222222222222"
+      ),
+    ];
+
+    it("writes the second caller's state last, from a run that started after its call", async () => {
+      mockListProvidersWithApiKeys.mockResolvedValue(oldState());
+      const release = holdFirstDiscovery();
+
+      const first = regenerateOpenClawConfig();
+      await vi.waitFor(() => expect(mockResolveCustomProviderModels).toHaveBeenCalledTimes(1));
+
+      // A save commits while the first regenerate is still in flight…
+      mockListProvidersWithApiKeys.mockResolvedValue(newState());
+      const second = regenerateOpenClawConfig();
+      // …and its regenerate does not start alongside the stale one. A bounded
+      // negative window: past the 300 ms cold-start retry every regenerate in
+      // this block takes (no openclaw.json on disk), a concurrent run would
+      // have read the table AND written its config by now — and the held
+      // first run would then overwrite it with the stale row.
+      await new Promise((r) => setTimeout(r, 450));
+      expect(mockListProvidersWithApiKeys).toHaveBeenCalledTimes(1);
+      expect(configWrites()).toHaveLength(0);
+
+      release();
+      await Promise.all([first, second]);
+
+      expect(mockListProvidersWithApiKeys).toHaveBeenCalledTimes(2);
+      const writes = configWrites();
+      expect(writes.at(-1).models.providers["swisscom-ai"]).toMatchObject({
+        baseUrl: "https://moved.swisscom.example/v1",
+        apiKey: { id: "/providers/swisscom-ai@2222222222222222/apiKey" },
+      });
+      // secrets.json ends on the same version openclaw.json points at.
+      const lastSecrets = mockWriteSecretsFile.mock.calls.at(-1)![0];
+      expect(lastSecrets.providers).toEqual(
+        expect.objectContaining({ "swisscom-ai@2222222222222222": { apiKey: "new-key" } })
+      );
+      expect(lastSecrets.providers).not.toHaveProperty("swisscom-ai@1111111111111111");
+    });
+
+    it("runs exactly one more regenerate for any number of calls made during a run", async () => {
+      mockListProvidersWithApiKeys.mockResolvedValue(oldState());
+      const release = holdFirstDiscovery();
+
+      const first = regenerateOpenClawConfig();
+      await vi.waitFor(() => expect(mockResolveCustomProviderModels).toHaveBeenCalledTimes(1));
+      mockListProvidersWithApiKeys.mockResolvedValue(newState());
+      const during = [
+        regenerateOpenClawConfig(),
+        regenerateOpenClawConfig(),
+        regenerateOpenClawConfig(),
+      ];
+
+      release();
+      await Promise.all([first, ...during]);
+      await drainBackgroundCoroutine();
+
+      expect(mockListProvidersWithApiKeys).toHaveBeenCalledTimes(2);
+    });
+
+    it("rejects the caller whose run failed, and still applies the next caller's change", async () => {
+      mockListProvidersWithApiKeys.mockResolvedValue(oldState());
+      let release!: () => void;
+      const gate = new Promise<void>((r) => (release = r));
+      mockResolveCustomProviderModels.mockImplementationOnce(async () => {
+        await gate;
+        throw new Error("first regenerate failed");
+      });
+
+      const first = regenerateOpenClawConfig();
+      await vi.waitFor(() => expect(mockResolveCustomProviderModels).toHaveBeenCalledTimes(1));
+      mockListProvidersWithApiKeys.mockResolvedValue(newState());
+      const second = regenerateOpenClawConfig();
+
+      release();
+      await expect(first).rejects.toThrow("first regenerate failed");
+      await expect(second).resolves.toBeUndefined();
+
+      expect(configWrites().at(-1).models.providers["swisscom-ai"].baseUrl).toBe(
+        "https://moved.swisscom.example/v1"
+      );
+    });
+  });
+
   it("never writes the raw key into the emitted config tree (assertNoPlaintextSecrets passes)", async () => {
     const { assertNoPlaintextSecrets } = await import("@/lib/openclaw-plaintext-scanner");
     // Use an OpenAI-shaped key so the scanner's `openai-generic` pattern would

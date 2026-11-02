@@ -41,6 +41,7 @@ import { CONFIG_PATH } from "./paths";
 import { configsAreEquivalentUpToOpenClawMetadata } from "./normalize";
 import { readExistingConfig, pushConfigInBackground } from "./write";
 import { reloadSecretsInBackground } from "./secrets-reload";
+import { serializeRegenerates } from "./regenerate-queue";
 import {
   buildSecretsBundle,
   collectPluginSecrets,
@@ -186,7 +187,18 @@ export async function loadAgentConnectionPermissions(dbClient: typeof db): Promi
   });
 }
 
-export async function regenerateOpenClawConfig() {
+/**
+ * Rebuild openclaw.json + secrets.json from the DB and push them to OpenClaw.
+ *
+ * Serialized (see regenerate-queue.ts): at most one regenerate runs at a time,
+ * and a call made while one runs resolves only after a regenerate that started
+ * AFTER the call has completed — so the state a caller changed before calling
+ * is what that caller's await has applied, and an older run can never write
+ * after a newer one. It rejects with the error of the run the caller waited for.
+ */
+export const regenerateOpenClawConfig = serializeRegenerates(regenerateOpenClawConfigOnce);
+
+async function regenerateOpenClawConfigOnce(): Promise<void> {
   // `readExistingConfig` distinguishes two recoverable failure modes:
   //   - ENOENT / parse error → returns {} (cold start; we build the first config from scratch).
   //   - Persistent EACCES → throws (file exists but unreadable; race with OC's
