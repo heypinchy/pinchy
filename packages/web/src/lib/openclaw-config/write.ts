@@ -8,6 +8,7 @@ import {
   configsAreEquivalentUpToOpenClawMetadata,
 } from "./normalize";
 import { CONFIG_PATH } from "./paths";
+import { parseSizeDropRejection, planShrinkPush, utf8Bytes } from "./size-drop";
 import {
   trackConfigPushStarted,
   trackConfigPushSettled,
@@ -232,6 +233,29 @@ const WS_DISCONNECTED_ERROR_FRAGMENT = "Not connected to OpenClaw Gateway";
 const NOT_CONNECTED_MAX_WAIT_MS = 60_000;
 const NOT_CONNECTED_RETRY_DELAY_MS = 2_000;
 
+// OpenClaw's config writer refuses any write under half of the current
+// openclaw.json (`size-drop:OLD->NEW`), and config.apply exposes no way to lift
+// that. A shrink regenerateOpenClawConfig has already judged deliberate — a
+// provider catalog getting smaller, e.g. a deleted 40-model OpenAI-compatible
+// provider (see size-drop.ts) — is delivered in steps that each stay above
+// OpenClaw's threshold: the first refusal calibrates Pinchy's byte count against
+// OpenClaw's, then every step re-adds just enough of the provider content
+// OpenClaw still has to clear floor(OLD * 0.5). Each accepted step is an
+// ordinary OpenClaw-owned write, so OpenClaw promotes it to last-known-good
+// like any other and its own clobber detection stays fully in force.
+//
+// A refused shrink is NEVER forced in through a file write. That bypasses
+// OpenClaw's guard, and OpenClaw's read path undoes it anyway: the next start
+// (or any unpinned config load) sees the file under half of last-known-good and
+// restores `.bak` (`size-drop-vs-last-good`). When no step can explain the
+// shrink — it is outside the provider catalog, the stale-payload shape of #314 —
+// the push is dropped loudly; the next regenerate starts from current state.
+//
+// Halving per step, 8 steps cover a 256x shrink; 3 refusals bound a
+// calibration that keeps missing (it should never need a second).
+const MAX_SHRINK_STEPS = 8;
+const MAX_SIZE_DROP_REFUSALS = 3;
+
 /**
  * Options for {@link pushConfigInBackground}.
  *
@@ -317,6 +341,32 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
     // (no meta) triggers OC's missing-meta-before-write anomaly which can
     // prevent plugins (e.g. pinchy-docs) from loading correctly.
     let lastSupplemented: string | undefined;
+    // Shrink-in-steps state (see MAX_SHRINK_STEPS). `shrink` is set by the first
+    // size-drop refusal: OpenClaw's baseline for the NEXT write, and OpenClaw's
+    // byte count minus Pinchy's for the same payload.
+    let shrink: { ocBaselineBytes: number; offset: number } | undefined;
+    let shrinkSteps = 0;
+    let sizeDropRefusals = 0;
+    let lastOcConfig: Record<string, unknown> | undefined;
+    let lastSent: string | undefined;
+    let lastSizeDrop = "";
+    const dropRefusedShrink = (why: string) => {
+      console.error(
+        `[openclaw-config] push gen=${String(generation)}: OpenClaw refused this config as a size drop (${lastSizeDrop}) and ${why}. ` +
+          `NOT writing openclaw.json directly — that would bypass OpenClaw's clobber guard, and OpenClaw restores .bak over it on its next start. ` +
+          `Only a shrinking provider catalog is delivered in steps; anything else is the #311/#314 stale-payload shape.`
+      );
+    };
+    // A file-write fallback while a shrink is in flight would land the target
+    // past OpenClaw's guard (see MAX_SHRINK_STEPS) — refuse it instead.
+    const writeFallback = (content: string): boolean => {
+      if (shrink) {
+        dropRefusedShrink("the stepwise delivery could not finish over config.apply");
+        return false;
+      }
+      writeConfigAtomic(content);
+      return true;
+    };
     for (let i = 0; i < backoffsMs.length; i++) {
       // Check before each attempt — a newer pushConfigInBackground call
       // may have started while we were sleeping.
@@ -330,7 +380,13 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
         const current = (await client.config.get()) as {
           hash: string;
           config?: Record<string, unknown>;
+          parsed?: Record<string, unknown> | null;
         };
+        // A shrink step re-adds provider content from OpenClaw's FILE as
+        // authored (`parsed`), never from the runtime `config`: that one is
+        // materialized (every model gains cost/contextWindow/… defaults), and
+        // the file is what OpenClaw's size-drop baseline measures.
+        lastOcConfig = current.parsed ?? current.config;
 
         // Newer call started while we were awaiting config.get()
         if (generation !== getCurrentConfigPushGeneration()) {
@@ -403,9 +459,38 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
         }
 
         lastSupplemented = supplemented;
-        await client.config.apply(supplemented, current.hash, {
+        let payload = supplemented;
+        let isShrinkStep = false;
+        if (shrink) {
+          const plan = planShrinkPush({ target: supplemented, ocConfig: lastOcConfig, ...shrink });
+          if (!plan) {
+            dropRefusedShrink("the shrink is not one the provider catalog explains");
+            return;
+          }
+          payload = plan.payload;
+          isShrinkStep = plan.isStep;
+        }
+        lastSent = payload;
+        await client.config.apply(payload, current.hash, {
           note: "pinchy: regenerateOpenClawConfig",
         });
+        if (isShrinkStep && shrink) {
+          shrinkSteps++;
+          if (shrinkSteps > MAX_SHRINK_STEPS) {
+            dropRefusedShrink(`${String(MAX_SHRINK_STEPS)} steps did not reach the target`);
+            return;
+          }
+          shrink.ocBaselineBytes = utf8Bytes(payload) + shrink.offset;
+          // Progress, not a failure: a step that landed must not count against
+          // the budgets meant for an apply that keeps failing. OpenClaw's
+          // rate limit (~3 applies per window) is smaller than a 10x shrink.
+          rateLimitAttempts = 0;
+          console.log(
+            `[openclaw-config] push gen=${String(generation)}: provider-catalog shrink step ${String(shrinkSteps)} applied (~${String(shrink.ocBaselineBytes)} bytes)`
+          );
+          i--;
+          continue;
+        }
         // config.apply's inner writeConfigFile persists the config to disk.
         // A newer call's payload will overwrite via its own config.apply or
         // writeConfigAtomic fallback.
@@ -436,6 +521,33 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
             message
           );
           return;
+        }
+
+        // Size-drop: OpenClaw refused the write as a >50% shrink of its current
+        // file. Never retried as-is and never forced in through the file (see
+        // MAX_SHRINK_STEPS): calibrate, then deliver in steps on the next pass
+        // — or drop the push if no step can explain the shrink.
+        const sizeDrop = parseSizeDropRejection(message);
+        if (sizeDrop) {
+          sizeDropRefusals++;
+          lastSizeDrop = `size-drop:${String(sizeDrop.fromBytes)}->${String(sizeDrop.toBytes)}`;
+          if (!lastSent || sizeDropRefusals > MAX_SIZE_DROP_REFUSALS) {
+            dropRefusedShrink(`was refused ${String(sizeDropRefusals)} times`);
+            return;
+          }
+          if (!lastOcConfig) {
+            dropRefusedShrink("OpenClaw's current config is unavailable to step from");
+            return;
+          }
+          shrink = {
+            ocBaselineBytes: sizeDrop.fromBytes,
+            offset: sizeDrop.toBytes - utf8Bytes(lastSent),
+          };
+          console.warn(
+            `[openclaw-config] push gen=${String(generation)}: config.apply refused a size drop (${String(sizeDrop.fromBytes)}->${String(sizeDrop.toBytes)} bytes); delivering the provider-catalog shrink in steps`
+          );
+          i--;
+          continue;
         }
 
         // Rate-limit handling: OC 5.3 rejects apply calls over the budget with
@@ -469,8 +581,9 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
             `[openclaw-config] push gen=${String(generation)}: config.apply rate-limited past retry budget; writing file for inotify fallback (reload may lag):`,
             message
           );
-          writeConfigAtomic(lastSupplemented ?? supplementPayloadWithFileFields(newContent));
-          onChangeApplied?.();
+          if (writeFallback(lastSupplemented ?? supplementPayloadWithFileFields(newContent))) {
+            onChangeApplied?.();
+          }
           return;
         }
 
@@ -509,8 +622,9 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
           );
           // All retries exhausted — fall back to file write so inotify picks up
           // the change. Same meta-preservation logic as the rate-limit path above.
-          writeConfigAtomic(lastSupplemented ?? supplementPayloadWithFileFields(newContent));
-          onChangeApplied?.();
+          if (writeFallback(lastSupplemented ?? supplementPayloadWithFileFields(newContent))) {
+            onChangeApplied?.();
+          }
           return;
         }
         await new Promise((resolve) => setTimeout(resolve, backoffsMs[i]));

@@ -41,6 +41,7 @@ import { resolveBootstrapCaps } from "./bootstrap-caps";
 import { CONFIG_PATH } from "./paths";
 import { configsAreEquivalentUpToOpenClawMetadata } from "./normalize";
 import { readExistingConfig, pushConfigInBackground } from "./write";
+import { sizeGuardBaseline } from "./size-drop";
 import { reloadSecretsInBackground } from "./secrets-reload";
 import {
   buildSecretsBundle,
@@ -1757,21 +1758,25 @@ export async function regenerateOpenClawConfig() {
     // Removable when we bump OpenClaw past the upstream fix; tracked in #215.
     if (configsAreEquivalentUpToOpenClawMetadata(existing, newContent)) return;
 
-    // Defense-in-depth size-drop guard (#311). OpenClaw's `config.apply` RPC
-    // already rejects writes that shrink the on-disk config by more than 50%
-    // (`size-drop:OLD->NEW` error), but Pinchy's `writeConfigAtomic` runs
-    // BEFORE `pushConfigInBackground`, so a corrupted regenerate lands on
-    // disk and OC's inotify watcher diffs it before the RPC ever runs —
-    // triggering a full gateway restart cascade. The trigger pattern: a
-    // regenerate runs through a window where DB-derived state isn't fully
-    // loaded (telegram_bot_token race in CI flake) and produces a payload
-    // missing `channels.telegram` + `bindings`, ~50% smaller than the
-    // healthy on-disk file. Mirroring OC's threshold on the Pinchy side
-    // keeps the bad payload off disk so the cascade never starts; the next
-    // regenerate (from the same or a follow-up request) writes correct
-    // content. The bad payload is saved alongside the config for postmortem
-    // — silent skip would hide the underlying race forever.
-    if (existing.length > 0 && newContent.length < existing.length * 0.5) {
+    // Defense-in-depth size-drop guard (#311). A regenerate that runs through a
+    // window where DB-derived state isn't fully loaded (telegram_bot_token race
+    // in CI flake) produces a payload missing `channels.telegram` + `bindings`,
+    // ~50% smaller than the healthy on-disk file. Mirroring OpenClaw's own 50%
+    // threshold (its config writer refuses `size-drop:OLD->NEW`) keeps such a
+    // payload off disk and out of the push; the next regenerate writes correct
+    // content. The bad payload is saved alongside the config for postmortem —
+    // silent skip would hide the underlying race forever (#314).
+    //
+    // Measured against the existing file MINUS whatever the provider catalog
+    // shrank by, as long as a provider survives (see size-drop.ts). Deleting a
+    // 40-model OpenAI-compatible provider removes most of the file on purpose;
+    // judged against the raw size, it was refused here, every later regenerate
+    // was refused the same way, and OpenClaw kept serving the deleted provider.
+    // An empty provider read, and any shrink outside `models.providers`, are
+    // still judged in full. Delivering such a shrink past OpenClaw's own check
+    // is pushConfigInBackground's job (stepwise config.apply).
+    const sizeBaseline = sizeGuardBaseline(existing, config);
+    if (existing.length > 0 && newContent.length < sizeBaseline * 0.5) {
       const ts = new Date().toISOString().replace(/[:.]/g, "-");
       const rejectedPath = `${CONFIG_PATH}.regenerate-rejected.${ts}`;
       try {
@@ -1782,7 +1787,8 @@ export async function regenerateOpenClawConfig() {
       }
       console.error(
         `[openclaw-config] regenerate produced a suspiciously small config ` +
-          `(${newContent.length} bytes, was ${existing.length}). ` +
+          `(${newContent.length} bytes, was ${existing.length}` +
+          `${sizeBaseline !== existing.length ? `; ${sizeBaseline} after discounting the provider catalog shrink` : ""}). ` +
           `Refusing the write to keep OpenClaw's existing state intact. ` +
           `Likely a DB-state-loading race; see #311. ` +
           `Rejected payload saved to ${rejectedPath}.`

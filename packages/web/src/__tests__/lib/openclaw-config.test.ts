@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { isOpenClawLocalBaseUrl } from "@/lib/openclaw-local-url";
 import { computeAllowedTools } from "@/lib/tool-registry";
 
@@ -8602,6 +8602,178 @@ describe("regenerateOpenClawConfig size-drop guard (#311)", () => {
 
     const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
     expect(config.agents.defaults.pdfModel.primary).toBe("google/gemini-2.5-flash");
+  });
+});
+
+// A deliberate removal must not look like the #311 race to the size guard.
+//
+// A large OpenAI-compatible provider is most of an install's openclaw.json: 40
+// discovered models at ~450 bytes each dwarf everything else Pinchy emits.
+// Deleting it legitimately shrinks the file by far more than half, and the #311
+// guard used to read that as "regenerate ran through a DB-loading race" — so the
+// write was refused, nothing was pushed, and OpenClaw kept serving the deleted
+// provider (and its key reference). Worse, every LATER regenerate computed the
+// same small payload against the same large file and was refused too: the
+// config froze until someone hand-edited openclaw.json.
+//
+// The guard now measures against the existing file with the provider catalog
+// shrink discounted — but only while the new payload still carries at least one
+// provider. A DB read that came back empty (no providers at all) and any shrink
+// OUTSIDE models.providers still trip it exactly as before.
+describe("regenerateOpenClawConfig size-drop guard vs deliberate provider removal", () => {
+  function makeLargeCustomProvider() {
+    return {
+      id: "prov-big",
+      slug: "acme-llm",
+      displayName: "Acme LLM",
+      baseUrl: "https://acme.example/v1",
+      models: Array.from({ length: 40 }, (_, i) => ({
+        id: `acme-model-${i}-with-a-realistically-long-identifier`,
+        name: `Acme Model ${i} (realistic display name)`,
+        contextWindow: 128000,
+        maxTokens: 8192,
+        reasoning: false,
+        vision: false,
+        input: ["text"],
+        cost: { input: 0.5, output: 1.5, cacheRead: 0.05, cacheWrite: 0.5 },
+      })),
+      keyHint: "cret",
+      createdAt: new Date("2026-01-01T00:00:00Z"),
+      updatedAt: new Date("2026-01-01T00:00:00Z"),
+    };
+  }
+
+  /** Regenerate with the given DB state and return the openclaw.json it wrote. */
+  async function regenerateAndCapture(): Promise<string> {
+    mockedWriteFileSync.mockClear();
+    await regenerateOpenClawConfig();
+    return writtenOpenClawConfig(mockedWriteFileSync);
+  }
+
+  function rejectedDumps() {
+    return mockedWriteFileSync.mock.calls.filter(
+      (c) => typeof c[0] === "string" && (c[0] as string).includes(".regenerate-rejected.")
+    );
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockedGetOrCreateGatewayToken.mockResolvedValue("test-gateway-token");
+    mockedExistsSync.mockReturnValue(true);
+    mockReadSecretsFile.mockReturnValue({});
+    mockValidateBuiltConfig.mockReturnValue({ ok: true });
+    mockedDb.select.mockReturnValue({ from: mockFrom([]) } as never);
+    mockListOpenAiCompatibleProviders.mockResolvedValue([]);
+    mockListProvidersWithApiKeys.mockResolvedValue([]);
+    mockGetDecryptedApiKey.mockResolvedValue(null);
+    mockResolveCustomProviderModels.mockImplementation(async (p: { models: unknown }) => p.models);
+    mockedReadFileSync.mockImplementation(() => {
+      throw new Error("ENOENT: no such file or directory");
+    });
+  });
+
+  // vi.clearAllMocks() keeps implementations, and the describes below this one
+  // do not reset all of them: leave no large on-disk config or custom provider
+  // behind for them to regenerate against.
+  afterEach(() => {
+    mockedReadFileSync.mockImplementation(() => {
+      throw new Error("ENOENT: no such file or directory");
+    });
+    mockedGetSetting.mockResolvedValue(null);
+    mockListOpenAiCompatibleProviders.mockResolvedValue([]);
+    mockListProvidersWithApiKeys.mockResolvedValue([]);
+  });
+
+  /**
+   * The on-disk config of an install with Anthropic AND a 40-model custom
+   * provider — produced by Pinchy's own regenerate, so the sizes are real.
+   */
+  async function installWithLargeCustomProvider(): Promise<string> {
+    mockedGetSetting.mockImplementation(async (key: string) =>
+      key === "anthropic_api_key" ? "sk-ant-test" : null
+    );
+    mockListOpenAiCompatibleProviders.mockResolvedValue([makeLargeCustomProvider()]);
+    mockListProvidersWithApiKeys.mockResolvedValue([{ slug: "acme-llm", apiKey: "acme-key" }]);
+    const existing = await regenerateAndCapture();
+    expect(JSON.parse(existing).models.providers).toHaveProperty("acme-llm");
+    return existing;
+  }
+
+  it("writes the config when a large custom provider is deleted and another provider remains", async () => {
+    const existing = await installWithLargeCustomProvider();
+    mockedReadFileSync.mockReturnValue(existing);
+
+    // The admin deletes the custom provider; Anthropic is still configured.
+    mockListOpenAiCompatibleProviders.mockResolvedValue([]);
+    mockListProvidersWithApiKeys.mockResolvedValue([]);
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      mockedWriteFileSync.mockClear();
+      await regenerateOpenClawConfig();
+
+      const written = findOpenClawConfigWrite(mockedWriteFileSync);
+      expect(
+        written,
+        `deleting the provider must reach openclaw.json; guard said: ${errorSpy.mock.calls.flat().join(" ")}`
+      ).toBeDefined();
+      const config = JSON.parse(written![1] as string);
+      // Precondition that makes this a real repro: the deletion more than
+      // halves the file, i.e. exactly what the #311 guard used to refuse.
+      expect((written![1] as string).length).toBeLessThan(existing.length * 0.5);
+      expect(config.models.providers).not.toHaveProperty("acme-llm");
+      expect(config.models.providers).toHaveProperty("anthropic");
+      expect(rejectedDumps()).toHaveLength(0);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it("still refuses when the provider read comes back empty (#311: no provider survives)", async () => {
+    const existing = await installWithLargeCustomProvider();
+    mockedReadFileSync.mockReturnValue(existing);
+
+    // Every provider read is empty — the shape of a DB-loading race, not of a
+    // deletion: Pinchy refuses to delete the last provider (`countConfiguredProviders`),
+    // so an install never legitimately reaches zero.
+    mockedGetSetting.mockResolvedValue(null);
+    mockListOpenAiCompatibleProviders.mockResolvedValue([]);
+    mockListProvidersWithApiKeys.mockResolvedValue([]);
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      mockedWriteFileSync.mockClear();
+      await regenerateOpenClawConfig();
+
+      expect(findOpenClawConfigWrite(mockedWriteFileSync)).toBeUndefined();
+      expect(rejectedDumps()).toHaveLength(1);
+      expect(errorSpy.mock.calls.flat().join(" ")).toMatch(/suspiciously small/);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it("still refuses when the rest of the config collapses alongside a provider deletion (#311)", async () => {
+    // A deletion discounts exactly the provider bytes it explains — nothing
+    // else. Here the rest of the on-disk config (gateway, agents, channels,
+    // bindings…) also lost more than half of itself, which no provider
+    // deletion accounts for. The `secrets.padding` stands in for that state:
+    // Pinchy's regenerate never reproduces it (same device as the #311 block).
+    const healthy = JSON.parse(await installWithLargeCustomProvider());
+    healthy.secrets = { ...healthy.secrets, padding: "x".repeat(8000) };
+    const existing = JSON.stringify(healthy, null, 2).trimEnd() + "\n";
+    mockedReadFileSync.mockReturnValue(existing);
+
+    mockListOpenAiCompatibleProviders.mockResolvedValue([]);
+    mockListProvidersWithApiKeys.mockResolvedValue([]);
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      mockedWriteFileSync.mockClear();
+      await regenerateOpenClawConfig();
+
+      expect(findOpenClawConfigWrite(mockedWriteFileSync)).toBeUndefined();
+      expect(rejectedDumps()).toHaveLength(1);
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 });
 
