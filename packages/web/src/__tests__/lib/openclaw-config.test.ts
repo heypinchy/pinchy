@@ -8904,7 +8904,7 @@ describe("OpenAI-compatible custom providers (#894)", () => {
   it("resolves each provider's emitted models via resolveCustomProviderModels, passing slug/baseUrl/apiKey/snapshot", async () => {
     mockListOpenAiCompatibleProviders.mockResolvedValue([makeProvider()]);
     mockListProvidersWithApiKeys.mockResolvedValue([
-      { slug: "swisscom-ai", apiKey: "swiss-plaintext-key" },
+      { slug: "swisscom-ai", apiKey: "swiss-plaintext-key", keyVersion: "0123456789abcdef" },
     ]);
     mockGetDecryptedApiKey.mockResolvedValue("swiss-plaintext-key");
 
@@ -8926,7 +8926,7 @@ describe("OpenAI-compatible custom providers (#894)", () => {
     // result rather than `p.models` directly.
     mockListOpenAiCompatibleProviders.mockResolvedValue([makeProvider()]);
     mockListProvidersWithApiKeys.mockResolvedValue([
-      { slug: "swisscom-ai", apiKey: "swiss-plaintext-key" },
+      { slug: "swisscom-ai", apiKey: "swiss-plaintext-key", keyVersion: "0123456789abcdef" },
     ]);
     mockResolveCustomProviderModels.mockResolvedValueOnce([
       makeModel({
@@ -8961,15 +8961,59 @@ describe("OpenAI-compatible custom providers (#894)", () => {
     mockListOpenAiCompatibleProviders.mockResolvedValue([makeProvider()]);
     // The secrets bundle sources keys from the single-query accessor.
     mockListProvidersWithApiKeys.mockResolvedValue([
-      { slug: "swisscom-ai", apiKey: "swiss-plaintext-key" },
+      { slug: "swisscom-ai", apiKey: "swiss-plaintext-key", keyVersion: "0123456789abcdef" },
     ]);
 
     await regenerateOpenClawConfig();
 
     expect(mockWriteSecretsFile).toHaveBeenCalled();
     const secretsArg = mockWriteSecretsFile.mock.calls[0][0];
-    expect(secretsArg.providers?.["swisscom-ai"]).toEqual({ apiKey: "swiss-plaintext-key" });
+    expect(secretsArg.providers?.["swisscom-ai@0123456789abcdef"]).toEqual({
+      apiKey: "swiss-plaintext-key",
+    });
     expect(mockListProvidersWithApiKeys).toHaveBeenCalled();
+  });
+
+  // Runtime pairing (review finding on #1238). OpenClaw learns a new baseUrl by
+  // config apply, and the key by re-resolving SecretRefs. If the pointer stayed
+  // `/providers/<slug>/apiKey` while both changed, a `secrets.reload` against
+  // the still-running config could put the NEW key on the OLD address, and a
+  // failed reload could leave the address and key from different saves. With
+  // the slot versioned by the key, the config that carries the new baseUrl is
+  // the only one whose pointer resolves the new key, and the previous slot is
+  // gone — a config still pointing at it fails closed.
+  it("re-points the SecretRef whenever the key changes, so a new baseUrl only ever resolves its own key", async () => {
+    mockListOpenAiCompatibleProviders.mockResolvedValue([makeProvider()]);
+    mockListProvidersWithApiKeys.mockResolvedValue([
+      { slug: "swisscom-ai", apiKey: "old-key", keyVersion: "1111111111111111" },
+    ]);
+    await regenerateOpenClawConfig();
+    const before = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
+
+    mockedWriteFileSync.mockClear();
+    mockWriteSecretsFile.mockClear();
+    mockListOpenAiCompatibleProviders.mockResolvedValue([
+      makeProvider({ baseUrl: "https://moved.swisscom.example/v1" }),
+    ]);
+    mockListProvidersWithApiKeys.mockResolvedValue([
+      { slug: "swisscom-ai", apiKey: "new-key", keyVersion: "2222222222222222" },
+    ]);
+    await regenerateOpenClawConfig();
+    const after = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
+    const secretsAfter = mockWriteSecretsFile.mock.calls[0][0];
+
+    expect(before.models.providers["swisscom-ai"].apiKey.id).toBe(
+      "/providers/swisscom-ai@1111111111111111/apiKey"
+    );
+    expect(after.models.providers["swisscom-ai"]).toMatchObject({
+      baseUrl: "https://moved.swisscom.example/v1",
+      apiKey: { id: "/providers/swisscom-ai@2222222222222222/apiKey" },
+    });
+    expect(secretsAfter.providers["swisscom-ai@2222222222222222"]).toEqual({ apiKey: "new-key" });
+    // The old pointer resolves nothing any more: a runtime still on the old
+    // config cannot pick up the new key, and the new config cannot resolve the old.
+    expect(secretsAfter.providers).not.toHaveProperty("swisscom-ai@1111111111111111");
+    expect(secretsAfter.providers).not.toHaveProperty("swisscom-ai");
   });
 
   it("never writes the raw key into the emitted config tree (assertNoPlaintextSecrets passes)", async () => {
@@ -8979,7 +9023,11 @@ describe("OpenAI-compatible custom providers (#894)", () => {
     // through the secrets bundle (listProvidersWithApiKeys), never the config.
     mockListOpenAiCompatibleProviders.mockResolvedValue([makeProvider()]);
     mockListProvidersWithApiKeys.mockResolvedValue([
-      { slug: "swisscom-ai", apiKey: "sk-proj-abcdef0123456789abcdef" },
+      {
+        slug: "swisscom-ai",
+        apiKey: "sk-proj-abcdef0123456789abcdef",
+        keyVersion: "0123456789abcdef",
+      },
     ]);
 
     await regenerateOpenClawConfig();
@@ -8990,7 +9038,7 @@ describe("OpenAI-compatible custom providers (#894)", () => {
     expect(config.models.providers["swisscom-ai"].apiKey).toEqual({
       source: "file",
       provider: "pinchy",
-      id: "/providers/swisscom-ai/apiKey",
+      id: "/providers/swisscom-ai@0123456789abcdef/apiKey",
     });
   });
 
@@ -9045,8 +9093,8 @@ describe("OpenAI-compatible custom providers (#894)", () => {
       }),
     ]);
     mockListProvidersWithApiKeys.mockResolvedValue([
-      { slug: "swisscom-ai", apiKey: skKey },
-      { slug: "acme-llm", apiKey: jwtKey },
+      { slug: "swisscom-ai", apiKey: skKey, keyVersion: "0123456789abcdef" },
+      { slug: "acme-llm", apiKey: jwtKey, keyVersion: "fedcba9876543210" },
     ]);
 
     await regenerateOpenClawConfig();
@@ -9063,12 +9111,12 @@ describe("OpenAI-compatible custom providers (#894)", () => {
     expect(config.models.providers["swisscom-ai"].apiKey).toEqual({
       source: "file",
       provider: "pinchy",
-      id: "/providers/swisscom-ai/apiKey",
+      id: "/providers/swisscom-ai@0123456789abcdef/apiKey",
     });
     expect(config.models.providers["acme-llm"].apiKey).toEqual({
       source: "file",
       provider: "pinchy",
-      id: "/providers/acme-llm/apiKey",
+      id: "/providers/acme-llm@fedcba9876543210/apiKey",
     });
   });
 
@@ -9136,7 +9184,7 @@ describe("OpenAI-compatible custom providers (#894)", () => {
     mockWriteSecretsFile.mockClear();
     mockListOpenAiCompatibleProviders.mockResolvedValue([makeProvider()]);
     mockListProvidersWithApiKeys.mockResolvedValue([
-      { slug: "swisscom-ai", apiKey: "swiss-plaintext-key" },
+      { slug: "swisscom-ai", apiKey: "swiss-plaintext-key", keyVersion: "0123456789abcdef" },
     ]);
     mockGetDecryptedApiKey.mockResolvedValue("swiss-plaintext-key");
 

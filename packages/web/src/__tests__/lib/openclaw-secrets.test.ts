@@ -4,6 +4,8 @@ import {
   writeSecretsFile,
   readSecretsFile,
   checkSecretsVolumeWritable,
+  secretVersion,
+  versionedSecretName,
 } from "@/lib/openclaw-secrets";
 import { readFileSync, existsSync, statSync, writeFileSync } from "fs";
 import { mkdtempSync, rmSync } from "fs";
@@ -17,6 +19,18 @@ describe("secretRef", () => {
       provider: "pinchy",
       id: "/providers/anthropic/apiKey",
     });
+  });
+});
+
+describe("secretVersion / versionedSecretName", () => {
+  it("derives a short, stable hex version that differs for different material", () => {
+    expect(secretVersion("ciphertext-1")).toMatch(/^[0-9a-f]{16}$/);
+    expect(secretVersion("ciphertext-1")).toBe(secretVersion("ciphertext-1"));
+    expect(secretVersion("ciphertext-1")).not.toBe(secretVersion("ciphertext-2"));
+  });
+
+  it("names a versioned slot `<name>@<version>`", () => {
+    expect(versionedSecretName("acme-llm", "0123456789abcdef")).toBe("acme-llm@0123456789abcdef");
   });
 });
 
@@ -125,6 +139,35 @@ describe("writeSecretsFile", () => {
     // removal-only exemption must not swallow it.
     writeSecretsFile({ providers: { anthropic: { apiKey: "a" }, openai: { apiKey: "b" } } });
     expect(writeSecretsFile({ providers: { anthropic: { apiKey: "rotated" } } })).toBe(true);
+  });
+
+  // A versioned slot (`<name>@<version>`) changes its NAME whenever its value
+  // changes, so the config that points at it changes too — and the config apply
+  // re-resolves config-tree SecretRefs from this file. A reload here would only
+  // re-resolve the config OpenClaw is still running, whose pointer this write
+  // just removed: it would fail closed and log a degraded runtime for nothing.
+  describe("versioned secrets (a new value is a new pointer)", () => {
+    const v1 = versionedSecretName("acme-llm", secretVersion("ciphertext-1"));
+    const v2 = versionedSecretName("acme-llm", secretVersion("ciphertext-2"));
+
+    it("reports nothing to do when a versioned slot is replaced by a new version", () => {
+      writeSecretsFile({ providers: { [v1]: { apiKey: "old-key" } } });
+      expect(writeSecretsFile({ providers: { [v2]: { apiKey: "new-key" } } })).toBe(false);
+    });
+
+    it("reports nothing to do on the upgrade from an unversioned slot to a versioned one", () => {
+      writeSecretsFile({ providers: { "acme-llm": { apiKey: "key" } } });
+      expect(writeSecretsFile({ providers: { [v1]: { apiKey: "key" } } })).toBe(false);
+    });
+
+    it("still reports a stale runtime when an unversioned key rotates in the same write", () => {
+      writeSecretsFile({ providers: { anthropic: { apiKey: "a" }, [v1]: { apiKey: "k" } } });
+      expect(
+        writeSecretsFile({
+          providers: { anthropic: { apiKey: "rotated" }, [v2]: { apiKey: "k2" } },
+        })
+      ).toBe(true);
+    });
   });
 
   it("reports a stale runtime for a nested plugin secret, not just providers", () => {

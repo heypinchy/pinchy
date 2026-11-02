@@ -48,6 +48,8 @@ At startup — and every time you change a provider or integration — Pinchy ca
 
 Step 4 is what makes rotation immediate. OpenClaw resolves each pointer once and holds the value for the life of the process, and `openclaw.json` is unchanged by a rotation — it carries the pointer, not the key. So a new key would otherwise sit in the file unread until the container restarted, with every agent still presenting the old one.
 
+OpenAI-compatible providers take a stricter route, because their address is set by you rather than fixed by Pinchy. Each one's key sits under a slot named for the key itself — `/providers/<slug>@<version>/apiKey`, where the version is a fingerprint of the stored ciphertext — so every newly entered key gives `openclaw.json` a new pointer. The base URL and the key entered for it then reach OpenClaw together, in one config apply: OpenClaw can never send the new key to the old address, or the old key to a new one. A configuration still pointing at the previous version resolves nothing, and OpenClaw stays on its last working configuration until the new one arrives.
+
 That path is a Docker `tmpfs` mount. tmpfs is RAM-based storage — it's never written to disk, never included in Docker volume exports, and disappears on container restart.
 
 ```yaml

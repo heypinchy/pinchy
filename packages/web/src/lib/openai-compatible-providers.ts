@@ -6,6 +6,7 @@
 // last-4 `keyHint` shown in the admin UI). The list path never returns the
 // decrypted key.
 
+import { secretVersion } from "@/lib/openclaw-secrets";
 import { db } from "@/db";
 import { openaiCompatibleProviders } from "@/db/schema";
 import { decrypt, encrypt } from "@/lib/encryption";
@@ -96,15 +97,24 @@ export async function listOpenAiCompatibleProvidersForAdmin(): Promise<
 }
 
 /**
- * Every provider's `{ slug, apiKey }` with the key decrypted, in one query and
+ * Every provider's `{ slug, apiKey, keyVersion }` with the key decrypted, in one query and
  * one decrypt per row. Purpose-built for the secrets bundle (`collectProviderSecrets`)
  * so it never pays the `listOpenAiCompatibleProviders` keyHint-decrypt tax nor a
  * per-slug round trip (the old 1+N / 2N-decrypt path). The decrypted key never
  * leaves the secrets pipeline — do not use this for anything exposed to the client.
  */
-export async function listProvidersWithApiKeys(): Promise<{ slug: string; apiKey: string }[]> {
+export async function listProvidersWithApiKeys(): Promise<
+  { slug: string; apiKey: string; keyVersion: string }[]
+> {
   const rows = await db.select().from(openaiCompatibleProviders);
-  return rows.map((r) => ({ slug: r.slug, apiKey: decrypt(r.apiKey) }));
+  return rows.map((r) => ({
+    slug: r.slug,
+    apiKey: decrypt(r.apiKey),
+    // Versions the secrets-bundle slot, so every newly entered key gets a new
+    // SecretRef pointer (see versionedSecretName). Taken from the ciphertext:
+    // it changes on every save of a key, and says nothing about the key.
+    keyVersion: secretVersion(r.apiKey),
+  }));
 }
 
 /**

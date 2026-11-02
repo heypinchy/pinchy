@@ -143,7 +143,7 @@ async function readStoredKey(slug: string): Promise<string | undefined> {
 }
 
 describe("listProvidersWithApiKeys", () => {
-  it("returns exactly { slug, apiKey } with real decrypted keys for every row", async () => {
+  it("returns exactly { slug, apiKey, keyVersion } with real decrypted keys for every row", async () => {
     await createOrUpdateProvider(
       {
         displayName: "Swisscom AI",
@@ -165,15 +165,17 @@ describe("listProvidersWithApiKeys", () => {
     // Order-independent: assert the set of decrypted { slug, apiKey } pairs.
     expect(rows).toEqual(
       expect.arrayContaining([
-        { slug: "swisscom-ai", apiKey: "sk-swiss-real" },
-        { slug: "acme-llm", apiKey: "sk-acme-real" },
+        { slug: "swisscom-ai", apiKey: "sk-swiss-real", keyVersion: expect.any(String) },
+        { slug: "acme-llm", apiKey: "sk-acme-real", keyVersion: expect.any(String) },
       ])
     );
     expect(rows).toHaveLength(2);
 
-    // Shape is EXACTLY slug + apiKey — no keyHint, no ciphertext, no extra fields.
+    // Shape is EXACTLY slug + apiKey + keyVersion — no keyHint, no ciphertext.
     for (const row of rows) {
-      expect(Object.keys(row).sort()).toEqual(["apiKey", "slug"]);
+      expect(Object.keys(row).sort()).toEqual(["apiKey", "keyVersion", "slug"]);
+      expect(row.keyVersion).toMatch(/^[0-9a-f]{16}$/);
+      expect(row.keyVersion).not.toContain(row.apiKey);
       expect(row).not.toHaveProperty("keyHint");
       expect(row).not.toHaveProperty("models");
     }
@@ -181,6 +183,41 @@ describe("listProvidersWithApiKeys", () => {
 
   it("returns an empty array when no providers exist", async () => {
     expect(await listProvidersWithApiKeys()).toEqual([]);
+  });
+
+  // The keyVersion names the provider's secrets-bundle slot, so it must move
+  // exactly when a key is (re-)entered — and only then. A rename or a model
+  // refresh must not churn the SecretRef; a new key (even the same value typed
+  // again, e.g. alongside a new base URL) must.
+  it("keeps keyVersion across an update without a key, and changes it whenever a key is entered", async () => {
+    const created = await createOrUpdateProvider(
+      { displayName: "Swisscom AI", baseUrl: "https://api.swisscom.example/v1", apiKey: "sk-k" },
+      [MODEL]
+    );
+    const version = async () =>
+      (await listProvidersWithApiKeys()).find((r) => r.slug === "swisscom-ai")!.keyVersion;
+    const v1 = await version();
+
+    await createOrUpdateProvider(
+      {
+        id: created.id,
+        displayName: "Swisscom Renamed",
+        baseUrl: "https://api.swisscom.example/v1",
+      },
+      [MODEL]
+    );
+    expect(await version()).toBe(v1);
+
+    await createOrUpdateProvider(
+      {
+        id: created.id,
+        displayName: "Swisscom Renamed",
+        baseUrl: "https://moved.swisscom.example/v1",
+        apiKey: "sk-k",
+      },
+      [MODEL]
+    );
+    expect(await version()).not.toBe(v1);
   });
 });
 

@@ -377,7 +377,7 @@ export async function regenerateOpenClawConfig() {
   // Pattern A from CLAUDE.md "Secrets Handling": secret pair for each LLM
   // provider with a configured apiKey. Helper returns a fresh mutable map;
   // ollama-cloud is spliced into providerSecrets at the model-providers call site.
-  const { providers: providerSecrets } = await collectProviderSecrets();
+  const { providers: providerSecrets, customProviderSecretNames } = await collectProviderSecrets();
 
   // Keep agents.defaults minimal. OpenClaw enriches agents.defaults with
   // heartbeat, models, contextPruning, compaction at runtime; if Pinchy were to
@@ -1461,17 +1461,22 @@ export async function regenerateOpenClawConfig() {
   // supplies slug/baseUrl/snapshot and backs the default-provider guard;
   // `providerSecrets` (already fetched for the secrets bundle) supplies the
   // decrypted key discovery needs without a second DB round trip.
+  //
+  // The key's slot is versioned (`<slug>@<keyVersion>`, see versionedSecretName):
+  // a new key is a new pointer, so the config that moves `baseUrl` is the only
+  // one that resolves the key entered for it — the two can never go live apart.
   for (const p of customProviders) {
+    const secretSlot = customProviderSecretNames[p.slug] ?? p.slug;
     const models = await resolveCustomProviderModels({
       slug: p.slug,
       baseUrl: p.baseUrl,
-      apiKey: providerSecrets[p.slug]?.apiKey ?? "",
+      apiKey: providerSecrets[secretSlot]?.apiKey ?? "",
       models: p.models,
     });
     modelProviders[p.slug] = {
       baseUrl: p.baseUrl,
       api: "openai-completions",
-      apiKey: secretRef(`/providers/${p.slug}/apiKey`),
+      apiKey: secretRef(`/providers/${secretSlot}/apiKey`),
       models: stripVision(models).map((m) => ({
         ...m,
         compat: { supportsUsageInStreaming: true },

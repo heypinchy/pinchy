@@ -9,6 +9,7 @@ import {
   constants,
 } from "fs";
 import { dirname } from "path";
+import { createHash } from "crypto";
 
 export type SecretRef = {
   source: "file";
@@ -21,6 +22,39 @@ export function secretRef(id: string): SecretRef {
 }
 
 const DEFAULT_SECRETS_PATH = "/openclaw-secrets/secrets.json";
+
+/**
+ * A short, stable fingerprint of a secret's stored form, for naming a versioned
+ * slot. Feed it the CIPHERTEXT, never the plaintext: AES-GCM with a random IV
+ * makes the ciphertext new on every save — even when the same key is typed
+ * again — and a hash of it says nothing about the key, while a hash of a weak
+ * plaintext key would be a dictionary lookup away in openclaw.json.
+ */
+export function secretVersion(storedForm: string): string {
+  return createHash("sha256").update(storedForm).digest("hex").slice(0, 16);
+}
+
+/**
+ * The bundle slot for a versioned secret: `<name>@<version>`.
+ *
+ * Why version a slot at all: OpenClaw resolves a config-tree SecretRef when a
+ * config is applied, and it keeps the runtime it resolved until the next
+ * successful apply or `secrets.reload`. If the pointer stayed the same while
+ * both the key and the address it is sent to changed, the two halves would
+ * reach the runtime by different routes — the address by config apply, the
+ * key by a separate reload that can fail or race it — and for a while the new
+ * key could go to the old address (or the old key to the new one). With the
+ * version in the name, a new key IS a new pointer: the only config that can
+ * resolve it is the one carrying the address it was entered for, and a config
+ * still pointing at the previous version finds nothing and fails closed
+ * (OpenClaw stays on its last-known-good snapshot).
+ */
+export function versionedSecretName(name: string, version: string): string {
+  return `${name}@${version}`;
+}
+
+/** A path segment written by {@link versionedSecretName}. */
+const VERSIONED_SEGMENT = /^[^@/]+@[0-9a-f]{16}$/;
 
 export type SecretsBundle = {
   gateway?: { token?: string };
@@ -109,7 +143,8 @@ function flattenSecretValues(
 /**
  * True when `next` holds a value the previous bundle did not have under the
  * same path — added or rotated. Deliberately false when the only difference is
- * that values DISAPPEARED: see the removal note on {@link writeSecretsFile}.
+ * that values DISAPPEARED (see the removal note on {@link writeSecretsFile}),
+ * and for versioned slots (see {@link versionedSecretName}).
  */
 function hasNewOrRotatedValue(previousContent: string | undefined, next: SecretsBundle): boolean {
   let previousBundle: unknown = {};
@@ -125,6 +160,10 @@ function hasNewOrRotatedValue(previousContent: string | undefined, next: Secrets
   }
   const before = flattenSecretValues(previousBundle);
   for (const [path, value] of flattenSecretValues(next)) {
+    // A versioned slot never needs a reload: its value cannot change in place,
+    // and a new slot is reachable only through the config that names it — the
+    // config apply of this same regenerate. See versionedSecretName.
+    if (path.split("/").some((segment) => VERSIONED_SEGMENT.test(segment))) continue;
     if (before.get(path) !== value) return true;
   }
   return false;
