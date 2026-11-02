@@ -1178,6 +1178,9 @@ interface VerifyResult {
   // authentic and unmodified, so they are not integrity violations and do not
   // clear `valid`. They are reported separately and never folded into the
   // healthy rows, so the rotation stays visible. See getPreviousSecret().
+  // Only a contiguous prefix of the chain can land here: an old-key row after a
+  // row that verified under the active key is forged (the old key file outlives
+  // a rotation) and goes to `invalidIds` instead.
   previousKeyIds: number[];
 }
 
@@ -1213,6 +1216,9 @@ export async function verifyIntegrity(
   const chainBreakIds: number[] = [];
   const previousKeyIds: number[] = [];
   let totalChecked = 0;
+  // Set once a row verifies under the ACTIVE key. Carried across pages: the
+  // previous key is only acceptable before the first such row.
+  let activeKeySeen = false;
   // rowHmac of the previous row in range; undefined before the first row so the
   // first row in a partial range isn't chain-checked against a missing
   // predecessor — UNLESS seedPrevHmac was supplied, in which case it seeds the
@@ -1261,11 +1267,26 @@ export async function verifyIntegrity(
       };
 
       let signatureOk = verifier(secret, fields) === entry.rowHmac;
-      // Only rows that fail under the ACTIVE key are retried, so an unrotated
-      // install pays nothing and a rotated one pays one extra HMAC per legacy
-      // row. A row that verifies under neither key is tampering, and the
-      // fallback must not launder it into the previous-key bucket.
-      if (!signatureOk && previousSecret && verifier(previousSecret, fields) === entry.rowHmac) {
+      if (signatureOk) {
+        // The rotation has happened by this row. From here on the superseded
+        // key is no longer acceptable (see below).
+        activeKeySeen = true;
+      } else if (
+        // Only rows that fail under the ACTIVE key are retried, so an
+        // unrotated install pays nothing and a rotated one pays one extra HMAC
+        // per legacy row. A row that verifies under neither key is tampering,
+        // and the fallback must not launder it into the previous-key bucket.
+        //
+        // The previous key is only trusted for the PREFIX of the chain that
+        // pre-dates the rotation. Its file stays in the secrets volume after a
+        // rotation (typically one done because the old key leaked), so anyone
+        // with DB write access and that file could re-sign any row, including
+        // rows written after the rotation, and have it verify. Once a row has
+        // verified under the active key, an old-key row is therefore invalid.
+        !activeKeySeen &&
+        previousSecret &&
+        verifier(previousSecret, fields) === entry.rowHmac
+      ) {
         previousKeyIds.push(entry.id);
         signatureOk = true;
       }

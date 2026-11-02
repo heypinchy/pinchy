@@ -57,7 +57,11 @@ This is what a changed `AUDIT_HMAC_SECRET` looks like. If you pin the variable o
 
 So Pinchy keeps looking at the key it superseded. The generated secret stays in the `pinchy-secrets` volume; rows that verify against it are authentic and unmodified, and they're listed on their own instead of being folded into the healthy rows, so a rotation stays visible to whoever reads the report. `valid` stays true, because nothing was tampered with.
 
+The earlier key is only accepted for the **opening stretch** of the log, the rows that pre-date the key change. Once one row verifies under the current key, every later row has to as well: a later row that only verifies under the earlier key goes into `invalidIds`, not `previousKeyIds`, and `valid` turns false. A legitimate rotation always looks the same: earlier-secret rows first, then current-key rows, never the two interleaved. Without that rule, anyone holding the earlier key could rewrite rows written after the change and still get a clean report.
+
 The hash chain is untouched by any of this. Each row stores its predecessor's signature verbatim, whichever key produced that signature, so the links still match straight across the point where the key changed.
+
+If you changed the key because the earlier one **leaked**, remove the earlier key file as well. It sits at `.audit_hmac_secret` in the `pinchy-secrets` volume (`/app/secrets/.audit_hmac_secret` inside the container). While the file exists, anyone who obtains it can still sign rows that verify as pre-change history, and even with the rule above, a leaked key lets them forge rows in the opening stretch. Once the file is gone, Pinchy has no earlier key to check against, so every row signed with it reports in `invalidIds` and `valid` stays false. That is the price of closing the door: those rows can't be told apart from tampered ones any more. Keep the file in an offline backup first if you want to be able to re-verify the old history later.
 
 Two limits worth stating plainly. This covers a secret **superseded by the environment variable** — the case pinning `AUDIT_HMAC_SECRET` creates. If you overwrite the key file itself, the old key is gone and the rows it signed can no longer be verified by anyone. And Pinchy remembers one previous key, not a history of them: rotate twice and the oldest rows become unverifiable the same way.
 

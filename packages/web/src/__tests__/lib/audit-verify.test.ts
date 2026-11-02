@@ -524,6 +524,69 @@ describe("verifyIntegrity across a signing-secret rotation", () => {
     expect(result.valid).toBe(false);
   });
 
+  // The previous key is only trusted for the rows that PRE-date the rotation.
+  // The superseded key file stays in the secrets volume, so anyone with DB write
+  // access and that key could otherwise re-sign any row — including rows written
+  // after the rotation — and still verify. Once a row verifies under the active
+  // key, the rotation has happened; no later row may need the old one.
+  it("accepts the previous key only as a contiguous prefix: an old-key row after an active-key row is invalid", async () => {
+    const r1 = makeV3SignedWith(1, null, previousSecret);
+    const r2 = makeV3SignedWith(2, r1.rowHmac, secret);
+    // Forged after the rotation by someone holding the old key file.
+    const r3 = makeV3SignedWith(3, r2.rowHmac, previousSecret);
+    const r4 = makeV3SignedWith(4, r3.rowHmac, secret);
+    mockLimit.mockResolvedValue([r1, r2, r3, r4]);
+
+    const result = await verifyIntegrity();
+
+    expect(result.invalidIds).toEqual([3]);
+    // The forged row must not be laundered into the "authentic but superseded" bucket.
+    expect(result.previousKeyIds).toEqual([1]);
+    expect(result.valid).toBe(false);
+  });
+
+  it("keeps the prefix rule across page boundaries", async () => {
+    const r1 = makeV3SignedWith(1, null, previousSecret);
+    const r2 = makeV3SignedWith(2, r1.rowHmac, secret);
+    const r3 = makeV3SignedWith(3, r2.rowHmac, previousSecret);
+    mockLimit.mockResolvedValueOnce([r1, r2]).mockResolvedValueOnce([r3]);
+
+    const result = await verifyIntegrity(undefined, undefined, { pageSize: 2 });
+
+    expect(result.invalidIds).toEqual([3]);
+    expect(result.previousKeyIds).toEqual([1]);
+    expect(result.valid).toBe(false);
+  });
+
+  it("does not treat a row that verifies under neither key as the end of the prefix", async () => {
+    // A tampered row proves nothing about the rotation having happened, so an
+    // authentic old-key row after it is still part of the pre-rotation prefix.
+    const tampered = { ...makeV1SignedWith(2, previousSecret), rowHmac: "0".repeat(64) };
+    mockLimit.mockResolvedValue([
+      makeV1SignedWith(1, previousSecret),
+      tampered,
+      makeV1SignedWith(3, previousSecret),
+      makeV1SignedWith(4, secret),
+    ]);
+
+    const result = await verifyIntegrity();
+
+    expect(result.invalidIds).toEqual([2]);
+    expect(result.previousKeyIds).toEqual([1, 3]);
+  });
+
+  it("treats a chain signed entirely under the previous key as pre-rotation (nothing written since)", async () => {
+    const r1 = makeV3SignedWith(1, null, previousSecret);
+    const r2 = makeV3SignedWith(2, r1.rowHmac, previousSecret);
+    mockLimit.mockResolvedValue([r1, r2]);
+
+    const result = await verifyIntegrity();
+
+    expect(result.invalidIds).toEqual([]);
+    expect(result.previousKeyIds).toEqual([1, 2]);
+    expect(result.valid).toBe(true);
+  });
+
   it("reports pre-rotation rows as invalid when no previous secret is available", async () => {
     // The honest limitation: an operator who overwrote the secret FILE has
     // destroyed the old key, and nothing can reclassify those rows.
