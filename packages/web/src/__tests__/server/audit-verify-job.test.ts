@@ -20,6 +20,7 @@ const {
   mockInsert,
   mockSelect,
   mockIsRowSignedWithActiveKey,
+  mockCheckpointAuditRowThen,
 } = vi.hoisted(() => {
   const mockVerifyIntegrity = vi.fn();
   const mockIsRowSignedWithActiveKey = vi.fn().mockResolvedValue(false);
@@ -41,9 +42,15 @@ const {
   // like the real query builder.
   const mockRacedRowLimit = vi.fn().mockResolvedValue([]);
   const mockLastScannedOrderBy = vi.fn().mockReturnValue({ limit: mockLastScannedLimit });
+  // db.select({ rowHmac }).from(auditLog).where(eq(id, checkpointId)) ->
+  // awaited directly: the checkpoint row as it stands NOW, compared against
+  // the rowHmac the checkpoint remembered for it.
+  const mockCheckpointAuditRowThen = vi.fn().mockResolvedValue([]);
   const mockLastScannedWhere = vi.fn().mockReturnValue({
     orderBy: mockLastScannedOrderBy,
     limit: mockRacedRowLimit,
+    then: (...args: Parameters<Promise<unknown>["then"]>) =>
+      mockCheckpointAuditRowThen().then(...args),
   });
   // NOTE: there is deliberately no "own report row" query stub any more. The
   // sweep folds its own audit.integrity_check row into the checkpoint from the
@@ -89,6 +96,7 @@ const {
     mockInsert,
     mockSelect,
     mockIsRowSignedWithActiveKey,
+    mockCheckpointAuditRowThen,
   };
 });
 
@@ -125,6 +133,17 @@ function mockCheckpointRow(
   row: { lastVerifiedId: number; lastVerifiedHmac: string | null } | null
 ) {
   mockCheckpointWhere.mockResolvedValue(row ? [row] : []);
+  // By default the audit row the checkpoint points at is still there and
+  // unchanged. The tests for a deleted or altered checkpoint row override this
+  // with mockCheckpointAuditRow afterwards.
+  mockCheckpointAuditRow(
+    row && row.lastVerifiedHmac !== null ? { rowHmac: row.lastVerifiedHmac } : null
+  );
+}
+
+// The audit_log row at the checkpoint's lastVerifiedId, as it is now.
+function mockCheckpointAuditRow(row: { rowHmac: string } | null) {
+  mockCheckpointAuditRowThen.mockResolvedValue(row ? [row] : []);
 }
 
 // The current MAX(id) snapshot taken before verifyIntegrity() runs — sets the
@@ -200,6 +219,7 @@ describe("sweepAuditVerify", () => {
     expect(mockVerifyIntegrity).toHaveBeenCalledWith(11, 11, {
       seedPrevHmac: "abc",
       seedActiveKeySeen: false,
+      seedPredecessorBroken: false,
     });
     expect(mockAppendAuditLog).not.toHaveBeenCalled();
     expect(mockInsert).not.toHaveBeenCalled();
@@ -236,6 +256,7 @@ describe("sweepAuditVerify", () => {
     expect(mockVerifyIntegrity).toHaveBeenCalledWith(1, 5, {
       seedPrevHmac: null,
       seedActiveKeySeen: false,
+      seedPredecessorBroken: false,
     });
   });
 
@@ -259,6 +280,7 @@ describe("sweepAuditVerify", () => {
     expect(mockVerifyIntegrity).toHaveBeenCalledWith(11, 13, {
       seedPrevHmac: "hmac-10",
       seedActiveKeySeen: false,
+      seedPredecessorBroken: false,
     });
     expect(result).toEqual({
       scanned: true,
@@ -542,7 +564,70 @@ describe("sweepAuditVerify", () => {
     expect(mockVerifyIntegrity).toHaveBeenCalledWith(11, 11, {
       seedPrevHmac: "hmac-10",
       seedActiveKeySeen: true,
+      seedPredecessorBroken: false,
     });
+  });
+
+  // The checkpoint stores the rowHmac of the row it ends on, so the next window's
+  // first link is checked against the remembered value. That says nothing about
+  // the checkpoint row itself: if it was deleted or rewritten since, the link
+  // still matches the remembered value and the seed above would be read off
+  // whatever the row has become. A row re-signed with the old key would then
+  // re-open the previous-key window for everything after it.
+  it("altered checkpoint row: reports the window's boundary link as broken and seeds the key change as already seen", async () => {
+    mockCheckpointRow({ lastVerifiedId: 10, lastVerifiedHmac: "hmac-10" });
+    mockCheckpointAuditRow({ rowHmac: "hmac-10-rewritten" });
+    mockCurrentMaxId(11);
+    mockIsRowSignedWithActiveKey.mockResolvedValue(false);
+    mockVerifyIntegrity.mockResolvedValue({
+      valid: false,
+      totalChecked: 1,
+      invalidIds: [],
+      chainBreakIds: [11],
+      previousKeyIds: [],
+    });
+    mockLastScannedRow({ id: 11, rowHmac: "hmac-11" });
+    mockOwnReportRow(12, "hmac-12");
+
+    const result = await sweepAuditVerify();
+
+    expect(mockVerifyIntegrity).toHaveBeenCalledWith(11, 11, {
+      seedPrevHmac: "hmac-10",
+      // Fail closed: what the row says about the key can't be trusted any more.
+      seedActiveKeySeen: true,
+      seedPredecessorBroken: true,
+    });
+    expect(mockIsRowSignedWithActiveKey).not.toHaveBeenCalled();
+    expect(result.valid).toBe(false);
+    expect(result.chainBreakCount).toBe(1);
+    expect(mockAppendAuditLog.mock.calls[0][0].outcome).toBe("failure");
+    expect(mockInsertValues).toHaveBeenCalledWith(
+      expect.objectContaining({ lastStatus: "violation" })
+    );
+  });
+
+  it("deleted checkpoint row: reports the window's boundary link as broken and seeds the key change as already seen", async () => {
+    mockCheckpointRow({ lastVerifiedId: 10, lastVerifiedHmac: "hmac-10" });
+    mockCheckpointAuditRow(null);
+    mockCurrentMaxId(11);
+    mockVerifyIntegrity.mockResolvedValue({
+      valid: false,
+      totalChecked: 1,
+      invalidIds: [],
+      chainBreakIds: [11],
+      previousKeyIds: [],
+    });
+    mockLastScannedRow({ id: 11, rowHmac: "hmac-11" });
+    mockOwnReportRow(12, "hmac-12");
+
+    await sweepAuditVerify();
+
+    expect(mockVerifyIntegrity).toHaveBeenCalledWith(11, 11, {
+      seedPrevHmac: "hmac-10",
+      seedActiveKeySeen: true,
+      seedPredecessorBroken: true,
+    });
+    expect(mockIsRowSignedWithActiveKey).not.toHaveBeenCalled();
   });
 
   it("does not look up a checkpoint row on the very first sweep", async () => {

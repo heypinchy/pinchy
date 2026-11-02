@@ -1,5 +1,5 @@
 import { createHmac } from "crypto";
-import { asc, desc, eq, gt, gte, lte, and, sql } from "drizzle-orm";
+import { asc, desc, eq, gt, gte, lt, lte, and, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { auditLog, users, type AuditDetail } from "@/db/schema";
 import { getOrCreateSecret, getPreviousSecret } from "@/lib/encryption";
@@ -1184,18 +1184,11 @@ interface VerifyResult {
   previousKeyIds: number[];
 }
 
-/**
- * Does the stored row `id` verify under the ACTIVE signing key?
- *
- * The incremental sweep uses this on its checkpoint row to seed
- * `verifyIntegrity`'s `seedActiveKeySeen` (see there). A missing row, an unknown
- * row version or a signature that does not verify all answer false: the
- * conservative direction for a seed is "no rotation seen yet", and a checkpoint
- * row that was deleted or altered is reported by the chain checks regardless.
- */
-export async function isRowSignedWithActiveKey(id: number): Promise<boolean> {
-  const [entry] = await db.select().from(auditLog).where(eq(auditLog.id, id)).limit(1);
-  if (!entry) return false;
+type AuditLogRow = typeof auditLog.$inferSelect;
+
+// Does this stored row verify under the ACTIVE signing key? An unknown row
+// version can't be shown to verify, so it answers false.
+function verifiesUnderActiveKey(entry: AuditLogRow): boolean {
   const verifier = ROW_HMAC_VERIFIERS[entry.version];
   if (!verifier) return false;
   return (
@@ -1211,6 +1204,45 @@ export async function isRowSignedWithActiveKey(id: number): Promise<boolean> {
       prevHmac: entry.prevHmac,
     }) === entry.rowHmac
   );
+}
+
+/**
+ * Does the stored row `id` verify under the ACTIVE signing key?
+ *
+ * The incremental sweep uses this on its checkpoint row to seed
+ * `verifyIntegrity`'s `seedActiveKeySeen` (see there). A missing row, an unknown
+ * row version or a signature that does not verify all answer false. That is
+ * only safe because the sweep first checks that the checkpoint row is still the
+ * row it verified: a row that was deleted or rewritten since never reaches this
+ * function, the sweep reports it as a broken link and seeds `true` instead. Any
+ * other caller must make the same check, or a row re-signed with the old key
+ * re-opens the previous-key window for everything after it.
+ */
+export async function isRowSignedWithActiveKey(id: number): Promise<boolean> {
+  const [entry] = await db.select().from(auditLog).where(eq(auditLog.id, id)).limit(1);
+  return entry ? verifiesUnderActiveKey(entry) : false;
+}
+
+/**
+ * Had the active key already signed a row by the time the row at `fromId` was
+ * written? The seed for a partial-range verification that starts at `fromId`.
+ *
+ * Answers from the row immediately before `fromId` (the greatest existing id
+ * below it), the same way the incremental sweep answers from its checkpoint row.
+ * No such row, or one that does not verify under the active key, answers false.
+ *
+ * That is a context, not a proof. Whether the predecessor itself is authentic,
+ * and where in the log the key really changed, only a verification from the
+ * first row establishes.
+ */
+export async function isActiveKeySeenBefore(fromId: number): Promise<boolean> {
+  const [entry] = await db
+    .select()
+    .from(auditLog)
+    .where(lt(auditLog.id, fromId))
+    .orderBy(desc(auditLog.id))
+    .limit(1);
+  return entry ? verifiesUnderActiveKey(entry) : false;
 }
 
 // Rows processed per fetch. The whole audit_log can grow unbounded, so loading
@@ -1241,6 +1273,12 @@ export async function verifyIntegrity(
     // here; omitted (the default) means "the window starts at the chain's
     // beginning", which is correct for a full-range verification.
     seedActiveKeySeen?: boolean;
+    // The row BEFORE this window is no longer the row the caller verified: it
+    // was deleted, or its rowHmac changed. `seedPrevHmac` can't see that, since
+    // the first row's link still matches the value the caller remembered. The
+    // first row's link to its real predecessor is broken all the same, so it is
+    // reported in `chainBreakIds`, whatever its row version.
+    seedPredecessorBroken?: boolean;
   }
 ): Promise<VerifyResult> {
   const secret = getOrCreateSecret("audit_hmac_secret");
@@ -1264,6 +1302,8 @@ export async function verifyIntegrity(
   // Carried ACROSS pages so a chain break that straddles a page boundary is
   // still detected.
   let prevRowHmac: string | null | undefined = hasSeed ? (opts?.seedPrevHmac ?? null) : undefined;
+  // Cleared after the first row of the window, not the first row of each page.
+  let predecessorBroken = opts?.seedPredecessorBroken ?? false;
   // Exclusive lower-bound cursor for keyset pagination. Undefined on the first
   // page (which honors `fromId`); afterwards it advances past the last id seen.
   let cursor: number | undefined = undefined;
@@ -1285,6 +1325,10 @@ export async function verifyIntegrity(
 
     for (const entry of page) {
       totalChecked++;
+      // Taken before any `continue` below, so it can only ever apply to the
+      // window's first row.
+      const linkKnownBroken = predecessorBroken;
+      predecessorBroken = false;
       const verifier = ROW_HMAC_VERIFIERS[entry.version];
       if (!verifier) {
         invalidIds.push(entry.id);
@@ -1331,6 +1375,8 @@ export async function verifyIntegrity(
 
       if (!signatureOk) {
         invalidIds.push(entry.id);
+      } else if (linkKnownBroken) {
+        chainBreakIds.push(entry.id);
       } else if (
         entry.version >= 3 &&
         prevRowHmac !== undefined &&

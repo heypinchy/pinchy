@@ -2203,6 +2203,8 @@ Verify the integrity of audit log entries by recomputing HMAC signatures. **Admi
 
 If tampered entries are found, `valid` is `false` and `invalidIds` contains the IDs of entries with mismatched signatures.
 
+A range that starts at `fromId` takes its key context from the entry immediately before it. If that entry verifies under the current signing key, the key changed before the range starts, and an entry in the range that only verifies under an earlier key is reported in `invalidIds` rather than as signed with an earlier secret. Only a verification without `fromId` establishes where the key actually changed. See [Rows signed with an earlier secret](/concepts/audit-trail-verification/#rows-signed-with-an-earlier-secret).
+
 **Errors:**
 
 - `401` — not authenticated

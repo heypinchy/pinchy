@@ -278,6 +278,8 @@ Two things follow. Keep backing up the `pinchy-secrets` volume: that's where the
 
 Pin it on a fresh install, or when you run several Pinchy instances against one database. That second case is the one it exists for: without a shared secret each instance derives different actor pseudonyms, and no single instance can show a user's full history. See [Secrets](/reference/environment-variables/#secrets).
 
+**Running several instances against one database?** Then the key switch has to happen on all of them at once. Re-fetch the compose file everywhere, stop every instance, and only then start them again. Don't roll the upgrade through one instance at a time: while some sign with the new key and others with the old one, the old-key rows written after the first new-key row look exactly like forgeries. Verification reports them as invalid, and the background check records an integrity violation that stays in the log. If that's already happened, [Switching the key on several instances](/concepts/audit-trail-verification/#switching-the-key-on-several-instances) explains what you'll see and what to do.
+
 #### An Odoo URL is now checked against the address it resolves to
 
 The SSRF guard on the Odoo connection routes only ever read the hostname as a string, so a name pointing at `169.254.169.254` or an internal address passed a check that a bare `10.0.0.5` failed. It now resolves the name and classifies every address it gets back.

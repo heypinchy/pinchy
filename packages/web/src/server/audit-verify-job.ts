@@ -81,6 +81,22 @@ async function writeCheckpoint(
 }
 
 /**
+ * Is the audit row at the checkpoint still there, with the rowHmac the
+ * checkpoint remembered for it?
+ *
+ * audit_log rows are immutable (DB triggers), so on an untampered install this
+ * is always true. False means someone with direct DB access deleted or rewrote
+ * a row this sweep had already verified.
+ */
+async function checkpointRowIntact(checkpoint: Checkpoint): Promise<boolean> {
+  const [row] = await db
+    .select({ rowHmac: auditLog.rowHmac })
+    .from(auditLog)
+    .where(eq(auditLog.id, checkpoint.lastVerifiedId));
+  return row !== undefined && row.rowHmac === checkpoint.lastVerifiedHmac;
+}
+
+/**
  * Did another writer land a row in the open interval (afterId, beforeId)?
  *
  * Used to detect a concurrent append that happened between this sweep's
@@ -152,18 +168,33 @@ export async function sweepAuditVerify(): Promise<AuditVerifySweepResult> {
     return { scanned: false };
   }
 
+  // Is the checkpoint row still the row this sweep verified last time? The
+  // stored lastVerifiedHmac protects the window's first link, but the first
+  // row's link still matches it after the checkpoint row itself was deleted or
+  // rewritten. Compare the row as it is now with what was remembered.
+  const checkpointBroken =
+    checkpoint.lastVerifiedId > 0 && !(await checkpointRowIntact(checkpoint));
+
   // The previous signing key is only valid for the rows before a rotation, and
   // this window cannot see them. If the checkpoint row itself was signed under
   // the active key, the rotation already happened: an old-key row in this
   // window is forged, even when no active-key row precedes it inside the window.
   // The sweep's own report row is always written under the active key, so after
   // the first sweep this is true on every run of a rotated install.
-  const seedActiveKeySeen =
-    checkpoint.lastVerifiedId > 0 && (await isRowSignedWithActiveKey(checkpoint.lastVerifiedId));
+  //
+  // A broken checkpoint row says nothing trustworthy about the key any more (a
+  // row re-signed with the old key would read as "no rotation yet" and re-open
+  // the old key for this whole window), so it fails closed: rotation seen.
+  const seedActiveKeySeen = checkpointBroken
+    ? true
+    : checkpoint.lastVerifiedId > 0 && (await isRowSignedWithActiveKey(checkpoint.lastVerifiedId));
 
   const result = await verifyIntegrity(fromId, toId, {
     seedPrevHmac: checkpoint.lastVerifiedHmac,
     seedActiveKeySeen,
+    // Reported as a chain break on the window's first row, the same place a
+    // deleted or reordered boundary row shows up.
+    seedPredecessorBroken: checkpointBroken,
   });
 
   if (result.totalChecked === 0) {

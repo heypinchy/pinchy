@@ -1,20 +1,25 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-const { mockLimit, mockOrderBy, mockWhere, mockFrom, mockSelect, gtCursors } = vi.hoisted(() => {
-  // verifyIntegrity now keyset-paginates: select().from().where().orderBy().limit().
-  // The terminal awaited call is .limit(), so test data is staged on mockLimit.
-  const mockLimit = vi.fn();
-  const mockOrderBy = vi.fn().mockReturnValue({ limit: mockLimit });
-  const mockWhere = vi.fn().mockReturnValue({ orderBy: mockOrderBy });
-  const mockFrom = vi.fn().mockReturnValue({ where: mockWhere });
-  const mockSelect = vi.fn().mockReturnValue({ from: mockFrom });
-  // Records the cursor passed to each keyset `gt(auditLog.id, cursor)` so tests
-  // can assert the cursor actually advances across pages (not just that
-  // pagination ran). gt() is only used for the keyset cursor — fromId uses gte,
-  // toId uses lte — so this captures exactly the page-to-page progression.
-  const gtCursors: unknown[] = [];
-  return { mockLimit, mockOrderBy, mockWhere, mockFrom, mockSelect, gtCursors };
-});
+const { mockLimit, mockOrderBy, mockWhere, mockFrom, mockSelect, gtCursors, ltBounds } = vi.hoisted(
+  () => {
+    // verifyIntegrity now keyset-paginates: select().from().where().orderBy().limit().
+    // The terminal awaited call is .limit(), so test data is staged on mockLimit.
+    const mockLimit = vi.fn();
+    const mockOrderBy = vi.fn().mockReturnValue({ limit: mockLimit });
+    const mockWhere = vi.fn().mockReturnValue({ orderBy: mockOrderBy });
+    const mockFrom = vi.fn().mockReturnValue({ where: mockWhere });
+    const mockSelect = vi.fn().mockReturnValue({ from: mockFrom });
+    // Records the cursor passed to each keyset `gt(auditLog.id, cursor)` so tests
+    // can assert the cursor actually advances across pages (not just that
+    // pagination ran). gt() is only used for the keyset cursor — fromId uses gte,
+    // toId uses lte — so this captures exactly the page-to-page progression.
+    const gtCursors: unknown[] = [];
+    // Records the bound passed to `lt(auditLog.id, …)`. Only the predecessor
+    // lookup (isActiveKeySeenBefore) uses lt, so this pins which row it reads.
+    const ltBounds: unknown[] = [];
+    return { mockLimit, mockOrderBy, mockWhere, mockFrom, mockSelect, gtCursors, ltBounds };
+  }
+);
 
 vi.mock("@/lib/encryption", () => ({
   getOrCreateSecret: vi.fn(() => Buffer.from("a".repeat(64), "hex")),
@@ -38,10 +43,21 @@ vi.mock("drizzle-orm", async (importOriginal) => {
       gtCursors.push(val);
       return (actual.gt as (c: unknown, v: unknown) => unknown)(col, val);
     },
+    lt: (col: unknown, val: unknown) => {
+      ltBounds.push(val);
+      return (actual.lt as (c: unknown, v: unknown) => unknown)(col, val);
+    },
   };
 });
 
-import { computeRowHmacV1, computeRowHmacV2, computeRowHmacV3, verifyIntegrity } from "@/lib/audit";
+import {
+  computeRowHmacV1,
+  computeRowHmacV2,
+  computeRowHmacV3,
+  isActiveKeySeenBefore,
+  isRowSignedWithActiveKey,
+  verifyIntegrity,
+} from "@/lib/audit";
 import { getPreviousSecret } from "@/lib/encryption";
 
 const secret = Buffer.from("a".repeat(64), "hex");
@@ -340,6 +356,57 @@ describe("verifyIntegrity", () => {
         expect(result.chainBreakIds).toEqual([1]);
       });
 
+      // The incremental sweep stores the rowHmac of its checkpoint row. When
+      // that row has since vanished or changed, the first row's stored link
+      // still matches the remembered value, so seedPrevHmac alone can't see
+      // it. The caller knows, and says so with seedPredecessorBroken.
+      it("seedPredecessorBroken: flags the first row as a chain break even though its link matches the seed", async () => {
+        const seedHmac = "a".repeat(64);
+        const r6 = makeV3Entry(6, seedHmac);
+        const r7 = makeV3Entry(7, r6.rowHmac);
+        mockLimit.mockResolvedValue([r6, r7]);
+
+        const result = await verifyIntegrity(6, 7, {
+          seedPrevHmac: seedHmac,
+          seedPredecessorBroken: true,
+        });
+
+        expect(result.valid).toBe(false);
+        expect(result.invalidIds).toEqual([]);
+        // Only the boundary link: the rest of the window is intact.
+        expect(result.chainBreakIds).toEqual([6]);
+      });
+
+      it("seedPredecessorBroken: reports the first row of a legacy (pre-chain) window too", async () => {
+        // The break is known from outside the window, not read from the row's
+        // own link, so a row version without a link field must not hide it.
+        mockLimit.mockResolvedValue([makeEntry(6), makeEntry(7)]);
+
+        const result = await verifyIntegrity(6, 7, {
+          seedPrevHmac: "a".repeat(64),
+          seedPredecessorBroken: true,
+        });
+
+        expect(result.valid).toBe(false);
+        expect(result.chainBreakIds).toEqual([6]);
+      });
+
+      it("seedPredecessorBroken: marks only the first row of the window, not the first row of each page", async () => {
+        const seedHmac = "a".repeat(64);
+        const r6 = makeV3Entry(6, seedHmac);
+        const r7 = makeV3Entry(7, r6.rowHmac);
+        const r8 = makeV3Entry(8, r7.rowHmac);
+        mockLimit.mockResolvedValueOnce([r6, r7]).mockResolvedValueOnce([r8]);
+
+        const result = await verifyIntegrity(6, 8, {
+          pageSize: 2,
+          seedPrevHmac: seedHmac,
+          seedPredecessorBroken: true,
+        });
+
+        expect(result.chainBreakIds).toEqual([6]);
+      });
+
       it("existing callers without seedPrevHmac keep treating the first row as an unchecked chain root", async () => {
         // Additive/optional: omitting seedPrevHmac must reproduce the
         // pre-existing "first row of a partial range is not chain-checked"
@@ -614,6 +681,76 @@ describe("verifyIntegrity across a signing-secret rotation", () => {
     expect(result.invalidIds).toEqual([]);
     expect(result.previousKeyIds).toEqual([1, 2]);
     expect(result.valid).toBe(true);
+  });
+
+  describe("isRowSignedWithActiveKey", () => {
+    // select().from().where(eq(id)).limit(1): no orderBy on a point lookup.
+    beforeEach(() => {
+      mockWhere.mockReturnValue({ orderBy: mockOrderBy, limit: mockLimit });
+    });
+
+    it("answers true for a row signed under the active key", async () => {
+      mockLimit.mockResolvedValue([makeV3SignedWith(7, "x".repeat(64), secret)]);
+
+      expect(await isRowSignedWithActiveKey(7)).toBe(true);
+    });
+
+    it("answers false for a row signed under the previous key", async () => {
+      // The previous key being known and valid for that row does not make it
+      // an active-key row: the question is whether the rotation has happened.
+      mockLimit.mockResolvedValue([makeV3SignedWith(7, "x".repeat(64), previousSecret)]);
+
+      expect(await isRowSignedWithActiveKey(7)).toBe(false);
+    });
+
+    it("answers false for a row that does not exist", async () => {
+      mockLimit.mockResolvedValue([]);
+
+      expect(await isRowSignedWithActiveKey(7)).toBe(false);
+    });
+
+    it("answers false for a row with an unknown version", async () => {
+      // Signed under the active key, but a version no verifier knows: it can't
+      // be shown to verify, so it must not count as evidence of a rotation.
+      mockLimit.mockResolvedValue([
+        { ...makeV3SignedWith(7, "x".repeat(64), secret), version: 99 },
+      ]);
+
+      expect(await isRowSignedWithActiveKey(7)).toBe(false);
+    });
+  });
+
+  describe("isActiveKeySeenBefore (seed for a partial-range verification)", () => {
+    beforeEach(() => {
+      ltBounds.length = 0;
+    });
+
+    it("reads the row directly before fromId", async () => {
+      mockLimit.mockResolvedValue([]);
+
+      await isActiveKeySeenBefore(42);
+
+      expect(ltBounds).toEqual([42]);
+      expect(mockLimit).toHaveBeenCalledWith(1);
+    });
+
+    it("answers true when that row was signed under the active key", async () => {
+      mockLimit.mockResolvedValue([makeV3SignedWith(41, "x".repeat(64), secret)]);
+
+      expect(await isActiveKeySeenBefore(42)).toBe(true);
+    });
+
+    it("answers false when that row was signed under the previous key", async () => {
+      mockLimit.mockResolvedValue([makeV3SignedWith(41, "x".repeat(64), previousSecret)]);
+
+      expect(await isActiveKeySeenBefore(42)).toBe(false);
+    });
+
+    it("answers false when nothing precedes fromId", async () => {
+      mockLimit.mockResolvedValue([]);
+
+      expect(await isActiveKeySeenBefore(1)).toBe(false);
+    });
   });
 
   it("reports pre-rotation rows as invalid when no previous secret is available", async () => {

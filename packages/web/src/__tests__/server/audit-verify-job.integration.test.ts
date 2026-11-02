@@ -17,7 +17,12 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { asc, eq, sql } from "drizzle-orm";
-import { appendAuditLog, computeRowHmacV3, verifyIntegrity } from "@/lib/audit";
+import {
+  appendAuditLog,
+  computeRowHmacV3,
+  isActiveKeySeenBefore,
+  verifyIntegrity,
+} from "@/lib/audit";
 import { db } from "@/db";
 import { auditLog, auditVerifyState } from "@/db/schema";
 import { sweepAuditVerify } from "@/server/audit-verify-job";
@@ -222,6 +227,27 @@ describe("audit-verify-job (integration)", () => {
     expect(checkpointAfterSecondSweep!.lastStatus).toBe("violation");
   });
 
+  it("DELETED CHECKPOINT ROW: the next sweep reports the boundary link as broken", async () => {
+    // The checkpoint remembers the rowHmac of the row it ends on, and the next
+    // window's first link still matches that remembered value after the row
+    // itself is gone. Only comparing the row as it is now with what the
+    // checkpoint remembered notices the deletion.
+    await appendRow("u1");
+    await appendRow("u2");
+    expect((await sweepAuditVerify()).valid).toBe(true);
+    const checkpoint = await readCheckpointRow();
+
+    await appendRow("u3");
+    await deleteRowPastTrigger(checkpoint!.lastVerifiedId);
+
+    const second = await sweepAuditVerify();
+
+    expect(second.scanned).toBe(true);
+    expect(second.valid).toBe(false);
+    expect(second.chainBreakCount).toBe(1);
+    expect((await readCheckpointRow())!.lastStatus).toBe("violation");
+  });
+
   it("CONCURRENT APPEND during the sweep: the raced row is verified by the next sweep, not skipped forever (#698)", async () => {
     await appendRow("u1");
     await appendRow("u2");
@@ -385,6 +411,71 @@ describe("audit-verify-job across a signing-secret rotation (integration)", () =
     expect(second.invalidCount).toBe(1);
     expect(second.previousKeyCount).toBe(0);
     expect(second.valid).toBe(false);
+  });
+
+  it("flags old-key rows after a checkpoint row that was itself re-signed with the old key", async () => {
+    // The checkpoint row decides whether the next window may still contain
+    // pre-rotation rows. Re-signing that row with the leaked old key would make
+    // it look pre-rotation, and every row after it could then be re-signed the
+    // same way and pass as history. Each row's stored link stays untouched, so
+    // nothing in the chain itself gives it away.
+    await appendRow("u1");
+    await appendRow("u2");
+    expect((await sweepAuditVerify()).valid).toBe(true);
+    const checkpoint = await readCheckpointRow();
+
+    await appendRow("u3");
+    const rows = await allRowsById();
+    await resignUnderPreviousKey(checkpoint!.lastVerifiedId);
+    await resignUnderPreviousKey(rows[rows.length - 1].id, "forged-after-rotation");
+
+    const second = await sweepAuditVerify();
+
+    expect(second.scanned).toBe(true);
+    expect(second.previousKeyCount).toBe(0);
+    expect(second.invalidCount).toBe(1);
+    expect(second.valid).toBe(false);
+  });
+
+  it("reports a re-signed checkpoint row as a broken link even when the rows after it are untouched", async () => {
+    await appendRow("u1");
+    await appendRow("u2");
+    expect((await sweepAuditVerify()).valid).toBe(true);
+    const checkpoint = await readCheckpointRow();
+
+    await appendRow("u3");
+    await resignUnderPreviousKey(checkpoint!.lastVerifiedId);
+
+    const second = await sweepAuditVerify();
+
+    expect(second.valid).toBe(false);
+    expect(second.invalidCount).toBe(0);
+    expect(second.chainBreakCount).toBe(1);
+  });
+
+  // GET /api/audit/verify?fromId= seeds its range this way. Lives here because
+  // this describe owns the two-key setup; the route's own test pins the wiring.
+  it("a partial range past the key change takes its key context from the row before it", async () => {
+    await appendRow("u1");
+    await appendRow("u2");
+    await appendRow("u3");
+    const rows = await allRowsById();
+    const forged = rows[2];
+    await resignUnderPreviousKey(forged.id, "forged-after-rotation");
+
+    // Control: unseeded, the range can't see that row 2 was already under the
+    // active key, and the forged row passes as pre-change history.
+    const unseeded = await verifyIntegrity(forged.id, undefined);
+    expect(unseeded.previousKeyIds).toEqual([forged.id]);
+    expect(unseeded.valid).toBe(true);
+
+    expect(await isActiveKeySeenBefore(forged.id)).toBe(true);
+    const seeded = await verifyIntegrity(forged.id, undefined, {
+      seedActiveKeySeen: await isActiveKeySeenBefore(forged.id),
+    });
+    expect(seeded.invalidIds).toEqual([forged.id]);
+    expect(seeded.previousKeyIds).toEqual([]);
+    expect(seeded.valid).toBe(false);
   });
 
   it("still reports a legitimately rotated chain (old-key rows, then active rows) as valid", async () => {
