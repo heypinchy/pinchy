@@ -15,6 +15,8 @@ import { assertMailHostAllowed, MailHostBlockedError } from "@/lib/integrations/
  * stored destination leaves Pinchy's hands:
  *
  *   - `GET /api/internal/integrations/:id/credentials` — every plugin fetch
+ *     (plugins cache what they fetched for up to 5 minutes, so a stricter
+ *     rule reaches an already-cached client within that window)
  *   - `POST /api/integrations/:id/test` and `probeIntegrationCredentials`
  *   - `createEmailPort` — the inbox sweep's IMAP connection
  *
