@@ -364,7 +364,7 @@ Pinchy avoids this by **never recording plaintext email addresses in `detail`**.
 
 Hash determinism depends on every Pinchy instance using the **same** `audit_hmac_secret`. The default behaviour — auto-generate a secret file under `/app/secrets/.audit_hmac_secret` on first start — produces a different secret per instance. If you run more than one Pinchy instance against a shared Postgres (HA, blue/green, multiple replicas), set `AUDIT_HMAC_SECRET` explicitly via env var or mount the same secret file on every instance. Without this, the same email address will hash to different values on different instances, and an admin will not be able to look up its history from one place. The same prerequisite applies to row HMAC verification.
 
-Changing that shared secret later means changing it everywhere at once: stop every instance, then start them all with the new key. A rolling restart doesn't work here. Instances still on the old key keep writing rows after the first row signed with the new one, verification can't tell those apart from rows forged with a leaked old key, and the background check records an integrity violation that stays in the append-only log. If the current key lives only in `AUDIT_HMAC_SECRET`, write its value into `/app/secrets/.audit_hmac_secret` on every instance before the switch, so it becomes the earlier key Pinchy checks against. Skip that and the rows signed with it become unverifiable, and the first background run records a failure that can't be cleared. If that file already holds an even older key, overwriting it loses that one instead. See [Switching the key on several instances](/concepts/audit-trail-verification/#switching-the-key-on-several-instances).
+Changing that shared secret later means changing it on every instance at once, never one after another: see [Switching the key on several instances](/concepts/audit-trail-verification/#switching-the-key-on-several-instances).
 
 ### Actor identity (GDPR Art. 17 crypto-erasure)
 
@@ -428,11 +428,13 @@ The response indicates whether all entries are intact:
 {
   "valid": true,
   "totalChecked": 142,
-  "invalidIds": []
+  "invalidIds": [],
+  "chainBreakIds": [],
+  "previousKeyIds": []
 }
 ```
 
-If tampered entries are found, `valid` is `false` and `invalidIds` contains the IDs of the affected rows.
+If tampered entries are found, `valid` is `false`: `invalidIds` lists rows whose content changed, `chainBreakIds` rows whose link to the previous entry no longer matches. `previousKeyIds` lists rows signed with an earlier secret and doesn't affect `valid`. See [Verify it yourself](/concepts/audit-trail-verification/#verify-it-yourself).
 
 ## Export for compliance
 

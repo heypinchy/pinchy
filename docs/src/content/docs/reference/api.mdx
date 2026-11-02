@@ -2197,11 +2197,21 @@ Verify the integrity of audit log entries by recomputing HMAC signatures. **Admi
 {
   "valid": true,
   "totalChecked": 142,
-  "invalidIds": []
+  "invalidIds": [],
+  "chainBreakIds": [],
+  "previousKeyIds": []
 }
 ```
 
-If tampered entries are found, `valid` is `false` and `invalidIds` contains the IDs of entries with mismatched signatures.
+| Field            | Description                                                                                                                                                                                                                                     |
+| ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `valid`          | `true` when `invalidIds` and `chainBreakIds` are both empty                                                                                                                                                                                     |
+| `totalChecked`   | Number of entries verified                                                                                                                                                                                                                      |
+| `invalidIds`     | IDs of entries whose signature doesn't match their content, or that only verify under an earlier key although they come after the key change                                                                                                    |
+| `chainBreakIds`  | IDs of entries whose own signature matches but whose link to the previous entry doesn't: an entry before them was deleted, or entries were reordered                                                                                            |
+| `previousKeyIds` | IDs of entries signed with an earlier `AUDIT_HMAC_SECRET`, before the key changed. They're authentic and don't affect `valid`; see [Rows signed with an earlier secret](/concepts/audit-trail-verification/#rows-signed-with-an-earlier-secret) |
+
+If tampered entries are found, `valid` is `false`, and `invalidIds` and `chainBreakIds` say which entries and how.
 
 A range that starts at `fromId` takes its key context from the entry immediately before it. If that entry verifies under the current signing key, the key changed before the range starts, and an entry in the range that only verifies under an earlier key is reported in `invalidIds` rather than as signed with an earlier secret. The same goes for an entry that verifies under no key at all or carries a signature version Pinchy doesn't know: the range treats the key change as already behind it. That's why a spot check can list entries in `invalidIds` that a full verification lists in `previousKeyIds`. Only a verification without `fromId` establishes where the key actually changed. See [Rows signed with an earlier secret](/concepts/audit-trail-verification/#rows-signed-with-an-earlier-secret).
 
