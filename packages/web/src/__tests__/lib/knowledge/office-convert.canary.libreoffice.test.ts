@@ -20,14 +20,24 @@
  * plus a CONTROL: the same documents, stock profile, unsanitized, DO fetch or
  * read. A canary that cannot go red proves nothing.
  *
- * Not every vector has two layers, and each one says which it has. The review
- * of this very suite found two that the profile does NOT stop — an altChunk
- * importing embedded HTML, and an SVG picture with `<image href="file:///…">`:
- * both read local files into the PDF under the locked profile. For those the
- * preflight is the only layer (it refuses the altChunk and cuts the SVG), so
- * they are absent from layer 2 by design. And a legacy OLE2 `.doc` with a
- * linked picture has only the profile: the preflight passes binary formats
- * through untouched, so that vector is absent from layer 3.
+ * Not every vector has two layers, and each one says which it has. The
+ * reviews of this very suite found a family the profile does NOT stop:
+ * anything LibreOffice draws as an SVG reads `<image href="file:///…">` into
+ * the PDF under the locked profile — an SVG picture, an altChunk importing
+ * HTML, a font or an "Office part" whose bytes are SVG (LibreOffice resolves
+ * `r:embed` by Id and detects the format from the bytes), a `data:` URL
+ * claiming PNG, an RTF `\pict`. For those the preflight is the only layer
+ * (it cuts or refuses them), so they are absent from layer 2 by design. A
+ * legacy OLE2 `.doc` with a linked picture has only the profile: the
+ * preflight passes binary formats through untouched, so it is absent from
+ * layer 3.
+ *
+ * And one vector has NO layer here: a legacy `.doc` whose embedded picture is
+ * an SVG. The preflight cannot rewrite OLE2, and the profile does not stop
+ * the SVG import. Its test below pins that it still leaks, so the gap is
+ * written down where it can be seen and cannot quietly change; isolating the
+ * converter itself (no network, no view of the workspaces) is being built on
+ * branch feat/kb-office-convert-sidecar.
  *
  * Gated like its sibling on `soffice`; the file header there says how to run
  * it in the runtime image (Debian's LibreOffice, the version that ships). An
@@ -46,6 +56,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { execFile, spawnSync } from "node:child_process";
+import { deflateSync, gzipSync } from "node:zlib";
 import { promisify } from "node:util";
 import { createServer, type Server } from "node:http";
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -59,6 +70,7 @@ import { prepareOfficeSource } from "@/lib/knowledge/office-preflight";
 import { extractPdfPages } from "@/lib/knowledge/pdf-extract";
 import {
   assembleZip,
+  crc32,
   deflatedPart,
   inflatePart,
   rawPart,
@@ -136,6 +148,45 @@ describe.skipIf(!hasSoffice)("an Office file cannot make the converter fetch or 
         .toString("latin1")
         .match(/\/Subtype\s*\/Image\b/g) ?? []
     ).length;
+  }
+
+  /** A body paragraph drawing the picture behind relationship `relId` (`r:embed`). */
+  const embeddedPicture = (relId: string) =>
+    `<w:p><w:r><w:drawing><wp:inline><wp:extent cx="3905000" cy="1905000"/><wp:docPr id="2" name="s"/><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic><pic:nvPicPr><pic:cNvPr id="0" name="s"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed="${relId}"/></pic:blipFill><pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="3905000" cy="1905000"/></a:xfrm><a:prstGeom prst="rect"/></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>`;
+
+  /**
+   * A 40x40 PNG of noise, stored (not compressed) so LibreOffice keeps its
+   * bytes verbatim when it writes a legacy .doc — which lets the test find
+   * them there and put an SVG in their place. Deterministic, so a run is
+   * reproducible.
+   */
+  function noisePng(): Buffer {
+    const chunk = (type: string, data: Buffer) => {
+      const length = Buffer.alloc(4);
+      length.writeUInt32BE(data.length);
+      const body = Buffer.concat([Buffer.from(type, "latin1"), data]);
+      const crc = Buffer.alloc(4);
+      crc.writeUInt32BE(crc32(body) >>> 0);
+      return Buffer.concat([length, body, crc]);
+    };
+    const size = 40;
+    const raw = Buffer.alloc((size * 3 + 1) * size);
+    let seed = 0x2545f491;
+    for (let i = 0; i < raw.length; i++) {
+      seed = (seed * 1103515245 + 12345) >>> 0;
+      raw[i] = i % (size * 3 + 1) === 0 ? 0 : seed >>> 24;
+    }
+    const header = Buffer.alloc(13);
+    header.writeUInt32BE(size, 0);
+    header.writeUInt32BE(size, 4);
+    header[8] = 8;
+    header[9] = 2;
+    return Buffer.concat([
+      Buffer.from("89504e470d0a1a0a", "hex"),
+      chunk("IHDR", header),
+      chunk("IDAT", deflateSync(raw, { level: 0 })),
+      chunk("IEND", Buffer.alloc(0)),
+    ]);
   }
 
   const linkedPicture = (target: string, type = REL_IMAGE) =>
@@ -247,6 +298,8 @@ describe.skipIf(!hasSoffice)("an Office file cannot make the converter fetch or 
     );
     const svgUrl = pathToFileURL(secretSvg).href;
     const pngUrl = pathToFileURL(localPng).href;
+    /** An SVG that draws the local secret SVG and PNG. */
+    const reachingSvg = `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="400" height="200"><image x="0" y="0" width="400" height="60" xlink:href="${svgUrl}"/><image x="0" y="80" width="40" height="40" xlink:href="${pngUrl}"/></svg>`;
 
     // An internal altChunk importing an embedded HTML part: LibreOffice's HTML
     // import draws <img src="file://…"> — a local PNG embedded, a local SVG's
@@ -263,7 +316,7 @@ describe.skipIf(!hasSoffice)("an Office file cannot make the converter fetch or 
           "word/afchunk.htm": `<html><body><p>${ALT_CHUNK_BODY}</p><img src="${pngUrl}"><img src="${svgUrl}" width="400" height="60"></body></html>`,
         },
       }),
-      { profile: false, preflight: "refuses" }
+      { profile: false, preflight: "sanitizes" }
     );
     // An altChunk importing a NESTED .docx — whose own relationships the
     // preflight never saw — with an externally linked picture.
@@ -277,7 +330,7 @@ describe.skipIf(!hasSoffice)("an Office file cannot make the converter fetch or 
         body: `<w:altChunk r:id="rIdA"/>`,
         parts: { "word/afchunk.docx": linkedPicture(`${origin}/nested.png`) },
       }),
-      { profile: true, preflight: "refuses" }
+      { profile: true, preflight: "sanitizes" }
     );
     // An ordinary INTERNAL picture relationship to an SVG that reaches out.
     planted(
@@ -287,11 +340,64 @@ describe.skipIf(!hasSoffice)("an Office file cannot make the converter fetch or 
         documentRels: relationships(
           `<Relationship Id="rId5" Type="${REL_IMAGE}" Target="media/image1.svg"/>`
         ),
-        body: `<w:p><w:r><w:drawing><wp:inline><wp:extent cx="3905000" cy="1905000"/><wp:docPr id="2" name="s"/><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic><pic:nvPicPr><pic:cNvPr id="0" name="s"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed="rId5"/></pic:blipFill><pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="3905000" cy="1905000"/></a:xfrm><a:prstGeom prst="rect"/></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>`,
+        body: embeddedPicture("rId5"),
+        parts: { "word/media/image1.svg": reachingSvg },
+      }),
+      { profile: false, preflight: "sanitizes" }
+    );
+
+    // --- The second review (PR #1243): SVG by its BYTES, whatever the Type ---
+    // LibreOffice resolves r:embed by Id and never checks the Type, then
+    // detects the picture's format from its content. Each of these drew a
+    // local file into the PDF under the locked profile (26.2, measured).
+    planted(
+      "font-svgz.docx",
+      docxWith({
+        text: "Body words for the font canary",
+        documentRels: relationships(
+          `<Relationship Id="rIdF" Type="${relType("font")}" Target="fonts/font1.odttf"/>`
+        ),
+        body: embeddedPicture("rIdF"),
+        parts: { "word/fonts/font1.odttf": gzipSync(Buffer.from(reachingSvg)) },
+      }),
+      { profile: false, preflight: "sanitizes" }
+    );
+    planted(
+      "office-namespaced-svg.docx",
+      docxWith({
+        text: "Body words for the namespace canary",
+        documentRels: relationships(
+          `<Relationship Id="rIdX" Type="${relType("header")}" Target="media/x.xml"/>`
+        ),
+        body: embeddedPicture("rIdX"),
         parts: {
-          "word/media/image1.svg": `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="400" height="200"><image x="0" y="0" width="400" height="60" xlink:href="${svgUrl}"/><image x="0" y="80" width="40" height="40" xlink:href="${pngUrl}"/></svg>`,
+          "word/media/x.xml": reachingSvg.replace(
+            'xmlns="http://www.w3.org/2000/svg"',
+            'xmlns="http://schemas.microsoft.com/office/2006/x"'
+          ),
         },
       }),
+      { profile: false, preflight: "refuses" }
+    );
+    planted(
+      "data-url-svg.docx",
+      docxWith({
+        text: "Body words for the data URL canary",
+        documentRels: relationships(
+          `<Relationship Id="rId5" Type="${REL_IMAGE}" Target="media/image1.svg"/>`
+        ),
+        body: embeddedPicture("rId5"),
+        parts: {
+          "word/media/image1.svg": `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="400" height="200"><image x="0" y="0" width="400" height="200" xlink:href="data:image/png;base64,${Buffer.from(reachingSvg).toString("base64")}"/></svg>`,
+        },
+      }),
+      { profile: false, preflight: "sanitizes" }
+    );
+    // An RTF file named .doc (Word writes these, so it is accepted) whose
+    // `\pict` claims PNG and holds an SVG.
+    planted(
+      "rtf-picture.doc",
+      `{\\rtf1\\ansi\\deff0 {\\fonttbl {\\f0 Times;}}\\pard Body words for the RTF canary\\par {\\pict\\pngblip\\picw400\\pich200\\picwgoal6000\\pichgoal3000 ${Buffer.from(reachingSvg).toString("hex")}}\\par }`,
       { profile: false, preflight: "sanitizes" }
     );
 
@@ -302,6 +408,21 @@ describe.skipIf(!hasSoffice)("an Office file cannot make the converter fetch or 
     // fetches while it writes: those requests are drained below).
     const legacyDir = join(root, "legacy");
     mkdirSync(legacyDir, { recursive: true });
+    // A picture LibreOffice will store verbatim in the .doc it writes, so its
+    // bytes can be swapped for an SVG's afterwards (see the KNOWN GAP test).
+    const noise = noisePng();
+    const embeddedNoise = join(root, "embedded-noise.docx");
+    writeFileSync(
+      embeddedNoise,
+      docxWith({
+        text: "Body words for the legacy picture canary",
+        documentRels: relationships(
+          `<Relationship Id="rId5" Type="${REL_IMAGE}" Target="media/image1.png"/>`
+        ),
+        body: embeddedPicture("rId5"),
+        parts: { "word/media/image1.png": noise },
+      })
+    );
     await execFileAsync(
       SOFFICE,
       [
@@ -314,6 +435,7 @@ describe.skipIf(!hasSoffice)("an Office file cannot make the converter fetch or 
         legacyDir,
         vectors.get("linked-http.docx")!.path,
         vectors.get("linked-file.docx")!.path,
+        embeddedNoise,
       ],
       { timeout: 180_000 }
     );
@@ -323,6 +445,17 @@ describe.skipIf(!hasSoffice)("an Office file cannot make the converter fetch or 
       expect(readFileSync(doc).subarray(0, 4).toString("hex")).toBe("d0cf11e0");
       vectors.set(`legacy-${name}.doc`, { path: doc, profile: true, preflight: false });
     }
+    // The KNOWN GAP: the .doc's embedded picture, overwritten in place by an
+    // SVG (space-padded to the PNG's length) that draws the local secret.
+    const legacy = readFileSync(join(legacyDir, "embedded-noise.doc"));
+    const at = legacy.indexOf(noise);
+    expect(at, "LibreOffice stored the picture verbatim").toBeGreaterThan(0);
+    const svgInPlace = Buffer.alloc(noise.length, 0x20);
+    expect(Buffer.byteLength(reachingSvg)).toBeLessThan(noise.length);
+    svgInPlace.write(reachingSvg, "latin1");
+    const patched = Buffer.from(legacy);
+    svgInPlace.copy(patched, at);
+    planted("legacy-svg-picture.doc", patched, { profile: false, preflight: false });
     drain();
   }, 240_000);
 
@@ -386,8 +519,18 @@ describe.skipIf(!hasSoffice)("an Office file cannot make the converter fetch or 
     for (const name of ["linked-file", "legacy-linked-file", "svg-picture"]) {
       expect(imagesIn(join(outDir, `${name}.pdf`)), name).toBeGreaterThan(0);
     }
-    // ...and a local file's TEXT reached the text layer the index reads.
-    expect(await textOf(join(outDir, "svg-picture.pdf"))).toContain(SECRET);
+    // ...and a local file's TEXT reached the text layer the index reads —
+    // through every way of getting LibreOffice to draw an SVG.
+    for (const name of [
+      "svg-picture",
+      "font-svgz",
+      "office-namespaced-svg",
+      "data-url-svg",
+      "rtf-picture",
+      "legacy-svg-picture",
+    ]) {
+      expect(await textOf(join(outDir, `${name}.pdf`)), name).toContain(SECRET);
+    }
 
     // Whether altChunk HTML is imported at all depends on the LibreOffice
     // version: 26.2 imports it and reads the local files (local PNG embedded,
@@ -412,26 +555,62 @@ describe.skipIf(!hasSoffice)("an Office file cannot make the converter fetch or 
       expect(byName.get(name)!.status, name).toBe("failed");
       expect(byName.get(name)!.reason).toMatch(/not a Word or PowerPoint document/);
     }
-    for (const name of ["altchunk-html.docx", "altchunk-nested.docx"]) {
-      expect(byName.get(name)!.status, name).toBe("failed");
-      expect(byName.get(name)!.reason).toMatch(/altChunk/);
-    }
+    // An "Office part" that is really an SVG is built to be imported: refused.
+    expect(byName.get("office-namespaced-svg.docx")!.status).toBe("failed");
+    expect(byName.get("office-namespaced-svg.docx")!.reason).toMatch(/should be Office XML/);
     // The documents themselves still convert: a cut link costs a picture, not
     // the text — and no local file's text or picture reaches the PDF.
+    // CORRECTED (second review): the two altChunk files used to be refused
+    // outright. They are converted now, with the chunk cut — so the rest of
+    // the document is searchable and the chunk's own content is not.
     for (const name of [
       "linked-http.docx",
       "linked-file.docx",
       "mislabelled-hyperlink.docx",
       "deck-linked-http.pptx",
       "svg-picture.docx",
+      "altchunk-html.docx",
+      "altchunk-nested.docx",
+      "font-svgz.docx",
+      "data-url-svg.docx",
+      "rtf-picture.doc",
       "legacy-linked-http.doc",
       "legacy-linked-file.doc",
     ]) {
       const outcome = byName.get(name)!;
       expect(outcome.status, `${name}: ${outcome.reason}`).toBe("converted");
       expect(imagesIn(outcome.artifactPath!), name).toBe(0);
-      expect(await textOf(outcome.artifactPath!), name).not.toContain(SECRET);
+      const text = await textOf(outcome.artifactPath!);
+      expect(text, name).not.toContain(SECRET);
+      expect(text, name).not.toContain(ALT_CHUNK_BODY);
     }
+    expect(await textOf(byName.get("altchunk-html.docx")!.artifactPath!)).toContain(
+      "Body words for the altChunk canary"
+    );
+    expect(await textOf(byName.get("rtf-picture.doc")!.artifactPath!)).toContain(
+      "Body words for the RTF canary"
+    );
+  }, 240_000);
+
+  it("KNOWN GAP of the profile-only layer: a legacy .doc whose embedded picture is an SVG still draws a local file", async () => {
+    // Today's TRUE behaviour, pinned on purpose rather than skipped. The
+    // preflight cannot rewrite a binary .doc, and the locked profile does not
+    // stop LibreOffice's SVG import from reading `<image href="file:///…">`.
+    // The fix is not another check here but isolating the converter (no
+    // network, no view of the workspaces): branch feat/kb-office-convert-sidecar.
+    // When that lands this assertion goes red — flip it, and move the vector
+    // into the full-pipeline test above.
+    const store = new OfficeArtifactStore(join(root, "artifacts-known-gap"));
+    const [outcome] = await convertOfficeFiles(
+      [{ absPath: vectors.get("legacy-svg-picture.doc")!.path }],
+      { store }
+    );
+
+    expect(drain()).toEqual([]);
+    expect(outcome.status, outcome.reason).toBe("converted");
+    const text = await textOf(outcome.artifactPath!);
+    expect(text).toContain("Body words for the legacy picture canary");
+    expect(text, "the local SVG's text reached the index").toContain(SECRET);
   }, 240_000);
 
   it("2. locked profile alone (preflight bypassed): nothing is fetched or embedded, whatever the file claims to be", async () => {
@@ -476,7 +655,7 @@ describe.skipIf(!hasSoffice)("an Office file cannot make the converter fetch or 
         staged.push(out);
         expect(vector.preflight, name).toBe("sanitizes");
       } catch {
-        // Refused (HTML posing as Word, an altChunk): never reaches a converter.
+        // Refused (HTML posing as Word, an SVG posing as an Office part): never reaches a converter.
         expect(vector.preflight, name).toBe("refuses");
       }
     }
