@@ -36,6 +36,12 @@ chown pinchy:pinchy /openclaw-secrets 2>/dev/null || true
 # a broken corpus rather than a permissions problem.
 chown -R pinchy:pinchy /var/cache/pinchy-kb-artifacts 2>/dev/null || true
 
+# Spool shared with the office-converter sidecar. Seeded with pinchy ownership
+# from the image on first creation; repaired here for a volume that was created
+# some other way. The converter runs without capabilities and cannot fix it
+# itself. Only the top level: batches inside are short-lived and ours.
+chown pinchy:pinchy /var/spool/pinchy-office 2>/dev/null || true
+
 # Refresh plugin SOURCE in the shared openclaw-extensions volume on every
 # startup (the named volume is only seeded from the image on first creation;
 # upgrades otherwise keep stale content from the previous image). The sync

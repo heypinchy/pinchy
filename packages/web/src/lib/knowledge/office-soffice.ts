@@ -93,7 +93,7 @@ export function killTree(child: ReturnType<typeof spawn>): void {
  * network) and embed a `file://` one into the PDF (a local-file read that is
  * then served to every reader of the knowledge base). Each setting here was
  * chosen by CANARY — a crafted document, a local listener, the real binary —
- * not by its name (office-convert.libreoffice.test.ts keeps those canaries):
+ * not by its name (office-convert.canary.libreoffice.test.ts keeps those canaries):
  *
  *   - `BlockUntrustedRefererLinks` stopped BOTH the http fetch and the
  *     `file://` embed on its own, for Word, PowerPoint, an HTML file posing as
@@ -107,8 +107,11 @@ export function killTree(child: ReturnType<typeof spawn>): void {
  * None of these is the only line of defence: `office-preflight.ts` has already
  * cut the external relationships out of the copy it is converting, and refused
  * files whose content is not the format they claim. This is the layer that
- * holds if one of those is wrong. A sidecar with no network at all would be
- * the real boundary; that is a deployment change, not a profile one.
+ * holds if one of those is wrong. And none of it is the boundary: in
+ * production this runs in the office-converter sidecar, which has no network
+ * to fetch over and no secret to embed (office-converter-sidecar.ts). These
+ * settings still guard the in-process converter a developer machine runs,
+ * which has both.
  */
 const LOCKED_DOWN_PROFILE = `<?xml version="1.0" encoding="UTF-8"?>
 <oor:items xmlns:oor="http://openoffice.org/2001/registry" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">

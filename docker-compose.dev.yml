@@ -45,6 +45,18 @@ services:
       # the workspace-file serve route in web resolve the same paths an agent's
       # allowed_paths reference.
       - ./sample-data:/data/sample-docs:ro
+  office-converter:
+    # No image override needed: `pinchy` above builds the image the base file
+    # names, and Compose runs this service on that local build.
+    #
+    # Root, because the dev image has no `pinchy` user and the dev web process
+    # stages its batches as root — a uid-999 converter could not write the PDFs
+    # back. Still no network, no capabilities, read-only root filesystem.
+    user: "0:0"
+    volumes:
+      # Live source, like the pinchy service, so a change to the converter is
+      # one `docker compose restart office-converter` away.
+      - ./packages/web/src:/app/packages/web/src:ro
   openclaw:
     build:
       context: .

@@ -32,7 +32,7 @@
  */
 import { createHash, randomUUID } from "node:crypto";
 import { createReadStream, mkdirSync } from "node:fs";
-import { mkdir, readdir, rename, rm, stat, utimes } from "node:fs/promises";
+import { copyFile, mkdir, readdir, rename, rm, stat, utimes } from "node:fs/promises";
 import { join } from "node:path";
 
 /**
@@ -129,12 +129,29 @@ export class OfficeArtifactStore {
    * returning its final path. The move is the commit point: an artifact only
    * becomes visible once conversion AND verification are behind it, so a
    * reader can never be handed a half-written file.
+   *
+   * A batch staged in the office-converter's spool sits on a DIFFERENT volume,
+   * and `rename()` cannot cross one (EXDEV). Then the PDF is copied to a
+   * temporary name beside the artifact and renamed from there — the commit is
+   * still one atomic rename, inside the store.
    */
   async put(contentHash: string, stagedPdfPath: string): Promise<string> {
     const path = this.pathFor(contentHash);
     await mkdir(join(path, ".."), { recursive: true });
     await rm(path, { force: true });
-    await rename(stagedPdfPath, path);
+    try {
+      await rename(stagedPdfPath, path);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "EXDEV") throw err;
+      const temporary = `${path}.${randomUUID()}.tmp`;
+      try {
+        await copyFile(stagedPdfPath, temporary);
+        await rename(temporary, path);
+      } finally {
+        await rm(temporary, { force: true });
+      }
+      await rm(stagedPdfPath, { force: true });
+    }
     return path;
   }
 

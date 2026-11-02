@@ -64,6 +64,7 @@ import {
 } from "./office-formats";
 import { prepareOfficeSource, readGuardedDocx, type PreparedSource } from "./office-preflight";
 import { extractPdfPages } from "./pdf-extract";
+import { sidecarConverter } from "./office-converter-sidecar";
 import {
   childEnv,
   killTree,
@@ -180,6 +181,12 @@ export type PrepareSource = (absPath: string) => Promise<PreparedSource | null>;
 export interface ConvertOptions {
   store?: OfficeArtifactStore;
   runConverter?: RunConverter;
+  /**
+   * Where a batch is staged. The converter's business, not the store's: the
+   * sidecar can only see its spool. Defaults to the one that belongs to the
+   * default converter (see `defaultConverter`).
+   */
+  createStagingDir?: () => Promise<string>;
   /** Defaults to the real preflight (./office-preflight.ts). */
   prepareSource?: PrepareSource;
   /** Words in the converted PDF. Prod: the pdfjs text layer (./pdf-extract.ts). */
@@ -214,7 +221,9 @@ export async function convertOfficeFiles(
   if (sources.length === 0) return [];
 
   const store = options.store ?? getOfficeArtifactStore();
-  const runConverter = options.runConverter ?? runSoffice;
+  const converter = defaultConverter(store);
+  const runConverter = options.runConverter ?? converter.runConverter;
+  const createStagingDir = options.createStagingDir ?? converter.createStagingDir;
   const prepareSource = options.prepareSource ?? prepareOfficeSource;
   const countPdfWords = options.countPdfWords ?? defaultCountPdfWords;
   const countSourceWords = options.countSourceWords ?? countSourceWordsWithOracle;
@@ -261,6 +270,7 @@ export async function convertOfficeFiles(
     const results = await convertBatch(batch, {
       store,
       runConverter,
+      createStagingDir,
       prepareSource,
       countPdfWords,
       countSourceWords,
@@ -280,9 +290,33 @@ export async function convertOfficeFiles(
   return outcomes;
 }
 
+/**
+ * Who converts, decided per call so a test can switch it.
+ *
+ * `KB_OFFICE_SPOOL_DIR` set — and Dockerfile.pinchy sets it, so every
+ * production image does — means the office-converter sidecar: a container with
+ * no network and no secrets (./office-converter-sidecar.ts). There is
+ * deliberately NO fallback to converting in this process when the sidecar is
+ * missing: that fallback would be exactly the capability the sidecar exists to
+ * remove. A missing sidecar is an `infrastructure` outcome, retryable, with a
+ * reason that says what to start.
+ *
+ * Unset — a developer machine running `pnpm dev`, the tests — means
+ * LibreOffice in this process, staged inside the store as before.
+ */
+function defaultConverter(store: OfficeArtifactStore): {
+  runConverter: RunConverter;
+  createStagingDir: () => Promise<string>;
+} {
+  const spoolDir = process.env.KB_OFFICE_SPOOL_DIR;
+  if (spoolDir) return sidecarConverter(spoolDir);
+  return { runConverter: runSoffice, createStagingDir: () => store.createStagingDir() };
+}
+
 interface BatchDeps {
   store: OfficeArtifactStore;
   runConverter: RunConverter;
+  createStagingDir: () => Promise<string>;
   prepareSource: PrepareSource;
   countPdfWords: (absPath: string) => Promise<number>;
   countSourceWords: (absPath: string) => Promise<number | null>;
@@ -306,14 +340,15 @@ interface BatchDeps {
 async function convertBatch(batch: WorkItem[], deps: BatchDeps): Promise<ConversionOutcome[]> {
   let stagingDir: string;
   try {
-    stagingDir = await deps.store.createStagingDir();
+    stagingDir = await deps.createStagingDir();
   } catch (err) {
-    // A full or unwritable artifact volume is a squeeze on the machine, not a
-    // verdict on these documents — and it must arrive as a retryable outcome
+    // A full or unwritable staging volume (the artifact store's, or the
+    // sidecar's spool) is a squeeze on the machine, not a verdict on these
+    // documents — and it must arrive as a retryable outcome
     // rather than an exception that also throws away the batches that already
     // succeeded.
     return batch.map((item) =>
-      infrastructureFailure(item.absPath, `artifact store unavailable: ${reasonOf(err)}`)
+      infrastructureFailure(item.absPath, `staging area unavailable: ${reasonOf(err)}`)
     );
   }
 
@@ -366,7 +401,7 @@ async function convertBatch(batch: WorkItem[], deps: BatchDeps): Promise<Convers
       if (wasKilled(result)) {
         const reason = result.timedOut
           ? "converter exceeded its time budget"
-          : "converter was killed — out of memory (see PINCHY_MEM_LIMIT)";
+          : "converter was killed — out of memory (raise OFFICE_CONVERTER_MEM_LIMIT)";
         return batch.map((item, i) => outcomes[i] ?? infrastructureFailure(item.absPath, reason));
       }
 

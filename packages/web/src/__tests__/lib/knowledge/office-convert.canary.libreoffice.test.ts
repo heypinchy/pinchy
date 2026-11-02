@@ -1,9 +1,15 @@
 /**
  * CANARIES for release review v0.10.0, finding 1: an Office file on a mounted
  * share must not make the converter fetch from the network or embed a local
- * file. Anyone who can write to the share can plant one; the nightly reindex
- * converts it inside the web container, which has a network and can read the
- * OpenClaw workspaces.
+ * file. Anyone who can write to the share can plant one, and the nightly
+ * reindex converts it.
+ *
+ * In production the converter runs in the office-converter sidecar, which has
+ * no network and no secrets — office-convert.sidecar.canary.test.ts proves that
+ * boundary with all of the hardening below switched off. This file proves the
+ * hardening itself, layer by layer, in a process that DOES have a network: the
+ * in-process converter of a developer machine, and the defence in depth the
+ * sidecar keeps.
  *
  * These drive the REAL LibreOffice against a REAL local HTTP listener with
  * crafted documents, because the only honest evidence that a setting stops a

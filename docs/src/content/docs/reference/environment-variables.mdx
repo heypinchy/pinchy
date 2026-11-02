@@ -102,14 +102,16 @@ You can enter the same key in **Settings → License** instead — the environme
 
 Every container carries a memory and CPU cap so one runaway agent cannot take the host down with it. The defaults suit a 4 GB VPS.
 
-| Variable             | Default | What it does                                                      |
-| -------------------- | ------- | ----------------------------------------------------------------- |
-| `PINCHY_MEM_LIMIT`   | `1g`    | Memory for the `pinchy` container (web UI, API, WebSocket bridge) |
-| `PINCHY_CPUS`        | `1.5`   | CPU cores for `pinchy`                                            |
-| `OPENCLAW_MEM_LIMIT` | `2g`    | Memory for the `openclaw` container (agent runtime, model calls)  |
-| `OPENCLAW_CPUS`      | `2`     | CPU cores for `openclaw`                                          |
-| `DB_MEM_LIMIT`       | `1g`    | Memory for the `db` container (PostgreSQL 17 + pgvector)          |
-| `DB_CPUS`            | `1`     | CPU cores for `db`                                                |
+| Variable                     | Default | What it does                                                             |
+| ---------------------------- | ------- | ------------------------------------------------------------------------ |
+| `PINCHY_MEM_LIMIT`           | `1g`    | Memory for the `pinchy` container (web UI, API, WebSocket bridge)        |
+| `PINCHY_CPUS`                | `1.5`   | CPU cores for `pinchy`                                                   |
+| `OFFICE_CONVERTER_MEM_LIMIT` | `1g`    | Memory for the `office-converter` container (Word and PowerPoint to PDF) |
+| `OFFICE_CONVERTER_CPUS`      | `1`     | CPU cores for `office-converter`                                         |
+| `OPENCLAW_MEM_LIMIT`         | `2g`    | Memory for the `openclaw` container (agent runtime, model calls)         |
+| `OPENCLAW_CPUS`              | `2`     | CPU cores for `openclaw`                                                 |
+| `DB_MEM_LIMIT`               | `1g`    | Memory for the `db` container (PostgreSQL 17 + pgvector)                 |
+| `DB_CPUS`                    | `1`     | CPU cores for `db`                                                       |
 
 Lowering `OPENCLAW_MEM_LIMIT` too far gets the gateway OOM-killed mid-conversation, which looks like a dropped chat rather than an out-of-memory error. [Customizing Your Deployment](/guides/customizing-deployment/) has sizing tables, including what the knowledge base needs while it indexes Office documents.
 
