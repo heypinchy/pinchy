@@ -45,8 +45,9 @@ vi.mock("@/lib/workspace", async (importOriginal) => {
   return { ...actual, deleteWorkspace: vi.fn().mockResolvedValue(undefined) };
 });
 
+import { and, eq } from "drizzle-orm";
 import { db } from "@/db";
-import { users } from "@/db/schema";
+import { users, auditLog } from "@/db/schema";
 import { getSession } from "@/lib/auth";
 import { mockSession } from "@/test-helpers/auth";
 import { DELETE } from "@/app/api/users/[userId]/route";
@@ -54,6 +55,9 @@ import { POST as REACTIVATE } from "@/app/api/users/[userId]/reactivate/route";
 import { ClientRouter } from "@/server/client-router";
 import { SessionCache } from "@/server/session-cache";
 import { getUserSocketRegistry, ACCOUNT_DEACTIVATED_CLOSE_CODE } from "@/server/user-sockets";
+import { getActiveRunsSingleton } from "@/server/active-runs-singleton";
+import { setOpenClawClient } from "@/server/openclaw-client";
+import { directSessionKey } from "@/lib/session-key";
 
 let seq = 0;
 async function insertUser(name: string, role: "admin" | "member") {
@@ -73,6 +77,8 @@ async function openChat(userId: string) {
   await new Promise<void>((resolve) => wss!.once("listening", () => resolve()));
   wss.on("connection", (ws) => getUserSocketRegistry().register(userId, ws));
   const tab = new WebSocket(`ws://127.0.0.1:${(wss.address() as AddressInfo).port}`);
+  const frames: unknown[] = [];
+  tab.on("message", (data) => frames.push(JSON.parse(data.toString())));
   const closed = new Promise<{ code: number; reason: string }>((resolve) =>
     tab.once("close", (code, reason) => resolve({ code, reason: reason.toString() }))
   );
@@ -83,7 +89,8 @@ async function openChat(userId: string) {
   for (let i = 0; i < 200 && getUserSocketRegistry().openSocketCount(userId) === 0; i++) {
     await new Promise((r) => setTimeout(r, 5));
   }
-  return { tab, closed };
+  const serverSide = [...wss.clients][0];
+  return { tab, closed, frames, serverSide };
 }
 
 function within<T>(promise: Promise<T>, ms: number): Promise<T | "still open"> {
@@ -155,8 +162,102 @@ describe("DELETE /api/users/:id with the user's chat open", () => {
 
     expect(openclaw.chat).not.toHaveBeenCalled();
     expect(sent.map((s) => JSON.parse(s))).toEqual([
-      { type: "error", message: "Your account has been deactivated." },
+      {
+        type: "error",
+        code: "policy_account_deactivated",
+        message: "Your account has been deactivated.",
+      },
     ]);
+  });
+
+  it("stops a reply that is still running, so the agent runs no further tool for them", async () => {
+    // Closing the socket only detaches it from the run: OpenClaw keeps
+    // executing a run it accepted — odoo_write, email_send — until it ends on
+    // its own. Deactivation has to abort it, the way the stop button does.
+    const admin = await insertUser("Admin", "admin");
+    const member = await insertUser("Leaving Member", "member");
+    const colleague = await insertUser("Staying Member", "member");
+    asAdmin(admin);
+    const { closed, frames, serverSide } = await openChat(member.id);
+
+    const runs = getActiveRunsSingleton();
+    const leaving = directSessionKey("agent-ops", member.id);
+    const staying = directSessionKey("agent-ops", colleague.id);
+    runs.registerPending({
+      runId: "provisional-1",
+      sessionKey: leaving,
+      agentId: "agent-ops",
+      userId: member.id,
+      agentName: "Ops Agent",
+      submittedAt: Date.now(),
+      currentMessageId: "msg-1",
+      ws: serverSide as never,
+    });
+    // Already streaming: the gateway issued its own runId.
+    runs.markFirstChunk(leaving, Date.now(), "gateway-run-1");
+    runs.registerPending({
+      runId: "provisional-2",
+      sessionKey: staying,
+      agentId: "agent-ops",
+      userId: colleague.id,
+      agentName: "Ops Agent",
+      submittedAt: Date.now(),
+      currentMessageId: "msg-2",
+      ws: serverSide as never,
+    });
+    const chatAbort = vi.fn().mockResolvedValue({ ok: true, aborted: true, runIds: [] });
+    setOpenClawClient({ ...fakeOpenClaw(), chatAbort } as never);
+
+    try {
+      const res = await deactivate(member.id);
+      expect(res.status).toBe(200);
+
+      // Aborted by the response, named by the gateway's runId, and only theirs.
+      expect(chatAbort).toHaveBeenCalledTimes(1);
+      expect(chatAbort).toHaveBeenCalledWith(leaving, "gateway-run-1");
+      // Marked like a stop click, so the abort's own error chunk ends the turn
+      // instead of being recorded as a provider failure (#978).
+      expect(runs.get(leaving)?.abortedByUser).toBe(true);
+      expect(runs.get(staying)?.abortedByUser).toBe(false);
+
+      // The tab learns why, and nothing after that.
+      await within(closed, 2000);
+      expect(frames).toEqual([
+        {
+          type: "error",
+          code: "policy_account_deactivated",
+          message: "Your account has been deactivated.",
+        },
+      ]);
+
+      // On the trail with the admin as the actor, like the deactivation.
+      let rows: (typeof auditLog.$inferSelect)[] = [];
+      for (let i = 0; i < 100 && rows.length === 0; i++) {
+        rows = await db
+          .select()
+          .from(auditLog)
+          .where(
+            and(
+              eq(auditLog.eventType, "chat.run_aborted"),
+              eq(auditLog.resource, "agent:agent-ops")
+            )
+          );
+        if (rows.length === 0) await new Promise((r) => setTimeout(r, 20));
+      }
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ actorType: "user", outcome: "success" });
+      expect(rows[0].detail).toEqual({
+        agent: { id: "agent-ops", name: "Ops Agent" },
+        sessionKey: leaving,
+        runId: "gateway-run-1",
+        reason: "account_deactivated",
+      });
+      // #824: the acting admin is the pseudonymized actorId, never a raw id.
+      expect(JSON.stringify(rows[0].detail)).not.toContain(admin.id);
+    } finally {
+      runs.delete(leaving);
+      runs.delete(staying);
+    }
   });
 
   it("lets a reactivated user open a chat again", async () => {

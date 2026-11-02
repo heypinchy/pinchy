@@ -10,6 +10,10 @@ import { recalculateTelegramAllowStores } from "@/lib/telegram-allow-store";
 import { parseRequestBody } from "@/lib/api-validation";
 import { updateUserSchema } from "@/lib/schemas/users";
 import { getUserSocketRegistry } from "@/server/user-sockets";
+import { getActiveRunsSingleton } from "@/server/active-runs-singleton";
+import { getOpenClawClient } from "@/server/openclaw-client";
+import { abortRunsOfUser } from "@/server/abort-runs";
+import { deferAuditLog } from "@/lib/audit-deferred";
 
 export async function PATCH(
   request: NextRequest,
@@ -145,6 +149,34 @@ export async function DELETE(
   // would keep working — agent tools included. Close those sockets now; the
   // registry also makes ClientRouter refuse a frame still in flight.
   getUserSocketRegistry().revoke(userId);
+
+  // Closing a socket only detaches it from the run it was listening to:
+  // OpenClaw keeps executing a run it already accepted — tools included —
+  // until it ends on its own. Stop every chat run of theirs the way the stop
+  // button does. Awaited, so the admin's "done" means the aborts went out.
+  // A gateway that can't be reached shows up as a `failure` row, not as a
+  // failed deactivation: the account is deactivated either way.
+  const abortedRuns = await abortRunsOfUser(userId, {
+    activeRuns: getActiveRunsSingleton(),
+    chatAbort: (sessionKey, runId) => getOpenClawClient().chatAbort(sessionKey, runId),
+  });
+  for (const aborted of abortedRuns) {
+    deferAuditLog({
+      actorType: "user",
+      actorId: session.user.id!,
+      eventType: "chat.run_aborted",
+      resource: `agent:${aborted.agent.id}`,
+      detail: {
+        agent: aborted.agent,
+        sessionKey: aborted.sessionKey,
+        // Null while pending: the trail must not point at a runId the gateway
+        // never issued.
+        runId: aborted.runId ?? null,
+        reason: "account_deactivated",
+      },
+      outcome: aborted.outcome,
+    });
+  }
 
   after(() =>
     appendAuditLog({

@@ -60,6 +60,7 @@ import { attachmentIdsSchema } from "@/lib/schemas/uploads";
 import { chatIdSchema } from "@/lib/schemas/sessions";
 import { StreamPipe, GENERIC_RUN_FAILURE_MESSAGE } from "@/server/stream-pipe";
 import { getUserSocketRegistry, refuseDeactivatedSocket } from "@/server/user-sockets";
+import { abortSessionRun } from "@/server/abort-runs";
 
 const WS_OPEN = 1;
 const CONNECTION_TIMEOUT_MS = 10_000;
@@ -215,12 +216,8 @@ export class ClientRouter {
 
   /**
    * Abort the in-flight run for this (user, agent[, chat]) session (#550).
-   *
-   * Calls `chatAbort` with the runId from the active-run registry when known
-   * (precise — never aborts a newer run that already replaced this one on the
-   * same session), falling back to a sessionKey-only abort otherwise. The
-   * stream pipe for the aborted run handles the resulting synthetic terminal
-   * `done` through the existing post-abort path — no extra teardown here.
+   * The mechanics — runId gating, the #978 mark, reading the gateway's answer
+   * — live in `abortSessionRun`, which deactivation reuses.
    *
    * Emits `chat.run_aborted` (reserved by #441, first emitted here) only when
    * there was a run to abort, with `outcome` reflecting the RPC result so an
@@ -235,49 +232,11 @@ export class ClientRouter {
     chatId: string | undefined
   ): Promise<void> {
     const sessionKey = this.computeSessionKey(agent.id, chatId);
-    // Mark BEFORE the RPC, not after (#978). OpenClaw answers `chat.abort` and
-    // surfaces the abort into the stream as an error independently, and the
-    // stream pipe is a different async context — awaiting the RPC first leaves
-    // a window where the error chunk arrives while the run still looks healthy,
-    // and the whole point is that the pipe can recognise it.
-    const run = this.activeRuns.markUserAborted(sessionKey);
-    // A PENDING run's runId is provisional — Pinchy's per-turn messageId, which
-    // the gateway has never seen (`registerPending`; reconciled to the real one
-    // by `markFirstChunk`). Handing it to `chatAbort` would name a run the
-    // gateway cannot find, so it would abort NOTHING while the stop button
-    // clears client-side: the reply streams on and the UI lies. Omitting it
-    // aborts the session's current run instead — what the user actually asked
-    // for. Same gate as `livenessRunId` in `handleHistory`.
-    const runId = run && run.firstChunkAt !== null ? run.runId : undefined;
-
-    let outcome: "success" | "failure" = "success";
-    try {
-      const res = await this.openclawClient.chatAbort(sessionKey, runId);
-      // The gateway answers `{ ok, aborted, runIds }`. `ok: true` only means it
-      // understood the call — `aborted: false` means it stopped NOTHING, which
-      // is the openclaw#42172 failure mode (the reply streams on while the
-      // composer clears). A non-throwing call is therefore NOT proof of an
-      // abort, and recording one as success made a lying stop button
-      // indistinguishable from a working one in the trail.
-      // A gateway that reports no payload (older builds) stays `success`: we
-      // cannot tell, and a made-up failure is as dishonest as a made-up success.
-      // Gated on `run`: a stop click with nothing in flight answers
-      // `aborted: false` too, and this method deliberately neither audits nor
-      // logs that (see the docstring) — warning here would reopen exactly the
-      // "aborted nothing" spam vector a buggy or hostile client could exploit.
-      if (run && res?.aborted === false) {
-        outcome = "failure";
-        console.warn(
-          `[client-router] gateway reported no run aborted for ${sessionKey} (runId=${runId ?? "none"})`
-        );
-      }
-    } catch (err) {
-      outcome = "failure";
-      console.warn(
-        `[client-router] user-triggered chatAbort failed for ${sessionKey}:`,
-        err instanceof Error ? err.message : err
-      );
-    }
+    const { run, runId, outcome } = await abortSessionRun(
+      this.activeRuns,
+      (key, id) => this.openclawClient.chatAbort(key, id),
+      sessionKey
+    );
 
     if (!run) return;
 
