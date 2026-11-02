@@ -531,11 +531,12 @@ describe("createAgent() service", () => {
   });
 
   // Config emission points such a provider at a reserved address and drops it
-  // as the runtime default, so an agent built on it would fail every run. A
-  // template treats it like no default at all — the fallback above.
-  it("treats a default provider whose saved base URL is now refused like no default provider", async () => {
+  // as the runtime default, so an agent built on it would fail every run. With
+  // no other usable provider configured, a template treats it like no default
+  // at all — the fallback above.
+  it("treats a default provider whose saved base URL is now refused like no default provider when nothing else is usable", async () => {
     vi.mocked(getSetting).mockImplementation(async (key: string) =>
-      key === "default_provider" ? "imds" : "anthropic"
+      key === "default_provider" ? "imds" : null
     );
     vi.mocked(listOpenAiCompatibleProviders).mockResolvedValue([
       {
@@ -573,6 +574,59 @@ describe("createAgent() service", () => {
     } finally {
       vi.mocked(getSetting).mockResolvedValue("anthropic");
       vi.mocked(listOpenAiCompatibleProviders).mockResolvedValue([]);
+    }
+  });
+
+  // The anchor fallback above names Anthropic whether or not it is configured.
+  // When the refused default leaves another usable provider behind, a new agent
+  // should land on that one — the same first usable provider a removal would
+  // migrate agents onto (built-ins first) — rather than on a model it can't run.
+  it("uses the first usable provider when the default provider's saved base URL is now refused", async () => {
+    vi.mocked(getSetting).mockImplementation(async (key: string) => {
+      if (key === "default_provider") return "imds";
+      if (key === "openai_api_key") return "sk-openai";
+      return null;
+    });
+    vi.mocked(listOpenAiCompatibleProviders).mockResolvedValue([
+      {
+        id: "row-imds",
+        slug: "imds",
+        displayName: "Rebound",
+        baseUrl: "http://100.100.100.200/v1",
+        models: [],
+        createdAt: new Date("2026-01-01T00:00:00Z"),
+        updatedAt: new Date("2026-01-01T00:00:00Z"),
+      },
+    ]);
+    vi.mocked(getDefaultModel).mockImplementation(async (provider: string) => `${provider}/pick`);
+    try {
+      const custom = await createAgent({ name: "Plain", templateId: "custom" }, "user-1");
+      expect(custom.ok).toBe(true);
+      expect(getDefaultModel).toHaveBeenCalledWith("openai");
+      expect(getDefaultModel).not.toHaveBeenCalledWith("imds");
+      expect(insertValuesMock).toHaveBeenLastCalledWith(
+        expect.objectContaining({ model: "openai/pick" })
+      );
+
+      const hinted = await createAgent(
+        {
+          name: "Contract Bot",
+          templateId: "knowledge-base",
+          pluginConfig: { "pinchy-files": { allowed_paths: ["/data/contracts/"] } },
+        },
+        "user-1"
+      );
+      expect(hinted.ok).toBe(true);
+      expect(mockResolveAvailableModelForTemplate).toHaveBeenCalledWith(
+        expect.objectContaining({ provider: "openai" })
+      );
+      expect(mockResolveAvailableModelForTemplate).not.toHaveBeenCalledWith(
+        expect.objectContaining({ provider: "imds" })
+      );
+    } finally {
+      vi.mocked(getSetting).mockResolvedValue("anthropic");
+      vi.mocked(listOpenAiCompatibleProviders).mockResolvedValue([]);
+      vi.mocked(getDefaultModel).mockResolvedValue("anthropic/claude-haiku-4-5-20251001");
     }
   });
 

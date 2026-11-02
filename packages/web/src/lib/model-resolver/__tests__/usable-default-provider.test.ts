@@ -27,7 +27,19 @@ function customProvider(slug: string, baseUrl: string): OpenAiCompatibleProvider
     slug,
     displayName: `${slug} display`,
     baseUrl,
-    models: [],
+    // Never empty for a real row: the upsert schema requires at least one.
+    models: [
+      {
+        id: `${slug}-model`,
+        name: `${slug} model`,
+        contextWindow: 8192,
+        maxTokens: 4096,
+        reasoning: false,
+        vision: false,
+        input: ["text"],
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      },
+    ],
     createdAt: new Date("2026-01-01T00:00:00.000Z"),
     updatedAt: new Date("2026-01-01T00:00:00.000Z"),
   };
@@ -67,10 +79,32 @@ describe("getUsableDefaultProvider", () => {
 
   // Config emission points this provider at a reserved address and drops it
   // as the runtime default. A new agent built on it would fail every run, so
-  // template resolution treats it exactly like "no default provider".
-  it("is null for an OpenAI-compatible default whose saved base URL is now refused", async () => {
+  // with nothing usable left template resolution treats it exactly like "no
+  // default provider".
+  it("is null for an OpenAI-compatible default whose saved base URL is now refused, when no other provider is usable", async () => {
+    vi.mocked(listOpenAiCompatibleProviders).mockResolvedValue([
+      customProvider("imds", "http://100.100.100.200/v1"),
+      customProvider("metadata", "http://169.254.169.254/v1"),
+    ]);
     defaultProviderIs("imds");
     expect(await getUsableDefaultProvider()).toBeNull();
+  });
+
+  // With another usable provider configured, "no default" would send templates
+  // to the Anthropic anchor even when Anthropic isn't configured. They get the
+  // provider a removal of the refused one would move agents onto instead.
+  it("falls back to the first usable custom provider for a refused default", async () => {
+    defaultProviderIs("imds");
+    expect(await getUsableDefaultProvider()).toBe("lan-llm");
+  });
+
+  it("prefers a configured built-in over a usable custom provider for a refused default", async () => {
+    vi.mocked(getSetting).mockImplementation(async (key: string) => {
+      if (key === "default_provider") return "imds";
+      if (key === "google_api_key") return "AIza";
+      return null;
+    });
+    expect(await getUsableDefaultProvider()).toBe("google");
   });
 
   it("follows PINCHY_PROVIDER_BLOCK_PRIVATE_NETWORKS", async () => {
