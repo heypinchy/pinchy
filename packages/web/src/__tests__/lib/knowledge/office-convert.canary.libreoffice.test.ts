@@ -28,7 +28,9 @@
  * `r:embed` by Id and detects the format from the bytes), a `data:` URL
  * claiming PNG, an RTF `\pict` (also one hidden behind a `\bin` the two
  * readers count differently), and an SVG carried INSIDE a metafile — an EMF+
- * image object, or an EMF inside a WMF — which is drawn as a raster, so the
+ * image object, or an EMF inside a WMF, even one planted as a FONT (a
+ * version-0x0100 WMF, an EPS's WMF preview, a deck's bullet picture named by
+ * a font relationship) — which is drawn as a raster, so the
  * local file's pixels reach the PDF rather than its text. For those the
  * preflight is the only layer (it cuts or refuses them), so they are absent
  * from layer 2 by design. A legacy OLE2 `.doc` with a linked picture has only
@@ -250,8 +252,15 @@ describe.skipIf(!hasSoffice)("an Office file cannot make the converter fetch or 
       pictureRelId: "rId9",
     });
 
-  /** A real .pptx made by LibreOffice, then given an externally-linked picture. */
-  function plantPptx(target: string): string {
+  /**
+   * A real .pptx made by LibreOffice, then given an externally-linked picture.
+   * When `font` is given, the same base deck is also planted as
+   * `deck-font-bullet.pptx`: `font` embedded where PowerPoint embeds fonts
+   * (a font relationship of the presentation part), and named by that part's
+   * default text style as a bullet PICTURE (`a:buBlip`) — which LibreOffice
+   * 26.2 and 7.4.7 both draw, by the bytes' own format.
+   */
+  function plantPptx(target: string, font?: Buffer): string {
     const fodp = join(root, "base.fodp");
     writeFileSync(
       fodp,
@@ -307,6 +316,31 @@ describe.skipIf(!hasSoffice)("an Office file cannot make the converter fetch or 
             : rawPart(base, e)
       )
     );
+    if (font) {
+      const presentation = text("ppt/presentation.xml").replace(
+        "</p:presentation>",
+        `<p:defaultTextStyle><a:lvl1pPr marL="342900" indent="-342900"><a:buSzPct val="300000"/><a:buBlip><a:blip r:embed="rIdF"/></a:buBlip></a:lvl1pPr></p:defaultTextStyle></p:presentation>`
+      );
+      expect(presentation, "the default text style went in").toContain("<a:buBlip>");
+      const presentationRels = text("ppt/_rels/presentation.xml.rels").replace(
+        "</Relationships>",
+        `<Relationship Id="rIdF" Type="${relType("font")}" Target="fonts/font1.fntdata"/></Relationships>`
+      );
+      planted(
+        "deck-font-bullet.pptx",
+        assembleZip([
+          ...entries.map((e) =>
+            e.name === "ppt/presentation.xml"
+              ? deflatedPart(e.name, Buffer.from(presentation))
+              : e.name === "ppt/_rels/presentation.xml.rels"
+                ? deflatedPart(e.name, Buffer.from(presentationRels))
+                : rawPart(base, e)
+          ),
+          deflatedPart("ppt/fonts/font1.fntdata", font),
+        ]),
+        { profile: false, preflight: "sanitizes" }
+      );
+    }
     return planted("deck-linked-http.pptx", patched);
   }
 
@@ -336,7 +370,6 @@ describe.skipIf(!hasSoffice)("an Office file cannot make the converter fetch or 
       "mislabelled-hyperlink.docx",
       linkedPicture(`${origin}/mislabelled.png`, REL_HYPERLINK)
     );
-    plantPptx(`${origin}/deck.png`);
     // The same HTML, named for three formats: LibreOffice sniffs content.
     const html = `<html><body><p>Hello html posing as an office file</p><img src="${origin}/html.png"></body></html>`;
     planted("posing.doc", html, { profile: true, preflight: "refuses" });
@@ -557,6 +590,53 @@ describe.skipIf(!hasSoffice)("an Office file cannot make the converter fetch or 
       ),
       { profile: false, preflight: "sanitizes" }
     );
+    // --- A metafile planted as a FONT ---
+    // A font relationship's target is drawn by its bytes when something
+    // names its id as a picture. Two formats LibreOffice draws that the
+    // preflight did not recognise as pictures: a WMF of version 0x0100, and a
+    // DOS-binary EPS — both carrying the EMF+ SVG above (the EPS in its WMF
+    // preview). In a document's own relationships, where no font is read
+    // from, they are cut by their place; in a deck's presentation part, where
+    // fonts do live, by their bytes: PowerPoint embeds Embedded OpenType.
+    const wmf100 = Buffer.from(
+      wmf(wmfEmbeddedEmf(emfPlusSvg), WMF_RECTANGLE, wmfText(WMF_WORDS)).subarray(22)
+    );
+    wmf100.writeUInt16LE(0x0100, 4);
+    const epsPostScript = Buffer.from(
+      "%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 400 200\nshowpage\n"
+    );
+    const epsPreview = Buffer.from(wmf100);
+    epsPreview.writeUInt16LE(0x0300, 4);
+    const epsHeader = Buffer.alloc(30);
+    epsHeader.writeUInt32LE(0xc6d3d0c5, 0);
+    epsHeader.writeUInt32LE(30, 4);
+    epsHeader.writeUInt32LE(epsPostScript.length, 8);
+    epsHeader.writeUInt32LE(30 + epsPostScript.length, 12);
+    epsHeader.writeUInt32LE(epsPreview.length, 16);
+    epsHeader.writeUInt16LE(0xffff, 28);
+    const fontPicture = (text: string, bytes: Buffer) =>
+      docxWith({
+        text,
+        documentRels: relationships(
+          `<Relationship Id="rIdF" Type="${relType("font")}" Target="fonts/font1.odttf"/>`
+        ),
+        body: embeddedPicture("rIdF"),
+        parts: { "word/fonts/font1.odttf": bytes },
+      });
+    planted("font-wmf100.docx", fontPicture("Body words for the WMF font canary", wmf100), {
+      profile: false,
+      preflight: "sanitizes",
+    });
+    planted(
+      "font-eps.docx",
+      fontPicture(
+        "Body words for the EPS font canary",
+        Buffer.concat([epsHeader, epsPostScript, epsPreview])
+      ),
+      { profile: false, preflight: "sanitizes" }
+    );
+    plantPptx(`${origin}/deck.png`, wmf100);
+
     // `\bin` with 2^31: the sanitizer skipped to the end of the file, while
     // LibreOffice's 32-bit parameter overflowed to 0 and it drew the `\pict`.
     planted(
@@ -697,9 +777,18 @@ describe.skipIf(!hasSoffice)("an Office file cannot make the converter fetch or 
       expect(await textOf(join(outDir, `${name}.pdf`)), name).toContain(SECRET);
     }
     // ...and through a metafile's own picture, the local file's PIXELS.
-    for (const name of ["emfplus-svg", "wmf-embedded-emf", "emfplus-dual-svg"]) {
+    for (const name of [
+      "emfplus-svg",
+      "wmf-embedded-emf",
+      "emfplus-dual-svg",
+      "font-wmf100",
+      "font-eps",
+    ]) {
       expect(localPixelsIn(join(outDir, `${name}.pdf`)), name).toBe(true);
     }
+    // The deck draws it as its bullet — a JPEG there, which `localPixelsIn`
+    // does not decode; it has no picture but that one.
+    expect(imagesIn(join(outDir, "deck-font-bullet.pdf")), "deck-font-bullet").toBeGreaterThan(0);
 
     // Whether altChunk HTML is imported at all depends on the LibreOffice
     // version: 26.2 imports it and reads the local files (local PNG embedded,
@@ -756,6 +845,9 @@ describe.skipIf(!hasSoffice)("an Office file cannot make the converter fetch or 
       "emfplus-svg.docx",
       "wmf-embedded-emf.docx",
       "emfplus-dual-svg.docx",
+      "font-wmf100.docx",
+      "font-eps.docx",
+      "deck-font-bullet.pptx",
       "legacy-linked-http.doc",
       "legacy-linked-file.doc",
     ]) {

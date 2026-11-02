@@ -61,7 +61,12 @@
  * relationship used as a picture link fetched exactly like an image one
  * (measured, 3 requests). The same fact is why a kept relationship's TARGET is
  * vetted by its bytes, not its type: an `r:embed` naming a "font" or an
- * "Office part" whose bytes are SVG is drawn as SVG.
+ * "Office part" whose bytes are SVG is drawn as SVG. And every kept target
+ * must be what its type promises, by a check of what it IS, never of what it
+ * is not: a font must be a font — in the format, and the place, fonts are
+ * read from (`isKeptFont`) — because a rule that only refused what LOOKED
+ * like a document or an SVG kept a version-0x0100 WMF and an EPS, and
+ * LibreOffice drew the local file the EMF inside each one reached for.
  *
  * The same is true one level down: a metafile picture (EMF, WMF) passes on
  * its magic bytes, but its records can carry a picture of their own, which
@@ -762,8 +767,9 @@ export function stripExternalRelationships(xml: string): { xml: string; removed:
  *             (or Microsoft Office extension) namespace, with no DTD.
  * - `image` — a picture: a raster or metafile format by its magic bytes, or an
  *             SVG that references nothing outside itself.
- * - `font`  — an embedded (usually obfuscated) font: opaque bytes, as long as
- *             they are not a document format some import filter would take.
+ * - `font`  — an embedded font, and only where fonts live: in the
+ *             relationships of Word's font table or PowerPoint's presentation
+ *             part, in the format that part embeds them in (`isKeptFont`).
  */
 type TargetClass = "xml" | "image" | "font";
 
@@ -1068,14 +1074,24 @@ function isPixelPicture(bytes: Buffer): boolean {
 const isEmf = (bytes: Buffer) =>
   startsWith(bytes, "01000000") && bytes.subarray(40, 44).toString("latin1") === " EMF";
 
-/** WMF: placeable (the Aldus header), or a plain header in memory (1) or on disk (2). */
+/**
+ * WMF, as LibreOffice's picture detection takes one: placeable (the Aldus
+ * header), or a plain header — type 1 (in memory) or 2 (on disk), header size
+ * 9 — of ANY version. Asking for version 0x0300 as well missed 0x0100
+ * (METAVERSION100), which LibreOffice draws all the same, embedded EMF and all.
+ */
 const isWmf = (bytes: Buffer) =>
   startsWith(bytes, "d7cdc69a") ||
-  startsWith(bytes, "010009000003") ||
-  startsWith(bytes, "020009000003");
+  (bytes.length >= 4 &&
+    (bytes.readUInt16LE(0) === 1 || bytes.readUInt16LE(0) === 2) &&
+    bytes.readUInt16LE(2) === 9);
 
 /** A Windows metafile — EMF (with or without EMF+) or WMF — by its magic number. */
 const isMetafile = (bytes: Buffer) => isEmf(bytes) || isWmf(bytes);
+
+/** EPS: the DOS-binary header (`C5 D0 D3 C6`, a WMF or TIFF preview behind it) or PostScript text. */
+const isEps = (bytes: Buffer) =>
+  startsWith(bytes, "c5d0d3c6") || bytes.subarray(0, 10).toString("latin1") === "%!PS-Adobe";
 
 /** Is `bytes` a raster picture by its magic number — PNG, JPEG, GIF, BMP or WebP — and nothing else? */
 function isRaster(bytes: Buffer): boolean {
@@ -1133,29 +1149,195 @@ function isSelfContainedSvg(text: string): boolean {
   return true;
 }
 
+// --- Fonts ----------------------------------------------------------------
+
 /**
- * A document format some import filter would take, by its first bytes.
- *
- * Read the way an import filter's detection reads text: past a byte-order
- * mark (UTF-8, UTF-16 or UTF-32, either byte order — as latin1, `ï»¿`, `ÿþ`,
- * `þÿ`) and past the NULs a UTF-16 or UTF-32 spelling puts between its
- * characters, BOM or none. LibreOffice 26.2 took a "font" that was UTF-16LE
- * HTML for HTML when an altChunk borrowed its id, and drew the local file its
- * `<img>` named. A font itself never starts like text: an sfnt's first bytes
- * are a version tag, an obfuscated font's are scrambled.
+ * The format a font owner's fonts are in. Word's font table holds TrueType
+ * or OpenType, its first 32 bytes obfuscated with the key the table names
+ * (ECMA-376 §17.8.1) — or not obfuscated at all. PowerPoint embeds Embedded
+ * OpenType (`.fntdata`), and so does LibreOffice writing a .pptx.
  */
-function looksLikeDocument(head: Buffer): boolean {
-  const text = head
-    .toString("latin1")
-    .replace(/\0/g, "")
-    .replace(/^[\s\uFEFF\u00EF\u00BB\u00BF\u00FE\u00FF]+/, "");
+type FontFormat = "obfuscated" | "eot";
+
+/**
+ * Where a font relationship may stand: in the relationships of a part whose
+ * root is Word's font table (`w:fonts`, embedding fonts with
+ * `w:embedRegular` & co.) or PowerPoint's presentation part
+ * (`p:presentation`, with `p:embeddedFontLst`). That is where Word,
+ * PowerPoint and LibreOffice write them, and where LibreOffice reads them
+ * from. Anywhere else a font is never read as a font — only named as a
+ * PICTURE (`r:embed` resolves by Id, never by Type) — and is cut.
+ */
+const FONT_OWNERS: ReadonlyArray<{
+  root: string;
+  namespaces: readonly string[];
+  format: FontFormat;
+}> = [
+  {
+    root: "fonts",
+    namespaces: [
+      "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
+      "http://purl.oclc.org/ooxml/wordprocessingml/main",
+    ],
+    format: "obfuscated",
+  },
+  {
+    root: "presentation",
+    namespaces: [
+      "http://schemas.openxmlformats.org/presentationml/2006/main",
+      "http://purl.oclc.org/ooxml/presentationml/main",
+    ],
+    format: "eot",
+  },
+];
+
+/** The elements of a Word font table that embed a font: an `r:id`, and the `w:fontKey` it is obfuscated with. */
+const FONT_EMBED_ELEMENTS = new Set([
+  "embedRegular",
+  "embedBold",
+  "embedItalic",
+  "embedBoldItalic",
+]);
+
+/** A font owner's format, and (Word) the keys its font table gives each relationship id. */
+interface FontOwner {
+  format: FontFormat;
+  keys: ReadonlyMap<string, readonly string[]>;
+}
+
+/**
+ * The font owner whose text this is, or null for a part fonts are not read
+ * from. One forward pass over a font table collects its keys.
+ */
+function fontOwner(text: string): FontOwner | null {
+  if (DTD.test(text)) return null;
+  const root = rootElement(text);
+  const owner = FONT_OWNERS.find(
+    ({ root: name, namespaces }) =>
+      root !== null &&
+      root.name === name &&
+      root.namespace !== undefined &&
+      namespaces.includes(root.namespace)
+  );
+  if (!owner) return null;
+  const keys = new Map<string, string[]>();
+  if (owner.format === "obfuscated") {
+    for (let at = text.indexOf("<"); at !== -1; at = text.indexOf("<", at + 1)) {
+      if (!FONT_EMBED_ELEMENTS.has(localName(qualifiedNameAt(text, at)))) continue;
+      const close = tagEnd(text, at);
+      if (close < 0) break;
+      const attributes = attributesOf(text.slice(at, close + 1));
+      if (!attributes) continue;
+      let id: string | undefined;
+      let fontKey: string | undefined;
+      for (const [name, value] of attributes) {
+        if (localName(name) === "id") id = value;
+        if (localName(name) === "fontKey") fontKey = value;
+      }
+      if (id !== undefined && fontKey !== undefined) {
+        keys.set(id, [...(keys.get(id) ?? []), fontKey]);
+      }
+    }
+  }
+  return { format: owner.format, keys };
+}
+
+/** An sfnt by its version tag: TrueType (`00 01 00 00`, `true`), OpenType with CFF (`OTTO`), a collection (`ttcf`). */
+const isSfnt = (bytes: Buffer) =>
+  ["00010000", "4f54544f", "74727565", "74746366"].some((tag) => startsWith(bytes, tag));
+
+/** A `w:fontKey`: a GUID in braces, the one spelling Word and LibreOffice write and read. */
+const FONT_KEY =
+  /^\{[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}\}$/;
+
+/**
+ * An obfuscated font's first 32 bytes as a reader de-obfuscates them
+ * (ECMA-376 Part 1, §17.8.1): XORed with the key's 16 bytes, last first,
+ * twice over — exactly what LibreOffice does.
+ */
+function deobfuscatedHead(head: Buffer, fontKey: string): Buffer {
+  const key = Buffer.from(fontKey.replace(/[{}-]/g, ""), "hex").reverse();
+  const out = Buffer.from(head.subarray(0, 32));
+  for (let i = 0; i < out.length; i++) out[i] ^= key[i % 16];
+  return out;
+}
+
+const EOT_VERSIONS = new Set([0x00010000, 0x00020001, 0x00020002]);
+const EOT_MAGIC = 0x504c; // "LP"
+const EOT_COMPRESSED = 0x00000004; // TTEMBED_TTCOMPRESSED: MicroType Express
+const EOT_XOR = 0x10000000; // TTEMBED_XORENCRYPTDATA: the font data XORed with 0x50
+/** The fixed fields of every EOT version's header, before its strings. */
+const EOT_MIN_HEADER = 82;
+/** MicroType Express data opens with its version: 3 for MTX 1.0 (W3C MTX submission, §2.1). */
+const MTX_VERSION = 3;
+
+/**
+ * Is this an Embedded OpenType font, as PowerPoint and LibreOffice write one
+ * into a .pptx (W3C EOT submission)? The header states its own length — the
+ * part's — and the length of the font data that ends it; a known version;
+ * `LP` at 34. The font data is then an sfnt (XORed with 0x50 when the flags
+ * say so), or MicroType Express — PowerPoint compresses — whose first byte is
+ * its version. Compressed data is not inflated here.
+ */
+function isEot(archive: Buffer, entry: ZipEntryInfo, head: Buffer): boolean {
+  if (head.length < EOT_MIN_HEADER) return false;
+  const length = head.readUInt32LE(0);
+  const dataLength = head.readUInt32LE(4);
+  const flags = head.readUInt32LE(12);
+  if (
+    length !== entry.uncompressedSize ||
+    !EOT_VERSIONS.has(head.readUInt32LE(8)) ||
+    head.readUInt16LE(34) !== EOT_MAGIC ||
+    dataLength < 4 ||
+    dataLength > length - EOT_MIN_HEADER
+  ) {
+    return false;
+  }
+  const dataAt = length - dataLength;
+  const data = Buffer.from(
+    inflatePart(archive, entry, dataAt + 4, { partial: true }).subarray(dataAt, dataAt + 4)
+  );
+  if (data.length < 4) return false;
+  if (flags & EOT_XOR) for (let i = 0; i < data.length; i++) data[i] ^= 0x50;
+  return flags & EOT_COMPRESSED ? data[0] === MTX_VERSION : isSfnt(data);
+}
+
+/**
+ * Would LibreOffice draw these bytes as a picture that can reach outside the
+ * file — an SVG or SVGZ, a metafile (an EMF+ image, an EMF inside a WMF), an
+ * EPS (and the WMF it previews with)? A font's STORED bytes are what a picture
+ * reference to it draws, and they are not always the bytes it is judged a
+ * font by: an obfuscated font's first 32 are scrambled by a key the planter
+ * chooses, an EOT's first four are its length. Either can spell a picture's
+ * magic number, and PowerPoint's presentation part does draw a font
+ * relationship as a picture — a bullet (`a:buBlip`) in its default text
+ * style, measured in LibreOffice 26.2 and 7.4.7.
+ */
+const drawnAsPicture = (head: Buffer) => looksLikeSvg(head) || isMetafile(head) || isEps(head);
+
+/**
+ * Is the target of font relationship `relId` a font, in a place fonts are
+ * read from? Only when its relationships belong to a font owner
+ * (`FONT_OWNERS`), and its bytes are a font in that owner's format: for Word,
+ * an sfnt as stored or once a key the font table gives this id de-obfuscates
+ * it; for PowerPoint, an EOT. Never when its stored bytes are a picture.
+ */
+function isKeptFont(
+  archive: Buffer,
+  entry: ZipEntryInfo,
+  owner: FontOwner | null,
+  relId: string
+): boolean {
+  if (!owner) return false;
+  const head = inflateHead(archive, entry);
+  if (drawnAsPicture(head)) return false;
+  if (owner.format === "eot") return isEot(archive, entry, head);
+  if (head.length < 32) return false;
   return (
-    head.subarray(0, 8).equals(OLE2_MAGIC) ||
-    (head.length >= 4 && head.readUInt32LE(0) === 0x04034b50) ||
-    text.startsWith("{\\rtf") ||
-    text.startsWith("%PDF") ||
-    text.startsWith("<") ||
-    /^mime-version:/i.test(text)
+    isSfnt(head) ||
+    (owner.keys.get(relId) ?? []).some(
+      (key) => FONT_KEY.test(key) && isSfnt(deobfuscatedHead(head, key))
+    )
   );
 }
 
@@ -1287,7 +1469,7 @@ function sanitizedParts(buffer: Buffer): {
   };
 
   /** Is the part at `name` what `kind` promises? Throws to refuse; false to cut. Memoised. */
-  const vet = (name: string, kind: TargetClass): boolean => {
+  const vet = (name: string, kind: Exclude<TargetClass, "font">): boolean => {
     const key = `${kind}:${name.toLowerCase()}`;
     const known = verdicts.get(key);
     if (known !== undefined) return known;
@@ -1295,21 +1477,23 @@ function sanitizedParts(buffer: Buffer): {
     let verdict: boolean;
     if (!entry) verdict = false;
     else if (kind === "xml") verdict = vetXmlPart(entry);
-    else if (kind === "image") {
+    else {
       const kept = vetImagePart(buffer, entry);
       verdict = kept !== null;
       // A metafile kept without the layer that reached for a picture.
       if (kept instanceof Buffer) rewritten.set(entry, kept);
-    } else {
-      // A font is drawn as a picture when an `r:embed` names it, and then by
-      // what its bytes are: a metafile carrying a picture is one. An
-      // obfuscated font's first 32 bytes are scrambled, so none of
-      // these magic numbers turns up in a real one.
-      const head = inflateHead(buffer, entry);
-      verdict = !looksLikeDocument(head) && !looksLikeSvg(head) && !isMetafile(head);
     }
     verdicts.set(key, verdict);
     return verdict;
+  };
+
+  /** The font owner a relationship part belongs to (`fontOwner`), or null. */
+  const fontOwnerOf = (relsName: string): FontOwner | null => {
+    const owner = /^(.*?)_rels\/([^/]+)\.rels$/i.exec(relsName);
+    const entry = owner && byName.get(`${owner[1]}${owner[2]}`.toLowerCase());
+    if (!entry || entry.uncompressedSize > MAX_XML_PART_BYTES) return null;
+    const text = utf8XmlText(inflatePart(buffer, entry, MAX_XML_PART_BYTES));
+    return text === null ? null : fontOwner(text);
   };
 
   let removed = 0;
@@ -1319,12 +1503,17 @@ function sanitizedParts(buffer: Buffer): {
     const text = utf8XmlText(inflatePart(buffer, entry, MAX_XML_PART_BYTES));
     if (text === null) throw unexpected(`relationship part "${entry.name}" is not UTF-8 text`);
 
+    let owner: FontOwner | null | undefined;
     const result = filterRelationships(text, (attributes) => {
       if (!isInternal(attributes)) return false;
       const kind = RENDERED_FROM.get(attributes.get("Type") ?? "");
       if (!kind) return false;
       const target = resolveTarget(entry.name, attributes.get("Target")!);
-      return target !== null && vet(target, kind);
+      if (target === null) return false;
+      if (kind !== "font") return vet(target, kind);
+      const font = byName.get(target.toLowerCase());
+      if (owner === undefined) owner = fontOwnerOf(entry.name);
+      return font !== undefined && isKeptFont(buffer, font, owner, attributes.get("Id") ?? "");
     });
     if (result.removed === 0) continue;
     removed += result.removed;
@@ -1410,8 +1599,24 @@ const PUBLIC_COMMENTS_KEPT = new Set([0x00000002, 0x00000003, 0x00000040, 0x0000
 const EMF_PLUS_OBJECT = 0x4008;
 const EMF_PLUS_OBJECT_BRUSH = 1;
 const EMF_PLUS_OBJECT_PEN = 2;
-const EMF_PLUS_OBJECT_IMAGE = 5;
-const EMF_PLUS_BRUSH_TEXTURE = 2;
+/**
+ * The EMF+ object kinds kept: the ones [MS-EMFPLUS] 2.1.1.22 defines that hold
+ * no picture — path, region, font, string format, image attributes, custom
+ * line cap — and the brush and pen, whose brush is checked on its own. Not
+ * Image (5), and not a kind it does not define.
+ */
+const EMF_PLUS_OBJECTS_KEPT = new Set([
+  EMF_PLUS_OBJECT_BRUSH,
+  EMF_PLUS_OBJECT_PEN,
+  3,
+  4,
+  6,
+  7,
+  8,
+  9,
+]);
+/** The brush types kept ([MS-EMFPLUS] 2.1.1.3): solid, hatch, path and linear gradient. Not a texture (2), which is a picture. */
+const EMF_PLUS_BRUSHES_KEPT = new Set([0, 1, 3, 4]);
 const EMF_PLUS_CONTINUED = 0x8000;
 
 /** The EmfPlusHeader record, and its flag for "EMF+ Dual" ([MS-EMFPLUS] 2.3.3.3). */
@@ -1597,7 +1802,7 @@ function emfCommentIsPlain(record: Buffer): boolean {
   return identifier !== COMMENT_EMF_SPOOL;
 }
 
-/** EMF+ records inside one comment: no image object, and no brush or pen that could be filled with one. */
+/** EMF+ records inside one comment: only objects that hold no picture (`EMF_PLUS_OBJECTS_KEPT`), brushes and pens filled without one. */
 function emfPlusIsPlain(records: Buffer): boolean {
   let at = 0;
   while (at < records.length) {
@@ -1611,14 +1816,14 @@ function emfPlusIsPlain(records: Buffer): boolean {
     }
     if (type === EMF_PLUS_OBJECT) {
       const kind = (flags >> 8) & 0x7f;
-      if (kind === EMF_PLUS_OBJECT_IMAGE) return false;
+      if (!EMF_PLUS_OBJECTS_KEPT.has(kind)) return false;
       if (kind === EMF_PLUS_OBJECT_BRUSH || kind === EMF_PLUS_OBJECT_PEN) {
         // A continued object starts mid-structure: nothing here to read it by.
         if (flags & EMF_PLUS_CONTINUED) return false;
         const data = records.subarray(at + 12, at + 12 + dataSize);
         const brush = kind === EMF_PLUS_OBJECT_PEN ? penBrushOffset(data) : 0;
         if (brush < 0 || brush + 8 > data.length) return false;
-        if (data.readUInt32LE(brush + 4) === EMF_PLUS_BRUSH_TEXTURE) return false;
+        if (!EMF_PLUS_BRUSHES_KEPT.has(data.readUInt32LE(brush + 4))) return false;
       }
     }
     at += size;

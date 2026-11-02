@@ -1,8 +1,9 @@
 /**
  * Where the knowledge base's Office preflight must read a file the way the
- * reader behind it does: a false refusal of ordinary files, three ways past
+ * reader behind it does: a false refusal of ordinary files, four ways past
  * the preflight, and two ways to make the web process inflate or grind for
- * minutes. Each test here was red before the change it pins.
+ * minutes. Each test here was red before the change it pins, except those
+ * showing that a real file Office or LibreOffice writes still passes.
  *
  *   1. `<asvg:svgBlip>` — what Office 365 and LibreOffice write for EVERY SVG
  *      picture — is not an `<svg` element; read as one, every such document
@@ -17,6 +18,11 @@
  *      past a check that counts literal brackets.
  *   5. One Office XML part, however large, would be inflated whole into the
  *      web heap; mammoth builds a DOM from it on top.
+ *   6. A font relationship's target is drawn as a picture, by its bytes,
+ *      when something names its id as one — and a version-0x0100 WMF or an
+ *      EPS planted as a font passed a rule that only refused what looked like
+ *      a document, an SVG or a 0x0300 WMF. A font is now kept only where
+ *      fonts live, and only if it is one.
  *
  * Deterministic, no LibreOffice; the matching canaries are in
  * `office-convert.canary.libreoffice.test.ts`.
@@ -24,7 +30,8 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { randomBytes } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { createRequire } from "node:module";
+import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import ExcelJS from "exceljs";
 
@@ -51,6 +58,7 @@ import {
   relationships,
   relType,
   truthfulSpacesEntry,
+  zipOf,
 } from "@/test-helpers/office-zip";
 import {
   EMF_PLUS_DRAW_IMAGE,
@@ -63,6 +71,7 @@ import {
   emfPlusDualComment,
   emfPlusImageObject,
   emfPlusPenObject,
+  emfPlusRecord,
   emfRecord,
   emfText,
   paddingComment,
@@ -78,7 +87,7 @@ const FIXTURES = join(__dirname, "../../fixtures/kb/office");
 
 let dir: string;
 beforeEach(() => {
-  dir = mkdtempSync(join(tmpdir(), "pinchy-kb-preflight-r3-"));
+  dir = mkdtempSync(join(tmpdir(), "pinchy-kb-reader-agreement-"));
 });
 afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
@@ -260,6 +269,26 @@ describe("a metafile picture is kept only if it carries no picture of its own", 
     expect(imageCut(emf(emfPlusComment(record), EMF_RECTANGLE))).toBe(1);
   });
 
+  // The EMF+ objects and brushes that are kept are the ones [MS-EMFPLUS]
+  // defines without a picture in them — named, not inferred from a list of
+  // the ones known to carry one: a kind this walk has never heard of is not
+  // one it can vouch for.
+  it.each([
+    ["an object of a kind [MS-EMFPLUS] does not define", emfPlusRecord(0x4008, 0x0a00, u32(0))],
+    ["a brush of a type [MS-EMFPLUS] does not define", emfPlusBrushObject(5)],
+    ["a pen filled by a brush of such a type", emfPlusPenObject(5)],
+  ])("cuts an EMF whose EMF+ records carry %s", (_, record) => {
+    expect(imageCut(emf(emfPlusComment(record), EMF_RECTANGLE))).toBe(1);
+  });
+
+  it.each([
+    ["a hatch", 1],
+    ["a path gradient", 3],
+    ["a linear gradient", 4],
+  ])("keeps an EMF whose EMF+ brush is %s", (_, brushType) => {
+    expect(imageCut(emf(emfPlusComment(emfPlusBrushObject(brushType)), EMF_RECTANGLE))).toBe(0);
+  });
+
   it.each([
     ["an embedded EMF or EPS (multiformats)", 0x40000004],
     ["an embedded WMF", 0x80000001],
@@ -308,6 +337,29 @@ describe("a metafile picture is kept only if it carries no picture of its own", 
     expect(
       imageCut(wmf(wmfEmbeddedEmf(emf(EMF_RECTANGLE)), WMF_RECTANGLE), "media/image1.wmf")
     ).toBe(0);
+  });
+
+  // LibreOffice takes a file for a WMF by its type (1 or 2) and header size
+  // (9), whatever the version — 0x0100 (METAVERSION100) as well as 0x0300 —
+  // and draws an EMF carried inside one. A version-0x0100 WMF that was not
+  // recognised as a metafile was never walked, only cut or kept by a rule
+  // for something else: as a font it was kept, and both LibreOffice 26.2 and
+  // 7.4.7 drew the SVG in its embedded EMF.
+  it("walks a WMF of version 0x0100 like any other: kept when plain, its embedded EMF dropped when that reaches for a picture", () => {
+    const plain = withWmfVersion(unplaceable(wmf(WMF_RECTANGLE)), 0x0100);
+    expect(imageCut(plain, "media/image1.wmf")).toBe(0);
+
+    const carrying = withWmfVersion(
+      unplaceable(wmf(wmfEmbeddedEmf(smuggled), WMF_RECTANGLE)),
+      0x0100
+    );
+    const kept = keptPicture(carrying, "media/image1.wmf");
+    expect(kept.includes(Buffer.from("WMFC"))).toBe(false);
+    expect(kept.includes(WMF_RECTANGLE)).toBe(true);
+  });
+
+  it("cuts an EPS picture, whatever WMF preview it carries: no EPS is walked", () => {
+    expect(imageCut(epsWithPreview(unplaceable(wmf(WMF_RECTANGLE))), "media/image1.eps")).toBe(1);
   });
 
   it.each(["libreoffice-drawing.emf", "libreoffice-drawing.wmf"])(
@@ -445,6 +497,205 @@ describe("a picture cut costs its words, so a metafile is cut only where it has 
     // Placeable header (22 bytes), then the WMF header: Size in 16-bit words.
     expect(kept.readUInt32LE(22 + 6) * 2).toBe(kept.length - 22);
   });
+});
+
+describe("a font is kept only where fonts live, and only if it is a font", () => {
+  // A font relationship's target is drawn as a PICTURE when something names
+  // its id as one, by whatever its bytes are — so a "font" that is a
+  // version-0x0100 WMF or a DOS-binary EPS (both with an EMF inside whose
+  // EMF+ image is an SVG reading a local file) passed a rule that only asked
+  // whether the bytes looked like a document, an SVG or a 0x0300 WMF, and
+  // LibreOffice 26.2 and 7.4.7 both drew the local file from the staged copy.
+  // Fonts live in exactly two places: Word's font table and PowerPoint's
+  // presentation part. Anywhere else the relationship is cut; there, the
+  // bytes must BE a font in the format that writer uses.
+
+  /**
+   * The first 64 bytes of `word/fonts/font1.odttf` as LibreOffice 26.2 wrote
+   * it into a .docx, and the `w:fontKey` its font table gave it: an sfnt
+   * whose first 32 bytes are XORed with the key (ECMA-376 §17.8.1).
+   */
+  const LIBREOFFICE_ODTTF = Buffer.concat([
+    Buffer.from(
+      "01dfef9ad848ad12f04abc8a3e0c554c721f1b6ad85cad4af04ebcd63f0e444794cf8ee6000004f40000029447504f5333f19b620001810400009e8a47535542",
+      "hex"
+    ),
+    Buffer.alloc(4096),
+  ]);
+  const LIBREOFFICE_FONT_KEY = "{01014A78-CABC-4EF0-12AC-5CD89AEFDE01}";
+
+  /**
+   * A `ppt/fonts/*.fntdata` as LibreOffice 26.2 wrote it into a .pptx: an
+   * Embedded OpenType header — its first field the file's own length,
+   * 680 508 bytes; `LP` at 34 — then the font, an sfnt, at 244. Only the
+   * first 260 bytes are the real ones; the rest is the length it declares.
+   */
+  const LIBREOFFICE_EOT_HEAD = Buffer.from(
+    "3c620a0048610a000200020000000000020b060603080402020400009001000000004c50ff6e00e7fffd00d22960240a0c200004ff0100600000ffdfbdb65e5b0000000000000000000000000000000000002c00440065006a006100560075002000530061006e007300200043006f006e00640065006e00730065006400000000000a0042006f006f006b00000000001a00560065007200730069006f006e00200032002e0033003700000000002c00440065006a006100560075002000530061006e007300200043006f006e00640065006e0073006500640000000000000042534750e40400000000000000000000000000000001000000140100000400404646544d",
+    "hex"
+  );
+  const eot = (length = LIBREOFFICE_EOT_HEAD.readUInt32LE(0)) => {
+    const out = Buffer.concat([
+      LIBREOFFICE_EOT_HEAD,
+      Buffer.alloc(length - LIBREOFFICE_EOT_HEAD.length),
+    ]);
+    const header = 244; // the real header's length: the font data follows it
+    out.writeUInt32LE(length, 0);
+    out.writeUInt32LE(length - header, 4);
+    return out;
+  };
+
+  /** A real, un-obfuscated TrueType font: the one pdfjs ships. */
+  const TRUETYPE = readFileSync(
+    join(
+      dirname(createRequire(__filename).resolve("pdfjs-dist/package.json")),
+      "standard_fonts/LiberationSans-Regular.ttf"
+    )
+  );
+
+  /** A version-0x0100 WMF whose embedded EMF carries an SVG that reads a local file. */
+  const WMF_100 = withWmfVersion(
+    unplaceable(
+      wmf(
+        wmfEmbeddedEmf(
+          emf(
+            paddingComment(4400),
+            emfPlusComment(emfPlusImageObject(REACHING_SVG), EMF_PLUS_DRAW_IMAGE),
+            EMF_RECTANGLE
+          )
+        ),
+        WMF_RECTANGLE
+      )
+    ),
+    0x0100
+  );
+  /** A DOS-binary EPS whose preview is that WMF, as version 0x0300 — what LibreOffice draws of an EPS. */
+  const EPS = epsWithPreview(withWmfVersion(WMF_100, 0x0300));
+
+  /** The 32 bytes ECMA-376 §17.8.1 XORs over a font's first 32: the GUID's 16 bytes, last first, twice. */
+  const obfuscated = (font: Buffer, fontKey: string) => {
+    const guid = Buffer.from(fontKey.replace(/[{}-]/g, ""), "hex").reverse();
+    const out = Buffer.from(font);
+    for (let i = 0; i < 32; i++) out[i] ^= guid[i % 16];
+    return out;
+  };
+
+  const WML = `xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"`;
+
+  /** Relationships cut from a .docx whose font table embeds `font` — the place Word and LibreOffice put one. */
+  function fontTableCut(font: Buffer, fontKey?: string): number {
+    const embed = `<w:embedRegular r:id="rIdF"${fontKey ? ` w:fontKey="${fontKey}"` : ""}/>`;
+    const pkg = docxWith({
+      documentRels: relationships(rel("rId9", relType("fontTable"), "fontTable.xml")),
+      parts: {
+        "word/fontTable.xml": `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:fonts ${WML}><w:font w:name="DejaVu Sans Condensed">${embed}</w:font></w:fonts>`,
+        "word/_rels/fontTable.xml.rels": relationships(
+          rel("rIdF", relType("font"), "fonts/font1.odttf")
+        ),
+        "word/fonts/font1.odttf": font,
+      },
+    });
+    return sanitizeOoxmlPackage(pkg).removed;
+  }
+
+  /** Relationships cut from a .pptx whose `owner` part carries a font relationship to `font`. */
+  function deckFontCut(font: Buffer, owner: "presentation" | "slide" = "presentation"): number {
+    const PML = `xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"`;
+    const fontRel = (target: string) => rel("rIdF", relType("font"), target);
+    const pkg = zipOf({
+      "[Content_Types].xml": `<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>`,
+      "_rels/.rels": relationships(rel("rId1", relType("officeDocument"), "ppt/presentation.xml")),
+      "ppt/presentation.xml": `<?xml version="1.0" encoding="UTF-8"?><p:presentation ${PML}><p:sldIdLst><p:sldId id="256" r:id="rId2"/></p:sldIdLst><p:embeddedFontLst><p:embeddedFont><p:font typeface="DejaVu Sans Condensed"/><p:regular r:id="rIdF"/></p:embeddedFont></p:embeddedFontLst></p:presentation>`,
+      "ppt/_rels/presentation.xml.rels": relationships(
+        rel("rId2", relType("slide"), "slides/slide1.xml"),
+        ...(owner === "presentation" ? [fontRel("fonts/font1.fntdata")] : [])
+      ),
+      "ppt/slides/slide1.xml": `<?xml version="1.0" encoding="UTF-8"?><p:sld ${PML}/>`,
+      "ppt/slides/_rels/slide1.xml.rels": relationships(
+        ...(owner === "slide" ? [fontRel("../fonts/font1.fntdata")] : [])
+      ),
+      "ppt/fonts/font1.fntdata": font,
+    });
+    return sanitizeOoxmlPackage(pkg).removed;
+  }
+
+  it("keeps the obfuscated font LibreOffice writes into a .docx's font table", () => {
+    expect(fontTableCut(LIBREOFFICE_ODTTF, LIBREOFFICE_FONT_KEY)).toBe(0);
+  });
+
+  it("keeps a plain TrueType font in a font table", () => {
+    expect(fontTableCut(TRUETYPE)).toBe(0);
+  });
+
+  it("keeps the Embedded OpenType font LibreOffice writes into a .pptx's presentation part", () => {
+    // Its first field is its length, 0x000A623C: `<b` in its first two bytes.
+    // A rule that read every font's first bytes as text took it for markup.
+    expect(deckFontCut(eot())).toBe(0);
+  });
+
+  it.each([
+    ["a version-0x0100 WMF carrying an EMF that reads a local file", WMF_100],
+    ["a DOS-binary EPS whose WMF preview carries that EMF", EPS],
+    ["bytes its key does not turn into a font", obfuscated(EPS, LIBREOFFICE_FONT_KEY)],
+  ])("cuts a font-table font that is %s", (_, bytes) => {
+    expect(fontTableCut(bytes, LIBREOFFICE_FONT_KEY)).toBe(1);
+  });
+
+  it("cuts a font-table font that its key turns into a font, but that is stored as a WMF header", () => {
+    // The stored bytes are what a picture reference draws, and the key is the
+    // planter's to choose: one that turns `00 01 00 00` into `01 00 09 00`
+    // makes a font that LibreOffice's picture detection reads as a WMF.
+    const wmfKey = "{00000000-0000-0000-0000-000000090101}";
+    const font = obfuscated(TRUETYPE, wmfKey);
+    expect(font.subarray(0, 4).toString("hex")).toBe("01000900");
+    expect(fontTableCut(font, wmfKey)).toBe(1);
+  });
+
+  it.each([
+    ["a version-0x0100 WMF", WMF_100],
+    ["a DOS-binary EPS", EPS],
+    ["a plain TrueType font: PowerPoint embeds Embedded OpenType, nothing else", TRUETYPE],
+  ])("cuts a presentation font that is %s", (_, bytes) => {
+    expect(deckFontCut(bytes)).toBe(1);
+  });
+
+  it("cuts an Embedded OpenType font whose length makes its first bytes a WMF header", () => {
+    // An EOT starts with its own length, and 0x00090001 is `01 00 09 00`. A
+    // bullet picture in presentation.xml (`a:buBlip`) draws a font
+    // relationship's bytes — measured, 26.2 and 7.4.7 — so a font there is
+    // also judged as the picture it would be.
+    const polyglot = eot(0x00090001);
+    expect(polyglot.subarray(0, 4).toString("hex")).toBe("01000900");
+    expect(deckFontCut(polyglot)).toBe(1);
+  });
+
+  it.each([
+    ["a document's own relationships", () => docxFontCut("document")],
+    ["a header's relationships", () => docxFontCut("header")],
+    ["a slide's relationships", () => deckFontCut(eot(), "slide")],
+  ])(
+    "cuts a font relationship in %s, even to a real font: no font is read from there",
+    (_, cut) => {
+      expect(cut()).toBe(1);
+    }
+  );
+
+  /** A real TrueType font, related from the document part or a header part — places a picture can name it from. */
+  function docxFontCut(owner: "document" | "header"): number {
+    const fontRel = rel("rIdF", relType("font"), "fonts/font1.ttf");
+    const pkg = docxWith({
+      documentRels: relationships(
+        rel("rId9", relType("header"), "header1.xml"),
+        ...(owner === "document" ? [fontRel] : [])
+      ),
+      parts: {
+        "word/header1.xml": `<?xml version="1.0" encoding="UTF-8"?><w:hdr ${WML}/>`,
+        "word/_rels/header1.xml.rels": relationships(...(owner === "header" ? [fontRel] : [])),
+        "word/fonts/font1.ttf": TRUETYPE,
+      },
+    });
+    return sanitizeOoxmlPackage(pkg).removed;
+  }
 });
 
 describe("a number format is judged by what the XML parser makes of it", () => {
@@ -629,4 +880,33 @@ function u32(n: number): Buffer {
 /** `emfBytes` with `record` spliced in right after the header (and the header's size fields left as they were). */
 function injectAfterHeader(emfBytes: Buffer, record: Buffer): Buffer {
   return Buffer.concat([emfBytes.subarray(0, 108), record, emfBytes.subarray(108)]);
+}
+
+/** A placeable WMF without its 22-byte Aldus header: the plain WMF it wraps, as a program writes one in memory. */
+function unplaceable(placeableWmf: Buffer): Buffer {
+  return Buffer.from(placeableWmf.subarray(22));
+}
+
+/** A plain WMF with its header's version field set to `version` (0x0100 or 0x0300). */
+function withWmfVersion(plainWmf: Buffer, version: number): Buffer {
+  const out = Buffer.from(plainWmf);
+  out.writeUInt16LE(version, 4);
+  return out;
+}
+
+/**
+ * A DOS-binary EPS: its 30-byte header (`C5 D0 D3 C6`), a scrap of
+ * PostScript, and `preview` — the WMF a program shows instead of rendering
+ * the PostScript, which is what LibreOffice draws.
+ */
+function epsWithPreview(preview: Buffer): Buffer {
+  const ps = Buffer.from("%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 400 200\nshowpage\n%%EOF\n");
+  const head = Buffer.alloc(30);
+  head.writeUInt32LE(0xc6d3d0c5, 0);
+  head.writeUInt32LE(30, 4);
+  head.writeUInt32LE(ps.length, 8);
+  head.writeUInt32LE(30 + ps.length, 12);
+  head.writeUInt32LE(preview.length, 16);
+  head.writeUInt16LE(0xffff, 28);
+  return Buffer.concat([head, ps, preview]);
 }

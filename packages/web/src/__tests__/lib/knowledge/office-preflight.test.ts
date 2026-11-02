@@ -1447,6 +1447,30 @@ describe("a kept part is vetted by what it IS, not by its relationship's Type", 
     return sanitizeOoxmlPackage(pkg).removed;
   }
 
+  /**
+   * Relationships cut from a .docx whose FONT TABLE embeds `part` — where
+   * fonts live, so what is judged is the font's bytes, not its place. (A
+   * font relationship anywhere else is cut whatever it points at:
+   * office-preflight.reader-agreement.test.ts.)
+   */
+  function fontCut(
+    part: Buffer,
+    target = "fonts/font1.odttf",
+    fontKey: string | null = FONT_KEY
+  ): number {
+    const key = fontKey ? ` w:fontKey="${fontKey}"` : "";
+    const pkg = docxWith({
+      documentRels: relationships(rel("rId9", relType("fontTable"), "fontTable.xml")),
+      parts: {
+        "word/fontTable.xml": `<?xml version="1.0" encoding="UTF-8"?><w:fonts xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:font w:name="F"><w:embedRegular r:id="rIdF"${key}/></w:font></w:fonts>`,
+        "word/_rels/fontTable.xml.rels": relationships(rel("rIdF", relType("font"), target)),
+        [`word/${target}`]: part,
+      },
+    });
+    return sanitizeOoxmlPackage(pkg).removed;
+  }
+  const FONT_KEY = "{62E79491-959F-41E9-B76B-6B32631DEA5C}";
+
   function refused(relType_: string, target: string, part: string | Buffer) {
     const pkg = docxWith({
       documentRels: relationships(rel("rId5", relType_, target)),
@@ -1456,18 +1480,29 @@ describe("a kept part is vetted by what it IS, not by its relationship's Type", 
   }
 
   it("cuts a font that is a gzipped SVG (svgz)", () => {
-    expect(cutCount(relType("font"), "fonts/font1.odttf", gzip(reachingSvg))).toBe(1);
+    expect(fontCut(gzip(reachingSvg))).toBe(1);
   });
 
   it("cuts a font whose first kilobytes carry an SVG element behind binary junk", () => {
     const part = Buffer.concat([Buffer.from([0, 1, 2, 3, 0xff, 0xfe]), Buffer.from(reachingSvg)]);
-    expect(cutCount(relType("font"), "fonts/font1.odttf", part)).toBe(1);
+    expect(fontCut(part)).toBe(1);
   });
 
-  it("keeps an ordinary obfuscated font", () => {
+  it("keeps an ordinary obfuscated font: a TrueType font whose first 32 bytes its key scrambles", () => {
+    // ECMA-376 §17.8.1: the GUID's 16 bytes, last first, XORed over the
+    // font's first 32 twice over.
+    const key = Buffer.from(FONT_KEY.replace(/[{}-]/g, ""), "hex").reverse();
     const font = Buffer.alloc(2048);
     for (let i = 0; i < font.length; i++) font[i] = (i * 131 + 7) & 0xff;
-    expect(cutCount(relType("font"), "fonts/font1.odttf", font)).toBe(0);
+    Buffer.from("00010000", "hex").copy(font);
+    for (let i = 0; i < 32; i++) font[i] ^= key[i % 16];
+    expect(fontCut(font)).toBe(0);
+  });
+
+  it("cuts an 'obfuscated font' that its key does not turn into a font", () => {
+    const font = Buffer.alloc(2048);
+    for (let i = 0; i < font.length; i++) font[i] = (i * 131 + 7) & 0xff;
+    expect(fontCut(font)).toBe(1);
   });
 
   // A font's id can be borrowed by anything that resolves an `r:id` without
@@ -1488,7 +1523,7 @@ describe("a kept part is vetted by what it IS, not by its relationship's Type", 
     ["UTF-16LE without one", Buffer.from(page, "utf16le")],
     ["UTF-16BE without one", utf16be(page)],
   ])("cuts a font that is an HTML page in %s", (_, bytes) => {
-    expect(cutCount(relType("font"), "fonts/font1.odttf", bytes)).toBe(1);
+    expect(fontCut(bytes)).toBe(1);
   });
 
   it.each([
@@ -1496,7 +1531,8 @@ describe("a kept part is vetted by what it IS, not by its relationship's Type", 
     ["OpenType", "4f54544f000c0080000300404346462000"],
   ])("keeps a plain %s font: its NULs are not text", (_, hex) => {
     const font = Buffer.concat([Buffer.from(hex, "hex"), Buffer.alloc(1024, 0x3c)]);
-    expect(cutCount(relType("font"), "fonts/font1.ttf", font)).toBe(0);
+    // No key: a plain font is read as it is.
+    expect(fontCut(font, "fonts/font1.ttf", null)).toBe(0);
   });
 
   it("cuts a picture that is a gzipped SVG (svgz): what it reaches for cannot be read without inflating it", () => {
