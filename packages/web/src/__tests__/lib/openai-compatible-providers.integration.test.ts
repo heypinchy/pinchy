@@ -10,6 +10,7 @@ import {
   ProviderNotFoundError,
   listOpenAiCompatibleProvidersForAdmin,
   listProvidersWithApiKeys,
+  listProvidersForModelFetch,
 } from "@/lib/openai-compatible-providers";
 import type { OpenClawModelDefinition } from "@/lib/openclaw-builtin-models";
 import { eq } from "drizzle-orm";
@@ -242,6 +243,25 @@ describe("listProvidersWithApiKeys", () => {
       await getProviderSnapshotById(created.id)
     );
     expect(await version()).not.toBe(v1);
+  });
+});
+
+describe("listProvidersForModelFetch", () => {
+  // The model dropdown and config emission share one live-model cache keyed by
+  // (slug, base URL, keyVersion). Both readers must derive the version the same
+  // way, or the two paths would never share an entry — or worse, share one
+  // across a key change.
+  it("carries the same keyVersion as listProvidersWithApiKeys for each row", async () => {
+    await createOrUpdateProvider(
+      { displayName: "Swisscom AI", baseUrl: "https://api.swisscom.example/v1", apiKey: "sk-k" },
+      [MODEL]
+    );
+
+    const [forFetch] = await listProvidersForModelFetch();
+    const [forConfig] = await listProvidersWithApiKeys();
+
+    expect(forFetch!.keyVersion).toMatch(/^[0-9a-f]{16}$/);
+    expect(forFetch!.keyVersion).toBe(forConfig!.keyVersion);
   });
 });
 

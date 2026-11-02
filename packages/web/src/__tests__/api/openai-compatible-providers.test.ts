@@ -880,6 +880,29 @@ describe("POST /api/settings/providers/openai-compatible", () => {
     });
   });
 
+  // The live-model cache used to be keyed by slug alone and cleared only AFTER
+  // the regenerate, so the regenerate a re-pointing save triggers could emit
+  // the OLD endpoint's cached model list under the NEW base URL. The cache is
+  // now keyed by the destination too (openai-compatible-discovery.test.ts), and
+  // it is cleared before the regenerate reads it.
+  it("clears the model cache BEFORE regenerating, so the regenerate discovers afresh", async () => {
+    await POST(
+      postRequest({
+        id: "11111111-1111-4111-8111-111111111111",
+        displayName: "Acme LLM",
+        baseUrl: "https://new-host.example.com/v1",
+        apiKey: SECRET_KEY,
+      }),
+      routeCtx
+    );
+
+    expect(resetCache).toHaveBeenCalledTimes(1);
+    expect(regenerateOpenClawConfig).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(resetCache).mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(regenerateOpenClawConfig).mock.invocationCallOrder[0]
+    );
+  });
+
   it("rejects an invalid body (empty displayName) with a structured 400 and no side effects", async () => {
     const res = await POST(
       postRequest({

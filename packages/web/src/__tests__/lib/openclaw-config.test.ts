@@ -8918,18 +8918,22 @@ describe("OpenAI-compatible custom providers (#894)", () => {
     expect(config.models.providers["acme-llm"].models[0]).not.toHaveProperty("vision");
   });
 
-  it("resolves each provider's emitted models via resolveCustomProviderModels, passing slug/baseUrl/apiKey/snapshot", async () => {
+  it("resolves each provider's emitted models via resolveCustomProviderModels, passing slug/baseUrl/apiKey/keyVersion/snapshot", async () => {
     mockListProvidersWithApiKeys.mockResolvedValue([
       keyed(makeProvider(), "swiss-plaintext-key", "0123456789abcdef"),
     ]);
 
     await regenerateOpenClawConfig();
 
+    // keyVersion is part of the live-model cache key (with the base URL), so a
+    // re-pointed or re-keyed provider never reuses a list cached for another
+    // destination or key.
     expect(mockResolveCustomProviderModels).toHaveBeenCalledWith(
       expect.objectContaining({
         slug: "swisscom-ai",
         baseUrl: "https://api.swisscom.example/v1",
         apiKey: "swiss-plaintext-key",
+        keyVersion: "0123456789abcdef",
         models: [makeModel()],
       })
     );

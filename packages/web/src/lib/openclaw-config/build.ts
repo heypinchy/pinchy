@@ -1472,6 +1472,7 @@ export async function regenerateOpenClawConfig() {
       slug: p.slug,
       baseUrl: p.baseUrl,
       apiKey: p.apiKey,
+      keyVersion: p.keyVersion,
       models: p.models,
     });
     modelProviders[p.slug] = {

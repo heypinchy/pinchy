@@ -159,6 +159,8 @@ export interface ProviderModelFetchSource {
   displayName: string;
   baseUrl: string;
   apiKey: string;
+  /** Same fingerprint as {@link CustomProviderConfigSource.keyVersion}; keys the model cache. */
+  keyVersion: string;
   models: OpenClawModelDefinition[];
 }
 
@@ -170,6 +172,7 @@ export async function listProvidersForModelFetch(): Promise<ProviderModelFetchSo
     displayName: r.displayName,
     baseUrl: r.baseUrl,
     apiKey: decrypt(r.apiKey),
+    keyVersion: secretVersion(r.apiKey),
     models: r.models,
   }));
 }

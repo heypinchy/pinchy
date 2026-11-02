@@ -316,6 +316,11 @@ export const POST = withAdmin(async (request, _ctx, session) => {
   // audited flag asserts only that the regenerate did not throw — the push
   // itself is fire-and-forget, so it is deliberately NOT named
   // `runtimeApplied` (see setup/provider, #943).
+  //
+  // The model cache is cleared FIRST: the regenerate resolves this provider's
+  // live model list, and must not be served the list cached before the save —
+  // for a re-pointed provider that is the OLD endpoint's catalog.
+  resetCache();
   let configRegenerated = true;
   try {
     await regenerateOpenClawConfig();
@@ -323,7 +328,6 @@ export const POST = withAdmin(async (request, _ctx, session) => {
     console.error("Failed to apply OpenAI-compatible provider config to the runtime:", err);
     configRegenerated = false;
   }
-  resetCache();
 
   // Cap the migrated-agent list so audit's 2KB truncateDetail can't shred the
   // structured fields (same rationale as the delete route).
