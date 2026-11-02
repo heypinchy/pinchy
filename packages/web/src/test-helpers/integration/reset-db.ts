@@ -85,19 +85,33 @@ function findAnnTables(): Promise<string[]> {
  * stays bounded by the schema instead of growing with the suite. See
  * src/__tests__/db/integration-db-reset.integration.test.ts.
  *
- * Tables with an ANN index are the exception and are still TRUNCATEd (only
- * when they hold rows, so an unused one costs nothing): an HNSW scan collects
- * its ef_search candidates before checking visibility, so dead tuples left by
- * DELETE would crowd live rows out of a later test's vector-search results.
+ * Tables with an ANN index are the exception and are still TRUNCATEd: an HNSW
+ * scan collects its ef_search candidates before checking visibility, so dead
+ * tuples left by DELETE would crowd live rows out of a later test's
+ * vector-search results. The test is whether the heap has STORAGE
+ * (`pg_relation_size > 0`), not whether it has live rows: a test that deletes
+ * every chunk itself (ingest's "removes the document and its chunks") leaves
+ * no live row but every dead index entry, and an `EXISTS` check would wave
+ * exactly that state through. A never-used table, or one this function already
+ * truncated, has zero pages and costs nothing.
+ *
+ * What this gives up: TRUNCATE handed every test brand-new, physically empty
+ * heaps and fresh planner statistics. DELETE leaves dead tuples behind for
+ * autovacuum to reclaim whenever it gets round to it, and the planner keeps
+ * whatever statistics it last gathered. So a query WITHOUT `ORDER BY` no
+ * longer reliably returns rows in insertion order across tests — new rows can
+ * land in reclaimed space, and the plan can change. A flake of that shape
+ * (right rows, wrong order, varying between runs) points at a missing
+ * `ORDER BY` in the code or the assertion, not at this reset.
  */
 export async function resetIntegrationDatabase(): Promise<void> {
   const ann = await findAnnTables();
-  const annWithRows = ann.length
+  const annWithStorage = ann.length
     ? (
         (await db.execute<{ rel: string }>(
           sql.raw(
             ann
-              .map((t) => `SELECT '${t}' AS rel WHERE EXISTS (SELECT 1 FROM ${t})`)
+              .map((t) => `SELECT '${t}' AS rel WHERE pg_relation_size('${t}') > 0`)
               .join(" UNION ALL ")
           )
         )) as unknown as { rel: string }[]
@@ -107,8 +121,8 @@ export async function resetIntegrationDatabase(): Promise<void> {
   // One transaction: no other session ever sees audit_log's triggers disabled,
   // and a failure part-way leaves nothing half-reset.
   await db.transaction(async (tx) => {
-    if (annWithRows.length > 0) {
-      await tx.execute(sql.raw(`TRUNCATE TABLE ${annWithRows.join(", ")} CASCADE`));
+    if (annWithStorage.length > 0) {
+      await tx.execute(sql.raw(`TRUNCATE TABLE ${annWithStorage.join(", ")} CASCADE`));
     }
     // audit_log is immutable to production code (migration 0047's no_delete /
     // no_truncate triggers). Test isolation is the one legitimate exception,

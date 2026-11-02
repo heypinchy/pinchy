@@ -175,4 +175,31 @@ describe("integration database reset", () => {
     expect(after["idx_kb_chunks_embedding"]).not.toBe(before["idx_kb_chunks_embedding"]);
     expect(after["kb_chunks"]).not.toBe(before["kb_chunks"]);
   });
+
+  it("also replaces it when every row is already deleted, because the HNSW index still holds the dead ones", async () => {
+    // The shape ingest.integration.test.ts leaves behind: a test removes a
+    // document and its chunks cascade away. No live row remains, but until
+    // VACUUM runs the index still holds every dead entry — and the next test's
+    // `ORDER BY embedding <=> q LIMIT k` can come back short or empty over live
+    // rows. "Has live rows" is the wrong question; "has storage" is the right one.
+    const [doc] = await db
+      .insert(kbDocuments)
+      .values({ orgId: "org-reset", contentHash: "h", sourcePath: "/data/a.pdf" })
+      .returning();
+    await db.insert(kbChunks).values({
+      documentId: doc.id,
+      orgId: "org-reset",
+      sourcePath: "/data/a.pdf",
+      chunkText: "x",
+      locator: { kind: "page", page: 1 },
+      embedding: Array(768).fill(0.1),
+    });
+    await db.delete(kbChunks);
+    const before = await relationFiles();
+
+    await resetIntegrationDatabase();
+
+    const after = await relationFiles();
+    expect(after["idx_kb_chunks_embedding"]).not.toBe(before["idx_kb_chunks_embedding"]);
+  });
 });

@@ -33,7 +33,8 @@ export default defineConfig({
     include: ["src/**/*.integration.test.{ts,tsx}"],
     setupFiles: ["./src/test-helpers/integration/setup.ts"],
     globalSetup: ["./src/test-helpers/integration/global-setup.ts"],
-    // TRUNCATE in beforeEach makes parallel workers race on the shared DB.
+    // The per-test reset in beforeEach empties the shared DB, so parallel
+    // workers would wipe each other's rows mid-test.
     // fileParallelism: false runs all test files sequentially in a single
     // worker; if test count grows we can switch to per-worker DB names and
     // remove this.
