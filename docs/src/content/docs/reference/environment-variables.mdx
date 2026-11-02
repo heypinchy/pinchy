@@ -104,10 +104,10 @@ Don't just correct the value. While the variable is ignored, the key file is the
 - **Set the variable to the key file's exact contents**, so the key is in `.env` too. Delete the `ENCRYPTION_KEY=` line from `.env`, then run this in the directory that holds your `docker-compose.yml`:
 
   ```bash
-  printf 'ENCRYPTION_KEY=%s\n' "$(docker compose exec -T pinchy cat /app/secrets/.encryption_key)" >> .env
+  printf '\nENCRYPTION_KEY=%s\n' "$(docker compose exec -T pinchy cat /app/secrets/.encryption_key)" >> .env
   ```
 
-  That copies the key straight into `.env` without showing it on screen or in a log. `.env` now holds a key, so keep it readable by you alone (`chmod 600 .env`).
+  That copies the key straight into `.env` without showing it on screen or in a log. The leading `\n` keeps it off the end of the last line when `.env` doesn't end in a newline; a blank line in `.env` is harmless. `.env` now holds a key, so keep it readable by you alone (`chmod 600 .env`).
 
 Either way, apply it with `docker compose up -d`. `docker compose restart` and `docker compose start` reuse the environment the container was created with and don't read `.env` again; `up -d` recreates the container when `.env` changed. Afterwards the warning is gone from the start's log (`docker compose logs pinchy`), and **Settings → Integrations** shows no "can't be read" card.
 
