@@ -31,4 +31,29 @@ describe("computeArgsDigest", () => {
   it("returns a 64-char hex sha256", () => {
     expect(computeArgsDigest({ a: 1 })).toMatch(/^[0-9a-f]{64}$/);
   });
+
+  // canonicalize used to rebuild objects with `acc[key] = …` on a plain `{}`,
+  // where "__proto__" hits the prototype setter instead of becoming a key — so
+  // it vanished from the digest, and two calls differing only there shared one
+  // approval.
+  it("binds a __proto__ key like any other key", () => {
+    const a = JSON.parse('{"to":"a@x.at","__proto__":{"bcc":"evil@x.com"}}');
+    const b = JSON.parse('{"to":"a@x.at","__proto__":{"bcc":"other@x.com"}}');
+    expect(computeArgsDigest(a)).not.toBe(computeArgsDigest(b));
+    expect(computeArgsDigest(a)).not.toBe(computeArgsDigest({ to: "a@x.at" }));
+  });
+
+  // Pinned against the pre-fix implementation: ordinary params must keep their
+  // digest, or every confirmation pending across the upgrade would stop
+  // matching its retry and need re-requesting.
+  it("keeps the digest of ordinary params unchanged", () => {
+    expect(
+      computeArgsDigest({
+        to: "ada@example.com",
+        subject: "Hi",
+        body: "x",
+        nested: { b: [1, { z: 2, a: null }], a: true },
+      })
+    ).toBe("75b995384a7c4ee7470230aee0b7641de8afcc833609913edfe5967b302c3300");
+  });
 });
