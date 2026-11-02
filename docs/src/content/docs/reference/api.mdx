@@ -442,7 +442,7 @@ Machine clients (CI, scripts) provision agents with a scoped API key instead of 
 
 ### `GET /api/settings/api-keys`
 
-List every API key (masked `start`, scopes, expiry, last-used, enabled state). **Admin only.** The plaintext secret is never returned — it is shown once at creation and never again.
+List every API key (masked `start`, scopes, expiry, last-used, enabled state, and `createdBy` with the creator's snapshotted name and an `active` flag that turns `false` once the creator is banned, deleted or no longer an admin). **Admin only.** The plaintext secret is never returned — it is shown once at creation and never again.
 
 ### `POST /api/settings/api-keys`
 
