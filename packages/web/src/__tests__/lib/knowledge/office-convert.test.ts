@@ -38,6 +38,7 @@ import {
 import { OfficeArtifactStore } from "@/lib/knowledge/office-artifacts";
 import { prepareOfficeSource } from "@/lib/knowledge/office-preflight";
 import { OfficeFileRejectedError } from "@/lib/knowledge/office-formats";
+import { countDocxWordsIsolated } from "@/lib/knowledge/xlsx-isolated";
 import {
   declaredBomb,
   docxWith,
@@ -879,14 +880,11 @@ describe("preflight before conversion (release review v0.10.0)", () => {
     const bomb = join(tmpRoot, "bomb.docx");
     await writeFile(bomb, declaredBomb(0xfffffffe, "word/document.xml"));
     // A null alone proves little (mammoth would fail on this archive too), so
-    // pin that it was never asked.
-    const extract = vi.spyOn(mammoth, "extractRawText");
-    try {
-      expect(await countSourceWordsWithOracle(bomb)).toBeNull();
-      expect(extract).not.toHaveBeenCalled();
-    } finally {
-      extract.mockRestore();
-    }
+    // pin that it was never asked. mammoth runs in the reader child (sixth
+    // review); `countDocxWords` is the only way to it.
+    const countDocxWords = vi.fn(async () => 0);
+    expect(await countSourceWordsWithOracle(bomb, { countDocxWords })).toBeNull();
+    expect(countDocxWords).not.toHaveBeenCalled();
   });
 
   it("does not hand the oracle's mammoth a .docx that lies about its size, or one behind a junk prefix", async () => {
@@ -912,14 +910,10 @@ describe("preflight before conversion (release review v0.10.0)", () => {
       prefixed,
       Buffer.concat([Buffer.alloc(64, 0x41), docxWith({ documentRels: relationships() })])
     );
-    const extract = vi.spyOn(mammoth, "extractRawText");
-    try {
-      expect(await countSourceWordsWithOracle(lying)).toBeNull();
-      expect(await countSourceWordsWithOracle(prefixed)).toBeNull();
-      expect(extract).not.toHaveBeenCalled();
-    } finally {
-      extract.mockRestore();
-    }
+    const countDocxWords = vi.fn(async () => 0);
+    expect(await countSourceWordsWithOracle(lying, { countDocxWords })).toBeNull();
+    expect(await countSourceWordsWithOracle(prefixed, { countDocxWords })).toBeNull();
+    expect(countDocxWords).not.toHaveBeenCalled();
   });
 });
 
@@ -937,16 +931,15 @@ describe("the word-count oracle's markup ceiling (fourth review, PR #1243)", () 
         body: "<w:p><w:r><w:t>word</w:t></w:r></w:p>".repeat(60_000),
       })
     );
-    const extract = vi.spyOn(mammoth, "extractRawText");
+    const countDocxWords = vi.fn(async () => 0);
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
-      expect(await countSourceWordsWithOracle(big)).toBeNull();
-      expect(extract).not.toHaveBeenCalled();
+      expect(await countSourceWordsWithOracle(big, { countDocxWords })).toBeNull();
+      expect(countDocxWords).not.toHaveBeenCalled();
       expect(warn.mock.calls.map((call) => String(call[0])).join("\n")).toMatch(
         /unverified.*markup/
       );
     } finally {
-      extract.mockRestore();
       warn.mockRestore();
     }
   });
@@ -968,6 +961,86 @@ describe("the word-count oracle's markup ceiling (fourth review, PR #1243)", () 
       })
     );
     expect(await countSourceWordsWithOracle(withPhoto)).toBe(3);
+  });
+});
+
+describe("the word-count oracle reads in a heap-capped child (sixth review, PR #1243)", () => {
+  // Three rounds running, the markup ceiling was bypassed because its scan
+  // and mammoth disagreed about which parts are parsed; through the oracle
+  // that reached ~900 MB in the web process. The scan stays the first layer.
+  // What bounds the memory now is the reader child's heap cap, shared with
+  // the spreadsheet reader — whatever the scan misses.
+  const tinyParagraphs = (bytes: number) =>
+    "<w:p><w:r><w:t>a</w:t></w:r></w:p>".repeat(Math.ceil(bytes / 34));
+
+  it("counts in a child, never in this process, and counts what mammoth counts", async () => {
+    const docx = docxWith({
+      text: "Größe naïve 東京 and five more words",
+      documentRels: relationships(),
+      body: "<w:tbl><w:tr><w:tc><w:p><w:r><w:t>cell one</w:t></w:r></w:p></w:tc></w:tr></w:tbl>",
+    });
+    const path = join(tmpRoot, "plain.docx");
+    await writeFile(path, docx);
+    const inProcess = (await mammoth.extractRawText({ buffer: docx })).value
+      .split(/\s+/)
+      .filter(Boolean).length;
+    const extract = vi.spyOn(mammoth, "extractRawText");
+    try {
+      expect(await countSourceWordsWithOracle(path)).toBe(inProcess);
+      expect(extract).not.toHaveBeenCalled();
+    } finally {
+      extract.mockRestore();
+    }
+  });
+
+  it("refuses a document past the child's heap — and this process stays small", async () => {
+    // Unguarded on purpose: this is what a scan bypass hands the reader.
+    const docx = docxWith({ documentRels: relationships(), body: tinyParagraphs(4 * 1024 * 1024) });
+    const baseline = process.memoryUsage().rss;
+    let peak = baseline;
+    const sampler = setInterval(() => {
+      peak = Math.max(peak, process.memoryUsage().rss);
+    }, 10);
+    let err: unknown;
+    try {
+      await countDocxWordsIsolated(docx, { maxHeapMb: 64 });
+    } catch (e) {
+      err = e;
+    } finally {
+      clearInterval(sampler);
+    }
+    expect(err).toBeInstanceOf(OfficeFileRejectedError);
+    expect((err as OfficeFileRejectedError).code).toBe("too_large");
+    expect((err as Error).message).toMatch(/word-count reader/);
+    peak = Math.max(peak, process.memoryUsage().rss);
+    expect(peak - baseline).toBeLessThan(200 * 1024 * 1024);
+  });
+
+  it("skips the count and says so when the reader runs out of heap — the conversion goes on unverified", async () => {
+    const path = join(tmpRoot, "plain.docx");
+    await writeFile(path, docxWith({ documentRels: relationships() }));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const countDocxWords = vi.fn(async () => {
+        throw new OfficeFileRejectedError("too_large", "reading it needed more than 384 MB");
+      });
+      expect(await countSourceWordsWithOracle(path, { countDocxWords })).toBeNull();
+      expect(countDocxWords).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls.map((call) => String(call[0])).join("\n")).toMatch(
+        /unverified.*384 MB/
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("answers null, not a crash, when the reader breaks", async () => {
+    const path = join(tmpRoot, "plain.docx");
+    await writeFile(path, docxWith({ documentRels: relationships() }));
+    const countDocxWords = vi.fn(async () => {
+      throw new Error("the word-count reader could not be started");
+    });
+    expect(await countSourceWordsWithOracle(path, { countDocxWords })).toBeNull();
   });
 });
 

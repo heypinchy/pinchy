@@ -1,14 +1,17 @@
 /**
  * The spreadsheet reader's child process — the other half of
  * `xlsx-isolated.ts`, which forks this file with a capped heap and explains
- * why. It reads ONE request, answers it, and exits.
+ * why. It reads ONE request (a workbook, a range of rows, or a .docx's word
+ * count), answers it, and exits.
  *
  * Everything that is not the read lives in the parent; this file only makes
  * itself the expendable process and relays.
  */
 import { writeFileSync } from "node:fs";
 
-import { OfficeFileRejectedError } from "./office-formats";
+import mammoth from "mammoth";
+
+import { countWords, OfficeFileRejectedError } from "./office-formats";
 import { extractXlsx, readSheetRange, XlsxExtractionError } from "./xlsx-extract";
 import type { SheetReaderFailure, SheetReaderMessage, SheetReaderRequest } from "./xlsx-isolated";
 
@@ -37,13 +40,28 @@ function toFailure(err: unknown): SheetReaderFailure {
   return { kind: "error", message: err instanceof Error ? err.message : String(err) };
 }
 
+/** The words mammoth sees in a verified .docx — the conversion's oracle. */
+async function docxWords(data: Uint8Array): Promise<number> {
+  // Structured clone hands a Buffer over as a plain Uint8Array.
+  const buffer = Buffer.from(data.buffer, data.byteOffset, data.byteLength);
+  const { value } = await mammoth.extractRawText({ buffer });
+  return countWords(value);
+}
+
+function read(request: SheetReaderRequest): Promise<unknown> {
+  switch (request.op) {
+    case "extract":
+      return extractXlsx(request.path, request.options);
+    case "rows":
+      return readSheetRange(request.path, request.sheet, request.startRow, request.endRow);
+    case "docx-words":
+      return docxWords(request.data);
+  }
+}
+
 async function answer(request: SheetReaderRequest): Promise<SheetReaderMessage> {
   try {
-    const value =
-      request.op === "extract"
-        ? await extractXlsx(request.path, request.options)
-        : await readSheetRange(request.path, request.sheet, request.startRow, request.endRow);
-    return { type: "result", value };
+    return { type: "result", value: await read(request) };
   } catch (err) {
     return { type: "failure", failure: toFailure(err) };
   }
@@ -55,5 +73,5 @@ process.once("message", (request: SheetReaderRequest) => {
     .finally(() => process.exit(0));
 });
 
-// Only now — with the reader loaded — is a death about the file it reads.
+// Only now — with the readers loaded — is a death about the file it reads.
 void send({ type: "ready" });

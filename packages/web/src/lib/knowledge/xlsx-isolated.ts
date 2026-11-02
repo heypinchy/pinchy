@@ -43,6 +43,15 @@
  * leaves the queue, a running one has its child killed. And it passes
  * `maxQueued`, so reloads cannot stack reads in front of the indexer — which
  * passes neither, and is never cut short or turned away.
+ *
+ * The same child also counts a `.docx`'s words for the conversion's oracle
+ * (`countDocxWordsIsolated`, sixth review, PR #1243). mammoth builds a DOM at
+ * up to ~300x the markup it parses, and the markup ceiling in front of it
+ * (`MAX_DOCX_MARKUP_BYTES`) is a PREDICTION of which parts mammoth parses —
+ * one that three review rounds running found a spelling to get wrong, each
+ * time a 13 KB file worth ~900 MB in the web process. Behind this fence, a
+ * wrong prediction costs the child, never the server. It shares the gate, so
+ * the memory one child may use is still the memory all of them use.
  */
 import { fork, type ChildProcess } from "node:child_process";
 import { join } from "node:path";
@@ -77,7 +86,14 @@ const CHILD_ENTRY = join(process.cwd(), "src/lib/knowledge/xlsx-isolated-child.t
 /** What the child is asked to do: one read, then it exits. */
 export type SheetReaderRequest =
   | { op: "extract"; path: string; options?: XlsxExtractOptions }
-  | { op: "rows"; path: string; sheet: string | null; startRow: number; endRow: number };
+  | { op: "rows"; path: string; sheet: string | null; startRow: number; endRow: number }
+  /** Words mammoth sees in `data`, a VERIFIED .docx (`readGuardedDocx`). */
+  | { op: "docx-words"; data: Uint8Array };
+
+/** What the reader is called in its errors and log lines: the job it was doing. */
+function readerName(request: SheetReaderRequest): string {
+  return request.op === "docx-words" ? "word-count reader" : "spreadsheet reader";
+}
 
 /** A failure the child diagnosed itself, carried across the process boundary by kind. */
 export type SheetReaderFailure =
@@ -206,14 +222,14 @@ function childEnv(): NodeJS.ProcessEnv {
   return env;
 }
 
-function failureToError(failure: SheetReaderFailure): Error {
+function failureToError(failure: SheetReaderFailure, name: string): Error {
   switch (failure.kind) {
     case "rejected":
       return new OfficeFileRejectedError(failure.code, failure.message);
     case "unreadable":
       return new XlsxExtractionError(failure.sourcePath, failure.reason);
     default:
-      return new Error(`spreadsheet reader failed: ${failure.message}`);
+      return new Error(`${name} failed: ${failure.message}`);
   }
 }
 
@@ -227,30 +243,31 @@ function deathError(
   signal: NodeJS.Signals | null,
   timedOut: boolean,
   stderr: string,
-  opts: Required<Pick<SheetReaderOptions, "maxHeapMb" | "timeoutMs">>
+  opts: Required<Pick<SheetReaderOptions, "maxHeapMb" | "timeoutMs">> & { name: string }
 ): Error {
   if (!timedOut && /heap out of memory|Reached heap limit/i.test(stderr)) {
     return new OfficeFileRejectedError(
       "too_large",
-      `reading it needed more than the ${opts.maxHeapMb} MB the spreadsheet reader may use`
+      `reading it needed more than the ${opts.maxHeapMb} MB the ${opts.name} may use`
     );
   }
   if (timedOut) {
-    return new Error(`the spreadsheet reader took longer than ${opts.timeoutMs / 1000} s`);
+    return new Error(`the ${opts.name} took longer than ${opts.timeoutMs / 1000} s`);
   }
   if (signal === "SIGKILL") {
     return new Error(
-      "the spreadsheet reader was killed while reading (by the system, most likely out of memory)"
+      `the ${opts.name} was killed while reading (by the system, most likely out of memory)`
     );
   }
   return new Error(
-    `the spreadsheet reader stopped while reading (${signal ?? `exit code ${code}`}): ${stderr.trim().slice(0, 500)}`
+    `the ${opts.name} stopped while reading (${signal ?? `exit code ${code}`}): ${stderr.trim().slice(0, 500)}`
   );
 }
 
 function runChild(request: SheetReaderRequest, options: SheetReaderOptions): Promise<unknown> {
   const maxHeapMb = options.maxHeapMb ?? SHEET_READER_HEAP_MB;
   const timeoutMs = options.timeoutMs ?? SHEET_READER_TIMEOUT_MS;
+  const name = readerName(request);
 
   return new Promise((resolve, reject) => {
     const { signal } = options;
@@ -271,7 +288,7 @@ function runChild(request: SheetReaderRequest, options: SheetReaderOptions): Pro
         serialization: "advanced",
       });
     } catch (err) {
-      reject(new Error("the spreadsheet reader could not be started", { cause: err }));
+      reject(new Error(`the ${name} could not be started`, { cause: err }));
       return;
     }
 
@@ -311,14 +328,14 @@ function runChild(request: SheetReaderRequest, options: SheetReaderOptions): Pro
       answered = true;
       settle();
       if (message.type === "result") resolve(message.value);
-      else reject(failureToError(message.failure));
+      else reject(failureToError(message.failure, name));
     });
 
     child.on("error", (err) => {
       if (answered) return;
       answered = true;
       settle();
-      reject(new Error("the spreadsheet reader could not be started", { cause: err }));
+      reject(new Error(`the ${name} could not be started`, { cause: err }));
     });
 
     child.on("exit", (code, exitSignal) => {
@@ -333,12 +350,12 @@ function runChild(request: SheetReaderRequest, options: SheetReaderOptions): Pro
         // It never got as far as reading, so nothing here is about the file.
         reject(
           new Error(
-            `the spreadsheet reader exited before it was ready (${exitSignal ?? `exit code ${code}`}): ${stderr.trim().slice(0, 500)}`
+            `the ${name} exited before it was ready (${exitSignal ?? `exit code ${code}`}): ${stderr.trim().slice(0, 500)}`
           )
         );
         return;
       }
-      reject(deathError(code, exitSignal, timedOut, stderr, { maxHeapMb, timeoutMs }));
+      reject(deathError(code, exitSignal, timedOut, stderr, { maxHeapMb, timeoutMs, name }));
     });
 
     child.send(request);
@@ -381,4 +398,18 @@ export async function readSheetRangeIsolated(
     { op: "rows", path: absPath, sheet: sheetName, startRow, endRow },
     readerOptions
   )) as SheetRange | null;
+}
+
+/**
+ * The words mammoth sees in a VERIFIED .docx (`readGuardedDocx`), counted in
+ * a child process — the conversion's word-count oracle. Same fence, same gate
+ * and same errors as the spreadsheet reads: a document whose read ran out of
+ * heap is refused (`OfficeFileRejectedError("too_large")`), any other death is
+ * a plain error.
+ */
+export async function countDocxWordsIsolated(
+  verified: Buffer,
+  readerOptions: SheetReaderOptions = {}
+): Promise<number> {
+  return (await runSheetReader({ op: "docx-words", data: verified }, readerOptions)) as number;
 }

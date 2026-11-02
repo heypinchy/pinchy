@@ -141,3 +141,12 @@ export class OfficeFileRejectedError extends Error {
     this.name = "OfficeFileRejectedError";
   }
 }
+
+/**
+ * One word-splitting rule for both sides of the conversion's comparison — two
+ * rules would make the bound meaningless. Here, in the import-free module,
+ * because the word-count reader's child counts with it too.
+ */
+export function countWords(text: string): number {
+  return text.split(/\s+/).filter(Boolean).length;
+}

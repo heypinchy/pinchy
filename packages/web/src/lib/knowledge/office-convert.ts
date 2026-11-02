@@ -57,6 +57,7 @@ import { extname, join } from "node:path";
 
 import { getOfficeArtifactStore, hashFileContents, OfficeArtifactStore } from "./office-artifacts";
 import {
+  countWords,
   OFFICE_CONVERT_BATCH_SIZE,
   OFFICE_EXTENSIONS,
   OfficeFileRejectedError,
@@ -64,6 +65,7 @@ import {
 } from "./office-formats";
 import { prepareOfficeSource, readGuardedDocx, type PreparedSource } from "./office-preflight";
 import { extractPdfPages } from "./pdf-extract";
+import { countDocxWordsIsolated } from "./xlsx-isolated";
 
 /**
  * Re-exported so this module stays the one place a caller has to know about
@@ -705,6 +707,15 @@ async function defaultCountPdfWords(absPath: string): Promise<number> {
   return countWords(pages.map((page) => page.text).join(" "));
 }
 
+export interface OracleDeps {
+  /**
+   * Counts the words of a VERIFIED .docx. Production runs mammoth in the
+   * heap-capped reader child (`countDocxWordsIsolated`); a test that must
+   * prove mammoth was never reached passes a spy.
+   */
+  countDocxWords?: (verified: Buffer) => Promise<number>;
+}
+
 /**
  * Words the INDEPENDENT extractor sees in the original, or null when there is
  * none for this format.
@@ -712,7 +723,9 @@ async function defaultCountPdfWords(absPath: string): Promise<number> {
  * Independence is the point: an oracle derived from LibreOffice would agree
  * with LibreOffice about text it dropped, and verify nothing.
  *
- *   - `.docx` — mammoth, already a web dependency, reading OOXML directly.
+ *   - `.docx` — mammoth, already a web dependency, reading OOXML directly —
+ *     in the reader child (`xlsx-isolated.ts`), never in this process: its
+ *     DOM costs up to ~300x the markup it parses.
  *   - `.doc`  — `catdoc`, and `.ppt` — `catppt` (Debian `catdoc`, ~1 MB next
  *     to LibreOffice's 422 MB). Both are known to under-report and to mangle
  *     Central/Eastern European diacritics; the lower-bound direction is chosen
@@ -723,22 +736,26 @@ async function defaultCountPdfWords(absPath: string): Promise<number> {
  * A missing binary is not an error: it yields null, the file is recorded
  * `unverified`, and conversion proceeds. Local dev has no catdoc.
  */
-export async function countSourceWordsWithOracle(absPath: string): Promise<number | null> {
+export async function countSourceWordsWithOracle(
+  absPath: string,
+  deps: OracleDeps = {}
+): Promise<number | null> {
   const ext = extname(absPath).toLowerCase();
 
   if (ext === ".docx") {
     try {
       // The same limits the conversion input passed: mammoth inflates the
       // whole archive, so a bomb must not reach it through the oracle's door.
+      // This is the cheap first layer; the reader child's heap cap is what
+      // bounds the memory whatever it misses (sixth review, PR #1243).
       const buffer = await readGuardedDocx(absPath);
-      const { default: mammoth } = await import("mammoth");
-      const { value } = await mammoth.extractRawText({ buffer });
-      return countWords(value);
+      return await (deps.countDocxWords ?? countDocxWordsIsolated)(buffer);
     } catch (err) {
       if (err instanceof OfficeFileRejectedError && err.code === "too_large") {
-        // Too much for mammoth's DOM in this process (or a bomb the
-        // conversion's own preflight refuses as well). Not a failure: the
-        // conversion goes on, without its tripwire.
+        // Too much markup for mammoth's DOM — refused by the scan, or by the
+        // reader child running out of heap — or a bomb the conversion's own
+        // preflight refuses as well. Not a failure: the conversion goes on,
+        // without its tripwire.
         console.warn(`[kb-convert] ${absPath}: word count skipped, unverified — ${err.message}`);
       }
       return null;
@@ -797,7 +814,4 @@ export function runTextOracle(bin: string, absPath: string): Promise<number | nu
   });
 }
 
-/** One word-splitting rule for both sides of the comparison — two rules would make the bound meaningless. */
-export function countWords(text: string): number {
-  return text.split(/\s+/).filter(Boolean).length;
-}
+export { countWords };
