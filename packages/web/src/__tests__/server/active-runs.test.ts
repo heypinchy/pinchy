@@ -220,6 +220,24 @@ describe("ActiveRuns", () => {
     });
   });
 
+  describe("markStreamEnded (OpenClaw ended the reply; the pipe is still finishing up)", () => {
+    it("marks this turn's run, which stays registered until the pipe lets go of it", () => {
+      runs.register({ ...baseRun, ws: fakeWs() });
+
+      runs.markStreamEnded(baseRun.sessionKey, "run-1");
+
+      expect(runs.get(baseRun.sessionKey)?.streamEnded).toBe(true);
+    });
+
+    it("leaves a newer turn that replaced this one alone", () => {
+      runs.register({ ...baseRun, runId: "run-new", ws: fakeWs() });
+
+      runs.markStreamEnded(baseRun.sessionKey, "run-1");
+
+      expect(runs.get(baseRun.sessionKey)?.streamEnded).toBeUndefined();
+    });
+  });
+
   describe("addListener", () => {
     it("adds an additional ws as a listener and returns true when the run exists (Tier 2b multi-tab)", () => {
       const wsA = fakeWs();

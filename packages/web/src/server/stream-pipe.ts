@@ -581,6 +581,23 @@ export class StreamPipe {
         }
       }
 
+      // OpenClaw ended this stream itself, so the reply is over — while the
+      // entry stays registered (and the stop button showing) through the file
+      // delivery below. Mark it: a stop from now on finds nothing running
+      // (`abortSessionRun`), instead of reading as a stop that missed and
+      // having its follow-up report the reply "completed for nobody". Not when
+      // the stream ended because the run was stopped — openclaw-node ends it
+      // with a `done` of its own the moment the abort goes out, whether or not
+      // OpenClaw stopped anything — nor when OpenClaw dropped the socket or the
+      // watchdog tore the run down: neither says the run is over.
+      if (
+        !openclawDisconnected &&
+        !tornDownByWatchdog &&
+        activeRuns.get(sessionKey)?.abortedByUser !== true
+      ) {
+        activeRuns.markStreamEnded(sessionKey, activeRunId ?? initialMessageId);
+      }
+
       // Agent → user file delivery (#703): the OpenClaw gateway does not stream
       // native plugin tool-output text to openclaw-node, so a delivery cannot be
       // observed inline. Instead, once the run's stream has closed, ask OpenClaw

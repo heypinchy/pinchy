@@ -142,12 +142,21 @@ export async function abortSessionRun(
   sessionKey: string,
   options: { request?: AbortRequest; followUp?: FollowUpDeps } = {}
 ): Promise<SessionAbortResult> {
+  // A run whose stream OpenClaw already ended is over: the entry only lingers
+  // while the pipe delivers its files. Nothing is in flight to stop, so it is
+  // treated like a click with nothing in flight — not marked, not followed up
+  // and, by the callers, not audited. Marking it would turn its ordinary end
+  // into a "stop that stopped nothing" whose follow-up then reports the reply
+  // completed for nobody, while the tab that clicked had received all of it.
+  //
   // Mark BEFORE the RPC, not after (#978). OpenClaw answers `chat.abort` and
   // surfaces the abort into the stream as an error independently, and the
   // stream pipe is a different async context — awaiting the RPC first leaves
   // a window where the error chunk arrives while the run still looks healthy,
   // and the whole point is that the pipe can recognise it.
-  const run = activeRuns.markUserAborted(sessionKey);
+  const run = activeRuns.get(sessionKey)?.streamEnded
+    ? undefined
+    : activeRuns.markUserAborted(sessionKey);
   // The first stop names who asked; a second one does not rewrite it.
   if (run && options.request && !run.abortRequest) run.abortRequest = options.request;
   // A PENDING run's runId is provisional — Pinchy's per-turn messageId, which
@@ -163,8 +172,7 @@ export async function abortSessionRun(
   // failed abort — the stop button sends it anyway so it is never a silent
   // no-op, and an unreachable gateway is still a failure.
   const answer = requestAbort(chatAbort, sessionKey, runId, { inFlight: run !== undefined });
-  if (run) recordAbortAttempt(run, answer);
-  const outcome = await answer;
+  const outcome = run ? await recordAbortAttempt(run, answer, runId) : (await answer).outcome;
   if (run && runId !== undefined && outcome === "failure" && options.followUp) {
     pursueAbort(run, sessionKey, runId, options.followUp, { immediate: false });
   }
@@ -172,18 +180,29 @@ export async function abortSessionRun(
 }
 
 /**
- * Send one `chat.abort` and read the gateway's answer as an outcome. Never
- * throws: an unreachable gateway is a `failure`, like any abort that did not
- * stop anything.
+ * The gateway's answer to one `chat.abort`: whether it stopped anything and,
+ * when it says, which runs. `runIds` is undefined for a gateway that did not
+ * say (older builds, or no payload at all).
+ */
+interface AbortAnswer {
+  outcome: "success" | "failure";
+  runIds?: string[];
+}
+
+/**
+ * Send one `chat.abort` and read the gateway's answer. Never throws: an
+ * unreachable gateway is a `failure`, like any abort that did not stop
+ * anything.
  */
 async function requestAbort(
   chatAbort: ChatAbort,
   sessionKey: string,
   runId: string | undefined,
   { inFlight, quiet = false }: { inFlight: boolean; quiet?: boolean }
-): Promise<"success" | "failure"> {
+): Promise<AbortAnswer> {
   try {
-    const res = (await chatAbort(sessionKey, runId)) as { aborted?: unknown } | undefined;
+    const res = (await chatAbort(sessionKey, runId)) as
+      { aborted?: unknown; runIds?: unknown } | undefined;
     // The gateway answers `{ ok, aborted, runIds }`. `ok: true` only means it
     // understood the call — `aborted: false` means it stopped NOTHING, which
     // is the openclaw#42172 failure mode (the reply streams on while the
@@ -202,9 +221,14 @@ async function requestAbort(
           `[abort-runs] gateway reported no run aborted for ${sessionKey} (runId=${runId ?? "none"})`
         );
       }
-      return "failure";
+      return { outcome: "failure" };
     }
-    return "success";
+    // OpenClaw 2026.7.1 answers `{ ok, aborted, runIds }`: every run the call
+    // stopped — for an abort by session, whoever's they are.
+    const runIds = Array.isArray(res?.runIds)
+      ? res.runIds.filter((id): id is string => typeof id === "string")
+      : undefined;
+    return { outcome: "success", runIds };
   } catch (err) {
     if (!quiet) {
       console.warn(
@@ -212,7 +236,7 @@ async function requestAbort(
         err instanceof Error ? err.message : err
       );
     }
-    return "failure";
+    return { outcome: "failure" };
   }
 }
 
@@ -220,20 +244,57 @@ async function requestAbort(
  * Note an abort sent for `run` on the run itself, so anyone can ask whether it
  * took effect (`abortTookEffect`) while the answer is still on its way —
  * OpenClaw ends an aborted run's stream and answers the RPC independently.
- * Any confirmed attempt confirms the run: two answers can cross, and a later
- * "stopped nothing" for a run an earlier abort already stopped is not news.
+ * Two answers can cross, and a later "stopped nothing" for a run an earlier
+ * abort already stopped is not news.
+ *
+ * Resolves to this attempt's verdict FOR THIS RUN, which its sender records.
+ * `namedRunId` is the runId the abort named; an abort by runId stops only that
+ * run, so OpenClaw's `aborted: true` is about it. An abort by session (a
+ * pending run, `namedRunId` undefined) stops every run on the session, and its
+ * `aborted: true` can be about another one — an earlier turn OpenClaw started
+ * after that turn's own stop missed it. It confirms this run only when its
+ * `runIds` include this run's real runId, known once the first chunk named it;
+ * openclaw-node delivers that chunk before OpenClaw's answer arrives, because
+ * it ends the local stream the moment the abort is sent. An answer naming runs
+ * while this run's runId is still unknown confirms nothing yet; the follow-up
+ * credits it once the runId shows up (`pursueAbort`).
+ *
+ * The verdict is in place — `abortConfirmed` included — before anyone waiting
+ * on `abortSettled` resumes.
  */
-function recordAbortAttempt(run: ActiveRun, answer: Promise<"success" | "failure">): void {
-  const settled = answer.then((outcome) => {
-    if (outcome === "success") run.abortConfirmed = true;
+function recordAbortAttempt(
+  run: ActiveRun,
+  answer: Promise<AbortAnswer>,
+  namedRunId: string | undefined
+): Promise<"success" | "failure"> {
+  const verdict = answer.then(({ outcome, runIds }): "success" | "failure" => {
+    if (outcome !== "success") return "failure";
+    const stopped = (run.abortStoppedRunIds ??= new Set());
+    if (namedRunId !== undefined) stopped.add(namedRunId);
+    else if (runIds === undefined) run.abortStoppedUnnamed = true;
+    else for (const id of runIds) stopped.add(id);
+    const ownRunId = namedRunId ?? (run.firstChunkAt !== null ? run.runId : undefined);
+    if (!abortStopped(run, ownRunId)) return "failure";
+    run.abortConfirmed = true;
+    return "success";
   });
+  const settled = verdict.then(() => undefined);
   const earlier = run.abortSettled;
   run.abortSettled = earlier ? Promise.all([earlier, settled]).then(() => undefined) : settled;
+  return verdict;
+}
+
+/** Did an answer to an abort sent for `run` say it stopped `runId`? */
+function abortStopped(run: ActiveRun, runId: string | undefined): boolean {
+  if (run.abortStoppedUnnamed) return true;
+  return runId !== undefined && run.abortStoppedRunIds?.has(runId) === true;
 }
 
 /**
- * Did stopping `run` work? False for a run nobody stopped, and for one whose
- * every abort so far failed. Waits for aborts still in flight.
+ * Did stopping `run` work — did OpenClaw confirm it stopped this run? False
+ * for a run nobody stopped, for one whose every abort so far failed, and for
+ * one whose abort by session stopped only other runs. Waits for aborts still
+ * in flight.
  */
 export async function abortTookEffect(run: ActiveRun): Promise<boolean> {
   if (!run.abortedByUser) return false;
@@ -312,7 +373,18 @@ function pursueAbort(
           FOLLOW_UP_ABORT_DELAYS_MS[Math.min(step, FOLLOW_UP_ABORT_DELAYS_MS.length - 1)]
         );
       }
-      if (await abortTookEffect(run)) return;
+      // Asked of THIS runId, not of the run: a confirmation for another
+      // attempt of the turn, or another run on the session, stops nothing here.
+      await run.abortSettled;
+      if (abortStopped(run, runId)) {
+        // Stopped by an abort whose answer came before this runId was known,
+        // so no row has said so yet.
+        if (!run.abortConfirmed) {
+          run.abortConfirmed = true;
+          await auditFollowUpAbort(run, runId);
+        }
+        return;
+      }
       // Turned away before it became a run: nothing will run, and nothing
       // else will ever say so.
       if (deps.dispatchRejected?.(runId)) return;
@@ -321,15 +393,14 @@ function pursueAbort(
         inFlight: true,
         quiet: true,
       });
-      recordAbortAttempt(run, answer);
-      if ((await answer) === "success") {
-        await auditFollowUpAbort(run, sessionKey, runId);
+      if ((await recordAbortAttempt(run, answer, runId)) === "success") {
+        await auditFollowUpAbort(run, runId);
         return;
       }
 
       const ended = await runEnded(deps, runId);
       if (ended) {
-        if (ended.status === "ok") await auditCompletedAnyway(run, sessionKey, runId);
+        if (ended.status === "ok") await auditCompletedAnyway(run, runId);
         return;
       }
     }
@@ -358,7 +429,15 @@ async function runEnded(deps: FollowUpDeps, runId: string): Promise<AgentWaitRes
   }
 }
 
-async function auditFollowUpAbort(run: ActiveRun, sessionKey: string, runId: string) {
+/*
+ * The rows below carry no `sessionKey`: a web-chat key is
+ * `agent:<agentId>:direct:<userId>`, the run's user's raw id, and `detail` is
+ * stored verbatim in an immutable, HMAC-chained row crypto-erasure cannot
+ * reach (#824). The agent and the runId identify the run; the actor is on the
+ * row, pseudonymized on write.
+ */
+
+async function auditFollowUpAbort(run: ActiveRun, runId: string) {
   if (!run.abortRequest) return;
   await writeAudit({
     actorType: "user",
@@ -367,7 +446,6 @@ async function auditFollowUpAbort(run: ActiveRun, sessionKey: string, runId: str
     resource: `agent:${run.agentId}`,
     detail: {
       agent: { id: run.agentId, name: run.agentName },
-      sessionKey,
       runId,
       reason: run.abortRequest.reason,
       followUp: "aborted_by_run_id",
@@ -376,7 +454,7 @@ async function auditFollowUpAbort(run: ActiveRun, sessionKey: string, runId: str
   });
 }
 
-async function auditCompletedAnyway(run: ActiveRun, sessionKey: string, runId: string) {
+async function auditCompletedAnyway(run: ActiveRun, runId: string) {
   await writeAudit({
     actorType: "user",
     // The run's user, pseudonymized on write. Not repeated in `detail`, which
@@ -386,7 +464,6 @@ async function auditCompletedAnyway(run: ActiveRun, sessionKey: string, runId: s
     resource: `agent:${run.agentId}`,
     detail: {
       agent: { id: run.agentId, name: run.agentName },
-      sessionKey,
       runId,
     },
     outcome: "success",
@@ -410,7 +487,6 @@ export async function auditStoppedBeforeDispatch(run: ActiveRun): Promise<void> 
     resource: `agent:${run.agentId}`,
     detail: {
       agent: { id: run.agentId, name: run.agentName },
-      sessionKey: run.sessionKey,
       // No run reached OpenClaw, so there is no gateway runId to name.
       runId: null,
       reason: run.abortRequest.reason,
@@ -462,8 +538,11 @@ export async function abortRunsOfUser(
   }
 ): Promise<AbortedRun[]> {
   // Snapshot first: an abort can finish a run and remove it from the registry
-  // while this loop is still walking it.
-  const theirs = [...deps.activeRuns.values()].filter((run) => run.userId === userId);
+  // while this loop is still walking it. A run whose stream OpenClaw already
+  // ended is not in flight (see `abortSessionRun`): nothing to stop or report.
+  const theirs = [...deps.activeRuns.values()].filter(
+    (run) => run.userId === userId && !run.streamEnded
+  );
   const request: AbortRequest | undefined = deps.requestedBy
     ? { actorId: deps.requestedBy, reason: "account_deactivated" }
     : undefined;

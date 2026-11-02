@@ -246,14 +246,16 @@ describe("DELETE /api/users/:id with the user's chat open", () => {
       }
       expect(rows).toHaveLength(1);
       expect(rows[0]).toMatchObject({ actorType: "user", outcome: "success" });
+      // No sessionKey: it is `agent:<id>:direct:<userId>`, the deactivated
+      // user's raw id in a verbatim row crypto-erasure cannot reach (#824).
       expect(rows[0].detail).toEqual({
         agent: { id: "agent-ops", name: "Ops Agent" },
-        sessionKey: leaving,
         runId: "gateway-run-1",
         reason: "account_deactivated",
       });
       // #824: the acting admin is the pseudonymized actorId, never a raw id.
       expect(JSON.stringify(rows[0].detail)).not.toContain(admin.id);
+      expect(JSON.stringify(rows[0].detail)).not.toContain(member.id);
     } finally {
       runs.delete(leaving);
       runs.delete(staying);
@@ -324,20 +326,22 @@ describe("DELETE /api/users/:id with the user's chat open", () => {
       expect(rows).toHaveLength(2);
       expect(byOutcome.failure.detail).toEqual({
         agent: { id: "agent-late", name: "Late Agent" },
-        sessionKey: leaving,
         runId: "gateway-run-3",
         reason: "account_deactivated",
       });
       expect(byOutcome.success.detail).toEqual({
         agent: { id: "agent-late", name: "Late Agent" },
-        sessionKey: leaving,
         runId: "gateway-run-3",
         reason: "account_deactivated",
         followUp: "aborted_by_run_id",
       });
       // Same actor as the deactivation's own row: the admin, pseudonymized.
       expect(byOutcome.success.actorId).toBe(byOutcome.failure.actorId);
-      expect(JSON.stringify(byOutcome.success.detail)).not.toContain(admin.id);
+      // Neither the admin's raw id nor the deactivated user's (#824).
+      for (const row of rows) {
+        expect(JSON.stringify(row.detail)).not.toContain(admin.id);
+        expect(JSON.stringify(row.detail)).not.toContain(member.id);
+      }
     } finally {
       runs.delete(leaving);
     }

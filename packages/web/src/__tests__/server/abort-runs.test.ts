@@ -28,6 +28,7 @@ import {
   dispatchWasRejected,
   reAbortStartedRun,
   watchDispatchRejections,
+  type AbortRequest,
   type FollowUpDeps,
 } from "@/server/abort-runs";
 
@@ -114,6 +115,87 @@ describe("abortSessionRun", () => {
     expect(chatAbort).toHaveBeenCalledWith("agent:a:direct:u1", undefined);
     expect(result.runId).toBeUndefined();
     expect(result.outcome).toBe("success");
+  });
+
+  describe("for a pending run, aborted by session", () => {
+    // An abort by session stops every run on it and OpenClaw answers with
+    // their runIds — which need not include this one. openclaw-node ends the
+    // local stream the moment `chatAbort` is called, so the run's first chunk
+    // (and its real runId) arrives before OpenClaw's answer does.
+    function abortReconcilingTo(runs: ActiveRuns, realRunId: string, answer: unknown) {
+      return vi.fn(async () => {
+        runs.markFirstChunk("s1", 2_000, realRunId);
+        return answer;
+      });
+    }
+
+    it("is a failure when OpenClaw stopped only another run on the session", async () => {
+      const runs = new ActiveRuns();
+      const run = pendingRun(runs, "s1", "u1");
+
+      const result = await abortSessionRun(
+        runs,
+        abortReconcilingTo(runs, "run-real", { ok: true, aborted: true, runIds: ["run-other"] }),
+        "s1"
+      );
+
+      expect(result.outcome).toBe("failure");
+      expect(await abortTookEffect(run)).toBe(false);
+    });
+
+    it("is a success when OpenClaw names this run among those it stopped", async () => {
+      const runs = new ActiveRuns();
+      const run = pendingRun(runs, "s1", "u1");
+
+      const result = await abortSessionRun(
+        runs,
+        abortReconcilingTo(runs, "run-real", {
+          ok: true,
+          aborted: true,
+          runIds: ["run-other", "run-real"],
+        }),
+        "s1"
+      );
+
+      expect(result.outcome).toBe("success");
+      expect(await abortTookEffect(run)).toBe(true);
+    });
+
+    it("is a failure while the run's own runId is still unknown, whichever runs OpenClaw names", async () => {
+      const runs = new ActiveRuns();
+      const run = pendingRun(runs, "s1", "u1");
+
+      const result = await abortSessionRun(
+        runs,
+        vi.fn().mockResolvedValue({ ok: true, aborted: true, runIds: ["run-real"] }),
+        "s1"
+      );
+
+      expect(result.outcome).toBe("failure");
+      expect(await abortTookEffect(run)).toBe(false);
+    });
+  });
+
+  it("leaves a run whose stream already ended alone: nothing is running to stop", async () => {
+    // OpenClaw finished the reply; the pipe is still delivering the run's
+    // files, so the entry (and the stop button) is still there.
+    const runs = new ActiveRuns();
+    const run = startedRun(runs, "s1", "u1");
+    runs.markStreamEnded("s1", "run-s1");
+    const chatAbort = vi.fn().mockResolvedValue({ ok: true, aborted: false, runIds: [] });
+    const { deps } = followUp();
+
+    const result = await abortSessionRun(runs, chatAbort, "s1", {
+      request: { actorId: "u1", reason: "user_request" },
+      followUp: deps,
+    });
+
+    expect(result.run).toBeUndefined();
+    expect(run.abortedByUser).toBe(false);
+    // Still sent, as for a click with nothing in flight: never a silent no-op.
+    expect(chatAbort).toHaveBeenCalledWith("s1", undefined);
+    expect(run.abortFollowUp).toBeUndefined();
+    expect(deps.abortRun).not.toHaveBeenCalled();
   });
 
   it("reports a failure when the gateway stopped nothing or could not be reached", async () => {
@@ -244,6 +326,64 @@ describe("reAbortStartedRun", () => {
     expect(deps.abortRun).not.toHaveBeenCalled();
   });
 
+  it("keeps aborting by the real runId when the abort by session stopped another run", async () => {
+    const runs = new ActiveRuns();
+    pendingRun(runs, "s1", "u1");
+    await abortSessionRun(
+      runs,
+      vi.fn(async () => {
+        runs.markFirstChunk("s1", 2_000, "run-real");
+        return { ok: true, aborted: true, runIds: ["run-earlier-turn"] };
+      }),
+      "s1",
+      { request: { actorId: "u1", reason: "user_request" } }
+    );
+    const run = runs.get("s1")!;
+    const { deps } = followUp({
+      abortRun: vi.fn().mockResolvedValue({ ok: true, aborted: true, runIds: ["run-real"] }),
+    });
+
+    await reAbortStartedRun(run, "s1", "run-real", deps);
+
+    expect(deps.abortRun).toHaveBeenCalledWith("s1", "run-real");
+    expect(await abortTookEffect(run)).toBe(true);
+    expect(auditRows("chat.run_aborted")).toEqual([
+      expect.objectContaining({
+        outcome: "success",
+        detail: expect.objectContaining({ runId: "run-real", followUp: "aborted_by_run_id" }),
+      }),
+    ]);
+  });
+
+  it("records the stop once the run's runId shows it was among those an earlier answer named", async () => {
+    // The answer to the abort by session came before the first chunk named the
+    // run, so the first row could not credit it. The run is stopped: no further
+    // abort, and the trail must not end on that failure.
+    const runs = new ActiveRuns();
+    pendingRun(runs, "s1", "u1");
+    const first = await abortSessionRun(
+      runs,
+      vi.fn().mockResolvedValue({ ok: true, aborted: true, runIds: ["run-real"] }),
+      "s1",
+      { request: { actorId: "u1", reason: "user_request" } }
+    );
+    expect(first.outcome).toBe("failure");
+    runs.markFirstChunk("s1", 2_000, "run-real");
+    const run = runs.get("s1")!;
+    const { deps } = followUp();
+
+    await reAbortStartedRun(run, "s1", "run-real", deps);
+
+    expect(deps.abortRun).not.toHaveBeenCalled();
+    expect(await abortTookEffect(run)).toBe(true);
+    expect(auditRows("chat.run_aborted")).toEqual([
+      expect.objectContaining({
+        outcome: "success",
+        detail: expect.objectContaining({ runId: "run-real", followUp: "aborted_by_run_id" }),
+      }),
+    ]);
+  });
+
   it("leaves the run unconfirmed when the follow-up fails too", async () => {
     const runs = new ActiveRuns();
     pendingRun(runs, "s1", "u1");
@@ -300,7 +440,6 @@ describe("reAbortStartedRun", () => {
           outcome: "success",
           detail: {
             agent: { id: "agent-1", name: "Agent agent-1" },
-            sessionKey: "s1",
             runId: "run-real",
             reason: "account_deactivated",
             followUp: "aborted_by_run_id",
@@ -333,7 +472,6 @@ describe("reAbortStartedRun", () => {
           // raw id in the verbatim detail would survive crypto-erasure (#824).
           detail: {
             agent: { id: "agent-1", name: "Agent agent-1" },
-            sessionKey: "s1",
             runId: "run-real",
           },
         }),
@@ -571,13 +709,35 @@ describe("auditStoppedBeforeDispatch", () => {
         resource: "agent:agent-1",
         detail: {
           agent: { id: "agent-1", name: "Agent agent-1" },
-          sessionKey: "s1",
           runId: null,
           reason: "user_request",
           followUp: "stopped_before_dispatch",
         },
         outcome: "success",
       },
+    ]);
+  });
+
+  it("records that the stop took effect when the abort by session stopped only other runs", async () => {
+    // Nothing of this turn reached OpenClaw, so whatever that abort stopped,
+    // it was not this turn.
+    const runs = new ActiveRuns();
+    const run = pendingRun(runs, "s1", "u1");
+    const first = await abortSessionRun(
+      runs,
+      vi.fn().mockResolvedValue({ ok: true, aborted: true, runIds: ["run-earlier-turn"] }),
+      "s1",
+      { request: { actorId: "u1", reason: "user_request" } }
+    );
+
+    await auditStoppedBeforeDispatch(run);
+
+    expect(first.outcome).toBe("failure");
+    expect(auditRows("chat.run_aborted")).toEqual([
+      expect.objectContaining({
+        outcome: "success",
+        detail: expect.objectContaining({ followUp: "stopped_before_dispatch" }),
+      }),
     ]);
   });
 
@@ -660,6 +820,17 @@ describe("abortRunsOfUser", () => {
     ]);
   });
 
+  it("leaves a run whose stream already ended out: there is nothing to stop or report", async () => {
+    const runs = new ActiveRuns();
+    startedRun(runs, "agent:a:direct:leaver", "leaver", "a");
+    runs.markStreamEnded("agent:a:direct:leaver", "run-agent:a:direct:leaver");
+    const chatAbort = vi.fn();
+
+    expect(await abortRunsOfUser("leaver", { activeRuns: runs, chatAbort })).toEqual([]);
+    expect(chatAbort).not.toHaveBeenCalled();
+    expect(runs.get("agent:a:direct:leaver")?.abortedByUser).toBe(false);
+  });
+
   it("keeps going when one abort fails, and reports which one", async () => {
     const runs = new ActiveRuns();
     startedRun(runs, "s1", "leaver", "a");
@@ -674,5 +845,69 @@ describe("abortRunsOfUser", () => {
 
     expect(aborted.find((r) => r.sessionKey === "s1")?.outcome).toBe("failure");
     expect(aborted.find((r) => r.sessionKey === "s2")?.outcome).toBe("success");
+  });
+});
+
+describe("the rows the follow-up writes (#824)", () => {
+  // A web-chat sessionKey is `agent:<agentId>:direct:<userId>`: the run's
+  // user's raw id. `detail` is stored verbatim in an immutable, HMAC-chained
+  // row that crypto-erasure cannot reach, so these rows carry the agent and
+  // the runId, never the key. The actor is on the row, pseudonymized.
+  const userId = "usr-leaving-42";
+  const sessionKey = `agent:agent-1:direct:${userId}`;
+
+  async function stoppedPendingRun(
+    request: AbortRequest = { actorId: userId, reason: "user_request" }
+  ) {
+    const runs = new ActiveRuns();
+    pendingRun(runs, sessionKey, userId);
+    await abortSessionRun(
+      runs,
+      vi.fn().mockResolvedValue({ ok: true, aborted: false, runIds: [] }),
+      sessionKey,
+      { request }
+    );
+    return runs;
+  }
+
+  function expectNoUserIdIn(rows: Array<{ detail: Record<string, unknown> }>) {
+    expect(rows.length).toBeGreaterThan(0);
+    for (const row of rows) {
+      expect(row.detail).not.toHaveProperty("sessionKey");
+      expect(JSON.stringify(row.detail)).not.toContain(userId);
+    }
+  }
+
+  it("aborted_by_run_id", async () => {
+    const runs = await stoppedPendingRun();
+    runs.markFirstChunk(sessionKey, 2_000, "run-real");
+    const { deps } = followUp({
+      abortRun: vi.fn().mockResolvedValue({ ok: true, aborted: true, runIds: ["run-real"] }),
+    });
+
+    await reAbortStartedRun(runs.get(sessionKey)!, sessionKey, "run-real", deps);
+
+    expectNoUserIdIn(auditRows("chat.run_aborted"));
+  });
+
+  it("stopped_before_dispatch", async () => {
+    const runs = await stoppedPendingRun();
+
+    await auditStoppedBeforeDispatch(runs.get(sessionKey)!);
+
+    expectNoUserIdIn(auditRows("chat.run_aborted"));
+  });
+
+  it("chat.run_completed_after_disconnect", async () => {
+    const runs = await stoppedPendingRun({ actorId: "admin-1", reason: "account_deactivated" });
+    runs.markFirstChunk(sessionKey, 2_000, "run-real");
+    const { deps } = followUp({
+      abortRun: vi.fn().mockResolvedValue({ ok: true, aborted: false, runIds: [] }),
+      agentWait: vi.fn().mockResolvedValue({ status: "ok", endedAt: 9_000 }),
+    });
+
+    await reAbortStartedRun(runs.get(sessionKey)!, sessionKey, "run-real", deps);
+
+    expectNoUserIdIn(auditRows("chat.run_completed_after_disconnect"));
   });
 });

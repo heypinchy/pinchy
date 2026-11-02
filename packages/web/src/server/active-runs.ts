@@ -107,11 +107,31 @@ export interface ActiveRun {
    * Did an abort of this run actually stop it? `abortedByUser` only says one
    * was asked for. The RPC can throw, or OpenClaw can answer `aborted: false`
    * (it was not running the run yet, or no longer), and then the reply may
-   * still finish. Set to true by the first abort OpenClaw confirms
-   * (`abort-runs.ts`); never set back. Read through `abortTookEffect`, not
-   * directly: the answer may still be on its way when the stream ends.
+   * still finish. An abort by session can also answer `aborted: true` for a
+   * DIFFERENT run on the session. Set to true once OpenClaw confirms it
+   * stopped this run, by its runId — and a row says so (`abort-runs.ts`);
+   * never set back. Read through `abortTookEffect`, not directly: the answer
+   * may still be on its way when the stream ends.
    */
   abortConfirmed?: boolean;
+  /**
+   * Every runId an answer to an abort sent for this run said it stopped. An
+   * abort by session names them all, whoever's they are; this run is among
+   * them only if its own runId is.
+   */
+  abortStoppedRunIds?: Set<string>;
+  /**
+   * An abort by session was confirmed by a gateway that did not say which runs
+   * it stopped (no `runIds` — older builds). Taken at its word, as before.
+   */
+  abortStoppedUnnamed?: boolean;
+  /**
+   * OpenClaw ended this run's stream itself: the reply is over. Set by the
+   * stream pipe when the stream ends other than by an abort, while the entry
+   * may still be registered (the post-run file delivery runs before the pipe
+   * lets go of it). A stop now finds nothing running.
+   */
+  streamEnded?: boolean;
   /** Settles once every abort sent for this run so far has been answered. */
   abortSettled?: Promise<void>;
   /**
@@ -261,6 +281,15 @@ export class ActiveRuns {
     if (!run || run.runId !== fromRunId) return undefined;
     run.runId = toRunId;
     return run;
+  }
+
+  /**
+   * OpenClaw ended the stream of the run identified by `runId` (see
+   * `streamEnded`). Marked only while the entry is still that run's.
+   */
+  markStreamEnded(sessionKey: string, runId: string): void {
+    const run = this.runs.get(sessionKey);
+    if (run && run.runId === runId) run.streamEnded = true;
   }
 
   /**

@@ -811,15 +811,16 @@ describe("ClientRouter ↔ ActiveRuns wiring (#310 Tier 2a)", () => {
           actorId,
           eventType: "chat.run_aborted",
           resource: "agent:agent-1",
+          // No sessionKey: it names the run's user by raw id (#824).
           detail: {
             agent: { id: "agent-1", name: "Smithers" },
-            sessionKey,
             runId: null,
             reason,
             followUp: "stopped_before_dispatch",
           },
           outcome: "success",
         });
+        expect(JSON.stringify(rows.at(-1)?.detail)).not.toContain("user-1");
       }
     );
   });
@@ -993,6 +994,93 @@ describe("ClientRouter ↔ ActiveRuns wiring (#310 Tier 2a)", () => {
 
       expect(gw.aborts).toEqual([{ sessionKey, runId: undefined, aborted: true }]);
     });
+
+    it.each(stoppers)(
+      "is still aborted by its runId when %s's abort by session stopped an earlier turn instead",
+      async (_label, stop) => {
+        // A pending turn is aborted by session, and OpenClaw answers with every
+        // run that abort stopped. Here that is an EARLIER turn of the same
+        // session — stopped while OpenClaw prepared it, and started by OpenClaw
+        // before its own follow-up got to it. Its `aborted: true` says nothing
+        // about this turn, which OpenClaw starts afterwards, tools included.
+        const r = router();
+        const t0 = await send(r, 0);
+        await r.handleMessage(t0.ws, { type: "abort", agentId: "agent-1" } as never);
+        await t0.handling;
+        await vi.waitFor(() => expect(gw.aborts).toHaveLength(2));
+        const t1 = await send(r, 1);
+
+        gw.accept(t0.gwRun.runId);
+        await stop(r, t1.ws);
+        await t1.handling;
+        expect(t0.gwRun.state).toBe("aborted");
+        // OpenClaw starts this turn now.
+        gw.accept(t1.gwRun.runId);
+        await vi.waitFor(() => expect(t1.gwRun.state).toBe("aborted"), { timeout: 5_000 });
+        expect(gw.runTool(t1.gwRun.runId, "odoo_write")).toBe(false);
+        await t1.run.abortFollowUp;
+
+        expect(t1.gwRun.toolsRun).toEqual([]);
+        expect(gw.aborts).toContainEqual({
+          sessionKey,
+          runId: t1.gwRun.runId,
+          aborted: true,
+        });
+        // The only success on the trail is the abort that stopped THIS turn —
+        // not a row crediting it with the earlier turn's stop.
+        expect(auditRows("chat.run_aborted").filter((row) => row.outcome === "success")).toEqual([
+          expect.objectContaining({
+            detail: expect.objectContaining({
+              runId: t1.gwRun.runId,
+              followUp: "aborted_by_run_id",
+            }),
+          }),
+        ]);
+      }
+    );
+
+    it.each(stoppers)(
+      "is neither aborted again nor recorded as completed when %s lands after the reply streamed in full",
+      async (_label, stop) => {
+        // OpenClaw finished the reply and the tab has all of it, but the pipe
+        // is still asking OpenClaw for the run's files, so it has not sent
+        // `complete` yet: the stop button still shows. A stop now stops
+        // nothing, because nothing is running — that is not a reply that
+        // "completed with nobody receiving it".
+        let releaseArtifacts!: () => void;
+        const held = new Promise<void>((res) => (releaseArtifacts = res));
+        let polling = false;
+        const request = client.request.bind(client);
+        (client as unknown as { request: typeof client.request }).request = (async (
+          method: string,
+          params?: unknown
+        ) => {
+          if (method === "artifacts.list") {
+            polling = true;
+            await held;
+          }
+          return request(method as never, params as never);
+        }) as never;
+        const r = router();
+        const t0 = await send(r, 0);
+        gw.accept(t0.gwRun.runId);
+        gw.emitText(t0.gwRun.runId, "All booked.");
+        gw.finish(t0.gwRun.runId);
+        await vi.waitFor(() => expect(polling).toBe(true));
+        expect(activeRuns.get(sessionKey)).toBeDefined();
+
+        await stop(r, t0.ws);
+        releaseArtifacts();
+        await t0.handling;
+        await t0.run.abortFollowUp;
+
+        expect(t0.ws.sent.some((f) => f.includes("All booked."))).toBe(true);
+        expect(gw.aborts.filter((a) => a.runId !== undefined)).toEqual([]);
+        expect(gw.calls.some((c) => c.method === "agent.wait")).toBe(false);
+        expect(auditRows("chat.run_completed_after_disconnect")).toEqual([]);
+        expect(auditRows("chat.run_aborted")).toEqual([]);
+      }
+    );
 
     it("is not aborted at all when nobody stopped it", async () => {
       const r = router();

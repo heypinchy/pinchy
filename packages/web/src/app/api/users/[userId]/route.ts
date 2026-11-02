@@ -170,9 +170,12 @@ export async function DELETE(
       actorId: session.user.id!,
       eventType: "chat.run_aborted",
       resource: `agent:${aborted.agent.id}`,
+      // No `sessionKey`: a web-chat key is `agent:<id>:direct:<userId>`, the
+      // deactivated user's raw id, and `detail` is out of crypto-erasure's
+      // reach (#824). The agent and the runId identify the run; the user is
+      // the `resource` of this request's `user.deleted` row.
       detail: {
         agent: aborted.agent,
-        sessionKey: aborted.sessionKey,
         // Null while pending: the trail must not point at a runId the gateway
         // never issued.
         runId: aborted.runId ?? null,
