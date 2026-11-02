@@ -5,7 +5,7 @@ import { ApprovalCard } from "../approval-card";
 import { buildApprovalPrompt } from "@/lib/approvals/prompt";
 import { makeRefResolver } from "@/lib/approvals/call-models";
 import { renderText, summarizeArgs, type SummarizeOptions } from "@/lib/approvals/summary";
-import { displayScalar } from "@/lib/approvals/display";
+import { displayScalar, quoted } from "@/lib/approvals/display";
 // pinchy-odoo's own encoder, so the refs below are real ones — see
 // call-models.test.ts for why this crosses the package boundary.
 import { encodeRef, _resetKeyCacheForTest } from "../../../../plugins/pinchy-odoo/integration-ref";
@@ -201,6 +201,63 @@ describe("a host note past the whole-view bound", () => {
     const html = card({ email: `rechnungen.${"x".repeat(8_200)}@f\u0456rma.at` });
     expect(html).toMatch(/Show full text/);
     expect(visibleText(html)).toContain("xn--frma-l9d.at");
+  });
+});
+
+/**
+ * Fifteenth review of #1242. A record's label comes from Odoo, where anyone
+ * who can name a partner writes it. Drawn between bare `"`, the label
+ * `x" — res.partner #12 "Acme GmbH` made the card read as naming #12 while
+ * the prompt, which escapes it, did not.
+ */
+describe("a record label that holds quotes", () => {
+  const label = 'x" — res.partner #12 "Acme GmbH';
+  let forgedRef: string;
+  beforeAll(() => {
+    forgedRef = encodeRef({
+      integrationType: "odoo",
+      connectionId: "c1",
+      model: "res.partner",
+      id: 666,
+      label,
+    });
+  });
+
+  it("is quoted and escaped on the card exactly as in the prompt", () => {
+    const html = card({ partner_id: forgedRef });
+    expect(html).toContain('data-annotation="ref"');
+    expect(visibleText(html)).toContain(`res.partner #666 ${quoted(label)}`);
+    expect(prompt({ partner_id: forgedRef })).toContain(`res.partner #666 ${quoted(label)}`);
+  });
+});
+
+/**
+ * Fifteenth review of #1242. Past the whole-view bound the host of an address
+ * sits behind "Show full text", and a host note was only written when the
+ * host reads differently from what it resolves to. An ASCII host never does —
+ * so two long addresses that differ only in where they go collapsed to the
+ * same card. Past the bound, the host is always named.
+ */
+describe("a long address with a plain ASCII host", () => {
+  const pad = "intranet.firma.at.".repeat(470);
+  const cases: [string, (host: string) => Record<string, unknown>][] = [
+    ["an email address", (host) => ({ email: `buchhaltung.${pad}@${host}` })],
+    ["a URL", (host) => ({ website: `https://${pad}@${host}/x` })],
+    ["a recipient", (host) => ({ to: `buchhaltung.${pad}@${host}` })],
+  ];
+
+  it.each(cases)("names the host of %s on the collapsed card", (_name, params) => {
+    const evil = card(params("evil.example"));
+    const look = card(params("firma.at.xyz"));
+    expect(evil).toMatch(/Show full text/);
+    expect(evil).not.toBe(look);
+    expect(evil).toContain('data-annotation="host"');
+    expect(visibleText(evil)).toContain("host evil.example");
+    expect(visibleText(look)).toContain("host firma.at.xyz");
+  });
+
+  it("is not named for an address short enough to be drawn whole", () => {
+    expect(card({ email: "buchhaltung@evil.example" })).not.toContain("data-annotation=");
   });
 });
 

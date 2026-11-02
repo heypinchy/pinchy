@@ -8,27 +8,18 @@ import {
   displayScalar,
   inStoredOrder,
   isAddressShaped,
+  modelText,
+  quoted,
   readNode,
   secretText,
   splitTruncation,
   type SummaryNode,
   type SummaryNote,
+  WHOLE_MAX,
 } from "@/lib/approvals/display";
 
 /** Texts longer than this show a preview first, with the full text on demand. */
 const PREVIEW_LEN = 200;
-
-/**
- * A target or an address is drawn whole up to this many characters, as shown.
- * It holds every real one: pinchy-files caps a path at 1,024 characters, and
- * the widest a character is shown is an eight-character marker (`⟨U+200D⟩`).
- * Past it, the value is previewed like any long text, with the rest one click
- * away. Unbounded, it froze the approver's tab: Chromium lays out a long
- * mixed-direction text in time that grows faster than its length — 13 s for
- * one 200,000-character value, against under 40 ms at this size (fourteenth
- * review of #1242).
- */
-const WHOLE_MAX = 8_192;
 
 /**
  * `text` drawn in the order it was sent (`inStoredOrder`): each line held in
@@ -58,13 +49,39 @@ function StoredOrder({ text }: { text: string }) {
 }
 
 /**
+ * What is drawn, hidden from assistive technology, and what is read in its
+ * place. The dashed label that sets an annotation apart from a value, and the
+ * element boundary that sets one value apart from the next, are seen, not
+ * read: a screen reader got `record reference res.partner #7 "Acme GmbH"` for
+ * a real record reference and for a string of those words alike (fifteenth
+ * review of #1242). So the card says it in words, as the prompt does: a string
+ * is read `quoted()`, its own `"` escaped, and an annotation as a note that
+ * says it is Pinchy's. The read copy can't be selected, so a copied value is
+ * still the drawn one, and it is held left to right in one override: left to
+ * the bidi algorithm, 8,192 alternating Hebrew letters and digits took
+ * Chromium another 60 ms to lay out, unseen. The order a screen reader reads
+ * in is the stored one either way.
+ */
+function Spoken({ drawn, spoken }: { drawn: ReactNode; spoken: string }) {
+  return (
+    <>
+      <span aria-hidden="true">{drawn}</span>
+      <bdo dir="ltr" className="sr-only select-none">
+        {spoken}
+      </bdo>
+    </>
+  );
+}
+
+/**
  * A string value as the summary stored it: whitespace kept (`pre-wrap`), a
  * string that would read as a literal shown quoted (`displayScalar`), and a
  * long text previewed — unless `full`, for the fields that say who an action
  * reaches or where it lands, which are short and are the decision, or unless
  * the value itself is an email address or a URL, at any key: its host is the
  * decision too, and it sits at the END of an address, exactly where a preview
- * cuts (fourth review of #1242). Those are drawn whole up to WHOLE_MAX.
+ * cuts (fourth review of #1242). Those are drawn whole up to WHOLE_MAX; past
+ * it, the summary names the host in a note beside the preview.
  *
  * The truncation marker the summary appends to a value it cut is shown
  * OUTSIDE the preview: inside it, it sat in exactly the part the preview
@@ -83,18 +100,32 @@ function TextValue({ text, full }: { text: string; full: boolean }) {
   if (chars.length <= PREVIEW_LEN || (decision && chars.length <= WHOLE_MAX)) {
     return (
       <span className="break-words">
-        <span className="whitespace-pre-wrap">
-          <StoredOrder text={shown} />
-        </span>
+        <Spoken
+          drawn={
+            <span className="whitespace-pre-wrap">
+              <StoredOrder text={shown} />
+            </span>
+          }
+          spoken={quoted(split.text)}
+        />
         {marker}
       </span>
     );
   }
   return (
     <span className="break-words">
-      <span className="whitespace-pre-wrap">
-        <StoredOrder text={expanded ? shown : `${chars.slice(0, PREVIEW_LEN).join("")}…`} />
-      </span>
+      <Spoken
+        drawn={
+          <span className="whitespace-pre-wrap">
+            <StoredOrder text={expanded ? shown : `${chars.slice(0, PREVIEW_LEN).join("")}…`} />
+          </span>
+        }
+        spoken={
+          expanded
+            ? quoted(split.text)
+            : `${quoted([...split.text].slice(0, PREVIEW_LEN).join(""))}…`
+        }
+      />
       {!expanded && (
         <span className="text-muted-foreground">
           {" "}
@@ -122,14 +153,19 @@ function TextValue({ text, full }: { text: string; full: boolean }) {
  * text, `boss@fіrma.at (xn--frma-l9d.at)` read exactly like a value typed with
  * those characters, and past the preview bound the note sat behind "Show full
  * text" (fourteenth review of #1242). A value's text can't draw this element.
+ * Nor can it be read as one: it is a `note`, read as Pinchy's, while a value
+ * is read in quotes (`Spoken`).
  */
 function Annotation({ kind, children }: { kind: string; children: ReactNode }) {
   return (
-    <span
-      data-annotation={kind}
-      className="ml-1 inline-block rounded border border-dashed px-1 font-sans text-xs text-muted-foreground"
-    >
-      {children}
+    <span role="note">
+      <span className="sr-only select-none"> Pinchy note: </span>
+      <span
+        data-annotation={kind}
+        className="ml-1 inline-block rounded border border-dashed px-1 font-sans text-xs text-muted-foreground"
+      >
+        {children}
+      </span>
     </span>
   );
 }
@@ -161,9 +197,12 @@ function NodeValue({ node, full }: { node: SummaryNode; full: boolean }) {
     case "ref":
       return (
         <Annotation kind="ref">
-          record reference <span className="font-mono">{node.model}</span> #{node.id} {'"'}
-          <StoredOrder text={node.label} />
-          {'"'}
+          {/* The label is Odoo's display name, which anyone who can name a
+              partner writes: quoted and escaped, like the prompt's, so
+              `x" — res.partner #12 "Acme` can't close it early (fifteenth
+              review of #1242). */}
+          record reference <span className="font-mono">{modelText(node.model)}</span> #{node.id}{" "}
+          <StoredOrder text={quoted(node.label)} />
           {node.labelCut > 0 && ` … (label cut: ${node.labelCut} more characters not shown)`}
         </Annotation>
       );

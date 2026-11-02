@@ -104,6 +104,7 @@ import {
   FULL_VIEW_KEYS,
   TARGET_KEYS,
   URL_SHAPED,
+  WHOLE_MAX,
   noteText,
   refText,
   secretText,
@@ -479,10 +480,10 @@ function bounded(text: string, budget: Budget): string {
 /**
  * The punycode form of a non-ASCII host: `boss@fіrma.at` with a Cyrillic "і"
  * renders exactly like the real domain, and its ASCII form (`xn--…`) is what
- * shows that it is not.
+ * shows that it is not. With `always`, an ASCII host is named too.
  */
-function punycodeNote(host: string | null): SummaryNote | null {
-  if (host === null || /^[\x00-\x7F]*$/.test(host)) return null;
+function punycodeNote(host: string | null, always = false): SummaryNote | null {
+  if (host === null || (!always && /^[\x00-\x7F]*$/.test(host))) return null;
   const ascii = domainToASCII(host);
   return ascii ? { kind: "host", host: ascii } : { kind: "not-a-domain" };
 }
@@ -497,7 +498,7 @@ function punycodeNote(host: string | null): SummaryNote | null {
  * differs from the text's. A non-special scheme keeps an opaque,
  * percent-encoded host, which is decoded to read as the domain it names.
  */
-function urlNote(value: string, textHost: string): SummaryNote | null {
+function urlNote(value: string, textHost: string, always: boolean): SummaryNote | null {
   let host: string;
   try {
     host = new URL(value).hostname;
@@ -511,7 +512,19 @@ function urlNote(value: string, textHost: string): SummaryNote | null {
       // Not decodable: show it as the parser holds it.
     }
   }
-  return host.toLowerCase() === textHost.toLowerCase() ? null : { kind: "host", host };
+  return !always && host.toLowerCase() === textHost.toLowerCase() ? null : { kind: "host", host };
+}
+
+/**
+ * Past WHOLE_MAX the card previews an address like any long text, and its
+ * host sits at the end, behind "Show full text". A note was written only for
+ * a host that reads differently from where it goes — an ASCII one never does,
+ * so `buchhaltung.intranet.firma.at.…@evil.example` and `…@firma.at.xyz`
+ * collapsed to the same card (fifteenth review of #1242). Past the bound, the
+ * host is always named. `shown` is the value as rendered, what the card counts.
+ */
+function hidesHost(shown: string): boolean {
+  return codePointLength(shown) > WHOLE_MAX;
 }
 
 /**
@@ -519,9 +532,12 @@ function urlNote(value: string, textHost: string): SummaryNote | null {
  * email address or a URL. Free text that merely contains one is left alone:
  * rewriting the middle of a mail body is not what the card is for.
  */
-function hostNotes(value: string): SummaryNote[] {
+function hostNotes(value: string, shown: string): SummaryNote[] {
+  const always = hidesHost(shown);
   const url = URL_SHAPED.exec(value);
-  const note = url ? urlNote(value, url[1]) : punycodeNote(EMAIL_SHAPED.exec(value)?.[1] ?? null);
+  const note = url
+    ? urlNote(value, url[1], always)
+    : punycodeNote(EMAIL_SHAPED.exec(value)?.[1] ?? null, always);
   return note ? [note] : [];
 }
 
@@ -581,7 +597,8 @@ function summarizeString(
     const head = renderText(headCodePoints(value, MAX_STRING_LEN), target);
     return bounded(head, budget) + truncationMarker(length - MAX_STRING_LEN);
   }
-  return noted(bounded(renderText(value, target), budget), hostNotes(value), budget);
+  const shown = renderText(value, target);
+  return noted(bounded(shown, budget), hostNotes(value, shown), budget);
 }
 
 /**
@@ -629,14 +646,15 @@ function describeRecipient(entry: string, budget: Budget): string | SummaryNode 
   const address = named ? named[2].replace(ENTRY_PADDING, "") : entry;
   const at = address.lastIndexOf("@");
   const notes: SummaryNote[] = [];
-  const host = punycodeNote(at < 0 ? null : address.slice(at + 1));
+  const shown = renderText(address);
+  const host = punycodeNote(at < 0 ? null : address.slice(at + 1), hidesHost(shown));
   if (host) notes.push(host);
   let name = named ? named[1].replace(ENTRY_PADDING, "") : "";
   if (name.length >= 2 && name.startsWith('"') && name.endsWith('"')) {
     name = name.slice(1, -1).replace(/\\([\s\S])/gu, "$1");
   }
   if (name) notes.push({ kind: "name", name: renderText(name) });
-  return noted(bounded(renderText(address), budget), notes, budget);
+  return noted(bounded(shown, budget), notes, budget);
 }
 
 function summarizeRecipients(value: unknown, budget: Budget, path: string): unknown | undefined {

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi } from "vitest";
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { cleanup, configure, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { ApprovalCard } from "../approval-card";
@@ -18,6 +18,28 @@ function approval(argsSummary: Record<string, unknown> | null, toolName = "email
     createdAt: "",
     expiresAt: "",
   } satisfies PendingApproval;
+}
+
+/**
+ * Every string value is drawn once for the eye and once, quoted and hidden,
+ * for a screen reader (`Spoken` in approval-card.tsx). The text queries here
+ * read what is DRAWN; what is read aloud is checked through `spokenText`.
+ */
+configure({ defaultIgnore: "script, style, .sr-only" });
+
+/** The card's text as assistive technology reads it: everything but what is
+ * hidden from it with `aria-hidden`. */
+function spokenText(node: Node): string {
+  if (node.nodeType === Node.TEXT_NODE) return node.textContent ?? "";
+  if (node instanceof Element && node.getAttribute("aria-hidden") === "true") return "";
+  return [...node.childNodes].map(spokenText).join("");
+}
+
+/** The card's text as it is drawn: everything but the screen-reader copy. */
+function drawnText(node: Node): string {
+  if (node.nodeType === Node.TEXT_NODE) return node.textContent ?? "";
+  if (node instanceof Element && node.classList.contains("sr-only")) return "";
+  return [...node.childNodes].map(drawnText).join("");
 }
 
 function renderCard(argsSummary: Record<string, unknown> | null, toolName?: string) {
@@ -44,7 +66,8 @@ describe("ApprovalCard shows what will actually run", () => {
     renderCard({ to: ["chef@firma.at", "angreifer@evil.com"] });
     const list = screen.getByRole("list");
     const items = within(list).getAllByRole("listitem");
-    expect(items.map((item) => item.textContent)).toEqual(["chef@firma.at", "angreifer@evil.com"]);
+    expect(items.map(drawnText)).toEqual(["chef@firma.at", "angreifer@evil.com"]);
+    expect(items.map(spokenText)).toEqual(['"chef@firma.at"', '"angreifer@evil.com"']);
   });
 
   // End to end from the raw call: a trailing-space "to " key used to be merged
@@ -377,6 +400,89 @@ describe("ApprovalCard shows what will actually run", () => {
         /cannot show/
       );
       expect(screen.queryByText("res.partner")).not.toBeInTheDocument();
+    });
+  });
+
+  /**
+   * Fifteenth review of #1242. The dashed label tells an annotation from a
+   * value only to the eye. A screen reader, and anything else that reads the
+   * card's text, got the same characters for both: a real record reference
+   * and the plain string `record reference res.partner #7 "Acme GmbH"` — which
+   * pinchy-odoo resolves by name — read identically. So the card says it in
+   * words, the way the prompt does: every string value is read in quotes,
+   * escaped, and every annotation as a note that says it is Pinchy's.
+   */
+  describe("reads a value apart from an annotation without seeing the card", () => {
+    const pairs: [string, Record<string, unknown>, Record<string, unknown>][] = [
+      [
+        "a record reference and its words typed as a string",
+        {
+          partner_id: { "@": "ref", model: "res.partner", id: 7, label: "Acme GmbH", labelCut: 0 },
+        },
+        { partner_id: 'record reference res.partner #7 "Acme GmbH"' },
+      ],
+      [
+        "an address with its host note and the note typed after it",
+        summarizeArgs({ email: "boss@f\u0456rma.at" }),
+        { email: "boss@f\u0456rma.athost xn--frma-l9d.at" },
+      ],
+      [
+        "a named recipient and the name typed after the address",
+        summarizeArgs({ to: '"Ada" <ada@example.com>' }),
+        { to: "ada@example.comname Ada" },
+      ],
+    ];
+
+    it.each(pairs)("for %s", (_name, annotated, typed) => {
+      const real = renderCard(annotated).container;
+      const realSpoken = spokenText(real);
+      const realText = real.textContent;
+      expect(screen.getAllByRole("note").length).toBeGreaterThan(0);
+      cleanup();
+      const forged = renderCard(typed).container;
+      expect(screen.queryAllByRole("note")).toHaveLength(0);
+      expect(spokenText(forged)).not.toBe(realSpoken);
+      expect(forged.textContent).not.toBe(realText);
+      cleanup();
+    });
+
+    it("reads a string value in quotes, escaped, and a literal without", () => {
+      const { container } = renderCard({
+        name: 'record reference res.partner #7 "Acme GmbH"',
+        flag: "false",
+        active: false,
+      });
+      const spoken = spokenText(container);
+      expect(spoken).toContain('"record reference res.partner #7 \\"Acme GmbH\\""');
+      expect(spoken).toContain('flag"false"');
+      expect(spoken).toContain("activefalse");
+    });
+
+    it("reads an annotation as Pinchy's note, outside the value's quotes", () => {
+      const { container } = renderCard(summarizeArgs({ email: "boss@f\u0456rma.at" }));
+      expect(spokenText(container)).toContain(
+        '"boss@f\u0456rma.at" Pinchy note: host xn--frma-l9d.at'
+      );
+    });
+
+    // Left to the bidi algorithm, the unseen copy of 8,192 alternating Hebrew
+    // letters and digits tripled the card's layout time in Chromium.
+    it("holds the read copy in one left-to-right override, which costs no bidi layout", () => {
+      const { container } = renderCard({ path: "\u05d01".repeat(4_096) });
+      const copies = container.querySelectorAll(".sr-only");
+      expect(copies.length).toBeGreaterThan(0);
+      const copy = [...copies].find((el) => el.textContent?.includes("\u05d01"))!;
+      expect(copy.tagName).toBe("BDO");
+      expect(copy).toHaveAttribute("dir", "ltr");
+      expect(copy.children).toHaveLength(0);
+    });
+
+    it("reads only the preview of a collapsed text, quoted, and says the rest is hidden", () => {
+      const { container } = renderCard({ body: `${"a".repeat(200)}SECRET-TAIL` });
+      const spoken = spokenText(container);
+      expect(spoken).toContain(`"${"a".repeat(200)}"…`);
+      expect(spoken).toContain("(11 more characters hidden)");
+      expect(spoken).not.toContain("SECRET-TAIL");
     });
   });
 

@@ -69,6 +69,23 @@ export const EMAIL_SHAPED = /^[^\s@<>,;/]+@([^\s@<>,;/:?#]+)$/u;
 export const URL_SHAPED = /^[A-Za-z][A-Za-z0-9+.-]*:\/\/(?:[^/?#\s@]*@)?(\[[^\]]*\]|[^/?#\s:]+)/u;
 
 /**
+ * A target or an address is drawn whole on the card up to this many
+ * characters, as shown. It holds every real one: pinchy-files caps a path at
+ * 1,024 characters, and the widest a character is shown is an
+ * eight-character marker (`⟨U+200D⟩`). Past it, the value is previewed like
+ * any long text, with the rest one click away. Unbounded, it froze the
+ * approver's tab: Chromium lays out a long mixed-direction text in time that
+ * grows faster than its length — 13 s for one 200,000-character value
+ * (fourteenth review of #1242). At this size the whole card lays out in under
+ * 50 ms in headless Chromium for the worst shape measured, 8,192 alternating
+ * Hebrew letters and digits (one isolate per letter): 38–47 ms, against
+ * 6–8 ms for a Hebrew or Arabic path of the same length. And past it,
+ * the summary always names an address's host (`summary.ts`), since the host
+ * sits at the end, behind the preview (fifteenth review).
+ */
+export const WHOLE_MAX = 8_192;
+
+/**
  * Is this value an email address or a URL — the shapes whose host is the
  * decision? The card never shortens one to a preview: a 217-character address
  * whose `@evil.com` sits past the cut reads as the familiar name its local
@@ -179,7 +196,7 @@ export function noteText(note: SummaryNote): string {
 }
 
 /** A model name as the prompt prints it: bare when it is a plain identifier. */
-function modelText(model: string): string {
+export function modelText(model: string): string {
   return /^[A-Za-z0-9_.-]+$/.test(model) ? model : quoted(model);
 }
 
