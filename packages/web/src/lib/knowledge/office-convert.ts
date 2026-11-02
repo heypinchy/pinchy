@@ -63,9 +63,13 @@ import {
   OfficeFileRejectedError,
   isOfficeFile,
 } from "./office-formats";
-import { prepareOfficeSource, readGuardedDocx, type PreparedSource } from "./office-preflight";
+import type { StagedSource } from "./office-preflight";
 import { extractPdfPages } from "./pdf-extract";
-import { countDocxWordsIsolated } from "./xlsx-isolated";
+import {
+  countDocxWordsIsolated,
+  SheetReaderStoppedError,
+  stageOfficeSourceIsolated,
+} from "./xlsx-isolated";
 
 /**
  * Re-exported so this module stays the one place a caller has to know about
@@ -183,16 +187,21 @@ export interface ConvertProgress {
 }
 
 /**
- * Vets one source and returns the bytes to convert — or `null` to convert the
- * file in place, through a link (what the tests that fake the converter use).
- * Throws `OfficeFileRejectedError` for a file that must not reach a reader.
+ * Vets one source and writes the bytes to convert to `staged`, answering with
+ * what it did — or `null` to convert the file in place, through a link (what
+ * the tests that fake the converter use). Throws `OfficeFileRejectedError` for
+ * a file that must not reach a reader, and `SheetReaderStoppedError` when the
+ * process doing the vetting stopped without a verdict.
  */
-export type PrepareSource = (absPath: string) => Promise<PreparedSource | null>;
+export type PrepareSource = (absPath: string, staged: string) => Promise<StagedSource | null>;
 
 export interface ConvertOptions {
   store?: OfficeArtifactStore;
   runConverter?: RunConverter;
-  /** Defaults to the real preflight (./office-preflight.ts). */
+  /**
+   * Defaults to the real preflight (./office-preflight.ts), run in the reader
+   * child (`stageOfficeSourceIsolated`): this process never holds the file.
+   */
   prepareSource?: PrepareSource;
   /** Words in the converted PDF. Prod: the pdfjs text layer (./pdf-extract.ts). */
   countPdfWords?: (absPath: string) => Promise<number>;
@@ -227,7 +236,7 @@ export async function convertOfficeFiles(
 
   const store = options.store ?? getOfficeArtifactStore();
   const runConverter = options.runConverter ?? runSoffice;
-  const prepareSource = options.prepareSource ?? prepareOfficeSource;
+  const prepareSource = options.prepareSource ?? defaultPrepareSource;
   const countPdfWords = options.countPdfWords ?? defaultCountPdfWords;
   const countSourceWords = options.countSourceWords ?? countSourceWordsWithOracle;
   const batchSize = Math.max(1, options.batchSize ?? DEFAULT_BATCH_SIZE);
@@ -301,6 +310,10 @@ interface BatchDeps {
   epsilon: number;
 }
 
+/** The production preparer: the preflight, in the reader child. */
+const defaultPrepareSource: PrepareSource = (absPath, staged) =>
+  stageOfficeSourceIsolated(absPath, staged);
+
 /**
  * Converts one batch in a single converter process.
  *
@@ -346,7 +359,9 @@ async function convertBatch(batch: WorkItem[], deps: BatchDeps): Promise<Convers
     for (const [i, item] of batch.entries()) {
       const staged = join(inDir, `${i}${extname(item.absPath).toLowerCase()}`);
       try {
-        const prepared = await deps.prepareSource(item.absPath);
+        // One file at a time, in the reader child: it reads, checks and
+        // writes the copy at `staged`, and this process gets the metadata.
+        const prepared = await deps.prepareSource(item.absPath, staged);
         if (prepared) {
           if (prepared.altChunksRemoved > 0) {
             // Unlike a cut picture link, a cut altChunk costs text: the
@@ -355,7 +370,6 @@ async function convertBatch(batch: WorkItem[], deps: BatchDeps): Promise<Convers
               `[kb-office] ${item.absPath}: cut ${prepared.altChunksRemoved} altChunk(s) — content embedded in another format is not indexed`
             );
           }
-          await writeFile(staged, prepared.data);
           // NOT the hash from the run's first read of the file: that read and
           // this one can see different bytes, and the artifact must be filed
           // under the content it was converted from.
@@ -363,10 +377,19 @@ async function convertBatch(batch: WorkItem[], deps: BatchDeps): Promise<Convers
         } else await symlink(item.absPath, staged);
         inputs.push(staged);
       } catch (err) {
-        outcomes[i] =
-          err instanceof OfficeFileRejectedError
-            ? documentFailure(item.absPath, `refused before conversion: ${err.message}`)
-            : documentFailure(item.absPath, `could not stage source: ${reasonOf(err)}`);
+        if (err instanceof OfficeFileRejectedError) {
+          outcomes[i] = documentFailure(item.absPath, `refused before conversion: ${err.message}`);
+        } else if (err instanceof SheetReaderStoppedError) {
+          // The child stopped without a verdict — killed by the system, out
+          // of time, never started. Nothing is known about this document:
+          // read it again next run, and keep what the index has meanwhile.
+          outcomes[i] = infrastructureFailure(
+            item.absPath,
+            `could not check the source: ${err.message}`
+          );
+        } else {
+          outcomes[i] = documentFailure(item.absPath, `could not stage source: ${reasonOf(err)}`);
+        }
       }
     }
 
@@ -709,11 +732,11 @@ async function defaultCountPdfWords(absPath: string): Promise<number> {
 
 export interface OracleDeps {
   /**
-   * Counts the words of a VERIFIED .docx. Production runs mammoth in the
-   * heap-capped reader child (`countDocxWordsIsolated`); a test that must
-   * prove mammoth was never reached passes a spy.
+   * Counts the words of the .docx at a path. Production reads it through the
+   * guard and runs mammoth, both in the heap-capped reader child
+   * (`countDocxWordsIsolated`), so this process never holds the file.
    */
-  countDocxWords?: (verified: Buffer) => Promise<number>;
+  countDocxWords?: (absPath: string) => Promise<number>;
 }
 
 /**
@@ -744,12 +767,11 @@ export async function countSourceWordsWithOracle(
 
   if (ext === ".docx") {
     try {
-      // The same limits the conversion input passed: mammoth inflates the
-      // whole archive, so a bomb must not reach it through the oracle's door.
-      // This is the cheap first layer; the reader child's heap cap is what
-      // bounds the memory whatever it misses (sixth review, PR #1243).
-      const buffer = await readGuardedDocx(absPath);
-      return await (deps.countDocxWords ?? countDocxWordsIsolated)(buffer);
+      // The child reads the file through the same limits the conversion
+      // input passed — mammoth inflates the whole archive, so a bomb must not
+      // reach it through the oracle's door — and its heap cap bounds the
+      // memory whatever those limits miss (sixth review, PR #1243).
+      return await (deps.countDocxWords ?? countDocxWordsIsolated)(absPath);
     } catch (err) {
       if (err instanceof OfficeFileRejectedError && err.code === "too_large") {
         // Too much markup for mammoth's DOM — refused by the scan, or by the

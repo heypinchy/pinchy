@@ -36,9 +36,9 @@ import {
   type RunConverter,
 } from "@/lib/knowledge/office-convert";
 import { OfficeArtifactStore } from "@/lib/knowledge/office-artifacts";
-import { prepareOfficeSource } from "@/lib/knowledge/office-preflight";
+import { MAX_DOCX_MARKUP_BYTES } from "../../../../../plugins/pinchy-files/docx-zip-guard";
 import { OfficeFileRejectedError } from "@/lib/knowledge/office-formats";
-import { countDocxWordsIsolated } from "@/lib/knowledge/xlsx-isolated";
+import { countDocxWordsIsolated, stageOfficeSourceIsolated } from "@/lib/knowledge/xlsx-isolated";
 import {
   declaredBomb,
   docxWith,
@@ -113,6 +113,15 @@ function fakeConverter(options: FakeConverterOptions): FakeConverter {
   };
   return { run, calls };
 }
+
+/** The error `promise` rejects with; fails the test if it resolves. */
+const rejection = (promise: Promise<unknown>) =>
+  promise.then(
+    () => {
+      throw new Error("expected a rejection");
+    },
+    (err: unknown) => err as Error
+  );
 
 /** Reads back the stand-in PDF the fake converter wrote and counts its words. */
 async function fakeCountPdfWords(absPath: string): Promise<number> {
@@ -729,13 +738,17 @@ describe("preflight before conversion (release review v0.10.0)", () => {
       deps(
         { run: converter.run, calls: [] },
         {
-          prepareSource: async () => ({
-            data: Buffer.from("CHECKED COPY"),
-            relationshipsRemoved: 2,
-            altChunksRemoved: 0,
-            rtfGroupsRemoved: 0,
-            contentHash: "0".repeat(64),
-          }),
+          // The preparer writes the checked copy where it is told to; this
+          // process gets the metadata.
+          prepareSource: async (_absPath, staged) => {
+            await writeFile(staged, "CHECKED COPY");
+            return {
+              relationshipsRemoved: 2,
+              altChunksRemoved: 0,
+              rtfGroupsRemoved: 0,
+              contentHash: "0".repeat(64),
+            };
+          },
         }
       )
     );
@@ -758,13 +771,15 @@ describe("preflight before conversion (release review v0.10.0)", () => {
         deps(
           { run: converter.run, calls: [] },
           {
-            prepareSource: async () => ({
-              data: Buffer.from("CHECKED COPY"),
-              relationshipsRemoved: 1,
-              altChunksRemoved: 2,
-              rtfGroupsRemoved: 0,
-              contentHash: "0".repeat(64),
-            }),
+            prepareSource: async (_absPath, staged) => {
+              await writeFile(staged, "CHECKED COPY");
+              return {
+                relationshipsRemoved: 1,
+                altChunksRemoved: 2,
+                rtfGroupsRemoved: 0,
+                contentHash: "0".repeat(64),
+              };
+            },
           }
         )
       );
@@ -800,11 +815,11 @@ describe("preflight before conversion (release review v0.10.0)", () => {
         { run: echoing, calls: [] },
         {
           store,
-          prepareSource: async (absPath) => {
+          prepareSource: async (absPath, staged) => {
             // The planter rewrites the file after the run hashed it, before
             // the preflight reads it.
             await writeFile(absPath, "{\\rtf1 SECOND}");
-            return prepareOfficeSource(absPath);
+            return stageOfficeSourceIsolated(absPath, staged);
           },
         }
       )
@@ -879,12 +894,14 @@ describe("preflight before conversion (release review v0.10.0)", () => {
     // preflight refuses — it opens the same file.
     const bomb = join(tmpRoot, "bomb.docx");
     await writeFile(bomb, declaredBomb(0xfffffffe, "word/document.xml"));
+    expect(await countSourceWordsWithOracle(bomb)).toBeNull();
     // A null alone proves little (mammoth would fail on this archive too), so
-    // pin that it was never asked. mammoth runs in the reader child (sixth
-    // review); `countDocxWords` is the only way to it.
-    const countDocxWords = vi.fn(async () => 0);
-    expect(await countSourceWordsWithOracle(bomb, { countDocxWords })).toBeNull();
-    expect(countDocxWords).not.toHaveBeenCalled();
+    // pin WHO said no: the guard, in the reader child, before mammoth — whose
+    // failure would come back as a plain error, not as a refusal.
+    const err = await rejection(countDocxWordsIsolated(bomb));
+    expect(err).toBeInstanceOf(OfficeFileRejectedError);
+    expect((err as OfficeFileRejectedError).code).toBe("too_large");
+    expect(err.message).not.toMatch(/needed more than/);
   });
 
   it("does not hand the oracle's mammoth a .docx that lies about its size, or one behind a junk prefix", async () => {
@@ -910,34 +927,36 @@ describe("preflight before conversion (release review v0.10.0)", () => {
       prefixed,
       Buffer.concat([Buffer.alloc(64, 0x41), docxWith({ documentRels: relationships() })])
     );
-    const countDocxWords = vi.fn(async () => 0);
-    expect(await countSourceWordsWithOracle(lying, { countDocxWords })).toBeNull();
-    expect(await countSourceWordsWithOracle(prefixed, { countDocxWords })).toBeNull();
-    expect(countDocxWords).not.toHaveBeenCalled();
+    for (const path of [lying, prefixed]) {
+      expect(await countSourceWordsWithOracle(path)).toBeNull();
+      expect(await rejection(countDocxWordsIsolated(path))).toBeInstanceOf(OfficeFileRejectedError);
+    }
   });
 });
 
 describe("the word-count oracle's markup ceiling (fourth review, PR #1243)", () => {
-  // mammoth's DOM costs up to ~300x the XML it parses, and the oracle runs in
-  // the web process: a 1.9 MB .docx with a 31 MiB document part peaked at
-  // 2.9 GB. The oracle is a tripwire, not a gate — past the ceiling it is
-  // skipped, the conversion goes on, and the document is recorded unverified.
+  // mammoth's DOM costs up to ~300x the XML it parses: a 1.9 MB .docx with a
+  // 31 MiB document part peaked at 2.9 GB. The oracle is a tripwire, not a
+  // gate — past the ceiling it is skipped, the conversion goes on, and the
+  // document is recorded unverified.
   it("skips a document with more markup than it may parse, says so, and never calls mammoth", async () => {
     const big = join(tmpRoot, "long.docx");
     await writeFile(
       big,
       docxWith({
         documentRels: relationships(),
-        body: "<w:p><w:r><w:t>word</w:t></w:r></w:p>".repeat(60_000),
+        body: "<w:p><w:r><w:t>word</w:t></w:r></w:p>".repeat(
+          Math.ceil((MAX_DOCX_MARKUP_BYTES + 1) / 37)
+        ),
       })
     );
-    const countDocxWords = vi.fn(async () => 0);
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
-      expect(await countSourceWordsWithOracle(big, { countDocxWords })).toBeNull();
-      expect(countDocxWords).not.toHaveBeenCalled();
+      expect(await countSourceWordsWithOracle(big)).toBeNull();
+      // The guard's words, not mammoth's and not the heap's: refused before
+      // a DOM was built.
       expect(warn.mock.calls.map((call) => String(call[0])).join("\n")).toMatch(
-        /unverified.*markup/
+        /unverified.*bytes of markup to parse/
       );
     } finally {
       warn.mockRestore();
@@ -947,7 +966,7 @@ describe("the word-count oracle's markup ceiling (fourth review, PR #1243)", () 
   it("still counts a document whose picture is bigger than that ceiling", async () => {
     const photo = Buffer.concat([
       Buffer.from("89504e470d0a1a0a", "hex"),
-      randomBytes(3 * 1024 * 1024),
+      randomBytes(MAX_DOCX_MARKUP_BYTES + 1024 * 1024),
     ]);
     const withPhoto = join(tmpRoot, "photo.docx");
     await writeFile(
@@ -994,8 +1013,12 @@ describe("the word-count oracle reads in a heap-capped child (sixth review, PR #
   });
 
   it("refuses a document past the child's heap — and this process stays small", async () => {
-    // Unguarded on purpose: this is what a scan bypass hands the reader.
-    const docx = docxWith({ documentRels: relationships(), body: tinyParagraphs(4 * 1024 * 1024) });
+    // Inside the markup ceiling, which only predicts; the heap is the bound.
+    const path = join(tmpRoot, "tiny.docx");
+    await writeFile(
+      path,
+      docxWith({ documentRels: relationships(), body: tinyParagraphs(4 * 1024 * 1024) })
+    );
     const baseline = process.memoryUsage().rss;
     let peak = baseline;
     const sampler = setInterval(() => {
@@ -1003,7 +1026,7 @@ describe("the word-count oracle reads in a heap-capped child (sixth review, PR #
     }, 10);
     let err: unknown;
     try {
-      await countDocxWordsIsolated(docx, { maxHeapMb: 64 });
+      await countDocxWordsIsolated(path, { maxHeapMb: 64 });
     } catch (e) {
       err = e;
     } finally {

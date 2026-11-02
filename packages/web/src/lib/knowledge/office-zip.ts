@@ -19,13 +19,14 @@ import {
   crc32,
   locateEntryData,
   readZipEntries,
+  zipChunks,
   type ZipEntryInfo,
   type ZipPart,
 } from "../../../../plugins/pinchy-files/docx-zip-guard";
 
 import { OfficeFileRejectedError } from "./office-formats";
 
-export { assembleZip, crc32, readZipEntries };
+export { assembleZip, crc32, readZipEntries, zipChunks };
 export type { ZipEntryInfo, ZipPart };
 
 function unreadable(detail: string): OfficeFileRejectedError {

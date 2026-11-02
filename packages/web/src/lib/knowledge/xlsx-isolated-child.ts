@@ -1,8 +1,8 @@
 /**
  * The spreadsheet reader's child process — the other half of
  * `xlsx-isolated.ts`, which forks this file with a capped heap and explains
- * why. It reads ONE request (a workbook, a range of rows, or a .docx's word
- * count), answers it, and exits.
+ * why. It reads ONE request (a workbook, a range of rows, a .docx's word
+ * count, or an Office file to stage for conversion), answers it, and exits.
  *
  * Everything that is not the read lives in the parent; this file only makes
  * itself the expendable process and relays.
@@ -12,6 +12,7 @@ import { writeFileSync } from "node:fs";
 import mammoth from "mammoth";
 
 import { countWords, OfficeFileRejectedError } from "./office-formats";
+import { readGuardedDocx, stageOfficeSource } from "./office-preflight";
 import { extractXlsx, readSheetRange, XlsxExtractionError } from "./xlsx-extract";
 import type { SheetReaderFailure, SheetReaderMessage, SheetReaderRequest } from "./xlsx-isolated";
 
@@ -40,11 +41,13 @@ function toFailure(err: unknown): SheetReaderFailure {
   return { kind: "error", message: err instanceof Error ? err.message : String(err) };
 }
 
-/** The words mammoth sees in a verified .docx — the conversion's oracle. */
-async function docxWords(data: Uint8Array): Promise<number> {
-  // Structured clone hands a Buffer over as a plain Uint8Array.
-  const buffer = Buffer.from(data.buffer, data.byteOffset, data.byteLength);
-  const { value } = await mammoth.extractRawText({ buffer });
+/**
+ * The words mammoth sees in a .docx — the conversion's oracle. Read through
+ * the same guard the conversion input passed: mammoth inflates the whole
+ * archive, so a bomb must not reach it through the oracle's door.
+ */
+async function docxWords(path: string): Promise<number> {
+  const { value } = await mammoth.extractRawText({ buffer: await readGuardedDocx(path) });
   return countWords(value);
 }
 
@@ -55,7 +58,9 @@ function read(request: SheetReaderRequest): Promise<unknown> {
     case "rows":
       return readSheetRange(request.path, request.sheet, request.startRow, request.endRow);
     case "docx-words":
-      return docxWords(request.data);
+      return docxWords(request.path);
+    case "stage-office":
+      return stageOfficeSource(request.path, request.dest);
   }
 }
 

@@ -796,6 +796,17 @@ function isRedundantZip64End(
 
 /** Writes `parts` as a plain (non-ZIP64) archive: fresh headers, no data descriptors, entries copied as given. */
 export function assembleZip(parts: readonly ZipPart[]): Buffer {
+  return Buffer.concat(zipChunks(parts));
+}
+
+/**
+ * The archive `assembleZip` writes, as its pieces in order — headers, each
+ * part's own `data` (not a copy of it), the directory. Written one after
+ * another they are the same file, without the second copy of every entry that
+ * concatenating them costs: what lets the knowledge base stage a 200 MB deck
+ * holding it once, not twice.
+ */
+export function zipChunks(parts: readonly ZipPart[]): Buffer[] {
   if (parts.length >= 0xffff) throw new ZipLimitError("Archive has too many entries to write.");
 
   const chunks: Buffer[] = [];
@@ -848,5 +859,5 @@ export function assembleZip(parts: readonly ZipPart[]): Buffer {
   eocd.writeUInt32LE(directory.length, 12);
   eocd.writeUInt32LE(offset, 16);
 
-  return Buffer.concat([...chunks, directory, eocd]);
+  return [...chunks, directory, eocd];
 }

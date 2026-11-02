@@ -52,11 +52,27 @@
  * time a 13 KB file worth ~900 MB in the web process. Behind this fence, a
  * wrong prediction costs the child, never the server. It shares the gate, so
  * the memory one child may use is still the memory all of them use.
+ *
+ * And it stages every Word and PowerPoint file for conversion
+ * (`stageOfficeSourceIsolated`, seventh review, PR #1243): reads it, checks
+ * it, writes the checked copy where the converter will find it, and answers
+ * with what it did — never with the bytes. In the web process that staging
+ * held a file up to three times over (the original, the verified copy, the
+ * sanitized one, each up to 200 MB) and the oracle read it once more: one
+ * ~190 MB deck cost the server +570 MB before LibreOffice started, which
+ * beside the embedding model OOM-killed a 1 GB container — and a run requeued
+ * at boot killed it again. Those copies are Buffers, which the heap cap does
+ * not bound; what keeps them off the server is that they are never in it, and
+ * `oom_score_adj` is what makes the CHILD the one the kernel kills when they
+ * do not fit. A child that stops without the heap banner throws
+ * `SheetReaderStoppedError`, which the converter books as infrastructure: the
+ * file is read again next run, and the index keeps what it had.
  */
 import { fork, type ChildProcess } from "node:child_process";
 import { join } from "node:path";
 
 import { OfficeFileRejectedError } from "./office-formats";
+import type { StagedSource } from "./office-preflight";
 import {
   XlsxExtractionError,
   type SheetRange,
@@ -87,12 +103,21 @@ const CHILD_ENTRY = join(process.cwd(), "src/lib/knowledge/xlsx-isolated-child.t
 export type SheetReaderRequest =
   | { op: "extract"; path: string; options?: XlsxExtractOptions }
   | { op: "rows"; path: string; sheet: string | null; startRow: number; endRow: number }
-  /** Words mammoth sees in `data`, a VERIFIED .docx (`readGuardedDocx`). */
-  | { op: "docx-words"; data: Uint8Array };
+  /** Words mammoth sees in the .docx at `path`, read through `readGuardedDocx`. */
+  | { op: "docx-words"; path: string }
+  /** The Office file at `path`, checked and written to `dest` (`stageOfficeSource`). */
+  | { op: "stage-office"; path: string; dest: string };
 
 /** What the reader is called in its errors and log lines: the job it was doing. */
 function readerName(request: SheetReaderRequest): string {
-  return request.op === "docx-words" ? "word-count reader" : "spreadsheet reader";
+  switch (request.op) {
+    case "docx-words":
+      return "word-count reader";
+    case "stage-office":
+      return "Office preflight";
+    default:
+      return "spreadsheet reader";
+  }
 }
 
 /** A failure the child diagnosed itself, carried across the process boundary by kind. */
@@ -147,6 +172,20 @@ export class SheetReaderBusyError extends Error {
   constructor(waiting: number) {
     super(`the spreadsheet reader is busy: ${waiting} reads are already waiting`);
     this.name = "SheetReaderBusyError";
+  }
+}
+
+/**
+ * The child ended without an answer that is about the file: it could not be
+ * started, never got ready, ran out of time, crashed, or was killed from
+ * outside without V8's heap banner (the container's OOM killer, which
+ * `oom_score_adj` aims at the child whatever filled the memory). Nothing is
+ * known about the file; it is read again next run.
+ */
+export class SheetReaderStoppedError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "SheetReaderStoppedError";
   }
 }
 
@@ -252,14 +291,16 @@ function deathError(
     );
   }
   if (timedOut) {
-    return new Error(`the ${opts.name} took longer than ${opts.timeoutMs / 1000} s`);
+    return new SheetReaderStoppedError(
+      `the ${opts.name} took longer than ${opts.timeoutMs / 1000} s`
+    );
   }
   if (signal === "SIGKILL") {
-    return new Error(
+    return new SheetReaderStoppedError(
       `the ${opts.name} was killed while reading (by the system, most likely out of memory)`
     );
   }
-  return new Error(
+  return new SheetReaderStoppedError(
     `the ${opts.name} stopped while reading (${signal ?? `exit code ${code}`}): ${stderr.trim().slice(0, 500)}`
   );
 }
@@ -288,7 +329,7 @@ function runChild(request: SheetReaderRequest, options: SheetReaderOptions): Pro
         serialization: "advanced",
       });
     } catch (err) {
-      reject(new Error(`the ${name} could not be started`, { cause: err }));
+      reject(new SheetReaderStoppedError(`the ${name} could not be started`, { cause: err }));
       return;
     }
 
@@ -335,7 +376,7 @@ function runChild(request: SheetReaderRequest, options: SheetReaderOptions): Pro
       if (answered) return;
       answered = true;
       settle();
-      reject(new Error(`the ${name} could not be started`, { cause: err }));
+      reject(new SheetReaderStoppedError(`the ${name} could not be started`, { cause: err }));
     });
 
     child.on("exit", (code, exitSignal) => {
@@ -349,7 +390,7 @@ function runChild(request: SheetReaderRequest, options: SheetReaderOptions): Pro
       if (!ready && !timedOut) {
         // It never got as far as reading, so nothing here is about the file.
         reject(
-          new Error(
+          new SheetReaderStoppedError(
             `the ${name} exited before it was ready (${exitSignal ?? `exit code ${code}`}): ${stderr.trim().slice(0, 500)}`
           )
         );
@@ -401,15 +442,36 @@ export async function readSheetRangeIsolated(
 }
 
 /**
- * The words mammoth sees in a VERIFIED .docx (`readGuardedDocx`), counted in
- * a child process — the conversion's word-count oracle. Same fence, same gate
- * and same errors as the spreadsheet reads: a document whose read ran out of
- * heap is refused (`OfficeFileRejectedError("too_large")`), any other death is
- * a plain error.
+ * The words mammoth sees in the .docx at `absPath`, counted in a child
+ * process — the conversion's word-count oracle. The child reads the file
+ * itself, through the same guard the conversion input passed
+ * (`readGuardedDocx`), so this process never holds it. Same fence, same gate
+ * and same errors as the spreadsheet reads: a document the guard refuses, or
+ * whose read ran out of heap, is refused (`OfficeFileRejectedError`); any
+ * other death is a `SheetReaderStoppedError`.
  */
 export async function countDocxWordsIsolated(
-  verified: Buffer,
+  absPath: string,
   readerOptions: SheetReaderOptions = {}
 ): Promise<number> {
-  return (await runSheetReader({ op: "docx-words", data: verified }, readerOptions)) as number;
+  return (await runSheetReader({ op: "docx-words", path: absPath }, readerOptions)) as number;
+}
+
+/**
+ * `stageOfficeSource`, in a child process: the Office file at `absPath` is
+ * read, checked and written to `dest` there, and only what was done comes
+ * back. Refusals — the preflight's own, or a check that ran out of heap —
+ * are `OfficeFileRejectedError`; a child that stopped any other way is a
+ * `SheetReaderStoppedError`; a file the child could not read or write
+ * (vanished, unreadable) is a plain error.
+ */
+export async function stageOfficeSourceIsolated(
+  absPath: string,
+  dest: string,
+  readerOptions: SheetReaderOptions = {}
+): Promise<StagedSource> {
+  return (await runSheetReader(
+    { op: "stage-office", path: absPath, dest },
+    readerOptions
+  )) as StagedSource;
 }

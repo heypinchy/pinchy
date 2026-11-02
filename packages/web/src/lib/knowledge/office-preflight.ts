@@ -85,7 +85,7 @@
  * backtracks on a hostile file blocks the web process the KB worker runs in.
  */
 import { createHash } from "node:crypto";
-import { open, type FileHandle } from "node:fs/promises";
+import { open, writeFile, type FileHandle } from "node:fs/promises";
 import { extname } from "node:path";
 
 import {
@@ -104,7 +104,9 @@ import {
   inflatePart,
   rawPart,
   readZipEntries,
+  zipChunks,
   type ZipEntryInfo,
+  type ZipPart,
 } from "./office-zip";
 
 const MiB = 1024 * 1024;
@@ -112,8 +114,14 @@ const MiB = 1024 * 1024;
 /**
  * The largest Office file we will load to convert. Past it the file is listed
  * as unsearchable instead. 200 MiB is well beyond any document a person writes
- * (a deck full of photographs is the realistic extreme) and small enough that
- * the copy we stage cannot threaten the heap.
+ * (a deck full of photographs is the realistic extreme).
+ *
+ * The file is staged in the reader child (`stageOfficeSource`), never in the
+ * server, holding at most two copies: measured in the shipped image, a 190 MB
+ * deck took the child to 483 MB and the server by nothing (seventh review,
+ * PR #1243; in the server it had cost +570 MB). Where the container cannot fit
+ * that beside what the server already holds, the kernel kills the child —
+ * its `oom_score_adj` is the maximum — and the file is read again next run.
  */
 export const OFFICE_MAX_FILE_BYTES = 200 * MiB;
 
@@ -200,7 +208,9 @@ const XLSX_LIMITS: ZipLimits = {
  * (fourth review, PR #1243) — while a picture costs it nothing. The plugin's
  * own `extractDocxText` uses the same ceilings; `MAX_DOCX_MARKUP_BYTES` has
  * the measurements. Past them the oracle is skipped and the conversion is
- * recorded `unverified`: the oracle is a tripwire, not worth the server.
+ * recorded `unverified`. Both the guard and mammoth run in the reader child
+ * (`countDocxWordsIsolated`), whose heap cap is what bounds the DOM; these
+ * ceilings only turn away early what it could not read anyway.
  */
 const MAMMOTH_LIMITS: ZipLimits = {
   ...OOXML_LIMITS,
@@ -242,6 +252,9 @@ export interface PreparedSource {
   /** Picture, object and field-instruction groups cut from an RTF file. */
   rtfGroupsRemoved: number;
 }
+
+/** What staging did, without the bytes: those are on disk, where the converter reads them. */
+export type StagedSource = Omit<PreparedSource, "data">;
 
 export interface PreflightOptions {
   /** Test seam; production uses the module's cap. */
@@ -439,7 +452,8 @@ function fromCodePoint(code: number): string {
 /**
  * The `.docx` bytes for the word-count oracle, verified like the conversion
  * input and held to mammoth's per-part ceiling on top. A refusal here only
- * leaves the conversion unverified; it never fails it.
+ * leaves the conversion unverified; it never fails it. Read in the reader
+ * child, never in the server (`countDocxWordsIsolated`).
  */
 export async function readGuardedDocx(absPath: string): Promise<Buffer> {
   const buffer = await readCapped(absPath, OFFICE_MAX_FILE_BYTES);
@@ -1084,6 +1098,22 @@ export function sanitizeOoxmlPackage(buffer: Buffer): {
   removed: number;
   altChunksRemoved: number;
 } {
+  const { parts, removed, altChunksRemoved } = sanitizedParts(buffer);
+  return { data: parts ? assembleZip(parts) : buffer, removed, altChunksRemoved };
+}
+
+/**
+ * `sanitizeOoxmlPackage`, stopping short of assembling the archive: the parts
+ * of the rewrite — each untouched entry's bytes still INSIDE `buffer` — or
+ * null when nothing needed rewriting. A caller that writes the rewrite to disk
+ * writes these one after another (`zipChunks`) instead of building a second
+ * copy of the package first.
+ */
+function sanitizedParts(buffer: Buffer): {
+  parts: ZipPart[] | null;
+  removed: number;
+  altChunksRemoved: number;
+} {
   const entries = readZipEntries(buffer);
   const byName = new Map(entries.map((entry) => [entry.name.toLowerCase(), entry]));
   const verdicts = new Map<string, boolean>();
@@ -1178,15 +1208,13 @@ export function sanitizeOoxmlPackage(buffer: Buffer): {
     rewritten.set(entry, Buffer.from(result.xml, "latin1"));
   }
 
-  if (rewritten.size === 0) return { data: buffer, removed: 0, altChunksRemoved: 0 };
+  if (rewritten.size === 0) return { parts: null, removed: 0, altChunksRemoved: 0 };
 
   return {
-    data: assembleZip(
-      entries.map((entry) => {
-        const replacement = rewritten.get(entry);
-        return replacement ? deflatedPart(entry.name, replacement) : rawPart(buffer, entry);
-      })
-    ),
+    parts: entries.map((entry) => {
+      const replacement = rewritten.get(entry);
+      return replacement ? deflatedPart(entry.name, replacement) : rawPart(buffer, entry);
+    }),
     removed,
     altChunksRemoved,
   };
@@ -1689,13 +1717,47 @@ export function sanitizeRtf(rtf: Buffer): { data: Buffer; removed: number } {
  * sits on a share its planter can still write to, and a symlink would let it
  * change between the check and the conversion.
  *
+ * In-process and whole; what the converter actually uses is
+ * `stageOfficeSource`, in the reader child.
+ *
  * @throws OfficeFileRejectedError when the file must not be handed to a reader.
  */
 export async function prepareOfficeSource(
   absPath: string,
   opts: PreflightOptions = {}
 ): Promise<PreparedSource> {
-  const buffer = await readCapped(absPath, opts.maxBytes ?? OFFICE_MAX_FILE_BYTES);
+  const { chunks, staged } = await checkedChunks(absPath, opts);
+  return { data: chunks.length === 1 ? chunks[0] : Buffer.concat(chunks), ...staged };
+}
+
+/**
+ * `prepareOfficeSource`, with the checked bytes written to `dest` (which must
+ * not exist yet) instead of returned. What the converter stages through the
+ * reader child (`stageOfficeSourceIsolated`): the file is read, checked and
+ * written there, and the server is told only what was done.
+ *
+ * Holds at most two copies of the file: the original and the verified copy,
+ * while the guard builds it. A rewrite of the verified copy is written piece
+ * by piece out of it, never assembled into a third.
+ *
+ * @throws OfficeFileRejectedError when the file must not be handed to a reader.
+ */
+export async function stageOfficeSource(
+  absPath: string,
+  dest: string,
+  opts: PreflightOptions = {}
+): Promise<StagedSource> {
+  const { chunks, staged } = await checkedChunks(absPath, opts);
+  await writeFile(dest, chunks, { flag: "wx" });
+  return staged;
+}
+
+/** The checked bytes, as the pieces they are written in (see `zipChunks`), and what checking them did. */
+async function checkedChunks(
+  absPath: string,
+  opts: PreflightOptions
+): Promise<{ chunks: Buffer[]; staged: StagedSource }> {
+  let buffer: Buffer | null = await readCapped(absPath, opts.maxBytes ?? OFFICE_MAX_FILE_BYTES);
   const contentHash = createHash("sha256").update(buffer).digest("hex");
   const ext = extname(absPath).toLowerCase();
 
@@ -1706,20 +1768,22 @@ export async function prepareOfficeSource(
       `the content of this ${ext} file is not a Word or PowerPoint document`
     );
   }
-  const none = { relationshipsRemoved: 0, altChunksRemoved: 0, rtfGroupsRemoved: 0 };
+  const none = { contentHash, relationshipsRemoved: 0, altChunksRemoved: 0, rtfGroupsRemoved: 0 };
   // A legacy binary .doc/.ppt cannot be rewritten here: the locked profile is
   // its only layer, and it does NOT stop an embedded SVG picture from reading
   // a local file (the canary pins that gap).
-  if (container === "ole2") return { data: buffer, contentHash, ...none };
+  if (container === "ole2") return { chunks: [buffer], staged: none };
   if (container === "rtf") {
     const { data, removed } = sanitizeRtf(buffer);
-    return { data, contentHash, ...none, rtfGroupsRemoved: removed };
+    return { chunks: [data], staged: { ...none, rtfGroupsRemoved: removed } };
   }
 
   // Everything from here on reads the VERIFIED copy, and the copy (or its
   // sanitized rewrite) is what is staged: LibreOffice never sees a byte of the
   // original archive that the guard did not inflate and check.
   const verified = await verifiedCopy(buffer, OOXML_LIMITS, "Office Open XML package");
+  // Nothing reads the original from here on; up to 200 MB, so it goes now.
+  buffer = null;
   try {
     const entries = readZipEntries(verified);
     if (!entries.some((entry) => entry.name === "[Content_Types].xml")) {
@@ -1728,8 +1792,11 @@ export async function prepareOfficeSource(
         `this ${ext} file is a zip, but not an Office Open XML package`
       );
     }
-    const { data, removed, altChunksRemoved } = sanitizeOoxmlPackage(verified);
-    return { ...none, data, relationshipsRemoved: removed, altChunksRemoved, contentHash };
+    const { parts, removed, altChunksRemoved } = sanitizedParts(verified);
+    return {
+      chunks: parts ? zipChunks(parts) : [verified],
+      staged: { ...none, relationshipsRemoved: removed, altChunksRemoved },
+    };
   } catch (err) {
     if (err instanceof OfficeFileRejectedError) throw err;
     // A corrupt central directory: not a package, and not worth a reader's time.
