@@ -48,9 +48,7 @@ At startup — and every time you change a provider or integration — Pinchy ca
 
 Step 4 is what makes rotation immediate. OpenClaw resolves each pointer once and holds the value for the life of the process, and `openclaw.json` is unchanged by a rotation — it carries the pointer, not the key. So a new key would otherwise sit in the file unread until the container restarted, with every agent still presenting the old one.
 
-OpenAI-compatible providers take a stricter route, because their address is set by you rather than fixed by Pinchy. Each one's key sits under a slot named for the key itself — `/providers/<slug>@<version>/apiKey`, where the version is a fingerprint of the stored ciphertext — so every newly entered key gives `openclaw.json` a new pointer. The base URL and the key entered for it then reach OpenClaw together, in one config apply: OpenClaw can never send the new key to the old address, or the old key to a new one. A configuration still pointing at the previous version resolves nothing, and OpenClaw stays on its last working configuration until the new one arrives.
-
-That path is a Docker `tmpfs` mount. tmpfs is RAM-based storage — it's never written to disk, never included in Docker volume exports, and disappears on container restart.
+The `/openclaw-secrets/` directory is a Docker `tmpfs` mount. tmpfs is RAM-based storage — it's never written to disk, never included in Docker volume exports, and disappears on container restart.
 
 ```yaml
 # docker-compose.yml (excerpt)
@@ -63,6 +61,14 @@ openclaw-secrets:
 ```
 
 The directory is owned by uid/gid 999 (the `pinchy` system user inside the Pinchy container) with mode `0770`. Pinchy writes `secrets.json` as the owner; OpenClaw runs as root in its own container and reads the file regardless of ownership. Inside, `secrets.json` is written with mode `0600` (owner read/write only) as defense-in-depth: even a same-uid process that obtained directory access cannot read another tenant's file.
+
+### OpenAI-compatible providers: the address and the key travel together
+
+OpenAI-compatible providers take a stricter route than the built-in ones, because their address is set by you rather than fixed by Pinchy. A key must only ever reach the address it was entered for, and Pinchy holds to that at three points:
+
+- **Saving.** Changing a provider's base URL needs the key typed again. And a save only lands if the stored address and key are still the ones Pinchy checked it against when the request arrived. If another save changed either in the meantime, nothing is written and the request is answered with `409`.
+- **Reading.** Step 1 above reads each provider's address, models and key in a single query, so everything written for a provider comes from one saved state of it. A save that lands while the files are being written is picked up by the next regenerate, which that save triggers itself — it is never mixed into the current one. The model list Pinchy fetches during the regenerate uses that same address and key.
+- **Applying.** Each provider's key sits under a slot named for the key itself — `/providers/<slug>@<version>/apiKey`, where the version is a fingerprint of the stored ciphertext — so every newly entered key gives `openclaw.json` a new pointer. The base URL and the key entered for it then reach OpenClaw together, in one config apply: OpenClaw never sends the new key to the old address, or the old key to a new one. A configuration still pointing at the previous version resolves nothing, and OpenClaw stays on its last working configuration until the new one arrives.
 
 ## What this protects against
 
