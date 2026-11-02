@@ -197,5 +197,38 @@ describe("assertMailHostAllowed", () => {
         MailHostBlockedError
       );
     });
+
+    // The guard used to check the host with everything after a `%` dropped,
+    // while imapflow/nodemailer connect to the host as stored. For
+    // `a%b.attacker.test` that meant checking `a` (unresolvable → let through)
+    // and connecting to a name whose DNS the attacker controls. Measured: glibc
+    // and c-ares (our node:22-slim images) refuse to query such a name, musl
+    // sends the query and connects to the answer — so the check was only as
+    // good as the libc. No mail host needs a `%`: a hostname cannot contain
+    // one, and the only literal that does (an IPv6 zone ID) is link-local,
+    // refused anyway.
+    it.each([
+      ["a name whose prefix does not resolve", "a%b.attacker.test"],
+      ["a public name with a suffix", "mail.example.com%x"],
+      ["an IPv6 link-local literal with a zone ID", "fe80::1%eth0"],
+      ["a bracketed literal with a zone ID", "[fe80::1%25eth0]"],
+    ])("refuses %s (%s) without resolving it", async (_label, host) => {
+      const resolver = vi.fn(resolvesTo("93.184.216.34"));
+
+      await expect(assertMailHostAllowed(host, resolver)).rejects.toThrow(MailHostBlockedError);
+      expect(resolver).not.toHaveBeenCalled();
+    });
+
+    it("refuses a `%` even with ALLOW_PRIVATE_MAIL_HOSTS=1, and says what is wrong", async () => {
+      vi.stubEnv("ALLOW_PRIVATE_MAIL_HOSTS", "1");
+
+      const error = await assertMailHostAllowed("a%b.attacker.test", resolvesTo()).catch(
+        (e: unknown) => e
+      );
+
+      expect(error).toBeInstanceOf(MailHostBlockedError);
+      expect((error as Error).message).toContain("%");
+      expect((error as Error).message).not.toContain("ALLOW_PRIVATE_MAIL_HOSTS");
+    });
   });
 });

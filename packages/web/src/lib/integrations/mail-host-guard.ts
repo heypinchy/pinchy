@@ -94,6 +94,19 @@ export async function assertMailHostAllowed(
     throw new MailHostBlockedError("Blocked: no mail server host was given.");
   }
 
+  // Checked on the host as given, not on `normalizedHost`: the address
+  // normalizer drops a zone ID, but the mail client connects to the host as
+  // stored. `a%b.attacker.test` was checked as `a` (unresolvable, so let
+  // through) and then handed to a resolver that — on musl, measured — queries
+  // the full name and connects to the attacker's answer. No mail host needs a
+  // `%`: hostnames cannot contain one, and the only literal that does (an IPv6
+  // zone ID) is link-local, refused below anyway.
+  if (host.includes("%")) {
+    throw new MailHostBlockedError(
+      'Blocked: a mail server host cannot contain "%". Enter the server\'s name or IP address without a zone ID.'
+    );
+  }
+
   let addresses: string[];
   try {
     addresses = await resolver(normalizedHost);

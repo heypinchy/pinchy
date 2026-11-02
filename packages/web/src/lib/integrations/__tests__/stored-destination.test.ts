@@ -81,7 +81,39 @@ describe("checkStoredDestination", () => {
       const result = await checkStoredDestination("imap", imap("fd00:ec2::254", "192.168.1.20"));
       expect(result).toMatchObject({ allowed: false, field: "imapHost" });
     });
+
+    // A host saved before the guard refused `%` must not keep being used: it was
+    // checked with the part after `%` dropped, the mail client connects to all of it.
+    it("refuses a stored host containing `%`, which the guard used to check only in part", async () => {
+      const result = await checkStoredDestination(
+        "imap",
+        imap("93.184.216.34", "a%b.attacker.test")
+      );
+      expect(result).toEqual({
+        allowed: false,
+        field: "smtpHost",
+        message: expect.stringContaining('"%"'),
+      });
+    });
   });
+
+  // The Odoo side never had the mail guard's split: the check and odoo-node's
+  // fetch read the host through the same WHATWG parser, which refuses `%` in a
+  // host outright (percent-decoded or not) and an IPv6 zone ID with it. Pinned,
+  // so a future normalizer added in front of the parser cannot open the gap.
+  it.each(["http://a%25b.example.com", "http://a%b.example.com", "http://[fe80::1%25eth0]:8069"])(
+    "refuses a stored Odoo URL with `%%` in its host (%s)",
+    async (url) => {
+      const result = await checkStoredDestination("odoo", {
+        url,
+        db: "prod",
+        login: "admin",
+        apiKey: "k",
+        uid: 2,
+      });
+      expect(result).toMatchObject({ allowed: false, field: "url" });
+    }
+  );
 
   it.each(["microsoft", "google", "web-search"])(
     "has nothing to check for %s — its host is fixed, not stored",
