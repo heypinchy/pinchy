@@ -1,22 +1,24 @@
 import { posix } from "node:path";
 import { hiddenCharIn, isSpaceSeparator } from "./hidden-chars";
-import { invisibleEmojiFormatOffsets } from "./emoji-sequence";
+import { invisibleFormatOffsets } from "./emoji-sequence";
 
 /** Longest path accepted. Far past any real one; short enough to show whole. */
 const MAX_PATH_LENGTH = 1024;
 
 /**
- * The path with the emoji format characters taken out where they are part of
- * what you see (`emoji-sequence.ts`). Inside an emoji the card shows them
- * unchanged — so `⚠️ offen.md` must be writable (fifth review of #1242).
- * Anywhere else they render as nothing: `a\u200Db.md` looks exactly like
- * `ab.md` and may be a different file, and so does `✅\uFE0F.md` next to
- * `✅.md`, since ✅ is an emoji without the selector (sixth review). Those
- * are left in place for `hiddenCharIn` to refuse.
+ * The path with the zero-width format characters taken out where they are
+ * part of what you see (`emoji-sequence.ts`). Inside an emoji the card shows
+ * them unchanged — so `⚠️ offen.md` must be writable (fifth review of #1242) —
+ * and so it does a joiner that shapes Arabic-script or Indic text, as in
+ * `گزارش‌ها.md` or `ශ්‍රී.md` (seventh review). Anywhere else they render as
+ * nothing: `a\u200Db.md` looks exactly like `ab.md` and may be a different
+ * file, and so does `✅\uFE0F.md` next to `✅.md`, since ✅ is an emoji
+ * without the selector (sixth review). Those are left in place for
+ * `hiddenCharIn` to refuse.
  */
-function withoutVisibleEmojiFormatChars(value: string): string {
-  const invisible = invisibleEmojiFormatOffsets(value, { redundant: true });
-  return value.replace(/[\u200D\uFE0E\uFE0F]/g, (char: string, offset: number) =>
+function withoutVisibleFormatChars(value: string): string {
+  const invisible = invisibleFormatOffsets(value, { redundant: true });
+  return value.replace(/[\u200C\u200D\uFE0E\uFE0F]/g, (char: string, offset: number) =>
     invisible.has(offset) ? char : ""
   );
 }
@@ -69,7 +71,7 @@ export function assertPlainPath(
         "Use a shorter path."
     );
   }
-  const hidden = hiddenCharIn(withoutVisibleEmojiFormatChars(value), isSpaceSeparator);
+  const hidden = hiddenCharIn(withoutVisibleFormatChars(value), isSpaceSeparator);
   if (hidden) {
     throw new Error(
       `${field} contains an invisible or blank-rendering character (${hidden}). ` +

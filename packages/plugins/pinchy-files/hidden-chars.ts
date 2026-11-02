@@ -26,6 +26,12 @@
  *   the card prints each one as `⟨U+XXXX⟩`. Real file names carry them —
  *   macOS names a screenshot "… at 10.00.00 AM.png" — so a path may.
  *
+ * A third allowance depends on position rather than on the character: U+200C
+ * and U+200D where they shape Arabic-script or Indic text (after a virama, or
+ * a U+200C between letters that would otherwise join — RFC 5892 CONTEXTJ,
+ * seventh review of #1242). `emoji-sequence.ts` decides that, and the callers
+ * take those out before asking `hiddenCharIn`.
+ *
  * Duplicated byte-identically in pinchy-email and pinchy-files (plugins cannot
  * import each other); `packages/web/src/__tests__/lib/hidden-chars-drift.test.ts`
  * pins the copies together, pins the approval summary's escaping to them, and

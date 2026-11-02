@@ -88,6 +88,35 @@ describe("assertPlainPath", () => {
     refused(value, why);
   });
 
+  // Seventh review of #1242: U+200C was refused everywhere and U+200D outside
+  // an emoji, but in Arabic-script and Indic text they shape what you see —
+  // the Persian plural گزارش‌ها keeps its ش unjoined, Sinhala ශ්‍රී is drawn
+  // with a rakaaraansaya, Malayalam അവന്‍ ends in a chillu. They are accepted
+  // where IDNA's CONTEXTJ rule (RFC 5892 A.1/A.2) says they do something:
+  // after a virama, and a ZWNJ between two letters that would otherwise join.
+  it.each([
+    ["a Persian plural with a ZWNJ", "/data/output/گزارش\u200Cها.md"],
+    ["Sinhala Sri with a ZWJ after al-lakuna", "/data/output/ශ්\u200Dරී ලංකා.md"],
+    ["a Malayalam chillu with a ZWJ after the virama", "/data/output/അവന്\u200D.md"],
+    ["a Devanagari half form with a ZWNJ after the virama", "/data/output/क्\u200Cष.md"],
+    ["a ZWNJ after a dual-joining letter with a vowel mark", "/data/output/مِ\u200Cها.md"],
+  ])("accepts %s, which shapes the text", (_label, value) => {
+    ok(value);
+  });
+
+  it.each([
+    ["a ZWNJ between Latin letters", "/data/a\u200Cb.md", /U\+200C/],
+    // د only joins to the right, so a ZWNJ after it changes nothing on screen:
+    // محمد‌رضا reads exactly like محمدرضا (the reviewer's probe name).
+    ["a ZWNJ after a right-joining letter", "/data/محمد\u200Cرضا.md", /U\+200C/],
+    ["a ZWNJ with no letter after it", "/data/گزارش\u200C.md", /U\+200C/],
+    ["a ZWNJ before a non-joining hamza", "/data/ش\u200Cء.md", /U\+200C/],
+    ["a ZWJ between Arabic letters", "/data/ش\u200Dه.md", /U\+200D/],
+    ["a ZWNJ between Latin letters next to Persian", "/data/گزارش a\u200Cb.md", /U\+200C/],
+  ])("still refuses %s, which renders as nothing", (_label, value, why) => {
+    refused(value, why);
+  });
+
   // Sixth review of #1242: ✅ is shown as an emoji by default, so a U+FE0F
   // after it changes nothing on screen — `Vertrag ✅️.pdf` read exactly like
   // `Vertrag ✅.pdf` and is a different file. A selector that asks for the

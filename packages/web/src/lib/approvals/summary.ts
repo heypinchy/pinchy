@@ -41,8 +41,11 @@
  *   `⟨N tabs⟩`, so padding cannot push text out of view. U+200D (the emoji
  *   joiner) and U+FE0E / U+FE0F (text / emoji presentation) are left alone
  *   inside an emoji (👨‍👩‍👧, ❤️), where they are part of what you see, and
- *   marked anywhere else, where they render as nothing — "Noack\u200D GmbH"
- *   must not read as "Noack GmbH" (sixth review of #1242). Where an action
+ *   U+200C / U+200D where they shape Arabic-script or Indic text (after a
+ *   virama, or a U+200C between letters that would otherwise join: RFC 5892
+ *   CONTEXTJ, seventh review of #1242), and marked anywhere else, where they
+ *   render as nothing — "Noack\u200D GmbH" must not read as "Noack GmbH"
+ *   (sixth review of #1242). Where an action
  *   lands (`TARGET_KEYS`: a path, a file name, a record), a value names one
  *   target and two that render alike are two targets, so a space, tab or line
  *   break at its start or end is marked too, and so is a U+FE0F after a
@@ -90,9 +93,10 @@
 import { domainToASCII } from "node:url";
 import { isCanonicalRef, type RefRecord } from "./call-models";
 import { EMAIL_SHAPED, FULL_VIEW_KEYS, TARGET_KEYS, URL_SHAPED, truncationMarker } from "./display";
-// Shared with pinchy-files' path rule, so the card marks a joiner or selector
-// exactly where a path may not carry one. Import-free by contract; see the file.
-import { invisibleEmojiFormatOffsets } from "../../../../plugins/pinchy-files/emoji-sequence";
+// Shared with pinchy-files' path rule and pinchy-email's recipient rule, so the
+// card marks a joiner or selector exactly where a path may not carry one.
+// Import-free by contract; see the file.
+import { invisibleFormatOffsets } from "../../../../plugins/pinchy-files/emoji-sequence";
 
 const SECRET_KEY = /(token|secret|password|passwd|api[-_]?key|authorization|cookie|credential)/i;
 /** A record id or a list of them, whatever the rest of the key says. */
@@ -199,10 +203,11 @@ export interface CallSummary {
  */
 const HIDDEN =
   /[\p{Cc}\p{Cf}\p{Cs}\p{Z}\p{Default_Ignorable_Code_Point}\u2800\u115F\u1160\u3164\uFFA0]/u;
-/** Readable as they are: layout (space, tab, line break), and the three that
- * appear in ordinary emoji (👨‍👩‍👧, ❤️) — but those three only inside an
- * emoji: `escapeText` marks one anywhere else. */
-const KEPT_VISIBLE = new Set([" ", "\t", "\n", "\u200D", "\uFE0E", "\uFE0F"]);
+/** Readable as they are: layout (space, tab, line break), the three that
+ * appear in ordinary emoji (👨‍👩‍👧, ❤️), and the zero-width non-joiner that shapes
+ * Persian words — but those four only inside an emoji or where they shape
+ * Arabic-script or Indic text: `escapeText` marks one anywhere else. */
+const KEPT_VISIBLE = new Set([" ", "\t", "\n", "\u200C", "\u200D", "\uFE0E", "\uFE0F"]);
 /** How a long run of a layout character is named. */
 const LAYOUT_RUN_NAME: Record<string, string> = {
   " ": "spaces",
@@ -211,8 +216,8 @@ const LAYOUT_RUN_NAME: Record<string, string> = {
 };
 const BARE_KEY = /^[A-Za-z0-9_.-]+$/;
 
-/** Is `char` shown as a `⟨U+XXXX⟩` marker wherever it stands? (The emoji
- * format characters are not, but are marked outside an emoji: `escapeText`.) */
+/** Is `char` shown as a `⟨U+XXXX⟩` marker wherever it stands? (The joiners and
+ * selectors are not, but are marked where they render as nothing: `escapeText`.) */
 export function isEscapedChar(char: string): boolean {
   return HIDDEN.test(char) && !KEPT_VISIBLE.has(char);
 }
@@ -250,7 +255,7 @@ function escapeText(
   // for values: a key with a CR in it is not a line break, it is a trick.
   const source = layout ? text.replace(/\r\n/g, "\n") : text;
   const chars = [...source];
-  const invisible = invisibleEmojiFormatOffsets(source, { redundant: target });
+  const invisible = invisibleFormatOffsets(source, { redundant: target });
   let leadEnd = 0;
   let trailStart = chars.length;
   if (target) {

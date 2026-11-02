@@ -485,6 +485,27 @@ describe("summarizeArgs", () => {
       });
     });
 
+    // Seventh review of #1242: a ZWNJ was marked everywhere and a ZWJ outside
+    // an emoji, although in Arabic-script and Indic text they shape what you
+    // see. Kept as they are where RFC 5892's CONTEXTJ rule says they do
+    // something — after a virama, and a ZWNJ between letters that would
+    // otherwise join — and marked where they render as nothing.
+    it("leaves a joiner that shapes Arabic-script or Indic text as it is", () => {
+      const text = "گزارش\u200Cها ශ්\u200Dරී അവന്\u200D क्\u200Cष";
+      expect(summarizeArgs({ subject: text, path: `/data/output/${text}.md` })).toEqual({
+        path: `/data/output/${text}.md`,
+        subject: text,
+      });
+    });
+
+    it.each([
+      ["a ZWNJ between Latin letters", "a\u200Cb", "a⟨U+200C⟩b"],
+      ["a ZWNJ after a right-joining letter", "محمد\u200Cرضا", "محمد⟨U+200C⟩رضا"],
+      ["a ZWJ between Arabic letters", "ش\u200Dه", "ش⟨U+200D⟩ه"],
+    ])("marks %s", (_label, text, shown) => {
+      expect(summarizeArgs({ subject: text })).toEqual({ subject: shown });
+    });
+
     it.each([
       ["a joiner trailing an emoji", "\u{1F468}\u200D.", "\u{1F468}⟨U+200D⟩."],
       ["a joiner before an emoji", "a\u200D\u{1F468}", "a⟨U+200D⟩\u{1F468}"],

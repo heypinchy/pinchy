@@ -14,6 +14,7 @@
  * recipient, which is also what the schema ("Recipient email address") says.
  */
 
+import { invisibleFormatOffsets } from "./emoji-sequence.js";
 import { hiddenCharIn, isEmojiFormatChar } from "./hidden-chars.js";
 
 export type ParsedRecipient = { ok: true; address: string } | { ok: false; error: string };
@@ -26,8 +27,9 @@ const MAX_NAME_LENGTH = 64;
 
 // Characters that separate, group or comment an address in RFC 5322 syntax. If
 // one is present the string is not one plain address. The emoji format
-// characters a display name may carry are not part of any address either.
-const PART = String.raw`[^\s@,;:<>()\[\]"\\\u200D\uFE0E\uFE0F]`;
+// characters a display name may carry are not part of any address either, nor
+// is the zero-width non-joiner a Persian name may carry.
+const PART = String.raw`[^\s@,;:<>()\[\]"\\\u200C\u200D\uFE0E\uFE0F]`;
 const ADDRESS = `${PART}+@${PART}+`;
 const BARE_ADDRESS = new RegExp(`^${ADDRESS}$`, "u");
 // `"Display Name" <address>`: RFC 5322's quoted form, which is how a mail
@@ -82,6 +84,14 @@ function checkName(name: string): string | null {
   return null;
 }
 
+/** `text` without the U+200C that shape it (`invisibleFormatOffsets`). */
+function withoutShapingNonJoiners(text: string): string {
+  const invisible = invisibleFormatOffsets(text, { redundant: false });
+  return text.replace(/\u200C/g, (char: string, offset: number) =>
+    invisible.has(offset) ? char : ""
+  );
+}
+
 export function parseSingleRecipient(value: unknown): ParsedRecipient {
   if (typeof value !== "string") {
     return { ok: false, error: `Invalid recipient: ${ONLY_ONE}` };
@@ -96,8 +106,11 @@ export function parseSingleRecipient(value: unknown): ParsedRecipient {
   // space and pushed the real address out of view on the confirmation card
   // (second review of #1242); bidi overrides make one address read as another.
   // The emoji format characters (ZWJ, VS15, VS16) are allowed here and kept
-  // out of the address by PART: a name like "❤️ Team" is ordinary.
-  const hidden = hiddenCharIn(text, isEmojiFormatChar);
+  // out of the address by PART: a name like "❤️ Team" is ordinary. So is a
+  // zero-width non-joiner where it shapes the name — "علی‌رضا" keeps its ی
+  // unjoined (seventh review of #1242) — but not where it renders as nothing,
+  // which is where the card marks it (`emoji-sequence.ts`).
+  const hidden = hiddenCharIn(withoutShapingNonJoiners(text), isEmojiFormatChar);
   if (hidden) {
     return {
       ok: false,

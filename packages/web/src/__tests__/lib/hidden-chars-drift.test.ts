@@ -19,19 +19,35 @@ import {
   isSpaceSeparator,
 } from "../../../../plugins/pinchy-email/hidden-chars";
 import { assertPlainPath } from "../../../../plugins/pinchy-files/plain-path";
+import { parseSingleRecipient } from "../../../../plugins/pinchy-email/recipient";
 
-const COPIES = ["pinchy-email", "pinchy-files"].map((plugin) =>
-  resolve(import.meta.dirname, `../../../../plugins/${plugin}/hidden-chars.ts`)
-);
+const copiesOf = (file: string) =>
+  ["pinchy-email", "pinchy-files"].map((plugin) =>
+    resolve(import.meta.dirname, `../../../../plugins/${plugin}/${file}`)
+  );
+const COPIES = copiesOf("hidden-chars.ts");
 
-/** Kept readable by the summary on purpose: layout (tab, line break) and the
- * three emoji code points that cannot carry a payload. The tools refuse them. */
-const SUMMARY_KEEPS = new Set([0x09, 0x0a, 0x200d, 0xfe0e, 0xfe0f]);
+/** Kept readable by the summary on purpose: layout (tab, line break), the
+ * three emoji code points and the zero-width non-joiner, which cannot carry a
+ * payload. The card marks those four wherever they render as nothing
+ * (`emoji-sequence.ts`); the tools refuse them there. */
+const SUMMARY_KEEPS = new Set([0x09, 0x0a, 0x200c, 0x200d, 0xfe0e, 0xfe0f]);
 
 describe("hidden-chars drift guard", () => {
   it("is identical in every plugin that carries it", () => {
     const [first, ...rest] = COPIES.map((file) => readFileSync(file, "utf8"));
     expect(first).toContain("export function hiddenCharIn(");
+    for (const copy of rest) expect(copy).toBe(first);
+  });
+
+  // Seventh review of #1242: the recipient check now reads joiners through the
+  // same rule as the path check and the card, so pinchy-email carries a copy.
+  it("the joiner and emoji rule is identical in every plugin that carries it", () => {
+    const [first, ...rest] = copiesOf("emoji-sequence.ts").map((file) =>
+      readFileSync(file, "utf8")
+    );
+    expect(first).toContain("export function invisibleFormatOffsets(");
+    expect(rest).toHaveLength(1);
     for (const copy of rest) expect(copy).toBe(first);
   });
 
@@ -69,7 +85,9 @@ describe("hidden-chars drift guard", () => {
 
     it("a display name may carry exactly the emoji characters the card shows as they are", () => {
       const allowed = every(isEmojiFormatChar);
-      expect(allowed).toEqual([...SUMMARY_KEEPS].filter((cp) => cp > 0x0a).sort((a, b) => a - b));
+      expect(allowed).toEqual(
+        [...SUMMARY_KEEPS].filter((cp) => cp > 0x0a && cp !== 0x200c).sort((a, b) => a - b)
+      );
       for (const cp of allowed) {
         const char = String.fromCodePoint(cp);
         expect(hiddenCharIn(char)).not.toBeNull();
@@ -132,6 +150,63 @@ describe("hidden-chars drift guard", () => {
       // Both directions are exercised, or the comparison proves nothing.
       expect(rows.some((row) => row.refused)).toBe(true);
       expect(rows.some((row) => !row.refused)).toBe(true);
+    });
+
+    // Seventh review of #1242: U+200C was refused and marked everywhere, and
+    // U+200D outside an emoji, although in Arabic-script and Indic text they
+    // shape what you see. All three read them through one rule (RFC 5892
+    // CONTEXTJ, in `emoji-sequence.ts`): the path check and the recipient
+    // check refuse a joiner exactly where the card marks it.
+    it("the card marks a joiner exactly where the path and recipient checks refuse it", () => {
+      const names = [
+        "گزارش\u200Cها",
+        "علی\u200Cرضا",
+        "مِ\u200Cها",
+        "محمد\u200Cرضا",
+        "گزارش\u200C",
+        "ش\u200Cء",
+        "ش\u200Dه",
+        "ශ්\u200Dරී",
+        "അവന്\u200D",
+        "क्\u200Cष",
+        "क\u093C\u200Cष",
+        "a\u200Cb",
+        "Ad\u200Da",
+      ];
+      const rows = names.map((name) => {
+        const path = `/data/${name}.md`;
+        let pathRefused = false;
+        try {
+          assertPlainPath(path, "path");
+        } catch {
+          pathRefused = true;
+        }
+        const recipient = `${name} <x@example.com>`;
+        const shownPath = summarizeCall({ path }).summary.path as string;
+        const shownTo = summarizeCall({ to: recipient }).summary.to as string;
+        return {
+          name,
+          pathRefused,
+          pathMarked: /⟨U\+200[CD]⟩/.test(shownPath),
+          recipientRefused: !parseSingleRecipient(recipient).ok,
+          recipientMarked: /⟨U\+200[CD]⟩/.test(shownTo),
+        };
+      });
+      expect(rows.filter((row) => row.pathRefused !== row.pathMarked)).toEqual([]);
+      // A display name may carry U+200D anywhere (`isEmojiFormatChar`): the
+      // card marks it where it renders as nothing. U+200C has no such
+      // allowance, so for it the two must agree exactly.
+      expect(
+        rows.filter(
+          (row) => row.name.includes("\u200C") && row.recipientRefused !== row.recipientMarked
+        )
+      ).toEqual([]);
+      expect(rows.filter((row) => row.recipientRefused && !row.recipientMarked)).toEqual([]);
+      // Both directions are exercised, or the comparison proves nothing.
+      expect(rows.some((row) => row.pathRefused)).toBe(true);
+      expect(rows.some((row) => !row.pathRefused)).toBe(true);
+      expect(rows.some((row) => row.recipientRefused)).toBe(true);
+      expect(rows.some((row) => !row.recipientRefused && row.name.includes("\u200C"))).toBe(true);
     });
 
     it("a path may carry exactly the space separators, and the card marks every one", () => {

@@ -162,6 +162,31 @@ describe("parseSingleRecipient: names with commas, parentheses and emoji", () =>
   });
 });
 
+// Seventh review of #1242: a ZWNJ was refused in every display name, but in
+// Persian it is part of how a name is written — it keeps two letters that
+// would join apart. It is accepted where it does that (IDNA's CONTEXTJ rule,
+// RFC 5892 A.1, shared with the card through `emoji-sequence.ts`), and
+// refused where it renders as nothing, as before.
+describe("parseSingleRecipient: joiners that shape Arabic-script and Indic names", () => {
+  it.each([
+    ["a Persian name with a ZWNJ", "علی\u200Cرضا <a@x.ir>"],
+    ["a Sinhala name with a ZWJ after al-lakuna", "ශ්\u200Dරී <s@x.lk>"],
+  ])("accepts %s", (_label, input) => {
+    expect(parseSingleRecipient(input)).toEqual({ ok: true, address: input });
+  });
+
+  it.each([
+    ["a ZWNJ between Latin letters", "Ad\u200Ca <a@x.at>"],
+    // د joins only to the right, so the ZWNJ after it changes nothing on
+    // screen: this reads exactly like محمدرضا (the reviewer's probe name).
+    ["a ZWNJ after a right-joining letter", "محمد\u200Cرضا <m@x.ir>"],
+    ["a ZWNJ in the address itself", "علی\u200Cرضا@x.ir"],
+    ["a ZWNJ in the address of a named recipient", "Ali <علی\u200Cرضا@x.ir>"],
+  ])("refuses %s", (_label, input) => {
+    expect(parseSingleRecipient(input).ok).toBe(false);
+  });
+});
+
 describe("splitMailbox", () => {
   it("unquotes a quoted display name", () => {
     expect(splitMailbox('"M\u00FCller, Hans" <hans@x.de>')).toEqual({
