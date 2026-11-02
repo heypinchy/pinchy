@@ -128,6 +128,7 @@ function customProvider(
     displayName,
     baseUrl: `https://${slug}.test/v1`,
     apiKey: `sk-${slug}-key`,
+    keyVersion: `${slug}-key-version`,
     models: modelDefs.map((m) => ({
       id: m.id,
       name: m.name,
@@ -393,6 +394,7 @@ describe("fetchProviderModels", () => {
         slug: "acme",
         baseUrl: "https://acme.test/v1",
         apiKey: "sk-acme-key",
+        keyVersion: "acme-key-version",
         models: snapshot.models,
       })
     );

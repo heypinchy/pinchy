@@ -1,5 +1,7 @@
 import { DEFAULT_MODEL_CAPS, lookupModelCapabilities } from "@/lib/model-catalog";
 import { assertAllowedProviderUrl } from "@/lib/provider-url-guard";
+import { canonicalDestinationUrl } from "@/lib/secret-destination";
+import { isMap, processWideCache } from "@/lib/process-wide-cache";
 import type { OpenClawModelDefinition } from "@/lib/openclaw-builtin-models";
 import {
   AUTH_RETRY_DELAY_MS,
@@ -228,35 +230,60 @@ export async function fetchOpenAiCompatibleModels(
 // is a remote HTTP call (real network latency, real cost to hammer), and —
 // unlike ollama-local — there is no "I just pulled a new model, show it now"
 // UX expectation driving a short TTL here.
+//
+// An entry belongs to one slug, one destination and one key — see
+// {@link modelCacheKey}. The slug never changes, but the endpoint behind it
+// can: keyed by slug alone, the regenerate a re-pointing save triggers was
+// served the OLD endpoint's catalog and emitted it under the NEW base URL.
+//
+// Process-wide (see process-wide-cache.ts): a regenerate reads it, and the
+// module instance that runs a regenerate is not always the one that reset it.
 const CUSTOM_PROVIDER_MODEL_CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
-const customProviderModelCache = new Map<
-  string,
-  { fetchedAt: number; result: OpenClawModelDefinition[] }
->();
+const customProviderModelCache = () =>
+  processWideCache<Map<string, { fetchedAt: number; result: OpenClawModelDefinition[] }>>(
+    "__pinchyCustomProviderModelCache",
+    () => new Map(),
+    isMap
+  );
 
 /** Clear the custom-provider live-model cache (mirrors provider-models.ts's `resetCache()`). */
 export function resetCustomModelCache(): void {
-  customProviderModelCache.clear();
+  customProviderModelCache().clear();
 }
 
 /**
- * The last live model list fetched for `slug`, however old, or `undefined`
+ * The last live model list fetched for `slug` — under any base URL or key,
+ * however old — or `undefined`
  * when none was. Never fetches. For a provider whose base URL is refused,
  * which must not be fetched (the request would carry its key to the refused
  * address) but whose emitted list should not shrink to the saved snapshot —
  * see `refusedProviderModels` in openai-compatible-stored-url.ts.
  */
 export function cachedCustomProviderModels(slug: string): OpenClawModelDefinition[] | undefined {
-  return customProviderModelCache.get(slug)?.result;
+  // The cache is keyed by slug, destination and key version (see
+  // modelCacheKey); any of them will do here, so take the newest for the slug.
+  let latest: { fetchedAt: number; result: OpenClawModelDefinition[] } | undefined;
+  for (const [key, entry] of customProviderModelCache()) {
+    if ((JSON.parse(key) as unknown[])[0] !== slug) continue;
+    if (!latest || entry.fetchedAt > latest.fetchedAt) latest = entry;
+  }
+  return latest?.result;
 }
 
 /** The inputs `resolveCustomProviderModels` needs to resolve one provider's live model list. */
 export interface CustomProviderModelSource {
-  /** Cache key. Stable per row (immutable once created). */
+  /** Stable per row (immutable once created). Part of the cache key. */
   slug: string;
+  /** Part of the cache key, in canonical form. */
   baseUrl: string;
   /** Decrypted API key. */
   apiKey: string;
+  /**
+   * Fingerprint of the stored key's ciphertext (`secretVersion`), new on every
+   * save of a key. Part of the cache key — a list fetched with one key is not
+   * the answer for another — without the key itself ever being one.
+   */
+  keyVersion: string;
   /** Last-known-good snapshot, written at save time — the offline/failure fallback. */
   models: OpenClawModelDefinition[];
 }
@@ -268,8 +295,9 @@ export interface CustomProviderModelSource {
  * db/schema.ts). Mirrors `fetchOllamaLocalModelsFromUrl`'s cache+fallback
  * shape in provider-models.ts.
  *
- * - Cache hit (within {@link CUSTOM_PROVIDER_MODEL_CACHE_TTL_MS} of the last
- *   successful live fetch) ⇒ return the cached result, no network call.
+ * - Cache hit (same slug, base URL and key version, within
+ *   {@link CUSTOM_PROVIDER_MODEL_CACHE_TTL_MS} of the last successful live
+ *   fetch) ⇒ return the cached result, no network call.
  * - Cache miss ⇒ call `fetchOpenAiCompatibleModels(baseUrl, apiKey)`.
  *   - ≥1 model discovered ⇒ cache it and return it.
  *   - 0 models, or the call throws ⇒ return the snapshot WITHOUT caching, so
@@ -280,7 +308,8 @@ export interface CustomProviderModelSource {
 export async function resolveCustomProviderModels(
   p: CustomProviderModelSource
 ): Promise<OpenClawModelDefinition[]> {
-  const cached = customProviderModelCache.get(p.slug);
+  const key = modelCacheKey(p);
+  const cached = customProviderModelCache().get(key);
   if (cached && Date.now() - cached.fetchedAt < CUSTOM_PROVIDER_MODEL_CACHE_TTL_MS) {
     return cached.result;
   }
@@ -296,6 +325,16 @@ export async function resolveCustomProviderModels(
     return p.models;
   }
 
-  customProviderModelCache.set(p.slug, { fetchedAt: Date.now(), result: live });
+  customProviderModelCache().set(key, { fetchedAt: Date.now(), result: live });
   return live;
+}
+
+/**
+ * (slug, canonical base URL, key version). The base URL in the form a secret is
+ * bound to (`canonicalDestinationUrl`): a trailing slash or the host's letter
+ * case is the same endpoint, a different path is not. JSON-encoded, so no field
+ * can run into the next.
+ */
+function modelCacheKey(p: CustomProviderModelSource): string {
+  return JSON.stringify([p.slug, canonicalDestinationUrl(p.baseUrl) ?? p.baseUrl, p.keyVersion]);
 }

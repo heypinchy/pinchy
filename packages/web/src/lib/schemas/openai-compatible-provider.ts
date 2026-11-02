@@ -47,6 +47,8 @@ export const modelDefinitionSchema = z.object({
  */
 const providerBaseUrlSchema = z
   .string()
+  // Longer than any real endpoint; also bounds what a refusal can put into an audit row.
+  .max(2048, "The URL is too long — 2048 characters at most.")
   .url()
   .refine((u) => /^https?:\/\//i.test(u), {
     message: "The base URL must start with http:// or https://.",

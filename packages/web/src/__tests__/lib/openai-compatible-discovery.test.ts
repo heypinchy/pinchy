@@ -225,6 +225,7 @@ describe("resolveCustomProviderModels", () => {
       slug: "acme",
       baseUrl: "https://acme.example.com/v1",
       apiKey: "sk-key",
+      keyVersion: "v1",
       models: snapshot,
       ...overrides,
     };
@@ -304,6 +305,78 @@ describe("resolveCustomProviderModels", () => {
     expect(acme.map((m) => m.id)).toEqual(["acme-large"]);
     expect(beta.map((m) => m.id)).toEqual(["beta-large"]);
   });
+
+  // The slug never changes, but the endpoint behind it can. Keyed by slug
+  // alone, the regenerate a re-pointing save triggers was served the OLD
+  // endpoint's cached catalog and emitted it under the NEW base URL.
+  describe("a cached list belongs to one destination and one key", () => {
+    // A queued response a cache hit never consumed must not leak into the
+    // next test (clearAllMocks keeps the once-queue).
+    beforeEach(() => {
+      vi.mocked(fetch).mockReset();
+    });
+
+    function listing(...ids: string[]) {
+      return new Response(JSON.stringify({ data: ids.map((id) => ({ id })) }), { status: 200 });
+    }
+
+    it("discovers afresh at the new endpoint when the provider is re-pointed", async () => {
+      vi.mocked(fetch).mockImplementation(async (url) =>
+        String(url).startsWith("https://acme.example.com/")
+          ? listing("old-endpoint-model")
+          : listing("new-endpoint-model")
+      );
+
+      const before = await resolveCustomProviderModels(source());
+      expect(before.map((m) => m.id)).toEqual(["old-endpoint-model"]);
+
+      vi.mocked(fetch).mockClear();
+      const after = await resolveCustomProviderModels(
+        source({ baseUrl: "https://new-host.example.com/v1", keyVersion: "v2" })
+      );
+
+      expect(fetch).toHaveBeenCalledTimes(1);
+      expect(String(vi.mocked(fetch).mock.calls[0]![0])).toBe(
+        "https://new-host.example.com/v1/models"
+      );
+      expect(after.map((m) => m.id)).toEqual(["new-endpoint-model"]);
+    });
+
+    it("discovers afresh when only the path moved on the same origin", async () => {
+      vi.mocked(fetch).mockResolvedValueOnce(listing("account-a-model"));
+      await resolveCustomProviderModels(source({ baseUrl: "https://gw.example.com/v1/a" }));
+
+      vi.mocked(fetch).mockResolvedValueOnce(listing("account-b-model"));
+      const after = await resolveCustomProviderModels(
+        source({ baseUrl: "https://gw.example.com/v1/b" })
+      );
+
+      expect(after.map((m) => m.id)).toEqual(["account-b-model"]);
+    });
+
+    it("discovers afresh when a new key was entered at the same address", async () => {
+      vi.mocked(fetch).mockResolvedValueOnce(listing("old-key-model"));
+      await resolveCustomProviderModels(source());
+
+      vi.mocked(fetch).mockResolvedValueOnce(listing("new-key-model"));
+      const after = await resolveCustomProviderModels(source({ keyVersion: "v2" }));
+
+      expect(after.map((m) => m.id)).toEqual(["new-key-model"]);
+    });
+
+    it("still hits the cache for the same destination written with a trailing slash or upper-case host", async () => {
+      vi.mocked(fetch).mockResolvedValueOnce(listing("acme-large"));
+      await resolveCustomProviderModels(source());
+
+      vi.mocked(fetch).mockClear();
+      const again = await resolveCustomProviderModels(
+        source({ baseUrl: "https://ACME.example.com/v1/" })
+      );
+
+      expect(fetch).not.toHaveBeenCalled();
+      expect(again.map((m) => m.id)).toEqual(["acme-large"]);
+    });
+  });
 });
 
 describe("cachedCustomProviderModels", () => {
@@ -334,6 +407,7 @@ describe("cachedCustomProviderModels", () => {
       slug: "acme",
       baseUrl: "https://acme.example.com/v1",
       apiKey: "sk-key",
+      keyVersion: "0123456789abcdef",
       models: [],
     });
     vi.mocked(fetch).mockClear();
@@ -587,6 +661,7 @@ describe("fetchModels — the stored base URL itself is re-validated", () => {
       slug: "acme",
       baseUrl: "http://169.254.169.254/v1",
       apiKey: "sk-key",
+      keyVersion: "0123456789abcdef",
       models: snapshot,
     });
 
@@ -602,6 +677,7 @@ describe("fetchModels — the stored base URL itself is re-validated", () => {
       slug: "lan",
       baseUrl: "http://vllm.lan.example:8000/v1",
       apiKey: "sk-key",
+      keyVersion: "0123456789abcdef",
       models: snapshot,
     });
 
