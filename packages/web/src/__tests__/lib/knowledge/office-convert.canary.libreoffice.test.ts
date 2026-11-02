@@ -44,9 +44,12 @@
  * And one vector has NO layer here: a legacy `.doc` whose embedded picture is
  * an SVG. The preflight cannot rewrite OLE2, and the profile does not stop
  * the SVG import. Its test below pins that it still leaks, so the gap is
- * written down where it can be seen and cannot quietly change; isolating the
- * converter itself (no network, no view of the workspaces) is being built on
- * branch feat/kb-office-convert-sidecar.
+ * written down where it can be seen and cannot quietly change. It is a gap of
+ * the in-process layers this suite measures, not of a production install: there
+ * the converter runs in the office-converter sidecar, with no network and no
+ * view of the workspaces, so a `file://` reaches nothing of ours —
+ * office-convert.sidecar.canary.test.ts proves that against the shipped
+ * compose service.
  *
  * Run it with `pnpm test:libreoffice` (vitest.libreoffice.config.ts: one file
  * at a time — two LibreOffice first starts in parallel workers raced on the
@@ -732,9 +735,12 @@ describe.skipIf(!hasSoffice)("an Office file cannot make the converter fetch or 
     // preflight cannot rewrite a binary .doc, and the locked profile does not
     // stop LibreOffice's SVG import from reading `<image href="file:///…">`.
     // The fix is not another check here but isolating the converter (no
-    // network, no view of the workspaces): branch feat/kb-office-convert-sidecar.
-    // When that lands this assertion goes red — flip it, and move the vector
-    // into the full-pipeline test above.
+    // network, no view of the workspaces), which the office-converter sidecar
+    // does in production. This suite runs in-process on purpose
+    // (vitest.libreoffice.config.ts clears KB_OFFICE_SPOOL_DIR), so the sidecar
+    // does NOT turn this red: it is the layer below, and its own canary
+    // (office-convert.sidecar.canary.test.ts) shows the same kind of reference
+    // finding nothing there.
     const store = new OfficeArtifactStore(join(root, "artifacts-known-gap"));
     const [outcome] = await convertOfficeFiles(
       [{ absPath: vectors.get("legacy-svg-picture.doc")!.path }],
