@@ -4,6 +4,9 @@ import {
   writeSecretsFile,
   readSecretsFile,
   checkSecretsVolumeWritable,
+  secretVersion,
+  versionedSecretName,
+  referencedSecretIds,
 } from "@/lib/openclaw-secrets";
 import { readFileSync, existsSync, statSync, writeFileSync } from "fs";
 import { mkdtempSync, rmSync } from "fs";
@@ -17,6 +20,50 @@ describe("secretRef", () => {
       provider: "pinchy",
       id: "/providers/anthropic/apiKey",
     });
+  });
+});
+
+describe("referencedSecretIds", () => {
+  it("collects every pinchy file SecretRef id anywhere in a config", () => {
+    const config = {
+      models: {
+        providers: {
+          anthropic: { apiKey: secretRef("/providers/anthropic/apiKey") },
+          acme: {
+            baseUrl: "https://acme.example/v1",
+            apiKey: secretRef("/providers/acme@0123456789abcdef/apiKey"),
+          },
+        },
+      },
+      channels: { list: [{ token: secretRef("/telegram/bot-1/botToken") }] },
+      // Not ours: another provider's ref, and a lookalike plain string.
+      other: { source: "env", provider: "default", id: "/providers/x/apiKey" },
+      note: "/providers/y/apiKey",
+    };
+    expect(referencedSecretIds(config)).toEqual(
+      new Set([
+        "/providers/anthropic/apiKey",
+        "/providers/acme@0123456789abcdef/apiKey",
+        "/telegram/bot-1/botToken",
+      ])
+    );
+  });
+
+  it("is empty for an empty or missing config", () => {
+    expect(referencedSecretIds({})).toEqual(new Set());
+    expect(referencedSecretIds(undefined)).toEqual(new Set());
+  });
+});
+
+describe("secretVersion / versionedSecretName", () => {
+  it("derives a short, stable hex version that differs for different material", () => {
+    expect(secretVersion("ciphertext-1")).toMatch(/^[0-9a-f]{16}$/);
+    expect(secretVersion("ciphertext-1")).toBe(secretVersion("ciphertext-1"));
+    expect(secretVersion("ciphertext-1")).not.toBe(secretVersion("ciphertext-2"));
+  });
+
+  it("names a versioned slot `<name>@<version>`", () => {
+    expect(versionedSecretName("acme-llm", "0123456789abcdef")).toBe("acme-llm@0123456789abcdef");
   });
 });
 
@@ -125,6 +172,142 @@ describe("writeSecretsFile", () => {
     // removal-only exemption must not swallow it.
     writeSecretsFile({ providers: { anthropic: { apiKey: "a" }, openai: { apiKey: "b" } } });
     expect(writeSecretsFile({ providers: { anthropic: { apiKey: "rotated" } } })).toBe(true);
+  });
+
+  // A versioned slot (`<name>@<version>`) changes its NAME whenever its value
+  // changes, so the config that points at it changes too — and the config apply
+  // re-resolves config-tree SecretRefs from this file. A reload here would only
+  // re-resolve the config OpenClaw is still running, whose pointer this write
+  // just removed: it would fail closed and log a degraded runtime for nothing.
+  describe("versioned secrets (a new value is a new pointer)", () => {
+    const v1 = versionedSecretName("acme-llm", secretVersion("ciphertext-1"));
+    const v2 = versionedSecretName("acme-llm", secretVersion("ciphertext-2"));
+
+    it("reports nothing to do when a versioned slot is replaced by a new version", () => {
+      writeSecretsFile({ providers: { [v1]: { apiKey: "old-key" } } });
+      expect(writeSecretsFile({ providers: { [v2]: { apiKey: "new-key" } } })).toBe(false);
+    });
+
+    it("reports nothing to do on the upgrade from an unversioned slot to a versioned one", () => {
+      writeSecretsFile({ providers: { "acme-llm": { apiKey: "key" } } });
+      expect(writeSecretsFile({ providers: { [v1]: { apiKey: "key" } } })).toBe(false);
+    });
+
+    it("still reports a stale runtime when an unversioned key rotates in the same write", () => {
+      writeSecretsFile({ providers: { anthropic: { apiKey: "a" }, [v1]: { apiKey: "k" } } });
+      expect(
+        writeSecretsFile({
+          providers: { anthropic: { apiKey: "rotated" }, [v2]: { apiKey: "k2" } },
+        })
+      ).toBe(true);
+    });
+  });
+
+  // OpenClaw moves off a superseded pointer only when the config that names the
+  // new one is applied — and that apply runs in the background, 60–100 s late
+  // under rate limiting or a restart. Until then the RUNNING config points at
+  // the old slot, and a `secrets.reload` (fired by a built-in key rotation in
+  // that window) re-resolves exactly that config. Removing the old slot the
+  // moment it is superseded makes that reload fail, and the rotated built-in
+  // key never reaches the runtime. So a value the running config still points
+  // at stays — an old pointer next to its old value is still a consistent
+  // pair — and goes with the first write after the running config moved on.
+  describe("values the running config still points at", () => {
+    const v1 = versionedSecretName("acme-llm", secretVersion("ciphertext-1"));
+    const v2 = versionedSecretName("acme-llm", secretVersion("ciphertext-2"));
+    const ref = (slot: string) => `/providers/${slot}/apiKey`;
+    const onDisk = () => JSON.parse(readFileSync(process.env.OPENCLAW_SECRETS_PATH!, "utf-8"));
+
+    it("keeps a superseded slot while the running config still points at it", () => {
+      writeSecretsFile({ providers: { [v1]: { apiKey: "old-key" } } });
+      writeSecretsFile(
+        { providers: { [v2]: { apiKey: "new-key" } } },
+        { stillReferenced: new Set([ref(v1)]) }
+      );
+      expect(onDisk().providers).toEqual({
+        [v1]: { apiKey: "old-key" },
+        [v2]: { apiKey: "new-key" },
+      });
+    });
+
+    it("drops it with the first write after the running config moved on", () => {
+      writeSecretsFile({ providers: { [v1]: { apiKey: "old-key" } } });
+      writeSecretsFile(
+        { providers: { [v2]: { apiKey: "new-key" } } },
+        { stillReferenced: new Set([ref(v1)]) }
+      );
+      writeSecretsFile(
+        { providers: { [v2]: { apiKey: "new-key" } } },
+        { stillReferenced: new Set([ref(v2)]) }
+      );
+      expect(onDisk().providers).toEqual({ [v2]: { apiKey: "new-key" } });
+    });
+
+    it("lets a deleted provider's key go once the running config no longer names it", () => {
+      writeSecretsFile({ providers: { anthropic: { apiKey: "a" }, [v1]: { apiKey: "k" } } });
+      writeSecretsFile(
+        { providers: { anthropic: { apiKey: "a" } } },
+        { stillReferenced: new Set([ref(v1), ref("anthropic")]) }
+      );
+      expect(onDisk().providers[v1]).toEqual({ apiKey: "k" });
+
+      writeSecretsFile(
+        { providers: { anthropic: { apiKey: "a" } } },
+        { stillReferenced: new Set([ref("anthropic")]) }
+      );
+      expect(onDisk().providers[v1]).toBeUndefined();
+    });
+
+    it("keeps the unversioned slot a pre-versioning config still points at", () => {
+      // The upgrade case: the running config still names `acme-llm` while the
+      // first versioned config is on its way.
+      writeSecretsFile({ providers: { "acme-llm": { apiKey: "key" } } });
+      writeSecretsFile(
+        { providers: { [v1]: { apiKey: "key" } } },
+        { stillReferenced: new Set([ref("acme-llm")]) }
+      );
+      expect(onDisk().providers["acme-llm"]).toEqual({ apiKey: "key" });
+    });
+
+    it("never invents a value the previous file did not hold", () => {
+      writeSecretsFile(
+        { providers: { [v2]: { apiKey: "new-key" } } },
+        { stillReferenced: new Set([ref(v1)]) }
+      );
+      expect(onDisk().providers).toEqual({ [v2]: { apiKey: "new-key" } });
+    });
+
+    it("keeping an old value is not a rotation — no reload for it", () => {
+      writeSecretsFile({ providers: { anthropic: { apiKey: "a" }, [v1]: { apiKey: "k" } } });
+      expect(
+        writeSecretsFile(
+          { providers: { anthropic: { apiKey: "a" }, [v2]: { apiKey: "k2" } } },
+          { stillReferenced: new Set([ref(v1)]) }
+        )
+      ).toBe(false);
+      // …and a later write that only lets it go is a pure removal.
+      expect(
+        writeSecretsFile(
+          { providers: { anthropic: { apiKey: "a" }, [v2]: { apiKey: "k2" } } },
+          { stillReferenced: new Set([ref(v2)]) }
+        )
+      ).toBe(false);
+    });
+
+    it("a built-in rotation while an old slot is kept still asks for a reload", () => {
+      writeSecretsFile({ providers: { anthropic: { apiKey: "a" }, [v1]: { apiKey: "k" } } });
+      writeSecretsFile(
+        { providers: { anthropic: { apiKey: "a" }, [v2]: { apiKey: "k2" } } },
+        { stillReferenced: new Set([ref(v1)]) }
+      );
+      expect(
+        writeSecretsFile(
+          { providers: { anthropic: { apiKey: "rotated" }, [v2]: { apiKey: "k2" } } },
+          { stillReferenced: new Set([ref(v1)]) }
+        )
+      ).toBe(true);
+      expect(onDisk().providers[v1]).toEqual({ apiKey: "k" });
+    });
   });
 
   it("reports a stale runtime for a nested plugin secret, not just providers", () => {

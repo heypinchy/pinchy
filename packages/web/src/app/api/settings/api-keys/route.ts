@@ -125,14 +125,17 @@ export const GET = withAdmin(async () => {
       ? []
       : (
           await db
-            .select({ id: users.id, banned: users.banned })
+            .select({ id: users.id, banned: users.banned, role: users.role })
             .from(users)
             .where(inArray(users.id, creatorIds))
         )
           // A missing row means the account is gone; `banned` means it's
-          // disabled. Both are "no longer works here" — the only distinction
-          // that matters for "should we rotate this key?".
-          .filter((u) => !u.banned)
+          // disabled; a role other than "admin" means it was demoted — the
+          // key it minted is still a working org credential held by someone
+          // who can no longer manage keys. All three are "no longer serves
+          // here" — the only distinction that matters for "should we rotate
+          // this key?".
+          .filter((u) => !u.banned && u.role === "admin")
           .map((u) => u.id)
   );
 

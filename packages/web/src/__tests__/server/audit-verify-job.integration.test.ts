@@ -95,8 +95,8 @@ describe("audit-verify-job (integration)", () => {
     // Only the #698 test arms the concurrent-append interposer; make sure a
     // leftover arming can never bleed into another test's row sequence.
     raceState.armed = false;
-    // Fresh checkpoint per test — the shared per-test TRUNCATE in
-    // src/test-helpers/integration/setup.ts already resets audit_verify_state,
+    // Fresh checkpoint per test — the shared per-test reset in
+    // src/test-helpers/integration/reset-db.ts already empties audit_verify_state,
     // this is just documentation of that assumption.
     expect(await readCheckpointRow()).toBeNull();
   });

@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { EventEmitter } from "events";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
@@ -212,7 +212,9 @@ vi.mock("@/server/attachment-pipeline", async (importOriginal) => {
 
 import { ClientRouter } from "@/server/client-router";
 import { SessionCache } from "@/server/session-cache";
+import { ActiveRuns } from "@/server/active-runs";
 import { CHAT_HISTORY_OVERSIZED_PLACEHOLDER } from "@/lib/openclaw-history";
+import { getUserSocketRegistry, ACCOUNT_DEACTIVATED_CLOSE_CODE } from "@/server/user-sockets";
 
 function createMockClientWs() {
   const sent: string[] = [];
@@ -2858,6 +2860,104 @@ describe("ClientRouter", () => {
       } finally {
         vi.useRealTimers();
       }
+    });
+  });
+
+  describe("a user deactivated while their chat was open", () => {
+    // DELETE /api/users/:id closes the user's sockets (user-sockets.ts), but a
+    // frame already in flight on a closing socket still reaches the router.
+    // It must not reach the agent: no lookup, no OpenClaw call, no tool run.
+    beforeEach(() => getUserSocketRegistry().revoke("user-1"));
+    afterEach(() => getUserSocketRegistry().restore("user-1"));
+
+    it.each(["message", "history", "abort"] as const)(
+      "refuses its %s frame and closes the socket",
+      async (type) => {
+        const clientWs = createMockClientWs();
+
+        await router.handleMessage(
+          clientWs as any,
+          {
+            type,
+            content: "Run the payroll export",
+            agentId: "agent-1",
+          } as any
+        );
+
+        expect(mockChat).not.toHaveBeenCalled();
+        expect(mockSessionsHistory).not.toHaveBeenCalled();
+        expect(mockFindFirst).not.toHaveBeenCalled();
+        expect(clientWs.sent.map((s) => JSON.parse(s))).toEqual([
+          {
+            type: "error",
+            code: "policy_account_deactivated",
+            message: "Your account has been deactivated.",
+          },
+        ]);
+        expect(clientWs.close).toHaveBeenCalledWith(
+          ACCOUNT_DEACTIVATED_CLOSE_CODE,
+          "Account deactivated"
+        );
+      }
+    );
+
+    it("does not start a run when the deactivation lands while the message is being prepared", async () => {
+      // The top-of-handleMessage check passes, then the router awaits a
+      // string of lookups before it registers the run. A deactivation in
+      // that window finds no run to abort (abortRunsOfUser snapshots the
+      // registry), so the router itself must notice before it registers.
+      getUserSocketRegistry().restore("user-1");
+      const activeRuns = new ActiveRuns();
+      const parked = new ClientRouter(
+        mockOpenClawClient as any,
+        "user-1",
+        "member",
+        sessionCache,
+        activeRuns
+      );
+      let releaseUserLookup!: (row: unknown) => void;
+      mockUserFindFirst.mockImplementationOnce(
+        () => new Promise((resolve) => (releaseUserLookup = resolve))
+      );
+      mockChat.mockImplementation(async function* () {
+        yield { type: "text", text: "Exported." };
+        yield { type: "done" };
+      });
+      const clientWs = createMockClientWs();
+
+      const handling = parked.handleMessage(clientWs as any, {
+        type: "message",
+        content: "Run the payroll export",
+        agentId: "agent-1",
+      });
+      await vi.waitFor(() => expect(mockUserFindFirst).toHaveBeenCalled());
+
+      // What DELETE /api/users/:id does, in the same tick: revoke, then abort
+      // whatever is registered — nothing is yet.
+      getUserSocketRegistry().revoke("user-1");
+      releaseUserLookup({ id: "user-1", context: null });
+      await handling;
+
+      expect(mockChat).not.toHaveBeenCalled();
+      expect(activeRuns.size()).toBe(0);
+      expect(clientWs.sent.map((s) => JSON.parse(s))).toContainEqual({
+        type: "error",
+        code: "policy_account_deactivated",
+        message: "Your account has been deactivated.",
+      });
+      expect(clientWs.close).toHaveBeenCalledWith(
+        ACCOUNT_DEACTIVATED_CLOSE_CODE,
+        "Account deactivated"
+      );
+    });
+
+    it("serves a different, active user as before", async () => {
+      const other = new ClientRouter(mockOpenClawClient as any, "user-2", "member", sessionCache);
+      const clientWs = createMockClientWs();
+
+      await other.handleMessage(clientWs as any, { type: "history", agentId: "agent-1" } as any);
+
+      expect(mockFindFirst).toHaveBeenCalled();
     });
   });
 

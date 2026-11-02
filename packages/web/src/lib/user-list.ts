@@ -14,6 +14,8 @@ export type UserListItem =
       role: UserRole;
       status: "active" | "deactivated";
       groups: UserGroup[];
+      /** Neither the setup wizard nor a claimed invite created this account. */
+      unknownOrigin: boolean;
     }
   | {
       kind: "invite";
@@ -36,6 +38,7 @@ interface ApiUser {
   role: UserRole;
   banned: boolean;
   groups?: UserGroup[];
+  unknownOrigin?: boolean;
 }
 
 interface ApiInvite {
@@ -69,6 +72,7 @@ export function mergeUserList(
     role: u.role,
     status: u.banned ? "deactivated" : "active",
     groups: u.groups || [],
+    unknownOrigin: u.unknownOrigin ?? false,
   }));
 
   const inviteItems: UserListItem[] = invites

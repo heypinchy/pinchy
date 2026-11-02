@@ -291,8 +291,9 @@ describe("GET /api/settings/api-keys", () => {
    *   1. `db.select().from(apiKeys).orderBy(...)` → `rows`.
    *   2. `db.select().from(users).where(inArray(...))` → `creatorRows`, the
    *      creator-liveness lookup. Defaults to "the fixture's creator is still
-   *      employed"; pass `[]` for a creator who is gone, or a `banned: true`
-   *      row for one who is deactivated.
+   *      employed and still an admin"; pass `[]` for a creator who is gone, a
+   *      `banned: true` row for one who is deactivated, or a non-admin `role`
+   *      for one who was demoted.
    *
    * Dispatches on the TABLE rather than call order, deliberately. Query 2 is
    * skipped entirely when no key has a recorded creator, so a call-order mock
@@ -307,7 +308,9 @@ describe("GET /api/settings/api-keys", () => {
    */
   function mockKeyRows(
     rows: unknown[],
-    creatorRows: { id: string; banned: boolean }[] = [{ id: "admin-1", banned: false }]
+    creatorRows: { id: string; banned: boolean; role: string }[] = [
+      { id: "admin-1", banned: false, role: "admin" },
+    ]
   ) {
     const orderBy = vi.fn().mockResolvedValue(rows);
     const creatorWhere = vi.fn().mockResolvedValue(creatorRows);
@@ -389,6 +392,19 @@ describe("GET /api/settings/api-keys", () => {
     // Degrade honestly rather than guess or throw: one bad row must not take
     // the whole settings page down, and "unknown" must look like unknown.
     expect(body.keys.map((k: { createdBy: unknown }) => k.createdBy)).toEqual([null, null, null]);
+  });
+
+  it.each([
+    ["banned", { id: "admin-1", banned: true, role: "admin" }],
+    ["demoted to member", { id: "admin-1", banned: false, role: "member" }],
+    ["banned and demoted", { id: "admin-1", banned: true, role: "member" }],
+  ])("flags a creator who is %s as inactive", async (_label, creatorRow) => {
+    mockKeyRows([fullKeyRow()], [creatorRow]);
+
+    const response = await GET(getRequest(), routeContext());
+    const body = await response.json();
+
+    expect(body.keys[0].createdBy).toEqual({ id: "admin-1", name: "Ada Admin", active: false });
   });
 
   it("queries the apikey table directly, org-wide — no per-admin filter", async () => {

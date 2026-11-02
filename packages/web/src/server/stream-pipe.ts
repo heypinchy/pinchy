@@ -9,6 +9,7 @@ import {
 } from "@/server/model-unavailable-throttle";
 import type { SessionCache } from "@/server/session-cache";
 import type { ActiveRuns } from "@/server/active-runs";
+import { followUpDepsFor, reAbortStartedRun } from "@/server/abort-runs";
 import { getErrorHint, presentProviderError, cannedProviderMessage } from "@/server/error-hints";
 import { classifyModelError } from "@/server/model-error-classifier";
 import {
@@ -249,6 +250,24 @@ export class StreamPipe {
           }
           activeRunRegistered = true;
           activeRunId = chunk.runId;
+          // Stopped while still pending — by the stop button or by
+          // deactivation. That abort named the session only, and if OpenClaw
+          // had not accepted this run yet it stopped nothing; OpenClaw may
+          // still start it. This chunk names it — usually it is the client's
+          // own post-abort `done`, not OpenClaw's — so follow up by that runId
+          // until an abort is confirmed or OpenClaw reports the run over.
+          // Detached: this stream is ending, the run on OpenClaw may not be.
+          // Once per run here: this branch runs on the reconciling chunk only
+          // (a retried attempt is followed up where its runId shows up, below).
+          const reconciledRun = activeRuns.get(sessionKey);
+          if (reconciledRun?.abortedByUser) {
+            void reAbortStartedRun(
+              reconciledRun,
+              sessionKey,
+              chunk.runId,
+              followUpDepsFor(() => openclawClient)
+            );
+          }
           // Authoritative liveness: the run has actually started streaming.
           // Additive to the existing chunk/done frames — the client switchover
           // is a later task. Emitted exactly once per run (gated by
@@ -266,6 +285,29 @@ export class StreamPipe {
           }
         } else if (activeRunRegistered) {
           activeRuns.touch(sessionKey, Date.now());
+          // A chunk naming another run: the dispatch-race retry
+          // (`chat-dispatch-retry.ts`) sent this turn again after OpenClaw
+          // failed the attempt it was reconciled to ("Unknown model"), and
+          // OpenClaw runs the new attempt under its own runId. Everything that
+          // names this turn's run must follow — a stop or deactivation aborts
+          // `run.runId`, and an abort naming the failed attempt stops nothing
+          // while the new one runs on, tools included. Stopped already? Then
+          // this attempt was dispatched before the stop and the abort sent
+          // missed it (usually this chunk is the client's own post-abort
+          // `done`, carrying the new attempt's id): follow it up by its runId,
+          // exactly as for a pending run's first chunk.
+          if (chunk.runId && activeRunId !== undefined && chunk.runId !== activeRunId) {
+            const switched = activeRuns.switchRunId(sessionKey, activeRunId, chunk.runId);
+            activeRunId = chunk.runId;
+            if (switched?.abortedByUser) {
+              void reAbortStartedRun(
+                switched,
+                sessionKey,
+                chunk.runId,
+                followUpDepsFor(() => openclawClient)
+              );
+            }
+          }
         }
         // #978: OpenClaw hands a user abort to the stream as an error chunk
         // (`decision=surface_error reason=none rawError=Request was aborted`),
@@ -539,6 +581,23 @@ export class StreamPipe {
         }
       }
 
+      // OpenClaw ended this stream itself, so the reply is over — while the
+      // entry stays registered (and the stop button showing) through the file
+      // delivery below. Mark it: a stop from now on finds nothing running
+      // (`abortSessionRun`), instead of reading as a stop that missed and
+      // having its follow-up report the reply "completed for nobody". Not when
+      // the stream ended because the run was stopped — openclaw-node ends it
+      // with a `done` of its own the moment the abort goes out, whether or not
+      // OpenClaw stopped anything — nor when OpenClaw dropped the socket or the
+      // watchdog tore the run down: neither says the run is over.
+      if (
+        !openclawDisconnected &&
+        !tornDownByWatchdog &&
+        activeRuns.get(sessionKey)?.abortedByUser !== true
+      ) {
+        activeRuns.markStreamEnded(sessionKey, activeRunId ?? initialMessageId);
+      }
+
       // Agent → user file delivery (#703): the OpenClaw gateway does not stream
       // native plugin tool-output text to openclaw-node, so a delivery cannot be
       // observed inline. Instead, once the run's stream has closed, ask OpenClaw
@@ -733,39 +792,11 @@ export class StreamPipe {
         broadcastForRun(sessionKey, clientWs, { type: "complete" });
       }
     } finally {
-      // #310 Tier 2a: clean up the registry entry and, if the run finished
-      // normally but with zero listeners, write a chat.run_completed_after_disconnect
-      // audit row so operators can see "this run completed for a browser
-      // session that had already gone away". A terminated error path
-      // (sawTerminalError === true) doesn't get this audit — that's
-      // covered by the existing chat.agent_error / classified events.
-      if (activeRunRegistered) {
-        const run = activeRuns.get(sessionKey);
-        // `!openclawDisconnected`: a run abandoned because OpenClaw dropped the
-        // socket did NOT complete, so it must not be logged as
-        // `run_completed_after_disconnect` (that event means the browser left
-        // but the reply still finished server-side).
-        if (run && run.listeners.size === 0 && !sawTerminalError && !openclawDisconnected) {
-          const auditEntry = {
-            actorType: "user" as const,
-            actorId: userId,
-            eventType: "chat.run_completed_after_disconnect" as const,
-            resource: `agent:${agent.id}`,
-            detail: {
-              agent: { id: agent.id, name: agent.name },
-              user: { id: userId },
-              sessionKey,
-              runId: activeRunId!,
-            },
-            outcome: "success" as const,
-          };
-          try {
-            await appendAuditLog(auditEntry);
-          } catch (err) {
-            recordAuditFailure(err, auditEntry);
-          }
-        }
-      }
+      // Let go of the run first: drop its registry entry and stop its
+      // heartbeat before anything below awaits. A reopened tab asks the
+      // registry whether a run is still going, so an entry held across an
+      // audit write is a spinner for a run that is over.
+      //
       // B-1/S-1: drop the registry entry for THIS run only. Covers a
       // dispatch-time pending run that errored before its first chunk
       // (`activeRunRegistered` stays false → owned id is the provisional
@@ -774,10 +805,56 @@ export class StreamPipe {
       // resend replaces the entry with a NEWER run on the same sessionKey, and
       // an unconditional delete here would clobber it — `deleteIfRunId` only
       // removes the entry if it is still ours. Idempotent if the watchdog
-      // already tore the run down.
+      // already tore the run down. The snapshot keeps what the audit below
+      // reads.
+      const run = activeRunRegistered ? activeRuns.get(sessionKey) : undefined;
       activeRuns.deleteIfRunId(sessionKey, activeRunId ?? initialMessageId);
       if (heartbeatInterval !== null) {
         clearInterval(heartbeatInterval);
+      }
+
+      // #310 Tier 2a: if the run finished normally but with zero listeners,
+      // write a chat.run_completed_after_disconnect audit row so operators can
+      // see "this run completed for a browser session that had already gone
+      // away". A terminated error path (sawTerminalError === true) doesn't get
+      // this audit — that's covered by the existing chat.agent_error /
+      // classified events.
+      // `!openclawDisconnected`: a run abandoned because OpenClaw dropped the
+      // socket did NOT complete, so it must not be logged as
+      // `run_completed_after_disconnect` (that event means the browser left
+      // but the reply still finished server-side).
+      // `!abortedByUser`: a stopped run's stream ends with a `done` of the
+      // client's own making — openclaw-node ends the local stream the moment
+      // it sends `chat.abort` — whether or not OpenClaw stopped anything, so
+      // that `done` says nothing about how the reply ended. When the abort did
+      // not take, the follow-up (`abort-runs.ts`) asks OpenClaw and records a
+      // reply that finished anyway.
+      if (
+        run &&
+        run.listeners.size === 0 &&
+        !sawTerminalError &&
+        !openclawDisconnected &&
+        !run.abortedByUser
+      ) {
+        const auditEntry = {
+          actorType: "user" as const,
+          actorId: userId,
+          eventType: "chat.run_completed_after_disconnect" as const,
+          resource: `agent:${agent.id}`,
+          // The user is the row's actor, pseudonymized on write — never
+          // mirrored into the verbatim `detail` (#824).
+          detail: {
+            agent: { id: agent.id, name: agent.name },
+            sessionKey,
+            runId: activeRunId!,
+          },
+          outcome: "success" as const,
+        };
+        try {
+          await appendAuditLog(auditEntry);
+        } catch (err) {
+          recordAuditFailure(err, auditEntry);
+        }
       }
     }
   }

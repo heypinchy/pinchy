@@ -128,8 +128,19 @@ export type AuditEventType =
   | "agent.created"
   | "agent.updated"
   | "agent.deleted"
+  // An account came into existence: through the setup wizard (the first
+  // admin) or a claimed invite. `detail.via` says which. Actor is the new user.
+  | "user.created"
   | "user.invited"
   | "user.invite_blocked"
+  // Written once per account at boot by reportUnknownOriginUsers
+  // (lib/user-provenance.ts): an account that neither the setup wizard nor a
+  // claimed invite explains — in practice, one self-registered through the
+  // sign-up endpoint earlier releases left open to clients.
+  | "user.unknown_origin_detected"
+  // An admin marked a flagged account as known (Mark as known in Settings →
+  // Users). The row IS the acknowledgement: findUnknownOriginUsers reads it.
+  | "user.origin_acknowledged"
   | "user.updated"
   | "user.deleted"
   | "config.changed"
@@ -542,6 +553,27 @@ export type AuditLogEntry =
       };
     })
   | (AuditLogBase & {
+      // Provenance check (lib/user-provenance.ts). System-written, one row per
+      // account ever; `resource` is `user:<id>`, which is also how the check
+      // knows it already reported an account. No email — `user.name` is the
+      // human-readable snapshot.
+      eventType: "user.unknown_origin_detected";
+      detail: {
+        user: EntityRef;
+        role: string;
+        accountCreatedAt: string;
+      };
+    })
+  | (AuditLogBase & {
+      // An admin vouched for a flagged account (lib/user-provenance.ts). The
+      // provenance check reads these rows by `resource` = `user:<id>`, so the
+      // row is the stored state, not a side note. No email, and no id: the
+      // route works on the admin's own account, so a `user.id` here could be
+      // the acting admin's raw id (#824). The id is in `resource`.
+      eventType: "user.origin_acknowledged";
+      detail: { user: { name: string } };
+    })
+  | (AuditLogBase & {
       // Cost budgets (#36): a budget crossed its warning line (80%) or its
       // limit (100%) this month. One row per budget, crossing and month — the
       // monitor claims each before writing it (lib/budgets.ts).
@@ -725,6 +757,12 @@ export type AuditLogEntry =
         reason?: string;
         fields?: string[];
         modelCount?: number;
+        // Where a credential update moved the secret (Odoo url/db, mail
+        // hosts/ports/security), as `{ <field>: { from, to } }`. On a refused
+        // update (`reason: "secret_required_for_new_destination"`, outcome
+        // failure) it names the destination the stored secret was kept from.
+        // URLs carry no userinfo or query. See lib/secret-destination.ts.
+        destinationChange?: Record<string, { from: string | number; to: string | number }>;
         // Present instead of a plaintext `name` when the connection's
         // human-readable name is itself PII (an OAuth mailbox address).
         // See redactEmail(): GDPR Art. 17 forbids writing the raw address

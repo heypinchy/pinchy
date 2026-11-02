@@ -30,3 +30,11 @@ export const updateUserGroupsSchema = z.object({
   groupIds: z.array(z.string()),
 });
 export type UpdateUserGroupsInput = z.infer<typeof updateUserGroupsSchema>;
+
+/**
+ * `POST /api/users/[userId]/acknowledge-origin` — "Mark as known" on an account
+ * the provenance check flagged. Takes no fields; `strict()` so a client that
+ * starts sending one (a reason, say) gets a 400 instead of a silent drop.
+ */
+export const acknowledgeUserOriginSchema = z.object({}).strict();
+export type AcknowledgeUserOriginInput = z.infer<typeof acknowledgeUserOriginSchema>;
