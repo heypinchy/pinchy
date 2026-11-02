@@ -202,7 +202,10 @@ export const KEY_VARIABLE_IGNORED_DOCS_URL =
  *     encrypts goes under the key file. A corrected value is a different key,
  *     and every credential stored so far stops decrypting. The only safe moves
  *     keep the file's key in effect: drop the variable, or set it to the
- *     file's exact contents. So this warning never suggests a new key.
+ *     file's exact contents. So this warning never suggests a new key. The
+ *     exception is a value that worked and broke later: the credentials saved
+ *     before that are encrypted with the original value, so setting it back
+ *     keeps most of them.
  *   - `AUDIT_HMAC_SECRET`: a corrected value switches the signing key, which is
  *     supported but has a procedure (current key in the file first, several
  *     instances stop together). Until then the file is the signing key, and the
@@ -239,7 +242,10 @@ export function describeIgnoredSecretEnv(opts: {
         "your .env, or setting it to the key file's exact contents, then running " +
         "docker compose up -d. Any other value, even a valid one, makes everything " +
         "encrypted with the key file unreadable, and those credentials can only be " +
-        "re-entered. See " +
+        "re-entered. If the variable held a working key before and only broke later, " +
+        "set it back to that exact value instead: the credentials saved before it " +
+        "broke are encrypted with it, and only the ones saved while it was broken " +
+        "then need re-entering. See " +
         KEY_VARIABLE_IGNORED_DOCS_URL,
     };
   }

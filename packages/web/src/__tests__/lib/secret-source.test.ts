@@ -206,6 +206,16 @@ describe("describeIgnoredSecretEnv", () => {
       expect(message()).toMatch(/unreadable/);
     });
 
+    it("tells the operator whose variable used to work to set it back, not to keep the key file", () => {
+      // A variable that was a working key and broke later (a character lost
+      // in a .env edit) encrypted almost every credential with the original
+      // value; only the ones saved while it was broken use the key file. The
+      // two safe fixes above would keep the smaller share and lose the rest.
+      expect(message()).toMatch(/held a working key/);
+      expect(message()).toMatch(/set it back to that exact value/);
+      expect(message()).toMatch(/saved while it was broken .*re-enter/);
+    });
+
     it("says how to apply the change so .env is read again", () => {
       // docker compose restart keeps the old environment.
       expect(message()).toMatch(/docker compose up -d/);

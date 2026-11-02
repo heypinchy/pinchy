@@ -162,7 +162,15 @@ As with a rolling restart (below), there's no reset, on purpose. Write down what
 
 3. Generate the new key with `openssl rand -hex 32` and set it as `AUDIT_HMAC_SECRET` in `.env`.
 4. Start Pinchy with `docker compose up -d`. Not `docker compose start` or `restart`: those keep the old environment, so Pinchy would write the **leaked** value into the new key file and keep signing with it.
-5. Check that start's log (`docker compose logs pinchy`) for `Wrote the AUDIT_HMAC_SECRET value to .audit_hmac_secret`. If it shows `AUDIT_HMAC_SECRET is set but is not a valid key` instead, the new value isn't in effect and Pinchy is signing with a key it just generated: correct it in `.env` and run `docker compose up -d` again before anything else.
+5. Check that start's log (`docker compose logs pinchy`) for `Wrote the AUDIT_HMAC_SECRET value to .audit_hmac_secret`. If it shows `AUDIT_HMAC_SECRET is set but is not a valid key` instead, the new value isn't in effect. Correcting `.env` alone doesn't fix that: with no key file and no valid variable, Pinchy generates a random key file the first time it needs the key (the first audit entry, or the first background run about 60 seconds after the start), and it never overwrites a key file, so the corrected value would never get into it. Before anything else, stop Pinchy and remove the key file again, as in steps 1 and 2:
+
+   ```bash
+   docker compose stop pinchy
+   backup_pinchy_keys && docker compose run --rm --no-deps -T --entrypoint rm pinchy /app/secrets/.audit_hmac_secret
+   ```
+
+   If `rm` reports that there's no such file, Pinchy hadn't generated one yet, and that's fine. Then correct the value in `.env`, run `docker compose up -d`, and check the log again. Entries signed with the generated key in the meantime become unverifiable along with the ones signed with the leaked key; the backup keeps it.
+
 6. Check that the file holds the new value, not the leaked one. These two commands print a hash each, never the key, and the hashes have to match:
 
    ```bash
@@ -170,7 +178,7 @@ As with a rolling restart (below), there's no reset, on purpose. Write down what
    sed -n 's/^AUDIT_HMAC_SECRET=//p' .env | tr -dc '0-9a-fA-F' | tr 'A-F' 'a-f' | sha256sum
    ```
 
-   The second command keeps only the hex digits of the `.env` line and lowercases them, because Pinchy writes the key in lowercase and Compose drops quotes and line endings before Pinchy sees the value. If they differ, the container is running on a different value than the one in `.env`: stop and look before anything signs more entries.
+   The second command keeps only the hex digits of the `.env` line and lowercases them, because Pinchy writes the key in lowercase and Compose drops quotes and line endings before Pinchy sees the value. If they differ, the container is running on a different value than the one in `.env`: stop and look before anything signs more entries. After a step 5 retry, the likely cause is a key file Pinchy generated while the value was invalid and that you didn't remove before correcting `.env`: the file is then that random key, and Pinchy kept it. Do step 5's commands, then `docker compose up -d`, and compare again.
 
 Retiring in the same stop costs you the failure entry above for the rows signed with the leaked key since the last background run. The key alone does nothing without write access to the database, so for most leaks the short window is the smaller risk. If you have reason to think someone holds both right now, retire it in the same stop and document why.
 
