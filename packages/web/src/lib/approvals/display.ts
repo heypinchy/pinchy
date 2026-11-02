@@ -151,10 +151,11 @@ export function readUrl(text: string): UrlRead | null {
  * any long text, with the rest one click away. Unbounded, it froze the
  * approver's tab: Chromium lays out a long mixed-direction text in time that
  * grows faster than its length — 13 s for one 200,000-character value
- * in Chromium. At this size the whole card lays out in under
- * 50 ms in headless Chromium for the worst shape measured, 8,192 alternating
- * Hebrew letters and digits (one isolate per letter): 38–47 ms, against
- * 6–8 ms for a Hebrew or Arabic path of the same length. Wherever the card
+ * in Chromium. At this size one value lays out in 38–47 ms in headless
+ * Chromium for the worst shape measured, 8,192 alternating Hebrew letters and
+ * digits (one isolate per letter), against 6–8 ms for a Hebrew or Arabic path
+ * of the same length. This bounds one value, not a card: sixty such targets
+ * took about a second. MAX_DRAWN_WORDS bounds the card. Wherever the card
  * previews an address, the summary names its host beside it (`previewed`),
  * since the host sits at the end, behind the preview.
  */
@@ -197,6 +198,51 @@ export function previewed(text: string, full: boolean): boolean {
   const length = [...displayScalar(text)].length;
   if (length <= PREVIEW_LEN) return false;
   return !((full || isAddressShaped(text)) && length <= WHOLE_MAX);
+}
+
+/**
+ * The most right-to-left words one card draws, collapsed, over all its values
+ * — exactly what one target drawn whole holds at most: WHOLE_MAX alternating
+ * Hebrew letters and digits are 4,096 words. The card draws each such word in
+ * an isolate of its own (`inStoredOrder`), and the time Chromium takes to lay
+ * them out grows with how many it draws, wherever they sit: a bound per value
+ * let sixty 4,096-character targets hold 122,880 of them, and two thousand
+ * 200-character notes 200,000 — 0.8–1.3 s and 0.85–0.94 s to lay out in
+ * headless Chromium (load 8–13; 2.5 s at load 53). The summary counts them
+ * (`drawnWords`) and refuses a call past this bound; the card draws what the
+ * summary accepted, so the count is one decision. Natural right-to-left text
+ * is a handful of words per line — words joined by spaces are one — so
+ * ordinary work stays far below it.
+ *
+ * Measured with the bound, same machine and load: the right-to-left words of
+ * any accepted card lay out in 38–54 ms (that one 8,192-character target; the
+ * same 4,096 words spread over forty values take 18 ms). The rest of a card is
+ * bounded by its size (MAX_TOTAL_CHARS in `summary.ts`), and costs what its
+ * glyphs cost: that target plus 2,400 short Latin values 98–117 ms, 2,500
+ * Arabic or Devanagari ones 205–248 ms. One shape is slower and is not bounded
+ * here: a glyph Chromium finds in no font it tries first — the white flag
+ * U+1F3F3 of 🏳️‍🌈 — costs ~11 µs each, so 500 previews of such sequences
+ * took 2.1–2.2 s.
+ */
+export const MAX_DRAWN_WORDS = 4_096;
+
+/**
+ * How many right-to-left words the collapsed card draws for `text` — a value,
+ * or a display name beside one: the whole text, or its preview where the card
+ * previews it (`previewed`).
+ */
+export function drawnWords(text: string, full: boolean): number {
+  const shown = displayScalar(text);
+  return isolatedWords(previewed(text, full) ? [...shown].slice(0, PREVIEW_LEN).join("") : shown);
+}
+
+/** How many right-to-left words `inStoredOrder` isolates in `drawn`. */
+export function isolatedWords(drawn: string): number {
+  let words = 0;
+  for (const line of inStoredOrder(drawn) ?? []) {
+    for (const piece of line) if (piece.word) words++;
+  }
+  return words;
 }
 
 /**

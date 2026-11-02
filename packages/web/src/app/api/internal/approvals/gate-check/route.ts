@@ -5,7 +5,7 @@ import { parseRequestBody } from "@/lib/api-validation";
 import { gateCheckSchema } from "@/lib/schemas/approvals";
 import { decideGate } from "@/lib/approvals/service";
 import { computeArgsDigest } from "@/lib/approvals/digest";
-import { describeRefusal, summarizeCall } from "@/lib/approvals/summary";
+import { describeRefusal, summarizeCall, type SummaryLimit } from "@/lib/approvals/summary";
 import { buildApprovalPrompt } from "@/lib/approvals/prompt";
 import { resolveConfirmation, toolIsConfigured } from "@/lib/approvals/policy";
 import { collectCallModels, makeRefResolver } from "@/lib/approvals/call-models";
@@ -102,14 +102,15 @@ export async function POST(request: NextRequest) {
     return requester?.name ?? null;
   };
 
-  // Fail closed on a call the card cannot show in full. The summary marks what it
-  // left out, but a person who approves "1 more field not shown" still approves
-  // that field — the digest binds the whole call, and the whole call runs. So no
-  // confirmation is opened at all: there is nothing to approve. The bounds in
-  // `summary.ts` are sized for ordinary work; only an oversized call lands here.
-  // No pending row exists, so no grant can ever clear this digest. The model is
-  // told which bound the call crossed, and to split it only where that can help.
-  if (exceeded) {
+  // Fail closed on a call the card or the prompt cannot show in full. The
+  // summary marks what it left out, but a person who approves "1 more field not
+  // shown" still approves that field — the digest binds the whole call, and the
+  // whole call runs. So no confirmation is opened at all: there is nothing to
+  // approve. The bounds in `summary.ts` are sized for ordinary work; only an
+  // oversized call lands here. No pending row exists, so no grant can ever
+  // clear this digest. The model is told which bound the call crossed, and to
+  // split it only where that can help.
+  const refuse = async (limit: SummaryLimit) => {
     const entry: AuditLogEntry = {
       actorType: "agent",
       actorId: agentId,
@@ -121,7 +122,7 @@ export async function POST(request: NextRequest) {
         toolName,
         argsDigest,
         reason: "too-large-to-show",
-        exceeded: exceeded.kind,
+        exceeded: limit.kind,
       },
       outcome: "failure",
     };
@@ -130,8 +131,15 @@ export async function POST(request: NextRequest) {
     } catch (err) {
       recordAuditFailure(err, entry);
     }
-    return NextResponse.json({ decision: "block", reason: describeRefusal(exceeded) });
-  }
+    return NextResponse.json({ decision: "block", reason: describeRefusal(limit) });
+  };
+  if (exceeded) return refuse(exceeded);
+
+  // The wording every approval surface shows, and where "allow" runs the tool
+  // as surely as the card's Approve does. Built before anything is opened: a
+  // call whose hosts it cannot all name is refused here (`buildApprovalPrompt`).
+  const approval = buildApprovalPrompt(toolName, params, resources, { refRecord });
+  if ("exceeded" in approval) return refuse(approval.exceeded);
 
   const result = await decideGate({
     agentId,
@@ -213,6 +221,6 @@ export async function POST(request: NextRequest) {
     //
     // The plugin keys on the presence of this field to decide whether to pause
     // the run, so it is absent from every non-blocking answer.
-    approval: buildApprovalPrompt(toolName, params, resources, { refRecord }),
+    approval,
   });
 }

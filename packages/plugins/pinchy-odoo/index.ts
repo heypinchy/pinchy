@@ -1,3 +1,4 @@
+import { refusingUnknownParams } from "./unknown-params";
 import { readFile, stat } from "./io";
 import { basename, extname } from "path";
 import { OdooClient, type OdooDomain } from "odoo-node";
@@ -3114,7 +3115,9 @@ const plugin = {
   name: "Pinchy Odoo",
   description: "Odoo ERP integration with model-level permissions.",
 
-  register(api: PluginApi) {
+  register(pluginApi: PluginApi) {
+    // Every tool refuses a parameter it does not declare (unknown-params.ts).
+    const api = refusingUnknownParams(pluginApi);
     const pluginConfig = api.pluginConfig;
     const agentConfigs = pluginConfig?.agents ?? {};
     const apiBaseUrl = pluginConfig?.apiBaseUrl ?? "";
@@ -5342,22 +5345,6 @@ const plugin = {
                 return permissionDenied("delete", model);
               }
 
-              // pinchy#1078: raw ids were how a hallucinated delete reached
-              // Odoo. `ids: [40]` needs no prior read, so nothing tied a delete
-              // to a record the model had actually seen — while every other
-              // governed write tool already spoke refs. Refusing loudly (rather
-              // than quietly accepting ids alongside targets) is the whole
-              // point: a silent fallback is a one-parameter route back to the
-              // hole this closes.
-              if (params.ids !== undefined) {
-                return errorResult(
-                  new Error(
-                    "Raw numeric IDs are not accepted for odoo_delete. Read the records with " +
-                      "`odoo_read` first and pass the `_pinchy_ref` each one carries in `targets` — " +
-                      "that is what keeps a delete to records that were actually looked up."
-                  )
-                );
-              }
               // The `{item: …}` array-serialization artifact reaches `targets`
               // exactly as it reaches `values` elsewhere (see hasItemWrappedArray);
               // caught here so the model gets the actionable shape error rather

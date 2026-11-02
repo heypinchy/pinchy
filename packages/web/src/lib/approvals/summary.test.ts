@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll } from "vitest";
 import { domainToASCII } from "node:url";
 import { describeRefusal, markScripts, summarizeArgs, summarizeCall } from "./summary";
 import { makeRefResolver } from "./call-models";
-import { inStoredOrder, readNode } from "./display";
+import { MAX_DRAWN_WORDS, WHOLE_MAX, inStoredOrder, readNode } from "./display";
 // The pinchy-odoo encoder, so the ref rendering is tested against real refs —
 // see call-models.test.ts for why this crosses the package boundary.
 import { encodeRef, _resetKeyCacheForTest } from "../../../../plugins/pinchy-odoo/integration-ref";
@@ -1398,6 +1398,58 @@ describe("summarizeArgs", () => {
     });
   });
 
+  // Chromium lays out every right-to-left word the card isolates as an
+  // element of its own, and the time grows with how many it draws: sixty
+  // 4,096-character targets of alternating Hebrew letters and digits drew
+  // 122,880 of them, and so did two thousand 200-character notes — about a
+  // second either way, in the approver's tab, for a call the gate accepted.
+  // So a call whose card would draw more than one maximal value holds is
+  // refused, like any other call the card cannot show.
+  describe("a card that takes too long to draw", () => {
+    const alternating = (length: number) =>
+      Array.from({ length }, (_, i) => (i % 2 ? "1" : "א")).join("");
+
+    it("refuses sixty long targets drawn whole", () => {
+      const { exceeded } = summarizeCall({
+        targets: Array.from({ length: 60 }, () => alternating(4_096)),
+      });
+      expect(exceeded).toEqual({
+        kind: "too-many-rtl-words",
+        count: 60 * 2_048,
+        limit: MAX_DRAWN_WORDS,
+      });
+    });
+
+    it("refuses as many words in short values, which are drawn whole too", () => {
+      const notes = Object.fromEntries(
+        Array.from({ length: 10 }, (_, k) => [
+          `n${k}`,
+          Array.from({ length: 200 }, () => alternating(200)),
+        ])
+      );
+      expect(summarizeCall(notes).exceeded).toMatchObject({ kind: "too-many-rtl-words" });
+    });
+
+    it("counts a previewed text by its preview, the only part the card draws", () => {
+      // 40 texts of 500 words each, 100 of them drawn in each preview: 4,000.
+      const { exceeded } = summarizeCall({
+        notes: Array.from({ length: 40 }, () => alternating(1_000)),
+      });
+      expect(exceeded).toBeNull();
+    });
+
+    it("still shows one target as long as a target may be drawn whole", () => {
+      const { incomplete } = summarizeCall({ targets: [alternating(WHOLE_MAX)] });
+      expect(incomplete).toBe(false);
+    });
+
+    it("still shows an ordinary Hebrew record write in full", () => {
+      const line = "חברה בע״מ, רחוב הרצל 12, תל אביב — חשבונית לחודש מרץ";
+      const values = Object.fromEntries(Array.from({ length: 60 }, (_, i) => [`x_${i}`, line]));
+      expect(summarizeCall({ model: "res.partner", ids: [7], values }).incomplete).toBe(false);
+    });
+  });
+
   describe("what the refusal says", () => {
     it.each([
       [
@@ -1455,6 +1507,13 @@ describe("summarizeArgs", () => {
       expect(describeRefusal({ kind: "nested-too-deep", at: "deep", limit: 10 })).not.toMatch(
         split
       );
+      const rtl = describeRefusal({ kind: "too-many-rtl-words", count: 122_880, limit: 4_096 });
+      expect(rtl).toMatch(split);
+      expect(rtl).toMatch(/122,880 right-to-left words/);
+      expect(rtl).toMatch(/4,096/);
+      const hosts = describeRefusal({ kind: "too-many-hosts", count: 27 });
+      expect(hosts).toMatch(split);
+      expect(hosts).toMatch(/27 different hosts/);
     });
   });
 

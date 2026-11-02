@@ -3544,6 +3544,12 @@ describe("odoo_delete", () => {
     });
   });
 
+  // pinchy#1078: raw ids were how a hallucinated delete reached Odoo. `ids:
+  // [40]` needs no prior read, so nothing tied a delete to a record the model
+  // had actually seen. The schema declares no `ids`, so the call is refused
+  // like any undeclared parameter (unknown-params.ts) — loudly, and never
+  // quietly accepted alongside `targets`, which would be a one-parameter route
+  // back to the hole.
   it("refuses raw numeric ids and names the ref parameter to use instead", async () => {
     const result = await deleteTool().execute("call-4", {
       model: "res.partner",
@@ -3551,7 +3557,7 @@ describe("odoo_delete", () => {
     });
 
     expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain("Raw numeric IDs are not accepted");
+    expect(result.content[0].text).toContain('does not take the parameter "ids"');
     expect(result.content[0].text).toContain("targets");
     expect(mockUnlink).not.toHaveBeenCalled();
   });

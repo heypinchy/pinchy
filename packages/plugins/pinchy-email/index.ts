@@ -4,7 +4,7 @@ import type { EmailAdapter, EmailSummary, Folder } from "./email-adapter.js";
 import { MAX_ATTACHMENT_BYTES, truncateEmailBody } from "./email-adapter.js";
 import { checkPermission, type Permissions } from "./permissions.js";
 import { parseSingleRecipient } from "./recipient.js";
-import { unknownParams, unknownParamsMessage } from "./unknown-params.js";
+import { refusingUnknownParams } from "./unknown-params.js";
 import {
   putHandle,
   putAttachmentHandle,
@@ -394,9 +394,10 @@ function emailWriteAuditDetails(params: Record<string, unknown>): {
 }
 
 /**
- * The parameters of email_send and email_draft — one object, so the schema the
- * runtime validates against and the one the tool checks at its own edge
- * (`unknownParams`) cannot drift apart.
+ * The parameters of email_send and email_draft — one object, shared by both
+ * tools. Every tool is registered through `refusingUnknownParams`, which
+ * declares `additionalProperties: false` and refuses an undeclared key at the
+ * tool's own edge, against this same schema.
  */
 const EMAIL_WRITE_PARAMETERS = {
   type: "object",
@@ -419,27 +420,6 @@ const EMAIL_WRITE_PARAMETERS = {
   required: ["to", "subject", "body"],
   additionalProperties: false,
 };
-
-/**
- * Refusal for a call that carries an undeclared parameter. The model is told
- * which keys; the audit detail gets only how many — a key is free text a
- * model chose, and may well be an address.
- */
-function refuseUnknownParams(
-  tool: string,
-  unknown: string[],
-  params: Record<string, unknown>
-): { content: ContentBlock[]; isError: true; details: Record<string, unknown> } {
-  return {
-    isError: true,
-    content: [{ type: "text", text: unknownParamsMessage(tool, unknown, EMAIL_WRITE_PARAMETERS) }],
-    details: {
-      ...emailWriteAuditDetails(params),
-      error: "Refused: unknown parameters",
-      unknownParams: unknown.length,
-    },
-  };
-}
 
 /**
  * Merge curated email audit details into an error result so the audit route
@@ -721,7 +701,9 @@ const plugin = {
   name: "Pinchy Email",
   description: "Email integration (Gmail, Microsoft 365, and IMAP) with per-agent permissions.",
 
-  register(api: PluginApi) {
+  register(pluginApi: PluginApi) {
+    // Every tool refuses a parameter it does not declare (unknown-params.ts).
+    const api = refusingUnknownParams(pluginApi);
     // Capture agentConfigs at register() time. OpenClaw calls register() with a
     // fully-populated api.pluginConfig; the reference may be reset after the call
     // returns, so factories must not read api.pluginConfig?.agents dynamically —
@@ -1139,29 +1121,6 @@ const plugin = {
                 return withEmailSearchAuditDetails(permissionDenied("read"), params);
               }
 
-              // email_search used to take a raw Gmail-style `query` string.
-              // It was replaced by the structured DSL fields below, but the
-              // JSON schema doesn't declare additionalProperties:false and
-              // nothing else in the handler catches a caller still passing
-              // `query` — the value would silently be dropped and the
-              // adapter would throw a generic "search requires at least one
-              // filter field" that never mentions `query`. Guard for it here
-              // so the model gets an error it can act on. If `query` and
-              // valid DSL fields are both present, treat it as ambiguous
-              // intent and reject rather than guess.
-              if (typeof params.query === "string" && params.query.length > 0) {
-                return withEmailSearchAuditDetails(
-                  errorResult(
-                    new Error(
-                      "The `query` parameter was removed. email_search now uses structured " +
-                        "fields instead of a raw query string: from, to, subject, unread, " +
-                        "sinceDays, folder, limit. Re-issue the call using those fields."
-                    )
-                  ),
-                  params
-                );
-              }
-
               const result = await withAuthRetry(agentId, config, (adapter) =>
                 adapter.search({
                   from: params.from as string | undefined,
@@ -1211,9 +1170,6 @@ const plugin = {
               if (!checkPermission(config.permissions, "email", "draft")) {
                 return withEmailAuditDetails(permissionDenied("draft"), params);
               }
-
-              const unknown = unknownParams(params, EMAIL_WRITE_PARAMETERS);
-              if (unknown.length > 0) return refuseUnknownParams("email_draft", unknown, params);
 
               // One address per call: a string is parsed as an address LIST by
               // the mail libraries, so a comma-smuggled second recipient would
@@ -1287,9 +1243,6 @@ const plugin = {
               if (!checkPermission(config.permissions, "email", "send")) {
                 return withEmailAuditDetails(permissionDenied("send"), params);
               }
-
-              const unknown = unknownParams(params, EMAIL_WRITE_PARAMETERS);
-              if (unknown.length > 0) return refuseUnknownParams("email_send", unknown, params);
 
               // One address per call: a string is parsed as an address LIST by
               // the mail libraries, so a comma-smuggled second recipient would

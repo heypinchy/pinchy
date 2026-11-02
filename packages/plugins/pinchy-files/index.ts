@@ -21,7 +21,7 @@ import { resolveAgentInfo } from "./resolve-agent-info";
 import { generateFile, type GenerateFileFormat } from "./generate-file";
 import { normalizeDeliverableBasename } from "./deliverable-filename";
 import { assertPlainPath } from "./plain-path";
-import { unknownParams, unknownParamsMessage } from "./unknown-params";
+import { refusingUnknownParams } from "./unknown-params";
 
 // The Pinchy web process runs as uid/gid 999 in the container and must own a
 // generated file to serve it back to the user as a download (#703). Chowning
@@ -90,24 +90,6 @@ type ContentBlock =
   // picks this up via artifacts.list and the #703 serve route resolves the
   // bytes from disk, so this block never carries the file content itself.
   | { type: "file"; filename: string; mimeType: string };
-
-/**
- * Refusal for a call that carries an undeclared parameter. The model is told
- * which keys; the audit detail gets only how many — a key is free text the
- * model chose. Setting `details` also keeps the audit route from logging the
- * raw params, which for pinchy_write include the whole file content.
- */
-function refuseUnknownParams(
-  tool: string,
-  unknown: string[],
-  schema: { properties: Record<string, unknown> }
-): { content: ContentBlock[]; isError: true; details: Record<string, unknown> } {
-  return {
-    isError: true,
-    content: [{ type: "text", text: unknownParamsMessage(tool, unknown, schema) }],
-    details: { error: "Refused: unknown parameters", unknownParams: unknown.length },
-  };
-}
 
 /**
  * Build an MCP-style error result. Every error result MUST carry
@@ -320,7 +302,9 @@ const plugin = {
     },
   },
 
-  register(api: PluginApi) {
+  register(pluginApi: PluginApi) {
+    // Every tool refuses a parameter it does not declare (unknown-params.ts).
+    const api = refusingUnknownParams(pluginApi);
     const agentConfigs = api.pluginConfig?.agents ?? {};
     const apiBaseUrl = api.pluginConfig?.apiBaseUrl;
     const gatewayToken = api.pluginConfig?.gatewayToken;
@@ -590,10 +574,6 @@ const plugin = {
           parameters,
           async execute(_toolCallId: string, params: Record<string, unknown>) {
             try {
-              const unknown = unknownParams(params, parameters);
-              if (unknown.length > 0)
-                return refuseUnknownParams("pinchy_write", unknown, parameters);
-
               if (typeof params.path !== "string") {
                 throw new Error("path must be a string");
               }
@@ -789,10 +769,6 @@ const plugin = {
           parameters,
           async execute(_toolCallId: string, params: Record<string, unknown>) {
             try {
-              const unknown = unknownParams(params, parameters);
-              if (unknown.length > 0)
-                return refuseUnknownParams("pinchy_delete", unknown, parameters);
-
               if (typeof params.path !== "string") {
                 throw new Error("path must be a string");
               }
@@ -944,10 +920,6 @@ const plugin = {
           parameters,
           async execute(_toolCallId: string, params: Record<string, unknown>) {
             try {
-              const unknown = unknownParams(params, parameters);
-              if (unknown.length > 0)
-                return refuseUnknownParams("pinchy_generate_file", unknown, parameters);
-
               if (
                 typeof params.format !== "string" ||
                 !GENERATE_FILE_FORMATS.includes(params.format as GenerateFileFormat)

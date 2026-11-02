@@ -1279,8 +1279,9 @@ describe("email_search", () => {
   // guarded the handler against a caller still passing the old `query` —
   // the value was silently dropped and the adapter threw a generic "search
   // requires at least one filter field" that never mentioned `query`. The
-  // handler must catch this before it ever reaches the adapter and name the
-  // replacement fields so the model can self-correct.
+  // call must be refused before it ever reaches the adapter, naming the
+  // replacement fields so the model can self-correct — which the refusal of
+  // every undeclared parameter (unknown-params.ts) does.
   it("rejects the legacy `query` parameter with a descriptive error naming the replacement DSL fields", async () => {
     const tools = createApi();
     const tool = findTool(tools, "email_search", agentId)!;
@@ -1317,7 +1318,9 @@ describe("email_search", () => {
     expect(mockSearch).not.toHaveBeenCalled();
   });
 
-  it("ignores an empty-string `query` and still runs the DSL search unchanged", async () => {
+  // The tool does not read `query`, so an empty one is refused like any other
+  // undeclared parameter: a call carries nothing the tool does not read.
+  it("refuses an empty-string `query` too, naming the fields it does take", async () => {
     mockSearch.mockResolvedValue([]);
     const tools = createApi();
     const tool = findTool(tools, "email_search", agentId)!;
@@ -1327,8 +1330,10 @@ describe("email_search", () => {
       subject: "invoice",
     });
 
-    expect(result.isError).toBeUndefined();
-    expect(mockSearch).toHaveBeenCalledWith({ subject: "invoice" });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('"query"');
+    expect(result.content[0].text).toContain("subject");
+    expect(mockSearch).not.toHaveBeenCalled();
   });
 
   // Capability restoration (PR #328 follow-up): `text` is a NEW field for

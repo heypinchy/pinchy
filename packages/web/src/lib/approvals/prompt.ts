@@ -1,5 +1,10 @@
 import { TOOL_REGISTRY } from "@/lib/tool-registry";
-import { renderText, summarizeCall, type SummarizeOptions } from "@/lib/approvals/summary";
+import {
+  renderText,
+  summarizeCall,
+  type SummarizeOptions,
+  type SummaryLimit,
+} from "@/lib/approvals/summary";
 import {
   displayScalar,
   inStoredOrderPlain,
@@ -103,22 +108,21 @@ function describeArgs(summary: Record<string, unknown>): string {
 }
 
 /**
- * The hosts a call reaches, each once, as many as fit in `room` characters —
- * `reaches "evil.com", "…aaaa.evil.org" — ` — and `…` for the rest. A host
- * longer than PROMPT_HOST_MAX is named by its end. Empty when it reaches none.
+ * Every host the call reaches, each once — `reaches "evil.com", "…aaaa.evil.org"
+ * — `. A host longer than PROMPT_HOST_MAX is named by its end, where the
+ * domain it reaches is. Empty when it reaches none.
  */
-function reachesClause(hosts: string[], room: number): string {
-  const entries: string[] = [];
-  for (const host of new Set(hosts)) {
-    const entry = quoted(host.length > PROMPT_HOST_MAX ? `…${host.slice(-PROMPT_HOST_MAX)}` : host);
-    // Room for this entry, and for a `…` after it should the next not fit.
-    if (`reaches ${[...entries, entry, "…"].join(", ")} — `.length > room) {
-      entries.push("…");
-      break;
-    }
-    entries.push(entry);
-  }
-  return entries.length > 0 ? `reaches ${entries.join(", ")} — ` : "";
+function reachesClause(hosts: string[]): string {
+  const named = [...new Set(hosts)].map((host) =>
+    quoted(host.length > PROMPT_HOST_MAX ? `…${host.slice(-PROMPT_HOST_MAX)}` : host)
+  );
+  return named.length > 0 ? `reaches ${named.join(", ")} — ` : "";
+}
+
+/** What a person reads before approving, on every approval surface. */
+export interface ApprovalPrompt {
+  title: string;
+  description: string;
 }
 
 export function buildApprovalPrompt(
@@ -135,7 +139,7 @@ export function buildApprovalPrompt(
   /** The same ref resolver the card's summary uses, so a real record reference
    * reads as the record it names here too. */
   options: SummarizeOptions = {}
-): { title: string; description: string } {
+): ApprovalPrompt | { exceeded: SummaryLimit } {
   const known = TOOL_REGISTRY.find((tool) => tool.id === toolName);
 
   // An unknown tool still gets a card, and the card still has to say something.
@@ -157,18 +161,24 @@ export function buildApprovalPrompt(
   const args = describeArgs(summary);
   const lead = known?.description ?? `The agent wants to run ${toolName}.`;
   const whole = args ? `${lead} — ${args}` : lead;
-  // Cut, the description can end anywhere — inside the address itself, past
-  // `https://www.firma.at.` and before the domain it reaches, or in a long
-  // text before it. So a description that has to be cut names every host the
-  // call reaches first, ahead of the arguments; one that fits shows each
-  // address whole, with any note beside it.
-  const description =
-    whole.length <= APPROVAL_DESCRIPTION_MAX
-      ? whole
-      : truncate(
-          `${lead} — ${reachesClause(hosts, APPROVAL_DESCRIPTION_MAX - lead.length - 4)}${args}`,
-          APPROVAL_DESCRIPTION_MAX
-        );
+  // A description that fits shows each address whole, with any note beside it.
+  if (whole.length <= APPROVAL_DESCRIPTION_MAX) return { title, description: whole };
 
-  return { title, description };
+  // Cut, it can end anywhere — inside the address itself, past
+  // `https://www.firma.at.` and before the domain it reaches, or in a long
+  // text before it. So it names every host the call reaches first, and only
+  // the arguments after them are cut. Every host, or no prompt: naming the
+  // hosts that fit and eliding the rest left out whichever came last, and the
+  // order is the call's to choose — decoys under `target` and `destination`
+  // ahead of a fetch's `url` took the room, and the host it reached went
+  // unnamed. So a call whose hosts do not all fit is refused, like one too
+  // large for the card (`describeRefusal`): split, each part names its own.
+  const reaches = reachesClause(hosts);
+  if (!reaches) return { title, description: truncate(whole, APPROVAL_DESCRIPTION_MAX) };
+  const head = `${lead} — ${reaches}`;
+  // At least one character after the hosts: the `…` that says the rest is cut.
+  if (head.length >= APPROVAL_DESCRIPTION_MAX) {
+    return { exceeded: { kind: "too-many-hosts", count: new Set(hosts).size } };
+  }
+  return { title, description: head + truncate(args, APPROVAL_DESCRIPTION_MAX - head.length) };
 }

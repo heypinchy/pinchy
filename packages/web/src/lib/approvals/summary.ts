@@ -104,10 +104,14 @@ import { domainToASCII } from "node:url";
 import { isCanonicalRef, type RefRecord } from "./call-models";
 import {
   FULL_VIEW_KEYS,
+  MAX_DRAWN_WORDS,
   TARGET_KEYS,
+  drawnWords,
+  isolatedWords,
   mailboxAddress,
   noteText,
   previewed,
+  quoted,
   readUrl,
   refText,
   secretText,
@@ -140,6 +144,10 @@ const RECIPIENT_KEY = /^(to|cc|bcc)$/i;
  * several agents may have more — but sends each summary once: a poll names the
  * cards it already holds (`known`, up to MAX_KNOWN_APPROVALS) and gets those
  * back without their summary.
+ *
+ * Drawing: the right-to-left words the collapsed card draws, each in an
+ * isolate of its own, are counted against MAX_DRAWN_WORDS (`display.ts`) —
+ * the layout time of a card grows with them, wherever they sit.
  */
 /** Longest string stored whole, in characters as sent (code points): a
  * report of ~60 pages, or a long mail body with room to spare. */
@@ -179,7 +187,11 @@ export type SummaryLimit =
   | { kind: "too-many-items"; at: string; count: number; limit: number }
   | { kind: "too-many-recipients"; at: string; count: number; limit: number }
   | { kind: "nested-too-deep"; at: string; limit: number }
-  | { kind: "too-large-in-all"; limit: number };
+  | { kind: "too-large-in-all"; limit: number }
+  /** The card would draw more right-to-left words than MAX_DRAWN_WORDS. */
+  | { kind: "too-many-rtl-words"; count: number; limit: number }
+  /** The prompt cannot name every host the call reaches (`prompt.ts`). */
+  | { kind: "too-many-hosts"; count: number };
 
 interface Budget {
   chars: number;
@@ -188,6 +200,8 @@ interface Budget {
   exceeded: SummaryLimit | null;
   /** Every host a shown value reaches, in the order the values are summarized. */
   hosts: string[];
+  /** The right-to-left words the collapsed card draws (`drawnWords`). */
+  words: number;
 }
 
 /**
@@ -212,8 +226,9 @@ export interface CallSummary {
   /**
    * True when any part of the call did not fit — a key past MAX_KEYS, an item
    * past MAX_ITEMS, nesting past MAX_DEPTH, a string or key cut, the total
-   * budget spent. Such a call must not be offered for approval: the person
-   * would approve the part they cannot see.
+   * budget spent, more right-to-left words than the card may draw
+   * (MAX_DRAWN_WORDS). Such a call must not be offered for approval: the
+   * person would approve the part they cannot see.
    */
   incomplete: boolean;
   /** Which bound made it incomplete; null when the call fits. */
@@ -469,16 +484,29 @@ function describeRef(record: RefRecord, budget: Budget): SummaryNode {
     labelCut: Math.max(0, chars.length - MAX_REF_LABEL_LEN),
   };
   budget.chars -= refText(node).length;
+  // The card draws a label whole, quoted.
+  budget.words += isolatedWords(quoted(node.label));
   return node;
 }
 
 /**
  * A string with what Pinchy says about it, or the plain string when there is
- * nothing to say. The notes are charged as the prompt prints them.
+ * nothing to say. The notes are charged as the prompt prints them, and the
+ * text and a display name by the words the card draws of them (`full`: as
+ * the card draws a value under a recipient or target key).
  */
-function noted(text: string, notes: SummaryNote[], budget: Budget): string | SummaryNode {
+function noted(
+  text: string,
+  notes: SummaryNote[],
+  budget: Budget,
+  full: boolean
+): string | SummaryNode {
+  budget.words += drawnWords(text, full);
   if (notes.length === 0) return text;
-  for (const note of notes) budget.chars -= noteText(note).length + 3;
+  for (const note of notes) {
+    budget.chars -= noteText(note).length + 3;
+    if (note.kind === "name") budget.words += drawnWords(note.name, full);
+  }
   return { "@": "noted", text, notes };
 }
 
@@ -630,7 +658,12 @@ function summarizeString(
     return bounded(head, budget) + truncationMarker(length - MAX_STRING_LEN);
   }
   const shown = renderText(value, place.target);
-  return noted(bounded(shown, budget), reachNotes(reachOf(value), shown, place, budget), budget);
+  return noted(
+    bounded(shown, budget),
+    reachNotes(reachOf(value), shown, place, budget),
+    budget,
+    place.full
+  );
 }
 
 /**
@@ -685,7 +718,7 @@ function describeRecipient(entry: string, budget: Budget, place: Place): string 
     name = name.slice(1, -1).replace(/\\([\s\S])/gu, "$1");
   }
   if (name) notes.push({ kind: "name", name: renderText(name) });
-  return noted(bounded(shown, budget), notes, budget);
+  return noted(bounded(shown, budget), notes, budget, place.full);
 }
 
 function summarizeRecipients(
@@ -880,6 +913,7 @@ export function summarizeCall(params: unknown, options: SummarizeOptions = {}): 
     refRecord: options.refRecord,
     exceeded: null,
     hosts: [],
+    words: 0,
   };
   const summary = summarizeObject(
     Object.entries(params as Record<string, unknown>),
@@ -891,6 +925,9 @@ export function summarizeCall(params: unknown, options: SummarizeOptions = {}): 
   );
   // A last value can overshoot without anything after it to cut.
   if (budget.chars < 0) exceed(budget, TOO_LARGE_IN_ALL);
+  if (budget.words > MAX_DRAWN_WORDS) {
+    exceed(budget, { kind: "too-many-rtl-words", count: budget.words, limit: MAX_DRAWN_WORDS });
+  }
   return {
     summary,
     incomplete: budget.exceeded !== null,
@@ -950,6 +987,16 @@ export function describeRefusal(limit: SummaryLimit): string {
       return split(
         `Shown for approval it would be more than ${count(limit.limit)} characters in all — ` +
           `send fewer fields, records or lines per call, or shorter texts.`
+      );
+    case "too-many-rtl-words":
+      return split(
+        `Shown for approval it would draw ${count(limit.count)} right-to-left words; a ` +
+          `confirmation draws at most ${count(limit.limit)} — send fewer values per call.`
+      );
+    case "too-many-hosts":
+      return split(
+        `It reaches ${count(limit.count)} different hosts — more than an approval prompt can ` +
+          `name — send to fewer addresses or URLs per call.`
       );
   }
 }

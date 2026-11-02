@@ -214,8 +214,10 @@ export type AuditEventType =
   | "approval.denied"
   | "approval.consumed"
   | "approval.expired"
-  // A gated call whose arguments are too large to show on a confirmation card
-  // in full: nothing was opened, so nobody could approve what they cannot see.
+  // A gated call whose arguments the confirmation card or the approval prompt
+  // cannot show in full — too large, too costly to draw, or reaching more hosts
+  // than the prompt can name: nothing was opened, so nobody could approve what
+  // they cannot see.
   | "approval.refused"
   | "approval.gc"
   // Cost budgets (#36). Written once per budget and month by the budget
@@ -547,8 +549,9 @@ export type AuditLogEntry =
         argsDigest: string;
         reason: "too-large-to-show";
         /** Which bound the call crossed (`SummaryLimit["kind"]` in
-         * `approvals/summary.ts`) — never the value or the key path, which
-         * may carry the call's content. */
+         * `approvals/summary.ts`, `too-many-hosts` from `approvals/prompt.ts`)
+         * — never the value, the key path or a host, which may carry the
+         * call's content. */
         exceeded: SummaryLimit["kind"];
       };
     })

