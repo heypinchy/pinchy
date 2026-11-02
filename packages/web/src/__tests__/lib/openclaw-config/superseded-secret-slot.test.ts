@@ -546,6 +546,59 @@ describe("a superseded key slot outlives the config apply that moves OpenClaw of
       expect(applies, "superseded: no retry of the old payload").toHaveLength(1);
       expect(files.get(CONFIG_PATH)).toBe(afterRefusal);
     });
+
+    // Only a refusal that took a key out of secrets.json has anything to
+    // supersede: a push from before it can name that key. The common refusal
+    // removes no key — Ollama unreachable at boot, a discovery that answered
+    // half — and superseding then just dropped whatever was in flight: a
+    // Telegram disconnect parked in OpenClaw's rate-limit wait (the bot kept
+    // polling with the revoked token), a permission revocation.
+    it("leaves a push in flight intact when the refusal removed no key", async () => {
+      await installWithBigCatalogue();
+      const applies: string[] = [];
+      let first: { reject: (err: Error) => void } | undefined;
+      mockGetClient.mockReturnValue({
+        config: {
+          get: vi.fn(async () => ({ hash: "h", config: JSON.parse(files.get(CONFIG_PATH)!) })),
+          apply: vi.fn((payload: string) => {
+            applies.push(payload);
+            if (first) return Promise.resolve();
+            return new Promise<void>((_, reject) => (first = { reject }));
+          }),
+        },
+        hasMethod: () => true,
+        request: vi.fn(async () => ({ type: "res", id: "1", ok: true, payload: {} })),
+      });
+      // A targeted writer's change, its apply in flight.
+      const onDisk = JSON.parse(files.get(CONFIG_PATH)!);
+      const targeted = JSON.stringify({ ...onDisk, channels: { telegram: { enabled: false } } });
+      pushConfigInBackground(targeted);
+      await drain();
+      expect(applies, "precondition: its apply is in flight").toHaveLength(1);
+
+      // Discovery answers a fraction of the same provider's catalogue: same
+      // key, so nothing leaves secrets.json — and the guard refuses.
+      const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      customProviders[0] = { ...customProviders[0], models: bigCatalogue.slice(0, 2) };
+      writes = [];
+      await regenerateOpenClawConfig();
+      await drain();
+      expect(errorSpy.mock.calls.flat().join(" "), "precondition: refused").toMatch(
+        /suspiciously small/
+      );
+      expect(
+        writes.map((w) => w.path),
+        "precondition: no bridge"
+      ).toEqual([SECRETS_PATH]);
+
+      first!.reject(new Error("config changed since last load; re-run config.get and retry"));
+      for (let i = 0; i < 1200 && getPendingConfigPushCount() > 0; i++) {
+        await new Promise((r) => setTimeout(r, 5));
+      }
+      expect(getPendingConfigPushCount()).toBe(0);
+      expect(applies, "not superseded: the change is retried and lands").toHaveLength(2);
+      expect(JSON.parse(applies[1]).channels).toEqual({ telegram: { enabled: false } });
+    });
   });
 
   // The file fallback is the one route by which a push writes openclaw.json

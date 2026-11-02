@@ -1975,15 +1975,19 @@ async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise
     );
   }
   if (refused) {
-    // Nothing of this regenerate is pushed, but secrets.json is now newer than
-    // any push still in flight: one started earlier (a regenerate's, or a
-    // targeted writer's copy of the pre-bridge file, parked in a rate-limit
-    // wait) can name a key this write just removed. OpenClaw refuses that
-    // payload, and its file fallback would write it. A passing regenerate
-    // supersedes such a push with its own; a refused one does it here. The
-    // superseded change reaches OpenClaw with the next regenerate that passes
-    // the guard, like this one's.
-    nextConfigPushGeneration();
+    // Nothing of this regenerate is pushed. When it took a key out of
+    // secrets.json (it wrote a bridge), a push still in flight — a
+    // regenerate's, or a targeted writer's copy of the pre-bridge file, parked
+    // in a rate-limit wait — can name that key: OpenClaw refuses it on every
+    // retry. A passing regenerate supersedes such a push with its own; a
+    // refused one does it here, and the superseded change reaches OpenClaw
+    // with the next regenerate that passes the guard. A refusal that removed
+    // no key (Ollama unreachable, a half-answered discovery: the common case)
+    // supersedes nothing, as before this guard learned to write secrets.json:
+    // what is in flight (a Telegram disconnect, a permission revocation) must
+    // still land. A push naming a key removed earlier is caught by its own
+    // file fallback (namesRemovedKey in write.ts), and OpenClaw refuses it.
+    if (bridge) nextConfigPushGeneration();
     return;
   }
   if (unchanged) return;
