@@ -137,12 +137,27 @@ function renderDate(value: Date): string {
  * Removes everything in a number-format section that is a literal rather than a
  * directive: quoted runs, backslash-escaped characters, and the bracketed
  * blocks Excel uses for colours and conditions.
+ *
+ * Three passes, each linear, in the order the regexes they replace ran. The
+ * bracket pass used to be `/\[[^\]]*\]/g`, which re-scans to the end of the
+ * string from every unclosed `[`: quadratic on a format code read from the
+ * workbook — 400 000 of them held the web process for two minutes (second
+ * review, PR #1243). An unclosed quote or bracket is kept, as before.
  */
 function stripFormatLiterals(section: string): string {
-  return section
-    .replace(/"[^"]*"/g, "")
-    .replace(/\\./g, "")
-    .replace(/\[[^\]]*\]/g, "");
+  const withoutQuoted = section.replace(/"[^"]*"/g, "").replace(/\\./g, "");
+  let out = "";
+  let at = 0;
+  while (at < withoutQuoted.length) {
+    const open = withoutQuoted.indexOf("[", at);
+    if (open < 0) break;
+    const close = withoutQuoted.indexOf("]", open + 1);
+    // No `]` anywhere after this `[`, so none after any later one either.
+    if (close < 0) break;
+    out += withoutQuoted.slice(at, open);
+    at = close + 1;
+  }
+  return out + withoutQuoted.slice(at);
 }
 
 /**

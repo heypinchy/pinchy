@@ -12,6 +12,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { gzipSync } from "node:zlib";
 import ExcelJS from "exceljs";
 import mammoth from "mammoth";
 
@@ -611,7 +612,9 @@ describe("sanitizeOoxmlPackage — relationship allow-list (release review v0.10
       "ppt/tableStyles.xml": `<?xml version="1.0"?><a:tblStyleLst xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"/>`,
       "ppt/media/image1.png": PNG_1X1,
     });
-    expect(sanitizeOoxmlPackage(pkg)).toEqual({ data: pkg, removed: 0 });
+    // `altChunksRemoved` joined the result when an altChunk became something
+    // cut rather than refused (second review); a clean deck has none.
+    expect(sanitizeOoxmlPackage(pkg)).toEqual({ data: pkg, removed: 0, altChunksRemoved: 0 });
   });
 
   it.each([
@@ -662,28 +665,77 @@ describe("sanitizeOoxmlPackage — relationship allow-list (release review v0.10
     expect(sanitizeOoxmlPackage(pkg).removed).toBe(3);
   });
 
-  it("refuses an altChunk relationship: its content would be imported by a second filter", () => {
+  // CORRECTED (second review, PR #1243): these two used to assert that an
+  // altChunk REFUSES the whole package. Refusing threw away every word of an
+  // otherwise ordinary document over one embedded chunk; cutting the chunk —
+  // relationship AND element — keeps the rest searchable and still never lets
+  // a second import filter see it. The operator log says what was dropped.
+  function partAfter(pkg: Buffer, name: string): string {
+    const out = sanitizeOoxmlPackage(pkg);
+    const entry = readZipEntries(out.data).find((e) => e.name === name)!;
+    return inflatePart(out.data, entry, 1 << 20).toString("utf8");
+  }
+
+  it("cuts an altChunk relationship and its element, and keeps the rest of the document", async () => {
     // The reviewer's vector: an embedded HTML part whose <img src="file://…">
     // LibreOffice resolves, locked profile or not.
     const pkg = docxWith({
+      text: "Words around the chunk",
       documentRels: relationships(rel("rIdA", relType("aFChunk"), "afchunk.htm")),
-      body: `<w:altChunk r:id="rIdA"/>`,
+      body: `<w:altChunk r:id="rIdA"/><w:p><w:r><w:t>Words after the chunk</w:t></w:r></w:p>`,
       parts: { "word/afchunk.htm": `<html><body><img src="file:///etc/hostname"></body></html>` },
     });
-    const err = refusedWith(pkg);
-    expect(err.code).toBe("unexpected_content");
-    expect(err.message).toMatch(/altChunk/);
+    const out = sanitizeOoxmlPackage(pkg);
+    expect(out.removed).toBe(1);
+    expect(out.altChunksRemoved).toBe(1);
+    expect(docRelsAfter(pkg)).not.toContain("afchunk.htm");
+    const document = partAfter(pkg, "word/document.xml");
+    expect(document).not.toMatch(/altChunk/);
+    // An independent reader still finds every word the author wrote around it.
+    const { value } = await mammoth.extractRawText({ buffer: out.data });
+    expect(value).toContain("Words around the chunk");
+    expect(value).toContain("Words after the chunk");
   });
 
-  it("refuses an altChunk element that borrows an allowed relationship's id", () => {
+  it("cuts an altChunk element that borrows an allowed relationship's id, and keeps the picture", () => {
     // LibreOffice resolves an r:id without checking the relationship's Type,
-    // so an altChunk can point at an id labelled `image` just as well.
+    // so an altChunk can point at an id labelled `image` just as well. The
+    // relationship is a real picture and stays; the element that would import
+    // it through a second filter goes.
     const pkg = docxWith({
       documentRels: relationships(rel("rId5", REL_IMAGE, "media/image1.png")),
-      body: `<w:altChunk r:id="rId5"/>`,
+      body: `<w:altChunk r:id="rId5"><w:altChunkPr><w:matchSrc/></w:altChunkPr></w:altChunk>`,
       parts: { "word/media/image1.png": PNG_1X1 },
     });
-    expect(refusedWith(pkg).message).toMatch(/altChunk/);
+    const out = sanitizeOoxmlPackage(pkg);
+    expect(out.removed).toBe(0);
+    expect(out.altChunksRemoved).toBe(1);
+    expect(docRelsAfter(pkg)).toContain("media/image1.png");
+    const document = partAfter(pkg, "word/document.xml");
+    expect(document).not.toMatch(/altChunk/);
+    expect(document).toContain("Hello canary document");
+  });
+
+  it("cuts an altChunk in a header too, whatever prefix it is spelled with", () => {
+    const pkg = docxWith({
+      documentRels: relationships(rel("rId1", relType("header"), "header1.xml")),
+      parts: {
+        "word/header1.xml": `<?xml version="1.0"?><x:hdr xmlns:x="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><x:p><x:r><x:t>Header words</x:t></x:r></x:p><x:altChunk r:id="rId9" /></x:hdr>`,
+      },
+    });
+    const out = sanitizeOoxmlPackage(pkg);
+    expect(out.altChunksRemoved).toBe(1);
+    const header = partAfter(pkg, "word/header1.xml");
+    expect(header).not.toMatch(/altChunk/);
+    expect(header).toContain("Header words");
+  });
+
+  it("refuses an altChunk element that never ends: what follows it is not ours to guess", () => {
+    const pkg = docxWith({
+      documentRels: relationships(),
+      body: `<w:altChunk r:id="rId5"><w:altChunkPr/>`,
+    });
+    expect(refusedWith(pkg).code).toBe("unexpected_content");
   });
 
   it.each([
@@ -813,4 +865,225 @@ describe("sanitizeOoxmlPackage — relationship allow-list (release review v0.10
       expect(prepared.relationshipsRemoved).toBe(0);
     }
   );
+});
+
+describe("the second review (PR #1243): no regex on file bytes is super-linear", () => {
+  // `attributesOf` used a global regex whose `[^\s=/>]+` re-scanned a long
+  // token from every offset: a 942-byte .docx carrying one 50 000-character
+  // token in a relationship tag held the web process for 2.7 s, 100 000 for
+  // 11 s — and the part may be 4 MiB. The KB worker shares that process.
+  // Just under the 4 MiB a relationship part may inflate to, so it is the
+  // tag that is refused, not the part's size.
+  const BIG = 4 * 1024 * 1024 - 4096;
+
+  it("refuses a 4 MiB single-token relationship tag in well under a second", () => {
+    const xml = relationships(
+      `<Relationship Id="rId1" Type="${relType("styles")}" Target="styles.xml" ${"A".repeat(BIG)}/>`
+    );
+    const started = Date.now();
+    expect(() => stripExternalRelationships(xml)).toThrow(OfficeFileRejectedError);
+    expect(Date.now() - started).toBeLessThan(1000);
+  });
+
+  it("refuses the reviewer's package — a single-token relationship deflated to a few hundred bytes — in bounded time", async () => {
+    const pkg = zipOf({
+      "[Content_Types].xml": "<Types/>",
+      "_rels/.rels": relationships(
+        `<Relationship Id="rId1" Type="${relType("officeDocument")}" Target="word/document.xml" ${"A".repeat(BIG)}/>`
+      ),
+      "word/document.xml": ooxmlPart("w:document"),
+    });
+    expect(pkg.length).toBeLessThan(64 * 1024);
+    const started = Date.now();
+    const err = await rejection(prepareOfficeSource(file("redos.docx", pkg)));
+    expect(err.code).toBe("unexpected_content");
+    expect(Date.now() - started).toBeLessThan(1000);
+  });
+
+  it("refuses an Office part whose root tag is a 4 MiB token, in bounded time", () => {
+    const pkg = docxWith({
+      documentRels: relationships(rel("rId1", relType("styles"), "styles.xml")),
+      parts: {
+        "word/styles.xml": `<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" ${"A".repeat(BIG)}/>`,
+      },
+    });
+    const started = Date.now();
+    expect(() => sanitizeOoxmlPackage(pkg)).toThrow(OfficeFileRejectedError);
+    expect(Date.now() - started).toBeLessThan(1000);
+  });
+
+  it("still reads a relationship with many attributes, in any quoting, at ordinary length", () => {
+    const xml = relationships(
+      `<Relationship  Id = 'rId1'\n\tType="${REL_IMAGE}" Target='http://10.0.0.5/a.png' TargetMode = "External" />`,
+      rel("rId2", REL_IMAGE, "media/image1.png")
+    );
+    const out = stripExternalRelationships(xml);
+    expect(out.removed).toBe(1);
+    expect(out.xml).toContain("media/image1.png");
+    expect(out.xml).not.toContain("10.0.0.5");
+  });
+
+  it("refuses a relationship that names an attribute twice: which one a parser keeps is not ours to guess", () => {
+    const xml = relationships(
+      `<Relationship Id="rId1" Type="${REL_IMAGE}" Target="media/a.png" TargetMode="Internal" TargetMode="External"/>`
+    );
+    expect(() => stripExternalRelationships(xml)).toThrow(OfficeFileRejectedError);
+  });
+
+  it("refuses a relationship tag that is not attributes at all", () => {
+    const xml = relationships(`<Relationship Id="rId1" junk Target="media/a.png"/>`);
+    expect(() => stripExternalRelationships(xml)).toThrow(OfficeFileRejectedError);
+  });
+});
+
+describe("the second review (PR #1243): a kept part is vetted by what it IS, not by its relationship's Type", () => {
+  // LibreOffice resolves `r:embed` by Id and never looks at the Type, then
+  // detects a picture's format from its bytes. So a part kept as a FONT, or
+  // as Office XML, is drawn as an SVG if its bytes say SVG — and an SVG reads
+  // local files under the locked profile. Measured against LibreOffice 26.2,
+  // every vector below put a local file's text into the PDF before this.
+  const gzip = (text: string) => gzipSync(Buffer.from(text));
+  const reachingSvg = `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="400" height="200"><image width="400" height="60" xlink:href="file:///etc/hostname"/></svg>`;
+
+  function cutCount(relType_: string, target: string, part: string | Buffer): number {
+    const pkg = docxWith({
+      documentRels: relationships(rel("rId5", relType_, target)),
+      parts: { [`word/${target}`]: part },
+    });
+    return sanitizeOoxmlPackage(pkg).removed;
+  }
+
+  function refused(relType_: string, target: string, part: string | Buffer) {
+    const pkg = docxWith({
+      documentRels: relationships(rel("rId5", relType_, target)),
+      parts: { [`word/${target}`]: part },
+    });
+    expect(() => sanitizeOoxmlPackage(pkg)).toThrow(OfficeFileRejectedError);
+  }
+
+  it("cuts a font that is a gzipped SVG (svgz)", () => {
+    expect(cutCount(relType("font"), "fonts/font1.odttf", gzip(reachingSvg))).toBe(1);
+  });
+
+  it("cuts a font whose first kilobytes carry an SVG element behind binary junk", () => {
+    const part = Buffer.concat([Buffer.from([0, 1, 2, 3, 0xff, 0xfe]), Buffer.from(reachingSvg)]);
+    expect(cutCount(relType("font"), "fonts/font1.odttf", part)).toBe(1);
+  });
+
+  it("keeps an ordinary obfuscated font", () => {
+    const font = Buffer.alloc(2048);
+    for (let i = 0; i < font.length; i++) font[i] = (i * 131 + 7) & 0xff;
+    expect(cutCount(relType("font"), "fonts/font1.odttf", font)).toBe(0);
+  });
+
+  it("cuts a picture that is a gzipped SVG (svgz): what it reaches for cannot be read without inflating it", () => {
+    expect(cutCount(REL_IMAGE, "media/image1.svgz", gzip(reachingSvg))).toBe(1);
+  });
+
+  it.each([
+    [
+      "an SVG root in a Microsoft namespace",
+      `<svg xmlns="http://schemas.microsoft.com/office/2006/x" xmlns:xlink="http://www.w3.org/1999/xlink"><image xlink:href="file:///etc/hostname"/></svg>`,
+    ],
+    [
+      "a prefixed SVG root in a Microsoft namespace",
+      `<s:svg xmlns:s="http://schemas.microsoft.com/office/2006/x" xmlns="http://www.w3.org/2000/svg"/>`,
+    ],
+    [
+      "HTML in the WordprocessingML namespace",
+      `<w:html xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"/>`,
+    ],
+    [
+      "an Office root with an SVG element in its first kilobytes",
+      `<w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><!-- <svg --></w:hdr>`,
+    ],
+  ])("refuses a header relationship whose target is %s", (_, content) => {
+    refused(relType("header"), "header1.xml", content);
+  });
+
+  it.each([
+    ["an SVG", reachingSvg],
+    ["a gzipped SVG", gzip(reachingSvg)],
+    ["text", "just some words, no picture at all"],
+  ])("cuts an SVG picture whose data: URL claims to be a PNG but decodes to %s", (_, payload) => {
+    const b64 = Buffer.from(payload).toString("base64");
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"><image xlink:href="data:image/png;base64,${b64}"/></svg>`;
+    expect(cutCount(REL_IMAGE, "media/image1.svg", svg)).toBe(1);
+  });
+
+  it("cuts an SVG picture with a foreignObject: an HTML island can carry its own references", () => {
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg"><foreignObject><img xmlns="http://www.w3.org/1999/xhtml" src="file:///etc/hostname"/></foreignObject></svg>`;
+    expect(cutCount(REL_IMAGE, "media/image1.svg", svg)).toBe(1);
+  });
+
+  it("cuts a PNG-looking picture whose first kilobytes also carry an SVG element", () => {
+    const part = Buffer.concat([PNG_1X1.subarray(0, 16), Buffer.from(reachingSvg)]);
+    expect(cutCount(REL_IMAGE, "media/image1.png", part)).toBe(1);
+  });
+});
+
+describe("the second review (PR #1243): RTF named .doc", () => {
+  // An RTF file named .doc is accepted (Word writes these), and LibreOffice
+  // draws an RTF `\pict` by sniffing its bytes — an SVG inside one read a
+  // local file under the locked profile (reviewer's posing.doc). So the
+  // picture and object groups are cut, and so is every field instruction
+  // (INCLUDEPICTURE and INCLUDETEXT read files; the field's last result, the
+  // text a reader saw, stays). Ordinary text is untouched.
+  const svgHex = Buffer.from(
+    `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"><image xlink:href="file:///etc/hostname"/></svg>`
+  ).toString("hex");
+
+  async function sanitized(rtf: string): Promise<string> {
+    return (await prepareOfficeSource(file("posing.doc", rtf))).data.toString("latin1");
+  }
+
+  it("cuts a picture group and keeps the text around it", async () => {
+    const out = await sanitized(
+      `{\\rtf1\\ansi Before words\\par {\\pict\\pngblip\\picw400\\pich200 ${svgHex}}\\par After words\\par}`
+    );
+    expect(out).not.toContain(svgHex);
+    expect(out).not.toMatch(/\\pict/);
+    expect(out).toContain("Before words");
+    expect(out).toContain("After words");
+  });
+
+  it.each([
+    ["a shape picture", `{\\*\\shppict{\\pict\\pngblip ${svgHex}}}`],
+    ["a fallback picture", `{\\nonshppict{\\pict\\wmetafile8 ${svgHex}}}`],
+    [
+      "an embedded object",
+      `{\\object\\objemb{\\*\\objdata ${svgHex}}{\\result{\\pict ${svgHex}}}}`,
+    ],
+    ["a picture with a binary run full of braces", `{\\pict\\pngblip\\bin4 }}}}${svgHex}}`],
+  ])("cuts %s", async (_, group) => {
+    const out = await sanitized(`{\\rtf1\\ansi Kept words ${group} Tail words\\par}`);
+    expect(out).not.toContain(svgHex);
+    expect(out).toContain("Kept words");
+    expect(out).toContain("Tail words");
+  });
+
+  it.each(["INCLUDEPICTURE", "INCLUDETEXT"])(
+    "cuts the %s field's instruction and keeps its last result",
+    async (field) => {
+      const out = await sanitized(
+        `{\\rtf1\\ansi {\\field{\\*\\fldinst { ${field} "file:///etc/hostname" }}{\\fldrslt CACHED RESULT}}\\par}`
+      );
+      expect(out).not.toContain(field);
+      expect(out).not.toContain("hostname");
+      expect(out).toContain("CACHED RESULT");
+    }
+  );
+
+  it("leaves escaped braces and an RTF with nothing to cut exactly as they were", async () => {
+    const rtf = `{\\rtf1\\ansi Escaped \\{brace\\} words\\par}`;
+    expect(await sanitized(rtf)).toBe(rtf);
+  });
+
+  it("handles a million nested groups in bounded time", async () => {
+    const rtf = `{\\rtf1 ${"{".repeat(1_000_000)}\\pict ${svgHex}`;
+    const started = Date.now();
+    const out = await sanitized(rtf);
+    expect(Date.now() - started).toBeLessThan(2000);
+    expect(out).not.toContain(svgHex);
+  });
 });

@@ -267,6 +267,42 @@ describe("cell values", () => {
     expect(rowLines(chunks[0].text)).toEqual(["Kind: literal; Value: 0.15"]);
   });
 
+  it("refuses a hostile number format before exceljs reads it (second review, PR #1243)", async () => {
+    // The format code comes straight from the workbook's styles part, and
+    // exceljs strips its `[…]` blocks with `/\[[^\]]*]/g` — on load, for
+    // every styled cell. That regex re-scans to the end of the string from
+    // every `[` with no `]` after it: 100 000 of them made exceljs's load
+    // take 4 s, 400 000 two minutes, before our own code saw a cell. Excel
+    // caps a format at 255 characters, so a workbook with one like this was
+    // not written by Excel; it is refused, as fast as the guard reads it.
+    const path = await buildWorkbook("hostile-format.xlsx", (workbook) => {
+      const sheet = workbook.addWorksheet("Formats");
+      sheet.addRow(["Kind", "Value"]);
+      const row = sheet.addRow(["hostile", 0.15]);
+      row.getCell(2).numFmt = `0%${"[".repeat(400_000)}`;
+    });
+
+    const started = Date.now();
+    await expect(extractXlsx(path)).rejects.toBeInstanceOf(XlsxExtractionError);
+    expect(Date.now() - started).toBeLessThan(3000);
+  });
+
+  it("still strips quoted runs, escapes and closed brackets from a number format", async () => {
+    const path = await buildWorkbook("literal-formats.xlsx", (workbook) => {
+      const sheet = workbook.addWorksheet("Formats");
+      // (A backslash-escaped `%` is not exercised here: exceljs drops the
+      // backslash when it writes the format, so it would round-trip as `0.00%`.)
+      sheet.addRow(["A", "B", "C"]);
+      const row = sheet.addRow([0.15, 0.15, 0.15]);
+      row.getCell(1).numFmt = '0.00"[%]"';
+      row.getCell(2).numFmt = "[Color10]0.00";
+      row.getCell(3).numFmt = "[Red]0%";
+    });
+
+    const { chunks } = await extractXlsx(path);
+    expect(rowLines(chunks[0].text)).toEqual(["A: 0.15; B: 0.15; C: 15%"]);
+  });
+
   it("drops error cells and collapses newlines inside a cell", async () => {
     const path = await buildWorkbook("noise.xlsx", (workbook) => {
       const sheet = workbook.addWorksheet("Noise");

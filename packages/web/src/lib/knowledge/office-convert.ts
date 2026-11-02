@@ -346,6 +346,13 @@ async function convertBatch(batch: WorkItem[], deps: BatchDeps): Promise<Convers
       try {
         const prepared = await deps.prepareSource(item.absPath);
         if (prepared) {
+          if (prepared.altChunksRemoved > 0) {
+            // Unlike a cut picture link, a cut altChunk costs text: the
+            // chunk's content (HTML, a nested document) is not indexed.
+            console.warn(
+              `[kb-office] ${item.absPath}: cut ${prepared.altChunksRemoved} altChunk(s) — content embedded in another format is not indexed`
+            );
+          }
           await writeFile(staged, prepared.data);
           // NOT the hash from the run's first read of the file: that read and
           // this one can see different bytes, and the artifact must be filed
@@ -588,15 +595,16 @@ function killTree(child: ReturnType<typeof spawn>): void {
  *     fetch but not `file://`. Its job is the future: whatever LibreOffice
  *     learns to fetch next still has nowhere to go.
  *
- * Two honest limits, both measured (release review v0.10.0). This profile
+ * Two honest limits, both measured (release reviews of v0.10.0). This profile
  * does NOT stop LibreOffice's HTML import (an altChunk) or its SVG import from
- * reading `file://` references — for those, `office-preflight.ts` is the only
- * layer: it refuses an altChunk and cuts a picture that reaches outside itself,
- * along with every relationship not on its allow-list. And for the legacy
- * binary formats (`.doc`, `.ppt`), which the preflight cannot rewrite, this
- * profile is the ONLY layer. The canary says, vector by vector, which layers
- * hold alone. A sidecar with no network and no view of the workspaces would be
- * the real boundary; that is a deployment change, not a profile one.
+ * reading `file://` references — and anything LibreOffice takes for SVG by its
+ * bytes goes through that import, whatever the document called it. For OOXML
+ * and RTF, `office-preflight.ts` is the layer that holds: it cuts altChunks,
+ * pictures that reach outside themselves and everything else not on its
+ * allow-list. For the legacy binary formats (`.doc`, `.ppt`), which the
+ * preflight cannot rewrite, this profile is the ONLY layer, and an SVG
+ * embedded in one still reads a local file (the canary pins that gap). The
+ * canary says, vector by vector, which layers hold alone.
  */
 const LOCKED_DOWN_PROFILE = `<?xml version="1.0" encoding="UTF-8"?>
 <oor:items xmlns:oor="http://openoffice.org/2001/registry" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">

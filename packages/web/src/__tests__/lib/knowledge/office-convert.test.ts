@@ -730,6 +730,8 @@ describe("preflight before conversion (release review v0.10.0)", () => {
           prepareSource: async () => ({
             data: Buffer.from("CHECKED COPY"),
             relationshipsRemoved: 2,
+            altChunksRemoved: 0,
+            rtfGroupsRemoved: 0,
             contentHash: "0".repeat(64),
           }),
         }
@@ -738,6 +740,38 @@ describe("preflight before conversion (release review v0.10.0)", () => {
 
     expect(outcomes[0].status).toBe("converted");
     expect(converter.seen).toEqual([{ staged: "0.docx", symlink: false, body: "CHECKED COPY" }]);
+  });
+
+  it("logs a document whose altChunk was cut: that content is converted without it, and not indexed", async () => {
+    // An altChunk used to refuse the whole file; it is cut now, so the rest
+    // stays searchable (second review, PR #1243). A cut picture link costs a
+    // picture; a cut altChunk costs TEXT — the operator should be able to
+    // find out which document lost some.
+    const source = await corpusFile("chunked.docx", "ORIGINAL");
+    const converter = recordingConverter();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const outcomes = await convertOfficeFiles(
+        [source],
+        deps(
+          { run: converter.run, calls: [] },
+          {
+            prepareSource: async () => ({
+              data: Buffer.from("CHECKED COPY"),
+              relationshipsRemoved: 1,
+              altChunksRemoved: 2,
+              rtfGroupsRemoved: 0,
+              contentHash: "0".repeat(64),
+            }),
+          }
+        )
+      );
+      expect(outcomes[0].status).toBe("converted");
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0][0])).toMatch(/chunked\.docx.*2 altChunk/);
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it("keys the artifact on the bytes that were checked and staged, not on an earlier read of the file", async () => {

@@ -45,19 +45,26 @@
  * is cut from a COPY of the package before conversion. The document text
  * survives; the linked picture, the template, the hyperlink's destination,
  * the embedded object's live data do not — none of which the PDF's text layer
- * carried. An altChunk is refused outright: cutting it would silently drop
- * text the author wrote.
+ * carried. An altChunk is cut too — relationship and element — and that one
+ * does cost text (the chunk's own), so the converter logs it.
  *
  * **Every** external relationship goes, hyperlinks included. A first version
  * spared `hyperlink` and was wrong: LibreOffice resolves an `r:link` id
  * WITHOUT checking the relationship's Type, so a hyperlink-labelled
  * relationship used as a picture link fetched exactly like an image one
  * (measured, 3 requests). The same fact is why a kept relationship's TARGET is
- * vetted, not just its type: an altChunk can borrow the id of an `image`.
+ * vetted by its bytes, not its type: an `r:embed` naming a "font" or an
+ * "Office part" whose bytes are SVG is drawn as SVG (second review, PR #1243).
  *
- * The legacy binary formats (`.doc`, `.ppt`) cannot be rewritten like this;
- * for them the locked profile is the only layer, and the canary
+ * RTF (accepted under a `.doc` name, because Word writes those) has its
+ * picture, object and field-instruction groups cut (`sanitizeRtf`). The
+ * legacy binary formats (`.doc`, `.ppt`) cannot be rewritten here at all; for
+ * them the locked profile is the only layer, and it does NOT stop an embedded
+ * SVG picture from reading a local file. The canary
  * (`office-convert.canary.libreoffice.test.ts`) says so per vector.
+ *
+ * Every scan here is a single forward pass over the bytes: a regex that
+ * backtracks on a hostile file blocks the web process the KB worker runs in.
  */
 import { createHash } from "node:crypto";
 import { open, type FileHandle } from "node:fs/promises";
@@ -119,6 +126,14 @@ export interface PreparedSource {
   contentHash: string;
   /** Relationships cut from the package; 0 when it was handed through as it was. */
   relationshipsRemoved: number;
+  /**
+   * `altChunk` elements cut from an OOXML package. Each one was content in
+   * another format (HTML, a nested document) that is now NOT indexed — the
+   * converter logs it, because unlike a cut picture link it costs text.
+   */
+  altChunksRemoved: number;
+  /** Picture, object and field-instruction groups cut from an RTF file. */
+  rtfGroupsRemoved: number;
 }
 
 export interface PreflightOptions {
@@ -190,7 +205,62 @@ export async function readWorkbookBuffer(
   opts: PreflightOptions = {}
 ): Promise<Buffer> {
   const buffer = await readCapped(absPath, opts.maxBytes ?? XLSX_MAX_FILE_BYTES);
-  return verifiedCopy(buffer, XLSX_LIMITS, "workbook archive");
+  const verified = await verifiedCopy(buffer, XLSX_LIMITS, "workbook archive");
+  assertReadableNumberFormats(verified);
+  return verified;
+}
+
+/** Excel caps a number format at 255 characters; this leaves room for entity-escaped ones. */
+const MAX_FORMAT_CODE_CHARS = 1024;
+/** `[` after a format's last `]`: each one costs exceljs a scan to the end of the format, per cell. */
+const MAX_UNCLOSED_BRACKETS = 4;
+
+/**
+ * Refuses a workbook whose styles part holds a number format exceljs would
+ * choke on. exceljs runs `fmt.replace(/\[[^\]]*]/g, '')` on a cell's format
+ * for EVERY styled cell it loads (`utils.isDateFmt`), and that regex re-scans
+ * to the end of the format from every `[` with no `]` after it: 100 000 such
+ * brackets made one load take 4 s, 400 000 two minutes (second review,
+ * PR #1243) — in the web process, before our code sees a cell. Excel writes
+ * neither a format longer than 255 characters nor a run of unclosed brackets.
+ *
+ * exceljs reads styles from `xl/styles.xml` by that name and no other, so
+ * that is the part checked. One linear pass over its `formatCode` attributes.
+ */
+function assertReadableNumberFormats(archive: Buffer): void {
+  let entries: ZipEntryInfo[];
+  try {
+    entries = readZipEntries(archive);
+  } catch {
+    return; // Not ours to diagnose: exceljs reports an unreadable archive itself.
+  }
+  const styles = entries.find((entry) => entry.name.replace(/^\//, "") === "xl/styles.xml");
+  if (!styles) return;
+  const xml = inflatePart(archive, styles, styles.uncompressedSize).toString("latin1");
+  const refuse = () =>
+    new OfficeFileRejectedError(
+      "unexpected_content",
+      "this workbook declares a number format no spreadsheet application writes"
+    );
+  let at = 0;
+  while ((at = xml.indexOf("formatCode", at)) !== -1) {
+    at += "formatCode".length;
+    while (isXmlSpace(xml[at])) at++;
+    if (xml[at] !== "=") continue;
+    at++;
+    while (isXmlSpace(xml[at])) at++;
+    const quote = xml[at];
+    if (quote !== '"' && quote !== "'") continue;
+    const close = xml.indexOf(quote, at + 1);
+    if (close < 0) throw refuse();
+    const value = xml.slice(at + 1, close);
+    at = close + 1;
+    if (value.length > MAX_FORMAT_CODE_CHARS) throw refuse();
+    let unclosed = 0;
+    for (let i = value.lastIndexOf("]") + 1; i < value.length; i++) {
+      if (value[i] === "[" && ++unclosed > MAX_UNCLOSED_BRACKETS) throw refuse();
+    }
+  }
 }
 
 /** The `.docx` bytes for the word-count oracle, verified the same way as the conversion input. */
@@ -231,18 +301,77 @@ function allowedContainers(path: string): readonly Container[] {
  */
 const RELATIONSHIP_START = /<(?:[A-Za-z_][\w.-]*:)?Relationship(?=[\s/>])/y;
 const CLOSING_TAG = /\s*<\/(?:[A-Za-z_][\w.-]*:)?Relationship\s*>/y;
-const ATTRIBUTE = /([^\s=/>]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/g;
 /** Starts with a URI scheme, or is a UNC / protocol-relative path. */
 const SCHEME_OR_NETWORK_PATH = /^(?:[A-Za-z][A-Za-z0-9+.-]*:|\\\\|\/\/)/;
 /** A DTD can define entities, and an entity can spell markup no text match sees. No Office writer emits one. */
 const DTD = /<!(?:DOCTYPE|ENTITY)/i;
 
-function attributesOf(tag: string): Map<string, string> {
-  const attributes = new Map<string, string>();
-  for (const match of tag.matchAll(ATTRIBUTE)) {
-    if (!attributes.has(match[1])) attributes.set(match[1], match[2] ?? match[3] ?? "");
+/**
+ * The longest start tag we read: a relationship, an altChunk, a part's root
+ * element. A real one is a few hundred bytes (Word's busiest root, with every
+ * namespace it declares, is about 4 KiB). Anything longer is refused rather
+ * than read: it bounds what one tag can cost, whatever reads it.
+ */
+const MAX_TAG_CHARS = 16 * 1024;
+
+const isXmlSpace = (c: string | undefined) => c === " " || c === "\t" || c === "\n" || c === "\r";
+
+/**
+ * The index of the `>` that ends the start tag opening at `from`, honouring
+ * quotes so a `>` inside an attribute value cannot end it early. -1 when there
+ * is none within `MAX_TAG_CHARS` — no end, or a tag too long to be real.
+ * Never reads further than that, so a caller looping over tags stays linear.
+ */
+function tagEnd(xml: string, from: number): number {
+  const limit = Math.min(xml.length, from + MAX_TAG_CHARS);
+  let quote = "";
+  for (let at = from + 1; at < limit; at++) {
+    const c = xml[at];
+    if (quote) {
+      if (c === quote) quote = "";
+    } else if (c === '"' || c === "'") quote = c;
+    else if (c === ">") return at;
   }
-  return attributes;
+  return -1;
+}
+
+/**
+ * The attributes of one start tag (`<name a="1" b='2'>` or `…/>`), or null
+ * when the tag is not well-formed: an attribute without a quoted value,
+ * attributes not separated by whitespace, stray characters, or the same name
+ * twice (which one a parser keeps is not ours to guess).
+ *
+ * One forward pass. It replaced a global regex whose `[^\s=/>]+` re-scanned a
+ * long token from every offset — quadratic: one 50 000-character token in a
+ * 942-byte .docx held the web process for 2.7 s (second review, PR #1243).
+ */
+function attributesOf(tag: string): Map<string, string> | null {
+  let at = 1;
+  while (at < tag.length && !isXmlSpace(tag[at]) && tag[at] !== "/" && tag[at] !== ">") at++;
+  const attributes = new Map<string, string>();
+  for (;;) {
+    const before = at;
+    while (isXmlSpace(tag[at])) at++;
+    const c = tag[at];
+    if (c === ">") return at === tag.length - 1 ? attributes : null;
+    if (c === "/") return at === tag.length - 2 && tag[at + 1] === ">" ? attributes : null;
+    if (c === undefined || at === before) return null;
+
+    const nameStart = at;
+    while (at < tag.length && !isXmlSpace(tag[at]) && !"=/>\"'<".includes(tag[at])) at++;
+    if (at === nameStart) return null;
+    const name = tag.slice(nameStart, at);
+    while (isXmlSpace(tag[at])) at++;
+    if (tag[at] !== "=") return null;
+    at++;
+    while (isXmlSpace(tag[at])) at++;
+    const quote = tag[at];
+    if (quote !== '"' && quote !== "'") return null;
+    const close = tag.indexOf(quote, at + 1);
+    if (close < 0 || attributes.has(name)) return null;
+    attributes.set(name, tag.slice(at + 1, close));
+    at = close + 1;
+  }
 }
 
 /**
@@ -290,23 +419,17 @@ function filterRelationships(
       continue;
     }
 
-    // Find the tag's end honouring quotes, so a `>` inside an attribute value
-    // cannot end it early. No end at all means the part is not well-formed XML
-    // — refused outright, which is also what keeps this pass linear.
-    let quote = "";
-    let close = at + start[0].length;
-    for (; close < xml.length; close++) {
-      const c = xml[close];
-      if (quote) {
-        if (c === quote) quote = "";
-      } else if (c === '"' || c === "'") quote = c;
-      else if (c === ">") break;
-    }
-    if (close >= xml.length) throw malformed();
+    // No end (or none within MAX_TAG_CHARS) means the part is not well-formed
+    // XML, or not a real one — refused outright, which is also what keeps this
+    // pass linear.
+    const close = tagEnd(xml, at);
+    if (close < 0) throw malformed();
 
     const tag = xml.slice(at, close + 1);
+    const attributes = attributesOf(tag);
+    if (!attributes) throw malformed();
     let end = close + 1;
-    if (keep(attributesOf(tag))) {
+    if (keep(attributes)) {
       at = end;
       continue;
     }
@@ -372,8 +495,9 @@ const MS_OFFICE = "http://schemas.microsoft.com/office/";
  * from their preview picture), `subDocument`, `attachedTemplate`, `frame`,
  * `hyperlink` (always external in a real file), `customXml`/`customXmlProps`,
  * `vbaProject`, `control`/ActiveX, `vmlDrawing`, `printerSettings`,
- * `audio`/`video`/`media`, mail-merge sources, web extensions, signatures.
- * `aFChunk` is not cut but REFUSED (see `assertNoAltChunk`).
+ * `audio`/`video`/`media`, mail-merge sources, web extensions, signatures —
+ * and `aFChunk`, whose `<w:altChunk>` element is cut along with it (see
+ * `removeAltChunks`).
  *
  * Checked against real Word and PowerPoint files (comments, footnotes,
  * headers, people, custom properties, notes, handout masters) and against
@@ -443,23 +567,142 @@ const RENDERED_FROM: ReadonlyMap<string, TargetClass> = new Map([
   [`${MS_OFFICE}2018/10/relationships/authors`, "xml"],
 ]);
 
-const AFCHUNK = new Set([TRANSITIONAL + "aFChunk", STRICT + "aFChunk"]);
-
 /** The namespaces an OOXML part's root element may live in. */
 const OOXML_NAMESPACE =
   /^(?:http:\/\/schemas\.openxmlformats\.org\/|http:\/\/purl\.oclc\.org\/ooxml\/|http:\/\/schemas\.microsoft\.com\/office\/)/;
 
-/** `<w:altChunk …>`, any prefix: content imported through a second filter. */
-const ALT_CHUNK = /<(?:[A-Za-z_][\w.-]*:)?altChunk[\s/>]/;
+/**
+ * The local names an Office part's root element may have: the root of every
+ * part type on the allow-list, in WordprocessingML, PresentationML,
+ * DrawingML, the package properties and Microsoft's extensions. A namespace
+ * alone is not enough (second review, PR #1243): `<svg xmlns="http://schemas.microsoft.com/office/…">`
+ * is in an Office namespace, and LibreOffice drew it as an SVG — which read a
+ * local file — when a picture's `r:embed` named it.
+ */
+const OOXML_ROOT_NAMES = new Set([
+  // WordprocessingML
+  "document",
+  "styles",
+  "numbering",
+  "fonts",
+  "settings",
+  "webSettings",
+  "hdr",
+  "ftr",
+  "footnotes",
+  "endnotes",
+  "comments",
+  "glossaryDocument",
+  "people",
+  "commentsEx",
+  "commentsIds",
+  "commentsExtensible",
+  // PresentationML
+  "presentation",
+  "sld",
+  "sldLayout",
+  "sldMaster",
+  "notes",
+  "notesMaster",
+  "handoutMaster",
+  "presentationPr",
+  "viewPr",
+  "cmAuthorLst",
+  "cmLst",
+  "authorLst",
+  // DrawingML: themes, table styles, charts, SmartArt
+  "theme",
+  "themeOverride",
+  "tblStyleLst",
+  "chartSpace",
+  "userShapes",
+  "chartStyle",
+  "colorStyle",
+  "dataModel",
+  "layoutDef",
+  "styleDef",
+  "colorsDef",
+  "drawing",
+  // Package properties
+  "coreProperties",
+  "Properties",
+]);
+
+/**
+ * An element named `svg` (any prefix), or a DTD, in the first bytes of a part.
+ * LibreOffice's picture detection takes a part for SVG when it finds `<svg`
+ * anywhere in its first 2 KiB (or an XML declaration, a DOCTYPE and `svg`),
+ * whatever the relationship called it and whatever namespace the element is
+ * in. Looking at 4 KiB, case-insensitively and with any prefix, is the
+ * superset of that.
+ */
+const SVG_MARKUP = /<(?:[A-Za-z_][\w.-]*:)?svg|<!DOCTYPE/i;
+
+/** Would LibreOffice's picture detection take these first bytes for SVG — or gzip, i.e. SVGZ? */
+function looksLikeSvg(head: Buffer): boolean {
+  if (head[0] === 0x1f && head[1] === 0x8b) return true;
+  // NULs dropped: a UTF-16 spelling must not hide the markup from this check.
+  return SVG_MARKUP.test(head.subarray(0, 4096).toString("latin1").replace(/\0/g, ""));
+}
+
+/** `<w:altChunk`, any prefix, as a candidate the scanner then reads properly. */
+const ALT_CHUNK_START = /<((?:[A-Za-z_][\w.-]*:)?altChunk)(?=[\s/>])/g;
+
+/**
+ * Removes every `altChunk` element from an Office XML part — the self-closing
+ * form and the one with children (`<w:altChunkPr>`) — and says how many.
+ *
+ * An altChunk imports the part its `r:id` names through a SECOND import filter
+ * (HTML, RTF, a nested document), which reads local files the locked profile
+ * does not stop (release review v0.10.0). LibreOffice resolves that id without
+ * checking the relationship's Type, so cutting the `aFChunk` relationship is
+ * not enough: an altChunk can borrow the id of a kept picture. So the element
+ * goes. Everything around it stays searchable; the chunk's own content is not
+ * indexed, and the converter logs that it was dropped.
+ *
+ * Linear: each element is read once from where the last one ended. A start
+ * tag with no end, or an element with no closing tag, is refused — what
+ * follows it is not ours to guess.
+ */
+function removeAltChunks(xml: string, partName: string): { xml: string; removed: number } {
+  const malformed = () => unexpected(`part "${partName}" has an altChunk that is not well-formed`);
+  let out = "";
+  let cursor = 0;
+  let removed = 0;
+  ALT_CHUNK_START.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = ALT_CHUNK_START.exec(xml))) {
+    const close = tagEnd(xml, match.index);
+    if (close < 0) throw malformed();
+    let end = close + 1;
+    if (xml[close - 1] !== "/") {
+      // The first `</w:altChunk` that is that name exactly — `</w:altChunkPr>`
+      // starts the same way. Searching only forward keeps this linear.
+      const closingTag = `</${match[1]}`;
+      let closing = xml.indexOf(closingTag, end);
+      while (
+        closing >= 0 &&
+        !isXmlSpace(xml[closing + closingTag.length]) &&
+        xml[closing + closingTag.length] !== ">"
+      ) {
+        closing = xml.indexOf(closingTag, closing + closingTag.length);
+      }
+      if (closing < 0) throw malformed();
+      let after = closing + closingTag.length;
+      while (isXmlSpace(xml[after])) after++;
+      if (xml[after] !== ">") throw malformed();
+      end = after + 1;
+    }
+    out += xml.slice(cursor, match.index);
+    cursor = end;
+    removed++;
+    ALT_CHUNK_START.lastIndex = end;
+  }
+  return removed === 0 ? { xml, removed: 0 } : { xml: out + xml.slice(cursor), removed };
+}
 
 /** No SVG picture we keep is anywhere near this; a bigger one is not drawn. */
 const MAX_SVG_BYTES = 16 * MiB;
-
-function refuseAltChunk(): never {
-  throw unexpected(
-    "the document embeds content in another format (altChunk), which LibreOffice would import through a second, unchecked filter"
-  );
-}
 
 /** The local name and namespace of an XML document's root element, or null if it has none we can read. */
 function rootElement(xml: string): { name: string; namespace: string | undefined } | null {
@@ -483,9 +726,10 @@ function rootElement(xml: string): { name: string; namespace: string | undefined
   );
   if (!open) return null;
   const [prefix, local] = open[2] === undefined ? [undefined, open[1]] : [open[1], open[2]];
-  const tagEnd = xml.indexOf(">", at);
-  if (tagEnd < 0) return null;
-  const attributes = attributesOf(xml.slice(at, tagEnd + 1));
+  const end = tagEnd(xml, at);
+  if (end < 0) return null;
+  const attributes = attributesOf(xml.slice(at, end + 1));
+  if (!attributes) return null;
   return { name: local, namespace: attributes.get(prefix ? `xmlns:${prefix}` : "xmlns") };
 }
 
@@ -515,25 +759,55 @@ function isRasterOrMetafile(bytes: Buffer): boolean {
   );
 }
 
+/** Is `bytes` a raster picture by its magic number — PNG, JPEG, GIF, BMP or WebP — and nothing else? */
+function isRaster(bytes: Buffer): boolean {
+  const starts = (hex: string) => bytes.subarray(0, hex.length / 2).equals(Buffer.from(hex, "hex"));
+  return (
+    starts("89504e470d0a1a0a") ||
+    starts("ffd8ff") ||
+    starts("474946383761") ||
+    starts("474946383961") ||
+    starts("424d") ||
+    (starts("52494646") && bytes.subarray(8, 12).toString("latin1") === "WEBP")
+  );
+}
+
 const SVG_HREF = /\bhref\s*=\s*(?:"([^"]*)"|'([^']*)')/gi;
 const CSS_URL = /url\(\s*(['"]?)([^'")]*)/gi;
-const DATA_IMAGE = /^data:image\/(?:png|jpe?g|gif|bmp|webp);base64,[A-Za-z0-9+/=\s]*$/;
+const DATA_IMAGE = /^data:image\/(?:png|jpe?g|gif|bmp|webp);base64,([A-Za-z0-9+/=\s]*)$/;
+/** An HTML island inside an SVG: it can carry references of its own (`<img src>`). */
+const FOREIGN_OBJECT = /<(?:[A-Za-z_][\w.-]*:)?foreignObject/i;
+
+/**
+ * A `data:` URL's picture is what its BYTES are, not what its media type
+ * says: LibreOffice detects the format from the decoded content. The
+ * reviewer's `data:image/png;base64,` holding an SVG (or a gzipped one) was
+ * drawn as SVG and read a local file. So the bytes must be a raster, and not
+ * one that also carries SVG markup up front.
+ */
+function isEmbeddedRaster(value: string): boolean {
+  const match = DATA_IMAGE.exec(value);
+  if (!match) return false;
+  const bytes = Buffer.from(match[1], "base64");
+  return isRaster(bytes) && !looksLikeSvg(bytes);
+}
 
 /**
  * Does this SVG reference nothing outside itself? Every `href` must be a
  * fragment of this same file or an embedded raster, every CSS `url()` a
- * fragment; no stylesheet imports, no DTD, no entities hiding a reference.
+ * fragment; no stylesheet imports, no DTD, no entities hiding a reference,
+ * no `foreignObject`.
  *
  * Measured against LibreOffice 26.2 under the locked profile: an internal SVG
  * picture with `<image href="file:///…">` drew the local file into the PDF —
  * a local PNG embedded, a local SVG's text in the indexed text layer.
  */
 function isSelfContainedSvg(text: string): boolean {
-  if (DTD.test(text) || /@import/i.test(text)) return false;
+  if (DTD.test(text) || /@import/i.test(text) || FOREIGN_OBJECT.test(text)) return false;
   for (const match of text.matchAll(SVG_HREF)) {
     const value = (match[1] ?? match[2]).trim();
     if (value.includes("&")) return false;
-    if (!value.startsWith("#") && !DATA_IMAGE.test(value)) return false;
+    if (!value.startsWith("#") && !isEmbeddedRaster(value)) return false;
   }
   for (const match of text.matchAll(CSS_URL)) {
     if (!match[2].trim().startsWith("#")) return false;
@@ -583,22 +857,36 @@ function resolveTarget(relsPath: string, target: string): string | null {
 /**
  * Returns the package with every relationship cut that is external, of a type
  * not on the allow-list (`RENDERED_FROM`), or pointing at something that is
- * not what its type promises — or the SAME buffer when there was nothing to
- * cut (the common case costs no copy and no re-deflate; untouched entries are
+ * not what its type promises — and every `altChunk` element cut from the
+ * Office parts it keeps — or the SAME buffer when there was nothing to cut
+ * (the common case costs no copy and no re-deflate; untouched entries are
  * copied as stored either way).
  *
+ * A kept target is vetted by what its BYTES are, whatever its relationship
+ * says: LibreOffice resolves `r:embed` by Id, never checks the Type, and
+ * detects a picture's format from its content. So a part that would be taken
+ * for SVG or SVGZ is cut — or refused, for a part that claims to be Office
+ * XML — unless it is a picture that passes the self-contained-SVG check.
+ *
  * Refuses the package (throws `OfficeFileRejectedError`) when cutting would
- * hide what is really going on: an altChunk anywhere, a DTD in a part
- * LibreOffice parses, or a part the allow-list says is Office XML that is
- * something else entirely (HTML, SVG, a nested package…). Those are not real
- * documents with an unlucky link; they are built to be imported.
+ * hide what is really going on: a DTD in a part LibreOffice parses, or a part
+ * the allow-list says is Office XML that is something else entirely (HTML,
+ * SVG, a nested package…). Those are not real documents with an unlucky
+ * link; they are built to be imported.
  *
  * Expects a VERIFIED archive (`verifiedZipCopy`): sizes are taken as true.
  */
-export function sanitizeOoxmlPackage(buffer: Buffer): { data: Buffer; removed: number } {
+export function sanitizeOoxmlPackage(buffer: Buffer): {
+  data: Buffer;
+  removed: number;
+  altChunksRemoved: number;
+} {
   const entries = readZipEntries(buffer);
   const byName = new Map(entries.map((entry) => [entry.name.toLowerCase(), entry]));
   const verdicts = new Map<string, boolean>();
+  /** Parts whose bytes change: relationship parts, and Office parts that held an altChunk. */
+  const rewritten = new Map<ZipEntryInfo, Buffer>();
+  let altChunksRemoved = 0;
 
   const contentTypes = byName.get("[content_types].xml");
   if (
@@ -608,6 +896,32 @@ export function sanitizeOoxmlPackage(buffer: Buffer): { data: Buffer; removed: n
     throw unexpected("the content-types part declares a DOCTYPE");
   }
 
+  /** An Office XML part, or a refusal; any altChunk in it is cut. */
+  const vetXmlPart = (entry: ZipEntryInfo): true => {
+    const bytes = inflatePart(buffer, entry, entry.uncompressedSize);
+    const notOoxml = (what: string) =>
+      unexpected(`part "${entry.name}" should be Office XML but ${what}`);
+    if (bytes.includes(0)) throw notOoxml("is not UTF-8 text");
+    const text = bytes.toString("latin1");
+    if (DTD.test(text)) throw notOoxml("declares a DOCTYPE");
+    const root = rootElement(text);
+    if (
+      !root ||
+      root.namespace === undefined ||
+      !OOXML_NAMESPACE.test(root.namespace) ||
+      !OOXML_ROOT_NAMES.has(root.name)
+    ) {
+      throw notOoxml("is something else");
+    }
+    if (looksLikeSvg(bytes)) throw notOoxml("would be drawn as an SVG picture");
+    const result = removeAltChunks(text, entry.name);
+    if (result.removed > 0) {
+      altChunksRemoved += result.removed;
+      rewritten.set(entry, Buffer.from(result.xml, "latin1"));
+    }
+    return true;
+  };
+
   /** Is the part at `name` what `kind` promises? Throws to refuse; false to cut. Memoised. */
   const vet = (name: string, kind: TargetClass): boolean => {
     const key = `${kind}:${name.toLowerCase()}`;
@@ -616,47 +930,48 @@ export function sanitizeOoxmlPackage(buffer: Buffer): { data: Buffer; removed: n
     const entry = byName.get(name.toLowerCase());
     let verdict: boolean;
     if (!entry) verdict = false;
-    else if (kind === "xml") verdict = vetXmlPart(buffer, entry);
+    else if (kind === "xml") verdict = vetXmlPart(entry);
     else if (kind === "image") verdict = vetImagePart(buffer, entry);
-    else verdict = !looksLikeDocument(inflateHead(buffer, entry));
+    else {
+      const head = inflateHead(buffer, entry);
+      verdict = !looksLikeDocument(head) && !looksLikeSvg(head);
+    }
     verdicts.set(key, verdict);
     return verdict;
   };
 
-  const rewritten = new Map<number, Buffer>();
   let removed = 0;
 
-  entries.forEach((entry, index) => {
-    if (!/\.rels$/i.test(entry.name)) return;
+  for (const entry of entries) {
+    if (!/\.rels$/i.test(entry.name)) continue;
     const bytes = inflatePart(buffer, entry, MAX_RELS_BYTES);
     // UTF-16 (or anything with NULs) would defeat every text match here while a
     // parser still reads it. A relationship part is ASCII-compatible text.
     if (bytes.includes(0)) throw unexpected("a relationship part is not UTF-8 text");
 
     const result = filterRelationships(bytes.toString("latin1"), (attributes) => {
-      const type = attributes.get("Type") ?? "";
-      if (AFCHUNK.has(type)) refuseAltChunk();
       if (!isInternal(attributes)) return false;
-      const kind = RENDERED_FROM.get(type);
+      const kind = RENDERED_FROM.get(attributes.get("Type") ?? "");
       if (!kind) return false;
       const target = resolveTarget(entry.name, attributes.get("Target")!);
       return target !== null && vet(target, kind);
     });
-    if (result.removed === 0) return;
+    if (result.removed === 0) continue;
     removed += result.removed;
-    rewritten.set(index, Buffer.from(result.xml, "latin1"));
-  });
+    rewritten.set(entry, Buffer.from(result.xml, "latin1"));
+  }
 
-  if (removed === 0) return { data: buffer, removed: 0 };
+  if (rewritten.size === 0) return { data: buffer, removed: 0, altChunksRemoved: 0 };
 
   return {
     data: assembleZip(
-      entries.map((entry, index) => {
-        const replacement = rewritten.get(index);
+      entries.map((entry) => {
+        const replacement = rewritten.get(entry);
         return replacement ? deflatedPart(entry.name, replacement) : rawPart(buffer, entry);
       })
     ),
     removed,
+    altChunksRemoved,
   };
 }
 
@@ -666,33 +981,113 @@ function inflateHead(archive: Buffer, entry: ZipEntryInfo): Buffer {
 }
 
 /**
- * An Office XML part, or a refusal: a part an allow-listed relationship
- * calls XML that is not OOXML is not a document with a broken link — it is
- * built to be imported as something else (HTML, SVG, flat ODF, a package).
+ * A picture we will let LibreOffice draw; anything else is cut (the picture
+ * is not drawn). Whatever would be taken for SVG is held to the SVG rule —
+ * raster magic up front does not excuse SVG markup behind it — and SVGZ is
+ * never kept: what it reaches for cannot be read without inflating it whole.
  */
-function vetXmlPart(archive: Buffer, entry: ZipEntryInfo): true {
-  const bytes = inflatePart(archive, entry, entry.uncompressedSize);
-  const notOoxml = (what: string) =>
-    unexpected(`part "${entry.name}" should be Office XML but ${what}`);
-  if (bytes.includes(0)) throw notOoxml("is not UTF-8 text");
-  const text = bytes.toString("latin1");
-  if (DTD.test(text)) throw notOoxml("declares a DOCTYPE");
-  const root = rootElement(text);
-  if (!root || root.namespace === undefined || !OOXML_NAMESPACE.test(root.namespace)) {
-    throw notOoxml("is something else");
-  }
-  if (ALT_CHUNK.test(text)) refuseAltChunk();
-  return true;
-}
-
-/** A picture we will let LibreOffice draw; anything else is cut (the picture is not drawn). */
 function vetImagePart(archive: Buffer, entry: ZipEntryInfo): boolean {
   const head = inflateHead(archive, entry);
-  if (isRasterOrMetafile(head)) return true;
-  if (!/<svg[\s>]/i.test(head.toString("latin1"))) return false;
+  if (!looksLikeSvg(head)) return isRasterOrMetafile(head);
+  if (head[0] === 0x1f && head[1] === 0x8b) return false;
   if (entry.uncompressedSize > MAX_SVG_BYTES) return false;
   const svg = inflatePart(archive, entry, entry.uncompressedSize);
   return !svg.includes(0) && isSelfContainedSvg(svg.toString("latin1"));
+}
+
+// --- RTF -----------------------------------------------------------------
+
+/**
+ * The RTF control words whose content we cut, from the word to the end of
+ * the group it stands in:
+ *
+ * - `pict` — a picture. LibreOffice detects its format from the bytes, so an
+ *   SVG hex-encoded in a `\pict` claiming `\pngblip` was drawn as SVG and
+ *   read a local file under the locked profile (second review, PR #1243).
+ * - `object`, `objdata` — an embedded OLE object and its data.
+ * - `fldinst` — a field's instruction. INCLUDEPICTURE and INCLUDETEXT read
+ *   files; the field's last result (`\fldrslt`, the text a reader saw) stays
+ *   and is what LibreOffice prints without an instruction (measured). Every
+ *   instruction goes, not a list of dangerous ones: an instruction can be
+ *   spelled in escapes and nested groups no text match would follow.
+ */
+const RTF_CUT_WORDS = new Set(["pict", "object", "objdata", "fldinst"]);
+
+const isAsciiLetter = (b: number) => (b >= 0x61 && b <= 0x7a) || (b >= 0x41 && b <= 0x5a);
+const isAsciiDigit = (b: number) => b >= 0x30 && b <= 0x39;
+
+/**
+ * Cuts every picture, object and field-instruction group (`RTF_CUT_WORDS`)
+ * from an RTF file and says how many. Ordinary text is untouched; a file with
+ * nothing to cut comes back as the SAME buffer.
+ *
+ * A cut runs from the control word (with a `\*` right before it) to the end
+ * of the group it stands in, wherever in the group it stands: LibreOffice
+ * switches destination on the word itself, not only at a group's start, so
+ * `{\b \pict …}` is a picture too. One forward pass, tokenizing as RTF does —
+ * `\'hh` escapes, control symbols, and `\binN`, whose N raw bytes may hold
+ * braces that must not end a group. A group still open at the end of the file
+ * is cut to the end.
+ */
+export function sanitizeRtf(rtf: Buffer): { data: Buffer; removed: number } {
+  const cuts: Array<[number, number]> = [];
+  let depth = 0;
+  /** Depth of the group being cut, or -1; and where its cut starts. */
+  let cutDepth = -1;
+  let cutFrom = 0;
+  let at = 0;
+
+  while (at < rtf.length) {
+    const byte = rtf[at];
+    if (byte === 0x7b) {
+      depth++;
+      at++;
+    } else if (byte === 0x7d) {
+      if (depth > 0 && cutDepth === depth) {
+        cuts.push([cutFrom, at]);
+        cutDepth = -1;
+      }
+      if (depth > 0) depth--;
+      at++;
+    } else if (byte === 0x5c && isAsciiLetter(rtf[at + 1])) {
+      const wordStart = at + 1;
+      let next = wordStart;
+      while (next < rtf.length && isAsciiLetter(rtf[next])) next++;
+      const word = rtf.toString("latin1", wordStart, next);
+      const negative = rtf[next] === 0x2d;
+      if (negative) next++;
+      const digitsStart = next;
+      while (next < rtf.length && isAsciiDigit(rtf[next])) next++;
+      const parameter = Number(
+        rtf.toString("latin1", digitsStart, Math.min(next, digitsStart + 10))
+      );
+      if (rtf[next] === 0x20) next++;
+      // `\binN`: N raw bytes follow, braces and backslashes included.
+      if (word === "bin" && !negative && parameter > 0)
+        next = Math.min(rtf.length, next + parameter);
+      if (cutDepth < 0 && RTF_CUT_WORDS.has(word)) {
+        cutDepth = depth;
+        // `{\*\fldinst …}`: take the `\*` that marks it as ignorable with it.
+        cutFrom = at >= 2 && rtf[at - 2] === 0x5c && rtf[at - 1] === 0x2a ? at - 2 : at;
+      }
+      at = next;
+    } else if (byte === 0x5c && rtf[at + 1] === 0x27) {
+      at += 4; // `\'hh`
+    } else if (byte === 0x5c) {
+      at += 2; // a control symbol: `\{`, `\}`, `\\`, `\*`, `\~`, …
+    } else at++;
+  }
+  if (cutDepth >= 0) cuts.push([cutFrom, rtf.length]);
+  if (cuts.length === 0) return { data: rtf, removed: 0 };
+
+  const kept: Buffer[] = [];
+  let cursor = 0;
+  for (const [from, to] of cuts) {
+    kept.push(rtf.subarray(cursor, from));
+    cursor = to;
+  }
+  kept.push(rtf.subarray(cursor));
+  return { data: Buffer.concat(kept), removed: cuts.length };
 }
 
 /**
@@ -719,7 +1114,15 @@ export async function prepareOfficeSource(
       `the content of this ${ext} file is not a Word or PowerPoint document`
     );
   }
-  if (container !== "zip") return { data: buffer, relationshipsRemoved: 0, contentHash };
+  const none = { relationshipsRemoved: 0, altChunksRemoved: 0, rtfGroupsRemoved: 0 };
+  // A legacy binary .doc/.ppt cannot be rewritten here: the locked profile is
+  // its only layer, and it does NOT stop an embedded SVG picture from reading
+  // a local file (the canary pins that gap).
+  if (container === "ole2") return { data: buffer, contentHash, ...none };
+  if (container === "rtf") {
+    const { data, removed } = sanitizeRtf(buffer);
+    return { data, contentHash, ...none, rtfGroupsRemoved: removed };
+  }
 
   // Everything from here on reads the VERIFIED copy, and the copy (or its
   // sanitized rewrite) is what is staged: LibreOffice never sees a byte of the
@@ -733,8 +1136,8 @@ export async function prepareOfficeSource(
         `this ${ext} file is a zip, but not an Office Open XML package`
       );
     }
-    const { data, removed } = sanitizeOoxmlPackage(verified);
-    return { data, relationshipsRemoved: removed, contentHash };
+    const { data, removed, altChunksRemoved } = sanitizeOoxmlPackage(verified);
+    return { ...none, data, relationshipsRemoved: removed, altChunksRemoved, contentHash };
   } catch (err) {
     if (err instanceof OfficeFileRejectedError) throw err;
     // A corrupt central directory: not a package, and not worth a reader's time.
