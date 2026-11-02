@@ -137,7 +137,7 @@ describe.skipIf(!hasSoffice)("convertOfficeFiles against a real LibreOffice", ()
     ).toEqual(["broken.docx", "source.doc", "source.docx"]);
   }, 180_000);
 
-  // Ninth review, PR #1243: LibreOffice writes its PDFs onto the artifact
+  // LibreOffice writes its PDFs onto the artifact
   // volume the staged copies just filled. A failed write there exits 0 with no
   // PDF — the same shape as an unloadable document — and must not be booked
   // as one: a changed file would lose its indexed version.
@@ -187,10 +187,10 @@ describe.skipIf(!hasSoffice)("convertOfficeFiles against a real LibreOffice", ()
     180_000
   );
 
-  // Eleventh review, PR #1243: LibreOffice unpacks a package into scratch
+  // LibreOffice unpacks a package into scratch
   // space while LOADING it, and a load that runs out of room there says what
   // an unloadable document says — exit 0, no PDF, "source file could not be
-  // loaded". The review's document: 152 KB zipped, 26.6 MB of document.xml —
+  // loaded". A document that shows it: 152 KB zipped, 26.6 MB of document.xml —
   // 40,000 of these paragraphs, ~665 bytes each.
   function packageOfParagraphs(name: string, paragraphs: number): string {
     const paragraph =
@@ -241,11 +241,11 @@ describe.skipIf(!hasSoffice)("convertOfficeFiles against a real LibreOffice", ()
     return total;
   }
 
-  it("loads a package with its unpacked scratch inside the batch, not in the OS temp dir (eleventh review)", async () => {
+  it("loads a package with its unpacked scratch inside the batch, not in the OS temp dir", async () => {
     // Left to itself LibreOffice uses /tmp — a volume nothing here checks.
     // Its scratch must land in the batch, on the volume the free-space check
     // asks. Watched there while it runs: on any /tmp the scratch is seen
-    // where it belongs. A fifth of the review's document — converting all of
+    // where it belongs. A fifth of that document — converting all of
     // it takes most of a minute, a single batch's time budget.
     const source = packageOfParagraphs("scratch.docx", 8_000);
     let peak = 0;
@@ -278,11 +278,11 @@ describe.skipIf(!hasSoffice)("convertOfficeFiles against a real LibreOffice", ()
   // /kb-small-volume:size=24m`, KB_SMALL_VOLUME) — a test cannot shrink a
   // filesystem, and faking statfs would not make LibreOffice fail.
   it.skipIf(!process.env.KB_SMALL_VOLUME)(
-    "books a document whose scratch did not fit on the volume as infrastructure, not unreadable (eleventh review)",
+    "books a document whose scratch did not fit on the volume as infrastructure, not unreadable",
     async () => {
       // 24 MiB cannot hold 26.6 MB of scratch. LibreOffice gives up loading,
-      // and the scratch is gone again by the time the volume is asked — the
-      // review measured 23.6 MiB free afterwards, far above twice the zipped
+      // and the scratch is gone again by the time the volume is asked —
+      // measured 23.6 MiB free afterwards, far above twice the zipped
       // size. Booked as unreadable, a changed document would lose the version
       // the index holds and be listed unsearchable.
       const source = packageOfParagraphs("unpacks-large.docx", 40_000);
@@ -378,13 +378,13 @@ describe.skipIf(!hasSoffice)("convertOfficeFiles against a real LibreOffice", ()
     return buildFixture("doc", name, fodt);
   }
 
-  // Twelfth review, PR #1243: LibreOffice exports the PDF into its TMPDIR —
+  // LibreOffice exports the PDF into its TMPDIR —
   // inside the batch, on the artifact volume — and then copies it into
   // --outdir. For a moment the PDF is on the volume twice, and a volume with
   // room for it once fails the copy: exit 0, no PDF, `impl_store … failed`,
   // and the volume free again afterwards. Same small volume as above.
   it.skipIf(!process.env.KB_SMALL_VOLUME)(
-    "books a PDF that fit the volume once but not twice as infrastructure, not unreadable (twelfth review)",
+    "books a PDF that fit the volume once but not twice as infrastructure, not unreadable",
     async () => {
       const source = picturesDoc("pictures.doc", 5);
       // How large its PDF is, from a conversion on a volume with room.
@@ -424,7 +424,7 @@ describe.skipIf(!hasSoffice)("convertOfficeFiles against a real LibreOffice", ()
     300_000
   );
 
-  it("books a deck whose every slide is hidden as a document failure, though LibreOffice's store fails (tenth review)", async () => {
+  it("books a deck whose every slide is hidden as a document failure, though LibreOffice's store fails", async () => {
     // The real binary exits 0, writes no PDF and prints the SAME
     // `impl_store … failed … Error Area:Io` line a full volume gives
     // (`Class:Write Code:16`) — on a disk with room. Nothing about this deck
@@ -456,7 +456,7 @@ describe.skipIf(!hasSoffice)("convertOfficeFiles against a real LibreOffice", ()
 </office:document>`
     );
     const deck = buildFixture("pptx", "hidden.pptx", fodp);
-    // The fixture is what the review found: every slide `show="0"`.
+    // The fixture's defining property: every slide `show="0"`.
     const archive = await readFile(deck);
     const slides = readZipEntries(archive)
       .filter((entry) => /^ppt\/slides\/slide\d+\.xml$/.test(entry.name))

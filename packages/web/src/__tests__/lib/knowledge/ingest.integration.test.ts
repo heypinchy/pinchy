@@ -1438,7 +1438,7 @@ it("books a workbook it could read nothing out of as unsearchable, not indexed",
   expect(await chunksFor(doc.id)).toHaveLength(0);
 });
 
-it("books a workbook refused as too large as unsearchable — listed, final, and not a failed run (release review v0.10.0)", async () => {
+it("books a workbook refused as too large as unsearchable — listed, final, and not a failed run", async () => {
   // A compressed bomb is a verdict on THIS file: nothing a retry does changes
   // what its central directory declares. It must neither crash the run (the
   // reader refuses before inflating) nor vanish as `failed` with no row —
@@ -1467,7 +1467,7 @@ it("books a workbook refused as too large as unsearchable — listed, final, and
   expect(listed.documents.map((d) => d.sourcePath)).toEqual([xlsxPath]);
 });
 
-it("keeps a changed workbook's indexed version when its reader is killed without a verdict, and reads it again (fifth review, PR #1243)", async () => {
+it("keeps a changed workbook's indexed version when its reader is killed without a verdict, and reads it again", async () => {
   // The container's OOM killer, aimed at the reader child by its
   // oom_score_adj, says nothing about THIS workbook — the memory may have been
   // the server's. Booked as "too large", it deleted the version already
@@ -1759,7 +1759,7 @@ it("keeps the last indexed version when a re-conversion of a changed file fails 
   );
 });
 
-describe("an artifact volume that cannot be written (eighth and ninth review, PR #1243)", () => {
+describe("an artifact volume that cannot be written", () => {
   // The reader child writes each checked copy onto the artifact volume. A
   // full or read-only volume there is a squeeze on the machine, not a verdict
   // on the document: a CHANGED file must keep the version the index holds and
@@ -1852,7 +1852,7 @@ describe("an artifact volume that cannot be written (eighth and ninth review, PR
     }
   );
 
-  it("keeps the last indexed version when the converted PDF cannot be written (ninth review)", async () => {
+  it("keeps the last indexed version when the converted PDF cannot be written", async () => {
     // The copy fit; the PDF, written to the same volume right after, did not.
     // What the real `soffice` does then: exit 0, no PDF, one stderr line —
     // and the volume reports what a nearly full one reports: 4 KB left.
@@ -1867,7 +1867,7 @@ describe("an artifact volume that cannot be written (eighth and ninth review, PR
     );
   });
 
-  it("lists an all-hidden deck as unsearchable: LibreOffice's failed store on a roomy volume is the document's (tenth review)", async () => {
+  it("lists an all-hidden deck as unsearchable: LibreOffice's failed store on a roomy volume is the document's", async () => {
     // The real binary prints the same `impl_store … failed … Error Area:Io`
     // for a .pptx whose every slide is hidden — on a volume with room. That
     // is a verdict on the deck, not a full disk to retry forever.
@@ -1964,7 +1964,7 @@ it("batches from the document that asked, carrying the hash the ingest already c
   ]);
 });
 
-it("hashes an Office file as it streams, so the server never holds it whole while it converts (seventh review, PR #1243)", async () => {
+it("hashes an Office file as it streams, so the server never holds it whole while it converts", async () => {
   // The hash was taken from a whole-file read, and V8 kept that buffer alive
   // across the awaits after it — through the whole conversion: up to 200 MB
   // of the web process for one deck, on top of the embedding model, during

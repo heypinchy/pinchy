@@ -1,5 +1,5 @@
 /**
- * The spreadsheet reader's child process (fourth review, PR #1243).
+ * The spreadsheet reader's child process.
  *
  * exceljs costs ~20× the sheet XML, so a workbook well inside the archive
  * limits could OOM-kill the 1 GB web container — on every nightly reindex,
@@ -8,9 +8,9 @@
  * the in-process reader gives, and a child that runs out of heap reading a
  * file refuses that file instead of killing the server. Every other way a
  * child dies — killed without the heap banner, timed out, crashed, never
- * ready — is infrastructure, not a verdict, and must not be booked as one
- * (fifth review). A preview whose requester went away stops costing the
- * queue anything, and the queue in front of the indexer is bounded.
+ * ready — is infrastructure, not a verdict, and must not be booked as one.
+ * A preview whose requester went away stops costing the queue anything, and
+ * the queue in front of the indexer is bounded.
  *
  * The death cases run stub children written into a temp dir, because a real
  * OOM, hang or crash on demand is exactly what a stub is for. The success and
@@ -130,7 +130,7 @@ describe("running out of heap is a verdict on the file", () => {
     // The heap has to hold the reader itself (~18 MB loaded) with room to
     // spare, or the child dies LOADING — before it is ready, which is
     // rightly not a verdict on the file. A 16 MB cap sat on that edge and
-    // flaked under load (fifth review). So: 48 MB, and a 4 MiB sheet of
+    // flaked under load. So: 48 MB, and a 4 MiB sheet of
     // numbers whose model alone is several times that.
     const workbook = new ExcelJS.Workbook();
     workbook.addWorksheet("S").addRow([1]);
@@ -169,7 +169,7 @@ describe("running out of heap is a verdict on the file", () => {
   }, 60_000);
 });
 
-describe("every other death is not a verdict on the file (fifth review, PR #1243)", () => {
+describe("every other death is not a verdict on the file", () => {
   // V8's heap-limit banner is the one death that is about THIS file: the
   // heap cap was reached reading it. A SIGKILL without it is the container's
   // OOM killer, which `oom_score_adj` aims at the child whatever was using the
@@ -294,7 +294,7 @@ describe("the fence itself", () => {
   });
 });
 
-describe("a preview nobody waits for any more (fifth review, PR #1243)", () => {
+describe("a preview nobody waits for any more", () => {
   // Every rows preview queues behind the one reader child, and so does the
   // indexer. Twenty reloads of a preview used to queue twenty reads of up to
   // two minutes each — none of them wanted any more — in front of the

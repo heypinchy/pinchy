@@ -706,7 +706,7 @@ describe("convertOfficeFiles", () => {
   });
 });
 
-describe("preflight before conversion (release review v0.10.0)", () => {
+describe("preflight before conversion", () => {
   /** A converter that records what it was handed — kind and bytes — and converts everything. */
   function recordingConverter() {
     const seen: Array<{ staged: string; symlink: boolean; body: string }> = [];
@@ -771,8 +771,8 @@ describe("preflight before conversion (release review v0.10.0)", () => {
   });
 
   it("logs a document whose altChunk was cut: that content is converted without it, and not indexed", async () => {
-    // An altChunk used to refuse the whole file; it is cut now, so the rest
-    // stays searchable (second review, PR #1243). A cut picture link costs a
+    // An altChunk is cut rather than the whole file refused, so the rest
+    // stays searchable. A cut picture link costs a
     // picture; a cut altChunk costs TEXT — the operator should be able to
     // find out which document lost some.
     const source = await corpusFile("chunked.docx", "ORIGINAL");
@@ -948,7 +948,7 @@ describe("preflight before conversion (release review v0.10.0)", () => {
   });
 });
 
-describe("a staged copy that cannot be written is infrastructure, not a verdict (eighth review, PR #1243)", () => {
+describe("a staged copy that cannot be written is infrastructure, not a verdict", () => {
   // The reader child writes the checked copy onto the artifact volume, up to
   // 20 copies of up to 200 MB per batch. A full or read-only volume there says
   // nothing about the document — exactly like a staging directory that cannot
@@ -1039,14 +1039,14 @@ describe("a staged copy that cannot be written is infrastructure, not a verdict 
   });
 });
 
-describe("an output the converter could not write is infrastructure, not a verdict (ninth and tenth review, PR #1243)", () => {
+describe("an output the converter could not write is infrastructure, not a verdict", () => {
   // LibreOffice writes its PDFs into staging/<batch>/out — the same volume the
   // staged copies just filled. When that write fails it exits 0, writes no
   // PDF and only says so on stderr, which looks exactly like a document it
   // could not load. Booked as a document failure, a CHANGED file would lose
   // the version the index already held to a chunkless row.
   //
-  // But the stderr line is not the volume's word (tenth review): LibreOffice
+  // But the stderr line is not the volume's word: LibreOffice
   // prints the same `impl_store … failed … Error Area:Io` when the export
   // fails for reasons of the DOCUMENT — a deck whose every slide is hidden
   // gives `Class:Write Code:16` on a roomy disk. So the verdict comes from the
@@ -1072,7 +1072,7 @@ describe("an output the converter could not write is infrastructure, not a verdi
       ffree: freeInodes,
     });
 
-  /** The volume the previous round measured: 4 KB left, so the probe still fits and the PDF does not. */
+  /** A measured nearly full volume: 4 KB left, so the probe still fits and the PDF does not. */
   const nearlyFull = volumeWith({ freeBytes: 4096 });
 
   /** Converts the inputs whose source maps to text, and lets `after` spoil the run. */
@@ -1112,7 +1112,7 @@ describe("an output the converter could not write is infrastructure, not a verdi
     expect(outcomes[0].reason).toMatch(/impl_store/);
   });
 
-  it("books a failed store as the document's when the volume has room: an all-hidden deck (tenth review)", async () => {
+  it("books a failed store as the document's when the volume has room: an all-hidden deck", async () => {
     // What the real binary prints for a .pptx whose every slide is hidden, on
     // a volume with gigabytes free: the same Area:Io line a full disk gives.
     // Booked as infrastructure, that deck would be converted every run and
@@ -1217,11 +1217,11 @@ describe("an output the converter could not write is infrastructure, not a verdi
       };
     };
 
-  it("measures the room against the UNPACKED document, not the zipped one (eleventh review)", async () => {
+  it("measures the room against the UNPACKED document, not the zipped one", async () => {
     // LibreOffice unpacks an OOXML package into scratch space while it LOADS
     // it. When that runs out it says exactly what an unloadable document says
     // — exit 0, no PDF, `source file could not be loaded` — and its scratch is
-    // gone again by the time the volume is asked. The review's case: a
+    // gone again by the time the volume is asked. Measured case: a
     // 152 KB .docx whose document.xml is 26.6 MB, on a volume left with
     // 23.6 MiB free — far above twice the zipped size, below the unpacked one.
     const source = await corpusFile("report.docx", "x");
@@ -1262,14 +1262,14 @@ describe("an output the converter could not write is infrastructure, not a verdi
     expect(outcomes.map((o) => o.status)).toEqual(["infrastructure", "failed"]);
   });
 
-  it("asks for room for the PDF twice: LibreOffice writes it to its scratch, then copies it out (twelfth review)", async () => {
+  it("asks for room for the PDF twice: LibreOffice writes it to its scratch, then copies it out", async () => {
     // LibreOffice exports into its TMPDIR — inside the batch, on this volume —
     // and only then copies the file into --outdir, so for a moment the PDF is
     // there twice. Measured in the runtime image: a .doc whose PDF is 5,758 KiB
     // converts with 11,592 KiB free and fails the store with 11,336 KiB —
     // exit 0, no PDF, the volume free again afterwards. Room for the PDF once
     // is not room enough, for a large document or a small one:
-    // - the review's deck: 12 MB, a 14 MB PDF, 26 MiB free — above twice
+    // - a deck of 12 MB, a 14 MB PDF, 26 MiB free — above twice
     //   the source, below twice that again;
     // - a small .doc full of pictures: 868 KiB, a 13.6 MiB PDF (measured),
     //   on a volume with 23 MiB free — above the floor, below twice it.
@@ -1298,7 +1298,7 @@ describe("an output the converter could not write is infrastructure, not a verdi
     expect(outcomes[0].reason).toMatch(/could not write the converted PDF: .*bytes free/);
   });
 
-  it("leaves a PDF that outgrew the estimate to the document — the gap the docs state (thirteenth review)", async () => {
+  it("leaves a PDF that outgrew the estimate to the document — the gap the docs state", async () => {
     // The estimate is a guess about a PDF that was never written, and a
     // document of pictures beats it: LibreOffice re-encodes them. Measured in
     // the runtime image: an 8,551,936-byte .doc of 200 screenshots exports an
@@ -1439,7 +1439,7 @@ describe("an output the converter could not write is infrastructure, not a verdi
   });
 });
 
-describe("the word-count oracle's markup ceiling (fourth review, PR #1243)", () => {
+describe("the word-count oracle's markup ceiling", () => {
   // mammoth's DOM costs up to ~300x the XML it parses: a 1.9 MB .docx with a
   // 31 MiB document part peaked at 2.9 GB. The oracle is a tripwire, not a
   // gate — past the ceiling it is skipped, the conversion goes on, and the
@@ -1488,8 +1488,8 @@ describe("the word-count oracle's markup ceiling (fourth review, PR #1243)", () 
   });
 });
 
-describe("the word-count oracle reads in a heap-capped child (sixth review, PR #1243)", () => {
-  // Three rounds running, the markup ceiling was bypassed because its scan
+describe("the word-count oracle reads in a heap-capped child", () => {
+  // The markup ceiling was bypassed again and again because its scan
   // and mammoth disagreed about which parts are parsed; through the oracle
   // that reached ~900 MB in the web process. The scan stays the first layer.
   // What bounds the memory now is the reader child's heap cap, shared with

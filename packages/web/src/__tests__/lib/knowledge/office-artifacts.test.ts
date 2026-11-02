@@ -145,7 +145,7 @@ describe("OfficeArtifactStore", () => {
     });
   });
 
-  describe("clearStagedBatches (eighth review, PR #1243)", () => {
+  describe("clearStagedBatches", () => {
     // A batch cleans its staging directory up when it finishes. A batch that
     // never finishes — a restart, an upgrade, an OOM kill during the nightly
     // reindex — leaves up to 20 checked copies of up to 200 MB each behind,

@@ -112,13 +112,13 @@ describe("runSoffice", () => {
     // HOME must match the private profile: LibreOffice writes into $HOME too,
     // and pointing it anywhere else puts state outside the staging directory.
     expect(env.HOME).toBe(profileDir);
-    // And its scratch space goes into the batch too (eleventh review): left
+    // And its scratch space goes into the batch too: left
     // to the OS temp dir, a load that runs out of room there looks exactly
     // like a document LibreOffice cannot read, on a volume nothing checks.
     expect(env.TMPDIR).toBe(scratchDir);
   });
 
-  describe("the locked-down profile (release review v0.10.0, finding 1)", () => {
+  describe("the locked-down profile", () => {
     // Each key below was found by CANARY, not by name: a crafted document with
     // an external picture link, converted by the real binary against a local
     // listener (see office-convert.libreoffice.test.ts). Only
@@ -191,10 +191,10 @@ describe("runSoffice", () => {
     expect(result.stderr).toContain("could not be loaded");
   });
 
-  it("keeps enough stderr for every file of a full batch whose PDFs did not fit (ninth review, PR #1243)", async () => {
+  it("keeps enough stderr for every file of a full batch whose PDFs did not fit", async () => {
     // The per-file `impl_store … failed` line is what the operator is shown
-    // for a PDF a full volume did not take (the volume itself decides that,
-    // tenth review). At production staging-path lengths a batch of 20 prints
+    // for a PDF a full volume did not take (the volume itself decides that).
+    // At production staging-path lengths a batch of 20 prints
     // ~9 KB of them; the last file must not lose its line to the cap.
     const dir = `/app/kb-artifacts/staging/${"0".repeat(8)}-0000-4000-8000-${"0".repeat(12)}`;
     process.env.KB_SOFFICE_BIN = stub(

@@ -3,7 +3,7 @@
  * mammoth, LibreOffice) touches it. Anyone who can write to a mounted share can
  * plant these files, and the reindex opens them inside the web container —
  * which has a network, and can read the OpenClaw workspaces. Three questions,
- * answered from the bytes alone (release review v0.10.0):
+ * answered from the bytes alone:
  *
  * ## 1. Is it the format its name says?
  *
@@ -54,15 +54,15 @@
  * relationship used as a picture link fetched exactly like an image one
  * (measured, 3 requests). The same fact is why a kept relationship's TARGET is
  * vetted by its bytes, not its type: an `r:embed` naming a "font" or an
- * "Office part" whose bytes are SVG is drawn as SVG (second review, PR #1243).
+ * "Office part" whose bytes are SVG is drawn as SVG.
  *
  * The same is true one level down: a metafile picture (EMF, WMF) passes on
  * its magic bytes, but its records can carry a picture of their own, which
  * LibreOffice again detects by ITS bytes. So a metafile is walked record by
- * record (third review, PR #1243). One that carries a picture keeps its
+ * record. One that carries a picture keeps its
  * second, plain drawing where it has one — the EMF records of an "EMF+ Dual"
  * file, the WMF records around an embedded EMF — words included; one that
- * has none is cut, and its words with it (fourth review).
+ * has none is cut, and its words with it.
  *
  * RTF (accepted under a `.doc` name, because Word writes those) has its
  * picture, object and field-instruction groups cut (`sanitizeRtf`), and is
@@ -73,7 +73,7 @@
  * (`office-convert.canary.libreoffice.test.ts`) says so per vector.
  *
  * What this module is, stated plainly: DEFENCE IN DEPTH, not a boundary. It
- * closes every vector the release reviews found, each pinned by a test, and
+ * closes every vector known to it, each pinned by a test, and
  * it errs towards cutting or refusing what it cannot read unambiguously. But
  * it is a rewrite of formats LibreOffice reads in more ways than any list
  * here, and the next way LibreOffice draws something by its bytes is a gap
@@ -122,8 +122,8 @@ const MiB = 1024 * 1024;
  *
  * The file is staged in the reader child (`stageOfficeSource`), never in the
  * server, holding at most two copies: measured in the shipped image, a 190 MB
- * deck took the child to 483 MB and the server by nothing (seventh review,
- * PR #1243; in the server it had cost +570 MB). Where the container cannot fit
+ * deck took the child to 483 MB and the server by nothing (in the server it
+ * had cost +570 MB). Where the container cannot fit
  * that beside what the server already holds, the kernel kills the child —
  * its `oom_score_adj` is the maximum — and the file is read again next run.
  */
@@ -145,7 +145,7 @@ const OOXML_LIMITS: ZipLimits = { maxDecompressedBytes: 500 * MiB, ...RATIO_RULE
  * The largest single part of a workbook we let exceljs read. Its cell model
  * costs ~20x the sheet XML, and the reader's child process (xlsx-isolated.ts)
  * has a 384 MB heap. Measured in the shipped image under a 1 GB container
- * limit, sheets of numeric rows (fourth review, PR #1243):
+ * limit, sheets of numeric rows:
  *
  *   sheet XML    peak RSS of the reader
  *   8 MiB        219 MB
@@ -181,7 +181,7 @@ function exceljsParses(name: string): boolean {
  * since every part exceljs parses is held to `XLSX_MAX_PART_BYTES`. exceljs
  * copies a picture into Buffers, which the reader's heap cap does not bound.
  * Measured in the shipped image under a 1 GB container limit, one picture of
- * incompressible bytes beside two rows (fifth review, PR #1243):
+ * incompressible bytes beside two rows:
  *
  *   picture     peak RSS of the reader
  *   1 MiB       110 MB
@@ -208,8 +208,8 @@ const XLSX_LIMITS: ZipLimits = {
  * What mammoth (the word-count oracle) may be handed: the conversion's limits,
  * plus a ceiling on any ONE part, plus a ceiling on the MARKUP it parses,
  * summed. mammoth builds a DOM at up to ~300x the XML it reads — a 1.9 MB
- * .docx with a 31 MiB document part peaked at 2.9 GB, in the web process
- * (fourth review, PR #1243) — while a picture costs it nothing. The plugin's
+ * .docx with a 31 MiB document part peaked at 2.9 GB, in the web process —
+ * while a picture costs it nothing. The plugin's
  * own `extractDocxText` uses the same ceilings; `MAX_DOCX_MARKUP_BYTES` has
  * the measurements. Past them the oracle is skipped and the conversion is
  * recorded `unverified`. Both the guard and mammoth run in the reader child
@@ -227,10 +227,10 @@ const MAMMOTH_LIMITS: ZipLimits = {
  * largest it lets through to LibreOffice. Relationship parts and the
  * content-types part are held to it too: a 4 MiB cap of their own refused a
  * real catalogue whose 25 000 hyperlinks make a 5.1 MB relationship part, and
- * the filter that reads them is one forward pass (fourth review, PR #1243). Each one is inflated whole into the
- * web process to be checked; the archive's total limit (500 MiB) does not
+ * the filter that reads them is one forward pass. Each one is inflated whole
+ * into the web process to be checked; the archive's total limit (500 MiB) does not
  * bound that, and a 400 MiB `document.xml` built to stay under the ratio rule
- * took the preflight to 1.3 GB RSS (third review, PR #1243). A thousand-page
+ * took the preflight to 1.3 GB RSS. A thousand-page
  * report's document part is a few MB.
  */
 const MAX_XML_PART_BYTES = 64 * MiB;
@@ -260,8 +260,7 @@ export interface PreparedSource {
    * or null for a file that is not an archive (`.doc`/`.ppt`, RTF), which
    * LibreOffice reads as it is. LibreOffice unpacks a package into scratch
    * space while LOADING it, so this, not the file's size, is what the load
-   * needs from the volume: a 152 KB `.docx` measured 26.6 MB (eleventh
-   * review). The converter sizes its free-space check from it.
+   * needs from the volume: a 152 KB `.docx` measured 26.6 MB. The converter sizes its free-space check from it.
    */
   unpackedBytes: number | null;
 }
@@ -312,7 +311,7 @@ async function readCapped(absPath: string, maxBytes: number): Promise<Buffer> {
  * this cannot parse are all refusals; none of them is ever handed on to a
  * reader to "diagnose". The earlier version handed parse failures on, and a
  * bomb behind 64 junk bytes is a parse failure here while JSZip opens it
- * without complaint (release review v0.10.0: 989 MB RSS from a 465 KB file).
+ * without complaint (measured: 989 MB RSS from a 465 KB file).
  */
 async function verifiedCopy(buffer: Buffer, limits: ZipLimits, what: string): Promise<Buffer> {
   try {
@@ -355,14 +354,13 @@ const MAX_UNCLOSED_BRACKETS = 4;
  * choke on. exceljs runs `fmt.replace(/\[[^\]]*]/g, '')` on a cell's format
  * for EVERY styled cell it loads (`utils.isDateFmt`), and that regex re-scans
  * to the end of the format from every `[` with no `]` after it: 100 000 such
- * brackets made one load take 4 s, 400 000 two minutes (second review,
- * PR #1243) — in the web process, before our code sees a cell. Excel writes
- * neither a format longer than 255 characters nor a run of unclosed brackets.
+ * brackets made one load take 4 s, 400 000 two minutes — in the web process,
+ * before our code sees a cell. Excel writes neither a format longer than 255 characters nor a run of unclosed brackets.
  *
  * The format is judged as exceljs's XML parser will hand it over: with its
  * character and entity references DECODED. Counting the attribute as written
  * missed `&#91;`, which is a `[` by the time exceljs sees it — 204 of them in
- * a 1 KiB attribute cost 4.4 s per 200 000 cells (third review, PR #1243).
+ * a 1 KiB attribute cost 4.4 s per 200 000 cells.
  *
  * exceljs reads styles from `xl/styles.xml` by that name and no other, so
  * that is the part checked. One linear pass over its `formatCode` attributes.
@@ -547,7 +545,7 @@ function tagEnd(xml: string, from: number): number {
  *
  * One forward pass. It replaced a global regex whose `[^\s=/>]+` re-scanned a
  * long token from every offset — quadratic: one 50 000-character token in a
- * 942-byte .docx held the web process for 2.7 s (second review, PR #1243).
+ * 942-byte .docx held the web process for 2.7 s.
  */
 function attributesOf(tag: string): Map<string, string> | null {
   let at = 1;
@@ -633,7 +631,7 @@ function filterRelationships(
     const attributes = attributesOf(tag);
     // A prefixed attribute is where this scanner and the readers part ways
     // (`PLAIN_ATTRIBUTE_NAME`): xmldom hands mammoth `q:Type` as `Type`, the
-    // later of two winning (sixth review, PR #1243). No Office writer puts one
+    // later of two winning. No Office writer puts one
     // on a relationship, so the part is refused rather than resolved.
     if (!attributes || [...attributes.keys()].some((name) => !PLAIN_ATTRIBUTE_NAME.test(name))) {
       throw malformed();
@@ -695,8 +693,7 @@ const MS_OFFICE = "http://schemas.microsoft.com/office/";
 /**
  * The relationship types a converted page is RENDERED from, by the URI
  * ECMA-376 (transitional and strict) and Microsoft's extensions give them —
- * and nothing else. Release review v0.10.0 showed that "internal is fine" was
- * the wrong rule: an internal `aFChunk` imports an embedded HTML part, and
+ * and nothing else. "Internal is fine" is the wrong rule: an internal `aFChunk` imports an embedded HTML part, and
  * that importer resolves `<img src="file:///…">` past the locked profile.
  *
  * Deliberately NOT here, so cut (the document's text survives without them):
@@ -785,8 +782,8 @@ const OOXML_NAMESPACE =
  * The local names an Office part's root element may have: the root of every
  * part type on the allow-list, in WordprocessingML, PresentationML,
  * DrawingML, the package properties and Microsoft's extensions. A namespace
- * alone is not enough (second review, PR #1243): `<svg xmlns="http://schemas.microsoft.com/office/…">`
- * is in an Office namespace, and LibreOffice drew it as an SVG — which read a
+ * alone is not enough: `<svg xmlns="http://schemas.microsoft.com/office/…">`
+ * is in an Office namespace, and LibreOffice draws it as an SVG — which read a
  * local file — when a picture's `r:embed` named it.
  */
 const OOXML_ROOT_NAMES = new Set([
@@ -850,7 +847,7 @@ const OOXML_ROOT_NAMES = new Set([
  * EXACTLY `svg`, for a prefixed name: `<asvg:svgBlip>` is what Office 365 and
  * LibreOffice write next to every SVG picture (and every PowerPoint Icon),
  * and the first version of this pattern — `svg` after ANY prefix, as a prefix
- * of the local name — refused every such document (third review, PR #1243).
+ * of the local name — refused every such document.
  * Unprefixed, `<svg` stays a byte match, as it is for LibreOffice: `<svgx>`
  * is taken for SVG too.
  */
@@ -872,7 +869,7 @@ const ALT_CHUNK_START = /<((?:[A-Za-z_][\w.-]*:)?altChunk)(?=[\s/>])/g;
  *
  * An altChunk imports the part its `r:id` names through a SECOND import filter
  * (HTML, RTF, a nested document), which reads local files the locked profile
- * does not stop (release review v0.10.0). LibreOffice resolves that id without
+ * does not stop. LibreOffice resolves that id without
  * checking the relationship's Type, so cutting the `aFChunk` relationship is
  * not enough: an altChunk can borrow the id of a kept picture. So the element
  * goes. Everything around it stays searchable; the chunk's own content is not
@@ -1010,9 +1007,9 @@ const FOREIGN_OBJECT = /<(?:[A-Za-z_][\w.-]*:)?foreignObject(?=[\s/>])/i;
 
 /**
  * A `data:` URL's picture is what its BYTES are, not what its media type
- * says: LibreOffice detects the format from the decoded content. The
- * reviewer's `data:image/png;base64,` holding an SVG (or a gzipped one) was
- * drawn as SVG and read a local file. So the bytes must be a raster, and not
+ * says: LibreOffice detects the format from the decoded content. A
+ * `data:image/png;base64,` holding an SVG (or a gzipped one) is drawn as SVG
+ * and reads a local file. So the bytes must be a raster, and not
  * one that also carries SVG markup up front.
  */
 function isEmbeddedRaster(value: string): boolean {
@@ -1190,8 +1187,8 @@ function sanitizedParts(buffer: Buffer): {
       if (kept instanceof Buffer) rewritten.set(entry, kept);
     } else {
       // A font is drawn as a picture when an `r:embed` names it, and then by
-      // what its bytes are: a metafile carrying a picture is one (third
-      // review). An obfuscated font's first 32 bytes are scrambled, so none of
+      // what its bytes are: a metafile carrying a picture is one. An
+      // obfuscated font's first 32 bytes are scrambled, so none of
       // these magic numbers turns up in a real one.
       const head = inflateHead(buffer, entry);
       verdict = !looksLikeDocument(head) && !looksLikeSvg(head) && !isMetafile(head);
@@ -1316,7 +1313,7 @@ const EMF_PLUS_DUAL = 0x0001;
  *
  * Cutting costs words. A metafile's text is GDI text records, LibreOffice
  * draws them into the PDF's text layer, and the index reads that layer — so
- * a cut chart lost its labels from search (fourth review, PR #1243). Two
+ * a cut chart loses its labels from search. Two
  * shapes have a second, complete drawing to fall back to:
  *
  *  - An "EMF+ Dual" EMF — what Office and LibreOffice write whenever they
@@ -1427,9 +1424,10 @@ function wmfWithoutEmbeddedEmf(wmf: Buffer): Buffer | null {
  * EMF+ image object holds compressed bitmap bytes (an SVG among them) or a
  * whole metafile, a brush or pen can be filled with such an image, a public
  * comment can carry an EMF, EPS or WMF, and a WMF escape can carry a whole
- * EMF (which LibreOffice then draws instead of the WMF). The third review of PR #1243 put an SVG that reads a local file into
- * an EMF+ image object, behind 4 KiB of padding so the first bytes said
- * nothing but "metafile", and LibreOffice drew the local file into the PDF.
+ * EMF (which LibreOffice then draws instead of the WMF). Put an SVG that reads
+ * a local file into an EMF+ image object, behind 4 KiB of padding so the first
+ * bytes say nothing but "metafile", and LibreOffice draws the local file into
+ * the PDF.
  *
  * So the records are walked, boundedly — an EMF carried in a WMF is
  * reassembled and walked too — and the picture is cut when one of them
@@ -1604,7 +1602,7 @@ function wmfIsPlain(wmf: Buffer): boolean {
  *
  * - `pict` — a picture. LibreOffice detects its format from the bytes, so an
  *   SVG hex-encoded in a `\pict` claiming `\pngblip` was drawn as SVG and
- *   read a local file under the locked profile (second review, PR #1243).
+ *   read a local file under the locked profile.
  * - `object`, `objdata` — an embedded OLE object and its data.
  * - `fldinst` — a field's instruction. INCLUDEPICTURE and INCLUDETEXT read
  *   files; the field's last result (`\fldrslt`, the text a reader saw) stays
@@ -1636,7 +1634,7 @@ const RTF_MAX_PARAMETER = 2 ** 31 - 1;
  *
  * The cut is only as good as the agreement between this tokenizer and
  * LibreOffice's about where a group ends, so the two places they could
- * disagree are REFUSED rather than guessed (third review, PR #1243):
+ * disagree are REFUSED rather than guessed:
  *
  * - `\binN` that is not plainly a count of bytes that follow: negative, more
  *   than 10 digits, past 2^31−1 (LibreOffice's 32-bit parameter overflowed

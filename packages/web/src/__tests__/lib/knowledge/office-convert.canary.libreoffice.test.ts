@@ -1,5 +1,5 @@
 /**
- * CANARIES for release review v0.10.0, finding 1: an Office file on a mounted
+ * CANARIES: an Office file on a mounted
  * share must not make the converter fetch from the network or embed a local
  * file. Anyone who can write to the share can plant one; the nightly reindex
  * converts it inside the web container, which has a network and can read the
@@ -20,8 +20,8 @@
  * plus a CONTROL: the same documents, stock profile, unsanitized, DO fetch or
  * read. A canary that cannot go red proves nothing.
  *
- * Not every vector has two layers, and each one says which it has. The
- * reviews of this very suite found a family the profile does NOT stop:
+ * Not every vector has two layers, and each one says which it has. There is
+ * a family the profile does NOT stop:
  * anything LibreOffice draws as an SVG reads `<image href="file:///…">` into
  * the PDF under the locked profile — an SVG picture, an altChunk importing
  * HTML, a font or an "Office part" whose bytes are SVG (LibreOffice resolves
@@ -144,7 +144,7 @@ describe.skipIf(!hasSoffice)("an Office file cannot make the converter fetch or 
 
   /** Planted in every local-file vector; it must never reach a PDF's text. */
   const SECRET = "SVGSECRETMARKER";
-  /** Words drawn by a metafile's own records: they must survive the preflight (fourth review). */
+  /** Words drawn by a metafile's own records: they must survive the preflight. */
   const EMF_WORDS = "EMFWORDSMARKER";
   const WMF_WORDS = "WMFWORDSMARKER";
   /** The altChunk's own text: present in a PDF only if this LibreOffice imported the chunk at all. */
@@ -341,7 +341,7 @@ describe.skipIf(!hasSoffice)("an Office file cannot make the converter fetch or 
     planted("posing.doc", html, { profile: true, preflight: "refuses" });
     planted("posing.docx", html, { profile: true, preflight: "refuses" });
 
-    // --- What the locked profile does NOT stop (release review v0.10.0) ---
+    // --- What the locked profile does NOT stop ---
     const secretSvg = join(root, "secret.svg");
     writeFileSync(
       secretSvg,
@@ -397,7 +397,7 @@ describe.skipIf(!hasSoffice)("an Office file cannot make the converter fetch or 
       { profile: false, preflight: "sanitizes" }
     );
 
-    // --- The second review (PR #1243): SVG by its BYTES, whatever the Type ---
+    // --- SVG by its BYTES, whatever the Type ---
     // LibreOffice resolves r:embed by Id and never checks the Type, then
     // detects the picture's format from its content. Each of these drew a
     // local file into the PDF under the locked profile (26.2, measured).
@@ -452,7 +452,7 @@ describe.skipIf(!hasSoffice)("an Office file cannot make the converter fetch or 
       { profile: false, preflight: "sanitizes" }
     );
 
-    // --- The third review (PR #1243): a picture INSIDE a metafile, and RTF \bin ---
+    // --- A picture INSIDE a metafile, and RTF \bin ---
     // An EMF passes the picture check on its magic bytes, but an EMF+ image
     // object carries another picture LibreOffice detects by ITS bytes. Behind
     // 4 KiB of comment padding the first bytes say nothing but "metafile";
@@ -476,8 +476,8 @@ describe.skipIf(!hasSoffice)("an Office file cannot make the converter fetch or 
       preflight: "sanitizes",
     });
     // The same EMF carried whole inside a WMF (the "WMFC" comment Office uses).
-    // Since the fourth review the EMF is dropped and the WMF's own records —
-    // its words among them — are drawn instead of the picture being cut.
+    // The EMF is dropped and the WMF's own records — its words among them —
+    // are drawn instead of the picture being cut.
     planted(
       "wmf-embedded-emf.docx",
       metafilePicture(
@@ -486,7 +486,7 @@ describe.skipIf(!hasSoffice)("an Office file cannot make the converter fetch or 
       ),
       { profile: false, preflight: "sanitizes" }
     );
-    // Fourth review: an "EMF+ Dual" EMF — what Office and LibreOffice write —
+    // An "EMF+ Dual" EMF — what Office and LibreOffice write —
     // draws everything twice. When only its EMF+ layer carries the picture,
     // that layer is dropped and the EMF records stay: the same drawing, its
     // words included, which a cut used to take out of the index.
@@ -679,9 +679,9 @@ describe.skipIf(!hasSoffice)("an Office file cannot make the converter fetch or 
     expect(byName.get("rtf-bin-overflow.doc")!.reason).toMatch(/binary run/);
     // The documents themselves still convert: a cut link costs a picture, not
     // the text — and no local file's text or picture reaches the PDF.
-    // CORRECTED (second review): the two altChunk files used to be refused
-    // outright. They are converted now, with the chunk cut — so the rest of
-    // the document is searchable and the chunk's own content is not.
+    // The two altChunk files are converted with the chunk cut, not refused
+    // outright — so the rest of the document is searchable and the chunk's
+    // own content is not.
     for (const name of [
       "linked-http.docx",
       "linked-file.docx",
@@ -713,7 +713,7 @@ describe.skipIf(!hasSoffice)("an Office file cannot make the converter fetch or 
     expect(await textOf(byName.get("rtf-picture.doc")!.artifactPath!)).toContain(
       "Body words for the RTF canary"
     );
-    // A metafile with a second drawing keeps it, words and all (fourth review).
+    // A metafile with a second drawing keeps it, words and all.
     // Glyph by glyph, as a metafile positions them, so pdfjs may split a word:
     // compared without whitespace.
     const glyphs = async (name: string) =>
@@ -815,10 +815,9 @@ describe.skipIf(!hasSoffice)("an Office file cannot make the converter fetch or 
   }, 240_000);
 
   it("converts a document with an SVG picture the way Office 365 and LibreOffice write it — not refused", async () => {
-    // The third review's false refusal: `<asvg:svgBlip>`, written next to
-    // every SVG picture and PowerPoint Icon, was read as an `<svg` element and
-    // the whole document refused. Both files were written by LibreOffice 26.2.
-    // (That the picture itself is KEPT is office-preflight.review3.test.ts's
+    // `<asvg:svgBlip>`, written next to every SVG picture and PowerPoint Icon,
+    // must not be read as an `<svg` element and the whole document refused. Both files were written by LibreOffice 26.2.
+    // (That the picture itself is KEPT is office-preflight.reader-agreement.test.ts's
     // claim: LibreOffice draws the icon as vectors, not as an image object.)
     const fixtures = join(__dirname, "../../fixtures/kb/office");
     const store = new OfficeArtifactStore(join(root, "artifacts-svg-icons"));

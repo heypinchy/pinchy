@@ -126,9 +126,9 @@ export function batchTimeoutMs(fileCount: number): number {
  * see `runSoffice`). When that runs out it reports exactly what an unloadable
  * document reports — exit 0, no PDF, `source file could not be loaded` — and
  * by the time the volume is asked the scratch is gone again. Measured in the
- * runtime image (eleventh review): a 152 KB `.docx` whose document.xml is
- * 26.6 MB peaked at 26 MB of scratch, failed to load on a 24 MiB volume and
- * left 23.6 MiB free behind it. So the unpacked size (`unpackedBytes` from the
+ * runtime image: a 152 KB `.docx` whose document.xml is 26.6 MB peaked at
+ * 26 MB of scratch, failed to load on a 24 MiB volume and left 23.6 MiB free
+ * behind it. So the unpacked size (`unpackedBytes` from the
  * preflight) is demanded in full; a legacy `.doc`/`.ppt` is not an archive
  * and adds nothing.
  *
@@ -137,17 +137,17 @@ export function batchTimeoutMs(fileCount: number): number {
  * a guess, and no factor makes it a bound: the export embeds fonts and
  * re-encodes pictures (a PNG becomes a JPEG), so the PDF's size follows the
  * pictures' pixels, not the file's bytes. A 868 KiB `.doc` of five pictures
- * exports to a 13.6 MiB PDF (twelfth review), an 8.55 MB `.doc` of 200
- * screenshots to an 81.9 MB one, 9.6 times the file (thirteenth review).
+ * exports to a 13.6 MiB PDF, an 8.55 MB `.doc` of 200 screenshots to an
+ * 81.9 MB one, 9.6 times the file (both measured in the runtime image).
  * 16 MiB is above any font set and above the first of those PDFs, and far
  * below what a volume that is merely busy has left. It also catches the case
- * the ninth round measured: 4 KB left, the probe's write fits, the PDF does
+ * measured on a nearly full volume: 4 KB left, the probe's write fits, the PDF does
  * not.
  *
  * And room for that PDF TWICE. LibreOffice exports into its `TMPDIR` — the
  * batch's, on this volume — and then copies the file into `--outdir`, so for
  * a moment it is on the volume twice; the temp copy goes before the next
- * document's. Measured in the runtime image (twelfth review), a `.doc` whose
+ * document's. Measured in the runtime image, a `.doc` whose
  * PDF is 5,758 KiB: converts with 11,592 KiB free, fails the store with
  * 11,336 KiB (exit 0, no PDF, `impl_store … failed: 0x20d`) and leaves the
  * volume free again — and twice the PDF is 11,516 KiB, between the two.
@@ -156,8 +156,8 @@ export function batchTimeoutMs(fileCount: number): number {
  * a PDF is never held against it on a volume with less than 32 MiB left —
  * a volume that is nearly full, not one that is merely in use.
  *
- * The scratch and the PDF are added rather than maxed: the eleventh round's
- * measurement shows the scratch released before the PDF is written, but
+ * The scratch and the PDF are added rather than maxed: measuring that
+ * `.docx` shows the scratch released before the PDF is written, but
  * that is one document's behaviour, not a promise for every format.
  *
  * The error that costs least is the one this leans towards: a document
@@ -172,7 +172,7 @@ export function batchTimeoutMs(fileCount: number): number {
  * at fault. LibreOffice's output cannot settle it: the line it prints —
  * `impl_store … failed: 0xc10(Error Area:Io Class:Write Code:16)` — is
  * byte for byte what an all-hidden `.pptx` or `.ppt` prints on a roomy disk
- * (measured in the runtime image, thirteenth review; a corrupt or truncated
+ * (measured in the runtime image; a corrupt or truncated
  * file fails to LOAD instead, and an empty deck converts). Nor can a larger
  * factor: the deck it then wrongly blamed on the volume would be retried
  * every run, uncapped, where a wrong `failed` is an incomplete read and is
@@ -649,7 +649,7 @@ async function collectOne(
  * fails for the DOCUMENT's sake: a .pptx whose every slide is hidden gives
  * `Class:Write Code:16` on a disk with gigabytes free. Taken as "the volume is
  * full", that deck was converted again every run, never listed unsearchable,
- * and the operator was sent after a disk that was fine (tenth review). So the
+ * and the operator was sent after a disk that was fine. So the
  * volume decides (`probeWritable`, `outputVolumeFault`), and this line is only
  * quoted once it has. It is matched to the output it names — stderr is
  * batch-wide.
@@ -866,7 +866,7 @@ function killTree(child: ReturnType<typeof spawn>): void {
  *     fetch but not `file://`. Its job is the future: whatever LibreOffice
  *     learns to fetch next still has nowhere to go.
  *
- * Two honest limits, both measured (release reviews of v0.10.0). This profile
+ * Two honest limits, both measured. This profile
  * does NOT stop LibreOffice's HTML import (an altChunk) or its SVG import from
  * reading `file://` references — and anything LibreOffice takes for SVG by its
  * bytes goes through that import, whatever the document called it: a picture,
@@ -875,7 +875,7 @@ function killTree(child: ReturnType<typeof spawn>): void {
  * limits, not a guarantee: it cuts altChunks, pictures that reach outside
  * themselves (metafiles carrying a picture of their own included) and
  * everything else not on its allow-list, and refuses what it cannot read
- * unambiguously. Each of those answers a vector a review found; the next way
+ * unambiguously. Each of those answers a vector found by canary; the next way
  * LibreOffice draws something by its bytes is a gap until it is found. For
  * the legacy binary formats (`.doc`, `.ppt`), which the preflight cannot
  * rewrite, this profile is the ONLY layer, and an SVG embedded in one still
@@ -1027,7 +1027,7 @@ export async function countSourceWordsWithOracle(
       // The child reads the file through the same limits the conversion
       // input passed — mammoth inflates the whole archive, so a bomb must not
       // reach it through the oracle's door — and its heap cap bounds the
-      // memory whatever those limits miss (sixth review, PR #1243).
+      // memory whatever those limits miss.
       return await (deps.countDocxWords ?? countDocxWordsIsolated)(absPath);
     } catch (err) {
       if (err instanceof OfficeFileRejectedError && err.code === "too_large") {

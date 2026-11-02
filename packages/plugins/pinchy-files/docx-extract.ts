@@ -5,10 +5,9 @@
  * mammoth builds a DOM at up to ~300x the markup it parses, and the OpenClaw
  * container gets 2 GB. The zip guard (`docx-zip-guard.ts`) bounds that markup
  * before mammoth sees it — but it does so by PREDICTING which parts mammoth
- * parses, and three review rounds running found a spelling it predicted
- * wrong: an entity, a character the XML parser normalises, a prefixed
- * attribute, a name JSZip resolves (PR #1243). Each one was a 13 KB file that
- * took this process past 1 GB. The guard now refuses every one of those
+ * parses, and that prediction kept proving wrong, one spelling at a time: an
+ * entity, a character the XML parser normalises, a prefixed attribute, a name
+ * JSZip resolves. Each one was a 13 KB file that took this process past 1 GB. The guard now refuses every one of those
  * shapes, and stays as the cheap first layer; what bounds the memory no
  * longer depends on it being right.
  *
@@ -90,7 +89,7 @@ export const MAX_DOCX_EXTRACTED_TEXT_BYTES = MAX_FILE_SIZE;
 /**
  * The reader child's heap, in MB — the bound on what reading a document may
  * cost, whatever the markup scan in front of it predicts. Measured in the
- * OpenClaw image (Node 22, mammoth 1.13), peak RSS (sixth review, PR #1243):
+ * OpenClaw image (Node 22, mammoth 1.13), peak RSS:
  *
  *   document                                  child     result
  *   2 MiB markup, tiny paragraphs (legit)     443 MB    reads it
@@ -135,8 +134,7 @@ export class DocxReaderOutOfMemoryError extends Error {
  * Issue #424: decompression bombs are rejected from the central directory's
  * declared sizes before anything is inflated — and, since an archive can lie
  * about those sizes, every entry's REAL size is verified too, and the reader
- * is handed a copy built only from entries that held up (release review
- * v0.10.0). mammoth never sees the bytes it was given. That copy is then
+ * is handed a copy built only from entries that held up. mammoth never sees the bytes it was given. That copy is then
  * converted in the heap-capped reader child.
  */
 export async function extractDocxText(
@@ -148,7 +146,7 @@ export async function extractDocxText(
     maxEntryBytes: options.maxEntryBytes ?? MAX_DOCX_ENTRY_BYTES,
     // The first layer: past this the guard answers with its own error
     // ("…bytes of markup to parse, past the …-byte limit…") without starting
-    // a reader at all (fourth review, PR #1243).
+    // a reader at all.
     maxMarkupBytes: options.maxMarkupBytes ?? MAX_DOCX_MARKUP_BYTES,
   });
   const maxTextBytes = options.maxTextBytes ?? MAX_DOCX_EXTRACTED_TEXT_BYTES;

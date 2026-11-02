@@ -93,7 +93,7 @@ const IRRELEVANT_FILES = new Set([
  *
  * The third is the zip guard from #424 (`docx-zip-guard.ts`), which the
  * knowledge base's Office preflight reuses before exceljs, mammoth or
- * LibreOffice inflate an untrusted archive (release review v0.10.0). Same
+ * LibreOffice inflate an untrusted archive. Same
  * shape, canonical in the plugin; it imports one Node built-in (`node:zlib`,
  * to verify real sizes), which resolves on both sides of the boundary.
  *

@@ -57,7 +57,7 @@ export async function hashFileContents(absPath: string): Promise<string> {
  * changed filter or font set, a different `--convert-to` invocation. Every
  * stored artifact is invalidated, and #939's preview serves the new output.
  */
-// 2: the preflight's relationship allow-list (release review v0.10.0). An
+// 2: the preflight's relationship allow-list. An
 // artifact converted before it may hold what an altChunk or an SVG picture
 // read from the server's disk — and the store is keyed on content, so the same
 // file would be served that artifact forever. Bumping re-converts it once.

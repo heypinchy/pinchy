@@ -34,8 +34,8 @@ vi.mock("@/lib/knowledge/embeddings", async (importOriginal) => ({
 vi.mock("@/lib/knowledge/kb-ocr", () => ({ resolveKbOcr: vi.fn() }));
 vi.mock("@/lib/knowledge/pdf-extract", () => ({ extractPdfPages: vi.fn() }));
 // The spreadsheet reader the worker wires in: the isolated one, whose child
-// process is what keeps a heavy workbook from OOM-killing the web container
-// (fourth review, PR #1243). Its own behaviour is xlsx-isolated.test.ts.
+// process is what keeps a heavy workbook from OOM-killing the web container.
+// Its own behaviour is xlsx-isolated.test.ts.
 vi.mock("@/lib/knowledge/xlsx-isolated", () => ({
   extractXlsxIsolated: vi.fn(async () => ({
     chunks: [{ text: "Sheet: S\nName: Alice", sheet: "S", startRow: 2, endRow: 2 }],
@@ -308,7 +308,7 @@ describe("a scheduled run", () => {
   });
 });
 
-describe("the spreadsheet reader the worker wires in (fourth review, PR #1243)", () => {
+describe("the spreadsheet reader the worker wires in", () => {
   it("reads a workbook through the isolated child, never in the web process", async () => {
     mockResolveKbOcr.mockResolvedValue(null);
     const agent = await makeAgent();

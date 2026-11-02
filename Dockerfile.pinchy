@@ -103,7 +103,7 @@ COPY packages/plugins/pinchy-files/openclaw.plugin.json packages/plugins/pinchy-
 #
 # The zip guard (#424) rides the same COPY: the Office preflight checks an
 # archive's declared AND real sizes with it, and hands exceljs, mammoth and
-# LibreOffice only the copy it verified (release review v0.10.0). It imports
+# LibreOffice only the copy it verified. It imports
 # nothing but a Node built-in (`node:zlib`).
 COPY packages/plugins/pinchy-files/pdf-scan-rule.ts packages/plugins/pinchy-files/pdf-vision-api.ts packages/plugins/pinchy-files/docx-zip-guard.ts packages/plugins/pinchy-files/
 COPY packages/plugins/pinchy-context/openclaw.plugin.json packages/plugins/pinchy-context/

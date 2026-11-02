@@ -289,7 +289,7 @@ describe("assertZipWithinLimits", () => {
 });
 
 // ---------------------------------------------------------------------------
-// verifiedZipCopy — real sizes, not declared ones (release review v0.10.0)
+// verifiedZipCopy — real sizes, not declared ones
 // ---------------------------------------------------------------------------
 
 /** One raw-deflate stream that inflates to `head` + `spaceBytes` spaces + `tail`, built in O(1 MiB) memory. */
@@ -535,7 +535,7 @@ describe("verifiedZipCopy", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Third review (PR #1243): one part, however large, is one reader's problem
+// One part, however large, is one reader's problem
 // ---------------------------------------------------------------------------
 
 describe("verifiedZipCopy — a ceiling per entry", () => {
@@ -564,7 +564,7 @@ describe("verifiedZipCopy — a ceiling per entry", () => {
     expect(contentsOf(copy).get("a.xml")!.length).toBe(1000);
   });
 
-  it("holds the entries a reader parses to a tighter ceiling, and only those (fifth review, PR #1243)", async () => {
+  it("holds the entries a reader parses to a tighter ceiling, and only those", async () => {
     const limits = {
       ...LIMITS,
       maxEntryBytes: 4000,
@@ -587,7 +587,7 @@ describe("verifiedZipCopy — a ceiling per entry", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Fourth review (PR #1243): what a reader PARSES is capped, not what it stores
+// What a reader PARSES is capped, not what it stores
 // ---------------------------------------------------------------------------
 
 describe("verifiedZipCopy — a ceiling on the markup a reader may parse", () => {
@@ -691,7 +691,7 @@ describe("verifiedZipCopy — a ceiling on the markup a reader may parse", () =>
   });
 
   it("counts every part when a parsed relationship's target holds a character the XML parser rewrites", async () => {
-    // Fifth review (PR #1243): mammoth reads `.rels` with @xmldom/xmldom,
+    // mammoth reads `.rels` with @xmldom/xmldom,
     // which normalises a literal newline, tab or carriage return in an
     // attribute value to a space (and so does any conforming parser) — and
     // xmldom also turns NEL and LINE SEPARATOR into one (measured). So
@@ -814,11 +814,11 @@ describe("verifiedZipCopy — a ZIP64 end record nothing needed", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Sixth review (PR #1243): where the scanner and mammoth disagree, refuse
+// Where the scanner and mammoth disagree, refuse
 // ---------------------------------------------------------------------------
 
-describe("verifiedZipCopy — what mammoth reads differently is not guessed at (sixth review, PR #1243)", () => {
-  // Three rounds in a row the markup ceiling was bypassed the same way: this
+describe("verifiedZipCopy — what mammoth reads differently is not guessed at", () => {
+  // The markup ceiling was bypassed again and again the same way: this
   // scanner and mammoth (xmldom + JSZip) disagreed about which parts are
   // parsed. These shapes are not predicted any more; they are refused, or
   // every part counts. No Office writer produces any of them.

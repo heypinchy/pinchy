@@ -126,7 +126,7 @@ describe("SheetDialog", () => {
     );
   });
 
-  // Fifth review (PR #1243): a 503 is the READER being busy or unavailable,
+  // A 503 is the READER being busy or unavailable,
   // never a fact about the workbook — and a preview nobody is looking at any
   // more must not keep a read queued on the server.
   it("says the reader is busy, not that the workbook is broken, on a 503", async () => {

@@ -267,7 +267,7 @@ describe("cell values", () => {
     expect(rowLines(chunks[0].text)).toEqual(["Kind: literal; Value: 0.15"]);
   });
 
-  it("refuses a hostile number format before exceljs reads it (second review, PR #1243)", async () => {
+  it("refuses a hostile number format before exceljs reads it", async () => {
     // The format code comes straight from the workbook's styles part, and
     // exceljs strips its `[…]` blocks with `/\[[^\]]*]/g` — on load, for
     // every styled cell. That regex re-scans to the end of the string from
@@ -708,7 +708,7 @@ describe("readSheetRange — what a spreadsheet citation opens", () => {
   });
 });
 
-describe("a compressed-bomb workbook is refused, not inflated (release review v0.10.0, finding 2)", () => {
+describe("a compressed-bomb workbook is refused, not inflated", () => {
   // exceljs inflates every zip entry whole and builds the entire cell model. A
   // few hundred bytes can declare gigabytes; the index worker runs in the web
   // process and the rows preview is reachable by any member with agent access,
@@ -769,7 +769,7 @@ describe("a compressed-bomb workbook is refused, not inflated (release review v0
   });
 });
 
-describe("a workbook that lies about its size, or hides behind a prefix, never reaches exceljs (release review v0.10.0)", () => {
+describe("a workbook that lies about its size, or hides behind a prefix, never reaches exceljs", () => {
   // The declared-size guard above reads the central directory, and both of
   // these get past it. exceljs (JSZip) then inflates the entry WHOLE before it
   // compares sizes. Measured before the fix: 1.43 GB RSS for a sheet that

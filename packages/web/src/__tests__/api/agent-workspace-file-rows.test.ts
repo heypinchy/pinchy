@@ -49,7 +49,7 @@ vi.mock("@/lib/file-serve-roots", async () => {
 
 // The rows are read in a heap-capped CHILD process, never in the web process:
 // exceljs costs ~20× the sheet XML, and this route is reachable by any member,
-// uncached (fourth review, PR #1243). The in-process reader is booby-trapped
+// uncached. The in-process reader is booby-trapped
 // for the whole file, so every 200 below is also proof the read happened in
 // the child — which imports the real module, out of this mock's reach.
 vi.mock("@/lib/knowledge/xlsx-extract", async (importOriginal) => ({
@@ -232,7 +232,7 @@ describe("what it answers rather than failing", () => {
     expect(entry.detail.reason).toBe("unreadable_document");
   });
 
-  it("answers 413 for a compressed-bomb workbook instead of inflating it, and audits the reason (release review v0.10.0)", async () => {
+  it("answers 413 for a compressed-bomb workbook instead of inflating it, and audits the reason", async () => {
     // Any member with agent access can ask for this, uncached and as often as
     // they like, and exceljs would inflate the declared 4 GB into the web
     // server's heap. The refusal is read off the central directory.
@@ -252,7 +252,7 @@ describe("what it answers rather than failing", () => {
   });
 });
 
-describe("when the reader is the problem, not the workbook (fifth review, PR #1243)", () => {
+describe("when the reader is the problem, not the workbook", () => {
   // The rows are read in a child process (xlsx-isolated.ts). A child that
   // could not be started (tsx missing, EAGAIN/ENOMEM on fork), was killed by
   // the system, or timed out says nothing about THIS workbook — answering

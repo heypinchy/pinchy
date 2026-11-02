@@ -832,8 +832,7 @@ async function ingestFile(
 ): Promise<FileOutcome> {
   // Hashed as it streams, never read whole: a whole-file buffer here stayed
   // alive across every await below — through an Office file's conversion,
-  // which runs in a child precisely so the server does not hold the file
-  // (seventh review, PR #1243).
+  // which runs in a child precisely so the server does not hold the file.
   const { contentHash, fileStat } = await fileStep(absPath, async () => ({
     contentHash: await hashFileContents(absPath),
     fileStat: await stat(absPath),

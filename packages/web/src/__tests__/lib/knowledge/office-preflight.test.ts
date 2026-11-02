@@ -2,7 +2,7 @@
  * What the knowledge base checks about an Office file BEFORE a reader touches
  * it: that it is the format its extension claims, that it does not inflate
  * into a heap-sized surprise, and that it carries no relationship that makes
- * LibreOffice go and fetch something (release review v0.10.0, findings 1+2).
+ * LibreOffice go and fetch something.
  *
  * Everything here is deterministic and runs on every PR; the matching proof
  * that LibreOffice itself no longer fetches is the gated
@@ -253,9 +253,8 @@ describe("sanitizeOoxmlPackage", () => {
   });
 
   it("refuses a relationship part that inflates past its ceiling, whatever it declares", () => {
-    // The ceiling is the per-part XML limit, 64 MiB (it was a separate 4 MiB
-    // one until the fourth review of PR #1243 found it refusing real
-    // link-heavy documents).
+    // The ceiling is the per-part XML limit, 64 MiB (a separate 4 MiB one
+    // refused real link-heavy documents).
     const bomb = zipOf({
       "[Content_Types].xml": "<Types/>",
       "word/_rels/document.xml.rels": Buffer.alloc(65 * 1024 * 1024, 0x20),
@@ -328,7 +327,7 @@ describe("prepareOfficeSource", () => {
     expect(b.data.includes("10.0.0.5")).toBe(false);
   });
 
-  it("reports how large the staged package unpacks — what LibreOffice needs as scratch to load it (eleventh review)", async () => {
+  it("reports how large the staged package unpacks — what LibreOffice needs as scratch to load it", async () => {
     // The converter sizes the room it demands of the volume from this: a
     // 152 KB .docx can unpack to 26.6 MB, and LibreOffice unpacks it into
     // scratch space while loading. Counted on what is STAGED, the rewrite
@@ -433,11 +432,10 @@ describe("readWorkbookBuffer", () => {
   });
 
   it("refuses a file that is not a zip at all instead of handing it to the reader", async () => {
-    // This used to read "leaves a file that is not a zip at all to the
-    // reader's own diagnosis" and assert the bytes came back untouched. That
-    // expectation WAS the hole (release review v0.10.0): every guard parse
-    // failure was handed on, and "the guard could not parse it" includes "64
-    // junk bytes in front of a bomb", which JSZip opens anyway. Fail closed.
+    // Not left to the reader's own diagnosis: handing on every guard parse
+    // failure would be a hole, because "the guard could not parse it"
+    // includes "64 junk bytes in front of a bomb", which JSZip opens anyway.
+    // Fail closed.
     // extractXlsx still reports it as XlsxExtractionError (xlsx-extract.test.ts).
     const junk = Buffer.from("this is not a workbook");
     expect((await rejection(readWorkbookBuffer(file("junk.xlsx", junk)))).code).toBe(
@@ -495,7 +493,7 @@ describe("readWorkbookBuffer", () => {
   });
 });
 
-describe("relationship and content-types parts are held to the per-part XML limit (fourth review, PR #1243)", () => {
+describe("relationship and content-types parts are held to the per-part XML limit", () => {
   // A 4 MiB cap refused real link-heavy documents: a catalogue with 25 000
   // hyperlinks has a 5.1 MB relationship part. The filter is one forward pass,
   // so the part is held to the same 64 MiB as any other Office XML part.
@@ -559,7 +557,7 @@ describe("relationship and content-types parts are held to the per-part XML limi
   });
 });
 
-describe("readWorkbookBuffer — one sheet part is capped (fourth review, PR #1243)", () => {
+describe("readWorkbookBuffer — one sheet part is capped", () => {
   // exceljs's cell model costs ~20x the sheet XML. The reader runs in a
   // heap-capped child (xlsx-isolated.ts), and this is the last line in front
   // of it: a part past the cap is refused by its size, before exceljs builds
@@ -602,7 +600,7 @@ describe("readWorkbookBuffer — one sheet part is capped (fourth review, PR #12
     await expect(readWorkbookBuffer(file("big.xlsx", xlsx))).resolves.toBeInstanceOf(Buffer);
   });
 
-  // Fifth review (PR #1243): the cap is for what exceljs PARSES. It copies a
+  // The cap is for what exceljs PARSES. It copies a
   // picture under `xl/media/` as a Buffer and builds nothing from it, so a
   // two-row price list with one 17 MB product photo is an ordinary workbook.
   // Every other part it decodes to a string first — including parts it then
@@ -700,7 +698,7 @@ describe("readGuardedDocx", () => {
   });
 });
 
-describe("what a reader resolves differently is refused, not predicted (sixth review, PR #1243)", () => {
+describe("what a reader resolves differently is refused, not predicted", () => {
   // The preflight reads relationship parts and part names with its own small
   // scanner; mammoth (xmldom + JSZip) and LibreOffice read them with theirs.
   // Where the two can disagree — a prefixed attribute xmldom keys by its local
@@ -762,7 +760,7 @@ describe("what a reader resolves differently is refused, not predicted (sixth re
     expect(oracle.code).toBe("unexpected_content");
   });
 
-  it("refuses the reviewer's shape: the document's relationships under a name JSZip resolves", async () => {
+  it("refuses the document's relationships under a name JSZip resolves", async () => {
     // LibreOffice converts the decoy; mammoth reads `word/_rels/document.xml.rels/.`
     // as the document's relationships, whose styles relationship sends it to
     // a .png the markup count left out.
@@ -799,7 +797,7 @@ function partsOf(zip: Buffer): Record<string, string> {
   return out;
 }
 
-describe("sanitizeOoxmlPackage — relationship allow-list (release review v0.10.0, blocker 1)", () => {
+describe("sanitizeOoxmlPackage — relationship allow-list", () => {
   // A relationship being INTERNAL is not enough. An internal aFChunk to an
   // embedded HTML part makes LibreOffice import that HTML, which resolves
   // `<img src="file:///…">` even under the locked profile: local PDF/SVG text
@@ -915,8 +913,8 @@ describe("sanitizeOoxmlPackage — relationship allow-list (release review v0.10
       "ppt/tableStyles.xml": `<?xml version="1.0"?><a:tblStyleLst xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"/>`,
       "ppt/media/image1.png": PNG_1X1,
     });
-    // `altChunksRemoved` joined the result when an altChunk became something
-    // cut rather than refused (second review); a clean deck has none.
+    // `altChunksRemoved` counts the altChunks cut (they are cut rather than
+    // refused); a clean deck has none.
     expect(sanitizeOoxmlPackage(pkg)).toEqual({ data: pkg, removed: 0, altChunksRemoved: 0 });
   });
 
@@ -968,9 +966,9 @@ describe("sanitizeOoxmlPackage — relationship allow-list (release review v0.10
     expect(sanitizeOoxmlPackage(pkg).removed).toBe(3);
   });
 
-  // CORRECTED (second review, PR #1243): these two used to assert that an
-  // altChunk REFUSES the whole package. Refusing threw away every word of an
-  // otherwise ordinary document over one embedded chunk; cutting the chunk —
+  // An altChunk is cut, not a reason to refuse the whole package. Refusing
+  // would throw away every word of an otherwise ordinary document over one
+  // embedded chunk; cutting the chunk —
   // relationship AND element — keeps the rest searchable and still never lets
   // a second import filter see it. The operator log says what was dropped.
   function partAfter(pkg: Buffer, name: string): string {
@@ -980,7 +978,7 @@ describe("sanitizeOoxmlPackage — relationship allow-list (release review v0.10
   }
 
   it("cuts an altChunk relationship and its element, and keeps the rest of the document", async () => {
-    // The reviewer's vector: an embedded HTML part whose <img src="file://…">
+    // The vector: an embedded HTML part whose <img src="file://…">
     // LibreOffice resolves, locked profile or not.
     const pkg = docxWith({
       text: "Words around the chunk",
@@ -1162,7 +1160,7 @@ describe("sanitizeOoxmlPackage — relationship allow-list (release review v0.10
     ["a C1 control character", "media/x\u0090y.png"],
     ["a line separator", "media/x\u2028y.png"],
   ])(
-    "cuts a relationship whose target holds %s, even when a part of exactly that name exists: a parser may read it as another name (fifth review, PR #1243)",
+    "cuts a relationship whose target holds %s, even when a part of exactly that name exists: a parser may read it as another name",
     (_, target) => {
       // Attribute-value normalisation turns a newline into a space, and
       // @xmldom/xmldom does the same to NEL and U+2028; the part vetted under
@@ -1194,7 +1192,7 @@ describe("sanitizeOoxmlPackage — relationship allow-list (release review v0.10
   );
 });
 
-describe("the second review (PR #1243): no regex on file bytes is super-linear", () => {
+describe("no regex on file bytes is super-linear", () => {
   // `attributesOf` used a global regex whose `[^\s=/>]+` re-scanned a long
   // token from every offset: a 942-byte .docx carrying one 50 000-character
   // token in a relationship tag held the web process for 2.7 s, 100 000 for
@@ -1212,7 +1210,7 @@ describe("the second review (PR #1243): no regex on file bytes is super-linear",
     expect(Date.now() - started).toBeLessThan(1000);
   });
 
-  it("refuses the reviewer's package — a single-token relationship deflated to a few hundred bytes — in bounded time", async () => {
+  it("refuses a package whose single-token relationship is deflated to a few hundred bytes — in bounded time", async () => {
     const pkg = zipOf({
       "[Content_Types].xml": "<Types/>",
       "_rels/.rels": relationships(
@@ -1263,7 +1261,7 @@ describe("the second review (PR #1243): no regex on file bytes is super-linear",
   });
 });
 
-describe("the second review (PR #1243): a kept part is vetted by what it IS, not by its relationship's Type", () => {
+describe("a kept part is vetted by what it IS, not by its relationship's Type", () => {
   // LibreOffice resolves `r:embed` by Id and never looks at the Type, then
   // detects a picture's format from its bytes. So a part kept as a FONT, or
   // as Office XML, is drawn as an SVG if its bytes say SVG — and an SVG reads
@@ -1349,10 +1347,10 @@ describe("the second review (PR #1243): a kept part is vetted by what it IS, not
   });
 });
 
-describe("the second review (PR #1243): RTF named .doc", () => {
+describe("RTF named .doc", () => {
   // An RTF file named .doc is accepted (Word writes these), and LibreOffice
   // draws an RTF `\pict` by sniffing its bytes — an SVG inside one read a
-  // local file under the locked profile (reviewer's posing.doc). So the
+  // local file under the locked profile. So the
   // picture and object groups are cut, and so is every field instruction
   // (INCLUDEPICTURE and INCLUDETEXT read files; the field's last result, the
   // text a reader saw, stays). Ordinary text is untouched.

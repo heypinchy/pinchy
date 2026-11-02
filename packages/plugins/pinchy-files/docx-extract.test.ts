@@ -113,13 +113,13 @@ describe("extractDocxText", () => {
     expect(result.text.length).toBeGreaterThan(50);
   });
 
-  // Release review v0.10.0: the declared-size guard above trusts the central
+  // The declared-size guard above trusts the central
   // directory, and mammoth (via JSZip) inflates an entry whole before it
   // notices the entry was bigger than declared. The guard now inflates every
   // entry itself, capped at its declared size, and hands mammoth a copy built
   // only from entries that held up.
   it("rejects a .docx whose document inflates past its declared size, without calling mammoth", async () => {
-    // mammoth runs in the reader child (sixth review); `read` is the only way
+    // mammoth runs in the reader child; `read` is the only way
     // to it, so a reader that is never asked is a mammoth that never parsed.
     const fixture = readFileSync(join(FIXTURES, "simple.docx"));
     const lying = withLyingDocument(fixture, 64 * 1024 * 1024);
@@ -129,7 +129,7 @@ describe("extractDocxText", () => {
   });
 });
 
-describe("extractDocxText — one part, however honest, is capped (third review, PR #1243)", () => {
+describe("extractDocxText — one part, however honest, is capped", () => {
   // mammoth builds a DOM from every XML part it reads, many times the part's
   // own size. A document part that tells the truth about being 33 MiB is
   // past what that is worth; it is refused before mammoth sees it.
@@ -142,7 +142,7 @@ describe("extractDocxText — one part, however honest, is capped (third review,
   });
 });
 
-describe("extractDocxText — the markup mammoth parses is capped, the pictures it skips are not (fourth review, PR #1243)", () => {
+describe("extractDocxText — the markup mammoth parses is capped, the pictures it skips are not", () => {
   // mammoth's DOM costs up to ~300x the XML it parses: a 1.9 MB .docx with a
   // 31 MiB document part peaked at 2.9 GB, and a 2 MiB part of tiny paragraphs
   // at 0.7 GB through this very function. The OpenClaw container gets 2 GB.
@@ -180,7 +180,7 @@ describe("extractDocxText — the markup mammoth parses is capped, the pictures 
   });
 });
 
-describe("extractDocxText — a long document is read, not refused (seventh review, PR #1243)", () => {
+describe("extractDocxText — a long document is read, not refused", () => {
   // The ceiling used to be 2 MiB: a LibreOffice-written report of 118 pages
   // is 1.72 MB of markup, so a document of ~140 pages was refused — a
   // regression, since main read it. The heap-capped child is what bounds the
@@ -215,8 +215,8 @@ describe("extractDocxText — a long document is read, not refused (seventh revi
   );
 });
 
-describe("extractDocxText — the shapes the markup scan read differently are refused (sixth review, PR #1243)", () => {
-  // The reviewer's three probes, built small: each hides megabytes of
+describe("extractDocxText — the shapes the markup scan read differently are refused", () => {
+  // Three probes, built small: each hides megabytes of
   // paragraphs from the markup ceiling by a spelling mammoth (xmldom + JSZip)
   // resolves and the scan did not. 13 KB of .docx, 1.2-1.5 GB RSS here.
   // Each hides more paragraphs than the ceiling admits, so a scan that
@@ -267,8 +267,8 @@ describe("extractDocxText — the shapes the markup scan read differently are re
   });
 });
 
-describe("extractDocxText — mammoth runs in a child whose heap is capped (sixth review, PR #1243)", () => {
-  // Three rounds running, the markup ceiling was bypassed because the scan
+describe("extractDocxText — mammoth runs in a child whose heap is capped", () => {
+  // The markup ceiling was bypassed again and again because the scan
   // and mammoth disagreed about which parts are parsed. The scan stays as a
   // cheap first layer; what bounds the memory now is a child process with a
   // hard heap cap, whatever the scan missed.
@@ -370,7 +370,7 @@ describe("extractDocxText — mammoth runs in a child whose heap is capped (sixt
   });
 });
 
-describe("extractDocxText — a reader that dies is not a verdict on the document (sixth review, PR #1243)", () => {
+describe("extractDocxText — a reader that dies is not a verdict on the document", () => {
   // Only V8's own heap-limit banner says the document was too big. A child
   // killed from outside, one that crashes, one that never got ready, and one
   // that runs out of time are infrastructure, and say so.

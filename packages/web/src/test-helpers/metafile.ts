@@ -4,10 +4,10 @@
  * A metafile is a picture LibreOffice draws record by record — and some of
  * those records carry ANOTHER picture: an EMF+ image object holds compressed
  * bitmap bytes (any format LibreOffice's graphic filter detects, SVG included),
- * a WMF escape can hold a whole EMF. The third review of PR #1243 put an SVG
- * that reads a local file into an EMF+ image object, behind 4 KiB of comment
- * padding so the first bytes looked like nothing but a metafile, and
- * LibreOffice drew the local file into the PDF. These builders make those
+ * a WMF escape can hold a whole EMF. Put an SVG that reads a local file into
+ * an EMF+ image object, behind 4 KiB of comment padding so the first bytes
+ * look like nothing but a metafile, and LibreOffice draws the local file into
+ * the PDF. These builders make those
  * shapes, and the plain ones the preflight must keep, from first principles
  * ([MS-EMF], [MS-EMFPLUS], [MS-WMF]) rather than from a captured file.
  */

@@ -633,7 +633,7 @@ describe("kb index worker tick", () => {
     expect(await getLatestIndexJobForAgent(agent.id)).toMatchObject({ status: "succeeded" });
   });
 
-  it("clears the staged copies an interrupted run left behind, before it claims anything (eighth review, PR #1243)", async () => {
+  it("clears the staged copies an interrupted run left behind, before it claims anything", async () => {
     // A batch removes its staging directory when it finishes; one that never
     // finishes — a restart, an upgrade, an OOM kill mid-reindex — leaves up to
     // 20 checked copies of up to 200 MB on the artifact volume, and nothing

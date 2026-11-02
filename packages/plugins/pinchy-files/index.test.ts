@@ -734,7 +734,7 @@ describe("pinchy_read DOCX integration", () => {
       rmSync(tmpDir, { recursive: true, force: true });
     }
   });
-  it("answers a .docx with too much markup to read safely with isError=true and says why (fourth review, PR #1243)", async () => {
+  it("answers a .docx with too much markup to read safely with isError=true and says why", async () => {
     const tmpDir = mkdtempSync(join(tmpdir(), "pinchy-files-test-"));
     const path = join(tmpDir, "huge-text.docx");
     const { assembleZip, crc32, readZipEntries, MAX_DOCX_MARKUP_BYTES } =

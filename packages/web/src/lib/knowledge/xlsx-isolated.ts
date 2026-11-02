@@ -4,7 +4,7 @@
  *
  * exceljs builds the whole cell model, and that model costs ~20× the sheet XML
  * it came from: a 2.5 MB `.xlsx` holding a 32 MiB sheet peaked at 0.7 GB, a
- * 15 MB one at 3.1 GB (fourth review, PR #1243) — both well inside the archive
+ * 15 MB one at 3.1 GB — both well inside the archive
  * limits, and both past the 1 GB the web container gets by default
  * (`PINCHY_MEM_LIMIT`). In-process, that is an OOM kill of the web server; on
  * the nightly reindex it is one every night, and because a killed run is
@@ -32,7 +32,7 @@
  * got ready is a broken image. Ingest counts a plain error `failed` and keeps
  * whatever the index already held for the file — for a CHANGED file, the
  * version it had indexed — and reads it again next run, instead of branding
- * it unreadable for good (fifth review, PR #1243). The rows route answers
+ * it unreadable for good. The rows route answers
  * it with 503.
  *
  * One child at a time, process-wide: the index worker and every rows preview
@@ -45,16 +45,16 @@
  * passes neither, and is never cut short or turned away.
  *
  * The same child also counts a `.docx`'s words for the conversion's oracle
- * (`countDocxWordsIsolated`, sixth review, PR #1243). mammoth builds a DOM at
+ * (`countDocxWordsIsolated`). mammoth builds a DOM at
  * up to ~300x the markup it parses, and the markup ceiling in front of it
  * (`MAX_DOCX_MARKUP_BYTES`) is a PREDICTION of which parts mammoth parses —
- * one that three review rounds running found a spelling to get wrong, each
- * time a 13 KB file worth ~900 MB in the web process. Behind this fence, a
+ * one that kept proving wrong, one spelling at a time, each time a 13 KB
+ * file worth ~900 MB in the web process. Behind this fence, a
  * wrong prediction costs the child, never the server. It shares the gate, so
  * the memory one child may use is still the memory all of them use.
  *
  * And it stages every Word and PowerPoint file for conversion
- * (`stageOfficeSourceIsolated`, seventh review, PR #1243): reads it, checks
+ * (`stageOfficeSourceIsolated`): reads it, checks
  * it, writes the checked copy where the converter will find it, and answers
  * with what it did — never with the bytes. In the web process that staging
  * held a file up to three times over (the original, the verified copy, the

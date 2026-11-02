@@ -1,21 +1,22 @@
 /**
- * The third review of PR #1243 on the knowledge base's Office preflight: one
- * false refusal of ordinary files, three ways past it, and two ways to make
- * the web process inflate or grind for minutes. Each test here was red before
- * the change it pins.
+ * Where the knowledge base's Office preflight must read a file the way the
+ * reader behind it does: a false refusal of ordinary files, three ways past
+ * the preflight, and two ways to make the web process inflate or grind for
+ * minutes. Each test here was red before the change it pins.
  *
  *   1. `<asvg:svgBlip>` — what Office 365 and LibreOffice write for EVERY SVG
- *      picture — was read as an `<svg` element, so every such document was
- *      refused outright.
- *   2. RTF `\binN` with N past 2^31: the sanitizer skipped to the end of the
- *      file, LibreOffice overflowed N to 0 and drew the hidden `\pict`.
+ *      picture — is not an `<svg` element; read as one, every such document
+ *      would be refused outright.
+ *   2. RTF `\binN` with N past 2^31: a sanitizer that skips N bytes reaches
+ *      the end of the file, while LibreOffice overflows N to 0 and draws the
+ *      hidden `\pict`.
  *   3. EMF/WMF pictures pass on their magic bytes, but an EMF+ image object
  *      (or an EMF inside a WMF) carries another picture LibreOffice detects by
- *      ITS bytes — an SVG that read a local file into the PDF.
+ *      ITS bytes — an SVG that reads a local file into the PDF.
  *   4. A number format spelled `&#91;` decodes to `[` in exceljs's parser,
- *      past a check that counted literal brackets.
- *   5. One Office XML part, however large, was inflated whole into the web
- *      heap; mammoth builds a DOM from it on top.
+ *      past a check that counts literal brackets.
+ *   5. One Office XML part, however large, would be inflated whole into the
+ *      web heap; mammoth builds a DOM from it on top.
  *
  * Deterministic, no LibreOffice; the matching canaries are in
  * `office-convert.canary.libreoffice.test.ts`.
@@ -107,7 +108,7 @@ const REACHING_SVG = Buffer.from(
   `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="400" height="200"><image width="400" height="60" xlink:href="file:///etc/hostname"/></svg>`
 );
 
-describe("finding 1: an SVG picture written by Office or LibreOffice is converted, not refused", () => {
+describe("an SVG picture written by Office or LibreOffice is converted, not refused", () => {
   // Both files were written by LibreOffice 26.2 from a flat ODF holding one
   // SVG icon and a line of text — the shape Office 365 writes for every SVG
   // picture and every PowerPoint Icon: a PNG fallback in `a:blip` and the SVG
@@ -161,14 +162,14 @@ describe("finding 1: an SVG picture written by Office or LibreOffice is converte
   });
 });
 
-describe("finding 2: RTF `\\bin` that the sanitizer and LibreOffice could read differently is refused", () => {
+describe("RTF `\\bin` that the sanitizer and LibreOffice could read differently is refused", () => {
   const svgHex = REACHING_SVG.toString("hex");
   const pict = `{\\pict\\pngblip\\picw400\\pich200 ${svgHex}}`;
   const rtf = (before: string) =>
     `{\\rtf1\\ansi\\deff0 {\\fonttbl {\\f0 Times;}}\\pard Body words\\par ${before}${pict}\\par After words\\par }`;
 
   it.each([
-    // The reviewer's s2.doc: 2^31 is past what LibreOffice's 32-bit parameter
+    // 2^31 is past what LibreOffice's 32-bit parameter
     // holds, it reads 0 and draws the picture the sanitizer skipped over.
     ["2^31 in an ignorable destination", "{\\*\\pinchyx\\bin2147483648 X}"],
     ["2^31", "{\\bin2147483648 X}"],
@@ -235,10 +236,10 @@ function keptPicture(bytes: Buffer, target = "media/image1.emf"): Buffer {
   return inflatePart(data, entry, entry.uncompressedSize);
 }
 
-describe("finding 3: a metafile picture is kept only if it carries no picture of its own", () => {
-  // The reviewer's emfplus2.docx: an EMF+ image object whose compressed
+describe("a metafile picture is kept only if it carries no picture of its own", () => {
+  // An EMF+ image object whose compressed
   // bitmap is an SVG, behind 4 KiB of comment padding so the first kilobytes
-  // look like a metafile and nothing else. LibreOffice drew the local file.
+  // look like a metafile and nothing else. LibreOffice draws the local file.
   const smuggled = emf(
     paddingComment(4400),
     emfPlusComment(emfPlusImageObject(REACHING_SVG), EMF_PLUS_DRAW_IMAGE),
@@ -319,10 +320,9 @@ describe("finding 3: a metafile picture is kept only if it carries no picture of
     }
   );
 
-  // CORRECTED (fourth review): these two were cut whole, and the WMF's own
-  // records — its drawing, text included — went with the embedded EMF. Now
-  // only the EMF goes: LibreOffice draws the WMF records instead, and those
-  // are walked like any WMF's. What reached for a picture is still gone.
+  // Only the embedded EMF goes, not the whole picture: the WMF's own records
+  // — its drawing, text included — stay, LibreOffice draws them instead, and
+  // they are walked like any WMF's. What reached for a picture is gone.
   it("drops an embedded EMF that carries a picture, and keeps the WMF's own drawing: LibreOffice would draw that EMF instead", () => {
     const kept = keptPicture(wmf(wmfEmbeddedEmf(smuggled), WMF_RECTANGLE), "media/image1.wmf");
     expect(kept.includes(Buffer.from("WMFC"))).toBe(false);
@@ -358,14 +358,14 @@ describe("finding 3: a metafile picture is kept only if it carries no picture of
   });
 });
 
-describe("fourth review: a picture cut costs its words, so a metafile is cut only where it has no other drawing", () => {
+describe("a picture cut costs its words, so a metafile is cut only where it has no other drawing", () => {
   // An EMF's words are GDI text records, and LibreOffice draws them into the
   // PDF's text layer — so cutting a metafile picture cut text from the index.
   // Office and LibreOffice write every EMF+ file as "EMF+ Dual": the EMF
   // records around the EMF+ layer draw the whole picture again. Where only the
   // EMF+ layer reaches for a picture, that layer goes and the rest stays.
 
-  /** The third review's EMF+ file: not dual, so its EMF records do not draw the picture. */
+  /** The SVG-carrying EMF+ file above: not dual, so its EMF records do not draw the picture. */
   const smuggled = emf(
     paddingComment(4400),
     emfPlusComment(emfPlusImageObject(REACHING_SVG), EMF_PLUS_DRAW_IMAGE),
@@ -447,7 +447,7 @@ describe("fourth review: a picture cut costs its words, so a metafile is cut onl
   });
 });
 
-describe("finding 4: a number format is judged by what the XML parser makes of it", () => {
+describe("a number format is judged by what the XML parser makes of it", () => {
   function workbook(formatCode: string, cells: number): Buffer {
     const part = (name: string, xml: string) => deflatedPart(name, Buffer.from(xml));
     const col = (i: number) =>
@@ -499,7 +499,7 @@ describe("finding 4: a number format is judged by what the XML parser makes of i
     ["references padded past any fixed length", "0" + `&#${"0".repeat(20)}91;`.repeat(100)],
     ["a mix after a closed bracket", "[Red]0" + "&#91;&#x5B;".repeat(60)],
   ])("refuses a format whose unclosed brackets are spelled as %s — fast", async (_, formatCode) => {
-    // The reviewer's xl.mts: 200 000 styled cells with this format took
+    // Measured: 200 000 styled cells with this format took
     // exceljs 4.4 s to load, and minutes at the size limit.
     const started = Date.now();
     const err = await rejection(
@@ -531,14 +531,14 @@ describe("finding 4: a number format is judged by what the XML parser makes of i
   });
 });
 
-describe("finding 5: no single Office XML part is inflated whole past a ceiling", () => {
+describe("no single Office XML part is inflated whole past a ceiling", () => {
   const DOC_HEAD = `<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>`;
   const DOC_TAIL = `</w:t></w:r></w:p></w:body></w:document>`;
 
   /**
    * A .docx whose document part is `xmlBytes` long and true about it, plus a
    * stored pad of random bytes so the archive stays under the ratio rule —
-   * the reviewer's big.mts, which ran the preflight to 1.3 GB RSS.
+   * the shape that, at 400 MiB, ran the preflight to 1.3 GB RSS.
    */
   function docxWithDocumentOf(xmlBytes: number): Buffer {
     const base = docxWith({ documentRels: relationships() });

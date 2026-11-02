@@ -12,7 +12,7 @@
 // can declare 1000 bytes and inflate to a gigabyte, and the readers we feed
 // (mammoth and exceljs, both through JSZip) inflate the whole entry before
 // they compare it with the declared size — measured at 1.43 GB RSS for one
-// such workbook (release review v0.10.0). An earlier version of this comment
+// such workbook. An earlier version of this comment
 // called that gap acceptable because "mainstream readers treat lying archives
 // as corrupt"; they do, but only after the memory is spent. So every entry is
 // inflated HERE first, by zlib, with its declared size as the hard ceiling,
@@ -48,7 +48,7 @@ export const MAX_DOCX_DECOMPRESSED_BYTES = 500 * 1024 * 1024;
 
 // The largest single entry mammoth is handed. mammoth inflates a part whole
 // and builds a DOM from it, which costs many times the part itself; the total
-// above bounds the archive, not that (third review, PR #1243). No real
+// above bounds the archive, not that. No real
 // document part comes near this — a thousand-page report's is a few MB — and
 // a .docx the plugin reads is at most MAX_FILE_SIZE (10 MB) on disk, so a
 // picture past it cannot be stored either.
@@ -61,13 +61,13 @@ export const MAX_DOCX_ENTRY_BYTES = 32 * 1024 * 1024;
 // This is NOT what bounds the memory. mammoth runs in a child whose heap is
 // capped (`DOCX_READER_HEAP_MB` in docx-extract.ts, `SHEET_READER_HEAP_MB` for
 // the knowledge base's word count), and that cap holds whatever this scan
-// predicts — three review rounds in a row found a spelling it read
-// differently from mammoth (PR #1243). So the ceiling only turns away, early
+// predicts — predicting how mammoth reads a part kept proving wrong, one
+// spelling at a time. So the ceiling only turns away, early
 // and with a precise message, a document the child could not read anyway. It
 // sits below where WORD-SHAPED markup — revision ids, run properties, a
 // sentence split over several runs — exhausts that heap, measured in the
 // OpenClaw image (Node 22, mammoth 1.13) through `extractDocxText` with the
-// ceiling switched off (seventh review, PR #1243):
+// ceiling switched off:
 //
 //   document                          markup      reader child    result
 //   150 pages, Word-shaped            2.4 MiB     252 MB          read, 1.9 s
@@ -265,8 +265,7 @@ export interface ZipLimits {
    * A tighter `maxEntryBytes` for the entries a reader PARSES — `parses(name)`
    * says which — while every other entry keeps `maxEntryBytes`. exceljs builds
    * a model at ~20x the XML it parses but only copies a picture, so one
-   * ceiling for both refused a two-row price list over its product photo
-   * (fifth review, PR #1243).
+   * ceiling for both refused a two-row price list over its product photo.
    */
   maxParsedEntryBytes?: { bytes: number; parses: (name: string) => boolean };
   /**
@@ -447,8 +446,7 @@ function verifyDeflated(entry: ZipEntryInfo, data: Buffer): Promise<void> {
  * `..` before it files an entry, so `word/./document.xml` and
  * `_rels/.rels/.` are `word/document.xml` and `_rels/.rels` to the reader and
  * two other names to anything matching the raw name — a duplicate this guard
- * did not see, or a relationship part it did not read (sixth review, PR
- * #1243). No Office writer produces any of these, and neither a leading slash
+ * did not see, or a relationship part it did not read. No Office writer produces any of these, and neither a leading slash
  * nor a backslash (which the zip spec forbids, and lenient readers turn into
  * a separator). A trailing slash is a directory entry, which some archivers
  * write; it must be empty.
@@ -606,7 +604,7 @@ const isXmlSpace = (c: string | undefined) => c === " " || c === "\t" || c === "
  * `xmlns:q`). A prefixed attribute is where this scanner and mammoth part
  * ways: xmldom hands mammoth `q:Type` keyed by its local name `Type` when the
  * prefix is undeclared or bound to nothing, and the later of two wins — the
- * scanner read only the exact `Type` (sixth review, PR #1243). Which
+ * scanner read only the exact `Type`. Which
  * prefixes a parser resolves, and how, is not something to predict; no
  * relationship part an Office writer emits has one, so a tag with one is
  * not read at all. The knowledge base's preflight refuses on the same rule.
@@ -677,8 +675,7 @@ function relationshipsIn(xml: string): Relationship[] | null {
  * which mammoth uses, does the same to NEL (U+0085) and LINE SEPARATOR
  * (U+2028) (measured, xmldom 0.8). The rest of C0, C1 and U+2029 are listed
  * because none of them belongs in a part name, and which parser rewrites
- * which is exactly the question not to have to answer (fifth review,
- * PR #1243).
+ * which is exactly the question not to have to answer.
  */
 function parserRewrites(target: string): boolean {
   for (let i = 0; i < target.length; i++) {
@@ -767,9 +764,9 @@ const ZIP64_LOCATOR_BYTES = 20;
  * Is the gap between the central directory and the classic end record exactly
  * a ZIP64 end record and its locator that say nothing the classic record does
  * not? Some writers put one there when nothing needed it — .NET's
- * System.IO.Packaging, which a lot of generated Office files come from (third
- * review, PR #1243). The classic record still carries every real value (a
- * ZIP64 marker in it is refused before this is reached), so the record is
+ * System.IO.Packaging, which a lot of generated Office files come from. The
+ * classic record still carries every real value (a ZIP64 marker in it is
+ * refused before this is reached), so the record is
  * accepted only when it repeats them exactly — one disk, the same entry count,
  * directory size and offset, no extensible data — and its locator points at
  * it. Anything else in that gap is somewhere a reader could look that this

@@ -363,8 +363,8 @@ export const GET = withAuth<Params>(async (req, { params }, session) => {
         );
       }
       // Anything else is the READER failing, not the document: a child that
-      // could not be started, was killed by the system or ran out of time
-      // (fifth review, PR #1243). Answering 422 and auditing
+      // could not be started, was killed by the system or ran out of time.
+      // Answering 422 and auditing
       // `unreadable_document` would write a false statement about the
       // document into an immutable row.
       console.error(`[workspace-file] spreadsheet reader failed for ${documentName}:`, err);

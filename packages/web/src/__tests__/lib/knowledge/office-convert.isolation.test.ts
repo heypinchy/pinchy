@@ -1,5 +1,5 @@
 /**
- * The server never holds an Office file it converts (seventh review, PR #1243).
+ * The server never holds an Office file it converts.
  *
  * Staging a checked copy used to read the file into the web process and hold
  * it three times over — the original, the verified copy, the sanitized copy —
@@ -99,7 +99,7 @@ function keepingConverter() {
   return { run, staged };
 }
 
-describe("the server never holds an Office file it converts (seventh review, PR #1243)", () => {
+describe("the server never holds an Office file it converts", () => {
   it("stages a checked copy and counts its words without opening the file in this process", async () => {
     // An external hyperlink, so the copy really is a rewrite of the package.
     const docx = docxWith({
@@ -159,7 +159,7 @@ describe("the server never holds an Office file it converts (seventh review, PR 
   });
 });
 
-describe("a staging child that dies is handled like any reader that dies (seventh review, PR #1243)", () => {
+describe("a staging child that dies is handled like any reader that dies", () => {
   /** A stub reader child: `body` runs once the parent's request arrives. */
   function stubChild(name: string, body: string): string {
     const path = join(tmpRoot, `${name}.mjs`);
