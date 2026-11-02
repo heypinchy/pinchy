@@ -138,12 +138,22 @@ Deactivation prevents a user from logging in without permanently deleting their 
 When a user is deactivated:
 
 - They can no longer log in, and every session they had ends at once.
-- Any chat they have open stops working immediately: Pinchy closes the connection with the message "Your account has been deactivated." and refuses anything that tab still sends, so no agent runs another tool for them. A reply that was already streaming when you deactivated them is not delivered to them.
+- Any chat they have open stops working immediately: Pinchy closes the connection with the message "Your account has been deactivated.", sends the tab to the login page, and refuses anything it still sends.
+- A reply that is still running in one of their chats is stopped. Pinchy aborts it on OpenClaw the same way the stop button does, so the agent starts no further tool for them; a tool call that was already executing at that moment can still complete. Each stopped reply is recorded as `chat.run_aborted` with `reason: "account_deactivated"` and you as the actor.
 - Their personal agents are soft-deleted.
 - Their data remains in the database and can be restored.
 - The user appears as "Deactivated" in the user list with reduced opacity.
 
 You cannot deactivate your own account.
+
+#### What deactivation doesn't stop
+
+Pinchy can only stop what Pinchy started. A few things carry on:
+
+- **A Telegram reply that's already running.** OpenClaw's Telegram channel starts those, not Pinchy, so Pinchy has no way to abort one; it finishes with the agent's permissions. New messages from their Telegram account are refused from the moment you deactivate them.
+- **An automation run already handling an email on one of their personal agents.** No new run starts — those agents are removed with the account — but one in progress finishes on its own. Pinchy stops any single turn of an automation run after five minutes.
+- **Automations they created on shared agents.** These belong to the agent, not to the person, and keep running with the agent's permissions. Their notifications still go to the deactivated account, where nobody reads them. Disable them in **Agent Settings → Automations**, or recreate them yourself if they should go on.
+- **API keys they created.** Keys belong to your organisation and keep working. See [what to rotate when someone leaves](/reference/agent-provisioning-api/#offboarding-what-to-rotate).
 
 ### Reactivating a user
 
@@ -158,7 +168,7 @@ The user can log in again immediately.
 
 Releases up to and including v0.9.1 left the authentication library's sign-up endpoint open, so anyone who could reach your Pinchy URL could register a member account. That is closed now, but an account created back then still signs in. Pinchy looks for them on every start. An account counts as explained if it is the setup admin (the earliest-created admin), claimed an invite, or created one (only admins can). Any other account gets one `user.unknown_origin_detected` row in the audit trail, and while it is active, a banner at the top of **Settings → Users** lists it.
 
-Click **Review** next to an account to open it. If you don't recognise it, **Deactivate** it as described above. If you do — say you demoted the admin who ran setup and they never sent an invite — click **Mark as known**. That works on your own account too, and it is recorded as `user.origin_acknowledged` with you as the actor; the account stays off the banner from then on. The banner hides when you dismiss it, but only for this visit — it comes back until every active account is explained or marked as known. [Upgrading](/guides/upgrading/) explains what such an account could reach and how to check what it did.
+Click **Review** next to an account to open it. If you don't recognise it, **Deactivate** it as described above. If you do — say you demoted the admin who ran setup and they never sent an invite — click **Mark as known** and confirm. It can't be undone — nothing puts an account back on the list. That works on your own account too, and it is recorded as `user.origin_acknowledged` with you as the actor; the account stays off the banner from then on. The banner hides when you dismiss it, but only for this visit — it comes back until every active account is explained or marked as known. [Upgrading](/guides/upgrading/) explains what such an account could reach and how to check what it did.
 
 The check can also miss one: a self-registered account that an admin promoted reads as legitimate once it is the earliest admin left, or once it has sent an invite. Both need an admin to have promoted it first, and the `user.role_updated` row records who did.
 
