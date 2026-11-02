@@ -392,6 +392,50 @@ describe("audit-verify-job across a signing-secret rotation (integration)", () =
     return rowHmac;
   }
 
+  // Re-sign every row in the table, in order, under `key`, threading the chain:
+  // re-signing changes rowHmac, so the next row's prevHmac must follow. Models
+  // history that was written while `key` was the active key. Returns the last
+  // row's { id, rowHmac }.
+  async function resignChainUnder(key: Buffer) {
+    const rows = await allRowsById();
+    let prev: string | null = null;
+    await db.execute(sql`ALTER TABLE audit_log DISABLE TRIGGER no_update`);
+    try {
+      for (const r of rows) {
+        const [row] = await db.select().from(auditLog).where(eq(auditLog.id, r.id));
+        const rowHmac = computeRowHmacV3(key, {
+          timestamp: row.timestamp,
+          eventType: row.eventType,
+          actorType: row.actorType,
+          actorId: row.actorId,
+          resource: row.resource,
+          detail: row.detail,
+          outcome: (row.outcome ?? "success") as "success" | "failure",
+          error: row.error as { message: string } | null,
+          prevHmac: prev,
+        });
+        await db.execute(
+          sql`UPDATE audit_log SET prev_hmac = ${prev}, row_hmac = ${rowHmac} WHERE id = ${r.id}`
+        );
+        prev = rowHmac;
+      }
+    } finally {
+      await db.execute(sql`ALTER TABLE audit_log ENABLE TRIGGER no_update`);
+    }
+    return { id: rows[rows.length - 1].id, rowHmac: prev! };
+  }
+
+  // Change a stored row's content past the immutability trigger and leave its
+  // row_hmac alone: the stored hash string stays the one the sweep remembered.
+  async function alterContentInPlace(id: number) {
+    await db.execute(sql`ALTER TABLE audit_log DISABLE TRIGGER no_update`);
+    try {
+      await db.execute(sql`UPDATE audit_log SET detail = '{}'::jsonb WHERE id = ${id}`);
+    } finally {
+      await db.execute(sql`ALTER TABLE audit_log ENABLE TRIGGER no_update`);
+    }
+  }
+
   it("flags an old-key row that appears in a later window than the active-key rows", async () => {
     await appendRow("u1");
     await appendRow("u2");
@@ -453,6 +497,72 @@ describe("audit-verify-job across a signing-secret rotation (integration)", () =
     expect(second.chainBreakCount).toBe(1);
   });
 
+  // Content-only tampering: the checkpoint row's content changes, its row_hmac
+  // does not. The remembered hash still matches, so the row reads as intact,
+  // but it verifies under no key any more. Read as "not signed under the active
+  // key", that re-opened the old key for the whole next window and a forged
+  // old-key row after it passed as pre-change history.
+  it("flags an old-key row after a checkpoint row whose content was altered in place", async () => {
+    await appendRow("u1");
+    await appendRow("u2");
+    expect((await sweepAuditVerify()).valid).toBe(true);
+    const checkpoint = await readCheckpointRow();
+
+    await appendRow("u3");
+    const rows = await allRowsById();
+    await alterContentInPlace(checkpoint!.lastVerifiedId);
+    await resignUnderPreviousKey(rows[rows.length - 1].id, "forged-after-rotation");
+
+    const second = await sweepAuditVerify();
+
+    expect(second.scanned).toBe(true);
+    expect(second.previousKeyCount).toBe(0);
+    expect(second.invalidCount).toBe(1);
+    expect(second.valid).toBe(false);
+  });
+
+  // A second rotation: K1 is still the key file (the previous key), K2 signed
+  // the history up to the checkpoint, K3 is the active env key now. K2 is held
+  // nowhere any more, so the checkpoint row verifies under neither key. That is
+  // a legitimate install, and the sweep must not record a violation for it.
+  it("does not alarm on a checkpoint row signed under a key retired by a second rotation", async () => {
+    const k2 = Buffer.from("cd".repeat(32), "hex");
+    await appendRow("u1");
+    await appendRow("u2");
+    const last = await resignChainUnder(k2);
+    // The sweep that ran while K2 was active verified up to here.
+    await db
+      .insert(auditVerifyState)
+      .values({ id: 1, lastVerifiedId: last.id, lastVerifiedHmac: last.rowHmac, lastStatus: "ok" });
+
+    // Written under K3 after the restart, chained to the last K2 row.
+    await appendRow("u3");
+
+    const result = await sweepAuditVerify();
+
+    expect(result.scanned).toBe(true);
+    expect(result.chainBreakCount).toBe(0);
+    expect(result.invalidCount).toBe(0);
+    expect(result.valid).toBe(true);
+  });
+
+  it("a partial range whose predecessor was altered in place does not re-open the old key", async () => {
+    await appendRow("u1");
+    await appendRow("u2");
+    await appendRow("u3");
+    const rows = await allRowsById();
+    const forged = rows[2];
+    await alterContentInPlace(rows[1].id);
+    await resignUnderPreviousKey(forged.id, "forged-after-rotation");
+
+    expect(await isActiveKeySeenBefore(forged.id)).toBe(true);
+    const seeded = await verifyIntegrity(forged.id, undefined, {
+      seedActiveKeySeen: await isActiveKeySeenBefore(forged.id),
+    });
+    expect(seeded.invalidIds).toEqual([forged.id]);
+    expect(seeded.previousKeyIds).toEqual([]);
+  });
+
   // GET /api/audit/verify?fromId= seeds its range this way. Lives here because
   // this describe owns the two-key setup; the route's own test pins the wiring.
   it("a partial range past the key change takes its key context from the row before it", async () => {
@@ -481,34 +591,9 @@ describe("audit-verify-job across a signing-secret rotation (integration)", () =
   it("still reports a legitimately rotated chain (old-key rows, then active rows) as valid", async () => {
     await appendRow("u1");
     await appendRow("u2");
-    const rows = await allRowsById();
     // Model the pre-rotation history: both rows were signed under the key that
-    // was later superseded. Re-signing changes rowHmac, so the next row's
-    // prevHmac must follow — re-sign in order, threading the chain.
-    let prev: string | null = null;
-    await db.execute(sql`ALTER TABLE audit_log DISABLE TRIGGER no_update`);
-    try {
-      for (const r of rows) {
-        const [row] = await db.select().from(auditLog).where(eq(auditLog.id, r.id));
-        const rowHmac = computeRowHmacV3(previousSecret, {
-          timestamp: row.timestamp,
-          eventType: row.eventType,
-          actorType: row.actorType,
-          actorId: row.actorId,
-          resource: row.resource,
-          detail: row.detail,
-          outcome: (row.outcome ?? "success") as "success" | "failure",
-          error: row.error as { message: string } | null,
-          prevHmac: prev,
-        });
-        await db.execute(
-          sql`UPDATE audit_log SET prev_hmac = ${prev}, row_hmac = ${rowHmac} WHERE id = ${r.id}`
-        );
-        prev = rowHmac;
-      }
-    } finally {
-      await db.execute(sql`ALTER TABLE audit_log ENABLE TRIGGER no_update`);
-    }
+    // was later superseded.
+    await resignChainUnder(previousSecret);
 
     // Sweep 1 covers only old-key rows: nothing active yet, so the prefix holds.
     const first = await sweepAuditVerify();

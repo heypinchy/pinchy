@@ -1186,41 +1186,77 @@ interface VerifyResult {
 
 type AuditLogRow = typeof auditLog.$inferSelect;
 
-// Does this stored row verify under the ACTIVE signing key? An unknown row
-// version can't be shown to verify, so it answers false.
-function verifiesUnderActiveKey(entry: AuditLogRow): boolean {
+/**
+ * Which key a stored row's signature verifies under, recomputed from the row as
+ * it is now:
+ *
+ * - `"active"`: the current signing key.
+ * - `"previous"`: the key an operator superseded by pinning AUDIT_HMAC_SECRET
+ *   (`getPreviousSecret`), and not the active one.
+ * - `"neither"`: no key this instance holds. Either the row was altered after it
+ *   was signed, or the key that signed it is no longer held (removed key file, a
+ *   second rotation). The two look identical without that key.
+ * - `"unknown-version"`: a row version no verifier knows. `verifyIntegrity`
+ *   reports such a row as invalid under every key, so it is not a key question.
+ * - `"missing"`: there is no such row.
+ *
+ * Legacy v1/v2 rows are signed with the same audit secret as v3 (only the
+ * payload shape differs), so they classify by key exactly like v3 rows, as they
+ * do in `verifyIntegrity`.
+ */
+export type AuditRowKey = "active" | "previous" | "neither" | "unknown-version" | "missing";
+
+function classifyRowKey(entry: AuditLogRow): Exclude<AuditRowKey, "missing"> {
   const verifier = ROW_HMAC_VERIFIERS[entry.version];
-  if (!verifier) return false;
-  return (
-    verifier(getOrCreateSecret("audit_hmac_secret"), {
-      timestamp: entry.timestamp,
-      eventType: entry.eventType,
-      actorType: entry.actorType,
-      actorId: entry.actorId,
-      resource: entry.resource,
-      detail: entry.detail,
-      outcome: (entry.outcome ?? "success") as "success" | "failure",
-      error: entry.error as { message: string } | null,
-      prevHmac: entry.prevHmac,
-    }) === entry.rowHmac
-  );
+  if (!verifier) return "unknown-version";
+  const fields = {
+    timestamp: entry.timestamp,
+    eventType: entry.eventType,
+    actorType: entry.actorType,
+    actorId: entry.actorId,
+    resource: entry.resource,
+    detail: entry.detail,
+    outcome: (entry.outcome ?? "success") as "success" | "failure",
+    error: entry.error as { message: string } | null,
+    prevHmac: entry.prevHmac,
+  };
+  if (verifier(getOrCreateSecret("audit_hmac_secret"), fields) === entry.rowHmac) return "active";
+  const previousSecret = getPreviousSecret("audit_hmac_secret");
+  if (previousSecret && verifier(previousSecret, fields) === entry.rowHmac) return "previous";
+  return "neither";
 }
 
 /**
- * Does the stored row `id` verify under the ACTIVE signing key?
- *
- * The incremental sweep uses this on its checkpoint row to seed
- * `verifyIntegrity`'s `seedActiveKeySeen` (see there). A missing row, an unknown
- * row version or a signature that does not verify all answer false. That is
- * only safe because the sweep first checks that the checkpoint row is still the
- * row it verified: a row that was deleted or rewritten since never reaches this
- * function, the sweep reports it as a broken link and seeds `true` instead. Any
- * other caller must make the same check, or a row re-signed with the old key
- * re-opens the previous-key window for everything after it.
+ * Read the stored row `id` once and answer both questions a verifier resuming
+ * after it needs: its rowHmac as stored now, and which key it verifies under
+ * (see `AuditRowKey`). One read, so the row can't change between the two.
  */
-export async function isRowSignedWithActiveKey(id: number): Promise<boolean> {
+export async function readAuditRowKey(
+  id: number
+): Promise<{ key: AuditRowKey; rowHmac: string | null }> {
   const [entry] = await db.select().from(auditLog).where(eq(auditLog.id, id)).limit(1);
-  return entry ? verifiesUnderActiveKey(entry) : false;
+  if (!entry) return { key: "missing", rowHmac: null };
+  return { key: classifyRowKey(entry), rowHmac: entry.rowHmac };
+}
+
+/**
+ * The `seedActiveKeySeen` for a window that follows a row of class `key`.
+ *
+ * Only a row that positively verifies under the previous key says the key change
+ * hasn't happened yet, so only `"previous"` keeps the old key open. A row that
+ * verifies under neither key or has an unknown version was either altered or
+ * signed by a key retired since; both mean the change already happened, so they
+ * close it (fail closed). Reading them as "not the active key, so not rotated
+ * yet" let content-only tampering of that one row re-open the old key for
+ * everything after it. `"missing"` means there is no row before the window: it
+ * starts the chain, and nothing has been seen.
+ *
+ * Whether the row is still the row a caller verified earlier is a separate
+ * question this can't answer; the incremental sweep compares its rowHmac with
+ * the one it remembered.
+ */
+export function keyChangeSeenAfter(key: AuditRowKey): boolean {
+  return key !== "previous" && key !== "missing";
 }
 
 /**
@@ -1228,8 +1264,10 @@ export async function isRowSignedWithActiveKey(id: number): Promise<boolean> {
  * written? The seed for a partial-range verification that starts at `fromId`.
  *
  * Answers from the row immediately before `fromId` (the greatest existing id
- * below it), the same way the incremental sweep answers from its checkpoint row.
- * No such row, or one that does not verify under the active key, answers false.
+ * below it), by the same rule the incremental sweep applies to its checkpoint
+ * row (`keyChangeSeenAfter`): only a predecessor that verifies under the
+ * previous key and not the active one answers false, and so does having no
+ * predecessor at all.
  *
  * That is a context, not a proof. Whether the predecessor itself is authentic,
  * and where in the log the key really changed, only a verification from the
@@ -1242,7 +1280,7 @@ export async function isActiveKeySeenBefore(fromId: number): Promise<boolean> {
     .where(lt(auditLog.id, fromId))
     .orderBy(desc(auditLog.id))
     .limit(1);
-  return entry ? verifiesUnderActiveKey(entry) : false;
+  return keyChangeSeenAfter(entry ? classifyRowKey(entry) : "missing");
 }
 
 // Rows processed per fetch. The whole audit_log can grow unbounded, so loading

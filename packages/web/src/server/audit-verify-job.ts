@@ -28,7 +28,7 @@
 import { eq, desc, and, gt, gte, lt, lte, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { auditVerifyState, auditLog } from "@/db/schema";
-import { verifyIntegrity, appendAuditLog, isRowSignedWithActiveKey } from "@/lib/audit";
+import { verifyIntegrity, appendAuditLog, keyChangeSeenAfter, readAuditRowKey } from "@/lib/audit";
 import { recordAuditFailure } from "@/lib/audit-deferred";
 
 const CHECKPOINT_ID = 1;
@@ -81,19 +81,42 @@ async function writeCheckpoint(
 }
 
 /**
- * Is the audit row at the checkpoint still there, with the rowHmac the
- * checkpoint remembered for it?
+ * What the checkpoint row tells the next window: is it still the row this sweep
+ * verified, and has the signing key already changed by then?
  *
- * audit_log rows are immutable (DB triggers), so on an untampered install this
- * is always true. False means someone with direct DB access deleted or rewrote
- * a row this sweep had already verified.
+ * The row is read ONCE (`readAuditRowKey`): its stored rowHmac and the key it
+ * verifies under come from the same read, so nothing can rewrite it between the
+ * "is it intact?" and the "which key?" questions.
+ *
+ * Intact means the row is there, its rowHmac is the one the checkpoint
+ * remembered, and its version is one a verifier knows. audit_log rows are
+ * immutable (DB triggers), so on an untampered install this is always true; a
+ * deleted row, a re-signed row (new rowHmac) or a changed version means someone
+ * with direct DB access rewrote a row this sweep had already verified. Not
+ * intact fails closed: the key change counts as seen, so an old-key row in the
+ * window can't pass as pre-change history.
+ *
+ * Intact does NOT require the row to verify under a key we hold. A row that
+ * verifies under neither key may have had its content altered in place (rowHmac
+ * left alone), but it may just as well be a legitimate row signed under a key
+ * this instance no longer holds: after a second rotation (K2 signed it, K3 is
+ * active, the previous key is still the K1 file), or after the retired key file
+ * was removed before the first sweep under the new key. Without that key the two
+ * can't be told apart, and calling the legitimate case a broken link would record
+ * a permanent violation. What matters for the window is the seed, and
+ * `keyChangeSeenAfter` closes the old key for such a row: only a row that
+ * positively verifies under the previous key keeps it open. Content changed in
+ * place on an already verified row is what a full verification reports.
  */
-async function checkpointRowIntact(checkpoint: Checkpoint): Promise<boolean> {
-  const [row] = await db
-    .select({ rowHmac: auditLog.rowHmac })
-    .from(auditLog)
-    .where(eq(auditLog.id, checkpoint.lastVerifiedId));
-  return row !== undefined && row.rowHmac === checkpoint.lastVerifiedHmac;
+async function inspectCheckpointRow(
+  checkpoint: Checkpoint
+): Promise<{ intact: boolean; activeKeySeen: boolean }> {
+  const row = await readAuditRowKey(checkpoint.lastVerifiedId);
+  const intact =
+    row.key !== "missing" &&
+    row.key !== "unknown-version" &&
+    row.rowHmac === checkpoint.lastVerifiedHmac;
+  return { intact, activeKeySeen: !intact || keyChangeSeenAfter(row.key) };
 }
 
 /**
@@ -168,26 +191,26 @@ export async function sweepAuditVerify(): Promise<AuditVerifySweepResult> {
     return { scanned: false };
   }
 
-  // Is the checkpoint row still the row this sweep verified last time? The
-  // stored lastVerifiedHmac protects the window's first link, but the first
-  // row's link still matches it after the checkpoint row itself was deleted or
-  // rewritten. Compare the row as it is now with what was remembered.
-  const checkpointBroken =
-    checkpoint.lastVerifiedId > 0 && !(await checkpointRowIntact(checkpoint));
-
-  // The previous signing key is only valid for the rows before a rotation, and
-  // this window cannot see them. If the checkpoint row itself was signed under
-  // the active key, the rotation already happened: an old-key row in this
-  // window is forged, even when no active-key row precedes it inside the window.
-  // The sweep's own report row is always written under the active key, so after
-  // the first sweep this is true on every run of a rotated install.
+  // Is the checkpoint row still the row this sweep verified last time, and had
+  // the key already changed by then? See inspectCheckpointRow.
   //
-  // A broken checkpoint row says nothing trustworthy about the key any more (a
-  // row re-signed with the old key would read as "no rotation yet" and re-open
-  // the old key for this whole window), so it fails closed: rotation seen.
-  const seedActiveKeySeen = checkpointBroken
-    ? true
-    : checkpoint.lastVerifiedId > 0 && (await isRowSignedWithActiveKey(checkpoint.lastVerifiedId));
+  // The stored lastVerifiedHmac protects the window's first link, but that link
+  // still matches it after the checkpoint row itself was deleted or rewritten,
+  // so the row is compared with what was remembered.
+  //
+  // The previous signing key is only valid for the rows before a key change,
+  // and this window cannot see them. If the checkpoint row is already past the
+  // change, an old-key row in this window is forged, even when no active-key
+  // row precedes it inside the window. The sweep's own report row is always
+  // written under the active key, so after the first sweep under a new key this
+  // holds on every run.
+  const checkpointRow =
+    checkpoint.lastVerifiedId > 0
+      ? await inspectCheckpointRow(checkpoint)
+      : // First sweep: the window starts the chain, nothing before it to read.
+        { intact: true, activeKeySeen: false };
+  const checkpointBroken = !checkpointRow.intact;
+  const seedActiveKeySeen = checkpointRow.activeKeySeen;
 
   const result = await verifyIntegrity(fromId, toId, {
     seedPrevHmac: checkpoint.lastVerifiedHmac,
