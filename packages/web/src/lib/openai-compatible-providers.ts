@@ -165,14 +165,25 @@ export interface ProviderModelFetchSource {
 }
 
 export async function listProvidersForModelFetch(): Promise<ProviderModelFetchSource[]> {
-  const rows = await db.select().from(openaiCompatibleProviders);
+  // The key column is AES-GCM ciphertext; select it under that name (see
+  // listProvidersWithApiKeys) so the fingerprint says what it hashes.
+  const rows = await db
+    .select({
+      id: openaiCompatibleProviders.id,
+      slug: openaiCompatibleProviders.slug,
+      displayName: openaiCompatibleProviders.displayName,
+      baseUrl: openaiCompatibleProviders.baseUrl,
+      encryptedApiKey: openaiCompatibleProviders.apiKey,
+      models: openaiCompatibleProviders.models,
+    })
+    .from(openaiCompatibleProviders);
   return rows.map((r) => ({
     id: r.id,
     slug: r.slug,
     displayName: r.displayName,
     baseUrl: r.baseUrl,
-    apiKey: decrypt(r.apiKey),
-    keyVersion: secretVersion(r.apiKey),
+    apiKey: decrypt(r.encryptedApiKey),
+    keyVersion: secretVersion(r.encryptedApiKey),
     models: r.models,
   }));
 }
