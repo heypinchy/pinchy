@@ -1182,7 +1182,9 @@ describe("an output the converter could not write is infrastructure, not a verdi
   it("measures the room against the document: twice its staged size, never under the floor", async () => {
     // A PDF that did not fit needed more than was left. Its size is not known
     // (it was never written), so the staged source stands in for it: twice
-    // that, and never less than MIN_FREE_OUTPUT_BYTES.
+    // that, and never less than MIN_FREE_OUTPUT_BYTES — and room for that
+    // twice over, since LibreOffice writes the PDF once into its scratch and
+    // then copies it out.
     const big = join(corpusDir, "big.pptx");
     await mkdir(corpusDir, { recursive: true });
     await writeFile(big, Buffer.alloc(12 * 1024 * 1024));
@@ -1191,8 +1193,9 @@ describe("an output the converter could not write is infrastructure, not a verdi
     const outcomes = await convertOfficeFiles(
       [{ absPath: big }, small],
       deps(fakeConverter({ outputs: {} }), {
-        // Above the floor, below twice the big source.
-        statfs: volumeWith({ freeBytes: MIN_FREE_OUTPUT_BYTES + 4 * 1024 * 1024 }),
+        // Room for two copies of a floor-sized PDF, not for two copies of a
+        // PDF twice the big source.
+        statfs: volumeWith({ freeBytes: 2 * MIN_FREE_OUTPUT_BYTES + 4 * 1024 * 1024 }),
         runConverter: converterThat({}, async () => ""),
       })
     );
@@ -1238,7 +1241,8 @@ describe("an output the converter could not write is infrastructure, not a verdi
 
   it("asks for room for the unpacked scratch AND the PDF beside it", async () => {
     // Scratch that fits is not enough: the PDF is written to the same volume.
-    // 12 MiB unpacked on a 24 MiB volume leaves less than the PDF's floor.
+    // 12 MiB unpacked on a 40 MiB volume leaves less than the PDF's floor,
+    // written twice.
     const [packed, legacy] = [await corpusFile("a.docx", "x"), await corpusFile("b.doc", "y")];
 
     const outcomes = await convertOfficeFiles(
@@ -1248,14 +1252,50 @@ describe("an output the converter could not write is infrastructure, not a verdi
           absPath.endsWith(".docx")
             ? stagedAs(4096, 12 * 1024 * 1024)(absPath, staged)
             : // A legacy binary is not an archive: nothing to unpack, so the
-              // PDF rule alone applies, and 24 MiB is room enough to judge it.
+              // PDF rule alone applies, and 40 MiB is room enough to judge it.
               stagedAs(4096, null)(absPath, staged),
-        statfs: volumeWith({ freeBytes: 24 * 1024 * 1024 }),
+        statfs: volumeWith({ freeBytes: 40 * 1024 * 1024 }),
         runConverter: converterThat({}, async () => ""),
       })
     );
 
     expect(outcomes.map((o) => o.status)).toEqual(["infrastructure", "failed"]);
+  });
+
+  it("asks for room for the PDF twice: LibreOffice writes it to its scratch, then copies it out (twelfth review)", async () => {
+    // LibreOffice exports into its TMPDIR — inside the batch, on this volume —
+    // and only then copies the file into --outdir, so for a moment the PDF is
+    // there twice. Measured in the runtime image: a .doc whose PDF is 5,758 KiB
+    // converts with 11,592 KiB free and fails the store with 11,336 KiB —
+    // exit 0, no PDF, the volume free again afterwards. Room for the PDF once
+    // is not room enough, for a large document or a small one:
+    // - the review's deck: 12 MB, a 14 MB PDF, 26 MiB free — above twice
+    //   the source, below twice that again;
+    // - a small .doc full of pictures: 868 KiB, a 13.6 MiB PDF (measured),
+    //   on a volume with 23 MiB free — above the floor, below twice it.
+    const deck = join(corpusDir, "changed.ppt");
+    await mkdir(corpusDir, { recursive: true });
+    await writeFile(deck, Buffer.alloc(12 * 1024 * 1024));
+    const pictures = await corpusFile("pictures.doc", "y");
+
+    const outcomes = await convertOfficeFiles(
+      [{ absPath: deck }],
+      deps(fakeConverter({ outputs: {} }), {
+        statfs: volumeWith({ freeBytes: 26 * 1024 * 1024 }),
+        runConverter: converterThat({}, async () => ""),
+      })
+    );
+    const small = await convertOfficeFiles(
+      [pictures],
+      deps(fakeConverter({ outputs: {} }), {
+        prepareSource: stagedAs(888_320, null),
+        statfs: volumeWith({ freeBytes: 23 * 1024 * 1024 }),
+        runConverter: converterThat({}, async () => ""),
+      })
+    );
+
+    expect([outcomes[0].status, small[0].status]).toEqual(["infrastructure", "infrastructure"]);
+    expect(outcomes[0].reason).toMatch(/could not write the converted PDF: .*bytes free/);
   });
 
   it("gives LibreOffice its scratch space inside the batch, on the volume that is checked", async () => {

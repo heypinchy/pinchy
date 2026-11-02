@@ -119,7 +119,7 @@ export function batchTimeoutMs(fileCount: number): number {
 /**
  * Free space below which a missing PDF is blamed on the volume, not the
  * document: the unpacked package, plus
- * `max(MIN_FREE_OUTPUT_BYTES, 2 × the staged source)` for the PDF.
+ * `2 × max(MIN_FREE_OUTPUT_BYTES, 2 × the staged source)` for the PDF.
  *
  * Two things land on the batch's volume. First the SCRATCH LibreOffice
  * unpacks a package into while loading it (its `TMPDIR` is inside the batch,
@@ -136,12 +136,27 @@ export function batchTimeoutMs(fileCount: number): number {
  * source stands in for it. Twice the source, because the export re-encodes:
  * pictures are recompressed and fonts embedded, and a PDF larger than its
  * source is ordinary. The floor, because for a small document the embedded
- * fonts dominate and can be many times the source — 16 MiB is far above any
- * font set and far below what a volume that is merely busy has left. It also
- * catches the case the ninth round measured: 4 KB left, the probe's write
- * fits, the PDF does not. The two are added rather than maxed: the
- * measurement above shows the scratch released before the PDF is written,
- * but that is one document's behaviour, not a promise for every format.
+ * fonts and recompressed pictures dominate and can be many times the source
+ * — a 868 KiB `.doc` of five pictures exports to a 13.6 MiB PDF (twelfth
+ * review). 16 MiB is above any font set and above that PDF, and far below
+ * what a volume that is merely busy has left. It also catches the case the ninth round measured: 4 KB
+ * left, the probe's write fits, the PDF does not.
+ *
+ * And room for that PDF TWICE. LibreOffice exports into its `TMPDIR` — the
+ * batch's, on this volume — and then copies the file into `--outdir`, so for
+ * a moment it is on the volume twice; the temp copy goes before the next
+ * document's. Measured in the runtime image (twelfth review), a `.doc` whose
+ * PDF is 5,758 KiB: converts with 11,592 KiB free, fails the store with
+ * 11,336 KiB (exit 0, no PDF, `impl_store … failed: 0x20d`) and leaves the
+ * volume free again — and twice the PDF is 11,516 KiB, between the two.
+ * Counting the PDF once judged a changed 12 MB `.ppt` with a 14 MB PDF, on
+ * 26 MiB free, as the document's fault. So a document that came out without
+ * a PDF is never held against it on a volume with less than 32 MiB left —
+ * a volume that is nearly full, not one that is merely in use.
+ *
+ * The scratch and the PDF are added rather than maxed: the eleventh round's
+ * measurement shows the scratch released before the PDF is written, but
+ * that is one document's behaviour, not a promise for every format.
  *
  * The error that costs least is the one this leans towards: a document
  * blamed on a volume too small to load it is read again next run — and the
@@ -689,7 +704,9 @@ function outputVolumeFault(
 ): string | null {
   if (typeof space === "string") return space;
   const free = space.bavail * space.bsize;
-  const needed = (unpackedBytes ?? 0) + Math.max(MIN_FREE_OUTPUT_BYTES, 2 * sourceBytes);
+  // The PDF's size, estimated, then twice: once in LibreOffice's TMPDIR, once in --outdir.
+  const pdfBytes = Math.max(MIN_FREE_OUTPUT_BYTES, 2 * sourceBytes);
+  const needed = (unpackedBytes ?? 0) + 2 * pdfBytes;
   if (free < needed) {
     return `only ${free} bytes free on the output volume, below the ${needed} bytes this document needs to load and convert`;
   }

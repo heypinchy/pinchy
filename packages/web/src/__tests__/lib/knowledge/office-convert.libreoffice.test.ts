@@ -19,12 +19,16 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { chmod, readdir, readFile, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, readdir, readFile, stat, statfs, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { inflateRawSync } from "node:zlib";
+import { crc32, deflateSync, inflateRawSync } from "node:zlib";
 
-import { convertOfficeFiles, runSoffice } from "@/lib/knowledge/office-convert";
+import {
+  convertOfficeFiles,
+  MIN_FREE_OUTPUT_BYTES,
+  runSoffice,
+} from "@/lib/knowledge/office-convert";
 import { OfficeArtifactStore } from "@/lib/knowledge/office-artifacts";
 import { assembleZip, deflatedPart, rawPart, readZipEntries } from "@/lib/knowledge/office-zip";
 import { extractPdfPages } from "@/lib/knowledge/pdf-extract";
@@ -295,6 +299,125 @@ describe.skipIf(!hasSoffice)("convertOfficeFiles against a real LibreOffice", ()
 
       // The premise: the shape of an unloadable document, not a failed store.
       expect(stderr).toMatch(/source file could not be loaded/);
+      expect(outcomes[0].status, outcomes[0].reason).toBe("infrastructure");
+      expect(outcomes[0].reason).toMatch(/bytes free/);
+    },
+    300_000
+  );
+
+  /**
+   * A legacy `.doc` whose PDF weighs many times the file: one picture per
+   * page, a 64-pixel tile of noise repeated across 2000 × 2800 pixels. The
+   * `.doc` keeps it as a PNG, which the repetition shrinks to almost nothing;
+   * the PDF export recompresses it as a JPEG, which cannot see the repetition.
+   * Measured in the runtime image: five pages make a 868 KiB `.doc` and a
+   * 13.6 MiB PDF.
+   */
+  function picturesDoc(name: string, pages: number): string {
+    const [width, height, tile] = [2000, 2800, 64];
+    const chunk = (type: string, data: Buffer) => {
+      const length = Buffer.alloc(4);
+      length.writeUInt32BE(data.length);
+      const typed = Buffer.concat([Buffer.from(type, "latin1"), data]);
+      const crc = Buffer.alloc(4);
+      crc.writeUInt32BE(crc32(typed));
+      return Buffer.concat([length, typed, crc]);
+    };
+    let seed = 7;
+    const png = () => {
+      const noise = Buffer.alloc(tile * tile * 3);
+      for (let i = 0; i < noise.length; i++) {
+        seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+        noise[i] = seed & 255;
+      }
+      const row = width * 3 + 1;
+      const raw = Buffer.alloc(row * height);
+      for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+          noise.copy(
+            raw,
+            y * row + 1 + x * 3,
+            ((y % tile) * tile + (x % tile)) * 3,
+            ((y % tile) * tile + (x % tile)) * 3 + 3
+          );
+        }
+      }
+      const header = Buffer.alloc(13);
+      header.writeUInt32BE(width, 0);
+      header.writeUInt32BE(height, 4);
+      header[8] = 8; // bits per channel
+      header[9] = 2; // RGB
+      return Buffer.concat([
+        Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+        chunk("IHDR", header),
+        chunk("IDAT", deflateSync(raw)),
+        chunk("IEND", Buffer.alloc(0)),
+      ]);
+    };
+    const body = Array.from(
+      { length: pages },
+      (_, page) =>
+        `<text:p text:style-name="${page ? "Break" : "Standard"}">Page ${page + 1} of the picture report</text:p>` +
+        `<text:p><draw:frame draw:name="p${page}" text:anchor-type="as-char" svg:width="16cm" svg:height="22.4cm"><draw:image><office:binary-data>${png().toString("base64")}</office:binary-data></draw:image></draw:frame></text:p>`
+    ).join("");
+    const fodt = join(tmpRoot, name.replace(/\.doc$/, ".fodt"));
+    writeFileSync(
+      fodt,
+      `<?xml version="1.0" encoding="UTF-8"?>
+<office:document xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"
+ xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0"
+ xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"
+ xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0"
+ xmlns:svg="urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0"
+ xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0"
+ office:version="1.2" office:mimetype="application/vnd.oasis.opendocument.text">
+ <office:automatic-styles><style:style style:name="Break" style:family="paragraph"><style:paragraph-properties fo:break-before="page"/></style:style></office:automatic-styles>
+ <office:body><office:text>${body}</office:text></office:body>
+</office:document>`
+    );
+    return buildFixture("doc", name, fodt);
+  }
+
+  // Twelfth review, PR #1243: LibreOffice exports the PDF into its TMPDIR —
+  // inside the batch, on the artifact volume — and then copies it into
+  // --outdir. For a moment the PDF is on the volume twice, and a volume with
+  // room for it once fails the copy: exit 0, no PDF, `impl_store … failed`,
+  // and the volume free again afterwards. Same small volume as above.
+  it.skipIf(!process.env.KB_SMALL_VOLUME)(
+    "books a PDF that fit the volume once but not twice as infrastructure, not unreadable (twelfth review)",
+    async () => {
+      const source = picturesDoc("pictures.doc", 5);
+      // How large its PDF is, from a conversion on a volume with room.
+      const [roomy] = await convertOfficeFiles([{ absPath: source }], {
+        store: new OfficeArtifactStore(join(tmpRoot, "artifacts-pictures")),
+      });
+      expect(roomy.status, roomy.reason).toBe("converted");
+      const pdfBytes = (await stat(roomy.artifactPath!)).size;
+      let stderr = "";
+      let freeBytes = 0;
+
+      const outcomes = await convertOfficeFiles([{ absPath: source }], {
+        store: new OfficeArtifactStore(join(process.env.KB_SMALL_VOLUME!, "artifacts-pictures")),
+        runConverter: async (run) => {
+          const result = await runSoffice(run);
+          stderr = result.stderr;
+          return result;
+        },
+        statfs: async (dir) => {
+          const space = await statfs(dir);
+          freeBytes = space.bavail * space.bsize;
+          return space;
+        },
+      });
+
+      // The premise: room for the PDF once — and for the floor, and for twice
+      // the file — but not for the PDF twice, and LibreOffice said so.
+      expect(stderr).toMatch(/impl_store <file:\/\/[^>]*\/0\.pdf> failed/);
+      expect(freeBytes).toBeGreaterThan(pdfBytes);
+      expect(freeBytes).toBeGreaterThan(
+        Math.max(MIN_FREE_OUTPUT_BYTES, 2 * (await stat(source)).size)
+      );
+      expect(freeBytes).toBeLessThan(2 * pdfBytes);
       expect(outcomes[0].status, outcomes[0].reason).toBe("infrastructure");
       expect(outcomes[0].reason).toMatch(/bytes free/);
     },
