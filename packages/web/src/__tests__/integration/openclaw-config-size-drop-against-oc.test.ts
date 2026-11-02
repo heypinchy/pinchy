@@ -60,15 +60,38 @@ vi.mock("@/server/openclaw-client", () => ({
 
 // In production Pinchy cannot read secrets.json: start-openclaw.sh's 50 ms
 // fix-config-permissions tick chowns it to root:root 0600, and Pinchy runs as
-// uid 999. Nothing here may depend on reading it, so here it cannot be read.
-vi.mock("@/lib/openclaw-secrets", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@/lib/openclaw-secrets")>()),
-  readSecretsFile: () => {
-    throw Object.assign(new Error("EACCES: permission denied, open 'secrets.json'"), {
-      code: "EACCES",
-    });
+// uid 999. Nothing here may depend on reading it, so here Pinchy cannot read
+// it either: `fs.readFileSync` of the current test's secrets.json throws
+// EACCES. That is the one call every Pinchy read of the file goes through —
+// `readSecretsFile`, and `writeSecretsFile`'s read of the previous file (for
+// its reload flag and the identical-write skip) — and both run unmocked on top
+// of it. Pinchy reads the file through no other fs API today; one that did
+// would escape this seam.
+//
+// OpenClaw reads the same file, as root does in production, and must succeed:
+// its dist/ is loaded by Node itself (vitest externalizes node_modules), so
+// this mock never reaches it — every `startOpenClaw()` below that resolves a
+// SecretRef proves that. The test reads the file the same way, through
+// `readAsOpenClaw`.
+const unreadableToPinchy = vi.hoisted(() => ({
+  path: "",
+  readAsOpenClaw: (_path: string): string => {
+    throw new Error("fs mock not loaded");
   },
 }));
+vi.mock("fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("fs")>();
+  unreadableToPinchy.readAsOpenClaw = (path) => actual.readFileSync(path, "utf-8");
+  const readFileSync = ((path: Parameters<typeof actual.readFileSync>[0], ...rest: unknown[]) => {
+    if (unreadableToPinchy.path !== "" && String(path) === unreadableToPinchy.path) {
+      throw Object.assign(new Error(`EACCES: permission denied, open '${String(path)}'`), {
+        code: "EACCES",
+      });
+    }
+    return (actual.readFileSync as (...args: unknown[]) => unknown)(path, ...rest);
+  }) as typeof actual.readFileSync;
+  return { ...actual, default: { ...actual, readFileSync }, readFileSync };
+});
 
 type Json = Record<string, unknown>;
 
@@ -226,6 +249,7 @@ describe("a >50% provider deletion against OpenClaw's real config.get / config.a
     ocConfigPath = join(dir, "openclaw.json");
     pinchyConfigPath = join(dir, "pinchy-must-not-write.json");
     secretsPath = join(dir, "secrets.json");
+    unreadableToPinchy.path = secretsPath;
     process.env.OPENCLAW_STATE_DIR = dir;
     vi.resetModules();
   });
@@ -233,6 +257,7 @@ describe("a >50% provider deletion against OpenClaw's real config.get / config.a
   afterEach(() => {
     delete process.env.OPENCLAW_STATE_DIR;
     delete process.env.OPENCLAW_CONFIG_PATH;
+    unreadableToPinchy.path = "";
     rmSync(dir, { recursive: true, force: true });
     vi.restoreAllMocks();
   });
@@ -323,14 +348,15 @@ describe("a >50% provider deletion against OpenClaw's real config.get / config.a
   // reads it, changes one block and applies it). Pinchy therefore first writes
   // the on-disk file with the deleted provider as a key-less stub that keeps
   // its models (keyless-bridge.ts). Pinchy reads secrets.json for none of this
-  // — in production it cannot (root:root 0600; see the mock at the top).
+  // — in production it cannot (root:root 0600), and here it cannot either
+  // (the fs mock at the top).
   it("leaves OpenClaw a file it can restart on and apply while a deletion is handed over", async () => {
     process.env.OPENCLAW_CONFIG_PATH = pinchyConfigPath;
     process.env.OPENCLAW_SECRETS_PATH = secretsPath;
     const { pushConfigInBackground } = await import("@/lib/openclaw-config/write");
     const { getPendingConfigPushCount } = await import("@/lib/openclaw-config/push-state");
     const { keylessBridge } = await import("@/lib/openclaw-config/keyless-bridge");
-    const { writeSecretsFile } = await import("@/lib/openclaw-secrets");
+    const { writeSecretsFile, readSecretsFile } = await import("@/lib/openclaw-secrets");
     process.env.OPENCLAW_CONFIG_PATH = ocConfigPath;
     const { writeConfigFile } = await import("openclaw/plugin-sdk/config-runtime");
     type OcConfig = Parameters<typeof writeConfigFile>[0];
@@ -340,6 +366,9 @@ describe("a >50% provider deletion against OpenClaw's real config.get / config.a
       request(handlers["config.apply"], { raw, ...(baseHash ? { baseHash } : {}), ...options });
     try {
       writeSecrets({ anthropic: { apiKey: "sk-ant-test" }, "acme-llm": { apiKey: "sk-acme" } });
+      expect(() => readSecretsFile(), "precondition: Pinchy cannot read secrets.json").toThrow(
+        /EACCES/
+      );
       await writeConfigFile(config({ "acme-llm": acme() }) as OcConfig);
       await promoteToLastKnownGood();
       vi.spyOn(console, "log").mockImplementation(() => {});
@@ -409,7 +438,7 @@ describe("a >50% provider deletion against OpenClaw's real config.get / config.a
       expect(final.models.providers).not.toHaveProperty("acme-llm");
       await startOpenClaw();
       // …and the key was never anywhere again after the regenerate.
-      expect(JSON.parse(readFileSync(secretsPath, "utf-8"))).toEqual(authoritative);
+      expect(JSON.parse(unreadableToPinchy.readAsOpenClaw(secretsPath))).toEqual(authoritative);
       expect(existsSync(pinchyConfigPath), "the push wrote no file itself").toBe(false);
     } finally {
       delete process.env.OPENCLAW_SECRETS_PATH;
@@ -517,7 +546,7 @@ describe("a >50% provider deletion against OpenClaw's real config.get / config.a
       expect(started.models.providers["acme-llm"]).not.toHaveProperty("apiKey");
       expect(started.models.providers["acme-llm"].models).toHaveLength(40);
       expect(started.models.providers.ollama.models).toHaveLength(80);
-      expect(JSON.parse(readFileSync(secretsPath, "utf-8"))).toEqual(bundle);
+      expect(JSON.parse(unreadableToPinchy.readAsOpenClaw(secretsPath))).toEqual(bundle);
     } finally {
       delete process.env.OPENCLAW_SECRETS_PATH;
     }
@@ -528,7 +557,7 @@ describe("a >50% provider deletion against OpenClaw's real config.get / config.a
   // secrets.json and takes the old one out — while openclaw.json still names
   // the old one. An earlier fix kept the old slot in secrets.json for that
   // window, reading its value back from the file; Pinchy cannot read it in
-  // production (see the mock at the top), so it kept nothing. Here, in
+  // production, so it kept nothing (nor here: the fs mock at the top). Here, in
   // regenerate's order (superseded-secret-slot.test.ts pins it): the key-less
   // bridge, secrets.json, then the provider's entry from the target. After
   // every one of those writes OpenClaw starts, and accepts a targeted writer's
@@ -629,7 +658,7 @@ describe("a >50% provider deletion against OpenClaw's real config.get / config.a
       expect(getPendingConfigPushCount()).toBe(0);
       expect(errorSpy.mock.calls.flat().join(" ")).toBe("");
       expect(await usable()).toMatchObject({ baseUrl: "https://new-gateway.example/v1" });
-      expect(JSON.parse(readFileSync(secretsPath, "utf-8"))).toEqual(authoritative);
+      expect(JSON.parse(unreadableToPinchy.readAsOpenClaw(secretsPath))).toEqual(authoritative);
       expect(existsSync(pinchyConfigPath), "the push wrote no file itself").toBe(false);
     } finally {
       delete process.env.OPENCLAW_SECRETS_PATH;

@@ -171,13 +171,21 @@ vi.mock("@/lib/gateway-token-source", () => ({
   getOrCreateGatewayToken: mockedGetOrCreateGatewayToken,
 }));
 
-const { mockWriteSecretsFile, mockReadSecretsFile } = vi.hoisted(() => ({
+const { mockWriteSecretsFile, mockReadSecretsFile, actualSecrets } = vi.hoisted(() => ({
   mockWriteSecretsFile: vi.fn(),
   mockReadSecretsFile: vi.fn().mockReturnValue({}),
+  // The real functions, for tests that run them on top of the mocked fs
+  // (secretsUnreadableToPinchy).
+  actualSecrets: {} as Pick<
+    typeof import("@/lib/openclaw-secrets"),
+    "writeSecretsFile" | "readSecretsFile"
+  >,
 }));
 
 vi.mock("@/lib/openclaw-secrets", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/openclaw-secrets")>();
+  actualSecrets.writeSecretsFile = actual.writeSecretsFile;
+  actualSecrets.readSecretsFile = actual.readSecretsFile;
   return {
     ...actual,
     writeSecretsFile: mockWriteSecretsFile,
@@ -8732,6 +8740,41 @@ describe("regenerateOpenClawConfig size-drop guard vs deliberate provider remova
       });
   }
 
+  /**
+   * secrets.json as production has it: Pinchy (uid 999) cannot read it —
+   * fix-config-permissions.sh chowns it to root:root 0600 every 50 ms. Here
+   * the mocked `fs.readFileSync` throws EACCES for its path, and that is the
+   * one call both of Pinchy's reads of it go through: `readSecretsFile`, and
+   * `writeSecretsFile`'s read of the previous file (for its reload flag and
+   * the identical-write skip). Both run unmocked on top of it — the real
+   * `writeSecretsFile` writes through the mocked fs, so nothing reaches disk —
+   * and `onWrite` sees each bundle just before it is written. Every other
+   * read answers `readOpenClawJson()`.
+   */
+  function secretsUnreadableToPinchy(
+    readOpenClawJson: () => string,
+    onWrite: (bundle: Record<string, unknown>) => void
+  ) {
+    const secretsPath = process.env.OPENCLAW_SECRETS_PATH || "/openclaw-secrets/secrets.json";
+    mockedReadFileSync.mockImplementation((path) => {
+      if (String(path) === secretsPath) {
+        throw Object.assign(new Error(`EACCES: permission denied, open '${secretsPath}'`), {
+          code: "EACCES",
+        });
+      }
+      return readOpenClawJson();
+    });
+    mockReadSecretsFile.mockImplementation(() => actualSecrets.readSecretsFile());
+    mockWriteSecretsFile.mockImplementation((bundle: Record<string, unknown>) => {
+      onWrite(bundle);
+      return actualSecrets.writeSecretsFile(bundle);
+    });
+    expect(
+      () => actualSecrets.readSecretsFile(),
+      "precondition: Pinchy cannot read secrets.json"
+    ).toThrow(/EACCES/);
+  }
+
   beforeEach(() => {
     vi.clearAllMocks();
     mockedGetOrCreateGatewayToken.mockResolvedValue("test-gateway-token");
@@ -8980,10 +9023,6 @@ describe("regenerateOpenClawConfig size-drop guard vs deliberate provider remova
     mockListProvidersWithApiKeys.mockResolvedValue([keyedRow(makeLargeCustomProvider())]);
     const existing = await regenerateAndCapture();
     expect(JSON.parse(existing).models.providers.ollama.models).toHaveLength(80);
-    mockedReadFileSync.mockReturnValue(existing);
-    mockReadSecretsFile.mockImplementation(() => {
-      throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
-    });
     mockGetClient.mockReturnValue(undefined);
 
     // Boot after a host reboot: the admin had deleted the custom provider and
@@ -8993,11 +9032,13 @@ describe("regenerateOpenClawConfig size-drop guard vs deliberate provider remova
     vi.mocked(fetchOllamaLocalModelsFromUrl).mockResolvedValue([]);
     const order: string[] = [];
     let secrets: Record<string, unknown> = {};
-    mockWriteSecretsFile.mockImplementation((bundle: Record<string, unknown>) => {
-      secrets = bundle;
-      order.push("secrets.json");
-      return false;
-    });
+    secretsUnreadableToPinchy(
+      () => existing,
+      (bundle) => {
+        secrets = bundle;
+        order.push("secrets.json");
+      }
+    );
     mockedWriteFileSync.mockImplementation((path: unknown) => {
       if (typeof path === "string" && path.endsWith("openclaw.json.tmp")) {
         order.push("openclaw.json");
@@ -9191,13 +9232,9 @@ describe("regenerateOpenClawConfig size-drop guard vs deliberate provider remova
     // resolve: OpenClaw restarting, and a targeted Telegram write of the file
     // (refused otherwise, after which its fallback used to write that file).
     // Pinchy cannot read secrets.json in production (root:root 0600), so here
-    // it cannot either.
+    // no read of it succeeds either (secretsUnreadableToPinchy).
     const existing = await installWithLargeCustomProvider();
     let ocFile = existing;
-    mockedReadFileSync.mockImplementation(() => ocFile);
-    mockReadSecretsFile.mockImplementation(() => {
-      throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
-    });
     let secretsOnDisk: Record<string, unknown> = {
       providers: { anthropic: { apiKey: "sk-ant-test" }, [ACME_SLOT]: { apiKey: "acme-key" } },
     };
@@ -9208,12 +9245,14 @@ describe("regenerateOpenClawConfig size-drop guard vs deliberate provider remova
     const check = (after: string) =>
       violations.push(...unresolvable(ocFile, secretsOnDisk).map((id) => `${after} left ${id}`));
     const order: string[] = [];
-    mockWriteSecretsFile.mockImplementation((bundle: Record<string, unknown>) => {
-      secretsOnDisk = bundle;
-      order.push("secrets.json");
-      check("secrets write");
-      return false;
-    });
+    secretsUnreadableToPinchy(
+      () => ocFile,
+      (bundle) => {
+        secretsOnDisk = bundle;
+        order.push("secrets.json");
+        check("secrets write");
+      }
+    );
     // Pinchy's own write (writeConfigAtomic: tmp, then rename) lands in OpenClaw's file.
     mockedWriteFileSync.mockImplementation((path: unknown, content: unknown) => {
       if (typeof path === "string" && path.endsWith("openclaw.json.tmp")) {
@@ -9301,20 +9340,18 @@ describe("regenerateOpenClawConfig size-drop guard vs deliberate provider remova
     // (that OpenClaw does start on this shape is proven against its real
     // startup code in integration/openclaw-config-size-drop-against-oc.test.ts).
     const existing = await installWithLargeCustomProvider();
-    mockedReadFileSync.mockReturnValue(existing);
-    mockReadSecretsFile.mockImplementation(() => {
-      throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
-    });
     mockGetClient.mockReturnValue(undefined);
     mockListOpenAiCompatibleProviders.mockResolvedValue([]);
     mockListProvidersWithApiKeys.mockResolvedValue([]);
     const order: string[] = [];
     let secrets: Record<string, unknown> = {};
-    mockWriteSecretsFile.mockImplementation((bundle: Record<string, unknown>) => {
-      secrets = bundle;
-      order.push("secrets.json");
-      return false;
-    });
+    secretsUnreadableToPinchy(
+      () => existing,
+      (bundle) => {
+        secrets = bundle;
+        order.push("secrets.json");
+      }
+    );
     mockedWriteFileSync.mockImplementation((path: unknown) => {
       if (typeof path === "string" && path.endsWith("openclaw.json.tmp")) {
         order.push("openclaw.json");
