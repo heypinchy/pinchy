@@ -239,6 +239,17 @@ export function resetCustomModelCache(): void {
   customProviderModelCache.clear();
 }
 
+/**
+ * The last live model list fetched for `slug`, however old, or `undefined`
+ * when none was. Never fetches. For a provider whose base URL is refused,
+ * which must not be fetched (the request would carry its key to the refused
+ * address) but whose emitted list should not shrink to the saved snapshot —
+ * see `refusedProviderModels` in openai-compatible-stored-url.ts.
+ */
+export function cachedCustomProviderModels(slug: string): OpenClawModelDefinition[] | undefined {
+  return customProviderModelCache.get(slug)?.result;
+}
+
 /** The inputs `resolveCustomProviderModels` needs to resolve one provider's live model list. */
 export interface CustomProviderModelSource {
   /** Cache key. Stable per row (immutable once created). */

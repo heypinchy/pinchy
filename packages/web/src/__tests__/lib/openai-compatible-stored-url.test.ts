@@ -4,6 +4,7 @@ import {
   refusedBaseUrlReason,
   refusedBaseUrlReasons,
   refusedBaseUrlsForEmission,
+  refusedProviderModels,
 } from "@/lib/openai-compatible-stored-url";
 import { PROVIDER_DNS_LOOKUP_TIMEOUT_MS, type HostResolver } from "@/lib/provider-url-guard";
 
@@ -12,6 +13,12 @@ import { PROVIDER_DNS_LOOKUP_TIMEOUT_MS, type HostResolver } from "@/lib/provide
 // hangs is the case under test, and no test here touches real DNS.
 const { mockLookup } = vi.hoisted(() => ({ mockLookup: vi.fn() }));
 vi.mock("dns/promises", () => ({ default: { lookup: mockLookup }, lookup: mockLookup }));
+
+const { mockCachedModels } = vi.hoisted(() => ({ mockCachedModels: vi.fn() }));
+vi.mock("@/lib/openai-compatible-discovery", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/openai-compatible-discovery")>()),
+  cachedCustomProviderModels: mockCachedModels,
+}));
 
 /**
  * Config emission must not hand OpenClaw a saved OpenAI-compatible provider
@@ -208,5 +215,63 @@ describe("refusedBaseUrlReasons", () => {
     expect(settled?.size).toBe(0);
     // The same guard as everywhere else, so the same timeout.
     expect(mockLookup).toHaveBeenCalledWith("llm.acme.example", { all: true });
+  });
+});
+
+describe("refusedProviderModels", () => {
+  // A refused provider is never fetched, so its emitted list comes from what
+  // Pinchy already knows. The saved snapshot is the LAST resort: while the
+  // provider was allowed, openclaw.json held the live list, and a snapshot of
+  // one manual id in its place shrinks the file past the size-drop guard,
+  // which then refuses the very write that takes the URL out (#311).
+  const model = (id: string) => ({
+    id,
+    name: id,
+    contextWindow: 8192,
+    maxTokens: 4096,
+    reasoning: false,
+    vision: false,
+    input: ["text" as const],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+  });
+  const snapshot = [model("snap")];
+  const onDisk = (slug: string, models: unknown) => ({
+    models: { providers: { [slug]: { baseUrl: "http://10.0.0.1/v1", models } } },
+  });
+
+  beforeEach(() => {
+    mockCachedModels.mockReset();
+    mockCachedModels.mockReturnValue(undefined);
+  });
+
+  it("prefers the list the existing openclaw.json holds for the slug", () => {
+    mockCachedModels.mockReturnValue([model("cached")]);
+    const ids = refusedProviderModels(onDisk("imds", [model("a"), model("b")]), {
+      slug: "imds",
+      models: snapshot,
+    }).map((m) => m.id);
+    expect(ids).toEqual(["a", "b"]);
+  });
+
+  it("falls back to the last live list when the file has no usable entry", () => {
+    mockCachedModels.mockReturnValue([model("cached")]);
+    for (const existing of [
+      {},
+      onDisk("other", [model("a")]),
+      onDisk("imds", []),
+      onDisk("imds", "not-a-list"),
+      onDisk("imds", [{ name: "no id" }]),
+    ]) {
+      expect(
+        refusedProviderModels(existing, { slug: "imds", models: snapshot }).map((m) => m.id)
+      ).toEqual(["cached"]);
+    }
+    expect(mockCachedModels).toHaveBeenCalledWith("imds");
+  });
+
+  it("falls back to the saved snapshot when nothing else is known", () => {
+    expect(refusedProviderModels({}, { slug: "imds", models: snapshot })).toEqual(snapshot);
+    mockCachedModels.mockReturnValue([]);
+    expect(refusedProviderModels({}, { slug: "imds", models: snapshot })).toEqual(snapshot);
   });
 });

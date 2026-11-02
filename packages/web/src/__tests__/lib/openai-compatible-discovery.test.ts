@@ -5,6 +5,7 @@ import {
   fetchOpenAiCompatibleModels,
   resolveCustomProviderModels,
   resetCustomModelCache,
+  cachedCustomProviderModels,
   type CustomProviderModelSource,
 } from "@/lib/openai-compatible-discovery";
 import { DEFAULT_MODEL_CAPS } from "@/lib/model-catalog";
@@ -302,6 +303,48 @@ describe("resolveCustomProviderModels", () => {
 
     expect(acme.map((m) => m.id)).toEqual(["acme-large"]);
     expect(beta.map((m) => m.id)).toEqual(["beta-large"]);
+  });
+});
+
+describe("cachedCustomProviderModels", () => {
+  // A provider whose base URL is refused is never fetched, but its emitted
+  // block must not shrink to the saved snapshot (see build.ts). The last live
+  // list is the next-best size, and reading it must not touch the network.
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetCustomModelCache();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("is undefined when no live list was ever fetched", () => {
+    expect(cachedCustomProviderModels("acme")).toBeUndefined();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("returns the last live list, even after the TTL, without fetching", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.mocked(fetch).mockResolvedValue(
+      new Response(JSON.stringify({ data: [{ id: "acme-large" }, { id: "acme-small" }] }), {
+        status: 200,
+      })
+    );
+    await resolveCustomProviderModels({
+      slug: "acme",
+      baseUrl: "https://acme.example.com/v1",
+      apiKey: "sk-key",
+      models: [],
+    });
+    vi.mocked(fetch).mockClear();
+    vi.setSystemTime(Date.now() + 2 * 60 * 60 * 1000);
+
+    expect(cachedCustomProviderModels("acme")?.map((m) => m.id)).toEqual([
+      "acme-large",
+      "acme-small",
+    ]);
+    expect(cachedCustomProviderModels("beta")).toBeUndefined();
+    expect(fetch).not.toHaveBeenCalled();
   });
 });
 

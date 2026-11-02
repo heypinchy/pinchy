@@ -23,8 +23,13 @@
 // size-drop guard (#311, build.ts) refuses — and so does OpenClaw's
 // `config.apply` (`size-drop:OLD->NEW`, no override from the RPC). The
 // write was refused, the refused URL stayed live, and so did every later
-// config change. Replacing one string keeps the file the size it was.
+// config change. Replacing one string keeps the file the size it was —
+// provided the model list stays the one the file already holds, which is the
+// live /models list, not the snapshot saved with the provider
+// (`refusedProviderModels`).
 
+import { cachedCustomProviderModels } from "@/lib/openai-compatible-discovery";
+import type { OpenClawModelDefinition } from "@/lib/openclaw-builtin-models";
 import {
   assertAllowedProviderUrl,
   memoizeResolver,
@@ -125,4 +130,32 @@ export async function refusedBaseUrlsForEmission(
     );
   }
   return refused;
+}
+
+/**
+ * The model list to emit for a refused provider, which is never fetched.
+ *
+ * While the provider was allowed, openclaw.json held its LIVE /models list.
+ * The snapshot saved with the provider can be far smaller — one model id
+ * typed by hand, or a catalogue that has grown since — and emitting it in
+ * place of the live list shrank the file past the size-drop guard (#311),
+ * which refused the write that was meant to take the URL out. So: the list
+ * the existing file already holds for this slug, else the last live list
+ * Pinchy fetched, else the snapshot.
+ */
+export function refusedProviderModels(
+  existingConfig: Record<string, unknown>,
+  provider: { slug: string; models: OpenClawModelDefinition[] }
+): OpenClawModelDefinition[] {
+  const models = (existingConfig.models as { providers?: Record<string, { models?: unknown }> })
+    ?.providers?.[provider.slug]?.models;
+  if (
+    Array.isArray(models) &&
+    models.length > 0 &&
+    models.every((m) => typeof (m as { id?: unknown } | null)?.id === "string")
+  ) {
+    return models as OpenClawModelDefinition[];
+  }
+  const cached = cachedCustomProviderModels(provider.slug);
+  return cached && cached.length > 0 ? cached : provider.models;
 }

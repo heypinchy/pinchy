@@ -140,6 +140,9 @@ const { mockResolveCustomProviderModels } = vi.hoisted(() => ({
 
 vi.mock("@/lib/openai-compatible-discovery", () => ({
   resolveCustomProviderModels: mockResolveCustomProviderModels,
+  // No live list cached: a refused provider's list comes from the existing
+  // file, else its snapshot.
+  cachedCustomProviderModels: vi.fn(() => undefined),
 }));
 
 // Emission re-checks each custom provider's saved base URL with the SSRF guard
@@ -9017,6 +9020,70 @@ describe("OpenAI-compatible custom providers (#894)", () => {
       const written = writtenOpenClawConfig(mockedWriteFileSync);
       expect(written).not.toContain("100.100.100.200");
       expect(JSON.parse(written).models.providers.imds.models).toHaveLength(40);
+    } finally {
+      warn.mockRestore();
+      error.mockRestore();
+    }
+  });
+
+  it("keeps a refused provider's on-disk model list when its saved snapshot is much smaller", async () => {
+    // While a provider is allowed, its block holds the LIVE /models list, not
+    // the snapshot saved with the provider — one manual model id, or a
+    // catalogue that has grown since. Emitting the snapshot once the URL is
+    // refused shrank the file by more than half: the size-drop guard refused
+    // the write, so the refused baseUrl and key stayed live, and so did every
+    // later config change.
+    const manyModels = Array.from({ length: 40 }, (_, i) =>
+      makeModel({ id: `rebound-model-${i}`, name: `Rebound Model ${i}` })
+    );
+    const imds = makeProvider({
+      id: "prov-2",
+      slug: "imds",
+      displayName: "Rebound",
+      baseUrl: "http://100.100.100.200/v1",
+      models: [manyModels[0]],
+    });
+    mockedReadFileSync.mockReturnValue(
+      JSON.stringify(
+        {
+          gateway: { mode: "local", bind: "lan", auth: { mode: "token", token: "t" } },
+          models: {
+            providers: {
+              imds: {
+                baseUrl: "http://100.100.100.200/v1",
+                api: "openai-completions",
+                apiKey: { source: "file", provider: "pinchy", id: "/providers/imds/apiKey" },
+                models: manyModels.map(({ vision: _vision, ...m }) => ({
+                  ...m,
+                  contextTokens: 32000,
+                  compat: { supportsUsageInStreaming: true },
+                })),
+              },
+            },
+          },
+        },
+        null,
+        2
+      ) + "\n"
+    );
+    mockListOpenAiCompatibleProviders.mockResolvedValue([imds]);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      await regenerateOpenClawConfig();
+
+      expect(error.mock.calls.flat().join(" ")).not.toMatch(/suspiciously small/i);
+      const written = writtenOpenClawConfig(mockedWriteFileSync);
+      expect(written).not.toContain("100.100.100.200");
+      const refused = JSON.parse(written).models.providers.imds;
+      expect(refused.baseUrl).toBe(REFUSED_BASE_URL);
+      expect(refused).not.toHaveProperty("apiKey");
+      expect(refused.models.map((m: { id: string }) => m.id)).toEqual(manyModels.map((m) => m.id));
+      // Never fetched to find the list: discovery would send the key.
+      expect(mockResolveCustomProviderModels).not.toHaveBeenCalledWith(
+        expect.objectContaining({ slug: "imds" })
+      );
     } finally {
       warn.mockRestore();
       error.mockRestore();

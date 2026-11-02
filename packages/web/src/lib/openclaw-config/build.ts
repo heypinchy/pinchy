@@ -29,7 +29,11 @@ import {
 } from "@/lib/openclaw-builtin-models";
 import { listOpenAiCompatibleProviders } from "@/lib/openai-compatible-providers";
 import { resolveCustomProviderModels } from "@/lib/openai-compatible-discovery";
-import { REFUSED_BASE_URL, refusedBaseUrlsForEmission } from "@/lib/openai-compatible-stored-url";
+import {
+  REFUSED_BASE_URL,
+  refusedBaseUrlsForEmission,
+  refusedProviderModels,
+} from "@/lib/openai-compatible-stored-url";
 import {
   getOpenClawWorkspacePath,
   getAgentBootstrapSizes,
@@ -1471,13 +1475,14 @@ export async function regenerateOpenClawConfig() {
   // supplies slug/baseUrl/snapshot and backs the default-provider guard;
   // `providerSecrets` (already fetched for the secrets bundle) supplies the
   // decrypted key discovery needs without a second DB round trip.
-  // A saved base URL the SSRF guard now refuses keeps its entry and saved
-  // models (so the file keeps its size — see openai-compatible-stored-url.ts)
-  // but points at REFUSED_BASE_URL, carries no key, and is never fetched.
+  // A saved base URL the SSRF guard now refuses keeps its entry and the model
+  // list the file already holds (so the file keeps its size — see
+  // openai-compatible-stored-url.ts) but points at REFUSED_BASE_URL, carries
+  // no key, and is never fetched.
   for (const p of customProviders) {
     const refused = refusedCustomProviders.has(p.slug);
     const models = refused
-      ? p.models
+      ? refusedProviderModels(existing, p)
       : await resolveCustomProviderModels({
           slug: p.slug,
           baseUrl: p.baseUrl,
