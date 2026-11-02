@@ -5,8 +5,8 @@
 // table (db/schema.ts) actually matches the plugin's `apiKeySchema` — a missing
 // column or wrong nullability would surface here as an insert/select failure.
 //
-// Provisioned by global-setup.ts (fresh migrated DB) and truncated between tests
-// (setup.ts). Everything runs for real — no mocks.
+// Provisioned by global-setup.ts (fresh migrated DB) and emptied between tests
+// by the integration reset (setup.ts). Everything runs for real — no mocks.
 
 import { describe, it, expect } from "vitest";
 import { eq } from "drizzle-orm";

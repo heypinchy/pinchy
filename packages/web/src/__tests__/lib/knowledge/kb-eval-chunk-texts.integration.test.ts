@@ -57,9 +57,9 @@ async function seed(sourcePath: string, texts: string[]) {
 }
 
 describe("fetchChunkTexts", () => {
-  // Seeding belongs in `beforeEach`, not `beforeAll`: the integration harness
-  // TRUNCATEs every application table between tests (test-helpers/integration/
-  // setup.ts), so a `beforeAll` seed is gone by the time the first test runs.
+  // Seeding belongs in `beforeEach`, not `beforeAll`: every application table
+  // is emptied between tests by the integration reset (test-helpers/integration/
+  // reset-db.ts), so a `beforeAll` seed is gone by the time the first test runs.
   beforeEach(async () => {
     await seed(PATH_A, ["Alpha first passage.", "Alpha second passage."]);
     await seed(PATH_B, ["Beta only passage."]);

@@ -5,7 +5,7 @@
 // invites/users/userGroups schemas, or Better Auth's signUpEmail integration
 // worked end-to-end. This suite exercises all of them against a freshly
 // migrated Postgres test database (provisioned by global-setup.ts) and
-// truncated between cases (setup.ts).
+// emptied between cases by the integration reset.
 //
 // What stays mocked, and why:
 //   - @/lib/personal-agent.seedPersonalAgent — touches the real filesystem
