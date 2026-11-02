@@ -232,19 +232,25 @@ read-write finance templates carry.
 
 Pinchy fetches the URL you enter from its own server, so an admin who can add a connection can point it at anything that server can reach. That's why we only connect to a URL that lands on a public address — and we check the address it actually resolves to, not just how the hostname reads. A name like `erp.yourcompany.com` pointing at `10.0.0.5` is the same request as typing `10.0.0.5` directly.
 
-If your Odoo genuinely lives on your own network — on `10.x`, `172.16–31.x`, `192.168.x`, a Tailscale or other carrier-grade-NAT address (`100.64.0.0/10`), or an IPv6 unique-local range — set the environment variable on the Pinchy container and restart it:
+If your Odoo genuinely lives on your own network — on `10.x`, `172.16–31.x`, `192.168.x`, a Tailscale or other carrier-grade-NAT address (`100.64.0.0/10`), `198.18.0.0/15`, or an IPv6 unique-local range — set the environment variable on the Pinchy container and restart it:
 
 ```bash
 ALLOW_PRIVATE_URLS=1
 ```
 
-That opens your private network and nothing else. Loopback and link-local addresses stay blocked either way — `localhost`, `127.0.0.1`, `::1`, and the cloud metadata endpoints `169.254.169.254`, `fd00:ec2::254` and `100.100.100.200` — and so do `0.0.0.0`, multicast, broadcast and the reserved test ranges (`198.18.0.0/15`, `192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24`, `240.0.0.0/4`). No Odoo server lives there, so there's nothing to trade off. It's the same two-tier switch [`ALLOW_PRIVATE_MAIL_HOSTS`](/guides/connect-email-imap/#mail-servers-on-your-own-network) is for mail servers, and a hostname is still resolved and checked with it set.
+That opens your private network and nothing else. Loopback and link-local addresses stay blocked either way — `localhost`, `127.0.0.1`, `::1`, and the cloud metadata endpoints `169.254.169.254`, `100.100.100.200` (Alibaba Cloud), and on IPv6 `fd00:ec2::254` (AWS), `fd00:ec2::23` (the EKS Pod Identity Agent), `fd20:ce::254` (Google Cloud) and `fd00:c1::a9fe:a9fe` (Oracle Cloud) — and so do `0.0.0.0/8`, multicast, broadcast and the reserved test ranges (`192.0.0.0/24`, `192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24`, `240.0.0.0/4`). No Odoo server lives there, so there's nothing to trade off. It's the same two-tier switch [`ALLOW_PRIVATE_MAIL_HOSTS`](/guides/connect-email-imap/#mail-servers-on-your-own-network) is for mail servers, and a hostname is still resolved and checked with it set.
 
 :::caution
 With the flag set, an admin who can add an Odoo connection can point Pinchy at anything on your private network, not only at Odoo. Set it only on an instance whose admins you'd trust with that reach anyway.
 :::
 
-The same check runs everywhere a URL is accepted, not only on the first connect: adding a connection, editing one, testing credentials, listing databases, previewing a sync, and re-syncing the schema. So a blocked address can't be stored and quietly reconnected to later.
+The same check runs everywhere a URL is accepted — adding a connection, editing one, testing credentials, listing databases, previewing a sync, re-syncing the schema — and again every time a saved connection is used: before an agent's Odoo tools receive the connection, and before **Test connection** contacts it. So a connection saved under older rules, or before the flag was removed, can't quietly keep reaching an address that's refused now. A refusal says why and leaves the connection's credentials alone; the agent's tool reports it, and the audit trail records it as `integration.credentials_denied` with the reason `destination-blocked`.
+
+Developing against an Odoo on your own machine? On OrbStack, `host.docker.internal` resolves to `0.250.250.254`, inside `0.0.0.0/8`, and is refused whatever you set — use the Odoo container's name or your machine's LAN address. Docker Desktop and Linux's `host-gateway` answer with a private address, where the flag is enough.
+
+:::note
+One gap remains. The check resolves the hostname, and the Odoo client resolves it again a moment later to connect, so a DNS server that answers differently the second time (DNS rebinding) isn't caught. Closing it would mean pinning the Odoo client's connection to the address we checked, which it doesn't support yet. If that matters for your network, use an IP address or a name your own DNS controls.
+:::
 
 ## Re-syncing when Odoo permissions change
 

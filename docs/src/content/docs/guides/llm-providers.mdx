@@ -146,8 +146,8 @@ Some endpoints — a bare vLLM server, say — don't publish a `/models` list. W
 
 Because Pinchy connects to the base URL from the server, it guards against being pointed at somewhere it shouldn't reach:
 
-- **Public endpoints** (sovereign clouds, hosted gateways) and **private-network endpoints** (a self-hosted vLLM/TGI box on your LAN, e.g. `http://10.0.0.5:8000/v1`, an IPv6 unique-local address, or a Tailscale `100.x` address) all work out of the box.
-- **Reserved and internal addresses are refused** — loopback (`localhost` inside the Pinchy container is Pinchy itself, not your host), cloud-metadata/link-local (`169.254.x.x`, `fd00:ec2::254`, `100.100.100.200`), multicast, the reserved test ranges, the IPv6 forms that wrap one of those addresses (NAT64, 6to4, Teredo), and non-`http(s)` URLs. These are never a real model endpoint, and blocking them protects the host Pinchy runs on. It's the same address table the Odoo and mail-server checks use.
+- **Public endpoints** (sovereign clouds, hosted gateways) and **private-network endpoints** (a self-hosted vLLM/TGI box on your LAN, e.g. `http://10.0.0.5:8000/v1`, an IPv6 unique-local address, a Tailscale `100.x` address, or `198.18.0.0/15`) all work out of the box.
+- **Reserved and internal addresses are refused** — loopback (`localhost` inside the Pinchy container is Pinchy itself, not your host), cloud-metadata/link-local (`169.254.x.x`, `100.100.100.200`, and the IPv6 metadata endpoints `fd00:ec2::254`, `fd00:ec2::23`, `fd20:ce::254` and `fd00:c1::a9fe:a9fe`), multicast, the reserved test ranges, the IPv6 forms that wrap one of those addresses (NAT64, 6to4, Teredo), and non-`http(s)` URLs. These are never a real model endpoint, and blocking them protects the host Pinchy runs on. It's the same address table the Odoo and mail-server checks use.
 
 If you operate Pinchy as a **managed/multi-tenant host** (where the person configuring a provider isn't the owner of the underlying network), set `PINCHY_PROVIDER_BLOCK_PRIVATE_NETWORKS=1` to also refuse private-network addresses. Self-hosted deployments leave it unset so LAN endpoints keep working.
 
