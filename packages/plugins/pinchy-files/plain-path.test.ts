@@ -59,6 +59,35 @@ describe("assertPlainPath", () => {
     refused(`/data/a${char}b.md`, why);
   });
 
+  // Fifth review of #1242: U+FE0F and U+200D were refused outright, so
+  // ordinary emoji file names could not be written or deleted although the
+  // card shows them unchanged. Inside an emoji they are part of a visible
+  // glyph; anywhere else they render as nothing and stay refused.
+  it.each([
+    ["an emoji with a presentation selector", "/data/notes/⚠️ offen.md"],
+    ["a heart with a presentation selector", "/data/notes/❤️ Team.md"],
+    ["a joined family", "/data/notes/👨‍👩‍👧 Familie.md"],
+    ["an emoji without format characters", "/data/notes/✅ done.md"],
+    ["a skin-toned joined emoji", "/data/notes/👩🏽‍💻 Dev.md"],
+    ["a flag joined with a selector", "/data/notes/🏳️‍🌈 Pride.md"],
+    ["a text-presentation selector", "/data/notes/⚠︎ text.md"],
+    ["a keycap", "/data/notes/1️⃣ first.md"],
+  ])("accepts %s", (_label, value) => {
+    ok(value);
+  });
+
+  it.each([
+    ["a joiner between letters", "/data/a\u200Db.md", /U\+200D/],
+    ["a presentation selector after a letter", "/data/report\uFE0F.md", /U\+FE0F/],
+    ["a presentation selector after a digit", "/data/report1\uFE0F.md", /U\+FE0F/],
+    ["a joiner after an emoji, before a letter", "/data/👨\u200Db.md", /U\+200D/],
+    ["a joiner trailing an emoji", "/data/👨\u200D.md", /U\+200D/],
+    ["a joiner before an emoji", "/data/a\u200D👨.md", /U\+200D/],
+    ["two selectors after an emoji", "/data/⚠\uFE0F\uFE0F.md", /U\+FE0F/],
+  ])("still refuses %s, which renders as nothing", (_label, value, why) => {
+    refused(value, why);
+  });
+
   it("still refuses an NFD path and a '..' segment", () => {
     refused("/data/übersicht.md", /NFC/);
     refused("/data/reports/../contracts/x.pdf", /\.\./);

@@ -5,6 +5,26 @@ import { hiddenCharIn, isSpaceSeparator } from "./hidden-chars";
 const MAX_PATH_LENGTH = 1024;
 
 /**
+ * One emoji as a file name carries it: a pictograph (or a keycap digit) with
+ * an optional presentation selector and skin tone, and any further pictographs
+ * joined to it by U+200D — ⚠️, ❤️, 👨‍👩‍👧, 👩🏽‍💻, 🏳️‍🌈, 1️⃣.
+ */
+const EMOJI_SEQUENCE =
+  /(?:\p{Extended_Pictographic}|[0-9#*](?=\uFE0F\u20E3))[\uFE0E\uFE0F]?\p{Emoji_Modifier}?(?:\u200D\p{Extended_Pictographic}[\uFE0E\uFE0F]?\p{Emoji_Modifier}?)*/gu;
+
+/**
+ * The path with the emoji format characters (`isEmojiFormatChar`) taken out of
+ * the emoji they belong to. Inside an emoji they are part of a visible glyph,
+ * and the card shows them unchanged — so `⚠️ offen.md` must be writable (fifth
+ * review of #1242). Anywhere else they render as nothing: `a\u200Db.md` looks
+ * exactly like `ab.md` and may be a different file, so a stray one is left in
+ * place for `hiddenCharIn` to refuse.
+ */
+function withoutEmojiFormatChars(value: string): string {
+  return value.replace(EMOJI_SEQUENCE, (emoji) => emoji.replace(/[\u200D\uFE0E\uFE0F]/g, ""));
+}
+
+/**
  * Refuses a path a write tool is asked to change unless it reads as exactly
  * the file it resolves to (second and third review of #1242).
  *
@@ -40,7 +60,7 @@ export function assertPlainPath(value: string, field: string): void {
         "Use a shorter path."
     );
   }
-  const hidden = hiddenCharIn(value, isSpaceSeparator);
+  const hidden = hiddenCharIn(withoutEmojiFormatChars(value), isSpaceSeparator);
   if (hidden) {
     throw new Error(
       `${field} contains an invisible or blank-rendering character (${hidden}). ` +

@@ -17,7 +17,9 @@
  *
  * - `isEmojiFormatChar` — U+200D, U+FE0E, U+FE0F. They take no space, sit
  *   inside ordinary emoji (👨‍👩‍👧, ❤️), and the card shows them as they are.
- *   A display name may carry them; an address may not.
+ *   A display name may carry them; an address may not; a path may only
+ *   inside an emoji (pinchy-files `plain-path.ts`) — anywhere else one
+ *   renders as nothing, and `a⟨U+200D⟩b.md` would pass for `ab.md`.
  * - `isSpaceSeparator` — every space separator other than U+0020 (`\p{Zs}`:
  *   no-break, narrow no-break, ideographic, …). They take visible width, and
  *   the card prints each one as `⟨U+XXXX⟩`. Real file names carry them —

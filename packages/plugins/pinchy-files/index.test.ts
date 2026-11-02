@@ -2132,6 +2132,40 @@ describe("write tools refuse a path that does not read as what it resolves to", 
     expect(existsSync(target)).toBe(true);
   });
 
+  // Fifth review of #1242: the emoji joiner and presentation selector were
+  // refused outright, so ordinary emoji names could be neither written nor
+  // deleted — though the card shows them unchanged.
+  it.each([
+    ["a presentation selector", "\u26A0\uFE0F offen.md"],
+    ["joined emoji", "\u{1F468}\u200D\u{1F469}\u200D\u{1F467} Familie.md"],
+  ])("writes and deletes an emoji name with %s", async (_l, name) => {
+    const target = join(tmpDir, name);
+    const written = await (
+      await toolNamed("pinchy_write")
+    ).execute("call-1", {
+      path: target,
+      content: "x",
+    });
+    expect(written.isError).toBeFalsy();
+    expect(existsSync(target)).toBe(true);
+
+    const deleted = await (await toolNamed("pinchy_delete")).execute("call-2", { path: target });
+    expect(deleted.isError).toBeFalsy();
+    expect(existsSync(target)).toBe(false);
+  });
+
+  it("still refuses a joiner outside an emoji, and writes nothing", async () => {
+    const result = await (
+      await toolNamed("pinchy_write")
+    ).execute("call-1", {
+      path: join(tmpDir, "a\u200Db.md"),
+      content: "x",
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/U\+200D/);
+    expect(existsSync(join(tmpDir, "a\u200Db.md"))).toBe(false);
+  });
+
   it("still writes an ordinary path, spaces and umlauts included", async () => {
     const tool = await toolNamed("pinchy_write");
     const target = join(tmpDir, "Q3 Bericht \u00FCber.md");
