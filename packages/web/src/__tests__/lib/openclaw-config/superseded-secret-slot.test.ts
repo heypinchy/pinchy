@@ -125,7 +125,7 @@ const { customProviders } = vi.hoisted(() => ({
     slug: string;
     displayName: string;
     baseUrl: string;
-    models: never[];
+    models: unknown[];
     apiKey: string;
     keyVersion: string;
   }[],
@@ -149,7 +149,8 @@ vi.mock("@/server/openclaw-client", () => ({
 
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { CONFIG_PATH } from "@/lib/openclaw-config/paths";
-import { _resetConfigPushState } from "@/lib/openclaw-config/push-state";
+import { _resetConfigPushState, getPendingConfigPushCount } from "@/lib/openclaw-config/push-state";
+import { pushConfigInBackground } from "@/lib/openclaw-config/write";
 import { referencedSecretIds } from "@/lib/openclaw-secrets";
 
 const SECRETS_PATH = process.env.OPENCLAW_SECRETS_PATH || "/openclaw-secrets/secrets.json";
@@ -379,5 +380,208 @@ describe("a superseded key slot outlives the config apply that moves OpenClaw of
       }
     }
     expect(writes.flatMap((w) => w.dangling)).toEqual([]);
+  });
+  // A re-key to an address that serves a much smaller catalogue: the payload
+  // shrinks a KEPT provider, so the #311 guard refuses it, as it refuses any
+  // kept provider's catalogue shrink under half the file. The refusal still
+  // takes the old slot out of secrets.json, so it still writes the bridge and
+  // the re-keyed entry — and each of those file writes must stay above
+  // OpenClaw's read-side check (under half of last-known-good, it restores
+  // `.bak`, which names the old slot). The real handlers judge the same files
+  // in integration/openclaw-config-size-drop-against-oc.test.ts.
+  describe("re-keyed to a much smaller catalogue (refused by the #311 guard)", () => {
+    const bigCatalogue = Array.from({ length: 40 }, (_, i) => ({
+      id: `acme-model-${i}-with-a-realistically-long-identifier`,
+      name: `Acme Model ${i} (realistic display name)`,
+      contextWindow: 128000,
+      maxTokens: 8192,
+      input: ["text"],
+    }));
+    const rekeyToSmallEndpoint = () => {
+      customProviders[0] = {
+        ...customProviders[0],
+        baseUrl: "https://small.example/v1",
+        models: [{ id: "small-model", name: "Small Model", input: ["text"] }],
+        apiKey: "sk-acme-new",
+        keyVersion: NEW_VERSION,
+      };
+    };
+    /** Boot with no gateway, so the big catalogue is on disk as OpenClaw's file. */
+    async function installWithBigCatalogue(): Promise<string> {
+      customProviders[0] = { ...customProviders[0], models: bigCatalogue };
+      mockGetClient.mockImplementation(() => {
+        throw new Error("OpenClaw client not initialized");
+      });
+      await regenerateOpenClawConfig();
+      await drain();
+      return files.get(CONFIG_PATH)!;
+    }
+
+    it("never file-writes a config under OpenClaw's read-side check, and resolves after every write", async () => {
+      const installed = await installWithBigCatalogue();
+      connectGateway();
+      writes = [];
+      const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      rekeyToSmallEndpoint();
+      await regenerateOpenClawConfig();
+      await drain();
+
+      expect(errorSpy.mock.calls.flat().join(" "), "precondition: refused").toMatch(
+        /suspiciously small/
+      );
+      expect(writes.map((w) => w.path)).toEqual([CONFIG_PATH, SECRETS_PATH, CONFIG_PATH]);
+      expect(writes.flatMap((w) => w.dangling)).toEqual([]);
+      for (const w of writes.filter((w) => w.path === CONFIG_PATH)) {
+        expect(
+          Buffer.byteLength(w.config),
+          "over half of the file OpenClaw last accepted, with headroom"
+        ).toBeGreaterThan(Buffer.byteLength(installed) * 0.55);
+      }
+      const acme = JSON.parse(files.get(CONFIG_PATH)!).models.providers["acme-llm"];
+      expect(acme.apiKey.id).toBe(`/providers/${NEW_SLOT}/apiKey`);
+      expect(acme.baseUrl).toBe("https://small.example/v1");
+      expect(acme.models.map((m: { id: string }) => m.id)).toContain("small-model");
+      expect(pendingApplies, "a refused regenerate pushes nothing").toEqual([]);
+
+      // The known limit, pinned: the smaller catalogue is a kept provider's
+      // shrink, which the #311 guard refuses on every later regenerate too
+      // (as on main). Each refusal leaves a file OpenClaw starts on.
+      const settled = files.get(CONFIG_PATH);
+      writes = [];
+      errorSpy.mockClear();
+      await regenerateOpenClawConfig();
+      await drain();
+      expect(errorSpy.mock.calls.flat().join(" ")).toMatch(/suspiciously small/);
+      expect(writes.map((w) => w.path)).toEqual([SECRETS_PATH]);
+      expect(writes.flatMap((w) => w.dangling)).toEqual([]);
+      expect(files.get(CONFIG_PATH)).toBe(settled);
+    });
+
+    // A push started before the refusal still carries the old slot. When it
+    // wakes, OpenClaw refuses its payload (the slot no longer resolves), and
+    // once its retries ran out its file fallback wrote that payload: a file
+    // naming a key secrets.json had already lost. The refusal supersedes it.
+    it("supersedes a push still in flight, so it never retries or file-writes the old slot", async () => {
+      await installWithBigCatalogue();
+      const applies: string[] = [];
+      const inFlight: { reject: (err: Error) => void }[] = [];
+      mockGetClient.mockReturnValue({
+        config: {
+          get: vi.fn(async () => ({ hash: "h", config: JSON.parse(files.get(CONFIG_PATH)!) })),
+          apply: vi.fn((payload: string) => {
+            applies.push(payload);
+            return new Promise<void>((_, reject) => inFlight.push({ reject }));
+          }),
+        },
+        hasMethod: () => true,
+        request: vi.fn(async () => ({ type: "res", id: "1", ok: true, payload: {} })),
+      });
+      // An earlier change (one more model) whose apply is still in flight.
+      customProviders[0] = {
+        ...customProviders[0],
+        models: [...bigCatalogue, { ...bigCatalogue[0], id: "acme-model-extra" }],
+      };
+      await regenerateOpenClawConfig();
+      await drain();
+      expect(applies, "precondition: its apply is in flight").toHaveLength(1);
+      expect(applies[0]).toContain(OLD_SLOT);
+
+      vi.spyOn(console, "error").mockImplementation(() => {});
+      rekeyToSmallEndpoint();
+      await regenerateOpenClawConfig();
+      await drain();
+      const afterRefusal = files.get(CONFIG_PATH)!;
+      expect(afterRefusal).not.toContain(OLD_SLOT);
+
+      inFlight[0].reject(
+        new Error(
+          `invalid config: active SecretRef resolution failed for models.providers.acme-llm.apiKey`
+        )
+      );
+      for (let i = 0; i < 1200 && getPendingConfigPushCount() > 0; i++) {
+        await new Promise((r) => setTimeout(r, 5));
+      }
+      expect(getPendingConfigPushCount()).toBe(0);
+      expect(applies, "superseded: no retry of the old payload").toHaveLength(1);
+      expect(files.get(CONFIG_PATH)).toBe(afterRefusal);
+    });
+  });
+
+  // The file fallback is the one route by which a push writes openclaw.json
+  // itself. A payload captured before a key left secrets.json — a targeted
+  // writer's copy of the pre-bridge file, or an older regenerate's — is one
+  // OpenClaw refuses over config.apply (its SecretRef does not resolve), so
+  // every retry fails and the fallback used to write it: a file OpenClaw can
+  // neither start on nor accept a copy of. The fallback now checks the payload
+  // against the bundle Pinchy last wrote, kept in memory without its values —
+  // never by reading secrets.json.
+  describe("the push's file fallback", () => {
+    async function deleteAcme(): Promise<string> {
+      mockGetClient.mockImplementation(() => {
+        throw new Error("OpenClaw client not initialized");
+      });
+      await regenerateOpenClawConfig();
+      await drain();
+      const preDeletion = files.get(CONFIG_PATH)!;
+      expect(preDeletion).toContain(OLD_SLOT);
+      customProviders.length = 0;
+      await regenerateOpenClawConfig();
+      await drain();
+      expect(secretsOnDisk().providers[OLD_SLOT], "precondition: the key left").toBeUndefined();
+      return preDeletion;
+    }
+
+    it("never writes a payload naming a key secrets.json no longer holds once config.apply gives up", async () => {
+      const stale = await deleteAcme();
+      const afterDeletion = files.get(CONFIG_PATH)!;
+      const applies: string[] = [];
+      mockGetClient.mockReturnValue({
+        config: {
+          get: vi.fn(async () => ({ hash: "h", config: JSON.parse(files.get(CONFIG_PATH)!) })),
+          apply: vi.fn(async (payload: string) => {
+            applies.push(payload);
+            throw new Error(
+              "invalid config: active SecretRef resolution failed for models.providers.acme-llm.apiKey"
+            );
+          }),
+        },
+      });
+      const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+      pushConfigInBackground(stale);
+      for (let i = 0; i < 2000 && getPendingConfigPushCount() > 0; i++) {
+        await new Promise((r) => setTimeout(r, 5));
+      }
+
+      expect(getPendingConfigPushCount()).toBe(0);
+      expect(applies.length, "precondition: config.apply was tried").toBeGreaterThan(0);
+      expect(files.get(CONFIG_PATH)).toBe(afterDeletion);
+      expect(errorSpy.mock.calls.flat().join(" ")).toContain(`/providers/${OLD_SLOT}/apiKey`);
+    }, 20_000);
+
+    it("never writes such a payload without an OpenClaw client either", async () => {
+      const stale = await deleteAcme();
+      const afterDeletion = files.get(CONFIG_PATH)!;
+      vi.spyOn(console, "error").mockImplementation(() => {});
+
+      pushConfigInBackground(stale);
+      await drain();
+
+      expect(files.get(CONFIG_PATH)).toBe(afterDeletion);
+    });
+
+    it("still writes a payload whose every key resolves", async () => {
+      const stale = await deleteAcme();
+      const resolvable = JSON.stringify({
+        ...JSON.parse(stale),
+        models: { providers: {} },
+        agents: { list: [{ id: "smithers", name: "S" }] },
+      });
+
+      pushConfigInBackground(resolvable);
+      await drain();
+
+      expect(files.get(CONFIG_PATH)).toBe(resolvable);
+    });
   });
 });

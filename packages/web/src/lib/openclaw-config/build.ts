@@ -47,8 +47,10 @@ import {
 } from "./write";
 import { sizeGuardBaseline, expectsSizeDropRefusal, keepsAProvider } from "./size-drop";
 import {
+  nextConfigPushGeneration,
   nextRegenerateSequence,
   noteRegenerateCall,
+  recordWrittenSecrets,
   takeRegenerateRunIsFollowUpOnly,
 } from "./push-state";
 import { keylessBridge, rekeyedBridge, unresolvedSecretRefs } from "./keyless-bridge";
@@ -1890,7 +1892,12 @@ async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise
       // above half the file this guard protects. A re-keyed provider then
       // takes its entry from the payload, as below: one provider's saved
       // state, whose models fall back to the snapshot stored with it, never
-      // to `[]` (resolveCustomProviderModels).
+      // to `[]` (resolveCustomProviderModels). When a re-key is what this
+      // guard refused — the new address serves far fewer models, a kept
+      // provider's shrink — that entry keeps the file's models as well
+      // (rekeyedBridge), so the write stays above OpenClaw's read-side check;
+      // the shorter list itself is refused here on every regenerate, as any
+      // kept provider's shrink is.
       //
       // Except for a payload with no provider at all: Pinchy refuses to delete
       // the last provider, so that is an empty provider read, and a bridge
@@ -1967,7 +1974,19 @@ async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise
       "[openclaw-config] openclaw.json points re-keyed provider(s) at their new key slot (written after secrets.json)"
     );
   }
-  if (unchanged || refused) return;
+  if (refused) {
+    // Nothing of this regenerate is pushed, but secrets.json is now newer than
+    // any push still in flight: one started earlier (a regenerate's, or a
+    // targeted writer's copy of the pre-bridge file, parked in a rate-limit
+    // wait) can name a key this write just removed. OpenClaw refuses that
+    // payload, and its file fallback would write it. A passing regenerate
+    // supersedes such a push with its own; a refused one does it here. The
+    // superseded change reaches OpenClaw with the next regenerate that passes
+    // the guard, like this one's.
+    nextConfigPushGeneration();
+    return;
+  }
+  if (unchanged) return;
 
   // Write per-agent auth-profiles.json for agents that use API-key-based
   // providers. Required by OpenClaw ≥ 4.15: each agent directory must
@@ -2105,5 +2124,8 @@ async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise
  * writeSecretsFile.
  */
 function writeSecretsAndReload(bundle: SecretsBundle, { reload = true } = {}): void {
-  if (writeSecretsFile(bundle) && reload) reloadSecretsInBackground();
+  const runtimeIsStale = writeSecretsFile(bundle);
+  // What the push's file fallback judges a payload's SecretRefs against.
+  recordWrittenSecrets(bundle);
+  if (runtimeIsStale && reload) reloadSecretsInBackground();
 }

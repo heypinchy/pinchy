@@ -29,7 +29,9 @@
 // the push lands would leave every agent on it without a key, so once
 // secrets.json holds the new slot, a second write gives it the TARGET's entry
 // (rekeyedBridge) — the base URL, the slot and the models of one saved state of
-// the provider, so the new key never meets the old address. Two writes, because
+// the provider, so the new key never meets the old address. (When that model
+// list would shrink the file past OpenClaw's read-side check, the entry keeps
+// the file's models too — see rekeyedBridge.) Two writes, because
 // no single order works with one: the old slot is in the old secrets.json only,
 // the new slot in the new one only, and the key-less stub in between resolves
 // against both.
@@ -54,7 +56,7 @@
 //     objects, and its startup read keeps it;
 //   - the stubbed provider keeps its models, so nothing that still names one
 //     becomes an "Unknown model" before the deletion lands.
-import { providerStub } from "./size-drop";
+import { expectsSizeDropRefusal, providerStub } from "./size-drop";
 import { referencedSecretIds, type SecretsBundle } from "@/lib/openclaw-secrets";
 
 type Json = Record<string, unknown>;
@@ -128,6 +130,20 @@ export function keylessBridge(onDisk: Json, bundle: SecretsBundle): Json | null 
  * SecretRef: the key was entered for the target's base URL, and must not be
  * paired with the one on disk. Null when no provider qualifies: a deleted one
  * stays a stub until the push removes it.
+ *
+ * Except the entry's model list, when the target's catalogue is much smaller
+ * than the one on disk (a re-key to an address that serves fewer models). This
+ * is a file write, judged by OpenClaw's READ path: a file under half of its
+ * last-known-good is "suspicious", and OpenClaw restores last-known-good or
+ * `.bak` over it — files written before the bridge, naming the slot
+ * secrets.json no longer holds, so OpenClaw cannot start. So when the entries
+ * as the target has them would put the file under that line
+ * (expectsSizeDropRefusal: UTF-8 bytes, with headroom, against the on-disk
+ * file — the largest last-known-good OpenClaw can hold here, since the bridge
+ * only removed credentials from it), each re-keyed entry keeps the models the
+ * file already lists, after the target's own. The new key still goes only with
+ * the new address. Delivering the smaller catalogue is the push's job, judged
+ * by OpenClaw's write-side guard; Pinchy never file-writes it.
  */
 export function rekeyedBridge(
   keyless: Json,
@@ -153,7 +169,31 @@ export function rekeyedBridge(
   });
   if (rekeyed.length === 0) return null;
   const models = isRecord(keyless.models) ? keyless.models : {};
-  const providers = { ...providersOf(keyless) };
-  for (const key of rekeyed) providers[key] = targetProviders[key];
-  return { ...keyless, models: { ...models, providers } };
+  const withEntries = (keepFileModels: boolean): Json => {
+    const providers = { ...providersOf(keyless) };
+    for (const key of rekeyed) {
+      const entry = targetProviders[key] as Json;
+      providers[key] = keepFileModels
+        ? { ...entry, models: withFileModels(entry.models, (onDiskProviders[key] as Json).models) }
+        : entry;
+    }
+    return { ...keyless, models: { ...models, providers } };
+  };
+  const exact = withEntries(false);
+  return expectsSizeDropRefusal(serializeFile(onDisk), serializeFile(exact))
+    ? withEntries(true)
+    : exact;
+}
+
+/** As Pinchy and OpenClaw write openclaw.json. */
+function serializeFile(config: Json): string {
+  return JSON.stringify(config, null, 2).trimEnd() + "\n";
+}
+
+/** `target`'s models, then every model of `file` whose id the target does not list. */
+function withFileModels(target: unknown, file: unknown): unknown[] {
+  const targetModels = Array.isArray(target) ? target : [];
+  const ids = new Set(targetModels.map((m) => (isRecord(m) ? m.id : undefined)));
+  const fileModels = Array.isArray(file) ? file : [];
+  return [...targetModels, ...fileModels.filter((m) => !isRecord(m) || !ids.has(m.id))];
 }

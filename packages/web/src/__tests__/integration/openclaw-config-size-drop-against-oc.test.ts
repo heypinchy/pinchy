@@ -664,4 +664,89 @@ describe("a >50% provider deletion against OpenClaw's real config.get / config.a
       delete process.env.OPENCLAW_SECRETS_PATH;
     }
   }, 60_000);
+  // The same re-key, to an address that serves a much smaller catalogue (a
+  // large OpenRouter list → a small endpoint). Its payload shrinks a KEPT
+  // provider, so the #311 guard refuses it — and the refusal still writes the
+  // bridge, secrets.json and the re-keyed entry. Written as the target has it,
+  // that entry took the file far under half of last-known-good, and OpenClaw's
+  // read path restored `.bak`: its own pre-bridge write, naming the old slot
+  // secrets.json no longer has — "required secrets are unavailable", and every
+  // later regenerate wrote the same state again. Here OpenClaw has written its
+  // file twice, so `.bak` exists, and nothing promotes Pinchy's writes: after
+  // each of them OpenClaw starts on exactly that file and resolves every ref.
+  it("re-keys a provider to a much smaller catalogue without a write OpenClaw's read path reverts", async () => {
+    process.env.OPENCLAW_CONFIG_PATH = pinchyConfigPath;
+    process.env.OPENCLAW_SECRETS_PATH = secretsPath;
+    const { keylessBridge, rekeyedBridge, unresolvedSecretRefs } =
+      await import("@/lib/openclaw-config/keyless-bridge");
+    const { sizeGuardBaseline, keepsAProvider } = await import("@/lib/openclaw-config/size-drop");
+    const { writeSecretsFile } = await import("@/lib/openclaw-secrets");
+    process.env.OPENCLAW_CONFIG_PATH = ocConfigPath;
+    const { writeConfigFile } = await import("openclaw/plugin-sdk/config-runtime");
+    type OcConfig = Parameters<typeof writeConfigFile>[0];
+    const OLD_SLOT = "acme-llm@0000000000000001";
+    const NEW_SLOT = "acme-llm@0000000000000002";
+    const acmeOld = {
+      baseUrl: "https://old.acme.example/v1",
+      api: "openai-completions",
+      apiKey: ref(`/providers/${OLD_SLOT}/apiKey`),
+      models: Array.from({ length: 40 }, (_, i) => model(i)),
+    };
+    const acmeNew = {
+      baseUrl: "https://new-gateway.example/v1",
+      api: "openai-completions",
+      apiKey: ref(`/providers/${NEW_SLOT}/apiKey`),
+      models: [{ ...model(0), id: "acme-next" }],
+    };
+    try {
+      writeSecrets({ anthropic: { apiKey: "sk-ant-test" }, [OLD_SLOT]: { apiKey: "sk-acme-old" } });
+      await writeConfigFile(config({ "acme-llm": acmeOld }) as OcConfig);
+      await writeConfigFile({
+        ...config({ "acme-llm": acmeOld }),
+        agents: { list: [{ id: "smithers", name: "Smithers 2" }] },
+      } as OcConfig);
+      await promoteToLastKnownGood();
+      expect(existsSync(`${ocConfigPath}.bak`), "precondition: OpenClaw has a .bak").toBe(true);
+
+      const target = config({ "acme-llm": acmeNew });
+      const bundle = {
+        providers: { anthropic: { apiKey: "sk-ant-test" }, [NEW_SLOT]: { apiKey: "sk-acme-new" } },
+      };
+      const onDiskContent = readFileSync(ocConfigPath, "utf-8");
+      const before = JSON.parse(onDiskContent) as Json;
+      const payload = JSON.stringify(target, null, 2).trimEnd() + "\n";
+      expect(
+        payload.length < sizeGuardBaseline(onDiskContent, target) * 0.5 && keepsAProvider(target),
+        "precondition: the #311 guard refuses the payload, and still writes the bridge"
+      ).toBe(true);
+      expect(unresolvedSecretRefs(before, bundle)).toEqual([`/providers/${OLD_SLOT}/apiKey`]);
+
+      /** OpenClaw starts on exactly the file Pinchy wrote, and resolves every ref in it. */
+      const startsOn = async (written: string) => {
+        const started = (await startOpenClaw()) as { models: { providers: Record<string, Json> } };
+        expect(readFileSync(ocConfigPath, "utf-8"), "OpenClaw kept Pinchy's write").toBe(written);
+        return started.models.providers["acme-llm"];
+      };
+      const write = (file: Json) => {
+        const content = JSON.stringify(file, null, 2).trimEnd() + "\n";
+        writeFileSync(ocConfigPath, content, { mode: 0o666 });
+        return content;
+      };
+
+      // The refusal's writes, in regenerate's order.
+      const keyless = keylessBridge(before, bundle)!;
+      const keylessContent = write(keyless);
+      expect(await startsOn(keylessContent)).not.toHaveProperty("apiKey");
+      writeSecretsFile(bundle);
+      expect(await startsOn(keylessContent)).not.toHaveProperty("apiKey");
+      const rekeyed = rekeyedBridge(keyless, before, target, bundle);
+      expect(rekeyed, "the provider is kept, so it gets its key back").not.toBeNull();
+      const acme = await startsOn(write(rekeyed!));
+      expect(acme.apiKey).toEqual(ref(`/providers/${NEW_SLOT}/apiKey`));
+      expect(acme.baseUrl).toBe("https://new-gateway.example/v1");
+      expect((acme.models as Json[]).map((m) => m.id)).toContain("acme-next");
+    } finally {
+      delete process.env.OPENCLAW_SECRETS_PATH;
+    }
+  }, 60_000);
 });

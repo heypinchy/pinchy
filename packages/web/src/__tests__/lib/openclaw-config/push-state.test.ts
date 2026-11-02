@@ -24,6 +24,8 @@ import {
   getCurrentConfigPushGeneration,
   noteRegenerateCall,
   takeRegenerateRunIsFollowUpOnly,
+  recordWrittenSecrets,
+  writtenSecretsShape,
   _resetConfigPushState,
 } from "@/lib/openclaw-config/push-state";
 
@@ -157,5 +159,27 @@ describe("which regenerate run counts as a shrink follow-up", () => {
     noteRegenerateCall({ shrinkFollowUp: true });
     expect(takeRegenerateRunIsFollowUpOnly()).toBe(true);
     expect(takeRegenerateRunIsFollowUpOnly()).toBe(false);
+  });
+});
+
+// The push's file fallback asks whether OpenClaw would resolve a payload's
+// SecretRefs against the secrets.json Pinchy last wrote — a file Pinchy cannot
+// read back in production. So the regenerate records what it wrote, process-
+// wide (the push can run in another module instance), as a shape: which
+// pointers resolve, never a value.
+describe("the recorded secrets shape", () => {
+  beforeEach(() => _resetConfigPushState());
+
+  it("keeps which pointers resolve, and no secret value", () => {
+    expect(writtenSecretsShape()).toBeUndefined();
+    recordWrittenSecrets({
+      gateway: { token: "gw-secret" },
+      providers: { anthropic: { apiKey: "sk-ant-secret" } },
+    });
+    expect(writtenSecretsShape()).toEqual({
+      gateway: { token: "" },
+      providers: { anthropic: { apiKey: "" } },
+    });
+    expect(JSON.stringify(globalThis.__pinchyConfigPushState)).not.toMatch(/secret/);
   });
 });

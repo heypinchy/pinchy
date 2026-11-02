@@ -20,6 +20,7 @@ import {
   rekeyedBridge,
   unresolvedSecretRefs,
 } from "@/lib/openclaw-config/keyless-bridge";
+import { expectsSizeDropRefusal } from "@/lib/openclaw-config/size-drop";
 
 const ref = (id: string) => ({ source: "file", provider: "pinchy", id });
 
@@ -165,7 +166,10 @@ describe("rekeyedBridge", () => {
     baseUrl: "https://new-gateway.example/v1",
     api: "openai-completions",
     apiKey: ref(NEW),
-    models: [{ id: "acme-next" }],
+    models: Array.from({ length: 40 }, (_, i) => ({
+      id: `acme-next-${i}`,
+      name: `Acme Next ${i}`,
+    })),
   };
   const rekeyedBundle = {
     providers: {
@@ -207,6 +211,35 @@ describe("rekeyedBridge", () => {
     const onDisk = config({ anthropic, "acme-llm": acme });
     const keyless = keylessBridge(onDisk, bundleWithoutAcme)!;
     expect(rekeyedBridge(keyless, onDisk, config({ anthropic }), bundleWithoutAcme)).toBeNull();
+  });
+
+  // The new address can serve a much smaller catalogue (a large OpenRouter
+  // list → a small endpoint). Written whole, the entry would take the file
+  // under half of OpenClaw's last-known-good, and OpenClaw's read path would
+  // restore `.bak` — its own pre-bridge write, naming the slot secrets.json no
+  // longer has: "required secrets are unavailable". So the entry keeps the
+  // models the file already lists, after the target's own; the catalogue
+  // shrink itself is the guarded push's job.
+  it("keeps the file's models in a re-keyed entry whose target catalogue would shrink the file past OpenClaw's read-side check", () => {
+    const smallTarget = { ...acmeTarget, models: [{ id: "acme-next" }] };
+    const onDisk = config({ anthropic, "acme-llm": acmeOld });
+    const target = config({ anthropic, "acme-llm": smallTarget });
+    const serialize = (c: unknown) => JSON.stringify(c, null, 2).trimEnd() + "\n";
+    expect(
+      expectsSizeDropRefusal(serialize(onDisk), serialize(target)),
+      "precondition: the target's entry, written whole, would trip OpenClaw's check"
+    ).toBe(true);
+    const keyless = keylessBridge(onDisk, rekeyedBundle)!;
+
+    const rekeyed = rekeyedBridge(keyless, onDisk, target, rekeyedBundle)!;
+
+    const entry = (rekeyed as { models: { providers: Record<string, unknown> } }).models.providers[
+      "acme-llm"
+    ];
+    expect(entry).toEqual({ ...smallTarget, models: [{ id: "acme-next" }, ...models] });
+    expect(expectsSizeDropRefusal(serialize(onDisk), serialize(rekeyed))).toBe(false);
+    expect(unresolvedSecretRefs(rekeyed, rekeyedBundle)).toEqual([]);
+    expect(JSON.stringify(rekeyed)).not.toMatch(/hunter2|QQQ|plaintext-header-secret/);
   });
 
   it("keeps the stub when the target's entry would not resolve either", () => {

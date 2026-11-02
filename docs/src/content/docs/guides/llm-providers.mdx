@@ -148,6 +148,12 @@ Some endpoints — a bare vLLM server, say — don't publish a `/models` list. W
   Pinchy never sends a stored key to a new address.
 </Aside>
 
+### Moving a provider to a much smaller endpoint
+
+The agent runtime picks up a provider's new address and key straight away. Its model list can lag behind when the new endpoint serves far fewer models than the old one — a hosted catalogue of hundreds of models swapped for a single self-hosted one, say. If the shorter list would cut the runtime's configuration by more than half, we don't hand it over: a provider that suddenly lists far fewer models usually means discovery failed half-way, not that you changed anything, and handing that over would leave your agents without their models. So the runtime keeps listing the previous models after the new ones, and agents on a model the new endpoint doesn't serve answer with an error. Other configuration changes are held back the same way while the runtime's list is that much longer than the provider's, so they don't reach the runtime either.
+
+To make such a move, [remove the provider](#remove-a-provider) and add it again with the new address. A removal is handed over in steps the runtime accepts, and the new provider's models are then simply added.
+
 ### Which base URLs are allowed
 
 Because Pinchy connects to the base URL from the server, it guards against being pointed at somewhere it shouldn't reach:

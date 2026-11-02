@@ -9,6 +9,7 @@ import {
 } from "./normalize";
 import { CONFIG_PATH } from "./paths";
 import { parseSizeDropRejection, planShrinkPush, utf8Bytes } from "./size-drop";
+import { unresolvedSecretRefs } from "./keyless-bridge";
 import {
   trackConfigPushStarted,
   trackConfigPushSettled,
@@ -17,6 +18,7 @@ import {
   cancelShrinkResume,
   scheduleShrinkResume,
   nextRegenerateSequence,
+  writtenSecretsShape,
 } from "./push-state";
 
 /** Atomic write: tmp file + rename to prevent OpenClaw reading a truncated config */
@@ -427,6 +429,28 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
     const onSuperseded = () => {
       if (shrinkKnown()) resumeShrink("superseded before it finished");
     };
+    // A payload that names a key secrets.json no longer holds — captured
+    // before a regenerate took the key out (a targeted writer's copy of the
+    // pre-bridge file, an older regenerate's payload) — is one OpenClaw refuses
+    // over config.apply, and could neither start on nor accept a copy of as its
+    // file. Judged against the bundle Pinchy last wrote, never by reading
+    // secrets.json (recordWrittenSecrets in push-state.ts); before Pinchy wrote one, nothing is
+    // refused. The regenerate that removed the key delivers its own config.
+    const namesRemovedKey = (content: string): boolean => {
+      const shape = writtenSecretsShape();
+      let dangling: string[] = [];
+      try {
+        dangling = shape ? unresolvedSecretRefs(JSON.parse(content), shape) : [];
+      } catch {
+        // Unparseable: writeConfigAtomic's own parse rejects it.
+      }
+      if (dangling.length === 0) return false;
+      console.error(
+        `[openclaw-config] push gen=${String(generation)}: NOT writing openclaw.json — the payload names ${dangling.join(", ")}, which secrets.json no longer holds. ` +
+          `OpenClaw could neither start on that file nor accept a copy of it; the regenerate that removed the key delivers the current config.`
+      );
+      return true;
+    };
     // A file-write fallback for a shrink would land the target past OpenClaw's
     // guard (see MAX_SHRINK_STEPS) — refuse it instead.
     const writeFallback = (content: string): boolean => {
@@ -434,6 +458,7 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
         dropShrink("could not be delivered over config.apply", { transient: true });
         return false;
       }
+      if (namesRemovedKey(content)) return false;
       writeConfigAtomic(content);
       return true;
     };
@@ -459,6 +484,7 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
         dropShrink("Pinchy has no OpenClaw client yet", { transient: true });
         return;
       }
+      if (namesRemovedKey(newContent)) return;
       console.log(
         `[openclaw-config] push gen=${String(generation)}: no WS client → file write (inotify; reload may lag)`
       );

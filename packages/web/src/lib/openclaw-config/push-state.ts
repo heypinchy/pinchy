@@ -33,6 +33,8 @@
 // route push cannot supersede a server push and both reach `config.apply` —
 // the restart storm the generation guard exists to stop (#193).
 
+import type { SecretsBundle } from "@/lib/openclaw-secrets";
+
 interface ConfigPushState {
   pending: number;
   generation: number;
@@ -50,6 +52,8 @@ interface ConfigPushState {
    * of them were shrink follow-ups (see noteRegenerateCall).
    */
   unservedCalls: { followUpOnly: boolean } | undefined;
+  /** See recordWrittenSecrets. */
+  writtenSecretsShape: SecretsBundle | undefined;
 }
 
 declare global {
@@ -79,6 +83,7 @@ function state(): ConfigPushState {
       shrinkResumeSeq: 0,
       regenerateSeq: 0,
       unservedCalls: undefined,
+      writtenSecretsShape: undefined,
     };
     return globalThis.__pinchyConfigPushState;
   }
@@ -237,14 +242,43 @@ export function scheduleShrinkResume(resume: () => void, strandedSeq: number): v
   s.shrinkResume.unref?.();
 }
 
+/** `value` with every string replaced by "": which SecretRefs it resolves, and nothing else. */
+function shapeOf<T>(value: T): T {
+  if (typeof value === "string") return "" as T;
+  if (value === null || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value).map(([key, child]) => [key, shapeOf(child)])
+  ) as T;
+}
+
 /**
- * Test-only: reset the pending counter and drop a queued follow-up regenerate
- * between tests. Do not call in app code.
+ * Record the bundle a regenerate just wrote to secrets.json — its shape only,
+ * every value replaced by "". It answers "would OpenClaw resolve this
+ * SecretRef?" for the push's file fallback (unresolvedSecretRefs in
+ * keyless-bridge.ts) without reading secrets.json, which Pinchy cannot read in
+ * production, and without keeping a secret in memory past the regenerate that
+ * built it. Here, on globalThis, because the regenerate that writes it and the
+ * push that reads it (a targeted writer's, say) can sit in different module
+ * instances.
+ */
+export function recordWrittenSecrets(bundle: SecretsBundle): void {
+  state().writtenSecretsShape = shapeOf(bundle);
+}
+
+/** The shape recordWrittenSecrets last recorded, or undefined before the first. */
+export function writtenSecretsShape(): SecretsBundle | undefined {
+  return state().writtenSecretsShape;
+}
+
+/**
+ * Test-only: reset the pending counter, the recorded secrets shape, and drop a
+ * queued follow-up regenerate between tests. Do not call in app code.
  */
 export function _resetConfigPushState(): void {
   const s = state();
   s.pending = 0;
   s.unservedCalls = undefined;
+  s.writtenSecretsShape = undefined;
   clearShrinkResume(s);
 }
 
