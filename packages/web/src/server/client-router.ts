@@ -775,6 +775,20 @@ export class ClientRouter {
       // of leaving the user on an indefinitely blank thread. The provisional
       // runId (the per-turn messageId) is reconciled to the real runId by
       // `markFirstChunk` on the first chunk in pipeStream.
+      //
+      // Deactivation re-check. The check at the top of handleMessage is many
+      // awaits ago (agent, licence, budget, connection, attachments, model,
+      // user). DELETE /api/users/:id revokes and then snapshots the registered
+      // runs to abort them in the same tick, so a deactivation that landed in
+      // between found nothing to abort. Checking here, with NO await between
+      // this check and registerPending, closes that window: either the revoke
+      // happened first and we refuse, or the run is registered first and
+      // abortRunsOfUser sees it. `stream` is a lazy generator — nothing has
+      // reached OpenClaw yet.
+      if (getUserSocketRegistry().isRevoked(this.userId)) {
+        refuseDeactivatedSocket(clientWs);
+        return;
+      }
       this.activeRuns.registerPending({
         runId: messageId,
         sessionKey,
