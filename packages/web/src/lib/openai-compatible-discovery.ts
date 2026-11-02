@@ -1,6 +1,7 @@
 import { DEFAULT_MODEL_CAPS, lookupModelCapabilities } from "@/lib/model-catalog";
 import { assertAllowedProviderUrl } from "@/lib/provider-url-guard";
 import { canonicalDestinationUrl } from "@/lib/secret-destination";
+import { isMap, processWideCache } from "@/lib/process-wide-cache";
 import type { OpenClawModelDefinition } from "@/lib/openclaw-builtin-models";
 import {
   AUTH_RETRY_DELAY_MS,
@@ -187,15 +188,20 @@ export async function fetchOpenAiCompatibleModels(
 // {@link modelCacheKey}. The slug never changes, but the endpoint behind it
 // can: keyed by slug alone, the regenerate a re-pointing save triggers was
 // served the OLD endpoint's catalog and emitted it under the NEW base URL.
+//
+// Process-wide (see process-wide-cache.ts): a regenerate reads it, and the
+// module instance that runs a regenerate is not always the one that reset it.
 const CUSTOM_PROVIDER_MODEL_CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
-const customProviderModelCache = new Map<
-  string,
-  { fetchedAt: number; result: OpenClawModelDefinition[] }
->();
+const customProviderModelCache = () =>
+  processWideCache<Map<string, { fetchedAt: number; result: OpenClawModelDefinition[] }>>(
+    "__pinchyCustomProviderModelCache",
+    () => new Map(),
+    isMap
+  );
 
 /** Clear the custom-provider live-model cache (mirrors provider-models.ts's `resetCache()`). */
 export function resetCustomModelCache(): void {
-  customProviderModelCache.clear();
+  customProviderModelCache().clear();
 }
 
 /** The inputs `resolveCustomProviderModels` needs to resolve one provider's live model list. */
@@ -237,7 +243,7 @@ export async function resolveCustomProviderModels(
   p: CustomProviderModelSource
 ): Promise<OpenClawModelDefinition[]> {
   const key = modelCacheKey(p);
-  const cached = customProviderModelCache.get(key);
+  const cached = customProviderModelCache().get(key);
   if (cached && Date.now() - cached.fetchedAt < CUSTOM_PROVIDER_MODEL_CACHE_TTL_MS) {
     return cached.result;
   }
@@ -253,7 +259,7 @@ export async function resolveCustomProviderModels(
     return p.models;
   }
 
-  customProviderModelCache.set(key, { fetchedAt: Date.now(), result: live });
+  customProviderModelCache().set(key, { fetchedAt: Date.now(), result: live });
   return live;
 }
 
