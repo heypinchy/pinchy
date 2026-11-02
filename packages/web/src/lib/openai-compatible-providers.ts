@@ -106,14 +106,21 @@ export async function listOpenAiCompatibleProvidersForAdmin(): Promise<
 export async function listProvidersWithApiKeys(): Promise<
   { slug: string; apiKey: string; keyVersion: string }[]
 > {
-  const rows = await db.select().from(openaiCompatibleProviders);
+  // The column holds AES-GCM ciphertext, never the plaintext key; naming it
+  // that way here keeps the fingerprint below honest about what it hashes.
+  const rows = await db
+    .select({
+      slug: openaiCompatibleProviders.slug,
+      encryptedApiKey: openaiCompatibleProviders.apiKey,
+    })
+    .from(openaiCompatibleProviders);
   return rows.map((r) => ({
     slug: r.slug,
-    apiKey: decrypt(r.apiKey),
+    apiKey: decrypt(r.encryptedApiKey),
     // Versions the secrets-bundle slot, so every newly entered key gets a new
     // SecretRef pointer (see versionedSecretName). Taken from the ciphertext:
     // it changes on every save of a key, and says nothing about the key.
-    keyVersion: secretVersion(r.apiKey),
+    keyVersion: secretVersion(r.encryptedApiKey),
   }));
 }
 

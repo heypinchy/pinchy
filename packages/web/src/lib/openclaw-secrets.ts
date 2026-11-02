@@ -30,8 +30,8 @@ const DEFAULT_SECRETS_PATH = "/openclaw-secrets/secrets.json";
  * again — and a hash of it says nothing about the key, while a hash of a weak
  * plaintext key would be a dictionary lookup away in openclaw.json.
  */
-export function secretVersion(storedForm: string): string {
-  return createHash("sha256").update(storedForm).digest("hex").slice(0, 16);
+export function secretVersion(ciphertext: string): string {
+  return createHash("sha256").update(ciphertext).digest("hex").slice(0, 16);
 }
 
 /**
