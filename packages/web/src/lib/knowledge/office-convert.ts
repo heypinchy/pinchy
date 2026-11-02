@@ -873,7 +873,7 @@ function killTree(child: ReturnType<typeof spawn>): void {
  * a font, an RTF `\pict`, a picture inside an EMF+ record. For OOXML and RTF,
  * `office-preflight.ts` is a second layer — defence in depth with known
  * limits, not a guarantee: it cuts altChunks, pictures that reach outside
- * themselves (metafiles carrying a picture of their own included) and
+ * themselves (and every record of a metafile that can carry another) and
  * everything else not on its allow-list, and refuses what it cannot read
  * unambiguously. Each of those answers a vector found by canary; the next way
  * LibreOffice draws something by its bytes is a gap until it is found. For

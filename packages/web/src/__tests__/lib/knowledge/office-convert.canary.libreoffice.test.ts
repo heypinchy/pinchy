@@ -94,6 +94,7 @@ import {
 import {
   EMF_PLUS_DRAW_IMAGE,
   EMF_RECTANGLE,
+  decoyedWmf,
   emf,
   emfPlusComment,
   emfPlusDualComment,
@@ -572,6 +573,26 @@ describe.skipIf(!hasSoffice)("an Office file cannot make the converter fetch or 
       ),
       { profile: false, preflight: "sanitizes" }
     );
+    // The same EMF in a WMF between two "WMFC" decoys LibreOffice skips — a
+    // Version, a CommentType or a CommentRecordCount other than Office's — an
+    // EMF header whose size swallows the real chunk, and an end of file. A
+    // walk that reassembled every chunk read header -> end of file and kept
+    // the WMF whole; LibreOffice 26.2 and 7.4.7 reassembled the one real chunk
+    // and drew the local files. Every embedded-EMF record is dropped now.
+    for (const [name, decoy] of [
+      ["wmf-decoy-version.docx", { version: 0x00020000 }],
+      ["wmf-decoy-comtype.docx", { commentType: 2 }],
+      ["wmf-decoy-reccount.docx", { recordCount: 0 }],
+    ] as const) {
+      planted(
+        name,
+        metafilePicture(
+          "media/image1.wmf",
+          decoyedWmf(emfPlusSvg, decoy, WMF_RECTANGLE, wmfText(WMF_WORDS))
+        ),
+        { profile: false, preflight: "sanitizes" }
+      );
+    }
     // An "EMF+ Dual" EMF — what Office and LibreOffice write —
     // draws everything twice. When only its EMF+ layer carries the picture,
     // that layer is dropped and the EMF records stay: the same drawing, its
@@ -780,6 +801,9 @@ describe.skipIf(!hasSoffice)("an Office file cannot make the converter fetch or 
     for (const name of [
       "emfplus-svg",
       "wmf-embedded-emf",
+      "wmf-decoy-version",
+      "wmf-decoy-comtype",
+      "wmf-decoy-reccount",
       "emfplus-dual-svg",
       "font-wmf100",
       "font-eps",
@@ -844,6 +868,9 @@ describe.skipIf(!hasSoffice)("an Office file cannot make the converter fetch or 
       "rtf-picture.doc",
       "emfplus-svg.docx",
       "wmf-embedded-emf.docx",
+      "wmf-decoy-version.docx",
+      "wmf-decoy-comtype.docx",
+      "wmf-decoy-reccount.docx",
       "emfplus-dual-svg.docx",
       "font-wmf100.docx",
       "font-eps.docx",
@@ -874,7 +901,14 @@ describe.skipIf(!hasSoffice)("an Office file cannot make the converter fetch or 
     const glyphs = async (name: string) =>
       (await textOf(byName.get(name)!.artifactPath!)).replace(/\s+/g, "");
     expect(await glyphs("emfplus-dual-svg.docx")).toContain(EMF_WORDS);
-    expect(await glyphs("wmf-embedded-emf.docx")).toContain(WMF_WORDS);
+    for (const name of [
+      "wmf-embedded-emf.docx",
+      "wmf-decoy-version.docx",
+      "wmf-decoy-comtype.docx",
+      "wmf-decoy-reccount.docx",
+    ]) {
+      expect(await glyphs(name), name).toContain(WMF_WORDS);
+    }
   }, 240_000);
 
   it("KNOWN GAP of the profile-only layer: a legacy .doc whose embedded picture is an SVG still draws a local file", async () => {

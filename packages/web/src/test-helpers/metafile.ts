@@ -204,18 +204,57 @@ export function wmfEscape(escapeFunction: number, data: Buffer): Buffer {
 
 /** The MFCOMMENT escape Office uses to carry a whole EMF inside a WMF ("WMFC"). */
 export function wmfEmbeddedEmf(emfBytes: Buffer): Buffer {
+  return wmfEmbeddedEmfChunk(emfBytes, { total: emfBytes.length });
+}
+
+/**
+ * One "WMFC" record carrying `chunk` as its share of an EMF of `total` bytes
+ * ([MS-WMF] 2.3.6.1). The fields a reader may check before it takes the chunk
+ * — CommentType (1), Version (0x00010000), CommentRecordCount — default to
+ * what Office writes and can be set to anything: LibreOffice reassembles only
+ * the records whose fields are Office's, so a record with other values is a
+ * chunk it skips and a walk that took every chunk does not.
+ */
+export function wmfEmbeddedEmfChunk(
+  chunk: Buffer,
+  fields: { total: number; commentType?: number; version?: number; recordCount?: number }
+): Buffer {
   const head = Buffer.concat([
     u32(0x43464d57), // "WMFC"
-    u32(1),
-    u32(0x00010000),
-    u16(0),
-    u32(0),
-    u32(1),
-    u32(emfBytes.length),
-    u32(0),
-    u32(emfBytes.length),
+    u32(fields.commentType ?? 1),
+    u32(fields.version ?? 0x00010000),
+    u16(0), // Checksum
+    u32(0), // Flags
+    u32(fields.recordCount ?? 1),
+    u32(chunk.length), // CurrentRecordSize
+    u32(0), // RemainingBytes
+    u32(fields.total), // EnhancedMetafileDataSize
   ]);
-  return wmfEscape(0x000f, Buffer.concat([head, emfBytes]));
+  return wmfEscape(0x000f, Buffer.concat([head, chunk]));
+}
+
+/**
+ * A WMF carrying `emfBytes` the way LibreOffice reassembles it, between two
+ * "WMFC" decoys whose `decoy` fields make LibreOffice skip them: a header
+ * whose size claims the real EMF as its own, and an end-of-file record.
+ * Reassembled from every chunk, the decoys walk header -> end of file and
+ * the EMF in between is never read.
+ */
+export function decoyedWmf(
+  emfBytes: Buffer,
+  decoy: { commentType?: number; version?: number; recordCount?: number },
+  ...records: Buffer[]
+): Buffer {
+  const header = Buffer.from(emf().subarray(0, 108));
+  header.writeUInt32LE(108 + emfBytes.length, 4);
+  const eof = emf().subarray(108);
+  const total = header.length + emfBytes.length + eof.length;
+  return wmf(
+    wmfEmbeddedEmfChunk(header, { ...decoy, total }),
+    wmfEmbeddedEmfChunk(emfBytes, { total }),
+    wmfEmbeddedEmfChunk(eof, { ...decoy, total }),
+    ...records
+  );
 }
 
 /** A placeable WMF: the Aldus header, the WMF header, `records`, and META_EOF. */

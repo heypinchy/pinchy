@@ -64,6 +64,7 @@ import {
   EMF_PLUS_DRAW_IMAGE,
   EMF_RECTANGLE,
   GDI_PUBLIC_ID,
+  decoyedWmf,
   emf,
   emfComment,
   emfPlusBrushObject,
@@ -245,7 +246,18 @@ function keptPicture(bytes: Buffer, target = "media/image1.emf"): Buffer {
   return inflatePart(data, entry, entry.uncompressedSize);
 }
 
-describe("a metafile picture is kept only if it carries no picture of its own", () => {
+/** The metafile as kept: it was not cut, and none of `gone` is left in it. */
+function keptWithout(bytes: Buffer, target: string, ...gone: Buffer[]): Buffer {
+  const kept = keptPicture(bytes, target);
+  for (const piece of gone)
+    expect(kept.includes(piece), `${piece.toString("latin1")} left`).toBe(false);
+  return kept;
+}
+
+const EMF_PLUS_MARK = Buffer.from("EMF+");
+const WMFC_MARK = Buffer.from("WMFC");
+
+describe("a metafile picture reaches LibreOffice as its own plain records, and nothing it embeds", () => {
   // An EMF+ image object whose compressed
   // bitmap is an SVG, behind 4 KiB of comment padding so the first kilobytes
   // look like a metafile and nothing else. LibreOffice draws the local file.
@@ -254,50 +266,76 @@ describe("a metafile picture is kept only if it carries no picture of its own", 
     emfPlusComment(emfPlusImageObject(REACHING_SVG), EMF_PLUS_DRAW_IMAGE),
     EMF_RECTANGLE
   );
+  const svgMark = REACHING_SVG.subarray(0, 32);
 
-  it("cuts an EMF whose EMF+ image object is an SVG behind 4 KiB of padding", () => {
+  it("keeps an EMF whose EMF+ image object is an SVG behind 4 KiB of padding only without its EMF+ layer", () => {
     expect(smuggled.subarray(0, 4096).includes("<svg")).toBe(false);
-    expect(imageCut(smuggled)).toBe(1);
+    const kept = keptWithout(smuggled, "media/image1.emf", EMF_PLUS_MARK, svgMark);
+    expect(kept.includes(EMF_RECTANGLE)).toBe(true);
   });
 
+  // No EMF+ record is vouched for, by its kind or its brush: reading them the
+  // way LibreOffice does is what a differential lives on. Every EMF+ comment
+  // goes; the EMF records draw the picture.
   it.each([
     ["a PNG bitmap", emfPlusImageObject(PNG_1X1)],
     ["an embedded metafile", emfPlusImageObject(emf(EMF_RECTANGLE), "metafile")],
     ["a texture-brush", emfPlusBrushObject(2)],
     ["a pen filled by a texture brush", emfPlusPenObject(2)],
-  ])("cuts an EMF whose EMF+ records carry %s", (_, record) => {
-    expect(imageCut(emf(emfPlusComment(record), EMF_RECTANGLE))).toBe(1);
+  ])("keeps an EMF whose EMF+ records carry %s only without them", (_, record) => {
+    keptWithout(emf(emfPlusComment(record), EMF_RECTANGLE), "media/image1.emf", EMF_PLUS_MARK);
   });
 
-  // The EMF+ objects and brushes that are kept are the ones [MS-EMFPLUS]
-  // defines without a picture in them — named, not inferred from a list of
-  // the ones known to carry one: a kind this walk has never heard of is not
-  // one it can vouch for.
   it.each([
     ["an object of a kind [MS-EMFPLUS] does not define", emfPlusRecord(0x4008, 0x0a00, u32(0))],
     ["a brush of a type [MS-EMFPLUS] does not define", emfPlusBrushObject(5)],
     ["a pen filled by a brush of such a type", emfPlusPenObject(5)],
-  ])("cuts an EMF whose EMF+ records carry %s", (_, record) => {
-    expect(imageCut(emf(emfPlusComment(record), EMF_RECTANGLE))).toBe(1);
+  ])("keeps an EMF whose EMF+ records carry %s only without them", (_, record) => {
+    keptWithout(emf(emfPlusComment(record), EMF_RECTANGLE), "media/image1.emf", EMF_PLUS_MARK);
   });
 
   it.each([
     ["a hatch", 1],
     ["a path gradient", 3],
     ["a linear gradient", 4],
-  ])("keeps an EMF whose EMF+ brush is %s", (_, brushType) => {
-    expect(imageCut(emf(emfPlusComment(emfPlusBrushObject(brushType)), EMF_RECTANGLE))).toBe(0);
+  ])("keeps an EMF whose EMF+ brush is %s, without its EMF+ layer too", (_, brushType) => {
+    const kept = keptWithout(
+      emf(emfPlusComment(emfPlusBrushObject(brushType)), EMF_RECTANGLE),
+      "media/image1.emf",
+      EMF_PLUS_MARK
+    );
+    expect(kept.includes(EMF_RECTANGLE)).toBe(true);
   });
 
   it.each([
     ["an embedded EMF or EPS (multiformats)", 0x40000004],
     ["an embedded WMF", 0x80000001],
     ["an unknown public comment", 0x41414141],
-  ])("cuts an EMF whose public comment carries %s", (_, kind) => {
+  ])("keeps an EMF whose public comment carries %s only without the comment", (_, kind) => {
     const comment = emfComment(GDI_PUBLIC_ID, Buffer.concat([u32(kind), Buffer.alloc(64)]));
-    expect(imageCut(emf(comment))).toBe(1);
+    keptWithout(emf(comment, EMF_RECTANGLE), "media/image1.emf", Buffer.from("GDIC"));
   });
 
+  it("drops an EMF+ comment it could not even walk: no EMF+ record is read, so none is misread", () => {
+    const unwalkable = emfComment(
+      0x2b464d45,
+      Buffer.from([0x08, 0x40, 0x00, 0x05, 0xff, 0, 0, 0, 0, 0, 0, 0])
+    );
+    keptWithout(emf(unwalkable, EMF_RECTANGLE), "media/image1.emf", EMF_PLUS_MARK);
+  });
+
+  /** An EMF whose fields are rewritten by `edit` after it is built. */
+  const edited = (edit: (bytes: Buffer) => void, ...records: Buffer[]) => {
+    const bytes = emf(...records);
+    edit(bytes);
+    return bytes;
+  };
+
+  // What is dropped is decided by where this walk says each record starts.
+  // A reader that disagrees could find a record this walk never saw, so the
+  // walk trusts no size it cannot check against another: the header's own
+  // size against what a header holds, every record's against the file, and
+  // the file's against the byte count its header states.
   it.each([
     [
       "a record running past the end",
@@ -309,34 +347,141 @@ describe("a metafile picture is kept only if it carries no picture of its own", 
     ],
     ["no end-of-file record", () => emf(EMF_RECTANGLE).subarray(0, -20)],
     [
-      "an EMF+ record running past its comment",
-      () =>
-        emf(
-          emfComment(0x2b464d45, Buffer.from([0x08, 0x40, 0x00, 0x05, 0xff, 0, 0, 0, 0, 0, 0, 0]))
-        ),
+      "a header whose size swallows the EMF+ records after it",
+      () => {
+        const comment = Buffer.concat([
+          paddingComment(4400),
+          emfPlusComment(emfPlusImageObject(REACHING_SVG), EMF_PLUS_DRAW_IMAGE),
+        ]);
+        const bytes = injectAfterHeader(emf(EMF_RECTANGLE), comment);
+        bytes.writeUInt32LE(108 + comment.length, 4);
+        bytes.writeUInt32LE(bytes.length, 48);
+        return bytes;
+      },
     ],
-  ])("cuts an EMF it cannot walk: %s", (_, build) => {
+    ["a header shorter than a header", () => edited((b) => b.writeUInt32LE(84, 4), EMF_RECTANGLE)],
+    [
+      "a description that lies outside the header",
+      () =>
+        edited((b) => {
+          b.writeUInt32LE(4, 60);
+          b.writeUInt32LE(108, 64);
+        }, EMF_RECTANGLE),
+    ],
+    [
+      "a byte count other than its length",
+      () => edited((b) => b.writeUInt32LE(b.length + 4, 48), EMF_RECTANGLE),
+    ],
+    [
+      "a record after its end-of-file record",
+      () => {
+        const bytes = Buffer.concat([emf(), EMF_RECTANGLE]);
+        bytes.writeUInt32LE(bytes.length, 48);
+        return bytes;
+      },
+    ],
+  ])("cuts an EMF it cannot walk unambiguously: %s", (_, build) => {
     expect(imageCut(build())).toBe(1);
   });
 
-  it("keeps a plain EMF, and one whose EMF+ records only draw shapes", () => {
-    expect(imageCut(emf(EMF_RECTANGLE))).toBe(0);
-    expect(
-      imageCut(
-        emf(
-          paddingComment(64),
-          emfPlusComment(emfPlusBrushObject(0), emfPlusPenObject(0)),
-          EMF_RECTANGLE
-        )
-      )
-    ).toBe(0);
+  it("keeps an EMF whose header carries a description, as GDI writes one", () => {
+    const description = Buffer.from("Pinchy\0Chart\0\0", "utf16le");
+    const plain = emf(EMF_RECTANGLE);
+    const bytes = Buffer.concat([plain.subarray(0, 108), description, plain.subarray(108)]);
+    bytes.writeUInt32LE(108 + description.length, 4);
+    bytes.writeUInt32LE(description.length / 2, 60);
+    bytes.writeUInt32LE(108, 64);
+    bytes.writeUInt32LE(bytes.length, 48);
+    expect(keptPicture(bytes).equals(bytes)).toBe(true);
   });
 
-  it("keeps a plain WMF, and one carrying a plain EMF — as every WMF LibreOffice and Office write does", () => {
-    expect(imageCut(wmf(WMF_RECTANGLE), "media/image1.wmf")).toBe(0);
-    expect(
-      imageCut(wmf(wmfEmbeddedEmf(emf(EMF_RECTANGLE)), WMF_RECTANGLE), "media/image1.wmf")
-    ).toBe(0);
+  it("keeps a plain EMF as it is, and one whose EMF+ records only draw shapes without them", () => {
+    const plain = emf(EMF_RECTANGLE);
+    expect(keptPicture(plain).equals(plain)).toBe(true);
+    keptWithout(
+      emf(
+        paddingComment(64),
+        emfPlusComment(emfPlusBrushObject(0), emfPlusPenObject(0)),
+        EMF_RECTANGLE
+      ),
+      "media/image1.emf",
+      EMF_PLUS_MARK
+    );
+  });
+
+  it("keeps a plain WMF as it is, and one carrying a plain EMF without it — as every WMF LibreOffice and Office write does", () => {
+    const plain = wmf(WMF_RECTANGLE);
+    expect(keptPicture(plain, "media/image1.wmf").equals(plain)).toBe(true);
+    const kept = keptWithout(
+      wmf(wmfEmbeddedEmf(emf(EMF_RECTANGLE)), WMF_RECTANGLE),
+      "media/image1.wmf",
+      WMFC_MARK
+    );
+    expect(kept.includes(WMF_RECTANGLE)).toBe(true);
+  });
+
+  // LibreOffice reassembles a WMF's embedded EMF only from "WMFC" records
+  // whose CommentType is 1, Version 0x00010000 and CommentRecordCount not 0.
+  // A walk that reassembled EVERY such record read decoys LibreOffice skips:
+  // a decoy EMF header whose size swallowed the real chunk hid an EMF+ SVG
+  // from the walk, the WMF was kept whole, and LibreOffice 26.2 and 7.4.7
+  // drew the local files from the one chunk it did take. No chunk is matched
+  // to LibreOffice's choice: every one goes.
+  it.each([
+    ["a Version other than 0x00010000", { version: 0x00020000 }],
+    ["a CommentType other than 1", { commentType: 2 }],
+    ["a CommentRecordCount of 0", { recordCount: 0 }],
+  ])(
+    "drops every embedded-EMF record, decoys with %s among them, and keeps the WMF's own drawing",
+    (_, decoy) => {
+      const kept = keptWithout(
+        decoyedWmf(smuggled, decoy, WMF_RECTANGLE, wmfText("WMF words survive")),
+        "media/image1.wmf",
+        WMFC_MARK,
+        EMF_PLUS_MARK,
+        svgMark
+      );
+      expect(kept.includes(WMF_RECTANGLE)).toBe(true);
+      expect(kept.includes(Buffer.from("WMF words survive", "latin1"))).toBe(true);
+    }
+  );
+
+  /** A WMF whose records are rewritten by `edit` after it is built. */
+  const editedWmf = (edit: (bytes: Buffer) => void, ...records: Buffer[]) => {
+    const bytes = wmf(...records);
+    edit(bytes);
+    return bytes;
+  };
+
+  it.each([
+    [
+      "a size other than its length",
+      () => editedWmf((b) => b.writeUInt32LE(b.readUInt32LE(28) + 1, 28), WMF_RECTANGLE),
+    ],
+    [
+      "records after its end-of-file record",
+      () => {
+        const bytes = Buffer.concat([wmf(), WMF_RECTANGLE]);
+        bytes.writeUInt32LE((bytes.length - 22) / 2, 28);
+        return bytes;
+      },
+    ],
+    ["no end-of-file record", () => wmf(WMF_RECTANGLE).subarray(0, -6)],
+    [
+      "a record running past the end",
+      () => editedWmf((b) => b.writeUInt32LE(0x1000, 40), WMF_RECTANGLE),
+    ],
+  ])("cuts a WMF it cannot walk unambiguously: %s", (_, build) => {
+    expect(imageCut(build(), "media/image1.wmf")).toBe(1);
+  });
+
+  // LibreOffice sniffs a picture's format from its first bytes; markup that
+  // sat behind 4 KiB of comment padding moves into them once the padding goes.
+  it("cuts a metafile whose own records, once what it embeds is gone, start like an SVG", () => {
+    const markup = emfRecord(83, Buffer.concat([Buffer.alloc(76), REACHING_SVG]));
+    const bytes = emf(paddingComment(4400), markup, EMF_RECTANGLE);
+    expect(bytes.subarray(0, 4096).includes("<svg")).toBe(false);
+    expect(imageCut(bytes)).toBe(1);
   });
 
   // LibreOffice takes a file for a WMF by its type (1 or 2) and header size
@@ -345,7 +490,7 @@ describe("a metafile picture is kept only if it carries no picture of its own", 
   // recognised as a metafile was never walked, only cut or kept by a rule
   // for something else: as a font it was kept, and both LibreOffice 26.2 and
   // 7.4.7 drew the SVG in its embedded EMF.
-  it("walks a WMF of version 0x0100 like any other: kept when plain, its embedded EMF dropped when that reaches for a picture", () => {
+  it("walks a WMF of version 0x0100 like any other: kept when plain, its embedded EMF dropped", () => {
     const plain = withWmfVersion(unplaceable(wmf(WMF_RECTANGLE)), 0x0100);
     expect(imageCut(plain, "media/image1.wmf")).toBe(0);
 
@@ -353,8 +498,7 @@ describe("a metafile picture is kept only if it carries no picture of its own", 
       unplaceable(wmf(wmfEmbeddedEmf(smuggled), WMF_RECTANGLE)),
       0x0100
     );
-    const kept = keptPicture(carrying, "media/image1.wmf");
-    expect(kept.includes(Buffer.from("WMFC"))).toBe(false);
+    const kept = keptWithout(carrying, "media/image1.wmf", WMFC_MARK);
     expect(kept.includes(WMF_RECTANGLE)).toBe(true);
   });
 
@@ -363,12 +507,20 @@ describe("a metafile picture is kept only if it carries no picture of its own", 
   });
 
   it.each(["libreoffice-drawing.emf", "libreoffice-drawing.wmf"])(
-    "keeps %s — a rectangle, an ellipse, text and a bitmap, as LibreOffice 26.2 writes them",
+    "keeps %s — a rectangle, an ellipse, text and a bitmap, as LibreOffice 26.2 writes them — words included, without what it embeds",
     (name) => {
-      // The WMF carries the whole drawing again as an EMF; a rule that cut
-      // every WMF with an embedded EMF would cut every one LibreOffice writes.
+      // LibreOffice writes the EMF "EMF+ Dual", and the WMF with the whole
+      // drawing again as an EMF inside it. Both draw it once more in their
+      // own records, which is what is kept.
       const bytes = readFileSync(join(FIXTURES, name));
-      expect(imageCut(bytes, `media/image1.${name.split(".").pop()}`)).toBe(0);
+      const isWmf = name.endsWith(".wmf");
+      const kept = keptWithout(
+        bytes,
+        `media/image1.${isWmf ? "wmf" : "emf"}`,
+        isWmf ? WMFC_MARK : EMF_PLUS_MARK
+      );
+      const words = Buffer.from("Chart label text", isWmf ? "latin1" : "utf16le");
+      expect(kept.includes(words)).toBe(true);
     }
   );
 
@@ -376,24 +528,26 @@ describe("a metafile picture is kept only if it carries no picture of its own", 
   // — its drawing, text included — stay, LibreOffice draws them instead, and
   // they are walked like any WMF's. What reached for a picture is gone.
   it("drops an embedded EMF that carries a picture, and keeps the WMF's own drawing: LibreOffice would draw that EMF instead", () => {
-    const kept = keptPicture(wmf(wmfEmbeddedEmf(smuggled), WMF_RECTANGLE), "media/image1.wmf");
-    expect(kept.includes(Buffer.from("WMFC"))).toBe(false);
-    expect(kept.includes(REACHING_SVG.subarray(0, 32))).toBe(false);
+    const kept = keptWithout(
+      wmf(wmfEmbeddedEmf(smuggled), WMF_RECTANGLE),
+      "media/image1.wmf",
+      WMFC_MARK,
+      svgMark
+    );
     expect(kept.includes(WMF_RECTANGLE)).toBe(true);
   });
 
   it("drops an embedded EMF that is not all there, and keeps the WMF's own drawing", () => {
     const record = wmfEmbeddedEmf(emf(EMF_RECTANGLE));
     record.writeUInt32LE(record.readUInt32LE(40) + 4, 40); // declares 4 bytes more than it carries
-    const kept = keptPicture(wmf(record, WMF_RECTANGLE), "media/image1.wmf");
-    expect(kept.includes(Buffer.from("WMFC"))).toBe(false);
+    const kept = keptWithout(wmf(record, WMF_RECTANGLE), "media/image1.wmf", WMFC_MARK);
     expect(kept.includes(WMF_RECTANGLE)).toBe(true);
   });
 
-  it("cuts a WMF carrying encapsulated PostScript", () => {
-    expect(
-      imageCut(wmf(wmfEscape(0x1014, Buffer.from("%!PS-Adobe-3.0 EPSF-3.0\n"))), "media/image1.wmf")
-    ).toBe(1);
+  it("drops a WMF's encapsulated PostScript, and keeps its drawing: no escape is kept", () => {
+    const ps = Buffer.from("%!PS-Adobe-3.0 EPSF-3.0\n");
+    const kept = keptWithout(wmf(wmfEscape(0x1014, ps), WMF_RECTANGLE), "media/image1.wmf", ps);
+    expect(kept.includes(WMF_RECTANGLE)).toBe(true);
   });
 
   it("cuts a metafile too large to walk", () => {
@@ -410,12 +564,12 @@ describe("a metafile picture is kept only if it carries no picture of its own", 
   });
 });
 
-describe("a picture cut costs its words, so a metafile is cut only where it has no other drawing", () => {
+describe("a metafile keeps its words: what is dropped is what it embeds, never its own drawing", () => {
   // An EMF's words are GDI text records, and LibreOffice draws them into the
   // PDF's text layer — so cutting a metafile picture cut text from the index.
   // Office and LibreOffice write every EMF+ file as "EMF+ Dual": the EMF
-  // records around the EMF+ layer draw the whole picture again. Where only the
-  // EMF+ layer reaches for a picture, that layer goes and the rest stays.
+  // records around the EMF+ layer draw the whole picture again. The EMF+
+  // layer goes, always, and the rest stays.
 
   /** The SVG-carrying EMF+ file above: not dual, so its EMF records do not draw the picture. */
   const smuggled = emf(
@@ -472,20 +626,34 @@ describe("a picture cut costs its words, so a metafile is cut only where it has 
     expect(kept.includes(REACHING_SVG.subarray(0, 32))).toBe(false);
   });
 
-  it("still cuts an EMF+ file that is not dual: its EMF records do not draw the picture", () => {
-    expect(imageCut(smuggled)).toBe(1);
+  it("keeps an EMF+ file that is not dual as its EMF records alone: its EMF+ picture never reaches LibreOffice", () => {
+    const kept = keptPicture(smuggled);
+    expect(kept.includes(Buffer.from("EMF+"))).toBe(false);
+    expect(kept.includes(REACHING_SVG.subarray(0, 32))).toBe(false);
+    expect(kept.includes(EMF_RECTANGLE)).toBe(true);
   });
 
-  it("still cuts a dual EMF whose GDI layer itself reaches for a picture", () => {
+  it("drops a dual EMF's public comment along with its EMF+ layer: an embedded EMF, EPS or WMF in the GDI layer", () => {
     const comment = emfComment(GDI_PUBLIC_ID, Buffer.concat([u32(0x40000004), Buffer.alloc(64)]));
-    expect(
-      imageCut(emf(emfPlusDualComment(emfPlusImageObject(REACHING_SVG)), comment, EMF_RECTANGLE))
-    ).toBe(1);
+    const kept = keptPicture(
+      emf(
+        paddingComment(4400),
+        emfPlusDualComment(emfPlusImageObject(REACHING_SVG)),
+        comment,
+        EMF_RECTANGLE
+      )
+    );
+    expect(kept.includes(Buffer.from("GDIC"))).toBe(false);
+    expect(kept.includes(Buffer.from("EMF+"))).toBe(false);
+    expect(kept.includes(EMF_RECTANGLE)).toBe(true);
   });
 
-  it("still cuts a WMF whose own records carry PostScript, embedded EMF or not", () => {
+  it("drops a WMF's PostScript and its embedded EMF alike", () => {
     const ps = wmfEscape(0x1014, Buffer.from("%!PS-Adobe-3.0 EPSF-3.0\n"));
-    expect(imageCut(wmf(wmfEmbeddedEmf(smuggled), ps), "media/image1.wmf")).toBe(1);
+    const kept = keptPicture(wmf(wmfEmbeddedEmf(smuggled), ps, WMF_RECTANGLE), "media/image1.wmf");
+    expect(kept.includes(Buffer.from("WMFC"))).toBe(false);
+    expect(kept.includes(Buffer.from("%!PS"))).toBe(false);
+    expect(kept.includes(WMF_RECTANGLE)).toBe(true);
   });
 
   it("keeps a WMF's own words when its embedded EMF is dropped, and rewrites its header", () => {

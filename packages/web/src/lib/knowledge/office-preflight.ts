@@ -71,10 +71,10 @@
  * The same is true one level down: a metafile picture (EMF, WMF) passes on
  * its magic bytes, but its records can carry a picture of their own, which
  * LibreOffice again detects by ITS bytes. So a metafile is walked record by
- * record. One that carries a picture keeps its
- * second, plain drawing where it has one — the EMF records of an "EMF+ Dual"
- * file, the WMF records around an embedded EMF — words included; one that
- * has none is cut, and its words with it.
+ * record, and every record that can carry something else — an EMF's comments
+ * (its EMF+ layer among them), a WMF's escapes (an embedded EMF among them)
+ * — is dropped unread. What stays is its own plain drawing, words included;
+ * one whose records do not add up is cut, and its words with it.
  *
  * RTF (accepted under a `.doc` name, because Word writes those) has its
  * picture, object and field-instruction groups cut (`sanitizeRtf`), and is
@@ -1539,8 +1539,8 @@ function inflateHead(archive: Buffer, entry: ZipEntryInfo): Buffer {
 
 /**
  * A picture we will let LibreOffice draw: `true` to keep it as it is, a
- * Buffer to keep THAT instead (a metafile without the layer that reached for
- * a picture), `null` to cut it (the picture is not drawn). Whatever would be
+ * Buffer to keep THAT instead (a metafile without the records that can carry
+ * something else), `null` to cut it (the picture is not drawn). Whatever would be
  * taken for SVG is held to the SVG rule — raster magic up front does not
  * excuse SVG markup behind it — and SVGZ is never kept: what it reaches for
  * cannot be read without inflating it whole. A metafile is walked record by
@@ -1554,6 +1554,8 @@ function vetImagePart(archive: Buffer, entry: ZipEntryInfo): true | Buffer | nul
     if (entry.uncompressedSize > MAX_METAFILE_BYTES) return null;
     const bytes = inflatePart(archive, entry, MAX_METAFILE_BYTES);
     const kept = keptMetafile(bytes);
+    // What a drop moved into the first kilobytes is sniffed there too.
+    if (kept === null || looksLikeSvg(kept.subarray(0, 4096))) return null;
     return kept === bytes ? true : kept;
   }
   if (head[0] === 0x1f && head[1] === 0x8b) return null;
@@ -1574,12 +1576,13 @@ const EMR_HEADER = 1;
 const EMR_EOF = 14;
 const EMR_COMMENT = 70;
 /**
- * EMF records that name a file or hand data to a device or another filter:
- * colour-space and ICM-profile records (a profile FILE NAME), and the escape
- * records (PostScript and other passthrough). No ordinary picture needs them
- * to be drawn.
+ * EMF records dropped besides every comment: the ones that name a file or
+ * hand data to a device or another filter — colour-space and ICM-profile
+ * records (a profile FILE NAME), and the escape records (PostScript and other
+ * passthrough). No ordinary picture needs them to be drawn.
  */
-const EMF_RECORDS_CUT = new Set([
+const EMF_RECORDS_DROPPED = new Set([
+  EMR_COMMENT,
   99, // EMR_CREATECOLORSPACE
   105, // EMR_DRAWESCAPE
   106, // EMR_EXTESCAPE
@@ -1589,110 +1592,73 @@ const EMF_RECORDS_CUT = new Set([
   121, // EMR_COLORMATCHTOTARGETW
   122, // EMR_CREATECOLORSPACEW
 ]);
+/** An EMR_HEADER's base fields, and its fixed fields with both optional extensions, through `szlMicrometers` ([MS-EMF] 2.3.4.2). */
+const EMF_HEADER_MIN = 88;
+const EMF_HEADER_FIXED = 108;
 
-const COMMENT_EMF_PLUS = 0x2b464d45; // "EMF+"
-const COMMENT_PUBLIC = 0x43494447; // "GDIC"
-const COMMENT_EMF_SPOOL = 0x00000000;
-/** Public comments that only group records or label them. MULTIFORMATS (an embedded EMF or EPS) and WINDOWS_METAFILE (an embedded WMF) are not among them. */
-const PUBLIC_COMMENTS_KEPT = new Set([0x00000002, 0x00000003, 0x00000040, 0x00000080]);
-
-const EMF_PLUS_OBJECT = 0x4008;
-const EMF_PLUS_OBJECT_BRUSH = 1;
-const EMF_PLUS_OBJECT_PEN = 2;
-/**
- * The EMF+ object kinds kept: the ones [MS-EMFPLUS] 2.1.1.22 defines that hold
- * no picture — path, region, font, string format, image attributes, custom
- * line cap — and the brush and pen, whose brush is checked on its own. Not
- * Image (5), and not a kind it does not define.
- */
-const EMF_PLUS_OBJECTS_KEPT = new Set([
-  EMF_PLUS_OBJECT_BRUSH,
-  EMF_PLUS_OBJECT_PEN,
-  3,
-  4,
-  6,
-  7,
-  8,
-  9,
-]);
-/** The brush types kept ([MS-EMFPLUS] 2.1.1.3): solid, hatch, path and linear gradient. Not a texture (2), which is a picture. */
-const EMF_PLUS_BRUSHES_KEPT = new Set([0, 1, 3, 4]);
-const EMF_PLUS_CONTINUED = 0x8000;
-
-/** The EmfPlusHeader record, and its flag for "EMF+ Dual" ([MS-EMFPLUS] 2.3.3.3). */
-const EMF_PLUS_HEADER = 0x4001;
-const EMF_PLUS_DUAL = 0x0001;
+const META_EOF = 0x0000;
+const META_ESCAPE = 0x0626;
 
 /**
- * What to keep of a metafile picture: the bytes themselves when they carry
- * no picture of their own (`metafileCarriesNoPicture`); a copy without the
- * layer that does, when the rest still draws the whole picture; or null, to
- * cut it.
+ * What to keep of a metafile picture: its own plain records, and nothing it
+ * embeds — or null, to cut it.
  *
- * Cutting costs words. A metafile's text is GDI text records, LibreOffice
- * draws them into the PDF's text layer, and the index reads that layer — so
- * a cut chart loses its labels from search. Two
- * shapes have a second, complete drawing to fall back to:
+ * A metafile passes the picture check on its magic bytes, but some of its
+ * records carry ANOTHER picture, which LibreOffice detects by its own bytes:
+ * an EMF+ image object (an SVG among them), a brush or pen filled with one,
+ * a public comment carrying an EMF, EPS or WMF, a WMF escape carrying a whole
+ * EMF ("WMFC", which LibreOffice then draws instead of the WMF). Put an SVG
+ * that reads a local file in any of them and LibreOffice draws the local file
+ * into the PDF.
  *
- *  - An "EMF+ Dual" EMF — what Office and LibreOffice write whenever they
- *    write EMF+ — draws everything twice: once in EMF+ records (inside
- *    comments), once in ordinary EMF records for readers without EMF+. When
- *    the EMF+ layer is what carries a picture, EVERY EMF+ comment goes and
- *    the EMF records stay: LibreOffice then draws the file as the plain EMF
- *    it also is. Partial removal is not attempted — one comment batches many
- *    EMF+ records, and a half-present EMF+ layer is a drawing nobody wrote.
- *  - A WMF that carries an EMF ("WMFC" comments, Office's and LibreOffice's
- *    habit): LibreOffice draws the EMF instead of the WMF records around it.
- *    When the EMF is what carries a picture (or is not all there), the WMFC
- *    records go and the WMF's own records — the same drawing — stay.
+ * So those records are not read, they are dropped — every one, whatever it
+ * says it holds: every EMR_COMMENT of an EMF (the EMF+ layer, public and
+ * private comments alike, `EMF_RECORDS_DROPPED`) and every META_ESCAPE of a
+ * WMF. Deciding which of them LibreOffice would act on is what lost before:
+ * LibreOffice reassembles a WMF's embedded EMF only from records whose
+ * CommentType, Version and CommentRecordCount are Office's, and a walk that
+ * took every chunk read decoys LibreOffice skips — a decoy EMF header whose
+ * size swallowed the real chunk, and the EMF+ SVG in it was never walked.
+ * Nothing is matched to LibreOffice's choice now; there is nothing to match.
  *
- * The rewrite drops whole records and fixes the counts the header keeps
- * (an EMF's byte and record count, a WMF's size and largest record); nothing
- * else in either format points at a record's position. The result is walked
- * again like any metafile and cut if it is not plain. An EMF+ file that is
- * NOT dual has no second drawing, and is cut as before — with its words.
+ * What stays is the metafile's own drawing — what LibreOffice draws without
+ * EMF+ and without an embedded EMF, words included. Office and LibreOffice
+ * write every EMF+ file "EMF+ Dual" (the EMF records draw it all again) and
+ * every WMF with its embedded EMF drawn again in WMF records, so for what
+ * they write nothing is lost but rendering detail. An EMF+ file that is not
+ * dual keeps no drawing worth the name: the picture comes out blank, and the
+ * words it drew in EMF+ are not indexed. So does the Unicode text escape
+ * LibreOffice writes into a WMF for a string its font's code page cannot
+ * hold: the polygons it draws instead stay, the words do not reach the index.
+ *
+ * Which bytes are a record is decided by this walk, so it trusts no size it
+ * cannot check against another (`emfRecords`, `wmfRecords`): a reader that
+ * disagreed about where a record starts could find one this walk never saw.
+ * Anything that does not add up cuts the picture. The rewrite drops whole
+ * records and sets the counts the header keeps (an EMF's byte and record
+ * count, a WMF's size and largest record); nothing else in either format
+ * points at a record's position.
+ *
+ * Not covered, stated plainly: a bitmap in an ordinary EMF/WMF bitmap record
+ * (a DIB) is kept. LibreOffice decodes a DIB as pixels; one that declares
+ * PNG or JPEG compression and holds an SVG drew nothing at all (26.2,
+ * measured), so no format detector saw it.
  */
 function keptMetafile(bytes: Buffer): Buffer | null {
-  if (metafileCarriesNoPicture(bytes)) return bytes;
   try {
-    const fallback = isEmf(bytes) ? emfWithoutEmfPlus(bytes) : wmfWithoutEmbeddedEmf(bytes);
-    return fallback && metafileCarriesNoPicture(fallback) ? fallback : null;
+    return isEmf(bytes) ? plainEmf(bytes) : plainWmf(bytes);
   } catch {
     return null; // Read past the end: a record lied about its size.
   }
 }
 
-const isEmfPlusComment = (record: Buffer) =>
-  record.readUInt32LE(0) === EMR_COMMENT &&
-  record.length >= 16 &&
-  record.readUInt32LE(8) >= 4 &&
-  record.readUInt32LE(12) === COMMENT_EMF_PLUS;
-
-/**
- * This EMF without any of its EMF+ comments — only if it is "EMF+ Dual" (the
- * flag on the EMF+ header, the first EMF+ record of the first EMF+ comment),
- * and with the header's byte and record counts set to what is left. Null for
- * anything else.
- */
-function emfWithoutEmfPlus(emf: Buffer): Buffer | null {
-  const kept: Buffer[] = [];
-  let dual: boolean | null = null;
-  for (let at = 0; at < emf.length;) {
-    const size = emf.readUInt32LE(at + 4);
-    if (size < 8 || size % 4 !== 0 || at + size > emf.length) return null;
-    const record = emf.subarray(at, at + size);
-    at += size;
-    if (!isEmfPlusComment(record)) {
-      kept.push(record);
-      continue;
-    }
-    if (dual === null) {
-      if (record.length < 28 || record.readUInt16LE(16) !== EMF_PLUS_HEADER) return null;
-      dual = (record.readUInt16LE(18) & EMF_PLUS_DUAL) !== 0;
-    }
-  }
+/** This EMF without `EMF_RECORDS_DROPPED` (the same buffer when there are none), or null if it does not walk cleanly. */
+function plainEmf(emf: Buffer): Buffer | null {
+  const records = emfRecords(emf);
+  if (records === null) return null;
+  const kept = records.filter((record) => !EMF_RECORDS_DROPPED.has(record.readUInt32LE(0)));
+  if (kept.length === records.length) return emf;
   // The header record carries nBytes at 48 and nRecords at 52.
-  if (!dual || kept.length === 0 || kept[0].length < 56) return null;
   const out = Buffer.concat(kept);
   out.writeUInt32LE(out.length, 48);
   out.writeUInt32LE(kept.length, 52);
@@ -1700,216 +1666,85 @@ function emfWithoutEmfPlus(emf: Buffer): Buffer | null {
 }
 
 /**
- * This WMF without its "WMFC" records (the EMF it carries), with its header's
- * size and largest-record fields set to what is left. Null when there were
- * none, or the records cannot be walked.
+ * Every record of an EMF, or null unless they add up: the header first, of a
+ * size a header has (`emfHeaderIsBounded`); every record at least 8 bytes, a
+ * multiple of 4, inside the file; the end-of-file record last; and the file
+ * exactly the byte count its header states.
  */
-function wmfWithoutEmbeddedEmf(wmf: Buffer): Buffer | null {
-  const start = startsWith(wmf, "d7cdc69a") ? 22 : 0;
-  if (start + 18 > wmf.length || wmf.readUInt16LE(start + 2) !== 9) return null;
-  const kept: Buffer[] = [];
-  let dropped = 0;
-  let largest = 0;
-  for (let at = start + 18; at < wmf.length;) {
-    const size = wmf.readUInt32LE(at) * 2;
-    if (size < 6 || at + size > wmf.length) return null;
-    const record = wmf.subarray(at, at + size);
+function emfRecords(emf: Buffer): Buffer[] | null {
+  if (emf.length < EMF_HEADER_MIN || !emfHeaderIsBounded(emf)) return null;
+  if (emf.readUInt32LE(48) !== emf.length) return null;
+  const records: Buffer[] = [];
+  for (let at = 0; at < emf.length;) {
+    if (records.length > 0 && records[records.length - 1].readUInt32LE(0) === EMR_EOF) return null;
+    const type = emf.readUInt32LE(at);
+    const size = emf.readUInt32LE(at + 4);
+    if (size < 8 || size % 4 !== 0 || at + size > emf.length) return null;
+    if ((at === 0) !== (type === EMR_HEADER)) return null;
+    records.push(emf.subarray(at, at + size));
     at += size;
-    const embedsEmf =
-      record.readUInt16LE(4) === META_ESCAPE &&
-      size >= 14 &&
-      record.readUInt16LE(6) === MFCOMMENT &&
-      record.readUInt32LE(10) === WMF_EMBEDDED_EMF;
-    if (embedsEmf) {
-      dropped++;
-      continue;
-    }
-    kept.push(record);
-    largest = Math.max(largest, size / 2);
   }
-  if (dropped === 0) return null;
+  const last = records[records.length - 1];
+  return last.readUInt32LE(0) === EMR_EOF ? records : null;
+}
+
+/**
+ * Is the EMR_HEADER no bigger than what it holds? Its fixed fields
+ * (88 bytes, 108 with the optional extensions), then its description and
+ * pixel format, each where its offset says — and nothing past them. A header
+ * whose size claimed more swallowed whatever records it covered from this
+ * walk: a decoy header that reached past an EMF+ comment hid it.
+ */
+function emfHeaderIsBounded(emf: Buffer): boolean {
+  const size = emf.readUInt32LE(4);
+  if (size < EMF_HEADER_MIN) return false;
+  let end = EMF_HEADER_FIXED;
+  const holds = (count: number, offset: number) => {
+    if (count === 0) return true;
+    if (offset < EMF_HEADER_MIN || offset + count > size) return false;
+    end = Math.max(end, offset + count);
+    return true;
+  };
+  if (!holds(emf.readUInt32LE(60) * 2, emf.readUInt32LE(64))) return false; // description, UTF-16
+  if (size >= 100 && !holds(emf.readUInt32LE(88), emf.readUInt32LE(92))) return false; // pixel format
+  return size <= Math.ceil(end / 4) * 4;
+}
+
+/** This WMF without its escapes (the same buffer when there are none), or null if it does not walk cleanly. */
+function plainWmf(wmf: Buffer): Buffer | null {
+  const start = startsWith(wmf, "d7cdc69a") ? 22 : 0;
+  const records = wmfRecords(wmf, start);
+  if (records === null) return null;
+  const kept = records.filter((record) => record.readUInt16LE(4) !== META_ESCAPE);
+  if (kept.length === records.length) return wmf;
   const header = Buffer.from(wmf.subarray(start, start + 18));
   const body = Buffer.concat(kept);
   header.writeUInt32LE((18 + body.length) / 2, 6); // Size, in 16-bit words
+  const largest = kept.reduce((max, record) => Math.max(max, record.length / 2), 0);
   header.writeUInt32LE(largest, 12); // MaxRecord, in 16-bit words
   return Buffer.concat([wmf.subarray(0, start), header, body]);
 }
 
 /**
- * Does this EMF or WMF carry nothing LibreOffice would hand to ANOTHER import
- * filter? A metafile passes the picture check on its magic bytes, but its
- * records can carry pictures of their own, each detected by ITS bytes: an
- * EMF+ image object holds compressed bitmap bytes (an SVG among them) or a
- * whole metafile, a brush or pen can be filled with such an image, a public
- * comment can carry an EMF, EPS or WMF, and a WMF escape can carry a whole
- * EMF (which LibreOffice then draws instead of the WMF). Put an SVG that reads
- * a local file into an EMF+ image object, behind 4 KiB of padding so the first
- * bytes say nothing but "metafile", and LibreOffice draws the local file into
- * the PDF.
- *
- * So the records are walked, boundedly — an EMF carried in a WMF is
- * reassembled and walked too — and the picture is cut when one of them
- * carries another picture, or when the walk cannot be finished cleanly
- * (a record running past the end, a size of zero, no end-of-file record):
- * a reader that disagrees with this walk about where a record starts could
- * find a picture this walk never saw. A cut costs the picture AND the words
- * drawn in it, which is why `keptMetafile` first looks for a second drawing
- * it can keep instead.
- *
- * Not covered, stated plainly: a bitmap in an ordinary EMF/WMF bitmap record
- * (a DIB) is kept. LibreOffice decodes a DIB as pixels; one that declares
- * PNG or JPEG compression and holds an SVG drew nothing at all (26.2,
- * measured), so no format detector saw it. Real Office EMFs with EMF+ image
- * objects (a photo pasted into a chart) are "EMF+ Dual", and `keptMetafile`
- * keeps their EMF drawing instead — the photo is drawn from the EMF records
- * if they hold it, the words always.
+ * Every record of a WMF (after the placeable header, if any), or null unless
+ * they add up: a header of 9 words, every record at least 3 words and inside
+ * the file, META_EOF last — where LibreOffice stops reading — and the file
+ * exactly the size its header states.
  */
-function metafileCarriesNoPicture(bytes: Buffer): boolean {
-  try {
-    return isEmf(bytes) ? emfIsPlain(bytes) : wmfIsPlain(bytes);
-  } catch {
-    return false; // Read past the end: a record lied about its size.
-  }
-}
-
-function emfIsPlain(emf: Buffer): boolean {
-  let at = 0;
+function wmfRecords(wmf: Buffer, start: number): Buffer[] | null {
+  if (start + 18 > wmf.length || wmf.readUInt16LE(start + 2) !== 9) return null;
+  if (wmf.readUInt32LE(start + 6) * 2 !== wmf.length - start) return null;
+  const records: Buffer[] = [];
   let sawEof = false;
-  while (at < emf.length) {
-    const type = emf.readUInt32LE(at);
-    const size = emf.readUInt32LE(at + 4);
-    if (size < 8 || size % 4 !== 0 || at + size > emf.length) return false;
-    if ((at === 0) !== (type === EMR_HEADER)) return false;
-    if (EMF_RECORDS_CUT.has(type)) return false;
-    if (type === EMR_COMMENT && !emfCommentIsPlain(emf.subarray(at, at + size))) return false;
-    if (type === EMR_EOF) sawEof = true;
-    at += size;
-  }
-  return sawEof;
-}
-
-/** An EMR_COMMENT: private comments are opaque to every reader; the three kinds LibreOffice reads are walked. */
-function emfCommentIsPlain(record: Buffer): boolean {
-  const dataSize = record.readUInt32LE(8);
-  if (12 + dataSize > record.length) return false;
-  if (dataSize < 4) return true;
-  const data = record.subarray(12, 12 + dataSize);
-  const identifier = data.readUInt32LE(0);
-  if (identifier === COMMENT_EMF_PLUS) return emfPlusIsPlain(data.subarray(4));
-  if (identifier === COMMENT_PUBLIC) {
-    return data.length >= 8 && PUBLIC_COMMENTS_KEPT.has(data.readUInt32LE(4));
-  }
-  return identifier !== COMMENT_EMF_SPOOL;
-}
-
-/** EMF+ records inside one comment: only objects that hold no picture (`EMF_PLUS_OBJECTS_KEPT`), brushes and pens filled without one. */
-function emfPlusIsPlain(records: Buffer): boolean {
-  let at = 0;
-  while (at < records.length) {
-    if (at + 12 > records.length) return false;
-    const type = records.readUInt16LE(at);
-    const flags = records.readUInt16LE(at + 2);
-    const size = records.readUInt32LE(at + 4);
-    const dataSize = records.readUInt32LE(at + 8);
-    if (size < 12 || size % 4 !== 0 || at + size > records.length || 12 + dataSize > size) {
-      return false;
-    }
-    if (type === EMF_PLUS_OBJECT) {
-      const kind = (flags >> 8) & 0x7f;
-      if (!EMF_PLUS_OBJECTS_KEPT.has(kind)) return false;
-      if (kind === EMF_PLUS_OBJECT_BRUSH || kind === EMF_PLUS_OBJECT_PEN) {
-        // A continued object starts mid-structure: nothing here to read it by.
-        if (flags & EMF_PLUS_CONTINUED) return false;
-        const data = records.subarray(at + 12, at + 12 + dataSize);
-        const brush = kind === EMF_PLUS_OBJECT_PEN ? penBrushOffset(data) : 0;
-        if (brush < 0 || brush + 8 > data.length) return false;
-        if (!EMF_PLUS_BRUSHES_KEPT.has(data.readUInt32LE(brush + 4))) return false;
-      }
-    }
-    at += size;
-  }
-  return true;
-}
-
-/**
- * Where an EMF+ pen's brush starts in its data, or -1: after the pen's fixed
- * fields come optional ones, present by flag, two of them counted arrays and
- * two sized blocks ([MS-EMFPLUS] 2.2.2.42).
- */
-function penBrushOffset(pen: Buffer): number {
-  if (pen.length < 20) return -1;
-  const flags = pen.readUInt32LE(8);
-  let at = 20;
-  const fixed: Array<[number, number]> = [
-    [0x01, 24], // transform
-    [0x02, 4], // start cap
-    [0x04, 4], // end cap
-    [0x08, 4], // join
-    [0x10, 4], // miter limit
-    [0x20, 4], // line style
-    [0x40, 4], // dashed line cap
-    [0x80, 4], // dashed line offset
-  ];
-  for (const [flag, bytes] of fixed) if (flags & flag) at += bytes;
-  const counted = (bytesPer: number) => {
-    if (at + 4 > pen.length) return false;
-    at += 4 + pen.readUInt32LE(at) * bytesPer;
-    return true;
-  };
-  if (flags & 0x100 && !counted(4)) return -1; // dashed line
-  if (flags & 0x200) at += 4; // alignment
-  if (flags & 0x400 && !counted(4)) return -1; // compound line
-  if (flags & 0x800 && !counted(1)) return -1; // custom start cap
-  if (flags & 0x1000 && !counted(1)) return -1; // custom end cap
-  if (flags & ~0x1fff) return -1; // a flag this walk does not know the size of
-  return at <= pen.length ? at : -1;
-}
-
-const META_EOF = 0x0000;
-const META_ESCAPE = 0x0626;
-const MFCOMMENT = 0x000f;
-const WMF_EMBEDDED_EMF = 0x43464d57; // "WMFC"
-/** Escapes that carry PostScript for a printer — or for an EPS import. */
-const WMF_ESCAPES_CUT = new Set([0x0025, 0x0026, 0x1013, 0x1014, 0x1015, 0x1016, 0x11d8]);
-
-/**
- * A WMF: no PostScript escape, and — if it carries a whole EMF, as every WMF
- * LibreOffice and Office write does (the "WMFC" comment, split over as many
- * records as it takes) — that EMF reassembled, complete, and plain itself:
- * it is what LibreOffice draws instead of the WMF records around it.
- */
-function wmfIsPlain(wmf: Buffer): boolean {
-  let at = startsWith(wmf, "d7cdc69a") ? 22 : 0;
-  if (at + 18 > wmf.length || wmf.readUInt16LE(at + 2) !== 9) return false;
-  at += 18;
-  let sawEof = false;
-  const embedded: Buffer[] = [];
-  let embeddedSize = -1;
-  while (at < wmf.length) {
+  for (let at = start + 18; at < wmf.length;) {
+    if (sawEof) return null;
     const size = wmf.readUInt32LE(at) * 2;
-    const fn = wmf.readUInt16LE(at + 4);
-    if (size < 6 || at + size > wmf.length) return false;
-    if (fn === META_EOF) sawEof = true;
-    if (fn === META_ESCAPE) {
-      if (size < 10) return false;
-      const escape = wmf.readUInt16LE(at + 6);
-      if (WMF_ESCAPES_CUT.has(escape)) return false;
-      if (escape === MFCOMMENT && size >= 14 && wmf.readUInt32LE(at + 10) === WMF_EMBEDDED_EMF) {
-        // [MS-WMF] 2.3.6.1: …, EnhancedMetafileDataSize at +40, this
-        // record's share of it (CurrentRecordSize at +32) from +44.
-        const chunk = wmf.readUInt32LE(at + 32);
-        const total = wmf.readUInt32LE(at + 40);
-        if (44 + chunk > size || (embeddedSize >= 0 && total !== embeddedSize)) return false;
-        embeddedSize = total;
-        embedded.push(wmf.subarray(at + 44, at + 44 + chunk));
-      }
-    }
+    if (size < 6 || at + size > wmf.length) return null;
+    sawEof = size === 6 && wmf.readUInt16LE(at + 4) === META_EOF;
+    records.push(wmf.subarray(at, at + size));
     at += size;
   }
-  if (!sawEof) return false;
-  if (embeddedSize < 0) return true;
-  const emf = Buffer.concat(embedded);
-  return emf.length === embeddedSize && isEmf(emf) && emfIsPlain(emf);
+  return sawEof ? records : null;
 }
 
 // --- RTF -----------------------------------------------------------------
