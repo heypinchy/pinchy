@@ -218,8 +218,9 @@ describe("rekeyedBridge", () => {
   // under half of OpenClaw's last-known-good, and OpenClaw's read path would
   // restore `.bak` — its own pre-bridge write, naming the slot secrets.json no
   // longer has: "required secrets are unavailable". So the entry keeps the
-  // models the file already lists, after the target's own; the catalogue
-  // shrink itself is the guarded push's job.
+  // models the file already lists, after the target's own — only as many as
+  // keep the file above that line; the catalogue shrink itself is the guarded
+  // push's job.
   it("keeps the file's models in a re-keyed entry whose target catalogue would shrink the file past OpenClaw's read-side check", () => {
     const smallTarget = { ...acmeTarget, models: [{ id: "acme-next" }] };
     const onDisk = config({ anthropic, "acme-llm": acmeOld });
@@ -236,10 +237,92 @@ describe("rekeyedBridge", () => {
     const entry = (rekeyed as { models: { providers: Record<string, unknown> } }).models.providers[
       "acme-llm"
     ];
-    expect(entry).toEqual({ ...smallTarget, models: [{ id: "acme-next" }, ...models] });
+    const kept = (entry as { models: unknown[] }).models.length - 1;
+    expect(entry).toEqual({
+      ...smallTarget,
+      models: [{ id: "acme-next" }, ...models.slice(0, kept)],
+    });
     expect(expectsSizeDropRefusal(serialize(onDisk), serialize(rekeyed))).toBe(false);
     expect(unresolvedSecretRefs(rekeyed, rekeyedBundle)).toEqual([]);
     expect(JSON.stringify(rekeyed)).not.toMatch(/hunter2|QQQ|plaintext-header-secret/);
+    // Just above the line: one model fewer and it would be under it.
+    expect(kept).toBeGreaterThan(0);
+    expect(kept).toBeLessThan(models.length);
+    expect(expectsSizeDropRefusal(serialize(onDisk), serialize(withAcmeModels(kept - 1)))).toBe(
+      true
+    );
+    function withAcmeModels(count: number) {
+      return {
+        ...rekeyed,
+        models: {
+          providers: {
+            ...(rekeyed as { models: { providers: Record<string, unknown> } }).models.providers,
+            "acme-llm": {
+              ...smallTarget,
+              models: [{ id: "acme-next" }, ...models.slice(0, count)],
+            },
+          },
+        },
+      };
+    }
+  });
+
+  // A target just over half of the file passes the #311 guard and is pushed,
+  // yet written whole its entry would still sit inside the headroom kept over
+  // OpenClaw's read-side line. Carrying EVERY file model then made the file
+  // larger than before the re-key: OpenClaw refused the push's target as a
+  // size drop against it (no deleted provider to step), and every later
+  // regenerate was refused by the #311 guard against the enlarged file — while
+  // on main the same apply went through. Only as many file models as keep the
+  // file above the line: the target then clears OpenClaw's write-side check
+  // against it, and the next regenerate's guard.
+  it("never makes the file larger than the push's target can shrink, for a target just over half of it", () => {
+    const serialize = (c: unknown) => JSON.stringify(c, null, 2).trimEnd() + "\n";
+    const onDisk = config({ anthropic, "acme-llm": acmeOld });
+    const onDiskContent = serialize(onDisk);
+    const targetWith = (n: number) =>
+      config({
+        anthropic,
+        "acme-llm": {
+          ...acmeTarget,
+          models: Array.from({ length: n }, (_, i) => ({
+            id: `new-model-${i}-with-a-realistically-long-identifier`,
+            name: `New Model ${i}`,
+            contextWindow: 128000,
+          })),
+        },
+      });
+    // Every catalogue size whose target passes the #311 guard (at least half
+    // of the file) yet sits inside expectsSizeDropRefusal's headroom.
+    const band = Array.from({ length: 40 }, (_, n) => n + 1).filter((n) => {
+      const content = serialize(targetWith(n));
+      return (
+        content.length >= onDiskContent.length * 0.5 &&
+        expectsSizeDropRefusal(onDiskContent, content)
+      );
+    });
+    expect(band.length, "precondition: some targets fall in the band").toBeGreaterThan(0);
+
+    for (const n of band) {
+      const target = targetWith(n);
+      const targetContent = serialize(target);
+      const keyless = keylessBridge(onDisk, rekeyedBundle)!;
+      const rekeyed = rekeyedBridge(keyless, onDisk, target, rekeyedBundle)!;
+      const written = serialize(rekeyed);
+
+      expect(expectsSizeDropRefusal(onDiskContent, written), `n=${n}: above the line`).toBe(false);
+      expect(Buffer.byteLength(written), `n=${n}: never larger than before`).toBeLessThan(
+        Buffer.byteLength(onDiskContent)
+      );
+      // OpenClaw's write-side check of the push's target against this file.
+      expect(Buffer.byteLength(targetContent), `n=${n}: the push lands`).toBeGreaterThanOrEqual(
+        Math.floor(Buffer.byteLength(written) * 0.5)
+      );
+      // The next regenerate's #311 guard against this file.
+      expect(targetContent.length, `n=${n}: not refused next time`).toBeGreaterThanOrEqual(
+        written.length * 0.5
+      );
+    }
   });
 
   it("keeps the stub when the target's entry would not resolve either", () => {

@@ -749,4 +749,139 @@ describe("a >50% provider deletion against OpenClaw's real config.get / config.a
       delete process.env.OPENCLAW_SECRETS_PATH;
     }
   }, 60_000);
+
+  // A re-key whose target is just over half of the file: the #311 guard passes
+  // it and it is pushed, but written whole its entry would sit inside the
+  // headroom rekeyedBridge keeps over OpenClaw's read-side line. Carrying ALL
+  // the file's models then left the file larger than before the re-key:
+  // OpenClaw refused the push's target as a size drop against it (no deleted
+  // provider to step, so the push was dropped), and every later regenerate was
+  // refused by the #311 guard against the enlarged file — "refused forever",
+  // where main's config.apply of the same target went through. Found by review
+  // probing exactly this band against these handlers.
+  it("re-keys a provider to a catalogue just over half of the file, and the push lands", async () => {
+    process.env.OPENCLAW_CONFIG_PATH = pinchyConfigPath;
+    process.env.OPENCLAW_SECRETS_PATH = secretsPath;
+    const { pushConfigInBackground } = await import("@/lib/openclaw-config/write");
+    const { getPendingConfigPushCount } = await import("@/lib/openclaw-config/push-state");
+    const { keylessBridge, rekeyedBridge } = await import("@/lib/openclaw-config/keyless-bridge");
+    const { sizeGuardBaseline, expectsSizeDropRefusal } =
+      await import("@/lib/openclaw-config/size-drop");
+    const { writeSecretsFile } = await import("@/lib/openclaw-secrets");
+    process.env.OPENCLAW_CONFIG_PATH = ocConfigPath;
+    const { writeConfigFile } = await import("openclaw/plugin-sdk/config-runtime");
+    type OcConfig = Parameters<typeof writeConfigFile>[0];
+    const handlers = await loadConfigHandlers();
+    const get = () => request(handlers["config.get"], {});
+    const apply = (raw: string, baseHash?: string) =>
+      request(handlers["config.apply"], { raw, ...(baseHash ? { baseHash } : {}) });
+    const OLD_SLOT = "acme-llm@0000000000000001";
+    const NEW_SLOT = "acme-llm@0000000000000002";
+    const acmeOld = {
+      baseUrl: "https://old.acme.example/v1",
+      api: "openai-completions",
+      apiKey: ref(`/providers/${OLD_SLOT}/apiKey`),
+      models: Array.from({ length: 40 }, (_, i) => model(i)),
+    };
+    // Disjoint from the old catalogue: the new address serves other models.
+    const acmeNew = (n: number) => ({
+      baseUrl: "https://new-gateway.example/v1",
+      api: "openai-completions",
+      apiKey: ref(`/providers/${NEW_SLOT}/apiKey`),
+      models: Array.from({ length: n }, (_, i) => ({
+        ...model(i),
+        id: `new-${i}-with-a-realistically-long-identifier`,
+        name: `New ${i} (display)`,
+      })),
+    });
+    const bundle = {
+      providers: { anthropic: { apiKey: "sk-ant-test" }, [NEW_SLOT]: { apiKey: "sk-acme-new" } },
+    };
+    const serialize = (file: Json) => JSON.stringify(file, null, 2).trimEnd() + "\n";
+    const write = (file: Json) => {
+      const content = serialize(file);
+      writeFileSync(ocConfigPath, content, { mode: 0o666 });
+      return content;
+    };
+    /** OpenClaw's file and last-known-good as before the re-key, with a `.bak`. */
+    const installOld = async () => {
+      writeSecrets({ anthropic: { apiKey: "sk-ant-test" }, [OLD_SLOT]: { apiKey: "sk-acme-old" } });
+      await writeConfigFile(config({ "acme-llm": acmeOld }) as OcConfig);
+      await writeConfigFile({
+        ...config({ "acme-llm": acmeOld }),
+        agents: { list: [{ id: "smithers", name: "Smithers 2" }] },
+      } as OcConfig);
+      await promoteToLastKnownGood();
+      return readFileSync(ocConfigPath, "utf-8");
+    };
+    try {
+      vi.spyOn(console, "log").mockImplementation(() => {});
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+      const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      mockGetClient.mockReturnValue({ config: { get, apply } });
+
+      // The band: a target the #311 guard passes, whose entry written whole
+      // would still be inside the headroom over OpenClaw's read-side line.
+      const reference = await installOld();
+      const keylessOf = (content: string) => keylessBridge(JSON.parse(content) as Json, bundle)!;
+      const band = Array.from({ length: 40 }, (_, i) => i + 1).filter((n) => {
+        const target = config({ "acme-llm": acmeNew(n) });
+        const keyless = keylessOf(reference);
+        const exact = {
+          ...keyless,
+          models: {
+            ...(keyless.models as Json),
+            providers: { ...((keyless.models as Json).providers as Json), "acme-llm": acmeNew(n) },
+          },
+        };
+        return (
+          serialize(target).length >= sizeGuardBaseline(reference, target) * 0.5 &&
+          expectsSizeDropRefusal(reference, serialize(exact))
+        );
+      });
+      expect(band.length, "precondition: the band holds some catalogue sizes").toBeGreaterThan(0);
+
+      for (const n of band) {
+        const onDiskContent = await installOld();
+        const before = JSON.parse(onDiskContent) as Json;
+        const target = config({ "acme-llm": acmeNew(n) });
+
+        // Regenerate's writes, in its order; OpenClaw starts on each as written.
+        const keyless = keylessBridge(before, bundle)!;
+        write(keyless);
+        writeSecretsFile(bundle);
+        const rekeyed = rekeyedBridge(keyless, before, target, bundle)!;
+        const written = write(rekeyed);
+        await startOpenClaw();
+        expect(readFileSync(ocConfigPath, "utf-8"), `n=${n}: OpenClaw kept Pinchy's write`).toBe(
+          written
+        );
+        await promoteToLastKnownGood();
+
+        // The push of the exact target lands over config.apply.
+        errorSpy.mockClear();
+        pushConfigInBackground(JSON.stringify(target, null, 2), { fullRegenerate: true });
+        for (let i = 0; i < 2000 && getPendingConfigPushCount() > 0; i++) {
+          await new Promise((r) => setTimeout(r, 5));
+        }
+        expect(getPendingConfigPushCount()).toBe(0);
+        expect(errorSpy.mock.calls.flat().join(" "), `n=${n}: no push error`).toBe("");
+        const landed = (await startOpenClaw()) as { models: { providers: Record<string, Json> } };
+        expect(
+          (landed.models.providers["acme-llm"].models as Json[]).map((m) => m.id),
+          `n=${n}: OpenClaw runs exactly the new catalogue`
+        ).toEqual(acmeNew(n).models.map((m) => m.id));
+
+        // And the next regenerate's #311 guard passes against the file it left.
+        const fileNow = readFileSync(ocConfigPath, "utf-8");
+        const next = serialize(target);
+        expect(next.length, `n=${n}: the next regenerate is not refused`).toBeGreaterThanOrEqual(
+          sizeGuardBaseline(fileNow, target) * 0.5
+        );
+      }
+      expect(existsSync(pinchyConfigPath), "the push wrote no file itself").toBe(false);
+    } finally {
+      delete process.env.OPENCLAW_SECRETS_PATH;
+    }
+  }, 120_000);
 });

@@ -457,6 +457,47 @@ describe("a superseded key slot outlives the config apply that moves OpenClaw of
       expect(files.get(CONFIG_PATH)).toBe(settled);
     });
 
+    // A catalogue the guard refuses (under half of the file), but not by much.
+    // The re-keyed entry then carries only as many of the file's models as
+    // keep the file above OpenClaw's read-side line — not all of them — so the
+    // file sits just above that line, and the next regenerate's guard, judging
+    // the same target against it, lets it through. Carrying every model left
+    // the file as large as before, and refused this target forever.
+    it("delivers a catalogue the guard refused this time with the next regenerate, when it is over half of the re-keyed file", async () => {
+      await installWithBigCatalogue();
+      connectGateway();
+      const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      const smaller = Array.from({ length: 8 }, (_, i) => ({
+        ...bigCatalogue[i],
+        id: `small-model-${i}-with-a-realistically-long-identifier`,
+      }));
+      customProviders[0] = {
+        ...customProviders[0],
+        baseUrl: "https://small.example/v1",
+        models: smaller,
+        apiKey: "sk-acme-new",
+        keyVersion: NEW_VERSION,
+      };
+      await regenerateOpenClawConfig();
+      await drain();
+      expect(errorSpy.mock.calls.flat().join(" "), "precondition: refused").toMatch(
+        /suspiciously small/
+      );
+      expect(pendingApplies).toEqual([]);
+
+      errorSpy.mockClear();
+      await regenerateOpenClawConfig();
+      await drain();
+      expect(errorSpy.mock.calls.flat().join(" ")).not.toMatch(/suspiciously small/);
+      expect(pendingApplies).toHaveLength(1);
+      land();
+      await drain();
+      const acme = JSON.parse(files.get(CONFIG_PATH)!).models.providers["acme-llm"];
+      expect(acme.models.map((m: { id: string }) => m.id)).toEqual(smaller.map((m) => m.id));
+      expect(acme.apiKey.id).toBe(`/providers/${NEW_SLOT}/apiKey`);
+      expect(acme.baseUrl).toBe("https://small.example/v1");
+    });
+
     // A push started before the refusal still carries the old slot. When it
     // wakes, OpenClaw refuses its payload (the slot no longer resolves), and
     // once its retries ran out its file fallback wrote that payload: a file

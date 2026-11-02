@@ -31,7 +31,7 @@
 // (rekeyedBridge) — the base URL, the slot and the models of one saved state of
 // the provider, so the new key never meets the old address. (When that model
 // list would shrink the file past OpenClaw's read-side check, the entry keeps
-// the file's models too — see rekeyedBridge.) Two writes, because
+// just enough of the file's models too — see rekeyedBridge.) Two writes, because
 // no single order works with one: the old slot is in the old secrets.json only,
 // the new slot in the new one only, and the key-less stub in between resolves
 // against both.
@@ -140,10 +140,18 @@ export function keylessBridge(onDisk: Json, bundle: SecretsBundle): Json | null 
  * as the target has them would put the file under that line
  * (expectsSizeDropRefusal: UTF-8 bytes, with headroom, against the on-disk
  * file — the largest last-known-good OpenClaw can hold here, since the bridge
- * only removed credentials from it), each re-keyed entry keeps the models the
- * file already lists, after the target's own. The new key still goes only with
- * the new address. Delivering the smaller catalogue is the push's job, judged
- * by OpenClaw's write-side guard; Pinchy never file-writes it.
+ * only removed credentials from it), each re-keyed entry keeps models the file
+ * already lists, after the target's own: the fewest that clear the line, so the
+ * file sits just above it. Never all of them: that left the file larger than
+ * before the re-key, and a target just over half of the old file — which the
+ * #311 guard passes — was then refused by OpenClaw's write-side check against
+ * it (nothing to step: no provider was deleted), and by the #311 guard on every
+ * later regenerate. Just above the line, the target clears both whenever it is
+ * at least about half of THIS file (roughly 28% of the old one), so a target the
+ * guard refused this time goes through on the next regenerate. The new key
+ * still goes only with the new address. Delivering the smaller catalogue is
+ * the push's job, judged by OpenClaw's write-side guard; Pinchy never
+ * file-writes it.
  */
 export function rekeyedBridge(
   keyless: Json,
@@ -169,20 +177,42 @@ export function rekeyedBridge(
   });
   if (rekeyed.length === 0) return null;
   const models = isRecord(keyless.models) ? keyless.models : {};
-  const withEntries = (keepFileModels: boolean): Json => {
+  // Every model the file lists for a re-keyed provider that its target entry
+  // does not, in the file's order — carried back as a prefix.
+  const carried: Array<[provider: string, model: unknown]> = rekeyed.flatMap((key) =>
+    fileOnlyModels(
+      (targetProviders[key] as Json).models,
+      (onDiskProviders[key] as Json).models
+    ).map((model): [string, unknown] => [key, model])
+  );
+  const withCarried = (count: number): Json => {
     const providers = { ...providersOf(keyless) };
     for (const key of rekeyed) {
       const entry = targetProviders[key] as Json;
-      providers[key] = keepFileModels
-        ? { ...entry, models: withFileModels(entry.models, (onDiskProviders[key] as Json).models) }
-        : entry;
+      const extra = carried
+        .slice(0, count)
+        .filter(([provider]) => provider === key)
+        .map(([, model]) => model);
+      const own = Array.isArray(entry.models) ? entry.models : [];
+      providers[key] = extra.length > 0 ? { ...entry, models: [...own, ...extra] } : entry;
     }
     return { ...keyless, models: { ...models, providers } };
   };
-  const exact = withEntries(false);
-  return expectsSizeDropRefusal(serializeFile(onDisk), serializeFile(exact))
-    ? withEntries(true)
-    : exact;
+  const onDiskContent = serializeFile(onDisk);
+  const underLine = (count: number) =>
+    expectsSizeDropRefusal(onDiskContent, serializeFile(withCarried(count)));
+  if (!underLine(0)) return withCarried(0);
+  // The smallest prefix that clears the line (the size grows with it), so the
+  // file sits just above it — never larger than the push's target can shrink
+  // (all of them, should even that not clear it).
+  let lo = 1;
+  let hi = carried.length;
+  while (lo < hi) {
+    const mid = Math.floor((lo + hi) / 2);
+    if (underLine(mid)) lo = mid + 1;
+    else hi = mid;
+  }
+  return withCarried(lo);
 }
 
 /** As Pinchy and OpenClaw write openclaw.json. */
@@ -190,10 +220,10 @@ function serializeFile(config: Json): string {
   return JSON.stringify(config, null, 2).trimEnd() + "\n";
 }
 
-/** `target`'s models, then every model of `file` whose id the target does not list. */
-function withFileModels(target: unknown, file: unknown): unknown[] {
+/** Every model of `file` whose id `target` does not list, in the file's order. */
+function fileOnlyModels(target: unknown, file: unknown): unknown[] {
   const targetModels = Array.isArray(target) ? target : [];
   const ids = new Set(targetModels.map((m) => (isRecord(m) ? m.id : undefined)));
   const fileModels = Array.isArray(file) ? file : [];
-  return [...targetModels, ...fileModels.filter((m) => !isRecord(m) || !ids.has(m.id))];
+  return fileModels.filter((m) => !isRecord(m) || !ids.has(m.id));
 }
