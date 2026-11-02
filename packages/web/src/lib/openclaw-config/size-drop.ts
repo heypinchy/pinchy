@@ -75,6 +75,12 @@ export function keepsAProvider(next: Json): boolean {
   return Object.keys(providersOf(next) ?? {}).length > 0;
 }
 
+/** True when `next` no longer lists a provider `existing` does. */
+export function deletesAProvider(existing: Json, next: Json): boolean {
+  const after = providersOf(next) ?? {};
+  return Object.keys(providersOf(existing) ?? {}).some((key) => !(key in after));
+}
+
 /**
  * The size the #311 guard should compare a new payload against: the existing
  * file, minus the bytes of every provider the new payload DELETED — provided at

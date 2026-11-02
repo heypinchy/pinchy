@@ -44,8 +44,14 @@ import {
   readExistingConfig,
   pushConfigInBackground,
   writeConfigAtomic,
+  type PushConfigOptions,
 } from "./write";
-import { sizeGuardBaseline, expectsSizeDropRefusal, keepsAProvider } from "./size-drop";
+import {
+  sizeGuardBaseline,
+  expectsSizeDropRefusal,
+  keepsAProvider,
+  deletesAProvider,
+} from "./size-drop";
 import {
   getPendingConfigPushCount,
   nextConfigPushGeneration,
@@ -56,7 +62,7 @@ import {
   takeRegenerateRunIsFollowUpOnly,
 } from "./push-state";
 import { keylessBridge, rekeyedBridge, unresolvedSecretRefs } from "./keyless-bridge";
-import { readSideBaselineBytes } from "./last-good-bound";
+import { readSideBaselineBytes, UnderReadSideLineError } from "./last-good-bound";
 import { reloadSecretsInBackground } from "./secrets-reload";
 import { serializeRegenerates } from "./regenerate-queue";
 import {
@@ -204,7 +210,6 @@ export async function loadAgentConnectionPermissions(dbClient: typeof db): Promi
   });
 }
 
-/**
 /**
  * Options for {@link regenerateOpenClawConfig}. `shrinkFollowUp` marks the one
  * follow-up regenerate a stranded provider deletion queues (see write.ts,
@@ -1828,6 +1833,36 @@ async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise
       configsAreEquivalentUpToOpenClawMetadata(onDiskContent, newContent));
   // Set below when the guard lets a deletion through that OpenClaw will refuse.
   let expectsProviderShrink = false;
+  // The one follow-up regenerate a stranded provider deletion queues (see
+  // MAX_SHRINK_STEPS in write.ts) — none from that follow-up itself, so the
+  // hand-off cannot recurse.
+  const resumeStrandedShrink = options.shrinkFollowUp
+    ? undefined
+    : () => {
+        regenerateOpenClawConfig({ shrinkFollowUp: true }).catch((err: unknown) => {
+          console.error(
+            "[openclaw-config] follow-up regenerate for a stranded provider deletion failed:",
+            err instanceof Error ? err.message : String(err)
+          );
+        });
+      };
+  const deletesProvider = onDiskConfig !== undefined && deletesAProvider(onDiskConfig, config);
+  // How a write of openclaw.json below goes to OpenClaw when it falls under
+  // the read-side line (writeFileOrApply): carrying this regenerate's change
+  // like its own push, and resuming it once it has landed.
+  const deferredWrite: PushConfigOptions = {
+    regenerateSeq,
+    deletesProvider,
+    resumeStrandedShrink,
+    onChangeApplied: () => {
+      regenerateOpenClawConfig().catch((err: unknown) => {
+        console.error(
+          "[openclaw-config] regenerate after a config.apply that stood in for a file write failed:",
+          err instanceof Error ? err.message : String(err)
+        );
+      });
+    },
+  };
   // Set below when the #311 guard refuses the payload: nothing is pushed.
   let refused = false;
   // The key-less bridge, and the re-keyed one that follows secrets.json.
@@ -1943,6 +1978,12 @@ async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise
     // deleted — then takes the target's entry, once secrets.json holds its new
     // slot (see keyless-bridge.ts). Decided from the file and the bundle
     // alone; Pinchy cannot read secrets.json in production.
+    //
+    // A bridge under OpenClaw's read-side line — judged against a bound that
+    // can be stale-high (last-good-bound.ts) — goes over config.apply instead
+    // (writeFileOrApply), and nothing else is written: openclaw.json still
+    // names the key, so secrets.json keeps it until the regenerate that runs
+    // once the bridge has landed.
     bridge = onDiskConfig ? keylessBridge(onDiskConfig, secretsBundle) : null;
     if (bridge && onDiskConfig) {
       const dangling = unresolvedSecretRefs(bridge, secretsBundle);
@@ -1952,7 +1993,7 @@ async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise
             `Pinchy emits none there, so the key-less bridge cannot cover them.`
         );
       }
-      writeConfigAtomic(JSON.stringify(bridge, null, 2).trimEnd() + "\n");
+      if (!writeFileOrApply(bridge, deferredWrite)) return;
       console.log(
         `[openclaw-config] openclaw.json no longer names the removed key(s) ${unresolvedSecretRefs(onDiskConfig, secretsBundle).join(", ")} (key-less bridge written before secrets.json)`
       );
@@ -1977,8 +2018,10 @@ async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise
   // would instead re-resolve the config OpenClaw is still running, which names
   // the key this write removes — it fails, and tells the operator to restart.
   writeSecretsAndReload(secretsBundle, { reload: !bridge });
+  // Under the read-side line, the re-keyed entry goes over config.apply too;
+  // the file stays the bridge, which resolves against this secrets.json.
   if (rekeyed) {
-    writeConfigAtomic(JSON.stringify(rekeyed, null, 2).trimEnd() + "\n");
+    if (!writeFileOrApply(rekeyed, deferredWrite)) return;
     console.log(
       "[openclaw-config] openclaw.json points re-keyed provider(s) at their new key slot (written after secrets.json)"
     );
@@ -2104,16 +2147,8 @@ async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise
     fullRegenerate: true,
     regenerateSeq,
     expectsProviderShrink,
-    resumeStrandedShrink: options.shrinkFollowUp
-      ? undefined
-      : () => {
-          regenerateOpenClawConfig({ shrinkFollowUp: true }).catch((err: unknown) => {
-            console.error(
-              "[openclaw-config] follow-up regenerate for a stranded provider deletion failed:",
-              err instanceof Error ? err.message : String(err)
-            );
-          });
-        },
+    deletesProvider,
+    resumeStrandedShrink,
   });
 
   // Report AFTER the push, never instead of it. The caller has to hear about
@@ -2138,6 +2173,40 @@ async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise
         `owned by the pinchy uid (start-openclaw.sh's fix_config_permissions tick).`,
       { cause: authProfileFailures[0].error }
     );
+  }
+}
+
+/**
+ * Write `config` as openclaw.json — or, when writeConfigAtomic refuses it under
+ * OpenClaw's read-side line (last-good-bound.ts), send it over config.apply
+ * with `push` instead, and return false. The caller then writes nothing more:
+ * what would have followed the file follows in the regenerate
+ * `push.onChangeApplied` runs once it has landed.
+ *
+ * Every write of openclaw.json in this file goes through here (pinned by
+ * last-good-bound.test.ts). The bound only ever errs high, and it goes stale
+ * whenever OpenClaw promotes a file Pinchy wrote with no config.apply landing
+ * since — a push's file fallback it started on. A refusal that escaped the
+ * regenerate aborted it before any push, the same way on every later one, and
+ * no config change reached OpenClaw again. A landed config.apply clears the
+ * bound (OpenClaw is running, and promotes its own write), so the regenerate
+ * that follows it writes the file. With OpenClaw unreachable, the push owes
+ * the change to its next connect, like any file write it gives up on.
+ */
+function writeFileOrApply(config: Record<string, unknown>, push: PushConfigOptions): boolean {
+  const content = JSON.stringify(config, null, 2).trimEnd() + "\n";
+  try {
+    writeConfigAtomic(content);
+    return true;
+  } catch (err) {
+    if (!(err instanceof UnderReadSideLineError)) throw err;
+    console.error(
+      `[openclaw-config] NOT writing openclaw.json: ${String(err.nextBytes)} bytes is under half of ` +
+        `${String(err.baselineBytes)}, the largest file OpenClaw may still hold as last-known-good. ` +
+        `Sending it over config.apply instead; the regenerate carries on once it has landed.`
+    );
+    pushConfigInBackground(content, push);
+    return false;
   }
 }
 

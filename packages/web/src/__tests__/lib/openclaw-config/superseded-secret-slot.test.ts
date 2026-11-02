@@ -59,12 +59,16 @@ vi.mock("fs", async (importOriginal) => {
   // Directories are not modelled: report every path as present so no
   // workspace retrofit writes run, exactly like the sibling rotation tests.
   const existsSync = vi.fn(() => true);
+  const unlinkSync = vi.fn((path: string) => {
+    if (!files.delete(String(path))) throw enoent(String(path));
+  });
   const noop = vi.fn();
   const fsMock = {
     readFileSync,
     writeFileSync,
     renameSync,
     existsSync,
+    unlinkSync,
     mkdirSync: noop,
     chmodSync: noop,
   };
@@ -149,9 +153,15 @@ vi.mock("@/server/openclaw-client", () => ({
 
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { CONFIG_PATH } from "@/lib/openclaw-config/paths";
-import { _resetConfigPushState, getPendingConfigPushCount } from "@/lib/openclaw-config/push-state";
+import {
+  _resetConfigPushState,
+  getPendingConfigPushCount,
+  setLastGoodBound,
+} from "@/lib/openclaw-config/push-state";
 import { pushConfigInBackground } from "@/lib/openclaw-config/write";
-import { referencedSecretIds } from "@/lib/openclaw-secrets";
+import { LAST_GOOD_BOUND_PATH } from "@/lib/openclaw-config/last-good-bound";
+import { keylessBridge } from "@/lib/openclaw-config/keyless-bridge";
+import { referencedSecretIds, type SecretsBundle } from "@/lib/openclaw-secrets";
 
 const SECRETS_PATH = process.env.OPENCLAW_SECRETS_PATH || "/openclaw-secrets/secrets.json";
 
@@ -748,4 +758,198 @@ describe("a superseded key slot outlives the config apply that moves OpenClaw of
       expect(files.get(CONFIG_PATH)).toBe(resolvable);
     });
   });
+  // The last-known-good bound (last-good-bound.ts) only ever errs high, and it
+  // goes stale whenever OpenClaw promotes a file Pinchy wrote without a
+  // config.apply landing since — a push's file fallback written while OpenClaw
+  // was unreachable, which it then started on. A stale bound refuses a file
+  // write OpenClaw would have accepted. For the bridge and the re-keyed entry
+  // that used to throw out of the regenerate: before secrets.json, before any
+  // push, and the same way on every later regenerate, so no config change
+  // reached OpenClaw again — across restarts, since the bound is persisted.
+  // A refused write goes over config.apply instead, whose landing clears the
+  // bound, and the regenerate carries on from there.
+  describe("a last-known-good bound OpenClaw has moved past", () => {
+    /** Pinchy still assumes OpenClaw may hold a file of `bytes`; it runs the one on disk. */
+    function staleBound(bytes: number) {
+      files.set(LAST_GOOD_BOUND_PATH, JSON.stringify({ bytes }) + "\n");
+      setLastGoodBound({ bytes, persistedBytes: bytes });
+    }
+    /** A secrets.json shape resolving every pointer in `config` but `except`. */
+    function bundleResolving(config: string, except: string): SecretsBundle {
+      const bundle: Record<string, unknown> = {};
+      for (const id of referencedSecretIds(JSON.parse(config))) {
+        if (id === except) continue;
+        const segments = id.split("/").slice(1);
+        let node = bundle;
+        for (const segment of segments.slice(0, -1)) {
+          node = (node[segment] ??= {}) as Record<string, unknown>;
+        }
+        node[segments.at(-1)!] = "x";
+      }
+      return bundle as SecretsBundle;
+    }
+    const bytes = (s: string) => Buffer.byteLength(s, "utf-8");
+    const serialize = (c: unknown) => JSON.stringify(c, null, 2).trimEnd() + "\n";
+    async function waitFor(condition: () => boolean, what: string) {
+      for (let i = 0; i < 1000 && !condition(); i++) await new Promise((r) => setTimeout(r, 5));
+      expect(condition(), what).toBe(true);
+    }
+    async function install(): Promise<string> {
+      mockGetClient.mockImplementation(() => {
+        throw new Error("OpenClaw client not initialized");
+      });
+      await regenerateOpenClawConfig();
+      await drain();
+      return files.get(CONFIG_PATH)!;
+    }
+
+    it("sends a deletion's key-less bridge over config.apply when the file write is refused, and finishes once it lands", async () => {
+      const installed = await install();
+      // The file on disk sits one byte above the line; the bridge, which only
+      // drops the key reference, falls under it.
+      staleBound(2 * bytes(installed) - 1);
+      connectGateway();
+      writes = [];
+      vi.spyOn(console, "error").mockImplementation(() => {});
+
+      customProviders.length = 0;
+      await expect(regenerateOpenClawConfig()).resolves.toBeUndefined();
+      await drain();
+
+      // Nothing written: openclaw.json still names the key, so secrets.json keeps it.
+      expect(writes).toEqual([]);
+      expect(secretsOnDisk().providers[OLD_SLOT]).toBeDefined();
+      expect(pendingApplies, "the bridge goes over config.apply instead").toHaveLength(1);
+      const sent = JSON.parse(pendingApplies[0].payload).models.providers["acme-llm"];
+      expect(sent).toBeDefined();
+      expect(sent).not.toHaveProperty("apiKey");
+
+      // It lands: OpenClaw runs (and persisted) the bridge, and the bound is gone.
+      land();
+      await waitFor(
+        () => pendingApplies.length === 1 && secretsOnDisk().providers[OLD_SLOT] === undefined,
+        "the regenerate carries on: secrets.json without the key, then the deletion"
+      );
+      expect(files.has(LAST_GOOD_BOUND_PATH)).toBe(false);
+      land();
+      await drain();
+      expect(JSON.parse(files.get(CONFIG_PATH)!).models.providers).not.toHaveProperty("acme-llm");
+      expect(writes.flatMap((w) => w.dangling)).toEqual([]);
+    });
+
+    it("sends the re-keyed entry over config.apply when its file write is refused, and lands the re-key", async () => {
+      // An address long enough that the re-keyed entry, pointing at a short
+      // one, is smaller than the bridge that keeps the long one.
+      customProviders[0] = {
+        ...customProviders[0],
+        baseUrl: `https://api.acme.example/${"v".repeat(400)}/v1`,
+      };
+      const installed = await install();
+      const bridgeBytes = bytes(
+        serialize(
+          keylessBridge(
+            JSON.parse(installed),
+            bundleResolving(installed, `/providers/${OLD_SLOT}/apiKey`)
+          )
+        )
+      );
+      // The bridge sits exactly on the line; the re-keyed file falls under it.
+      staleBound(2 * bridgeBytes);
+      connectGateway();
+      writes = [];
+      vi.spyOn(console, "error").mockImplementation(() => {});
+
+      customProviders[0] = {
+        ...customProviders[0],
+        baseUrl: "https://s.example/v1",
+        apiKey: "sk-acme-new",
+        keyVersion: NEW_VERSION,
+      };
+      await expect(regenerateOpenClawConfig()).resolves.toBeUndefined();
+      await drain();
+
+      expect(
+        writes.map((w) => w.path),
+        "bridge, secrets.json — and no re-keyed file"
+      ).toEqual([CONFIG_PATH, SECRETS_PATH]);
+      expect(writes.flatMap((w) => w.dangling)).toEqual([]);
+      expect(pendingApplies, "the re-keyed entry goes over config.apply instead").toHaveLength(1);
+      const sent = JSON.parse(pendingApplies[0].payload).models.providers["acme-llm"];
+      expect(sent.apiKey.id).toBe(`/providers/${NEW_SLOT}/apiKey`);
+      expect(sent.baseUrl).toBe("https://s.example/v1");
+
+      land();
+      await waitFor(
+        () => writes.filter((w) => w.path === SECRETS_PATH).length === 2,
+        "the regenerate carries on once it landed"
+      );
+      for (let i = 0; i < 200 && getPendingConfigPushCount() > 0; i++) {
+        await new Promise((r) => setTimeout(r, 5));
+      }
+      land();
+      await drain();
+      const acme = JSON.parse(files.get(CONFIG_PATH)!).models.providers["acme-llm"];
+      expect(acme.apiKey.id).toBe(`/providers/${NEW_SLOT}/apiKey`);
+      expect(acme.baseUrl).toBe("https://s.example/v1");
+      expect(files.has(LAST_GOOD_BOUND_PATH)).toBe(false);
+      expect(writes.flatMap((w) => w.dangling)).toEqual([]);
+    });
+  });
+
+  // A small provider deletion — not one OpenClaw refuses as a size drop — can
+  // be superseded by a targeted writer (a Telegram bot connected meanwhile)
+  // before its config.apply goes out. The targeted writer pushes its copy of
+  // the file, which still lists the deleted provider as a key-less stub; with
+  // no follow-up, OpenClaw kept that stub until the next config change.
+  it("finishes a small provider deletion a targeted write superseded before it reached OpenClaw", async () => {
+    mockGetClient.mockImplementation(() => {
+      throw new Error("OpenClaw client not initialized");
+    });
+    await regenerateOpenClawConfig();
+    await drain();
+
+    let releaseGet!: () => void;
+    const firstGetHeld = new Promise<void>((resolve) => (releaseGet = resolve));
+    let gets = 0;
+    mockGetClient.mockReturnValue({
+      config: {
+        get: vi.fn(async () => {
+          if (gets++ === 0) await firstGetHeld;
+          return { hash: "h", config: JSON.parse(files.get(CONFIG_PATH)!) };
+        }),
+        apply: vi.fn(async (payload: string) => {
+          files.set(CONFIG_PATH, payload);
+        }),
+      },
+      hasMethod: () => true,
+      request: vi.fn(async () => ({ type: "res", id: "1", ok: true, payload: {} })),
+    });
+
+    customProviders.length = 0;
+    await regenerateOpenClawConfig();
+    await drain();
+    const onDisk = JSON.parse(files.get(CONFIG_PATH)!);
+    expect(onDisk.models.providers, "precondition: the stub").toHaveProperty("acme-llm");
+    pushConfigInBackground(
+      JSON.stringify({ ...onDisk, channels: { telegram: { enabled: false } } }, null, 2)
+    );
+    releaseGet();
+
+    // The deletion's own push hands off to the follow-up regenerate.
+    const warn = vi.mocked(console.warn);
+    for (let i = 0; i < 400 && !warn.mock.calls.flat().join(" ").includes("superseded"); i++) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    expect(warn.mock.calls.flat().join(" ")).toMatch(
+      /provider deletion stopped after 0 step\(s\) \(superseded before it finished\); queueing a follow-up regenerate/
+    );
+    for (
+      let i = 0;
+      i < 1600 && "acme-llm" in JSON.parse(files.get(CONFIG_PATH)!).models.providers;
+      i++
+    ) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    expect(JSON.parse(files.get(CONFIG_PATH)!).models.providers).not.toHaveProperty("acme-llm");
+  }, 20_000);
 });

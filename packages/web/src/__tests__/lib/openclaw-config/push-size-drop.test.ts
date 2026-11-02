@@ -391,6 +391,47 @@ describe("pushConfigInBackground: a shrink OpenClaw refuses as size-drop", () =>
     expect(undeliveredConfigChange()).toBe(true);
   });
 
+  // A deletion too small for OpenClaw to refuse as a size drop is no shrink —
+  // but a targeted write that supersedes it strands OpenClaw on the deleted
+  // provider just the same (its copy of the file still lists the key-less
+  // stub), and nothing else would remove it before the next config change.
+  it("queues one follow-up regenerate when a targeted write supersedes a small provider deletion", async () => {
+    vi.useFakeTimers();
+    const small = { ...acmeProvider, models: [model(0)] };
+    const agents = {
+      list: Array.from({ length: 12 }, (_, i) => ({
+        id: `agent-${i}`,
+        name: `Agent ${i}`,
+        model: "anthropic/claude",
+      })),
+    };
+    const oc = new FakeOpenClaw(
+      pinchyConfig({ "acme-llm": small }, { agents }),
+      new Set([anthropicRef.id])
+    );
+    mockGetClient.mockReturnValue(oc.client);
+    const resume = vi.fn();
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const target = serialize(pinchyConfig({}, { agents }));
+    expect(bytes(target), "precondition: no size drop").toBeGreaterThan(bytes(oc.file) / 2);
+    pushConfigInBackground(target, {
+      fullRegenerate: true,
+      deletesProvider: true,
+      resumeStrandedShrink: resume,
+    });
+    const onDisk = JSON.parse(oc.file) as Json;
+    pushConfigInBackground(
+      serialize({ ...onDisk, channels: { telegram: { enabled: true, dmPolicy: "pairing" } } })
+    );
+    await drainWithFakeTimers();
+
+    expect(oc.providers(), "precondition: the targeted write kept it").toHaveProperty("acme-llm");
+    expect(resume).toHaveBeenCalledTimes(1);
+    expect(undeliveredConfigChange()).toBe(true);
+  });
+
   it("runs no follow-up when a full regenerate supersedes the stepped delivery and delivers the target itself", async () => {
     vi.useFakeTimers();
     const oc = new FakeOpenClaw(

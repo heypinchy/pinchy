@@ -7,7 +7,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
-import { join } from "path";
+import { join, resolve } from "path";
 
 const mockGetClient = vi.fn();
 vi.mock("@/server/openclaw-client", () => ({
@@ -234,5 +234,31 @@ describe("Pinchy's file writes against OpenClaw's last-known-good", () => {
     expect(readFileSync(configPath, "utf-8")).toBe(configOf(12));
     expect(errorSpy.mock.calls.flat().join(" ")).toMatch(/last-known-good/);
     pinchy._resetConfigPushState();
+  });
+});
+
+// The regenerate writes openclaw.json itself twice (the key-less bridge and
+// the re-keyed entry), and either can fall under the line — a bound only ever
+// errs high, and goes stale whenever OpenClaw promotes a Pinchy-written file
+// with no config.apply landing since. A call that let UnderReadSideLineError
+// escape aborted the regenerate before any push, on every later regenerate
+// too. So build.ts writes the file through one function, which sends a refused
+// write over config.apply instead.
+describe("build.ts's own writes of openclaw.json", () => {
+  const source = readFileSync(resolve(__dirname, "../../../lib/openclaw-config/build.ts"), "utf-8");
+
+  it("all go through writeFileOrApply, which hands a refused write to config.apply", () => {
+    const start = source.indexOf("\nfunction writeFileOrApply(");
+    expect(start, "writeFileOrApply exists").toBeGreaterThan(-1);
+    const end = source.indexOf("\n}\n", start);
+    const helper = source.slice(start, end);
+    expect(helper).toMatch(/instanceof UnderReadSideLineError/);
+    expect(helper).toMatch(/pushConfigInBackground\(/);
+
+    const calls = [...source.matchAll(/\bwriteConfigAtomic\(/g)].map((m) => m.index);
+    expect(calls.length, "the corpus: build.ts writes the file").toBeGreaterThan(0);
+    for (const at of calls) {
+      expect(at > start && at < end, `writeConfigAtomic( at offset ${String(at)}`).toBe(true);
+    }
   });
 });

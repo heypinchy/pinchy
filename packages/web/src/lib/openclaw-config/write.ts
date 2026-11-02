@@ -360,6 +360,14 @@ export interface PushConfigOptions {
    */
   expectsProviderShrink?: boolean;
   /**
+   * The payload deletes a provider, whatever its size. A newer push that
+   * supersedes it then hands off to `resumeStrandedShrink` even when OpenClaw
+   * would have taken the deletion in one write: a targeted writer's copy of
+   * the file still lists the deleted provider (as a key-less stub), and
+   * nothing else would remove it before the next config change.
+   */
+  deletesProvider?: boolean;
+  /**
    * Runs (once, debounced) when this push's provider deletion stops short of
    * its target: superseded, dropped for a transient reason, or dropped after a
    * step landed (see MAX_SHRINK_STEPS). build.ts passes a
@@ -458,11 +466,14 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
       );
       if (transient || shrinkSteps > 0) resumeShrink(why);
     };
-    // Superseded before the shrink finished. Queued even when a full
+    // Superseded before a deletion finished — a shrink, or any other push that
+    // deletes a provider (`deletesProvider`). Queued even when a full
     // regenerate supersedes: that one cancels the follow-up only once it has
     // reached OpenClaw, and a partial writer can still supersede it first.
     const onSuperseded = () => {
-      if (shrinkKnown()) resumeShrink("superseded before it finished");
+      if (shrinkKnown() || options.deletesProvider === true) {
+        resumeShrink("superseded before it finished");
+      }
     };
     // A payload that names a key secrets.json no longer holds — captured
     // before a regenerate took the key out (a targeted writer's copy of the
