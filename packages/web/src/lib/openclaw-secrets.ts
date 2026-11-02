@@ -53,6 +53,26 @@ export function versionedSecretName(name: string, version: string): string {
   return `${name}@${version}`;
 }
 
+/**
+ * Every id a config points at through a Pinchy file SecretRef
+ * (`/providers/acme-llm@0123456789abcdef/apiKey`, …), wherever in the tree the
+ * ref sits. Walking the tree rather than naming branches keeps this right when
+ * a new section starts using SecretRefs.
+ */
+export function referencedSecretIds(config: unknown, out = new Set<string>()): Set<string> {
+  if (Array.isArray(config)) {
+    for (const item of config) referencedSecretIds(item, out);
+  } else if (config !== null && typeof config === "object") {
+    const node = config as Record<string, unknown>;
+    if (node.source === "file" && node.provider === "pinchy" && typeof node.id === "string") {
+      out.add(node.id);
+    } else {
+      for (const child of Object.values(node)) referencedSecretIds(child, out);
+    }
+  }
+  return out;
+}
+
 /** A path segment written by {@link versionedSecretName}. */
 const VERSIONED_SEGMENT = /^[^@/]+@[0-9a-f]{16}$/;
 
@@ -140,24 +160,54 @@ function flattenSecretValues(
   return out;
 }
 
+/** Parse the previous file; an unreadable one counts as empty. */
+function parsePreviousBundle(previousContent: string | undefined): unknown {
+  if (previousContent === undefined) return {};
+  try {
+    return JSON.parse(previousContent);
+  } catch {
+    // Unreadable/corrupt previous state — treat every value as new, which is
+    // the safe side: an unnecessary reload costs a round trip, a missed one
+    // costs every agent a 401.
+    return {};
+  }
+}
+
+/**
+ * `next`, plus every value of the previous bundle that `next` dropped while the
+ * running config still points at it (see "values the running config still
+ * points at" on {@link writeSecretsFile}). Only values the previous file really
+ * held come back; nothing is invented for a pointer that resolved to nothing.
+ */
+function withStillReferencedValues(
+  previousBundle: unknown,
+  next: SecretsBundle,
+  stillReferenced: ReadonlySet<string>
+): SecretsBundle {
+  const nextValues = flattenSecretValues(next);
+  let kept: SecretsBundle | undefined;
+  for (const [path, value] of flattenSecretValues(previousBundle)) {
+    if (nextValues.has(path) || !stillReferenced.has(`/${path}`)) continue;
+    kept ??= structuredClone(next);
+    const segments = path.split("/");
+    let node = kept as Record<string, unknown>;
+    for (const segment of segments.slice(0, -1)) {
+      const child = node[segment];
+      if (child === null || typeof child !== "object") node[segment] = {};
+      node = node[segment] as Record<string, unknown>;
+    }
+    node[segments.at(-1)!] = value;
+  }
+  return kept ?? next;
+}
+
 /**
  * True when `next` holds a value the previous bundle did not have under the
  * same path — added or rotated. Deliberately false when the only difference is
  * that values DISAPPEARED (see the removal note on {@link writeSecretsFile}),
  * and for versioned slots (see {@link versionedSecretName}).
  */
-function hasNewOrRotatedValue(previousContent: string | undefined, next: SecretsBundle): boolean {
-  let previousBundle: unknown = {};
-  if (previousContent !== undefined) {
-    try {
-      previousBundle = JSON.parse(previousContent);
-    } catch {
-      // Unreadable/corrupt previous state — treat every value as new, which is
-      // the safe side: an unnecessary reload costs a round trip, a missed one
-      // costs every agent a 401.
-      previousBundle = {};
-    }
-  }
+function hasNewOrRotatedValue(previousBundle: unknown, next: SecretsBundle): boolean {
   const before = flattenSecretValues(previousBundle);
   for (const [path, value] of flattenSecretValues(next)) {
     // A versioned slot never needs a reload: its value cannot change in place,
@@ -190,31 +240,53 @@ function hasNewOrRotatedValue(previousContent: string | undefined, next: Secrets
  * re-resolve the config OpenClaw is still running, which points at the old
  * slot, and must not be the route by which a key meets an address.
  *
- * A pure REMOVAL returns false even though the file did change. OpenClaw
- * re-resolves the config it is currently running, and that config still points
- * at the key just taken away — so a reload there fails on the dangling pointer,
- * degrades OpenClaw's secrets runtime, and prints "restart the gateway" for a
- * deletion that the config apply from this same regenerate already repairs. The
- * removal travels with that config change and needs no reload of its own.
+ * A pure REMOVAL returns false even though the file did change. A reload
+ * re-resolves the config OpenClaw is currently running; a removal gives it
+ * nothing new to resolve, and the removal itself travels with the config apply
+ * of this same regenerate. (A caller that does not pass `stillReferenced` can
+ * still remove a value the running config points at — a reload then would fail
+ * on the dangling pointer and degrade OpenClaw's secrets runtime, which is the
+ * other reason a removal must never ask for one.)
+ *
+ * Values the running config still points at. A value is removed from this file
+ * only once the config OpenClaw is RUNNING no longer points at it — callers pass
+ * those pointers as `stillReferenced` (the SecretRef ids of the openclaw.json
+ * OpenClaw last persisted, see {@link referencedSecretIds}). The config that
+ * moves OpenClaw off a pointer — a re-keyed OpenAI-compatible provider's new
+ * versioned slot, a deleted provider — arrives by a background `config.apply`
+ * that can take a minute or more under rate limiting or a restart. Until it
+ * lands, a `secrets.reload` (a built-in key rotation in that window) re-resolves
+ * the running config, and a slot already gone from this file fails the whole
+ * reload — the rotated built-in key would then not reach the runtime until a
+ * restart. Keeping the old value costs no safety: the running config pairs it
+ * with the address it was entered for. It goes with the first write after the
+ * running config stopped naming it. Keeping it is not a rotation, so it never
+ * sets the reload flag, and dropping it later is a pure removal.
  */
-export function writeSecretsFile(bundle: SecretsBundle): boolean {
+export function writeSecretsFile(
+  bundle: SecretsBundle,
+  { stillReferenced = new Set<string>() }: { stillReferenced?: ReadonlySet<string> } = {}
+): boolean {
   const path = process.env.OPENCLAW_SECRETS_PATH || DEFAULT_SECRETS_PATH;
-  const newContent = JSON.stringify(bundle, null, 2);
 
-  // Skip the write when content is unchanged to avoid a spurious inotify event
-  // that would trigger OpenClaw's secrets-file watcher unnecessarily.
   let previousContent: string | undefined;
   if (existsSync(path)) {
     try {
       previousContent = readFileSync(path, "utf-8");
-      if (previousContent === newContent) return false;
     } catch {
       // Fall through and write — if read failed for any reason, a write attempt
       // is the safer recovery path than silently leaving stale content.
       previousContent = undefined;
     }
   }
-  const runtimeIsStale = hasNewOrRotatedValue(previousContent, bundle);
+  const previousBundle = parsePreviousBundle(previousContent);
+  const toWrite = withStillReferencedValues(previousBundle, bundle, stillReferenced);
+  const newContent = JSON.stringify(toWrite, null, 2);
+
+  // Skip the write when content is unchanged to avoid a spurious inotify event
+  // that would trigger OpenClaw's secrets-file watcher unnecessarily.
+  if (previousContent === newContent) return false;
+  const runtimeIsStale = hasNewOrRotatedValue(previousBundle, toWrite);
 
   const dir = dirname(path);
   try {

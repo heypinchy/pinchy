@@ -3863,7 +3863,8 @@ describe("regenerateOpenClawConfig", () => {
         providers: expect.objectContaining({
           "ollama-local": { apiKey: "dummy-integration-test-key" },
         }),
-      })
+      }),
+      { stillReferenced: expect.any(Set) }
     );
 
     const authProfileCall = mockedWriteFileSync.mock.calls.find((call) =>

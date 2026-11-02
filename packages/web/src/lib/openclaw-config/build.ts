@@ -1,7 +1,12 @@
 import { readFileSync, writeFileSync } from "fs";
 import { dirname } from "path";
 import { isDeepStrictEqual } from "util";
-import { writeSecretsFile, secretRef, type SecretsBundle } from "@/lib/openclaw-secrets";
+import {
+  writeSecretsFile,
+  secretRef,
+  referencedSecretIds,
+  type SecretsBundle,
+} from "@/lib/openclaw-secrets";
 import { PROVIDERS, type ProviderName, resolveProviderBaseUrl } from "@/lib/providers";
 import { getDefaultModel, fetchOllamaLocalModelsFromUrl } from "@/lib/provider-models";
 import { eq, ne } from "drizzle-orm";
@@ -257,6 +262,15 @@ async function regenerateOpenClawConfigOnce(): Promise<void> {
       return;
     }
   }
+
+  // The secrets OpenClaw's RUNNING config points at. On the WS path Pinchy never
+  // writes openclaw.json itself — OpenClaw persists it when a config.apply lands
+  // — so the file read above is the config OpenClaw runs, and its SecretRefs are
+  // what a `secrets.reload` re-resolves. Taken now, before anything below can
+  // touch `existing`; writeSecretsFile keeps those values until a config that
+  // no longer names them has landed (see "values the running config still
+  // points at" there).
+  const runningSecretRefs = referencedSecretIds(existing);
 
   // Build the gateway block (see buildGatewayBlock for the mode/bind/auth and
   // Control-UI rationale). The token is resolved here because it's reused later
@@ -1748,10 +1762,12 @@ async function regenerateOpenClawConfigOnce(): Promise<void> {
   // travels with the config apply below — no reload. See writeSecretsFile.)
   //
   // The flag is "a value was added or rotated", NOT "the file changed": a pure
-  // removal must stay silent here, because OpenClaw would re-resolve the config
-  // it is still running — which points at the key this regenerate just took
-  // away. See writeSecretsFile.
-  if (writeSecretsFile(secretsBundle)) {
+  // removal gives a reload nothing new to resolve. Neither kind of write takes
+  // away a value the running config still points at — those stay until a
+  // config without them has landed (`runningSecretRefs`), so a reload fired
+  // while a re-keyed or deleted provider's apply is still in flight resolves.
+  // See writeSecretsFile.
+  if (writeSecretsFile(secretsBundle, { stillReferenced: runningSecretRefs })) {
     reloadSecretsInBackground();
   }
 
