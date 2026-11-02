@@ -106,6 +106,14 @@ export interface AuditSecretPolicyResult {
 }
 
 /**
+ * Where the startup notice sends an operator who did not mean to switch keys.
+ * Exported so a docs test can check the heading still exists: the docs anchor
+ * check only reads links in the built site, never a URL in a log line.
+ */
+export const AUDIT_KEY_SWITCH_BACK_DOCS_URL =
+  "https://docs.heypinchy.com/concepts/audit-trail-verification/#switching-back-to-the-earlier-key";
+
+/**
  * Pinning `AUDIT_HMAC_SECRET` over a secret Pinchy generated leaves the audit
  * log signed under two keys. `verifyIntegrity` handles that — rows signed with
  * the superseded key land in `previousKeyIds` instead of `invalidIds` — but
@@ -131,14 +139,6 @@ export interface AuditSecretPolicyResult {
  * WHERE a secret comes from and never its value; a signature that cannot
  * accept a key cannot leak one.
  */
-/**
- * Where the startup notice sends an operator who did not mean to switch keys.
- * Exported so a docs test can check the heading still exists: the docs anchor
- * check only reads links in the built site, never a URL in a log line.
- */
-export const AUDIT_KEY_SWITCH_BACK_DOCS_URL =
-  "https://docs.heypinchy.com/concepts/audit-trail-verification/#switching-back-to-the-earlier-key";
-
 export function evaluateAuditSecretRotation(opts: {
   hasSupersededSecret: boolean;
 }): AuditSecretPolicyResult {

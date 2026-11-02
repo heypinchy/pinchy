@@ -78,7 +78,7 @@ The earlier key file sits at `.audit_hmac_secret` in the `pinchy-secrets` volume
 When you remove it matters. Each background run verifies the rows written since the run before it. Until the first run under the new key has gone through, some of those were signed with the earlier key: everything written between the last run and the restart, up to 6 hours of entries. If the file is gone by the time the run reaches them, they verify under no key and the run records a failure. So retire the key in this order:
 
 1. Set the new `AUDIT_HMAC_SECRET` with the key file still in place, and restart.
-2. Wait for the first background run after the start, about 60 seconds later. `GET /api/audit/verify/status` (see [Checking the job's own health](#checking-the-jobs-own-health)) shows it finished: `lastRunAt` is later than the restart, and `lastStatus` is `"ok"`. If `lastRunAt` still shows a time before the restart a few minutes after the start, the run found nothing new to verify, so no row signed with the earlier key is waiting for it either.
+2. Right after the restart, do something that writes an audit entry, for example sign out and back in, and note the time. Then wait until `GET /api/audit/verify/status` (see [Checking the job's own health](#checking-the-jobs-own-health)) shows `lastRunAt` later than that entry, with `lastStatus` `"ok"`. The first background run starts about 60 seconds after the start; an entry written after it waits for the next run, up to 6 hours later. Don't read a `lastRunAt` that hasn't moved as "nothing left to verify": a run that failed leaves it unchanged, and so does a first run still working through a long backlog. If Pinchy's logs show `[audit-verify-job] sweep failed`, stop here and keep the key file until a run goes through.
 3. Back up the key file, then remove it from the volume. Pinchy looks for the file on every verification, so this takes effect without a restart.
 
 Lose a key while the background check still has rows signed with it ahead of it, and the failure entry it records can't be cleared. That happens in two ways:
@@ -101,6 +101,10 @@ So keeping the new key is usually the safer choice: back it up and treat it as y
 #### Switching the key on several instances
 
 If several Pinchy instances share one database, switch the key on all of them at once: stop every instance, set the new `AUDIT_HMAC_SECRET` on each, then start them again.
+
+Before that, check where the current key lives. Instances that share a database often have it in `AUDIT_HMAC_SECRET` alone, pinned from the start or set by an earlier switch. Replace that value and it's gone: the earlier key Pinchy checks against is always the key file, never an earlier value of the variable. So while the instances are stopped, write the current value, the 64 hex characters on their own, into `.audit_hmac_secret` in the `pinchy-secrets` volume of every instance. Once the new value takes over, that file is the earlier key. Pinchy checks against one earlier key only, so if the file already holds an even older key, overwriting it loses that one and the rows it signed instead. Back it up first.
+
+Skip this and the rows signed with the current value become unverifiable. A full verification reports them in `invalidIds`, and the first background run records a failure entry for the ones it hadn't reached yet, which can't be cleared. [Retiring the earlier key](#retiring-the-earlier-key) says what to write down for your auditors if that happens.
 
 A rolling restart breaks the precondition above. For as long as some instances sign with the new key and others still with the old one, their rows interleave: old, new, old. Pinchy can't tell an old-key row written after the change by an instance that hadn't restarted yet from one forged with a leaked key, so it treats both the same way.
 
