@@ -462,10 +462,17 @@ export async function regenerateOpenClawConfig() {
   // AND is a prototype-injection sink (a slug like `constructor` walks the
   // prototype chain). `Object.hasOwn` + `.some()` are both prototype-safe.
   const isBuiltInDefault = defaultProvider !== null && Object.hasOwn(PROVIDERS, defaultProvider);
+  // A saved base URL the SSRF guard now refuses is neither emitted below nor
+  // the default here — one check, shared by both decisions.
+  const usableCustomProviders = await withoutRefusedBaseUrls(customProviders);
   const isCustomDefault =
-    defaultProvider !== null && customProviders.some((p) => p.slug === defaultProvider);
+    defaultProvider !== null && usableCustomProviders.some((p) => p.slug === defaultProvider);
   if (defaultProvider && (isBuiltInDefault || isCustomDefault)) {
     pinchyDefaults.model = { primary: await getDefaultModel(defaultProvider) };
+  } else if (customProviders.some((p) => p.slug === defaultProvider)) {
+    // A refused default: `undefined` (not omission) so the deepMerge below
+    // drops the default an earlier regenerate wrote for it.
+    pinchyDefaults.model = undefined;
   }
 
   // Vision-model chain for the built-in `pdf` and `image` tools. Both use the
@@ -1463,7 +1470,7 @@ export async function regenerateOpenClawConfig() {
   // `providerSecrets` (already fetched for the secrets bundle) supplies the
   // decrypted key discovery needs without a second DB round trip.
   // A saved base URL the SSRF guard now refuses is not emitted at all.
-  for (const p of await withoutRefusedBaseUrls(customProviders)) {
+  for (const p of usableCustomProviders) {
     const models = await resolveCustomProviderModels({
       slug: p.slug,
       baseUrl: p.baseUrl,

@@ -8946,6 +8946,77 @@ describe("OpenAI-compatible custom providers (#894)", () => {
     }
   });
 
+  it("does not emit a refused provider as the default model", async () => {
+    // The default-model guard must see the same filtered list as the emission
+    // loop. Otherwise `agents.defaults.model` names a provider that has no
+    // `models.providers` entry, and OpenClaw answers with "No API key found"
+    // instead of anything that points at the refused URL.
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "default_provider") return "imds";
+      return null;
+    });
+    mockListOpenAiCompatibleProviders.mockResolvedValue([
+      makeProvider(),
+      makeProvider({
+        id: "prov-2",
+        slug: "imds",
+        displayName: "Rebound",
+        baseUrl: "http://100.100.100.200/v1",
+      }),
+    ]);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      await regenerateOpenClawConfig();
+
+      const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
+      expect(getDefaultModel).not.toHaveBeenCalledWith("imds");
+      expect(config.agents.defaults).not.toHaveProperty("model");
+      // One check per regenerate, shared by both decisions: one log line.
+      expect(warn.mock.calls.filter((c) => String(c[0]).includes("Rebound (imds)"))).toHaveLength(
+        1
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("clears a default model an earlier regenerate wrote for a provider that is now refused", async () => {
+    // The upgrade case: the provider was the default under the old rules, so
+    // openclaw.json already carries `agents.defaults.model`. agents.defaults is
+    // deep-merged over the file on every regenerate, so merely not emitting
+    // the key would keep the stale default alive.
+    mockedReadFileSync.mockReturnValue(
+      JSON.stringify({
+        agents: { defaults: { model: { primary: "imds/rebound-large" }, heartbeat: "30m" } },
+      })
+    );
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "default_provider") return "imds";
+      return null;
+    });
+    mockListOpenAiCompatibleProviders.mockResolvedValue([
+      makeProvider({
+        id: "prov-2",
+        slug: "imds",
+        displayName: "Rebound",
+        baseUrl: "http://100.100.100.200/v1",
+      }),
+    ]);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      await regenerateOpenClawConfig();
+
+      const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
+      expect(config.agents.defaults).not.toHaveProperty("model");
+      // Only the stale default goes; what OpenClaw stamped beside it stays.
+      expect(config.agents.defaults.heartbeat).toBe("30m");
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it("resolves each provider's emitted models via resolveCustomProviderModels, passing slug/baseUrl/apiKey/snapshot", async () => {
     mockListOpenAiCompatibleProviders.mockResolvedValue([makeProvider()]);
     mockListProvidersWithApiKeys.mockResolvedValue([
