@@ -8,6 +8,7 @@ import {
   inStoredOrderPlain,
   isAddressShaped,
   mailboxAddress,
+  previewed,
   readNode,
   readUrl,
 } from "./display";
@@ -183,6 +184,34 @@ describe("isAddressShaped", () => {
     "https://firma.at/ is live",
   ])("treats %j as text", (text) => {
     expect(isAddressShaped(text)).toBe(false);
+  });
+});
+
+// One answer to "does the card cut this value to a preview?", read by the
+// card to draw it and by the summary to decide when a value's host has to be
+// named beside it. It is asked of the text as stored — markers included — and
+// counted as drawn: quoted where it would read as a literal.
+describe("previewed", () => {
+  it("previews long text, and draws short text whole", () => {
+    expect(previewed("x".repeat(200), false)).toBe(false);
+    expect(previewed("x".repeat(201), false)).toBe(true);
+  });
+
+  it("draws a target, a recipient or an address whole up to 8,192 characters", () => {
+    expect(previewed("x".repeat(8_192), true)).toBe(false);
+    expect(previewed("x".repeat(8_193), true)).toBe(true);
+    expect(previewed(`a@${"b".repeat(8_187)}.at`, false)).toBe(false);
+  });
+
+  it("counts the quotes a text that reads as a literal is drawn with", () => {
+    const literal = `"${"a".repeat(8_179)}@firma.at"`;
+    expect([...literal]).toHaveLength(8_190);
+    expect(previewed(literal, true)).toBe(true);
+  });
+
+  it("reads the stored text, where a run of hidden characters is a marker with spaces in it", () => {
+    expect(previewed(`https://firma.at/${"a".repeat(200)}⟨4 × U+200B⟩`, false)).toBe(true);
+    expect(previewed(`https://firma.at/${"a".repeat(200)}⟨U+200B⟩`, false)).toBe(false);
   });
 });
 

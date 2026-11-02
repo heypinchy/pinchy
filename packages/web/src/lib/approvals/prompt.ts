@@ -1,5 +1,5 @@
 import { TOOL_REGISTRY } from "@/lib/tool-registry";
-import { renderText, summarizeArgs, type SummarizeOptions } from "@/lib/approvals/summary";
+import { renderText, summarizeCall, type SummarizeOptions } from "@/lib/approvals/summary";
 import {
   displayScalar,
   inStoredOrderPlain,
@@ -29,6 +29,13 @@ import {
  */
 export const APPROVAL_TITLE_MAX = 80;
 export const APPROVAL_DESCRIPTION_MAX = 256;
+
+/**
+ * The most of one host a cut description names: its end, where the domain it
+ * reaches is. A host has no length limit of its own, so a whole one could
+ * take the description's place.
+ */
+export const PROMPT_HOST_MAX = 100;
 
 /** Cuts at a word boundary where one is near, so the text ends readably —
  * and never between the two halves of a surrogate pair. */
@@ -80,7 +87,7 @@ function inline(value: unknown): string {
   return displayScalar(value);
 }
 
-function describeArgs(params: unknown, options: SummarizeOptions): string {
+function describeArgs(summary: Record<string, unknown>): string {
   // Every argument is printed, `null` and empty ones included: leaving them out
   // would let `active: null` read the same as no `active` at all. And in the
   // order it was sent, as the card draws it: a chat client reorders
@@ -89,10 +96,29 @@ function describeArgs(params: unknown, options: SummarizeOptions): string {
   // overrides; one that drops them draws the text as before, and the card stays
   // the view to decide on.
   return inStoredOrderPlain(
-    Object.entries(summarizeArgs(params, options))
+    Object.entries(summary)
       .map(([key, value]) => `${key}: ${inline(value)}`)
       .join(", ")
   );
+}
+
+/**
+ * The hosts a call reaches, each once, as many as fit in `room` characters —
+ * `reaches "evil.com", "…aaaa.evil.org" — ` — and `…` for the rest. A host
+ * longer than PROMPT_HOST_MAX is named by its end. Empty when it reaches none.
+ */
+function reachesClause(hosts: string[], room: number): string {
+  const entries: string[] = [];
+  for (const host of new Set(hosts)) {
+    const entry = quoted(host.length > PROMPT_HOST_MAX ? `…${host.slice(-PROMPT_HOST_MAX)}` : host);
+    // Room for this entry, and for a `…` after it should the next not fit.
+    if (`reaches ${[...entries, entry, "…"].join(", ")} — `.length > room) {
+      entries.push("…");
+      break;
+    }
+    entries.push(entry);
+  }
+  return entries.length > 0 ? `reaches ${entries.join(", ")} — ` : "";
 }
 
 export function buildApprovalPrompt(
@@ -127,9 +153,22 @@ export function buildApprovalPrompt(
     APPROVAL_TITLE_MAX
   );
 
-  const args = describeArgs(params, options);
+  const { summary, hosts } = summarizeCall(params, options);
+  const args = describeArgs(summary);
   const lead = known?.description ?? `The agent wants to run ${toolName}.`;
-  const description = truncate(args ? `${lead} — ${args}` : lead, APPROVAL_DESCRIPTION_MAX);
+  const whole = args ? `${lead} — ${args}` : lead;
+  // Cut, the description can end anywhere — inside the address itself, past
+  // `https://www.firma.at.` and before the domain it reaches, or in a long
+  // text before it. So a description that has to be cut names every host the
+  // call reaches first, ahead of the arguments; one that fits shows each
+  // address whole, with any note beside it.
+  const description =
+    whole.length <= APPROVAL_DESCRIPTION_MAX
+      ? whole
+      : truncate(
+          `${lead} — ${reachesClause(hosts, APPROVAL_DESCRIPTION_MAX - lead.length - 4)}${args}`,
+          APPROVAL_DESCRIPTION_MAX
+        );
 
   return { title, description };
 }

@@ -56,8 +56,9 @@ export const TARGET_KEYS: ReadonlySet<string> = new Set([
 
 /**
  * Rendered first in the summary (so no filler can starve them of the size
- * budget) and never shortened to a preview on the card: they are short, and
- * they are the decision.
+ * budget) and drawn whole on the card up to WHOLE_MAX characters, where any
+ * other text is previewed past PREVIEW_LEN: they are short, and they are the
+ * decision.
  */
 export const FULL_VIEW_KEYS: ReadonlySet<string> = new Set([...RECIPIENT_KEYS, ...TARGET_KEYS]);
 
@@ -153,15 +154,18 @@ export function readUrl(text: string): UrlRead | null {
  * in Chromium. At this size the whole card lays out in under
  * 50 ms in headless Chromium for the worst shape measured, 8,192 alternating
  * Hebrew letters and digits (one isolate per letter): 38–47 ms, against
- * 6–8 ms for a Hebrew or Arabic path of the same length. And past it,
- * the summary always names an address's host (`summary.ts`), since the host
- * sits at the end, behind the preview.
+ * 6–8 ms for a Hebrew or Arabic path of the same length. Wherever the card
+ * previews an address, the summary names its host beside it (`previewed`),
+ * since the host sits at the end, behind the preview.
  */
 export const WHOLE_MAX = 8_192;
 
+/** Any other text longer than this is previewed, the rest on demand. */
+export const PREVIEW_LEN = 200;
+
 /**
  * Is this value an email address or a URL — the shapes whose host is the
- * decision? The card never shortens one to a preview: a 217-character address
+ * decision? The card draws one whole up to WHOLE_MAX: a 217-character address
  * whose `@evil.com` sits past the cut reads as the familiar name its local
  * part spells. Only when the WHOLE value is one:
  * a URL the parser accepts with nothing after it (`readUrl`), or one mailbox
@@ -171,6 +175,28 @@ export const WHOLE_MAX = 8_192;
  */
 export function isAddressShaped(text: string): boolean {
   return readUrl(text)?.oneToken === true || mailboxAddress(text) !== null;
+}
+
+/**
+ * Does the card cut this text to a preview, its end behind "Show full text"?
+ * `text` is a summary string as stored — markers included — and `full` says
+ * whether it sits under a recipient or target key (`FULL_VIEW_KEYS`), at any
+ * depth. Counted as drawn: quoted where it would read as a literal
+ * (`displayScalar`).
+ *
+ * The one answer to that question. The card asks it to draw the value; the
+ * summary asks it to know when the host a value reaches must be named beside
+ * it, since the host sits at the end, where a preview cuts. Each used to ask
+ * in its own words — the summary by length alone, the card of the text as
+ * drawn — and where they disagreed a URL or address was previewed with no
+ * host named: one ending in `⟨4 × U+200B⟩` (a marker with spaces in it, so
+ * not one token), one that reads as a JSON string and grows by its quotes,
+ * one the URL parser accepts with words after it.
+ */
+export function previewed(text: string, full: boolean): boolean {
+  const length = [...displayScalar(text)].length;
+  if (length <= PREVIEW_LEN) return false;
+  return !((full || isAddressShaped(text)) && length <= WHOLE_MAX);
 }
 
 /**

@@ -1,8 +1,9 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
+import { domainToASCII } from "node:url";
 
 import { ApprovalCard } from "../approval-card";
-import { buildApprovalPrompt } from "@/lib/approvals/prompt";
+import { buildApprovalPrompt, PROMPT_HOST_MAX } from "@/lib/approvals/prompt";
 import { makeRefResolver } from "@/lib/approvals/call-models";
 import { renderText, summarizeArgs, type SummarizeOptions } from "@/lib/approvals/summary";
 import { displayScalar, quoted } from "@/lib/approvals/display";
@@ -360,5 +361,132 @@ describe("no plain string renders like an annotated value", () => {
     expect(card({ access_token: "abc" })).toContain("data-annotation=");
     expect(prompt(typed)).toContain('note: "[secret-like');
     expect(prompt({ access_token: "abc" })).toContain("access_token: [secret-like");
+  });
+});
+
+/**
+ * The summary names a host beside a value when the card will preview it, and
+ * the card decides whether to preview. Decided twice — the summary from the
+ * value's length, the card from its rendered text — the two disagreed: a run
+ * of hidden characters (`⟨4 × U+200B⟩`, which holds spaces) or a URL with
+ * text after it was previewed by the card as text, while the summary took it
+ * for an address the card would draw whole, and named no host. The real
+ * domain sat past the preview, behind "Show full text", in the card and in
+ * the prompt alike. Each pair differs only in that domain.
+ */
+describe("the host a value reaches, when the card previews it", () => {
+  const pad = "a".repeat(190);
+  const pairs: [string, (tld: string) => Record<string, unknown>][] = [
+    [
+      "a URL ending in a run of hidden characters",
+      (tld) => ({
+        values: { website: `https://www.firma.at.${pad}.evil.${tld}/x${"​".repeat(4)}` },
+      }),
+    ],
+    [
+      "an address with a run of hidden characters in its local part",
+      (tld) => ({ values: { email: `bo${"​".repeat(4)}ss@firma.at.${pad}.evil.${tld}` } }),
+    ],
+    [
+      "an address that reads as a JSON string, just under the whole-view bound",
+      (tld) => {
+        // Quoted on the card (`displayScalar`), it grows past 8,192 characters.
+        const tail = `@firma.at.evil.${tld}"`;
+        return { values: { email: `"${"a".repeat(8_190 - 1 - tail.length)}${tail}` } };
+      },
+    ],
+    [
+      "a URL the parser accepts with words after it",
+      (tld) => ({
+        values: { website: `https://www.firma.at.${"a".repeat(180)}.evil.${tld}/ Neue Website` },
+      }),
+    ],
+  ];
+
+  it.each(pairs)("draws %s with its host on the collapsed card", (_name, params) => {
+    const evil = card(params("com"));
+    const other = card(params("org"));
+    expect(evil).toMatch(/Show full text/);
+    expect(evil).not.toBe(other);
+    expect(evil).toContain('data-annotation="host"');
+    expect(visibleText(evil)).toContain(".evil.com");
+    expect(visibleText(other)).toContain(".evil.org");
+  });
+
+  it.each(pairs)("prints %s with the end of its host in the prompt", (_name, params) => {
+    expect(prompt(params("com"))).toContain(".evil.com");
+    expect(prompt(params("org"))).toContain(".evil.org");
+  });
+});
+
+/**
+ * The general claim: whatever a hostile value is wrapped in — a run of hidden
+ * characters, the quotes that make it read as a JSON string, padding, words
+ * after a URL — and whatever its length around the two bounds that decide a
+ * preview, the collapsed card and the prompt both show the end of the host
+ * the tool would reach. The host is resolved here independently, with the
+ * URL parser the tools use and the address's own domain.
+ */
+describe("the host a value reaches is always on the collapsed card and in the prompt", () => {
+  /** The host, resolved without the summary's help; null when nothing is reached. */
+  function resolvedHost(value: string): string | null {
+    try {
+      const url = new URL(value);
+      if (url.protocol === "https:") return url.hostname;
+    } catch {
+      // not a URL; maybe an address
+    }
+    const trimmed = value.trim();
+    const address = /^[^<>]*<([^<>]*)>$/.exec(trimmed)?.[1] ?? trimmed;
+    if (/[\s,;<>]/.test(address) || address.split("@").length !== 2) return null;
+    return domainToASCII(address.slice(address.indexOf("@") + 1)) || null;
+  }
+
+  /** How a surface prints a string: as it is, or escaped inside quotes. */
+  function printed(text: string, host: string): boolean {
+    return text.includes(host) || text.includes(quoted(host).slice(1, -1));
+  }
+
+  const RUNS = ["​", "⠀", " ", "‍", " "];
+  const KEYS: string[][] = [["values", "website"], ["values", "email"], ["url"], ["to"], ["note"]];
+
+  function hostile(next: () => number): { params: Record<string, unknown>; value: string } {
+    const pick = <T,>(items: T[]): T => items[Math.floor(next() * items.length)];
+    const near = pick([200, 8_192]);
+    const tld = pick(["com", "org", "net", "io"]);
+    const host = `www.firma.at.${"a".repeat(Math.max(0, near - 60 + Math.floor(next() * 120)))}.evil.${tld}`;
+    const run = pick(RUNS).repeat(1 + Math.floor(next() * 6));
+    const mailbox = next() < 0.5;
+    let value = mailbox
+      ? `${next() < 0.5 ? `bo${run}ss` : "boss"}@${host}`
+      : `https://${host}/x${next() < 0.5 ? run : ""}`;
+    if (mailbox && next() < 0.3) value = `Boss <${value}>`;
+    if (!mailbox && next() < 0.3) value += " Neue Website";
+    if (next() < 0.3) value = `"${value}"`;
+    if (next() < 0.2) value = ` ${value}`;
+    // A recipient field is read as addresses: a URL there reaches nothing.
+    const keys = pick(mailbox ? KEYS : KEYS.filter(([key]) => key !== "to"));
+    const params = keys.length === 2 ? { [keys[0]]: { [keys[1]]: value } } : { [keys[0]]: value };
+    return { params, value };
+  }
+
+  it("for generated hostile values", () => {
+    const next = random(1_242_017);
+    let checked = 0;
+    for (let round = 0; round < 400; round++) {
+      const { params, value } = hostile(next);
+      const host = resolvedHost(value);
+      if (host === null) continue;
+      checked++;
+      const text = visibleText(card(params));
+      const description = prompt(params);
+      if (!printed(text, host)) {
+        expect.fail(`the collapsed card for ${JSON.stringify(params)} hides ${host}`);
+      }
+      if (!printed(description, host.slice(-PROMPT_HOST_MAX))) {
+        expect.fail(`the prompt ${JSON.stringify(description)} hides the end of ${host}`);
+      }
+    }
+    expect(checked).toBeGreaterThan(250);
   });
 });

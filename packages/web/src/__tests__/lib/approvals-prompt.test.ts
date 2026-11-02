@@ -3,6 +3,7 @@ import {
   buildApprovalPrompt,
   APPROVAL_TITLE_MAX,
   APPROVAL_DESCRIPTION_MAX,
+  PROMPT_HOST_MAX,
 } from "@/lib/approvals/prompt";
 import { makeRefResolver } from "@/lib/approvals/call-models";
 // pinchy-odoo's own encoder, so the ref below is a real one — see
@@ -372,6 +373,53 @@ describe("buildApprovalPrompt", () => {
       seen.set(description, call);
     }
     expect(compared).toBeGreaterThan(15000);
+  });
+
+  // The description is cut at 256 characters, wherever that falls: inside a
+  // long text before the address, or inside the address itself, past
+  // `https://www.firma.at.` and before the domain it really reaches.
+  describe("when the description has to be cut", () => {
+    it("names every host the call reaches before the arguments", () => {
+      const { description } = buildApprovalPrompt("odoo_write", {
+        ids: [7],
+        values: { comment: "x ".repeat(200), website: "https://evil.com/", email: "a@b.evil.org" },
+      });
+      expect(description.length).toBeLessThanOrEqual(APPROVAL_DESCRIPTION_MAX);
+      expect(description).toContain(
+        'Modify existing records in Odoo — reaches "evil.com", "b.evil.org" — ids: [7]'
+      );
+    });
+
+    it("names a long host by its end, where the domain it reaches is", () => {
+      const host = `www.firma.at.${"a".repeat(300)}.evil.com`;
+      const { description } = buildApprovalPrompt("pinchy_web_fetch", { url: `https://${host}/x` });
+      expect(description.length).toBeLessThanOrEqual(APPROVAL_DESCRIPTION_MAX);
+      expect(description).toContain(`reaches "…${host.slice(-PROMPT_HOST_MAX)}" — url:`);
+    });
+
+    it("names each host once, and says so when more do not fit", () => {
+      const hosts = Array.from({ length: 6 }, (_, i) => `${String(i).repeat(60)}.example`);
+      const { description } = buildApprovalPrompt("email_send", {
+        to: [hosts[0], ...hosts].map((host) => `x@${host}`),
+      });
+      expect(description.length).toBeLessThanOrEqual(APPROVAL_DESCRIPTION_MAX);
+      expect(description.split(`"${hosts[0]}"`)).toHaveLength(2);
+      expect(description).toMatch(/^Send email directly — reaches "0+\.example", ".*", … — to:/);
+    });
+
+    it("leaves a hidden secret's host unsaid", () => {
+      const { description } = buildApprovalPrompt("odoo_write", {
+        values: { comment: "x ".repeat(200), api_key: "https://secret.example/" },
+      });
+      expect(description).not.toContain("secret.example");
+    });
+  });
+
+  it("adds no hosts to a description that fits", () => {
+    const { description } = buildApprovalPrompt("pinchy_web_fetch", { url: "https://evil.com/x" });
+    expect(description).toBe(
+      'Download and read content from web pages — url: "https://evil.com/x"'
+    );
   });
 
   it("adds no control characters to a call without right-to-left text", () => {

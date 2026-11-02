@@ -5,20 +5,17 @@ import { Button } from "@/components/ui/button";
 import type { PendingApproval } from "@/lib/approvals/client";
 import {
   FULL_VIEW_KEYS,
+  PREVIEW_LEN,
   displayScalar,
   inStoredOrder,
-  isAddressShaped,
   modelText,
+  previewed,
   quoted,
   readNode,
   secretText,
   type SummaryNode,
   type SummaryNote,
-  WHOLE_MAX,
 } from "@/lib/approvals/display";
-
-/** Texts longer than this show a preview first, with the full text on demand. */
-const PREVIEW_LEN = 200;
 
 /**
  * `text` drawn in the order it was sent (`inStoredOrder`): each line held in
@@ -78,8 +75,9 @@ function Spoken({ drawn, spoken }: { drawn: ReactNode; spoken: string }) {
  * reaches or where it lands, which are short and are the decision, or unless
  * the value itself is an email address or a URL, at any key: its host is the
  * decision too, and it sits at the END of an address, exactly where a preview
- * cuts. Those are drawn whole up to WHOLE_MAX; past
- * it, the summary names the host in a note beside the preview.
+ * cuts. Those are drawn whole up to WHOLE_MAX. Whether a value is previewed is
+ * `previewed`'s answer, the one the summary asks too: wherever it says yes to
+ * a URL or an address, the summary has named its host in a note beside it.
  *
  * Everything in `text` is the value's own: the card reads no marker out of it.
  * The gate refuses any call the summary would have to cut, so a value that
@@ -91,8 +89,7 @@ function TextValue({ text, full }: { text: string; full: boolean }) {
   const shown = displayScalar(text);
   // Counted and cut by code point, so the preview never ends in half an emoji.
   const chars = [...shown];
-  const decision = full || isAddressShaped(text);
-  if (chars.length <= PREVIEW_LEN || (decision && chars.length <= WHOLE_MAX)) {
+  if (!previewed(text, full)) {
     return (
       <span className="break-words">
         <Spoken

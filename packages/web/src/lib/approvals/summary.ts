@@ -79,7 +79,10 @@
  *   the same way a `to` does. What is a URL is decided by the WHATWG parser
  *   the tools use, not by a pattern, and its host is the one that parser
  *   resolves — what the tool connects to — named whenever the text does not
- *   show exactly that host right after `scheme://`. Recipient and target keys
+ *   show exactly that host right after `scheme://`. Wherever the card
+ *   previews such a value (`previewed`, the card's own answer), its host is
+ *   named whatever it looks like, since a preview cuts the end where the host
+ *   sits. Recipient and target keys
  *   (`FULL_VIEW_KEYS`) are rendered before anything else, so no filler in front of them can starve
  *   them of the size budget or push them past MAX_KEYS.
  * - An opaque record reference names the record it points at — model, id and
@@ -102,9 +105,9 @@ import { isCanonicalRef, type RefRecord } from "./call-models";
 import {
   FULL_VIEW_KEYS,
   TARGET_KEYS,
-  WHOLE_MAX,
   mailboxAddress,
   noteText,
+  previewed,
   readUrl,
   refText,
   secretText,
@@ -183,6 +186,18 @@ interface Budget {
   refRecord?: (ref: string) => RefRecord | null;
   /** The first bound crossed; set as soon as anything is dropped or cut. */
   exceeded: SummaryLimit | null;
+  /** Every host a shown value reaches, in the order the values are summarized. */
+  hosts: string[];
+}
+
+/**
+ * Where a value sits, as the card will read it: under a target key (`target`:
+ * its edges are marked), and under a recipient or target key (`full`: drawn
+ * whole up to WHOLE_MAX). Both hold for everything inside such a key.
+ */
+interface Place {
+  target: boolean;
+  full: boolean;
 }
 
 function exceed(budget: Budget, limit: SummaryLimit): void {
@@ -203,6 +218,13 @@ export interface CallSummary {
   incomplete: boolean;
   /** Which bound made it incomplete; null when the call fits. */
   exceeded: SummaryLimit | null;
+  /**
+   * Every host the call's shown values reach — a URL's, as the parser resolves
+   * it, and a mailbox's domain, in ASCII — in the order they are summarized,
+   * repeats included. Not stored: the prompt names them when it has to cut.
+   * A hidden secret reaches none.
+   */
+  hosts: string[];
 }
 
 /**
@@ -486,61 +508,69 @@ function bounded(text: string, budget: Budget): string {
   return `${text.slice(0, allowed)}${truncationMarker(text.length - allowed)}`;
 }
 
-/**
- * The punycode form of a non-ASCII host: `boss@fіrma.at` with a Cyrillic "і"
- * renders exactly like the real domain, and its ASCII form (`xn--…`) is what
- * shows that it is not. With `always`, an ASCII host is named too.
- */
-function punycodeNote(host: string | null, always = false): SummaryNote | null {
-  if (host === null || (!always && /^[\x00-\x7F]*$/.test(host))) return null;
-  const ascii = domainToASCII(host);
-  return ascii ? { kind: "host", host: ascii } : { kind: "not-a-domain" };
+/** Where a value reaches, as a note, and whether its own text already says so. */
+interface Reach {
+  note: SummaryNote;
+  /** The text shows that very host, readable as it resolves. */
+  plain: boolean;
 }
 
 /**
- * The host a URL really reaches, as the WHATWG parser resolves it — the
- * parser the tool's own `fetch` uses — named whenever the text does not show
- * that very host right after `scheme://` (`readUrl`). A host the text merely
- * reads as is not it: in `https://fіrma.at\@evil.com/x` the backslash is a
- * path separator, so the host is fіrma.at, where a regex reading the `@` saw
- * evil.com. Percent-encoding, a numeric IPv4 form, a
- * homoglyph, userinfo, missing or backslashed slashes and a stripped leading
- * control character all reach a host the text does not show. A URL with no
- * host (`file:///…`) reaches none, and gets no note.
+ * Where a mail domain reaches. A non-ASCII one is named in punycode:
+ * `boss@fіrma.at` with a Cyrillic "і" renders exactly like the real domain,
+ * and its ASCII form (`xn--…`) is what shows that it is not.
  */
-function urlNote(value: string, always: boolean): SummaryNote[] | null {
+function domainReach(domain: string): Reach {
+  const ascii = domainToASCII(domain);
+  return {
+    note: ascii ? { kind: "host", host: ascii } : { kind: "not-a-domain" },
+    plain: /^[\x00-\x7F]*$/.test(domain),
+  };
+}
+
+/**
+ * Where a value reaches: for any value the URL parser accepts, the host it
+ * resolves — the one the tool's own `fetch` connects to, whatever else the
+ * text holds — plain only when the text shows that very host right after
+ * `scheme://` (`readUrl`). A host the text merely reads as is not it: in
+ * `https://fіrma.at\@evil.com/x` the backslash is a path separator, so the
+ * host is fіrma.at, where a regex reading the `@` saw evil.com.
+ * Percent-encoding, a numeric IPv4 form, a homoglyph, userinfo, missing or
+ * backslashed slashes and a stripped leading control character all reach a
+ * host the text does not show. For a value that is one mailbox, read the way
+ * the mail tool reads it (`mailboxAddress`: trimmed, out of `Name <…>`), its
+ * domain. `null` for a URL with no host (`file:///…`), for free text the
+ * parser refuses — "https://firma.at, see above" — and for text that merely
+ * holds an address.
+ */
+function reachOf(value: string): Reach | null {
   const url = readUrl(value);
-  if (!url) return null;
-  return url.host !== "" && (always || !url.showsHost) ? [{ kind: "host", host: url.host }] : [];
-}
-
-/**
- * Past WHOLE_MAX the card previews an address like any long text, and its
- * host sits at the end, behind "Show full text". A note was written only for
- * a host that reads differently from where it goes — an ASCII one never does,
- * so `buchhaltung.intranet.firma.at.…@evil.example` and `…@firma.at.xyz`
- * collapsed to the same card. Past the bound, the
- * host is always named. `shown` is the value as rendered, what the card counts.
- */
-function hidesHost(shown: string): boolean {
-  return codePointLength(shown) > WHOLE_MAX;
-}
-
-/**
- * The note that names the host a value reaches: for any value the URL parser
- * accepts, since that is what decides where a tool connects, whatever else the
- * text holds; and for a value that is one mailbox, read the way the mail tool
- * reads it (`mailboxAddress`: trimmed, out of `Name <…>`). Free text the
- * parser refuses — "https://firma.at, see above" — is not a URL, and text
- * that merely holds an address is not a mailbox: both are left alone.
- */
-function hostNotes(value: string, shown: string): SummaryNote[] {
-  const always = hidesHost(shown);
-  const url = urlNote(value, always);
-  if (url) return url;
+  if (url) {
+    if (url.host === "") return null;
+    return { note: { kind: "host", host: url.host }, plain: url.showsHost };
+  }
   const address = mailboxAddress(value);
-  const note = punycodeNote(address && address.slice(address.lastIndexOf("@") + 1), always);
-  return note ? [note] : [];
+  return address === null ? null : domainReach(address.slice(address.lastIndexOf("@") + 1));
+}
+
+/**
+ * The notes beside a value that reaches somewhere. The host is named whenever
+ * the text does not show it plainly — and whenever the card previews the
+ * value (`previewed`), since the host sits at its end, behind "Show full
+ * text": an ASCII host reads as it resolves, so `…@firma.at.<pad>.evil.com`
+ * and `…@firma.at.<pad>.evil.org` collapsed to one card. `shown` is the value
+ * as stored, what the card draws. Every host reached is recorded for the
+ * prompt.
+ */
+function reachNotes(
+  reach: Reach | null,
+  shown: string,
+  place: Place,
+  budget: Budget
+): SummaryNote[] {
+  if (!reach) return [];
+  if (reach.note.kind === "host") budget.hosts.push(reach.note.host);
+  return !reach.plain || previewed(shown, place.full) ? [reach.note] : [];
 }
 
 /** Length in code points — characters as a person counts them. */
@@ -574,7 +604,7 @@ function summarizeString(
   value: string,
   budget: Budget,
   path: string,
-  target: boolean
+  place: Place
 ): string | SummaryNode {
   if (isCanonicalRef(value)) {
     // An opaque ref is 200+ characters of base64 that mean nothing to a reader.
@@ -596,11 +626,11 @@ function summarizeString(
   const length = codePointLength(value);
   if (length > MAX_STRING_LEN) {
     exceed(budget, { kind: "text-too-long", at: path, length, limit: MAX_STRING_LEN });
-    const head = renderText(headCodePoints(value, MAX_STRING_LEN), target);
+    const head = renderText(headCodePoints(value, MAX_STRING_LEN), place.target);
     return bounded(head, budget) + truncationMarker(length - MAX_STRING_LEN);
   }
-  const shown = renderText(value, target);
-  return noted(bounded(shown, budget), hostNotes(value, shown), budget);
+  const shown = renderText(value, place.target);
+  return noted(bounded(shown, budget), reachNotes(reachOf(value), shown, place, budget), budget);
 }
 
 /**
@@ -643,14 +673,13 @@ const ENTRY_PADDING = /^[ \t\r\n]+|[ \t\r\n]+$/g;
  * preview, and written into the text, `(name: "X")` read like an address that
  * merely carried those characters.
  */
-function describeRecipient(entry: string, budget: Budget): string | SummaryNode {
+function describeRecipient(entry: string, budget: Budget, place: Place): string | SummaryNode {
   const named = /^([^<>]*)<([^<>]*)>$/.exec(entry);
   const address = named ? named[2].replace(ENTRY_PADDING, "") : entry;
   const at = address.lastIndexOf("@");
-  const notes: SummaryNote[] = [];
   const shown = renderText(address);
-  const host = punycodeNote(at < 0 ? null : address.slice(at + 1), hidesHost(shown));
-  if (host) notes.push(host);
+  const reach = at < 0 ? null : domainReach(address.slice(at + 1));
+  const notes = reachNotes(reach, shown, place, budget);
   let name = named ? named[1].replace(ENTRY_PADDING, "") : "";
   if (name.length >= 2 && name.startsWith('"') && name.endsWith('"')) {
     name = name.slice(1, -1).replace(/\\([\s\S])/gu, "$1");
@@ -659,17 +688,24 @@ function describeRecipient(entry: string, budget: Budget): string | SummaryNode 
   return noted(bounded(shown, budget), notes, budget);
 }
 
-function summarizeRecipients(value: unknown, budget: Budget, path: string): unknown | undefined {
+function summarizeRecipients(
+  value: unknown,
+  budget: Budget,
+  path: string,
+  place: Place
+): unknown | undefined {
   const raw = typeof value === "string" ? [value] : Array.isArray(value) ? value : null;
   if (!raw || !raw.every((entry) => typeof entry === "string")) return undefined;
   const addresses = raw
     .flatMap((entry) => splitAddresses(entry as string))
     .map((entry) => entry.replace(ENTRY_PADDING, ""))
     .filter((entry) => entry.length > 0);
-  if (addresses.length === 0) return summarizeString(raw.join(" "), budget, path, false);
+  if (addresses.length === 0) {
+    return summarizeString(raw.join(" "), budget, path, { ...place, target: false });
+  }
   const shown: unknown[] = addresses
     .slice(0, MAX_ITEMS)
-    .map((address) => describeRecipient(address, budget));
+    .map((address) => describeRecipient(address, budget, place));
   if (addresses.length > MAX_ITEMS) {
     exceed(budget, {
       kind: "too-many-recipients",
@@ -709,11 +745,11 @@ function summarizeValue(
   budget: Budget,
   path: string,
   secret: boolean,
-  target: boolean
+  place: Place
 ): unknown {
   if (typeof value === "string") {
     if (secret) return describeSecret(value, budget);
-    return summarizeString(value, budget, path, target);
+    return summarizeString(value, budget, path, place);
   }
   if (value === null || ["number", "boolean"].includes(typeof value)) {
     // A number is shown too, and 200×200×50 of them made a 5.7 MB summary
@@ -735,7 +771,7 @@ function summarizeValue(
         return shown;
       }
       shown.push(
-        summarizeValue(item, depth + 1, budget, `${path}[${shown.length}]`, secret, target)
+        summarizeValue(item, depth + 1, budget, `${path}[${shown.length}]`, secret, place)
       );
     }
     if (value.length > MAX_ITEMS) {
@@ -751,7 +787,7 @@ function summarizeValue(
       return `… [${plural(entries.length, "field")} not shown: nested too deep]`;
     }
     budget.chars -= 2;
-    return summarizeObject(entries, depth, budget, path, secret, target);
+    return summarizeObject(entries, depth, budget, path, secret, place);
   }
   return String(value);
 }
@@ -762,7 +798,7 @@ function summarizeObject(
   budget: Budget,
   path: string,
   secret: boolean,
-  target: boolean
+  place: Place
 ): Record<string, unknown> {
   // Who a message reaches, and where an action lands, is rendered first,
   // while the budget is whole.
@@ -811,13 +847,20 @@ function summarizeObject(
     // A record id is never a secret, whatever its key says; anything else
     // under a secret-like key has its texts hidden, at any depth.
     const hidden = !RECORD_ID_KEY.test(key) && (secret || SECRET_KEY.test(key));
+    // As the card reads the key: whole for a recipient or target, at any depth.
+    const inner: Place = {
+      target: place.target || TARGET_KEYS.has(key),
+      full: place.full || FULL_VIEW_KEYS.has(key),
+    };
     const recipients =
-      !hidden && RECIPIENT_KEY.test(key) ? summarizeRecipients(value, budget, at) : undefined;
+      !hidden && RECIPIENT_KEY.test(key)
+        ? summarizeRecipients(value, budget, at, inner)
+        : undefined;
     add(
       label,
       recipients !== undefined
         ? recipients
-        : summarizeValue(value, depth + 1, budget, at, hidden, target || TARGET_KEYS.has(key))
+        : summarizeValue(value, depth + 1, budget, at, hidden, inner)
     );
   }
   // fromEntries defines own properties, so a "__proto__" key stays data.
@@ -830,12 +873,13 @@ function summarizeObject(
  */
 export function summarizeCall(params: unknown, options: SummarizeOptions = {}): CallSummary {
   if (!params || typeof params !== "object" || Array.isArray(params)) {
-    return { summary: {}, incomplete: false, exceeded: null };
+    return { summary: {}, incomplete: false, exceeded: null, hosts: [] };
   }
   const budget: Budget = {
     chars: MAX_TOTAL_CHARS,
     refRecord: options.refRecord,
     exceeded: null,
+    hosts: [],
   };
   const summary = summarizeObject(
     Object.entries(params as Record<string, unknown>),
@@ -843,11 +887,16 @@ export function summarizeCall(params: unknown, options: SummarizeOptions = {}): 
     budget,
     "",
     false,
-    false
+    { target: false, full: false }
   );
   // A last value can overshoot without anything after it to cut.
   if (budget.chars < 0) exceed(budget, TOO_LARGE_IN_ALL);
-  return { summary, incomplete: budget.exceeded !== null, exceeded: budget.exceeded };
+  return {
+    summary,
+    incomplete: budget.exceeded !== null,
+    exceeded: budget.exceeded,
+    hosts: budget.hosts,
+  };
 }
 
 const count = (n: number) => n.toLocaleString("en-US");
