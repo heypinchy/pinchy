@@ -19,7 +19,20 @@ export const gateCheckSchema = z.object({
    * `sessionKey`: some run contexts carry none, and a gated call without one
    * must get an answer it can act on rather than a 400. */
   toolCallId: z.string().min(1).optional(),
-  params: z.record(z.string(), z.unknown()).optional().default({}),
+  /**
+   * Taken as parsed, not rebuilt: `z.record` copies the object by assignment,
+   * and `out["__proto__"] = …` hits the prototype setter — the key vanished
+   * from the digest and the card while the tool, reading the raw JSON, could
+   * still receive it (second review of #1242). JSON.parse makes every key,
+   * `__proto__` included, an own data property; this keeps them all.
+   */
+  params: z
+    .custom<Record<string, unknown>>(
+      (value) => typeof value === "object" && value !== null && !Array.isArray(value),
+      { message: "params must be an object" }
+    )
+    .optional()
+    .default({}),
 });
 export type GateCheckBody = z.infer<typeof gateCheckSchema>;
 

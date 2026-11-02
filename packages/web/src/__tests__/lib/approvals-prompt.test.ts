@@ -1,9 +1,19 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeAll } from "vitest";
 import {
   buildApprovalPrompt,
   APPROVAL_TITLE_MAX,
   APPROVAL_DESCRIPTION_MAX,
 } from "@/lib/approvals/prompt";
+import { makeRefResolver } from "@/lib/approvals/call-models";
+// pinchy-odoo's own encoder, so the ref below is a real one — see
+// call-models.test.ts for why this crosses the package boundary.
+import { encodeRef, _resetKeyCacheForTest } from "../../../../plugins/pinchy-odoo/integration-ref";
+
+const REF_KEY = "c".repeat(64);
+beforeAll(() => {
+  process.env.PINCHY_REF_TOKEN_KEY = REF_KEY;
+  _resetKeyCacheForTest();
+});
 
 /**
  * The text a person reads before they approve an action. It replaces the bare
@@ -122,12 +132,54 @@ describe("buildApprovalPrompt", () => {
   // An opaque ref is 200+ characters of base64 and says nothing to a human.
   // Left in the summary it also eats the entire 256-character description,
   // pushing out the arguments that carry the meaning.
+  //
+  // Corrected input (second review of #1242): this used a fake "pinchy_ref:v1:
+  // AAAA…" string, which only stayed out of the description because ANY string
+  // with that prefix was hidden — the hole that let a prefixed email body
+  // vanish. A real ref is replaced by the record it names; a fake one is text.
   it("does not fill the description with an opaque ref token", () => {
-    const ref = `pinchy_ref:v1:${"A".repeat(300)}`;
-    const { description } = buildApprovalPrompt("odoo_confirm_order", { target: ref }, [
-      "sale.order",
-    ]);
-    expect(description).not.toContain("AAAA");
+    const ref = encodeRef({
+      integrationType: "odoo",
+      connectionId: "c1",
+      model: "sale.order",
+      id: 9,
+      label: "S00009",
+    });
+    const { description } = buildApprovalPrompt(
+      "odoo_confirm_order",
+      { target: ref },
+      ["sale.order"],
+      { refRecord: makeRefResolver(REF_KEY) }
+    );
+    expect(description).not.toContain(ref.slice(20, 40));
+    expect(description).toContain('(record reference: sale.order #9 "S00009")');
+  });
+
+  it("shows free text that starts with the ref prefix as the text it is", () => {
+    const { description } = buildApprovalPrompt("email_send", {
+      to: "boss@firma.at",
+      subject: "pinchy_ref:v1: Neue Bankverbindung",
+    });
+    expect(description).toContain("pinchy_ref:v1: Neue Bankverbindung");
+  });
+
+  // Odoo reads bool("false") as True — on a security prompt the string and the
+  // boolean must not print alike.
+  it("tells a string that reads like a literal apart from the literal", () => {
+    const { description } = buildApprovalPrompt("odoo_write", {
+      values: { active: "false", is_company: false, x: null },
+    });
+    expect(description).toContain('active: "false"');
+    expect(description).toContain("is_company: false");
+    expect(description).toContain("x: null");
+  });
+
+  it("names the recipient's address before a padded display name", () => {
+    const { description } = buildApprovalPrompt("email_send", {
+      to: `Raimund Korber${"\u2800".repeat(190)} <attacker@evil.com>`,
+      subject: "Rechnung",
+    });
+    expect(description).toContain("to: attacker@evil.com (name: ");
   });
   // The prompt reaches chat surfaces too, and it reads the same summary as the
   // card. Once the summary keeps real arrays/objects, flattening them with

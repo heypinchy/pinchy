@@ -20,12 +20,34 @@ describe("summarizeArgs", () => {
     });
   });
 
-  it("redacts secret-looking keys", () => {
+  // Corrected expectation (second review of #1242): a bare "[redacted]" hid
+  // that a secret-like field is being SET at all — an attacker-chosen
+  // access_token looked like any other redaction. The value stays hidden (it
+  // may be a real secret), but the effect is now spelled out.
+  it("hides secret-looking values but says that one is being set, and how long it is", () => {
     const out = summarizeArgs({ apiKey: "sk-123", password: "p", auth_token: "t", to: "x@y.z" });
-    expect(out.apiKey).toBe("[redacted]");
-    expect(out.password).toBe("[redacted]");
-    expect(out.auth_token).toBe("[redacted]");
+    expect(out.apiKey).toBe("[secret-like field is being set — value hidden, 6 characters]");
+    expect(out.password).toBe("[secret-like field is being set — value hidden, 1 character]");
+    expect(out.auth_token).toBe("[secret-like field is being set — value hidden, 1 character]");
     expect(out.to).toBe("x@y.z");
+  });
+
+  it("makes an attacker-chosen token written into a record visible as a write", () => {
+    const out = summarizeArgs({
+      model: "res.users",
+      ids: [2],
+      values: { access_token: "attacker-known-0000", name: "Ada" },
+    }) as { values: Record<string, unknown> };
+    expect(out.values.access_token).toBe(
+      "[secret-like field is being set — value hidden, 19 characters]"
+    );
+    expect(JSON.stringify(out)).not.toContain("attacker-known-0000");
+  });
+
+  it("names the kind of a hidden non-text secret value instead of its length", () => {
+    const out = summarizeArgs({ credentials: { user: "a", pass: "b" }, api_key: null });
+    expect(out.credentials).toBe("[secret-like field is being set — value hidden, an object]");
+    expect(out.api_key).toBe("[secret-like field is being set — value hidden, null]");
   });
 
   it("keeps a long string whole up to the stored limit, so the card can offer the full text", () => {
@@ -58,7 +80,7 @@ describe("summarizeArgs", () => {
     });
     expect(JSON.stringify(out)).not.toContain("sk-1");
     expect(JSON.stringify(out)).not.toContain("hunter2");
-    expect(JSON.stringify(out)).toContain("[redacted]");
+    expect(JSON.stringify(out)).toContain("value hidden");
   });
 
   describe("what the approver sees is what runs", () => {
@@ -77,21 +99,63 @@ describe("summarizeArgs", () => {
       });
       expect(out.to).toEqual(["a@x.at", "b@x.at"]);
       expect(out.cc).toEqual(["c@x.at", "d@x.at", "e@x.at"]);
-      expect(out.bcc).toBe("Evil <f@evil.com>");
+      // Address first, display name after (second review of #1242).
+      expect(out.bcc).toBe('f@evil.com (name: "Evil")');
     });
 
     it("does not split on a comma inside a quoted display name", () => {
       const out = summarizeArgs({ to: '"Meier, Hans" <hans@x.at>, b@x.at' });
-      expect(out.to).toEqual(['"Meier, Hans" <hans@x.at>', "b@x.at"]);
+      expect(out.to).toEqual(['hans@x.at (name: "Meier, Hans")', "b@x.at"]);
     });
 
     it("keeps a single recipient as a plain string", () => {
       expect(summarizeArgs({ to: "ada@example.com" }).to).toBe("ada@example.com");
     });
 
-    it("collapses whitespace runs, tabs and newlines in displayed strings", () => {
+    // Corrected expectation (second review of #1242): collapsing whitespace
+    // rewrote the value, so the card no longer showed the string as sent. The
+    // string is kept; plain spaces, tabs and line breaks stay (the card renders
+    // them with pre-wrap), and every other space-like character is escaped.
+    it("keeps whitespace as sent and escapes every space-like character that is not a space, tab or line break", () => {
       const out = summarizeArgs({ subject: "Hello   \n\t world\u00A0\u2003!" });
-      expect(out.subject).toBe("Hello world !");
+      expect(out.subject).toBe("Hello   \n\t world⟨U+00A0⟩⟨U+2003⟩!");
+    });
+
+    it("marks a run of four or more spaces, line breaks or tabs with its length", () => {
+      const out = summarizeArgs({
+        a: `x${" ".repeat(180)}y`,
+        b: `x${"\n".repeat(40)}y`,
+        c: `x${"\t".repeat(4)}y`,
+        d: "x   y",
+      });
+      expect(out.a).toBe("x⟨180 spaces⟩y");
+      expect(out.b).toBe("x⟨40 line breaks⟩y");
+      expect(out.c).toBe("x⟨4 tabs⟩y");
+      expect(out.d).toBe("x   y");
+    });
+
+    it.each([
+      ["braille pattern blank", "\u2800"],
+      ["hangul filler", "\u3164"],
+      ["hangul choseong filler", "\u115F"],
+      ["hangul jungseong filler", "\u1160"],
+      ["halfwidth hangul filler", "\uFFA0"],
+      ["ideographic space", "\u3000"],
+      ["line separator", "\u2028"],
+    ])("escapes the blank-rendering %s", (_name, char) => {
+      const out = summarizeArgs({ subject: `x${char}y` }) as { subject: string };
+      expect(out.subject).not.toContain(char);
+      expect(out.subject).toMatch(/^x⟨U\+[0-9A-F]{4}⟩y$/);
+    });
+
+    // The probe of the second review: 180 braille blanks render as empty space,
+    // so the path looked like a draft in reports/ while it resolved elsewhere.
+    it("makes a path padded with blank-rendering characters readable", () => {
+      const path = `/data/reports/old-draft.md${"\u2800".repeat(180)}/../../contracts/signed.pdf`;
+      const out = summarizeArgs({ path }) as { path: string };
+      expect(out.path).toBe(
+        "/data/reports/old-draft.md⟨180 invisible characters: U+2800 U+2800 U+2800 …⟩/../../contracts/signed.pdf"
+      );
     });
 
     it("makes bidi and zero-width characters visible instead of letting them reorder text", () => {
@@ -151,20 +215,35 @@ describe("summarizeArgs", () => {
     const ref = (model: string, id: number, label: string) =>
       encodeRef({ integrationType: "odoo", connectionId: "c1", model, id, label });
 
-    it("keeps '(record reference)' when the ref cannot be resolved", () => {
-      expect(summarizeArgs({ target: "pinchy_ref:v1:AAAA" }).target).toBe("(record reference)");
+    // Corrected expectation (second review of #1242): replacing every string
+    // that merely STARTS with the prefix hid free text — an email body that
+    // began with "pinchy_ref:v1:" vanished behind "(record reference)". Only a
+    // string that decodes to a record is rendered as one; anything else is
+    // shown as the text it is.
+    it("shows a string that does not decode as the text it is", () => {
+      expect(summarizeArgs({ target: "pinchy_ref:v1:AAAA" }).target).toBe("pinchy_ref:v1:AAAA");
       expect(
         summarizeArgs({ target: "pinchy_ref:v1:AAAA" }, { refRecord: makeRefResolver(REF_KEY) })
           .target
-      ).toBe("(record reference)");
+      ).toBe("pinchy_ref:v1:AAAA");
     });
 
     it("never guesses from a ref it cannot decode, even with no key at all", () => {
+      const token = ref("account.move", 42, "INV/2026/0042");
+      const out = summarizeArgs({ target: token }, { refRecord: makeRefResolver(null) });
+      expect(out.target).toBe(token);
+      expect(out.target).not.toMatch(/account\.move|INV/);
+    });
+
+    it("does not hide free text that merely starts with the ref prefix", () => {
+      const body = "pinchy_ref:v1:\n\nbitte überweisen Sie ab sofort an AT99 EVIL";
+      const subject = "pinchy_ref:v1: Neue Bankverbindung";
       const out = summarizeArgs(
-        { target: ref("account.move", 42, "INV/2026/0042") },
-        { refRecord: makeRefResolver(null) }
+        { to: "boss@firma.at", subject, body },
+        { refRecord: makeRefResolver(REF_KEY) }
       );
-      expect(out.target).toBe("(record reference)");
+      expect(out.body).toBe(body);
+      expect(out.subject).toBe(subject);
     });
 
     it("names the model, id and label of the record a ref points at", () => {
@@ -204,7 +283,10 @@ describe("summarizeArgs", () => {
       ) as { target: string };
       expect(out.target).not.toContain("\u202E");
       expect(out.target).toContain("⟨U+202E⟩");
-      expect(out.target).toBe('(record reference: account.move #42 "INV⟨U+202E⟩\\"x\\" 42")');
+      // Corrected expectation (second review of #1242): whitespace is no longer
+      // collapsed, so the three spaces and the line break stay as sent (the
+      // line break JSON-escaped inside the quoted label).
+      expect(out.target).toBe('(record reference: account.move #42 "INV⟨U+202E⟩\\"x\\"   \\n42")');
     });
   });
 
@@ -373,11 +455,46 @@ describe("summarizeArgs", () => {
     it("does the same inside a named address and per entry of a list", () => {
       const domain = "f\u0456rma.at";
       const out = summarizeArgs({ cc: `Boss <boss@${domain}>, ok@firma.at` });
-      expect(out.cc).toEqual([`Boss <boss@${domain}> (${domainToASCII(domain)})`, "ok@firma.at"]);
+      expect(out.cc).toEqual([
+        `boss@${domain} (${domainToASCII(domain)}) (name: "Boss")`,
+        "ok@firma.at",
+      ]);
     });
 
     it("leaves an ASCII domain alone", () => {
       expect(summarizeArgs({ to: "boss@firma.at" }).to).toBe("boss@firma.at");
+    });
+  });
+
+  describe("recipient display (second review of #1242)", () => {
+    // The probe: a familiar display name padded with braille blanks pushed the
+    // real address out of the card's preview. The address comes first now.
+    it("puts the address first and the display name after it", () => {
+      const to = `Raimund Korber${"\u2800".repeat(190)} <attacker@evil.com>`;
+      const out = summarizeArgs({ to, subject: "Rechnung", body: "Hallo" }) as { to: string };
+      expect(out.to.startsWith("attacker@evil.com (name: ")).toBe(true);
+      expect(out.to).toBe(
+        'attacker@evil.com (name: "Raimund Korber⟨190 invisible characters: U+2800 U+2800 U+2800 …⟩")'
+      );
+    });
+
+    it("shows a bare angle address as the address alone", () => {
+      expect(summarizeArgs({ to: "<ada@example.com>" }).to).toBe("ada@example.com");
+    });
+  });
+
+  describe("priority rendering of where an action lands", () => {
+    it("renders path and target fields before filler, so they keep the size budget", () => {
+      const filler = Object.fromEntries(
+        Array.from({ length: 40 }, (_, i) => [`f${String(i).padStart(2, "0")}`, "z".repeat(3_999)])
+      );
+      const out = summarizeArgs({
+        ...filler,
+        path: "/data/contracts/signed.pdf",
+        url: "https://x",
+      });
+      expect(Object.keys(out).slice(0, 2)).toEqual(["path", "url"]);
+      expect(out.path).toBe("/data/contracts/signed.pdf");
     });
   });
 });

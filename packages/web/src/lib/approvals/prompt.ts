@@ -1,5 +1,6 @@
 import { TOOL_REGISTRY } from "@/lib/tool-registry";
-import { summarizeArgs } from "@/lib/approvals/summary";
+import { summarizeArgs, type SummarizeOptions } from "@/lib/approvals/summary";
+import { displayScalar } from "@/lib/approvals/display";
 
 /**
  * Builds the two strings a person reads before approving a tool call.
@@ -45,15 +46,17 @@ function inline(value: unknown): string {
       .map(([key, v]) => `${key}: ${inline(v)}`)
       .join(", ")}}`;
   }
-  return String(value);
+  // The same type rule as the card: a string that would read as `false`, `1`
+  // or `null` is quoted, so it cannot pass for the literal.
+  return displayScalar(value);
 }
 
-function describeArgs(params: unknown): string {
-  const summary = summarizeArgs(params);
-  const parts = Object.entries(summary)
-    .filter(([, value]) => value !== undefined && value !== null && value !== "")
-    .map(([key, value]) => `${key}: ${inline(value)}`);
-  return parts.join(", ");
+function describeArgs(params: unknown, options: SummarizeOptions): string {
+  // Every argument is printed, `null` and empty ones included: leaving them
+  // out would let `active: null` read the same as no `active` at all.
+  return Object.entries(summarizeArgs(params, options))
+    .map(([key, value]) => `${key}: ${inline(value)}`)
+    .join(", ");
 }
 
 export function buildApprovalPrompt(
@@ -66,7 +69,10 @@ export function buildApprovalPrompt(
    * whole reason the setting exists. `null` entries are resources we could not
    * name and are left unsaid rather than printed.
    */
-  resources: (string | null)[] = []
+  resources: (string | null)[] = [],
+  /** The same ref resolver the card's summary uses, so a real record reference
+   * reads as the record it names here too. */
+  options: SummarizeOptions = {}
 ): { title: string; description: string } {
   const known = TOOL_REGISTRY.find((tool) => tool.id === toolName);
 
@@ -81,7 +87,7 @@ export function buildApprovalPrompt(
     APPROVAL_TITLE_MAX
   );
 
-  const args = describeArgs(params);
+  const args = describeArgs(params, options);
   const lead = known?.description ?? `The agent wants to run ${toolName}.`;
   const description = truncate(args ? `${lead} — ${args}` : lead, APPROVAL_DESCRIPTION_MAX);
 

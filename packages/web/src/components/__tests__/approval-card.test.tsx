@@ -103,6 +103,57 @@ describe("ApprovalCard shows what will actually run", () => {
     expect(screen.getByText(/truncated: 812 more characters not shown/)).toBeInTheDocument();
   });
 
+  // Second review of #1242: the marker sat at the end of the stored string,
+  // i.e. inside the part the 200-character preview collapses — so a value cut
+  // at the stored limit looked like any long text.
+  it("shows the truncation marker of a long value outside the collapsed preview", () => {
+    renderCard({ body: `${"a".repeat(4000)}… [truncated: 6000 more characters not shown]` });
+    expect(screen.getByRole("button", { name: /show full text/i })).toHaveAttribute(
+      "aria-expanded",
+      "false"
+    );
+    expect(screen.getByText(/truncated: 6000 more characters not shown/)).toBeInTheDocument();
+  });
+
+  // The probe of the second review: 180 blank-rendering characters pushed the
+  // traversal out of the 200-character preview. Where an action lands is never
+  // previewed — it is short, and it is the decision.
+  it("shows a path in full, never behind a preview", () => {
+    const path = `/data/reports/old-draft.md${"\u2800".repeat(180)}/../../contracts/signed.pdf`;
+    renderCard(summarizeArgs({ path, content: "x" }), "pinchy_write");
+    expect(screen.getByText(/\/\.\.\/\.\.\/contracts\/signed\.pdf$/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /show full text/i })).not.toBeInTheDocument();
+  });
+
+  it("shows recipients in full, address first", () => {
+    const to = `${"Raimund Korber Geschaeftsfuehrung ".repeat(8)}<attacker@evil.com>`;
+    renderCard(summarizeArgs({ to, subject: "Rechnung" }));
+    expect(screen.getByText(/^attacker@evil\.com \(name: /)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /show full text/i })).not.toBeInTheDocument();
+  });
+
+  it("keeps line breaks and spaces as sent", () => {
+    renderCard({ body: "Hallo,\n\n  zweite Zeile" });
+    const text = screen.getByText(/zweite Zeile/);
+    expect(text.textContent).toBe("Hallo,\n\n  zweite Zeile");
+    expect(text).toHaveClass("whitespace-pre-wrap");
+  });
+
+  // Odoo reads bool("false") as True: the string and the boolean set opposite
+  // values, so they must not render alike.
+  it("tells a string that reads like a literal apart from the literal", () => {
+    renderCard(
+      summarizeArgs({ values: { active: "false", is_company: false, n: "1", m: 1, x: null } }),
+      "odoo_write"
+    );
+    expect(screen.getByText('"false"')).toBeInTheDocument();
+    expect(screen.getByText("false")).toBeInTheDocument();
+    expect(screen.getByText('"1"')).toBeInTheDocument();
+    expect(screen.getByText("1")).toBeInTheDocument();
+    expect(screen.getByText("null")).toBeInTheDocument();
+    expect(screen.queryByText("(empty)")).not.toBeInTheDocument();
+  });
+
   it("renders a call without arguments", () => {
     renderCard(null, "pinchy_web_search");
     expect(screen.getByText("pinchy_web_search")).toBeInTheDocument();

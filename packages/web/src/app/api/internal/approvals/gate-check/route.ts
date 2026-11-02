@@ -91,6 +91,7 @@ export async function POST(request: NextRequest) {
   }
 
   const argsDigest = computeArgsDigest(params);
+  const refRecord = makeRefResolver(refKey);
   const result = await decideGate({
     agentId,
     requesterId,
@@ -98,7 +99,7 @@ export async function POST(request: NextRequest) {
     toolName,
     toolCallId,
     argsDigest,
-    argsSummary: summarizeArgs(params, { refRecord: makeRefResolver(refKey) }),
+    argsSummary: summarizeArgs(params, { refRecord }),
   });
 
   // Audit a fresh request once (not on retries) and every consume.
@@ -176,6 +177,6 @@ export async function POST(request: NextRequest) {
     //
     // The plugin keys on the presence of this field to decide whether to pause
     // the run, so it is absent from every non-blocking answer.
-    approval: buildApprovalPrompt(toolName, params, resources),
+    approval: buildApprovalPrompt(toolName, params, resources, { refRecord }),
   });
 }

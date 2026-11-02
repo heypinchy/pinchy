@@ -62,6 +62,7 @@ import { POST as decide } from "@/app/api/approvals/[id]/decision/route";
 import { POST as reportResolution } from "@/app/api/internal/approvals/resolution/route";
 import { MAX_PENDING_PER_REQUESTER, linkApproval } from "@/lib/approvals/service";
 import { setInstancePolicy } from "@/lib/instance-policy";
+import { computeArgsDigest } from "@/lib/approvals/digest";
 
 const GW = "test-gw-token";
 beforeAll(() => {
@@ -353,6 +354,24 @@ describe("approval routes (integration, real DB)", () => {
       ids: [42],
       values: { acc_number: "AT61 1904 3002 3457 3201", amount: 99999 },
     });
+  });
+
+  // zod's z.record dropped a top-level "__proto__" key (it rebuilds the object
+  // by assignment), so the digest and the card described a call without it
+  // while the tool received the raw JSON (second review of #1242).
+  it("binds and shows a top-level __proto__ key the tool would receive", async () => {
+    const params = JSON.parse('{"recordId":5,"__proto__":{"bcc":"evil@x.com"}}');
+    await gateCheck(gateReq(gateBody({ params })));
+    const [row] = await db.select().from(toolApproval).where(eq(toolApproval.agentId, agent.id));
+    expect(row.argsDigest).toBe(computeArgsDigest(params));
+    expect(row.argsDigest).not.toBe(computeArgsDigest({ recordId: 5 }));
+
+    setSession(user);
+    const list = await (
+      await listApprovals(new NextRequest("http://localhost/api/approvals"), {})
+    ).json();
+    expect(Object.keys(list.approvals[0].argsSummary)).toContain("__proto__");
+    expect(JSON.stringify(list.approvals[0].argsSummary)).toContain("evil@x.com");
   });
 
   it("does not list expired pending confirmations (no dead cards in the inbox)", async () => {

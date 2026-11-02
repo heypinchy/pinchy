@@ -1,0 +1,53 @@
+/**
+ * Drift guard for "which characters render as nothing or as blank space".
+ *
+ * Three places answer that question (second review of #1242): pinchy-email
+ * refuses such characters in a recipient, pinchy-files refuses them in a path,
+ * and the approval summary escapes them as `⟨U+XXXX⟩` so the card shows them.
+ * Plugins cannot import each other or the web package, so the plugin rule is
+ * duplicated (`hidden-chars.ts`, pinned byte-identical here), and the summary
+ * keeps its own regex — pinned here to the plugin rule over every code point,
+ * so a character one side treats as hidden cannot pass the other unseen.
+ */
+import { describe, it, expect } from "vitest";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { isEscapedChar } from "@/lib/approvals/summary";
+import { hiddenCharIn } from "../../../../plugins/pinchy-email/hidden-chars";
+
+const COPIES = ["pinchy-email", "pinchy-files"].map((plugin) =>
+  resolve(import.meta.dirname, `../../../../plugins/${plugin}/hidden-chars.ts`)
+);
+
+/** Kept readable by the summary on purpose: layout (tab, line break) and the
+ * three emoji code points that cannot carry a payload. The tools refuse them. */
+const SUMMARY_KEEPS = new Set([0x09, 0x0a, 0x200d, 0xfe0e, 0xfe0f]);
+
+describe("hidden-chars drift guard", () => {
+  it("is identical in every plugin that carries it", () => {
+    const [first, ...rest] = COPIES.map((file) => readFileSync(file, "utf8"));
+    expect(first).toContain("export function hiddenCharIn(");
+    for (const copy of rest) expect(copy).toBe(first);
+  });
+
+  it("the summary escapes exactly what the tools refuse, minus layout and emoji", () => {
+    const mismatches: string[] = [];
+    for (let cp = 0; cp <= 0x10ffff; cp++) {
+      if (cp >= 0xd800 && cp <= 0xdfff) continue;
+      const char = String.fromCodePoint(cp);
+      const refused = hiddenCharIn(char) !== null;
+      const expected = refused && !SUMMARY_KEEPS.has(cp);
+      if (isEscapedChar(char) !== expected) mismatches.push(cp.toString(16));
+    }
+    expect(mismatches).toEqual([]);
+  });
+
+  it("covers the blank-rendering characters of the review", () => {
+    for (const char of ["⠀", "ㅤ", "ᅟ", "ᅠ", "ﾠ", " ", "　"]) {
+      expect(hiddenCharIn(`a${char}b`)).toBe(
+        `U+${char.codePointAt(0)!.toString(16).toUpperCase().padStart(4, "0")}`
+      );
+    }
+    expect(hiddenCharIn("plain text with spaces")).toBeNull();
+  });
+});
