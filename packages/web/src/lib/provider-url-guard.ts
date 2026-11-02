@@ -14,10 +14,16 @@
 //     metadata services that sit inside private ranges (100.100.100.200,
 //     and the EC2/EKS/GCP/OCI addresses inside ULA) or in public space
 //     (Azure's WireServer, 168.63.129.16) — IMDS credential theft — plus loopback, unspecified,
-//     multicast, the reserved/documentation ranges, and every IPv6 form that
-//     carries an IPv4 address (mapped, NAT64, 6to4, Teredo, SIIT). Blocking
-//     these costs a real deployment nothing — nobody runs an LLM on
-//     169.254.169.254.
+//     multicast, the reserved/documentation ranges, and the two IPv6 forms
+//     that carry an IPv4 address without being a server of their own (Teredo,
+//     SIIT). Blocking these costs a real deployment nothing — nobody runs an
+//     LLM on 169.254.169.254.
+//   - The other IPv6 forms that carry an IPv4 address (mapped, IPv4-compatible,
+//     NAT64 64:ff9b::/96, 6to4) are not blocked as such: each is classified by
+//     the IPv4 address it names, so ::ffff:169.254.169.254 is blocked like
+//     169.254.169.254 and ::ffff:10.0.0.5 is private like 10.0.0.5. Local-use
+//     NAT64 (64:ff9b:1::/48) is private: the operator's translator decides
+//     where it lands.
 //   - Loopback stays blocked even though "Ollama on localhost" sounds like a
 //     use case: inside the Pinchy container 127.0.0.1 is Pinchy itself, never
 //     the host. A model server on the host is reached by a LAN address or a
