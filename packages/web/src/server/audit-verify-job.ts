@@ -106,7 +106,10 @@ async function writeCheckpoint(
  * break on the window's first row whatever that row's own signature says
  * (`seedPredecessorBroken`), so the report names it. A full verification walks
  * from the first row, finds the real change point, and lists the untouched
- * pre-change rows in `previousKeyIds` again.
+ * pre-change rows in `previousKeyIds` again. It sees the deletion only if rows
+ * had been written after the checkpoint row before it was deleted: a report row
+ * deleted while still the newest leaves a consistent chain, and this sweep's
+ * chain break is then the only record of it.
  *
  * Intact does NOT require the row to verify under a key we hold. A row that
  * verifies under neither key may have had its content altered in place (rowHmac

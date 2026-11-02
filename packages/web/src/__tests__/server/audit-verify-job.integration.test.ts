@@ -248,6 +248,43 @@ describe("audit-verify-job (integration)", () => {
     expect((await readCheckpointRow())!.lastStatus).toBe("violation");
   });
 
+  it("DELETED CHECKPOINT ROW AT THE TIP: only the sweep reports it, a full verification is clean", async () => {
+    // The checkpoint is usually the sweep's own report row, the newest row on a
+    // quiet instance. Deleted while it is still the newest, it leaves no gap in
+    // the chain: the next appended row links to the row before it. A full
+    // verification walks a consistent chain and finds nothing. Only the sweep,
+    // which compares the window's first link with the hash it remembered, sees
+    // the deletion, so its chain break has to stand on its own.
+    await appendRow("u1");
+    await appendRow("u2");
+    expect((await sweepAuditVerify()).valid).toBe(true);
+    const checkpoint = await readCheckpointRow();
+    const rowsBeforeDelete = await allRowsById();
+    expect(rowsBeforeDelete[rowsBeforeDelete.length - 1].id).toBe(checkpoint!.lastVerifiedId);
+
+    await deleteRowPastTrigger(checkpoint!.lastVerifiedId);
+    await appendRow("u3");
+    await appendRow("u4");
+    const [u3] = (await allRowsById()).filter((r) => r.id > checkpoint!.lastVerifiedId);
+
+    const second = await sweepAuditVerify();
+
+    expect(second.valid).toBe(false);
+    expect(second.chainBreakCount).toBe(1);
+    const [failure] = await db
+      .select({ detail: auditLog.detail })
+      .from(auditLog)
+      .where(eq(auditLog.eventType, "audit.integrity_check"))
+      .orderBy(sql`${auditLog.id} desc`)
+      .limit(1);
+    expect(failure.detail).toMatchObject({ chainBreakIds: [u3.id] });
+
+    const full = await verifyIntegrity();
+    expect(full.valid).toBe(true);
+    expect(full.chainBreakIds).toEqual([]);
+    expect(full.invalidIds).toEqual([]);
+  });
+
   it("CONCURRENT APPEND during the sweep: the raced row is verified by the next sweep, not skipped forever (#698)", async () => {
     await appendRow("u1");
     await appendRow("u2");
@@ -547,6 +584,49 @@ describe("audit-verify-job across a signing-secret rotation (integration)", () =
     const full = await verifyIntegrity();
     expect(full.invalidIds).toEqual([]);
     expect(full.chainBreakIds).toEqual([u3.id]);
+    expect(full.previousKeyIds).toEqual(expect.arrayContaining([u3.id, u4.id]));
+  });
+
+  // Same as above, except the earlier-key checkpoint row is deleted while it is
+  // still the newest row, before u3 and u4 are written. They link to the row
+  // before it, so the chain has no gap: a full verification places the change
+  // point and is clean, and the sweep's failure entry is the only record of the
+  // deletion.
+  it("reports a deleted earlier-key checkpoint row that was the newest row only in the sweep", async () => {
+    await appendRow("u1");
+    await appendRow("u2");
+    expect((await sweepAuditVerify()).valid).toBe(true);
+    const reportId = (await readCheckpointRow())!.lastVerifiedId;
+    await deleteRowPastTrigger(reportId);
+    await appendRow("u3");
+    await appendRow("u4");
+    // Everything so far was written while the earlier key was active.
+    await resignChainUnder(previousSecret);
+    const [u3, u4] = (await allRowsById()).filter((r) => r.id > reportId);
+
+    // The switch: this row is signed under the active key.
+    await appendRow("u5");
+
+    const second = await sweepAuditVerify();
+
+    expect(second.valid).toBe(false);
+    expect(second.chainBreakCount).toBe(1);
+    const [failure] = await db
+      .select({ detail: auditLog.detail })
+      .from(auditLog)
+      .where(eq(auditLog.eventType, "audit.integrity_check"))
+      .orderBy(sql`${auditLog.id} desc`)
+      .limit(1);
+    expect(failure.detail).toMatchObject({
+      chainBreakIds: [u3.id],
+      invalidIds: [u3.id, u4.id],
+      previousKeyCount: 0,
+    });
+
+    const full = await verifyIntegrity();
+    expect(full.valid).toBe(true);
+    expect(full.chainBreakIds).toEqual([]);
+    expect(full.invalidIds).toEqual([]);
     expect(full.previousKeyIds).toEqual(expect.arrayContaining([u3.id, u4.id]));
   });
 
