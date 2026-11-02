@@ -506,6 +506,13 @@ function fromPages(pages: readonly IngestPage[]): Pick<ExtractedDocument, "text"
  * (`copyVerifiedSource`). A document that cannot be copied that way is left
  * out of the batch and NOT answered: its own turn reads it again, and books
  * the refusal or the failure then, once.
+ *
+ * Each answer is kept with the hash of the copy it was converted from, and is
+ * given only to a turn asking with that same hash. A batch mate's own turn
+ * takes a fresh copy, and a save in between would otherwise pair the new
+ * bytes' hash with the old bytes' artifact: chunks from the old version that
+ * no later run re-reads, and a viewer that hashes the file it opens and finds
+ * no artifact for it. A mismatch converts the asking document's own copy.
  */
 function officeArtifacts(
   queue: readonly { absPath: string; realPath: string }[],
@@ -514,11 +521,11 @@ function officeArtifacts(
 ): ResolveArtifact {
   const pending = queue.filter((file) => isOfficeFile(file.absPath));
   const positionOf = new Map(pending.map((file, i) => [file.absPath, i]));
-  const done = new Map<string, ConversionOutcome>();
+  const done = new Map<string, { hash: string; outcome: ConversionOutcome }>();
 
   return async (absPath, contentHash, copyPath) => {
     const known = done.get(absPath);
-    if (known) return known;
+    if (known?.hash === contentHash) return known.outcome;
 
     const start = positionOf.get(absPath);
     if (start === undefined) {
@@ -533,7 +540,7 @@ function officeArtifacts(
     // time is work this run throws away. It is not free work either: every
     // document in a batch is read in full and copied before the converter sees
     // it, even one the artifact store already holds.
-    const batch: string[] = [absPath];
+    const batch: { path: string; hash: string }[] = [{ path: absPath, hash: contentHash }];
     const sources: OfficeSource[] = [{ absPath: copyPath, contentHash }];
     const copies: VerifiedCopy[] = [];
 
@@ -550,19 +557,22 @@ function officeArtifacts(
           continue;
         }
         copies.push(copy);
-        batch.push(mate.absPath);
+        batch.push({ path: mate.absPath, hash: copy.hash });
         sources.push({ absPath: copy.path, contentHash: copy.hash });
       }
 
       const outcomes = await deps.convertOffice(sources);
-      batch.forEach((path, i) => {
+      batch.forEach(({ path, hash }, i) => {
         if (outcomes[i]) {
-          done.set(path, outcomes[i]);
+          done.set(path, { hash, outcome: outcomes[i] });
         } else {
           // The converter returned fewer outcomes than it was given sources,
           // which is a broken contract rather than a statement about this
           // document. Retryable, so it must not be recorded as unreadable.
-          done.set(path, unavailable(path, "converter returned no outcome for this document"));
+          done.set(path, {
+            hash,
+            outcome: unavailable(path, "converter returned no outcome for this document"),
+          });
         }
       });
     } catch (err) {
@@ -575,7 +585,9 @@ function officeArtifacts(
       // same thing. Every one of them stays retryable, so no row is written
       // and nothing is branded unreadable (#936).
       const reason = `converter did not answer: ${err instanceof Error ? err.message : String(err)}`;
-      for (const path of batch) done.set(path, unavailable(path, reason));
+      for (const { path, hash } of batch) {
+        done.set(path, { hash, outcome: unavailable(path, reason) });
+      }
     } finally {
       // The artifact is in the store by now; the copies it was made from are
       // not needed past this batch. The asking document's copy is its caller's.
@@ -583,7 +595,8 @@ function officeArtifacts(
     }
 
     return (
-      done.get(absPath) ?? unavailable(absPath, "converter returned no outcome for this document")
+      done.get(absPath)?.outcome ??
+      unavailable(absPath, "converter returned no outcome for this document")
     );
   };
 }

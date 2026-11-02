@@ -39,7 +39,8 @@ import {
   type IngestResult,
 } from "@/lib/knowledge/ingest";
 import type { XlsxExtraction } from "@/lib/knowledge/xlsx-extract";
-import type { ConversionOutcome } from "@/lib/knowledge/office-convert";
+import type { ConversionOutcome, OfficeSource } from "@/lib/knowledge/office-convert";
+import { OfficeArtifactStore } from "@/lib/knowledge/office-artifacts";
 import { listUnsearchableDocuments } from "@/lib/knowledge/unsearchable";
 
 const ORG_ID = "org-kb-ingest-test";
@@ -1785,6 +1786,69 @@ it("batches from the document that asked, carrying the hash of the bytes it hand
   expect(sourcesOf(1)).toEqual([
     { name: "doc-2.docx", onShare: false, bytes: "bytes-2-v2", contentHash: hashOf("bytes-2-v2") },
   ]);
+});
+
+it("converts a batch mate again when it was saved between its batch and its own turn", async () => {
+  // A batch mate is converted from the copy taken when the batch was built,
+  // but its row is written from the copy its own turn takes. A save in
+  // between used to leave the two apart for good: the row recorded the new
+  // bytes' hash (so every later run skips it) while its chunks came from the
+  // old artifact — and the citation viewer, which keys the artifact on the
+  // hash of the file it opens, found none and answered 404 forever.
+  writeFileSync(join(tmpRoot, "a.pptx"), "A-v1");
+  writeFileSync(join(tmpRoot, "b.pptx"), "B-v1");
+  const hashOf = (bytes: string) => createHash("sha256").update(bytes).digest("hex");
+
+  // The real store, written the way the converter writes it: keyed on the
+  // hash it is handed, holding what the copy said.
+  const store = new OfficeArtifactStore(join(stagingDir, "artifacts"));
+  const converted: string[][] = [];
+  const convertOffice = vi.fn(async (sources: readonly OfficeSource[]) => {
+    converted.push(sources.map((source) => readFileSync(source.absPath, "utf8")));
+    return sources.map((source) => {
+      const artifactPath = store.pathFor(source.contentHash!);
+      mkdirSync(dirname(artifactPath), { recursive: true });
+      writeFileSync(artifactPath, readFileSync(source.absPath, "utf8"));
+      return { sourcePath: source.absPath, status: "converted" as const, artifactPath };
+    });
+  });
+  const deps: IngestDeps = {
+    embed: async (texts) => texts.map(() => Array(768).fill(0.05)),
+    extractPdf: async (artifact) => [
+      { page: 1, text: `Slide text: ${readFileSync(artifact, "utf8")}. ${PAGE_1_TEXT}` },
+    ],
+    extractXlsx: neverCalledXlsx,
+    convertOffice,
+    ocrModel: null,
+    stagingDir,
+  };
+
+  const mate = join(tmpRoot, "b.pptx");
+  let saved = false;
+  expect(
+    await ingestDirectory(ORG_ID, tmpRoot, deps, {
+      onProgress: (progress) => {
+        // a.pptx is behind us, and b.pptx was converted with it — from B-v1.
+        if (progress.processed === 1 && !saved) {
+          saved = true;
+          writeFileSync(mate, "B-v2");
+        }
+      },
+    })
+  ).toEqual(counts({ indexed: 2 }));
+  expect(saved).toBe(true);
+  expect(converted[0]).toEqual(["A-v1", "B-v1"]);
+
+  const [row] = await db.select().from(kbDocuments).where(eq(kbDocuments.sourcePath, mate));
+  expect(row.contentHash).toBe(hashOf("B-v2"));
+  const texts = (await chunksFor(row.id)).map((chunk) => chunk.chunkText).join("\n");
+  expect(texts).toContain("B-v2");
+  expect(texts).not.toContain("B-v1");
+
+  // What the citation viewer does: hash the file it opens, look the artifact up.
+  const artifact = await store.get(hashOf(readFileSync(mate, "utf8")));
+  expect(artifact).not.toBeNull();
+  expect(readFileSync(artifact!, "utf8")).toBe("B-v2");
 });
 
 it("spends one converter attempt per batch when the converter never answers at all", async () => {
