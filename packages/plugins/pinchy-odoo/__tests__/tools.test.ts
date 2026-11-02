@@ -8051,6 +8051,19 @@ describe("many2one natural-key lookup, edge cases (#1206 review)", () => {
       expect(mockCreate).not.toHaveBeenCalled();
     });
 
+    // A separator written onto the code makes it part of the code token, which
+    // no account carries: refused, never booked to 6000 on a guess
+    // (`guides/connect-odoo` says so).
+    it("refuses a separator written onto the code", async () => {
+      mockSchema({});
+      mockCandidates({ "account.account": [OFFICE] });
+
+      const result = await create({ name: WRITTEN_LABEL, account_id: "6000: Office supplies" });
+
+      expect(result.isError).toBe(true);
+      expect(mockCreate).not.toHaveBeenCalled();
+    });
+
     // Only one separator is the form's punctuation; a second is the name's.
     it("strips one separator, not every one", async () => {
       mockSchema({});

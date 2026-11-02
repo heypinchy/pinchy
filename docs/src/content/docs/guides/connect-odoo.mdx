@@ -186,8 +186,10 @@ mistaken for whatever carries the code "IT".
 
 **The name after a code has to match.** In the `"<code> <name>"` form, the
 name is checked against the record the code finds, ignoring case, extra spaces
-and one separator between the two — `"6000 - Office supplies"`, `"6000: Office
+and one separator between the two — `"6000 - Office supplies"`, `"6000 : Office
 supplies"` and `"6000 | Office supplies"` all read as `"6000 Office supplies"`.
+A separator written onto the code itself, as in `"6000: Office supplies"`,
+makes `6000:` the code, which no account carries, so that lookup is refused.
 `"6000 Bank fees"` is refused when account 6000 is called "Office supplies",
 and the refusal names what 6000 actually is, so the agent can send the exact
 name or a reference. Otherwise the confirmation card would read "Bank fees"

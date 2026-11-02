@@ -1119,8 +1119,10 @@ function normalizeNameText(value: string): string {
 
 /**
  * One separator a model writes between a code and its name — `"600000 -
- * Expenses"`, `"6000: Office supplies"` — and the space around it. Only the
- * first: a second one belongs to the name.
+ * Expenses"`, `"6000 : Office supplies"` — and the space around it. Only the
+ * first: a second one belongs to the name. One written onto the code
+ * (`"6000: Office supplies"`) is part of the code token, which then matches no
+ * record, and the lookup is refused.
  */
 const CODE_NAME_SEPARATOR = /^\s*[-–—:|/]\s*/;
 
