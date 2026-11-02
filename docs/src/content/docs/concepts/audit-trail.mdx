@@ -185,7 +185,7 @@ Email workflows the Inbox Agent runs on its own — see [the Automations tab](/c
 
 ### Tool confirmations
 
-The human-in-the-loop checkpoint in front of a gated tool — see [Require Confirmation Before a Tool Runs](/guides/tool-confirmation). Every row identifies the action by `argsDigest`, a sha256 of the tool's arguments; the arguments themselves are never written to the audit trail, so a confirmation for an email never puts its recipient in the log. All five carry `request.{id}`, `agent.{id,name}`, `requester.{id,name}`, `toolName` and that digest.
+The human-in-the-loop checkpoint in front of a gated tool — see [Require Confirmation Before a Tool Runs](/guides/tool-confirmation). Every row identifies the action by `argsDigest`, a sha256 of the tool's arguments; the arguments themselves are never written to the audit trail, so a confirmation for an email never puts its recipient in the log. Every event in the table below carries `agent.{id,name}`, `requester.{id,name}`, `toolName` and that digest, and all but `approval.refused` carry `request.{id}` — a refused call opens no request, so there is none to name.
 
 | Event Type           | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -209,7 +209,7 @@ Read together, a `granted` with `resumed: true` followed by a `consumed` is one 
 
 An `approval.expired` therefore never follows a `granted` or a `denied`: it belongs to confirmations nobody answered.
 
-The same sweep also reaps settled confirmations after 30 days and records that as a single `approval.gc` summary row (`swept`, `retentionDays`, `sweepId`) rather than one row per deleted record.
+The same sweep also reaps settled confirmations after 30 days and records that as a single `approval.gc` summary row (`swept`, `retentionDays`, `sweepId`) rather than one row per deleted record. Until then a settled confirmation keeps only its bookkeeping: the copy of the arguments its card showed is dropped the moment it leaves the pending state — decided, run, expired or cancelled.
 
 ### File uploads
 
