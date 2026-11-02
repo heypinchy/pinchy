@@ -1431,7 +1431,10 @@ describe("DELETE /api/settings/providers/openai-compatible", () => {
       detail: {
         action: "provider_delete_refused_no_usable_target",
         reason: "last_usable_provider",
-        provider: { id: PROVIDER_ID, name: "Acme LLM" },
+        // The slug, not the row UUID: every config.changed row about an
+        // existing OpenAI-compatible provider is keyed by slug (route header,
+        // audit-trail.mdx), as PATCH /default's refusal is.
+        provider: { id: "acme-llm", name: "Acme LLM" },
       },
     });
     expect(data.error).toBe(LAST_USABLE_PROVIDER_ERROR);
@@ -1487,7 +1490,7 @@ describe("DELETE /api/settings/providers/openai-compatible", () => {
       detail: {
         action: "provider_delete_refused_no_usable_target",
         reason: "provider_itself_refused",
-        provider: { id: PROVIDER_ID, name: "LAN A" },
+        provider: { id: "lan-a", name: "LAN A" },
       },
     });
     expect(JSON.stringify(entry)).not.toContain("100.100.100.200");

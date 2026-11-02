@@ -444,7 +444,9 @@ export const DELETE = withAdmin(async (request, _ctx, session) => {
         detail: {
           action: "provider_delete_refused_no_usable_target",
           reason: refusal.reason,
-          provider: { id, name: row.displayName },
+          // Keyed by slug like every other config.changed row about an
+          // existing provider (see the header), not by the row UUID.
+          provider: { id: row.slug, name: row.displayName },
         },
       })
     );
