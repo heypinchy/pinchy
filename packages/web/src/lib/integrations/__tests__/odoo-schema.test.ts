@@ -110,3 +110,24 @@ describe("odooConnectionDataSchema", () => {
     expect(result.success).toBe(false);
   });
 });
+
+describe("Odoo URL length bound", () => {
+  it("rejects an Odoo URL longer than 2048 characters, also in a partial (edit) parse", () => {
+    const valid = {
+      url: "https://odoo.example.com",
+      db: "production",
+      login: "admin",
+      apiKey: "abc123",
+      uid: 2,
+    };
+    const long = `https://odoo.example.com/${"a".repeat(2048)}`;
+    expect(odooCredentialsSchema.safeParse({ ...valid, url: long }).success).toBe(false);
+    const partial = odooCredentialsSchema.partial().safeParse({ url: long });
+    expect(partial.success).toBe(false);
+    if (!partial.success) {
+      expect(partial.error.flatten().fieldErrors.url).toEqual([
+        "The URL is too long — 2048 characters at most.",
+      ]);
+    }
+  });
+});

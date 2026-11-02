@@ -704,6 +704,12 @@ export type AuditLogEntry =
         reason?: string;
         fields?: string[];
         modelCount?: number;
+        // Where a credential update moved the secret (Odoo url/db, mail
+        // hosts/ports/security), as `{ <field>: { from, to } }`. On a refused
+        // update (`reason: "secret_required_for_new_destination"`, outcome
+        // failure) it names the destination the stored secret was kept from.
+        // URLs carry no userinfo or query. See lib/secret-destination.ts.
+        destinationChange?: Record<string, { from: string | number; to: string | number }>;
         // Present instead of a plaintext `name` when the connection's
         // human-readable name is itself PII (an OAuth mailbox address).
         // See redactEmail(): GDPR Art. 17 forbids writing the raw address
