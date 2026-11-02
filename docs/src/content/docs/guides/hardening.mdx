@@ -463,7 +463,13 @@ This is the sequence for restoring Pinchy onto a brand-new host — a full disas
      alpine sh -c "cp -a /source/. /target/"
    ```
 
-   If you always pin all four secrets in `.env` (see above), you can skip restoring `pinchy-secrets` — Pinchy reads the values from the environment instead. `openclaw-config` is safe to skip too; Pinchy regenerates it from the restored database on boot, at the cost of a fresh gateway bootstrap token.
+   If your key backup is a `pinchy-secrets-<stamp>.tar` from [`backup_pinchy_keys`](/concepts/audit-trail-verification/#backing-up-the-keys), restore it into the volume instead of the first `docker run` line, in the directory that holds your `docker-compose.yml` and before the first `docker compose up -d`:
+
+   ```bash
+   docker compose run --rm --no-deps -T --entrypoint tar pinchy -C /app/secrets -xpf - < pinchy-secrets-<stamp>.tar
+   ```
+
+   If you always pin all four secrets in `.env` (see above) and have never changed `AUDIT_HMAC_SECRET`, you can skip restoring `pinchy-secrets` — Pinchy reads the values from the environment instead. If you did change it, restore the volume anyway: the key it replaced exists only there, and without it every entry signed before the change fails verification for good, with nothing in the logs to say so (see [Switching the key](/concepts/audit-trail-verification/#switching-the-key)). `openclaw-config` is safe to skip; Pinchy regenerates it from the restored database on boot, at the cost of a fresh gateway bootstrap token.
 
 4. **Start the rest of the stack**
 
