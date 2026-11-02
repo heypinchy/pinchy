@@ -115,8 +115,10 @@ First define this command in the same shell. Like `backup_pinchy_keys`, it doesn
 
 ```bash
 compose_with_backup_key() (
-  line=$(env -u AUDIT_HMAC_SECRET PINCHY_VERSION=unused docker compose --env-file "$1" config --environment |
-    grep '^AUDIT_HMAC_SECRET=') || { echo "No AUDIT_HMAC_SECRET in $1" >&2; exit 1; }
+  vars=$(env -u AUDIT_HMAC_SECRET PINCHY_VERSION=unused docker compose --env-file "$1" config --environment) ||
+    { echo "Compose couldn't read $1, see its error above. Nothing ran." >&2; exit 1; }
+  line=$(printf '%s\n' "$vars" | grep '^AUDIT_HMAC_SECRET=') ||
+    { echo "No AUDIT_HMAC_SECRET in $1. Nothing ran." >&2; exit 1; }
   shift
   export AUDIT_HMAC_SECRET="${line#AUDIT_HMAC_SECRET=}"
   docker compose "$@"
@@ -124,6 +126,8 @@ compose_with_backup_key() (
 ```
 
 `compose_with_backup_key <file> …` runs `docker compose …` on your current `.env` with one change: `AUDIT_HMAC_SECRET` comes from the file you name. Compose reads that file the way it reads `.env`, dropping quotes and a trailing comment, and the command takes only that one value from it. The Pinchy version stays the one in `.env`, so Compose uses the image you run today instead of pulling the one the backup names. `PINCHY_VERSION=unused` only lets Compose read the file; nothing starts at that step. A variable of the same name in your shell doesn't win over the file either. If the file doesn't set `AUDIT_HMAC_SECRET`, it stops with `No AUDIT_HMAC_SECRET in …` and runs nothing.
+
+It needs a Compose that can print the variables it read: `docker compose config --help` has to list `--environment`. If Compose can't read the file at all, the command stops with `Compose couldn't read …`, below Compose's own error, and runs nothing. That says nothing about the key: the file may still hold it. `unknown flag: --environment` means your Compose is too old, so update it; `couldn't find env file` means there's no file of that name in this directory. Anything else, Compose's error names.
 
 Then set `backup` to the file's name and write the key:
 
@@ -148,14 +152,20 @@ Before the first start, check what you restored. For each variable with no line 
 docker compose run --rm --no-deps -T --entrypoint ls pinchy -la /app/secrets
 ```
 
+Each key file has to belong to Pinchy's user, the way Pinchy writes it: `-rw-------` and `pinchy pinchy` (or `999 999`). A file restored as root often shows `root root` instead, and Pinchy, which runs as uid 999, can't read it. Without a readable `.audit_hmac_secret`, Pinchy has no earlier key, and its first background run records a failure for every entry signed with it. Give the file to Pinchy's user, and do the same with `.encryption_key` if it shows another owner:
+
+```bash
+docker compose run --rm --no-deps -T --entrypoint sh pinchy -c 'chown 999:999 /app/secrets/.audit_hmac_secret && chmod 600 /app/secrets/.audit_hmac_secret'
+```
+
 With `AUDIT_HMAC_SECRET` set, compare the key file with the value instead. About 60 seconds after that start, the first background run verifies against whatever the file holds, and a failure it records can't be cleared. These two commands print a hash each, never the key:
 
 ```bash
-docker compose run --rm --no-deps -T --entrypoint cat pinchy /app/secrets/.audit_hmac_secret | tr -d '[:space:]' | tr 'A-F' 'a-f' | sha256sum
+docker compose run --rm --no-deps -T -u 999:999 --entrypoint cat pinchy /app/secrets/.audit_hmac_secret | tr -d '[:space:]' | tr 'A-F' 'a-f' | sha256sum
 docker compose run --rm --no-deps -T --entrypoint sh pinchy -c 'printf %s "$AUDIT_HMAC_SECRET"' | tr 'A-F' 'a-f' | sha256sum
 ```
 
-The second one hashes the value as Compose hands it to Pinchy, from `.env` or from a variable set in your shell, which wins over `.env`. Compose reads the file its own way: it drops quotes and a trailing comment, for one. So read the value through Compose, not out of `.env` with a text tool. Both commands lowercase the key, because Pinchy reads a key the same in either case, and the first also drops a line break a key file written by hand may end with.
+The first one reads the file as Pinchy's user, so it reads exactly what Pinchy can. If `cat` says `Permission denied`, the file isn't Pinchy's: fix the owner as above and check again. The hash it prints then, `e3b0c442…`, is the hash of nothing, so it's no answer either way. The second one hashes the value as Compose hands it to Pinchy, from `.env` or from a variable set in your shell, which wins over `.env`. Compose reads the file its own way: it drops quotes and a trailing comment, for one. So read the value through Compose, not out of `.env` with a text tool. Both commands lowercase the key, because Pinchy reads a key the same in either case, and the first also drops a line break a key file written by hand may end with.
 
 While the key your last switch replaced is still kept, the hashes have to differ. Otherwise they have to match, or `cat` says there's no such file. Like the log notice below, different hashes only say the file holds some other key; which one, only the backup you took it from says. If you wrote the file from a `.env` backup above, you can check that too. This hashes the value from that backup, and it has to match the key file's hash:
 
@@ -166,7 +176,13 @@ compose_with_backup_key "$backup" run --rm --no-deps -T --entrypoint sh pinchy -
 Then confirm it in the log of that first start (`docker compose logs pinchy`). With `AUDIT_HMAC_SECRET` set:
 
 - **The notice `AUDIT_HMAC_SECRET is set and differs from the audit signing key`:** the file holds a different key. That's right until the key your last switch replaced is retired. The notice doesn't say which key it is; only the backup you took the file from does.
-- **`Wrote the AUDIT_HMAC_SECRET value to .audit_hmac_secret`, or neither line:** the file holds the current value. That's right only if there's no replaced key to keep: you never switched, or you've retired it. If you removed the file and get the notice instead, the removal didn't take: stop Pinchy, remove the file again, and run `docker compose up -d`.
+- **`Wrote the AUDIT_HMAC_SECRET value to .audit_hmac_secret`, or none of the lines in this list:** the file holds the current value. That's right only if there's no replaced key to keep: you never switched, or you've retired it. If you removed the file and get the notice instead, the removal didn't take: stop Pinchy, remove the file again, and run `docker compose up -d`.
+- **The warning `Could not read .audit_hmac_secret in the secrets volume`:** Pinchy can't open the file, so it has no earlier key, and the first background run records a failure for every entry signed with the key in it. Stop Pinchy at once (`docker compose stop pinchy`), give the file to Pinchy's user with the `chown` command above, check again, and run `docker compose up -d`. Don't remove the file: it may well be the key you restored.
+- **The warning `.audit_hmac_secret in the secrets volume is not a valid key`:** the file you restored doesn't hold a key (it's empty, or not 64 hex characters), so again Pinchy has no earlier key, with the same result. Stop Pinchy at once, then move the file out of the volume, keeping a copy, and restore the key again from a backup that has it:
+
+  ```bash
+  backup_pinchy_keys && docker compose run --rm --no-deps -T --entrypoint rm pinchy /app/secrets/.audit_hmac_secret
+  ```
 
 And for either variable, the warning `… is set but is not a valid key` means the line in `.env` isn't the value Pinchy ran on: put that value in, or remove the line if Pinchy ran on the key file. A new value would be a key change, not a restore.
 
