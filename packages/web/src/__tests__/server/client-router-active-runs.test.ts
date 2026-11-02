@@ -893,6 +893,28 @@ describe("ClientRouter ↔ ActiveRuns wiring (#310 Tier 2a)", () => {
       ],
     ];
 
+    /**
+     * Hold the pipe in its post-run file delivery (`artifacts.list`): the run
+     * stays registered, and the stop button showing, until `release()`.
+     */
+    function holdArtifacts() {
+      let release!: () => void;
+      const held = new Promise<void>((res) => (release = res));
+      let polling = false;
+      const request = client.request.bind(client);
+      (client as unknown as { request: typeof client.request }).request = (async (
+        method: string,
+        params?: unknown
+      ) => {
+        if (method === "artifacts.list") {
+          polling = true;
+          await held;
+        }
+        return request(method as never, params as never);
+      }) as never;
+      return { polling: () => polling, release };
+    }
+
     function auditRows(eventType: string) {
       return mockAppendAuditLog.mock.calls
         .map(
@@ -1047,30 +1069,17 @@ describe("ClientRouter ↔ ActiveRuns wiring (#310 Tier 2a)", () => {
         // `complete` yet: the stop button still shows. A stop now stops
         // nothing, because nothing is running — that is not a reply that
         // "completed with nobody receiving it".
-        let releaseArtifacts!: () => void;
-        const held = new Promise<void>((res) => (releaseArtifacts = res));
-        let polling = false;
-        const request = client.request.bind(client);
-        (client as unknown as { request: typeof client.request }).request = (async (
-          method: string,
-          params?: unknown
-        ) => {
-          if (method === "artifacts.list") {
-            polling = true;
-            await held;
-          }
-          return request(method as never, params as never);
-        }) as never;
+        const artifacts = holdArtifacts();
         const r = router();
         const t0 = await send(r, 0);
         gw.accept(t0.gwRun.runId);
         gw.emitText(t0.gwRun.runId, "All booked.");
         gw.finish(t0.gwRun.runId);
-        await vi.waitFor(() => expect(polling).toBe(true));
+        await vi.waitFor(() => expect(artifacts.polling()).toBe(true));
         expect(activeRuns.get(sessionKey)).toBeDefined();
 
         await stop(r, t0.ws);
-        releaseArtifacts();
+        artifacts.release();
         await t0.handling;
         await t0.run.abortFollowUp;
 
@@ -1079,6 +1088,92 @@ describe("ClientRouter ↔ ActiveRuns wiring (#310 Tier 2a)", () => {
         expect(gw.calls.some((c) => c.method === "agent.wait")).toBe(false);
         expect(auditRows("chat.run_completed_after_disconnect")).toEqual([]);
         expect(auditRows("chat.run_aborted")).toEqual([]);
+      }
+    );
+
+    it.each(stoppers)(
+      "is not aborted again when %s lands after OpenClaw confirmed the first stop",
+      async (label, stop) => {
+        // The user stopped the reply and OpenClaw confirmed it, but the pipe is
+        // still asking OpenClaw for the run's files, so the run is still
+        // registered. A second stop — deactivation, or a click in another tab —
+        // finds nothing running. Aborting again would get `aborted: false` and
+        // end the trail on a failed abort, which reads "the stop was never
+        // confirmed" — false.
+        const artifacts = holdArtifacts();
+        const r = router();
+        const t0 = await send(r, 0);
+        gw.accept(t0.gwRun.runId);
+        gw.emitText(t0.gwRun.runId, "Working");
+        await vi.waitFor(() => expect(t0.run.firstChunkAt).not.toBeNull());
+        await r.handleMessage(t0.ws, { type: "abort", agentId: "agent-1" } as never);
+        await vi.waitFor(() => expect(artifacts.polling()).toBe(true));
+        expect(activeRuns.get(sessionKey)).toBe(t0.run);
+        expect(t0.run.abortConfirmed).toBe(true);
+        const chatAbort = vi.spyOn(client, "chatAbort");
+
+        const result = await stop(r, t0.ws);
+        artifacts.release();
+        await t0.handling;
+        await t0.run.abortFollowUp;
+
+        // No abort named the run again (a click with nothing in flight still
+        // reaches the gateway by session — a safe no-op).
+        expect(chatAbort.mock.calls.filter(([, runId]) => runId !== undefined)).toEqual([]);
+        expect(gw.aborts.filter((a) => a.runId !== undefined)).toEqual([
+          { sessionKey, runId: t0.gwRun.runId, aborted: true },
+        ]);
+        // Deactivation writes one row per run it returns; there is none.
+        if (label === "deactivation") expect(result).toEqual([]);
+        // The trail ends on the confirmed stop.
+        expect(auditRows("chat.run_aborted")).toEqual([
+          expect.objectContaining({
+            outcome: "success",
+            detail: expect.objectContaining({ runId: t0.gwRun.runId, reason: "user_request" }),
+          }),
+        ]);
+      }
+    );
+
+    it.each(stoppers)(
+      "is still aborted when %s lands after a stop OpenClaw did not confirm",
+      async (label, stop) => {
+        // The first stop reached OpenClaw before it accepted the run, so it
+        // stopped nothing — the run is still on its way. A second stop must not
+        // treat it as stopped.
+        const artifacts = holdArtifacts();
+        const r = router();
+        const t0 = await send(r, 0);
+        await r.handleMessage(t0.ws, { type: "abort", agentId: "agent-1" } as never);
+        await vi.waitFor(() => expect(artifacts.polling()).toBe(true));
+        expect(activeRuns.get(sessionKey)).toBe(t0.run);
+        expect(t0.run.abortConfirmed).not.toBe(true);
+        const chatAbort = vi.spyOn(client, "chatAbort");
+
+        const result = await stop(r, t0.ws);
+
+        expect(chatAbort).toHaveBeenCalledWith(sessionKey, t0.gwRun.runId);
+        if (label === "deactivation") {
+          expect(result).toEqual([expect.objectContaining({ runId: t0.gwRun.runId })]);
+        } else {
+          expect(auditRows("chat.run_aborted")).toHaveLength(2);
+        }
+
+        // OpenClaw starts it now, and the follow-up stops it.
+        gw.accept(t0.gwRun.runId);
+        await vi.waitFor(() => expect(t0.gwRun.state).toBe("aborted"), { timeout: 5_000 });
+        artifacts.release();
+        await t0.handling;
+        await t0.run.abortFollowUp;
+        expect(auditRows("chat.run_aborted").at(-1)).toEqual(
+          expect.objectContaining({
+            outcome: "success",
+            detail: expect.objectContaining({
+              runId: t0.gwRun.runId,
+              followUp: "aborted_by_run_id",
+            }),
+          })
+        );
       }
     );
 

@@ -142,21 +142,17 @@ export async function abortSessionRun(
   sessionKey: string,
   options: { request?: AbortRequest; followUp?: FollowUpDeps } = {}
 ): Promise<SessionAbortResult> {
-  // A run whose stream OpenClaw already ended is over: the entry only lingers
-  // while the pipe delivers its files. Nothing is in flight to stop, so it is
-  // treated like a click with nothing in flight — not marked, not followed up
-  // and, by the callers, not audited. Marking it would turn its ordinary end
-  // into a "stop that stopped nothing" whose follow-up then reports the reply
-  // completed for nobody, while the tab that clicked had received all of it.
+  // A run that is no longer in flight (`isInFlight`) is treated like a click
+  // with nothing in flight — not marked, not followed up and, by the callers,
+  // not audited.
   //
   // Mark BEFORE the RPC, not after (#978). OpenClaw answers `chat.abort` and
   // surfaces the abort into the stream as an error independently, and the
   // stream pipe is a different async context — awaiting the RPC first leaves
   // a window where the error chunk arrives while the run still looks healthy,
   // and the whole point is that the pipe can recognise it.
-  const run = activeRuns.get(sessionKey)?.streamEnded
-    ? undefined
-    : activeRuns.markUserAborted(sessionKey);
+  const current = activeRuns.get(sessionKey);
+  const run = current && isInFlight(current) ? activeRuns.markUserAborted(sessionKey) : undefined;
   // The first stop names who asked; a second one does not rewrite it.
   if (run && options.request && !run.abortRequest) run.abortRequest = options.request;
   // A PENDING run's runId is provisional — Pinchy's per-turn messageId, which
@@ -177,6 +173,26 @@ export async function abortSessionRun(
     pursueAbort(run, sessionKey, runId, options.followUp, { immediate: false });
   }
   return { run, runId, outcome };
+}
+
+/**
+ * Is `run` still running on OpenClaw, as far as Pinchy knows — is there
+ * anything for a stop to stop? Its registry entry outlives the run: the pipe
+ * lets go of it only after delivering the run's files. Two things end it
+ * before that:
+ *  - OpenClaw ended its stream itself (`streamEnded`): the reply is over.
+ *    Stopping it would turn its ordinary end into a "stop that stopped
+ *    nothing" whose follow-up then reports the reply completed for nobody,
+ *    while the tab that clicked had received all of it.
+ *  - OpenClaw confirmed an abort of it (`abortConfirmed`): it is stopped. A
+ *    second stop — deactivation, or a click in another tab — would get
+ *    `aborted: false` and end the trail on a failed `chat.run_aborted`, which
+ *    reads "the stop was never confirmed" when it was.
+ * A run whose abort is not confirmed (it failed, or its answer is still on
+ * its way) is still in flight: the next stop is sent.
+ */
+function isInFlight(run: ActiveRun): boolean {
+  return !run.streamEnded && run.abortConfirmed !== true;
 }
 
 /**
@@ -538,10 +554,11 @@ export async function abortRunsOfUser(
   }
 ): Promise<AbortedRun[]> {
   // Snapshot first: an abort can finish a run and remove it from the registry
-  // while this loop is still walking it. A run whose stream OpenClaw already
-  // ended is not in flight (see `abortSessionRun`): nothing to stop or report.
+  // while this loop is still walking it. A run no longer in flight
+  // (`isInFlight`: its reply ended, or its stop was confirmed) has nothing to
+  // stop or report.
   const theirs = [...deps.activeRuns.values()].filter(
-    (run) => run.userId === userId && !run.streamEnded
+    (run) => run.userId === userId && isInFlight(run)
   );
   const request: AbortRequest | undefined = deps.requestedBy
     ? { actorId: deps.requestedBy, reason: "account_deactivated" }
