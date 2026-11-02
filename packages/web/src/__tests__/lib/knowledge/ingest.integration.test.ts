@@ -25,6 +25,26 @@ import { basename, dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { and, eq } from "drizzle-orm";
 
+/**
+ * A pass-through, with one seam: `afterHash` runs once the ingest has hashed a
+ * source and before it copies it — the window a save on the share can land in.
+ */
+const verifiedSourceHooks = vi.hoisted(() => ({
+  afterHash: undefined as (() => void) | undefined,
+}));
+
+vi.mock("@/lib/knowledge/verified-source", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/knowledge/verified-source")>();
+  return {
+    ...actual,
+    hashVerifiedSource: async (realPath: string) => {
+      const hashed = await actual.hashVerifiedSource(realPath);
+      verifiedSourceHooks.afterHash?.();
+      return hashed;
+    },
+  };
+});
+
 import { db } from "@/db";
 import { kbChunks, kbDocuments } from "@/db/schema";
 import {
@@ -387,6 +407,57 @@ it("recovers a document whose chunks were deleted directly, without crashing or 
 
   const chunksAfter = await chunksFor(doc.id);
   expect(chunksAfter.length).toBeGreaterThan(0);
+});
+
+it("stores the hash of the bytes it re-read when a chunkless document is saved between its hash and its copy", async () => {
+  // The rebuild above reads the file again in place, under the row's stored
+  // hash. But the hash that let it in was taken before the copy, and a save in
+  // between hands the reader NEW bytes: the row used to keep the old hash
+  // beside the new text. Reverting the file then matched that old hash, and
+  // every later run skipped the document with the text of a version no longer
+  // on disk.
+  const pdfPath = join(tmpRoot, "saved-mid-rebuild.pdf");
+  writeFileSync(pdfPath, "PDF-v1");
+  const hashOf = (bytes: string) => createHash("sha256").update(bytes).digest("hex");
+  const deps: IngestDeps = {
+    embed: async (texts) => texts.map(() => Array(768).fill(0.02)),
+    extractPdf: async (copy) => [
+      { page: 1, text: `Version on disk: ${readFileSync(copy, "utf8")}. ${PAGE_1_TEXT}` },
+    ],
+    extractXlsx: neverCalledXlsx,
+    convertOffice: neverCalledConvert,
+    ocrModel: null,
+    stagingDir,
+  };
+  const rowFor = async () =>
+    (await db.select().from(kbDocuments).where(eq(kbDocuments.sourcePath, pdfPath)))[0];
+  const textOf = async (id: string) =>
+    (await chunksFor(id)).map((chunk) => chunk.chunkText).join("\n");
+
+  expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ indexed: 1 }));
+  await db.delete(kbChunks).where(eq(kbChunks.documentId, (await rowFor()).id));
+
+  verifiedSourceHooks.afterHash = () => {
+    verifiedSourceHooks.afterHash = undefined;
+    writeFileSync(pdfPath, "PDF-v2");
+  };
+  try {
+    expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ indexed: 1 }));
+  } finally {
+    verifiedSourceHooks.afterHash = undefined;
+  }
+  const rebuilt = await rowFor();
+  expect(await textOf(rebuilt.id)).toContain("PDF-v2");
+  expect(rebuilt.contentHash).toBe(hashOf("PDF-v2"));
+
+  // Reverted: a change like any other, read again — never skipped as unchanged.
+  writeFileSync(pdfPath, "PDF-v1");
+  expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ indexed: 1 }));
+  const reverted = await rowFor();
+  expect(reverted.contentHash).toBe(hashOf("PDF-v1"));
+  const text = await textOf(reverted.id);
+  expect(text).toContain("PDF-v1");
+  expect(text).not.toContain("PDF-v2");
 });
 
 // Robustness: an agent's allowed_paths grant can point at a single FILE, not

@@ -915,8 +915,9 @@ async function ingestFile(
   // First the hash, streamed, which is all an unchanged file costs. Only a
   // file that must be read is then streamed into a private copy, the one path
   // the extractors are handed — verified again, so a link swapped in between
-  // the two is refused too. What is stored is the COPY's hash and mtime: the
-  // bytes that were actually read, should the file have changed in between.
+  // the two is refused too. A row's hash always names the bytes that were
+  // actually read: should the file have changed between hash and copy, the
+  // COPY's hash and mtime are stored, through the replace path below.
   const { hash: contentHash } = await fileStep(absPath, () => hashVerifiedSource(realPath));
   const extract = () =>
     fileStep(absPath, async () => {
@@ -941,6 +942,8 @@ async function ingestFile(
     .where(and(eq(kbDocuments.orgId, orgId), eq(kbDocuments.sourcePath, absPath)))
     .limit(1);
 
+  // Set when a rebuild in place read bytes other than the ones it hashed.
+  let reread: Awaited<ReturnType<typeof extract>> | undefined;
   if (existing && existing.contentHash === contentHash) {
     // Self-healing status: the status is a pure function of the path
     // (archive-paths.ts), so a stored value can only disagree after a rule
@@ -986,34 +989,44 @@ async function ingestFile(
     // skip" would leave this document unsearchable while silently reporting
     // success. We read it again instead and rebuild its chunks in place (same
     // id, no duplicate row).
-    const { extracted } = await extract();
-    // A retry that fails worse than the read before it must not cost the text
-    // that read found: an outage that returned keeps what is stored.
-    const keepStored =
-      storedChunks > 0 && extracted.incomplete && extracted.chunks.length < storedChunks;
-    const record = extractionRecord(extracted, deps, existing.incompleteReads);
-    const written = await writeChunks(
-      existing.id,
-      orgId,
-      absPath,
-      keepStored ? [] : extracted.chunks,
-      deps,
-      onChunkProgress,
-      {
-        // A document that keeps its chunks is not an empty one.
-        record: keepStored ? { ...record, emptyExtractionBy: null } : record,
-        replaceStored: storedChunks > 0 && !keepStored,
-      }
-    );
-    if (keepStored) return "skipped";
-    return written > 0 ? "indexed" : "unsearchable";
+    const read = await extract();
+    // Unless the file was saved between the hash and the copy: then the reader
+    // was handed NEW bytes, and rebuilding in place would file their text
+    // under the old hash — which a revert matches, so every later run would
+    // skip the document with text no longer on disk. New bytes are a change
+    // like any other, and take the replace path below with what was read.
+    if (read.contentHash !== contentHash) {
+      reread = read;
+    } else {
+      const { extracted } = read;
+      // A retry that fails worse than the read before it must not cost the text
+      // that read found: an outage that returned keeps what is stored.
+      const keepStored =
+        storedChunks > 0 && extracted.incomplete && extracted.chunks.length < storedChunks;
+      const record = extractionRecord(extracted, deps, existing.incompleteReads);
+      const written = await writeChunks(
+        existing.id,
+        orgId,
+        absPath,
+        keepStored ? [] : extracted.chunks,
+        deps,
+        onChunkProgress,
+        {
+          // A document that keeps its chunks is not an empty one.
+          record: keepStored ? { ...record, emptyExtractionBy: null } : record,
+          replaceStored: storedChunks > 0 && !keepStored,
+        }
+      );
+      if (keepStored) return "skipped";
+      return written > 0 ? "indexed" : "unsearchable";
+    }
   }
 
   // Extract BEFORE deleting the old version: a file that changed into
   // something unparseable throws here and stays a `failed` update, with the
   // last good document and its chunks still searchable. Deleting first would
   // turn that same failure into silent data loss on a success response.
-  const { extracted, contentHash: readHash, mtime } = await extract();
+  const { extracted, contentHash: readHash, mtime } = reread ?? (await extract());
 
   if (existing) {
     // Content changed since the last ingest: replace wholesale. Deleting
