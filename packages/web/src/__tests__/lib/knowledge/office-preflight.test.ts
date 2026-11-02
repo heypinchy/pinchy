@@ -49,6 +49,7 @@ import {
   relType,
   replaceEntry,
   truthfulSpacesEntry,
+  withAliases,
   zipOf,
 } from "@/test-helpers/office-zip";
 
@@ -384,6 +385,35 @@ describe("prepareOfficeSource", () => {
     const bomb = declaredBomb(100 * 1024 * 1024, "word/document.xml");
     expect((await rejection(prepareOfficeSource(file("ratio.docx", bomb)))).code).toBe("too_large");
   });
+
+  it("refuses a package whose directory lists one picture many times, instead of staging it once per listing", async () => {
+    // 1 MiB of picture on disk, listed 100 times: every listing checks out on
+    // its own, and a copy built listing by listing stages 100 MiB.
+    const picture = Buffer.concat([PNG_1X1, randomBytes(1024 * 1024)]);
+    const pkg = withAliases(
+      docxWith({
+        documentRels: relationships(rel("rId1", REL_IMAGE, "media/a.png")),
+        parts: { "word/media/a.png": picture },
+      }),
+      "word/media/a.png",
+      Array.from({ length: 99 }, (_, i) => `word/media/a${i}.png`)
+    );
+    expect(pkg.length).toBeLessThan(2 * 1024 * 1024);
+
+    const err = await rejection(prepareOfficeSource(file("aliased.docx", pkg)));
+    expect(err.code).toBe("unexpected_content");
+    expect(err.message).toMatch(/shares bytes with another entry/);
+  });
+
+  it("stages a package no larger than the file it came from", async () => {
+    const pkg = docxWith({
+      documentRels: relationships(rel("rId1", REL_IMAGE, "media/a.png")),
+      parts: { "word/media/a.png": Buffer.concat([PNG_1X1, randomBytes(64 * 1024)]) },
+    });
+    expect((await prepareOfficeSource(file("plain.docx", pkg))).data.length).toBeLessThanOrEqual(
+      pkg.length
+    );
+  });
 });
 
 describe("readWorkbookBuffer", () => {
@@ -404,6 +434,25 @@ describe("readWorkbookBuffer", () => {
     const wb = new ExcelJS.Workbook();
     await wb.xlsx.load(copy as unknown as Parameters<typeof wb.xlsx.load>[0]);
     expect(wb.getWorksheet("Data")!.getCell("A2").value).toBe("Alice");
+  });
+
+  it("refuses a workbook whose directory lists one picture many times", async () => {
+    // exceljs is handed the verified copy, so a copy built listing by listing
+    // would hand it the picture once per listing: 100 MiB from a 1 MiB file.
+    const picture = Buffer.concat([PNG_1X1, randomBytes(1024 * 1024)]);
+    const xlsx = await realWorkbook();
+    const aliased = withAliases(
+      assembleZip([
+        ...readZipEntries(xlsx).map((entry) => rawPart(xlsx, entry)),
+        deflatedPart("xl/media/image1.png", picture),
+      ]),
+      "xl/media/image1.png",
+      Array.from({ length: 99 }, (_, i) => `xl/media/image${i + 2}.png`)
+    );
+
+    const err = await rejection(readWorkbookBuffer(file("aliased.xlsx", aliased)));
+    expect(err.code).toBe("unexpected_content");
+    expect(err.message).toMatch(/shares bytes with another entry/);
   });
 
   it("refuses a decompression bomb before exceljs ever sees it", async () => {

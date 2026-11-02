@@ -20,7 +20,8 @@
 // fresh archive built from the verified entries alone — so it can never see a
 // byte this guard did not check: not a junk prefix (JSZip shifts its offsets
 // and opens one anyway), not a local entry the central directory hides, not a
-// second end record.
+// second end record. Every entry must own its bytes, so that copy is never
+// larger than the archive it came from.
 //
 // The knowledge-base ingest in packages/web SHARES this file (it reaches it
 // with a relative import that climbs out of the package): exceljs, mammoth and
@@ -480,8 +481,14 @@ function assertPlainEntryName(entry: ZipEntryInfo): void {
  *    but a ZIP64 end record that only repeats it, more than one disk,
  *    encryption, a method other than stored/deflate, an entry shorter than
  *    declared or with a wrong CRC, two entries whose names differ only by
- *    case, or a name a reader would resolve to another one
- *    (`assertPlainEntryName`) (`ZipFormatError`).
+ *    case, a name a reader would resolve to another one
+ *    (`assertPlainEntryName`), two entries that share bytes, or a local
+ *    header that names another part than its directory record
+ *    (`assertEntriesOwnTheirBytes`) (`ZipFormatError`).
+ *
+ * The copy is never larger than `buffer`: each entry owns its span of the
+ * archive, and the copy writes no more than that span for it. A caller that
+ * budgets memory or disk for the file has budgeted for the copy.
  *
  * Fail closed throughout: an archive this cannot read is not an archive any
  * reader gets to read.
@@ -519,6 +526,8 @@ export async function verifiedZipCopy(buffer: Buffer, limits: ZipLimits): Promis
     if (seen.has(key)) throw invalidZip(`two entries are both named "${entry.name}"`);
     seen.add(key);
   }
+
+  assertEntriesOwnTheirBytes(buffer, entries, cdOffset);
 
   const parts: ZipPart[] = [];
   for (const entry of entries) {
@@ -563,7 +572,72 @@ export async function verifiedZipCopy(buffer: Buffer, limits: ZipLimits): Promis
     }
   }
 
+  // What the ownership check above guarantees, stated where it is spent: an
+  // entry is copied as a fresh header, its name and its stored bytes — never
+  // more than the span it owns in the archive — and the directory as records
+  // without their extra fields and comments. So the copy is never larger than
+  // the archive, and the memory a caller budgets for the file covers it.
+  // Anything that breaks that refuses here instead of allocating.
+  const copyBytes = zipSize(parts);
+  if (copyBytes > buffer.length) {
+    throw invalidZip(
+      `its verified copy (${copyBytes} bytes) would be larger than the archive (${buffer.length} bytes)`
+    );
+  }
+
   return assembleZip(parts);
+}
+
+const DATA_DESCRIPTOR_SIGNATURE = 0x08074b50;
+
+/**
+ * Every entry owns its bytes, and no two entries share any. Taken in offset
+ * order — the directory may list them in any order, and some writers do — each
+ * entry's local header, name, extra field, stored data and data descriptor (if
+ * bit 3 says one follows) must end at or before the next entry's header, and
+ * before the central directory; and the local header must carry the name its
+ * directory record does.
+ *
+ * Without this, a directory can point any number of records at ONE stored
+ * picture: each passes the size and checksum checks on its own, and a copy
+ * built record by record holds the picture once per record — bounded by the
+ * declared total, not by the file (measured: 33.5 MB in, 503 MB out). Gaps
+ * between entries are allowed; the copy drops them, as it drops anything the
+ * directory does not list.
+ */
+function assertEntriesOwnTheirBytes(
+  archive: Buffer,
+  entries: readonly ZipEntryInfo[],
+  cdOffset: number
+): void {
+  const byOffset = [...entries].sort((a, b) => a.localHeaderOffset - b.localHeaderOffset);
+  let free = 0;
+  for (const entry of byOffset) {
+    const at = entry.localHeaderOffset;
+    if (at < free) throw invalidZip(`entry "${entry.name}" shares bytes with another entry`);
+    if (at + 30 > cdOffset || archive.readUInt32LE(at) !== LOCAL_HEADER_SIGNATURE) {
+      throw invalidZip(`entry "${entry.name}" has no local header where the directory says`);
+    }
+    const nameEnd = at + 30 + archive.readUInt16LE(at + 26);
+    if (nameEnd > cdOffset || archive.toString("utf8", at + 30, nameEnd) !== entry.name) {
+      throw invalidZip(`entry "${entry.name}" is named differently in its local header`);
+    }
+    let end = nameEnd + archive.readUInt16LE(at + 28) + entry.compressedSize;
+    if (entry.flags & FLAG_DATA_DESCRIPTOR) {
+      const signed = end + 4 <= cdOffset && archive.readUInt32LE(end) === DATA_DESCRIPTOR_SIGNATURE;
+      end += signed ? 16 : 12;
+    }
+    if (end > cdOffset) throw invalidZip(`entry "${entry.name}" runs past its archive`);
+    free = end;
+  }
+}
+
+/** The length of the archive `assembleZip(parts)` writes, without writing it. */
+function zipSize(parts: readonly ZipPart[]): number {
+  return parts.reduce(
+    (total, part) => total + 30 + 46 + 2 * Buffer.byteLength(part.name, "utf8") + part.data.length,
+    22
+  );
 }
 
 // ---------------------------------------------------------------------------

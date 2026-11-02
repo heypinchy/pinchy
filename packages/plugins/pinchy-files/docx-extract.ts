@@ -136,6 +136,15 @@ export class DocxReaderOutOfMemoryError extends Error {
  * about those sizes, every entry's REAL size is verified too, and the reader
  * is handed a copy built only from entries that held up. mammoth never sees the bytes it was given. That copy is then
  * converted in the heap-capped reader child.
+ *
+ * The copy is built here, in the gateway, ahead of the gate — and it is never
+ * larger than the file (`verifiedZipCopy` refuses one that would be), so a
+ * read costs the gateway the file, a copy no larger, and the structured clone
+ * that carries it to the child. Measured with a 47.6 MB .docx (the cap is
+ * 50 MB): the process went from 110 MB with the file loaded to a 207 MB peak;
+ * two such reads at once, 158 MB to 350 MB. A directory that lists one stored
+ * picture fifteen times over, which once made a 33.5 MB file a 503 MB copy, is
+ * refused before anything is copied.
  */
 export async function extractDocxText(
   buffer: Buffer,

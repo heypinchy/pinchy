@@ -913,3 +913,206 @@ describe("verifiedZipCopy — what mammoth reads differently is not guessed at",
     expect(await refusal(verifiedZipCopy(zip, LIMITS))).toBeInstanceOf(ZipFormatError);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Every entry owns its bytes: the copy can never outgrow the archive
+// ---------------------------------------------------------------------------
+
+describe("verifiedZipCopy — every entry owns its own bytes", () => {
+  /** A local header for `entry` as `rawZip` writes it, named by `name`'s raw bytes. */
+  function localHeaderOf(entry: RawEntry, name = Buffer.from(entry.name, "utf8")): Buffer {
+    const header = Buffer.alloc(30 + name.length);
+    header.writeUInt32LE(0x04034b50, 0);
+    header.writeUInt16LE(20, 4);
+    header.writeUInt16LE(entry.flags ?? 0, 6);
+    header.writeUInt16LE(entry.method ?? 8, 8);
+    header.writeUInt32LE(entry.crc32 ?? 0, 14);
+    header.writeUInt32LE(entry.compressedSize ?? entry.data.length, 18);
+    header.writeUInt32LE(entry.uncompressedSize, 22);
+    header.writeUInt16LE(name.length, 26);
+    name.copy(header, 30);
+    return header;
+  }
+
+  /** A central record describing `entry`, named by `name`'s raw bytes, pointing at `offset`. */
+  function recordOf(entry: RawEntry, offset: number, name = Buffer.from(entry.name, "utf8")) {
+    const record = Buffer.alloc(46 + name.length);
+    record.writeUInt32LE(0x02014b50, 0);
+    record.writeUInt16LE(20, 4);
+    record.writeUInt16LE(20, 6);
+    record.writeUInt16LE(entry.flags ?? 0, 8);
+    record.writeUInt16LE(entry.method ?? 8, 10);
+    record.writeUInt32LE(entry.crc32 ?? 0, 16);
+    record.writeUInt32LE(entry.compressedSize ?? entry.data.length, 20);
+    record.writeUInt32LE(entry.uncompressedSize, 24);
+    record.writeUInt16LE(name.length, 28);
+    record.writeUInt32LE(offset, 42);
+    name.copy(record, 46);
+    return record;
+  }
+
+  /** `body` (the entries, as written) followed by a directory of `records` and its end record. */
+  function withDirectory(body: Buffer, records: Buffer[]): Buffer {
+    const directory = Buffer.concat(records);
+    const eocd = Buffer.alloc(22);
+    eocd.writeUInt32LE(0x06054b50, 0);
+    eocd.writeUInt16LE(records.length, 8);
+    eocd.writeUInt16LE(records.length, 10);
+    eocd.writeUInt32LE(directory.length, 12);
+    eocd.writeUInt32LE(body.length, 16);
+    return Buffer.concat([body, directory, eocd]);
+  }
+
+  /** A truthful STORED entry: a picture is stored, not deflated, so its bytes are its size. */
+  function stored(name: string, bytes: Buffer): RawEntry {
+    return { name, data: bytes, method: 0, crc32: crcOf(bytes), uncompressedSize: bytes.length };
+  }
+
+  const MiB = 1024 * 1024;
+  const PNG_SIGNATURE = Buffer.from("89504e470d0a1a0a", "hex");
+
+  it("refuses many directory records that all point at one stored entry", async () => {
+    // Each record passes the size and checksum checks on its own — it is the
+    // same honest blob every time — and a copy built record by record holds
+    // the blob once per record: 4 MiB on disk, 240 MiB copied.
+    const blob = Buffer.concat([PNG_SIGNATURE, Buffer.alloc(4 * MiB - 8, 7)]);
+    const types = honest("[Content_Types].xml", "<Types/>");
+    const typesHeader = localHeaderOf(types);
+    const picture = stored("word/media/a.png", blob);
+    const pictureAt = typesHeader.length + types.data.length;
+    const body = Buffer.concat([typesHeader, types.data, localHeaderOf(picture), blob]);
+    const records = [recordOf(types, 0), recordOf(picture, pictureAt)];
+    for (let i = 1; i < 60; i++) {
+      records.push(recordOf(picture, pictureAt, Buffer.from(`word/media/a${i}.png`)));
+    }
+    const zip = withDirectory(body, records);
+    expect(() => assertZipWithinLimits(zip, LIMITS)).not.toThrow();
+
+    const before = process.memoryUsage().arrayBuffers;
+    const err = await refusal(verifiedZipCopy(zip, LIMITS));
+    expect(err).toBeInstanceOf(ZipFormatError);
+    expect(err.message).toMatch(/shares bytes with another entry/);
+    expect(process.memoryUsage().arrayBuffers - before).toBeLessThan(2 * MiB);
+  });
+
+  it("refuses an entry whose local header sits inside another entry's data", async () => {
+    // Two distinct offsets, but the second one points INTO the first entry's
+    // stored bytes, where a complete entry has been planted: both check out,
+    // and the copy carries the inner bytes twice.
+    const inner = stored("word/media/b.png", Buffer.concat([PNG_SIGNATURE, Buffer.alloc(1000)]));
+    const innerBytes = Buffer.concat([localHeaderOf(inner), inner.data]);
+    const outer = stored("word/media/a.png", Buffer.concat([PNG_SIGNATURE, innerBytes]));
+    const outerHeader = localHeaderOf(outer);
+    const zip = withDirectory(Buffer.concat([outerHeader, outer.data]), [
+      recordOf(outer, 0),
+      recordOf(inner, outerHeader.length + PNG_SIGNATURE.length),
+    ]);
+    const err = await refusal(verifiedZipCopy(zip, LIMITS));
+    expect(err).toBeInstanceOf(ZipFormatError);
+    expect(err.message).toMatch(/shares bytes with another entry/);
+  });
+
+  it("refuses an entry whose local header names a different part than its directory record", async () => {
+    // A reader that walks the local headers (a streaming unzip) sees a
+    // different archive from the one this guard checked.
+    const entry = honest("word/document.xml", "<w:document/>");
+    const zip = withDirectory(
+      Buffer.concat([localHeaderOf(entry, Buffer.from("word/media/a.bin")), entry.data]),
+      [recordOf(entry, 0)]
+    );
+    const err = await refusal(verifiedZipCopy(zip, LIMITS));
+    expect(err).toBeInstanceOf(ZipFormatError);
+    expect(err.message).toMatch(/word\/document\.xml.*local header/);
+  });
+
+  it("refuses an entry whose data descriptor runs into the next entry", async () => {
+    // Bit 3 says the sizes follow the data; those bytes belong to the entry.
+    const first = { ...honest("[Content_Types].xml", "<Types/>"), flags: 0x0008 };
+    const second = honest("word/document.xml", "<w:document/>");
+    const firstHeader = localHeaderOf(first);
+    const at = firstHeader.length + first.data.length;
+    const zip = withDirectory(
+      Buffer.concat([firstHeader, first.data, localHeaderOf(second), second.data]),
+      [recordOf(first, 0), recordOf(second, at)]
+    );
+    expect(await refusal(verifiedZipCopy(zip, LIMITS))).toBeInstanceOf(ZipFormatError);
+  });
+
+  it("still accepts directory records listed out of offset order", async () => {
+    const a = honest("[Content_Types].xml", "<Types/>");
+    const b = honest("word/document.xml", "<w:document/>");
+    const aHeader = localHeaderOf(a);
+    const zip = withDirectory(Buffer.concat([aHeader, a.data, localHeaderOf(b), b.data]), [
+      recordOf(b, aHeader.length + a.data.length),
+      recordOf(a, 0),
+    ]);
+    const copy = await verifiedZipCopy(zip, LIMITS);
+    expect([...contentsOf(copy).keys()]).toEqual(["word/document.xml", "[Content_Types].xml"]);
+    expect(copy.length).toBeLessThanOrEqual(zip.length);
+  });
+
+  it.each([
+    ["with its signature", true],
+    ["without its signature", false],
+  ])(
+    "still accepts entries followed by a data descriptor %s, and drops it from the copy",
+    async (_, signed) => {
+      // What streaming writers (Java's ZipOutputStream, archiver) emit: bit 3
+      // set, zeros in the local header, the real sizes after the data.
+      const entries = [
+        honest("[Content_Types].xml", "<Types/>"),
+        honest("word/document.xml", "<w:document/>"),
+      ].map((entry) => ({ ...entry, flags: 0x0008 }));
+      const pieces: Buffer[] = [];
+      const records: Buffer[] = [];
+      let offset = 0;
+      for (const entry of entries) {
+        const header = localHeaderOf({
+          ...entry,
+          crc32: 0,
+          compressedSize: 0,
+          uncompressedSize: 0,
+        });
+        const descriptor = Buffer.alloc(signed ? 16 : 12);
+        let at = 0;
+        if (signed) at = descriptor.writeUInt32LE(0x08074b50, 0);
+        at = descriptor.writeUInt32LE(entry.crc32!, at);
+        at = descriptor.writeUInt32LE(entry.data.length, at);
+        descriptor.writeUInt32LE(entry.uncompressedSize, at);
+        records.push(recordOf(entry, offset));
+        pieces.push(header, entry.data, descriptor);
+        offset += header.length + entry.data.length + descriptor.length;
+      }
+      const zip = withDirectory(Buffer.concat(pieces), records);
+      const copy = await verifiedZipCopy(zip, LIMITS);
+      expect([...contentsOf(copy).keys()]).toEqual(["[Content_Types].xml", "word/document.xml"]);
+      expect(copy.length).toBeLessThan(zip.length);
+    }
+  );
+
+  it.each([
+    "packages/plugins/pinchy-files/test-fixtures/simple.docx",
+    "packages/plugins/pinchy-files/test-fixtures/with-image.docx",
+    "packages/web/src/__tests__/fixtures/kb/office/svg-icon-letter.docx",
+    "packages/web/src/__tests__/fixtures/kb/office/svg-icon-deck.pptx",
+  ])("returns a copy no larger than the archive for %s", async (path) => {
+    const original = readFileSync(join(import.meta.dirname, "..", "..", "..", path));
+    const copy = await verifiedZipCopy(original, LIMITS);
+    expect(copy.length).toBeLessThanOrEqual(original.length);
+  });
+
+  it("refuses rather than return a copy larger than the archive", async () => {
+    // Names that are not UTF-8 decode to U+FFFD, which takes three bytes
+    // written back: an archive with no slack (no extra fields, comments,
+    // descriptors or gaps to drop) would come out larger than it went in.
+    const name = Buffer.alloc(200, 0xff);
+    const bytes = Buffer.from("<x/>");
+    const entry = { ...stored("x", bytes), name: name.toString("utf8") };
+    const zip = withDirectory(Buffer.concat([localHeaderOf(entry, name), bytes]), [
+      recordOf(entry, 0, name),
+    ]);
+    const err = await refusal(verifiedZipCopy(zip, LIMITS));
+    expect(err).toBeInstanceOf(ZipFormatError);
+    expect(err.message).toMatch(/larger than the archive/);
+  });
+});

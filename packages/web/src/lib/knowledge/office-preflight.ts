@@ -1748,8 +1748,10 @@ export async function prepareOfficeSource(
  * written there, and the server is told only what was done.
  *
  * Holds at most two copies of the file: the original and the verified copy,
- * while the guard builds it. A rewrite of the verified copy is written piece
- * by piece out of it, never assembled into a third.
+ * while the guard builds it — and the verified copy is never larger than the
+ * file (`verifiedZipCopy` refuses an archive whose entries share bytes, the
+ * one way a copy could outgrow it). A rewrite of the verified copy is written
+ * piece by piece out of it, never assembled into a third.
  *
  * @throws OfficeFileRejectedError when the file must not be handed to a reader.
  * @throws StagedCopyWriteError when `dest` cannot be written — about the
