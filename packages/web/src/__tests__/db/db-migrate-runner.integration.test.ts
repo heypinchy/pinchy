@@ -59,13 +59,18 @@ const PROBE_ROLE_LIFETIME_SECONDS = 60 * 60;
  * role carried one), AND no session connected as it. Expiry rather than mere
  * idleness, because a concurrent run's role is idle between its own tests —
  * sweeping on "no session" alone would pull a live run's role out from under
- * it. The prefix's `_` is escaped: in LIKE it matches any character.
+ * it. The prefix is LIKE-escaped: its `_` would otherwise match any character.
  */
+/** Escapes LIKE's metacharacters (and the escape character itself) so `text` matches literally. */
+function escapeLike(text: string): string {
+  return text.replace(/[\\%_]/g, "\\$&");
+}
+
 async function sweepStaleProbeRoles(admin: postgres.Sql): Promise<void> {
   const stale = await admin<{ rolname: string; oid: number }[]>`
     SELECT r.rolname, r.oid::int AS oid
     FROM pg_roles r
-    WHERE r.rolname LIKE ${PROBE_ROLE_PREFIX.replace(/_/g, "\\_") + "%"}
+    WHERE r.rolname LIKE ${escapeLike(PROBE_ROLE_PREFIX) + "%"}
       AND (r.rolvaliduntil IS NULL OR r.rolvaliduntil < now())
       AND NOT EXISTS (SELECT 1 FROM pg_stat_activity a WHERE a.usename = r.rolname)
   `;
