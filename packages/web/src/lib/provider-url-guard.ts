@@ -12,7 +12,8 @@
 //   - ALWAYS hard-block the ranges that are never a legitimate model endpoint and
 //     ARE the classic SSRF prize: link-local 169.254.0.0/16 + fe80::/10 and the
 //     metadata services that sit inside private ranges (100.100.100.200,
-//     and the EC2/EKS/GCP/OCI addresses inside ULA) — IMDS credential theft — plus loopback, unspecified,
+//     and the EC2/EKS/GCP/OCI addresses inside ULA) or in public space
+//     (Azure's WireServer, 168.63.129.16) — IMDS credential theft — plus loopback, unspecified,
 //     multicast, the reserved/documentation ranges, and every IPv6 form that
 //     carries an IPv4 address (mapped, NAT64, 6to4, Teredo, SIIT). Blocking
 //     these costs a real deployment nothing — nobody runs an LLM on

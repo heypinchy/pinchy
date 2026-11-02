@@ -121,7 +121,7 @@ Pinchy's web fetch module blocks agents from directly requesting — or being re
 
 - Private ranges: `10.x.x.x`, `172.16-31.x.x`, `192.168.x.x`, IPv6 unique-local (`fc00::/7`), carrier-grade NAT (`100.64.0.0/10`), which is where every Tailscale node lives, and `198.18.0.0/15`
 - Loopback and the unspecified range (`127.0.0.1`, `::1`, `0.0.0.0/8`)
-- Link-local addresses (`169.254.x.x`, `fe80::/10`) and the cloud metadata endpoints that sit inside private ranges: `100.100.100.200` (Alibaba Cloud), `fd00:ec2::254` (AWS), `fd00:ec2::23` (EKS Pod Identity Agent), `fd20:ce::254` (Google Cloud) and `fd00:c1::a9fe:a9fe` (Oracle Cloud)
+- Link-local addresses (`169.254.x.x`, `fe80::/10`) and the cloud metadata endpoints that sit inside private ranges: `100.100.100.200` (Alibaba Cloud), `fd00:ec2::254` (AWS), `fd00:ec2::23` (EKS Pod Identity Agent), `fd20:ce::254` (Google Cloud) and `fd00:c1::a9fe:a9fe` (Oracle Cloud). Also `168.63.129.16`, Azure's WireServer: a public-looking address that only answers from inside an Azure VM and hands out its extension configuration, certificates included
 - Multicast, broadcast and the reserved test ranges (`192.0.0.0/24`, `192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24`, `240.0.0.0/4`)
 - Any of the above wrapped in an IPv6 address: IPv4-mapped (`::ffff:127.0.0.1`), NAT64 (`64:ff9b::/96`) and 6to4 (`2002::/16`) are unwrapped and checked as the IPv4 address they reach; Teredo (`2001:0::/32`) and SIIT (`::ffff:0:0:0/96`) are refused outright
 

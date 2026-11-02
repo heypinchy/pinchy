@@ -562,6 +562,8 @@ describe("webFetch", () => {
   describe("special-purpose ranges (shared classifier)", () => {
     const BLOCKED_LITERALS = [
       ["100.100.100.200", "Alibaba Cloud metadata"],
+      ["168.63.129.16", "Azure WireServer"],
+      ["[64:ff9b::a83f:8110]", "NAT64 wrapping Azure WireServer"],
       ["100.64.0.1", "CGNAT, bottom of 100.64.0.0/10"],
       ["100.127.255.255", "CGNAT, top of 100.64.0.0/10"],
       // Private since the classifier reclassified it (admins may opt into it

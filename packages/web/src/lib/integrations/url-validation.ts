@@ -100,8 +100,8 @@ function blockMessageFor(addressClass: IpAddressClass): string {
  * Two tiers, the same as `mail-host-guard.ts`:
  *
  *   - Always refused: loopback, unspecified, link-local (cloud metadata,
- *     including 100.100.100.200 and the EC2/EKS/GCP/OCI addresses inside
- *     ULA), and the reserved
+ *     including 100.100.100.200, Azure's WireServer 168.63.129.16 and the
+ *     EC2/EKS/GCP/OCI addresses inside ULA), and the reserved
  *     special-purpose ranges. No Odoo server lives there.
  *   - Refused unless `ALLOW_PRIVATE_URLS=1`: the `private` class — RFC-1918,
  *     ULA, CGNAT (Tailscale), 198.18/15. That is where an on-premise Odoo lives, and also

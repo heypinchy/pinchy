@@ -47,6 +47,10 @@ describe("classifyIp", () => {
     // a "private" range read as an ordinary LAN host, allowed by default, and
     // the IPv6 forms that carry an IPv4 address were taken at face value.
     ["100.100.100.200", "blocked"], // Alibaba Cloud metadata, inside CGNAT
+    // Azure WireServer: a public-looking address the old list let straight
+    // through, reachable only from inside an Azure VM.
+    ["168.63.129.16", "blocked"],
+    ["168.63.129.17", "public"],
     ["fd00:ec2::254", "blocked"], // EC2 IPv6 metadata, inside ULA
     ["fd00:ec2::23", "blocked"], // EKS Pod Identity Agent, inside ULA
     ["fd20:ce::254", "blocked"], // GCP IPv6 metadata, inside ULA
@@ -175,6 +179,7 @@ describe("assertAllowedProviderUrl — address literals bypass DNS", () => {
 
   it.each([
     ["Alibaba Cloud metadata", "http://100.100.100.200/latest/meta-data/"],
+    ["Azure WireServer", "http://168.63.129.16/machine?comp=goalstate"],
     ["EC2 IPv6 metadata", "http://[fd00:ec2::254]/latest/meta-data/"],
     ["EKS Pod Identity Agent", "http://[fd00:ec2::23]/v1/credentials"],
     ["GCP IPv6 metadata", "http://[fd20:ce::254]/computeMetadata/v1/"],

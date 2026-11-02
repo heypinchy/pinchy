@@ -29,7 +29,8 @@
  * callers weigh the categories differently:
  *
  *   - `loopback`, `unspecified`, `link-local` (cloud metadata lives there,
- *     including the metadata addresses that sit inside private ranges),
+ *     including the metadata addresses that sit inside private ranges and
+ *     Azure's WireServer at 168.63.129.16, which sits in public space),
  *     `reserved`: never a real server. Every guard refuses these whatever the
  *     operator sets.
  *   - `private`: RFC-1918, ULA, CGNAT (Tailscale) and 198.18/15. An on-premise Odoo, mail
@@ -132,6 +133,13 @@ function classifyIPv4(octets: number[]): IpAddressClass {
   // class every opt-in unlocks); classifying it as link-local is what keeps
   // this one address unreachable when they do.
   if (a === 100 && b === 100 && c === 100 && d === 200) return "link-local";
+  // 168.63.129.16 — Azure's WireServer / host agent. Public-looking and
+  // Microsoft-owned, but reachable only from inside an Azure VM: it serves
+  // DHCP, DNS, the load balancer's health probe and the VM extension
+  // configuration, certificates included. A metadata endpoint in all but
+  // name, so it gets the class no opt-in opens. Its neighbours are ordinary
+  // public space.
+  if (a === 168 && b === 63 && c === 129 && d === 16) return "link-local";
   // 10.0.0.0/8 — class A private
   if (a === 10) return "private";
   // 172.16.0.0/12 — class B private

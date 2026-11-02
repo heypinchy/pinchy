@@ -132,6 +132,13 @@ describe("classifyIpAddress", () => {
     ["100.64.0.1", "private"],
     ["100.127.255.255", "private"],
     ["100.100.100.200", "link-local"],
+    // 168.63.129.16, Azure's WireServer / host agent: public-looking, but only
+    // reachable from inside an Azure VM, and it hands out extension
+    // configuration including certificates. Filed with the metadata
+    // endpoints; its neighbours stay public.
+    ["168.63.129.16", "link-local"],
+    ["168.63.129.15", "public"],
+    ["168.63.129.17", "public"],
     ["100.63.255.255", "public"],
     ["100.128.0.1", "public"],
     // 198.18.0.0/15 benchmarking: "private", not "reserved" -- operators number
@@ -330,6 +337,7 @@ describe("validateExternalUrl", () => {
 
   it.each([
     "http://100.100.100.200/latest/meta-data/",
+    "http://168.63.129.16/machine?comp=goalstate",
     "http://[64:ff9b::a9fe:a9fe]/latest/meta-data/",
     "http://[fd20:ce::254]/computeMetadata/v1/",
     "http://240.0.0.1:8069",
@@ -494,6 +502,7 @@ describe("validateExternalUrl", () => {
       "http://0.0.0.0:8069",
       "http://169.254.169.254/latest/meta-data/",
       "http://100.100.100.200/latest/meta-data/",
+      "http://168.63.129.16/machine?comp=goalstate",
       "http://[fd00:ec2::254]/latest/meta-data/",
       "http://[::ffff:127.0.0.1]:8069",
       "http://[64:ff9b::a9fe:a9fe]/",

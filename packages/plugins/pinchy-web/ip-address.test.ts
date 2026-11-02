@@ -19,6 +19,15 @@ describe("classifyIpAddress (the table web_fetch and the web app share)", () => 
     ["100.100.100.100", "private"],
     ["100.127.255.255", "private"],
     ["100.100.100.200", "link-local"],
+    // Azure's WireServer / host agent (168.63.129.16). Public-looking,
+    // Microsoft-owned, and reachable only from inside an Azure VM: it serves
+    // DHCP, DNS, the health probe and the extension configuration --
+    // certificates included. A metadata endpoint in all but name, so it gets
+    // the class no opt-in opens. Only the one address: its neighbours are
+    // ordinary public space.
+    ["168.63.129.16", "link-local"],
+    ["168.63.129.15", "public"],
+    ["168.63.129.17", "public"],
     // 198.18.0.0/15 (RFC 2544 benchmarking). Used to be "reserved" -- blocked
     // with no opt-in -- but operators number internal lab/transit networks
     // from it and fake-IP DNS (Clash, Mihomo, Surge) hands it out for every
@@ -120,6 +129,9 @@ describe("classifyIpAddress (the table web_fetch and the web app share)", () => 
     ["::ffff:6464:64c8", "link-local"],
     ["::ffff:192.168.1.10", "private"],
     ["::ffff:8.8.8.8", "public"],
+    ["::ffff:168.63.129.16", "link-local"],
+    ["::ffff:a83f:8110", "link-local"],
+    ["::ffff:a83f:810f", "public"],
     // SIIT IPv4-translated (::ffff:0:0:0/96, RFC 2765): a stateless translator
     // forwards it to the embedded IPv4. Refused outright, never public.
     ["::ffff:0:7f00:1", "reserved"],
@@ -130,6 +142,7 @@ describe("classifyIpAddress (the table web_fetch and the web app share)", () => 
     ["::7f00:1", "loopback"],
     ["::100.100.100.200", "link-local"],
     ["::169.254.169.254", "link-local"],
+    ["::168.63.129.16", "link-local"],
     // NAT64 64:ff9b::/96: classify the IPv4 it translates to.
     ["64:ff9b::7f00:1", "loopback"],
     ["64:ff9b::127.0.0.1", "loopback"],
@@ -137,10 +150,15 @@ describe("classifyIpAddress (the table web_fetch and the web app share)", () => 
     ["64:ff9b::6464:64c8", "link-local"],
     ["64:ff9b::a00:1", "private"],
     ["64:ff9b::808:808", "public"],
+    ["64:ff9b::a83f:8110", "link-local"],
+    ["64:ff9b::168.63.129.16", "link-local"],
+    ["64:ff9b::a83f:8111", "public"],
     // 6to4 (2002::/16) embeds the IPv4 in groups 1-2.
     ["2002:7f00:1::1", "loopback"],
     ["2002:a9fe:a9fe::1", "link-local"],
     ["2002:808:808::1", "public"],
+    ["2002:a83f:8110::1", "link-local"],
+    ["2002:a83f:810f::1", "public"],
   ] as const)("classifies IPv6 %s as %s", (address, expected) => {
     expect(classifyIpAddress(address)).toBe(expected);
   });

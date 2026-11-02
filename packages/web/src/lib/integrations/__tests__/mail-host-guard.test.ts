@@ -34,6 +34,8 @@ describe("assertMailHostAllowed", () => {
       ["IPv4-compatible IPv6 loopback", "::7f00:1"],
       ["Alibaba Cloud metadata", "100.100.100.200"],
       ["IPv4-mapped Alibaba Cloud metadata", "::ffff:100.100.100.200"],
+      ["Azure WireServer", "168.63.129.16"],
+      ["IPv4-mapped Azure WireServer", "::ffff:168.63.129.16"],
       ["NAT64-wrapped IMDS", "64:ff9b::a9fe:a9fe"],
       ["TEST-NET-3", "203.0.113.50"],
       ["reserved 240.0.0.0/4", "240.0.0.1"],
