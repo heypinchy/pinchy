@@ -20,6 +20,7 @@ vi.mock("@/lib/audit-deferred", () => ({ recordAuditFailure: vi.fn() }));
 
 import { ActiveRuns } from "@/server/active-runs";
 import {
+  EARLIER_ABORT_ANSWER_WAIT_MS,
   FOLLOW_UP_ABORT_DEADLINE_MS,
   abortRunsOfUser,
   abortSessionRun,
@@ -196,6 +197,98 @@ describe("abortSessionRun", () => {
     expect(chatAbort).toHaveBeenCalledWith("s1", undefined);
     expect(run.abortFollowUp).toBeUndefined();
     expect(deps.abortRun).not.toHaveBeenCalled();
+  });
+
+  describe("a second stop while the first abort's answer is still on its way", () => {
+    // The run is still in flight when the second stop lands (no verdict yet),
+    // so it is aborted again by runId — and OpenClaw, which already stopped it,
+    // answers `aborted: false`. If the first abort is then confirmed, the run
+    // IS stopped: the second stop has nothing to report.
+    function deferred<T>() {
+      let resolve!: (value: T) => void;
+      const promise = new Promise<T>((r) => (resolve = r));
+      return { promise, resolve };
+    }
+
+    it("reports nothing in flight once the first abort turns out confirmed", async () => {
+      const runs = new ActiveRuns();
+      const run = startedRun(runs, "s1", "u1");
+      const firstAnswer = deferred<unknown>();
+      const { deps } = followUp();
+
+      const first = abortSessionRun(runs, vi.fn().mockReturnValue(firstAnswer.promise), "s1", {
+        request: { actorId: "u1", reason: "user_request" },
+        followUp: deps,
+      });
+      const second = abortSessionRun(
+        runs,
+        vi.fn().mockResolvedValue({ ok: true, aborted: false, runIds: [] }),
+        "s1",
+        { request: { actorId: "admin-1", reason: "account_deactivated" }, followUp: deps }
+      );
+      // Let the second answer land before the first one does.
+      await new Promise<void>((r) => setImmediate(r));
+      firstAnswer.resolve({ ok: true, aborted: true, runIds: ["run-s1"] });
+
+      expect(await first).toEqual(expect.objectContaining({ run, outcome: "success" }));
+      expect((await second).run).toBeUndefined();
+      // The run is stopped: nothing to pursue.
+      expect(run.abortFollowUp).toBeUndefined();
+      expect(deps.abortRun).not.toHaveBeenCalled();
+    });
+
+    it("waits only so long for the first answer, then reports and pursues the failure as before", async () => {
+      vi.useFakeTimers();
+      try {
+        const runs = new ActiveRuns();
+        const run = startedRun(runs, "s1", "u1");
+        // OpenClaw never answers the first abort.
+        const never = new Promise<unknown>(() => {});
+        const { deps } = followUp();
+
+        void abortSessionRun(runs, vi.fn().mockReturnValue(never), "s1", {
+          request: { actorId: "u1", reason: "user_request" },
+          followUp: deps,
+        });
+        const second = abortSessionRun(
+          runs,
+          vi.fn().mockResolvedValue({ ok: true, aborted: false, runIds: [] }),
+          "s1",
+          { request: { actorId: "admin-1", reason: "account_deactivated" }, followUp: deps }
+        );
+        let settled = false;
+        void second.then(() => (settled = true));
+        await vi.advanceTimersByTimeAsync(EARLIER_ABORT_ANSWER_WAIT_MS - 1);
+        expect(settled).toBe(false);
+        await vi.advanceTimersByTimeAsync(1);
+
+        expect(await second).toEqual(
+          expect.objectContaining({ run, runId: "run-s1", outcome: "failure" })
+        );
+        // Still pursued: nothing says the run was stopped.
+        expect(run.abortFollowUp).toBeDefined();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("does not wait when no earlier abort is on its way", async () => {
+      vi.useFakeTimers();
+      try {
+        const runs = new ActiveRuns();
+        const run = startedRun(runs, "s1", "u1");
+
+        const result = await abortSessionRun(
+          runs,
+          vi.fn().mockResolvedValue({ ok: true, aborted: false, runIds: [] }),
+          "s1"
+        );
+
+        expect(result).toEqual(expect.objectContaining({ run, outcome: "failure" }));
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 
   it("reports a failure when the gateway stopped nothing or could not be reached", async () => {
@@ -829,6 +922,32 @@ describe("abortRunsOfUser", () => {
     expect(await abortRunsOfUser("leaver", { activeRuns: runs, chatAbort })).toEqual([]);
     expect(chatAbort).not.toHaveBeenCalled();
     expect(runs.get("agent:a:direct:leaver")?.abortedByUser).toBe(false);
+  });
+
+  it("reports no run whose stop turned out confirmed by an abort already on its way", async () => {
+    // The stop button's abort reached OpenClaw first; deactivation's own abort
+    // then stops nothing. The route writes one row per run returned, and a
+    // failed row after the confirmed stop would read "never confirmed".
+    const runs = new ActiveRuns();
+    startedRun(runs, "s1", "leaver");
+    let answerFirst!: (value: unknown) => void;
+    const first = abortSessionRun(
+      runs,
+      vi.fn().mockReturnValue(new Promise((r) => (answerFirst = r))),
+      "s1",
+      { request: { actorId: "leaver", reason: "user_request" } }
+    );
+
+    const deactivation = abortRunsOfUser("leaver", {
+      activeRuns: runs,
+      chatAbort: vi.fn().mockResolvedValue({ ok: true, aborted: false, runIds: [] }),
+      requestedBy: "admin-1",
+    });
+    await new Promise<void>((r) => setImmediate(r));
+    answerFirst({ ok: true, aborted: true, runIds: ["run-s1"] });
+
+    expect((await first).outcome).toBe("success");
+    expect(await deactivation).toEqual([]);
   });
 
   it("keeps going when one abort fails, and reports which one", async () => {

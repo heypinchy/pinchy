@@ -1123,6 +1123,14 @@ describe("ClientRouter ↔ ActiveRuns wiring (#310 Tier 2a)", () => {
         expect(gw.aborts.filter((a) => a.runId !== undefined)).toEqual([
           { sessionKey, runId: t0.gwRun.runId, aborted: true },
         ]);
+        // What the docs say a second stop sends: a click, like any click with
+        // nothing in flight, still sends OpenClaw's abort by session;
+        // deactivation sends nothing at all.
+        if (label === "the stop button") {
+          expect(chatAbort.mock.calls).toEqual([[sessionKey, undefined]]);
+        } else {
+          expect(chatAbort).not.toHaveBeenCalled();
+        }
         // Deactivation writes one row per run it returns; there is none.
         if (label === "deactivation") expect(result).toEqual([]);
         // The trail ends on the confirmed stop.
@@ -1132,6 +1140,89 @@ describe("ClientRouter ↔ ActiveRuns wiring (#310 Tier 2a)", () => {
             detail: expect.objectContaining({ runId: t0.gwRun.runId, reason: "user_request" }),
           }),
         ]);
+      }
+    );
+
+    /**
+     * Let the first `chat.abort` reach OpenClaw and be answered, but hold the
+     * answer back from Pinchy until `release()`: the stop has taken effect,
+     * and Pinchy does not know it yet.
+     */
+    function holdFirstAbortAnswer() {
+      let release!: () => void;
+      const held = new Promise<void>((res) => (release = res));
+      let aborts = 0;
+      const request = client.request.bind(client);
+      (client as unknown as { request: typeof client.request }).request = (async (
+        method: string,
+        params?: unknown
+      ) => {
+        if (method === "chat.abort" && aborts++ === 0) {
+          const answer = await request(method as never, params as never);
+          await held;
+          return answer;
+        }
+        return request(method as never, params as never);
+      }) as never;
+      return { release };
+    }
+
+    it.each([
+      [0, 1],
+      [1, 0],
+    ] as const)(
+      "ends the trail on the confirmed stop when a second stop lands while the first's answer is on its way (stoppers %i then %i)",
+      async (firstIndex, secondIndex) => {
+        // The stop button and deactivation (either first): the first abort
+        // stops the run, and while OpenClaw's `aborted: true` is still on its
+        // way the run still looks in flight — so the second stop aborts it
+        // again by runId and gets `aborted: false`. A failed row after the
+        // first one's success would read "the stop was never confirmed".
+        const artifacts = holdArtifacts();
+        const r = router();
+        const t0 = await send(r, 0);
+        gw.accept(t0.gwRun.runId);
+        gw.emitText(t0.gwRun.runId, "Working");
+        await vi.waitFor(() => expect(t0.run.firstChunkAt).not.toBeNull());
+        const firstAnswer = holdFirstAbortAnswer();
+        const [, firstStop] = stoppers[firstIndex];
+        const [, secondStop] = stoppers[secondIndex];
+
+        const first = firstStop(r, t0.ws);
+        await vi.waitFor(() =>
+          expect(gw.aborts).toEqual([{ sessionKey, runId: t0.gwRun.runId, aborted: true }])
+        );
+        const second = secondStop(r, t0.ws);
+        await vi.waitFor(() => expect(gw.aborts).toHaveLength(2));
+        firstAnswer.release();
+        const results = await Promise.all([first, second]);
+        artifacts.release();
+        await t0.handling;
+        await t0.run.abortFollowUp;
+
+        expect(t0.gwRun.toolsRun).toEqual([]);
+        // Nothing pursued the run after it: it was stopped.
+        expect(gw.aborts).toHaveLength(2);
+        // One row for the stop: the button's own, or the one the deactivation
+        // route writes for the run it returns — and nothing after it.
+        const deactivationResult = results[firstIndex === 1 ? 0 : 1] as Array<{
+          outcome: string;
+        }>;
+        const buttonRows = auditRows("chat.run_aborted");
+        if (firstIndex === 0) {
+          expect(buttonRows).toEqual([
+            expect.objectContaining({
+              outcome: "success",
+              detail: expect.objectContaining({ runId: t0.gwRun.runId, reason: "user_request" }),
+            }),
+          ]);
+          expect(deactivationResult).toEqual([]);
+        } else {
+          expect(deactivationResult).toEqual([
+            expect.objectContaining({ runId: t0.gwRun.runId, outcome: "success" }),
+          ]);
+          expect(buttonRows).toEqual([]);
+        }
       }
     );
 

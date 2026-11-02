@@ -110,7 +110,11 @@ export const FOLLOW_UP_ABORT_DELAYS_MS = [250, 500, 1_000, 2_000] as const;
 export const FOLLOW_UP_ABORT_DEADLINE_MS = 60_000;
 
 export interface SessionAbortResult {
-  /** The run that was in flight, or undefined when nothing was. */
+  /**
+   * The run that was in flight, or undefined when nothing was — including a
+   * run an earlier stop's abort turned out to have stopped. Callers record a
+   * row only when it is set.
+   */
   run: ActiveRun | undefined;
   /** The gateway-issued runId the abort named — undefined for a pending run. */
   runId: string | undefined;
@@ -168,11 +172,49 @@ export async function abortSessionRun(
   // failed abort — the stop button sends it anyway so it is never a silent
   // no-op, and an unreachable gateway is still a failure.
   const answer = requestAbort(chatAbort, sessionKey, runId, { inFlight: run !== undefined });
-  const outcome = run ? await recordAbortAttempt(run, answer, runId) : (await answer).outcome;
-  if (run && runId !== undefined && outcome === "failure" && options.followUp) {
+  if (!run) return { run, runId, outcome: (await answer).outcome };
+
+  // Taken before this attempt is recorded: the aborts already on their way.
+  const earlier = run.abortSettled;
+  const outcome = await recordAbortAttempt(run, answer, runId);
+  // An earlier abort whose answer was still on its way when this one was sent
+  // may have stopped the run — OpenClaw then answers this one `aborted: false`
+  // because there is nothing left to stop. Once that earlier abort is
+  // confirmed, the run is stopped and its sender records the stop: this
+  // attempt is a stop with nothing in flight, like one landing a moment later
+  // (`isInFlight`). A failed row after the confirmed one would read "the stop
+  // was never confirmed". Bounded, so a gateway that never answers cannot hold
+  // up a stop click or a deactivation request: past it, this failure stands
+  // and is followed up as before.
+  if (outcome === "failure" && earlier) {
+    await settledWithin(earlier, EARLIER_ABORT_ANSWER_WAIT_MS);
+    if (run.abortConfirmed === true) {
+      return { run: undefined, runId: undefined, outcome: "success" };
+    }
+  }
+  if (runId !== undefined && outcome === "failure" && options.followUp) {
     pursueAbort(run, sessionKey, runId, options.followUp, { immediate: false });
   }
   return { run, runId, outcome };
+}
+
+/**
+ * How long a stop whose abort stopped nothing waits for the answer to an
+ * earlier abort of the same run still on its way (`abortSessionRun`). That
+ * answer is one RPC round trip behind; this only bounds a gateway that never
+ * sends it.
+ */
+export const EARLIER_ABORT_ANSWER_WAIT_MS = 2_000;
+
+/** Wait for `settled`, but no longer than `ms`. */
+async function settledWithin(settled: Promise<void>, ms: number): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<void>((resolve) => (timer = setTimeout(resolve, ms)));
+  try {
+    await Promise.race([settled, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /**
@@ -189,7 +231,9 @@ export async function abortSessionRun(
  *    `aborted: false` and end the trail on a failed `chat.run_aborted`, which
  *    reads "the stop was never confirmed" when it was.
  * A run whose abort is not confirmed (it failed, or its answer is still on
- * its way) is still in flight: the next stop is sent.
+ * its way) is still in flight: the next stop is sent. When that one stops
+ * nothing and the abort still on its way turns out confirmed, it is reported
+ * as a stop with nothing in flight after all (`abortSessionRun`).
  */
 function isInFlight(run: ActiveRun): boolean {
   return !run.streamEnded && run.abortConfirmed !== true;
@@ -565,13 +609,16 @@ export async function abortRunsOfUser(
     : undefined;
   return Promise.all(
     theirs.map(async ({ sessionKey, agentId, agentName }) => {
-      const { runId, outcome } = await abortSessionRun(
+      const { run, runId, outcome } = await abortSessionRun(
         deps.activeRuns,
         deps.chatAbort,
         sessionKey,
         { request, followUp: deps.followUp }
       );
-      return { agent: { id: agentId, name: agentName }, sessionKey, runId, outcome };
+      // No longer in flight by the time it was asked — its reply ended, or an
+      // earlier stop's abort was confirmed: nothing to report.
+      if (!run) return [];
+      return [{ agent: { id: agentId, name: agentName }, sessionKey, runId, outcome }];
     })
-  );
+  ).then((perRun) => perRun.flat());
 }
