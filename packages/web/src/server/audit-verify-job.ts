@@ -28,7 +28,7 @@
 import { eq, desc, and, gt, gte, lt, lte, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { auditVerifyState, auditLog } from "@/db/schema";
-import { verifyIntegrity, appendAuditLog } from "@/lib/audit";
+import { verifyIntegrity, appendAuditLog, isRowSignedWithActiveKey } from "@/lib/audit";
 import { recordAuditFailure } from "@/lib/audit-deferred";
 
 const CHECKPOINT_ID = 1;
@@ -152,8 +152,18 @@ export async function sweepAuditVerify(): Promise<AuditVerifySweepResult> {
     return { scanned: false };
   }
 
+  // The previous signing key is only valid for the rows before a rotation, and
+  // this window cannot see them. If the checkpoint row itself was signed under
+  // the active key, the rotation already happened: an old-key row in this
+  // window is forged, even when no active-key row precedes it inside the window.
+  // The sweep's own report row is always written under the active key, so after
+  // the first sweep this is true on every run of a rotated install.
+  const seedActiveKeySeen =
+    checkpoint.lastVerifiedId > 0 && (await isRowSignedWithActiveKey(checkpoint.lastVerifiedId));
+
   const result = await verifyIntegrity(fromId, toId, {
     seedPrevHmac: checkpoint.lastVerifiedHmac,
+    seedActiveKeySeen,
   });
 
   if (result.totalChecked === 0) {

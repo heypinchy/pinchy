@@ -12,9 +12,12 @@
 // through the checkpoint fold, which likewise only means something against
 // real ids and a real chain.
 
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { asc, eq, sql } from "drizzle-orm";
-import { appendAuditLog, verifyIntegrity } from "@/lib/audit";
+import { appendAuditLog, computeRowHmacV3, verifyIntegrity } from "@/lib/audit";
 import { db } from "@/db";
 import { auditLog, auditVerifyState } from "@/db/schema";
 import { sweepAuditVerify } from "@/server/audit-verify-job";
@@ -305,5 +308,126 @@ describe("audit-verify-job (integration)", () => {
     // checkpoint that pointed at a non-existent or wrong row.
     const secondSweep = await sweepAuditVerify();
     expect(secondSweep.scanned).toBe(false);
+  });
+});
+
+// The previous signing key is only trusted for the rows that pre-date the
+// rotation. The full-range verifier knows that from the rows it walks; the
+// incremental sweep sees one window at a time, so without help a window of
+// forged old-key rows that follows an active-key checkpoint looks like a
+// legitimate pre-rotation prefix. These prove the sweep carries the rotation
+// across the checkpoint.
+describe("audit-verify-job across a signing-secret rotation (integration)", () => {
+  const previousSecretHex = "ab".repeat(32);
+  const previousSecret = Buffer.from(previousSecretHex, "hex");
+  let secretsDir: string;
+  let originalKeyDir: string | undefined;
+
+  beforeEach(() => {
+    // AUDIT_HMAC_SECRET is pinned by the integration config (the active key).
+    // A different key file in the secrets dir is, by getPreviousSecret's
+    // definition, the key that pin superseded.
+    originalKeyDir = process.env.ENCRYPTION_KEY_DIR;
+    secretsDir = mkdtempSync(join(tmpdir(), "audit-prev-key-"));
+    writeFileSync(join(secretsDir, ".audit_hmac_secret"), previousSecretHex);
+    process.env.ENCRYPTION_KEY_DIR = secretsDir;
+  });
+
+  afterEach(() => {
+    if (originalKeyDir === undefined) delete process.env.ENCRYPTION_KEY_DIR;
+    else process.env.ENCRYPTION_KEY_DIR = originalKeyDir;
+    rmSync(secretsDir, { recursive: true, force: true });
+  });
+
+  // Re-sign a stored row under the previous key, as someone holding the old
+  // key file and DB write access would (immutability trigger bypassed).
+  async function resignUnderPreviousKey(id: number, actorId?: string) {
+    const [row] = await db.select().from(auditLog).where(eq(auditLog.id, id));
+    const newActorId = actorId ?? row.actorId;
+    const rowHmac = computeRowHmacV3(previousSecret, {
+      timestamp: row.timestamp,
+      eventType: row.eventType,
+      actorType: row.actorType,
+      actorId: newActorId,
+      resource: row.resource,
+      detail: row.detail,
+      outcome: (row.outcome ?? "success") as "success" | "failure",
+      error: row.error as { message: string } | null,
+      prevHmac: row.prevHmac,
+    });
+    await db.execute(sql`ALTER TABLE audit_log DISABLE TRIGGER no_update`);
+    try {
+      await db.execute(
+        sql`UPDATE audit_log SET actor_id = ${newActorId}, row_hmac = ${rowHmac} WHERE id = ${id}`
+      );
+    } finally {
+      await db.execute(sql`ALTER TABLE audit_log ENABLE TRIGGER no_update`);
+    }
+    return rowHmac;
+  }
+
+  it("flags an old-key row that appears in a later window than the active-key rows", async () => {
+    await appendRow("u1");
+    await appendRow("u2");
+    const first = await sweepAuditVerify();
+    expect(first.valid).toBe(true);
+
+    // After the rotation: a row written under the active key, then rewritten
+    // under the leaked old key. It is alone in the second window, with no
+    // active-key row inside that window to precede it.
+    await appendRow("u3");
+    const rows = await allRowsById();
+    await resignUnderPreviousKey(rows[rows.length - 1].id, "forged-after-rotation");
+
+    const second = await sweepAuditVerify();
+
+    expect(second.scanned).toBe(true);
+    expect(second.invalidCount).toBe(1);
+    expect(second.previousKeyCount).toBe(0);
+    expect(second.valid).toBe(false);
+  });
+
+  it("still reports a legitimately rotated chain (old-key rows, then active rows) as valid", async () => {
+    await appendRow("u1");
+    await appendRow("u2");
+    const rows = await allRowsById();
+    // Model the pre-rotation history: both rows were signed under the key that
+    // was later superseded. Re-signing changes rowHmac, so the next row's
+    // prevHmac must follow — re-sign in order, threading the chain.
+    let prev: string | null = null;
+    await db.execute(sql`ALTER TABLE audit_log DISABLE TRIGGER no_update`);
+    try {
+      for (const r of rows) {
+        const [row] = await db.select().from(auditLog).where(eq(auditLog.id, r.id));
+        const rowHmac = computeRowHmacV3(previousSecret, {
+          timestamp: row.timestamp,
+          eventType: row.eventType,
+          actorType: row.actorType,
+          actorId: row.actorId,
+          resource: row.resource,
+          detail: row.detail,
+          outcome: (row.outcome ?? "success") as "success" | "failure",
+          error: row.error as { message: string } | null,
+          prevHmac: prev,
+        });
+        await db.execute(
+          sql`UPDATE audit_log SET prev_hmac = ${prev}, row_hmac = ${rowHmac} WHERE id = ${r.id}`
+        );
+        prev = rowHmac;
+      }
+    } finally {
+      await db.execute(sql`ALTER TABLE audit_log ENABLE TRIGGER no_update`);
+    }
+
+    // Sweep 1 covers only old-key rows: nothing active yet, so the prefix holds.
+    const first = await sweepAuditVerify();
+    expect(first.valid).toBe(true);
+    expect(first.previousKeyCount).toBe(2);
+
+    // Active-key rows after the rotation verify normally in the next window.
+    await appendRow("u3");
+    const second = await sweepAuditVerify();
+    expect(second.valid).toBe(true);
+    expect(second.previousKeyCount).toBe(0);
   });
 });

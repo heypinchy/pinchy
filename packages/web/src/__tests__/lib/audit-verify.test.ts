@@ -545,6 +545,35 @@ describe("verifyIntegrity across a signing-secret rotation", () => {
     expect(result.valid).toBe(false);
   });
 
+  it("seedActiveKeySeen: an old-key row is invalid when an earlier window already saw the active key", async () => {
+    // An incremental verifier resumes mid-chain and cannot see the rows before
+    // its window. Its checkpoint tells it the rotation already happened.
+    const r1 = makeV3SignedWith(5, "checkpoint-hmac", previousSecret);
+    mockLimit.mockResolvedValue([r1]);
+
+    const result = await verifyIntegrity(5, 5, {
+      seedPrevHmac: "checkpoint-hmac",
+      seedActiveKeySeen: true,
+    });
+
+    expect(result.invalidIds).toEqual([5]);
+    expect(result.previousKeyIds).toEqual([]);
+    expect(result.valid).toBe(false);
+  });
+
+  it("seedActiveKeySeen: false (or omitted) keeps the previous key acceptable at the window start", async () => {
+    const r1 = makeV3SignedWith(5, "checkpoint-hmac", previousSecret);
+    mockLimit.mockResolvedValue([r1]);
+
+    const result = await verifyIntegrity(5, 5, {
+      seedPrevHmac: "checkpoint-hmac",
+      seedActiveKeySeen: false,
+    });
+
+    expect(result.previousKeyIds).toEqual([5]);
+    expect(result.valid).toBe(true);
+  });
+
   it("keeps the prefix rule across page boundaries", async () => {
     const r1 = makeV3SignedWith(1, null, previousSecret);
     const r2 = makeV3SignedWith(2, r1.rowHmac, secret);

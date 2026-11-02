@@ -19,8 +19,10 @@ const {
   mockOnConflictDoUpdate,
   mockInsert,
   mockSelect,
+  mockIsRowSignedWithActiveKey,
 } = vi.hoisted(() => {
   const mockVerifyIntegrity = vi.fn();
+  const mockIsRowSignedWithActiveKey = vi.fn().mockResolvedValue(false);
   const mockAppendAuditLog = vi.fn().mockResolvedValue(undefined);
   const mockRecordAuditFailure = vi.fn();
 
@@ -86,12 +88,14 @@ const {
     mockOnConflictDoUpdate,
     mockInsert,
     mockSelect,
+    mockIsRowSignedWithActiveKey,
   };
 });
 
 vi.mock("@/lib/audit", () => ({
   verifyIntegrity: mockVerifyIntegrity,
   appendAuditLog: mockAppendAuditLog,
+  isRowSignedWithActiveKey: mockIsRowSignedWithActiveKey,
 }));
 
 vi.mock("@/lib/audit-deferred", () => ({
@@ -163,6 +167,7 @@ describe("sweepAuditVerify", () => {
     // Tests that reach the append override this via mockOwnReportRow.
     mockAppendAuditLog.mockResolvedValue(undefined);
     mockRacedRow(null);
+    mockIsRowSignedWithActiveKey.mockResolvedValue(false);
   });
 
   it("no new rows since the checkpoint (toId < fromId): no-op, verifyIntegrity never called", async () => {
@@ -192,7 +197,10 @@ describe("sweepAuditVerify", () => {
     const result = await sweepAuditVerify();
 
     expect(result.scanned).toBe(false);
-    expect(mockVerifyIntegrity).toHaveBeenCalledWith(11, 11, { seedPrevHmac: "abc" });
+    expect(mockVerifyIntegrity).toHaveBeenCalledWith(11, 11, {
+      seedPrevHmac: "abc",
+      seedActiveKeySeen: false,
+    });
     expect(mockAppendAuditLog).not.toHaveBeenCalled();
     expect(mockInsert).not.toHaveBeenCalled();
   });
@@ -225,7 +233,10 @@ describe("sweepAuditVerify", () => {
 
     await sweepAuditVerify();
 
-    expect(mockVerifyIntegrity).toHaveBeenCalledWith(1, 5, { seedPrevHmac: null });
+    expect(mockVerifyIntegrity).toHaveBeenCalledWith(1, 5, {
+      seedPrevHmac: null,
+      seedActiveKeySeen: false,
+    });
   });
 
   it("clean run: advances the checkpoint past its own report row and emits audit.integrity_check success", async () => {
@@ -245,7 +256,10 @@ describe("sweepAuditVerify", () => {
 
     const result = await sweepAuditVerify();
 
-    expect(mockVerifyIntegrity).toHaveBeenCalledWith(11, 13, { seedPrevHmac: "hmac-10" });
+    expect(mockVerifyIntegrity).toHaveBeenCalledWith(11, 13, {
+      seedPrevHmac: "hmac-10",
+      seedActiveKeySeen: false,
+    });
     expect(result).toEqual({
       scanned: true,
       scannedFrom: 11,
@@ -504,6 +518,49 @@ describe("sweepAuditVerify", () => {
     const call = mockAppendAuditLog.mock.calls[0][0];
     expect(call.detail.invalidCount).toBe(80);
     expect(call.detail.invalidIds.length).toBeLessThan(80);
+  });
+
+  it("seeds verifyIntegrity with whether the checkpoint row is already signed under the active key", async () => {
+    // The previous key is only valid before a rotation. A window cannot see the
+    // rows before it, so the sweep answers for it from the checkpoint row.
+    mockCheckpointRow({ lastVerifiedId: 10, lastVerifiedHmac: "hmac-10" });
+    mockCurrentMaxId(11);
+    mockIsRowSignedWithActiveKey.mockResolvedValue(true);
+    mockVerifyIntegrity.mockResolvedValue({
+      valid: true,
+      totalChecked: 1,
+      invalidIds: [],
+      chainBreakIds: [],
+      previousKeyIds: [],
+    });
+    mockLastScannedRow({ id: 11, rowHmac: "hmac-11" });
+    mockOwnReportRow(12, "hmac-12");
+
+    await sweepAuditVerify();
+
+    expect(mockIsRowSignedWithActiveKey).toHaveBeenCalledWith(10);
+    expect(mockVerifyIntegrity).toHaveBeenCalledWith(11, 11, {
+      seedPrevHmac: "hmac-10",
+      seedActiveKeySeen: true,
+    });
+  });
+
+  it("does not look up a checkpoint row on the very first sweep", async () => {
+    mockCheckpointRow(null);
+    mockCurrentMaxId(2);
+    mockVerifyIntegrity.mockResolvedValue({
+      valid: true,
+      totalChecked: 2,
+      invalidIds: [],
+      chainBreakIds: [],
+      previousKeyIds: [],
+    });
+    mockLastScannedRow({ id: 2, rowHmac: "hmac-2" });
+    mockOwnReportRow(3, "hmac-3");
+
+    await sweepAuditVerify();
+
+    expect(mockIsRowSignedWithActiveKey).not.toHaveBeenCalled();
   });
 
   it("records rows verified under the superseded secret, and does NOT call it a violation", async () => {

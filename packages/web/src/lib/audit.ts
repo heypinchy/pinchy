@@ -1184,6 +1184,35 @@ interface VerifyResult {
   previousKeyIds: number[];
 }
 
+/**
+ * Does the stored row `id` verify under the ACTIVE signing key?
+ *
+ * The incremental sweep uses this on its checkpoint row to seed
+ * `verifyIntegrity`'s `seedActiveKeySeen` (see there). A missing row, an unknown
+ * row version or a signature that does not verify all answer false: the
+ * conservative direction for a seed is "no rotation seen yet", and a checkpoint
+ * row that was deleted or altered is reported by the chain checks regardless.
+ */
+export async function isRowSignedWithActiveKey(id: number): Promise<boolean> {
+  const [entry] = await db.select().from(auditLog).where(eq(auditLog.id, id)).limit(1);
+  if (!entry) return false;
+  const verifier = ROW_HMAC_VERIFIERS[entry.version];
+  if (!verifier) return false;
+  return (
+    verifier(getOrCreateSecret("audit_hmac_secret"), {
+      timestamp: entry.timestamp,
+      eventType: entry.eventType,
+      actorType: entry.actorType,
+      actorId: entry.actorId,
+      resource: entry.resource,
+      detail: entry.detail,
+      outcome: (entry.outcome ?? "success") as "success" | "failure",
+      error: entry.error as { message: string } | null,
+      prevHmac: entry.prevHmac,
+    }) === entry.rowHmac
+  );
+}
+
 // Rows processed per fetch. The whole audit_log can grow unbounded, so loading
 // it all at once (the old behavior) risked OOM-ing the process on a large table.
 // Keyset pagination caps resident memory to one page regardless of table size.
@@ -1203,6 +1232,15 @@ export async function verifyIntegrity(
     // (the default, omitting the option) preserves the pre-existing
     // unchecked-root behavior for existing callers.
     seedPrevHmac?: string | null;
+    // Whether a row BEFORE this window already verified under the active key.
+    // The previous signing key is only acceptable for the rows that pre-date
+    // the rotation, and a windowed verifier cannot see that from its own rows:
+    // a window of forged old-key rows that follows an active-key checkpoint
+    // would otherwise look like a legitimate pre-rotation prefix. An
+    // incremental verifier derives this from its checkpoint row and passes it
+    // here; omitted (the default) means "the window starts at the chain's
+    // beginning", which is correct for a full-range verification.
+    seedActiveKeySeen?: boolean;
   }
 ): Promise<VerifyResult> {
   const secret = getOrCreateSecret("audit_hmac_secret");
@@ -1218,7 +1256,7 @@ export async function verifyIntegrity(
   let totalChecked = 0;
   // Set once a row verifies under the ACTIVE key. Carried across pages: the
   // previous key is only acceptable before the first such row.
-  let activeKeySeen = false;
+  let activeKeySeen = opts?.seedActiveKeySeen ?? false;
   // rowHmac of the previous row in range; undefined before the first row so the
   // first row in a partial range isn't chain-checked against a missing
   // predecessor — UNLESS seedPrevHmac was supplied, in which case it seeds the
