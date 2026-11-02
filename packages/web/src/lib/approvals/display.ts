@@ -61,6 +61,28 @@ export const TARGET_KEYS: ReadonlySet<string> = new Set([
  */
 export const FULL_VIEW_KEYS: ReadonlySet<string> = new Set([...RECIPIENT_KEYS, ...TARGET_KEYS]);
 
+/** An email address: no whitespace, one `@`, nothing that makes it a list. */
+export const EMAIL_SHAPED = /^[^\s@<>,;/]+@([^\s@<>,;/:?#]+)$/u;
+/** A URL with an authority: `scheme://[userinfo@]host[:port]…`. The captured
+ * host is the one the text READS as; `summary.ts` asks the URL parser for the
+ * one it resolves to. */
+export const URL_SHAPED = /^[A-Za-z][A-Za-z0-9+.-]*:\/\/(?:[^/?#\s@]*@)?(\[[^\]]*\]|[^/?#\s:]+)/u;
+
+/** The host note `summary.ts` appends to an address: ` (xn--…)`. */
+const HOST_NOTE = / \([^()]*\)$/u;
+
+/**
+ * Is this stored value an email address or a URL — the shapes whose host is
+ * the decision? The card never shortens one to a preview: a 217-character
+ * address whose `@evil.com` sits past the cut reads as the familiar name its
+ * local part spells (fourth review of #1242). Tested on the stored text, with
+ * the host note the summary may have appended taken off first.
+ */
+export function isAddressShaped(text: string): boolean {
+  const bare = text.replace(HOST_NOTE, "");
+  return URL_SHAPED.test(bare) || EMAIL_SHAPED.test(bare);
+}
+
 /** Would `text`, printed bare, read as a value of another type? */
 function readsAsLiteral(text: string): boolean {
   if (text.trim() === "") return true;

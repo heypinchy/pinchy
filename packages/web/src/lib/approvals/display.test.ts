@@ -1,7 +1,13 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync, readdirSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
-import { FULL_VIEW_KEYS, displayScalar, splitTruncation, truncationMarker } from "./display";
+import {
+  FULL_VIEW_KEYS,
+  displayScalar,
+  isAddressShaped,
+  splitTruncation,
+  truncationMarker,
+} from "./display";
 
 describe("displayScalar: one rendering per type, so no value passes for another", () => {
   it("renders non-string values as their JSON literal", () => {
@@ -94,4 +100,24 @@ describe("FULL_VIEW_KEYS covers every path- or target-like tool parameter", () =
       expect(FULL_VIEW_KEYS).toContain(key);
     }
   });
+});
+
+// Fourth review of #1242: the card shows an address or URL in full at any key,
+// so the host at its end is never behind a preview.
+describe("isAddressShaped", () => {
+  it.each([
+    "billing@firma.at",
+    "billing@f\u0456rma.at (xn--frma-l9d.at)",
+    "https://firma.at/pay",
+    "https://evil.com\\@firma.at/x (evil.com)",
+  ])("treats %j as an address", (text) => {
+    expect(isAddressShaped(text)).toBe(true);
+  });
+
+  it.each(["Bitte an billing@firma.at schreiben", "Rechnung Q3", "a@b, c@d"])(
+    "treats %j as text",
+    (text) => {
+      expect(isAddressShaped(text)).toBe(false);
+    }
+  );
 });

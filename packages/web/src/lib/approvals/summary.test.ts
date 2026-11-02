@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll } from "vitest";
 import { domainToASCII } from "node:url";
-import { summarizeArgs, summarizeCall } from "./summary";
+import { describeRefusal, summarizeArgs, summarizeCall } from "./summary";
 import { makeRefResolver } from "./call-models";
 // The pinchy-odoo encoder, so the ref rendering is tested against real refs —
 // see call-models.test.ts for why this crosses the package boundary.
@@ -44,10 +44,17 @@ describe("summarizeArgs", () => {
     expect(JSON.stringify(out)).not.toContain("attacker-known-0000");
   });
 
-  it("names the kind of a hidden non-text secret value instead of its length", () => {
+  // Corrected expectation (fourth review of #1242): a secret-like key hid ANY
+  // value, so `payment_token_id: 7` and a whole object read as one opaque
+  // redaction. Only text is hidden now — a number, boolean or null cannot be a
+  // credential, and an object is shown field by field with its texts hidden.
+  it("hides the texts inside an object under a secret-like key, and shows a null as null", () => {
     const out = summarizeArgs({ credentials: { user: "a", pass: "b" }, api_key: null });
-    expect(out.credentials).toBe("[secret-like field is being set — value hidden, an object]");
-    expect(out.api_key).toBe("[secret-like field is being set — value hidden, null]");
+    expect(out.credentials).toEqual({
+      user: "[secret-like field is being set — value hidden, 1 character]",
+      pass: "[secret-like field is being set — value hidden, 1 character]",
+    });
+    expect(out.api_key).toBeNull();
   });
 
   it("keeps a long string whole up to the stored limit, so the card can offer the full text", () => {
@@ -59,10 +66,12 @@ describe("summarizeArgs", () => {
   // 4,000 to 20,000 characters, so an ordinary long body fits whole, and the
   // probe needs a longer string to cross it. A cut string now also makes the
   // call unapprovable (see "a call the card cannot show in full").
+  // Corrected again (fourth review of #1242): the limit is now 200,000
+  // characters of the text as sent, so the probe is 250,000 long.
   it("marks a string that exceeds the stored limit as truncated, and says by how much", () => {
-    const out = summarizeArgs({ body: "a".repeat(30_000) }) as { body: string };
-    expect(out.body).toMatch(/\[truncated: \d+ more characters not shown\]$/);
-    expect(out.body.length).toBeLessThan(21_000);
+    const out = summarizeArgs({ body: "a".repeat(250_000) }) as { body: string };
+    expect(out.body).toMatch(/\[truncated: 50000 more characters not shown\]$/);
+    expect(out.body.length).toBeLessThan(201_000);
   });
 
   it("shows the contents of arrays and objects, not a shape hint", () => {
@@ -209,13 +218,14 @@ describe("summarizeArgs", () => {
     });
 
     // Corrected expectation (third review of #1242): the total budget rose
-    // from 16,000 to 64,000 characters, so the bound sits higher.
+    // from 16,000 to 64,000 characters, so the bound sits higher. Corrected
+    // again (fourth review): the budget is now 512,000, and so is the probe.
     it("bounds the total size, and says that it did", () => {
       const huge = Object.fromEntries(
-        Array.from({ length: 25 }, (_, i) => [`k${i}`, "z".repeat(3_900)])
+        Array.from({ length: 25 }, (_, i) => [`k${i}`, "z".repeat(25_000)])
       );
       const json = JSON.stringify(summarizeArgs(huge));
-      expect(json.length).toBeLessThan(70_000);
+      expect(json.length).toBeLessThan(530_000);
       expect(json).toMatch(/not shown/);
     });
 
@@ -432,9 +442,11 @@ describe("summarizeArgs", () => {
 
     // Filler keys before `to` used to eat the size budget, so the recipient was
     // cut — or pushed past MAX_KEYS altogether.
+    // Corrected probe (fourth review of #1242): the budget rose to 512,000,
+    // so the filler grows past it to keep exhausting it.
     it("renders recipients in full even behind filler that exhausts the budget", () => {
       const filler = Object.fromEntries(
-        Array.from({ length: 40 }, (_, i) => [`f${String(i).padStart(2, "0")}`, "z".repeat(3_999)])
+        Array.from({ length: 40 }, (_, i) => [`f${String(i).padStart(2, "0")}`, "z".repeat(15_000)])
       );
       const out = summarizeArgs({ ...filler, to: "attacker@evil.com", cc: "x@evil.com" });
       expect(out.to).toBe("attacker@evil.com");
@@ -451,13 +463,17 @@ describe("summarizeArgs", () => {
       expect(out.reply_to).toBe("r@evil.com");
     });
 
+    // Corrected bound (fourth review of #1242): the total budget rose from
+    // 64,000 to 512,000, so the summary may be larger — but against 12.5
+    // million characters of keys sent, it still stays within the budget's
+    // documented ceiling of about twice MAX_TOTAL_CHARS.
     it("stays bounded when every field carries a long key", () => {
       const wide = Object.fromEntries(
         Array.from({ length: 25 }, (_, i) => [`${i}${"\u{E0041}".repeat(5_000)}`, i])
       );
       const items = Array.from({ length: 50 }, () => wide);
       const json = JSON.stringify(summarizeArgs({ items }));
-      expect(json.length).toBeLessThan(100_000);
+      expect(json.length).toBeLessThan(1_100_000);
       expect(json).toMatch(/not shown/);
     });
   });
@@ -584,7 +600,8 @@ describe("summarizeArgs", () => {
           return { deep };
         },
       ],
-      ["a string longer than the stored limit", () => ({ body: "a".repeat(20_001) })],
+      // Probe sized to the fourth review's limit of 200,000 characters.
+      ["a string longer than the stored limit", () => ({ body: "a".repeat(200_001) })],
       ["a key longer than the label limit", () => ({ ["k".repeat(101)]: 1 })],
       [
         "more recipients than a list shows",
@@ -599,15 +616,16 @@ describe("summarizeArgs", () => {
     // The review's budget probe: four long strings used up the budget, and the
     // field after them — the bank account the invoice is paid to — became
     // "1 more field not shown". It is never silently dropped and approved.
+    // Probe sized to the fourth review's budget of 512,000 characters.
     it("reports a call that exhausts the total budget as incomplete, never drops a key quietly", () => {
       const params = {
         model: "account.move",
         ids: [42],
         values: {
-          narration: "a".repeat(19_000),
-          ref: "b".repeat(19_000),
-          x1: "c".repeat(19_000),
-          x2: "d".repeat(19_000),
+          narration: "a".repeat(150_000),
+          ref: "b".repeat(150_000),
+          x1: "c".repeat(150_000),
+          x2: "d".repeat(150_000),
           partner_bank_id: 666,
         },
       };
@@ -669,11 +687,19 @@ describe("summarizeArgs", () => {
   describe("surrogates", () => {
     const LONE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
 
+    // Corrected probe (fourth review of #1242): one string no longer reaches
+    // the budget, so a filler field spends most of it first; with and without
+    // a leading "a", one of the two cuts lands on a pair boundary.
     it("never cuts a string between the halves of an emoji", () => {
-      const out = summarizeArgs({ body: `a${"😀".repeat(15_000)}` }) as { body: string };
-      expect(out.body).toMatch(/not shown\]$/);
-      expect(LONE.test(out.body)).toBe(false);
-      expect(JSON.stringify(out)).not.toMatch(/\\ud[89ab][0-9a-f]{2}/i);
+      for (const lead of ["", "a"]) {
+        const out = summarizeArgs({
+          a: "z".repeat(199_000),
+          body: `${lead}${"😀".repeat(199_000)}`,
+        }) as { body: string };
+        expect(out.body).toMatch(/not shown\]$/);
+        expect(LONE.test(out.body)).toBe(false);
+        expect(JSON.stringify(out)).not.toMatch(/\\ud[89ab][0-9a-f]{2}/i);
+      }
     });
 
     it("escapes a lone surrogate in the input as a marker", () => {
@@ -699,6 +725,231 @@ describe("summarizeArgs", () => {
 
     it("keeps a lone carriage return escaped", () => {
       expect(summarizeArgs({ body: "a\rb\n\rc" }).body).toBe("a⟨U+000D⟩b\n⟨U+000D⟩c");
+    });
+  });
+
+  // Fourth review of #1242: the per-string limit was 20,000 characters of the
+  // ESCAPED text, so a gated pinchy_write of a 25 KB report, or a mail body
+  // with no-break spaces (each shown as an 8-character marker), could never be
+  // confirmed — and "split it into smaller calls" is advice nobody can follow
+  // for one file or one mail.
+  describe("long texts (fourth review of #1242)", () => {
+    it("lets a gated pinchy_write of a 30,000-character report through, stored whole", () => {
+      const content = "Quarterly report line.\n".repeat(1_305).slice(0, 30_000);
+      const { summary, incomplete, exceeded } = summarizeCall({
+        path: "/data/out/report.md",
+        content,
+      });
+      expect(incomplete).toBe(false);
+      expect(exceeded).toBeNull();
+      expect(summary.content).toBe(content);
+    });
+
+    it("measures a text by its own length, not by the markers it is shown with", () => {
+      // 18,000 characters, one in eight a no-break space: shown, each NBSP is an
+      // eight-character marker, so the rendered text is far past 20,000.
+      const body = "Preis € ".repeat(2_250);
+      expect([...body].length).toBe(18_000);
+      const { summary, incomplete } = summarizeCall({ to: "a@b.at", subject: "s", body });
+      expect(incomplete).toBe(false);
+      expect(summary.body).toBe(body.replaceAll(" ", "⟨U+00A0⟩"));
+    });
+
+    it("refuses a 250,000-character text, and says which value, how long, and the limit", () => {
+      const { incomplete, exceeded } = summarizeCall({
+        path: "/data/out/dump.txt",
+        content: "x".repeat(250_000),
+      });
+      expect(incomplete).toBe(true);
+      expect(exceeded).toEqual({
+        kind: "text-too-long",
+        at: "content",
+        length: 250_000,
+        limit: 200_000,
+      });
+    });
+
+    it("counts code points, so an emoji is one character", () => {
+      expect(summarizeCall({ body: "😀".repeat(200_000) }).incomplete).toBe(false);
+      expect(summarizeCall({ body: "😀".repeat(200_001) }).exceeded).toMatchObject({
+        kind: "text-too-long",
+        length: 200_001,
+      });
+    });
+
+    it("names the path of a nested value that is too long", () => {
+      const { exceeded } = summarizeCall({
+        model: "res.partner",
+        values: { comment: "x".repeat(200_001) },
+        lines: [{ note: "ok" }],
+      });
+      expect(exceeded).toMatchObject({ kind: "text-too-long", at: "values.comment" });
+      expect(
+        summarizeCall({ lines: [{ note: "ok" }, { note: "x".repeat(200_001) }] }).exceeded
+      ).toMatchObject({ at: "lines[1].note" });
+    });
+
+    it("still bounds what is stored: a text whose markers blow past the total is refused", () => {
+      // 150,000 characters, every other one invisible: within the per-text
+      // limit, but shown as ~700,000 characters — more than the row may hold.
+      const { incomplete, exceeded } = summarizeCall({ body: "a\u{E0041}".repeat(75_000) });
+      expect(incomplete).toBe(true);
+      expect(exceeded).toEqual({ kind: "too-large-in-all", limit: 512_000 });
+    });
+  });
+
+  // Fourth review of #1242: numbers, booleans, null and empty containers
+  // cost nothing, so 200×200×50 numbers produced a 5.7 MB summary.
+  describe("every value counts against the total (fourth review of #1242)", () => {
+    const grid = (a: number, b: number, c: number) =>
+      Array.from({ length: a }, () =>
+        Array.from({ length: b }, () => Array.from({ length: c }, (_, i) => i))
+      );
+
+    it("refuses 200×200×50 numbers as too large in all, and stays bounded", () => {
+      const { summary, incomplete, exceeded } = summarizeCall({ rows: grid(200, 200, 50) });
+      expect(incomplete).toBe(true);
+      expect(exceeded).toEqual({ kind: "too-large-in-all", limit: 512_000 });
+      expect(JSON.stringify(summary).length).toBeLessThan(1_100_000);
+    });
+
+    it("refuses a grid of empty objects past the budget", () => {
+      const empties = Array.from({ length: 200 }, () =>
+        Array.from({ length: 200 }, () => Array.from({ length: 10 }, () => ({})))
+      );
+      const { incomplete, summary } = summarizeCall({ a: empties });
+      expect(incomplete).toBe(true);
+      expect(JSON.stringify(summary).length).toBeLessThan(1_100_000);
+    });
+
+    it("still shows a 200×200 grid of numbers in full", () => {
+      const rows = grid(1, 200, 200)[0];
+      const { summary, incomplete } = summarizeCall({ rows });
+      expect(incomplete).toBe(false);
+      expect(summary.rows).toEqual(rows);
+    });
+  });
+
+  describe("what the refusal says (fourth review of #1242)", () => {
+    it.each([
+      [
+        "too many fields",
+        { values: Object.fromEntries(Array.from({ length: 101 }, (_, i) => [`k${i}`, i])) },
+        { kind: "too-many-fields", at: "values", count: 101, limit: 100 },
+      ],
+      [
+        "too many items",
+        { ids: Array.from({ length: 201 }, (_, i) => i) },
+        { kind: "too-many-items", at: "ids", count: 201, limit: 200 },
+      ],
+      [
+        "too many recipients",
+        { to: Array.from({ length: 201 }, (_, i) => `a${i}@x.at`).join(", ") },
+        { kind: "too-many-recipients", at: "to", count: 201, limit: 200 },
+      ],
+      [
+        "a key too long",
+        { values: { ["k".repeat(101)]: 1 } },
+        { kind: "key-too-long", at: "values", length: 101, limit: 100 },
+      ],
+    ])("reports %s, where, and the limit", (_label, params, expected) => {
+      expect(summarizeCall(params).exceeded).toEqual(expected);
+    });
+
+    it("reports nesting that is too deep, and where", () => {
+      let deep: unknown = "bottom";
+      for (let i = 0; i < 12; i++) deep = { n: deep };
+      expect(summarizeCall({ deep }).exceeded).toMatchObject({
+        kind: "nested-too-deep",
+        limit: 10,
+      });
+    });
+
+    it("tells the agent to split a call only when splitting can help", () => {
+      const split = /split it into smaller calls/i;
+      expect(
+        describeRefusal({ kind: "text-too-long", at: "content", length: 250_000, limit: 200_000 })
+      ).not.toMatch(split);
+      const long = describeRefusal({
+        kind: "text-too-long",
+        at: "content",
+        length: 250_000,
+        limit: 200_000,
+      });
+      expect(long).toMatch(/content/);
+      expect(long).toMatch(/250,000/);
+      expect(long).toMatch(/200,000/);
+      expect(long).toMatch(/too long to show for approval/i);
+      expect(
+        describeRefusal({ kind: "too-many-items", at: "ids", count: 201, limit: 200 })
+      ).toMatch(split);
+      expect(describeRefusal({ kind: "too-large-in-all", limit: 512_000 })).toMatch(split);
+      expect(describeRefusal({ kind: "nested-too-deep", at: "deep", limit: 10 })).not.toMatch(
+        split
+      );
+    });
+  });
+
+  // Fourth review of #1242: the secret rule matched by key substring and hid
+  // ANY value — `payment_token_id: 7`, `token_ids: [1, 2]`, a whole object
+  // with a recipient in it.
+  describe("secret-like keys hide text, not record ids (fourth review of #1242)", () => {
+    it("shows a number, boolean or null under a secret-like key", () => {
+      const out = summarizeArgs({ access_token: 7, has_password: true, api_key: null });
+      expect(out).toEqual({ access_token: 7, has_password: true, api_key: null });
+    });
+
+    it("shows record ids under keys ending in _id / _ids in full", () => {
+      const out = summarizeArgs({
+        model: "account.payment",
+        values: { payment_token_id: 7, token_ids: [[6, 0, [1, 2]]], api_key_ids: "3" },
+      }) as { values: Record<string, unknown> };
+      expect(out.values).toEqual({
+        payment_token_id: 7,
+        token_ids: [[6, 0, [1, 2]]],
+        api_key_ids: "3",
+      });
+    });
+
+    it("recurses into an object under a secret-like key, hiding the texts in it", () => {
+      const out = summarizeArgs({
+        x_credential_info: { to: "attacker@evil.com", port: 993, ssl: true },
+      });
+      expect(out.x_credential_info).toEqual({
+        to: "[secret-like field is being set — value hidden, 17 characters]",
+        port: 993,
+        ssl: true,
+      });
+      expect(JSON.stringify(out)).not.toContain("evil.com");
+    });
+  });
+
+  // Fourth review of #1242: the host was read with a regex, which disagrees
+  // with the URL parser the tool uses — `https://fіrma.at\@evil.com/x` read as
+  // evil.com, while WHATWG resolves the host to fіrma.at (a backslash is a
+  // path separator in a special URL).
+  describe("the host a URL resolves to (fourth review of #1242)", () => {
+    it("annotates the host the URL parser resolves, not the one a regex reads", () => {
+      const value = "https://fіrma.at\\@evil.com/x";
+      const out = summarizeArgs({ url: value });
+      expect(out.url).toBe(`${value} (${new URL(value).hostname})`);
+      expect(new URL(value).hostname).toBe("xn--frma-l9d.at");
+    });
+
+    it("names the real host when the text reads as a different one", () => {
+      const value = "https://evil.com\\@firma.at/x";
+      expect(summarizeArgs({ website: value }).website).toBe(`${value} (evil.com)`);
+    });
+
+    it("names the host behind percent-encoding and numeric forms", () => {
+      expect(summarizeArgs({ url: "https://fir%6Da.at/" }).url).toBe(
+        "https://fir%6Da.at/ (firma.at)"
+      );
+      expect(summarizeArgs({ url: "http://0x7f.1/" }).url).toBe("http://0x7f.1/ (127.0.0.1)");
+    });
+
+    it("leaves a URL whose host reads as it resolves alone, case aside", () => {
+      expect(summarizeArgs({ url: "https://Firma.at/pay" }).url).toBe("https://Firma.at/pay");
     });
   });
 });

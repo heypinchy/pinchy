@@ -239,7 +239,9 @@ One limit follows from the NFC rule. A file stored under a decomposed (NFD) name
 
 #### Confirmations refuse calls too large to show in full
 
-When a tool needs your confirmation, the card now always shows the whole call. A call too large for that — more than 100 fields in an object, 200 entries in a list, 20,000 characters in one text or 64,000 in all — used to get a card with "… not shown" in place of the rest; it is now refused before any card opens, the agent is told to split it into smaller calls, and the audit trail records `approval.refused`. Ordinary work, such as an Odoo invoice with dozens of lines, fits well within these limits. See [Tool confirmation](/guides/tool-confirmation/#the-card-shows-what-will-run).
+When a tool needs your confirmation, the card now always shows the whole call. A call too large for that — more than 100 fields in an object, 200 entries in a list, 200,000 characters in one text (as the agent sent it) or 512,000 characters in all (as shown on the card) — used to get a card with "… not shown" in place of the rest; it is now refused before any card opens, the agent is told which limit the call crossed and where, and the audit trail records `approval.refused`. Where splitting helps — too many fields, entries or recipients, or too much in all — the agent is told to split the call; a single text that is too long can't be split, so the agent is told so and stops. Ordinary work, such as an Odoo invoice with dozens of lines or a report of a few dozen pages written with `pinchy_write`, fits well within these limits.
+
+The card also changed in three smaller ways. Only text under a secret-like field name is hidden now: numbers, `true`/`false`, `null` and record ids (fields ending in `_id` or `_ids`) are shown, and a list or object under such a name is shown field by field with its text hidden. A web address names the server it actually reaches when that differs from the one it reads as. And an email address or web address is never shortened to a preview. See [Tool confirmation](/guides/tool-confirmation/#the-card-shows-what-will-run).
 
 ### Upgrade notes
 

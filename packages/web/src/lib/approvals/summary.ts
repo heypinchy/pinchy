@@ -20,8 +20,9 @@
  * it (third review of #1242): a marker is honest, but a person who clicks
  * "Approve" on "1 more field not shown" still approves the field. The bounds
  * are sized so ordinary work — an Odoo invoice with dozens of lines, a long
- * mail body — fits whole; only an oversized call is refused, and the agent is
- * told to split it.
+ * mail body, a report written to a file — fits whole; only an oversized call
+ * is refused, and the agent is told which bound it crossed (`exceeded`,
+ * `describeRefusal`), and to split the call only where splitting can help.
  *
  *
  * - Strings are kept as sent — never trimmed or whitespace-collapsed, since a
@@ -40,8 +41,10 @@
  *   `⟨N tabs⟩`, so padding cannot push text out of view. Only U+200D (the emoji
  *   joiner) and U+FE0E / U+FE0F (text / emoji presentation) are left alone:
  *   they carry no payload and sit inside ordinary emoji. Strings are kept whole
- *   up to MAX_STRING_LEN; the card shows a preview and the full text on demand.
- *   A cut never lands between the two halves of a surrogate pair.
+ *   up to MAX_STRING_LEN characters as SENT — the markers a text is shown with
+ *   do not count against that, only against the total — and the card shows a
+ *   preview and the full text on demand. A cut never lands between the two
+ *   halves of a surrogate pair.
  * - Keys are never merged. A key that is not a plain identifier is shown
  *   quoted and escaped, so `"to "` (trailing space) is its own row next to
  *   `to` — trimming it into `to` once let a second, look-alike key overwrite
@@ -56,7 +59,9 @@
  *   domain is shown in punycode too, so a homoglyph domain reads as the
  *   different domain it is. The same goes for ANY value that is shaped like an
  *   email address or a URL, at any key and depth — an Odoo `values.email` or
- *   `website` deceives the same way a `to` does. Recipient and target keys
+ *   `website` deceives the same way a `to` does. A URL's host is the one the
+ *   WHATWG parser resolves — what the tool connects to — and it is named
+ *   whenever it differs from the host the text reads as. Recipient and target keys
  *   (`FULL_VIEW_KEYS`) are
  *   rendered before anything else, so no filler in front of them can starve
  *   them of the size budget or push them past MAX_KEYS.
@@ -65,18 +70,23 @@
  *   text it is: free text that merely starts with the ref prefix is still free
  *   text, and hiding it would hide an email body.
  *
- * Secret-looking keys keep their value hidden at any depth, so a leaked
+ * Text under a secret-looking key stays hidden at any depth, so a leaked
  * summary never exposes a token — but the row says that a secret-like field is
  * being SET, and how long the value is, because an attacker-chosen token
- * written into a record is an effect the approver has to see. The recipient
- * and subject of an email ARE kept — hiding them would defeat the point of an
- * informed confirmation.
+ * written into a record is an effect the approver has to see. Only TEXT is
+ * hidden: a number, boolean or null cannot carry a credential, a key ending in
+ * `_id` / `_ids` holds record ids (`payment_token_id: 7`), and an object or
+ * list under a secret-like key is shown field by field with every text in it
+ * hidden (fourth review of #1242). The recipient and subject of an email ARE
+ * kept — hiding them would defeat the point of an informed confirmation.
  */
 import { domainToASCII } from "node:url";
 import type { RefRecord } from "./call-models";
-import { FULL_VIEW_KEYS, truncationMarker } from "./display";
+import { EMAIL_SHAPED, FULL_VIEW_KEYS, URL_SHAPED, truncationMarker } from "./display";
 
 const SECRET_KEY = /(token|secret|password|passwd|api[-_]?key|authorization|cookie|credential)/i;
+/** A record id or a list of them, whatever the rest of the key says. */
+const RECORD_ID_KEY = /_ids?$/i;
 const RECIPIENT_KEY = /^(to|cc|bcc)$/i;
 
 /*
@@ -84,24 +94,32 @@ const RECIPIENT_KEY = /^(to|cc|bcc)$/i;
  * refuses it, so they are sized for real work rather than for a tidy card:
  * an Odoo record carries a few dozen fields (`res.partner` writes of 30–60 are
  * ordinary), an invoice create a few dozen line commands, a mail body a few
- * pages. The card scrolls (`max-h-64 overflow-y-auto`) and previews long text,
- * so a large summary stays usable.
+ * pages, a file written by `pinchy_write` a report of a few dozen pages. The
+ * card scrolls (`max-h-64 overflow-y-auto`) and previews long text, so a
+ * large summary stays usable.
  *
- * Size: MAX_TOTAL_CHARS bounds the jsonb row at roughly 64 KB plus markers and
- * JSON quoting, and the inbox poll carries at most MAX_PENDING_PER_REQUESTER
- * (20) of them for one person — about 1.3 MB in the worst case, which is a
- * deliberately-sized call repeated twenty times rather than a normal day.
+ * Size: every value is charged against MAX_TOTAL_CHARS as it is SHOWN — a
+ * string by its rendered length (markers included), a key by its label, a
+ * number, boolean or null by its JSON length, and every array or object 2 —
+ * so the summary's JSON is the budget plus quoting and separators: at most
+ * about twice MAX_TOTAL_CHARS (one-digit numbers, `"`-heavy text) and close to
+ * it for ordinary text, i.e. a jsonb row of 0.5–1 MB in the worst case, and
+ * up to ~1.5 MB of UTF-8 for non-Latin text. The inbox poll lists every
+ * pending card, at most MAX_PENDING_PER_REQUESTER (20) for one person, but
+ * sends each summary once: a poll names the cards it already holds (`known`)
+ * and gets those back without their summary.
  */
-/** Longest string stored whole: ~10 pages of mail body. */
-const MAX_STRING_LEN = 20_000;
+/** Longest string stored whole, in characters as sent (code points): a
+ * report of ~60 pages, or a long mail body with room to spare. */
+const MAX_STRING_LEN = 200_000;
 const MAX_KEYS = 100;
 const MAX_ITEMS = 200;
 /** Deep enough for an Odoo invoice: values → invoice_line_ids → [0, 0, {…}] →
  * tax_ids → [6, 0, [ids]] sits at depth 7. MAX_TOTAL_CHARS bounds the size. */
 const MAX_DEPTH = 10;
-/** Total characters across all strings and keys in one summary — keeps the
- * jsonb row (and the poll response that carries every pending card) bounded. */
-const MAX_TOTAL_CHARS = 64_000;
+/** Total characters one summary may show, everything counted (see above) —
+ * keeps the jsonb row, and the poll response that carries it, bounded. */
+const MAX_TOTAL_CHARS = 512_000;
 /** Longest key (in code points) rendered; a longer one is cut and says so. */
 const MAX_KEY_LEN = 100;
 /** Longest record label rendered for a reference. */
@@ -119,12 +137,33 @@ export interface SummarizeOptions {
   refRecord?: (ref: string) => RefRecord | null;
 }
 
+/**
+ * The first bound a call crossed, and where — so the refusal can say what
+ * was too large instead of a blanket "split it". `at` is the path of the
+ * value (`values.comment`, `lines[1].note`), built from the same escaped key
+ * labels the card shows.
+ */
+export type SummaryLimit =
+  | { kind: "text-too-long"; at: string; length: number; limit: number }
+  | { kind: "key-too-long"; at: string; length: number; limit: number }
+  | { kind: "too-many-fields"; at: string; count: number; limit: number }
+  | { kind: "too-many-items"; at: string; count: number; limit: number }
+  | { kind: "too-many-recipients"; at: string; count: number; limit: number }
+  | { kind: "nested-too-deep"; at: string; limit: number }
+  | { kind: "too-large-in-all"; limit: number };
+
 interface Budget {
   chars: number;
   refRecord?: (ref: string) => RefRecord | null;
-  /** Set as soon as anything is dropped or cut. */
-  incomplete: boolean;
+  /** The first bound crossed; set as soon as anything is dropped or cut. */
+  exceeded: SummaryLimit | null;
 }
+
+function exceed(budget: Budget, limit: SummaryLimit): void {
+  budget.exceeded ??= limit;
+}
+
+const TOO_LARGE_IN_ALL: SummaryLimit = { kind: "too-large-in-all", limit: MAX_TOTAL_CHARS };
 
 /** What the confirmation card stores, and whether it is the whole call. */
 export interface CallSummary {
@@ -136,6 +175,8 @@ export interface CallSummary {
    * would approve the part they cannot see.
    */
   incomplete: boolean;
+  /** Which bound made it incomplete; null when the call fits. */
+  exceeded: SummaryLimit | null;
 }
 
 /**
@@ -263,33 +304,18 @@ function describeRef(record: RefRecord): string {
 
 /** Spends `text` against the budget, cutting it — and saying so — if needed. */
 function bounded(text: string, budget: Budget): string {
-  let allowed = Math.max(0, Math.min(MAX_STRING_LEN, budget.chars));
+  let allowed = Math.max(0, budget.chars);
   if (text.length <= allowed) {
     budget.chars -= text.length;
     return text;
   }
-  budget.incomplete = true;
+  exceed(budget, TOO_LARGE_IN_ALL);
   // Never between the two halves of a surrogate pair: the lone half would be
   // an invalid string, and Postgres refuses it in jsonb.
   const last = text.charCodeAt(allowed - 1);
   if (allowed > 0 && last >= 0xd800 && last <= 0xdbff) allowed--;
   budget.chars -= allowed;
   return `${text.slice(0, allowed)}${truncationMarker(text.length - allowed)}`;
-}
-
-/** An email address: no whitespace, one `@`, nothing that makes it a list. */
-const EMAIL_SHAPED = /^[^\s@<>,;/]+@([^\s@<>,;/:?#]+)$/u;
-/** A URL with an authority: `scheme://[userinfo@]host[:port]…`. */
-const URL_SHAPED = /^[A-Za-z][A-Za-z0-9+.-]*:\/\/(?:[^/?#\s@]*@)?(\[[^\]]*\]|[^/?#\s:]+)/u;
-
-/**
- * The host a value names, when the whole value is an email address or a URL.
- * Free text that merely contains one is left alone: rewriting the middle of a
- * mail body is not what the card is for.
- */
-function hostOf(value: string): string | null {
-  const host = URL_SHAPED.exec(value)?.[1] ?? EMAIL_SHAPED.exec(value)?.[1];
-  return host ?? null;
 }
 
 /**
@@ -303,7 +329,72 @@ function punycodeNote(host: string | null): string {
   return ` (${ascii || "not a valid domain name"})`;
 }
 
-function summarizeString(value: string, budget: Budget): string {
+/**
+ * The host a URL really reaches, as the WHATWG parser resolves it — the
+ * parser the tool's own `fetch` uses. A host the text merely reads as is not
+ * it: in `https://fіrma.at\@evil.com/x` the backslash is a path separator, so
+ * the host is fіrma.at, where a regex reading the `@` saw evil.com (fourth
+ * review of #1242). Percent-encoding, a numeric IPv4 form and a homoglyph all
+ * resolve to a host that reads differently, so that host is named whenever it
+ * differs from the text's. A non-special scheme keeps an opaque,
+ * percent-encoded host, which is decoded to read as the domain it names.
+ */
+function urlNote(value: string, textHost: string): string {
+  let host: string;
+  try {
+    host = new URL(value).hostname;
+  } catch {
+    return " (not a valid URL)";
+  }
+  if (host.includes("%")) {
+    try {
+      host = domainToASCII(decodeURIComponent(host)) || host;
+    } catch {
+      // Not decodable: show it as the parser holds it.
+    }
+  }
+  return host.toLowerCase() === textHost.toLowerCase() ? "" : ` (${host})`;
+}
+
+/**
+ * The note that names the host a value reaches, when the whole value is an
+ * email address or a URL. Free text that merely contains one is left alone:
+ * rewriting the middle of a mail body is not what the card is for.
+ */
+function hostNote(value: string): string {
+  const url = URL_SHAPED.exec(value);
+  if (url) return urlNote(value, url[1]);
+  return punycodeNote(EMAIL_SHAPED.exec(value)?.[1] ?? null);
+}
+
+/** Length in code points — characters as a person counts them. */
+function codePointLength(text: string): number {
+  let length = text.length;
+  for (let i = 0; i < text.length - 1; i++) {
+    const code = text.charCodeAt(i);
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const next = text.charCodeAt(i + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        length--;
+        i++;
+      }
+    }
+  }
+  return length;
+}
+
+/** The first `count` code points of `text`. */
+function headCodePoints(text: string, count: number): string {
+  let end = 0;
+  for (let n = 0; n < count && end < text.length; n++) {
+    const code = text.charCodeAt(end);
+    const next = text.charCodeAt(end + 1);
+    end += code >= 0xd800 && code <= 0xdbff && next >= 0xdc00 && next <= 0xdfff ? 2 : 1;
+  }
+  return text.slice(0, end);
+}
+
+function summarizeString(value: string, budget: Budget, path: string): string {
   if (value.startsWith(REF_PREFIX)) {
     // An opaque ref is 200+ characters of base64 that mean nothing to a reader.
     // What it points AT is what matters — which record, not just which kind:
@@ -318,7 +409,16 @@ function summarizeString(value: string, budget: Budget): string {
       return text;
     }
   }
-  return bounded(renderText(value) + punycodeNote(hostOf(value)), budget);
+  // Measured as SENT, not as shown: a no-break space is one character a
+  // person typed, though it is shown as an eight-character marker. The
+  // markers count against the total, which bounds what is stored.
+  const length = codePointLength(value);
+  if (length > MAX_STRING_LEN) {
+    exceed(budget, { kind: "text-too-long", at: path, length, limit: MAX_STRING_LEN });
+    const head = renderText(headCodePoints(value, MAX_STRING_LEN));
+    return bounded(head, budget) + truncationMarker(length - MAX_STRING_LEN);
+  }
+  return bounded(renderText(value) + hostNote(value), budget);
 }
 
 /**
@@ -380,19 +480,24 @@ function describeRecipient(entry: string): string {
   return name ? `${address} (name: ${JSON.stringify(renderText(name))})` : address;
 }
 
-function summarizeRecipients(value: unknown, budget: Budget): unknown | undefined {
+function summarizeRecipients(value: unknown, budget: Budget, path: string): unknown | undefined {
   const raw = typeof value === "string" ? [value] : Array.isArray(value) ? value : null;
   if (!raw || !raw.every((entry) => typeof entry === "string")) return undefined;
   const addresses = raw
     .flatMap((entry) => splitAddresses(entry as string))
     .map((entry) => entry.replace(ENTRY_PADDING, ""))
     .filter((entry) => entry.length > 0);
-  if (addresses.length === 0) return summarizeString(raw.join(" "), budget);
+  if (addresses.length === 0) return summarizeString(raw.join(" "), budget, path);
   const shown = addresses
     .slice(0, MAX_ITEMS)
     .map((address) => bounded(describeRecipient(address), budget));
   if (addresses.length > MAX_ITEMS) {
-    budget.incomplete = true;
+    exceed(budget, {
+      kind: "too-many-recipients",
+      at: path,
+      count: addresses.length,
+      limit: MAX_ITEMS,
+    });
     shown.push(`… [${addresses.length - MAX_ITEMS} more addresses not shown]`);
   }
   return shown.length === 1 ? shown[0] : shown;
@@ -403,43 +508,58 @@ function plural(count: number, noun: string): string {
 }
 
 /**
- * A secret-like value stays hidden — it may be a real secret, and the summary
+ * A secret-like text stays hidden — it may be a real secret, and the summary
  * is stored — but setting one is an effect: an attacker-chosen `access_token`
  * written into a record must not look like any other redaction.
  */
-function describeSecret(value: unknown): string {
-  const what =
-    typeof value === "string"
-      ? plural([...value].length, "character")
-      : value === null
-        ? "null"
-        : Array.isArray(value)
-          ? "a list"
-          : typeof value === "object"
-            ? "an object"
-            : `a ${typeof value}`;
-  return `[secret-like field is being set — value hidden, ${what}]`;
+function describeSecret(value: string): string {
+  const length = plural(codePointLength(value), "character");
+  return `[secret-like field is being set — value hidden, ${length}]`;
 }
 
-function summarizeValue(value: unknown, depth: number, budget: Budget): unknown {
-  if (typeof value === "string") return summarizeString(value, budget);
-  if (value === null || ["number", "boolean"].includes(typeof value)) return value;
+/** Where a value sits, for the refusal: `values.comment`, `lines[1].note`. */
+function childPath(path: string, label: string): string {
+  return path ? `${path}.${label}` : label;
+}
+
+function summarizeValue(
+  value: unknown,
+  depth: number,
+  budget: Budget,
+  path: string,
+  secret: boolean
+): unknown {
+  if (typeof value === "string") {
+    if (secret) {
+      const text = describeSecret(value);
+      budget.chars -= text.length;
+      return text;
+    }
+    return summarizeString(value, budget, path);
+  }
+  if (value === null || ["number", "boolean"].includes(typeof value)) {
+    // A number is shown too, and 200×200×50 of them made a 5.7 MB summary
+    // when they cost nothing (fourth review of #1242).
+    budget.chars -= String(JSON.stringify(value)).length;
+    return value;
+  }
   if (Array.isArray(value)) {
     if (depth >= MAX_DEPTH) {
-      budget.incomplete = true;
+      exceed(budget, { kind: "nested-too-deep", at: path, limit: MAX_DEPTH });
       return `… [${plural(value.length, "item")} not shown: nested too deep]`;
     }
+    budget.chars -= 2;
     const shown: unknown[] = [];
     for (const item of value.slice(0, MAX_ITEMS)) {
       if (budget.chars <= 0) {
-        budget.incomplete = true;
+        exceed(budget, TOO_LARGE_IN_ALL);
         shown.push(`… [${value.length - shown.length} more items not shown: size limit reached]`);
         return shown;
       }
-      shown.push(summarizeValue(item, depth + 1, budget));
+      shown.push(summarizeValue(item, depth + 1, budget, `${path}[${shown.length}]`, secret));
     }
     if (value.length > MAX_ITEMS) {
-      budget.incomplete = true;
+      exceed(budget, { kind: "too-many-items", at: path, count: value.length, limit: MAX_ITEMS });
       shown.push(`… [${value.length - MAX_ITEMS} more items not shown]`);
     }
     return shown;
@@ -447,10 +567,11 @@ function summarizeValue(value: unknown, depth: number, budget: Budget): unknown 
   if (typeof value === "object") {
     const entries = Object.entries(value as Record<string, unknown>);
     if (depth >= MAX_DEPTH) {
-      budget.incomplete = true;
+      exceed(budget, { kind: "nested-too-deep", at: path, limit: MAX_DEPTH });
       return `… [${plural(entries.length, "field")} not shown: nested too deep]`;
     }
-    return summarizeObject(entries, depth, budget);
+    budget.chars -= 2;
+    return summarizeObject(entries, depth, budget, path, secret);
   }
   return String(value);
 }
@@ -458,7 +579,9 @@ function summarizeValue(value: unknown, depth: number, budget: Budget): unknown 
 function summarizeObject(
   entries: [string, unknown][],
   depth: number,
-  budget: Budget
+  budget: Budget,
+  path: string,
+  secret: boolean
 ): Record<string, unknown> {
   // Who a message reaches, and where an action lands, is rendered first,
   // while the budget is whole.
@@ -482,25 +605,37 @@ function summarizeObject(
     const [key, value] = ordered[i];
     const priority = FULL_VIEW_KEYS.has(key);
     if (i >= MAX_KEYS) {
-      budget.incomplete = true;
+      exceed(budget, {
+        kind: "too-many-fields",
+        at: path,
+        count: ordered.length,
+        limit: MAX_KEYS,
+      });
       add("…", `${ordered.length - i} more fields not shown`);
       break;
     }
     if (!priority && budget.chars <= 0) {
-      budget.incomplete = true;
+      exceed(budget, TOO_LARGE_IN_ALL);
       add("…", `${ordered.length - i} more fields not shown: size limit reached`);
       break;
     }
     // Keys are displayed too, so they count against the same budget.
-    if ([...key].length > MAX_KEY_LEN) budget.incomplete = true;
+    const keyLength = codePointLength(key);
+    if (keyLength > MAX_KEY_LEN) {
+      exceed(budget, { kind: "key-too-long", at: path, length: keyLength, limit: MAX_KEY_LEN });
+    }
     const label = keyLabel(key);
     budget.chars -= label.length;
-    if (SECRET_KEY.test(key)) {
-      add(label, describeSecret(value));
-      continue;
-    }
-    const recipients = RECIPIENT_KEY.test(key) ? summarizeRecipients(value, budget) : undefined;
-    add(label, recipients !== undefined ? recipients : summarizeValue(value, depth + 1, budget));
+    const at = childPath(path, label);
+    // A record id is never a secret, whatever its key says; anything else
+    // under a secret-like key has its texts hidden, at any depth.
+    const hidden = !RECORD_ID_KEY.test(key) && (secret || SECRET_KEY.test(key));
+    const recipients =
+      !hidden && RECIPIENT_KEY.test(key) ? summarizeRecipients(value, budget, at) : undefined;
+    add(
+      label,
+      recipients !== undefined ? recipients : summarizeValue(value, depth + 1, budget, at, hidden)
+    );
   }
   // fromEntries defines own properties, so a "__proto__" key stays data.
   return Object.fromEntries(shown);
@@ -512,15 +647,79 @@ function summarizeObject(
  */
 export function summarizeCall(params: unknown, options: SummarizeOptions = {}): CallSummary {
   if (!params || typeof params !== "object" || Array.isArray(params)) {
-    return { summary: {}, incomplete: false };
+    return { summary: {}, incomplete: false, exceeded: null };
   }
   const budget: Budget = {
     chars: MAX_TOTAL_CHARS,
     refRecord: options.refRecord,
-    incomplete: false,
+    exceeded: null,
   };
-  const summary = summarizeObject(Object.entries(params as Record<string, unknown>), 0, budget);
-  return { summary, incomplete: budget.incomplete };
+  const summary = summarizeObject(
+    Object.entries(params as Record<string, unknown>),
+    0,
+    budget,
+    "",
+    false
+  );
+  // A last value can overshoot without anything after it to cut.
+  if (budget.chars < 0) exceed(budget, TOO_LARGE_IN_ALL);
+  return { summary, incomplete: budget.exceeded !== null, exceeded: budget.exceeded };
+}
+
+const count = (n: number) => n.toLocaleString("en-US");
+
+/**
+ * The reason the gate gives the agent for refusing a call it cannot show in
+ * full. Read by the MODEL, which relays it to the person — so it names what
+ * was too large, and suggests splitting only where that can help: a list or
+ * a record can be sent in parts, one file or one mail body cannot (fourth
+ * review of #1242).
+ */
+export function describeRefusal(limit: SummaryLimit): string {
+  const notRun = "so it was not run and no confirmation was opened.";
+  const split = (how: string) =>
+    `This call is too large to show for approval in full, ${notRun} ` +
+    `${how} Split it into smaller calls and try again with each part.`;
+  const stop =
+    "Tell the person that, then stop — do not call this tool again with the same arguments.";
+  switch (limit.kind) {
+    case "text-too-long":
+      return (
+        `The value of ${limit.at} is ${count(limit.length)} characters long — too long to show ` +
+        `for approval: a confirmation shows at most ${count(limit.limit)} characters of one ` +
+        `text, ${notRun} ${stop}`
+      );
+    case "key-too-long":
+      return (
+        `A field name in ${limit.at || "the call"} is ${count(limit.length)} characters long — ` +
+        `too long to show for approval (at most ${count(limit.limit)}), ${notRun} ${stop}`
+      );
+    case "nested-too-deep":
+      return (
+        `${limit.at} is nested more than ${limit.limit} levels deep — too deep to show for ` +
+        `approval, ${notRun} ${stop}`
+      );
+    case "too-many-fields":
+      return split(
+        `${limit.at || "The call"} has ${count(limit.count)} fields; a confirmation shows at ` +
+          `most ${limit.limit} per object — write fewer fields per call.`
+      );
+    case "too-many-items":
+      return split(
+        `${limit.at} has ${count(limit.count)} entries; a confirmation shows at most ` +
+          `${limit.limit} per list — send fewer records or lines per call.`
+      );
+    case "too-many-recipients":
+      return split(
+        `${limit.at} names ${count(limit.count)} addresses; a confirmation shows at most ` +
+          `${limit.limit} — send to fewer recipients per message.`
+      );
+    case "too-large-in-all":
+      return split(
+        `Shown for approval it would be more than ${count(limit.limit)} characters in all — ` +
+          `send fewer fields, records or lines per call, or shorter texts.`
+      );
+  }
 }
 
 export function summarizeArgs(

@@ -154,9 +154,9 @@ describe("ApprovalCard shows what will actually run", () => {
     expect(screen.queryByText("(empty)")).not.toBeInTheDocument();
   });
 
-  // Third review of #1242: the stored limit is 20,000 characters now, so a
-  // long mail body is stored whole — and still previewed, with all of it on
-  // demand and no truncation marker.
+  // Third review of #1242: the stored limit is 20,000 characters now (200,000
+  // since the fourth review), so a long mail body is stored whole — and still
+  // previewed, with all of it on demand and no truncation marker.
   it("previews a long body stored whole, and shows all of it on demand", async () => {
     const tail = "MIT-FREUNDLICHEN-GRUESSEN";
     renderCard(summarizeArgs({ body: `${"Absatz. ".repeat(1_800)}${tail}` }));
@@ -183,6 +183,32 @@ describe("ApprovalCard shows what will actually run", () => {
   it("renders a call without arguments", () => {
     renderCard(null, "pinchy_web_search");
     expect(screen.getByText("pinchy_web_search")).toBeInTheDocument();
+  });
+
+  // Fourth review of #1242: an email address or URL under a key the card
+  // does not know (`values.email`, `website`) was previewed like prose, so a
+  // 217-character address showed its familiar local part and cut `@evil.com`.
+  it("shows an email-shaped value in full at any key, so the domain is never cut", () => {
+    const email = `buchhaltung.firma.at.${"rechnungen.".repeat(17)}@evil.com`;
+    expect(email).toHaveLength(217);
+    renderCard(summarizeArgs({ model: "res.partner", ids: [7], values: { email } }), "odoo_write");
+    expect(screen.getByText(email)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /show full text/i })).not.toBeInTheDocument();
+  });
+
+  it("shows a URL-shaped value in full, so a long userinfo cannot push the host out", () => {
+    const url = `https://firma.at.${"a".repeat(250)}@evil.com/pay`;
+    renderCard(summarizeArgs({ values: { website: url } }));
+    expect(screen.getByText(new RegExp("@evil\\.com/pay$"))).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /show full text/i })).not.toBeInTheDocument();
+  });
+
+  // Postgres jsonb stores object keys sorted by length, so the summary's
+  // "who and where first" order did not survive the round trip to the card.
+  it("lists the recipient and target fields first, whatever order they arrive in", () => {
+    renderCard({ body: "hi", subject: "Q3", values: { name: "x", model: "y" }, to: "a@b.at" });
+    const labels = screen.getAllByRole("term").map((term) => term.textContent);
+    expect(labels).toEqual(["to", "body", "subject", "values", "model", "name"]);
   });
 
   it("still has Approve and Deny", () => {

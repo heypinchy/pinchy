@@ -7,6 +7,7 @@ import { scrubEmails } from "@/lib/scrub-emails";
 // Type-only (erased at build time), so the IMAP probe's runtime dependencies
 // never enter audit.ts's module graph.
 import type { ProbeFailureCode } from "@/lib/integrations/imap-probe";
+import type { SummaryLimit } from "@/lib/approvals/summary";
 
 // Transaction-scoped advisory lock key that serializes audit appends so the
 // prev-hash chain can never fork (two writers must not read the same
@@ -534,6 +535,10 @@ export type AuditLogEntry =
         toolName: string;
         argsDigest: string;
         reason: "too-large-to-show";
+        /** Which bound the call crossed (`SummaryLimit["kind"]` in
+         * `approvals/summary.ts`) — never the value or the key path, which
+         * may carry the call's content. */
+        exceeded: SummaryLimit["kind"];
       };
     })
   | (AuditLogBase & {

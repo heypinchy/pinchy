@@ -3,7 +3,12 @@
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import type { PendingApproval } from "@/lib/approvals/client";
-import { FULL_VIEW_KEYS, displayScalar, splitTruncation } from "@/lib/approvals/display";
+import {
+  FULL_VIEW_KEYS,
+  displayScalar,
+  isAddressShaped,
+  splitTruncation,
+} from "@/lib/approvals/display";
 
 /** Texts longer than this show a preview first, with the full text on demand. */
 const PREVIEW_LEN = 200;
@@ -12,7 +17,10 @@ const PREVIEW_LEN = 200;
  * A string value as the summary stored it: whitespace kept (`pre-wrap`), a
  * string that would read as a literal shown quoted (`displayScalar`), and a
  * long text previewed — unless `full`, for the fields that say who an action
- * reaches or where it lands, which are short and are the decision.
+ * reaches or where it lands, which are short and are the decision, or unless
+ * the value itself is an email address or a URL, at any key: its host is the
+ * decision too, and it sits at the END of an address, exactly where a preview
+ * cuts (fourth review of #1242).
  *
  * The truncation marker the summary appends to a value it cut is shown
  * OUTSIDE the preview: inside it, it sat in exactly the part the preview
@@ -27,7 +35,7 @@ function TextValue({ text, full }: { text: string; full: boolean }) {
   ) : null;
   // Counted and cut by code point, so the preview never ends in half an emoji.
   const chars = [...shown];
-  if (full || chars.length <= PREVIEW_LEN) {
+  if (full || chars.length <= PREVIEW_LEN || isAddressShaped(split.text)) {
     return (
       <span className="break-words">
         <span className="whitespace-pre-wrap">{shown}</span>
@@ -88,8 +96,15 @@ function ArgValue({ value, full }: { value: unknown; full: boolean }) {
   return <span className="font-mono">{displayScalar(value)}</span>;
 }
 
+/**
+ * Who a call reaches and where it lands come first. The summary renders them
+ * first too, but Postgres stores a jsonb object with its keys re-sorted, so
+ * that order does not survive the round trip — it is restored here.
+ */
 function ArgFields({ fields, full }: { fields: Record<string, unknown>; full: boolean }) {
-  const entries = Object.entries(fields);
+  const entries = Object.entries(fields).sort(
+    ([a], [b]) => Number(FULL_VIEW_KEYS.has(b)) - Number(FULL_VIEW_KEYS.has(a))
+  );
   if (entries.length === 0) return <span className="text-muted-foreground">(none)</span>;
   return (
     <dl className="space-y-1">

@@ -386,14 +386,17 @@ describe("approval routes (integration, real DB)", () => {
   // show in full is refused at the gate — nothing is opened, nothing can be
   // approved, and the model is told to split it.
   describe("a call too large to show in full", () => {
+    // Probe sized to the fourth review's budget of 512,000 characters (it was
+    // 4 × 19,000 against 64,000): four texts of 150,000 each, every one under
+    // the per-text limit, together past the total.
     const oversized = () => ({
       model: "account.move",
       ids: [42],
       values: {
-        narration: "a".repeat(19_000),
-        ref: "b".repeat(19_000),
-        x1: "c".repeat(19_000),
-        x2: "d".repeat(19_000),
+        narration: "a".repeat(150_000),
+        ref: "b".repeat(150_000),
+        x1: "c".repeat(150_000),
+        x2: "d".repeat(150_000),
         partner_bank_id: 666,
       },
     });
@@ -424,6 +427,7 @@ describe("approval routes (integration, real DB)", () => {
         toolName: "odoo_write",
         argsDigest: computeArgsDigest(params),
         reason: "too-large-to-show",
+        exceeded: "too-large-in-all",
       });
       // The summary — and the field values in it — never reach the audit log.
       expect(JSON.stringify(refused[0].detail)).not.toContain("aaaa");
@@ -432,6 +436,55 @@ describe("approval routes (integration, real DB)", () => {
         .from(auditLog)
         .where(eq(auditLog.eventType, "approval.requested"));
       expect(requested).toHaveLength(0);
+    });
+
+    // Fourth review of #1242: any text over 20,000 characters — counted with
+    // its markers — was refused, so a gated pinchy_write of an ordinary report
+    // could never run, and "split it" is advice no single file can follow.
+    it("opens a card for a gated pinchy_write of a 30,000-character report, stored whole", async () => {
+      agent = await seedAgent(user.id, ["pinchy_write"]);
+      const content = "Quarterly report line.\n".repeat(1_305).slice(0, 30_000);
+      const params = { path: "/data/out/report.md", content };
+      const res = await (
+        await gateCheck(gateReq(gateBody({ toolName: "pinchy_write", params })))
+      ).json();
+      expect(res.decision).toBe("block");
+      expect(res.approval).toBeDefined();
+
+      setSession(user);
+      const list = await (
+        await listApprovals(new NextRequest("http://localhost/api/approvals"), {})
+      ).json();
+      expect(list.approvals[0].argsSummary.content).toBe(content);
+    });
+
+    it("opens a card for an 18,000-character mail body full of no-break spaces", async () => {
+      const body = "Preis\u00A0€ ".repeat(2_250);
+      const res = await (
+        await gateCheck(gateReq(gateBody({ params: { to: "a@b.at", subject: "s", body } })))
+      ).json();
+      expect(res.approval).toBeDefined();
+    });
+
+    it("refuses a 250,000-character text, naming the value and the limit, without 'split'", async () => {
+      agent = await seedAgent(user.id, ["pinchy_write"]);
+      const params = { path: "/data/out/dump.txt", content: "x".repeat(250_000) };
+      const res = await (
+        await gateCheck(gateReq(gateBody({ toolName: "pinchy_write", params })))
+      ).json();
+      expect(res.decision).toBe("block");
+      expect(res.approval).toBeUndefined();
+      expect(res.reason).toMatch(/content/);
+      expect(res.reason).toMatch(/250,000 characters/);
+      expect(res.reason).toMatch(/200,000/);
+      expect(res.reason).toMatch(/too long to show for approval/i);
+      expect(res.reason).not.toMatch(/split/i);
+      expect(await db.select().from(toolApproval)).toHaveLength(0);
+      const [refused] = await db
+        .select()
+        .from(auditLog)
+        .where(eq(auditLog.eventType, "approval.refused"));
+      expect(refused.detail).toMatchObject({ exceeded: "text-too-long" });
     });
 
     it("still opens a full card for an Odoo write with 26 fields, the bank account last", async () => {
