@@ -369,6 +369,49 @@ describe("pinchy-odoo against real mock-odoo + mock-pinchy (#209 layer 2)", () =
   });
 });
 
+describe("pinchy-odoo against a server that does not answer JSON-RPC", () => {
+  // The real odoo-node, the real transport, a body that is not JSON: what an
+  // Odoo URL that redirects to a cloud metadata service gets back. odoo-node
+  // 0.3.0 hands V8's SyntaxError through, and that message quotes the body.
+  let plainText: Server;
+  const connectionId = "conn-not-json-rpc";
+
+  beforeAll(async () => {
+    plainText = createServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "text/plain" });
+      res.end("my-ec2-role-name\n");
+    });
+    await new Promise<void>((resolve) => plainText.listen(0, "127.0.0.1", resolve));
+    credentialsByConnectionId.set(connectionId, {
+      url: `http://127.0.0.1:${(plainText.address() as AddressInfo).port}`,
+      db: "testdb",
+      uid: 2,
+      apiKey: "test-api-key",
+    });
+  });
+
+  afterAll(async () => {
+    credentialsByConnectionId.delete(connectionId);
+    await new Promise<void>((resolve, reject) =>
+      plainText.close((err) => (err ? reject(err) : resolve()))
+    );
+  });
+
+  it("reports that the answer was not JSON-RPC without quoting it to the model", async () => {
+    const tools = createApi({ [agentId]: { ...agentConfig, connectionId } });
+    const result = await findTool(tools, "odoo_read", agentId).execute("call-1", {
+      model: "sale.order",
+      filters: [],
+    });
+
+    expect(result.isError).toBe(true);
+    const text = result.content[0].text;
+    expect(text).not.toContain("my-ec2-role-name");
+    expect(text).toContain("not a JSON-RPC response");
+    expect(JSON.stringify(result.details)).not.toContain("my-ec2-role-name");
+  });
+});
+
 describe("pinchy-odoo mail.activity scheduling against real mock-odoo", () => {
   const activityAgentId = "agent-activity";
   const activityConnectionId = "conn-activity";

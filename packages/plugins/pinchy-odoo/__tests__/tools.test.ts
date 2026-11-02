@@ -3912,6 +3912,127 @@ describe("error handling", () => {
     expect(result.content[0].text).toContain("Error: Unknown error");
     expect(result.isError).toBe(true);
   });
+
+  // odoo-node 0.3.0 calls `response.json()` unguarded and follows redirects,
+  // so a non-JSON answer — here what AWS's metadata service returns for
+  // /latest/meta-data/iam/security-credentials/ — surfaces as V8's own
+  // SyntaxError, which quotes the start of the body. A tool result goes to
+  // the model and from there to a chat user who may not be an admin.
+  function realNonJsonSyntaxError(body: string): SyntaxError {
+    try {
+      JSON.parse(body);
+    } catch (err) {
+      return err as SyntaxError;
+    }
+    throw new Error("expected JSON.parse to throw");
+  }
+
+  it("never quotes a non-JSON Odoo answer back to the model", async () => {
+    const thrown = realNonJsonSyntaxError("my-ec2-role-name\n");
+    // Guard: this is the shape that leaks, not a hand-written stand-in.
+    expect(thrown.message).toContain("my-ec2-role-name");
+    mockSearchRead.mockRejectedValue(thrown);
+
+    const tools = createApi({ [agentId]: agentConfig });
+    const result = await findTool(tools, "odoo_read", agentId)!.execute("call-1", {
+      model: "sale.order",
+      filters: [],
+    });
+
+    expect(result.isError).toBe(true);
+    const text = result.content[0].text;
+    const detail = (result.details as { error?: string }).error ?? "";
+    for (const out of [text, detail]) {
+      expect(out).not.toContain("my-ec2-role-name");
+      expect(out).not.toContain("Unexpected token");
+      expect(out).toContain("not a JSON-RPC response");
+    }
+  });
+
+  it("does not quote a JSON answer of the wrong shape either (TypeError)", async () => {
+    // `{"error": {}}` makes odoo-node read `json.error.data.message` off undefined.
+    let thrown: unknown;
+    try {
+      const json = JSON.parse('{"error":{}}') as { error: { data: { message: string } } };
+      void json.error.data.message;
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).toBeInstanceOf(TypeError);
+    mockSearchRead.mockRejectedValue(thrown);
+
+    const tools = createApi({ [agentId]: agentConfig });
+    const result = await findTool(tools, "odoo_read", agentId)!.execute("call-1", {
+      model: "sale.order",
+      filters: [],
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).not.toContain("Cannot read properties");
+    expect(result.content[0].text).toContain("not a JSON-RPC response");
+  });
+
+  it("hands Odoo's own error to the model on one line, capped", async () => {
+    mockSearchRead.mockRejectedValue(
+      new Error(`Invalid field\nfirst line\n${"x".repeat(5000)}\nlast line`)
+    );
+
+    const tools = createApi({ [agentId]: agentConfig });
+    const result = await findTool(tools, "odoo_read", agentId)!.execute("call-1", {
+      model: "sale.order",
+      filters: [],
+    });
+
+    const text = result.content[0].text;
+    expect(text).toContain("Error: Invalid field first line");
+    expect(text).not.toContain("\n");
+    expect(text).not.toContain("last line");
+    expect(text.length).toBeLessThan(1100);
+  });
+
+  it("still adds the many2one hint after an integer-syntax error (classified before it is shortened)", async () => {
+    mockSearchRead.mockRejectedValue(
+      new Error('invalid input syntax for type integer: "7600 Office supplies"\nLINE 1: ...')
+    );
+
+    const tools = createApi({ [agentId]: agentConfig });
+    const result = await findTool(tools, "odoo_read", agentId)!.execute("call-1", {
+      model: "sale.order",
+      filters: [],
+    });
+
+    const text = result.content[0].text;
+    expect(text).toContain(
+      'Error: invalid input syntax for type integer: "7600 Office supplies" LINE 1: ...'
+    );
+    expect(text).toContain("Look the record up with odoo_read");
+  });
+
+  it("does not put a non-JSON answer into the auth-failure reason Pinchy shows admins", async () => {
+    // The first failure is an auth error (classified on the RAW message, so the
+    // retry still happens); the retry then lands on a non-JSON answer. The
+    // reason is stored as the connection's last error and audited.
+    mockSearchRead
+      .mockRejectedValueOnce(new Error("Access Denied: invalid api key"))
+      .mockRejectedValueOnce(realNonJsonSyntaxError("my-ec2-role-name\n"));
+
+    const tools = createApi({ [agentId]: agentConfig });
+    await findTool(tools, "odoo_read", agentId)!.execute("call-1", {
+      model: "sale.order",
+      filters: [],
+    });
+
+    expect(mockSearchRead).toHaveBeenCalledTimes(2);
+    const reportCalls = fetchMock.mock.calls.filter((c) =>
+      String(c[0]).includes("report-auth-failure")
+    );
+    expect(reportCalls).toHaveLength(1);
+    const { reason } = JSON.parse((reportCalls[0][1] as RequestInit).body as string) as {
+      reason: string;
+    };
+    expect(reason).not.toContain("my-ec2-role-name");
+    expect(reason).toContain("not a JSON-RPC response");
+  });
 });
 
 describe("client caching (#209 layer 2: credentials fetched lazily, cached)", () => {

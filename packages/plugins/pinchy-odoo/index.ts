@@ -16,6 +16,7 @@ import {
   requestCredentials,
   trackMutations,
 } from "./credential-client";
+import { describeOdooError } from "./odoo-error";
 
 const WORKSPACE_ROOT = "/root/.openclaw/workspaces";
 
@@ -2884,15 +2885,18 @@ function errorResult(
       `Odoo denied permission to ${op} on ${context.model}. The Odoo user's permissions may have changed since the last sync. An admin can re-sync the connection in Settings > Integrations to update available permissions.`
     );
   }
-  const message = error instanceof Error ? error.message : "Unknown error";
+  // Classify on the raw message, show the described one: a non-JSON answer's
+  // SyntaxError quotes the response body, which must not reach the model.
+  const raw = error instanceof Error ? error.message : "";
+  const message = describeOdooError(error);
   // A relation field (many2one) that received a display name instead of an id
   // surfaces from Postgres as "invalid input syntax for type integer: <text>".
   // That raw DB error is not actionable for the model, so append what to do:
   // resolve the name to an id/ref first (production: Penny repeatedly sent
   // account_id: "7600 Office supplies …" and got only the bare Postgres error).
-  if (/invalid input syntax for type integer:/i.test(message)) {
+  if (/invalid input syntax for type integer:/i.test(raw)) {
     return toolError(
-      `Error: ${message.trim()}\n\nThis usually means a relation field (e.g. account_id, partner_id, journal_id) was given a display name or text instead of a numeric id. Look the record up with odoo_read to get its id, then pass that id or the _pinchy_ref it returns — never the display name.`
+      `Error: ${message}\n\nThis usually means a relation field (e.g. account_id, partner_id, journal_id) was given a display name or text instead of a numeric id. Look the record up with odoo_read to get its id, then pass that id or the _pinchy_ref it returns — never the display name.`
     );
   }
   return toolError(`Error: ${message}`);
@@ -3063,13 +3067,14 @@ const plugin = {
             })
           );
         } catch (retryErr) {
-          const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
+          // Pinchy stores the reason as the connection's last error and audits
+          // it, so it gets the same treatment as a tool result.
           await postAuthFailure({
             apiBaseUrl,
             connectionId: config.connectionId,
             gatewayToken,
             pluginId: "pinchy-odoo",
-            reason: retryMsg,
+            reason: describeOdooError(retryErr),
           });
           throw retryErr;
         }
