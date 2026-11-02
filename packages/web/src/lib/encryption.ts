@@ -132,7 +132,8 @@ export function getPreviousSecret(name: string): Buffer | null {
 
 /** What {@link persistEnvSecretToKeyFile} did. Never carries the key. */
 export type EnvSecretPersistOutcome =
-  | { status: "written" }
+  /** `dir` is the key directory the file went to (ENCRYPTION_KEY_DIR). */
+  | { status: "written"; dir: string }
   | { status: "file-exists" }
   | { status: "file-invalid" }
   | { status: "file-unreadable"; code: string }
@@ -377,7 +378,7 @@ function existingKeyFileOutcome(keyFilePath: string): EnvSecretPersistOutcome {
  * anyway.
  */
 export function persistEnvSecretToKeyFile(name: string): EnvSecretPersistOutcome {
-  const { keyFilePath } = secretPaths(name);
+  const { keyFileDir, keyFilePath } = secretPaths(name);
   removeStaleKeyTempFilesOnce(keyFilePath);
 
   if (getSecretSource(name) !== "envvar") return { status: "not-envvar" };
@@ -388,7 +389,7 @@ export function persistEnvSecretToKeyFile(name: string): EnvSecretPersistOutcome
   const key = Buffer.from(process.env[name.toUpperCase()]!, "hex").toString("hex");
   try {
     return writeKeyFileExclusive(keyFilePath, key) === "written"
-      ? { status: "written" }
+      ? { status: "written", dir: keyFileDir }
       : existingKeyFileOutcome(keyFilePath);
   } catch (err) {
     // fs errors name the code and the path, never the content written.

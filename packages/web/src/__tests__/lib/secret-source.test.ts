@@ -261,7 +261,7 @@ describe("describeAuditKeyFilePersist", () => {
   // logged as a warning and startup continues — but the warning must say what
   // that costs, or "fail open" quietly becomes "fail silent".
   it("announces a written key file without the key", () => {
-    const result = describeAuditKeyFilePersist({ status: "written" });
+    const result = describeAuditKeyFilePersist({ status: "written", dir: "/app/secrets" });
 
     expect(result.action).toBe("info");
     expect(result.message).toMatch(/AUDIT_HMAC_SECRET/);
@@ -270,13 +270,23 @@ describe("describeAuditKeyFilePersist", () => {
   });
 
   it("says the saved key only outlasts a change of the variable on a persistent volume", () => {
-    // The file only keeps the key if /app/secrets survives a container being
+    // The file only keeps the key if its directory survives a container being
     // recreated. Promising that "a later change keeps this key" without the
     // condition is a promise an ephemeral directory silently breaks.
-    const result = describeAuditKeyFilePersist({ status: "written" });
+    const result = describeAuditKeyFilePersist({ status: "written", dir: "/app/secrets" });
 
     expect(result.message).toMatch(/\/app\/secrets/);
     expect(result.message).toMatch(/persistent volume/);
+  });
+
+  it("names the directory the key was actually written to, not the default", () => {
+    // ENCRYPTION_KEY_DIR moves the key files. Telling the operator to keep
+    // /app/secrets on a persistent volume when the key sits elsewhere sends
+    // them to protect the wrong directory.
+    const result = describeAuditKeyFilePersist({ status: "written", dir: "/srv/pinchy/keys" });
+
+    expect(result.message).toContain("/srv/pinchy/keys");
+    expect(result.message).not.toMatch(/\/app\/secrets/);
   });
 
   it("warns on a failed write, names the reason and the consequence, and does not stop startup", () => {

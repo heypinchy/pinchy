@@ -199,7 +199,7 @@ export function describeAuditKeyFilePersist(
       return {
         action: "info",
         message:
-          "Wrote the AUDIT_HMAC_SECRET value to .audit_hmac_secret in /app/secrets. " +
+          `Wrote the AUDIT_HMAC_SECRET value to .audit_hmac_secret in ${outcome.dir}. ` +
           "Keep that directory on a persistent volume, so a later change of the " +
           "variable keeps this key for verifying the entries signed with it.",
       };

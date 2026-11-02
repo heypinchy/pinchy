@@ -159,7 +159,7 @@ describe("persistEnvSecretToKeyFile", () => {
   it("writes the variable's value to the key file when no file exists", () => {
     process.env.AUDIT_HMAC_SECRET = KEY_A;
 
-    expect(persistEnvSecretToKeyFile(NAME)).toEqual({ status: "written" });
+    expect(persistEnvSecretToKeyFile(NAME)).toEqual({ status: "written", dir });
 
     // Same format as the file Pinchy generates: 64 lowercase hex, no newline.
     expect(readFileSync(keyFile, "utf-8")).toBe(KEY_A);
@@ -264,7 +264,7 @@ describe("persistEnvSecretToKeyFile", () => {
     ];
     for (const f of kept) writeFileSync(join(dir, f), "x");
 
-    expect(persistEnvSecretToKeyFile(NAME)).toEqual({ status: "written" });
+    expect(persistEnvSecretToKeyFile(NAME)).toEqual({ status: "written", dir });
 
     expect(readdirSync(dir).sort()).toEqual([`.${NAME}`, ...kept].sort());
   });
@@ -321,7 +321,7 @@ describe("persistEnvSecretToKeyFile", () => {
       faults.linkError = code;
       process.env.AUDIT_HMAC_SECRET = KEY_A;
 
-      expect(persistEnvSecretToKeyFile(NAME)).toEqual({ status: "written" });
+      expect(persistEnvSecretToKeyFile(NAME)).toEqual({ status: "written", dir });
 
       expect(readFileSync(keyFile, "utf-8")).toBe(KEY_A);
       expect(statSync(keyFile).mode & 0o777).toBe(0o600);
@@ -333,7 +333,7 @@ describe("persistEnvSecretToKeyFile", () => {
     faults.shortWrite = { bytes: 10 };
     process.env.AUDIT_HMAC_SECRET = KEY_A;
 
-    expect(persistEnvSecretToKeyFile(NAME)).toEqual({ status: "written" });
+    expect(persistEnvSecretToKeyFile(NAME)).toEqual({ status: "written", dir });
 
     expect(readFileSync(keyFile, "utf-8")).toBe(KEY_A);
   });
@@ -350,7 +350,7 @@ describe("persistEnvSecretToKeyFile", () => {
     faults.dirFsyncError = { at, code };
     process.env.AUDIT_HMAC_SECRET = KEY_A;
 
-    expect(persistEnvSecretToKeyFile(NAME)).toEqual({ status: "written" });
+    expect(persistEnvSecretToKeyFile(NAME)).toEqual({ status: "written", dir });
 
     faults.dirFsyncError = null;
     expect(readFileSync(keyFile, "utf-8")).toBe(KEY_A);
