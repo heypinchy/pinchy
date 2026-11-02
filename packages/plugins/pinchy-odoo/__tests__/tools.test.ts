@@ -4008,13 +4008,47 @@ describe("error handling", () => {
     expect(text).toContain("Look the record up with odoo_read");
   });
 
-  it("does not put a non-JSON answer into the auth-failure reason Pinchy shows admins", async () => {
-    // The first failure is an auth error (classified on the RAW message, so the
-    // retry still happens); the retry then lands on a non-JSON answer. The
-    // reason is stored as the connection's last error and audited.
+  // The first failure is an auth error, so the plugin refetches credentials
+  // and retries. The FRESH credentials are fine; the retry then fails for a
+  // reason that has nothing to do with them. Reporting that as an auth failure
+  // flips a healthy connection to auth_failed, puts a "reconnect" banner in
+  // Settings, writes an `integration.auth_failed` audit row blaming the
+  // credentials — and nothing clears it on its own.
+  it.each([
+    ["a non-JSON answer", () => realNonJsonSyntaxError("my-ec2-role-name\n")],
+    ["a transport failure", () => Object.assign(new Error("HTTP 502 Bad Gateway"), { code: 502 })],
+    [
+      "an Odoo validation error from the model's arguments",
+      () => new Error("ValidationError: The field 'state' is required"),
+    ],
+  ])(
+    "does not report an auth failure when the retry fails with %s",
+    async (_label, makeRetryError) => {
+      mockSearchRead
+        .mockRejectedValueOnce(new Error("Access Denied: invalid api key"))
+        .mockRejectedValueOnce(makeRetryError());
+
+      const tools = createApi({ [agentId]: agentConfig });
+      const result = await findTool(tools, "odoo_read", agentId)!.execute("call-1", {
+        model: "sale.order",
+        filters: [],
+      });
+
+      expect(mockSearchRead).toHaveBeenCalledTimes(2);
+      expect(result.isError).toBe(true);
+      expect(
+        fetchMock.mock.calls.filter((c) => String(c[0]).includes("report-auth-failure"))
+      ).toHaveLength(0);
+      // Still put through the error mapping: a non-JSON body never reaches
+      // the model.
+      expect(result.content[0].text).not.toContain("my-ec2-role-name");
+    }
+  );
+
+  it("still reports an auth failure when the retry is refused for its credentials too", async () => {
     mockSearchRead
       .mockRejectedValueOnce(new Error("Access Denied: invalid api key"))
-      .mockRejectedValueOnce(realNonJsonSyntaxError("my-ec2-role-name\n"));
+      .mockRejectedValueOnce(new Error("Access Denied: invalid api key"));
 
     const tools = createApi({ [agentId]: agentConfig });
     await findTool(tools, "odoo_read", agentId)!.execute("call-1", {
@@ -4022,7 +4056,6 @@ describe("error handling", () => {
       filters: [],
     });
 
-    expect(mockSearchRead).toHaveBeenCalledTimes(2);
     const reportCalls = fetchMock.mock.calls.filter((c) =>
       String(c[0]).includes("report-auth-failure")
     );
@@ -4030,8 +4063,7 @@ describe("error handling", () => {
     const { reason } = JSON.parse((reportCalls[0][1] as RequestInit).body as string) as {
       reason: string;
     };
-    expect(reason).not.toContain("my-ec2-role-name");
-    expect(reason).toContain("not a JSON-RPC response");
+    expect(reason).toContain("Access Denied");
   });
 });
 

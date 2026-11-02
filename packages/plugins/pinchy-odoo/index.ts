@@ -3034,8 +3034,9 @@ const plugin = {
      * Run an Odoo call with one transparent retry on auth failure.
      * Odoo throws an `AccessDenied` / 401-shaped error when the apiKey is
      * stale (rotated, revoked, expired). We invalidate the cache and
-     * fetch fresh credentials once — if it still fails, surface to the
-     * user.
+     * fetch fresh credentials once — if that is refused for its credentials
+     * too, report the connection as auth-failed; any other failure surfaces
+     * to the user like a first-attempt error.
      *
      * `isAuthError` is the shared classifier (#1077); the client is wrapped
      * so a closure that already completed a write is never re-run.
@@ -3067,6 +3068,11 @@ const plugin = {
             })
           );
         } catch (retryErr) {
+          // Fresh credentials and the retry still failed — but only an auth
+          // error says those credentials are bad. A 502, a non-JSON page or a
+          // ValidationError from the model's arguments would otherwise flip a
+          // healthy connection to auth_failed, and nothing clears that.
+          if (!isAuthError(retryErr)) throw retryErr;
           // Pinchy stores the reason as the connection's last error and audits
           // it, so it gets the same treatment as a tool result.
           await postAuthFailure({
