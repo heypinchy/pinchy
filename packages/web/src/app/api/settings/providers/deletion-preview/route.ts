@@ -3,7 +3,13 @@ import { withAdmin } from "@/lib/api-auth";
 import { formatValidationError } from "@/lib/api-validation";
 import { PROVIDERS, type ProviderName } from "@/lib/providers";
 import { listOpenAiCompatibleProviders } from "@/lib/openai-compatible-providers";
-import { builtInModelPrefix, previewProviderDeletion } from "@/lib/provider-deletion";
+import {
+  builtInModelPrefix,
+  previewProviderDeletion,
+  LAST_CONFIGURED_PROVIDER_ERROR,
+  LAST_USABLE_PROVIDER_ERROR,
+} from "@/lib/provider-deletion";
+import { countConfiguredProviders } from "@/lib/provider-count";
 import {
   deletionPreviewQuerySchema,
   type DeletionPreviewResponse,
@@ -53,6 +59,13 @@ export const GET = withAdmin(async (request) => {
     targetProviderLabel: target?.label ?? null,
     targetModel: target?.defaultModel ?? null,
     affectedAgents,
+    // The DELETE routes' two guards, in their order, with their messages.
+    refusal:
+      (await countConfiguredProviders()) <= 1
+        ? LAST_CONFIGURED_PROVIDER_ERROR
+        : target === null
+          ? LAST_USABLE_PROVIDER_ERROR
+          : null,
   };
   return NextResponse.json(body);
 });

@@ -34,6 +34,10 @@ export interface RemainingCandidate {
   defaultModel: string;
 }
 
+/** The DELETE routes' answer when nothing else is configured at all. */
+export const LAST_CONFIGURED_PROVIDER_ERROR =
+  "Cannot remove the last configured provider. Add another provider first.";
+
 /**
  * The DELETE routes' answer when other providers are configured but none of
  * them is usable — every remaining one is a custom provider whose base URL the

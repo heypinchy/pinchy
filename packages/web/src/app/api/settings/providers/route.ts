@@ -11,6 +11,7 @@ import {
   builtInModelPrefix,
   migrateAgentsOffDeletedProvider,
   capMigratedAgents,
+  LAST_CONFIGURED_PROVIDER_ERROR,
   LAST_USABLE_PROVIDER_ERROR,
 } from "@/lib/provider-deletion";
 import { parseRequestBody } from "@/lib/api-validation";
@@ -45,12 +46,7 @@ export const DELETE = withAdmin(async (request, _ctx, session) => {
   // so this count spans built-ins + custom instances (see provider-count.ts).
   const totalConfigured = await countConfiguredProviders();
   if (totalConfigured <= 1) {
-    return NextResponse.json(
-      {
-        error: "Cannot remove the last configured provider. Add another provider first.",
-      },
-      { status: 400 }
-    );
+    return NextResponse.json({ error: LAST_CONFIGURED_PROVIDER_ERROR }, { status: 400 });
   }
 
   // Build the set of providers an orphaned agent can migrate onto, EXCLUDING the
@@ -63,7 +59,21 @@ export const DELETE = withAdmin(async (request, _ctx, session) => {
   // Others are configured, but each is a custom provider whose base URL the
   // SSRF guard refuses (left out of the candidates). Deleting would leave the
   // agents and the default nowhere usable to go, so refuse before any change.
+  // The refusal comes from the SSRF guard's verdict on the other providers, so
+  // it is recorded like PATCH /default's refusal. No address in it.
   if (remainingCandidates.length === 0) {
+    after(() =>
+      appendAuditLog({
+        actorType: "user",
+        actorId: session.user.id!,
+        eventType: "config.changed",
+        outcome: "failure",
+        detail: {
+          action: "provider_delete_refused_no_usable_target",
+          provider: { id: provider, name: config.name },
+        },
+      })
+    );
     return NextResponse.json({ error: LAST_USABLE_PROVIDER_ERROR }, { status: 400 });
   }
 

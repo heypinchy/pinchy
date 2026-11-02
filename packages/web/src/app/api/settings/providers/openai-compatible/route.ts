@@ -8,6 +8,7 @@ import {
 } from "@/lib/schemas/openai-compatible-provider";
 import {
   createOrUpdateProvider,
+  listOpenAiCompatibleProviders,
   listOpenAiCompatibleProvidersForAdmin,
   deleteProviderById,
   getDecryptedKeyById,
@@ -23,6 +24,7 @@ import {
   migrateAgentsOffDeletedProvider,
   repointAgentsOffRemovedModels,
   capMigratedAgents,
+  LAST_CONFIGURED_PROVIDER_ERROR,
   LAST_USABLE_PROVIDER_ERROR,
 } from "@/lib/provider-deletion";
 import { assertAllowedProviderUrl, ProviderUrlBlockedError } from "@/lib/provider-url-guard";
@@ -291,12 +293,7 @@ export const DELETE = withAdmin(async (request, _ctx, session) => {
   // the last one, with the exact status + message shape the built-in route uses.
   const totalConfigured = await countConfiguredProviders();
   if (totalConfigured <= 1) {
-    return NextResponse.json(
-      {
-        error: "Cannot remove the last configured provider. Add another provider first.",
-      },
-      { status: 400 }
-    );
+    return NextResponse.json({ error: LAST_CONFIGURED_PROVIDER_ERROR }, { status: 400 });
   }
 
   // Build the migration-target set BEFORE deleting, excluding this row by id:
@@ -306,6 +303,21 @@ export const DELETE = withAdmin(async (request, _ctx, session) => {
   // in buildRemainingCandidates (shared with the built-in DELETE route).
   const remainingCandidates = await buildRemainingCandidates({ excludeCustomId: id });
   if (remainingCandidates.length === 0) {
+    // The refusal comes from the SSRF guard's verdict on the other providers,
+    // so it is recorded like PATCH /default's refusal. No address in it.
+    const row = (await listOpenAiCompatibleProviders()).find((p) => p.id === id);
+    after(() =>
+      appendAuditLog({
+        actorType: "user",
+        actorId: session.user.id!,
+        eventType: "config.changed",
+        outcome: "failure",
+        detail: {
+          action: "provider_delete_refused_no_usable_target",
+          provider: { id, name: row?.displayName ?? id },
+        },
+      })
+    );
     return NextResponse.json({ error: LAST_USABLE_PROVIDER_ERROR }, { status: 400 });
   }
 

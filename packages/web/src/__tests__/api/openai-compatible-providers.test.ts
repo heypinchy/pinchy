@@ -985,7 +985,21 @@ describe("DELETE /api/settings/providers/openai-compatible", () => {
     expect(deleteProviderById).not.toHaveBeenCalled();
     expect(db.update).not.toHaveBeenCalled();
     expect(setSetting).not.toHaveBeenCalled();
-    expect(appendAuditLog).not.toHaveBeenCalled();
+
+    // The SSRF verdict turned an admin action down: recorded as a failure,
+    // like PATCH /default's refusal — with the provider's name, never the
+    // refused address.
+    expect(appendAuditLog).toHaveBeenCalledTimes(1);
+    const entry = vi.mocked(appendAuditLog).mock.calls[0][0];
+    expect(entry).toMatchObject({
+      eventType: "config.changed",
+      outcome: "failure",
+      detail: {
+        action: "provider_delete_refused_no_usable_target",
+        provider: { id: PROVIDER_ID, name: "Acme LLM" },
+      },
+    });
+    expect(JSON.stringify(entry)).not.toContain("100.100.100.200");
   });
 
   it("migrates past a refused custom provider onto a usable one", async () => {

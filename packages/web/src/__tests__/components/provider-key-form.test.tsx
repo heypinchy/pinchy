@@ -32,6 +32,7 @@ function previewResponse(overrides: Partial<DeletionPreviewResponse> = {}): Resp
       { id: "a2", name: "Booker" },
       { id: "a3", name: "Reader" },
     ],
+    refusal: null,
     ...overrides,
   };
   return jsonResponse(body);
@@ -616,6 +617,44 @@ describe("ProviderKeyForm", () => {
         expect(dialog).not.toHaveTextContent(/0 agent/);
         expect(dialog).not.toHaveTextContent(/will be moved/i);
         expect(dialog).toHaveTextContent(/Removes your Anthropic API key\./);
+      });
+
+      // Every other provider is a custom one whose base URL is refused, so the
+      // DELETE would answer 400. Say so in the dialog and keep Remove disabled,
+      // rather than letting the admin click into a toast.
+      it("states the refusal inline and disables Remove when the DELETE would refuse", async () => {
+        const refusal =
+          "Cannot remove the last usable provider. Every other configured provider has a base URL that is now refused, so agents could not be moved onto it. Change one of those URLs or add another provider first.";
+        vi.mocked(global.fetch).mockImplementation(async (input) =>
+          String(input).includes("deletion-preview")
+            ? previewResponse({
+                targetProvider: null,
+                targetProviderLabel: null,
+                targetModel: null,
+                affectedAgents: [],
+                refusal,
+              })
+            : jsonResponse({})
+        );
+
+        render(<ProviderKeyForm onSuccess={onSuccess} configuredProviders={configuredProviders} />);
+
+        fireEvent.click(screen.getByRole("button", { name: /anthropic/i }));
+        fireEvent.click(screen.getByRole("button", { name: /remove key/i }));
+
+        const dialog = await screen.findByRole("alertdialog");
+        await waitFor(() => {
+          expect(dialog).toHaveTextContent(refusal);
+        });
+        expect(dialog).not.toHaveTextContent(/another configured provider/i);
+        const remove = screen.getByRole("button", { name: /^remove$/i });
+        expect(remove).toBeDisabled();
+        fireEvent.click(remove);
+        expect(global.fetch).not.toHaveBeenCalledWith(
+          "/api/settings/providers",
+          expect.objectContaining({ method: "DELETE" })
+        );
+        expect(toast.error).not.toHaveBeenCalled();
       });
 
       it("falls back to the generic sentence when the preview fails", async () => {
@@ -1461,6 +1500,47 @@ describe("ProviderKeyForm", () => {
         );
         expect(onSuccess).toHaveBeenCalled();
       });
+    });
+
+    it("states the refusal inline and disables Remove for a custom provider the DELETE would refuse", async () => {
+      const refusal = "Cannot remove the last usable provider. Change one of those URLs first.";
+      vi.mocked(global.fetch).mockImplementation(async (input, init) => {
+        const url = String(input);
+        const method = init?.method ?? "GET";
+        if (url.includes("deletion-preview")) {
+          return previewResponse({
+            targetProvider: null,
+            targetProviderLabel: null,
+            targetModel: null,
+            affectedAgents: [],
+            refusal,
+          });
+        }
+        if (url.endsWith("/api/settings/providers/openai-compatible") && method === "GET") {
+          return jsonResponse([acmeRow]);
+        }
+        return jsonResponse({});
+      });
+
+      render(<ProviderKeyForm onSuccess={onSuccess} manageCustomProviders />);
+
+      await waitFor(() => {
+        expect(screen.getByRole("button", { name: /acme llm/i })).toBeInTheDocument();
+      });
+      fireEvent.click(screen.getByRole("button", { name: /acme llm/i }));
+      fireEvent.click(screen.getByRole("button", { name: /remove provider/i }));
+
+      const dialog = await screen.findByRole("alertdialog");
+      await waitFor(() => {
+        expect(dialog).toHaveTextContent(refusal);
+      });
+      const remove = screen.getByRole("button", { name: /^remove$/i });
+      expect(remove).toBeDisabled();
+      fireEvent.click(remove);
+      expect(global.fetch).not.toHaveBeenCalledWith(
+        "/api/settings/providers/openai-compatible",
+        expect.objectContaining({ method: "DELETE" })
+      );
     });
 
     // #949 — the custom path carries the same disclosure as the built-in one:

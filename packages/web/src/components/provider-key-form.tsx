@@ -303,10 +303,19 @@ function bareModelId(model: string): string {
  * - affected agents: name the count, the target provider and its model. The
  *   move is reversible per agent, which is why the dialog states the outcome
  *   instead of offering a picker.
+ *
+ * And one state that overrides them: the DELETE would refuse (the last
+ * configured provider, or the last usable one because every other provider's
+ * base URL is refused). Then the dialog says why, in the DELETE's own words,
+ * and the caller keeps Remove disabled — see {@link removalRefusal}.
  */
 function RemovalConsequence({ preview }: { preview: DeletionPreviewResponse | null }) {
   if (!preview) {
     return <> Any agents using its models will be switched to another configured provider.</>;
+  }
+  const refusal = removalRefusal(preview);
+  if (refusal) {
+    return <span className="mt-2 block text-destructive">{refusal}</span>;
   }
   const count = preview.affectedAgents.length;
   if (count === 0 || !preview.targetModel) return null;
@@ -318,6 +327,11 @@ function RemovalConsequence({ preview }: { preview: DeletionPreviewResponse | nu
       agent&apos;s model afterwards.
     </>
   );
+}
+
+/** Why the DELETE would refuse this removal, or `null` (also for no preview yet). */
+function removalRefusal(preview: DeletionPreviewResponse | null): string | null {
+  return typeof preview?.refusal === "string" && preview.refusal ? preview.refusal : null;
 }
 
 /**
@@ -865,7 +879,7 @@ export function ProviderKeyForm({
                   <AlertDialogCancel disabled={deletingCustom}>Cancel</AlertDialogCancel>
                   <AlertDialogAction
                     variant="destructive"
-                    disabled={deletingCustom}
+                    disabled={deletingCustom || removalRefusal(deletionPreview) !== null}
                     onClick={() => handleDeleteCustomProvider(selectedCustomProvider)}
                   >
                     {deletingCustom ? "Removing..." : "Remove"}
@@ -1025,6 +1039,7 @@ export function ProviderKeyForm({
                     <AlertDialogCancel>Cancel</AlertDialogCancel>
                     <AlertDialogAction
                       variant="destructive"
+                      disabled={removalRefusal(deletionPreview) !== null}
                       onClick={async () => {
                         setRemoving(true);
                         try {

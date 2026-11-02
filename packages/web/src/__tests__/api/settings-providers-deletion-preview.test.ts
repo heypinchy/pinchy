@@ -79,10 +79,15 @@ import { getSetting, setSetting, deleteSetting } from "@/lib/settings";
 import { listOpenAiCompatibleProviders } from "@/lib/openai-compatible-providers";
 import type { OpenAiCompatibleProviderListItem } from "@/lib/openai-compatible-providers";
 import { db } from "@/db";
+import { appendAuditLog } from "@/lib/audit";
 import { PROVIDERS } from "@/lib/providers";
 import { mockSession } from "@/test-helpers/auth";
 import { makeNextRequest, routeContext } from "@/test-helpers/route";
 import type { DeletionPreviewResponse } from "@/lib/schemas/provider-deletion";
+import {
+  LAST_CONFIGURED_PROVIDER_ERROR,
+  LAST_USABLE_PROVIDER_ERROR,
+} from "@/lib/provider-deletion";
 
 function customProvider(slug: string, displayName: string): OpenAiCompatibleProviderListItem {
   return {
@@ -181,6 +186,8 @@ describe("GET /api/settings/providers/deletion-preview", () => {
       { id: "agent-1", name: "Hermes" },
       { id: "agent-3", name: "Reader" },
     ]);
+    // A removal the DELETE will carry out carries no refusal.
+    expect(data.refusal).toBeNull();
   });
 
   it("reflects the built-ins-first ordering: a configured built-in beats a custom provider", async () => {
@@ -261,6 +268,19 @@ describe("GET /api/settings/providers/deletion-preview", () => {
     expect(data.targetModel).toBeNull();
     // Nothing migrates without a target, so nothing may be promised either.
     expect(data.affectedAgents).toEqual([]);
+    // The DELETE refuses this, and the dialog says so before anyone clicks.
+    expect(data.refusal).toBe(LAST_CONFIGURED_PROVIDER_ERROR);
+
+    const res = await DELETE(
+      makeNextRequest("http://localhost/api/settings/providers", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ provider: "anthropic" }),
+      }),
+      routeContext()
+    );
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe(data.refusal);
   });
 
   it("agrees with the DELETE route on the target model for the same state", async () => {
@@ -331,17 +351,35 @@ describe("GET /api/settings/providers/deletion-preview", () => {
       expect(data.targetProvider).toBeNull();
       expect(data.targetModel).toBeNull();
       expect(data.affectedAgents).toEqual([]);
+      // The dialog states the refusal up front instead of letting the admin
+      // click Remove into a 400 — and it is the DELETE's own message.
+      expect(data.refusal).toBe(LAST_USABLE_PROVIDER_ERROR);
 
       const res = await deleteBuiltIn("anthropic");
 
       expect(res.status).toBe(400);
       const body = await res.json();
       expect(body.error).toMatch(/last usable provider/i);
+      expect(body.error).toBe(data.refusal);
       // Refused before anything changed: the key stays, no agent moves, the
       // default is not reassigned.
       expect(deleteSetting).not.toHaveBeenCalled();
       expect(db.update).not.toHaveBeenCalled();
       expect(setSetting).not.toHaveBeenCalled();
+
+      // The SSRF verdict turned an admin action down: recorded as a failure,
+      // like PATCH /default's refusal, without the refused address.
+      expect(appendAuditLog).toHaveBeenCalledTimes(1);
+      const entry = vi.mocked(appendAuditLog).mock.calls[0][0];
+      expect(entry).toMatchObject({
+        eventType: "config.changed",
+        outcome: "failure",
+        detail: {
+          action: "provider_delete_refused_no_usable_target",
+          provider: { id: "anthropic", name: PROVIDERS.anthropic.name },
+        },
+      });
+      expect(JSON.stringify(entry)).not.toContain("100.100.100.200");
     });
 
     it("skips it for a usable provider listed after it, in both preview and DELETE", async () => {

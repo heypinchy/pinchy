@@ -101,9 +101,9 @@ The model dropdown lists everything the provider serves, so a model released aft
 
 Agents pinned to a model from the removed provider are moved to a still-configured one, so no agent is left on a model that no longer exists. The confirmation dialog states the outcome before you commit: how many agents are affected, and which provider and model they'll be moved to. If you removed your default provider, the provider those agents moved to becomes the new default.
 
-Pinchy refuses to remove the **last** configured provider — add another one first. That is what keeps the sentence above true: there is always somewhere for an orphaned agent to go.
+Pinchy refuses to remove the **last** configured provider — add another one first. The confirmation dialog says so and keeps **Remove** disabled. That is what keeps the sentence above true: there is always somewhere for an orphaned agent to go.
 
-A custom provider whose base URL is refused (its tile says **Not in use**, see [Which base URLs are allowed](#which-base-urls-are-allowed)) never counts as that somewhere. Pinchy doesn't move agents onto it or make it the new default, and the dialog names the next usable provider instead. If every other configured provider is refused, the removal is refused too (`400`): change one of those base URLs, or add another provider first.
+A custom provider whose base URL is refused (its tile says **Not in use**, see [Which base URLs are allowed](#which-base-urls-are-allowed)) never counts as that somewhere. Pinchy doesn't move agents onto it or make it the new default, and the dialog names the next usable provider instead. If every other configured provider is refused, the removal is refused too: the dialog says why and keeps **Remove** disabled. Change one of those base URLs, or add another provider first.
 
 The move is a starting point, not a verdict: pick a different model for any agent afterwards — see [Change an agent's model](#change-an-agents-model).
 
