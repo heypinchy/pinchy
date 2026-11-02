@@ -151,7 +151,7 @@ describe("findUnknownOriginUsers", () => {
       actorId: admin.id,
       eventType: "user.origin_acknowledged",
       resource: `user:${known.id}`,
-      detail: { user: { id: known.id, name: known.name } },
+      detail: { user: { name: known.name } },
       outcome: "success",
     });
 
@@ -168,7 +168,7 @@ describe("findUnknownOriginUsers", () => {
       actorId: admin.id,
       eventType: "user.origin_acknowledged",
       resource: `user:${stranger.id}`,
-      detail: { user: { id: stranger.id, name: stranger.name } },
+      detail: { user: { name: stranger.name } },
       outcome: "failure",
       error: { message: "boom" },
     });

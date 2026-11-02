@@ -91,7 +91,11 @@ describe("POST /api/users/:id/acknowledge-origin", () => {
     const rows = await acknowledgementRows(stranger.id);
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ actorType: "user", outcome: "success" });
-    expect(rows[0].detail).toEqual({ user: { id: stranger.id, name: "Stranger" } });
+    // The subject's id is in `resource`, which the provenance check reads; the
+    // detail snapshots the name beside it (see the own-account test for why
+    // the id is not repeated there).
+    expect(rows[0].resource).toBe(`user:${stranger.id}`);
+    expect(rows[0].detail).toEqual({ user: { name: "Stranger" } });
     // #824: the acting admin is carried by the (pseudonymized) actorId alone —
     // never as a raw id in the immutable row. And no email anywhere.
     expect(rows[0].actorId).not.toBe(admin.id);
@@ -112,6 +116,14 @@ describe("POST /api/users/:id/acknowledge-origin", () => {
     expect(res.status).toBe(200);
     expect(await findUnknownOriginUsers()).toEqual([]);
     expect(earlier.id).not.toBe(me.id);
+
+    // #824: here the subject IS the actor. A `user.id` in the detail would put
+    // the acting admin's raw id into the immutable, HMAC-chained detail, where
+    // crypto-erasure of the (pseudonymized) actorId can never reach it.
+    const [row] = await acknowledgementRows(me.id);
+    expect(row.actorId).not.toBe(me.id);
+    expect(JSON.stringify(row.detail)).not.toContain(me.id);
+    expect(row.detail).toEqual({ user: { name: "Promoted Admin" } });
   });
 
   it("refuses a member, without writing anything", async () => {

@@ -546,9 +546,11 @@ export type AuditLogEntry =
   | (AuditLogBase & {
       // An admin vouched for a flagged account (lib/user-provenance.ts). The
       // provenance check reads these rows by `resource` = `user:<id>`, so the
-      // row is the stored state, not a side note. No email.
+      // row is the stored state, not a side note. No email, and no id: the
+      // route works on the admin's own account, so a `user.id` here could be
+      // the acting admin's raw id (#824). The id is in `resource`.
       eventType: "user.origin_acknowledged";
-      detail: { user: EntityRef };
+      detail: { user: { name: string } };
     })
   | (AuditLogBase & {
       // Cost budgets (#36): a budget crossed its warning line (80%) or its

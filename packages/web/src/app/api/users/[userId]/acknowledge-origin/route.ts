@@ -42,7 +42,11 @@ export async function POST(
     actorId: session.user.id,
     eventType: ORIGIN_ACKNOWLEDGED_EVENT,
     resource: `user:${user.id}`,
-    detail: { user: { id: user.id, name: user.name } },
+    // Name only. The account's id is in `resource`, which is what the
+    // provenance check reads — and this route works on the admin's own
+    // account, where a `user.id` here would be the ACTING admin's raw id in
+    // the immutable detail, out of crypto-erasure's reach (#824).
+    detail: { user: { name: user.name } },
     outcome: "success",
   });
 
