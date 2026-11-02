@@ -86,7 +86,7 @@ Once it's set, Pinchy also writes the value into `.audit_hmac_secret` in the `pi
 
 `ENCRYPTION_KEY` and `AUDIT_HMAC_SECRET` have to be exactly 64 hex characters, the output of `openssl rand -hex 32`. A value that isn't is ignored, see [When Pinchy ignores a key variable](#when-pinchy-ignores-a-key-variable).
 
-The one thing that cannot be recovered is a key you delete. Keep the `pinchy-secrets` volume in your backups even after pinning the value in `.env`. [Backing up the keys](/concepts/audit-trail-verification/#backing-up-the-keys) has a command that saves the volume and `.env` together.
+The one thing that cannot be recovered is a key you delete. Keep the `pinchy-secrets` volume in your backups even after pinning the value in `.env`. [Backing up the keys](/concepts/audit-trail-verification/#backing-up-the-keys) has a command that saves the volume and `.env` together. Run it again after every key change: a pair from before the change doesn't hold the keys you have now.
 
 :::caution
 Losing `ENCRYPTION_KEY` means losing every stored provider API key — they cannot be recovered, only re-entered. If you back up anything, back up the `pinchy-secrets` volume.
