@@ -45,7 +45,6 @@
  * it, but its IDENTITY stays the original: the row and every chunk carry the
  * source path, because the artifact is not a file the reader has.
  */
-import { createHash } from "node:crypto";
 import { lstat, readdir, realpath, stat } from "node:fs/promises";
 import { basename, dirname, join, sep } from "node:path";
 
@@ -79,11 +78,11 @@ import type { ConversionOutcome, OfficeSource } from "./office-convert";
 import type { XlsxExtraction } from "./xlsx-extract";
 import type { IngestPage, IngestResult } from "./types";
 import {
-  openVerifiedSource,
+  copyVerifiedSource,
+  hashVerifiedSource,
   SourceRefusedError,
-  writePrivateCopy,
-  type PrivateCopy,
   type SourceRefusal,
+  type VerifiedCopy,
 } from "./verified-source";
 
 // IngestPage/IngestResult live in ./types (a runtime-free module) because
@@ -144,7 +143,7 @@ export interface IngestDeps {
   ocrModel: string | null;
   /**
    * Where the run puts the private copies its readers open (verified-source.ts
-   * `writePrivateCopy`). Prod: the artifact volume's `staging/`
+   * `copyVerifiedSource`). Prod: the artifact volume's `staging/`
    * (`stagingDirOf()`), which the index worker clears at start — so a copy a
    * killed run left behind does not outlive it, as it would in the
    * container's `/tmp` on the writable layer.
@@ -502,11 +501,11 @@ function fromPages(pages: readonly IngestPage[]): Pick<ExtractedDocument, "text"
  * would come back for a slice of its own.
  *
  * The converter is handed private copies, never paths on the share — the
- * asking document's own, and one made here for each other document in the
- * batch, read through the same checks as every other source read
- * (`readVerified`). A document that cannot be read that way is left out of the
- * batch and NOT answered: its own turn reads it again, and books the refusal
- * or the failure then, once.
+ * asking document's own, and one streamed here for each other document in the
+ * batch through the same checks as every other source read
+ * (`copyVerifiedSource`). A document that cannot be copied that way is left
+ * out of the batch and NOT answered: its own turn reads it again, and books
+ * the refusal or the failure then, once.
  */
 function officeArtifacts(
   queue: readonly { absPath: string; realPath: string }[],
@@ -536,23 +535,23 @@ function officeArtifacts(
     // it, even one the artifact store already holds.
     const batch: string[] = [absPath];
     const sources: OfficeSource[] = [{ absPath: copyPath, contentHash }];
-    const copies: PrivateCopy[] = [];
+    const copies: VerifiedCopy[] = [];
 
     try {
       for (let i = start + 1; i < pending.length && batch.length < batchSize; i++) {
         const mate = pending[i];
         if (done.has(mate.absPath)) continue;
-        let read;
+        let copy;
         try {
-          read = await readVerified(mate.realPath);
+          copy = await copyVerifiedSource(mate.realPath, mate.absPath, deps.stagingDir);
         } catch {
-          // Refused or unreadable. Not answered: see the doc comment above.
+          // Refused, unreadable, or no room for the copy. Not answered: see
+          // the doc comment above.
           continue;
         }
-        const copy = await writePrivateCopy(read.bytes, mate.absPath, deps.stagingDir);
         copies.push(copy);
         batch.push(mate.absPath);
-        sources.push({ absPath: copy.path, contentHash: sha256(read.bytes) });
+        sources.push({ absPath: copy.path, contentHash: copy.hash });
       }
 
       const outcomes = await deps.convertOffice(sources);
@@ -606,24 +605,6 @@ type ResolveArtifact = (
   contentHash: string,
   copyPath: string
 ) => Promise<ConversionOutcome>;
-
-function sha256(bytes: Uint8Array): string {
-  return createHash("sha256").update(bytes).digest("hex");
-}
-
-/**
- * Reads a source in full through the one door every read after discovery
- * takes (verified-source.ts): no link followed, a regular file, still where
- * discovery listed it.
- */
-async function readVerified(realPath: string): Promise<{ bytes: Buffer; mtime: Date }> {
-  const { handle, stat: info } = await openVerifiedSource(realPath);
-  try {
-    return { bytes: await handle.readFile(), mtime: info.mtime };
-  } finally {
-    await handle.close();
-  }
-}
 
 /**
  * Reads one file into chunks with locators, dispatching on its extension.
@@ -914,16 +895,28 @@ async function ingestFile(
   resolveArtifact: ResolveArtifact,
   onChunkProgress?: ChunkProgressCallback
 ): Promise<FileOutcome> {
-  // ONE verified read, and everything below works from its bytes: the hash,
-  // the mtime, and the private copy the extractors open. Nothing re-opens the
-  // path on the share, so nothing can be swapped in behind this check.
-  const { bytes, mtime } = await fileStep(absPath, () => readVerified(realPath));
-  const contentHash = sha256(bytes);
+  // Every read goes through a verified open (verified-source.ts), and none
+  // holds the file whole: a whole-file buffer here stayed alive across every
+  // await below — through an Office file's conversion and the embedding.
+  //
+  // First the hash, streamed, which is all an unchanged file costs. Only a
+  // file that must be read is then streamed into a private copy, the one path
+  // the extractors are handed — verified again, so a link swapped in between
+  // the two is refused too. What is stored is the COPY's hash and mtime: the
+  // bytes that were actually read, should the file have changed in between.
+  const { hash: contentHash } = await fileStep(absPath, () => hashVerifiedSource(realPath));
   const extract = () =>
     fileStep(absPath, async () => {
-      const copy = await writePrivateCopy(bytes, absPath, deps.stagingDir);
+      const copy = await copyVerifiedSource(realPath, absPath, deps.stagingDir);
       try {
-        return await extractDocument(absPath, copy.path, deps, resolveArtifact, contentHash);
+        const extracted = await extractDocument(
+          absPath,
+          copy.path,
+          deps,
+          resolveArtifact,
+          copy.hash
+        );
+        return { extracted, contentHash: copy.hash, mtime: copy.mtime };
       } finally {
         await copy.dispose();
       }
@@ -980,7 +973,7 @@ async function ingestFile(
     // skip" would leave this document unsearchable while silently reporting
     // success. We read it again instead and rebuild its chunks in place (same
     // id, no duplicate row).
-    const extracted = await extract();
+    const { extracted } = await extract();
     // A retry that fails worse than the read before it must not cost the text
     // that read found: an outage that returned keeps what is stored.
     const keepStored =
@@ -1007,7 +1000,7 @@ async function ingestFile(
   // something unparseable throws here and stays a `failed` update, with the
   // last good document and its chunks still searchable. Deleting first would
   // turn that same failure into silent data loss on a success response.
-  const extracted = await extract();
+  const { extracted, contentHash: readHash, mtime } = await extract();
 
   if (existing) {
     // Content changed since the last ingest: replace wholesale. Deleting
@@ -1020,7 +1013,7 @@ async function ingestFile(
     .insert(kbDocuments)
     .values({
       orgId,
-      contentHash,
+      contentHash: readHash,
       sourcePath: absPath,
       status: statusForPath(absPath),
       pageCount: extracted.pageCount,

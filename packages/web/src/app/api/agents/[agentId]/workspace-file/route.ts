@@ -14,12 +14,18 @@ import type { AuditLogEntry } from "@/lib/audit";
 import { resolveAllowedFile } from "@/lib/agent-file-access";
 import { contentTypeForFile } from "@/lib/agent-file-content-type";
 import { parseRangeHeader } from "@/lib/http-range";
-import { getOfficeArtifactStore, hashOpenFile } from "@/lib/knowledge/office-artifacts";
+import {
+  getOfficeArtifactStore,
+  hashOpenFile,
+  liveStagingDirOf,
+} from "@/lib/knowledge/office-artifacts";
 import { convertedPdfName, isOfficeFile, isSpreadsheetFile } from "@/lib/knowledge/office-formats";
 import { readSheetRange, SHEET_RANGE_MAX_ROWS } from "@/lib/knowledge/xlsx-extract";
 import {
+  copyOpenSource,
   openVerifiedSource,
   SourceRefusedError,
+  type VerifiedCopy,
   type VerifiedSource,
 } from "@/lib/knowledge/verified-source";
 import type { AgentPluginConfig } from "@/db/schema";
@@ -339,19 +345,39 @@ export const GET = withAuth<Params>(async (req, { params }, session) => {
       return NextResponse.json({ error: "not a spreadsheet" }, { status: 400 });
     }
 
+    // The reader takes a path, so it is handed a private copy of the
+    // workbook, streamed from the verified descriptor onto the staging
+    // volume: never the share's path (a link swapped in after the check would
+    // be followed), and never the whole file in this process.
     const source = await openSource();
     if (!source) return new NextResponse("Not found", { status: 404 });
+    let copy: VerifiedCopy;
+    try {
+      copy = await copyOpenSource(source, realPath, liveStagingDirOf());
+    } catch (err) {
+      // The workbook was opened; only the copy could not be written — the
+      // staging volume is full, read-only or missing. A fact about the
+      // reader, not the workbook, so it is not audited as one.
+      console.error(`[workspace-file] could not stage ${documentName} for reading:`, err);
+      auditFailure("reader_unavailable");
+      return NextResponse.json(
+        { error: "The spreadsheet reader is unavailable right now. Try again shortly." },
+        { status: 503 }
+      );
+    } finally {
+      await source.handle.close();
+    }
+
     let sheetRange;
     try {
-      const bytes = await source.handle.readFile();
-      sheetRange = await readSheetRange(bytes, range.sheet, range.startRow, range.endRow);
+      sheetRange = await readSheetRange(copy.path, range.sheet, range.startRow, range.endRow);
     } catch {
       // The workbook is on disk and inside the grant but will not open. That is
       // a fact about the document, so it is audited like one.
       auditFailure("unreadable_document");
       return NextResponse.json({ error: "The workbook could not be read" }, { status: 422 });
     } finally {
-      await source.handle.close();
+      await copy.dispose();
     }
 
     deferAuditLog(

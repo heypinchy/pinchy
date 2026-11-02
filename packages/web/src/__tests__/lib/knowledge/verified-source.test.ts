@@ -6,10 +6,12 @@
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   renameSync,
@@ -24,10 +26,12 @@ import { dirname, join } from "node:path";
 import {
   SourceRefusedError,
   SourceUnverifiableError,
+  copyVerifiedSource,
+  hashVerifiedSource,
   isAtPath,
   openVerifiedSource,
-  writePrivateCopy,
 } from "@/lib/knowledge/verified-source";
+import { SOURCE_CHUNK_BYTES } from "@/lib/knowledge/office-artifacts";
 
 let base: string;
 let share: string;
@@ -288,23 +292,65 @@ describe("isAtPath — where the descriptor really is", () => {
   });
 });
 
-describe("writePrivateCopy", () => {
-  it("copies the bytes under the source's basename into a directory only this process can enter", async () => {
-    const staging = join(base, "kb-artifacts", "staging");
-    const copy = await writePrivateCopy(Buffer.from("bytes"), join(share, "Rechnung.doc"), staging);
+describe("copyVerifiedSource", () => {
+  const staging = () => join(base, "kb-artifacts", "staging");
+
+  it("streams the source into a directory only this process can enter, under its basename, hashing exactly the bytes it copied", async () => {
+    // Larger than a chunk: the copy is written a chunk at a time from the
+    // verified descriptor, and this process never holds the file whole.
+    const bytes = "x".repeat(2 * SOURCE_CHUNK_BYTES + 5);
+    const source = join(share, "Rechnung.doc");
+    writeFileSync(source, bytes);
+
+    const copy = await copyVerifiedSource(source, source, staging());
     try {
       expect(copy.path.endsWith("/Rechnung.doc")).toBe(true);
       expect(copy.path.startsWith(share)).toBe(false);
       // On the artifact volume's staging area, which the index worker clears
       // at start — never the container's /tmp, where a copy a killed run left
       // behind would outlive every restart on the writable layer.
-      expect(dirname(dirname(copy.path))).toBe(staging);
-      expect(readFileSync(copy.path, "utf8")).toBe("bytes");
+      expect(dirname(dirname(copy.path))).toBe(staging());
+      expect(readFileSync(copy.path, "utf8")).toBe(bytes);
+      expect(copy.hash).toBe(createHash("sha256").update(bytes).digest("hex"));
+      expect(copy.size).toBe(bytes.length);
+      expect(copy.mtime.getTime()).toBe(statSync(source, { bigint: true }).mtime.getTime());
       expect(statSync(dirname(copy.path)).mode & 0o777).toBe(0o700);
     } finally {
       await copy.dispose();
     }
     expect(() => statSync(dirname(copy.path))).toThrow();
+  });
+
+  it("refuses a source swapped for a link, and leaves no copy behind", async () => {
+    const source = join(share, "report.pdf");
+    writeFileSync(join(elsewhere, "secret.pdf"), "another team's file");
+    symlinkSync(join(elsewhere, "secret.pdf"), source);
+
+    await expect(copyVerifiedSource(source, source, staging())).rejects.toBeInstanceOf(
+      SourceRefusedError
+    );
+    expect(existsSync(staging()) ? readdirSync(staging()) : []).toEqual([]);
+  });
+});
+
+describe("hashVerifiedSource", () => {
+  it("hashes the source through the verified descriptor, without a copy", async () => {
+    const bytes = "y".repeat(SOURCE_CHUNK_BYTES + 1);
+    const source = join(share, "report.pdf");
+    writeFileSync(source, bytes);
+
+    const { hash, mtime } = await hashVerifiedSource(source);
+
+    expect(hash).toBe(createHash("sha256").update(bytes).digest("hex"));
+    expect(mtime.getTime()).toBe(statSync(source, { bigint: true }).mtime.getTime());
+  });
+
+  it("refuses a source swapped for a link", async () => {
+    const source = join(share, "report.pdf");
+    writeFileSync(join(elsewhere, "secret.pdf"), "another team's file");
+    symlinkSync(join(elsewhere, "secret.pdf"), source);
+
+    await expect(hashVerifiedSource(source)).rejects.toBeInstanceOf(SourceRefusedError);
   });
 });
 

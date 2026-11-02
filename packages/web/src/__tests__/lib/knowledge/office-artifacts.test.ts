@@ -10,10 +10,14 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { readdir, stat, utimes } from "node:fs/promises";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { tmpdir } from "node:os";
 
-import { clearStagedBatches, OfficeArtifactStore } from "@/lib/knowledge/office-artifacts";
+import {
+  clearStagedBatches,
+  liveStagingDirOf,
+  OfficeArtifactStore,
+} from "@/lib/knowledge/office-artifacts";
 
 let tmpRoot: string;
 
@@ -164,6 +168,25 @@ describe("OfficeArtifactStore", () => {
 
       expect(await readdir(join(root, "staging"))).toEqual([]);
       expect(readFileSync(artifact, "utf8")).toBe("%PDF-1.4 stand-in");
+    });
+
+    it("spares the copies this process is reading right now, and removes another process's", async () => {
+      // The web server takes requests before the index worker's first tick, so
+      // a preview may be reading its private copy of a workbook at the very
+      // moment the boot clear runs. Removing it would answer that reader
+      // "unreadable" — and audit it — over a file that is fine.
+      const root = join(tmpRoot, "store");
+      const own = liveStagingDirOf(root);
+      mkdirSync(join(own, "source-a"), { recursive: true });
+      writeFileSync(join(own, "source-a", "prices.xlsx"), "a preview's copy");
+      const dead = join(root, "staging", "live-of-a-dead-process", "source-b");
+      mkdirSync(dead, { recursive: true });
+      writeFileSync(join(dead, "salaries.xlsx"), "a dead preview's copy");
+
+      expect(await clearStagedBatches(root)).toBe(1);
+
+      expect(await readdir(join(root, "staging"))).toEqual([basename(own)]);
+      expect(readFileSync(join(own, "source-a", "prices.xlsx"), "utf8")).toBe("a preview's copy");
     });
 
     it("is a no-op on a store that has no staging directory, or no store at all", async () => {

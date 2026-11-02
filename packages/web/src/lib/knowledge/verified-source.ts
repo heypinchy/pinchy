@@ -44,15 +44,18 @@
  * place — needs the target on the same filesystem and is out of scope.
  *
  * Everything after this reads the returned handle — never the path again —
- * or a private copy made from it (`writePrivateCopy`), so a reader that only
- * takes a path (pdfjs, exceljs, LibreOffice) never sees one an author of the
- * share controls.
+ * or a private copy streamed from it (`copyVerifiedSource`), so a reader that
+ * only takes a path (pdfjs, exceljs, LibreOffice, and the child processes
+ * that run them) never sees one an author of the share controls, and this
+ * process never holds a source whole.
  */
 import { randomUUID } from "node:crypto";
 import { constants as fsConstants, type BigIntStats } from "node:fs";
-import { lstat, mkdir, mkdtemp, open, readlink, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, open, readlink, rm } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
 import { basename, join } from "node:path";
+
+import { hashOpenFile } from "./office-artifacts";
 
 /**
  * Why a source was not read. Each one means the path no longer leads to a
@@ -196,44 +199,98 @@ export async function isAtPath(
   return location === realPath;
 }
 
-/** A private copy of a source's bytes, for readers that only take a path. */
-export interface PrivateCopy {
+/**
+ * A source's hash, read through a verified descriptor and streamed
+ * (`hashOpenFile`), never held whole. What the ingest compares with the hash
+ * it stored, before it decides whether a source needs reading at all.
+ */
+export async function hashVerifiedSource(realPath: string): Promise<{ hash: string; mtime: Date }> {
+  const { handle, stat: info } = await openVerifiedSource(realPath);
+  try {
+    return { hash: await hashOpenFile(handle), mtime: info.mtime };
+  } finally {
+    await handle.close();
+  }
+}
+
+/** A private copy of a source, for readers that only take a path. */
+export interface VerifiedCopy {
+  /** The copy. The only path a reader is ever handed. */
   path: string;
+  /** sha256 of exactly the bytes copied: the content hash, and the artifact key. */
+  hash: string;
+  size: number;
+  /** The verified descriptor's mtime. */
+  mtime: Date;
   dispose(): Promise<void>;
 }
 
 /**
- * Writes `bytes` to a fresh directory only this process can enter (`mkdtemp`
- * creates it 0700) under `stagingDir`, under the source's own basename.
+ * Opens `realPath` through `openVerifiedSource` and streams it, a chunk at a
+ * time (`SOURCE_CHUNK_BYTES`), into a fresh directory only this process can
+ * enter (`mkdtemp` creates it 0700) under `stagingDir`, under the basename of
+ * `sourcePath` — hashing the same chunks as it writes them. This process never
+ * holds the file whole: a 190 MB deck read whole stayed alive through its
+ * conversion and embedding. The descriptor is closed before this returns.
  *
- * `stagingDir` is the artifact volume's `staging/` (`stagingDirOf` in
- * office-artifacts.ts), not `os.tmpdir()`: a run killed mid-copy — a restart,
- * an upgrade, an OOM kill — never reaches `dispose()`, and on the container's
- * writable layer a full plaintext copy of a document would survive every
- * restart. On the volume, the index worker clears it at start
- * (`clearStagedBatches`).
+ * `stagingDir` is the artifact volume's `staging/` (`stagingDirOf`, or a
+ * request's `liveStagingDirOf`, in office-artifacts.ts), not `os.tmpdir()`: a
+ * run killed mid-copy — a restart, an upgrade, an OOM kill — never reaches
+ * `dispose()`, and on the container's writable layer a full plaintext copy of
+ * a document would survive every restart. On the volume, the index worker
+ * clears it at start (`clearStagedBatches`).
  *
  * The basename is kept because readers dispatch on the extension and log the
  * name; the directory is fresh per copy so two `Rechnung.doc` from different
  * folders can never collide. The file is created exclusively (`wx`), so even
  * the copy cannot be a link someone prepared.
  */
-export async function writePrivateCopy(
-  bytes: Uint8Array,
+export async function copyVerifiedSource(
+  realPath: string,
   sourcePath: string,
   stagingDir: string
-): Promise<PrivateCopy> {
+): Promise<VerifiedCopy> {
+  const source = await openVerifiedSource(realPath);
+  try {
+    return await copyOpenSource(source, sourcePath, stagingDir);
+  } finally {
+    await source.handle.close();
+  }
+}
+
+/**
+ * `copyVerifiedSource` for a descriptor the caller has already opened through
+ * `openVerifiedSource` — the preview route, which tells a refused open apart
+ * from a copy that could not be written. The caller still owns, and closes,
+ * the descriptor.
+ */
+export async function copyOpenSource(
+  source: VerifiedSource,
+  sourcePath: string,
+  stagingDir: string
+): Promise<VerifiedCopy> {
   // eslint-disable-next-line security/detect-non-literal-fs-filename -- the artifact volume's staging directory, from configuration.
   await mkdir(stagingDir, { recursive: true });
   const dir = await mkdtemp(join(stagingDir, "source-"));
-  const name = basename(sourcePath) || randomUUID();
-  const path = join(dir, name);
+  const dispose = () => rm(dir, { recursive: true, force: true });
   try {
+    const path = join(dir, basename(sourcePath) || randomUUID());
     // eslint-disable-next-line security/detect-non-literal-fs-filename -- a directory mkdtemp just created for this copy.
-    await writeFile(path, bytes, { flag: "wx", mode: 0o600 });
+    const copy = await open(path, "wx", 0o600);
+    let size = 0;
+    let hash: string;
+    try {
+      hash = await hashOpenFile(source.handle, async (chunk) => {
+        // A write may take less than it was given; the rest follows.
+        for (let at = 0; at < chunk.length;) at += (await copy.write(chunk, at)).bytesWritten;
+        size += chunk.length;
+      });
+    } finally {
+      await copy.close();
+    }
+    return { path, hash, size, mtime: source.stat.mtime, dispose };
   } catch (err) {
-    await rm(dir, { recursive: true, force: true });
+    await dispose();
     throw err;
   }
-  return { path, dispose: () => rm(dir, { recursive: true, force: true }) };
 }

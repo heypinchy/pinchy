@@ -14,7 +14,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { createHash } from "node:crypto";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import ExcelJS from "exceljs";
@@ -54,6 +54,24 @@ vi.mock("@/lib/agent-file-access", async (importOriginal) => {
   };
 });
 
+/**
+ * What the spreadsheet reader was handed, and whether a file was there. A
+ * pass-through: the real reader still answers.
+ */
+const sheetReads = vi.hoisted(() => [] as Array<{ source: unknown; existed: boolean }>);
+vi.mock("@/lib/knowledge/xlsx-extract", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/knowledge/xlsx-extract")>();
+  const { existsSync } = await import("node:fs");
+  return {
+    ...actual,
+    readSheetRange: async (...args: Parameters<typeof actual.readSheetRange>) => {
+      const [source] = args;
+      sheetReads.push({ source, existed: typeof source === "string" && existsSync(source) });
+      return actual.readSheetRange(...args);
+    },
+  };
+});
+
 let tmpRoot: string;
 let allowedRoot: string;
 let otherTeam: string;
@@ -65,6 +83,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.resetModules();
   afterContainmentCheck = null;
+  sheetReads.length = 0;
   tmpRoot = mkdtempSync(join(tmpdir(), "pinchy-workspace-file-swap-"));
   allowedRoot = join(tmpRoot, "allowed");
   otherTeam = join(tmpRoot, "other-team");
@@ -82,6 +101,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   delete process.env.KB_ARTIFACT_DIR;
   rmSync(tmpRoot, { recursive: true, force: true });
 });
@@ -165,6 +185,55 @@ describe("a source swapped for a link after the containment check", () => {
     expect(res.status).toBe(404);
     expect(await res.text()).not.toContain(SECRET);
     expect(failureReasons()).toEqual(["refused_link"]);
+  });
+
+  it("reads an ordinary workbook's rows from a private copy, streamed — never the share's path, never whole in this process", async () => {
+    // The reader takes a path (and, with #1243, runs in a child process that
+    // opens it): handed the share's path, it would follow a link swapped in
+    // after the verified open; handed the bytes, this process would hold the
+    // whole workbook. It gets a copy on the staging volume, written from the
+    // verified descriptor a chunk at a time, and removed once it answered.
+    const book = new ExcelJS.Workbook();
+    const suppliers = book.addWorksheet("Suppliers");
+    suppliers.addRow(["Supplier"]);
+    suppliers.addRow(["Nordwind GmbH"]);
+    const report = join(allowedRoot, "prices.xlsx");
+    await book.xlsx.writeFile(report);
+    const { open } = await import("node:fs/promises");
+    const probe = await open(report, "r");
+    const readWhole = vi.spyOn(Object.getPrototypeOf(probe), "readFile");
+    await probe.close();
+
+    const res = await callGET(report, { variant: "rows", sheet: "Suppliers", from: "1", to: "2" });
+
+    expect(readWhole).not.toHaveBeenCalled();
+    expect(res.status).toBe(200);
+    expect(JSON.stringify(await res.json())).toContain("Nordwind GmbH");
+    expect(sheetReads).toHaveLength(1);
+    const [{ source, existed }] = sheetReads;
+    expect(typeof source).toBe("string");
+    expect(existed).toBe(true);
+    expect((source as string).startsWith(join(artifactDir, "staging") + "/")).toBe(true);
+    expect(existsSync(source as string)).toBe(false);
+  });
+
+  it("answers 503, not 'unreadable', when the copy cannot be written", async () => {
+    // A full or missing staging volume is a fact about the reader, not the
+    // workbook: auditing it as `unreadable_document` would write a false
+    // statement about the document into an immutable row.
+    const book = new ExcelJS.Workbook();
+    book.addWorksheet("Suppliers").addRow(["Supplier"]);
+    const report = join(allowedRoot, "prices.xlsx");
+    await book.xlsx.writeFile(report);
+    process.env.KB_ARTIFACT_DIR = report; // a file: no directory can be made under it
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const res = await callGET(report, { variant: "rows", sheet: "Suppliers", from: "1", to: "1" });
+
+    expect(res.status).toBe(503);
+    expect(failureReasons()).toEqual(["reader_unavailable"]);
+    expect(consoleError).toHaveBeenCalled();
+    expect(sheetReads).toEqual([]);
   });
 
   it("still serves an ordinary file, rows and conversion unchanged", async () => {
