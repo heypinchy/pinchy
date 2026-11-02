@@ -45,8 +45,7 @@
  * it, but its IDENTITY stays the original: the row and every chunk carry the
  * source path, because the artifact is not a file the reader has.
  */
-import { createHash } from "node:crypto";
-import { readdir, readFile, stat } from "node:fs/promises";
+import { readdir, stat } from "node:fs/promises";
 import { basename, dirname, join, sep } from "node:path";
 
 import { and, count, eq, inArray, sql } from "drizzle-orm";
@@ -76,6 +75,7 @@ import {
   OFFICE_CONVERT_BATCH_SIZE,
 } from "./office-formats";
 import type { ChunkLocator } from "./locator";
+import { hashFileContents } from "./office-artifacts";
 import type { ConversionOutcome, OfficeSource } from "./office-convert";
 import type { XlsxExtraction } from "./xlsx-extract";
 import type { IngestPage, IngestResult } from "./types";
@@ -830,11 +830,14 @@ async function ingestFile(
   resolveArtifact: ResolveArtifact,
   onChunkProgress?: ChunkProgressCallback
 ): Promise<FileOutcome> {
-  const { buffer, fileStat } = await fileStep(absPath, async () => ({
-    buffer: await readFile(absPath),
+  // Hashed as it streams, never read whole: a whole-file buffer here stayed
+  // alive across every await below — through an Office file's conversion,
+  // which runs in a child precisely so the server does not hold the file
+  // (seventh review, PR #1243).
+  const { contentHash, fileStat } = await fileStep(absPath, async () => ({
+    contentHash: await hashFileContents(absPath),
     fileStat: await stat(absPath),
   }));
-  const contentHash = createHash("sha256").update(buffer).digest("hex");
 
   const [existing] = await db
     .select()

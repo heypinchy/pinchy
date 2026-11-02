@@ -9,6 +9,28 @@
  * logic that Task 6 owns.
  */
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+
+/**
+ * Every path this process reads WHOLE (`readFile`). A pass-through: nothing
+ * reads differently, the record only says who read what — see the Office
+ * memory test below.
+ */
+const wholeFileReads = vi.hoisted(() => [] as string[]);
+
+/** `fn`, recording the path it is called with. */
+function recorded<A extends unknown[], R>(fn: (...args: A) => R): (...args: A) => R {
+  return (...args) => {
+    wholeFileReads.push(String(args[0]));
+    return fn(...args);
+  };
+}
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  const wrapped = { ...actual, readFile: recorded(actual.readFile) };
+  return { ...wrapped, default: wrapped };
+});
+
 import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -1795,6 +1817,24 @@ it("batches from the document that asked, carrying the hash the ingest already c
   expect(convertOffice.mock.calls[1][0]).toEqual([
     { absPath: changed, contentHash: createHash("sha256").update("bytes-2-v2").digest("hex") },
   ]);
+});
+
+it("hashes an Office file as it streams, so the server never holds it whole while it converts (seventh review, PR #1243)", async () => {
+  // The hash was taken from a whole-file read, and V8 kept that buffer alive
+  // across the awaits after it — through the whole conversion: up to 200 MB
+  // of the web process for one deck, on top of the embedding model, during
+  // the very step the reader child exists to keep off the server.
+  const docPath = join(tmpRoot, "Handbuch.docx");
+  writeFileSync(docPath, "handbook-bytes");
+  const { deps, convertOffice } = officeDeps(convertedTo("/artifacts/hb.pdf"), () => WORD_PAGES);
+  wholeFileReads.length = 0;
+
+  expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ indexed: 1 }));
+
+  expect(convertOffice.mock.calls[0][0]).toEqual([
+    { absPath: docPath, contentHash: createHash("sha256").update("handbook-bytes").digest("hex") },
+  ]);
+  expect(wholeFileReads).not.toContain(docPath);
 });
 
 it("spends one converter attempt per batch when the converter never answers at all", async () => {
