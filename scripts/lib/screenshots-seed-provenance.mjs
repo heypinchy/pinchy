@@ -81,6 +81,11 @@ function valueTuples(valuesText) {
   return tuples;
 }
 
+/** Escape every regex metacharacter, backslash included, so a table name is matched literally. */
+function escapeRegExp(text) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 function stripSqlComments(sql) {
   return sql
     .split("\n")
@@ -95,7 +100,7 @@ function stripSqlComments(sql) {
 export function parseInserts(sql, table) {
   const clean = stripSqlComments(sql);
   const header = new RegExp(
-    `INSERT\\s+INTO\\s+${table.replace(/"/g, '\\"')}\\s*\\(([^)]*)\\)\\s*VALUES`,
+    `INSERT\\s+INTO\\s+${escapeRegExp(table)}\\s*\\(([^)]*)\\)\\s*VALUES`,
     "gi",
   );
   const rows = [];
