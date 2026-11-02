@@ -98,7 +98,7 @@ describe("isPrivateUrl", () => {
   });
 
   it("accepts public IP with HTTP", () => {
-    expect(isPrivateUrl("http://203.0.113.50:8069")).toBe(false);
+    expect(isPrivateUrl("http://93.184.216.34:8069")).toBe(false);
   });
 
   it("does not reject 172.32.x.x (outside private range)", () => {
@@ -125,7 +125,23 @@ describe("classifyIpAddress", () => {
     ["172.31.255.255", "private"],
     ["192.168.1.10", "private"],
     ["172.32.0.1", "public"],
-    ["203.0.113.50", "public"],
+    ["93.184.216.34", "public"],
+    // Special-purpose ranges -- the shared table also used by web_fetch.
+    // CGNAT is "private" so an operator can opt in for a tailnet Odoo, except
+    // 100.100.100.200, Alibaba Cloud's metadata endpoint.
+    ["100.64.0.1", "private"],
+    ["100.127.255.255", "private"],
+    ["100.100.100.200", "link-local"],
+    ["100.63.255.255", "public"],
+    ["100.128.0.1", "public"],
+    ["198.18.0.1", "reserved"],
+    ["192.0.0.1", "reserved"],
+    ["192.0.2.1", "reserved"],
+    ["198.51.100.7", "reserved"],
+    ["203.0.113.50", "reserved"],
+    ["224.0.0.1", "reserved"],
+    ["240.0.0.1", "reserved"],
+    ["255.255.255.255", "reserved"],
   ] as const)("classifies IPv4 %s as %s", (address, expected) => {
     expect(classifyIpAddress(address)).toBe(expected);
   });
@@ -143,11 +159,18 @@ describe("classifyIpAddress", () => {
     ["fd00:ec2::254", "private"],
     ["2606:4700:4700::1111", "public"],
     ["fec0::1", "public"],
+    ["fe90::1", "link-local"],
+    ["ff02::1", "reserved"],
+    ["64:ff9b::7f00:1", "loopback"],
+    ["64:ff9b::a9fe:a9fe", "link-local"],
+    ["64:ff9b::808:808", "public"],
+    ["::ffff:100.64.0.1", "private"],
+    ["::100.100.100.200", "link-local"],
     // IPv4-mapped addresses carry an IPv4 destination; classify what they
     // actually reach, not the IPv6 wrapper.
     ["::ffff:127.0.0.1", "loopback"],
     ["::ffff:192.168.1.10", "private"],
-    ["::ffff:203.0.113.50", "public"],
+    ["::ffff:93.184.216.34", "public"],
     // ::a.b.c.d, the deprecated IPv4-compatible form. ::/96 is reserved, so
     // nothing public lives there — decode the tail rather than wave it past.
     ["::127.0.0.1", "loopback"],
@@ -237,8 +260,8 @@ describe("validateExternalUrl", () => {
   });
 
   it("accepts a public IPv4 literal without touching the resolver", async () => {
-    const result = await validateWithoutDns("https://203.0.113.10:8069");
-    expect(result).toEqual({ valid: true, url: "https://203.0.113.10:8069" });
+    const result = await validateWithoutDns("https://93.184.216.35:8069");
+    expect(result).toEqual({ valid: true, url: "https://93.184.216.35:8069" });
   });
 
   it("names the ALLOW_PRIVATE_URLS opt-out for an RFC-1918 address, and only there", async () => {
@@ -255,10 +278,53 @@ describe("validateExternalUrl", () => {
     expect(metadata).toEqual({ valid: false, error: expect.not.stringContaining("ALLOW_") });
   });
 
+  it("treats CGNAT (Tailscale) like RFC-1918: refused, with the ALLOW_PRIVATE_URLS way out", async () => {
+    const literal = await validateWithoutDns("http://100.64.0.7:8069");
+    expect(literal).toEqual({
+      valid: false,
+      error: expect.stringContaining("ALLOW_PRIVATE_URLS=1"),
+    });
+
+    const viaDns = await validateExternalUrl(
+      "https://odoo.tailnet.example",
+      resolveTo(["100.101.102.103"])
+    );
+    expect(viaDns).toEqual({
+      valid: false,
+      error: expect.stringContaining("ALLOW_PRIVATE_URLS=1"),
+    });
+  });
+
+  it("allows a CGNAT Odoo when ALLOW_PRIVATE_URLS=1", async () => {
+    vi.stubEnv("ALLOW_PRIVATE_URLS", "1");
+    const result = await validateWithoutDns("http://100.64.0.7:8069");
+    expect(result).toEqual({ valid: true, url: "http://100.64.0.7:8069" });
+  });
+
+  it.each([
+    "http://100.100.100.200/latest/meta-data/",
+    "http://[64:ff9b::a9fe:a9fe]/latest/meta-data/",
+    "http://198.18.0.1:8069",
+    "http://240.0.0.1:8069",
+    "http://224.0.0.1:8069",
+    "http://[ff02::1]:8069",
+  ])("rejects %s with no opt-out suggested, since no Odoo server lives there", async (url) => {
+    const result = await validateWithoutDns(url);
+    expect(result).toEqual({ valid: false, error: expect.not.stringContaining("ALLOW_") });
+  });
+
+  it("rejects a name that resolves to Alibaba Cloud metadata (100.100.100.200)", async () => {
+    const result = await validateExternalUrl(
+      "https://rebind.example.com",
+      resolveTo(["100.100.100.200"])
+    );
+    expect(result).toEqual({ valid: false, error: expect.not.stringContaining("ALLOW_") });
+  });
+
   it("accepts HTTPS public domain (resolves to a public address)", async () => {
     const result = await validateExternalUrl(
       "https://odoo.example.com",
-      resolveTo(["203.0.113.10"])
+      resolveTo(["93.184.216.35"])
     );
     expect(result).toEqual({ valid: true, url: "https://odoo.example.com" });
   });
@@ -266,7 +332,7 @@ describe("validateExternalUrl", () => {
   it("accepts HTTPS odoo.com subdomain (resolves to a public address)", async () => {
     const result = await validateExternalUrl(
       "https://mycompany.odoo.com",
-      resolveTo(["203.0.113.10"])
+      resolveTo(["93.184.216.35"])
     );
     expect(result).toEqual({ valid: true, url: "https://mycompany.odoo.com" });
   });
@@ -274,7 +340,7 @@ describe("validateExternalUrl", () => {
   it("accepts HTTP for on-prem (resolves to a public address)", async () => {
     const result = await validateExternalUrl(
       "http://odoo.example.com:8069",
-      resolveTo(["203.0.113.10"])
+      resolveTo(["93.184.216.35"])
     );
     expect(result).toEqual({ valid: true, url: "http://odoo.example.com:8069" });
   });
@@ -282,7 +348,7 @@ describe("validateExternalUrl", () => {
   it("normalizes trailing slash", async () => {
     const result = await validateExternalUrl(
       "https://odoo.example.com/",
-      resolveTo(["203.0.113.10"])
+      resolveTo(["93.184.216.35"])
     );
     expect(result).toEqual({ valid: true, url: "https://odoo.example.com" });
   });
@@ -290,7 +356,7 @@ describe("validateExternalUrl", () => {
   it("strips path for origin-only output", async () => {
     const result = await validateExternalUrl(
       "https://odoo.example.com/web/login",
-      resolveTo(["203.0.113.10"])
+      resolveTo(["93.184.216.35"])
     );
     expect(result).toEqual({ valid: true, url: "https://odoo.example.com" });
   });
@@ -330,7 +396,7 @@ describe("validateExternalUrl", () => {
       // of them must be classified, not just the first.
       const result = await validateExternalUrl(
         "https://mixed.attacker.example",
-        resolveTo(["203.0.113.10", "127.0.0.1"])
+        resolveTo(["93.184.216.35", "127.0.0.1"])
       );
       expect(result).toEqual({ valid: false, error: expect.stringContaining("loopback") });
     });
@@ -346,7 +412,7 @@ describe("validateExternalUrl", () => {
     it("allows a hostname that resolves only to public addresses", async () => {
       const result = await validateExternalUrl(
         "https://real-odoo.example",
-        resolveTo(["203.0.113.10", "2606:4700:4700::1111"])
+        resolveTo(["93.184.216.35", "2606:4700:4700::1111"])
       );
       expect(result).toEqual({ valid: true, url: "https://real-odoo.example" });
     });

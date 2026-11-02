@@ -27,6 +27,15 @@ describe("assertMailHostAllowed", () => {
       ["IPv6 link-local, upper half of fe80::/10", "feb0::1"],
       ["IPv4-mapped IPv6 loopback", "::ffff:127.0.0.1"],
       ["IPv4-compatible IPv6 loopback", "::7f00:1"],
+      ["Alibaba Cloud metadata", "100.100.100.200"],
+      ["IPv4-mapped Alibaba Cloud metadata", "::ffff:100.100.100.200"],
+      ["NAT64-wrapped IMDS", "64:ff9b::a9fe:a9fe"],
+      ["benchmarking 198.18.0.0/15", "198.18.0.1"],
+      ["TEST-NET-3", "203.0.113.50"],
+      ["reserved 240.0.0.0/4", "240.0.0.1"],
+      ["IPv4 multicast", "224.0.0.1"],
+      ["limited broadcast", "255.255.255.255"],
+      ["IPv6 multicast", "ff02::1"],
     ];
 
     it.each(alwaysBlocked)("blocks a host resolving to %s (%s)", async (_label, address) => {
@@ -65,6 +74,11 @@ describe("assertMailHostAllowed", () => {
       ["172.16.0.0/12 upper bound", "172.31.255.255"],
       ["192.168.0.0/16", "192.168.1.10"],
       ["IPv6 unique-local", "fd12:3456:789a::1"],
+      // CGNAT is where Tailscale puts every node: an on-premise mail server
+      // reached over a tailnet is a legitimate deployment, so it is opt-in
+      // like RFC-1918 rather than blocked outright.
+      ["CGNAT 100.64.0.0/10 (Tailscale)", "100.64.0.1"],
+      ["IPv4-mapped CGNAT", "::ffff:100.64.0.1"],
     ];
 
     it.each(privateAddresses)("blocks %s (%s) by default", async (_label, address) => {
@@ -93,7 +107,7 @@ describe("assertMailHostAllowed", () => {
 
   describe("public hosts", () => {
     it.each([
-      ["IPv4", "203.0.113.50"],
+      ["IPv4", "93.184.216.34"],
       ["IPv4 just outside 172.16.0.0/12", "172.32.0.1"],
       ["IPv6", "2606:4700:4700::1111"],
     ])("allows a host resolving to a public %s (%s)", async (_label, address) => {
@@ -109,13 +123,13 @@ describe("assertMailHostAllowed", () => {
       // address alongside an internal one; the connect() picks whichever the
       // OS prefers, so one bad answer has to fail the whole host.
       await expect(
-        assertMailHostAllowed("mail.evil.test", resolvesTo("203.0.113.50", "127.0.0.1"))
+        assertMailHostAllowed("mail.evil.test", resolvesTo("93.184.216.34", "127.0.0.1"))
       ).rejects.toThrow(MailHostBlockedError);
     });
 
     it("allows when every resolved address is public", async () => {
       await expect(
-        assertMailHostAllowed("imap.example.com", resolvesTo("203.0.113.50", "198.51.100.7"))
+        assertMailHostAllowed("imap.example.com", resolvesTo("93.184.216.34", "8.8.8.8"))
       ).resolves.toBeUndefined();
     });
   });
@@ -142,7 +156,7 @@ describe("assertMailHostAllowed", () => {
 
   describe("host input handling", () => {
     it("rejects an empty host without resolving", async () => {
-      const resolver = vi.fn(resolvesTo("203.0.113.50"));
+      const resolver = vi.fn(resolvesTo("93.184.216.34"));
 
       await expect(assertMailHostAllowed("   ", resolver)).rejects.toThrow(MailHostBlockedError);
       expect(resolver).not.toHaveBeenCalled();

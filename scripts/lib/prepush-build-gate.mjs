@@ -99,6 +99,9 @@ const IRRELEVANT_FILES = new Set([
 const BUILD_RELEVANT_OUTSIDE_WEB = [
   /^packages\/plugins\/[^/]+\/openclaw\.plugin\.json$/,
   /^packages\/plugins\/pinchy-files\/pdf-(scan-rule|vision-api)\.ts$/,
+  // The IP classifier the admin-facing SSRF guards share with web_fetch, so the
+  // two cannot keep separate (and drifting) lists of internal ranges.
+  /^packages\/plugins\/pinchy-web\/ip-address\.ts$/,
 ];
 
 /**

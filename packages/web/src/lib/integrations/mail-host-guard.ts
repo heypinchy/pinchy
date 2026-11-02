@@ -68,10 +68,11 @@ const ALWAYS_BLOCKED_CLASSES: ReadonlySet<IpAddressClass> = new Set([
   "loopback",
   "unspecified",
   "link-local",
+  "reserved",
 ]);
 
 const INTERNAL_MESSAGE =
-  "Blocked: this host resolves to a loopback, link-local, or cloud-metadata address.";
+  "Blocked: this host resolves to a loopback, link-local, cloud-metadata or otherwise reserved address.";
 
 const PRIVATE_MESSAGE =
   "Blocked: this host resolves to a private network address. " +

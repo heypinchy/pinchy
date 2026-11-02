@@ -232,7 +232,7 @@ read-write finance templates carry.
 
 Pinchy fetches the URL you enter from its own server, so an admin who can add a connection can point it at anything that server can reach. That's why we only connect to a URL that lands on a public address — and we check the address it actually resolves to, not just how the hostname reads. A name like `erp.yourcompany.com` pointing at `10.0.0.5` is the same request as typing `10.0.0.5` directly.
 
-If your Odoo genuinely lives on your own network — on `10.x`, `172.16–31.x`, `192.168.x`, or an IPv6 unique-local range — set the environment variable on the Pinchy container and restart it:
+If your Odoo genuinely lives on your own network — on `10.x`, `172.16–31.x`, `192.168.x`, a Tailscale or other carrier-grade-NAT address (`100.64.0.0/10`), or an IPv6 unique-local range — set the environment variable on the Pinchy container and restart it:
 
 ```bash
 ALLOW_PRIVATE_URLS=1

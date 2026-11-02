@@ -284,6 +284,14 @@ The SSRF guard on the Odoo connection routes only ever read the hostname as a st
 
 That closes the hole, and it also catches a setup that used to work by accident: **an on-premise Odoo reached by a hostname that resolves into your own network** — `erp.internal:8069` on `10.x`, `172.16–31.x`, `192.168.x` or an IPv6 unique-local range. Typing its IP address directly was already refused; the hostname now is too. The refusal says so and names the fix — set `ALLOW_PRIVATE_URLS=1` on the Pinchy container and restart it. Nothing to change if your Odoo is reachable at a public address, which includes every `odoo.com` instance. See [Odoo on your own network](/guides/connect-odoo/#odoo-on-your-own-network).
 
+#### Fetching web pages no longer reaches Tailscale, cloud-metadata or reserved addresses
+
+The check behind the **Fetch web pages** tool, and the one behind the Odoo and mail-server connections, kept two separate lists of internal address ranges, and both had holes. Neither knew `100.64.0.0/10` — carrier-grade NAT, which is where Alibaba Cloud serves instance credentials (`100.100.100.200`) and where every Tailscale node lives. The tool also missed most of `fe80::/10`, and neither unwrapped NAT64 (`64:ff9b::/96`). Both now read one shared table, and it also refuses multicast, broadcast and the reserved test ranges (`198.18.0.0/15`, `192.0.0.0/24`, `192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24`, `240.0.0.0/4`).
+
+For most installs there is nothing to do. One setup is affected: **an Odoo or mail server you reach over Tailscale (a `100.x` address).** It used to connect; it is now treated like any other private address. Set `ALLOW_PRIVATE_URLS=1` for Odoo, or `ALLOW_PRIVATE_MAIL_HOSTS=1` for mail, on the Pinchy container and restart it, exactly as for a `10.x` server. See [Odoo on your own network](/guides/connect-odoo/#odoo-on-your-own-network) and [Mail servers on your own network](/guides/connect-email-imap/#mail-servers-on-your-own-network). `100.100.100.200` itself stays refused for the mail check whatever you set.
+
+The **Fetch web pages** tool has no such switch and never did: an agent cannot fetch from your own network, and that now includes the tailnet.
+
 #### An agent that couldn't save, or couldn't see its mailbox, can again
 
 The shared-volume mix-up that [v0.9.1 fixed for provider keys](#a-provider-key-that-cant-reach-the-runtime-now-says-so) also reached the agent's workspace, where the files that brief an agent live. Pinchy and the runtime share one config volume under two different users; if the runtime created one of those files first, it came out owned by the wrong user, and from then on Pinchy couldn't write it — which stopped the whole config from reaching the runtime.
