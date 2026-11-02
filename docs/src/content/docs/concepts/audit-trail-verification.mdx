@@ -109,6 +109,23 @@ A pair you backed up after your last key change already is in that state. To get
 docker compose run --rm --no-deps -T --entrypoint rm pinchy /app/secrets/.audit_hmac_secret
 ```
 
+If no volume backup like that exists, the key your last switch replaced may only be in a `.env` backup: when it was the value of `AUDIT_HMAC_SECRET` before that switch, the `env-….backup` from the switch's first step holds it. This writes it from there into the key file without printing it, in the form Pinchy writes it in: lowercase, no line break, readable only by Pinchy's user (uid 999). Set `backup` to that file's name first. If you kept the value somewhere else, put it into a file of its own as one line, `AUDIT_HMAC_SECRET=` followed by the value, readable by you alone, and use that file:
+
+```bash
+backup=env-YYYYMMDD-HHMMSS.backup
+env -u AUDIT_HMAC_SECRET docker compose --env-file "$backup" run --rm --no-deps -T --entrypoint sh pinchy -c '
+  key=$(printf %s "$AUDIT_HMAC_SECRET" | tr A-F a-f)
+  case $key in *[!0-9a-f]*) key= ;; esac
+  if [ ${#key} -ne 64 ]; then echo "No valid AUDIT_HMAC_SECRET in that file" >&2; exit 1; fi
+  umask 077
+  set -C
+  printf %s "$key" > /app/secrets/.audit_hmac_secret &&
+    chown 999:999 /app/secrets/.audit_hmac_secret
+'
+```
+
+`--env-file` makes Compose read that file instead of `.env`, the way it reads `.env`, and `env -u` keeps a variable of the same name in your shell from winning over it. The command never replaces a key file: if there already is one, it stops with `File exists`. Check what that file is before you remove it.
+
 Before the first start, check what you restored. For each variable with no line in `.env`, its key file has to be in the volume. This lists the files, never their contents:
 
 ```bash
@@ -118,11 +135,13 @@ docker compose run --rm --no-deps -T --entrypoint ls pinchy -la /app/secrets
 With `AUDIT_HMAC_SECRET` set, compare the key file with the value instead. About 60 seconds after that start, the first background run verifies against whatever the file holds, and a failure it records can't be cleared. These two commands print a hash each, never the key:
 
 ```bash
-docker compose run --rm --no-deps -T --entrypoint cat pinchy /app/secrets/.audit_hmac_secret | sha256sum
-sed -n 's/^AUDIT_HMAC_SECRET=//p' .env | tr -dc '0-9a-fA-F' | tr 'A-F' 'a-f' | sha256sum
+docker compose run --rm --no-deps -T --entrypoint cat pinchy /app/secrets/.audit_hmac_secret | tr -d '[:space:]' | tr 'A-F' 'a-f' | sha256sum
+docker compose run --rm --no-deps -T --entrypoint sh pinchy -c 'printf %s "$AUDIT_HMAC_SECRET"' | tr 'A-F' 'a-f' | sha256sum
 ```
 
-While the key your last switch replaced is still kept, the hashes have to differ. Otherwise they have to match, or `cat` says there's no such file. Like the log notice below, different hashes only say the file holds some other key; which one, only the backup you took it from says.
+The second one hashes the value as Compose hands it to Pinchy, from `.env` or from a variable set in your shell, which wins over `.env`. Compose reads the file its own way: it drops quotes and a trailing comment, for one. So read the value through Compose, not out of `.env` with a text tool. Both commands lowercase the key, because Pinchy reads a key the same in either case, and the first also drops a line break a key file written by hand may end with.
+
+While the key your last switch replaced is still kept, the hashes have to differ. Otherwise they have to match, or `cat` says there's no such file. Like the log notice below, different hashes only say the file holds some other key; which one, only the backup you took it from says. If you wrote the file from a `.env` backup above, you can check that too: run the second command with the same `env -u AUDIT_HMAC_SECRET` and `--env-file "$backup"` in front of `run`, and its hash has to match the key file's.
 
 Then confirm it in the log of that first start (`docker compose logs pinchy`). With `AUDIT_HMAC_SECRET` set:
 
@@ -220,11 +239,11 @@ As with a rolling restart (below), there's no reset, on purpose. Write down what
 6. Check that the file holds the new value, not the leaked one. These two commands print a hash each, never the key, and the hashes have to match:
 
    ```bash
-   docker compose exec -T pinchy cat /app/secrets/.audit_hmac_secret | sha256sum
-   sed -n 's/^AUDIT_HMAC_SECRET=//p' .env | tr -dc '0-9a-fA-F' | tr 'A-F' 'a-f' | sha256sum
+   docker compose exec -T pinchy cat /app/secrets/.audit_hmac_secret | tr -d '[:space:]' | tr 'A-F' 'a-f' | sha256sum
+   docker compose run --rm --no-deps -T --entrypoint sh pinchy -c 'printf %s "$AUDIT_HMAC_SECRET"' | tr 'A-F' 'a-f' | sha256sum
    ```
 
-   The second command keeps only the hex digits of the `.env` line and lowercases them, because Pinchy writes the key in lowercase and Compose drops quotes and line endings before Pinchy sees the value. If they differ, the container is running on a different value than the one in `.env`: stop and look before anything signs more entries. After a step 5 retry, the likely cause is a key file Pinchy generated while the value was invalid and that you didn't remove before correcting `.env`: the file is then that random key, and Pinchy kept it. Do step 5's commands, then `docker compose up -d`, and compare again.
+   The second one hashes the new value as Compose hands it to Pinchy, read from `.env` the way Compose reads it, in a throwaway container next to the running one. It's the same check as in [Which backup to restore](#which-backup-to-restore). If the hashes differ, the key file isn't the new value: stop and look before anything signs more entries. Two causes are likely. After a step 5 retry, a key file Pinchy generated while the value was invalid and that you didn't remove before correcting `.env`: the file is then that random key, and Pinchy kept it. Or step 4 used `docker compose start` or `restart`, and Pinchy wrote the leaked value into the file. Either way, do step 5's commands, then `docker compose up -d`, and compare again.
 
 7. Once the hashes match, [back up the keys again](#which-backup-to-restore).
 
