@@ -598,13 +598,20 @@ function killTree(child: ReturnType<typeof spawn>): void {
  * Two honest limits, both measured (release reviews of v0.10.0). This profile
  * does NOT stop LibreOffice's HTML import (an altChunk) or its SVG import from
  * reading `file://` references — and anything LibreOffice takes for SVG by its
- * bytes goes through that import, whatever the document called it. For OOXML
- * and RTF, `office-preflight.ts` is the layer that holds: it cuts altChunks,
- * pictures that reach outside themselves and everything else not on its
- * allow-list. For the legacy binary formats (`.doc`, `.ppt`), which the
- * preflight cannot rewrite, this profile is the ONLY layer, and an SVG
- * embedded in one still reads a local file (the canary pins that gap). The
- * canary says, vector by vector, which layers hold alone.
+ * bytes goes through that import, whatever the document called it: a picture,
+ * a font, an RTF `\pict`, a picture inside an EMF+ record. For OOXML and RTF,
+ * `office-preflight.ts` is a second layer — defence in depth with known
+ * limits, not a guarantee: it cuts altChunks, pictures that reach outside
+ * themselves (metafiles carrying a picture of their own included) and
+ * everything else not on its allow-list, and refuses what it cannot read
+ * unambiguously. Each of those answers a vector a review found; the next way
+ * LibreOffice draws something by its bytes is a gap until it is found. For
+ * the legacy binary formats (`.doc`, `.ppt`), which the preflight cannot
+ * rewrite, this profile is the ONLY layer, and an SVG embedded in one still
+ * reads a local file (the canary pins that gap). Isolating the converter
+ * itself — no network, no view of the workspaces — is what closes the family;
+ * that is separate work (branch feat/kb-office-convert-sidecar). The canary
+ * says, vector by vector, which layers hold alone.
  */
 const LOCKED_DOWN_PROFILE = `<?xml version="1.0" encoding="UTF-8"?>
 <oor:items xmlns:oor="http://openoffice.org/2001/registry" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">

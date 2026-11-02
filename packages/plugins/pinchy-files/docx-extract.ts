@@ -1,7 +1,11 @@
 import mammoth from "mammoth";
 import TurndownService from "turndown";
 import { gfm } from "turndown-plugin-gfm";
-import { MAX_DOCX_DECOMPRESSED_BYTES, verifiedZipCopy } from "./docx-zip-guard";
+import {
+  MAX_DOCX_DECOMPRESSED_BYTES,
+  MAX_DOCX_ENTRY_BYTES,
+  verifiedZipCopy,
+} from "./docx-zip-guard";
 import { MAX_FILE_SIZE } from "./validate";
 
 export interface DocxExtractionResult {
@@ -16,6 +20,8 @@ export interface DocxExtractionResult {
 export interface DocxExtractOptions {
   /** Cap on the archive's declared decompressed size (issue #424). */
   maxDecompressedBytes?: number;
+  /** Cap on any one part's size: mammoth builds a DOM from a part, at many times its size. */
+  maxEntryBytes?: number;
   /** Cap on the extracted Markdown length — second defense layer. */
   maxTextBytes?: number;
 }
@@ -93,6 +99,7 @@ export async function extractDocxText(
   // v0.10.0). mammoth never sees the bytes it was given.
   const verified = await verifiedZipCopy(buffer, {
     maxDecompressedBytes: options.maxDecompressedBytes ?? MAX_DOCX_DECOMPRESSED_BYTES,
+    maxEntryBytes: options.maxEntryBytes ?? MAX_DOCX_ENTRY_BYTES,
   });
 
   const { value: rawHtml } = await mammoth.convertToHtml(

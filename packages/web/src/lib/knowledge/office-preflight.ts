@@ -56,12 +56,27 @@
  * vetted by its bytes, not its type: an `r:embed` naming a "font" or an
  * "Office part" whose bytes are SVG is drawn as SVG (second review, PR #1243).
  *
+ * The same is true one level down: a metafile picture (EMF, WMF) passes on
+ * its magic bytes, but its records can carry a picture of their own, which
+ * LibreOffice again detects by ITS bytes. So a metafile is walked record by
+ * record and cut if it carries one (third review, PR #1243).
+ *
  * RTF (accepted under a `.doc` name, because Word writes those) has its
- * picture, object and field-instruction groups cut (`sanitizeRtf`). The
- * legacy binary formats (`.doc`, `.ppt`) cannot be rewritten here at all; for
- * them the locked profile is the only layer, and it does NOT stop an embedded
- * SVG picture from reading a local file. The canary
+ * picture, object and field-instruction groups cut (`sanitizeRtf`), and is
+ * refused where this tokenizer and LibreOffice's could disagree about where a
+ * group ends. The legacy binary formats (`.doc`, `.ppt`) cannot be rewritten
+ * here at all; for them the locked profile is the only layer, and it does NOT
+ * stop an embedded SVG picture from reading a local file. The canary
  * (`office-convert.canary.libreoffice.test.ts`) says so per vector.
+ *
+ * What this module is, stated plainly: DEFENCE IN DEPTH, not a boundary. It
+ * closes every vector the release reviews found, each pinned by a test, and
+ * it errs towards cutting or refusing what it cannot read unambiguously. But
+ * it is a rewrite of formats LibreOffice reads in more ways than any list
+ * here, and the next way LibreOffice draws something by its bytes is a gap
+ * until someone finds it. What closes the family is isolating the converter
+ * itself (no network, no view of the workspaces) — separate work, on branch
+ * `feat/kb-office-convert-sidecar`.
  *
  * Every scan here is a single forward pass over the bytes: a regex that
  * backtracks on a hostile file blocks the web process the KB worker runs in.
@@ -71,6 +86,7 @@ import { open, type FileHandle } from "node:fs/promises";
 import { extname } from "node:path";
 
 import {
+  MAX_DOCX_ENTRY_BYTES,
   verifiedZipCopy,
   ZipLimitError,
   type ZipLimits,
@@ -111,8 +127,26 @@ const OOXML_LIMITS: ZipLimits = { maxDecompressedBytes: 500 * MiB, ...RATIO_RULE
 /** Workbooks: tighter, because the model exceljs builds is heavier than the XML it reads. */
 const XLSX_LIMITS: ZipLimits = { maxDecompressedBytes: 256 * MiB, ...RATIO_RULE };
 
+/**
+ * What mammoth (the word-count oracle) may be handed: the conversion's limits,
+ * plus a ceiling on any ONE part. mammoth inflates a part whole and builds a
+ * DOM from it at many times its size; the total above bounds the archive, not
+ * that. The plugin's own `extractDocxText` uses the same ceiling.
+ */
+const MAMMOTH_LIMITS: ZipLimits = { ...OOXML_LIMITS, maxEntryBytes: MAX_DOCX_ENTRY_BYTES };
+
 /** No real relationship part is anywhere near this; a bigger one is not one. */
 const MAX_RELS_BYTES = 4 * MiB;
+
+/**
+ * The largest single Office XML part the preflight reads — and therefore the
+ * largest it lets through to LibreOffice. Each one is inflated whole into the
+ * web process to be checked; the archive's total limit (500 MiB) does not
+ * bound that, and a 400 MiB `document.xml` built to stay under the ratio rule
+ * took the preflight to 1.3 GB RSS (third review, PR #1243). A thousand-page
+ * report's document part is a few MB.
+ */
+const MAX_XML_PART_BYTES = 64 * MiB;
 
 export interface PreparedSource {
   /** The bytes to convert. A snapshot: what was checked is what is converted. */
@@ -210,8 +244,10 @@ export async function readWorkbookBuffer(
   return verified;
 }
 
-/** Excel caps a number format at 255 characters; this leaves room for entity-escaped ones. */
+/** Excel caps a number format at 255 characters; this is that, with room to spare — counted DECODED. */
 const MAX_FORMAT_CODE_CHARS = 1024;
+/** The longest `formatCode` attribute we decode at all, as written: entities make it longer than what it says. */
+const MAX_FORMAT_CODE_RAW_CHARS = 16 * 1024;
 /** `[` after a format's last `]`: each one costs exceljs a scan to the end of the format, per cell. */
 const MAX_UNCLOSED_BRACKETS = 4;
 
@@ -223,6 +259,11 @@ const MAX_UNCLOSED_BRACKETS = 4;
  * brackets made one load take 4 s, 400 000 two minutes (second review,
  * PR #1243) — in the web process, before our code sees a cell. Excel writes
  * neither a format longer than 255 characters nor a run of unclosed brackets.
+ *
+ * The format is judged as exceljs's XML parser will hand it over: with its
+ * character and entity references DECODED. Counting the attribute as written
+ * missed `&#91;`, which is a `[` by the time exceljs sees it — 204 of them in
+ * a 1 KiB attribute cost 4.4 s per 200 000 cells (third review, PR #1243).
  *
  * exceljs reads styles from `xl/styles.xml` by that name and no other, so
  * that is the part checked. One linear pass over its `formatCode` attributes.
@@ -236,6 +277,12 @@ function assertReadableNumberFormats(archive: Buffer): void {
   }
   const styles = entries.find((entry) => entry.name.replace(/^\//, "") === "xl/styles.xml");
   if (!styles) return;
+  if (styles.uncompressedSize > MAX_XML_PART_BYTES) {
+    throw new OfficeFileRejectedError(
+      "too_large",
+      `this workbook's styles part is ${styles.uncompressedSize} bytes, past the ${MAX_XML_PART_BYTES}-byte limit`
+    );
+  }
   const xml = inflatePart(archive, styles, styles.uncompressedSize).toString("latin1");
   const refuse = () =>
     new OfficeFileRejectedError(
@@ -253,8 +300,10 @@ function assertReadableNumberFormats(archive: Buffer): void {
     if (quote !== '"' && quote !== "'") continue;
     const close = xml.indexOf(quote, at + 1);
     if (close < 0) throw refuse();
-    const value = xml.slice(at + 1, close);
+    const raw = xml.slice(at + 1, close);
     at = close + 1;
+    if (raw.length > MAX_FORMAT_CODE_RAW_CHARS) throw refuse();
+    const value = decodeXmlReferences(raw);
     if (value.length > MAX_FORMAT_CODE_CHARS) throw refuse();
     let unclosed = 0;
     for (let i = value.lastIndexOf("]") + 1; i < value.length; i++) {
@@ -263,10 +312,65 @@ function assertReadableNumberFormats(archive: Buffer): void {
   }
 }
 
-/** The `.docx` bytes for the word-count oracle, verified the same way as the conversion input. */
+const PREDEFINED_ENTITIES: Readonly<Record<string, string>> = {
+  lt: "<",
+  gt: ">",
+  amp: "&",
+  quot: '"',
+  apos: "'",
+};
+
+/**
+ * An attribute value as an XML parser reports it: character references
+ * (`&#91;`, `&#x5B;`, `&#0000091;` — leading zeros are legal, so a reference
+ * has no fixed length) and the five predefined entities decoded, everything
+ * else as written. One forward pass: a reference is read up to the first
+ * character that cannot be part of one, and the next `&` is past it.
+ */
+function decodeXmlReferences(raw: string): string {
+  if (!raw.includes("&")) return raw;
+  let out = "";
+  let at = 0;
+  for (;;) {
+    const amp = raw.indexOf("&", at);
+    if (amp < 0) return out + raw.slice(at);
+    out += raw.slice(at, amp);
+    let end = amp + 1;
+    while (end < raw.length && isReferenceChar(raw.charCodeAt(end))) end++;
+    const name = raw[end] === ";" ? raw.slice(amp + 1, end) : null;
+    const semi = end;
+    let decoded: string | undefined;
+    if (name !== null && /^#[0-9]+$/.test(name)) decoded = fromCodePoint(Number(name.slice(1)));
+    else if (name !== null && /^#x[0-9a-fA-F]+$/.test(name))
+      decoded = fromCodePoint(parseInt(name.slice(2), 16));
+    else if (name !== null) decoded = PREDEFINED_ENTITIES[name];
+    if (decoded === undefined) {
+      out += "&";
+      at = amp + 1;
+    } else {
+      out += decoded;
+      at = semi + 1;
+    }
+  }
+}
+
+/** `#`, an ASCII letter or a digit: what a character or entity reference is spelled with. */
+const isReferenceChar = (c: number) =>
+  c === 0x23 || (c >= 0x30 && c <= 0x39) || (c >= 0x41 && c <= 0x5a) || (c >= 0x61 && c <= 0x7a);
+
+/** The character a numeric reference names, or a replacement for one no parser would accept. */
+function fromCodePoint(code: number): string {
+  return code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : "\uFFFD";
+}
+
+/**
+ * The `.docx` bytes for the word-count oracle, verified like the conversion
+ * input and held to mammoth's per-part ceiling on top. A refusal here only
+ * leaves the conversion unverified; it never fails it.
+ */
 export async function readGuardedDocx(absPath: string): Promise<Buffer> {
   const buffer = await readCapped(absPath, OFFICE_MAX_FILE_BYTES);
-  return verifiedCopy(buffer, OOXML_LIMITS, "Office Open XML package");
+  return verifiedCopy(buffer, MAMMOTH_LIMITS, "Office Open XML package");
 }
 
 // ---------------------------------------------------------------------------
@@ -629,14 +733,22 @@ const OOXML_ROOT_NAMES = new Set([
 ]);
 
 /**
- * An element named `svg` (any prefix), or a DTD, in the first bytes of a part.
- * LibreOffice's picture detection takes a part for SVG when it finds `<svg`
- * anywhere in its first 2 KiB (or an XML declaration, a DOCTYPE and `svg`),
- * whatever the relationship called it and whatever namespace the element is
- * in. Looking at 4 KiB, case-insensitively and with any prefix, is the
- * superset of that.
+ * SVG markup, or a DTD, in the first bytes of a part. LibreOffice's picture
+ * detection takes a part for SVG when it finds the BYTES `<svg` anywhere in
+ * its first 2 KiB (or an XML declaration, a DOCTYPE and `svg`), whatever the
+ * relationship called it. Looking at 4 KiB, case-insensitively, is the
+ * superset of that — and so is a prefixed element whose local name is exactly
+ * `svg` (`<s:svg`), which no detector's byte match would see but an XML
+ * reader resolving namespaces would.
+ *
+ * EXACTLY `svg`, for a prefixed name: `<asvg:svgBlip>` is what Office 365 and
+ * LibreOffice write next to every SVG picture (and every PowerPoint Icon),
+ * and the first version of this pattern — `svg` after ANY prefix, as a prefix
+ * of the local name — refused every such document (third review, PR #1243).
+ * Unprefixed, `<svg` stays a byte match, as it is for LibreOffice: `<svgx>`
+ * is taken for SVG too.
  */
-const SVG_MARKUP = /<(?:[A-Za-z_][\w.-]*:)?svg|<!DOCTYPE/i;
+const SVG_MARKUP = /<svg|<[A-Za-z_][\w.-]*:svg(?=[\s/>])|<!DOCTYPE/i;
 
 /** Would LibreOffice's picture detection take these first bytes for SVG — or gzip, i.e. SVGZ? */
 function looksLikeSvg(head: Buffer): boolean {
@@ -733,12 +845,16 @@ function rootElement(xml: string): { name: string; namespace: string | undefined
   return { name: local, namespace: attributes.get(prefix ? `xmlns:${prefix}` : "xmlns") };
 }
 
+const startsWith = (bytes: Buffer, hex: string) =>
+  bytes.subarray(0, hex.length / 2).equals(Buffer.from(hex, "hex"));
+
 /**
- * Is `bytes` a picture by its magic number? PNG, JPEG, GIF, BMP, TIFF, EMF,
- * WMF (placeable and plain), JPEG XR (`hdphoto`), WebP, ICO.
+ * Is `bytes` a picture whose pixels are all it carries, by its magic number?
+ * PNG, JPEG, GIF, BMP, TIFF, JPEG XR (`hdphoto`), WebP, ICO. Metafiles are
+ * pictures too, but ones that can carry another picture — see `isMetafile`.
  */
-function isRasterOrMetafile(bytes: Buffer): boolean {
-  const starts = (hex: string) => bytes.subarray(0, hex.length / 2).equals(Buffer.from(hex, "hex"));
+function isPixelPicture(bytes: Buffer): boolean {
+  const starts = (hex: string) => startsWith(bytes, hex);
   return (
     starts("89504e470d0a1a0a") ||
     starts("ffd8ff") ||
@@ -749,15 +865,23 @@ function isRasterOrMetafile(bytes: Buffer): boolean {
     starts("4d4d002a") ||
     starts("49492b00") ||
     starts("4d4d002b") ||
-    starts("d7cdc69a") ||
-    starts("010009000003") ||
-    starts("020009000003") ||
     starts("4949bc") ||
     starts("00000100") ||
-    (starts("52494646") && bytes.subarray(8, 12).toString("latin1") === "WEBP") ||
-    (starts("01000000") && bytes.subarray(40, 44).toString("latin1") === " EMF")
+    (starts("52494646") && bytes.subarray(8, 12).toString("latin1") === "WEBP")
   );
 }
+
+const isEmf = (bytes: Buffer) =>
+  startsWith(bytes, "01000000") && bytes.subarray(40, 44).toString("latin1") === " EMF";
+
+/** WMF: placeable (the Aldus header), or a plain header in memory (1) or on disk (2). */
+const isWmf = (bytes: Buffer) =>
+  startsWith(bytes, "d7cdc69a") ||
+  startsWith(bytes, "010009000003") ||
+  startsWith(bytes, "020009000003");
+
+/** A Windows metafile — EMF (with or without EMF+) or WMF — by its magic number. */
+const isMetafile = (bytes: Buffer) => isEmf(bytes) || isWmf(bytes);
 
 /** Is `bytes` a raster picture by its magic number — PNG, JPEG, GIF, BMP or WebP — and nothing else? */
 function isRaster(bytes: Buffer): boolean {
@@ -776,7 +900,7 @@ const SVG_HREF = /\bhref\s*=\s*(?:"([^"]*)"|'([^']*)')/gi;
 const CSS_URL = /url\(\s*(['"]?)([^'")]*)/gi;
 const DATA_IMAGE = /^data:image\/(?:png|jpe?g|gif|bmp|webp);base64,([A-Za-z0-9+/=\s]*)$/;
 /** An HTML island inside an SVG: it can carry references of its own (`<img src>`). */
-const FOREIGN_OBJECT = /<(?:[A-Za-z_][\w.-]*:)?foreignObject/i;
+const FOREIGN_OBJECT = /<(?:[A-Za-z_][\w.-]*:)?foreignObject(?=[\s/>])/i;
 
 /**
  * A `data:` URL's picture is what its BYTES are, not what its media type
@@ -898,7 +1022,13 @@ export function sanitizeOoxmlPackage(buffer: Buffer): {
 
   /** An Office XML part, or a refusal; any altChunk in it is cut. */
   const vetXmlPart = (entry: ZipEntryInfo): true => {
-    const bytes = inflatePart(buffer, entry, entry.uncompressedSize);
+    if (entry.uncompressedSize > MAX_XML_PART_BYTES) {
+      throw new OfficeFileRejectedError(
+        "too_large",
+        `part "${entry.name}" is ${entry.uncompressedSize} bytes, past the ${MAX_XML_PART_BYTES}-byte limit for one part`
+      );
+    }
+    const bytes = inflatePart(buffer, entry, MAX_XML_PART_BYTES);
     const notOoxml = (what: string) =>
       unexpected(`part "${entry.name}" should be Office XML but ${what}`);
     if (bytes.includes(0)) throw notOoxml("is not UTF-8 text");
@@ -933,8 +1063,12 @@ export function sanitizeOoxmlPackage(buffer: Buffer): {
     else if (kind === "xml") verdict = vetXmlPart(entry);
     else if (kind === "image") verdict = vetImagePart(buffer, entry);
     else {
+      // A font is drawn as a picture when an `r:embed` names it, and then by
+      // what its bytes are: a metafile carrying a picture is one (third
+      // review). An obfuscated font's first 32 bytes are scrambled, so none of
+      // these magic numbers turns up in a real one.
       const head = inflateHead(buffer, entry);
-      verdict = !looksLikeDocument(head) && !looksLikeSvg(head);
+      verdict = !looksLikeDocument(head) && !looksLikeSvg(head) && !isMetafile(head);
     }
     verdicts.set(key, verdict);
     return verdict;
@@ -985,14 +1119,233 @@ function inflateHead(archive: Buffer, entry: ZipEntryInfo): Buffer {
  * is not drawn). Whatever would be taken for SVG is held to the SVG rule —
  * raster magic up front does not excuse SVG markup behind it — and SVGZ is
  * never kept: what it reaches for cannot be read without inflating it whole.
+ * A metafile is walked record by record (`metafileCarriesNoPicture`).
  */
 function vetImagePart(archive: Buffer, entry: ZipEntryInfo): boolean {
   const head = inflateHead(archive, entry);
-  if (!looksLikeSvg(head)) return isRasterOrMetafile(head);
+  if (!looksLikeSvg(head)) {
+    if (!isMetafile(head)) return isPixelPicture(head);
+    if (entry.uncompressedSize > MAX_METAFILE_BYTES) return false;
+    return metafileCarriesNoPicture(inflatePart(archive, entry, MAX_METAFILE_BYTES));
+  }
   if (head[0] === 0x1f && head[1] === 0x8b) return false;
   if (entry.uncompressedSize > MAX_SVG_BYTES) return false;
   const svg = inflatePart(archive, entry, entry.uncompressedSize);
   return !svg.includes(0) && isSelfContainedSvg(svg.toString("latin1"));
+}
+
+// --- Metafiles ------------------------------------------------------------
+
+/**
+ * The largest metafile picture we walk. Clip art and charts are kilobytes to a
+ * few MB; a bigger one is not drawn (cut), rather than read whole.
+ */
+const MAX_METAFILE_BYTES = 16 * MiB;
+
+const EMR_HEADER = 1;
+const EMR_EOF = 14;
+const EMR_COMMENT = 70;
+/**
+ * EMF records that name a file or hand data to a device or another filter:
+ * colour-space and ICM-profile records (a profile FILE NAME), and the escape
+ * records (PostScript and other passthrough). No ordinary picture needs them
+ * to be drawn.
+ */
+const EMF_RECORDS_CUT = new Set([
+  99, // EMR_CREATECOLORSPACE
+  105, // EMR_DRAWESCAPE
+  106, // EMR_EXTESCAPE
+  110, // EMR_NAMEDESCAPE
+  112, // EMR_SETICMPROFILEA
+  113, // EMR_SETICMPROFILEW
+  121, // EMR_COLORMATCHTOTARGETW
+  122, // EMR_CREATECOLORSPACEW
+]);
+
+const COMMENT_EMF_PLUS = 0x2b464d45; // "EMF+"
+const COMMENT_PUBLIC = 0x43494447; // "GDIC"
+const COMMENT_EMF_SPOOL = 0x00000000;
+/** Public comments that only group records or label them. MULTIFORMATS (an embedded EMF or EPS) and WINDOWS_METAFILE (an embedded WMF) are not among them. */
+const PUBLIC_COMMENTS_KEPT = new Set([0x00000002, 0x00000003, 0x00000040, 0x00000080]);
+
+const EMF_PLUS_OBJECT = 0x4008;
+const EMF_PLUS_OBJECT_BRUSH = 1;
+const EMF_PLUS_OBJECT_PEN = 2;
+const EMF_PLUS_OBJECT_IMAGE = 5;
+const EMF_PLUS_BRUSH_TEXTURE = 2;
+const EMF_PLUS_CONTINUED = 0x8000;
+
+/**
+ * Does this EMF or WMF carry nothing LibreOffice would hand to ANOTHER import
+ * filter? A metafile passes the picture check on its magic bytes, but its
+ * records can carry pictures of their own, each detected by ITS bytes: an
+ * EMF+ image object holds compressed bitmap bytes (an SVG among them) or a
+ * whole metafile, a brush or pen can be filled with such an image, a public
+ * comment can carry an EMF, EPS or WMF, and a WMF escape can carry a whole
+ * EMF (which LibreOffice then draws instead of the WMF). The third review of PR #1243 put an SVG that reads a local file into
+ * an EMF+ image object, behind 4 KiB of padding so the first bytes said
+ * nothing but "metafile", and LibreOffice drew the local file into the PDF.
+ *
+ * So the records are walked, boundedly — an EMF carried in a WMF is
+ * reassembled and walked too — and the picture is cut when one of them
+ * carries another picture, or when the walk cannot be finished cleanly
+ * (a record running past the end, a size of zero, no end-of-file record):
+ * a reader that disagrees with this walk about where a record starts could
+ * find a picture this walk never saw. A cut costs the picture, never text.
+ *
+ * Not covered, stated plainly: a bitmap in an ordinary EMF/WMF bitmap record
+ * (a DIB) is kept. LibreOffice decodes a DIB as pixels; one that declares
+ * PNG or JPEG compression and holds an SVG drew nothing at all (26.2,
+ * measured), so no format detector saw it. Real Office EMFs with EMF+ image
+ * objects (a photo pasted into a chart) lose that picture to this rule — a
+ * picture, never text.
+ */
+function metafileCarriesNoPicture(bytes: Buffer): boolean {
+  try {
+    return isEmf(bytes) ? emfIsPlain(bytes) : wmfIsPlain(bytes);
+  } catch {
+    return false; // Read past the end: a record lied about its size.
+  }
+}
+
+function emfIsPlain(emf: Buffer): boolean {
+  let at = 0;
+  let sawEof = false;
+  while (at < emf.length) {
+    const type = emf.readUInt32LE(at);
+    const size = emf.readUInt32LE(at + 4);
+    if (size < 8 || size % 4 !== 0 || at + size > emf.length) return false;
+    if ((at === 0) !== (type === EMR_HEADER)) return false;
+    if (EMF_RECORDS_CUT.has(type)) return false;
+    if (type === EMR_COMMENT && !emfCommentIsPlain(emf.subarray(at, at + size))) return false;
+    if (type === EMR_EOF) sawEof = true;
+    at += size;
+  }
+  return sawEof;
+}
+
+/** An EMR_COMMENT: private comments are opaque to every reader; the three kinds LibreOffice reads are walked. */
+function emfCommentIsPlain(record: Buffer): boolean {
+  const dataSize = record.readUInt32LE(8);
+  if (12 + dataSize > record.length) return false;
+  if (dataSize < 4) return true;
+  const data = record.subarray(12, 12 + dataSize);
+  const identifier = data.readUInt32LE(0);
+  if (identifier === COMMENT_EMF_PLUS) return emfPlusIsPlain(data.subarray(4));
+  if (identifier === COMMENT_PUBLIC) {
+    return data.length >= 8 && PUBLIC_COMMENTS_KEPT.has(data.readUInt32LE(4));
+  }
+  return identifier !== COMMENT_EMF_SPOOL;
+}
+
+/** EMF+ records inside one comment: no image object, and no brush or pen that could be filled with one. */
+function emfPlusIsPlain(records: Buffer): boolean {
+  let at = 0;
+  while (at < records.length) {
+    if (at + 12 > records.length) return false;
+    const type = records.readUInt16LE(at);
+    const flags = records.readUInt16LE(at + 2);
+    const size = records.readUInt32LE(at + 4);
+    const dataSize = records.readUInt32LE(at + 8);
+    if (size < 12 || size % 4 !== 0 || at + size > records.length || 12 + dataSize > size) {
+      return false;
+    }
+    if (type === EMF_PLUS_OBJECT) {
+      const kind = (flags >> 8) & 0x7f;
+      if (kind === EMF_PLUS_OBJECT_IMAGE) return false;
+      if (kind === EMF_PLUS_OBJECT_BRUSH || kind === EMF_PLUS_OBJECT_PEN) {
+        // A continued object starts mid-structure: nothing here to read it by.
+        if (flags & EMF_PLUS_CONTINUED) return false;
+        const data = records.subarray(at + 12, at + 12 + dataSize);
+        const brush = kind === EMF_PLUS_OBJECT_PEN ? penBrushOffset(data) : 0;
+        if (brush < 0 || brush + 8 > data.length) return false;
+        if (data.readUInt32LE(brush + 4) === EMF_PLUS_BRUSH_TEXTURE) return false;
+      }
+    }
+    at += size;
+  }
+  return true;
+}
+
+/**
+ * Where an EMF+ pen's brush starts in its data, or -1: after the pen's fixed
+ * fields come optional ones, present by flag, two of them counted arrays and
+ * two sized blocks ([MS-EMFPLUS] 2.2.2.42).
+ */
+function penBrushOffset(pen: Buffer): number {
+  if (pen.length < 20) return -1;
+  const flags = pen.readUInt32LE(8);
+  let at = 20;
+  const fixed: Array<[number, number]> = [
+    [0x01, 24], // transform
+    [0x02, 4], // start cap
+    [0x04, 4], // end cap
+    [0x08, 4], // join
+    [0x10, 4], // miter limit
+    [0x20, 4], // line style
+    [0x40, 4], // dashed line cap
+    [0x80, 4], // dashed line offset
+  ];
+  for (const [flag, bytes] of fixed) if (flags & flag) at += bytes;
+  const counted = (bytesPer: number) => {
+    if (at + 4 > pen.length) return false;
+    at += 4 + pen.readUInt32LE(at) * bytesPer;
+    return true;
+  };
+  if (flags & 0x100 && !counted(4)) return -1; // dashed line
+  if (flags & 0x200) at += 4; // alignment
+  if (flags & 0x400 && !counted(4)) return -1; // compound line
+  if (flags & 0x800 && !counted(1)) return -1; // custom start cap
+  if (flags & 0x1000 && !counted(1)) return -1; // custom end cap
+  if (flags & ~0x1fff) return -1; // a flag this walk does not know the size of
+  return at <= pen.length ? at : -1;
+}
+
+const META_EOF = 0x0000;
+const META_ESCAPE = 0x0626;
+const MFCOMMENT = 0x000f;
+const WMF_EMBEDDED_EMF = 0x43464d57; // "WMFC"
+/** Escapes that carry PostScript for a printer — or for an EPS import. */
+const WMF_ESCAPES_CUT = new Set([0x0025, 0x0026, 0x1013, 0x1014, 0x1015, 0x1016, 0x11d8]);
+
+/**
+ * A WMF: no PostScript escape, and — if it carries a whole EMF, as every WMF
+ * LibreOffice and Office write does (the "WMFC" comment, split over as many
+ * records as it takes) — that EMF reassembled, complete, and plain itself:
+ * it is what LibreOffice draws instead of the WMF records around it.
+ */
+function wmfIsPlain(wmf: Buffer): boolean {
+  let at = startsWith(wmf, "d7cdc69a") ? 22 : 0;
+  if (at + 18 > wmf.length || wmf.readUInt16LE(at + 2) !== 9) return false;
+  at += 18;
+  let sawEof = false;
+  const embedded: Buffer[] = [];
+  let embeddedSize = -1;
+  while (at < wmf.length) {
+    const size = wmf.readUInt32LE(at) * 2;
+    const fn = wmf.readUInt16LE(at + 4);
+    if (size < 6 || at + size > wmf.length) return false;
+    if (fn === META_EOF) sawEof = true;
+    if (fn === META_ESCAPE) {
+      if (size < 10) return false;
+      const escape = wmf.readUInt16LE(at + 6);
+      if (WMF_ESCAPES_CUT.has(escape)) return false;
+      if (escape === MFCOMMENT && size >= 14 && wmf.readUInt32LE(at + 10) === WMF_EMBEDDED_EMF) {
+        // [MS-WMF] 2.3.6.1: …, EnhancedMetafileDataSize at +40, this
+        // record's share of it (CurrentRecordSize at +32) from +44.
+        const chunk = wmf.readUInt32LE(at + 32);
+        const total = wmf.readUInt32LE(at + 40);
+        if (44 + chunk > size || (embeddedSize >= 0 && total !== embeddedSize)) return false;
+        embeddedSize = total;
+        embedded.push(wmf.subarray(at + 44, at + 44 + chunk));
+      }
+    }
+    at += size;
+  }
+  if (!sawEof) return false;
+  if (embeddedSize < 0) return true;
+  const emf = Buffer.concat(embedded);
+  return emf.length === embeddedSize && isEmf(emf) && emfIsPlain(emf);
 }
 
 // --- RTF -----------------------------------------------------------------
@@ -1015,6 +1368,10 @@ const RTF_CUT_WORDS = new Set(["pict", "object", "objdata", "fldinst"]);
 
 const isAsciiLetter = (b: number) => (b >= 0x61 && b <= 0x7a) || (b >= 0x41 && b <= 0x5a);
 const isAsciiDigit = (b: number) => b >= 0x30 && b <= 0x39;
+const isHexDigit = (b: number | undefined) =>
+  b !== undefined && (isAsciiDigit(b) || (b >= 0x61 && b <= 0x66) || (b >= 0x41 && b <= 0x46));
+/** The largest parameter an RTF reader with a signed 32-bit parameter holds. */
+const RTF_MAX_PARAMETER = 2 ** 31 - 1;
 
 /**
  * Cuts every picture, object and field-instruction group (`RTF_CUT_WORDS`)
@@ -1028,6 +1385,22 @@ const isAsciiDigit = (b: number) => b >= 0x30 && b <= 0x39;
  * `\'hh` escapes, control symbols, and `\binN`, whose N raw bytes may hold
  * braces that must not end a group. A group still open at the end of the file
  * is cut to the end.
+ *
+ * The cut is only as good as the agreement between this tokenizer and
+ * LibreOffice's about where a group ends, so the two places they could
+ * disagree are REFUSED rather than guessed (third review, PR #1243):
+ *
+ * - `\binN` that is not plainly a count of bytes that follow: negative, more
+ *   than 10 digits, past 2^31−1 (LibreOffice's 32-bit parameter overflowed
+ *   2^31 to 0 and drew the `\pict` this pass had skipped over as binary), or
+ *   past the end of the file. And any binary run at all OUTSIDE a group being
+ *   cut: whether a reader honours `\bin` in a destination it is skipping is
+ *   exactly the kind of thing two readers disagree on, and what is not cut is
+ *   what LibreOffice reads. Word writes pictures and objects in hex; a binary
+ *   run inside a cut group is cut with it either way.
+ * - `\'` not followed by two hex digits.
+ *
+ * @throws OfficeFileRejectedError for either.
  */
 export function sanitizeRtf(rtf: Buffer): { data: Buffer; removed: number } {
   const cuts: Array<[number, number]> = [];
@@ -1058,13 +1431,22 @@ export function sanitizeRtf(rtf: Buffer): { data: Buffer; removed: number } {
       if (negative) next++;
       const digitsStart = next;
       while (next < rtf.length && isAsciiDigit(rtf[next])) next++;
-      const parameter = Number(
-        rtf.toString("latin1", digitsStart, Math.min(next, digitsStart + 10))
-      );
+      const digits = next - digitsStart;
       if (rtf[next] === 0x20) next++;
-      // `\binN`: N raw bytes follow, braces and backslashes included.
-      if (word === "bin" && !negative && parameter > 0)
-        next = Math.min(rtf.length, next + parameter);
+      if (word === "bin") {
+        // `\binN`: N raw bytes follow, braces and backslashes included.
+        const count =
+          digits > 10
+            ? Infinity
+            : Number(rtf.toString("latin1", digitsStart, digitsStart + digits));
+        if (negative || count > RTF_MAX_PARAMETER || next + count > rtf.length) {
+          throw unexpected("an RTF binary run does not say plainly how long it is");
+        }
+        if (count > 0 && cutDepth < 0) {
+          throw unexpected("an RTF binary run sits outside any picture or object");
+        }
+        next += count;
+      }
       if (cutDepth < 0 && RTF_CUT_WORDS.has(word)) {
         cutDepth = depth;
         // `{\*\fldinst …}`: take the `\*` that marks it as ignorable with it.
@@ -1072,6 +1454,9 @@ export function sanitizeRtf(rtf: Buffer): { data: Buffer; removed: number } {
       }
       at = next;
     } else if (byte === 0x5c && rtf[at + 1] === 0x27) {
+      if (!isHexDigit(rtf[at + 2]) || !isHexDigit(rtf[at + 3])) {
+        throw unexpected("an RTF escape is not two hex digits");
+      }
       at += 4; // `\'hh`
     } else if (byte === 0x5c) {
       at += 2; // a control symbol: `\{`, `\}`, `\\`, `\*`, `\~`, …

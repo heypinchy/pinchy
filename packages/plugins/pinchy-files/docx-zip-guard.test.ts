@@ -533,3 +533,95 @@ describe("verifiedZipCopy", () => {
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// Third review (PR #1243): one part, however large, is one reader's problem
+// ---------------------------------------------------------------------------
+
+describe("verifiedZipCopy — a ceiling per entry", () => {
+  it("refuses an entry declared past maxEntryBytes, without inflating anything", async () => {
+    // Declared 40 MiB, carrying a few bytes: refused from the directory alone,
+    // so the wrong CRC is never reached.
+    const zip = rawZip([
+      honest("[Content_Types].xml", "<Types/>"),
+      { ...honest("word/document.xml", "<w:document/>"), uncompressedSize: 40 * 1024 * 1024 },
+    ]);
+    const err = await refusal(verifiedZipCopy(zip, { ...LIMITS, maxEntryBytes: 32 * 1024 * 1024 }));
+    expect(err).toBeInstanceOf(ZipLimitError);
+    expect(err.message).toMatch(/word\/document\.xml/);
+  });
+
+  it("refuses it in assertZipWithinLimits too", () => {
+    const zip = rawZip([{ ...honest("a.xml", "x"), uncompressedSize: 2000 }]);
+    expect(() => assertZipWithinLimits(zip, { ...LIMITS, maxEntryBytes: 1000 })).toThrow(
+      ZipLimitError
+    );
+  });
+
+  it("keeps an archive whose every entry is within it", async () => {
+    const zip = rawZip([honest("a.xml", "x".repeat(1000)), honest("b.xml", "y")]);
+    const copy = await verifiedZipCopy(zip, { ...LIMITS, maxEntryBytes: 1000 });
+    expect(contentsOf(copy).get("a.xml")!.length).toBe(1000);
+  });
+});
+
+describe("verifiedZipCopy — a ZIP64 end record nothing needed", () => {
+  // Some writers (.NET's System.IO.Packaging among them) put a ZIP64 end of
+  // central directory record and its locator in front of the classic end
+  // record even when every size fits in 32 bits. The classic record then
+  // carries the real values, and nothing is deferred to ZIP64.
+
+  /** `zip` with a ZIP64 end record + locator spliced between its directory and its end record. */
+  function withZip64End(
+    zip: Buffer,
+    tweak: { entries?: number; locatorOffset?: number; recordSize?: number } = {}
+  ): Buffer {
+    const eocd = zip.length - 22;
+    const entries = zip.readUInt16LE(eocd + 10);
+    const cdSize = zip.readUInt32LE(eocd + 12);
+    const cdOffset = zip.readUInt32LE(eocd + 16);
+    const record = Buffer.alloc(56);
+    record.writeUInt32LE(0x06064b50, 0);
+    record.writeBigUInt64LE(BigInt(tweak.recordSize ?? 44), 4);
+    record.writeUInt16LE(45, 12);
+    record.writeUInt16LE(45, 14);
+    record.writeBigUInt64LE(BigInt(tweak.entries ?? entries), 24);
+    record.writeBigUInt64LE(BigInt(tweak.entries ?? entries), 32);
+    record.writeBigUInt64LE(BigInt(cdSize), 40);
+    record.writeBigUInt64LE(BigInt(cdOffset), 48);
+    const locator = Buffer.alloc(20);
+    locator.writeUInt32LE(0x07064b50, 0);
+    locator.writeBigUInt64LE(BigInt(tweak.locatorOffset ?? cdOffset + cdSize), 8);
+    locator.writeUInt32LE(1, 16);
+    return Buffer.concat([zip.subarray(0, eocd), record, locator, zip.subarray(eocd)]);
+  }
+
+  const plain = () =>
+    rawZip([
+      honest("[Content_Types].xml", "<Types/>"),
+      honest("word/document.xml", "<w:document/>"),
+    ]);
+
+  it("accepts it when it agrees with the classic end record, and copies it without one", async () => {
+    const zip = withZip64End(plain());
+    const copy = await verifiedZipCopy(zip, LIMITS);
+    expect([...contentsOf(copy).keys()]).toEqual(["[Content_Types].xml", "word/document.xml"]);
+    expect(copy.includes(Buffer.from([0x50, 0x4b, 0x06, 0x06]))).toBe(false);
+  });
+
+  it.each([
+    ["a record that disagrees about the entry count", { entries: 7 }],
+    ["a locator that points somewhere else", { locatorOffset: 3 }],
+    ["a record carrying extensible data", { recordSize: 60 }],
+  ])("refuses %s", async (_, tweak) => {
+    expect(await refusal(verifiedZipCopy(withZip64End(plain(), tweak), LIMITS))).toBeInstanceOf(
+      ZipFormatError
+    );
+  });
+
+  it("still refuses an end record that defers its sizes to ZIP64", async () => {
+    const zip = withZip64End(plain());
+    zip.writeUInt32LE(0xffffffff, zip.length - 22 + 16);
+    expect(await refusal(verifiedZipCopy(zip, LIMITS))).toBeInstanceOf(ZipLimitError);
+  });
+});

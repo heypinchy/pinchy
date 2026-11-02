@@ -5,7 +5,7 @@ import { join } from "path";
 import { constants as zlibConstants, deflateRawSync } from "zlib";
 import mammoth from "mammoth";
 import { extractDocxText } from "./docx-extract";
-import { readZipEntries } from "./docx-zip-guard";
+import { assembleZip, crc32, readZipEntries, ZipLimitError } from "./docx-zip-guard";
 
 const FIXTURES = join(import.meta.dirname, "test-fixtures");
 
@@ -107,6 +107,60 @@ describe("extractDocxText", () => {
     }
   });
 });
+
+describe("extractDocxText — one part, however honest, is capped (third review, PR #1243)", () => {
+  // mammoth builds a DOM from every XML part it reads, many times the part's
+  // own size. A document part that tells the truth about being 33 MiB is
+  // past what that is worth; it is refused before mammoth sees it.
+  it("rejects a .docx whose document part is over 32 MiB, without calling mammoth", async () => {
+    const fixture = readFileSync(join(FIXTURES, "simple.docx"));
+    const big = withTruthfulDocument(fixture, 33 * 1024 * 1024);
+    const convert = vi.spyOn(mammoth, "convertToHtml");
+    try {
+      await expect(extractDocxText(big)).rejects.toThrow(ZipLimitError);
+      expect(convert).not.toHaveBeenCalled();
+    } finally {
+      convert.mockRestore();
+    }
+  });
+});
+
+/** `docx` with `word/document.xml` replaced by `realBytes` of document, truthful about its size and CRC. */
+function withTruthfulDocument(docx: Buffer, realBytes: number): Buffer {
+  const head = Buffer.from(
+    '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>'
+  );
+  const tail = Buffer.from("</w:body></w:document>");
+  const xml = Buffer.concat([
+    head,
+    Buffer.alloc(realBytes - head.length - tail.length, 0x20),
+    tail,
+  ]);
+  return assembleZip(
+    readZipEntries(docx).map((entry) => {
+      if (entry.name === "word/document.xml") {
+        return {
+          name: entry.name,
+          method: 8,
+          flags: 0,
+          crc32: crc32(xml),
+          uncompressedSize: xml.length,
+          data: deflateRawSync(xml),
+        };
+      }
+      const at = entry.localHeaderOffset;
+      const start = at + 30 + docx.readUInt16LE(at + 26) + docx.readUInt16LE(at + 28);
+      return {
+        name: entry.name,
+        method: entry.method,
+        flags: entry.flags,
+        crc32: entry.crc32,
+        uncompressedSize: entry.uncompressedSize,
+        data: docx.subarray(start, start + entry.compressedSize),
+      };
+    })
+  );
+}
 
 /**
  * `docx` with `word/document.xml` replaced by a stream of `realBytes` spaces

@@ -45,6 +45,14 @@ const EOCD_SEARCH_WINDOW = 22 + 0xffff;
 // hundred MB, and embedded media (PNG/JPEG) is stored near ratio 1.
 export const MAX_DOCX_DECOMPRESSED_BYTES = 500 * 1024 * 1024;
 
+// The largest single entry mammoth is handed. mammoth inflates a part whole
+// and builds a DOM from it, which costs many times the part itself; the total
+// above bounds the archive, not that (third review, PR #1243). No real
+// document part comes near this — a thousand-page report's is a few MB — and
+// a .docx the plugin reads is at most MAX_FILE_SIZE (10 MB) on disk, so a
+// picture past it cannot be stored either.
+export const MAX_DOCX_ENTRY_BYTES = 32 * 1024 * 1024;
+
 export interface DocxDeclaredSize {
   totalUncompressedBytes: number;
 }
@@ -214,6 +222,13 @@ export interface ZipLimits {
    */
   maxCompressionRatio?: number;
   ratioFloorBytes?: number;
+  /**
+   * Ceiling on any ONE entry's uncompressed size. A reader that builds a model
+   * from a part (mammoth's DOM) pays for the largest part, not for the total;
+   * this is where that cost is bounded. Real sizes are checked against the
+   * declared ones by `verifiedZipCopy`, so the declared size is the real one.
+   */
+  maxEntryBytes?: number;
 }
 
 /**
@@ -226,6 +241,14 @@ export function assertZipWithinLimits(buffer: Buffer, limits: ZipLimits): void {
 }
 
 function assertDeclaredWithinLimits(buffer: Buffer, entries: ZipEntryInfo[], limits: ZipLimits) {
+  if (limits.maxEntryBytes !== undefined) {
+    const oversized = entries.find((entry) => entry.uncompressedSize > limits.maxEntryBytes!);
+    if (oversized) {
+      throw new ZipLimitError(
+        `Archive entry "${oversized.name}" declares ${oversized.uncompressedSize} bytes, past the ${limits.maxEntryBytes}-byte limit for one entry.`
+      );
+    }
+  }
   const total = sumDeclared(entries);
   if (total > limits.maxDecompressedBytes) {
     throw new ZipLimitError(
@@ -362,13 +385,16 @@ function verifyDeflated(entry: ZipEntryInfo, data: Buffer): Promise<void> {
  * from the entries that held up. Callers hand the COPY to their reader.
  *
  * Refuses (throws, never returns the input) when:
- *  - the declared sizes are past `limits` (`ZipLimitError`, nothing inflated);
+ *  - the declared sizes, in total or for one entry, are past `limits`
+ *    (`ZipLimitError`, nothing inflated);
  *  - an entry inflates past the size it declares (`ZipLimitError`, inflation
  *    stops at the declared size);
  *  - the archive is not exactly a plain zip: bytes before its first entry or
- *    after its end record, more than one disk, encryption, a method other than
- *    stored/deflate, an entry shorter than declared or with a wrong CRC, or
- *    two entries whose names differ only by case (`ZipFormatError`).
+ *    after its end record, anything between its directory and its end record
+ *    but a ZIP64 end record that only repeats it, more than one disk,
+ *    encryption, a method other than stored/deflate, an entry shorter than
+ *    declared or with a wrong CRC, or two entries whose names differ only by
+ *    case (`ZipFormatError`).
  *
  * Fail closed throughout: an archive this cannot read is not an archive any
  * reader gets to read.
@@ -390,7 +416,10 @@ export async function verifiedZipCopy(buffer: Buffer, limits: ZipLimits): Promis
   ) {
     throw invalidZip("multi-disk archives are not supported");
   }
-  if (cdOffset + cdSize !== eocdOffset) {
+  if (
+    cdOffset + cdSize !== eocdOffset &&
+    !isRedundantZip64End(buffer, { cdOffset, cdSize, eocdOffset, entryCount: entries.length })
+  ) {
     throw invalidZip("the central directory does not end where the end record starts");
   }
 
@@ -438,6 +467,48 @@ export async function verifiedZipCopy(buffer: Buffer, limits: ZipLimits): Promis
   }
 
   return assembleZip(parts);
+}
+
+const ZIP64_END_SIGNATURE = 0x06064b50;
+const ZIP64_LOCATOR_SIGNATURE = 0x07064b50;
+/** A ZIP64 end record with no extensible data: 12 fixed bytes + the 44 its size field counts. */
+const ZIP64_END_BYTES = 56;
+const ZIP64_LOCATOR_BYTES = 20;
+
+/**
+ * Is the gap between the central directory and the classic end record exactly
+ * a ZIP64 end record and its locator that say nothing the classic record does
+ * not? Some writers put one there when nothing needed it — .NET's
+ * System.IO.Packaging, which a lot of generated Office files come from (third
+ * review, PR #1243). The classic record still carries every real value (a
+ * ZIP64 marker in it is refused before this is reached), so the record is
+ * accepted only when it repeats them exactly — one disk, the same entry count,
+ * directory size and offset, no extensible data — and its locator points at
+ * it. Anything else in that gap is somewhere a reader could look that this
+ * guard did not.
+ */
+function isRedundantZip64End(
+  buffer: Buffer,
+  at: { cdOffset: number; cdSize: number; eocdOffset: number; entryCount: number }
+): boolean {
+  const record = at.cdOffset + at.cdSize;
+  const locator = record + ZIP64_END_BYTES;
+  if (locator + ZIP64_LOCATOR_BYTES !== at.eocdOffset) return false;
+  const u64 = (offset: number) => buffer.readBigUInt64LE(offset);
+  return (
+    buffer.readUInt32LE(record) === ZIP64_END_SIGNATURE &&
+    u64(record + 4) === BigInt(ZIP64_END_BYTES - 12) &&
+    buffer.readUInt32LE(record + 16) === 0 &&
+    buffer.readUInt32LE(record + 20) === 0 &&
+    u64(record + 24) === BigInt(at.entryCount) &&
+    u64(record + 32) === BigInt(at.entryCount) &&
+    u64(record + 40) === BigInt(at.cdSize) &&
+    u64(record + 48) === BigInt(at.cdOffset) &&
+    buffer.readUInt32LE(locator) === ZIP64_LOCATOR_SIGNATURE &&
+    buffer.readUInt32LE(locator + 4) === 0 &&
+    u64(locator + 8) === BigInt(record) &&
+    buffer.readUInt32LE(locator + 16) === 1
+  );
 }
 
 /** Writes `parts` as a plain (non-ZIP64) archive: fresh headers, no data descriptors, entries copied as given. */
