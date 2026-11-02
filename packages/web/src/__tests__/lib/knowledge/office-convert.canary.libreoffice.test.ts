@@ -369,6 +369,30 @@ describe.skipIf(!hasSoffice)("an Office file cannot make the converter fetch or 
       }),
       { profile: false, preflight: "sanitizes" }
     );
+    // The same import, with nothing for the relationship allow-list to cut:
+    // the altChunk's prefix is non-ASCII (an XML name, if not an ASCII one)
+    // and its id is BORROWED from a font relationship — LibreOffice resolves
+    // an altChunk's r:id without checking the Type — whose part is HTML
+    // behind a UTF-16 byte-order mark. LibreOffice 26.2 read the local file
+    // into the PDF from the staged copy, until the preflight read element
+    // names the way a parser does and sniffed text past a byte-order mark.
+    planted(
+      "altchunk-borrowed-font.docx",
+      docxWith({
+        text: "Body words for the borrowed-font canary",
+        documentRels: relationships(
+          `<Relationship Id="rIdF" Type="${relType("font")}" Target="fonts/font1.odttf"/>`
+        ),
+        body: `<ä:altChunk xmlns:ä="http://schemas.openxmlformats.org/wordprocessingml/2006/main" r:id="rIdF"/>`,
+        parts: {
+          "word/fonts/font1.odttf": Buffer.from(
+            `﻿<html><body><p>${ALT_CHUNK_BODY}</p><img src="${pngUrl}"><img src="${svgUrl}" width="400" height="60"></body></html>`,
+            "utf16le"
+          ),
+        },
+      }),
+      { profile: false, preflight: "sanitizes" }
+    );
     // An altChunk importing a NESTED .docx — whose own relationships the
     // preflight never saw — with an externally linked picture.
     planted(
@@ -652,12 +676,14 @@ describe.skipIf(!hasSoffice)("an Office file cannot make the converter fetch or 
     // version: 26.2 imports it and reads the local files (local PNG embedded,
     // local SVG's text indexed); 7.4.7 — the runtime image's — skips the chunk
     // entirely (measured). Where it is imported, it leaks; that is the claim.
-    const altPdf = join(outDir, "altchunk-html.pdf");
-    const altText = await textOf(altPdf);
-    expect(
-      !altText.includes(ALT_CHUNK_BODY) || (imagesIn(altPdf) > 0 && altText.includes(SECRET)),
-      "an imported altChunk read the local files"
-    ).toBe(true);
+    for (const name of ["altchunk-html", "altchunk-borrowed-font"]) {
+      const altPdf = join(outDir, `${name}.pdf`);
+      const altText = await textOf(altPdf);
+      expect(
+        !altText.includes(ALT_CHUNK_BODY) || (imagesIn(altPdf) > 0 && altText.includes(SECRET)),
+        `${name}: an imported altChunk read the local files`
+      ).toBe(true);
+    }
   }, 240_000);
 
   it("1. full pipeline: nothing is fetched, no local file is embedded, the HTML posing as Word is refused", async () => {
@@ -689,6 +715,7 @@ describe.skipIf(!hasSoffice)("an Office file cannot make the converter fetch or 
       "deck-linked-http.pptx",
       "svg-picture.docx",
       "altchunk-html.docx",
+      "altchunk-borrowed-font.docx",
       "altchunk-nested.docx",
       "font-svgz.docx",
       "data-url-svg.docx",
@@ -709,6 +736,9 @@ describe.skipIf(!hasSoffice)("an Office file cannot make the converter fetch or 
     }
     expect(await textOf(byName.get("altchunk-html.docx")!.artifactPath!)).toContain(
       "Body words for the altChunk canary"
+    );
+    expect(await textOf(byName.get("altchunk-borrowed-font.docx")!.artifactPath!)).toContain(
+      "Body words for the borrowed-font canary"
     );
     expect(await textOf(byName.get("rtf-picture.doc")!.artifactPath!)).toContain(
       "Body words for the RTF canary"

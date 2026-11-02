@@ -125,6 +125,44 @@ describe("stripExternalRelationships", () => {
     expect(out.xml).not.toContain("etc/hostname");
   });
 
+  // XML names are not ASCII: `ä` is as good a prefix letter as `r`. A scanner
+  // that only knows `[A-Za-z_]` prefixes reads past such an element, and the
+  // reader behind it does not.
+  it("reads a relationship whose prefix is spelled with non-ASCII letters", () => {
+    const xml =
+      `<?xml version="1.0"?><ä:Relationships xmlns:ä="http://schemas.openxmlformats.org/package/2006/relationships">` +
+      `<ä:Relationship Id="rId5" Type="${REL_IMAGE}" Target="file:///etc/hostname" TargetMode="External"/>` +
+      `</ä:Relationships>`;
+    const out = stripExternalRelationships(xml);
+    expect(out.removed).toBe(1);
+    expect(out.xml).not.toContain("etc/hostname");
+  });
+
+  it("refuses a relationship that declares a non-ASCII prefix of its own, like any other prefixed attribute", () => {
+    const xml = relationships(
+      `<ä:Relationship xmlns:ä="http://schemas.openxmlformats.org/package/2006/relationships" Id="rId5" Type="${REL_IMAGE}" Target="file:///etc/hostname" TargetMode="External"/>`
+    );
+    expect(() => stripExternalRelationships(xml)).toThrow(OfficeFileRejectedError);
+  });
+
+  it("refuses a part where cutting one relationship would join the text around it into another", () => {
+    // `<Relation` + [a cut relationship] + `ship …/>` reads, once the cut is
+    // made, as a relationship nobody vetted. What a cut leaves is held to the
+    // same rules as what came in.
+    const xml = relationships(
+      `<Relation${rel("rId1", REL_IMAGE, "http://10.0.0.5/b.png", "External")}ship Id="rId2" Type="${REL_IMAGE}" Target="http://10.0.0.5/a.png" TargetMode="External"/>`
+    );
+    expect(() => stripExternalRelationships(xml)).toThrow(OfficeFileRejectedError);
+  });
+
+  it("refuses a part where cutting a relationship would join the text around it into a DOCTYPE", () => {
+    const xml = relationships(
+      `<!DOC${rel("rId1", REL_IMAGE, "http://10.0.0.5/b.png", "External")}TYPE x>`,
+      rel("rId2", REL_IMAGE, "media/image1.png")
+    );
+    expect(() => stripExternalRelationships(xml)).toThrow(OfficeFileRejectedError);
+  });
+
   it("removes a relationship whose TargetMode is entity-obfuscated", () => {
     // `&#69;xternal` decodes to `External` in an XML parser but is invisible to
     // a text match for the word. Anything that is not plainly Internal goes.
@@ -870,7 +908,8 @@ describe("sanitizeOoxmlPackage — relationship allow-list", () => {
   // what rendering text and layout needs, pointing at parts that are what the
   // relationship says they are; everything else is cut, and the few things
   // that would lose real content by being cut are refused instead.
-  const W_NS = `xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"`;
+  const W_MAIN = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+  const W_NS = `xmlns:w="${W_MAIN}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"`;
 
   function docRelsAfter(pkg: Buffer): string {
     const out = sanitizeOoxmlPackage(pkg);
@@ -1095,6 +1134,59 @@ describe("sanitizeOoxmlPackage — relationship allow-list", () => {
     expect(header).toContain("Header words");
   });
 
+  // LibreOffice 26.2 imported `<ä:altChunk xmlns:ä="…/wordprocessingml/2006/main" r:id="…"/>`
+  // from a staged copy: a prefix is any XML name, not only an ASCII one.
+  it.each([
+    ["self-closing", `<ä:altChunk xmlns:ä="${W_MAIN}" r:id="rId5"/>`],
+    [
+      "with children",
+      `<ä:altChunk xmlns:ä="${W_MAIN}" r:id="rId5"><ä:altChunkPr><ä:matchSrc/></ä:altChunkPr></ä:altChunk>`,
+    ],
+    ["in a script with no Latin letters", `<文書:altChunk xmlns:文書="${W_MAIN}" r:id="rId5"/>`],
+  ])("cuts an altChunk whose prefix is spelled with non-ASCII letters (%s)", (_, element) => {
+    const pkg = docxWith({
+      documentRels: relationships(rel("rId5", REL_IMAGE, "media/image1.png")),
+      body: element,
+      parts: { "word/media/image1.png": PNG_1X1 },
+    });
+    const out = sanitizeOoxmlPackage(pkg);
+    expect(out.altChunksRemoved).toBe(1);
+    const document = partAfter(pkg, "word/document.xml");
+    expect(document).not.toMatch(/altChunk/);
+    expect(document).toContain("Hello canary document");
+  });
+
+  it("reads a part whose root element has a non-ASCII prefix, and cuts its altChunk", () => {
+    const pkg = zipOf({
+      "[Content_Types].xml": "<Types/>",
+      "_rels/.rels": relationships(rel("rId1", relType("officeDocument"), "word/document.xml")),
+      "word/_rels/document.xml.rels": relationships(),
+      "word/document.xml": `<?xml version="1.0" encoding="UTF-8"?><ä:document xmlns:ä="${W_MAIN}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><ä:body><ä:p><ä:r><ä:t>Words</ä:t></ä:r></ä:p><ä:altChunk r:id="rId5"/></ä:body></ä:document>`,
+    });
+    const out = sanitizeOoxmlPackage(pkg);
+    expect(out.altChunksRemoved).toBe(1);
+    expect(partAfter(pkg, "word/document.xml")).not.toMatch(/altChunk/);
+  });
+
+  it.each([
+    ["an altChunk", `<w:alt<w:altChunk r:id="rId5"/>Chunk r:id="rId5"/>`],
+    ["a DOCTYPE", `<!DOC<w:altChunk r:id="rId5"/>TYPE w:document>`],
+    ["an SVG element", `<s<w:altChunk r:id="rId5"/>vg xmlns="http://www.w3.org/2000/svg"/>`],
+  ])(
+    "refuses a part where cutting an altChunk would join the text around it into %s",
+    (_, body) => {
+      // Measured for the first: LibreOffice 26.2 imported the altChunk the cut
+      // spliced together, from the staged copy. What a cut leaves is held to
+      // the same rules as what came in.
+      const pkg = docxWith({
+        documentRels: relationships(rel("rId5", REL_IMAGE, "media/image1.png")),
+        body,
+        parts: { "word/media/image1.png": PNG_1X1 },
+      });
+      expect(refusedWith(pkg).code).toBe("unexpected_content");
+    }
+  );
+
   it("refuses an altChunk element that never ends: what follows it is not ours to guess", () => {
     const pkg = docxWith({
       documentRels: relationships(),
@@ -1301,6 +1393,18 @@ describe("no regex on file bytes is super-linear", () => {
     expect(Date.now() - started).toBeLessThan(1000);
   });
 
+  it.each([
+    ["one 4 MiB name", `<${"a".repeat(BIG)}/>`],
+    ["4 MiB of names that never end", "<a".repeat(BIG / 2)],
+  ])("reads the element names in an Office part of %s in bounded time", (_, body) => {
+    // An element name is read up to the next `<` at most, so no character is
+    // read from more than one place.
+    const pkg = docxWith({ documentRels: relationships(), body });
+    const started = Date.now();
+    expect(sanitizeOoxmlPackage(pkg).altChunksRemoved).toBe(0);
+    expect(Date.now() - started).toBeLessThan(1000);
+  });
+
   it("still reads a relationship with many attributes, in any quoting, at ordinary length", () => {
     const xml = relationships(
       `<Relationship  Id = 'rId1'\n\tType="${REL_IMAGE}" Target='http://10.0.0.5/a.png' TargetMode = "External" />`,
@@ -1365,6 +1469,35 @@ describe("a kept part is vetted by what it IS, not by its relationship's Type", 
     expect(cutCount(relType("font"), "fonts/font1.odttf", font)).toBe(0);
   });
 
+  // A font's id can be borrowed by anything that resolves an `r:id` without
+  // checking the Type — an altChunk does, and LibreOffice 26.2 imported a
+  // "font" that was UTF-16 HTML and drew the local file its `<img>` named.
+  // An import filter's detection reads past a byte-order mark, so this does.
+  const page = `<html><body><img src="file:///etc/hostname"></body></html>`;
+  const utf16be = (text: string) => Buffer.from(text, "utf16le").swap16();
+  const utf32le = (text: string) => {
+    const out = Buffer.alloc(text.length * 4);
+    for (let i = 0; i < text.length; i++) out.writeUInt32LE(text.charCodeAt(i), i * 4);
+    return out;
+  };
+  it.each([
+    ["UTF-16LE with a byte-order mark", Buffer.from(`﻿${page}`, "utf16le")],
+    ["UTF-16BE with a byte-order mark", utf16be(`﻿${page}`)],
+    ["UTF-32LE with a byte-order mark", utf32le(`﻿${page}`)],
+    ["UTF-16LE without one", Buffer.from(page, "utf16le")],
+    ["UTF-16BE without one", utf16be(page)],
+  ])("cuts a font that is an HTML page in %s", (_, bytes) => {
+    expect(cutCount(relType("font"), "fonts/font1.odttf", bytes)).toBe(1);
+  });
+
+  it.each([
+    ["TrueType", "0001000000100100000400004744454600"],
+    ["OpenType", "4f54544f000c0080000300404346462000"],
+  ])("keeps a plain %s font: its NULs are not text", (_, hex) => {
+    const font = Buffer.concat([Buffer.from(hex, "hex"), Buffer.alloc(1024, 0x3c)]);
+    expect(cutCount(relType("font"), "fonts/font1.ttf", font)).toBe(0);
+  });
+
   it("cuts a picture that is a gzipped SVG (svgz): what it reaches for cannot be read without inflating it", () => {
     expect(cutCount(REL_IMAGE, "media/image1.svgz", gzip(reachingSvg))).toBe(1);
   });
@@ -1386,6 +1519,10 @@ describe("a kept part is vetted by what it IS, not by its relationship's Type", 
       "an Office root with an SVG element in its first kilobytes",
       `<w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><!-- <svg --></w:hdr>`,
     ],
+    [
+      "an Office root with an SVG element whose prefix is non-ASCII",
+      `<w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><ä:svg xmlns:ä="http://www.w3.org/2000/svg"/></w:hdr>`,
+    ],
   ])("refuses a header relationship whose target is %s", (_, content) => {
     refused(relType("header"), "header1.xml", content);
   });
@@ -1400,10 +1537,13 @@ describe("a kept part is vetted by what it IS, not by its relationship's Type", 
     expect(cutCount(REL_IMAGE, "media/image1.svg", svg)).toBe(1);
   });
 
-  it("cuts an SVG picture with a foreignObject: an HTML island can carry its own references", () => {
-    const svg = `<svg xmlns="http://www.w3.org/2000/svg"><foreignObject><img xmlns="http://www.w3.org/1999/xhtml" src="file:///etc/hostname"/></foreignObject></svg>`;
-    expect(cutCount(REL_IMAGE, "media/image1.svg", svg)).toBe(1);
-  });
+  it.each(["foreignObject", "s:foreignObject", "ä:foreignObject"])(
+    "cuts an SVG picture with a foreignObject (<%s>): an HTML island can carry its own references",
+    (qname) => {
+      const svg = `<svg xmlns="http://www.w3.org/2000/svg" xmlns:s="http://www.w3.org/2000/svg" xmlns:ä="http://www.w3.org/2000/svg"><${qname}><img xmlns="http://www.w3.org/1999/xhtml" src="file:///etc/hostname"/></${qname}></svg>`;
+      expect(cutCount(REL_IMAGE, "media/image1.svg", svg)).toBe(1);
+    }
+  );
 
   it("cuts a PNG-looking picture whose first kilobytes also carry an SVG element", () => {
     const part = Buffer.concat([PNG_1X1.subarray(0, 16), Buffer.from(reachingSvg)]);

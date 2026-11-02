@@ -48,6 +48,11 @@
  * carried. An altChunk is cut too — relationship and element — and that one
  * does cost text (the chunk's own), so the converter logs it.
  *
+ * Every element this looks for is found by its name as a parser reads it, with
+ * any prefix — `ä:` and `文書:` are as much XML as `w:` (`qualifiedNameAt`) —
+ * and what a cut leaves is held to the same rules as what came in, because
+ * the text either side of a cut can join into a new element.
+ *
  * **Every** external relationship goes, hyperlinks included. A first version
  * spared `hyperlink` and was wrong: LibreOffice resolves an `r:link` id
  * WITHOUT checking the relationship's Type, so a hyperlink-labelled
@@ -492,14 +497,6 @@ function allowedContainers(path: string): readonly Container[] {
 // 3. Does it ask LibreOffice to read something it should not?
 // ---------------------------------------------------------------------------
 
-/**
- * The start of a `<Relationship` element, with any namespace prefix. Sticky, so
- * it is only ever tried AT a position the scanner chose: a global regex that
- * also consumed the whole tag would rescan to the end of the part from every
- * unterminated `<Relationship ` — quadratic on a hostile 4 MiB part.
- */
-const RELATIONSHIP_START = /<(?:[A-Za-z_][\w.-]*:)?Relationship(?=[\s/>])/y;
-const CLOSING_TAG = /\s*<\/(?:[A-Za-z_][\w.-]*:)?Relationship\s*>/y;
 /** Starts with a URI scheme, or is a UNC / protocol-relative path. */
 const SCHEME_OR_NETWORK_PATH = /^(?:[A-Za-z][A-Za-z0-9+.-]*:|\\\\|\/\/)/;
 /** A DTD can define entities, and an entity can spell markup no text match sees. No Office writer emits one. */
@@ -514,6 +511,38 @@ const DTD = /<!(?:DOCTYPE|ENTITY)/i;
 const MAX_TAG_CHARS = 16 * 1024;
 
 const isXmlSpace = (c: string | undefined) => c === " " || c === "\t" || c === "\n" || c === "\r";
+
+/**
+ * The name of the tag whose `<` is at `at`, as written: everything up to the
+ * first XML whitespace, `/`, `>` or `<`. Every element name this module looks
+ * for is read through here, and compared by its local name (`localName`).
+ *
+ * A name is NOT `[A-Za-z_][\w.-]*`: XML takes letters from every script, so
+ * `<ä:altChunk xmlns:ä="…">` is an altChunk to the reader behind this scan —
+ * LibreOffice 26.2 imported one that a pattern of ASCII prefixes read past.
+ * The text here is UTF-8 decoded as latin1, and a multi-byte character never
+ * holds one of the delimiters, so reading to a delimiter needs no decoding.
+ *
+ * It stops at a `<` (which no name contains) so that no character is read
+ * from more than one place: a run of `<a<a<a…` costs one pass, not one per `<`.
+ */
+function qualifiedNameAt(xml: string, at: number): string {
+  let end = at + 1;
+  while (end < xml.length && !isXmlSpace(xml[end]) && !"/<>".includes(xml[end])) end++;
+  return xml.slice(at + 1, end);
+}
+
+/** A qualified name without its prefix: after the last `:`, so `a:b:c` counts as `c` too. */
+const localName = (qname: string) => qname.slice(qname.lastIndexOf(":") + 1);
+
+/** Does any tag in `xml` have a local name `matches` accepts? One forward pass. */
+function hasElement(xml: string, matches: (local: string, qname: string) => boolean): boolean {
+  for (let at = xml.indexOf("<"); at !== -1; at = xml.indexOf("<", at + 1)) {
+    const qname = qualifiedNameAt(xml, at);
+    if (matches(localName(qname), qname)) return true;
+  }
+  return false;
+}
 
 /**
  * The index of the `>` that ends the start tag opening at `from`, honouring
@@ -545,8 +574,7 @@ function tagEnd(xml: string, from: number): number {
  * 942-byte .docx held the web process for 2.7 s.
  */
 function attributesOf(tag: string): Map<string, string> | null {
-  let at = 1;
-  while (at < tag.length && !isXmlSpace(tag[at]) && tag[at] !== "/" && tag[at] !== ">") at++;
+  let at = 1 + qualifiedNameAt(tag, 0).length;
   const attributes = new Map<string, string>();
   for (;;) {
     const before = at;
@@ -595,6 +623,11 @@ const unexpected = (detail: string) => new OfficeFileRejectedError("unexpected_c
  * Removes every relationship `keep` says no to from the text of a `.rels`
  * part (decoded as latin1, so the round trip is byte-exact for whatever
  * encoding it declared). `keep` may also throw, to refuse the package.
+ *
+ * What the cuts leave is read again under the same rules, and refused if it
+ * holds anything they would not have let through: `<Relation` + [a cut
+ * relationship] + `ship …/>` joins into a relationship nobody vetted, and
+ * `<!DOC` + [a cut] + `TYPE` into a DTD.
  */
 function filterRelationships(
   xml: string,
@@ -611,9 +644,8 @@ function filterRelationships(
   let at = 0;
   // One forward pass: every position is looked at once, whatever the part holds.
   while ((at = xml.indexOf("<", at)) !== -1) {
-    RELATIONSHIP_START.lastIndex = at;
-    const start = RELATIONSHIP_START.exec(xml);
-    if (!start) {
+    const name = qualifiedNameAt(xml, at);
+    if (localName(name) !== "Relationship") {
       at++;
       continue;
     }
@@ -642,10 +674,12 @@ function filterRelationships(
     if (!tag.endsWith("/>")) {
       // `<Relationship …></Relationship>`: take the closing tag with it, or
       // the part would no longer be well-formed.
-      CLOSING_TAG.lastIndex = end;
-      const closing = CLOSING_TAG.exec(xml);
-      if (!closing) throw malformed();
-      end += closing[0].length;
+      while (isXmlSpace(xml[end])) end++;
+      if (!xml.startsWith(`</${name}`, end)) throw malformed();
+      end += name.length + 2;
+      while (isXmlSpace(xml[end])) end++;
+      if (xml[end] !== ">") throw malformed();
+      end++;
     }
     out += xml.slice(cursor, at);
     cursor = end;
@@ -653,7 +687,12 @@ function filterRelationships(
     at = end;
   }
 
-  return removed === 0 ? { xml, removed: 0 } : { xml: out + xml.slice(cursor), removed };
+  if (removed === 0) return { xml, removed: 0 };
+  out += xml.slice(cursor);
+  if (filterRelationships(out, keep).removed > 0) {
+    throw unexpected("a relationship part spells a new relationship once another is cut");
+  }
+  return { xml: out, removed };
 }
 
 /**
@@ -838,8 +877,8 @@ const OOXML_ROOT_NAMES = new Set([
  * its first 2 KiB (or an XML declaration, a DOCTYPE and `svg`), whatever the
  * relationship called it. Looking at 4 KiB, case-insensitively, is the
  * superset of that — and so is a prefixed element whose local name is exactly
- * `svg` (`<s:svg`), which no detector's byte match would see but an XML
- * reader resolving namespaces would.
+ * `svg` (`<s:svg`, `<ä:svg`), which no detector's byte match would see but an
+ * XML reader resolving namespaces would.
  *
  * EXACTLY `svg`, for a prefixed name: `<asvg:svgBlip>` is what Office 365 and
  * LibreOffice write next to every SVG picture (and every PowerPoint Icon),
@@ -848,49 +887,57 @@ const OOXML_ROOT_NAMES = new Set([
  * Unprefixed, `<svg` stays a byte match, as it is for LibreOffice: `<svgx>`
  * is taken for SVG too.
  */
-const SVG_MARKUP = /<svg|<[A-Za-z_][\w.-]*:svg(?=[\s/>])|<!DOCTYPE/i;
+const SVG_BYTES = /<svg|<!DOCTYPE/i;
 
 /** Would LibreOffice's picture detection take these first bytes for SVG — or gzip, i.e. SVGZ? */
 function looksLikeSvg(head: Buffer): boolean {
   if (head[0] === 0x1f && head[1] === 0x8b) return true;
   // NULs dropped: a UTF-16 spelling must not hide the markup from this check.
-  return SVG_MARKUP.test(head.subarray(0, 4096).toString("latin1").replace(/\0/g, ""));
+  const text = head.subarray(0, 4096).toString("latin1").replace(/\0/g, "");
+  return (
+    SVG_BYTES.test(text) ||
+    hasElement(text, (local, qname) => qname.includes(":") && local.toLowerCase() === "svg")
+  );
 }
-
-/** `<w:altChunk`, any prefix, as a candidate the scanner then reads properly. */
-const ALT_CHUNK_START = /<((?:[A-Za-z_][\w.-]*:)?altChunk)(?=[\s/>])/g;
 
 /**
  * Removes every `altChunk` element from an Office XML part — the self-closing
  * form and the one with children (`<w:altChunkPr>`) — and says how many.
+ * Whatever its prefix: the name is read the way a parser reads it
+ * (`qualifiedNameAt`), not matched against a pattern of what prefixes look like.
  *
  * An altChunk imports the part its `r:id` names through a SECOND import filter
  * (HTML, RTF, a nested document), which reads local files the locked profile
  * does not stop. LibreOffice resolves that id without
  * checking the relationship's Type, so cutting the `aFChunk` relationship is
- * not enough: an altChunk can borrow the id of a kept picture. So the element
- * goes. Everything around it stays searchable; the chunk's own content is not
+ * not enough: an altChunk can borrow the id of a kept picture or font. So the
+ * element goes. Everything around it stays searchable; the chunk's own content is not
  * indexed, and the converter logs that it was dropped.
  *
  * Linear: each element is read once from where the last one ended. A start
  * tag with no end, or an element with no closing tag, is refused — what
- * follows it is not ours to guess.
+ * follows it is not ours to guess. What the cuts leave is vetted again by the
+ * caller (`vetXmlPart`): a cut can join the text around it into a new element.
  */
 function removeAltChunks(xml: string, partName: string): { xml: string; removed: number } {
   const malformed = () => unexpected(`part "${partName}" has an altChunk that is not well-formed`);
   let out = "";
   let cursor = 0;
   let removed = 0;
-  ALT_CHUNK_START.lastIndex = 0;
-  let match: RegExpExecArray | null;
-  while ((match = ALT_CHUNK_START.exec(xml))) {
-    const close = tagEnd(xml, match.index);
+  let at = 0;
+  while ((at = xml.indexOf("<", at)) !== -1) {
+    const name = qualifiedNameAt(xml, at);
+    if (localName(name) !== "altChunk") {
+      at++;
+      continue;
+    }
+    const close = tagEnd(xml, at);
     if (close < 0) throw malformed();
     let end = close + 1;
     if (xml[close - 1] !== "/") {
       // The first `</w:altChunk` that is that name exactly — `</w:altChunkPr>`
       // starts the same way. Searching only forward keeps this linear.
-      const closingTag = `</${match[1]}`;
+      const closingTag = `</${name}`;
       let closing = xml.indexOf(closingTag, end);
       while (
         closing >= 0 &&
@@ -905,10 +952,10 @@ function removeAltChunks(xml: string, partName: string): { xml: string; removed:
       if (xml[after] !== ">") throw malformed();
       end = after + 1;
     }
-    out += xml.slice(cursor, match.index);
+    out += xml.slice(cursor, at);
     cursor = end;
     removed++;
-    ALT_CHUNK_START.lastIndex = end;
+    at = end;
   }
   return removed === 0 ? { xml, removed: 0 } : { xml: out + xml.slice(cursor), removed };
 }
@@ -933,11 +980,13 @@ function rootElement(xml: string): { name: string; namespace: string | undefined
       at = end + 3;
     } else break;
   }
-  const open = /^<([A-Za-z_][\w.-]*)(?::([A-Za-z_][\w.-]*))?(?=[\s/>])/.exec(
-    xml.slice(at, at + 512)
-  );
-  if (!open) return null;
-  const [prefix, local] = open[2] === undefined ? [undefined, open[1]] : [open[1], open[2]];
+  if (xml[at] !== "<") return null;
+  const qname = qualifiedNameAt(xml, at);
+  const colon = qname.indexOf(":");
+  // One prefix, or none: a name the namespace rules cannot resolve is not ours to resolve.
+  if (colon !== qname.lastIndexOf(":") || colon === 0) return null;
+  const prefix = colon < 0 ? undefined : qname.slice(0, colon);
+  const local = localName(qname);
   const end = tagEnd(xml, at);
   if (end < 0) return null;
   const attributes = attributesOf(xml.slice(at, end + 1));
@@ -999,8 +1048,8 @@ function isRaster(bytes: Buffer): boolean {
 const SVG_HREF = /\bhref\s*=\s*(?:"([^"]*)"|'([^']*)')/gi;
 const CSS_URL = /url\(\s*(['"]?)([^'")]*)/gi;
 const DATA_IMAGE = /^data:image\/(?:png|jpe?g|gif|bmp|webp);base64,([A-Za-z0-9+/=\s]*)$/;
-/** An HTML island inside an SVG: it can carry references of its own (`<img src>`). */
-const FOREIGN_OBJECT = /<(?:[A-Za-z_][\w.-]*:)?foreignObject(?=[\s/>])/i;
+/** An HTML island inside an SVG, whatever its prefix: it can carry references of its own (`<img src>`). */
+const isForeignObject = (local: string) => local.toLowerCase() === "foreignobject";
 
 /**
  * A `data:` URL's picture is what its BYTES are, not what its media type
@@ -1027,7 +1076,7 @@ function isEmbeddedRaster(value: string): boolean {
  * a local PNG embedded, a local SVG's text in the indexed text layer.
  */
 function isSelfContainedSvg(text: string): boolean {
-  if (DTD.test(text) || /@import/i.test(text) || FOREIGN_OBJECT.test(text)) return false;
+  if (DTD.test(text) || /@import/i.test(text) || hasElement(text, isForeignObject)) return false;
   for (const match of text.matchAll(SVG_HREF)) {
     const value = (match[1] ?? match[2]).trim();
     if (value.includes("&")) return false;
@@ -1039,9 +1088,22 @@ function isSelfContainedSvg(text: string): boolean {
   return true;
 }
 
-/** A document format some import filter would take, by its first bytes. */
+/**
+ * A document format some import filter would take, by its first bytes.
+ *
+ * Read the way an import filter's detection reads text: past a byte-order
+ * mark (UTF-8, UTF-16 or UTF-32, either byte order — as latin1, `ï»¿`, `ÿþ`,
+ * `þÿ`) and past the NULs a UTF-16 or UTF-32 spelling puts between its
+ * characters, BOM or none. LibreOffice 26.2 took a "font" that was UTF-16LE
+ * HTML for HTML when an altChunk borrowed its id, and drew the local file its
+ * `<img>` named. A font itself never starts like text: an sfnt's first bytes
+ * are a version tag, an obfuscated font's are scrambled.
+ */
 function looksLikeDocument(head: Buffer): boolean {
-  const text = head.toString("latin1").replace(/^[\s﻿ï»¿]+/, "");
+  const text = head
+    .toString("latin1")
+    .replace(/\0/g, "")
+    .replace(/^[\s\uFEFF\u00EF\u00BB\u00BF\u00FE\u00FF]+/, "");
   return (
     head.subarray(0, 8).equals(OLE2_MAGIC) ||
     (head.length >= 4 && head.readUInt32LE(0) === 0x04034b50) ||
@@ -1148,20 +1210,32 @@ function sanitizedParts(buffer: Buffer): {
     const notOoxml = (what: string) =>
       unexpected(`part "${entry.name}" should be Office XML but ${what}`);
     if (bytes.includes(0)) throw notOoxml("is not UTF-8 text");
-    const text = bytes.toString("latin1");
-    if (DTD.test(text)) throw notOoxml("declares a DOCTYPE");
-    const root = rootElement(text);
-    if (
-      !root ||
-      root.namespace === undefined ||
-      !OOXML_NAMESPACE.test(root.namespace) ||
-      !OOXML_ROOT_NAMES.has(root.name)
-    ) {
-      throw notOoxml("is something else");
-    }
-    if (looksLikeSvg(bytes)) throw notOoxml("would be drawn as an SVG picture");
-    const result = removeAltChunks(text, entry.name);
+    /** Every check on the part's text, then its altChunks cut. */
+    const vetted = (text: string) => {
+      if (DTD.test(text)) throw notOoxml("declares a DOCTYPE");
+      const root = rootElement(text);
+      if (
+        !root ||
+        root.namespace === undefined ||
+        !OOXML_NAMESPACE.test(root.namespace) ||
+        !OOXML_ROOT_NAMES.has(root.name)
+      ) {
+        throw notOoxml("is something else");
+      }
+      if (looksLikeSvg(Buffer.from(text.slice(0, 4096), "latin1"))) {
+        throw notOoxml("would be drawn as an SVG picture");
+      }
+      return removeAltChunks(text, entry.name);
+    };
+    const result = vetted(bytes.toString("latin1"));
     if (result.removed > 0) {
+      // What the cuts leave is what LibreOffice reads, so it is held to the
+      // same rules: `<w:alt` + [a cut altChunk] + `Chunk r:id=…/>` joins into
+      // an altChunk (LibreOffice 26.2 imported one from a staged copy), and
+      // `<!DOC` + [a cut] + `TYPE` into a DTD.
+      if (vetted(result.xml).removed > 0) {
+        throw unexpected(`part "${entry.name}" spells a new altChunk once another is cut`);
+      }
       altChunksRemoved += result.removed;
       rewritten.set(entry, Buffer.from(result.xml, "latin1"));
     }
