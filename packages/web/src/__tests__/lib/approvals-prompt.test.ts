@@ -152,7 +152,7 @@ describe("buildApprovalPrompt", () => {
       { refRecord: makeRefResolver(REF_KEY) }
     );
     expect(description).not.toContain(ref.slice(20, 40));
-    expect(description).toContain('(record reference: sale.order #9 "S00009")');
+    expect(description).toContain('target: "(record reference: sale.order #9 \\"S00009\\")"');
   });
 
   // Fifth review of #1242: a valid ref followed by `=` and text decoded to the
@@ -200,7 +200,7 @@ describe("buildApprovalPrompt", () => {
       to: `Raimund Korber${"\u2800".repeat(190)} <attacker@evil.com>`,
       subject: "Rechnung",
     });
-    expect(description).toContain("to: attacker@evil.com (name: ");
+    expect(description).toContain('to: "attacker@evil.com (name: \\"');
   });
   // The prompt reaches chat surfaces too, and it reads the same summary as the
   // card. Once the summary keeps real arrays/objects, flattening them with
@@ -211,7 +211,7 @@ describe("buildApprovalPrompt", () => {
       values: { acc_number: "AT61 1904", amount: 99999 },
     });
     expect(description).not.toContain("[object Object]");
-    expect(description).toContain("acc_number: AT61 1904");
+    expect(description).toContain('acc_number: "AT61 1904"');
     expect(description).toContain("99999");
   });
 
@@ -248,7 +248,7 @@ describe("buildApprovalPrompt", () => {
       to: "a@x.at",
       body: "Hallo,\r\nzweite Zeile\rx",
     });
-    expect(description).toContain("body: Hallo,\nzweite Zeile⟨U+000D⟩x");
+    expect(description).toContain('body: "Hallo,\nzweite Zeile⟨U+000D⟩x"');
   });
 
   it("never cuts the description between the halves of an emoji", () => {
@@ -271,10 +271,10 @@ describe("buildApprovalPrompt", () => {
   it("holds the arguments in the order they were sent", () => {
     const shown = (path: string) => buildApprovalPrompt("pinchy_write", { path }).description;
     expect(shown("/data/חוזים/2024.md")).toContain(
-      "\u2066\u202Dpath: /data/\u2066חוזים\u2069/2024.md\u202C\u2069"
+      '\u2066\u202Dpath: "/data/\u2066חוזים\u2069/2024.md"\u202C\u2069'
     );
     expect(shown("/data/2024/חוזים.md")).toContain(
-      "\u2066\u202Dpath: /data/2024/\u2066חוזים\u2069.md\u202C\u2069"
+      '\u2066\u202Dpath: "/data/2024/\u2066חוזים\u2069.md"\u202C\u2069'
     );
   });
 
@@ -282,7 +282,7 @@ describe("buildApprovalPrompt", () => {
   it("holds every line of a multi-line value in order", () => {
     const { description } = buildApprovalPrompt("email_send", { body: "שלום 1\n2 עולם" });
     expect(description).toContain(
-      "\u2066\u202Dbody: \u2066שלום\u2069 1\u202C\u2069\n\u2066\u202D2 \u2066עולם\u2069\u202C\u2069"
+      '\u2066\u202Dbody: "\u2066שלום\u2069 1\u202C\u2069\n\u2066\u202D2 \u2066עולם\u2069"\u202C\u2069'
     );
   });
 
@@ -293,6 +293,85 @@ describe("buildApprovalPrompt", () => {
     const shown = (path: string) => buildApprovalPrompt("pinchy_write", { path }).description;
     expect(shown("/data/\u05BCבא.md")).toContain("/data/⟨U+05BC⟩\u2066בא\u2069.md");
     expect(shown("/data/בא\u05BC.md")).toContain("/data/\u2066בא\u05BC\u2069.md");
+  });
+
+  // Fourteenth review of #1242: a string was printed bare, so one holding
+  // `, `, `: `, `{`, `}`, `[` or `]` printed exactly like the structure it
+  // imitated — each pair below was one prompt. Every string is quoted now, at
+  // every level, so a string can only ever read as a string.
+  it.each([
+    [
+      "a field smuggled into a string",
+      { model: "res.partner", ids: [7], values: { name: "Acme", active: false } },
+      { model: "res.partner", ids: [7], values: { name: "Acme, active: false" } },
+    ],
+    [
+      "a second id smuggled into a string",
+      { model: "res.partner", ids: [7, 8], values: { x: 1 } },
+      { model: "res.partner", ids: ["7, 8"], values: { x: 1 } },
+    ],
+    [
+      "a top-level argument smuggled into a path",
+      { path: "/data/a.md", content: "hi" },
+      { path: "/data/a.md, content: hi" },
+    ],
+  ])("prints %s apart from the real thing", (_label, real, forged) => {
+    const prompt = (args: unknown) => buildApprovalPrompt("odoo_write", args).description;
+    expect(prompt(forged)).not.toBe(prompt(real));
+  });
+
+  it("quotes every string, at every level", () => {
+    const { description } = buildApprovalPrompt("odoo_write", {
+      ids: ["7, 8"],
+      values: { name: 'Acme "Ltd", \\x', active: false },
+    });
+    expect(description).toContain(
+      'ids: ["7, 8"], values: {name: "Acme \\"Ltd\\", \\\\x", active: false}'
+    );
+  });
+
+  // The rule the pairs above are instances of: two different calls never
+  // share a prompt, whatever their strings hold.
+  it("gives every different call its own description", () => {
+    let seed = 1242;
+    const random = () => {
+      seed = (seed + 0x6d2b79f5) | 0;
+      let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 2 ** 32;
+    };
+    const pick = <T>(items: T[]): T => items[Math.floor(random() * items.length)];
+    // Pieces of the structure a string would have to imitate, so the fuzz
+    // actually reaches forgeries rather than hoping to type one.
+    const alphabet = ["a", "7", " ", ", ", ": ", "{", "}", "[", "]", '"', "\\", "b: ", "true"];
+    const text = () =>
+      Array.from({ length: Math.floor(random() * 6) }, () => pick(alphabet)).join("");
+    const value = (depth: number): unknown => {
+      const kind = Math.floor(random() * (depth > 1 ? 4 : 6));
+      if (kind === 0) return text();
+      if (kind === 1) return pick([0, 7, 8, true, false, null]);
+      if (kind === 2 || kind === 3) return text();
+      if (kind === 4)
+        return Array.from({ length: Math.floor(random() * 3) }, () => value(depth + 1));
+      return object(depth + 1);
+    };
+    const object = (depth: number) =>
+      Object.fromEntries(["a", "b"].filter(() => random() < 0.6).map((key) => [key, value(depth)]));
+    const seen = new Map<string, string>();
+    let compared = 0;
+    for (let n = 0; n < 20000; n++) {
+      const args = object(0);
+      const { description } = buildApprovalPrompt("odoo_write", args);
+      if (description.endsWith("…")) continue;
+      compared++;
+      const call = JSON.stringify(args);
+      const earlier = seen.get(description);
+      if (earlier !== undefined && earlier !== call) {
+        expect.fail(`${earlier} and ${call} both read ${JSON.stringify(description)}`);
+      }
+      seen.set(description, call);
+    }
+    expect(compared).toBeGreaterThan(15000);
   });
 
   it("adds no control characters to a call without right-to-left text", () => {

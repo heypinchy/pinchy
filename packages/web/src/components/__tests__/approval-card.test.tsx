@@ -203,6 +203,34 @@ describe("ApprovalCard shows what will actually run", () => {
     expect(screen.queryByRole("button", { name: /show full text/i })).not.toBeInTheDocument();
   });
 
+  // Fourteenth review of #1242: a target or an address was drawn whole at any
+  // length, and Chromium lays out a long mixed-direction text in time that
+  // grows faster than its length — 13 s for one 200,000-character value,
+  // frozen on every render of the card. Whole is bounded now, at a size that
+  // holds every real target: pinchy-files caps a path at 1,024 characters,
+  // and the widest marker a character can become is eight (`⟨U+200D⟩`).
+  describe("draws a target or an address whole only up to 8,192 characters", () => {
+    it("draws the longest path pinchy-files accepts whole, every character a marker", () => {
+      const path = "\u00A0\u200D".repeat(512);
+      const shown = summarizeArgs({ path }).path as string;
+      expect([...shown]).toHaveLength(8192);
+      renderCard({ path: shown }, "pinchy_write");
+      expect(screen.getByText(shown)).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /show full text/i })).not.toBeInTheDocument();
+    });
+
+    it.each([
+      ["a target", { path: `/data/${"x".repeat(8200)}END` }],
+      ["an address at any key", { note: `https://x.at/${"y".repeat(8200)}END` }],
+    ])("previews %s past that, and shows all of it on demand", async (_label, summary) => {
+      renderCard(summary);
+      expect(screen.queryByText(/END$/)).not.toBeInTheDocument();
+      expect(screen.getByText(/more characters hidden/i)).toBeInTheDocument();
+      await userEvent.click(screen.getByRole("button", { name: /show full text/i }));
+      expect(screen.getByText(/END$/)).toBeInTheDocument();
+    });
+  });
+
   // Postgres jsonb stores object keys sorted by length, so the summary's
   // "who and where first" order did not survive the round trip to the card.
   it("lists the recipient and target fields first, whatever order they arrive in", () => {

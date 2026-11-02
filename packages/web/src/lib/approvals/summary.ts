@@ -34,8 +34,9 @@
  *   separator (no-break, ideographic, …), variation selectors and the other
  *   default-ignorables (Hangul fillers), and the braille blank U+2800 — is
  *   shown as a `⟨U+XXXX⟩` marker, and so is a lone UTF-16 surrogate (which
- *   Postgres would refuse to store in jsonb). A long run of them collapses
- *   into one bounded marker that says how many there were. A CRLF is a line
+ *   Postgres would refuse to store in jsonb). A run of more than three of
+ *   one character is shown as a count (`⟨180 × U+2800⟩`); a mixed run names
+ *   every character, so no two runs read alike. A CRLF is a line
  *   break like LF; a lone CR stays escaped. A run of four or more
  *   spaces, line breaks or tabs is shown as `⟨N spaces⟩` / `⟨N line breaks⟩` /
  *   `⟨N tabs⟩`, so padding cannot push text out of view. U+200C / U+200D
@@ -135,7 +136,7 @@ const MAX_TOTAL_CHARS = 512_000;
 const MAX_KEY_LEN = 100;
 /** Longest record label rendered for a reference. */
 const MAX_REF_LABEL_LEN = 200;
-/** A run of invisible characters longer than this collapses into one marker. */
+/** A run of one invisible character longer than this is shown as a count. */
 const MAX_ESCAPED_RUN = 3;
 /** A run of this many spaces, line breaks or tabs is shown as a count. */
 const MIN_LAYOUT_RUN = 4;
@@ -286,10 +287,24 @@ function codePoint(char: string): string {
   return `U+${char.codePointAt(0)!.toString(16).toUpperCase().padStart(4, "0")}`;
 }
 
+/**
+ * A run of hidden characters, every one of them named. Only a stretch of ONE
+ * repeated character is counted (`⟨180 × U+2800⟩`); a mixed run names each
+ * character in order. It used to collapse into one marker naming its first
+ * three, so `a` + four joiners and `a` + three joiners and a non-joiner were
+ * one card (fourteenth review of #1242): a marker that drops a character
+ * drops the difference between two values.
+ */
 function escapeRun(run: string[]): string {
-  if (run.length <= MAX_ESCAPED_RUN) return run.map((char) => `⟨${codePoint(char)}⟩`).join("");
-  const preview = run.slice(0, MAX_ESCAPED_RUN).map(codePoint).join(" ");
-  return `⟨${run.length} invisible characters: ${preview} …⟩`;
+  let out = "";
+  for (let i = 0; i < run.length;) {
+    let length = 1;
+    while (i + length < run.length && run[i + length] === run[i]) length++;
+    const marker = `⟨${codePoint(run[i])}⟩`;
+    out += length > MAX_ESCAPED_RUN ? `⟨${length} × ${codePoint(run[i])}⟩` : marker.repeat(length);
+    i += length;
+  }
+  return out;
 }
 
 /** The layout characters a value may be padded with. */
@@ -711,9 +726,9 @@ function summarizeObject(
   const shown: [string, unknown][] = [];
   const used = new Set<string>();
   const add = (label: string, value: unknown) => {
-    // Labels are unique by construction except where a key was cut or a run
-    // collapsed; numbering them keeps even those apart, so no row can ever
-    // overwrite another in `fromEntries` below.
+    // Labels are unique by construction except where a key was cut; numbering
+    // them keeps even those apart, so no row can ever overwrite another in
+    // `fromEntries` below.
     let unique = label;
     for (let n = 2; used.has(unique); n++) unique = `${label} (#${n})`;
     used.add(unique);

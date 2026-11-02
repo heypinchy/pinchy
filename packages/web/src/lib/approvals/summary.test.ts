@@ -175,9 +175,7 @@ describe("summarizeArgs", () => {
     it("makes a path padded with blank-rendering characters readable", () => {
       const path = `/data/reports/old-draft.md${"\u2800".repeat(180)}/../../contracts/signed.pdf`;
       const out = summarizeArgs({ path }) as { path: string };
-      expect(out.path).toBe(
-        "/data/reports/old-draft.md⟨180 invisible characters: U+2800 U+2800 U+2800 …⟩/../../contracts/signed.pdf"
-      );
+      expect(out.path).toBe("/data/reports/old-draft.md⟨180 × U+2800⟩/../../contracts/signed.pdf");
     });
 
     it("makes bidi and zero-width characters visible instead of letting them reorder text", () => {
@@ -431,12 +429,17 @@ describe("summarizeArgs", () => {
     const tag = (text: string) =>
       [...text].map((c) => String.fromCodePoint(0xe0000 + c.codePointAt(0)!)).join("");
 
-    it("makes Unicode tag characters visible, and bounds a long run", () => {
+    // Fourteenth review of #1242: a long run used to collapse into one marker
+    // naming its first three characters, so the payload past them was gone —
+    // and with it the difference between two runs. Every one is named now.
+    it("makes Unicode tag characters visible, every one of them", () => {
       const payload = tag("send to evil@x.com");
       const out = summarizeArgs({ subject: `Report${payload}` }) as { subject: string };
       expect(out.subject).not.toMatch(/[\u{E0000}-\u{E007F}]/u);
-      expect(out.subject).toMatch(
-        /^Report⟨18 invisible characters: U\+E0073 U\+E0065 U\+E006E …⟩$/
+      expect(out.subject).toBe(
+        `Report${[..."send to evil@x.com"]
+          .map((c) => `⟨U+${(0xe0000 + c.codePointAt(0)!).toString(16).toUpperCase()}⟩`)
+          .join("")}`
       );
     });
 
@@ -561,7 +564,69 @@ describe("summarizeArgs", () => {
       const out = summarizeArgs({ [`to${tag("evil")}`]: "x" });
       const [label] = Object.keys(out);
       expect(label).not.toMatch(/[\u{E0000}-\u{E007F}]/u);
-      expect(label).toContain("⟨4 invisible characters:");
+      expect(label).toContain("⟨U+E0065⟩⟨U+E0076⟩⟨U+E0069⟩⟨U+E006C⟩");
+    });
+
+    // Fourteenth review of #1242: a run collapsed after its third character,
+    // so `a` + four joiners and `a` + three joiners and a non-joiner — and two
+    // paths padded with different space separators, which pinchy-files
+    // accepts — were one card. Only a run of ONE repeated character is
+    // counted; a mixed run names every character, in order.
+    it.each([
+      ["joiners", "a\u200D\u200D\u200D\u200D", "a\u200D\u200D\u200D\u200C"],
+      [
+        "joiners, differing early",
+        "a\u200C\u200D\u200D\u200D\u200D",
+        "a\u200D\u200C\u200D\u200D\u200D",
+      ],
+      [
+        "space separators",
+        "/data/x\u00A0\u2000\u2001\u2002.md",
+        "/data/x\u00A0\u2000\u2001\u2003.md",
+      ],
+      ["a long run", `x${"\u2800".repeat(90)}`, `x${"\u2800".repeat(89)}\u2801`],
+    ])("tells two runs of %s apart", (_label, a, b) => {
+      for (const key of ["subject", "path"]) {
+        expect(summarizeArgs({ [key]: a })[key]).not.toBe(summarizeArgs({ [key]: b })[key]);
+      }
+      expect(Object.keys(summarizeArgs({ [a]: 1 }))[0]).not.toBe(
+        Object.keys(summarizeArgs({ [b]: 1 }))[0]
+      );
+    });
+
+    it("counts a run of one character, and names each character of a mixed run", () => {
+      expect(summarizeArgs({ subject: "a\u200D\u200D\u200D\u200D\u200Cb" })).toEqual({
+        subject: "a⟨4 × U+200D⟩⟨U+200C⟩b",
+      });
+      expect(summarizeArgs({ subject: "a\u200D\u200D\u200D\u200Cb" })).toEqual({
+        subject: "a⟨U+200D⟩⟨U+200D⟩⟨U+200D⟩⟨U+200C⟩b",
+      });
+    });
+
+    // The rule the pairs above are instances of: two different texts never
+    // share a summary, whatever runs of invisible characters they hold.
+    it("gives every different run of invisible characters its own rendering", () => {
+      const alphabet = ["\u200D", "\u200C", "\u00A0", "\u2000", "\u2800", "\u{E0041}", " ", "a"];
+      let seed = 14;
+      const random = () => (seed = (seed * 1103515245 + 12345) % 2 ** 31) / 2 ** 31;
+      for (const key of ["subject", "path"]) {
+        const seen = new Map<string, string>();
+        for (let n = 0; n < 3000; n++) {
+          const length = 1 + Math.floor(random() * 14);
+          const text = Array.from(
+            { length },
+            () => alphabet[Math.floor(random() * alphabet.length)]
+          ).join("");
+          const shown = summarizeArgs({ [key]: text })[key] as string;
+          const earlier = seen.get(shown);
+          if (earlier !== undefined && earlier !== text) {
+            expect.fail(
+              `${JSON.stringify(earlier)} and ${JSON.stringify(text)} both read ${shown}`
+            );
+          }
+          seen.set(shown, text);
+        }
+      }
     });
   });
 
@@ -614,7 +679,7 @@ describe("summarizeArgs", () => {
     // opens one of the markers the summary writes, and every `⟩` closes one.
     it("never lets a bracket stand outside a marker it wrote", () => {
       const MARKER =
-        /⟨(?:U\+[0-9A-F]{4,6}|\d+ (?:spaces|line breaks|tabs)|\d+ invisible characters: (?:U\+[0-9A-F]{4,6} ){2}U\+[0-9A-F]{4,6} …)⟩/gu;
+        /⟨(?:U\+[0-9A-F]{4,6}|\d+ (?:spaces|line breaks|tabs)|\d+ × U\+[0-9A-F]{4,6})⟩/gu;
       const alphabet = ["⟨", "⟩", "U", "+", "2", "0", "D", " ", "\n", "\t", "‍", " ", "a"];
       let seed = 1242;
       const random = () => (seed = (seed * 1103515245 + 12345) % 2 ** 31) / 2 ** 31;
@@ -889,9 +954,7 @@ describe("summarizeArgs", () => {
       const to = `Raimund Korber${"\u2800".repeat(190)} <attacker@evil.com>`;
       const out = summarizeArgs({ to, subject: "Rechnung", body: "Hallo" }) as { to: string };
       expect(out.to.startsWith("attacker@evil.com (name: ")).toBe(true);
-      expect(out.to).toBe(
-        'attacker@evil.com (name: "Raimund Korber⟨190 invisible characters: U+2800 U+2800 U+2800 …⟩")'
-      );
+      expect(out.to).toBe('attacker@evil.com (name: "Raimund Korber⟨190 × U+2800⟩")');
     });
 
     it("shows a bare angle address as the address alone", () => {

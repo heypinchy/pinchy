@@ -50,8 +50,14 @@ function inline(value: unknown): string {
       .map(([key, v]) => `${key}: ${inline(v)}`)
       .join(", ")}}`;
   }
-  // The same type rule as the card: a string that would read as `false`, `1`
-  // or `null` is quoted, so it cannot pass for the literal.
+  // Every string is quoted, with its `"` and `\` escaped, so no string can
+  // print as structure. Printed bare, `name: "Acme, active: false"` read
+  // exactly like `name: "Acme", active: false`, and `ids: ["7, 8"]` like
+  // `ids: [7, 8]` (fourteenth review of #1242). The card needs no quotes: it
+  // draws each field and item in an element of its own. Line breaks stay
+  // line breaks — everything else that could hide is a marker already — and
+  // a key needs none either: it is a bare identifier or already quoted.
+  if (typeof value === "string") return `"${value.replace(/["\\]/g, "\\$&")}"`;
   return displayScalar(value);
 }
 

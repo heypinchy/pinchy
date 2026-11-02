@@ -15,6 +15,18 @@ import {
 const PREVIEW_LEN = 200;
 
 /**
+ * A target or an address is drawn whole up to this many characters, as shown.
+ * It holds every real one: pinchy-files caps a path at 1,024 characters, and
+ * the widest a character is shown is an eight-character marker (`⟨U+200D⟩`).
+ * Past it, the value is previewed like any long text, with the rest one click
+ * away. Unbounded, it froze the approver's tab: Chromium lays out a long
+ * mixed-direction text in time that grows faster than its length — 13 s for
+ * one 200,000-character value, against under 40 ms at this size (fourteenth
+ * review of #1242).
+ */
+const WHOLE_MAX = 8_192;
+
+/**
  * `text` drawn in the order it was sent (`inStoredOrder`): each line held in
  * order by `<bdo dir="ltr">`, each right-to-left word in a `<bdi dir="ltr">`
  * of its own, so it still reads. Text with no right-to-left character is
@@ -48,7 +60,7 @@ function StoredOrder({ text }: { text: string }) {
  * reaches or where it lands, which are short and are the decision, or unless
  * the value itself is an email address or a URL, at any key: its host is the
  * decision too, and it sits at the END of an address, exactly where a preview
- * cuts (fourth review of #1242).
+ * cuts (fourth review of #1242). Those are drawn whole up to WHOLE_MAX.
  *
  * The truncation marker the summary appends to a value it cut is shown
  * OUTSIDE the preview: inside it, it sat in exactly the part the preview
@@ -63,7 +75,8 @@ function TextValue({ text, full }: { text: string; full: boolean }) {
   ) : null;
   // Counted and cut by code point, so the preview never ends in half an emoji.
   const chars = [...shown];
-  if (full || chars.length <= PREVIEW_LEN || isAddressShaped(split.text)) {
+  const decision = full || isAddressShaped(split.text);
+  if (chars.length <= PREVIEW_LEN || (decision && chars.length <= WHOLE_MAX)) {
     return (
       <span className="break-words">
         <span className="whitespace-pre-wrap">
