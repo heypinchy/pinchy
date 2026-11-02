@@ -86,13 +86,64 @@ describe("bootInits", () => {
 
   it("still regenerates the config when the unknown-origin report throws", async () => {
     mocks.reportUnknownOriginUsers.mockRejectedValue(new Error("db hiccup"));
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
     const { bootInits } = await import("@/lib/boot-inits");
     const result = await bootInits();
+    // The report runs in the background; let its rejection land.
+    await vi.waitFor(() =>
+      expect(errorSpy).toHaveBeenCalledWith(
+        "[pinchy] Failed to check account provenance:",
+        "db hiccup"
+      )
+    );
 
     expect(result).toBe(true);
     expect(mocks.regenerateOpenClawConfig).toHaveBeenCalledOnce();
     expect(mocks.markOpenClawConfigReady).toHaveBeenCalledOnce();
+    errorSpy.mockRestore();
+  });
+
+  it("runs the unknown-origin report only after readiness is signalled", async () => {
+    // The report scans every account and writes an audit row per flagged one.
+    // On an instance a bot filled with sign-ups that is minutes of work, and
+    // OpenClaw's container waits on markOpenClawConfigReady() to start.
+    const { bootInits } = await import("@/lib/boot-inits");
+    await bootInits();
+
+    expect(mocks.reportUnknownOriginUsers).toHaveBeenCalledOnce();
+    expect(mocks.markOpenClawConfigReady.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.reportUnknownOriginUsers.mock.invocationCallOrder[0]
+    );
+    expect(mocks.regenerateOpenClawConfig.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.reportUnknownOriginUsers.mock.invocationCallOrder[0]
+    );
+  });
+
+  it("does not wait for the unknown-origin report to finish", async () => {
+    mocks.reportUnknownOriginUsers.mockReturnValue(new Promise<number>(() => {}));
+
+    const { bootInits } = await import("@/lib/boot-inits");
+    const outcome = await Promise.race([
+      bootInits(),
+      new Promise((resolve) => setTimeout(() => resolve("blocked"), 1000)),
+    ]);
+
+    expect(outcome).toBe(true);
+    expect(mocks.markOpenClawConfigReady).toHaveBeenCalledOnce();
+  });
+
+  it("still reports unknown-origin accounts when the config regeneration fails", async () => {
+    // Setup is complete either way; a broken config is no reason to stay
+    // quiet about accounts nobody invited.
+    mocks.regenerateOpenClawConfig.mockRejectedValue(new Error("EACCES"));
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const { bootInits } = await import("@/lib/boot-inits");
+    await bootInits();
+
+    expect(mocks.reportUnknownOriginUsers).toHaveBeenCalledOnce();
+    errorSpy.mockRestore();
   });
 
   it("runs all boot inits when setup is complete", async () => {

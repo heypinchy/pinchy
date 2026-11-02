@@ -10,12 +10,16 @@
 // each one exactly once.
 
 import { describe, it, expect } from "vitest";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { users, invites, auditLog } from "@/db/schema";
 import { createInvite } from "@/lib/invites";
 import { appendAuditLog } from "@/lib/audit";
-import { findUnknownOriginUsers, reportUnknownOriginUsers } from "@/lib/user-provenance";
+import {
+  REPORT_BATCH_SIZE,
+  findUnknownOriginUsers,
+  reportUnknownOriginUsers,
+} from "@/lib/user-provenance";
 
 let seq = 0;
 async function insertUser(opts: {
@@ -243,6 +247,45 @@ describe("reportUnknownOriginUsers", () => {
       );
     expect(secondRows).toHaveLength(1);
   });
+
+  it("handles more flagged accounts than a query can bind parameters for", async () => {
+    // Postgres caps a statement at 65,535 bind parameters. An instance a bot
+    // filled with sign-ups can have more flagged accounts than that, and the
+    // "already reported?" lookup used to pass one parameter per account — so
+    // every boot threw before writing a single row. 70k accounts, all but a
+    // batch and a bit already reported (so the writes cross a batch boundary),
+    // seeded in two set-based statements.
+    const BULK = 70_000;
+    const UNREPORTED = REPORT_BATCH_SIZE + 5;
+    await insertUser({ name: "Setup Admin", role: "admin", createdAt: t(0) });
+    await db.execute(sql`
+      INSERT INTO "user" (id, name, email, created_at)
+      SELECT 'bulk-' || g, 'Bulk ' || g, 'bulk-' || g || '@bots.example',
+             TIMESTAMP '2026-06-02 00:00:00' + g * INTERVAL '1 second'
+      FROM generate_series(1, ${BULK}) AS g`);
+    // Placeholder hashes: these rows stand in for earlier boots' reports and
+    // only the lookup reads them. The table is truncated after each test.
+    await db.execute(sql`
+      INSERT INTO audit_log (actor_type, actor_id, event_type, resource, detail, outcome, version, row_hmac)
+      SELECT 'system', 'system', 'user.unknown_origin_detected', 'user:bulk-' || g,
+             '{}'::jsonb, 'success', 3, 'seeded-' || g
+      FROM generate_series(1, ${BULK - UNREPORTED}) AS g`);
+
+    expect(await reportUnknownOriginUsers()).toBe(UNREPORTED);
+
+    const fresh = await db
+      .select({ resource: auditLog.resource })
+      .from(auditLog)
+      .where(
+        and(
+          eq(auditLog.eventType, "user.unknown_origin_detected"),
+          sql`${auditLog.rowHmac} NOT LIKE 'seeded-%'`
+        )
+      );
+    expect(fresh.map((r) => r.resource).sort()).toEqual(
+      Array.from({ length: UNREPORTED }, (_, i) => `user:bulk-${BULK - UNREPORTED + 1 + i}`).sort()
+    );
+  }, 120_000);
 
   it("writes nothing when every account is accounted for", async () => {
     await insertUser({ name: "Setup Admin", role: "admin", createdAt: t(0) });

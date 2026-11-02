@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, ne, notExists, sql } from "drizzle-orm";
+import { and, asc, eq, ne, notExists, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { users, invites, auditLog } from "@/db/schema";
 import { appendAuditLog, type AuditLogEntry } from "@/lib/audit";
@@ -125,48 +125,58 @@ export async function findUnknownOriginUsers(): Promise<UnknownOriginUser[]> {
   return rows.map((r) => ({ ...r, banned: r.banned ?? false }));
 }
 
+/** Rows written between yields to the event loop; see reportUnknownOriginUsers. */
+export const REPORT_BATCH_SIZE = 200;
+
 /**
  * Write one `user.unknown_origin_detected` audit row for every unknown-origin
- * account that has none yet. Runs at boot (lib/boot-inits.ts), so the upgrade
- * that closes the sign-up endpoint is also the moment those accounts show up
- * in the audit trail. Idempotent: the audit trail itself is the record of what
- * was already reported (`resource = user:<id>`), so a restart writes nothing
- * new. Returns the number of rows written.
+ * account that has none yet. Runs at boot (lib/boot-inits.ts), after readiness
+ * and detached from it, so the upgrade that closes the sign-up endpoint is also
+ * the moment those accounts show up in the audit trail. Idempotent: the audit
+ * trail itself is the record of what was already reported
+ * (`resource = user:<id>`), so a restart writes nothing new. Returns the number
+ * of rows written.
+ *
+ * Sized for an instance a bot filled with sign-ups. The "already reported"
+ * lookup filters on the event type alone and diffs in memory: one bind
+ * parameter per account would pass Postgres' 65,535 limit and throw on every
+ * boot. The writes go one at a time — each takes the audit chain's lock — and
+ * yield between batches of REPORT_BATCH_SIZE so live requests' audit writes and
+ * the event loop are not held up behind a long backlog.
  */
 export async function reportUnknownOriginUsers(): Promise<number> {
   const flagged = await findUnknownOriginUsers();
   if (flagged.length === 0) return 0;
 
-  const resources = flagged.map((u) => `user:${u.id}`);
   const already = await db
     .select({ resource: auditLog.resource })
     .from(auditLog)
-    .where(
-      and(eq(auditLog.eventType, UNKNOWN_ORIGIN_EVENT), inArray(auditLog.resource, resources))
-    );
+    .where(eq(auditLog.eventType, UNKNOWN_ORIGIN_EVENT));
   const reported = new Set(already.map((r) => r.resource));
+  const pending = flagged.filter((u) => !reported.has(`user:${u.id}`));
 
   let written = 0;
-  for (const user of flagged) {
-    const resource = `user:${user.id}`;
-    if (reported.has(resource)) continue;
-    const entry: AuditLogEntry = {
-      actorType: "system",
-      actorId: "system",
-      eventType: UNKNOWN_ORIGIN_EVENT,
-      resource,
-      detail: {
-        user: { id: user.id, name: user.name },
-        role: user.role,
-        accountCreatedAt: user.createdAt.toISOString(),
-      },
-      outcome: "success",
-    };
-    try {
-      await appendAuditLog(entry);
-      written++;
-    } catch (err) {
-      recordAuditFailure(err, entry);
+  for (let i = 0; i < pending.length; i += REPORT_BATCH_SIZE) {
+    if (i > 0) await new Promise<void>((resolve) => setImmediate(resolve));
+    for (const user of pending.slice(i, i + REPORT_BATCH_SIZE)) {
+      const entry: AuditLogEntry = {
+        actorType: "system",
+        actorId: "system",
+        eventType: UNKNOWN_ORIGIN_EVENT,
+        resource: `user:${user.id}`,
+        detail: {
+          user: { id: user.id, name: user.name },
+          role: user.role,
+          accountCreatedAt: user.createdAt.toISOString(),
+        },
+        outcome: "success",
+      };
+      try {
+        await appendAuditLog(entry);
+        written++;
+      } catch (err) {
+        recordAuditFailure(err, entry);
+      }
     }
   }
   return written;

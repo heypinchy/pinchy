@@ -162,8 +162,10 @@ export async function bootInits(): Promise<boolean> {
   }
 
   let setupWasComplete = false;
+  let setupComplete = false;
   try {
     if (await isSetupComplete()) {
+      setupComplete = true;
       await migrateExistingSmithers();
 
       // Bring un-customized Smithers souls up to the soul this build ships.
@@ -174,25 +176,6 @@ export async function bootInits(): Promise<boolean> {
       } catch (err) {
         console.error(
           "[pinchy] Failed to migrate Smithers souls:",
-          err instanceof Error ? err.message : err
-        );
-      }
-
-      // Accounts self-registered through the sign-up endpoint earlier releases
-      // left open survive the upgrade that closed it. Report each once in the
-      // audit trail; Settings → Users lists them for admins. Own try/catch:
-      // a failed report must never cost the instance its config.
-      try {
-        const reported = await reportUnknownOriginUsers();
-        if (reported > 0) {
-          console.warn(
-            `[pinchy] ${reported} account(s) neither the setup wizard nor an invite created — ` +
-              "review them in Settings → Users"
-          );
-        }
-      } catch (err) {
-        console.error(
-          "[pinchy] Failed to check account provenance:",
           err instanceof Error ? err.message : err
         );
       }
@@ -224,5 +207,35 @@ export async function bootInits(): Promise<boolean> {
   console.log("[pinchy] boot complete: OpenClaw container may now start");
   markOpenClawConfigReady();
 
+  // After readiness, and not awaited: the report reads every account and
+  // writes an audit row per flagged one, which on an instance a bot filled
+  // with sign-ups is minutes of work that neither OpenClaw's start nor the
+  // healthcheck has any reason to wait for. Before setup there is no setup
+  // admin, so every account would read as unknown.
+  if (setupComplete) void reportUnknownOriginUsersInBackground();
+
   return setupWasComplete;
+}
+
+/**
+ * Accounts self-registered through the sign-up endpoint earlier releases left
+ * open survive the upgrade that closed it. Report each once in the audit trail;
+ * Settings → Users lists them for admins. Never throws: it runs detached from
+ * boot, and a rejection here would have no one to catch it.
+ */
+async function reportUnknownOriginUsersInBackground(): Promise<void> {
+  try {
+    const reported = await reportUnknownOriginUsers();
+    if (reported > 0) {
+      console.warn(
+        `[pinchy] ${reported} account(s) neither the setup wizard nor an invite created — ` +
+          "review them in Settings → Users"
+      );
+    }
+  } catch (err) {
+    console.error(
+      "[pinchy] Failed to check account provenance:",
+      err instanceof Error ? err.message : err
+    );
+  }
 }
