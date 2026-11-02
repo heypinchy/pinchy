@@ -201,8 +201,8 @@ describe("parseSingleRecipient: names with commas, parentheses and emoji", () =>
 // would join apart. Tenth review: whether a joiner draws anything depends on
 // the script and the font, which no rule here can know, so a display name
 // may carry U+200C and U+200D anywhere — as it already could U+200D — and the
-// card marks every one outside an emoji (`emoji-sequence.ts`). An address
-// never carries one.
+// card marks every one (an emoji's too, eleventh review). An address never
+// carries one.
 describe("parseSingleRecipient: joiners in Arabic-script and Indic names", () => {
   it.each([
     ["a Persian name with a ZWNJ", "علی‌رضا <a@x.ir>"],

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi } from "vitest";
-import { render, screen, within } from "@testing-library/react";
+import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { ApprovalCard } from "../approval-card";
@@ -209,6 +209,77 @@ describe("ApprovalCard shows what will actually run", () => {
     renderCard({ body: "hi", subject: "Q3", values: { name: "x", model: "y" }, to: "a@b.at" });
     const labels = screen.getAllByRole("term").map((term) => term.textContent);
     expect(labels).toEqual(["to", "body", "subject", "values", "model", "name"]);
+  });
+
+  // Eleventh review of #1242: `/data/חוזים/2024.md` and `/data/2024/חוזים.md`
+  // were drawn pixel-identically — no control character needed, both plain
+  // paths — so an injected write was approved as the other file. The card now
+  // holds every value in stored order: an LTR override around it, and each
+  // right-to-left word in an isolate of its own (`inStoredOrder`).
+  describe("shows right-to-left text in the order it was sent", () => {
+    /** The value as drawn: override text in order, each isolated word as [word]. */
+    function drawn(text: string): string {
+      const override = screen
+        .getAllByText((_, element) => element?.tagName === "BDO" && element.textContent === text)
+        .at(0)!;
+      expect(override).toHaveAttribute("dir", "ltr");
+      return [...override.childNodes]
+        .map((node) => {
+          if (node.nodeType === Node.TEXT_NODE) return node.textContent;
+          const element = node as HTMLElement;
+          expect(element.tagName).toBe("BDI");
+          expect(element).toHaveAttribute("dir", "ltr");
+          return `[${element.textContent}]`;
+        })
+        .join("");
+    }
+
+    it.each([
+      [
+        "/data/חוזים/2024.md",
+        "/data/[חוזים]/2024.md",
+        "/data/2024/חוזים.md",
+        "/data/2024/[חוזים].md",
+      ],
+      ["/data/عقود/2024.md", "/data/[عقود]/2024.md", "/data/2024/عقود.md", "/data/2024/[عقود].md"],
+      ["/data/א/1.md", "/data/[א]/1.md", "/data/1/א.md", "/data/1/[א].md"],
+    ])("draws %s and its reordered twin apart", (a, shownA, b, shownB) => {
+      renderCard(summarizeArgs({ path: a, content: "x" }), "pinchy_write");
+      expect(drawn(a)).toBe(shownA);
+      cleanup();
+      renderCard(summarizeArgs({ path: b, content: "x" }), "pinchy_write");
+      expect(drawn(b)).toBe(shownB);
+    });
+
+    // Not only where an action lands: a record name or a mail subject is
+    // what the person reads too, and `חוזים 2024` drew like `2024 חוזים`.
+    it("holds every value in order, at any key", () => {
+      renderCard(
+        summarizeArgs({ model: "res.partner", ids: [7], values: { name: "חוזים 2024" } }),
+        "odoo_write"
+      );
+      expect(drawn("חוזים 2024")).toBe("[חוזים] 2024");
+    });
+
+    it("holds a recipient's address and name in order", () => {
+      const to = '"חוזים 2024" <a@b.at>';
+      renderCard(summarizeArgs({ to }));
+      expect(drawn('a@b.at (name: "חוזים 2024")')).toBe('a@b.at (name: "[חוזים] 2024")');
+    });
+
+    it("holds each line of a long text in order, in the preview and in full", async () => {
+      const body = `${"שורה 1\n".repeat(60)}סוף 2`;
+      renderCard({ body });
+      expect(screen.getAllByText((_, el) => el?.tagName === "BDO").length).toBeGreaterThan(1);
+      await userEvent.click(screen.getByRole("button", { name: /show full text/i }));
+      expect(drawn("סוף 2")).toBe("[סוף] 2");
+    });
+
+    it("leaves text without a right-to-left character as it was", () => {
+      renderCard({ subject: "Rechnung 2024 Grüße" });
+      expect(screen.getByText("Rechnung 2024 Grüße").tagName).toBe("SPAN");
+      expect(screen.queryAllByText((_, el) => el?.tagName === "BDO")).toEqual([]);
+    });
   });
 
   it("still has Approve and Deny", () => {

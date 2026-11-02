@@ -111,9 +111,8 @@ export function parseSingleRecipient(value: unknown): ParsedRecipient {
   // The emoji format characters (ZWJ, VS15, VS16) are allowed here and kept
   // out of the address by PART: a name like "❤️ Team" is ordinary. So is a
   // zero-width non-joiner — "علی‌رضا" keeps its ی unjoined (seventh review of
-  // #1242). The card marks each of them outside an emoji (pinchy-files
-  // `emoji-sequence.ts`), so a name never reads as the same name without one
-  // (tenth review).
+  // #1242). The card marks every one of them, inside an emoji too, so a name
+  // never reads as the same name without one (tenth and eleventh review).
   // A single no-break or ideographic space is allowed too, as in a path; a run
   // of them is not (`withLoneSpaceSeparatorsAsSpaces`).
   const hidden = hiddenCharIn(

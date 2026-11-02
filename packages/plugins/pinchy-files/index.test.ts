@@ -2089,7 +2089,9 @@ describe("write tools refuse a path that does not read as what it resolves to", 
     // Sixth review of #1242: these read on the card like the plain name.
     ["a trailing space", (root: string) => `${root}/report.md `, /space at the start or end/],
     ["a space before a slash", (root: string) => `${root}/out /r.md`, /space at the start or end/],
-    ["a selector that changes nothing", (root: string) => `${root}/\u2705\uFE0F.md`, /U\+FE0F/],
+    // A selector after ✅ is accepted since the eleventh review (the card marks
+    // it). A word joiner draws nothing either, and no real name needs one.
+    ["a word joiner", (root: string) => `${root}/report\u2060.md`, /U\+2060/],
   ])("pinchy_write refuses a path with %s, says why, and writes nothing", async (_l, make, why) => {
     const tool = await toolNamed("pinchy_write");
     const result = await tool.execute("call-1", { path: make(tmpDir), content: "x" });
@@ -2138,7 +2140,7 @@ describe("write tools refuse a path that does not read as what it resolves to", 
 
   // Fifth review of #1242: the emoji joiner and presentation selector were
   // refused outright, so ordinary emoji names could be neither written nor
-  // deleted — though the card shows them unchanged.
+  // deleted. They are accepted, and the card marks each one.
   it.each([
     ["a presentation selector", "\u26A0\uFE0F offen.md"],
     ["joined emoji", "\u{1F468}\u200D\u{1F469}\u200D\u{1F467} Familie.md"],
@@ -2158,16 +2160,19 @@ describe("write tools refuse a path that does not read as what it resolves to", 
     expect(existsSync(target)).toBe(false);
   });
 
-  it("still refuses a presentation selector outside an emoji, and writes nothing", async () => {
+  // Eleventh review of #1242: the card marks every selector, an emoji's too,
+  // so `report⟨U+FE0F⟩.md` reads apart from `report.md` and is written as the
+  // separate file it is.
+  it("writes a presentation selector outside an emoji too, as its own file", async () => {
     const result = await (
       await toolNamed("pinchy_write")
     ).execute("call-1", {
       path: join(tmpDir, "report️.md"),
       content: "x",
     });
-    expect(result.isError).toBe(true);
-    expect(result.content[0].text).toMatch(/U\+FE0F/);
-    expect(existsSync(join(tmpDir, "report️.md"))).toBe(false);
+    expect(result.isError).toBeFalsy();
+    expect(existsSync(join(tmpDir, "report️.md"))).toBe(true);
+    expect(existsSync(join(tmpDir, "report.md"))).toBe(false);
   });
 
   // Tenth review of #1242: a joiner outside an emoji is accepted in every

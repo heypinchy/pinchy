@@ -16,15 +16,14 @@
  * for a reason that holds only where that caller uses it (third and tenth
  * review of #1242):
  *
- * - `isEmojiFormatChar` — U+200D, U+FE0E, U+FE0F. They take no space, sit
- *   inside ordinary emoji (👨‍👩‍👧, ❤️), and the card shows them as they are
- *   there — and marks one anywhere else (pinchy-files `emoji-sequence.ts`).
- *   A display name may carry them; an address may not; a path may carry a
- *   presentation selector only inside an emoji (pinchy-files `plain-path.ts`).
+ * - `isEmojiFormatChar` — U+200D, U+FE0E, U+FE0F. They take no space and sit
+ *   inside ordinary emoji (👨‍👩‍👧, ❤️). The card marks every one, inside an
+ *   emoji too — whether a sequence is drawn as one glyph is the approver's
+ *   font (eleventh review). A display name and a path may carry them; an
+ *   address may not.
  * - `isJoiner` — U+200C, U+200D. Arabic-script and Indic names carry them
- *   (گزارش‌ها, ශ්‍රී), and the card marks every one outside an emoji, so a
- *   path and a display name may carry them anywhere: `a⟨U+200D⟩b.md` never
- *   reads as `ab.md`.
+ *   (گزارش‌ها, ශ්‍රී), and the card marks every one, so a path and a display
+ *   name may carry them anywhere: `a⟨U+200D⟩b.md` never reads as `ab.md`.
  * - `isSpaceSeparator` — every space separator other than U+0020 (`\p{Zs}`:
  *   no-break, narrow no-break, ideographic, …). They take visible width, and
  *   the card prints each one as `⟨U+XXXX⟩`. Real file names carry them —

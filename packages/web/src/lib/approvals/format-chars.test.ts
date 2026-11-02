@@ -1,10 +1,25 @@
-// @vitest-environment node
 import { describe, it, expect } from "vitest";
-import { markedFormatOffsets } from "./emoji-sequence";
+import { summarizeArgs } from "./summary";
 
-/** The offsets `markedFormatOffsets` reports, as the code points found there. */
+/**
+ * U+200C (zero-width non-joiner), U+200D (zero-width joiner), U+FE0E / U+FE0F
+ * (text / emoji presentation) take no space of their own, so the card shows
+ * each one as a `⟨U+XXXX⟩` marker — everywhere, inside an emoji too.
+ *
+ * Moved here from pinchy-files' `emoji-sequence.test.ts` (eleventh review of
+ * #1242), whose rule showed them raw inside a full RGI emoji: the server's
+ * Unicode data said which sequences are one emoji, but whether one is DRAWN
+ * as one depends on the approver's font, and Windows 10's Segoe UI Emoji
+ * (Emoji 12) draws ❤️‍🔥 like ❤️🔥. A marker costs the person approving a
+ * glance; a joiner drawn as nothing costs them the difference between two
+ * files.
+ */
+
+/** The format characters the card marks in `text`, as code points. */
 const marked = (text: string) =>
-  [...markedFormatOffsets(text)].map((offset) => text.codePointAt(offset)!.toString(16));
+  [...(summarizeArgs({ value: text }).value as string).matchAll(/⟨U\+(200C|200D|FE0E|FE0F)⟩/g)].map(
+    (match) => match[1].toLowerCase()
+  );
 
 /** Every U+200C / U+200D / U+FE0E / U+FE0F in `text`, as code points. */
 const formatChars = (text: string) =>
@@ -29,7 +44,7 @@ const UNICODE_16_VIRAMAS = [
   0x11a47, 0x11a99, 0x11c3f, 0x11d44, 0x11d45, 0x11d97, 0x11f41, 0x11f42, 0x1612f,
 ];
 
-describe("markedFormatOffsets: a joiner next to a virama", () => {
+describe("the card's marking: a joiner next to a virama", () => {
   it("marks a ZWNJ or ZWJ after every virama of Unicode 16.0", () => {
     const shownRaw = UNICODE_16_VIRAMAS.flatMap((cp) =>
       ["\u200C", "\u200D"].map((joiner) => `${String.fromCodePoint(cp)}${joiner}`)
@@ -45,7 +60,7 @@ describe("markedFormatOffsets: a joiner next to a virama", () => {
   });
 });
 
-describe("markedFormatOffsets: the tenth review's mid-word probes", () => {
+describe("the card's marking: the tenth review's mid-word probes", () => {
   // Each pixel-identical to the same name without the joiner in at least one
   // shipping font, which is what made `pinchy_delete path:"/data/out/க்‌ம.md"`
   // read on the card as `/data/out/க்ம.md`.
@@ -81,7 +96,7 @@ describe("markedFormatOffsets: the tenth review's mid-word probes", () => {
 
 // The seventh to ninth reviews' cases, which the old per-script rule showed
 // raw. None of them is shown raw any more.
-describe("markedFormatOffsets: joiners the old per-script rule showed raw", () => {
+describe("the card's marking: joiners the old per-script rule showed raw", () => {
   it.each([
     ["ZWNJ after a virama", "क्\u200Cष"],
     ["ZWJ after a virama", "ශ\u0DCA\u200Dරී"],
@@ -147,9 +162,9 @@ describe("markedFormatOffsets: joiners the old per-script rule showed raw", () =
   });
 });
 
-describe("markedFormatOffsets: emoji", () => {
-  // Inside a full RGI emoji (`\p{RGI_Emoji}`, Unicode's list of the emoji
-  // every vendor draws) the joiner and the selectors are part of one glyph.
+describe("the card's marking: emoji", () => {
+  // Inside a full RGI emoji the joiner and the selectors are part of one glyph
+  // — if the approver's font knows the emoji. Older ones draw its parts.
   it.each([
     ["a family", "\u{1F468}\u200D\u{1F469}\u200D\u{1F467}"],
     ["a rainbow flag", "\u{1F3F3}\uFE0F\u200D\u{1F308}"],
@@ -158,8 +173,8 @@ describe("markedFormatOffsets: emoji", () => {
     ["a keycap", "1\uFE0F\u20E3"],
     ["a warning sign shown as emoji", "⚠\uFE0F"],
     ["an eye in a speech bubble", "\u{1F441}\uFE0F\u200D\u{1F5E8}\uFE0F"],
-  ])("shows the format characters of %s as they are", (_label, text) => {
-    expect(marked(`x ${text} y`)).toEqual([]);
+  ])("marks the format characters of %s too", (_label, text) => {
+    expect(marked(`x ${text} y`)).toEqual(formatChars(text));
   });
 
   // Tenth review of #1242: any two pictographs joined by a ZWJ were taken as
@@ -170,13 +185,13 @@ describe("markedFormatOffsets: emoji", () => {
     [
       "a family joined to a page",
       "\u{1F468}\u200D\u{1F469}\u200D\u{1F467}\u200D\u{1F4C4}",
-      ["200d"],
+      ["200d", "200d", "200d"],
     ],
     ["a rainbow flag without its selector", "\u{1F3F3}\u200D\u{1F308}", ["200d"]],
     ["a selector after an emoji-by-default check mark", "✅\uFE0F", ["fe0f"]],
     ["a text selector after a warning sign", "⚠\uFE0E", ["fe0e"]],
     ["a text selector after a check mark", "✅\uFE0E", ["fe0e"]],
-    ["a second selector", "⚠\uFE0F\uFE0F", ["fe0f"]],
+    ["a second selector", "⚠\uFE0F\uFE0F", ["fe0f", "fe0f"]],
     ["a joiner trailing an emoji", "\u{1F468}\u200D", ["200d"]],
     ["a joiner before an emoji", "a\u200D\u{1F468}", ["200d"]],
   ])("marks %s", (_label, text, expected) => {
@@ -184,20 +199,12 @@ describe("markedFormatOffsets: emoji", () => {
   });
 });
 
-describe("markedFormatOffsets", () => {
-  it("marks a format character unless it is inside an RGI emoji", () => {
+describe("the card's marking", () => {
+  it("marks every format character, an emoji's included", () => {
     const text =
       "a\u200Cb \u{1F468}\u200D\u{1F469}\u200D\u{1F467} ශ\u0DCA\u200Dරී x\u200Dy \u{1F4C4}\u200D\u{1F4C4}";
-    const offsets = [...markedFormatOffsets(text)];
-    expect(offsets.map((offset) => text.codePointAt(offset)!.toString(16))).toEqual([
-      "200c",
-      "200d",
-      "200d",
-      "200d",
-    ]);
-    // The family's two joiners are the ones left out.
-    const family = text.indexOf("\u200D");
-    expect(offsets).not.toContain(family);
-    expect(offsets).not.toContain(text.indexOf("\u200D", family + 1));
+    expect(marked(text)).toEqual(["200c", "200d", "200d", "200d", "200d", "200d"]);
+    // None is left raw, the family's two joiners included.
+    expect(summarizeArgs({ value: text }).value).not.toMatch(/[\u200C\u200D\uFE0E\uFE0F]/);
   });
 });

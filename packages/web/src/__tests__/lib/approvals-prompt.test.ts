@@ -243,4 +243,32 @@ describe("buildApprovalPrompt", () => {
       );
     }
   });
+
+  // Eleventh review of #1242: a chat client draws `/data/חוזים/2024.md` and
+  // `/data/2024/חוזים.md` alike, as the card did. The prompt is plain text, so
+  // it carries the card's order in Unicode's own controls: each line in an
+  // LTR isolate with an override (U+2066 U+202D … U+202C U+2069), each
+  // right-to-left word in an isolate of its own (U+2066 … U+2069).
+  it("holds the arguments in the order they were sent", () => {
+    const shown = (path: string) => buildApprovalPrompt("pinchy_write", { path }).description;
+    expect(shown("/data/חוזים/2024.md")).toContain(
+      "\u2066\u202Dpath: /data/\u2066חוזים\u2069/2024.md\u202C\u2069"
+    );
+    expect(shown("/data/2024/חוזים.md")).toContain(
+      "\u2066\u202Dpath: /data/2024/\u2066חוזים\u2069.md\u202C\u2069"
+    );
+  });
+
+  // A line break ends an override, so every line of a body opens its own.
+  it("holds every line of a multi-line value in order", () => {
+    const { description } = buildApprovalPrompt("email_send", { body: "שלום 1\n2 עולם" });
+    expect(description).toContain(
+      "\u2066\u202Dbody: \u2066שלום\u2069 1\u202C\u2069\n\u2066\u202D2 \u2066עולם\u2069\u202C\u2069"
+    );
+  });
+
+  it("adds no control characters to a call without right-to-left text", () => {
+    const { description } = buildApprovalPrompt("pinchy_write", { path: "/data/2024/x.md" });
+    expect(description).not.toMatch(/[\u2066-\u2069\u202A-\u202E]/);
+  });
 });

@@ -83,6 +83,81 @@ export function isAddressShaped(text: string): boolean {
   return URL_SHAPED.test(bare) || EMAIL_SHAPED.test(bare);
 }
 
+/**
+ * A right-to-left character. Every code point Unicode's bidi algorithm reads
+ * as right-to-left (classes R and AL) or as an Arabic number (AN) sits in
+ * these blocks — unassigned ones included, which default to R or AL there —
+ * apart from four explicit controls (U+200F, U+202B, U+202E, U+2067) that the
+ * summary shows as `⟨U+XXXX⟩` markers anyway. Checked against Python's
+ * `unicodedata` (Unicode 16) over every code point.
+ */
+const RIGHT_TO_LEFT = /[֐-ࣿיִ-﷿ﹰ-﻿\u{10800}-\u{10FFF}\u{1E800}-\u{1EFFF}]/u;
+/** One word, or several joined by plain spaces: letters with their marks. */
+const WORDS = /\p{L}[\p{L}\p{M}]*(?: +\p{L}[\p{L}\p{M}]*)*/gu;
+
+/** A piece of one line: a right-to-left `word`, or text held in order. */
+export interface OrderedPiece {
+  text: string;
+  word: boolean;
+}
+
+/**
+ * How a value is drawn so that what you see is the order it was sent in
+ * (eleventh review of #1242). Left to itself, the bidi algorithm draws
+ * `/data/חוזים/2024.md` and `/data/2024/חוזים.md` pixel-identically: a digit
+ * or a slash next to a right-to-left word joins its run and moves with it.
+ * No control character is needed, and both are plain paths — so an injected
+ * write to one was approved as the other. Isolating each `/`-separated segment
+ * is not enough: `חוזים-2024.md` and `2024-חוזים.md` collide inside one.
+ *
+ * So everything is held in stored order (an LTR override) except the
+ * right-to-left words, each drawn in an isolate of its own so it still reads.
+ * A word is letters and marks only, joined by plain spaces — nothing that
+ * takes its direction from a neighbour (digits, punctuation) can sit in one —
+ * and inside it only its letters' own direction decides the order. So two
+ * different texts are never drawn alike, and each word stays readable.
+ *
+ * One array of pieces per line: a line break ends every override and isolate
+ * (it separates bidi paragraphs), so each line is held on its own. `null` for
+ * a text with no right-to-left character, where nothing can be reordered: it
+ * is drawn as it is.
+ */
+export function inStoredOrder(text: string): OrderedPiece[][] | null {
+  if (!RIGHT_TO_LEFT.test(text)) return null;
+  return text.split("\n").map((line) => {
+    const pieces: OrderedPiece[] = [];
+    let held = 0;
+    for (const match of line.matchAll(WORDS)) {
+      if (!RIGHT_TO_LEFT.test(match[0])) continue;
+      if (match.index > held) pieces.push({ text: line.slice(held, match.index), word: false });
+      pieces.push({ text: match[0], word: true });
+      held = match.index + match[0].length;
+    }
+    if (held < line.length || pieces.length === 0) {
+      pieces.push({ text: line.slice(held), word: false });
+    }
+    return pieces;
+  });
+}
+
+/**
+ * `inStoredOrder` in plain text, for the chat-channel prompt: each line in an
+ * LTR isolate with an override (U+2066 U+202D … U+202C U+2069, what the card's
+ * `<bdo dir="ltr">` is), each right-to-left word in an LTR isolate of its own
+ * (U+2066 … U+2069, the card's `<bdi dir="ltr">`). An isolate inside an
+ * override is not overridden (UAX #9, X5a), so the word keeps its direction.
+ */
+export function inStoredOrderPlain(text: string): string {
+  const lines = inStoredOrder(text);
+  if (!lines) return text;
+  return lines
+    .map(
+      (pieces) =>
+        `⁦‭${pieces.map((piece) => (piece.word ? `⁦${piece.text}⁩` : piece.text)).join("")}‬⁩`
+    )
+    .join("\n");
+}
+
 /** Would `text`, printed bare, read as a value of another type? */
 function readsAsLiteral(text: string): boolean {
   if (text.trim() === "") return true;

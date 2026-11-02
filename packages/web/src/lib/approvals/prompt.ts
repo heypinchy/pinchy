@@ -1,6 +1,6 @@
 import { TOOL_REGISTRY } from "@/lib/tool-registry";
 import { summarizeArgs, type SummarizeOptions } from "@/lib/approvals/summary";
-import { displayScalar } from "@/lib/approvals/display";
+import { displayScalar, inStoredOrderPlain } from "@/lib/approvals/display";
 
 /**
  * Builds the two strings a person reads before approving a tool call.
@@ -57,10 +57,17 @@ function inline(value: unknown): string {
 
 function describeArgs(params: unknown, options: SummarizeOptions): string {
   // Every argument is printed, `null` and empty ones included: leaving them
-  // out would let `active: null` read the same as no `active` at all.
-  return Object.entries(summarizeArgs(params, options))
-    .map(([key, value]) => `${key}: ${inline(value)}`)
-    .join(", ");
+  // out would let `active: null` read the same as no `active` at all. And in
+  // the order it was sent, as the card draws it: a chat client reorders
+  // `/data/חוזים/2024.md` into `/data/2024/חוזים.md` exactly as a browser
+  // does (eleventh review of #1242). That holds only where the client
+  // implements Unicode's isolates (6.3+) and overrides; one that drops them
+  // draws the text as before, and the card stays the view to decide on.
+  return inStoredOrderPlain(
+    Object.entries(summarizeArgs(params, options))
+      .map(([key, value]) => `${key}: ${inline(value)}`)
+      .join(", ")
+  );
 }
 
 export function buildApprovalPrompt(

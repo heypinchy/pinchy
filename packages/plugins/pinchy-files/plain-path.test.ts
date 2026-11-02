@@ -59,9 +59,8 @@ describe("assertPlainPath", () => {
   });
 
   // Fifth review of #1242: U+FE0F and U+200D were refused outright, so
-  // ordinary emoji file names could not be written or deleted although the
-  // card shows them unchanged. Inside a full RGI emoji they are part of a
-  // visible glyph.
+  // ordinary emoji file names could not be written or deleted. They are
+  // accepted, and the card marks each one (eleventh review).
   it.each([
     ["an emoji with a presentation selector", "/data/notes/⚠️ offen.md"],
     ["a heart with a presentation selector", "/data/notes/❤️ Team.md"],
@@ -74,20 +73,22 @@ describe("assertPlainPath", () => {
     ok(value);
   });
 
-  // A presentation selector outside a full RGI emoji draws nothing that a
-  // file name needs — `⚠︎ text.md` is drawn exactly like `⚠ text.md` in
-  // Helvetica (tenth review of #1242) — so it stays refused.
+  // A presentation selector outside an emoji draws nothing — `⚠︎ text.md` is
+  // drawn exactly like `⚠ text.md` in Helvetica (tenth review of #1242) — and
+  // was refused for that. The card marks every selector now, inside an emoji
+  // too (eleventh review), so `report⟨U+FE0F⟩.md` reads apart from
+  // `report.md`, the way a joiner or a no-break space does.
   it.each([
-    ["a presentation selector after a letter", "/data/report️.md", /U\+FE0F/],
-    ["a presentation selector after a digit", "/data/report1️.md", /U\+FE0F/],
-    ["two selectors after an emoji", "/data/⚠️️.md", /U\+FE0F/],
-    ["a text-presentation selector", "/data/notes/⚠︎ text.md", /U\+FE0E/],
-  ])("still refuses %s, which renders as nothing", (_label, value, why) => {
-    refused(value, why);
+    ["a presentation selector after a letter", "/data/report️.md"],
+    ["a presentation selector after a digit", "/data/report1️.md"],
+    ["two selectors after an emoji", "/data/⚠️️.md"],
+    ["a text-presentation selector", "/data/notes/⚠︎ text.md"],
+  ])("accepts %s; the card marks it", (_label, value) => {
+    ok(value);
   });
 
   // Tenth review of #1242: a joiner is accepted anywhere, and the card marks
-  // it as ⟨U+200C⟩ / ⟨U+200D⟩ everywhere outside a full RGI emoji — the way a
+  // it as ⟨U+200C⟩ / ⟨U+200D⟩ everywhere (an emoji's too, eleventh) — the way a
   // no-break space in a path is accepted and marked. Deciding per script
   // where it draws something failed for ten reviews; the marker keeps two
   // names that differ only by a joiner apart on the card.
@@ -106,7 +107,7 @@ describe("assertPlainPath", () => {
   // Seventh review of #1242: U+200C was refused everywhere and U+200D outside
   // an emoji, but Arabic-script and Indic names carry them — the Persian
   // plural گزارش‌ها, Sinhala ශ්‍රී, Malayalam അവന്‍. They are accepted, and
-  // marked on the card like every joiner outside an emoji.
+  // marked on the card like every joiner.
   it.each([
     ["a Persian plural with a ZWNJ", "/data/output/گزارش‌ها.md"],
     ["Sinhala Sri with a ZWJ after al-lakuna", "/data/output/ශ්‍රී ලංකා.md"],
@@ -141,21 +142,22 @@ describe("assertPlainPath", () => {
 
   // Sixth review of #1242: ✅ is shown as an emoji by default, so a U+FE0F
   // after it changes nothing on screen — `Vertrag ✅️.pdf` read exactly like
-  // `Vertrag ✅.pdf` and is a different file. None of these is a full RGI
-  // emoji, so the selector is refused like any other invisible character.
+  // `Vertrag ✅.pdf` and is a different file. The card marks the selector
+  // (`Vertrag ✅⟨U+FE0F⟩.pdf`), so the two read apart and the path is
+  // accepted (eleventh review).
   it.each([
     ["after an emoji-by-default check mark", "/data/out/Vertrag ✅️.pdf"],
     ["after an emoji-by-default page", "/data/out/\u{1F4C4}️.md"],
     ["after a skin tone", "/data/out/\u{1F44D}\u{1F3FD}️.md"],
-  ])("refuses a presentation selector that changes nothing: %s", (_label, value) => {
-    refused(value, /U\+FE0F/);
+  ])("accepts a presentation selector the card marks: %s", (_label, value) => {
+    ok(value);
   });
 
-  // `✅︎` is not an RGI emoji either: Helvetica draws it exactly like `✅`
-  // (tenth review of #1242).
-  it("accepts a selector only inside a full RGI emoji", () => {
+  // The path rule no longer asks whether a selector sits inside an emoji: the
+  // server's Unicode data cannot say what the approver's font draws.
+  it("accepts a selector inside an emoji and outside one alike", () => {
     ok("/data/notes/⚠️ offen.md");
-    refused("/data/out/Vertrag ✅︎.pdf", /U\+FE0E/);
+    ok("/data/out/Vertrag ✅︎.pdf");
   });
 
   // Sixth review of #1242: `/data/out/report.md ` read on the card exactly
@@ -178,7 +180,7 @@ describe("assertPlainPath", () => {
       assertPlainPath(value, "filename", { trimmedByTool: true });
     expect(trimmed("  padded  ")).not.toThrow();
     expect(trimmed("padded\u2800")).toThrow(/U\+2800/);
-    expect(trimmed("\u2705\uFE0F")).toThrow(/U\+FE0F/);
+    expect(trimmed("padded\u200B")).toThrow(/U\+200B/);
   });
 
   it("still refuses an NFD path and a '..' segment", () => {

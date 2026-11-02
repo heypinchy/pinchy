@@ -1,17 +1,45 @@
 "use client";
 
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import { Button } from "@/components/ui/button";
 import type { PendingApproval } from "@/lib/approvals/client";
 import {
   FULL_VIEW_KEYS,
   displayScalar,
+  inStoredOrder,
   isAddressShaped,
   splitTruncation,
 } from "@/lib/approvals/display";
 
 /** Texts longer than this show a preview first, with the full text on demand. */
 const PREVIEW_LEN = 200;
+
+/**
+ * `text` drawn in the order it was sent (`inStoredOrder`): each line held in
+ * order by `<bdo dir="ltr">`, each right-to-left word in a `<bdi dir="ltr">`
+ * of its own, so it still reads. Text with no right-to-left character is
+ * drawn as it is.
+ */
+function StoredOrder({ text }: { text: string }) {
+  const lines = inStoredOrder(text);
+  if (!lines) return text;
+  return lines.map((pieces, line) => (
+    <Fragment key={line}>
+      {line > 0 && "\n"}
+      <bdo dir="ltr">
+        {pieces.map((piece, index) =>
+          piece.word ? (
+            <bdi key={index} dir="ltr">
+              {piece.text}
+            </bdi>
+          ) : (
+            <Fragment key={index}>{piece.text}</Fragment>
+          )
+        )}
+      </bdo>
+    </Fragment>
+  ));
+}
 
 /**
  * A string value as the summary stored it: whitespace kept (`pre-wrap`), a
@@ -38,7 +66,9 @@ function TextValue({ text, full }: { text: string; full: boolean }) {
   if (full || chars.length <= PREVIEW_LEN || isAddressShaped(split.text)) {
     return (
       <span className="break-words">
-        <span className="whitespace-pre-wrap">{shown}</span>
+        <span className="whitespace-pre-wrap">
+          <StoredOrder text={shown} />
+        </span>
         {marker}
       </span>
     );
@@ -46,7 +76,7 @@ function TextValue({ text, full }: { text: string; full: boolean }) {
   return (
     <span className="break-words">
       <span className="whitespace-pre-wrap">
-        {expanded ? shown : `${chars.slice(0, PREVIEW_LEN).join("")}…`}
+        <StoredOrder text={expanded ? shown : `${chars.slice(0, PREVIEW_LEN).join("")}…`} />
       </span>
       {!expanded && (
         <span className="text-muted-foreground">

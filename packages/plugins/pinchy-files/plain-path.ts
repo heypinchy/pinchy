@@ -1,26 +1,8 @@
 import { posix } from "node:path";
-import { hiddenCharIn, isJoiner, isSpaceSeparator } from "./hidden-chars";
-import { markedFormatOffsets } from "./emoji-sequence";
+import { hiddenCharIn, isEmojiFormatChar, isJoiner, isSpaceSeparator } from "./hidden-chars";
 
 /** Longest path accepted. Far past any real one; short enough to show whole. */
 const MAX_PATH_LENGTH = 1024;
-
-/**
- * The path with the zero-width format characters taken out where the card
- * shows them as they are: inside a full RGI emoji (`emoji-sequence.ts`) — so
- * `⚠️ offen.md` must be writable (fifth review of #1242). A presentation
- * selector anywhere else is left in place for `hiddenCharIn` to refuse: it
- * draws nothing a file name needs, and `✅\uFE0F.md` next to `✅.md` would be
- * two files (sixth review). A joiner anywhere else is left in place too, and
- * accepted there (`isJoiner`): Arabic-script and Indic names carry one, and
- * the card marks it (tenth review).
- */
-function withoutEmojiFormatChars(value: string): string {
-  const marked = markedFormatOffsets(value);
-  return value.replace(/[\u200C\u200D\uFE0E\uFE0F]/g, (char: string, offset: number) =>
-    marked.has(offset) ? char : ""
-  );
-}
 
 /** A file or folder name that starts or ends with a space of any kind. */
 const PADDED_SEGMENT = /^\s|\s$/u;
@@ -48,10 +30,12 @@ const PADDED_SEGMENT = /^\s|\s$/u;
  *   no-break, ideographic) are allowed: they take visible width, the card
  *   prints each as `⟨U+XXXX⟩`, and real file names carry them — macOS writes
  *   "Screenshot … at 10.00.00 AM.png".
- *   The joiners U+200C / U+200D are allowed anywhere too, as Arabic-script
- *   and Indic names need: the card marks each one outside an emoji, so
- *   `a\u200Db.md` reads as `a⟨U+200D⟩b.md`, never as `ab.md` (tenth review
- *   of #1242);
+ *   The joiners U+200C / U+200D and the presentation selectors U+FE0E /
+ *   U+FE0F are allowed anywhere too, as Arabic-script and Indic names (tenth
+ *   review of #1242) and emoji names (`⚠️ offen.md`, fifth review) need: the
+ *   card marks every one, an emoji's included (eleventh review), so
+ *   `a\u200Db.md` reads as `a⟨U+200D⟩b.md` and `✅\uFE0F.md` as
+ *   `✅⟨U+FE0F⟩.md`, never as `ab.md` or `✅.md`;
  * - no file or folder name that starts or ends with a space of any kind —
  *   `report.md ` would be a different file from `report.md`, and the card can
  *   only mark the space, not make the two read apart at a glance (sixth
@@ -75,8 +59,8 @@ export function assertPlainPath(
     );
   }
   const hidden = hiddenCharIn(
-    withoutEmojiFormatChars(value),
-    (char) => isSpaceSeparator(char) || isJoiner(char)
+    value,
+    (char) => isSpaceSeparator(char) || isJoiner(char) || isEmojiFormatChar(char)
   );
   if (hidden) {
     throw new Error(

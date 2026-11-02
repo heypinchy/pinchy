@@ -39,12 +39,12 @@
  *   break like LF; a lone CR stays escaped. A run of four or more
  *   spaces, line breaks or tabs is shown as `⟨N spaces⟩` / `⟨N line breaks⟩` /
  *   `⟨N tabs⟩`, so padding cannot push text out of view. U+200C / U+200D
- *   (the joiners) and U+FE0E / U+FE0F (text / emoji presentation) are left
- *   alone inside a full RGI emoji (👨‍👩‍👧, ❤️), where they are part of what
- *   you see, and marked anywhere else — "Noack\u200D GmbH" must not read as
- *   "Noack GmbH" (sixth review of #1242), nor `க்\u200Cம.md` as `க்ம.md`
- *   (tenth review: whether a joiner draws anything in Indic or Arabic-script
- *   text depends on the font, so it is marked in every script). Where an
+ *   (the joiners) and U+FE0E / U+FE0F (text / emoji presentation) are marked
+ *   everywhere — "Noack\u200D GmbH" must not read as "Noack GmbH" (sixth
+ *   review of #1242), nor `க்\u200Cம.md` as `க்ம.md` (tenth), nor
+ *   `❤️\u200D🔥.md` as `❤️🔥.md`: whether a joiner draws anything, in a script
+ *   or inside an emoji, depends on the approver's font, which the server
+ *   cannot know — Windows 10 draws ❤️‍🔥 as two glyphs (eleventh). Where an
  *   action lands (`TARGET_KEYS`: a path, a file name, a record), a value names
  *   one target and two that render alike are two targets, so a space, tab or
  *   line break at its start or end is marked too.
@@ -91,10 +91,6 @@
 import { domainToASCII } from "node:url";
 import { isCanonicalRef, type RefRecord } from "./call-models";
 import { EMAIL_SHAPED, FULL_VIEW_KEYS, TARGET_KEYS, URL_SHAPED, truncationMarker } from "./display";
-// Shared with pinchy-files' path rule, so the card marks a selector exactly
-// where a path may not carry one, and a joiner wherever it is not part of an
-// emoji. Import-free by contract; see the file.
-import { markedFormatOffsets } from "../../../../plugins/pinchy-files/emoji-sequence";
 
 const SECRET_KEY = /(token|secret|password|passwd|api[-_]?key|authorization|cookie|credential)/i;
 /** A record id or a list of them, whatever the rest of the key says. */
@@ -201,10 +197,8 @@ export interface CallSummary {
  */
 const HIDDEN =
   /[\p{Cc}\p{Cf}\p{Cs}\p{Z}\p{Default_Ignorable_Code_Point}\u2800\u115F\u1160\u3164\uFFA0]/u;
-/** Readable as they are: layout (space, tab, line break) and the four that
- * appear in ordinary emoji (👨‍👩‍👧, ❤️) — but those four only inside a full RGI
- * emoji: `escapeText` marks one anywhere else. */
-const KEPT_VISIBLE = new Set([" ", "\t", "\n", "\u200C", "\u200D", "\uFE0E", "\uFE0F"]);
+/** Readable as they are: layout (space, tab, line break). */
+const KEPT_VISIBLE = new Set([" ", "\t", "\n"]);
 /** How a long run of a layout character is named. */
 const LAYOUT_RUN_NAME: Record<string, string> = {
   " ": "spaces",
@@ -213,8 +207,7 @@ const LAYOUT_RUN_NAME: Record<string, string> = {
 };
 const BARE_KEY = /^[A-Za-z0-9_.-]+$/;
 
-/** Is `char` shown as a `⟨U+XXXX⟩` marker wherever it stands? (The joiners and
- * selectors are not, but are marked outside an emoji: `escapeText`.) */
+/** Is `char` shown as a `⟨U+XXXX⟩` marker? */
 export function isEscapedChar(char: string): boolean {
   return HIDDEN.test(char) && !KEPT_VISIBLE.has(char);
 }
@@ -234,7 +227,7 @@ const LAYOUT = new Set([" ", "\t", "\n"]);
 
 /**
  * Walks `text` by code point. Hidden characters become markers (runs
- * collapsed), and so does an emoji format character outside an emoji. With
+ * collapsed). With
  * `layout`, a run of MIN_LAYOUT_RUN or more spaces, line breaks or tabs
  * becomes a count and a shorter one stays as it is; every other character goes
  * through `visible`. With `target`, a shorter run at the start or end is
@@ -252,7 +245,6 @@ function escapeText(
   // for values: a key with a CR in it is not a line break, it is a trick.
   const source = layout ? text.replace(/\r\n/g, "\n") : text;
   const chars = [...source];
-  const marked = markedFormatOffsets(source);
   let leadEnd = 0;
   let trailStart = chars.length;
   if (target) {
@@ -261,10 +253,9 @@ function escapeText(
   }
   let out = "";
   let run: string[] = [];
-  let offset = 0;
-  for (let i = 0; i < chars.length; offset += chars[i].length, i++) {
+  for (let i = 0; i < chars.length; i++) {
     const char = chars[i];
-    if (isEscapedChar(char) || marked.has(offset)) {
+    if (isEscapedChar(char)) {
       run.push(char);
       continue;
     }
@@ -286,7 +277,6 @@ function escapeText(
     if (runName) {
       out += length >= MIN_LAYOUT_RUN ? `⟨${length} ${runName}⟩` : char.repeat(length);
       // Skip the rest of the run; the loop's own step moves past its last.
-      for (let k = 0; k < length - 1; k++) offset += chars[i + k].length;
       i += length - 1;
       continue;
     }

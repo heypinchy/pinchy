@@ -460,17 +460,31 @@ describe("summarizeArgs", () => {
       expect(out.subject).toMatch(/^x⟨U\+[0-9A-F]{4,5}⟩y$/);
     });
 
-    it("leaves ordinary emoji readable: RGI ZWJ sequences and VS16 stay as they are", () => {
+    // Eleventh review of #1242: the joiners and selectors inside an RGI emoji
+    // were shown raw, but whether one is drawn as a single glyph depends on
+    // the approver's font, not on the server's Unicode data — Windows 10's
+    // Segoe UI Emoji has no ❤️‍🔥, and draws it like ❤️🔥. So they are marked
+    // inside an emoji too.
+    it("marks the joiners and selectors of an emoji too", () => {
       const family = "👨‍👩‍👧";
       const heart = "❤️";
       const fire = "❤️‍\u{1F525}";
       const out = summarizeArgs({ subject: `${family} ${heart} ${fire}` }) as { subject: string };
-      expect(out.subject).toBe(`${family} ${heart} ${fire}`);
+      expect(out.subject).toBe("👨⟨U+200D⟩👩⟨U+200D⟩👧 ❤⟨U+FE0F⟩ ❤⟨U+FE0F⟩⟨U+200D⟩\u{1F525}");
+    });
+
+    it.each([
+      ["❤️‍\u{1F525} Notizen.md", "❤️\u{1F525} Notizen.md"],
+      ["\u{1F426}‍\u{1F525}.md", "\u{1F426}\u{1F525}.md"],
+    ])("draws %s apart from %s, whatever the approver's font", (joined, apart) => {
+      const shown = (path: string) => summarizeArgs({ path: `/data/${path}` }).path as string;
+      expect(shown(joined)).toContain("⟨U+200D⟩");
+      expect(shown(apart)).not.toContain("⟨U+200D⟩");
     });
 
     // Tenth review of #1242: a text-presentation selector after ☺ was kept
     // raw, but ☺︎ is not an RGI emoji, and Helvetica draws it exactly like ☺.
-    it("marks a selector outside a full RGI emoji", () => {
+    it("marks a selector after a symbol", () => {
       expect(summarizeArgs({ subject: "☺︎" })).toEqual({ subject: "☺⟨U+FE0E⟩" });
     });
 
@@ -495,7 +509,7 @@ describe("summarizeArgs", () => {
     // says it shapes Arabic-script or Indic text, and the eighth and ninth
     // narrowed that per script. Tenth review: each rule still let through
     // joiners that draw nothing in some font — `க்‌ம.md` read as `க்ம.md`. A
-    // joiner outside an emoji is marked, in every script.
+    // joiner is marked, in every script.
     it("marks a joiner in Arabic-script and Indic text", () => {
       const text = "گزارش‌ها ශ්‍රී അവന്‍ क्‌ष";
       const shown = "گزارش⟨U+200C⟩ها ශ්⟨U+200D⟩රී അവന്⟨U+200D⟩ क्⟨U+200C⟩ष";
@@ -526,15 +540,15 @@ describe("summarizeArgs", () => {
     it.each([
       ["a joiner trailing an emoji", "\u{1F468}‍.", "\u{1F468}⟨U+200D⟩."],
       ["a joiner before an emoji", "a‍\u{1F468}", "a⟨U+200D⟩\u{1F468}"],
-      ["a second selector", "⚠️️", "⚠️⟨U+FE0F⟩"],
+      ["a second selector", "⚠️️", "⚠⟨U+FE0F⟩⟨U+FE0F⟩"],
       // Tenth review of #1242: any two pictographs joined by a ZWJ were taken
-      // as one emoji. Only a full RGI emoji is.
+      // as one emoji; eleventh: no joiner is shown raw at all.
       ["two pages joined", "\u{1F4C4}‍\u{1F4C4}", "\u{1F4C4}⟨U+200D⟩\u{1F4C4}"],
       ["a heart on fire without its selector", "❤‍\u{1F525}", "❤⟨U+200D⟩\u{1F525}"],
       [
         "a family joined to a page",
         "\u{1F468}‍\u{1F469}‍\u{1F467}‍\u{1F4C4}",
-        "\u{1F468}‍\u{1F469}‍\u{1F467}⟨U+200D⟩\u{1F4C4}",
+        "\u{1F468}⟨U+200D⟩\u{1F469}⟨U+200D⟩\u{1F467}⟨U+200D⟩\u{1F4C4}",
       ],
     ])("marks %s", (_label, text, shown) => {
       expect(summarizeArgs({ subject: text })).toEqual({ subject: shown });
@@ -691,8 +705,7 @@ describe("summarizeArgs", () => {
     it.each([
       ["a check mark", "/data/out/Vertrag ✅️.pdf", "/data/out/Vertrag ✅⟨U+FE0F⟩.pdf"],
       ["a page", "/data/out/\u{1F4C4}️.md", "/data/out/\u{1F4C4}⟨U+FE0F⟩.md"],
-      // Not an RGI emoji, and Helvetica draws it exactly like ✅ (tenth review
-      // of #1242).
+      // Helvetica draws it exactly like ✅ (tenth review of #1242).
       [
         "a check mark asked to be text",
         "/data/out/Vertrag ✅︎.pdf",
@@ -709,8 +722,13 @@ describe("summarizeArgs", () => {
       ["a keycap", "/data/notes/1️⃣ first.md"],
       ["a skin-toned technologist", "/data/notes/\u{1F469}\u{1F3FD}‍\u{1F4BB} Dev.md"],
       ["a heart on fire", "/data/notes/❤️‍\u{1F525} Team.md"],
-    ])("leaves %s as it is", (_label, path) => {
-      expect(summarizeArgs({ path })).toEqual({ path });
+    ])("marks the format characters of %s, which the approver's font may not join", (_l, path) => {
+      const marked = path.replace(
+        /[\u200D\uFE0F]/g,
+        (char) => `⟨U+${char.codePointAt(0)!.toString(16).toUpperCase()}⟩`
+      );
+      expect(marked).not.toBe(path);
+      expect(summarizeArgs({ path })).toEqual({ path: marked });
     });
   });
   // Third review of #1242: a marker that says "N more fields not shown" is

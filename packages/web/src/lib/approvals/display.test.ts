@@ -4,6 +4,8 @@ import { resolve } from "node:path";
 import {
   FULL_VIEW_KEYS,
   displayScalar,
+  inStoredOrder,
+  inStoredOrderPlain,
   isAddressShaped,
   splitTruncation,
   truncationMarker,
@@ -120,4 +122,97 @@ describe("isAddressShaped", () => {
       expect(isAddressShaped(text)).toBe(false);
     }
   );
+});
+
+/**
+ * Eleventh review of #1242: with no control character at all, the bidi
+ * algorithm drew `/data/חוזים/2024.md` and `/data/2024/חוזים.md` pixel-
+ * identically — a digit next to a right-to-left word joins its run — and both
+ * are plain paths. Isolating each `/`-separated segment is not enough:
+ * `/data/חוזים-2024.md` and `/data/2024-חוזים.md` collide inside ONE segment.
+ *
+ * So the card holds everything outside a right-to-left word in stored order
+ * (an LTR override), and lets each word keep its own direction in an isolate,
+ * where nothing but letters, marks and spaces can sit. Shown that way, a
+ * value reads as its pieces in the order they were sent: `[…]` below is a
+ * word drawn as one unit.
+ */
+const view = (text: string) =>
+  inStoredOrder(text)
+    ?.map((line) => line.map((piece) => (piece.word ? `[${piece.text}]` : piece.text)).join(""))
+    .join("\n") ?? text;
+
+describe("inStoredOrder: a value is shown in the order it was sent", () => {
+  it.each([
+    [
+      "/data/חוזים/2024.md",
+      "/data/[חוזים]/2024.md",
+      "/data/2024/חוזים.md",
+      "/data/2024/[חוזים].md",
+    ],
+    ["/data/عقود/2024.md", "/data/[عقود]/2024.md", "/data/2024/عقود.md", "/data/2024/[عقود].md"],
+    ["/data/א/1.md", "/data/[א]/1.md", "/data/1/א.md", "/data/1/[א].md"],
+    [
+      "/data/חוזים-2024.md",
+      "/data/[חוזים]-2024.md",
+      "/data/2024-חוזים.md",
+      "/data/2024-[חוזים].md",
+    ],
+  ])("keeps %s apart from its reordered twin", (a, shownA, b, shownB) => {
+    expect(view(a)).toBe(shownA);
+    expect(view(b)).toBe(shownB);
+  });
+
+  it("keeps a run of right-to-left words together, so a sentence still reads", () => {
+    expect(view("שלום עולם 2024")).toBe("[שלום עולם] 2024");
+  });
+
+  it("puts digits, punctuation and right-to-left non-letters outside every word", () => {
+    // Arabic-Indic digits, the Hebrew maqaf and geresh, the Arabic comma: none
+    // is a letter, so none can join a word and move with it.
+    const text = "عقود١٢،٣ חוזים־א׳ ab";
+    for (const line of inStoredOrder(text)!) {
+      for (const piece of line) {
+        if (piece.word)
+          expect(piece.text).toMatch(/^\p{L}[\p{L}\p{M}]*(?: +\p{L}[\p{L}\p{M}]*)*$/u);
+      }
+    }
+    expect(view(text)).toBe("[عقود]١٢،٣ [חוזים]־[א]׳ ab");
+  });
+
+  it("keeps a mark on the letter it belongs to", () => {
+    expect(view("שָׁלוֹם/1")).toBe("[שָׁלוֹם]/1");
+  });
+
+  // A line break ends every override and isolate (it is a paragraph
+  // separator), so each line is held in order on its own.
+  it("holds every line in order", () => {
+    expect(inStoredOrder("a/חוזים\n2024/ב")).toEqual([
+      [
+        { text: "a/", word: false },
+        { text: "חוזים", word: true },
+      ],
+      [
+        { text: "2024/", word: false },
+        { text: "ב", word: true },
+      ],
+    ]);
+  });
+
+  // Nothing in such a text can be reordered: it has no right-to-left letter,
+  // no right-to-left mark and no Arabic digit (the four bidi controls that
+  // are right-to-left too are shown as ⟨U+XXXX⟩ markers by the summary).
+  it("leaves a text without a right-to-left character as it is", () => {
+    expect(inStoredOrder("/data/2024/Grüße 東京.md")).toBeNull();
+  });
+
+  it("writes the same order into plain text, for the chat-channel prompt", () => {
+    expect(inStoredOrderPlain("/data/חוזים/2024.md")).toBe(
+      "\u2066\u202D/data/\u2066חוזים\u2069/2024.md\u202C\u2069"
+    );
+    expect(inStoredOrderPlain("a/א\nb")).toBe(
+      "\u2066\u202Da/\u2066א\u2069\u202C\u2069\n\u2066\u202Db\u202C\u2069"
+    );
+    expect(inStoredOrderPlain("/data/2024/x.md")).toBe("/data/2024/x.md");
+  });
 });
