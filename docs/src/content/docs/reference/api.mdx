@@ -1006,13 +1006,13 @@ Add or update an OpenAI-compatible provider. See [OpenAI-compatible providers](/
 
 **Request body:**
 
-| Field            | Type     | Required | Description                                                                               |
-| ---------------- | -------- | -------- | ----------------------------------------------------------------------------------------- |
-| `id`             | uuid     | No       | Omit to create, pass to update                                                            |
-| `displayName`    | string   | Yes      | Name on the provider tile, up to 120 characters                                           |
-| `baseUrl`        | string   | Yes      | Endpoint that speaks the OpenAI API. Rejected if it resolves to a private-network address |
-| `apiKey`         | string   | No       | Omit on update to keep the stored key                                                     |
-| `manualModelIds` | string[] | No       | Model ids to fall back on when the endpoint's live discovery returns none                 |
+| Field            | Type     | Required | Description                                                                                                                                                                                                                                                                                 |
+| ---------------- | -------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `id`             | uuid     | No       | Omit to create, pass to update                                                                                                                                                                                                                                                              |
+| `displayName`    | string   | Yes      | Name on the provider tile, up to 120 characters                                                                                                                                                                                                                                             |
+| `baseUrl`        | string   | Yes      | Endpoint that speaks the OpenAI API. Rejected if it resolves to a loopback, link-local/metadata or reserved address; a private-network address only when `PINCHY_PROVIDER_BLOCK_PRIVATE_NETWORKS=1` (see [Which base URLs are allowed](/guides/llm-providers/#which-base-urls-are-allowed)) |
+| `apiKey`         | string   | No       | Omit on update to keep the stored key                                                                                                                                                                                                                                                       |
+| `manualModelIds` | string[] | No       | Model ids to fall back on when the endpoint's live discovery returns none                                                                                                                                                                                                                   |
 
 The key is encrypted at rest and never written into the OpenClaw configuration in plaintext — see [Secret handling](/security/secrets/).
 
