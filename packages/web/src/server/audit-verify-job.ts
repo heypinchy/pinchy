@@ -313,8 +313,22 @@ export async function sweepAuditVerify(): Promise<AuditVerifySweepResult> {
     recordAuditFailure(err, entry);
   }
 
+  // The fallback never anchors on a row this window rejected. The next window
+  // takes its key context from the checkpoint row (inspectCheckpointRow), and a
+  // rejected row may verify under the previous key: an old-key row written
+  // after an active-key row, which is exactly what this window flagged. As a
+  // checkpoint it would read as "the key change hasn't happened yet", and the
+  // next window would accept rows re-signed with the old key as pre-change
+  // history. A persisted "key change seen" flag can't replace this: it would be
+  // relative to whichever key was active when it was written, and go wrong at
+  // the next key change. So keep the old checkpoint, whose context was right
+  // for this window, and let the next sweep verify the window again. That
+  // reports the same rejected rows a second time, and only on this fallback.
+  // The report row needs no such check: it is always signed with the active key.
   if (ownRow && !(await hasRowsBetween(toId, ownRow.id))) {
     await writeCheckpoint(ownRow.id, ownRow.rowHmac, status);
+  } else if (result.invalidIds.includes(scannedTo)) {
+    await writeCheckpoint(checkpoint.lastVerifiedId, checkpoint.lastVerifiedHmac, status);
   } else {
     await writeCheckpoint(scannedTo, lastVerifiedHmac, status);
   }

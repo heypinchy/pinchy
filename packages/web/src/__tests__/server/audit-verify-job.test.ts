@@ -791,6 +791,99 @@ describe("sweepAuditVerify", () => {
       expect.objectContaining({ lastVerifiedId: 1, lastVerifiedHmac: "hmac-1", lastStatus: "ok" })
     );
   });
+
+  // The next window takes its key context from the checkpoint row. A row this
+  // window rejected may verify under the previous key (an old-key row after an
+  // active-key row): as a checkpoint it would read as "key change not seen
+  // yet", and the next window would accept rows re-signed with the old key as
+  // pre-change history. So a fold that can't land on the report row never lands
+  // on a rejected row either: it keeps the old checkpoint, and the next sweep
+  // verifies the window again with the context it had.
+  it("audit-write failure with a rejected last row: keeps the old checkpoint instead of anchoring on that row", async () => {
+    mockCheckpointRow({ lastVerifiedId: 10, lastVerifiedHmac: "hmac-10" });
+    mockCheckpointAuditRow({ rowHmac: "hmac-10", key: "active" });
+    mockCurrentMaxId(13);
+    mockVerifyIntegrity.mockResolvedValue({
+      valid: false,
+      totalChecked: 3,
+      invalidIds: [13],
+      chainBreakIds: [],
+      previousKeyIds: [],
+    });
+    mockLastScannedRow({ id: 13, rowHmac: "hmac-13" });
+    mockAppendAuditLog.mockRejectedValueOnce(new Error("db down"));
+
+    const result = await sweepAuditVerify();
+
+    // The report still describes the window that was scanned.
+    expect(result.scannedTo).toBe(13);
+    expect(mockInsertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        lastVerifiedId: 10,
+        lastVerifiedHmac: "hmac-10",
+        lastStatus: "violation",
+      })
+    );
+    expect(mockOnConflictDoUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        set: expect.objectContaining({ lastVerifiedId: 10, lastVerifiedHmac: "hmac-10" }),
+      })
+    );
+  });
+
+  it("concurrent append with a rejected last row: keeps the old checkpoint instead of anchoring on that row", async () => {
+    mockCheckpointRow({ lastVerifiedId: 10, lastVerifiedHmac: "hmac-10" });
+    mockCheckpointAuditRow({ rowHmac: "hmac-10", key: "active" });
+    mockCurrentMaxId(13);
+    mockVerifyIntegrity.mockResolvedValue({
+      valid: false,
+      totalChecked: 3,
+      invalidIds: [12, 13],
+      chainBreakIds: [],
+      previousKeyIds: [],
+    });
+    mockLastScannedRow({ id: 13, rowHmac: "hmac-13" });
+    mockOwnReportRow(16, "hmac-16");
+    mockRacedRow({ id: 14 });
+
+    await sweepAuditVerify();
+
+    expect(mockInsertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        lastVerifiedId: 10,
+        lastVerifiedHmac: "hmac-10",
+        lastStatus: "violation",
+      })
+    );
+  });
+
+  it("concurrent append with an accepted last row and rejected rows earlier: still folds to the scanned window", async () => {
+    // Only the anchor row matters. A rejected row before an accepted one is
+    // behind the checkpoint, and the accepted row carries the key context.
+    mockCheckpointRow({ lastVerifiedId: 10, lastVerifiedHmac: "hmac-10" });
+    mockCheckpointAuditRow({ rowHmac: "hmac-10", key: "active" });
+    mockCurrentMaxId(13);
+    mockVerifyIntegrity.mockResolvedValue({
+      valid: false,
+      totalChecked: 3,
+      invalidIds: [12],
+      chainBreakIds: [],
+      previousKeyIds: [],
+    });
+    mockLastScannedRow({ id: 13, rowHmac: "hmac-13" });
+    mockOwnReportRow(16, "hmac-16");
+    mockRacedRow({ id: 14 });
+
+    await sweepAuditVerify();
+
+    expect(mockInsertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        lastVerifiedId: 13,
+        lastVerifiedHmac: "hmac-13",
+        lastStatus: "violation",
+      })
+    );
+  });
 });
 
 describe("startAuditVerifyJob / stopAuditVerifyJob", () => {
