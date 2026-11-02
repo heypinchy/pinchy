@@ -133,14 +133,16 @@ export function batchTimeoutMs(fileCount: number): number {
  * and adds nothing.
  *
  * Then the PDF, whose size is unknown — it was never written. The staged
- * source stands in for it. Twice the source, because the export re-encodes:
- * pictures are recompressed and fonts embedded, and a PDF larger than its
- * source is ordinary. The floor, because for a small document the embedded
- * fonts and recompressed pictures dominate and can be many times the source
- * — a 868 KiB `.doc` of five pictures exports to a 13.6 MiB PDF (twelfth
- * review). 16 MiB is above any font set and above that PDF, and far below
- * what a volume that is merely busy has left. It also catches the case the ninth round measured: 4 KB
- * left, the probe's write fits, the PDF does not.
+ * source stands in for it: twice the source, never under the floor. That is
+ * a guess, and no factor makes it a bound: the export embeds fonts and
+ * re-encodes pictures (a PNG becomes a JPEG), so the PDF's size follows the
+ * pictures' pixels, not the file's bytes. A 868 KiB `.doc` of five pictures
+ * exports to a 13.6 MiB PDF (twelfth review), an 8.55 MB `.doc` of 200
+ * screenshots to an 81.9 MB one, 9.6 times the file (thirteenth review).
+ * 16 MiB is above any font set and above the first of those PDFs, and far
+ * below what a volume that is merely busy has left. It also catches the case
+ * the ninth round measured: 4 KB left, the probe's write fits, the PDF does
+ * not.
  *
  * And room for that PDF TWICE. LibreOffice exports into its `TMPDIR` — the
  * batch's, on this volume — and then copies the file into `--outdir`, so for
@@ -161,6 +163,22 @@ export function batchTimeoutMs(fileCount: number): number {
  * The error that costs least is the one this leans towards: a document
  * blamed on a volume too small to load it is read again next run — and the
  * operator is told about a volume that really is about to stop taking writes.
+ *
+ * What it gets wrong the other way, and why it stays: a PDF that outgrows the
+ * guess, on a volume with room for the guess but not for that PDF twice, is
+ * booked `failed`. The 81.9 MB PDF above fails the store on a 70 MiB volume
+ * and leaves 64.5 MB free, against the 34 MB asked: on any volume with
+ * between about 34 MB and twice the PDF (164 MB) free, the document is held
+ * at fault. LibreOffice's output cannot settle it: the line it prints —
+ * `impl_store … failed: 0xc10(Error Area:Io Class:Write Code:16)` — is
+ * byte for byte what an all-hidden `.pptx` or `.ppt` prints on a roomy disk
+ * (measured in the runtime image, thirteenth review; a corrupt or truncated
+ * file fails to LOAD instead, and an empty deck converts). Nor can a larger
+ * factor: the deck it then wrongly blamed on the volume would be retried
+ * every run, uncapped, where a wrong `failed` is an incomplete read and is
+ * retried for `MAX_INCOMPLETE_READS` runs (ingest.ts) — the earlier version of
+ * a changed file is lost meanwhile and it is listed unsearchable, which the
+ * docs say. The volume being that full is what an operator can see and fix.
  */
 export const MIN_FREE_OUTPUT_BYTES = 16 * 1024 * 1024;
 

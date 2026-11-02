@@ -1298,6 +1298,33 @@ describe("an output the converter could not write is infrastructure, not a verdi
     expect(outcomes[0].reason).toMatch(/could not write the converted PDF: .*bytes free/);
   });
 
+  it("leaves a PDF that outgrew the estimate to the document — the gap the docs state (thirteenth review)", async () => {
+    // The estimate is a guess about a PDF that was never written, and a
+    // document of pictures beats it: LibreOffice re-encodes them. Measured in
+    // the runtime image: an 8,551,936-byte .doc of 200 screenshots exports an
+    // 81,919,270-byte PDF (9.6×). On a 70 MiB volume the store fails — exit 0,
+    // no PDF, `impl_store … Class:Write Code:16` — and leaves 64,548,864 bytes
+    // free, above the 34 MB the rule asks for. That line is byte for byte the
+    // one an all-hidden deck gives on a roomy disk, so it cannot settle it:
+    // the document is booked `failed`. The three docs pages say so; if the
+    // rule learns to tell the two apart, this fails and they must change too.
+    const manual = await corpusFile("manual.doc", "x");
+
+    const outcomes = await convertOfficeFiles(
+      [manual],
+      deps(fakeConverter({ outputs: {} }), {
+        prepareSource: stagedAs(8_551_936, null),
+        statfs: volumeWith({ freeBytes: 64_548_864 }),
+        runConverter: converterThat({}, async (call) =>
+          implStoreFailed(join(call.outDir, "0.pdf"), "Write Code:16")
+        ),
+      })
+    );
+
+    expect(outcomes[0].status).toBe("failed");
+    expect(outcomes[0].reason).toMatch(/no artifact produced/);
+  });
+
   it("gives LibreOffice its scratch space inside the batch, on the volume that is checked", async () => {
     // Left to itself LibreOffice uses the OS temp dir — the container's /tmp,
     // which no check here looks at. Inside the batch it lands on the volume
