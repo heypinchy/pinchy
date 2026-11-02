@@ -96,6 +96,27 @@ business, not the store's.
   the next candidate for the sidecar; out of scope here, noted as follow-up.
 - pdfjs reads the produced PDF in the web process, as before.
 
+### What the converter can still see
+
+Nothing secret, but not nothing:
+
+- **The image's own filesystem** — the application code (AGPL, public), its
+  `node_modules`, the embedding model, `/etc`. The paths the web container
+  mounts config, secrets, workspaces and the corpus at exist only as the
+  image's empty mountpoints. The canary asserts that.
+- **The spool** — its own batch, and in principle any other batch staged at
+  the same moment. Ingest converts one batch at a time per instance (one
+  index job per org, sequential batches), and a batch directory is a random
+  UUID a document cannot know. A `file://` reference into the spool can
+  therefore only reach the document's own staged copy.
+
+The #1243 review found a reference the profile does not stop: an INTERNAL
+`aFChunk` relationship. With this LibreOffice the HTML-chunk form does not
+import, but a Word document nested as the chunk does, and its `file://`
+picture is read — a PNG is drawn in, an SVG's text becomes searchable PDF
+text. The canary carries both: CONTROL with the files at a web-container path
+leaks, the shipped service converts the same documents with nothing.
+
 ## Evidence
 
 - `office-convert.sidecar.canary.test.ts` (docker-gated, run in CI's

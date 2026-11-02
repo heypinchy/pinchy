@@ -19,7 +19,13 @@
  *   files and the listener hears nothing; a socket to the same address fails
  *   with ENETUNREACH; `lo` is the only interface.
  * - SECRETS: inside the service there is no config, no secret file, no corpus
- *   and no secret in the environment for a `file://` link to draw in.
+ *   and no secret in the environment for a `file://` link to draw in. And the
+ *   reference that the profile does NOT stop — a Word document nested as an
+ *   INTERNAL altChunk, whose picture is a `file://` link (#1243 review) — is
+ *   proven both ways: CONTROL, with files at a path the web container has
+ *   (an agent workspace under /openclaw-config), draws the picture in and
+ *   turns an SVG's text into searchable PDF text; the shipped service, where
+ *   that path does not exist, converts the same document with neither.
  *
  * Needs Docker and the Pinchy image, so it is gated (an allowed env gate per
  * AGENTS.md) on `KB_SIDECAR_CANARY_VERSION`: the tag of
@@ -46,7 +52,14 @@ import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { promisify } from "node:util";
 
-import { docxWith, REL_HYPERLINK, REL_IMAGE, relationships } from "@/test-helpers/office-zip";
+import { extractPdfPages } from "@/lib/knowledge/pdf-extract";
+import {
+  docxWith,
+  REL_HYPERLINK,
+  REL_IMAGE,
+  relationships,
+  zipOf,
+} from "@/test-helpers/office-zip";
 
 const execFileAsync = promisify(execFile);
 
@@ -76,6 +89,40 @@ function stockConversion(name: string, inputs: string[]): string[] {
   ];
 }
 
+/**
+ * Where a file:// reference aims: a path that EXISTS in the web container —
+ * an agent's workspace under /openclaw-config. The CONTROL mounts files there
+ * to stand in for the web container; the shipped converter has no such path.
+ */
+const WEB_ONLY_DIR = "/openclaw-config/workspaces/agent-a";
+const SECRET_TEXT = "PINCHYSECRET4711";
+const SECRET_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="400" height="60"><text x="10" y="40" font-size="30">${SECRET_TEXT}</text></svg>`;
+
+/**
+ * A .docx whose body imports an embedded HTML part through an INTERNAL
+ * `aFChunk` relationship — and the HTML pulls in local files with
+ * <img src="file://…">. Internal, so it is no external link for a preflight to
+ * cut; LibreOffice resolves the HTML's references even under the locked
+ * profile (found in the #1243 review). Only having nothing at those paths
+ * makes it harmless.
+ */
+function altChunkDocx(chunk: { name: string; body: string | Buffer; contentType: string }): Buffer {
+  const ext = chunk.name.split(".").pop();
+  return zipOf({
+    "[Content_Types].xml": `<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Default Extension="${ext}" ContentType="${chunk.contentType}"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>`,
+    "_rels/.rels": `<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>`,
+    "word/_rels/document.xml.rels": relationships(
+      `<Relationship Id="rIdAlt" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/aFChunk" Target="${chunk.name}"/>`
+    ),
+    "word/document.xml": `<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body><w:p><w:r><w:t>Altchunk carrier document</w:t></w:r></w:p><w:altChunk r:id="rIdAlt"/><w:p><w:r><w:t>After the chunk</w:t></w:r></w:p></w:body></w:document>`,
+    [`word/${chunk.name}`]: chunk.body,
+  });
+}
+
+async function pdfText(pdf: string): Promise<string> {
+  return (await extractPdfPages(pdf)).map((page) => page.text).join(" ");
+}
+
 /** Connects to host:port and prints what happened. */
 const probe = (host: string, port: number) =>
   `const s=require('net').connect(${port},'${host}');` +
@@ -97,7 +144,11 @@ describe.skipIf(!VERSION)(
     const drain = () => requests.splice(0, requests.length);
 
     /** `docker run` on the default bridge network, with the host reachable. */
-    async function bridged(entrypoint: string, args: string[]): Promise<string> {
+    async function bridged(
+      entrypoint: string,
+      args: string[],
+      mounts: string[] = []
+    ): Promise<string> {
       const { stdout } = await execFileAsync(
         "docker",
         [
@@ -107,6 +158,7 @@ describe.skipIf(!VERSION)(
           "canary-host:host-gateway",
           "-v",
           `${root}:/canary`,
+          ...mounts.flatMap((m) => ["-v", m]),
           "--entrypoint",
           entrypoint,
           IMAGE,
@@ -155,7 +207,13 @@ describe.skipIf(!VERSION)(
       root = mkdtempSync(join(tmpdir(), "pinchy-sidecar-canary-"));
       // The service runs as uid 999; the bind mount must be writable for it.
       chmodSync(root, 0o777);
-      for (const dir of ["in", "control-out", "boundary-out"]) {
+      for (const dir of [
+        "in",
+        "control-out",
+        "control-alt-out",
+        "boundary-out",
+        "boundary-alt-out",
+      ]) {
         mkdirSync(join(root, dir));
         chmodSync(join(root, dir), 0o777);
       }
@@ -200,6 +258,26 @@ describe.skipIf(!VERSION)(
         `<html><body><p>Hello html posing as Word</p><img src="${origin}/html.png"></body></html>`
       );
       plant("linked-file.docx", linked("file:///canary/secret.png"));
+
+      writeFileSync(join(root, "secret.svg"), SECRET_SVG);
+      // A Word document nested as an altChunk, whose picture is a file://
+      // link. The HTML chunk form does not import in this LibreOffice; the
+      // nested-document form does, and CONTROL proves it reads the file.
+      const nested = (target: string) =>
+        altChunkDocx({
+          name: "chunk.docx",
+          body: docxWith({
+            text: "Embedded chunk",
+            documentRels: relationships(
+              `<Relationship Id="rId9" Type="${REL_IMAGE}" Target="${target}" TargetMode="External"/>`
+            ),
+            pictureRelId: "rId9",
+          }),
+          contentType:
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml",
+        });
+      plant("altchunk-png.docx", nested(`file://${WEB_ONLY_DIR}/secret.png`));
+      plant("altchunk-svg.docx", nested(`file://${WEB_ONLY_DIR}/secret.svg`));
     }, 300_000);
 
     afterAll(async () => {
@@ -233,6 +311,42 @@ describe.skipIf(!VERSION)(
           fetched.some((r) => r.endsWith(` ${path}`)),
           `${path} in [${fetched.join(", ")}]`
         ).toBe(true);
+      }
+    }, 300_000);
+
+    it("CONTROL: where the web container's files exist, an altChunk file:// reference draws them into the PDF", async () => {
+      // Stand-in for the web container: the same files at the same path.
+      await bridged(
+        "soffice",
+        stockConversion("control-alt", ["altchunk-png.docx", "altchunk-svg.docx"]),
+        [
+          `${join(root, "secret.png")}:${WEB_ONLY_DIR}/secret.png:ro`,
+          `${join(root, "secret.svg")}:${WEB_ONLY_DIR}/secret.svg:ro`,
+        ]
+      );
+
+      // The picture is drawn in, and the SVG's text becomes searchable PDF text:
+      // a file read, served to every reader of the knowledge base.
+      expect(imagesIn(join(root, "control-alt-out", "altchunk-png.pdf"))).toBeGreaterThan(0);
+      expect(await pdfText(join(root, "control-alt-out", "altchunk-svg.pdf"))).toContain(
+        SECRET_TEXT
+      );
+    }, 300_000);
+
+    it("BOUNDARY: as shipped, the same altChunk references find nothing to read", async () => {
+      await asShipped(
+        "soffice",
+        stockConversion("boundary-alt", ["altchunk-png.docx", "altchunk-svg.docx"])
+      );
+
+      for (const name of ["altchunk-png", "altchunk-svg"]) {
+        const pdf = join(root, "boundary-alt-out", `${name}.pdf`);
+        const text = await pdfText(pdf);
+        // Converted, nested chunk and all — the document is fine — but the
+        // paths it points at do not exist in the converter.
+        expect(text, name).toContain("Embedded chunk");
+        expect(text, name).not.toContain(SECRET_TEXT);
+        expect(imagesIn(pdf), name).toBe(0);
       }
     }, 300_000);
 
