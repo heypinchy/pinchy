@@ -47,6 +47,18 @@ vi.mock("@/lib/file-serve-roots", async () => {
   return { FILE_SERVE_ROOTS: [tmpdir()] };
 });
 
+// The rows are read in a heap-capped CHILD process, never in the web process:
+// exceljs costs ~20× the sheet XML, and this route is reachable by any member,
+// uncached (fourth review, PR #1243). The in-process reader is booby-trapped
+// for the whole file, so every 200 below is also proof the read happened in
+// the child — which imports the real module, out of this mock's reach.
+vi.mock("@/lib/knowledge/xlsx-extract", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/knowledge/xlsx-extract")>()),
+  readSheetRange: () => {
+    throw new Error("readSheetRange ran in the web process");
+  },
+}));
+
 let tmpRoot: string;
 let allowedRoot: string;
 let outsideDir: string;

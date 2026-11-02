@@ -21,7 +21,8 @@ import {
   isSpreadsheetFile,
   OfficeFileRejectedError,
 } from "@/lib/knowledge/office-formats";
-import { readSheetRange, SHEET_RANGE_MAX_ROWS } from "@/lib/knowledge/xlsx-extract";
+import { SHEET_RANGE_MAX_ROWS } from "@/lib/knowledge/xlsx-extract";
+import { readSheetRangeIsolated } from "@/lib/knowledge/xlsx-isolated";
 import type { AgentPluginConfig } from "@/db/schema";
 
 type Params = { params: Promise<{ agentId: string }> };
@@ -314,12 +315,21 @@ export const GET = withAuth<Params>(async (req, { params }, session) => {
 
     let sheetRange;
     try {
-      sheetRange = await readSheetRange(realPath, range.sheet, range.startRow, range.endRow);
+      // In a heap-capped child process (xlsx-isolated.ts): exceljs costs
+      // ~20× the sheet XML, and this route is reachable by any member with
+      // agent access, uncached and repeatably. The web process never holds a
+      // workbook's cell model.
+      sheetRange = await readSheetRangeIsolated(
+        realPath,
+        range.sheet,
+        range.startRow,
+        range.endRow
+      );
     } catch (err) {
       if (err instanceof OfficeFileRejectedError && err.code === "too_large") {
-        // Refused before exceljs inflated anything: this route is reachable by
-        // any member with agent access, uncached and repeatably, so a
-        // compressed bomb must cost a central-directory read and not a heap.
+        // Refused before exceljs inflated anything (a compressed bomb costs a
+        // central-directory read, not a heap), or the child reading it ran out
+        // of memory or time. Either way the server is still standing.
         auditFailure("document_too_large");
         return NextResponse.json({ error: "The workbook is too large to read" }, { status: 413 });
       }

@@ -71,7 +71,8 @@ export interface XlsxExtractOptions {
 export class XlsxExtractionError extends Error {
   constructor(
     readonly sourcePath: string,
-    reason: string,
+    /** Why, without the path — what the isolated reader carries back across the process boundary. */
+    readonly reason: string,
     options?: { cause?: unknown }
   ) {
     super(`Cannot read spreadsheet ${sourcePath}: ${reason}`, options);
@@ -345,12 +346,14 @@ function chunkSheet(sheet: SheetContent, targetChars: number): XlsxChunk[] {
  * from the very bytes that were vetted.
  *
  * exceljs inflates every zip entry whole and builds the entire cell model, so a
- * few hundred bytes declaring gigabytes can exhaust the heap of the web
- * process — from the index worker, or from the rows preview that any member
- * with agent access can request, uncached and repeatably. The central directory
- * is read first (nothing is inflated); a workbook past the limits is refused
- * with `OfficeFileRejectedError`, which callers answer as "too large to read"
- * instead of letting the process find out the hard way.
+ * few hundred bytes declaring gigabytes can exhaust the heap of whatever
+ * process reads them. The central directory is read first (nothing is
+ * inflated); a workbook past the limits — one sheet part over 16 MiB among
+ * them — is refused with `OfficeFileRejectedError`, which callers answer as
+ * "too large to read" instead of letting the process find out the hard way.
+ * In production that process is a heap-capped child (`xlsx-isolated.ts`), not
+ * the web server: the cell model of an honest workbook inside these limits
+ * still costs ~20x its sheet XML.
  *
  * @throws OfficeFileRejectedError when the workbook is past the limits.
  * @throws XlsxExtractionError when it cannot be opened as a workbook at all.

@@ -24,7 +24,7 @@ import { embedTexts } from "@/lib/knowledge/embeddings";
 import { kbEmbedderAvailable, kbEmbeddingConfig } from "@/lib/knowledge/kb-embedder";
 import { resolveKbOcr } from "@/lib/knowledge/kb-ocr";
 import { extractPdfPages } from "@/lib/knowledge/pdf-extract";
-import { extractXlsx } from "@/lib/knowledge/xlsx-extract";
+import { extractXlsxIsolated } from "@/lib/knowledge/xlsx-isolated";
 import { convertOfficeFiles } from "@/lib/knowledge/office-convert";
 import { ingestPaths, type IngestDeps } from "@/lib/knowledge/ingest";
 import {
@@ -102,7 +102,10 @@ async function resolveIngestDeps(tally: { current: OcrTally | null }): Promise<I
             }
           : {}),
       }),
-    extractXlsx,
+    // In a heap-capped child process: a workbook's cell model costs ~20× its
+    // sheet XML, and in this process that is an OOM kill of the web server on
+    // every nightly reindex (xlsx-isolated.ts).
+    extractXlsx: (absPath) => extractXlsxIsolated(absPath),
     convertOffice: (sources) => convertOfficeFiles(sources),
     ocrModel: ocr?.model ?? null,
   };

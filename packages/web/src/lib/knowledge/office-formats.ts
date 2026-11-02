@@ -118,7 +118,9 @@ export function convertedPdfName(path: string): string {
  *                   process. A decompression bomb takes this exit; so does a
  *                   genuinely enormous workbook, and that is deliberate — the
  *                   reader (exceljs, mammoth, LibreOffice) materialises the
- *                   whole thing and the cost is the same.
+ *                   whole thing and the cost is the same. The spreadsheet
+ *                   reader's child process running out of memory or time
+ *                   (`xlsx-isolated.ts`) is booked the same way.
  * - `unexpected_content` — the bytes are not the format the extension claims
  *                   (HTML renamed `.doc`, an ODF package renamed `.docx`).
  *                   LibreOffice sniffs content, not names, so such a file would

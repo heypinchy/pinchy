@@ -24,9 +24,10 @@ import {
   sanitizeOoxmlPackage,
   stripExternalRelationships,
   XLSX_MAX_FILE_BYTES,
+  XLSX_MAX_PART_BYTES,
 } from "@/lib/knowledge/office-preflight";
 import { OfficeFileRejectedError } from "@/lib/knowledge/office-formats";
-import { inflatePart, readZipEntries } from "@/lib/knowledge/office-zip";
+import { deflatedPart, inflatePart, readZipEntries } from "@/lib/knowledge/office-zip";
 import {
   declaredBomb,
   docxWith,
@@ -448,6 +449,50 @@ describe("readWorkbookBuffer", () => {
     expect((await rejection(readWorkbookBuffer(file("prefixed.xlsx", prefixed)))).code).toBe(
       "unexpected_content"
     );
+  });
+});
+
+describe("readWorkbookBuffer — one sheet part is capped (fourth review, PR #1243)", () => {
+  // exceljs's cell model costs ~20x the sheet XML. The reader runs in a
+  // heap-capped child (xlsx-isolated.ts), and this is the last line in front
+  // of it: a part past the cap is refused by its size, before exceljs builds
+  // anything, rather than by an out-of-memory death in the child.
+  /** A truthful, ordinarily compressible sheet of `bytes` (rows of numbers, ~13:1). */
+  function sheetOf(bytes: number): Buffer {
+    const rows: string[] = [];
+    let size = SHEET_HEAD.length + SHEET_TAIL.length;
+    for (let r = 2; size < bytes; r++) {
+      const row = `<row r="${r}">${"ABCDEFGHIJ"
+        .split("")
+        .map((c) => `<c r="${c}${r}"><v>${r * 7}</v></c>`)
+        .join("")}</row>`;
+      rows.push(row);
+      size += row.length;
+    }
+    return Buffer.from(SHEET_HEAD + rows.join("") + SHEET_TAIL);
+  }
+
+  async function workbookWithSheet(sheet: Buffer): Promise<Buffer> {
+    const wb = new ExcelJS.Workbook();
+    wb.addWorksheet("Data").addRows([["Name"], ["Alice"]]);
+    return replaceEntry(
+      Buffer.from(await wb.xlsx.writeBuffer()),
+      "xl/worksheets/sheet1.xml",
+      deflatedPart("xl/worksheets/sheet1.xml", sheet)
+    );
+  }
+
+  it("refuses a sheet part past the cap as too large, naming the part", async () => {
+    const xlsx = await workbookWithSheet(sheetOf(XLSX_MAX_PART_BYTES + 64 * 1024));
+    const err = await rejection(readWorkbookBuffer(file("wide.xlsx", xlsx)));
+    expect(err.code).toBe("too_large");
+    expect(err.message).toContain("xl/worksheets/sheet1.xml");
+    expect(err.message).toContain(`${XLSX_MAX_PART_BYTES}-byte limit for one entry`);
+  });
+
+  it("reads a sheet part just under the cap", async () => {
+    const xlsx = await workbookWithSheet(sheetOf(XLSX_MAX_PART_BYTES - 64 * 1024));
+    await expect(readWorkbookBuffer(file("big.xlsx", xlsx))).resolves.toBeInstanceOf(Buffer);
   });
 });
 

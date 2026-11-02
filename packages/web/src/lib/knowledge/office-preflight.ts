@@ -124,8 +124,32 @@ const RATIO_RULE = { maxCompressionRatio: 200, ratioFloorBytes: 16 * MiB } as co
 /** Word and PowerPoint packages: media is stored near ratio 1, so the ceiling is generous. */
 const OOXML_LIMITS: ZipLimits = { maxDecompressedBytes: 500 * MiB, ...RATIO_RULE };
 
+/**
+ * The largest single part of a workbook we let exceljs read. Its cell model
+ * costs ~20x the sheet XML, and the reader's child process (xlsx-isolated.ts)
+ * has a 384 MB heap. Measured in the shipped image under a 1 GB container
+ * limit, sheets of numeric rows (fourth review, PR #1243):
+ *
+ *   sheet XML    peak RSS of the reader
+ *   8 MiB        219 MB
+ *   16 MiB       350 MB
+ *   24 MiB       486 MB
+ *   32 MiB       out of heap (568 MB uncapped)
+ *
+ * 16 MiB — some 40 000 rows of ten columns — leaves the child room beside a
+ * server that is itself holding the embedding model. Past it the workbook is
+ * refused by its size, before exceljs builds anything; the heap cap stays the
+ * backstop for what this cannot see (many parts just under it, the shared
+ * strings of all of them at once).
+ */
+export const XLSX_MAX_PART_BYTES = 16 * MiB;
+
 /** Workbooks: tighter, because the model exceljs builds is heavier than the XML it reads. */
-const XLSX_LIMITS: ZipLimits = { maxDecompressedBytes: 256 * MiB, ...RATIO_RULE };
+const XLSX_LIMITS: ZipLimits = {
+  maxDecompressedBytes: 256 * MiB,
+  maxEntryBytes: XLSX_MAX_PART_BYTES,
+  ...RATIO_RULE,
+};
 
 /**
  * What mammoth (the word-count oracle) may be handed: the conversion's limits,
