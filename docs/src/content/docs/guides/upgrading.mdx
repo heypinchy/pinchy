@@ -225,6 +225,16 @@ Development licenses now carry their own signature, which release builds do not 
 
 Keys we issued are unaffected. Nothing about them changed, and there is nothing to re-enter.
 
+#### Some saved addresses are refused until you act
+
+The address checks behind Odoo, mail and OpenAI-compatible providers got stricter, and a saved address is now checked every time it's used, not only when it was saved. So these stop working on upgrade, with nothing re-entered and nothing lost:
+
+- **An Odoo or mail server on your tailnet (`100.64.0.0/10`) or in `198.18.0.0/15`**, saved without `ALLOW_PRIVATE_URLS=1` (Odoo) or `ALLOW_PRIVATE_MAIL_HOSTS=1` (mail). Set the switch on the Pinchy container and restart. The same goes for any Odoo or mail server if the Pinchy host's DNS runs in fake-IP mode. See [Fetching web pages no longer reaches Tailscale, cloud-metadata or reserved addresses](#fetching-web-pages-no-longer-reaches-tailscale-cloud-metadata-or-reserved-addresses).
+- **An Odoo at `localhost` or `127.0.0.1`**, even with `ALLOW_PRIVATE_URLS=1`. Point it at the Odoo host's network address or container name. See [`ALLOW_PRIVATE_URLS` opens your private network, and nothing else](#allow_private_urls-opens-your-private-network-and-nothing-else).
+- **An OpenAI-compatible provider whose saved base URL is now refused.** Pinchy leaves it out of the agent runtime, so its agents get an error, and marks it **Not in use** in **Settings → AI Provider**. Change its base URL. See [A saved Odoo or mail connection is checked each time it's used](#a-saved-odoo-or-mail-connection-is-checked-each-time-its-used).
+
+If none of these is your install, there's nothing to do.
+
 ### Upgrade notes
 
 The standard flow applies:
@@ -302,7 +312,7 @@ The base-URL check for **OpenAI-compatible providers** kept a third list, and no
 
 #### `ALLOW_PRIVATE_URLS` opens your private network, and nothing else
 
-`ALLOW_PRIVATE_URLS` used to switch the Odoo address check off entirely, so an install that set it also let an Odoo connection point at `localhost`, the cloud metadata services or anything else on the Pinchy host. Now it works like `ALLOW_PRIVATE_MAIL_HOSTS`: private ranges (including Tailscale and `198.18.0.0/15`) open up; loopback, `0.0.0.0/8`, link-local, the metadata endpoints listed above and the reserved ranges stay refused whatever you set. If your Odoo connection pointed at `localhost` or `127.0.0.1`, it stops working on upgrade — the saved address is checked again when it's used — so point it at the Odoo host's network address or container name instead.
+`ALLOW_PRIVATE_URLS` used to switch the Odoo address check off entirely, so an install that set it also let an Odoo connection point at `localhost`, the cloud metadata services or anything else on the Pinchy host. Now it works like `ALLOW_PRIVATE_MAIL_HOSTS`: private ranges (including Tailscale and `198.18.0.0/15`) open up; loopback, `0.0.0.0/8`, link-local, the metadata endpoints listed above and the reserved ranges stay refused whatever you set. If your Odoo connection pointed at `localhost` or `127.0.0.1`, it stops working on upgrade — the saved address is checked again when it's used — so point it at the Odoo host's network address or container name instead. One thing the switch does open, because it's private like any LAN host: the other containers on the Pinchy stack's Docker network, such as the agent runtime (`openclaw`) and the database (`db`), reachable by service name. Set it only if your Odoo really lives on your own network.
 
 #### A saved Odoo or mail connection is checked each time it's used
 
@@ -310,7 +320,7 @@ The address checks above used to run only when an admin saved a connection. Afte
 
 A connection that fails the check breaks nothing else. The agent's tool reports why, and names the switch if one would allow it; **Test connection** shows the same message without marking the connection as needing new credentials; an email automation on that mailbox shows an error until it's fixed. Each refused credential fetch is recorded in the audit trail as `integration.credentials_denied` with the reason `destination-blocked`.
 
-The same now goes for a saved **OpenAI-compatible provider**. Its base URL is checked again before Pinchy lists its models and each time Pinchy writes the agent runtime's configuration; a provider that fails the check is left out of that configuration — its agents get an error instead of reaching the address — and the Pinchy log names it and the reason. See [Which base URLs are allowed](/guides/llm-providers/#which-base-urls-are-allowed).
+The same now goes for a saved **OpenAI-compatible provider**. Its base URL is checked again before Pinchy lists its models and each time Pinchy writes the agent runtime's configuration; a provider that fails the check is left out of that configuration — its agents get an error instead of reaching the address, and it no longer serves as the runtime's default model. **Settings → AI Provider** marks it **Not in use** and shows the reason when you select it, and the Pinchy log names it too. See [Which base URLs are allowed](/guides/llm-providers/#which-base-urls-are-allowed).
 
 Two gaps remain, and we'd rather say so.
 

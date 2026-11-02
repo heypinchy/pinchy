@@ -109,8 +109,12 @@ function blockMessageFor(addressClass: IpAddressClass): string {
  *
  * The flag opens that one class and nothing else. It used to switch the whole
  * check off, which turned "my Odoo is on the tailnet" into "an Odoo admin can
- * reach 127.0.0.1, the metadata services and the OpenClaw gateway". With the
- * flag set, a DNS name is still resolved and classified.
+ * reach 127.0.0.1 and the metadata services". Loopback and metadata are now
+ * closed whatever is set. The services on the compose network are not: with
+ * the flag set, `http://openclaw:18789` and `http://db:5432` resolve to bridge
+ * addresses, which are `private` like any LAN host, so they are as reachable
+ * as the on-premise Odoo the flag is for. With the flag set, a DNS name is
+ * still resolved and classified.
  *
  * A hostname that is an IP literal, or one of the well-known private names
  * (`localhost`, …), is classified from the string alone via `classifyHostname`
