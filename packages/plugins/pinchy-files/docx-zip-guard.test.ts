@@ -812,3 +812,104 @@ describe("verifiedZipCopy — a ZIP64 end record nothing needed", () => {
     expect(await refusal(verifiedZipCopy(zip, LIMITS))).toBeInstanceOf(ZipLimitError);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Sixth review (PR #1243): where the scanner and mammoth disagree, refuse
+// ---------------------------------------------------------------------------
+
+describe("verifiedZipCopy — what mammoth reads differently is not guessed at (sixth review, PR #1243)", () => {
+  // Three rounds in a row the markup ceiling was bypassed the same way: this
+  // scanner and mammoth (xmldom + JSZip) disagreed about which parts are
+  // parsed. These shapes are not predicted any more; they are refused, or
+  // every part counts. No Office writer produces any of them.
+  const REL = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/";
+  const LIMITS_2K = { ...LIMITS, maxMarkupBytes: 2000 };
+  const markupBehindPng = Buffer.concat([
+    Buffer.from("89504e470d0a1a0a", "hex"),
+    Buffer.from(`<w:document>${"d".repeat(4000)}</w:document>`),
+  ]);
+  const relsOf = (body: string) =>
+    `<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${body}</Relationships>`;
+
+  it.each([
+    [
+      "a prefixed Type beside the plain one (mammoth keys q:Type as Type, the later one wins)",
+      `<Relationship Id="rId1" Type="${REL}image" q:Type="${REL}officeDocument" Target="word/document.png"/>`,
+    ],
+    [
+      "a prefixed Target beside the plain one",
+      `<Relationship Id="rId1" Type="${REL}officeDocument" Target="word/decoy.xml" q:Target="word/document.png"/><Relationship Id="rId2" Type="${REL}image" Target="word/document.png"/>`,
+    ],
+    [
+      "a prefix bound to the empty namespace",
+      `<Relationship xmlns:q="" Id="rId1" Type="${REL}image" q:Type="${REL}officeDocument" Target="word/document.png"/>`,
+    ],
+    [
+      "an attribute name that is not a plain XML name",
+      `<Relationship Id="rId1" Type="${REL}image"\fType="${REL}officeDocument" Target="word/document.png"/>`,
+    ],
+  ])("counts every part for %s", async (_, relationship) => {
+    const zip = rawZip([
+      honest("[Content_Types].xml", "<Types/>"),
+      honest("_rels/.rels", relsOf(relationship)),
+      honest("word/decoy.xml", "<w:document/>"),
+      honest("word/document.png", markupBehindPng),
+    ]);
+    expect(await refusal(verifiedZipCopy(zip, LIMITS_2K))).toBeInstanceOf(ZipLimitError);
+  });
+
+  it("still reads a relationship that declares a namespace prefix it does not use", async () => {
+    // `xmlns:*` is a declaration, not an attribute mammoth reads as data.
+    const zip = rawZip([
+      honest("[Content_Types].xml", "<Types/>"),
+      honest(
+        "_rels/.rels",
+        relsOf(
+          `<Relationship xmlns:q="urn:x" Id="rId1" Type="${REL}officeDocument" Target="word/document.xml"/><Relationship Id="rId2" Type="${REL}image" Target="word/media/p.png"/>`
+        )
+      ),
+      honest("word/document.xml", "<w:document/>"),
+      honest("word/media/p.png", markupBehindPng),
+    ]);
+    const copy = await verifiedZipCopy(zip, LIMITS_2K);
+    expect(contentsOf(copy).has("word/media/p.png")).toBe(true);
+  });
+
+  it.each([
+    ["a '.' segment JSZip drops", ["word/./document.xml"]],
+    ["a trailing '.' segment that turns a name into _rels/.rels", ["_rels/.rels/."]],
+    ["a '..' segment JSZip resolves", ["word/x/../document.xml"]],
+    ["an empty segment JSZip collapses", ["word//document.xml"]],
+    ["a leading slash", ["/word/document.xml"]],
+    ["a backslash", ["word\\document.xml"]],
+  ])("refuses an entry name with %s", async (_, names) => {
+    const zip = rawZip([
+      honest("[Content_Types].xml", "<Types/>"),
+      ...names.map((name) => honest(name, "<w:document/>")),
+    ]);
+    expect(await refusal(verifiedZipCopy(zip, LIMITS))).toBeInstanceOf(ZipFormatError);
+  });
+
+  it("refuses two names JSZip would resolve to the same part, whichever comes first", async () => {
+    const zip = rawZip([
+      honest("word/document.xml", "<w:document/>"),
+      honest("word/./document.xml", `<w:document>${"d".repeat(4000)}</w:document>`),
+    ]);
+    expect(await refusal(verifiedZipCopy(zip, LIMITS))).toBeInstanceOf(ZipFormatError);
+  });
+
+  it("still accepts the directory entries a hand-zipped document carries", async () => {
+    // `zip -r` and some archivers write `word/` and `_rels/` as empty entries.
+    const zip = rawZip([
+      honest("[Content_Types].xml", "<Types/>"),
+      honest("word/", ""),
+      honest("word/document.xml", "<w:document/>"),
+    ]);
+    expect([...contentsOf(await verifiedZipCopy(zip, LIMITS)).keys()]).toContain("word/");
+  });
+
+  it("refuses a 'directory' entry that holds bytes", async () => {
+    const zip = rawZip([honest("[Content_Types].xml", "<Types/>"), honest("word/", "<x/>")]);
+    expect(await refusal(verifiedZipCopy(zip, LIMITS))).toBeInstanceOf(ZipFormatError);
+  });
+});

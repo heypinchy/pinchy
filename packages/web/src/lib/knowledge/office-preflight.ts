@@ -92,6 +92,7 @@ import {
   MAX_DOCX_ENTRY_BYTES,
   MAX_DOCX_MARKUP_BYTES,
   verifiedZipCopy,
+  PLAIN_ATTRIBUTE_NAME,
   ZipLimitError,
   type ZipLimits,
 } from "../../../../plugins/pinchy-files/docx-zip-guard";
@@ -603,7 +604,13 @@ function filterRelationships(
 
     const tag = xml.slice(at, close + 1);
     const attributes = attributesOf(tag);
-    if (!attributes) throw malformed();
+    // A prefixed attribute is where this scanner and the readers part ways
+    // (`PLAIN_ATTRIBUTE_NAME`): xmldom hands mammoth `q:Type` as `Type`, the
+    // later of two winning (sixth review, PR #1243). No Office writer puts one
+    // on a relationship, so the part is refused rather than resolved.
+    if (!attributes || [...attributes.keys()].some((name) => !PLAIN_ATTRIBUTE_NAME.test(name))) {
+      throw malformed();
+    }
     let end = close + 1;
     if (keep(attributes)) {
       at = end;

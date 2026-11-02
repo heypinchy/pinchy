@@ -669,6 +669,92 @@ describe("readGuardedDocx", () => {
   });
 });
 
+describe("what a reader resolves differently is refused, not predicted (sixth review, PR #1243)", () => {
+  // The preflight reads relationship parts and part names with its own small
+  // scanner; mammoth (xmldom + JSZip) and LibreOffice read them with theirs.
+  // Where the two can disagree — a prefixed attribute xmldom keys by its local
+  // name, a part name JSZip resolves — the package is refused. No Office
+  // writer produces either.
+  const REL_DOC = relType("officeDocument");
+
+  it.each([
+    [
+      "a prefixed Type",
+      `<Relationship Id="rId9" Type="${REL_IMAGE}" q:Type="${relType("styles")}" Target="media/p.png"/>`,
+    ],
+    [
+      "a prefixed Target",
+      `<Relationship Id="rId9" Type="${relType("styles")}" Target="styles.xml" q:Target="media/p.png"/>`,
+    ],
+    [
+      "a prefix bound to nothing",
+      `<Relationship xmlns:q="" Id="rId9" Type="${REL_IMAGE}" q:Type="${relType("styles")}" Target="media/p.png"/>`,
+    ],
+    [
+      "a prefixed TargetMode",
+      `<Relationship Id="rId9" Type="${REL_IMAGE}" Target="media/p.png" q:TargetMode="External"/>`,
+    ],
+  ])("refuses a relationship carrying %s", async (_, relationship) => {
+    const docx = docxWith({
+      documentRels: relationships(relationship),
+      parts: { "word/media/p.png": PNG_1X1, "word/styles.xml": ooxmlPart("w:styles") },
+    });
+    const err = await rejection(prepareOfficeSource(file("prefixed.docx", docx)));
+    expect(err.code).toBe("unexpected_content");
+  });
+
+  it("still converts a relationship that only declares a namespace", async () => {
+    const docx = docxWith({
+      documentRels: relationships(
+        `<Relationship xmlns:q="urn:x" Id="rId9" Type="${REL_IMAGE}" Target="media/p.png"/>`
+      ),
+      parts: { "word/media/p.png": PNG_1X1 },
+    });
+    expect((await prepareOfficeSource(file("ns.docx", docx))).relationshipsRemoved).toBe(0);
+  });
+
+  it.each([
+    ["word/./document.xml"],
+    ["word/_rels/document.xml.rels/."],
+    ["word/x/../styles.xml"],
+    ["/word/styles.xml"],
+    ["word\\styles.xml"],
+    ["word//styles.xml"],
+  ])("refuses a package with a part named %s", async (name) => {
+    const docx = docxWith({
+      documentRels: relationships(),
+      parts: { [name]: ooxmlPart("w:styles") },
+    });
+    const prepared = await rejection(prepareOfficeSource(file("dots.docx", docx)));
+    expect(prepared.code).toBe("unexpected_content");
+    const oracle = await rejection(readGuardedDocx(file("dots-oracle.docx", docx)));
+    expect(oracle.code).toBe("unexpected_content");
+  });
+
+  it("refuses the reviewer's shape: the document's relationships under a name JSZip resolves", async () => {
+    // LibreOffice converts the decoy; mammoth reads `word/_rels/document.xml.rels/.`
+    // as the document's relationships, whose styles relationship sends it to
+    // a .png the markup count left out.
+    const docx = zipOf({
+      "[Content_Types].xml": `<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Default Extension="png" ContentType="image/png"/></Types>`,
+      "_rels/.rels": relationships(
+        `<Relationship Id="rId1" Type="${REL_DOC}" Target="word/document.xml"/><Relationship Id="rId2" Type="${REL_IMAGE}" Target="word/document.png"/>`
+      ),
+      "word/document.xml": ooxmlPart("w:document"),
+      "word/_rels/document.xml.rels/.": relationships(
+        `<Relationship Id="rId9" Type="${relType("styles")}" Target="document.png"/>`
+      ),
+      "word/document.png": Buffer.concat([PNG_1X1, Buffer.from("<w:document/>")]),
+    });
+    expect((await rejection(readGuardedDocx(file("web3.docx", docx)))).code).toBe(
+      "unexpected_content"
+    );
+    expect((await rejection(prepareOfficeSource(file("web3-convert.docx", docx)))).code).toBe(
+      "unexpected_content"
+    );
+  });
+});
+
 const MiB = 1024 * 1024;
 const SHEET_HEAD = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>x</t></is></c></row>`;
 const SHEET_TAIL = `</sheetData></worksheet>`;

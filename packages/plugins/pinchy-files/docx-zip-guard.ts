@@ -70,6 +70,14 @@ export const MAX_DOCX_ENTRY_BYTES = 32 * 1024 * 1024;
 // far cheaper per byte (a 4 MiB part of Word-shaped paragraphs: 573 MB through
 // extractDocxText), so 2 MiB of markup is a document of a few hundred pages;
 // past it, `pinchy_read` answers with a clear error instead.
+//
+// This is the FIRST layer, and a prediction: which parts mammoth parses is
+// decided by mammoth's XML parser and JSZip, and three review rounds in a row
+// found a spelling this scan read differently (PR #1243). What bounds the
+// memory whatever the scan misses is the heap cap of the child mammoth runs in
+// (`DOCX_READER_HEAP_MB` in docx-extract.ts, `SHEET_READER_HEAP_MB` for the
+// knowledge base's word count). This layer keeps the common case cheap and
+// the refusal precise.
 export const MAX_DOCX_MARKUP_BYTES = 2 * 1024 * 1024;
 
 export interface DocxDeclaredSize {
@@ -429,6 +437,33 @@ function verifyDeflated(entry: ZipEntryInfo, data: Buffer): Promise<void> {
 }
 
 /**
+ * Refuses an entry name a reader would RESOLVE to something else. JSZip (which
+ * mammoth and exceljs read through) drops `.` and empty segments and applies
+ * `..` before it files an entry, so `word/./document.xml` and
+ * `_rels/.rels/.` are `word/document.xml` and `_rels/.rels` to the reader and
+ * two other names to anything matching the raw name — a duplicate this guard
+ * did not see, or a relationship part it did not read (sixth review, PR
+ * #1243). No Office writer produces any of these, and neither a leading slash
+ * nor a backslash (which the zip spec forbids, and lenient readers turn into
+ * a separator). A trailing slash is a directory entry, which some archivers
+ * write; it must be empty.
+ */
+function assertPlainEntryName(entry: ZipEntryInfo): void {
+  const { name } = entry;
+  const directory = name.endsWith("/");
+  const segments = (directory ? name.slice(0, -1) : name).split("/");
+  if (
+    name.includes("\\") ||
+    segments.some((segment) => segment === "" || segment === "." || segment === "..")
+  ) {
+    throw invalidZip(`entry "${name}" has a name a reader would resolve to another one`);
+  }
+  if (directory && entry.uncompressedSize !== 0) {
+    throw invalidZip(`directory entry "${name}" holds data`);
+  }
+}
+
+/**
  * Checks an archive by its REAL contents and returns a fresh copy built only
  * from the entries that held up. Callers hand the COPY to their reader.
  *
@@ -441,8 +476,9 @@ function verifyDeflated(entry: ZipEntryInfo, data: Buffer): Promise<void> {
  *    after its end record, anything between its directory and its end record
  *    but a ZIP64 end record that only repeats it, more than one disk,
  *    encryption, a method other than stored/deflate, an entry shorter than
- *    declared or with a wrong CRC, or two entries whose names differ only by
- *    case (`ZipFormatError`).
+ *    declared or with a wrong CRC, two entries whose names differ only by
+ *    case, or a name a reader would resolve to another one
+ *    (`assertPlainEntryName`) (`ZipFormatError`).
  *
  * Fail closed throughout: an archive this cannot read is not an archive any
  * reader gets to read.
@@ -475,6 +511,7 @@ export async function verifiedZipCopy(buffer: Buffer, limits: ZipLimits): Promis
 
   const seen = new Set<string>();
   for (const entry of entries) {
+    assertPlainEntryName(entry);
     const key = entry.name.toLowerCase();
     if (seen.has(key)) throw invalidZip(`two entries are both named "${entry.name}"`);
     seen.add(key);
@@ -559,9 +596,23 @@ interface Relationship {
 const isXmlSpace = (c: string | undefined) => c === " " || c === "\t" || c === "\n" || c === "\r";
 
 /**
+ * An attribute name read as written, with nothing for a parser to resolve: a
+ * plain XML name with no prefix, or a namespace declaration (`xmlns`,
+ * `xmlns:q`). A prefixed attribute is where this scanner and mammoth part
+ * ways: xmldom hands mammoth `q:Type` keyed by its local name `Type` when the
+ * prefix is undeclared or bound to nothing, and the later of two wins — the
+ * scanner read only the exact `Type` (sixth review, PR #1243). Which
+ * prefixes a parser resolves, and how, is not something to predict; no
+ * relationship part an Office writer emits has one, so a tag with one is
+ * not read at all. The knowledge base's preflight refuses on the same rule.
+ */
+export const PLAIN_ATTRIBUTE_NAME = /^(?:xmlns(?::[A-Za-z_][\w.-]*)?|[A-Za-z_][\w.-]*)$/;
+
+/**
  * The attributes of one tag, or null where they cannot be read unambiguously:
  * an unquoted or unterminated value (a `>` inside a quoted value ends the tag
- * early and leaves one), or the same attribute twice.
+ * early and leaves one), the same attribute twice, attributes not separated
+ * by whitespace, or an attribute name that is not plain (`PLAIN_ATTRIBUTE_NAME`).
  */
 function tagAttributes(tag: string): Map<string, string> | null {
   const attributes = new Map<string, string>();
@@ -569,11 +620,14 @@ function tagAttributes(tag: string): Map<string, string> | null {
   // Skip the element name.
   while (at < tag.length && !isXmlSpace(tag[at]) && tag[at] !== "/") at++;
   for (;;) {
+    const before = at;
     while (isXmlSpace(tag[at])) at++;
     if (at >= tag.length || tag[at] === "/") return attributes;
+    if (at === before) return null;
     const nameStart = at;
     while (at < tag.length && tag[at] !== "=" && !isXmlSpace(tag[at])) at++;
     const name = tag.slice(nameStart, at);
+    if (!PLAIN_ATTRIBUTE_NAME.test(name)) return null;
     while (isXmlSpace(tag[at])) at++;
     if (tag[at] !== "=") return null;
     at++;
