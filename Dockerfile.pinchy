@@ -198,6 +198,13 @@ RUN corepack enable
 #     formats. An oracle derived from LibreOffice would agree with LibreOffice
 #     about text it dropped and verify nothing.
 # `--no-install-recommends` matters here: the recommends pull in a JRE.
+#
+# The web process never runs it. This image is ALSO the `office-converter`
+# service (docker-compose.yml) — no network, no secrets, no volume but the
+# spool — and that container is the only place LibreOffice opens a file.
+# KB_OFFICE_SPOOL_DIR below is what sends the web process there. One image
+# instead of two means nothing extra to build, publish, pull, or mirror into
+# an air-gapped install; the binary on disk is inert in the web container.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
        libreoffice-writer libreoffice-impress fonts-liberation catdoc \
@@ -209,6 +216,13 @@ EXPOSE 7777
 
 ENV PORT=7777
 ENV NODE_ENV=production
+
+# Office-to-PDF conversion happens in the office-converter sidecar, never in
+# this process. The spool is the volume both containers mount at this path;
+# the converter listens on a Unix socket inside it. There is deliberately no
+# fallback to converting in-process when the sidecar is missing
+# (lib/knowledge/office-convert.ts → defaultConverter).
+ENV KB_OFFICE_SPOOL_DIR=/var/spool/pinchy-office
 
 # Workspace manifests + patches: pnpm reads these to resolve workspace scripts
 # (`pnpm start`, `pnpm db:migrate`) and the patched-dependency map at runtime.
@@ -291,8 +305,12 @@ RUN groupadd -r -g 999 pinchy && useradd -r -u 999 -g pinchy -d /app pinchy
 # is a named volume in docker-compose.yml precisely so nothing is ever written
 # next to the original: /data is mounted read-only and the docs state that as a
 # product promise. Mirrors the openclaw container's pinchy-pdf-cache.
-RUN mkdir -p /app/secrets /openclaw-config/workspaces /var/cache/pinchy-kb-artifacts \
-    && chown -R pinchy:pinchy /app /app/secrets /openclaw-config/workspaces /var/cache/pinchy-kb-artifacts
+# /var/spool/pinchy-office is the hand-over to the office-converter sidecar. A
+# fresh named volume copies this directory's ownership, so both containers —
+# the web process and the converter, both uid 999 — can write it from the
+# first start.
+RUN mkdir -p /app/secrets /openclaw-config/workspaces /var/cache/pinchy-kb-artifacts /var/spool/pinchy-office \
+    && chown -R pinchy:pinchy /app /app/secrets /openclaw-config/workspaces /var/cache/pinchy-kb-artifacts /var/spool/pinchy-office
 
 COPY entrypoint.sh /entrypoint.sh
 # Plugin-source sync helper the entrypoint runs on every boot. Extracted from

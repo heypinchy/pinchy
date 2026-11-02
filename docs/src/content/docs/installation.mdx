@@ -37,15 +37,16 @@ docker compose pull && docker compose up -d
 
 ### Services
 
-The `docker-compose.yml` defines three services:
+The `docker-compose.yml` defines four services:
 
-| Service    | Image                           | Port             | Purpose                             |
-| ---------- | ------------------------------- | ---------------- | ----------------------------------- |
-| `pinchy`   | Custom (Next.js)                | 7777 (exposed)   | Web UI, API, WebSocket bridge       |
-| `openclaw` | Custom (Node.js)                | 18789 (internal) | AI agent runtime                    |
-| `db`       | `pgvector/pgvector:pg17-trixie` | 5432 (internal)  | Database (PostgreSQL 17 + pgvector) |
+| Service            | Image                           | Port              | Purpose                                                   |
+| ------------------ | ------------------------------- | ----------------- | --------------------------------------------------------- |
+| `pinchy`           | Custom (Next.js)                | 7777 (exposed)    | Web UI, API, WebSocket bridge                             |
+| `office-converter` | Same image as `pinchy`          | none (no network) | Converts Word and PowerPoint files for the knowledge base |
+| `openclaw`         | Custom (Node.js)                | 18789 (internal)  | AI agent runtime                                          |
+| `db`               | `pgvector/pgvector:pg17-trixie` | 5432 (internal)   | Database (PostgreSQL 17 + pgvector)                       |
 
-Only port **7777** is exposed to the host. OpenClaw and PostgreSQL are only reachable within the Docker network.
+Only port **7777** is exposed to the host. OpenClaw and PostgreSQL are only reachable within the Docker network. The Office converter has no network at all — it talks to Pinchy through a shared folder, because it opens files that anyone with write access to a mounted folder can put there.
 
 ### Environment variables
 

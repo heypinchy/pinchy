@@ -110,31 +110,34 @@ Your `docker-compose.override.yml` survives upgrades unchanged. However, if a ne
 
 ## Resource limits and health checks
 
-Pinchy's `docker-compose.yml` caps memory and CPU for all three containers, and gives `pinchy` and `db` HTTP/TCP health checks so Docker can tell a wedged container from a healthy one. All six limits are overridable via `.env` — you never need to touch `docker-compose.yml` itself. For every other variable `.env` accepts, see the [Environment Variables reference](/reference/environment-variables/).
+Pinchy's `docker-compose.yml` caps memory and CPU for all four containers, and gives each of them a health check so Docker can tell a wedged container from a healthy one. All eight limits are overridable via `.env` — you never need to touch `docker-compose.yml` itself. For every other variable `.env` accepts, see the [Environment Variables reference](/reference/environment-variables/).
 
-| Variable             | Default | Caps                                                              |
-| -------------------- | ------- | ----------------------------------------------------------------- |
-| `PINCHY_MEM_LIMIT`   | `1g`    | Memory for the `pinchy` container (web UI, API, WebSocket bridge) |
-| `PINCHY_CPUS`        | `1.5`   | CPU cores for `pinchy`                                            |
-| `OPENCLAW_MEM_LIMIT` | `2g`    | Memory for the `openclaw` container (agent runtime, model calls)  |
-| `OPENCLAW_CPUS`      | `2`     | CPU cores for `openclaw`                                          |
-| `DB_MEM_LIMIT`       | `1g`    | Memory for the `db` container (PostgreSQL 17)                     |
-| `DB_CPUS`            | `1`     | CPU cores for `db`                                                |
+| Variable                     | Default | Caps                                                                     |
+| ---------------------------- | ------- | ------------------------------------------------------------------------ |
+| `PINCHY_MEM_LIMIT`           | `1g`    | Memory for the `pinchy` container (web UI, API, WebSocket bridge)        |
+| `PINCHY_CPUS`                | `1.5`   | CPU cores for `pinchy`                                                   |
+| `OFFICE_CONVERTER_MEM_LIMIT` | `1g`    | Memory for the `office-converter` container (Word and PowerPoint to PDF) |
+| `OFFICE_CONVERTER_CPUS`      | `1`     | CPU cores for `office-converter`                                         |
+| `OPENCLAW_MEM_LIMIT`         | `2g`    | Memory for the `openclaw` container (agent runtime, model calls)         |
+| `OPENCLAW_CPUS`              | `2`     | CPU cores for `openclaw`                                                 |
+| `DB_MEM_LIMIT`               | `1g`    | Memory for the `db` container (PostgreSQL 17)                            |
+| `DB_CPUS`                    | `1`     | CPU cores for `db`                                                       |
 
 ### Why these exist
 
-Without a limit, a single runaway container — a leaking process, a model call that buffers an oversized response, a query that goes wide — can exhaust all memory on the host and take down every other container (and often the host itself) with it. `mem_limit`/`cpus` contain that failure to the one container that caused it. Combined with `restart: unless-stopped` (already set on all three services and not something you should change), an OOM-killed container comes back on its own instead of leaving the deployment wedged until someone notices and runs `docker compose up -d` by hand.
+Without a limit, a single runaway container — a leaking process, a model call that buffers an oversized response, a query that goes wide — can exhaust all memory on the host and take down every other container (and often the host itself) with it. `mem_limit`/`cpus` contain that failure to the one container that caused it. Combined with `restart: unless-stopped` (already set on all four services and not something you should change), an OOM-killed container comes back on its own instead of leaving the deployment wedged until someone notices and runs `docker compose up -d` by hand.
 
 ### Sizing your host
 
-The defaults add up to roughly 4 GB of memory ceiling across the three containers (1 + 2 + 1). That's a ceiling, not a reservation — containers use less at idle — but your host needs headroom **above** that total for the OS, Docker itself, and any reverse proxy you run alongside Pinchy. We recommend a host with meaningfully more than 4 GB, e.g. **6–8 GB or more**, so the limits are a backstop rather than a wall you hit during normal operation.
+The defaults add up to roughly 5 GB of memory ceiling across the four containers (1 + 1 + 2 + 1). The Office converter's share is only ever used while the knowledge base converts a Word or PowerPoint file. That's a ceiling, not a reservation — containers use less at idle — but your host needs headroom **above** that total for the OS, Docker itself, and any reverse proxy you run alongside Pinchy. We recommend a host with meaningfully more than 4 GB, e.g. **6–8 GB or more**, so the limits are a backstop rather than a wall you hit during normal operation.
 
-If you're intentionally running on a constrained 4 GB VPS — a real scenario, not just a hypothetical — lower the limits in `.env` so the three containers leave the OS enough room to breathe:
+If you're intentionally running on a constrained 4 GB VPS — a real scenario, not just a hypothetical — lower the limits in `.env` so the containers leave the OS enough room to breathe:
 
 ```bash
 # .env — tuned for a 4 GB VPS
 PINCHY_MEM_LIMIT=768m
 PINCHY_CPUS=1
+OFFICE_CONVERTER_MEM_LIMIT=640m
 OPENCLAW_MEM_LIMIT=1.5g
 OPENCLAW_CPUS=1.5
 DB_MEM_LIMIT=512m
@@ -150,22 +153,22 @@ DB_CPUS=0.5
 
 ### Memory when the knowledge base indexes Office documents
 
-Word and PowerPoint files take a detour on their way into the knowledge base: Pinchy converts them to PDF first, with LibreOffice running inside the `pinchy` container. That's what lets it read the legacy `.doc` and `.ppt` formats at all — no modern parsing library can — and it gives every citation one rendered document that the index and the preview agree on.
+Word and PowerPoint files take a detour on their way into the knowledge base: Pinchy converts them to PDF first, with LibreOffice running in the `office-converter` container — one with no network and none of Pinchy's secrets, because it opens files that anyone with write access to a mounted folder can put there. That's what lets it read the legacy `.doc` and `.ppt` formats at all — no modern parsing library can — and it gives every citation one rendered document that the index and the preview agree on.
 
 Two things about that are worth knowing when you size the container.
 
 **LibreOffice is not a daemon.** It starts, converts a batch of documents, and exits. The memory it needs is transient: nothing stays resident between reindexes, and a deployment that never indexes an Office document never pays for it.
 
-**It shares the container with the embedding model.** The knowledge base embeds in-process, so during a reindex the same container holds a ~300 MB model that is _actively working_ while the converter runs. We measured that overlap directly — 17 Word documents converting while the embedder kept embedding, at several ceilings:
+**It has a container to itself.** `OFFICE_CONVERTER_MEM_LIMIT` caps it, so a conversion no longer competes with the web app or with the ~300 MB embedding model that keeps working in the `pinchy` container during a reindex. Before the converter moved out, we measured the worst case of that overlap — 17 Word documents converting in one container while the embedder kept embedding, at several ceilings:
 
-| `PINCHY_MEM_LIMIT` | Result                                              |
-| ------------------ | --------------------------------------------------- |
-| `1g` (default)     | All 17 converted — the default has room to spare    |
-| `768m`             | All 17 converted, ~20 % slower                      |
-| `640m`             | All 17 converted, ~70 % slower                      |
-| `512m`             | **Out of memory.** The container was killed mid-run |
+| Memory for converter **and** embedder | Result                                              |
+| ------------------------------------- | --------------------------------------------------- |
+| `1g`                                  | All 17 converted, with room to spare                |
+| `768m`                                | All 17 converted, ~20 % slower                      |
+| `640m`                                | All 17 converted, ~70 % slower                      |
+| `512m`                                | **Out of memory.** The container was killed mid-run |
 
-So the **default `1g` is enough**, and the 4 GB VPS tuning above (`768m`) still works — but `512m` is below the floor once Office documents are in the corpus. Going the other way pays off in time rather than reliability: the converter is the one part of Pinchy that gets meaningfully faster with more memory, so `2g` is worth it for a large first-time index.
+The converter now gets its `1g` default without the embedder beside it, so the **default has more room than that measurement needed**, and `640m` (the 4 GB VPS tuning above) is the lowest ceiling we've seen work. Going the other way pays off in time rather than reliability: the converter is the one part of Pinchy that gets meaningfully faster with more memory, so `2g` is worth it for a large first-time index.
 
 <Aside type="tip">
   If the container does run out of memory mid-conversion, Pinchy tells the two
@@ -179,7 +182,7 @@ Converted PDFs live on their own volume, `pinchy-kb-artifacts`. Your source docu
 
 ### Health checks
 
-`db` and `pinchy` each have a Docker health check: `db` polls `pg_isready`, and `pinchy` polls its own `/api/internal/openclaw-config-ready` endpoint. `openclaw` has a lightweight **TCP liveness check** — a raw connect to the gateway's WebSocket port (`18789`) that succeeds as soon as the gateway is accepting connections. It doesn't inspect the gateway's internal state, only that something is listening; OpenClaw's own start script already respawns the gateway process if it dies internally, so this check exists to surface a fully stuck container (process alive, port not listening). Note that Compose does **not** restart a container just because it is `unhealthy` — `restart:` policies act on container _exit_, not health status. The check is diagnostic: a stuck container shows as `unhealthy` in `docker compose ps` so you can spot it and restart it yourself, rather than it silently sitting "up" but unreachable.
+`db` and `pinchy` each have a Docker health check: `db` polls `pg_isready`, and `pinchy` polls its own `/api/internal/openclaw-config-ready` endpoint. `office-converter` answers a health probe on the socket it shares with `pinchy` — it has no network port to probe. `openclaw` has a lightweight **TCP liveness check** — a raw connect to the gateway's WebSocket port (`18789`) that succeeds as soon as the gateway is accepting connections. It doesn't inspect the gateway's internal state, only that something is listening; OpenClaw's own start script already respawns the gateway process if it dies internally, so this check exists to surface a fully stuck container (process alive, port not listening). Note that Compose does **not** restart a container just because it is `unhealthy` — `restart:` policies act on container _exit_, not health status. The check is diagnostic: a stuck container shows as `unhealthy` in `docker compose ps` so you can spot it and restart it yourself, rather than it silently sitting "up" but unreachable.
 
 You can watch health status with:
 

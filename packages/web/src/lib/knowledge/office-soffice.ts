@@ -93,7 +93,7 @@ export function killTree(child: ReturnType<typeof spawn>): void {
  * network) and embed a `file://` one into the PDF (a local-file read that is
  * then served to every reader of the knowledge base). Each setting here was
  * chosen by CANARY — a crafted document, a local listener, the real binary —
- * not by its name (office-convert.libreoffice.test.ts keeps those canaries):
+ * not by its name (office-convert.canary.libreoffice.test.ts keeps those canaries):
  *
  *   - `BlockUntrustedRefererLinks` stopped BOTH the http fetch and the
  *     `file://` embed on its own, for Word, PowerPoint, an HTML file posing as
@@ -116,11 +116,14 @@ export function killTree(child: ReturnType<typeof spawn>): void {
  * unambiguously. Each of those answers a vector a review found; the next way
  * LibreOffice draws something by its bytes is a gap until it is found. For
  * the legacy binary formats (`.doc`, `.ppt`), which the preflight cannot
- * rewrite, this profile is the ONLY layer, and an SVG embedded in one still
- * reads a local file (the canary pins that gap). Isolating the converter
- * itself — no network, no view of the workspaces — is what closes the family;
- * that is separate work (branch feat/kb-office-convert-sidecar). The canary
- * says, vector by vector, which layers hold alone.
+ * rewrite, this profile is the ONLY layer of the two, and an SVG embedded in
+ * one still reads a local file (the canary pins that gap).
+ *
+ * None of it is the boundary. In production this runs in the office-converter
+ * sidecar, which has no network to fetch over and no secret or workspace to
+ * read (office-converter-sidecar.ts) — that is what closes the family. These
+ * settings still guard the in-process converter a developer machine runs,
+ * which has both. The canaries say, vector by vector, which layers hold alone.
  */
 const LOCKED_DOWN_PROFILE = `<?xml version="1.0" encoding="UTF-8"?>
 <oor:items xmlns:oor="http://openoffice.org/2001/registry" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
