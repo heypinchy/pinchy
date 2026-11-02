@@ -203,9 +203,9 @@ The `ollama pull bge-m3` step from the v0.9.0 notes no longer applies. If nothin
 
 The same run picks up four things it couldn't read before: **Word documents** (`.doc` and `.docx`), **slide decks** (`.ppt`, `.pptx`), **Excel workbooks** (`.xlsx`, `.xlsm`), and **scanned PDFs**. Citations land where each format actually has an anchor — a slide number, a heading, a sheet and row range — and open in the viewer like a PDF page does. Older `.xls` workbooks, plain text and Markdown are still out; [Supported file types](/guides/mount-data-directories/#supported-file-types) has the full split.
 
-Scans are the part worth a look before you click. A page with no text layer is rendered and handed to a vision model — the same one that already reads a scan when an agent opens it in chat — so **indexing now sends document content to your model provider**. It happens once per document, for every scanned page in the corpus, including documents nobody ever asks about. That's a wider statement than "only the question and the retrieved snippets leave the building", so it's worth deciding rather than discovering.
+Scans are the part worth a look before you upgrade. A page with no text layer is rendered and handed to a vision model — the same one that already reads a scan when an agent opens it in chat — so **indexing now sends document content to your model provider**. It happens once per document, for every scanned page in the corpus, including documents nobody ever asks about. That's a wider statement than "only the question and the retrieved snippets leave the building", so it's worth deciding rather than discovering.
 
-If that isn't right for your instance, set `PINCHY_KB_OCR=off` in your `.env` and restart before you reindex. Scans are then reported as `unsearchable` — listed by name, not quietly skipped — and nothing leaves the building. On an air-gapped install there's nothing to do either way: Pinchy picks the vision model from your configured cloud providers, so a local-only stack has none and never sends anything.
+If that isn't right for your instance, set `PINCHY_KB_OCR=off` in your `.env` **before you upgrade** — in the same edit as `PINCHY_VERSION`. Waiting until you click **Reindex now** is too late: the upgrade empties the index, and the [nightly reindex](#knowledge-bases-now-keep-themselves-current) rebuilds it on its own the first night after the upgrade, scans included. Scans are then reported as `unsearchable` — listed by name, not quietly skipped — and nothing leaves the building. On an air-gapped install there's nothing to do either way: Pinchy picks the vision model from your configured cloud providers, so a local-only stack has none and never sends anything.
 
 These calls run on your own API key and show up in the Usage Dashboard, and the reindex entry in the audit trail records how many documents and pages were sent, and to which model. [What indexing sends to your provider](/guides/mount-data-directories/#what-indexing-sends-to-your-provider) has the rest, including the 200-page-per-document limit.
 
@@ -248,6 +248,16 @@ Memory is now a permission of its own, in its own section of the **Permissions**
 An agent created from **Custom Agent — Start from scratch** gains nothing on that count alone — though most of them qualify under the first rule anyway, because the New Agent form ticked **Write files** for every agent it created. A from-scratch agent that genuinely holds no permissions stays that way, which is what starting from scratch is supposed to mean; turn memory on for it in **Agent Settings → Permissions → Memory** if you want it.
 
 **Write files** keeps its own checkbox, now labelled **Create files**, and it no longer covers the `uploads/` directory. That is where your chat attachments live; agents can still read it, but nothing can overwrite what you uploaded. If you wrote a custom instruction telling an agent to save files into `uploads/`, point it at `workbench/` instead.
+
+#### An agent can pause and ask before it acts
+
+Some actions are worth a second look — sending an email, writing to Odoo, deleting a record. You can now mark those per agent, and the agent stops and asks the person in the chat before it runs them. It doesn't hand the work back and make you start over: it waits mid-turn, and picks the turn straight up again once you approve.
+
+Set it in the agent's **Settings → Permissions**, under **Require confirmation before**. **Use recommended** ticks the tools that change things and leaves read-only ones alone, so the agent keeps feeling fast.
+
+For Odoo the model table on the same page carries three states per cell — **Not allowed**, **Ask first**, **Allowed** — because "ask before deleting" is usually too broad: an invoice deserves a second look, a note doesn't, and an agent that stops for both teaches people to click through without reading. A cell you've never touched inherits the tool setting above it, so gating deletion covers models you add next month, and setting one cell to **Allowed** stays an exception.
+
+Nothing changes for your existing agents on upgrade — no tool is gated until you gate one. Worth knowing before you do: a confirmation expires after 10 minutes and the action stays blocked, an approval is per person and good for exactly one action, there's no "always allow", and confirmations can only be answered in the Pinchy app — so a gated tool stays blocked on other channels and in scheduled runs, which have nobody to ask. [Require confirmation before a tool runs](/guides/tool-confirmation/) walks through the rest.
 
 #### `AUDIT_HMAC_SECRET` in `.env` now actually does something
 
@@ -301,6 +311,14 @@ Three things you may notice:
 - **Cost estimates on the Usage Dashboard changed for older models**, because their prices in Pinchy's catalog were out of date: Claude Opus 4.7 now reads $5 / $25 per million tokens instead of $15 / $75, and Claude Haiku 4.5 ($1 / $5), GPT-5.5 ($5 / $30), GPT-5.4 ($2.50 / $15), GPT-5.4 Mini ($0.75 / $4.50) and Gemini 2.5 Flash ($0.30 / $2.50) moved to their current list prices too. Past records keep the estimate they were stored with.
 - **Conversations on Claude Opus 4.7, Claude Sonnet 4.6, GPT-5.5, GPT-5.4 and GPT-5.4 Mini are compacted later.** Pinchy's catalog listed them with context windows of 128K or 200K tokens; they hold 400K to about 1M. Pinchy still caps the working context at 256K tokens, so these agents now compact at about 246K tokens instead of about 112K (GPT) or 184K (Claude). Long conversations keep more history, and their largest turns cost and take correspondingly more.
 - **Custom OpenAI-compatible providers may report different capabilities.** Pinchy fills in context windows and image support for their models from a bundled model list, which this release refreshes from 259 to 542 models. A model that list now marks as able to see — for example `qwen3.5-9b` — becomes eligible for image work. If your server runs such a model without image support, images sent to it will fail — give agents that receive images a different model. See [Where capabilities come from](/guides/llm-providers/#where-capabilities-come-from).
+
+#### The AI Provider settings are one grid
+
+**Settings → AI Provider** used to spread providers across separate sections. They're one grid of tiles now, each with its own logo, sorted so your default comes first and marked so you can see at a glance which one that is. Making a different provider the default is a click on its tile.
+
+Connecting an OpenAI-compatible endpoint lost a step as well: Pinchy asks your endpoint which models it serves and fills in their capabilities from its bundled model list, instead of asking you to pick from a list and then activate what you picked. [Where capabilities come from](/guides/llm-providers/#where-capabilities-come-from) says what that list is.
+
+Your existing providers, keys and default carry over untouched.
 
 #### Documents in archive folders drop out of everyday answers
 
@@ -364,6 +382,14 @@ Four admin-only management endpoints were still answering, and they are the last
 Nothing in Pinchy's own screens reaches those agents, so day-to-day admin work is unchanged: shared agents, and your own Smithers during Telegram setup, work exactly as before. Two smaller answers changed along with it — `GET`/`DELETE /api/agents/:agentId/integrations` and `GET /api/agents/:agentId/channels/telegram` used to answer `200` for an agent ID that belongs to nothing at all, and now answer `404`. Only a script calling those endpoints directly would notice.
 
 Nothing to configure, and nothing changes in the UI.
+
+#### Provision agents from a script, with an API key
+
+Agents can be created, listed and deleted over `/api/v1/*` with an API key now, instead of a browser session. It's built for CI/CD and infrastructure-as-code — the case that prompted it is resetting a demo or staging instance to a known state on every release, without leaning on database snapshots that break across schema migrations.
+
+Admins issue and revoke keys in **Settings → API Keys**. Keys carry a `pinchy_` prefix so they're easy to spot in logs, shell history and secret scanners, and they're scoped: `agents:read`, `agents:write` and `agents:delete` are separate grants, with deletion deliberately its own — it's irreversible and the highest-impact thing a leaked key could do. A key can't issue or revoke other keys, so a leaked one can never escalate itself, and everything it does lands in the audit trail.
+
+Nothing to do on upgrade: no keys exist until an admin creates one. [Agent Provisioning API](/reference/agent-provisioning-api/) has the endpoints and the scope rules.
 
 #### Changing your password now signs you out on every other device
 

@@ -172,6 +172,10 @@ export const sessions = pgTable(
     expiresAt: timestamp("expires_at").notNull(),
     ipAddress: text("ip_address"),
     userAgent: text("user_agent"),
+    // Better Auth `admin` plugin column (impersonation). Pinchy never impersonates,
+    // so it stays NULL — but better-auth >=1.7 checks the Drizzle schema against
+    // what its plugins declare at first use and refuses to run with this missing.
+    impersonatedBy: text("impersonated_by"),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at").notNull().defaultNow(),
   },
