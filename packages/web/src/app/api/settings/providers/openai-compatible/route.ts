@@ -4,12 +4,15 @@ import { parseRequestBody } from "@/lib/api-validation";
 import {
   upsertOpenAiCompatibleProviderSchema,
   deleteOpenAiCompatibleSchema,
+  baseUrlOrigin,
+  KEY_REQUIRED_FOR_NEW_ORIGIN,
 } from "@/lib/schemas/openai-compatible-provider";
 import {
   createOrUpdateProvider,
   listOpenAiCompatibleProvidersForAdmin,
   deleteProviderById,
   getDecryptedKeyById,
+  getBaseUrlById,
   getModelsById,
 } from "@/lib/openai-compatible-providers";
 import { fetchOpenAiCompatibleModels } from "@/lib/openai-compatible-discovery";
@@ -80,12 +83,32 @@ export const POST = withAdmin(async (request, _ctx, session) => {
   // can reuse it. `new URL(baseUrl)` is safe: the schema already validated it.
   const baseUrlHost = new URL(input.baseUrl).host;
 
+  // A stored key is bound to the origin it was entered for. The admin UI never
+  // shows the key, so without this an admin (or a stolen admin session) could
+  // point the base URL at a host they control and receive the key — as the
+  // Bearer token during discovery below, and on every later chat. The SSRF guard
+  // cannot help: the attacker's host is public. So an update that changes the
+  // origin must bring a fresh key; the stored one is never decrypted for it.
+  const newOrigin = new URL(input.baseUrl).origin;
+  const storedBaseUrl = input.id ? await getBaseUrlById(input.id) : undefined;
+  const originChanged = storedBaseUrl !== undefined && baseUrlOrigin(storedBaseUrl) !== newOrigin;
+  if (originChanged && !input.apiKey) {
+    return NextResponse.json(
+      {
+        error: KEY_REQUIRED_FOR_NEW_ORIGIN,
+        details: { formErrors: [], fieldErrors: { apiKey: [KEY_REQUIRED_FOR_NEW_ORIGIN] } },
+      },
+      { status: 422 }
+    );
+  }
+
   // Server-side model discovery (#894 backend redesign). The effective key is
-  // the freshly-supplied one, or — on an update that omitted it — the stored,
-  // decrypted key: discovery must still hit the live endpoint with SOME
-  // credential even when the admin didn't rotate it. Undefined only on a
-  // CREATE with no apiKey, which createOrUpdateProvider itself rejects below;
-  // discovery is simply skipped rather than probing with no credential.
+  // the freshly-supplied one, or — on an update that omitted it and kept the
+  // same origin — the stored, decrypted key: discovery must still hit the live
+  // endpoint with SOME credential even when the admin didn't rotate it.
+  // Undefined only on a CREATE with no apiKey, which createOrUpdateProvider
+  // itself rejects below; discovery is simply skipped rather than probing with
+  // no credential.
   const effectiveKey = input.apiKey ?? (input.id ? await getDecryptedKeyById(input.id) : undefined);
 
   let models: OpenClawModelDefinition[] = effectiveKey
@@ -228,6 +251,11 @@ export const POST = withAdmin(async (request, _ctx, session) => {
         provider: { id: row.slug, name: row.displayName },
         authType: "openai-compatible",
         baseUrlHost,
+        // Only present when an update moved the provider to a new origin (key-free:
+        // scheme + host + port only), so an analyst can see where a key was re-pointed.
+        ...(originChanged
+          ? { baseUrlChange: { from: baseUrlOrigin(storedBaseUrl!), to: newOrigin } }
+          : {}),
         modelCount: row.models.length,
         configRegenerated,
         // Only present when an edit actually repointed agents off removed models.

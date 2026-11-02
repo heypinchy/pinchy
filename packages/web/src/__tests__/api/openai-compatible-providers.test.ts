@@ -23,6 +23,7 @@ vi.mock("@/lib/openai-compatible-providers", () => ({
   listOpenAiCompatibleProvidersForAdmin: vi.fn().mockResolvedValue([]),
   deleteProviderById: vi.fn(),
   getDecryptedKeyById: vi.fn().mockResolvedValue("sk-stored-key"),
+  getBaseUrlById: vi.fn().mockResolvedValue("https://acme.example.com/v1"),
   getModelsById: vi.fn().mockResolvedValue([]),
 }));
 
@@ -114,6 +115,7 @@ import {
   listOpenAiCompatibleProvidersForAdmin,
   deleteProviderById,
   getDecryptedKeyById,
+  getBaseUrlById,
   getModelsById,
 } from "@/lib/openai-compatible-providers";
 import type { OpenAiCompatibleProviderListItem } from "@/lib/openai-compatible-providers";
@@ -191,6 +193,7 @@ describe("POST /api/settings/providers/openai-compatible", () => {
     vi.mocked(createOrUpdateProvider).mockResolvedValue(listItem());
     vi.mocked(regenerateOpenClawConfig).mockResolvedValue(undefined);
     vi.mocked(getDecryptedKeyById).mockResolvedValue("sk-stored-key");
+    vi.mocked(getBaseUrlById).mockResolvedValue("https://acme.example.com/v1");
     // Default: server-side discovery finds one model. #894 backend redesign —
     // the client no longer sends `models`; the route calls
     // fetchOpenAiCompatibleModels itself, mocked here.
@@ -473,6 +476,122 @@ describe("POST /api/settings/providers/openai-compatible", () => {
     expect(JSON.stringify(entry.detail)).not.toContain(SECRET_KEY);
     // An update must not clobber default_provider wiring for an existing slug.
     expect(setSetting).not.toHaveBeenCalled();
+  });
+
+  describe("a stored key never follows the base URL to a new origin", () => {
+    const updateId = "11111111-1111-4111-8111-111111111111";
+
+    it("rejects an update that moves the base URL to a new host without an api key, before any request", async () => {
+      const res = await POST(
+        postRequest({
+          id: updateId,
+          displayName: "Acme LLM",
+          baseUrl: "https://attacker.example.net/v1",
+        }),
+        routeCtx
+      );
+
+      expect(res.status).toBe(422);
+      const body = await res.json();
+      expect(body.details.fieldErrors.apiKey).toEqual([
+        "Enter the API key again when you change the address — the stored key is never sent to a new host.",
+      ]);
+      // The stored key is never even decrypted, let alone sent anywhere.
+      expect(getDecryptedKeyById).not.toHaveBeenCalled();
+      expect(fetchOpenAiCompatibleModels).not.toHaveBeenCalled();
+      expect(createOrUpdateProvider).not.toHaveBeenCalled();
+      expect(regenerateOpenClawConfig).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ["scheme", "http://acme.example.com/v1"],
+      ["port", "https://acme.example.com:8443/v1"],
+      ["host", "https://acme.example.org/v1"],
+    ])("treats a changed %s as a new origin", async (_what, baseUrl) => {
+      const res = await POST(
+        postRequest({ id: updateId, displayName: "Acme LLM", baseUrl }),
+        routeCtx
+      );
+
+      expect(res.status).toBe(422);
+      expect(fetchOpenAiCompatibleModels).not.toHaveBeenCalled();
+      expect(createOrUpdateProvider).not.toHaveBeenCalled();
+    });
+
+    it("lets a fresh api key accompany a new origin, and discovers with the NEW key only", async () => {
+      const res = await POST(
+        postRequest({
+          id: updateId,
+          displayName: "Acme LLM",
+          baseUrl: "https://new-host.example.com/v1",
+          apiKey: "sk-fresh-key",
+        }),
+        routeCtx
+      );
+
+      expect(res.status).toBe(200);
+      expect(getDecryptedKeyById).not.toHaveBeenCalled();
+      expect(fetchOpenAiCompatibleModels).toHaveBeenCalledTimes(1);
+      expect(fetchOpenAiCompatibleModels).toHaveBeenCalledWith(
+        "https://new-host.example.com/v1",
+        "sk-fresh-key"
+      );
+    });
+
+    it("still reuses the stored key when only the path changes on the same origin", async () => {
+      const res = await POST(
+        postRequest({
+          id: updateId,
+          displayName: "Acme LLM",
+          baseUrl: "https://acme.example.com/openai/v1",
+        }),
+        routeCtx
+      );
+
+      expect(res.status).toBe(200);
+      expect(fetchOpenAiCompatibleModels).toHaveBeenCalledWith(
+        "https://acme.example.com/openai/v1",
+        "sk-stored-key"
+      );
+    });
+
+    it("records the origin change on the success audit, without any key", async () => {
+      const res = await POST(
+        postRequest({
+          id: updateId,
+          displayName: "Acme LLM",
+          baseUrl: "https://new-host.example.com:8443/v1",
+          apiKey: SECRET_KEY,
+        }),
+        routeCtx
+      );
+
+      expect(res.status).toBe(200);
+      const entry = vi.mocked(appendAuditLog).mock.calls[0][0];
+      expect(entry.detail).toMatchObject({
+        baseUrlHost: "new-host.example.com:8443",
+        baseUrlChange: {
+          from: "https://acme.example.com",
+          to: "https://new-host.example.com:8443",
+        },
+      });
+      expect(JSON.stringify(entry.detail)).not.toContain(SECRET_KEY);
+      expect(JSON.stringify(entry.detail).length).toBeLessThan(2048);
+    });
+
+    it("does not record an origin change when the origin is unchanged", async () => {
+      await POST(
+        postRequest({
+          id: updateId,
+          displayName: "Acme Renamed",
+          baseUrl: "https://acme.example.com/v1",
+        }),
+        routeCtx
+      );
+
+      const entry = vi.mocked(appendAuditLog).mock.calls[0][0];
+      expect(entry.detail).not.toHaveProperty("baseUrlChange");
+    });
   });
 
   it("rejects an invalid body (empty displayName) with a structured 400 and no side effects", async () => {

@@ -152,6 +152,20 @@ export async function getDecryptedKeyById(id: string): Promise<string | undefine
 }
 
 /**
+ * The stored base URL for a single provider row, by id, or `undefined` if the
+ * row doesn't exist. The POST route compares its origin against the submitted
+ * one before it lets the stored key be reused: a key is bound to the host it
+ * was entered for, so it must never be sent to a different one.
+ */
+export async function getBaseUrlById(id: string): Promise<string | undefined> {
+  const [row] = await db
+    .select({ baseUrl: openaiCompatibleProviders.baseUrl })
+    .from(openaiCompatibleProviders)
+    .where(eq(openaiCompatibleProviders.id, id));
+  return row?.baseUrl;
+}
+
+/**
  * The stored last-known-good model snapshot for one provider, by id, or
  * `undefined` if the row doesn't exist. Used by the POST route on an UPDATE
  * whose live discovery found nothing (transient endpoint outage) and that

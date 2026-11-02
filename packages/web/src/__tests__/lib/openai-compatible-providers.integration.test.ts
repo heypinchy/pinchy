@@ -4,6 +4,7 @@ import { decrypt } from "@/lib/encryption";
 import {
   createOrUpdateProvider,
   deleteProviderById,
+  getBaseUrlById,
   listOpenAiCompatibleProviders,
   listOpenAiCompatibleProvidersForAdmin,
   listProvidersWithApiKeys,
@@ -233,6 +234,17 @@ describe("createOrUpdateProvider — update", () => {
         [MODEL]
       )
     ).rejects.toThrow(/not found/i);
+  });
+});
+
+describe("getBaseUrlById", () => {
+  it("returns the stored base URL, and undefined for an unknown id", async () => {
+    const created = await createOrUpdateProvider(
+      { displayName: "Swisscom AI", baseUrl: "https://api.swisscom.example/v1", apiKey: "sk-key" },
+      [MODEL]
+    );
+    expect(await getBaseUrlById(created.id)).toBe("https://api.swisscom.example/v1");
+    expect(await getBaseUrlById("00000000-0000-0000-0000-000000000000")).toBeUndefined();
   });
 });
 
