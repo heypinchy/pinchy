@@ -89,7 +89,6 @@ import { open, writeFile, type FileHandle } from "node:fs/promises";
 import { extname } from "node:path";
 
 import {
-  MAX_DOCX_ENTRY_BYTES,
   MAX_DOCX_MARKUP_BYTES,
   verifiedZipCopy,
   PLAIN_ATTRIBUTE_NAME,
@@ -206,19 +205,17 @@ const XLSX_LIMITS: ZipLimits = {
 
 /**
  * What mammoth (the word-count oracle) may be handed: the conversion's limits,
- * plus a ceiling on any ONE part, plus a ceiling on the MARKUP it parses,
- * summed. mammoth builds a DOM at up to ~300x the XML it reads — a 1.9 MB
- * .docx with a 31 MiB document part peaked at 2.9 GB, in the web process —
- * while a picture costs it nothing. The plugin's
- * own `extractDocxText` uses the same ceilings; `MAX_DOCX_MARKUP_BYTES` has
- * the measurements. Past them the oracle is skipped and the conversion is
- * recorded `unverified`. Both the guard and mammoth run in the reader child
+ * plus a ceiling on the MARKUP it parses, summed. mammoth builds a DOM at up
+ * to ~300x the XML it reads — a 1.9 MB .docx with a 31 MiB document part
+ * peaked at 2.9 GB, in the web process — while a picture costs it nothing, so
+ * no ceiling holds a picture back. The plugin's own `extractDocxText` uses the
+ * same markup ceiling; `MAX_DOCX_MARKUP_BYTES` has the measurements. Past it
+ * the oracle is skipped and the conversion is recorded `unverified`. Both the guard and mammoth run in the reader child
  * (`countDocxWordsIsolated`), whose heap cap is what bounds the DOM; these
  * ceilings only turn away early what it could not read anyway.
  */
 const MAMMOTH_LIMITS: ZipLimits = {
   ...OOXML_LIMITS,
-  maxEntryBytes: MAX_DOCX_ENTRY_BYTES,
   maxMarkupBytes: MAX_DOCX_MARKUP_BYTES,
 };
 
@@ -462,7 +459,7 @@ function fromCodePoint(code: number): string {
 
 /**
  * The `.docx` bytes for the word-count oracle, verified like the conversion
- * input and held to mammoth's per-part ceiling on top. A refusal here only
+ * input and held to mammoth's markup ceiling on top. A refusal here only
  * leaves the conversion unverified; it never fails it. Read in the reader
  * child, never in the server (`countDocxWordsIsolated`).
  */

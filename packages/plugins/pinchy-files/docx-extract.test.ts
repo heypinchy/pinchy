@@ -22,6 +22,7 @@ import {
   MAX_DOCX_EXTRACTED_TEXT_BYTES,
 } from "./docx-extract";
 import { docxToMarkdown } from "./docx-markdown";
+import { MAX_DOCX_FILE_SIZE } from "./validate";
 import {
   assembleZip,
   crc32,
@@ -175,6 +176,25 @@ describe("extractDocxText — the markup mammoth parses is capped, the pictures 
       "word/media/b3e7639622b0359f8b4e73fcd9d43f43c7727804.png",
       photo
     );
+    const { text } = await extractDocxText(withPhoto);
+    expect(text).toContain("[image]");
+  });
+
+  it("reads a document whose one picture fills the largest .docx pinchy_read accepts", async () => {
+    // A picture is stored near ratio 1, so a file at the size limit can carry
+    // one almost that large — a scan, an uncompressed screenshot. mammoth
+    // never reads it, so no ceiling on one part may turn it away.
+    const fixture = readFileSync(join(FIXTURES, "with-image.docx"));
+    const photo = Buffer.concat([
+      Buffer.from("89504e470d0a1a0a", "hex"),
+      randomBytes(MAX_DOCX_FILE_SIZE - fixture.length - 1024 * 1024),
+    ]);
+    const withPhoto = replacePart(
+      fixture,
+      "word/media/b3e7639622b0359f8b4e73fcd9d43f43c7727804.png",
+      photo
+    );
+    expect(withPhoto.length).toBeLessThanOrEqual(MAX_DOCX_FILE_SIZE);
     const { text } = await extractDocxText(withPhoto);
     expect(text).toContain("[image]");
   });

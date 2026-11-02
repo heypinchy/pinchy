@@ -41,7 +41,6 @@ import { fileURLToPath } from "node:url";
 
 import {
   MAX_DOCX_DECOMPRESSED_BYTES,
-  MAX_DOCX_ENTRY_BYTES,
   MAX_DOCX_MARKUP_BYTES,
   verifiedZipCopy,
 } from "./docx-zip-guard";
@@ -60,8 +59,6 @@ export interface DocxExtractionResult {
 export interface DocxExtractOptions {
   /** Cap on the archive's declared decompressed size (issue #424). */
   maxDecompressedBytes?: number;
-  /** Cap on any one part's size, pictures included. */
-  maxEntryBytes?: number;
   /**
    * Cap on the markup mammoth parses, summed: its DOM costs up to ~300x the
    * XML (see `MAX_DOCX_MARKUP_BYTES`), while a picture costs it nothing.
@@ -152,7 +149,6 @@ export async function extractDocxText(
 ): Promise<DocxExtractionResult> {
   const verified = await verifiedZipCopy(buffer, {
     maxDecompressedBytes: options.maxDecompressedBytes ?? MAX_DOCX_DECOMPRESSED_BYTES,
-    maxEntryBytes: options.maxEntryBytes ?? MAX_DOCX_ENTRY_BYTES,
     // The first layer: past this the guard answers with its own error
     // ("…bytes of markup to parse, past the …-byte limit…") without starting
     // a reader at all.

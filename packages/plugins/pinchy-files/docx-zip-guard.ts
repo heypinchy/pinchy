@@ -47,14 +47,6 @@ const EOCD_SEARCH_WINDOW = 22 + 0xffff;
 // hundred MB, and embedded media (PNG/JPEG) is stored near ratio 1.
 export const MAX_DOCX_DECOMPRESSED_BYTES = 500 * 1024 * 1024;
 
-// The largest single entry mammoth is handed. mammoth inflates a part whole
-// and builds a DOM from it, which costs many times the part itself; the total
-// above bounds the archive, not that. No real
-// document part comes near this — a thousand-page report's is a few MB — and
-// a .docx the plugin reads is at most MAX_FILE_SIZE (10 MB) on disk, so a
-// picture past it cannot be stored either.
-export const MAX_DOCX_ENTRY_BYTES = 32 * 1024 * 1024;
-
 // The most MARKUP mammoth is handed: every part it may parse as XML, summed
 // (see `ZipLimits.maxMarkupBytes`). mammoth's DOM costs 90-300x the XML it
 // parses, worst for many tiny paragraphs.
@@ -257,8 +249,8 @@ export interface ZipLimits {
   ratioFloorBytes?: number;
   /**
    * Ceiling on any ONE entry's uncompressed size. A reader that builds a model
-   * from a part (mammoth's DOM) pays for the largest part, not for the total;
-   * this is where that cost is bounded. Real sizes are checked against the
+   * from a part (exceljs's cell model) pays for the largest part, not for the
+   * total; this is where that cost is bounded. Real sizes are checked against the
    * declared ones by `verifiedZipCopy`, so the declared size is the real one.
    */
   maxEntryBytes?: number;
@@ -564,7 +556,7 @@ export async function verifiedZipCopy(buffer: Buffer, limits: ZipLimits): Promis
   }
 
   if (limits.maxMarkupBytes !== undefined) {
-    const markup = markupBytes(parts);
+    const markup = markupBytes(parts, limits.maxMarkupBytes);
     if (markup > limits.maxMarkupBytes) {
       throw new ZipLimitError(
         `This document has ${markup} bytes of markup to parse, past the ${limits.maxMarkupBytes}-byte limit for reading one safely.`
@@ -797,7 +789,16 @@ function inflated(part: ZipPart): Buffer {
  * NAME alone, case-insensitively, is what makes that conservative: however a
  * reader joins a target to its base path, the part it lands on has that name.
  */
-function markupBytes(parts: ZipPart[]): number {
+function markupBytes(parts: ZipPart[], ceiling: number): number {
+  // Parts named like XML count whatever a relationship says. Past the ceiling
+  // on those alone, the relationship parts are not read: reading one holds it
+  // whole, and only the archive's total bounds how large one is.
+  const named = parts.reduce(
+    (total, part) => total + (isMarkupName(part.name) ? part.uncompressedSize : 0),
+    0
+  );
+  if (named > ceiling) return named;
+
   const all = parts.reduce((total, part) => total + part.uncompressedSize, 0);
   const parsedNames = new Set<string>();
   const unparsedNames = new Set<string>();

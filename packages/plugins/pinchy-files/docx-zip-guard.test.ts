@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { constants as zlibConstants, deflateRawSync, inflateRawSync } from "node:zlib";
@@ -13,6 +13,13 @@ import {
   ZipFormatError,
   ZipLimitError,
 } from "./docx-zip-guard";
+
+// zlib unchanged, but with its whole-buffer inflate observable: the guard
+// streams every entry it verifies and inflates only what it must read.
+vi.mock("node:zlib", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:zlib")>();
+  return { ...actual, inflateRawSync: vi.fn(actual.inflateRawSync) };
+});
 
 const FIXTURES = join(import.meta.dirname, "test-fixtures");
 
@@ -744,6 +751,28 @@ describe("verifiedZipCopy — a ceiling on the markup a reader may parse", () =>
       honest("word/media/image1.png", pictureBytes()),
     ]);
     expect(await refusal(verifiedZipCopy(zip, LIMITS_2K))).toBeInstanceOf(ZipLimitError);
+  });
+
+  it("refuses relationship parts past the ceiling without inflating one to read it", async () => {
+    // A part named like XML counts whatever the relationships say, so those
+    // parts alone can be past the ceiling. Then the relationships are not
+    // read: reading one holds it whole, and nothing tighter than the archive's
+    // total bounds how large it is.
+    const zip = rawZip([
+      honest("[Content_Types].xml", "<Types/>"),
+      honest("_rels/.rels", rootRels),
+      honest(
+        "word/_rels/document.xml.rels",
+        docRels(["image", "media/image1.png"]).replace("<?xml", `<!--${" ".repeat(3000)}--><?xml`)
+      ),
+      honest("word/document.xml", "<w:document/>"),
+      honest("word/media/image1.png", pictureBytes()),
+    ]);
+    vi.mocked(inflateRawSync).mockClear();
+    const err = await refusal(verifiedZipCopy(zip, LIMITS_2K));
+    expect(err).toBeInstanceOf(ZipLimitError);
+    expect(err.message).toMatch(/markup/);
+    expect(inflateRawSync).not.toHaveBeenCalled();
   });
 
   it("is off unless asked for: workbooks and decks keep their own limits", async () => {

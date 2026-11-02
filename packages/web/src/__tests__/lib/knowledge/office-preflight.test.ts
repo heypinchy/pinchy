@@ -722,6 +722,21 @@ describe("readGuardedDocx", () => {
     expect(partsOf(copy)).toEqual(partsOf(docx));
   });
 
+  it("returns a document whose one picture is far larger than any part mammoth parses", async () => {
+    // mammoth never reads a picture, so no ceiling holds one back: a Word
+    // file carrying a 40 MiB scan is still checked by the word count.
+    const scan = Buffer.concat([Buffer.from("89504e470d0a1a0a", "hex"), randomBytes(40 * MiB)]);
+    const docx = docxWith({
+      documentRels: relationships(
+        `<Relationship Id="rId9" Type="${REL_IMAGE}" Target="media/scan.png"/>`
+      ),
+      parts: { "word/media/scan.png": scan },
+    });
+    const copy = await readGuardedDocx(file("scan.docx", docx));
+    const picture = readZipEntries(copy).find((entry) => entry.name === "word/media/scan.png");
+    expect(picture?.uncompressedSize).toBe(scan.length);
+  });
+
   it("refuses a document that inflates past the size it declares", async () => {
     const bomb = replaceEntry(
       docxWith({ documentRels: relationships() }),
