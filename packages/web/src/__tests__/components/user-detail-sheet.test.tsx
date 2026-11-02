@@ -37,6 +37,7 @@ const mockUser: UserListItem = {
   role: "member",
   status: "active",
   groups: [{ id: "g1", name: "Engineering" }],
+  unknownOrigin: false,
 };
 
 const allGroups = [

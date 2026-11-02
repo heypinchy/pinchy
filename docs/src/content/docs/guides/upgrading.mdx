@@ -235,6 +235,31 @@ sed -i 's/^PINCHY_VERSION=.*/PINCHY_VERSION=%%PINCHY_VERSION%%/' .env
 docker compose pull && docker compose up -d && docker image prune -f
 ```
 
+#### Security: open self-registration is closed — review your user list
+
+Earlier releases, v0.9.1 included, left the authentication library's sign-up endpoint reachable. Anyone who could reach your Pinchy URL could create their own account with the `member` role, bypassing invites and your seat cap. That account could do what any member can: open and **chat with** every shared agent set to **All users**, and have it run its tools with your organisation's credentials — Odoo reads and writes, sending email, web search, whatever that agent was granted. On an install with no licence key, that was every shared agent, because **Restricted** only takes effect with one; an expired or refused key keeps **Restricted** enforced. The account got no personal agent and no groups. This release closes it: `POST /api/auth/sign-up/*` now answers `404` to every client. Accounts are created only by the setup wizard and by claiming an invite.
+
+The same release goes further and turns the library's endpoints into an allowlist. A client — admin or not — now reaches exactly three of them: sign-in, sign-out and the session lookup. Everything else answers `404`, including the user-administration and profile endpoints (`/api/auth/admin/*`, `/update-user`, `/change-password`, `/change-email`, `/delete-user`), which bypassed Pinchy's audit trail and, for admins, the rule that personal agents stay private, and `/verify-password`, which let anyone holding a stolen session test password guesses outside the sign-in limit. Everything the Pinchy UI does is unchanged — it never used them.
+
+Closing the endpoint doesn't touch accounts that already used it: they keep signing in. So this release looks for them. Every legitimate account is the admin who ran the setup wizard, someone who claimed an invite, or an admin who has sent one; an account that is none of these most likely signed itself up. On its first start, Pinchy writes one `user.unknown_origin_detected` row per such account to the [audit trail](/concepts/audit-trail/), and **Settings → Users** lists the ones still active in a banner at the top. **Review** opens the account; if you don't recognise it, **Deactivate** it. Deactivating bans the account, ends all its sessions at once, closes any chat it has open, stops any reply still running in those chats — so the agent starts no further tool for it — and removes its personal agents (`DELETE /api/users/:id`). Before this release, a chat that was already open kept working after deactivation until the tab was closed. A Telegram reply already running, and automations the account created on shared agents, are out of that reach; [User management](/guides/user-management/#what-deactivation-doesnt-stop) lists what carries on. Pinchy has no hard delete — a deactivated account stays on record and can be reactivated.
+
+The check treats the earliest-created admin as the setup admin. If you demoted the admin who ran setup and they never sent an invite, they appear in the banner too. For them, and for any other account you recognise, click **Mark as known** and confirm — it can't be undone. It works on your own account as well, and it is recorded in the audit trail as `user.origin_acknowledged`. To run the same check yourself, list the users that no claimed invite points to and that never sent one:
+
+```bash
+docker compose exec -T db psql -U pinchy pinchy -c "
+  SELECT u.id, u.email, u.role, u.banned, u.created_at FROM \"user\" u
+  WHERE NOT EXISTS (SELECT 1 FROM invites i
+                    WHERE i.claimed_by_user_id = u.id AND i.type = 'invite')
+    AND NOT EXISTS (SELECT 1 FROM invites i WHERE i.created_by = u.id)
+  ORDER BY u.created_at;"
+```
+
+Apart from your setup admin, every row deserves a look; `banned = t` means it is already deactivated.
+
+Then find out what each account did. Its sign-up left no trace — registering wrote no audit row, and neither did the session it opened — but everything after it is recorded like any member's activity, with the account as the actor: its later sign-ins as `auth.login`, and every tool call an agent made in its chats as `tool.<name>` (`tool.odoo_write`, `tool.email_send`, …). The audit trail filters by account through the API — the user id is in the SQL output above, and in the `resource` of each `user.unknown_origin_detected` row: `GET /api/audit?actorId=<user id>`, or `GET /api/audit/export?actorId=<user id>` for a CSV of everything. If your instance was reachable from the internet, treat what those agents could read and do as possibly exposed.
+
+The API-key list in **Settings → API Keys** also now flags keys created by an admin who has since been demoted, not just one who was banned or deleted — consider rotating those.
+
 #### Memory is now its own permission — and most agents gain it on upgrade
 
 An agent's memory used to hang off the **Write files** permission. Nothing said so, no agent template granted that permission, and the New Agent form quietly ticked it for you — so whether an agent could remember anything depended on a checkbox about files, and any agent created outside that form, including your personal Smithers, had no memory at all.

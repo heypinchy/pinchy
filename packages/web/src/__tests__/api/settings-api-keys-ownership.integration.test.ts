@@ -208,6 +208,33 @@ describe("API key ownership (Model 2)", () => {
     });
   });
 
+  it("flags a demoted creator inactive — a former admin is no longer someone who serves here", async () => {
+    const adminId = await seedAdminSession("Cara Admin");
+    const created = await issueKey("CI Deploy");
+
+    // Demotion, not deactivation: the account still logs in and is not
+    // banned, but it can no longer administer anything — and the key it
+    // minted is still a working org credential. That is exactly the key an
+    // admin reviewing this page must be prompted to rotate.
+    await db.update(users).set({ role: "member" }).where(eq(users.id, adminId));
+    // A second admin, still serving, opens the settings page.
+    await seedAdminSession("Dara Admin", "dara@test.local");
+
+    const response = await GET(
+      new NextRequest("http://localhost/api/settings/api-keys"),
+      undefined
+    );
+    const { keys } = (await response.json()) as {
+      keys: { id: string; createdBy: { name: string; active: boolean } | null }[];
+    };
+
+    expect(keys.find((k) => k.id === created.id)?.createdBy).toEqual({
+      id: adminId,
+      name: "Cara Admin",
+      active: false,
+    });
+  });
+
   it("marks a serving admin's key active", async () => {
     const adminId = await seedAdminSession("Cara Admin");
     const created = await issueKey("CI Deploy");
