@@ -6,14 +6,17 @@ import {
   AUDIT_KEY_SWITCH_DOCS_URL,
   describeAuditKeyFilePersist,
   describeIgnoredSecretEnv,
+  ENCRYPTION_KEY_IGNORED_DOCS_URL,
   evaluateAuditSecretRotation,
 } from "@/lib/secret-source";
 
 const repoRoot = resolve(__dirname, "../../../../..");
-const pagePath = resolve(repoRoot, "docs/src/content/docs/concepts/audit-trail-verification.mdx");
+const docsRoot = resolve(repoRoot, "docs/src/content/docs");
+const pagePath = resolve(docsRoot, "concepts/audit-trail-verification.mdx");
+const envVarsPagePath = resolve(docsRoot, "reference/environment-variables.mdx");
 
-function headingSlugs(): string[] {
-  return readFileSync(pagePath, "utf-8")
+function headingSlugs(path: string): string[] {
+  return readFileSync(path, "utf-8")
     .split(/\r?\n/)
     .filter((line) => /^#{2,6} /.test(line))
     .map((line) =>
@@ -26,11 +29,17 @@ function headingSlugs(): string[] {
     );
 }
 
-function expectExistingSection(docsUrl: string) {
+function expectExistingSection(
+  docsUrl: string,
+  page: { pathname: string; path: string } = {
+    pathname: "/concepts/audit-trail-verification/",
+    path: pagePath,
+  }
+) {
   const url = new URL(docsUrl);
   expect(url.origin).toBe("https://docs.heypinchy.com");
-  expect(url.pathname).toBe("/concepts/audit-trail-verification/");
-  expect(headingSlugs()).toContain(url.hash.slice(1));
+  expect(url.pathname).toBe(page.pathname);
+  expect(headingSlugs(page.path)).toContain(url.hash.slice(1));
 }
 
 describe("the audit-key startup notices link to sections that exist", () => {
@@ -46,6 +55,16 @@ describe("the audit-key startup notices link to sections that exist", () => {
     // Printed when the variable's value could not be written to the key file:
     // the operator needs the one procedure that says what to do before a switch.
     expectExistingSection(AUDIT_KEY_SWITCH_DOCS_URL);
+  });
+
+  it("points the ignored-ENCRYPTION_KEY warning at the safe steps", () => {
+    // Printed on every start while ENCRYPTION_KEY is malformed. The obvious
+    // "fix" makes every stored credential unreadable, so the section it links
+    // to is the only place the safe steps are spelled out.
+    expectExistingSection(ENCRYPTION_KEY_IGNORED_DOCS_URL, {
+      pathname: "/reference/environment-variables/",
+      path: envVarsPagePath,
+    });
   });
 });
 
@@ -69,6 +88,14 @@ describe("the retire-the-earlier-key steps quote log lines Pinchy prints", () =>
     expect(
       describeIgnoredSecretEnv({ envVar: "AUDIT_HMAC_SECRET", ignored: true }).message
     ).toContain(line);
+  });
+
+  it("the ignored-ENCRYPTION_KEY warning, on the environment variables page", () => {
+    const line = "ENCRYPTION_KEY is set but is not a valid key";
+    expect(readFileSync(envVarsPagePath, "utf-8")).toContain(`\`${line}\``);
+    expect(describeIgnoredSecretEnv({ envVar: "ENCRYPTION_KEY", ignored: true }).message).toContain(
+      line
+    );
   });
 
   it("the key-file write", () => {

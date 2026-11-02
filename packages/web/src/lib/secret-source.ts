@@ -180,13 +180,32 @@ export interface IgnoredSecretEnvLog {
 }
 
 /**
+ * Where the ignored-`ENCRYPTION_KEY` warning sends an operator: the steps that
+ * keep their stored credentials readable. Exported for the same docs test as
+ * the audit links above.
+ */
+export const ENCRYPTION_KEY_IGNORED_DOCS_URL =
+  "https://docs.heypinchy.com/reference/environment-variables/#when-pinchy-ignores-a-key-variable";
+
+/**
  * The startup warning for a key variable Pinchy ignores. {@link getSecretSource}
  * only accepts 64 hex characters and otherwise falls back to the key file,
  * which is the right fallback but used to be a silent one: an operator with a
  * 63-character value or a `0x` prefix saw nothing wrong and believed the
- * variable was the key. For the audit secret that belief is dangerous, because
- * the retire-the-earlier-key steps remove the key file, and while the variable
- * is ignored that file is the signing key.
+ * variable was the key.
+ *
+ * The remedy differs per variable, because "fix the value and restart" is a
+ * key switch for both:
+ *
+ *   - `ENCRYPTION_KEY`: while the variable is ignored, everything Pinchy
+ *     encrypts goes under the key file. A corrected value is a different key,
+ *     and every credential stored so far stops decrypting. The only safe moves
+ *     keep the file's key in effect: drop the variable, or set it to the
+ *     file's exact contents. So this warning never suggests a new key.
+ *   - `AUDIT_HMAC_SECRET`: a corrected value switches the signing key, which is
+ *     supported but has a procedure (current key in the file first, several
+ *     instances stop together). Until then the file is the signing key, and the
+ *     retire-the-earlier-key steps remove that file.
  *
  * Takes a boolean, never the value, for the reason
  * {@link evaluateAuditSecretRotation} does. The message says only "not 64 hex
@@ -198,19 +217,34 @@ export function describeIgnoredSecretEnv(opts: {
 }): IgnoredSecretEnvLog {
   if (!opts.ignored) return { action: "none" };
 
-  const consequence =
-    opts.envVar === "AUDIT_HMAC_SECRET"
-      ? " Until then, the key file is the audit signing key, so don't remove " +
-        ".audit_hmac_secret from the volume."
-      : "";
+  const ignored =
+    `WARNING: ${opts.envVar} is set but is not a valid key, so Pinchy ignores it ` +
+    "and uses the key file in the secrets volume instead (creating one there if " +
+    "there is none). A valid key is 64 hex characters (0-9, a-f), with no 0x " +
+    "prefix, quotes or spaces.";
+
+  if (opts.envVar === "ENCRYPTION_KEY") {
+    return {
+      action: "warn",
+      message:
+        `${ignored} That file, .encryption_key, is the key Pinchy encrypts your ` +
+        "stored credentials with now. The safe fixes are removing ENCRYPTION_KEY from " +
+        "your .env, or setting it to the key file's exact contents, then running " +
+        "docker compose up -d. Any other value, even a valid one, makes everything " +
+        "encrypted with the key file unreadable, and those credentials can only be " +
+        "re-entered. See " +
+        ENCRYPTION_KEY_IGNORED_DOCS_URL,
+    };
+  }
+
   return {
     action: "warn",
     message:
-      `WARNING: ${opts.envVar} is set but is not a valid key, so Pinchy ignores it ` +
-      "and uses the key file in the secrets volume instead (creating one there if " +
-      "there is none). A valid key is 64 hex characters (0-9, a-f), with no 0x " +
-      "prefix, quotes or spaces: the output of openssl rand -hex 32. Fix the value " +
-      `in your .env and restart Pinchy.${consequence}`,
+      `${ignored} Until it is, the key file is the audit signing key, so don't ` +
+      "remove .audit_hmac_secret from the volume. Setting a valid value, such as " +
+      "the output of openssl rand -hex 32, switches the signing key: follow " +
+      `${AUDIT_KEY_SWITCH_DOCS_URL} (on several instances against one database, ` +
+      "stop them all first).",
   };
 }
 

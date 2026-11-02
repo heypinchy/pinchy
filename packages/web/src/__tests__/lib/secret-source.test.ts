@@ -31,6 +31,7 @@ import {
   AUDIT_KEY_SWITCH_DOCS_URL,
   describeAuditKeyFilePersist,
   describeIgnoredSecretEnv,
+  ENCRYPTION_KEY_IGNORED_DOCS_URL,
 } from "@/lib/secret-source";
 
 const mockedExistsSync = vi.mocked(existsSync);
@@ -130,12 +131,71 @@ describe("describeIgnoredSecretEnv", () => {
   });
 
   it("says what a valid value looks like", () => {
-    const result = describeIgnoredSecretEnv({ envVar: "ENCRYPTION_KEY", ignored: true });
+    for (const envVar of ["ENCRYPTION_KEY", "AUDIT_HMAC_SECRET"] as const) {
+      const result = describeIgnoredSecretEnv({ envVar, ignored: true });
 
-    expect(result.message).toMatch(/^WARNING: ENCRYPTION_KEY is set but is not a valid key/);
-    expect(result.message).toMatch(/64 hex characters/);
-    expect(result.message).toMatch(/0x/);
+      expect(result.message).toMatch(
+        new RegExp(`^WARNING: ${envVar} is set but is not a valid key`)
+      );
+      expect(result.message).toMatch(/64 hex characters/);
+      expect(result.message).toMatch(/0x/);
+    }
+  });
+
+  it("tells the audit operator how to make a fresh key, and that a valid value is a key switch", () => {
+    // A valid value replaces the key file as the signing key. That is the
+    // supported key switch, but it has a procedure (current key in the file
+    // first; several instances stop together), so the warning links to it
+    // instead of saying "fix it and restart".
+    const result = describeIgnoredSecretEnv({ envVar: "AUDIT_HMAC_SECRET", ignored: true });
     expect(result.message).toMatch(/openssl rand -hex 32/);
+    expect(result.message).toMatch(/switches the (audit )?signing key/);
+    expect(result.message).toContain(AUDIT_KEY_SWITCH_DOCS_URL);
+    expect(result.message).toMatch(/several instances/);
+    expect(result.message).toMatch(/stop (them )?all/);
+  });
+
+  describe("for ENCRYPTION_KEY", () => {
+    // While the variable is ignored, everything Pinchy encrypts goes under the
+    // key file. "Fix the value and restart" therefore means "switch the key",
+    // and every stored credential stops decrypting (reproduced on PR #1239's
+    // review). The only safe moves keep the key file's key in effect.
+    const message = () =>
+      describeIgnoredSecretEnv({ envVar: "ENCRYPTION_KEY", ignored: true }).message ?? "";
+
+    it("says the key file is the key in use", () => {
+      expect(message()).toMatch(/\.encryption_key/);
+      expect(message()).toMatch(/is the key Pinchy encrypts .* with now/);
+    });
+
+    it("never advises fixing the value", () => {
+      expect(message()).not.toMatch(/fix the value/i);
+      expect(message()).not.toMatch(/correct the value/i);
+    });
+
+    it("never suggests generating a new key", () => {
+      expect(message()).not.toMatch(/openssl rand/);
+    });
+
+    it("names both safe fixes", () => {
+      expect(message()).toMatch(/remov(e|ing) ENCRYPTION_KEY from your \.env/);
+      expect(message()).toMatch(/key file's exact contents/);
+    });
+
+    it("says what any other value costs", () => {
+      expect(message()).toMatch(/any other value/i);
+      expect(message()).toMatch(/unreadable/);
+    });
+
+    it("says how to apply the change so .env is read again", () => {
+      // docker compose restart keeps the old environment.
+      expect(message()).toMatch(/docker compose up -d/);
+      expect(message()).not.toMatch(/docker compose restart/);
+    });
+
+    it("links to the docs section with the safe steps", () => {
+      expect(message()).toContain(ENCRYPTION_KEY_IGNORED_DOCS_URL);
+    });
   });
 
   it("tells the audit operator not to remove the key file while the variable is ignored", () => {
