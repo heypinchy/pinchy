@@ -1,28 +1,28 @@
 import { posix } from "node:path";
 import { hiddenCharIn, isSpaceSeparator } from "./hidden-chars";
+import { invisibleEmojiFormatOffsets } from "./emoji-sequence";
 
 /** Longest path accepted. Far past any real one; short enough to show whole. */
 const MAX_PATH_LENGTH = 1024;
 
 /**
- * One emoji as a file name carries it: a pictograph (or a keycap digit) with
- * an optional presentation selector and skin tone, and any further pictographs
- * joined to it by U+200D — ⚠️, ❤️, 👨‍👩‍👧, 👩🏽‍💻, 🏳️‍🌈, 1️⃣.
+ * The path with the emoji format characters taken out where they are part of
+ * what you see (`emoji-sequence.ts`). Inside an emoji the card shows them
+ * unchanged — so `⚠️ offen.md` must be writable (fifth review of #1242).
+ * Anywhere else they render as nothing: `a\u200Db.md` looks exactly like
+ * `ab.md` and may be a different file, and so does `✅\uFE0F.md` next to
+ * `✅.md`, since ✅ is an emoji without the selector (sixth review). Those
+ * are left in place for `hiddenCharIn` to refuse.
  */
-const EMOJI_SEQUENCE =
-  /(?:\p{Extended_Pictographic}|[0-9#*](?=\uFE0F\u20E3))[\uFE0E\uFE0F]?\p{Emoji_Modifier}?(?:\u200D\p{Extended_Pictographic}[\uFE0E\uFE0F]?\p{Emoji_Modifier}?)*/gu;
-
-/**
- * The path with the emoji format characters (`isEmojiFormatChar`) taken out of
- * the emoji they belong to. Inside an emoji they are part of a visible glyph,
- * and the card shows them unchanged — so `⚠️ offen.md` must be writable (fifth
- * review of #1242). Anywhere else they render as nothing: `a\u200Db.md` looks
- * exactly like `ab.md` and may be a different file, so a stray one is left in
- * place for `hiddenCharIn` to refuse.
- */
-function withoutEmojiFormatChars(value: string): string {
-  return value.replace(EMOJI_SEQUENCE, (emoji) => emoji.replace(/[\u200D\uFE0E\uFE0F]/g, ""));
+function withoutVisibleEmojiFormatChars(value: string): string {
+  const invisible = invisibleEmojiFormatOffsets(value, { redundant: true });
+  return value.replace(/[\u200D\uFE0E\uFE0F]/g, (char: string, offset: number) =>
+    invisible.has(offset) ? char : ""
+  );
 }
+
+/** A file or folder name that starts or ends with a space of any kind. */
+const PADDED_SEGMENT = /^\s|\s$/u;
 
 /**
  * Refuses a path a write tool is asked to change unless it reads as exactly
@@ -47,24 +47,42 @@ function withoutEmojiFormatChars(value: string): string {
  *   no-break, ideographic) are allowed: they take visible width, the card
  *   prints each as `⟨U+XXXX⟩`, and real file names carry them — macOS writes
  *   "Screenshot … at 10.00.00 AM.png";
+ * - no file or folder name that starts or ends with a space of any kind —
+ *   `report.md ` would be a different file from `report.md`, and the card can
+ *   only mark the space, not make the two read apart at a glance (sixth
+ *   review). Unless `trimmedByTool`: a tool that trims the name itself
+ *   (`pinchy_generate_file`) writes the one file either spelling names;
  * - NFC only — an NFD path renders exactly like its NFC twin, and on a Linux
  *   filesystem the two can be two different files. A file stored under an NFD
  *   name is still reached through its NFC spelling (`resolveOnDiskPath`).
  *
  * Every error says why, so the model can send the plain form.
  */
-export function assertPlainPath(value: string, field: string): void {
+export function assertPlainPath(
+  value: string,
+  field: string,
+  { trimmedByTool = false }: { trimmedByTool?: boolean } = {}
+): void {
   if (value.length > MAX_PATH_LENGTH) {
     throw new Error(
       `${field} is longer than ${MAX_PATH_LENGTH} characters (${value.length}). ` +
         "Use a shorter path."
     );
   }
-  const hidden = hiddenCharIn(withoutEmojiFormatChars(value), isSpaceSeparator);
+  const hidden = hiddenCharIn(withoutVisibleEmojiFormatChars(value), isSpaceSeparator);
   if (hidden) {
     throw new Error(
       `${field} contains an invisible or blank-rendering character (${hidden}). ` +
         "Use the plain path, without such characters."
+    );
+  }
+  const padded = trimmedByTool
+    ? undefined
+    : value.split("/").find((segment) => PADDED_SEGMENT.test(segment));
+  if (padded !== undefined) {
+    throw new Error(
+      `${field} has a space at the start or end of a file or folder name ` +
+        `(${JSON.stringify(padded)}). Name it without the surrounding spaces.`
     );
   }
   if (value !== value.normalize("NFC")) {

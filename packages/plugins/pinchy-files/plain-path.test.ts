@@ -88,6 +88,47 @@ describe("assertPlainPath", () => {
     refused(value, why);
   });
 
+  // Sixth review of #1242: ✅ is shown as an emoji by default, so a U+FE0F
+  // after it changes nothing on screen — `Vertrag ✅️.pdf` read exactly like
+  // `Vertrag ✅.pdf` and is a different file. A selector that asks for the
+  // presentation a character already has is refused like any other invisible
+  // character; one that changes it (⚠️, ✅︎) is part of what you see.
+  it.each([
+    ["after an emoji-by-default check mark", "/data/out/Vertrag \u2705\uFE0F.pdf"],
+    ["after an emoji-by-default page", "/data/out/\u{1F4C4}\uFE0F.md"],
+    ["after a skin tone", "/data/out/\u{1F44D}\u{1F3FD}\uFE0F.md"],
+  ])("refuses a presentation selector that changes nothing: %s", (_label, value) => {
+    refused(value, /U\+FE0F/);
+  });
+
+  it("still accepts a selector that changes the presentation", () => {
+    ok("/data/out/Vertrag \u2705\uFE0E.pdf");
+    ok("/data/notes/\u26A0\uFE0F offen.md");
+  });
+
+  // Sixth review of #1242: `/data/out/report.md ` read on the card exactly
+  // like `/data/out/report.md`, and is a different file.
+  it.each([
+    ["a trailing space", "/data/out/report.md "],
+    ["a leading space", " /data/out/report.md"],
+    ["a space before a slash", "/data/out /report.md"],
+    ["a space after a slash", "/data/ out/report.md"],
+    ["a trailing no-break space", "/data/out/report.md\u00A0"],
+    ["a leading ideographic space", "/data/out/\u3000report.md"],
+  ])("refuses a file or folder name with %s", (_label, value) => {
+    refused(value, /space at the start or end/);
+  });
+
+  // pinchy_generate_file trims the name itself, so both spellings name the
+  // one file it writes; everything else still applies.
+  it("lets a tool that trims the name accept surrounding spaces, and nothing more", () => {
+    const trimmed = (value: string) => () =>
+      assertPlainPath(value, "filename", { trimmedByTool: true });
+    expect(trimmed("  padded  ")).not.toThrow();
+    expect(trimmed("padded\u2800")).toThrow(/U\+2800/);
+    expect(trimmed("\u2705\uFE0F")).toThrow(/U\+FE0F/);
+  });
+
   it("still refuses an NFD path and a '..' segment", () => {
     refused("/data/übersicht.md", /NFC/);
     refused("/data/reports/../contracts/x.pdf", /\.\./);

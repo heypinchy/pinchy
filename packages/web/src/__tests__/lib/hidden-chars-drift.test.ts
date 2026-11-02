@@ -12,7 +12,7 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { isEscapedChar } from "@/lib/approvals/summary";
+import { isEscapedChar, summarizeCall } from "@/lib/approvals/summary";
 import {
   hiddenCharIn,
   isEmojiFormatChar,
@@ -89,6 +89,49 @@ describe("hidden-chars drift guard", () => {
         expect(() => assertPlainPath(`/data/${inEmoji} x.md`, "path")).not.toThrow();
         expect(() => assertPlainPath(`/data/a${char}b.md`, "path")).toThrow(/U\+/);
       }
+    });
+
+    // Sixth review of #1242: the card kept the joiner and the presentation
+    // selectors raw everywhere, so a stray one read as nothing on the card
+    // while the path rule refused it. Both now read emoji through one module
+    // (pinchy-files `emoji-sequence.ts`); pinned here so they cannot drift:
+    // the card marks one of these characters exactly where a path may not
+    // carry it.
+    it("the card marks a joiner or selector in a path exactly where the path rule refuses it", () => {
+      const names = [
+        "\u26A0\uFE0F offen",
+        "\u26A0\uFE0E text",
+        "\u2705 done",
+        "\u2705\uFE0F done",
+        "\u2705\uFE0E done",
+        "\u{1F4C4}\uFE0F",
+        "\u{1F468}\u200D\u{1F469}\u200D\u{1F467}",
+        "\u{1F469}\u{1F3FD}\u200D\u{1F4BB}",
+        "\u{1F3F3}\uFE0F\u200D\u{1F308}",
+        "1\uFE0F\u20E3 first",
+        "a\u200Db",
+        "report\uFE0F",
+        "\u{1F468}\u200Db",
+        "\u{1F468}\u200D",
+        "a\u200D\u{1F468}",
+        "\u26A0\uFE0F\uFE0F",
+        "\u{1F600}\uFE0F\uFE0F",
+      ];
+      const rows = names.map((name) => {
+        const path = `/data/${name}.md`;
+        let refused = false;
+        try {
+          assertPlainPath(path, "path");
+        } catch {
+          refused = true;
+        }
+        const shown = summarizeCall({ path }).summary.path as string;
+        return { name, refused, marked: /⟨U\+(200D|FE0E|FE0F)⟩/.test(shown) };
+      });
+      expect(rows.filter((row) => row.refused !== row.marked)).toEqual([]);
+      // Both directions are exercised, or the comparison proves nothing.
+      expect(rows.some((row) => row.refused)).toBe(true);
+      expect(rows.some((row) => !row.refused)).toBe(true);
     });
 
     it("a path may carry exactly the space separators, and the card marks every one", () => {

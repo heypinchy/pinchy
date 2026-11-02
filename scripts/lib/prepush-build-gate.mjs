@@ -91,6 +91,11 @@ const IRRELEVANT_FILES = new Set([
  * Both files are deliberately import-free, which is what makes them safe to
  * pull into the build: see the header of pdf-scan-rule.ts.
  *
+ * The third is the emoji rule the approval card shares with `pinchy-files`'
+ * path check (#1242): where U+200D / U+FE0E / U+FE0F are part of a visible
+ * emoji. The card marks one exactly where a path may not carry it, so the two
+ * must not drift; import-free for the same reason.
+ *
  * This is a carve-out from IRRELEVANT_PREFIXES, checked before it. Do not extend
  * it by hand: `escapingImportTargets` + the drift guard in
  * prepush-build-gate.test.mjs derive the escapes from the source, so a new
@@ -99,6 +104,7 @@ const IRRELEVANT_FILES = new Set([
 const BUILD_RELEVANT_OUTSIDE_WEB = [
   /^packages\/plugins\/[^/]+\/openclaw\.plugin\.json$/,
   /^packages\/plugins\/pinchy-files\/pdf-(scan-rule|vision-api)\.ts$/,
+  /^packages\/plugins\/pinchy-files\/emoji-sequence\.ts$/,
 ];
 
 /**

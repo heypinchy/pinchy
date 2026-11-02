@@ -38,9 +38,16 @@
  *   into one bounded marker that says how many there were. A CRLF is a line
  *   break like LF; a lone CR stays escaped. A run of four or more
  *   spaces, line breaks or tabs is shown as `⟨N spaces⟩` / `⟨N line breaks⟩` /
- *   `⟨N tabs⟩`, so padding cannot push text out of view. Only U+200D (the emoji
- *   joiner) and U+FE0E / U+FE0F (text / emoji presentation) are left alone:
- *   they carry no payload and sit inside ordinary emoji. Strings are kept whole
+ *   `⟨N tabs⟩`, so padding cannot push text out of view. U+200D (the emoji
+ *   joiner) and U+FE0E / U+FE0F (text / emoji presentation) are left alone
+ *   inside an emoji (👨‍👩‍👧, ❤️), where they are part of what you see, and
+ *   marked anywhere else, where they render as nothing — "Noack\u200D GmbH"
+ *   must not read as "Noack GmbH" (sixth review of #1242). Where an action
+ *   lands (`TARGET_KEYS`: a path, a file name, a record), a value names one
+ *   target and two that render alike are two targets, so a space, tab or line
+ *   break at its start or end is marked too, and so is a U+FE0F after a
+ *   character that is an emoji anyway (`✅\uFE0F.pdf` reads as `✅.pdf`).
+ *   Strings are kept whole
  *   up to MAX_STRING_LEN characters as SENT — the markers a text is shown with
  *   do not count against that, only against the total — and the card shows a
  *   preview and the full text on demand. A cut never lands between the two
@@ -82,7 +89,10 @@
  */
 import { domainToASCII } from "node:url";
 import { isCanonicalRef, type RefRecord } from "./call-models";
-import { EMAIL_SHAPED, FULL_VIEW_KEYS, URL_SHAPED, truncationMarker } from "./display";
+import { EMAIL_SHAPED, FULL_VIEW_KEYS, TARGET_KEYS, URL_SHAPED, truncationMarker } from "./display";
+// Shared with pinchy-files' path rule, so the card marks a joiner or selector
+// exactly where a path may not carry one. Import-free by contract; see the file.
+import { invisibleEmojiFormatOffsets } from "../../../../plugins/pinchy-files/emoji-sequence";
 
 const SECRET_KEY = /(token|secret|password|passwd|api[-_]?key|authorization|cookie|credential)/i;
 /** A record id or a list of them, whatever the rest of the key says. */
@@ -190,7 +200,8 @@ export interface CallSummary {
 const HIDDEN =
   /[\p{Cc}\p{Cf}\p{Cs}\p{Z}\p{Default_Ignorable_Code_Point}\u2800\u115F\u1160\u3164\uFFA0]/u;
 /** Readable as they are: layout (space, tab, line break), and the three that
- * cannot carry a payload and appear in ordinary emoji: 👨‍👩‍👧, ❤️. */
+ * appear in ordinary emoji (👨‍👩‍👧, ❤️) — but those three only inside an
+ * emoji: `escapeText` marks one anywhere else. */
 const KEPT_VISIBLE = new Set([" ", "\t", "\n", "\u200D", "\uFE0E", "\uFE0F"]);
 /** How a long run of a layout character is named. */
 const LAYOUT_RUN_NAME: Record<string, string> = {
@@ -200,7 +211,8 @@ const LAYOUT_RUN_NAME: Record<string, string> = {
 };
 const BARE_KEY = /^[A-Za-z0-9_.-]+$/;
 
-/** Is `char` shown as a `⟨U+XXXX⟩` marker rather than rendered? */
+/** Is `char` shown as a `⟨U+XXXX⟩` marker wherever it stands? (The emoji
+ * format characters are not, but are marked outside an emoji: `escapeText`.) */
 export function isEscapedChar(char: string): boolean {
   return HIDDEN.test(char) && !KEPT_VISIBLE.has(char);
 }
@@ -215,24 +227,53 @@ function escapeRun(run: string[]): string {
   return `⟨${run.length} invisible characters: ${preview} …⟩`;
 }
 
+/** The layout characters a value may be padded with. */
+const LAYOUT = new Set([" ", "\t", "\n"]);
+
 /**
  * Walks `text` by code point. Hidden characters become markers (runs
- * collapsed). With `layout`, a run of MIN_LAYOUT_RUN or more spaces, line
- * breaks or tabs becomes a count and a shorter one stays as it is; every other
- * character goes through `visible`.
+ * collapsed), and so does an emoji format character outside an emoji. With
+ * `layout`, a run of MIN_LAYOUT_RUN or more spaces, line breaks or tabs
+ * becomes a count and a shorter one stays as it is; every other character goes
+ * through `visible`. With `target`, a shorter run at the start or end is
+ * marked as well, and so is a presentation selector that changes nothing.
  */
 function escapeText(
   text: string,
-  { layout, visible = (c) => c }: { layout: boolean; visible?: (char: string) => string }
+  {
+    layout,
+    target = false,
+    visible = (c) => c,
+  }: { layout: boolean; target?: boolean; visible?: (char: string) => string }
 ): string {
   // A CRLF is one line break, as every mail client and editor shows it. Only
   // for values: a key with a CR in it is not a line break, it is a trick.
-  const chars = [...(layout ? text.replace(/\r\n/g, "\n") : text)];
+  const source = layout ? text.replace(/\r\n/g, "\n") : text;
+  const chars = [...source];
+  const invisible = invisibleEmojiFormatOffsets(source, { redundant: target });
+  let leadEnd = 0;
+  let trailStart = chars.length;
+  if (target) {
+    while (leadEnd < chars.length && LAYOUT.has(chars[leadEnd])) leadEnd++;
+    while (trailStart > leadEnd && LAYOUT.has(chars[trailStart - 1])) trailStart--;
+  }
   let out = "";
   let run: string[] = [];
-  for (let i = 0; i < chars.length; i++) {
+  let offset = 0;
+  for (let i = 0; i < chars.length; offset += chars[i].length, i++) {
     const char = chars[i];
-    if (isEscapedChar(char)) {
+    if (isEscapedChar(char) || invisible.has(offset)) {
+      run.push(char);
+      continue;
+    }
+    const runName = layout ? LAYOUT_RUN_NAME[char] : undefined;
+    let length = 1;
+    if (runName) {
+      while (i + length < chars.length && chars[i + length] === char) length++;
+    }
+    const atEdge = i < leadEnd || i >= trailStart;
+    if (atEdge && length < MIN_LAYOUT_RUN) {
+      // Padding around a target: shown, never rendered as blank space.
       run.push(char);
       continue;
     }
@@ -240,13 +281,11 @@ function escapeText(
       out += escapeRun(run);
       run = [];
     }
-    const runName = layout ? LAYOUT_RUN_NAME[char] : undefined;
     if (runName) {
-      let end = i;
-      while (end + 1 < chars.length && chars[end + 1] === char) end++;
-      const length = end - i + 1;
       out += length >= MIN_LAYOUT_RUN ? `⟨${length} ${runName}⟩` : char.repeat(length);
-      i = end;
+      // Skip the rest of the run; the loop's own step moves past its last.
+      for (let k = 0; k < length - 1; k++) offset += chars[i + k].length;
+      i += length - 1;
       continue;
     }
     out += visible(char);
@@ -256,8 +295,8 @@ function escapeText(
 }
 
 /** A value as sent, with everything that could hide text made visible. */
-function renderText(text: string): string {
-  return escapeText(text, { layout: true });
+function renderText(text: string, target = false): string {
+  return escapeText(text, { layout: true, target });
 }
 
 /**
@@ -392,7 +431,7 @@ function headCodePoints(text: string, count: number): string {
   return text.slice(0, end);
 }
 
-function summarizeString(value: string, budget: Budget, path: string): string {
+function summarizeString(value: string, budget: Budget, path: string, target: boolean): string {
   if (isCanonicalRef(value)) {
     // An opaque ref is 200+ characters of base64 that mean nothing to a reader.
     // What it points AT is what matters — which record, not just which kind:
@@ -417,10 +456,10 @@ function summarizeString(value: string, budget: Budget, path: string): string {
   const length = codePointLength(value);
   if (length > MAX_STRING_LEN) {
     exceed(budget, { kind: "text-too-long", at: path, length, limit: MAX_STRING_LEN });
-    const head = renderText(headCodePoints(value, MAX_STRING_LEN));
+    const head = renderText(headCodePoints(value, MAX_STRING_LEN), target);
     return bounded(head, budget) + truncationMarker(length - MAX_STRING_LEN);
   }
-  return bounded(renderText(value) + hostNote(value), budget);
+  return bounded(renderText(value, target) + hostNote(value), budget);
 }
 
 /**
@@ -489,7 +528,7 @@ function summarizeRecipients(value: unknown, budget: Budget, path: string): unkn
     .flatMap((entry) => splitAddresses(entry as string))
     .map((entry) => entry.replace(ENTRY_PADDING, ""))
     .filter((entry) => entry.length > 0);
-  if (addresses.length === 0) return summarizeString(raw.join(" "), budget, path);
+  if (addresses.length === 0) return summarizeString(raw.join(" "), budget, path, false);
   const shown = addresses
     .slice(0, MAX_ITEMS)
     .map((address) => bounded(describeRecipient(address), budget));
@@ -529,7 +568,8 @@ function summarizeValue(
   depth: number,
   budget: Budget,
   path: string,
-  secret: boolean
+  secret: boolean,
+  target: boolean
 ): unknown {
   if (typeof value === "string") {
     if (secret) {
@@ -537,7 +577,7 @@ function summarizeValue(
       budget.chars -= text.length;
       return text;
     }
-    return summarizeString(value, budget, path);
+    return summarizeString(value, budget, path, target);
   }
   if (value === null || ["number", "boolean"].includes(typeof value)) {
     // A number is shown too, and 200×200×50 of them made a 5.7 MB summary
@@ -558,7 +598,9 @@ function summarizeValue(
         shown.push(`… [${value.length - shown.length} more items not shown: size limit reached]`);
         return shown;
       }
-      shown.push(summarizeValue(item, depth + 1, budget, `${path}[${shown.length}]`, secret));
+      shown.push(
+        summarizeValue(item, depth + 1, budget, `${path}[${shown.length}]`, secret, target)
+      );
     }
     if (value.length > MAX_ITEMS) {
       exceed(budget, { kind: "too-many-items", at: path, count: value.length, limit: MAX_ITEMS });
@@ -573,7 +615,7 @@ function summarizeValue(
       return `… [${plural(entries.length, "field")} not shown: nested too deep]`;
     }
     budget.chars -= 2;
-    return summarizeObject(entries, depth, budget, path, secret);
+    return summarizeObject(entries, depth, budget, path, secret, target);
   }
   return String(value);
 }
@@ -583,7 +625,8 @@ function summarizeObject(
   depth: number,
   budget: Budget,
   path: string,
-  secret: boolean
+  secret: boolean,
+  target: boolean
 ): Record<string, unknown> {
   // Who a message reaches, and where an action lands, is rendered first,
   // while the budget is whole.
@@ -636,7 +679,9 @@ function summarizeObject(
       !hidden && RECIPIENT_KEY.test(key) ? summarizeRecipients(value, budget, at) : undefined;
     add(
       label,
-      recipients !== undefined ? recipients : summarizeValue(value, depth + 1, budget, at, hidden)
+      recipients !== undefined
+        ? recipients
+        : summarizeValue(value, depth + 1, budget, at, hidden, target || TARGET_KEYS.has(key))
     );
   }
   // fromEntries defines own properties, so a "__proto__" key stays data.
@@ -661,6 +706,7 @@ export function summarizeCall(params: unknown, options: SummarizeOptions = {}): 
     0,
     budget,
     "",
+    false,
     false
   );
   // A last value can overshoot without anything after it to cut.

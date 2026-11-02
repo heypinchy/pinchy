@@ -961,7 +961,10 @@ const plugin = {
               }
               // Refused rather than normalized: the name approved on the
               // confirmation card is the name written (second review of #1242).
-              assertPlainPath(params.filename, "filename");
+              // Surrounding whitespace is the one exception: the name is
+              // trimmed below, so both spellings write the same file, and
+              // the card marks the spaces.
+              assertPlainPath(params.filename, "filename", { trimmedByTool: true });
               // Path confinement AND delivery-route alignment: the returned
               // basename is exactly what the file will be stored and granted
               // under (NFC, trimmed, no separators/traversal, no characters

@@ -2086,6 +2086,10 @@ describe("write tools refuse a path that does not read as what it resolves to", 
     ["a bidi override", (root: string) => `${root}/report\u202Edm.txt`, /U\+202E/],
     ["a line break", (root: string) => `${root}/report\n.md`, /U\+000A/],
     ["an NFD form", (root: string) => `${root}/u\u0308bersicht.md`, /NFC/],
+    // Sixth review of #1242: these read on the card like the plain name.
+    ["a trailing space", (root: string) => `${root}/report.md `, /space at the start or end/],
+    ["a space before a slash", (root: string) => `${root}/out /r.md`, /space at the start or end/],
+    ["a selector that changes nothing", (root: string) => `${root}/\u2705\uFE0F.md`, /U\+FE0F/],
   ])("pinchy_write refuses a path with %s, says why, and writes nothing", async (_l, make, why) => {
     const tool = await toolNamed("pinchy_write");
     const result = await tool.execute("call-1", { path: make(tmpDir), content: "x" });

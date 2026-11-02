@@ -468,6 +468,31 @@ describe("summarizeArgs", () => {
       expect(out.subject).toBe(`${family} ${heart} ${text}`);
     });
 
+    // Sixth review of #1242: the joiner and the presentation selectors were
+    // kept raw everywhere, so "Noack\u200D GmbH" read as "Noack GmbH" — a
+    // different name to look up — and "RE-1001\uFE0F" as "RE-1001", which the
+    // vendor-bill duplicate check compares exactly. Outside an emoji they
+    // render as nothing, so they are marked like any other invisible character.
+    it("marks a joiner or presentation selector that is not part of an emoji", () => {
+      const out = summarizeArgs({
+        model: "account.move",
+        values: { partner_id: "Noack\u200D GmbH", ref: "RE-1001\uFE0F", note: "a\uFE0Eb" },
+      }) as { values: Record<string, string> };
+      expect(out.values).toEqual({
+        partner_id: "Noack⟨U+200D⟩ GmbH",
+        ref: "RE-1001⟨U+FE0F⟩",
+        note: "a⟨U+FE0E⟩b",
+      });
+    });
+
+    it.each([
+      ["a joiner trailing an emoji", "\u{1F468}\u200D.", "\u{1F468}⟨U+200D⟩."],
+      ["a joiner before an emoji", "a\u200D\u{1F468}", "a⟨U+200D⟩\u{1F468}"],
+      ["a second selector", "\u26A0\uFE0F\uFE0F", "\u26A0\uFE0F⟨U+FE0F⟩"],
+    ])("marks %s", (_label, text, shown) => {
+      expect(summarizeArgs({ subject: text })).toEqual({ subject: shown });
+    });
+
     it("applies the same escaping to keys", () => {
       const out = summarizeArgs({ [`to${tag("evil")}`]: "x" });
       const [label] = Object.keys(out);
@@ -586,6 +611,55 @@ describe("summarizeArgs", () => {
       });
       expect(Object.keys(out).slice(0, 2)).toEqual(["path", "url"]);
       expect(out.path).toBe("/data/contracts/signed.pdf");
+    });
+  });
+
+  // Sixth review of #1242: a target names one file or record, and two names
+  // that render alike are two targets. Where an action lands, what renders as
+  // nothing is marked even where ordinary text keeps it.
+  describe("where an action lands reads as exactly one target", () => {
+    it.each([
+      ["a trailing space", "/data/out/report.md ", "/data/out/report.md⟨U+0020⟩"],
+      ["a leading space", " /data/out/report.md", "⟨U+0020⟩/data/out/report.md"],
+      ["a trailing line break", "/data/out/report.md\n", "/data/out/report.md⟨U+000A⟩"],
+      ["a trailing tab", "/data/out/report.md\t", "/data/out/report.md⟨U+0009⟩"],
+      ["four trailing spaces", "/data/out/report.md    ", "/data/out/report.md⟨4 spaces⟩"],
+    ])("marks %s around a path", (_label, path, shown) => {
+      expect(summarizeArgs({ path })).toEqual({ path: shown });
+    });
+
+    it("marks the edges of every entry in a list of targets", () => {
+      expect(summarizeArgs({ paths: ["/a.md ", "/b.md"] })).toEqual({
+        paths: ["/a.md⟨U+0020⟩", "/b.md"],
+      });
+    });
+
+    it("keeps spaces inside a path, and around ordinary text", () => {
+      expect(summarizeArgs({ path: "/data/Q3 Bericht.md", subject: " hi " })).toEqual({
+        path: "/data/Q3 Bericht.md",
+        subject: " hi ",
+      });
+    });
+
+    it.each([
+      [
+        "a check mark",
+        "/data/out/Vertrag \u2705\uFE0F.pdf",
+        "/data/out/Vertrag \u2705⟨U+FE0F⟩.pdf",
+      ],
+      ["a page", "/data/out/\u{1F4C4}\uFE0F.md", "/data/out/\u{1F4C4}⟨U+FE0F⟩.md"],
+    ])("marks a presentation selector that changes nothing after %s", (_label, path, shown) => {
+      expect(summarizeArgs({ path })).toEqual({ path: shown });
+    });
+
+    it.each([
+      ["a warning sign shown as emoji", "/data/notes/\u26A0\uFE0F offen.md"],
+      ["a check mark shown as text", "/data/out/Vertrag \u2705\uFE0E.pdf"],
+      ["a joined family", "/data/notes/\u{1F468}\u200D\u{1F469}\u200D\u{1F467} Familie.md"],
+      ["a rainbow flag", "/data/notes/\u{1F3F3}\uFE0F\u200D\u{1F308} Pride.md"],
+      ["a keycap", "/data/notes/1\uFE0F\u20E3 first.md"],
+    ])("leaves %s as it is", (_label, path) => {
+      expect(summarizeArgs({ path })).toEqual({ path });
     });
   });
   // Third review of #1242: a marker that says "N more fields not shown" is
