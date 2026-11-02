@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useState } from "react";
+import { Fragment, useState, type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import type { PendingApproval } from "@/lib/approvals/client";
 import {
@@ -8,7 +8,11 @@ import {
   displayScalar,
   inStoredOrder,
   isAddressShaped,
+  readNode,
+  secretText,
   splitTruncation,
+  type SummaryNode,
+  type SummaryNote,
 } from "@/lib/approvals/display";
 
 /** Texts longer than this show a preview first, with the full text on demand. */
@@ -113,6 +117,71 @@ function TextValue({ text, full }: { text: string; full: boolean }) {
 }
 
 /**
+ * What Pinchy says about a value, as an element of its own beside it: never
+ * part of the value's text run, never inside its preview. Written into the
+ * text, `boss@fіrma.at (xn--frma-l9d.at)` read exactly like a value typed with
+ * those characters, and past the preview bound the note sat behind "Show full
+ * text" (fourteenth review of #1242). A value's text can't draw this element.
+ */
+function Annotation({ kind, children }: { kind: string; children: ReactNode }) {
+  return (
+    <span
+      data-annotation={kind}
+      className="ml-1 inline-block rounded border border-dashed px-1 font-sans text-xs text-muted-foreground"
+    >
+      {children}
+    </span>
+  );
+}
+
+function Note({ note, full }: { note: SummaryNote; full: boolean }) {
+  switch (note.kind) {
+    case "host":
+      return (
+        <Annotation kind="host">
+          host <span className="font-mono">{note.host}</span>
+        </Annotation>
+      );
+    case "name":
+      return (
+        <Annotation kind="name">
+          name <TextValue text={note.name} full={full} />
+        </Annotation>
+      );
+    case "not-a-url":
+      return <Annotation kind="not-a-url">not a valid URL</Annotation>;
+    case "not-a-domain":
+      return <Annotation kind="not-a-domain">not a valid domain name</Annotation>;
+  }
+}
+
+/** A value the summary annotated (`SummaryNode`). */
+function NodeValue({ node, full }: { node: SummaryNode; full: boolean }) {
+  switch (node["@"]) {
+    case "ref":
+      return (
+        <Annotation kind="ref">
+          record reference <span className="font-mono">{node.model}</span> #{node.id} {'"'}
+          <StoredOrder text={node.label} />
+          {'"'}
+          {node.labelCut > 0 && ` … (label cut: ${node.labelCut} more characters not shown)`}
+        </Annotation>
+      );
+    case "secret":
+      return <Annotation kind="secret">{secretText(node)}</Annotation>;
+    case "noted":
+      return (
+        <span>
+          <TextValue text={node.text} full={full} />
+          {node.notes.map((note, index) => (
+            <Note key={index} note={note} full={full} />
+          ))}
+        </span>
+      );
+  }
+}
+
+/**
  * Renders the tool's arguments as the stored summary holds them: every value,
  * arrays one entry per line, objects as labelled fields. Nothing is collapsed
  * to a count — the person approving has to see what will run. Non-string
@@ -121,6 +190,15 @@ function TextValue({ text, full }: { text: string; full: boolean }) {
  */
 function ArgValue({ value, full }: { value: unknown; full: boolean }) {
   if (typeof value === "string") return <TextValue text={value} full={full} />;
+  const node = readNode(value);
+  if (node === "unreadable") {
+    return (
+      <Annotation kind="unreadable">
+        a value this version of Pinchy cannot show — deny, then ask the agent again
+      </Annotation>
+    );
+  }
+  if (node) return <NodeValue node={node} full={full} />;
   if (Array.isArray(value)) {
     if (value.length === 0) return <span className="text-muted-foreground">(none)</span>;
     return (

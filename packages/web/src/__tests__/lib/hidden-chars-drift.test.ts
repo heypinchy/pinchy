@@ -13,6 +13,7 @@ import { describe, it, expect } from "vitest";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { isEscapedChar, summarizeCall } from "@/lib/approvals/summary";
+import { readNode } from "@/lib/approvals/display";
 import {
   hiddenCharIn,
   isEmojiFormatChar,
@@ -27,6 +28,13 @@ const copiesOf = (file: string) =>
     resolve(import.meta.dirname, `../../../../plugins/${plugin}/${file}`)
   );
 const COPIES = copiesOf("hidden-chars.ts");
+
+/** The display name the card shows beside a recipient's address. */
+function shownName(to: unknown): string {
+  const node = readNode(to);
+  if (node === null || node === "unreadable" || node["@"] !== "noted") return "";
+  return node.notes.flatMap((note) => (note.kind === "name" ? [note.name] : [])).join("");
+}
 
 /** Kept readable by the summary on purpose: layout (tab, line break). The
  * four format characters of emoji are marked like everything else, inside an
@@ -223,7 +231,7 @@ describe("hidden-chars drift guard", () => {
         }
         const recipient = `${name} <x@example.com>`;
         const shownPath = summarizeCall({ path }).summary.path as string;
-        const shownTo = summarizeCall({ to: recipient }).summary.to as string;
+        const shownTo = shownName(summarizeCall({ to: recipient }).summary.to);
         return {
           name,
           pathRefused,
@@ -272,9 +280,11 @@ describe("hidden-chars drift guard", () => {
         expect(summarizeCall({ path }).summary.path).toBe(`/data/${marker}.md`);
         const recipient = `"${text}" <ada@example.com>`;
         expect(parseSingleRecipient(recipient).ok, text).toBe(true);
-        expect(summarizeCall({ to: recipient }).summary.to).toBe(
-          `ada@example.com (name: "${marker}")`
-        );
+        expect(summarizeCall({ to: recipient }).summary.to).toEqual({
+          "@": "noted",
+          text: "ada@example.com",
+          notes: [{ kind: "name", name: marker }],
+        });
       }
     });
 
@@ -302,7 +312,7 @@ describe("hidden-chars drift guard", () => {
         const marker = `⟨U+${cp.toString(16).toUpperCase().padStart(4, "0")}⟩`;
         const recipient = `"Ada${char}Lovelace" <ada@example.com>`;
         expect(parseSingleRecipient(recipient).ok, marker).toBe(true);
-        expect(summarizeCall({ to: recipient }).summary.to as string).toContain(marker);
+        expect(shownName(summarizeCall({ to: recipient }).summary.to)).toContain(marker);
         expect(parseSingleRecipient(`"Ada${char}${char}Lovelace" <ada@example.com>`).ok).toBe(
           false
         );

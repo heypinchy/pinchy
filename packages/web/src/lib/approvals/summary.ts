@@ -63,11 +63,17 @@
  * - Arrays and objects keep their actual contents, to a bounded depth, width
  *   and total size. Anything cut off is replaced by an explicit "… not shown"
  *   marker, so a reader can tell that something was left out.
+ * - What the summary says ABOUT a value — the record a ref names, the host an
+ *   address reaches, a recipient's display name, that a secret is being set —
+ *   is a node of its own (`SummaryNode` in `display.ts`), never text written
+ *   into the value: written in, it read exactly like a value typed with the
+ *   same characters (fourteenth review of #1242). A plain string in the
+ *   summary is always the value's own text.
  * - Recipients (`to` / `cc` / `bcc`) are split into an explicit address list,
  *   one entry each, so a comma-smuggled extra address is a visible line. Each
- *   entry names the address FIRST and the display name after it, so a long
+ *   entry is the address, with the display name as a note beside it, so a long
  *   familiar name cannot push the real address out of view, and a non-ASCII
- *   domain is shown in punycode too, so a homoglyph domain reads as the
+ *   domain is named in punycode too, so a homoglyph domain reads as the
  *   different domain it is. The same goes for ANY value that is shaped like an
  *   email address or a URL, at any key and depth — an Odoo `values.email` or
  *   `website` deceives the same way a `to` does. A URL's host is the one the
@@ -93,7 +99,18 @@
  */
 import { domainToASCII } from "node:url";
 import { isCanonicalRef, type RefRecord } from "./call-models";
-import { EMAIL_SHAPED, FULL_VIEW_KEYS, TARGET_KEYS, URL_SHAPED, truncationMarker } from "./display";
+import {
+  EMAIL_SHAPED,
+  FULL_VIEW_KEYS,
+  TARGET_KEYS,
+  URL_SHAPED,
+  noteText,
+  refText,
+  secretText,
+  truncationMarker,
+  type SummaryNode,
+  type SummaryNote,
+} from "./display";
 
 const SECRET_KEY = /(token|secret|password|passwd|api[-_]?key|authorization|cookie|credential)/i;
 /** A record id or a list of them, whatever the rest of the key says. */
@@ -412,20 +429,35 @@ function keyLabel(key: string): string {
 }
 
 /**
- * A decoded ref. The label is the record's display name as Odoo gave it when
- * the ref was minted — a hint for the reader, not an argument: the call acts on
+ * A decoded ref, as a node of its own (`SummaryNode`): written into the text,
+ * `(record reference: …)` read exactly like a plain string of those
+ * characters, which pinchy-odoo resolves by NAME (fourteenth review of #1242).
+ * The label is the record's display name as Odoo gave it when the ref was
+ * minted — a hint for the reader, not an argument: the call acts on
  * `model #id`, which is always shown whole. So a cut label is marked, but it
  * does not make the call incomplete.
  */
-function describeRef(record: RefRecord): string {
-  const label = renderText(record.label);
-  const chars = [...label];
-  const cut =
-    chars.length > MAX_REF_LABEL_LEN
-      ? ` … [label cut: ${chars.length - MAX_REF_LABEL_LEN} more characters not shown]`
-      : "";
-  const shown = JSON.stringify(chars.slice(0, MAX_REF_LABEL_LEN).join(""));
-  return `(record reference: ${renderText(record.model)} #${record.id} ${shown}${cut})`;
+function describeRef(record: RefRecord, budget: Budget): SummaryNode {
+  const chars = [...renderText(record.label)];
+  const node: SummaryNode = {
+    "@": "ref",
+    model: renderText(record.model),
+    id: record.id,
+    label: chars.slice(0, MAX_REF_LABEL_LEN).join(""),
+    labelCut: Math.max(0, chars.length - MAX_REF_LABEL_LEN),
+  };
+  budget.chars -= refText(node).length;
+  return node;
+}
+
+/**
+ * A string with what Pinchy says about it, or the plain string when there is
+ * nothing to say. The notes are charged as the prompt prints them.
+ */
+function noted(text: string, notes: SummaryNote[], budget: Budget): string | SummaryNode {
+  if (notes.length === 0) return text;
+  for (const note of notes) budget.chars -= noteText(note).length + 3;
+  return { "@": "noted", text, notes };
 }
 
 /** Spends `text` against the budget, cutting it — and saying so — if needed. */
@@ -445,14 +477,14 @@ function bounded(text: string, budget: Budget): string {
 }
 
 /**
- * The punycode form of a non-ASCII host, as a suffix: `boss@fіrma.at` with a
- * Cyrillic "і" renders exactly like the real domain, and its ASCII form
- * (`xn--…`) is what shows that it is not.
+ * The punycode form of a non-ASCII host: `boss@fіrma.at` with a Cyrillic "і"
+ * renders exactly like the real domain, and its ASCII form (`xn--…`) is what
+ * shows that it is not.
  */
-function punycodeNote(host: string | null): string {
-  if (host === null || /^[\x00-\x7F]*$/.test(host)) return "";
+function punycodeNote(host: string | null): SummaryNote | null {
+  if (host === null || /^[\x00-\x7F]*$/.test(host)) return null;
   const ascii = domainToASCII(host);
-  return ` (${ascii || "not a valid domain name"})`;
+  return ascii ? { kind: "host", host: ascii } : { kind: "not-a-domain" };
 }
 
 /**
@@ -465,12 +497,12 @@ function punycodeNote(host: string | null): string {
  * differs from the text's. A non-special scheme keeps an opaque,
  * percent-encoded host, which is decoded to read as the domain it names.
  */
-function urlNote(value: string, textHost: string): string {
+function urlNote(value: string, textHost: string): SummaryNote | null {
   let host: string;
   try {
     host = new URL(value).hostname;
   } catch {
-    return " (not a valid URL)";
+    return { kind: "not-a-url" };
   }
   if (host.includes("%")) {
     try {
@@ -479,7 +511,7 @@ function urlNote(value: string, textHost: string): string {
       // Not decodable: show it as the parser holds it.
     }
   }
-  return host.toLowerCase() === textHost.toLowerCase() ? "" : ` (${host})`;
+  return host.toLowerCase() === textHost.toLowerCase() ? null : { kind: "host", host };
 }
 
 /**
@@ -487,10 +519,10 @@ function urlNote(value: string, textHost: string): string {
  * email address or a URL. Free text that merely contains one is left alone:
  * rewriting the middle of a mail body is not what the card is for.
  */
-function hostNote(value: string): string {
+function hostNotes(value: string): SummaryNote[] {
   const url = URL_SHAPED.exec(value);
-  if (url) return urlNote(value, url[1]);
-  return punycodeNote(EMAIL_SHAPED.exec(value)?.[1] ?? null);
+  const note = url ? urlNote(value, url[1]) : punycodeNote(EMAIL_SHAPED.exec(value)?.[1] ?? null);
+  return note ? [note] : [];
 }
 
 /** Length in code points — characters as a person counts them. */
@@ -520,7 +552,12 @@ function headCodePoints(text: string, count: number): string {
   return text.slice(0, end);
 }
 
-function summarizeString(value: string, budget: Budget, path: string, target: boolean): string {
+function summarizeString(
+  value: string,
+  budget: Budget,
+  path: string,
+  target: boolean
+): string | SummaryNode {
   if (isCanonicalRef(value)) {
     // An opaque ref is 200+ characters of base64 that mean nothing to a reader.
     // What it points AT is what matters — which record, not just which kind:
@@ -533,11 +570,7 @@ function summarizeString(value: string, budget: Budget, path: string, target: bo
     // behind the record (fifth review of #1242), and the card must not rest
     // on every resolver getting that right.
     const record = budget.refRecord?.(value);
-    if (record) {
-      const text = describeRef(record);
-      budget.chars -= text.length;
-      return text;
-    }
+    if (record) return describeRef(record, budget);
   }
   // Measured as SENT, not as shown: a no-break space is one character a
   // person typed, though it is shown as an eight-character marker. The
@@ -548,7 +581,7 @@ function summarizeString(value: string, budget: Budget, path: string, target: bo
     const head = renderText(headCodePoints(value, MAX_STRING_LEN), target);
     return bounded(head, budget) + truncationMarker(length - MAX_STRING_LEN);
   }
-  return bounded(renderText(value, target) + hostNote(value), budget);
+  return noted(bounded(renderText(value, target), budget), hostNotes(value), budget);
 }
 
 /**
@@ -585,29 +618,25 @@ function splitAddresses(text: string): string[] {
 const ENTRY_PADDING = /^[ \t\r\n]+|[ \t\r\n]+$/g;
 
 /**
- * The address, with the punycode form of a non-ASCII domain appended:
- * `boss@fіrma.at` with a Cyrillic "і" renders exactly like the real domain,
- * and its ASCII form (`xn--…`) is what shows that it is not.
+ * One recipient, address first, with the punycode form of a non-ASCII domain
+ * and the display name as notes beside it: printed the other way round, a
+ * long familiar display name pushed the real address out of the card's
+ * preview (second review of #1242), and written into the text, `(name: "X")`
+ * read like an address that merely carried those characters (fourteenth).
  */
-function describeAddress(address: string): string {
-  const at = address.lastIndexOf("@");
-  return renderText(address) + punycodeNote(at < 0 ? null : address.slice(at + 1));
-}
-
-/**
- * One recipient, address first: `attacker@evil.com (name: "Raimund Korber")`.
- * Printed the other way round, a long familiar display name pushed the real
- * address out of the card's preview (second review of #1242).
- */
-function describeRecipient(entry: string): string {
+function describeRecipient(entry: string, budget: Budget): string | SummaryNode {
   const named = /^([^<>]*)<([^<>]*)>$/.exec(entry);
-  if (!named) return describeAddress(entry);
-  const address = describeAddress(named[2].replace(ENTRY_PADDING, ""));
-  let name = named[1].replace(ENTRY_PADDING, "");
+  const address = named ? named[2].replace(ENTRY_PADDING, "") : entry;
+  const at = address.lastIndexOf("@");
+  const notes: SummaryNote[] = [];
+  const host = punycodeNote(at < 0 ? null : address.slice(at + 1));
+  if (host) notes.push(host);
+  let name = named ? named[1].replace(ENTRY_PADDING, "") : "";
   if (name.length >= 2 && name.startsWith('"') && name.endsWith('"')) {
     name = name.slice(1, -1).replace(/\\([\s\S])/gu, "$1");
   }
-  return name ? `${address} (name: ${JSON.stringify(renderText(name))})` : address;
+  if (name) notes.push({ kind: "name", name: renderText(name) });
+  return noted(bounded(renderText(address), budget), notes, budget);
 }
 
 function summarizeRecipients(value: unknown, budget: Budget, path: string): unknown | undefined {
@@ -618,9 +647,9 @@ function summarizeRecipients(value: unknown, budget: Budget, path: string): unkn
     .map((entry) => entry.replace(ENTRY_PADDING, ""))
     .filter((entry) => entry.length > 0);
   if (addresses.length === 0) return summarizeString(raw.join(" "), budget, path, false);
-  const shown = addresses
+  const shown: unknown[] = addresses
     .slice(0, MAX_ITEMS)
-    .map((address) => bounded(describeRecipient(address), budget));
+    .map((address) => describeRecipient(address, budget));
   if (addresses.length > MAX_ITEMS) {
     exceed(budget, {
       kind: "too-many-recipients",
@@ -640,11 +669,13 @@ function plural(count: number, noun: string): string {
 /**
  * A secret-like text stays hidden — it may be a real secret, and the summary
  * is stored — but setting one is an effect: an attacker-chosen `access_token`
- * written into a record must not look like any other redaction.
+ * written into a record must not look like any other redaction. A node of its
+ * own, so no text can read as one.
  */
-function describeSecret(value: string): string {
-  const length = plural(codePointLength(value), "character");
-  return `[secret-like field is being set — value hidden, ${length}]`;
+function describeSecret(value: string, budget: Budget): SummaryNode {
+  const node: SummaryNode = { "@": "secret", length: codePointLength(value) };
+  budget.chars -= secretText(node).length;
+  return node;
 }
 
 /** Where a value sits, for the refusal: `values.comment`, `lines[1].note`. */
@@ -661,11 +692,7 @@ function summarizeValue(
   target: boolean
 ): unknown {
   if (typeof value === "string") {
-    if (secret) {
-      const text = describeSecret(value);
-      budget.chars -= text.length;
-      return text;
-    }
+    if (secret) return describeSecret(value, budget);
     return summarizeString(value, budget, path, target);
   }
   if (value === null || ["number", "boolean"].includes(typeof value)) {

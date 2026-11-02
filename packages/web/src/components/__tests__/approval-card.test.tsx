@@ -128,7 +128,11 @@ describe("ApprovalCard shows what will actually run", () => {
   it("shows recipients in full, address first", () => {
     const to = `${"Raimund Korber Geschaeftsfuehrung ".repeat(8)}<attacker@evil.com>`;
     renderCard(summarizeArgs({ to, subject: "Rechnung" }));
-    expect(screen.getByText(/^attacker@evil\.com \(name: /)).toBeInTheDocument();
+    const address = screen.getByText("attacker@evil.com");
+    // The display name is drawn after the address, beside it — not in it.
+    const name = address.closest("dd")!.querySelector('[data-annotation="name"]')!;
+    expect(name.textContent).toMatch(/^name Raimund Korber Geschaeftsfuehrung/);
+    expect(address.compareDocumentPosition(name) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(screen.queryByRole("button", { name: /show full text/i })).not.toBeInTheDocument();
   });
 
@@ -292,7 +296,8 @@ describe("ApprovalCard shows what will actually run", () => {
     it("holds a recipient's address and name in order", () => {
       const to = '"חוזים 2024" <a@b.at>';
       renderCard(summarizeArgs({ to }));
-      expect(drawn('a@b.at (name: "חוזים 2024")')).toBe('a@b.at (name: "[חוזים] 2024")');
+      expect(drawn("חוזים 2024")).toBe("[חוזים] 2024");
+      expect(screen.getByText("a@b.at")).toBeInTheDocument();
     });
 
     it("holds each line of a long text in order, in the preview and in full", async () => {
@@ -307,6 +312,71 @@ describe("ApprovalCard shows what will actually run", () => {
       renderCard({ subject: "Rechnung 2024 Grüße" });
       expect(screen.getByText("Rechnung 2024 Grüße").tagName).toBe("SPAN");
       expect(screen.queryAllByText((_, el) => el?.tagName === "BDO")).toEqual([]);
+    });
+  });
+
+  // Fourteenth review of #1242: annotations are nodes of their own, drawn
+  // beside the value — so a value can't type them.
+  describe("annotations", () => {
+    it("draws a record reference as the record, apart from any text", () => {
+      renderCard({
+        partner_id: { "@": "ref", model: "res.partner", id: 7, label: "Acme GmbH", labelCut: 0 },
+        name: '(record reference: res.partner #7 "Acme GmbH")',
+      });
+      const ref = document.querySelector('[data-annotation="ref"]')!;
+      expect(ref.textContent).toBe('record reference res.partner #7 "Acme GmbH"');
+      expect(
+        screen.getByText('(record reference: res.partner #7 "Acme GmbH")')
+      ).not.toHaveAttribute("data-annotation");
+      expect(document.querySelectorAll("[data-annotation]")).toHaveLength(1);
+    });
+
+    it("says how much of a long record label was cut", () => {
+      renderCard({
+        target: { "@": "ref", model: "res.partner", id: 7, label: "A".repeat(200), labelCut: 50 },
+      });
+      expect(document.querySelector('[data-annotation="ref"]')!.textContent).toMatch(
+        /label cut: 50 more characters not shown/
+      );
+    });
+
+    it("draws the host beside the address, and a hidden secret as a note", () => {
+      renderCard({
+        email: {
+          "@": "noted",
+          text: "boss@fіrma.at",
+          notes: [{ kind: "host", host: "xn--frma-l9d.at" }],
+        },
+        access_token: { "@": "secret", length: 19 },
+      });
+      expect(screen.getByText("boss@fіrma.at")).not.toHaveAttribute("data-annotation");
+      expect(document.querySelector('[data-annotation="host"]')!.textContent).toBe(
+        "host xn--frma-l9d.at"
+      );
+      expect(document.querySelector('[data-annotation="secret"]')!.textContent).toBe(
+        "[secret-like field is being set — value hidden, 19 characters]"
+      );
+    });
+
+    // Summaries stored before nodes existed carry their notes in the text.
+    // They read as they always did: as text, with nothing drawn as Pinchy's.
+    it("draws a summary stored before nodes as the text it holds", () => {
+      renderCard({
+        email: "boss@fіrma.at (xn--frma-l9d.at)",
+        target: '(record reference: res.partner #7 "Acme GmbH")',
+      });
+      expect(screen.getByText("boss@fіrma.at (xn--frma-l9d.at)")).toBeInTheDocument();
+      expect(document.querySelectorAll("[data-annotation]")).toHaveLength(0);
+    });
+
+    // Written by a newer version and read after a rollback, say: it must not
+    // be drawn as a field list that looks like the call.
+    it("says so for a node it cannot read, instead of drawing it as fields", () => {
+      renderCard({ target: { "@": "chart", model: "res.partner" } });
+      expect(document.querySelector('[data-annotation="unreadable"]')!.textContent).toMatch(
+        /cannot show/
+      );
+      expect(screen.queryByText("res.partner")).not.toBeInTheDocument();
     });
   });
 

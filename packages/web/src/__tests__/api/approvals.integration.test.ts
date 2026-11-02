@@ -515,7 +515,15 @@ describe("approval routes (integration, real DB)", () => {
       await gateCheck(gateReq(gateBody({ params: { values: { comment: ref } } })));
       const [row] = await db.select().from(toolApproval);
       expect(row.argsSummary).toEqual({
-        values: { comment: '(record reference: res.partner #7 "Raimund Korber")' },
+        values: {
+          comment: {
+            "@": "ref",
+            model: "res.partner",
+            id: 7,
+            label: "Raimund Korber",
+            labelCut: 0,
+          },
+        },
       });
     });
 

@@ -2,12 +2,37 @@ import { describe, it, expect, beforeAll } from "vitest";
 import { domainToASCII } from "node:url";
 import { describeRefusal, markScripts, summarizeArgs, summarizeCall } from "./summary";
 import { makeRefResolver } from "./call-models";
-import { inStoredOrder } from "./display";
+import { inStoredOrder, readNode } from "./display";
 // The pinchy-odoo encoder, so the ref rendering is tested against real refs —
 // see call-models.test.ts for why this crosses the package boundary.
 import { encodeRef, _resetKeyCacheForTest } from "../../../../plugins/pinchy-odoo/integration-ref";
 
 const REF_KEY = "b".repeat(64);
+
+/*
+ * Fourteenth review of #1242: what the summary says ABOUT a value — a hidden
+ * secret, a record a ref names, a host, a display name — is a node of its own
+ * (`SummaryNode`), never text written into the value. These build the nodes
+ * the expectations below compare against.
+ */
+const secret = (length: number) => ({ "@": "secret", length });
+const recordRef = (model: string, id: number, label: string) => ({
+  "@": "ref",
+  model,
+  id,
+  label,
+  labelCut: 0,
+});
+const named = (text: string, name: string) => ({
+  "@": "noted",
+  text,
+  notes: [{ kind: "name", name }],
+});
+const hosted = (text: string, host: string) => ({
+  "@": "noted",
+  text,
+  notes: [{ kind: "host", host }],
+});
 beforeAll(() => {
   process.env.PINCHY_REF_TOKEN_KEY = REF_KEY;
   _resetKeyCacheForTest();
@@ -27,9 +52,9 @@ describe("summarizeArgs", () => {
   // may be a real secret), but the effect is now spelled out.
   it("hides secret-looking values but says that one is being set, and how long it is", () => {
     const out = summarizeArgs({ apiKey: "sk-123", password: "p", auth_token: "t", to: "x@y.z" });
-    expect(out.apiKey).toBe("[secret-like field is being set — value hidden, 6 characters]");
-    expect(out.password).toBe("[secret-like field is being set — value hidden, 1 character]");
-    expect(out.auth_token).toBe("[secret-like field is being set — value hidden, 1 character]");
+    expect(out.apiKey).toEqual(secret(6));
+    expect(out.password).toEqual(secret(1));
+    expect(out.auth_token).toEqual(secret(1));
     expect(out.to).toBe("x@y.z");
   });
 
@@ -39,9 +64,7 @@ describe("summarizeArgs", () => {
       ids: [2],
       values: { access_token: "attacker-known-0000", name: "Ada" },
     }) as { values: Record<string, unknown> };
-    expect(out.values.access_token).toBe(
-      "[secret-like field is being set — value hidden, 19 characters]"
-    );
+    expect(out.values.access_token).toEqual(secret(19));
     expect(JSON.stringify(out)).not.toContain("attacker-known-0000");
   });
 
@@ -51,11 +74,31 @@ describe("summarizeArgs", () => {
   // credential, and an object is shown field by field with its texts hidden.
   it("hides the texts inside an object under a secret-like key, and shows a null as null", () => {
     const out = summarizeArgs({ credentials: { user: "a", pass: "b" }, api_key: null });
-    expect(out.credentials).toEqual({
-      user: "[secret-like field is being set — value hidden, 1 character]",
-      pass: "[secret-like field is being set — value hidden, 1 character]",
-    });
+    expect(out.credentials).toEqual({ user: secret(1), pass: secret(1) });
     expect(out.api_key).toBeNull();
+  });
+
+  // A node is marked by the key `@`. A value's own key is labelled bare only
+  // when it is `[A-Za-z0-9_.-]+`, so the call's `@` is labelled `"@"`, and no
+  // object the agent sends can read as a node.
+  it("never lets an object in the call pass for a node", () => {
+    const out = summarizeArgs({ values: { "@": "secret", length: 3 }, "@": "ref" });
+    expect(out).toEqual({ values: { '"@"': "secret", length: 3 }, '"@"': "ref" });
+    expect(readNode(out)).toBeNull();
+    expect(readNode(out.values)).toBeNull();
+  });
+
+  it("stores only plain text where nothing is said about a value", () => {
+    const out = summarizeArgs({
+      email: "boss@f\u0456rma.at (xn--frma-l9d.at)",
+      website: "boss@f\u0456rma.at (firma.at)",
+      note: "[secret-like field is being set — value hidden, 3 characters]",
+    });
+    expect(out).toEqual({
+      email: "boss@f\u0456rma.at (xn--frma-l9d.at)",
+      website: "boss@f\u0456rma.at (firma.at)",
+      note: "[secret-like field is being set — value hidden, 3 characters]",
+    });
   });
 
   it("keeps a long string whole up to the stored limit, so the card can offer the full text", () => {
@@ -94,7 +137,8 @@ describe("summarizeArgs", () => {
     });
     expect(JSON.stringify(out)).not.toContain("sk-1");
     expect(JSON.stringify(out)).not.toContain("hunter2");
-    expect(JSON.stringify(out)).toContain("value hidden");
+    expect(JSON.stringify(out)).toContain('{"@":"secret","length":4}');
+    expect(JSON.stringify(out)).toContain('{"@":"secret","length":7}');
   });
 
   describe("what the approver sees is what runs", () => {
@@ -114,19 +158,19 @@ describe("summarizeArgs", () => {
       expect(out.to).toEqual(["a@x.at", "b@x.at"]);
       expect(out.cc).toEqual(["c@x.at", "d@x.at", "e@x.at"]);
       // Address first, display name after (second review of #1242).
-      expect(out.bcc).toBe('f@evil.com (name: "Evil")');
+      expect(out.bcc).toEqual(named("f@evil.com", "Evil"));
     });
 
     it("does not split on a comma inside a quoted display name", () => {
       const out = summarizeArgs({ to: '"Meier, Hans" <hans@x.at>, b@x.at' });
-      expect(out.to).toEqual(['hans@x.at (name: "Meier, Hans")', "b@x.at"]);
+      expect(out.to).toEqual([named("hans@x.at", "Meier, Hans"), "b@x.at"]);
     });
 
     // Third review of #1242: email_send now accepts a quoted name with a
     // comma or parentheses; the card must show it as the one mailbox it is.
     it("shows a quoted name with parentheses as one recipient, address first", () => {
-      expect(summarizeArgs({ to: '"Raimund Korber (Noack)" <r@noack.at>' }).to).toBe(
-        'r@noack.at (name: "Raimund Korber (Noack)")'
+      expect(summarizeArgs({ to: '"Raimund Korber (Noack)" <r@noack.at>' }).to).toEqual(
+        named("r@noack.at", "Raimund Korber (Noack)")
       );
     });
 
@@ -240,6 +284,34 @@ describe("summarizeArgs", () => {
     const ref = (model: string, id: number, label: string) =>
       encodeRef({ integrationType: "odoo", connectionId: "c1", model, id, label });
 
+    // Fourteenth review of #1242: the ref used to be stored as the text
+    // `(record reference: res.partner #7 "Acme GmbH")` — the very string an
+    // agent could send instead, which pinchy-odoo resolves by NAME. The ref is
+    // a node now; the text stays the plain string it is.
+    it("stores a ref as a node, and the text it used to render as as text", () => {
+      const out = summarizeArgs(
+        {
+          partner_id: ref("res.partner", 7, "Acme GmbH"),
+          name: '(record reference: res.partner #7 "Acme GmbH")',
+        },
+        { refRecord: makeRefResolver(REF_KEY) }
+      );
+      expect(out.partner_id).toEqual(recordRef("res.partner", 7, "Acme GmbH"));
+      expect(out.name).toBe('(record reference: res.partner #7 "Acme GmbH")');
+    });
+
+    it("cuts a long label, says by how much, and still offers the call", () => {
+      const result = summarizeCall(
+        { target: ref("res.partner", 7, "A".repeat(250)) },
+        { refRecord: makeRefResolver(REF_KEY) }
+      );
+      expect(result.summary.target).toEqual({
+        ...recordRef("res.partner", 7, "A".repeat(200)),
+        labelCut: 50,
+      });
+      expect(result.incomplete).toBe(false);
+    });
+
     // Corrected expectation (second review of #1242): replacing every string
     // that merely STARTS with the prefix hid free text — an email body that
     // began with "pinchy_ref:v1:" vanished behind "(record reference)". Only a
@@ -276,7 +348,7 @@ describe("summarizeArgs", () => {
         { target: ref("account.move", 42, "INV/2026/0042") },
         { refRecord: makeRefResolver(REF_KEY) }
       );
-      expect(out.target).toBe('(record reference: account.move #42 "INV/2026/0042")');
+      expect(out.target).toEqual(recordRef("account.move", 42, "INV/2026/0042"));
     });
 
     // Two invoices of the same model used to render identically — "record
@@ -287,7 +359,7 @@ describe("summarizeArgs", () => {
       const a = summarizeArgs({ target: ref("account.move", 42, "INV/2026/0042") }, resolve);
       const b = summarizeArgs({ target: ref("account.move", 43, "INV/2026/0043") }, resolve);
       expect(a.target).not.toEqual(b.target);
-      expect(b.target).toBe('(record reference: account.move #43 "INV/2026/0043")');
+      expect(b.target).toEqual(recordRef("account.move", 43, "INV/2026/0043"));
     });
 
     it("renders refs nested in arrays too", () => {
@@ -296,8 +368,8 @@ describe("summarizeArgs", () => {
         { refRecord: makeRefResolver(REF_KEY) }
       );
       expect(out.targets).toEqual([
-        '(record reference: res.partner #7 "Ada")',
-        '(record reference: res.partner #8 "Bob")',
+        recordRef("res.partner", 7, "Ada"),
+        recordRef("res.partner", 8, "Bob"),
       ]);
     });
 
@@ -305,13 +377,12 @@ describe("summarizeArgs", () => {
       const out = summarizeArgs(
         { target: ref("account.move", 42, 'INV\u202E"x"   \n42') },
         { refRecord: makeRefResolver(REF_KEY) }
-      ) as { target: string };
-      expect(out.target).not.toContain("\u202E");
-      expect(out.target).toContain("⟨U+202E⟩");
+      );
+      expect(JSON.stringify(out.target)).not.toContain("\u202E");
+      expect(JSON.stringify(out.target)).toContain("⟨U+202E⟩");
       // Corrected expectation (second review of #1242): whitespace is no longer
-      // collapsed, so the three spaces and the line break stay as sent (the
-      // line break JSON-escaped inside the quoted label).
-      expect(out.target).toBe('(record reference: account.move #42 "INV⟨U+202E⟩\\"x\\"   \\n42")');
+      // collapsed, so the three spaces and the line break stay as sent.
+      expect(out.target).toEqual(recordRef("account.move", 42, 'INV⟨U+202E⟩"x"   \n42'));
     });
   });
 
@@ -670,8 +741,8 @@ describe("summarizeArgs", () => {
         { refRecord: makeRefResolver(REF_KEY) }
       );
       expect(out).toEqual({
-        target: '(record reference: res.partner #7 "Noack⟨U+27E8⟩U+200D⟨U+27E9⟩ GmbH")',
-        to: 'a@x.at (name: "Noack⟨U+27E8⟩U+200D⟨U+27E9⟩")',
+        target: recordRef("res.partner", 7, "Noack⟨U+27E8⟩U+200D⟨U+27E9⟩ GmbH"),
+        to: named("a@x.at", "Noack⟨U+27E8⟩U+200D⟨U+27E9⟩"),
       });
     });
 
@@ -773,8 +844,8 @@ describe("summarizeArgs", () => {
     });
 
     it("marks it in a display name, and in a key", () => {
-      expect(summarizeArgs({ to: '"\u0301Ada" <ada@example.com>' }).to).toBe(
-        'ada@example.com (name: "⟨U+0301⟩Ada")'
+      expect(summarizeArgs({ to: '"\u0301Ada" <ada@example.com>' }).to).toEqual(
+        named("ada@example.com", "⟨U+0301⟩Ada")
       );
       expect(Object.keys(summarizeArgs({ ["\u05BCא"]: 1 }))).toEqual(['"⟨U+05BC⟩⟨U+05D0⟩"']);
     });
@@ -929,15 +1000,22 @@ describe("summarizeArgs", () => {
     it("shows a non-ASCII domain in punycode too, so a homoglyph domain is visible", () => {
       const domain = "f\u0456rma.at"; // Cyrillic і
       const out = summarizeArgs({ to: `boss@${domain}` });
-      expect(out.to).toBe(`boss@${domain} (${domainToASCII(domain)})`);
-      expect(out.to).toMatch(/xn--/);
+      expect(out.to).toEqual(hosted(`boss@${domain}`, domainToASCII(domain)));
+      expect(JSON.stringify(out.to)).toMatch(/xn--/);
     });
 
     it("does the same inside a named address and per entry of a list", () => {
       const domain = "f\u0456rma.at";
       const out = summarizeArgs({ cc: `Boss <boss@${domain}>, ok@firma.at` });
       expect(out.cc).toEqual([
-        `boss@${domain} (${domainToASCII(domain)}) (name: "Boss")`,
+        {
+          "@": "noted",
+          text: `boss@${domain}`,
+          notes: [
+            { kind: "host", host: domainToASCII(domain) },
+            { kind: "name", name: "Boss" },
+          ],
+        },
         "ok@firma.at",
       ]);
     });
@@ -952,9 +1030,8 @@ describe("summarizeArgs", () => {
     // real address out of the card's preview. The address comes first now.
     it("puts the address first and the display name after it", () => {
       const to = `Raimund Korber${"\u2800".repeat(190)} <attacker@evil.com>`;
-      const out = summarizeArgs({ to, subject: "Rechnung", body: "Hallo" }) as { to: string };
-      expect(out.to.startsWith("attacker@evil.com (name: ")).toBe(true);
-      expect(out.to).toBe('attacker@evil.com (name: "Raimund Korber⟨190 × U+2800⟩")');
+      const out = summarizeArgs({ to, subject: "Rechnung", body: "Hallo" });
+      expect(out.to).toEqual(named("attacker@evil.com", "Raimund Korber⟨190 × U+2800⟩"));
     });
 
     it("shows a bare angle address as the address alone", () => {
@@ -1157,19 +1234,21 @@ describe("summarizeArgs", () => {
     const domain = "f\u0456rma.at"; // Cyrillic і
     const ascii = domainToASCII(domain);
 
-    it("appends the punycode form to an email-shaped value at any key and depth", () => {
+    it("names the punycode form beside an email-shaped value at any key and depth", () => {
       const out = summarizeArgs({
         model: "res.partner",
         ids: [7],
         values: { email: `billing@${domain}`, website: `https://${domain}/pay` },
-      }) as { values: Record<string, string> };
-      expect(out.values.email).toBe(`billing@${domain} (${ascii})`);
-      expect(out.values.website).toBe(`https://${domain}/pay (${ascii})`);
+      }) as { values: Record<string, unknown> };
+      expect(out.values.email).toEqual(hosted(`billing@${domain}`, ascii));
+      expect(out.values.website).toEqual(hosted(`https://${domain}/pay`, ascii));
     });
 
     it("does so inside arrays, and for a URL with credentials and a port", () => {
-      const out = summarizeArgs({ links: [`http://user@${domain}:8080/x`] }) as { links: string[] };
-      expect(out.links[0]).toBe(`http://user@${domain}:8080/x (${ascii})`);
+      const out = summarizeArgs({ links: [`http://user@${domain}:8080/x`] }) as {
+        links: unknown[];
+      };
+      expect(out.links[0]).toEqual(hosted(`http://user@${domain}:8080/x`, ascii));
     });
 
     it("leaves ASCII hosts and free text alone", () => {
@@ -1420,7 +1499,7 @@ describe("summarizeArgs", () => {
         x_credential_info: { to: "attacker@evil.com", port: 993, ssl: true },
       });
       expect(out.x_credential_info).toEqual({
-        to: "[secret-like field is being set — value hidden, 17 characters]",
+        to: secret(17),
         port: 993,
         ssl: true,
       });
@@ -1436,20 +1515,22 @@ describe("summarizeArgs", () => {
     it("annotates the host the URL parser resolves, not the one a regex reads", () => {
       const value = "https://fіrma.at\\@evil.com/x";
       const out = summarizeArgs({ url: value });
-      expect(out.url).toBe(`${value} (${new URL(value).hostname})`);
+      expect(out.url).toEqual(hosted(value, new URL(value).hostname));
       expect(new URL(value).hostname).toBe("xn--frma-l9d.at");
     });
 
     it("names the real host when the text reads as a different one", () => {
       const value = "https://evil.com\\@firma.at/x";
-      expect(summarizeArgs({ website: value }).website).toBe(`${value} (evil.com)`);
+      expect(summarizeArgs({ website: value }).website).toEqual(hosted(value, "evil.com"));
     });
 
     it("names the host behind percent-encoding and numeric forms", () => {
-      expect(summarizeArgs({ url: "https://fir%6Da.at/" }).url).toBe(
-        "https://fir%6Da.at/ (firma.at)"
+      expect(summarizeArgs({ url: "https://fir%6Da.at/" }).url).toEqual(
+        hosted("https://fir%6Da.at/", "firma.at")
       );
-      expect(summarizeArgs({ url: "http://0x7f.1/" }).url).toBe("http://0x7f.1/ (127.0.0.1)");
+      expect(summarizeArgs({ url: "http://0x7f.1/" }).url).toEqual(
+        hosted("http://0x7f.1/", "127.0.0.1")
+      );
     });
 
     it("leaves a URL whose host reads as it resolves alone, case aside", () => {

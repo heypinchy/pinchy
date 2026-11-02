@@ -152,7 +152,9 @@ describe("buildApprovalPrompt", () => {
       { refRecord: makeRefResolver(REF_KEY) }
     );
     expect(description).not.toContain(ref.slice(20, 40));
-    expect(description).toContain('target: "(record reference: sale.order #9 \\"S00009\\")"');
+    // Outside any quotes (fourteenth review of #1242): quoted, the record read
+    // exactly like a string typed with those characters.
+    expect(description).toContain('target: (record reference: sale.order #9 "S00009")');
   });
 
   // Fifth review of #1242: a valid ref followed by `=` and text decoded to the
@@ -200,7 +202,7 @@ describe("buildApprovalPrompt", () => {
       to: `Raimund Korber${"\u2800".repeat(190)} <attacker@evil.com>`,
       subject: "Rechnung",
     });
-    expect(description).toContain('to: "attacker@evil.com (name: \\"');
+    expect(description).toContain('to: "attacker@evil.com" (name: "Raimund Korber');
   });
   // The prompt reaches chat surfaces too, and it reads the same summary as the
   // card. Once the summary keeps real arrays/objects, flattening them with

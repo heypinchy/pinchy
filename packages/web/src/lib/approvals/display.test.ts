@@ -7,6 +7,7 @@ import {
   inStoredOrder,
   inStoredOrderPlain,
   isAddressShaped,
+  readNode,
   splitTruncation,
   truncationMarker,
 } from "./display";
@@ -109,19 +110,61 @@ describe("FULL_VIEW_KEYS covers every path- or target-like tool parameter", () =
 describe("isAddressShaped", () => {
   it.each([
     "billing@firma.at",
-    "billing@f\u0456rma.at (xn--frma-l9d.at)",
+    "billing@f\u0456rma.at",
     "https://firma.at/pay",
-    "https://evil.com\\@firma.at/x (evil.com)",
+    "https://evil.com\\@firma.at/x",
   ])("treats %j as an address", (text) => {
     expect(isAddressShaped(text)).toBe(true);
   });
 
-  it.each(["Bitte an billing@firma.at schreiben", "Rechnung Q3", "a@b, c@d"])(
-    "treats %j as text",
-    (text) => {
-      expect(isAddressShaped(text)).toBe(false);
+  // Corrected expectation (fourteenth review of #1242): the host note used to
+  // be written after the address, so this stripped a trailing " (…)" first —
+  // and an address with a note TYPED after it read as an address with
+  // Pinchy's note. Notes are nodes of their own now; the value is its text.
+  it.each([
+    "Bitte an billing@firma.at schreiben",
+    "Rechnung Q3",
+    "a@b, c@d",
+    "billing@f\u0456rma.at (xn--frma-l9d.at)",
+    "billing@f\u0456rma.at (firma.at)",
+  ])("treats %j as text", (text) => {
+    expect(isAddressShaped(text)).toBe(false);
+  });
+});
+
+describe("readNode", () => {
+  it.each([
+    [{ "@": "ref", model: "res.partner", id: 7, label: "Acme", labelCut: 0 }],
+    [{ "@": "secret", length: 3 }],
+    [{ "@": "noted", text: "boss@x.at", notes: [{ kind: "host", host: "xn--x" }] }],
+    [
+      {
+        "@": "noted",
+        text: "a@b.at",
+        notes: [{ kind: "name", name: "A" }, { kind: "not-a-domain" }],
+      },
+    ],
+  ])("reads %j as the node it is", (node) => {
+    expect(readNode(node)).toBe(node);
+  });
+
+  it.each([["text"], [7], [null], [["@"]], [{ to: "a@b.at" }], [{ '"@"': "secret" }]])(
+    "reads %j as a plain value",
+    (value) => {
+      expect(readNode(value)).toBeNull();
     }
   );
+
+  // A row written by a newer version, or garbage: never drawn as fields.
+  it.each([
+    [{ "@": "chart" }],
+    [{ "@": "secret", length: "3" }],
+    [{ "@": "ref", model: "x", id: 1.5, label: "y", labelCut: 0 }],
+    [{ "@": "noted", text: "a", notes: [] }],
+    [{ "@": "noted", text: "a", notes: [{ kind: "host" }] }],
+  ])("reads %j as unreadable", (value) => {
+    expect(readNode(value)).toBe("unreadable");
+  });
 });
 
 /**

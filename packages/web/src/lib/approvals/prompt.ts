@@ -1,6 +1,14 @@
 import { TOOL_REGISTRY } from "@/lib/tool-registry";
 import { renderText, summarizeArgs, type SummarizeOptions } from "@/lib/approvals/summary";
-import { displayScalar, inStoredOrderPlain } from "@/lib/approvals/display";
+import {
+  displayScalar,
+  inStoredOrderPlain,
+  noteText,
+  quoted,
+  readNode,
+  refText,
+  secretText,
+} from "@/lib/approvals/display";
 
 /**
  * Builds the two strings a person reads before approving a tool call.
@@ -44,6 +52,17 @@ function truncate(text: string, max: number): string {
  * would mean the safer surface hides what the riskier one prints.
  */
 function inline(value: unknown): string {
+  // What Pinchy says about a value is printed OUTSIDE its quotes, so no
+  // quoted text can imitate it: `partner_id: (record reference: res.partner
+  // #7 "Acme GmbH")` is a ref, `partner_id: "(record reference: …)"` is a
+  // string pinchy-odoo would look up by name (fourteenth review of #1242).
+  const node = readNode(value);
+  if (node === "unreadable") return "(a value this version cannot show)";
+  if (node?.["@"] === "ref") return refText(node);
+  if (node?.["@"] === "secret") return secretText(node);
+  if (node?.["@"] === "noted") {
+    return [quoted(node.text), ...node.notes.map((note) => `(${noteText(note)})`)].join(" ");
+  }
   if (Array.isArray(value)) return `[${value.map(inline).join(", ")}]`;
   if (value && typeof value === "object") {
     return `{${Object.entries(value)
@@ -57,7 +76,7 @@ function inline(value: unknown): string {
   // draws each field and item in an element of its own. Line breaks stay
   // line breaks — everything else that could hide is a marker already — and
   // a key needs none either: it is a bare identifier or already quoted.
-  if (typeof value === "string") return `"${value.replace(/["\\]/g, "\\$&")}"`;
+  if (typeof value === "string") return quoted(value);
   return displayScalar(value);
 }
 

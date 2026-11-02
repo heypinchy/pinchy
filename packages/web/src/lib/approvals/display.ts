@@ -68,19 +68,131 @@ export const EMAIL_SHAPED = /^[^\s@<>,;/]+@([^\s@<>,;/:?#]+)$/u;
  * one it resolves to. */
 export const URL_SHAPED = /^[A-Za-z][A-Za-z0-9+.-]*:\/\/(?:[^/?#\s@]*@)?(\[[^\]]*\]|[^/?#\s:]+)/u;
 
-/** The host note `summary.ts` appends to an address: ` (xn--…)`. */
-const HOST_NOTE = / \([^()]*\)$/u;
-
 /**
- * Is this stored value an email address or a URL — the shapes whose host is
- * the decision? The card never shortens one to a preview: a 217-character
- * address whose `@evil.com` sits past the cut reads as the familiar name its
- * local part spells (fourth review of #1242). Tested on the stored text, with
- * the host note the summary may have appended taken off first.
+ * Is this value an email address or a URL — the shapes whose host is the
+ * decision? The card never shortens one to a preview: a 217-character address
+ * whose `@evil.com` sits past the cut reads as the familiar name its local
+ * part spells (fourth review of #1242). Tested on the value's own text: the
+ * note naming its host is a separate node (`SummaryNode`), never part of it.
  */
 export function isAddressShaped(text: string): boolean {
-  const bare = text.replace(HOST_NOTE, "");
-  return URL_SHAPED.test(bare) || EMAIL_SHAPED.test(bare);
+  return URL_SHAPED.test(text) || EMAIL_SHAPED.test(text);
+}
+
+/**
+ * What Pinchy says ABOUT a value, beside it: the host an address or URL really
+ * reaches, that it does not parse, or the display name of a recipient.
+ */
+export type SummaryNote =
+  | { kind: "host"; host: string }
+  | { kind: "not-a-url" }
+  | { kind: "not-a-domain" }
+  | { kind: "name"; name: string };
+
+/**
+ * A summary value that carries an annotation. Fourteenth review of #1242: the
+ * summary used to write its annotations INTO the value's text —
+ * `(record reference: res.partner #7 "Acme GmbH")`, `boss@fіrma.at
+ * (xn--frma-l9d.at)` — so a value typed with the same characters read exactly
+ * like the annotated one; pinchy-odoo resolves a plain string by exact name,
+ * so an attacker-made partner of that literal name got the bill. Now every
+ * annotation travels out of band, in a node of its own:
+ *
+ * - `ref`: an opaque record reference that decodes — the value is the record,
+ *   and nothing of its text is shown. `label` is cut at 200 characters,
+ *   `labelCut` says how many more there were.
+ * - `secret`: text under a secret-like key, hidden; only its length is shown.
+ * - `noted`: a string value (`text`, rendered like any other) with what
+ *   Pinchy says about it (`notes`).
+ *
+ * A node is an object with the key `@`, which no summary object can have: a
+ * key is labelled bare only when it is `[A-Za-z0-9_.-]+`, and quoted
+ * otherwise. A plain string in a summary is always the value's own text and
+ * nothing else. Summaries stored before nodes existed hold none, and read as
+ * they always did.
+ */
+export type SummaryNode =
+  | { "@": "ref"; model: string; id: number; label: string; labelCut: number }
+  | { "@": "secret"; length: number }
+  | { "@": "noted"; text: string; notes: SummaryNote[] };
+
+/** The key that marks a summary node. */
+export const NODE_KEY = "@";
+
+function isNote(note: unknown): note is SummaryNote {
+  if (!note || typeof note !== "object") return false;
+  const { kind, host, name } = note as Record<string, unknown>;
+  if (kind === "host") return typeof host === "string";
+  if (kind === "name") return typeof name === "string";
+  return kind === "not-a-url" || kind === "not-a-domain";
+}
+
+/**
+ * The node a summary value is, `null` for a plain value, or `"unreadable"`
+ * for an object marked as a node that this version cannot read (one written
+ * by a newer version, say): it must not be drawn as if it were a field list.
+ */
+export function readNode(value: unknown): SummaryNode | "unreadable" | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  if (!Object.prototype.hasOwnProperty.call(value, NODE_KEY)) return null;
+  const node = value as Record<string, unknown>;
+  switch (node[NODE_KEY]) {
+    case "ref":
+      return typeof node.model === "string" &&
+        Number.isSafeInteger(node.id) &&
+        typeof node.label === "string" &&
+        Number.isSafeInteger(node.labelCut)
+        ? (node as SummaryNode)
+        : "unreadable";
+    case "secret":
+      return Number.isSafeInteger(node.length) ? (node as SummaryNode) : "unreadable";
+    case "noted":
+      return typeof node.text === "string" &&
+        Array.isArray(node.notes) &&
+        node.notes.length > 0 &&
+        node.notes.every(isNote)
+        ? (node as SummaryNode)
+        : "unreadable";
+    default:
+      return "unreadable";
+  }
+}
+
+/** A string in double quotes, its `"` and `\` escaped: one token no content
+ * can close early. Line breaks stay line breaks. */
+export function quoted(text: string): string {
+  return `"${text.replace(/["\\]/g, "\\$&")}"`;
+}
+
+/** A note as plain text, without its parentheses: `host: "xn--…"`. */
+export function noteText(note: SummaryNote): string {
+  switch (note.kind) {
+    case "host":
+      return `host: ${quoted(note.host)}`;
+    case "name":
+      return `name: ${quoted(note.name)}`;
+    case "not-a-url":
+      return "not a valid URL";
+    case "not-a-domain":
+      return "not a valid domain name";
+  }
+}
+
+/** A model name as the prompt prints it: bare when it is a plain identifier. */
+function modelText(model: string): string {
+  return /^[A-Za-z0-9_.-]+$/.test(model) ? model : quoted(model);
+}
+
+/** A record reference as plain text: `(record reference: res.partner #7 "Acme")`. */
+export function refText(node: Extract<SummaryNode, { "@": "ref" }>): string {
+  const cut = node.labelCut > 0 ? ` … [label cut: ${node.labelCut} more characters not shown]` : "";
+  return `(record reference: ${modelText(node.model)} #${node.id} ${quoted(node.label)}${cut})`;
+}
+
+/** A hidden secret as plain text. */
+export function secretText(node: Extract<SummaryNode, { "@": "secret" }>): string {
+  const unit = node.length === 1 ? "character" : "characters";
+  return `[secret-like field is being set — value hidden, ${node.length} ${unit}]`;
 }
 
 /**
