@@ -158,6 +158,16 @@ describe("runSoffice", () => {
       expect(xcu).toMatch(/oor:name="ooInetNoProxy" oor:op="fuse"><value><\/value>/);
     });
 
+    it("keeps its scratch space in TMPDIR, whatever the build's default", async () => {
+      // LibreOffice unpacks a package into its Temp path, which defaults to
+      // $(temp) — TMPDIR — on Linux but to the profile's own temp directory
+      // on macOS builds (measured, LibreOffice 26.2). Pinned, the scratch is
+      // where the batch's TMPDIR says on every build.
+      expect(await profileAtStart()).toContain(
+        `<item oor:path="/org.openoffice.Office.Paths/Paths/org.openoffice.Office.Paths:NamedPath['Temp']"><prop oor:name="WritePath" oor:op="fuse"><value>$(temp)</value></prop></item>`
+      );
+    });
+
     it("fails closed: if the profile cannot be written, the converter does not run", async () => {
       const ran = join(tmpRoot, "ran");
       process.env.KB_SOFFICE_BIN = stub("soffice-ran", `touch ${ran}\n`);

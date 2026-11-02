@@ -883,6 +883,12 @@ function killTree(child: ReturnType<typeof spawn>): void {
  * itself — no network, no view of the workspaces — is what closes the family;
  * that is separate work (branch feat/kb-office-convert-sidecar). The canary
  * says, vector by vector, which layers hold alone.
+ *
+ * The last setting is not about links: it pins LibreOffice's Temp path to
+ * `$(temp)`, which is `TMPDIR` (see `runSoffice`). That is the default on
+ * Linux, but a macOS build defaults to the profile's own `temp` directory
+ * (measured, LibreOffice 26.2), so the scratch space would follow the build
+ * rather than the batch's `tmpDir`.
  */
 const LOCKED_DOWN_PROFILE = `<?xml version="1.0" encoding="UTF-8"?>
 <oor:items xmlns:oor="http://openoffice.org/2001/registry" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
@@ -895,6 +901,11 @@ ${[
   ["/org.openoffice.Inet/Settings", "ooInetHTTPSProxyName", "127.0.0.1"],
   ["/org.openoffice.Inet/Settings", "ooInetHTTPSProxyPort", "9"],
   ["/org.openoffice.Inet/Settings", "ooInetNoProxy", ""],
+  [
+    "/org.openoffice.Office.Paths/Paths/org.openoffice.Office.Paths:NamedPath['Temp']",
+    "WritePath",
+    "$(temp)",
+  ],
 ]
   .map(
     ([path, name, value]) =>
@@ -925,7 +936,8 @@ async function writeLockedDownProfile(profileDir: string): Promise<void> {
  * an unreadable document says. In the batch it is on the volume
  * `outputVolumeFault` asks. Verified against the runtime image's
  * LibreOffice 7.4: with a 20 MiB /tmp and TMPDIR on a roomy volume, a
- * document needing 26 MB of scratch converts and /tmp stays empty.
+ * document needing 26 MB of scratch converts and /tmp stays empty. LibreOffice
+ * finds TMPDIR through its Temp path setting, which the profile pins.
  *
  * The binary is resolved per call rather than at import so a test can point at
  * a stub: without that, everything below is only reachable on a machine with a
