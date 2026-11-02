@@ -25,7 +25,7 @@ import {
   repointAgentsOffRemovedModels,
   capMigratedAgents,
   LAST_CONFIGURED_PROVIDER_ERROR,
-  LAST_USABLE_PROVIDER_ERROR,
+  noUsableTargetRefusal,
 } from "@/lib/provider-deletion";
 import { assertAllowedProviderUrl, ProviderUrlBlockedError } from "@/lib/provider-url-guard";
 import { refusedBaseUrlReasons } from "@/lib/openai-compatible-stored-url";
@@ -288,6 +288,15 @@ export const DELETE = withAdmin(async (request, _ctx, session) => {
   if ("error" in parsed) return parsed.error;
   const { id } = parsed.data;
 
+  // An unknown id is a 404 before any guard: otherwise a stale id would be
+  // answered — and audited — as a refused removal of a provider that does not
+  // exist. Same answer, and no audit, as the race below where the row vanishes
+  // between this lookup and the delete.
+  const row = (await listOpenAiCompatibleProviders()).find((p) => p.id === id);
+  if (!row) {
+    return NextResponse.json({ error: "OpenAI-compatible provider not found." }, { status: 404 });
+  }
+
   // A single custom instance counts as a valid sole provider, so this count
   // spans built-ins + custom instances (see provider-count.ts). Refuse to remove
   // the last one, with the exact status + message shape the built-in route uses.
@@ -304,8 +313,9 @@ export const DELETE = withAdmin(async (request, _ctx, session) => {
   const remainingCandidates = await buildRemainingCandidates({ excludeCustomId: id });
   if (remainingCandidates.length === 0) {
     // The refusal comes from the SSRF guard's verdict on the other providers,
-    // so it is recorded like PATCH /default's refusal. No address in it.
-    const row = (await listOpenAiCompatibleProviders()).find((p) => p.id === id);
+    // so it is recorded like PATCH /default's refusal. No address in it. Its
+    // wording (and `reason`) depends on whether this provider is refused too.
+    const refusal = await noUsableTargetRefusal(row);
     after(() =>
       appendAuditLog({
         actorType: "user",
@@ -314,11 +324,12 @@ export const DELETE = withAdmin(async (request, _ctx, session) => {
         outcome: "failure",
         detail: {
           action: "provider_delete_refused_no_usable_target",
-          provider: { id, name: row?.displayName ?? id },
+          reason: refusal.reason,
+          provider: { id, name: row.displayName },
         },
       })
     );
-    return NextResponse.json({ error: LAST_USABLE_PROVIDER_ERROR }, { status: 400 });
+    return NextResponse.json({ error: refusal.error }, { status: 400 });
   }
 
   let deleted: Awaited<ReturnType<typeof deleteProviderById>> = null;

@@ -7,7 +7,7 @@ import {
   builtInModelPrefix,
   previewProviderDeletion,
   LAST_CONFIGURED_PROVIDER_ERROR,
-  LAST_USABLE_PROVIDER_ERROR,
+  noUsableTargetRefusal,
 } from "@/lib/provider-deletion";
 import { countConfiguredProviders } from "@/lib/provider-count";
 import {
@@ -39,10 +39,11 @@ export const GET = withAdmin(async (request) => {
   // migrates — `ollama-local` notably namespaces its models as `ollama/`.
   const builtIn = PROVIDERS[provider as ProviderName];
   let deletedPrefix: string;
+  let custom: { slug: string; baseUrl: string } | undefined;
   if (builtIn) {
     deletedPrefix = builtInModelPrefix(provider);
   } else {
-    const custom = (await listOpenAiCompatibleProviders()).find((row) => row.slug === provider);
+    custom = (await listOpenAiCompatibleProviders()).find((row) => row.slug === provider);
     if (!custom) {
       return NextResponse.json({ error: "Provider not found." }, { status: 404 });
     }
@@ -64,7 +65,7 @@ export const GET = withAdmin(async (request) => {
       (await countConfiguredProviders()) <= 1
         ? LAST_CONFIGURED_PROVIDER_ERROR
         : target === null
-          ? LAST_USABLE_PROVIDER_ERROR
+          ? (await noUsableTargetRefusal(custom)).error
           : null,
   };
   return NextResponse.json(body);

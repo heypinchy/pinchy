@@ -51,6 +51,40 @@ export const LAST_USABLE_PROVIDER_ERROR =
   "add another provider first.";
 
 /**
+ * The same refusal when the provider being removed is refused ITSELF — e.g.
+ * two custom LAN providers both refused, no built-in. "The last usable
+ * provider" would be false there: the one being removed was never usable.
+ */
+export const NO_USABLE_TARGET_FOR_REFUSED_PROVIDER_ERROR =
+  "No usable provider would remain to move this provider's agents onto. " +
+  "Add or fix another provider first.";
+
+/** `detail.reason` of the `provider_delete_refused_no_usable_target` audit. */
+export type NoUsableTargetReason = "last_usable_provider" | "provider_itself_refused";
+
+/**
+ * Which "no usable provider would remain" refusal applies, as the error both
+ * the DELETE routes and the deletion preview answer with (word for word) and
+ * the `reason` the DELETE's audit records.
+ *
+ * `removedCustom` is the custom provider being removed; a built-in passes
+ * nothing, because a built-in is never refused (buildRemainingCandidates
+ * includes every configured one). Only called on the refusal path, so the
+ * extra SSRF verdict costs nothing on an ordinary removal.
+ */
+export async function noUsableTargetRefusal(removedCustom?: {
+  slug: string;
+  baseUrl: string;
+}): Promise<{ error: string; reason: NoUsableTargetReason }> {
+  const removedIsRefused =
+    removedCustom !== undefined &&
+    (await refusedBaseUrlReasons([removedCustom])).has(removedCustom.slug);
+  return removedIsRefused
+    ? { error: NO_USABLE_TARGET_FOR_REFUSED_PROVIDER_ERROR, reason: "provider_itself_refused" }
+    : { error: LAST_USABLE_PROVIDER_ERROR, reason: "last_usable_provider" };
+}
+
+/**
  * The ordered set of providers an orphaned agent can migrate onto, shared by
  * both DELETE routes so the built-ins-first ordering AND the custom-instance
  * `<slug>/<modelId>` namespacing (which must match the openclaw.json emission)
@@ -138,7 +172,7 @@ export interface MigrationResult {
  * built-ins-first (Task 8): the first element wins as the migration target, so
  * the ordering is the policy. With no remaining candidate nothing is migrated
  * and no default is reassigned — both DELETE routes refuse that case up front
- * ({@link LAST_USABLE_PROVIDER_ERROR}), so it does not strand agents in practice.
+ * ({@link noUsableTargetRefusal}), so it does not strand agents in practice.
  */
 export async function migrateAgentsOffDeletedProvider(opts: {
   deletedPrefix: string;

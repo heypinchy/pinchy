@@ -103,7 +103,7 @@ Agents pinned to a model from the removed provider are moved to a still-configur
 
 Pinchy refuses to remove the **last** configured provider — add another one first. The confirmation dialog says so and keeps **Remove** disabled. That is what keeps the sentence above true: there is always somewhere for an orphaned agent to go.
 
-A custom provider whose base URL is refused (its tile says **Not in use**, see [Which base URLs are allowed](#which-base-urls-are-allowed)) never counts as that somewhere. Pinchy doesn't move agents onto it or make it the new default, and the dialog names the next usable provider instead. If every other configured provider is refused, the removal is refused too: the dialog says why and keeps **Remove** disabled. Change one of those base URLs, or add another provider first.
+A custom provider whose base URL is refused (its tile says **Not in use**, see [Which base URLs are allowed](#which-base-urls-are-allowed)) never counts as that somewhere. Pinchy doesn't move agents onto it or make it the new default, and the dialog names the next usable provider instead. If every other configured provider is refused, the removal is refused too: the dialog says why and keeps **Remove** disabled. Change one of those base URLs, or add another provider first. The same goes for removing a refused provider when every other one is refused as well — the dialog then says that no usable provider would remain, since the one you're removing wasn't usable either.
 
 The move is a starting point, not a verdict: pick a different model for any agent afterwards — see [Change an agent's model](#change-an-agents-model).
 

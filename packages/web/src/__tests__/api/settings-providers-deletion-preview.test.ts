@@ -376,6 +376,9 @@ describe("GET /api/settings/providers/deletion-preview", () => {
         outcome: "failure",
         detail: {
           action: "provider_delete_refused_no_usable_target",
+          // A built-in is never refused itself, so this is always the
+          // "last usable provider" case.
+          reason: "last_usable_provider",
           provider: { id: "anthropic", name: PROVIDERS.anthropic.name },
         },
       });
