@@ -86,10 +86,6 @@ function lastAddress(entry: Entry): bigint {
   return entry.network | ((BigInt(1) << hostBits) - BigInt(1));
 }
 
-function key(entry: Entry): string {
-  return `${format(entry.network, entry.v6)}/${entry.prefix}`;
-}
-
 function treatmentOf(cell: string): Treatment {
   const text = cell.trim().toLowerCase();
   if (text.startsWith("private")) return "private";
