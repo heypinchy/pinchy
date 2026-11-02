@@ -244,5 +244,23 @@ describe("hidden-chars drift guard", () => {
         expect(isEscapedChar(char)).toBe(true);
       }
     });
+
+    // Ninth review of #1242: a display name refused every space separator, so
+    // a Japanese name written with an ideographic space could not be mailed.
+    // One is allowed now, as in a path, because the card marks it; a run of
+    // them is still blank space, and still refused.
+    it("a display name may carry a single space separator, and the card marks it", () => {
+      for (const cp of every(isSpaceSeparator)) {
+        const char = String.fromCodePoint(cp);
+        const marker = `⟨U+${cp.toString(16).toUpperCase().padStart(4, "0")}⟩`;
+        const recipient = `"Ada${char}Lovelace" <ada@example.com>`;
+        expect(parseSingleRecipient(recipient).ok, marker).toBe(true);
+        expect(summarizeCall({ to: recipient }).summary.to as string).toContain(marker);
+        expect(parseSingleRecipient(`"Ada${char}${char}Lovelace" <ada@example.com>`).ok).toBe(
+          false
+        );
+        expect(parseSingleRecipient(`"Ada ${char}Lovelace" <ada@example.com>`).ok).toBe(false);
+      }
+    });
   });
 });

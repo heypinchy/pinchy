@@ -25,6 +25,9 @@
  *   no-break, narrow no-break, ideographic, …). They take visible width, and
  *   the card prints each one as `⟨U+XXXX⟩`. Real file names carry them —
  *   macOS names a screenshot "… at 10.00.00 AM.png" — so a path may.
+ *   So may a display name, one at a time (ninth review of #1242): Japanese
+ *   writes a name with an ideographic space, and a run of them is blank
+ *   space again (pinchy-email `recipient.ts`).
  *
  * A third allowance depends on position rather than on the character: U+200C
  * and U+200D where they shape Arabic-script or Indic text (after a virama, or

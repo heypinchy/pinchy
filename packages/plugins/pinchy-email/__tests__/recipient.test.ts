@@ -76,8 +76,14 @@ describe("parseSingleRecipient", () => {
     ["a hangul choseong filler", "Raimund\u115FKorber <attacker@evil.com>"],
     ["a hangul jungseong filler", "Raimund\u1160Korber <attacker@evil.com>"],
     ["a halfwidth hangul filler", "Raimund\uFFA0Korber <attacker@evil.com>"],
-    ["a no-break space", "Raimund\u00A0Korber <attacker@evil.com>"],
-    ["an ideographic space", "Raimund\u3000Korber <attacker@evil.com>"],
+    // Corrected expectation (ninth review of #1242): a single no-break or
+    // ideographic space is part of real names — Japanese writes 山田\u3000太郎 —
+    // and the card prints it as ⟨U+3000⟩, as it does in a path. A run of them
+    // is still blank space that pushes the address out of view, so these rows
+    // now test runs.
+    ["a run of no-break spaces", "Raimund\u00A0\u00A0Korber <attacker@evil.com>"],
+    ["a run of ideographic spaces", "Raimund\u3000\u3000Korber <attacker@evil.com>"],
+    ["a space next to an ideographic space", "Raimund \u3000Korber <attacker@evil.com>"],
     // Corrected expectation (third review of #1242): this row used a zero-width
     // JOINER, which display names now accept — it sits inside ordinary emoji,
     // takes no space, and the card shows it as it is. The zero-width SPACE
@@ -89,6 +95,34 @@ describe("parseSingleRecipient", () => {
     const result = parseSingleRecipient(input);
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error).toMatch(/invisible|blank/i);
+  });
+
+  // Ninth review of #1242: `"山田\u3000太郎" <yamada@example.jp>` was refused, although
+  // a path may carry the same space. One space separator takes visible width,
+  // and the card prints it as ⟨U+XXXX⟩, so the name reads unambiguously.
+  it.each([
+    [
+      "an ideographic space",
+      '"山田\u3000太郎" <yamada@example.jp>',
+      "山田\u3000太郎 <yamada@example.jp>",
+    ],
+    [
+      "a no-break space",
+      "Raimund\u00A0Korber <rk@example.com>",
+      "Raimund\u00A0Korber <rk@example.com>",
+    ],
+    [
+      "a narrow no-break space",
+      "Raimund\u202FKorber <rk@example.com>",
+      "Raimund\u202FKorber <rk@example.com>",
+    ],
+  ])("accepts a display name with %s", (_label, input, address) => {
+    expect(parseSingleRecipient(input)).toEqual({ ok: true, address });
+  });
+
+  it("still keeps a space separator out of the address", () => {
+    expect(parseSingleRecipient("yamada\u3000@example.jp").ok).toBe(false);
+    expect(parseSingleRecipient("山田 <yamada\u00A0@example.jp>").ok).toBe(false);
   });
 
   it("rejects a run of spaces, and says why", () => {

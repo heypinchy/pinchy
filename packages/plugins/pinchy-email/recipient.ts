@@ -84,6 +84,18 @@ function checkName(name: string): string | null {
   return null;
 }
 
+/**
+ * `text` with each lone space separator read as a plain space (ninth review of
+ * #1242). A no-break or ideographic space takes visible width and is part of
+ * real names — `"山田\u3000太郎" <yamada@example.jp>` — and the card prints it as
+ * `⟨U+3000⟩`, as it does in a path. Next to another space of any kind it is
+ * part of a run, which reads as empty space and pushes the address out of
+ * view, so there it is left for `hiddenCharIn` to refuse.
+ */
+function withLoneSpaceSeparatorsAsSpaces(text: string): string {
+  return text.replace(/(?<![ \p{Zs}])\p{Zs}(?![ \p{Zs}])/gu, " ");
+}
+
 /** `text` without the U+200C that shape it (`invisibleFormatOffsets`). */
 function withoutShapingNonJoiners(text: string): string {
   const invisible = invisibleFormatOffsets(text, { redundant: false });
@@ -110,7 +122,12 @@ export function parseSingleRecipient(value: unknown): ParsedRecipient {
   // zero-width non-joiner where it shapes the name — "علی‌رضا" keeps its ی
   // unjoined (seventh review of #1242) — but not where it renders as nothing,
   // which is where the card marks it (`emoji-sequence.ts`).
-  const hidden = hiddenCharIn(withoutShapingNonJoiners(text), isEmojiFormatChar);
+  // A single no-break or ideographic space is allowed too, as in a path; a run
+  // of them is not (`withLoneSpaceSeparatorsAsSpaces`).
+  const hidden = hiddenCharIn(
+    withLoneSpaceSeparatorsAsSpaces(withoutShapingNonJoiners(text)),
+    isEmojiFormatChar
+  );
   if (hidden) {
     return {
       ok: false,
