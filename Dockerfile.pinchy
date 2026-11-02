@@ -101,9 +101,10 @@ COPY packages/plugins/pinchy-files/openclaw.plugin.json packages/plugins/pinchy-
 # path. The runtime stage inherits them through its `COPY --from=build
 # /app/packages/plugins`. Pinned by scripts/lib/prepush-build-gate.test.mjs.
 #
-# The zip central-directory guard (#424) rides the same COPY: the Office
-# preflight reads an archive's declared sizes with it before exceljs, mammoth or
-# LibreOffice inflate anything (release review v0.10.0). Import-free as well.
+# The zip guard (#424) rides the same COPY: the Office preflight checks an
+# archive's declared AND real sizes with it, and hands exceljs, mammoth and
+# LibreOffice only the copy it verified (release review v0.10.0). It imports
+# nothing but a Node built-in (`node:zlib`).
 COPY packages/plugins/pinchy-files/pdf-scan-rule.ts packages/plugins/pinchy-files/pdf-vision-api.ts packages/plugins/pinchy-files/docx-zip-guard.ts packages/plugins/pinchy-files/
 COPY packages/plugins/pinchy-context/openclaw.plugin.json packages/plugins/pinchy-context/
 COPY packages/plugins/pinchy-audit/openclaw.plugin.json packages/plugins/pinchy-audit/

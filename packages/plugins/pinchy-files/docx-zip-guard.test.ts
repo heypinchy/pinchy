@@ -2,13 +2,15 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { deflateRawSync } from "node:zlib";
+import { constants as zlibConstants, deflateRawSync, inflateRawSync } from "node:zlib";
 import {
   readDeclaredDocxSize,
   assertDocxDecompressedSizeWithinLimit,
   MAX_DOCX_DECOMPRESSED_BYTES,
   readZipEntries,
   assertZipWithinLimits,
+  verifiedZipCopy,
+  ZipFormatError,
   ZipLimitError,
 } from "./docx-zip-guard";
 
@@ -283,5 +285,251 @@ describe("assertZipWithinLimits", () => {
     expect(() =>
       assertZipWithinLimits(Buffer.from("MZ not a zip"), { maxDecompressedBytes: 1000 })
     ).toThrow(/not a valid zip archive/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// verifiedZipCopy — real sizes, not declared ones (release review v0.10.0)
+// ---------------------------------------------------------------------------
+
+/** One raw-deflate stream that inflates to `head` + `spaceBytes` spaces + `tail`, built in O(1 MiB) memory. */
+function deflatedSpaces(head: string, spaceBytes: number, tail: string): Buffer {
+  const MiB = 1024 * 1024;
+  // Independent SYNC_FLUSH chunks concatenate into one valid raw stream: each
+  // ends on a byte boundary with a non-final block, and only the last is final.
+  const flush = { finishFlush: zlibConstants.Z_SYNC_FLUSH };
+  const megabyte = deflateRawSync(Buffer.alloc(MiB, 0x20), flush);
+  const pieces = [deflateRawSync(Buffer.from(head), flush)];
+  for (let left = spaceBytes; left > 0; left -= MiB) {
+    pieces.push(left >= MiB ? megabyte : deflateRawSync(Buffer.alloc(left, 0x20), flush));
+  }
+  pieces.push(deflateRawSync(Buffer.from(tail)));
+  return Buffer.concat(pieces);
+}
+
+interface RawEntry {
+  name: string;
+  /** Exactly the bytes to store as the entry's data. */
+  data: Buffer;
+  method?: number;
+  flags?: number;
+  crc32?: number;
+  compressedSize?: number;
+  uncompressedSize: number;
+}
+
+/** A zip written field by field, so every lie a hostile archive can tell is expressible. */
+function rawZip(entries: RawEntry[], opts: { listed?: (index: number) => boolean } = {}): Buffer {
+  const local: Buffer[] = [];
+  const central: Buffer[] = [];
+  let offset = 0;
+  entries.forEach((entry, index) => {
+    const name = Buffer.from(entry.name, "utf8");
+    const header = Buffer.alloc(30 + name.length);
+    header.writeUInt32LE(0x04034b50, 0);
+    header.writeUInt16LE(20, 4);
+    header.writeUInt16LE(entry.flags ?? 0, 6);
+    header.writeUInt16LE(entry.method ?? 8, 8);
+    header.writeUInt32LE(entry.crc32 ?? 0, 14);
+    header.writeUInt32LE(entry.compressedSize ?? entry.data.length, 18);
+    header.writeUInt32LE(entry.uncompressedSize, 22);
+    header.writeUInt16LE(name.length, 26);
+    name.copy(header, 30);
+
+    if (opts.listed?.(index) ?? true) {
+      const record = Buffer.alloc(46 + name.length);
+      record.writeUInt32LE(0x02014b50, 0);
+      record.writeUInt16LE(20, 4);
+      record.writeUInt16LE(20, 6);
+      record.writeUInt16LE(entry.flags ?? 0, 8);
+      record.writeUInt16LE(entry.method ?? 8, 10);
+      record.writeUInt32LE(entry.crc32 ?? 0, 16);
+      record.writeUInt32LE(entry.compressedSize ?? entry.data.length, 20);
+      record.writeUInt32LE(entry.uncompressedSize, 24);
+      record.writeUInt16LE(name.length, 28);
+      record.writeUInt32LE(offset, 42);
+      name.copy(record, 46);
+      central.push(record);
+    }
+    local.push(header, entry.data);
+    offset += header.length + entry.data.length;
+  });
+  const directory = Buffer.concat(central);
+  const eocd = Buffer.alloc(22);
+  eocd.writeUInt32LE(0x06054b50, 0);
+  eocd.writeUInt16LE(central.length, 8);
+  eocd.writeUInt16LE(central.length, 10);
+  eocd.writeUInt32LE(directory.length, 12);
+  eocd.writeUInt32LE(offset, 16);
+  return Buffer.concat([...local, directory, eocd]);
+}
+
+/** A truthful deflated entry: real sizes and a real CRC. */
+function honest(name: string, content: string | Buffer): RawEntry {
+  const bytes = typeof content === "string" ? Buffer.from(content) : content;
+  return { name, data: deflateRawSync(bytes), crc32: crcOf(bytes), uncompressedSize: bytes.length };
+}
+
+function crcOf(bytes: Buffer): number {
+  let crc = 0xffffffff;
+  for (const byte of bytes) {
+    crc ^= byte;
+    for (let k = 0; k < 8; k++) crc = crc & 1 ? 0xedb88320 ^ (crc >>> 1) : crc >>> 1;
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+/** name -> inflated bytes, read independently of the code under test. */
+function contentsOf(zip: Buffer): Map<string, Buffer> {
+  const out = new Map<string, Buffer>();
+  for (const entry of readZipEntries(zip)) {
+    const at = entry.localHeaderOffset;
+    const start = at + 30 + zip.readUInt16LE(at + 26) + zip.readUInt16LE(at + 28);
+    const data = zip.subarray(start, start + entry.compressedSize);
+    out.set(entry.name, entry.method === 0 ? Buffer.from(data) : inflateRawSync(data));
+  }
+  return out;
+}
+
+const LIMITS = { maxDecompressedBytes: 500 * 1024 * 1024 };
+
+async function refusal(promise: Promise<unknown>): Promise<Error> {
+  try {
+    await promise;
+  } catch (err) {
+    return err as Error;
+  }
+  throw new Error("expected verifiedZipCopy to refuse the archive, but it resolved");
+}
+
+describe("verifiedZipCopy", () => {
+  it.each(["simple.docx", "with-image.docx"])(
+    "copies a real %s with every part intact, as a fresh archive",
+    async (fixture) => {
+      const original = readFileSync(join(FIXTURES, fixture));
+      const copy = await verifiedZipCopy(original, LIMITS);
+      expect(copy).not.toBe(original);
+      const before = contentsOf(original);
+      const after = contentsOf(copy);
+      expect([...after.keys()]).toEqual([...before.keys()]);
+      for (const [name, bytes] of before) expect(after.get(name)!.equals(bytes), name).toBe(true);
+    }
+  );
+
+  it("refuses an entry that inflates past the size it declares, and stops inflating at the declared size", async () => {
+    // The central directory says 1000 bytes; the stream holds 256 MiB. Readers
+    // that trust the declared size (JSZip, so exceljs and mammoth) inflate all
+    // of it before they notice — the declared-size check cannot see it at all.
+    const data = deflatedSpaces("<w:document>", 256 * 1024 * 1024, "</w:document>");
+    const zip = rawZip([
+      honest("[Content_Types].xml", "<Types/>"),
+      {
+        name: "word/document.xml",
+        data,
+        uncompressedSize: 1000,
+      },
+    ]);
+    expect(() => assertZipWithinLimits(zip, LIMITS)).not.toThrow();
+
+    const before = process.memoryUsage().arrayBuffers;
+    const started = Date.now();
+    const err = await refusal(verifiedZipCopy(zip, LIMITS));
+    expect(err).toBeInstanceOf(ZipLimitError);
+    expect(err.message).toMatch(/word\/document\.xml/);
+    expect(Date.now() - started).toBeLessThan(1000);
+    expect(process.memoryUsage().arrayBuffers - before).toBeLessThan(16 * 1024 * 1024);
+  });
+
+  it("refuses an entry that inflates to less than it declares", async () => {
+    const entry = honest("word/document.xml", "<w:document/>");
+    const zip = rawZip([{ ...entry, uncompressedSize: entry.uncompressedSize + 10 }]);
+    expect(await refusal(verifiedZipCopy(zip, LIMITS))).toBeInstanceOf(ZipFormatError);
+  });
+
+  it("refuses an entry whose content does not match its CRC", async () => {
+    const entry = honest("word/document.xml", "<w:document/>");
+    const zip = rawZip([{ ...entry, crc32: (entry.crc32! ^ 1) >>> 0 }]);
+    expect(await refusal(verifiedZipCopy(zip, LIMITS))).toBeInstanceOf(ZipFormatError);
+  });
+
+  it("refuses an archive with junk in front of it, which lenient readers still open", async () => {
+    // JSZip shifts every offset by the prefix and loads it anyway; the
+    // central directory's own offsets no longer point at the entries.
+    const zip = rawZip([honest("[Content_Types].xml", "<Types/>")]);
+    const prefixed = Buffer.concat([Buffer.alloc(64, 0x41), zip]);
+    expect(await refusal(verifiedZipCopy(prefixed, LIMITS))).toBeInstanceOf(ZipFormatError);
+  });
+
+  it("refuses bytes trailing the end-of-central-directory record", async () => {
+    const zip = rawZip([honest("[Content_Types].xml", "<Types/>")]);
+    const trailed = Buffer.concat([zip, Buffer.from("trailing")]);
+    expect(await refusal(verifiedZipCopy(trailed, LIMITS))).toBeInstanceOf(ZipFormatError);
+  });
+
+  it("refuses an encrypted entry and an unsupported compression method", async () => {
+    const entry = honest("word/document.xml", "<w:document/>");
+    expect(
+      await refusal(verifiedZipCopy(rawZip([{ ...entry, flags: 0x0001 }]), LIMITS))
+    ).toBeInstanceOf(ZipFormatError);
+    expect(
+      await refusal(verifiedZipCopy(rawZip([{ ...entry, method: 12 }]), LIMITS))
+    ).toBeInstanceOf(ZipFormatError);
+  });
+
+  it("refuses a stored entry whose two sizes disagree", async () => {
+    const bytes = Buffer.from("<w:document/>");
+    const zip = rawZip([
+      {
+        name: "word/document.xml",
+        data: bytes,
+        method: 0,
+        crc32: crcOf(bytes),
+        uncompressedSize: 5,
+      },
+    ]);
+    expect(await refusal(verifiedZipCopy(zip, LIMITS))).toBeInstanceOf(ZipFormatError);
+  });
+
+  it("refuses two entries whose names differ only by case", async () => {
+    // Part names are case-insensitive in OOXML: which one a reader picks is
+    // the reader's choice, not ours.
+    const zip = rawZip([
+      honest("word/document.xml", "<w:document/>"),
+      honest("Word/Document.xml", "<w:document/>"),
+    ]);
+    expect(await refusal(verifiedZipCopy(zip, LIMITS))).toBeInstanceOf(ZipFormatError);
+  });
+
+  it("does not carry bytes the central directory does not list", async () => {
+    // A local entry no central record points at is invisible to the check —
+    // so it must be invisible to every reader too.
+    const hidden = Buffer.from("SMUGGLED-PAYLOAD");
+    const zip = rawZip(
+      [
+        {
+          name: "word/afchunk.htm",
+          data: hidden,
+          method: 0,
+          crc32: crcOf(hidden),
+          uncompressedSize: hidden.length,
+        },
+        honest("[Content_Types].xml", "<Types/>"),
+      ],
+      { listed: (index) => index === 1 }
+    );
+    const copy = await verifiedZipCopy(zip, LIMITS);
+    expect(copy.includes(hidden)).toBe(false);
+    expect([...contentsOf(copy).keys()]).toEqual(["[Content_Types].xml"]);
+  });
+
+  it("still applies the declared limits first, without inflating", async () => {
+    const zip = rawZip([{ ...honest("a.xml", "x"), uncompressedSize: 600 * 1024 * 1024 }]);
+    expect(await refusal(verifiedZipCopy(zip, LIMITS))).toBeInstanceOf(ZipLimitError);
+  });
+
+  it("refuses a buffer that is not a zip at all", async () => {
+    expect(await refusal(verifiedZipCopy(Buffer.from("not a zip at all"), LIMITS))).toBeInstanceOf(
+      ZipFormatError
+    );
   });
 });

@@ -1,10 +1,7 @@
 import mammoth from "mammoth";
 import TurndownService from "turndown";
 import { gfm } from "turndown-plugin-gfm";
-import {
-  assertDocxDecompressedSizeWithinLimit,
-  MAX_DOCX_DECOMPRESSED_BYTES,
-} from "./docx-zip-guard";
+import { MAX_DOCX_DECOMPRESSED_BYTES, verifiedZipCopy } from "./docx-zip-guard";
 import { MAX_FILE_SIZE } from "./validate";
 
 export interface DocxExtractionResult {
@@ -90,14 +87,16 @@ export async function extractDocxText(
   options: DocxExtractOptions = {}
 ): Promise<DocxExtractionResult> {
   // Issue #424: reject decompression bombs from the central directory's
-  // declared sizes before mammoth inflates anything.
-  assertDocxDecompressedSizeWithinLimit(
-    buffer,
-    options.maxDecompressedBytes ?? MAX_DOCX_DECOMPRESSED_BYTES
-  );
+  // declared sizes before mammoth inflates anything — and, since an archive
+  // can lie about those sizes, verify every entry's REAL size too, handing
+  // mammoth a copy built only from entries that held up (release review
+  // v0.10.0). mammoth never sees the bytes it was given.
+  const verified = await verifiedZipCopy(buffer, {
+    maxDecompressedBytes: options.maxDecompressedBytes ?? MAX_DOCX_DECOMPRESSED_BYTES,
+  });
 
   const { value: rawHtml } = await mammoth.convertToHtml(
-    { buffer },
+    { buffer: verified },
     {
       // Empty src skips mammoth's base64 encoding; the strip-image
       // turndown rule above replaces <img> with [image] downstream.
@@ -107,8 +106,8 @@ export async function extractDocxText(
   const html = normalizeTableHtml(rawHtml);
   const text = turndown.turndown(html);
 
-  // Second defense layer: an archive that lied about its declared sizes
-  // still cannot hand the model an unbounded extraction result.
+  // Second defense layer: a document that is honestly within the archive
+  // limits can still hold more text than the model should be handed.
   const maxTextBytes = options.maxTextBytes ?? MAX_DOCX_EXTRACTED_TEXT_BYTES;
   if (Buffer.byteLength(text, "utf-8") > maxTextBytes) {
     throw new Error(

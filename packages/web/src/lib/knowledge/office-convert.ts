@@ -338,13 +338,20 @@ async function convertBatch(batch: WorkItem[], deps: BatchDeps): Promise<Convers
 
     const outcomes = new Array<ConversionOutcome>(batch.length);
     const inputs: string[] = [];
+    /** What each document is stored under: the hash of the bytes the preflight actually read. */
+    const keys = batch.map((item) => item.contentHash);
 
     for (const [i, item] of batch.entries()) {
       const staged = join(inDir, `${i}${extname(item.absPath).toLowerCase()}`);
       try {
         const prepared = await deps.prepareSource(item.absPath);
-        if (prepared) await writeFile(staged, prepared.data);
-        else await symlink(item.absPath, staged);
+        if (prepared) {
+          await writeFile(staged, prepared.data);
+          // NOT the hash from the run's first read of the file: that read and
+          // this one can see different bytes, and the artifact must be filed
+          // under the content it was converted from.
+          keys[i] = prepared.contentHash;
+        } else await symlink(item.absPath, staged);
         inputs.push(staged);
       } catch (err) {
         outcomes[i] =
@@ -382,7 +389,13 @@ async function convertBatch(batch: WorkItem[], deps: BatchDeps): Promise<Convers
 
       for (const [i, item] of batch.entries()) {
         if (outcomes[i]) continue;
-        outcomes[i] = await collectOne(item, join(outDir, `${i}.pdf`), deps, result.stderr);
+        outcomes[i] = await collectOne(
+          { ...item, contentHash: keys[i] },
+          join(inDir, `${i}${extname(item.absPath).toLowerCase()}`),
+          join(outDir, `${i}.pdf`),
+          deps,
+          result.stderr
+        );
       }
     }
 
@@ -398,6 +411,7 @@ async function convertBatch(batch: WorkItem[], deps: BatchDeps): Promise<Convers
  */
 async function collectOne(
   item: WorkItem,
+  stagedSource: string,
   producedPdf: string,
   deps: BatchDeps,
   stderr: string
@@ -417,8 +431,10 @@ async function collectOne(
   }
 
   // An oracle that breaks says nothing about the conversion, so it must never
-  // fail a document — it only removes the tripwire for this one file.
-  const sourceWords = await deps.countSourceWords(item.absPath).catch(() => null);
+  // fail a document — it only removes the tripwire for this one file. It reads
+  // the STAGED copy: the bytes that were checked and converted, not whatever
+  // the share holds by now.
+  const sourceWords = await deps.countSourceWords(stagedSource).catch(() => null);
 
   const verification: VerificationReport = {
     status: sourceWords === null ? "unverified" : "ok",
@@ -572,10 +588,14 @@ function killTree(child: ReturnType<typeof spawn>): void {
  *     fetch but not `file://`. Its job is the future: whatever LibreOffice
  *     learns to fetch next still has nowhere to go.
  *
- * None of these is the only line of defence: `office-preflight.ts` has already
- * cut the external relationships out of the copy it is converting, and refused
- * files whose content is not the format they claim. This is the layer that
- * holds if one of those is wrong. A sidecar with no network at all would be
+ * Two honest limits, both measured (release review v0.10.0). This profile
+ * does NOT stop LibreOffice's HTML import (an altChunk) or its SVG import from
+ * reading `file://` references — for those, `office-preflight.ts` is the only
+ * layer: it refuses an altChunk and cuts a picture that reaches outside itself,
+ * along with every relationship not on its allow-list. And for the legacy
+ * binary formats (`.doc`, `.ppt`), which the preflight cannot rewrite, this
+ * profile is the ONLY layer. The canary says, vector by vector, which layers
+ * hold alone. A sidecar with no network and no view of the workspaces would be
  * the real boundary; that is a deployment change, not a profile one.
  */
 const LOCKED_DOWN_PROFILE = `<?xml version="1.0" encoding="UTF-8"?>

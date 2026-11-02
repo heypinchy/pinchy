@@ -1,8 +1,11 @@
 // @vitest-environment node
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { readFileSync } from "fs";
 import { join } from "path";
+import { constants as zlibConstants, deflateRawSync } from "zlib";
+import mammoth from "mammoth";
 import { extractDocxText } from "./docx-extract";
+import { readZipEntries } from "./docx-zip-guard";
 
 const FIXTURES = join(import.meta.dirname, "test-fixtures");
 
@@ -86,4 +89,82 @@ describe("extractDocxText", () => {
     const result = await extractDocxText(buffer);
     expect(result.text.length).toBeGreaterThan(50);
   });
+
+  // Release review v0.10.0: the declared-size guard above trusts the central
+  // directory, and mammoth (via JSZip) inflates an entry whole before it
+  // notices the entry was bigger than declared. The guard now inflates every
+  // entry itself, capped at its declared size, and hands mammoth a copy built
+  // only from entries that held up.
+  it("rejects a .docx whose document inflates past its declared size, without calling mammoth", async () => {
+    const fixture = readFileSync(join(FIXTURES, "simple.docx"));
+    const lying = withLyingDocument(fixture, 64 * 1024 * 1024);
+    const convert = vi.spyOn(mammoth, "convertToHtml");
+    try {
+      await expect(extractDocxText(lying)).rejects.toThrow(/inflates past|declared/i);
+      expect(convert).not.toHaveBeenCalled();
+    } finally {
+      convert.mockRestore();
+    }
+  });
 });
+
+/**
+ * `docx` with `word/document.xml` replaced by a stream of `realBytes` spaces
+ * that DECLARES the original document's size — a lie only inflating reveals.
+ */
+function withLyingDocument(docx: Buffer, realBytes: number): Buffer {
+  const flush = { finishFlush: zlibConstants.Z_SYNC_FLUSH };
+  const megabyte = deflateRawSync(Buffer.alloc(1024 * 1024, 0x20), flush);
+  const stream = Buffer.concat([
+    deflateRawSync(
+      Buffer.from(
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>'
+      ),
+      flush
+    ),
+    ...Array.from({ length: Math.ceil(realBytes / (1024 * 1024)) }, () => megabyte),
+    deflateRawSync(Buffer.from("</w:body></w:document>")),
+  ]);
+  const local: Buffer[] = [];
+  const central: Buffer[] = [];
+  let offset = 0;
+  for (const entry of readZipEntries(docx)) {
+    const at = entry.localHeaderOffset;
+    const start = at + 30 + docx.readUInt16LE(at + 26) + docx.readUInt16LE(at + 28);
+    const data =
+      entry.name === "word/document.xml"
+        ? stream
+        : docx.subarray(start, start + entry.compressedSize);
+    const name = Buffer.from(entry.name);
+    const header = Buffer.alloc(30 + name.length);
+    header.writeUInt32LE(0x04034b50, 0);
+    header.writeUInt16LE(20, 4);
+    header.writeUInt16LE(entry.method, 8);
+    header.writeUInt32LE(entry.crc32, 14);
+    header.writeUInt32LE(data.length, 18);
+    header.writeUInt32LE(entry.uncompressedSize, 22);
+    header.writeUInt16LE(name.length, 26);
+    name.copy(header, 30);
+    const record = Buffer.alloc(46 + name.length);
+    record.writeUInt32LE(0x02014b50, 0);
+    record.writeUInt16LE(20, 6);
+    record.writeUInt16LE(entry.method, 10);
+    record.writeUInt32LE(entry.crc32, 16);
+    record.writeUInt32LE(data.length, 20);
+    record.writeUInt32LE(entry.uncompressedSize, 24);
+    record.writeUInt16LE(name.length, 28);
+    record.writeUInt32LE(offset, 42);
+    name.copy(record, 46);
+    local.push(header, data);
+    central.push(record);
+    offset += header.length + data.length;
+  }
+  const directory = Buffer.concat(central);
+  const eocd = Buffer.alloc(22);
+  eocd.writeUInt32LE(0x06054b50, 0);
+  eocd.writeUInt16LE(central.length, 8);
+  eocd.writeUInt16LE(central.length, 10);
+  eocd.writeUInt32LE(directory.length, 12);
+  eocd.writeUInt32LE(offset, 16);
+  return Buffer.concat([...local, directory, eocd]);
+}

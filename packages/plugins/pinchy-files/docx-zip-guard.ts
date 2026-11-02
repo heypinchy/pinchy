@@ -3,15 +3,24 @@
 // file does not bound that — a high-ratio zip bomb within the cap can inflate
 // to multiple GB inside the OpenClaw container.
 //
-// This guard reads the archive's central directory (plain offset arithmetic,
-// no decompression, no new dependency) and rejects the file when the DECLARED
-// total uncompressed size exceeds the limit. A real bomb must declare its
-// sizes truthfully for ordinary readers to inflate it; a payload that lies
-// about its size is caught downstream by the extracted-text cap in
-// docx-extract.ts (second defense layer). Note the residual gap: that cap
-// bounds what reaches the model, not mammoth's peak memory while it inflates
-// a lying archive — accepted because lying archives are treated as corrupt
-// by mainstream ZIP readers, so their attack value is doubtful.
+// Two layers. `assertZipWithinLimits` reads the archive's central directory
+// (plain offset arithmetic, no decompression) and rejects the file when the
+// DECLARED total uncompressed size exceeds the limit — cheap, and it stops
+// every bomb that tells the truth about its size.
+//
+// `verifiedZipCopy` closes the gap that leaves: an archive that LIES. An entry
+// can declare 1000 bytes and inflate to a gigabyte, and the readers we feed
+// (mammoth and exceljs, both through JSZip) inflate the whole entry before
+// they compare it with the declared size — measured at 1.43 GB RSS for one
+// such workbook (release review v0.10.0). An earlier version of this comment
+// called that gap acceptable because "mainstream readers treat lying archives
+// as corrupt"; they do, but only after the memory is spent. So every entry is
+// inflated HERE first, by zlib, with its declared size as the hard ceiling,
+// and the output is thrown away as it streams. Then the reader is handed a
+// fresh archive built from the verified entries alone — so it can never see a
+// byte this guard did not check: not a junk prefix (JSZip shifts its offsets
+// and opens one anyway), not a local entry the central directory hides, not a
+// second end record.
 //
 // The knowledge-base ingest in packages/web SHARES this file (it reaches it
 // with a relative import that climbs out of the package): exceljs, mammoth and
@@ -19,8 +28,11 @@
 // same archive shape as a .docx. The canonical copy lives here because a
 // plugin is deployed as a self-contained directory and can import nothing
 // outside itself, while web is unconstrained. That is also why this module
-// must stay IMPORT-FREE — whatever it imported would become a web dependency
-// (and, resolved out of a plugin's node_modules, would not resolve at all).
+// must import nothing but Node built-ins — whatever else it imported would
+// become a web dependency (and, resolved out of a plugin's node_modules, would
+// not resolve at all).
+
+import * as zlib from "node:zlib";
 
 const EOCD_SIGNATURE = 0x06054b50; // end of central directory
 const CENTRAL_DIR_SIGNATURE = 0x02014b50;
@@ -64,12 +76,24 @@ export class ZipLimitError extends Error {
   }
 }
 
+/**
+ * The archive is malformed, or shaped in a way no Office writer produces —
+ * as opposed to past a limit. Still a refusal: nothing that fails this guard
+ * is handed to a reader, whatever the reason.
+ */
+export class ZipFormatError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ZipFormatError";
+  }
+}
+
 function invalidDocx(detail: string): Error {
-  return new Error(`Not a valid .docx archive: ${detail}`);
+  return new ZipFormatError(`Not a valid .docx archive: ${detail}`);
 }
 
 function invalidZip(detail: string): Error {
-  return new Error(`Not a valid zip archive: ${detail}`);
+  return new ZipFormatError(`Not a valid zip archive: ${detail}`);
 }
 
 /**
@@ -78,7 +102,18 @@ function invalidZip(detail: string): Error {
  * standard, non-ZIP64 central directory, so anything else is not a document we
  * should inflate.
  */
+interface CentralDirectory {
+  entries: ZipEntryInfo[];
+  eocdOffset: number;
+  cdOffset: number;
+  cdSize: number;
+}
+
 function readCentralDirectory(buffer: Buffer, invalid: (detail: string) => Error): ZipEntryInfo[] {
+  return readDirectory(buffer, invalid).entries;
+}
+
+function readDirectory(buffer: Buffer, invalid: (detail: string) => Error): CentralDirectory {
   const searchStart = Math.max(0, buffer.length - EOCD_SEARCH_WINDOW);
   let eocdOffset = -1;
   for (let i = buffer.length - 22; i >= searchStart; i--) {
@@ -133,7 +168,7 @@ function readCentralDirectory(buffer: Buffer, invalid: (detail: string) => Error
     });
     pos += 46 + nameLength + extraLength + commentLength;
   }
-  return entries;
+  return { entries, eocdOffset, cdOffset, cdSize };
 }
 
 function sumDeclared(entries: ZipEntryInfo[]): number {
@@ -187,7 +222,11 @@ export interface ZipLimits {
  * .xlsx, .docx and .pptx alike.
  */
 export function assertZipWithinLimits(buffer: Buffer, limits: ZipLimits): void {
-  const total = sumDeclared(readCentralDirectory(buffer, invalidZip));
+  assertDeclaredWithinLimits(buffer, readCentralDirectory(buffer, invalidZip), limits);
+}
+
+function assertDeclaredWithinLimits(buffer: Buffer, entries: ZipEntryInfo[], limits: ZipLimits) {
+  const total = sumDeclared(entries);
   if (total > limits.maxDecompressedBytes) {
     throw new ZipLimitError(
       `Archive declared decompressed size (${total} bytes) exceeds the limit (${limits.maxDecompressedBytes} bytes). The file may be a decompression bomb.`
@@ -202,4 +241,258 @@ export function assertZipWithinLimits(buffer: Buffer, limits: ZipLimits): void {
       `Archive compression ratio (${Math.round(total / Math.max(buffer.length, 1))}:1) exceeds the limit (${limits.maxCompressionRatio}:1). The file may be a decompression bomb.`
     );
   }
+}
+
+// ---------------------------------------------------------------------------
+// Real sizes: inflate, verify, and copy only what held up
+// ---------------------------------------------------------------------------
+
+const LOCAL_HEADER_SIGNATURE = 0x04034b50;
+const FLAG_ENCRYPTED = 0x0001;
+const FLAG_STRONG_ENCRYPTION = 0x0040;
+const FLAG_DATA_DESCRIPTOR = 0x0008;
+const FLAG_UTF8_NAMES = 0x0800;
+/** 1980-01-01, the DOS-date epoch: a rewritten archive carries no timestamps worth keeping. */
+const DOS_DATE_EPOCH = 0x0021;
+const METHOD_STORED = 0;
+const METHOD_DEFLATED = 8;
+
+/** One entry of an archive being written: its bytes exactly as stored, and the sizes that describe them. */
+export interface ZipPart {
+  name: string;
+  /** 0 = stored, 8 = deflate. */
+  method: number;
+  flags: number;
+  crc32: number;
+  uncompressedSize: number;
+  /** The entry's bytes exactly as stored in the archive (compressed, for method 8). */
+  data: Buffer;
+}
+
+const CRC_TABLE = (() => {
+  const table = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    table[n] = c >>> 0;
+  }
+  return table;
+})();
+
+/**
+ * CRC-32 (IEEE) as zip stores it, continuing from `previous`. Native when the
+ * runtime has it (`zlib.crc32`, Node >= 22.2); `engines` admits 22.0, so the
+ * table walk stays as the fallback.
+ */
+export function crc32(data: Buffer, previous = 0): number {
+  const native = (zlib as { crc32?: (data: Buffer, value?: number) => number }).crc32;
+  if (typeof native === "function") return native(data, previous) >>> 0;
+  let crc = (previous ^ 0xffffffff) >>> 0;
+  for (let i = 0; i < data.length; i++) crc = CRC_TABLE[(crc ^ data[i]) & 0xff] ^ (crc >>> 8);
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+/**
+ * The entry's stored bytes, located through its LOCAL header (whose name and
+ * extra lengths may differ from the central record's), bounded by `end`.
+ */
+export function locateEntryData(
+  archive: Buffer,
+  entry: ZipEntryInfo,
+  end = archive.length
+): Buffer {
+  const at = entry.localHeaderOffset;
+  if (at + 30 > end || archive.readUInt32LE(at) !== LOCAL_HEADER_SIGNATURE) {
+    throw invalidZip(`entry "${entry.name}" has no local header where the directory says`);
+  }
+  const start = at + 30 + archive.readUInt16LE(at + 26) + archive.readUInt16LE(at + 28);
+  const stop = start + entry.compressedSize;
+  if (stop > end) throw invalidZip(`entry "${entry.name}" runs past its archive`);
+  return archive.subarray(start, stop);
+}
+
+/**
+ * Inflates `data` and checks it is exactly `entry.uncompressedSize` bytes with
+ * the entry's CRC, without ever holding more than one chunk of the output:
+ * zlib streams it, we count and checksum it, and stop the moment it runs past
+ * the declared size.
+ */
+function verifyDeflated(entry: ZipEntryInfo, data: Buffer): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const inflater = zlib.createInflateRaw({ chunkSize: 64 * 1024 });
+    let produced = 0;
+    let crc = 0;
+    let settled = false;
+    const fail = (err: Error) => {
+      if (settled) return;
+      settled = true;
+      inflater.destroy();
+      reject(err);
+    };
+    inflater.on("data", (chunk: Buffer) => {
+      produced += chunk.length;
+      if (produced > entry.uncompressedSize) {
+        fail(
+          new ZipLimitError(
+            `Archive entry "${entry.name}" inflates past the ${entry.uncompressedSize} bytes it declares. The file may be a decompression bomb.`
+          )
+        );
+        return;
+      }
+      crc = crc32(chunk, crc);
+    });
+    inflater.on("error", () => fail(invalidZip(`entry "${entry.name}" does not inflate`)));
+    inflater.on("end", () => {
+      if (settled) return;
+      if (produced !== entry.uncompressedSize) {
+        fail(invalidZip(`entry "${entry.name}" inflates to less than it declares`));
+      } else if (crc !== entry.crc32) {
+        fail(invalidZip(`entry "${entry.name}" does not match its checksum`));
+      } else {
+        settled = true;
+        resolve();
+      }
+    });
+    inflater.end(data);
+  });
+}
+
+/**
+ * Checks an archive by its REAL contents and returns a fresh copy built only
+ * from the entries that held up. Callers hand the COPY to their reader.
+ *
+ * Refuses (throws, never returns the input) when:
+ *  - the declared sizes are past `limits` (`ZipLimitError`, nothing inflated);
+ *  - an entry inflates past the size it declares (`ZipLimitError`, inflation
+ *    stops at the declared size);
+ *  - the archive is not exactly a plain zip: bytes before its first entry or
+ *    after its end record, more than one disk, encryption, a method other than
+ *    stored/deflate, an entry shorter than declared or with a wrong CRC, or
+ *    two entries whose names differ only by case (`ZipFormatError`).
+ *
+ * Fail closed throughout: an archive this cannot read is not an archive any
+ * reader gets to read.
+ */
+export async function verifiedZipCopy(buffer: Buffer, limits: ZipLimits): Promise<Buffer> {
+  const { entries, eocdOffset, cdOffset, cdSize } = readDirectory(buffer, invalidZip);
+
+  // The end record must be the archive's last bytes (its own comment
+  // included), and describe one disk. Anything after it, or a second disk, is
+  // somewhere a reader could look that this guard did not.
+  const commentLength = buffer.readUInt16LE(eocdOffset + 20);
+  if (eocdOffset + 22 + commentLength !== buffer.length) {
+    throw invalidZip("bytes follow the end-of-central-directory record");
+  }
+  if (
+    buffer.readUInt16LE(eocdOffset + 4) !== 0 ||
+    buffer.readUInt16LE(eocdOffset + 6) !== 0 ||
+    buffer.readUInt16LE(eocdOffset + 8) !== entries.length
+  ) {
+    throw invalidZip("multi-disk archives are not supported");
+  }
+  if (cdOffset + cdSize !== eocdOffset) {
+    throw invalidZip("the central directory does not end where the end record starts");
+  }
+
+  assertDeclaredWithinLimits(buffer, entries, limits);
+
+  const seen = new Set<string>();
+  for (const entry of entries) {
+    const key = entry.name.toLowerCase();
+    if (seen.has(key)) throw invalidZip(`two entries are both named "${entry.name}"`);
+    seen.add(key);
+  }
+
+  const parts: ZipPart[] = [];
+  for (const entry of entries) {
+    if (entry.flags & (FLAG_ENCRYPTED | FLAG_STRONG_ENCRYPTION)) {
+      throw invalidZip(`entry "${entry.name}" is encrypted`);
+    }
+    // Entry data must sit before the central directory, which is where every
+    // writer puts it — and where the junk prefix a lenient reader forgives
+    // sends these offsets wrong.
+    const data = locateEntryData(buffer, entry, cdOffset);
+    if (buffer.readUInt16LE(entry.localHeaderOffset + 8) !== entry.method) {
+      throw invalidZip(`entry "${entry.name}" names two compression methods`);
+    }
+    if (entry.method === METHOD_STORED) {
+      if (data.length !== entry.uncompressedSize) {
+        throw invalidZip(`stored entry "${entry.name}" declares two different sizes`);
+      }
+      if (crc32(data) !== entry.crc32) {
+        throw invalidZip(`entry "${entry.name}" does not match its checksum`);
+      }
+    } else if (entry.method === METHOD_DEFLATED) {
+      await verifyDeflated(entry, data);
+    } else {
+      throw invalidZip(`entry "${entry.name}" uses an unsupported compression method`);
+    }
+    parts.push({
+      name: entry.name,
+      method: entry.method,
+      flags: entry.flags,
+      crc32: entry.crc32,
+      uncompressedSize: entry.uncompressedSize,
+      data,
+    });
+  }
+
+  return assembleZip(parts);
+}
+
+/** Writes `parts` as a plain (non-ZIP64) archive: fresh headers, no data descriptors, entries copied as given. */
+export function assembleZip(parts: readonly ZipPart[]): Buffer {
+  if (parts.length >= 0xffff) throw new ZipLimitError("Archive has too many entries to write.");
+
+  const chunks: Buffer[] = [];
+  const central: Buffer[] = [];
+  let offset = 0;
+
+  for (const part of parts) {
+    const name = Buffer.from(part.name, "utf8");
+    const ascii = name.length === part.name.length;
+    // The descriptor flag is cleared: every size below is written up front.
+    const flags = (part.flags & ~FLAG_DATA_DESCRIPTOR) | (ascii ? 0 : FLAG_UTF8_NAMES);
+
+    const local = Buffer.alloc(30 + name.length);
+    local.writeUInt32LE(LOCAL_HEADER_SIGNATURE, 0);
+    local.writeUInt16LE(20, 4);
+    local.writeUInt16LE(flags, 6);
+    local.writeUInt16LE(part.method, 8);
+    local.writeUInt16LE(DOS_DATE_EPOCH, 12);
+    local.writeUInt32LE(part.crc32, 14);
+    local.writeUInt32LE(part.data.length, 18);
+    local.writeUInt32LE(part.uncompressedSize, 22);
+    local.writeUInt16LE(name.length, 26);
+    name.copy(local, 30);
+
+    const record = Buffer.alloc(46 + name.length);
+    record.writeUInt32LE(CENTRAL_DIR_SIGNATURE, 0);
+    record.writeUInt16LE(20, 4);
+    record.writeUInt16LE(20, 6);
+    record.writeUInt16LE(flags, 8);
+    record.writeUInt16LE(part.method, 10);
+    record.writeUInt16LE(DOS_DATE_EPOCH, 14);
+    record.writeUInt32LE(part.crc32, 16);
+    record.writeUInt32LE(part.data.length, 20);
+    record.writeUInt32LE(part.uncompressedSize, 24);
+    record.writeUInt16LE(name.length, 28);
+    record.writeUInt32LE(offset, 42);
+    name.copy(record, 46);
+
+    chunks.push(local, part.data);
+    central.push(record);
+    offset += local.length + part.data.length;
+    if (offset > 0xfffffffe) throw new ZipLimitError("Archive is too large to write.");
+  }
+
+  const directory = Buffer.concat(central);
+  const eocd = Buffer.alloc(22);
+  eocd.writeUInt32LE(EOCD_SIGNATURE, 0);
+  eocd.writeUInt16LE(parts.length, 8);
+  eocd.writeUInt16LE(parts.length, 10);
+  eocd.writeUInt32LE(directory.length, 12);
+  eocd.writeUInt32LE(offset, 16);
+
+  return Buffer.concat([...chunks, directory, eocd]);
 }

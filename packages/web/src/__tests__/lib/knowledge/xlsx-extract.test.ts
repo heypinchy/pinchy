@@ -17,7 +17,13 @@ import { tmpdir } from "node:os";
 import ExcelJS from "exceljs";
 
 import { OfficeFileRejectedError } from "@/lib/knowledge/office-formats";
-import { declaredBomb } from "@/test-helpers/office-zip";
+import {
+  declaredBomb,
+  lyingEntry,
+  peakRss,
+  replaceEntry,
+  truthfulSpacesEntry,
+} from "@/test-helpers/office-zip";
 import {
   extractXlsx,
   readSheetRange,
@@ -724,5 +730,90 @@ describe("a compressed-bomb workbook is refused, not inflated (release review v0
     });
     expect((await extractXlsx(path)).chunks).toHaveLength(1);
     expect((await readSheetRange(path, "Sheet1", 1, 5))?.rows).toHaveLength(1);
+  });
+});
+
+describe("a workbook that lies about its size, or hides behind a prefix, never reaches exceljs (release review v0.10.0)", () => {
+  // The declared-size guard above reads the central directory, and both of
+  // these get past it. exceljs (JSZip) then inflates the entry WHOLE before it
+  // compares sizes. Measured before the fix: 1.43 GB RSS for a sheet that
+  // declared 1000 bytes and held 1.2 GB; 989 MB RSS for a 465 KB workbook with
+  // 64 junk bytes in front. These pin both the refusal and the memory.
+  const MiB = 1024 * 1024;
+  const HEAD = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>x</t></is></c></row>`;
+  const TAIL = `</sheetData></worksheet>`;
+
+  async function baseWorkbook(): Promise<Buffer> {
+    const workbook = new ExcelJS.Workbook();
+    workbook.addWorksheet("S").addRow(["a", 1]);
+    return Buffer.from(await workbook.xlsx.writeBuffer());
+  }
+
+  /** Runs `read` with exceljs's loaders spied on; returns the error and the peak-RSS growth. */
+  async function readBomb(path: string, read: (path: string) => Promise<unknown>) {
+    const xlsxPrototype = Object.getPrototypeOf(new ExcelJS.Workbook().xlsx);
+    const load = vi.spyOn(xlsxPrototype, "load");
+    const readFile = vi.spyOn(xlsxPrototype, "readFile");
+    const peakBefore = peakRss();
+    try {
+      const err = await read(path).then(
+        () => null,
+        (e: unknown) => e
+      );
+      return {
+        err,
+        growth: peakRss() - peakBefore,
+        excelCalls: load.mock.calls.length + readFile.mock.calls.length,
+      };
+    } finally {
+      load.mockRestore();
+      readFile.mockRestore();
+    }
+  }
+
+  it("refuses a sheet that inflates past its declared size: too large, exceljs never called, memory flat", async () => {
+    const path = join(tmpRoot, "lying.xlsx");
+    await writeFile(
+      path,
+      replaceEntry(
+        await baseWorkbook(),
+        "xl/worksheets/sheet1.xml",
+        lyingEntry("xl/worksheets/sheet1.xml", {
+          head: HEAD,
+          tail: TAIL,
+          realBytes: 1024 * MiB,
+          declaredBytes: 1000,
+        })
+      )
+    );
+
+    for (const read of [extractXlsx, (p: string) => readSheetRange(p, "S", 1, 5)]) {
+      const { err, growth, excelCalls } = await readBomb(path, read);
+      expect(err).toBeInstanceOf(OfficeFileRejectedError);
+      expect((err as OfficeFileRejectedError).code).toBe("too_large");
+      expect(excelCalls).toBe(0);
+      expect(growth).toBeLessThan(128 * MiB);
+    }
+  });
+
+  it("refuses a bomb behind a junk prefix as unreadable: exceljs never called, memory flat", async () => {
+    const truthful = replaceEntry(
+      await baseWorkbook(),
+      "xl/worksheets/sheet1.xml",
+      truthfulSpacesEntry("xl/worksheets/sheet1.xml", {
+        head: HEAD,
+        tail: TAIL,
+        spaceBytes: 450 * MiB,
+      })
+    );
+    const path = join(tmpRoot, "prefixed.xlsx");
+    await writeFile(path, Buffer.concat([Buffer.alloc(64, 0x41), truthful]));
+
+    const { err, growth, excelCalls } = await readBomb(path, extractXlsx);
+    // A malformed archive keeps the existing "cannot read this workbook"
+    // contract (XlsxExtractionError) — it is just never handed to exceljs.
+    expect(err).toBeInstanceOf(XlsxExtractionError);
+    expect(excelCalls).toBe(0);
+    expect(growth).toBeLessThan(128 * MiB);
   });
 });

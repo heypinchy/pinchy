@@ -20,6 +20,7 @@ import { constants as fsConstants, mkdtempSync, rmSync } from "node:fs";
 import { mkdir, open, readdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, join } from "node:path";
 import { tmpdir } from "node:os";
+import { createHash } from "node:crypto";
 import mammoth from "mammoth";
 
 import {
@@ -35,8 +36,15 @@ import {
   type RunConverter,
 } from "@/lib/knowledge/office-convert";
 import { OfficeArtifactStore } from "@/lib/knowledge/office-artifacts";
+import { prepareOfficeSource } from "@/lib/knowledge/office-preflight";
 import { OfficeFileRejectedError } from "@/lib/knowledge/office-formats";
-import { declaredBomb } from "@/test-helpers/office-zip";
+import {
+  declaredBomb,
+  docxWith,
+  lyingEntry,
+  relationships,
+  replaceEntry,
+} from "@/test-helpers/office-zip";
 
 let tmpRoot: string;
 let corpusDir: string;
@@ -721,7 +729,8 @@ describe("preflight before conversion (release review v0.10.0)", () => {
         {
           prepareSource: async () => ({
             data: Buffer.from("CHECKED COPY"),
-            externalLinksRemoved: 2,
+            relationshipsRemoved: 2,
+            contentHash: "0".repeat(64),
           }),
         }
       )
@@ -729,6 +738,48 @@ describe("preflight before conversion (release review v0.10.0)", () => {
 
     expect(outcomes[0].status).toBe("converted");
     expect(converter.seen).toEqual([{ staged: "0.docx", symlink: false, body: "CHECKED COPY" }]);
+  });
+
+  it("keys the artifact on the bytes that were checked and staged, not on an earlier read of the file", async () => {
+    // The hash used to come from a read BEFORE the preflight's own read. A
+    // file swapped in between was converted from its new bytes and stored
+    // under the old bytes' hash — so the preview of the old content served
+    // the new one, for as long as the artifact lived.
+    const source = await corpusFile("swapped.doc", "{\\rtf1 FIRST}");
+    const store = new OfficeArtifactStore(storeDir);
+    const echoing: RunConverter = async (call) => {
+      for (const staged of call.inputs) {
+        const body = await readFile(staged, "utf8");
+        await writeFile(
+          join(call.outDir, basename(staged, extname(staged)) + ".pdf"),
+          `%PDF-1.4\n${body}\n`
+        );
+      }
+      return { code: 0, signal: null, stderr: "" };
+    };
+
+    const outcomes = await convertOfficeFiles(
+      [source],
+      deps(
+        { run: echoing, calls: [] },
+        {
+          store,
+          prepareSource: async (absPath) => {
+            // The planter rewrites the file after the run hashed it, before
+            // the preflight reads it.
+            await writeFile(absPath, "{\\rtf1 SECOND}");
+            return prepareOfficeSource(absPath);
+          },
+        }
+      )
+    );
+
+    expect(outcomes[0].status).toBe("converted");
+    const sha = (text: string) => createHash("sha256").update(text).digest("hex");
+    expect(await store.get(sha("{\\rtf1 FIRST}"))).toBeNull();
+    const artifact = await store.get(sha("{\\rtf1 SECOND}"));
+    expect(artifact).not.toBeNull();
+    expect(await readFile(artifact!, "utf8")).toContain("SECOND");
   });
 
   it("books a refused file as a document-level failure, with the reason, and converts its neighbours", async () => {
@@ -797,6 +848,39 @@ describe("preflight before conversion (release review v0.10.0)", () => {
     const extract = vi.spyOn(mammoth, "extractRawText");
     try {
       expect(await countSourceWordsWithOracle(bomb)).toBeNull();
+      expect(extract).not.toHaveBeenCalled();
+    } finally {
+      extract.mockRestore();
+    }
+  });
+
+  it("does not hand the oracle's mammoth a .docx that lies about its size, or one behind a junk prefix", async () => {
+    // Both get past a declared-size check; mammoth (JSZip) would inflate the
+    // whole entry before noticing. The oracle reads through the same verified
+    // copy the conversion does.
+    const lying = join(tmpRoot, "lying.docx");
+    await writeFile(
+      lying,
+      replaceEntry(
+        docxWith({ documentRels: relationships() }),
+        "word/document.xml",
+        lyingEntry("word/document.xml", {
+          head: "<w:document><w:body>",
+          tail: "</w:body></w:document>",
+          realBytes: 256 * 1024 * 1024,
+          declaredBytes: 1000,
+        })
+      )
+    );
+    const prefixed = join(tmpRoot, "prefixed.docx");
+    await writeFile(
+      prefixed,
+      Buffer.concat([Buffer.alloc(64, 0x41), docxWith({ documentRels: relationships() })])
+    );
+    const extract = vi.spyOn(mammoth, "extractRawText");
+    try {
+      expect(await countSourceWordsWithOracle(lying)).toBeNull();
+      expect(await countSourceWordsWithOracle(prefixed)).toBeNull();
       expect(extract).not.toHaveBeenCalled();
     } finally {
       extract.mockRestore();

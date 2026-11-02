@@ -348,7 +348,11 @@ async function openWorkbook(absPath: string): Promise<ExcelJS.Workbook> {
   try {
     buffer = await readWorkbookBuffer(absPath);
   } catch (err) {
-    if (err instanceof OfficeFileRejectedError) throw err;
+    // Too large is its own verdict (the route answers 413, ingest lists the
+    // file). Anything else the guard refused — not a zip, a legacy .xls, a
+    // malformed or lying archive — is a workbook that cannot be read, which is
+    // what XlsxExtractionError has always meant. Either way exceljs never saw it.
+    if (err instanceof OfficeFileRejectedError && err.code === "too_large") throw err;
     throw unreadable(err);
   }
 

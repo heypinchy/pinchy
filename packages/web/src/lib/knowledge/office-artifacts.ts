@@ -57,7 +57,11 @@ export async function hashFileContents(absPath: string): Promise<string> {
  * changed filter or font set, a different `--convert-to` invocation. Every
  * stored artifact is invalidated, and #939's preview serves the new output.
  */
-export const OFFICE_ARTIFACT_FORMAT_VERSION = 1;
+// 2: the preflight's relationship allow-list (release review v0.10.0). An
+// artifact converted before it may hold what an altChunk or an SVG picture
+// read from the server's disk — and the store is keyed on content, so the same
+// file would be served that artifact forever. Bumping re-converts it once.
+export const OFFICE_ARTIFACT_FORMAT_VERSION = 2;
 
 /**
  * Where converted artifacts live. Overridable so a dev machine (and the test

@@ -91,10 +91,11 @@ const IRRELEVANT_FILES = new Set([
  * Both files are deliberately import-free, which is what makes them safe to
  * pull into the build: see the header of pdf-scan-rule.ts.
  *
- * The third is the zip central-directory guard from #424 (`docx-zip-guard.ts`),
- * which the knowledge base's Office preflight reuses before exceljs, mammoth or
+ * The third is the zip guard from #424 (`docx-zip-guard.ts`), which the
+ * knowledge base's Office preflight reuses before exceljs, mammoth or
  * LibreOffice inflate an untrusted archive (release review v0.10.0). Same
- * shape: import-free, canonical in the plugin.
+ * shape, canonical in the plugin; it imports one Node built-in (`node:zlib`,
+ * to verify real sizes), which resolves on both sides of the boundary.
  *
  * This is a carve-out from IRRELEVANT_PREFIXES, checked before it. Do not extend
  * it by hand: `escapingImportTargets` + the drift guard in
@@ -104,8 +105,8 @@ const IRRELEVANT_FILES = new Set([
 const BUILD_RELEVANT_OUTSIDE_WEB = [
   /^packages\/plugins\/[^/]+\/openclaw\.plugin\.json$/,
   /^packages\/plugins\/pinchy-files\/pdf-(scan-rule|vision-api)\.ts$/,
-  // The zip central-directory guard (#424) the knowledge base's Office
-  // preflight shares: import-free, canonical in the plugin.
+  // The zip guard (#424) the knowledge base's Office preflight shares:
+  // canonical in the plugin, Node built-ins only.
   /^packages\/plugins\/pinchy-files\/docx-zip-guard\.ts$/,
 ];
 
