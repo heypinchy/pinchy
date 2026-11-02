@@ -43,7 +43,7 @@ describe("ApprovalsInbox", () => {
     expect(screen.getByText("5")).toBeInTheDocument();
   });
 
-  // A summary may be half a megabyte (a long report written to a file), and
+  // A summary may be 0.5–1.5 MB (a long report written to a file), and
   // the list is polled every five seconds for as long as the card waits. It
   // never changes once stored, so each poll names the cards it already holds
   // and the server sends those back without their summary.
@@ -60,6 +60,27 @@ describe("ApprovalsInbox", () => {
     await waitFor(() => expect(fetchPendingApprovals).toHaveBeenCalledTimes(2));
     expect(screen.getByText("recordId")).toBeInTheDocument();
     expect(screen.getByText("5")).toBeInTheDocument();
+  });
+
+  // Fifth review of #1242: a card listed without its summary that the poller
+  // does not hold — the server read it as known, but the snapshot has since
+  // dropped it — must wait for the next poll. Rendered with `argsSummary: null`
+  // it would be an approvable card that shows nothing of what it approves.
+  it("does not render a card whose summary it neither received nor holds", async () => {
+    const { argsSummary: _held, ...withoutSummary } = pending;
+    fetchPendingApprovals.mockResolvedValueOnce({ approvals: [withoutSummary] });
+    fetchPendingApprovals.mockResolvedValue({ approvals: [pending] });
+    render(<ApprovalsInbox />);
+    await waitFor(() => expect(fetchPendingApprovals).toHaveBeenCalledTimes(1));
+    await Promise.resolve();
+    expect(screen.queryByText(/needs your confirmation/i)).toBeNull();
+    expect(screen.queryByRole("button", { name: /approve/i })).toBeNull();
+
+    // The next poll does not name it as held, so it gets the summary back.
+    document.dispatchEvent(new Event("visibilitychange"));
+    await waitFor(() => expect(fetchPendingApprovals).toHaveBeenCalledTimes(2));
+    expect(fetchPendingApprovals).toHaveBeenLastCalledWith([]);
+    await screen.findByText("recordId");
   });
 
   it("approves a request and removes it from the list", async () => {
