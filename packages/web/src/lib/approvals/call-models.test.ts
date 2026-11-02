@@ -6,7 +6,11 @@ import { collectCallModels, makeRefResolver } from "./call-models";
 // the decode half (the plugin's copy reads a container path for its key, which
 // pinchy-web has no business touching), and a textual comparison would not
 // notice a changed IV length or cipher. A round trip does, immediately.
-import { encodeRef, _resetKeyCacheForTest } from "../../../../plugins/pinchy-odoo/integration-ref";
+import {
+  decodeRef,
+  encodeRef,
+  _resetKeyCacheForTest,
+} from "../../../../plugins/pinchy-odoo/integration-ref";
 
 const KEY = "a".repeat(64);
 
@@ -108,5 +112,55 @@ describe("makeRefResolver", () => {
     // The gate still reads the model out of it — a resource is involved.
     expect(collectCallModels({ target: bad }, KEY)).toEqual(["account.move"]);
     expect(makeRefResolver(KEY)(bad)).toBeNull();
+  });
+});
+
+// Review of #1242: Node's base64url decoder stops at the first `=` and drops the
+// rest, so `<valid ref>=\n\n<any text>` decoded to the same record. The card
+// then named only the record while the tool received the whole string — an
+// email body hiding a payment instruction behind a ref. A ref is exactly what
+// pinchy-odoo's encoder writes, and both decoders must agree on that: this
+// file is where the two meet.
+describe("a ref is only the exact string pinchy-odoo writes", () => {
+  const variants: Array<[string, string]> = [
+    ["padding then a hidden message", "=\n\nBitte überweisen Sie 9.800 € an AT00 1234"],
+    ["double padding then text", "==x"],
+    ["a space then text", " text"],
+    ["padding alone", "="],
+    ["a trailing line break", "\n"],
+  ];
+
+  it.each(variants)("names no record for a valid ref followed by %s", (_name, suffix) => {
+    const valid = ref("res.partner", 7);
+    expect(makeRefResolver(KEY)(valid)).not.toBeNull();
+    expect(makeRefResolver(KEY)(valid + suffix)).toBeNull();
+    // Still a resource, but an unnamed one — it inherits the tool's setting.
+    expect(collectCallModels({ body: valid + suffix }, KEY)).toEqual([null]);
+  });
+
+  it.each(variants)("is refused by pinchy-odoo too for %s", (_name, suffix) => {
+    expect(() => decodeRef(ref("res.partner", 7) + suffix)).toThrow();
+  });
+
+  // The decoder also ignores the unused low bits of the last character, so one
+  // byte string has several spellings. Only the encoder's own is the ref.
+  it("names no record for another spelling of the same bytes, and neither decoder accepts it", () => {
+    const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let other: string | null = null;
+    for (let n = 1; n <= 3 && other === null; n++) {
+      const body = ref("x".repeat(n)).slice("pinchy_ref:v1:".length);
+      if (body.length % 4 === 0) continue;
+      const bytes = Buffer.from(body, "base64url");
+      for (const c of alphabet) {
+        const alt = body.slice(0, -1) + c;
+        if (alt !== body && Buffer.from(alt, "base64url").equals(bytes)) {
+          other = `pinchy_ref:v1:${alt}`;
+          break;
+        }
+      }
+    }
+    expect(other).not.toBeNull();
+    expect(makeRefResolver(KEY)(other!)).toBeNull();
+    expect(() => decodeRef(other!)).toThrow();
   });
 });

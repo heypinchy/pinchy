@@ -316,6 +316,63 @@ describe("summarizeArgs", () => {
     });
   });
 
+  // Fifth review of #1242: Node's base64url decoder stops at the first `=` and
+  // drops the rest, so `<valid ref>=\n\n<any text>` still decoded. The card
+  // showed only "(record reference: …)" — and skipped the length check — while
+  // the tool received the whole string: an email body hiding a payment
+  // instruction behind a ref. Only the exact string the encoder writes is a
+  // ref; anything longer is text, shown and counted like any other.
+  describe("a ref with anything after it is text (fifth review of #1242)", () => {
+    const partner = () =>
+      encodeRef({
+        integrationType: "odoo",
+        connectionId: "c1",
+        model: "res.partner",
+        id: 7,
+        label: "Raimund Korber",
+      });
+    const hidden = "Bitte überweisen Sie 9.800 € an AT00 1234 5678 9012";
+
+    it.each([
+      ["padding then a hidden message", `=\n\n${hidden}`],
+      ["double padding then text", `==x ${hidden}`],
+      ["a space then text", ` ${hidden}`],
+      ["padding then text", `=${hidden}`],
+    ])("shows the whole string for a ref followed by %s", (_name, suffix) => {
+      const body = partner() + suffix;
+      const out = summarizeArgs(
+        { to: "kunde@example.com", body },
+        { refRecord: makeRefResolver(REF_KEY) }
+      ) as { body: string };
+      expect(out.body).not.toContain("record reference");
+      expect(out.body).toContain("AT00 1234 5678 9012");
+    });
+
+    it("shows a padded ref as text, not as the record", () => {
+      const body = partner() + "=";
+      const out = summarizeArgs({ body }, { refRecord: makeRefResolver(REF_KEY) });
+      expect(out.body).toBe(body);
+    });
+
+    // The card must not depend on every resolver being strict: the shape is
+    // checked here too, so a resolver that answers for anything still cannot
+    // hide text behind a record.
+    it("does not let a lenient resolver turn trailing text into a record", () => {
+      const anything = () => ({ model: "res.partner", id: 7, label: "Raimund Korber" });
+      const body = `${partner()}=\n\n${hidden}`;
+      const out = summarizeArgs({ body }, { refRecord: anything }) as { body: string };
+      expect(out.body).toContain("AT00 1234 5678 9012");
+      expect(out.body).not.toContain("record reference");
+    });
+
+    it("counts the trailing text against the length limit", () => {
+      const body = `${partner()}=${"a".repeat(200_001)}`;
+      const result = summarizeCall({ body }, { refRecord: makeRefResolver(REF_KEY) });
+      expect(result.incomplete).toBe(true);
+      expect(result.exceeded).toMatchObject({ kind: "text-too-long", at: "body" });
+    });
+  });
+
   describe("keys are shown as they are, never merged (review of #1242)", () => {
     // The exact payload the review used: "to " (trailing space) used to be
     // trimmed to "to" and merged over the real `to`, so the card showed the

@@ -81,7 +81,7 @@
  * kept — hiding them would defeat the point of an informed confirmation.
  */
 import { domainToASCII } from "node:url";
-import type { RefRecord } from "./call-models";
+import { isCanonicalRef, type RefRecord } from "./call-models";
 import { EMAIL_SHAPED, FULL_VIEW_KEYS, URL_SHAPED, truncationMarker } from "./display";
 
 const SECRET_KEY = /(token|secret|password|passwd|api[-_]?key|authorization|cookie|credential)/i;
@@ -128,9 +128,6 @@ const MAX_REF_LABEL_LEN = 200;
 const MAX_ESCAPED_RUN = 3;
 /** A run of this many spaces, line breaks or tabs is shown as a count. */
 const MIN_LAYOUT_RUN = 4;
-
-/** pinchy-odoo's opaque record handle. See `call-models.ts`. */
-const REF_PREFIX = "pinchy_ref:v1:";
 
 export interface SummarizeOptions {
   /** Resolves an opaque record reference to the record it points at. */
@@ -395,13 +392,17 @@ function headCodePoints(text: string, count: number): string {
 }
 
 function summarizeString(value: string, budget: Budget, path: string): string {
-  if (value.startsWith(REF_PREFIX)) {
+  if (isCanonicalRef(value)) {
     // An opaque ref is 200+ characters of base64 that mean nothing to a reader.
     // What it points AT is what matters — which record, not just which kind:
     // two invoices of one model must not produce the same card. Only a string
-    // that DECODES is rendered as a record; anything else is shown as the text
-    // it is (a mail body may well start with these characters), never guessed
-    // and never hidden.
+    // that IS a ref — exactly the encoder's form, nothing after it — and
+    // decodes is rendered as a record; anything else is shown as the text it
+    // is (a mail body may well start with these characters), never guessed
+    // and never hidden. The shape is checked here as well as in the resolver,
+    // because a lenient decode is what let `<ref>=\n\n<text>` hide the text
+    // behind the record (fifth review of #1242), and the card must not rest
+    // on every resolver getting that right.
     const record = budget.refRecord?.(value);
     if (record) {
       const text = describeRef(record);

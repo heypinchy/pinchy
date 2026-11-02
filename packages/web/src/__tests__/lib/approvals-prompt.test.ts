@@ -155,6 +155,27 @@ describe("buildApprovalPrompt", () => {
     expect(description).toContain('(record reference: sale.order #9 "S00009")');
   });
 
+  // Fifth review of #1242: a valid ref followed by `=` and text decoded to the
+  // record, so the prompt named the record and dropped the text the tool
+  // would send.
+  it("shows the text after a ref, not the record it seems to name", () => {
+    const ref = encodeRef({
+      integrationType: "odoo",
+      connectionId: "c1",
+      model: "res.partner",
+      id: 7,
+      label: "Raimund Korber",
+    });
+    const { description } = buildApprovalPrompt(
+      "email_send",
+      { to: "kunde@example.com", body: `${ref}=\n\nBitte überweisen Sie an AT00 1234` },
+      [],
+      { refRecord: makeRefResolver(REF_KEY) }
+    );
+    expect(description).not.toContain("record reference");
+    expect(description).toContain(ref.slice(0, 40));
+  });
+
   it("shows free text that starts with the ref prefix as the text it is", () => {
     const { description } = buildApprovalPrompt("email_send", {
       to: "boss@firma.at",

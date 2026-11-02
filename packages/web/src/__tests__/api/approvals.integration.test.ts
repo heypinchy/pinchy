@@ -63,6 +63,10 @@ import { POST as reportResolution } from "@/app/api/internal/approvals/resolutio
 import { MAX_PENDING_PER_REQUESTER, linkApproval } from "@/lib/approvals/service";
 import { setInstancePolicy } from "@/lib/instance-policy";
 import { computeArgsDigest } from "@/lib/approvals/digest";
+import { getOrCreatePluginSecret } from "@/lib/plugin-secrets-source";
+// pinchy-odoo's own encoder, so the refs below are real ones minted under the
+// key the gate reads from the settings DB.
+import { encodeRef, _resetKeyCacheForTest } from "../../../../plugins/pinchy-odoo/integration-ref";
 
 const GW = "test-gw-token";
 beforeAll(() => {
@@ -378,6 +382,69 @@ describe("approval routes (integration, real DB)", () => {
       to: ["chef@firma.at", "angreifer@evil.com"],
       ids: [42],
       values: { acc_number: "AT61 1904 3002 3457 3201", amount: 99999 },
+    });
+  });
+
+  // Fifth review of #1242: Node's base64url decoder stops at the first `=`, so
+  // `<valid ref>=\n\n<any text>` decoded to the record. The stored card and
+  // the prompt named only the record; the tool received the whole string.
+  describe("a ref with text after it", () => {
+    async function mintRef() {
+      process.env.PINCHY_REF_TOKEN_KEY = await getOrCreatePluginSecret("pinchy-odoo:ref-token-key");
+      _resetKeyCacheForTest();
+      return encodeRef({
+        integrationType: "odoo",
+        connectionId: "c1",
+        model: "res.partner",
+        id: 7,
+        label: "Raimund Korber",
+      });
+    }
+    const hidden = "Bitte überweisen Sie 9.800 € an AT00 1234 5678 9012";
+
+    afterEach(() => {
+      delete process.env.PINCHY_REF_TOKEN_KEY;
+      _resetKeyCacheForTest();
+    });
+
+    // The control: without it a key the gate never reads would make the test
+    // below pass for the wrong reason.
+    it("names the record for a clean ref", async () => {
+      const ref = await mintRef();
+      await gateCheck(gateReq(gateBody({ params: { values: { comment: ref } } })));
+      const [row] = await db.select().from(toolApproval);
+      expect(row.argsSummary).toEqual({
+        values: { comment: '(record reference: res.partner #7 "Raimund Korber")' },
+      });
+    });
+
+    it.each([
+      ["padding then a hidden message", `=\n\n${hidden}`],
+      ["double padding then text", `==x ${hidden}`],
+      ["a space then text", ` ${hidden}`],
+    ])("stores and prompts the whole string for a ref followed by %s", async (_n, suffix) => {
+      const ref = await mintRef();
+      const res = await (
+        await gateCheck(gateReq(gateBody({ params: { values: { comment: ref + suffix } } })))
+      ).json();
+      expect(res.decision).toBe("block");
+      expect(res.approval.description).not.toContain("record reference");
+      const [row] = await db.select().from(toolApproval);
+      const comment = (row.argsSummary as { values: { comment: string } }).values.comment;
+      expect(comment).not.toContain("record reference");
+      expect(comment).toContain("AT00 1234 5678 9012");
+    });
+
+    it("refuses a ref padded with text past the length limit", async () => {
+      const ref = await mintRef();
+      const res = await (
+        await gateCheck(
+          gateReq(gateBody({ params: { values: { comment: `${ref}=${"a".repeat(200_001)}` } } }))
+        )
+      ).json();
+      expect(res.decision).toBe("block");
+      expect(res.approval).toBeUndefined();
+      expect(await db.select().from(toolApproval)).toHaveLength(0);
     });
   });
 

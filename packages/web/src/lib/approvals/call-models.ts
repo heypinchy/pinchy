@@ -31,6 +31,25 @@ const ALGORITHM = "aes-256-gcm";
 const IV_LENGTH = 12;
 const TAG_LENGTH = 16;
 const HEX_64 = /^[0-9a-fA-F]{64}$/;
+const REF_SHAPE = /^pinchy_ref:v1:[A-Za-z0-9_-]+$/;
+
+/**
+ * True only for a string in the exact form pinchy-odoo's encoder writes: the
+ * prefix, unpadded base64url, and nothing after it — the same rule the
+ * plugin's `decodeRef` applies.
+ *
+ * Checked before any decode because Node's base64url decoder is lenient: it
+ * stops at the first `=` and drops whatever follows, skips whitespace, and
+ * ignores the unused bits of the last character. So `<valid ref>=\n\n<any
+ * text>` decoded to the record, the card named only the record, and the tool
+ * received the whole string (fifth review of #1242). A string that is not
+ * exactly a ref is text, and is shown as text.
+ */
+export function isCanonicalRef(value: string): boolean {
+  if (!REF_SHAPE.test(value)) return false;
+  const body = value.slice(PREFIX.length);
+  return Buffer.from(body, "base64url").toString("base64url") === body;
+}
 
 /**
  * A resource the call touches. `null` is one we could not name — a ref that
@@ -48,6 +67,7 @@ export interface RefRecord {
 }
 
 function decodeRefPayload(ref: string, key: string): Record<string, unknown> | null {
+  if (!isCanonicalRef(ref)) return null;
   try {
     const raw = Buffer.from(ref.slice(PREFIX.length), "base64url");
     if (raw.length <= IV_LENGTH + TAG_LENGTH) return null;
