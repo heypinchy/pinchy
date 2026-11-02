@@ -108,7 +108,16 @@ vi.mock("@/lib/integrations/odoo-template-validation", () => ({
   validateOdooTemplate: vi.fn(),
 }));
 
+// A custom default provider is checked against the SSRF guard before a
+// template resolves onto it (usable-default-provider.ts). The fixtures use
+// address literals, which the guard classifies without DNS.
+vi.mock("@/lib/openai-compatible-providers", () => ({
+  listOpenAiCompatibleProviders: vi.fn().mockResolvedValue([]),
+}));
+
 import { createAgent } from "@/lib/agents";
+import { listOpenAiCompatibleProviders } from "@/lib/openai-compatible-providers";
+import { getDefaultModel } from "@/lib/provider-models";
 import { appendAuditLog } from "@/lib/audit";
 import { db } from "@/db";
 import { validateOdooTemplate } from "@/lib/integrations/odoo-template-validation";
@@ -518,6 +527,52 @@ describe("createAgent() service", () => {
       );
     } finally {
       vi.mocked(getSetting).mockResolvedValue("anthropic");
+    }
+  });
+
+  // Config emission points such a provider at a reserved address and drops it
+  // as the runtime default, so an agent built on it would fail every run. A
+  // template treats it like no default at all — the fallback above.
+  it("treats a default provider whose saved base URL is now refused like no default provider", async () => {
+    vi.mocked(getSetting).mockImplementation(async (key: string) =>
+      key === "default_provider" ? "imds" : "anthropic"
+    );
+    vi.mocked(listOpenAiCompatibleProviders).mockResolvedValue([
+      {
+        id: "row-imds",
+        slug: "imds",
+        displayName: "Rebound",
+        baseUrl: "http://100.100.100.200/v1",
+        models: [],
+        createdAt: new Date("2026-01-01T00:00:00Z"),
+        updatedAt: new Date("2026-01-01T00:00:00Z"),
+      },
+    ]);
+    try {
+      const custom = await createAgent({ name: "Plain", templateId: "custom" }, "user-1");
+      expect(custom.ok).toBe(true);
+      expect(getDefaultModel).not.toHaveBeenCalledWith("imds");
+      expect(insertValuesMock).toHaveBeenLastCalledWith(
+        expect.objectContaining({ model: BALANCED_ANCHORS.anthropic })
+      );
+
+      // knowledge-base carries a modelHint, so the template resolver is
+      // reached on this path — and must not be asked about the refused slug.
+      const hinted = await createAgent(
+        {
+          name: "Contract Bot",
+          templateId: "knowledge-base",
+          pluginConfig: { "pinchy-files": { allowed_paths: ["/data/contracts/"] } },
+        },
+        "user-1"
+      );
+      expect(hinted.ok).toBe(true);
+      expect(mockResolveAvailableModelForTemplate).not.toHaveBeenCalledWith(
+        expect.objectContaining({ provider: "imds" })
+      );
+    } finally {
+      vi.mocked(getSetting).mockResolvedValue("anthropic");
+      vi.mocked(listOpenAiCompatibleProviders).mockResolvedValue([]);
     }
   });
 

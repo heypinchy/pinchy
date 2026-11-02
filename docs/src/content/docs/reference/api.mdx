@@ -993,9 +993,11 @@ Make a configured provider the default for new agents.
 
 **Request body:** `{ "provider": "anthropic" }` — a built-in provider name or a custom provider's slug.
 
+**Errors:** `400` when a built-in provider isn't configured, or when a custom provider's saved base URL is now refused by the address check — then the body also carries `refusedReason` (never the address), and the refusal is audited as `config.changed` with `outcome: "failure"` and `detail.action: "default_provider_refused"`. `404` for a slug that matches no provider.
+
 ### `GET /api/settings/providers/openai-compatible`
 
-List the OpenAI-compatible providers that have been added. Keys are never returned: each row carries `keyHint`, the key's last four characters. `refusedReason` is `null` for a provider in use, or says why the address check now refuses its saved base URL — such a provider is left out of the agent runtime until the URL changes (see [Which base URLs are allowed](/guides/llm-providers/#which-base-urls-are-allowed)). The reason never names the address.
+List the OpenAI-compatible providers that have been added. Keys are never returned: each row carries `keyHint`, the key's last four characters. `refusedReason` is `null` for a provider in use, or says why the address check now refuses its saved base URL — the agent runtime then gets a reserved, unresolvable address in its place, and no key, until the URL changes (see [Which base URLs are allowed](/guides/llm-providers/#which-base-urls-are-allowed)). The reason never names the address.
 
 ### `POST /api/settings/providers/openai-compatible`
 

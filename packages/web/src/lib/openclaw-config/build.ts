@@ -29,7 +29,7 @@ import {
 } from "@/lib/openclaw-builtin-models";
 import { listOpenAiCompatibleProviders } from "@/lib/openai-compatible-providers";
 import { resolveCustomProviderModels } from "@/lib/openai-compatible-discovery";
-import { withoutRefusedBaseUrls } from "@/lib/openai-compatible-stored-url";
+import { REFUSED_BASE_URL, refusedBaseUrlsForEmission } from "@/lib/openai-compatible-stored-url";
 import {
   getOpenClawWorkspacePath,
   getAgentBootstrapSizes,
@@ -464,9 +464,11 @@ export async function regenerateOpenClawConfig() {
   const isBuiltInDefault = defaultProvider !== null && Object.hasOwn(PROVIDERS, defaultProvider);
   // A saved base URL the SSRF guard now refuses is neither emitted below nor
   // the default here — one check, shared by both decisions.
-  const usableCustomProviders = await withoutRefusedBaseUrls(customProviders);
+  const refusedCustomProviders = await refusedBaseUrlsForEmission(customProviders);
   const isCustomDefault =
-    defaultProvider !== null && usableCustomProviders.some((p) => p.slug === defaultProvider);
+    defaultProvider !== null &&
+    !refusedCustomProviders.has(defaultProvider) &&
+    customProviders.some((p) => p.slug === defaultProvider);
   if (defaultProvider && (isBuiltInDefault || isCustomDefault)) {
     pinchyDefaults.model = { primary: await getDefaultModel(defaultProvider) };
   } else if (customProviders.some((p) => p.slug === defaultProvider)) {
@@ -1469,18 +1471,23 @@ export async function regenerateOpenClawConfig() {
   // supplies slug/baseUrl/snapshot and backs the default-provider guard;
   // `providerSecrets` (already fetched for the secrets bundle) supplies the
   // decrypted key discovery needs without a second DB round trip.
-  // A saved base URL the SSRF guard now refuses is not emitted at all.
-  for (const p of usableCustomProviders) {
-    const models = await resolveCustomProviderModels({
-      slug: p.slug,
-      baseUrl: p.baseUrl,
-      apiKey: providerSecrets[p.slug]?.apiKey ?? "",
-      models: p.models,
-    });
+  // A saved base URL the SSRF guard now refuses keeps its entry and saved
+  // models (so the file keeps its size — see openai-compatible-stored-url.ts)
+  // but points at REFUSED_BASE_URL, carries no key, and is never fetched.
+  for (const p of customProviders) {
+    const refused = refusedCustomProviders.has(p.slug);
+    const models = refused
+      ? p.models
+      : await resolveCustomProviderModels({
+          slug: p.slug,
+          baseUrl: p.baseUrl,
+          apiKey: providerSecrets[p.slug]?.apiKey ?? "",
+          models: p.models,
+        });
     modelProviders[p.slug] = {
-      baseUrl: p.baseUrl,
+      baseUrl: refused ? REFUSED_BASE_URL : p.baseUrl,
       api: "openai-completions",
-      apiKey: secretRef(`/providers/${p.slug}/apiKey`),
+      ...(refused ? {} : { apiKey: secretRef(`/providers/${p.slug}/apiKey`) }),
       models: stripVision(models).map((m) => ({
         ...m,
         compat: { supportsUsageInStreaming: true },

@@ -1181,7 +1181,7 @@ describe("ProviderKeyForm", () => {
     });
 
     it("marks a provider whose saved base URL is now refused, and says why once it's selected", async () => {
-      // Config emission leaves such a provider out, so its agents fail. The
+      // Config emission points such a provider at a reserved address, so its agents fail. The
       // notice is the admin's only sign of it in the UI, so it must not be a
       // toast that's gone in a few seconds.
       const refusedReason =
@@ -1361,6 +1361,69 @@ describe("ProviderKeyForm", () => {
         );
         expect(onSuccess).toHaveBeenCalled();
       });
+    });
+
+    it("offers no Set as default on a provider whose saved base URL is now refused", async () => {
+      // It is never the runtime's default while refused, and the server
+      // refuses the request — so the button would only promise something.
+      vi.mocked(global.fetch).mockImplementation(async (input) => {
+        const url = String(input);
+        if (url.endsWith("/api/settings/providers/openai-compatible")) {
+          return jsonResponse([
+            { ...acmeRow, refusedReason: "That host resolves to a private network address." },
+          ]);
+        }
+        return jsonResponse({});
+      });
+
+      render(
+        <ProviderKeyForm onSuccess={onSuccess} manageCustomProviders defaultProvider="anthropic" />
+      );
+
+      fireEvent.click(await screen.findByRole("button", { name: /acme llm/i }));
+
+      expect(screen.getByRole("alert")).toHaveTextContent(/not in use/i);
+      expect(screen.queryByRole("button", { name: /set as default/i })).not.toBeInTheDocument();
+    });
+
+    it("shows the refusal on the provider, not as a toast, when the server turns Set as default down", async () => {
+      // The list was loaded while the URL was still allowed (or the network
+      // policy changed since). The server's answer carries the reason; the
+      // panel then shows the same persistent notice as a refused provider
+      // loaded fresh, and the button goes away.
+      const refusedReason = "That host resolves to a private network address.";
+      vi.mocked(global.fetch).mockImplementation(async (input, init) => {
+        const url = String(input);
+        const method = init?.method ?? "GET";
+        if (url.endsWith("/api/settings/providers/openai-compatible")) {
+          return jsonResponse([{ ...acmeRow, refusedReason: null }]);
+        }
+        if (url.endsWith("/api/settings/providers/default") && method === "PATCH") {
+          return jsonResponse(
+            {
+              error: `Its base URL is now refused, so it can't be the default. ${refusedReason}`,
+              refusedReason,
+            },
+            { ok: false, status: 400 }
+          );
+        }
+        return jsonResponse({});
+      });
+
+      render(
+        <ProviderKeyForm onSuccess={onSuccess} manageCustomProviders defaultProvider="anthropic" />
+      );
+
+      fireEvent.click(await screen.findByRole("button", { name: /acme llm/i }));
+      fireEvent.click(await screen.findByRole("button", { name: /set as default/i }));
+
+      const notice = await screen.findByRole("alert");
+      expect(notice).toHaveTextContent(/not in use/i);
+      expect(notice).toHaveTextContent(refusedReason);
+      expect(screen.queryByRole("button", { name: /set as default/i })).not.toBeInTheDocument();
+      expect(toast.error).not.toHaveBeenCalled();
+      expect(toast.success).not.toHaveBeenCalled();
+      expect(onSuccess).not.toHaveBeenCalled();
     });
 
     it("removes a custom provider via the delete confirmation, calling DELETE with its id", async () => {

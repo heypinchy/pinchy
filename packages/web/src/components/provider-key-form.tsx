@@ -218,6 +218,17 @@ function readErrorDocs(body: unknown): { href: string; label: string } | null {
   return null;
 }
 
+/**
+ * The `refusedReason` a `PATCH /api/settings/providers/default` 400 carries
+ * when the target's saved base URL is now refused, or `null` for any other
+ * failure.
+ */
+function refusedReasonFrom(err: unknown): string | null {
+  if (!(err instanceof ApiError) || err.status !== 400) return null;
+  const reason = (err.body as { refusedReason?: unknown } | null)?.refusedReason;
+  return typeof reason === "string" && reason.length > 0 ? reason : null;
+}
+
 const VISION_CAPABLE_PROVIDERS: ReadonlySet<ProviderName> = new Set([
   "anthropic",
   "openai",
@@ -491,6 +502,18 @@ export function ProviderKeyForm({
       toast.success("Default provider updated.");
       onSuccess();
     } catch (e) {
+      // The server refuses a custom provider whose saved base URL is now
+      // refused (the list was loaded before it was). That is the same
+      // permanent state the "Not in use" notice describes, so show it there
+      // — inline and persistent — rather than as a toast.
+      const refusedReason = refusedReasonFrom(e);
+      if (refusedReason !== null) {
+        const markRefused = (row: ProviderListItem) =>
+          row.slug === target ? { ...row, refusedReason } : row;
+        setSelectedCustomProvider((current) => (current ? markRefused(current) : current));
+        setCustomProviders((rows) => rows.map(markRefused));
+        return;
+      }
       toast.error(errorMessage(e, "Could not set the default provider."));
     } finally {
       setSettingDefault(false);
@@ -776,7 +799,7 @@ export function ProviderKeyForm({
 
         {manageCustomProviders && selectedCustomProvider && (
           <div className="space-y-4">
-            {/* Persistent, not a toast: the provider stays out of the runtime
+            {/* Persistent, not a toast: the provider stays unusable in the runtime
                 config until the URL changes, so the notice stays as long. */}
             {selectedCustomProvider.refusedReason && (
               <Alert>
@@ -800,18 +823,21 @@ export function ProviderKeyForm({
               }}
               onCancel={() => setSelectedCustomProvider(null)}
             />
-            {defaultProvider !== selectedCustomProvider.slug && (
-              <Button
-                type="button"
-                variant="outline"
-                className="w-full"
-                disabled={settingDefault}
-                onClick={() => handleSetDefault(selectedCustomProvider.slug)}
-              >
-                <Star className="size-4 fill-muted-foreground text-muted-foreground" />
-                {settingDefault ? "Setting as default..." : "Set as default"}
-              </Button>
-            )}
+            {/* A refused provider can't be the default (the server says no
+                too), so there is nothing to offer while the notice is up. */}
+            {defaultProvider !== selectedCustomProvider.slug &&
+              !selectedCustomProvider.refusedReason && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="w-full"
+                  disabled={settingDefault}
+                  onClick={() => handleSetDefault(selectedCustomProvider.slug)}
+                >
+                  <Star className="size-4 fill-muted-foreground text-muted-foreground" />
+                  {settingDefault ? "Setting as default..." : "Set as default"}
+                </Button>
+              )}
             <AlertDialog
               onOpenChange={(open) =>
                 handleRemovalDialogOpenChange(open, selectedCustomProvider.slug)

@@ -83,6 +83,9 @@ vi.mock("@/lib/provider-url-guard", () => {
   return {
     ProviderUrlBlockedError,
     assertAllowedProviderUrl: vi.fn().mockResolvedValue(undefined),
+    // The GET list asks once per host per request; with the guard mocked the
+    // resolver is never called.
+    memoizeResolver: vi.fn(() => vi.fn()),
   };
 });
 
@@ -708,9 +711,9 @@ describe("GET /api/settings/providers/openai-compatible", () => {
   });
 
   it("flags a provider whose saved base URL is now refused, with the reason and no address", async () => {
-    // Config emission leaves such a provider out (withoutRefusedBaseUrls), so
-    // the settings page has to say so — otherwise the admin only sees agents
-    // failing. Same guard, same verdict.
+    // Config emission points such a provider at a reserved address
+    // (refusedBaseUrlsForEmission), so the settings page has to say so —
+    // otherwise the admin only sees agents failing. Same guard, same verdict.
     vi.mocked(listOpenAiCompatibleProvidersForAdmin).mockResolvedValue([
       listItem({ id: "row-ok", slug: "acme-llm", baseUrl: "https://acme.example.com/v1" }),
       listItem({ id: "row-imds", slug: "imds", baseUrl: "http://100.100.100.200/v1" }),
