@@ -46,8 +46,12 @@
  * Everything after this reads the returned handle — never the path again —
  * or a private copy streamed from it (`copyVerifiedSource`), so a reader that
  * only takes a path (pdfjs, exceljs, LibreOffice, and the child processes
- * that run them) never sees one an author of the share controls, and this
- * process never holds a source whole.
+ * that run them) never sees one an author of the share controls. The ingest
+ * and the citation route never buffer a source: they hash it and copy it a
+ * chunk at a time. The readers they hand the copy to are another matter —
+ * the in-process PDF reader (`extractPdfPages`) and, until #1243 moves it
+ * into a child process, the workbook reader (`readFile` in xlsx-extract.ts)
+ * load that copy whole.
  */
 import { randomUUID } from "node:crypto";
 import { constants as fsConstants, type BigIntStats } from "node:fs";
@@ -229,9 +233,11 @@ export interface VerifiedCopy {
  * Opens `realPath` through `openVerifiedSource` and streams it, a chunk at a
  * time (`SOURCE_CHUNK_BYTES`), into a fresh directory only this process can
  * enter (`mkdtemp` creates it 0700) under `stagingDir`, under the basename of
- * `sourcePath` — hashing the same chunks as it writes them. This process never
+ * `sourcePath` — hashing the same chunks as it writes them. The copy never
  * holds the file whole: a 190 MB deck read whole stayed alive through its
- * conversion and embedding. The descriptor is closed before this returns.
+ * conversion and embedding. (What a reader then does with the copy is its own
+ * business — see the top of this file.) The descriptor is closed before this
+ * returns.
  *
  * `stagingDir` is the artifact volume's `staging/` (`stagingDirOf`, or a
  * request's `liveStagingDirOf`, in office-artifacts.ts), not `os.tmpdir()`: a

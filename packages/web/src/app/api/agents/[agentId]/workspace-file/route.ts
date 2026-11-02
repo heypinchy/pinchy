@@ -348,7 +348,8 @@ export const GET = withAuth<Params>(async (req, { params }, session) => {
     // The reader takes a path, so it is handed a private copy of the
     // workbook, streamed from the verified descriptor onto the staging
     // volume: never the share's path (a link swapped in after the check would
-    // be followed), and never the whole file in this process.
+    // be followed). The copy is streamed; the workbook reader (exceljs) then
+    // loads that copy whole.
     const source = await openSource();
     if (!source) return new NextResponse("Not found", { status: 404 });
     let copy: VerifiedCopy;
