@@ -257,7 +257,8 @@ export class StreamPipe {
           // own post-abort `done`, not OpenClaw's — so follow up by that runId
           // until an abort is confirmed or OpenClaw reports the run over.
           // Detached: this stream is ending, the run on OpenClaw may not be.
-          // Once per run: this branch runs on the reconciling chunk only.
+          // Once per run here: this branch runs on the reconciling chunk only
+          // (a retried attempt is followed up where its runId shows up, below).
           const reconciledRun = activeRuns.get(sessionKey);
           if (reconciledRun?.abortedByUser) {
             void reAbortStartedRun(
@@ -284,6 +285,29 @@ export class StreamPipe {
           }
         } else if (activeRunRegistered) {
           activeRuns.touch(sessionKey, Date.now());
+          // A chunk naming another run: the dispatch-race retry
+          // (`chat-dispatch-retry.ts`) sent this turn again after OpenClaw
+          // failed the attempt it was reconciled to ("Unknown model"), and
+          // OpenClaw runs the new attempt under its own runId. Everything that
+          // names this turn's run must follow — a stop or deactivation aborts
+          // `run.runId`, and an abort naming the failed attempt stops nothing
+          // while the new one runs on, tools included. Stopped already? Then
+          // this attempt was dispatched before the stop and the abort sent
+          // missed it (usually this chunk is the client's own post-abort
+          // `done`, carrying the new attempt's id): follow it up by its runId,
+          // exactly as for a pending run's first chunk.
+          if (chunk.runId && activeRunId !== undefined && chunk.runId !== activeRunId) {
+            const switched = activeRuns.switchRunId(sessionKey, activeRunId, chunk.runId);
+            activeRunId = chunk.runId;
+            if (switched?.abortedByUser) {
+              void reAbortStartedRun(
+                switched,
+                sessionKey,
+                chunk.runId,
+                followUpDepsFor(() => openclawClient)
+              );
+            }
+          }
         }
         // #978: OpenClaw hands a user abort to the stream as an error chunk
         // (`decision=surface_error reason=none rawError=Request was aborted`),
@@ -800,9 +824,10 @@ export class StreamPipe {
           actorId: userId,
           eventType: "chat.run_completed_after_disconnect" as const,
           resource: `agent:${agent.id}`,
+          // The user is the row's actor, pseudonymized on write — never
+          // mirrored into the verbatim `detail` (#824).
           detail: {
             agent: { id: agent.id, name: agent.name },
-            user: { id: userId },
             sessionKey,
             runId: activeRunId!,
           },

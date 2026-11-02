@@ -60,7 +60,12 @@ import { attachmentIdsSchema } from "@/lib/schemas/uploads";
 import { chatIdSchema } from "@/lib/schemas/sessions";
 import { StreamPipe, GENERIC_RUN_FAILURE_MESSAGE } from "@/server/stream-pipe";
 import { getUserSocketRegistry, refuseDeactivatedSocket } from "@/server/user-sockets";
-import { abortSessionRun, auditStoppedBeforeDispatch, followUpDepsFor } from "@/server/abort-runs";
+import {
+  abortSessionRun,
+  auditStoppedBeforeDispatch,
+  followUpDepsFor,
+  watchDispatchRejections,
+} from "@/server/abort-runs";
 
 const WS_OPEN = 1;
 const CONNECTION_TIMEOUT_MS = 10_000;
@@ -715,7 +720,13 @@ export class ClientRouter {
       const thisTurn: { run?: ActiveRun } = {};
 
       const stream = chatWithDispatchRaceRetry(text, chatOptions as ChatOptions, {
-        chat: (m, o) => this.openclawClient.chat(m, o),
+        chat: (m, o) => {
+          // Before the dispatch goes out: should this turn be stopped while
+          // OpenClaw prepares it, the follow-up must learn that OpenClaw turned
+          // it away — an answer the stopped stream no longer reads.
+          watchDispatchRejections(this.openclawClient);
+          return this.openclawClient.chat(m, o);
+        },
         // Stopped (stop button or deactivation) while the dispatch race keeps
         // it pending: the session-only abort found nothing running, so the
         // retry must not dispatch it again.

@@ -197,6 +197,29 @@ describe("ActiveRuns", () => {
     });
   });
 
+  describe("switchRunId (a turn the dispatch-race retry sent again runs under a new runId)", () => {
+    it("moves this turn's run to the new runId, so an abort names the attempt that runs", () => {
+      runs.register({ ...baseRun, ws: fakeWs() });
+
+      const switched = runs.switchRunId(baseRun.sessionKey, "run-1", "run-2");
+
+      expect(switched).toBe(runs.get(baseRun.sessionKey));
+      expect(runs.get(baseRun.sessionKey)?.runId).toBe("run-2");
+    });
+
+    it("leaves a newer turn that replaced this one alone", () => {
+      runs.register({ ...baseRun, runId: "run-new", ws: fakeWs() });
+
+      expect(runs.switchRunId(baseRun.sessionKey, "run-1", "run-2")).toBeUndefined();
+      expect(runs.get(baseRun.sessionKey)?.runId).toBe("run-new");
+    });
+
+    it("is a no-op for an unknown sessionKey", () => {
+      expect(runs.switchRunId("agent:never:direct:u1", "a", "b")).toBeUndefined();
+      expect(runs.size()).toBe(0);
+    });
+  });
+
   describe("addListener", () => {
     it("adds an additional ws as a listener and returns true when the run exists (Tier 2b multi-tab)", () => {
       const wsA = fakeWs();

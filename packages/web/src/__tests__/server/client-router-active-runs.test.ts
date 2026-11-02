@@ -472,7 +472,12 @@ describe("ClientRouter ↔ ActiveRuns wiring (#310 Tier 2a)", () => {
     expect(detail.sessionKey).toBe(sessionKey);
     expect(detail.runId).toBe("run-disc");
     expect(detail.agent).toEqual({ id: "agent-1", name: "Smithers" });
-    expect(detail.user).toEqual({ id: "user-1" });
+    // #824: the acting user is the row's actor, pseudonymized on write; a raw
+    // id mirrored into the verbatim `detail` would survive crypto-erasure.
+    // (The sessionKey is OpenClaw's address for the conversation, kept as is.)
+    expect(detail).not.toHaveProperty("user");
+    const { sessionKey: _address, ...rest } = detail;
+    expect(JSON.stringify(rest)).not.toContain("user-1");
   });
 
   it("does NOT emit chat.run_completed_after_disconnect when listeners remain at `done`", async () => {
@@ -1000,6 +1005,87 @@ describe("ClientRouter ↔ ActiveRuns wiring (#310 Tier 2a)", () => {
 
       expect(gw.aborts).toEqual([]);
     });
+
+    describe("after the dispatch-race retry sent it again", () => {
+      // OpenClaw accepted the first attempt and failed it resolving the model
+      // ("Unknown model" — the provider block had not applied yet), so the
+      // retry dispatched the reply again, which OpenClaw runs under a NEW
+      // runId. The registry was reconciled to the first one on its ack; a stop
+      // that names that finished attempt stops nothing.
+      async function retriedRun() {
+        const r = router();
+        const first = await send(r, 0);
+        gw.accept(first.gwRun.runId);
+        gw.fail(first.gwRun.runId, "FailoverError: Unknown model: acme/not-yet-applied");
+        await vi.waitFor(() => expect(gw.runAt(1)).toBeDefined(), { timeout: 5_000 });
+        return { r, ...first, retry: gw.runAt(1)! };
+      }
+
+      it.each(stoppers)(
+        "stops the attempt OpenClaw is running when %s stops it mid-reply",
+        async (_label, stop) => {
+          const { r, ws, handling, run, retry } = await retriedRun();
+          gw.accept(retry.runId);
+          gw.emitText(retry.runId, "Booking the invoices…");
+          await vi.waitFor(() =>
+            expect(ws.sent.some((f) => f.includes("Booking the invoices"))).toBe(true)
+          );
+
+          await stop(r, ws);
+          await handling;
+          await run.abortFollowUp;
+
+          expect(gw.aborts[0]).toEqual({ sessionKey, runId: retry.runId, aborted: true });
+          expect(retry.state).toBe("aborted");
+          expect(gw.runTool(retry.runId, "odoo_write")).toBe(false);
+          expect(retry.toolsRun).toEqual([]);
+          expect(auditRows("chat.run_completed_after_disconnect")).toEqual([]);
+        }
+      );
+
+      it.each(stoppers)(
+        "stops the attempt when %s lands while OpenClaw is still preparing it",
+        async (_label, stop) => {
+          const { r, ws, handling, run, retry } = await retriedRun();
+
+          await stop(r, ws);
+          await handling;
+          // OpenClaw finishes preparing the retried attempt and starts it.
+          gw.accept(retry.runId);
+          await vi.waitFor(() => expect(retry.state).toBe("aborted"), { timeout: 5_000 });
+          expect(gw.runTool(retry.runId, "odoo_write")).toBe(false);
+          await run.abortFollowUp;
+
+          expect(retry.toolsRun).toEqual([]);
+          expect(gw.aborts.filter((a) => a.aborted)).toEqual([
+            { sessionKey, runId: retry.runId, aborted: true },
+          ]);
+          expect(auditRows("chat.run_completed_after_disconnect")).toEqual([]);
+        }
+      );
+    });
+
+    it.each(stoppers)(
+      "stops following up once OpenClaw turns the stopped dispatch away (%s)",
+      async (_label, stop) => {
+        // OpenClaw rejects a dispatch during validation (`respond(false)`, e.g.
+        // an unknown agent id) before any run exists, so `agent.wait` never
+        // reports it over. The rejection is the run's terminal answer.
+        const r = router();
+        const { ws, handling, gwRun, run } = await send(r, 0);
+        await stop(r, ws);
+        await handling;
+        await vi.waitFor(() => expect(gw.aborts).toHaveLength(2));
+
+        gw.reject(gwRun.runId, "invalid agent params: unknown agent id agent-1");
+        const ended = await Promise.race([
+          run.abortFollowUp!.then(() => true),
+          new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 4_000)),
+        ]);
+
+        expect(ended).toBe(true);
+      }
+    );
 
     describe("when the abort did not stop the reply and it finished", () => {
       // The stopped run's stream ended with the client's own `done` the moment

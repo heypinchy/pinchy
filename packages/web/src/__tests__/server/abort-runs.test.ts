@@ -9,6 +9,7 @@
  * run — tools included — until it ends on its own.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { EventEmitter } from "events";
 import type { WebSocket } from "ws";
 
 const { mockAppendAuditLog } = vi.hoisted(() => ({
@@ -24,7 +25,9 @@ import {
   abortSessionRun,
   abortTookEffect,
   auditStoppedBeforeDispatch,
+  dispatchWasRejected,
   reAbortStartedRun,
+  watchDispatchRejections,
   type FollowUpDeps,
 } from "@/server/abort-runs";
 
@@ -326,12 +329,63 @@ describe("reAbortStartedRun", () => {
         expect.objectContaining({
           actorId: "u1",
           outcome: "success",
+          // No `user`: the run's user is the actor, pseudonymized on write; a
+          // raw id in the verbatim detail would survive crypto-erasure (#824).
           detail: {
             agent: { id: "agent-1", name: "Agent agent-1" },
-            user: { id: "u1" },
             sessionKey: "s1",
             runId: "run-real",
           },
+        }),
+      ]);
+      expect(
+        JSON.stringify(auditRows("chat.run_completed_after_disconnect")[0].detail)
+      ).not.toContain("u1");
+    });
+
+    it("stops once OpenClaw has turned the dispatch away, which agent.wait never reports", async () => {
+      const run = await stoppedPendingRun();
+      const { deps } = followUp({
+        abortRun: vi.fn().mockResolvedValue({ ok: true, aborted: false, runIds: [] }),
+        // A dispatch rejected during validation leaves no run behind.
+        agentWait: vi.fn().mockResolvedValue({ status: "timeout", timeoutPhase: "queue" }),
+        dispatchRejected: vi.fn().mockReturnValueOnce(false).mockReturnValue(true),
+      });
+
+      await reAbortStartedRun(run, "s1", "run-real", deps);
+
+      expect(deps.abortRun).toHaveBeenCalledTimes(1);
+      expect(deps.dispatchRejected).toHaveBeenCalledWith("run-real");
+      expect(mockAppendAuditLog).not.toHaveBeenCalled();
+    });
+
+    it("follows up every runId the run is given — a retried dispatch runs under a new one", async () => {
+      const run = await stoppedPendingRun();
+      const { deps } = followUp({
+        abortRun: vi.fn(async (_key: string, runId: string) =>
+          runId === "run-retry"
+            ? { ok: true, aborted: true, runIds: [runId] }
+            : { ok: true, aborted: false, runIds: [] }
+        ),
+        // The first attempt failed resolving its model; it is over.
+        agentWait: vi.fn().mockResolvedValue({ status: "error", endedAt: 9_000 }),
+      });
+
+      await Promise.all([
+        reAbortStartedRun(run, "s1", "run-real", deps),
+        reAbortStartedRun(run, "s1", "run-retry", deps),
+      ]);
+
+      expect(
+        vi
+          .mocked(deps.abortRun)
+          .mock.calls.map((c) => c[1])
+          .sort()
+      ).toEqual(["run-real", "run-retry"]);
+      expect(auditRows("chat.run_aborted")).toEqual([
+        expect.objectContaining({
+          outcome: "success",
+          detail: expect.objectContaining({ runId: "run-retry", followUp: "aborted_by_run_id" }),
         }),
       ]);
     });
@@ -367,7 +421,7 @@ describe("reAbortStartedRun", () => {
       expect(mockAppendAuditLog).not.toHaveBeenCalled();
     });
 
-    it("runs one follow-up per run, however often it is asked for", async () => {
+    it("runs one follow-up per runId, however often it is asked for", async () => {
       const run = await stoppedPendingRun();
       const { deps } = followUp({
         abortRun: vi
@@ -384,6 +438,51 @@ describe("reAbortStartedRun", () => {
       expect(deps.abortRun).toHaveBeenCalledTimes(2);
       expect(auditRows("chat.run_aborted")).toHaveLength(1);
     });
+  });
+});
+
+describe("dispatchWasRejected", () => {
+  // OpenClaw answers a dispatch it turns away during validation with
+  // `ok: false` on the `agent` request itself (whose id is the runId), and
+  // openclaw-node drops that answer once the local stream has ended — which
+  // a stop does at once. The client still emits every response it receives.
+  function rejection(id: string) {
+    return { type: "res", id, ok: false, error: { code: "INVALID_REQUEST", message: "no" } };
+  }
+
+  it("knows a runId OpenClaw turned away once it watches the client", () => {
+    const client = new EventEmitter();
+    watchDispatchRejections(client as never);
+    client.emit("protocol:response", rejection("run-1"));
+    client.emit("protocol:response", { type: "res", id: "run-2", ok: true, payload: {} });
+
+    expect(dispatchWasRejected(client, "run-1")).toBe(true);
+    expect(dispatchWasRejected(client, "run-2")).toBe(false);
+    expect(dispatchWasRejected(new EventEmitter(), "run-1")).toBe(false);
+  });
+
+  it("listens once per client, however often it is asked to watch", () => {
+    const client = new EventEmitter();
+    watchDispatchRejections(client as never);
+    watchDispatchRejections(client as never);
+
+    expect(client.listenerCount("protocol:response")).toBe(1);
+  });
+
+  it("forgets a rejection no follow-up can still be waiting for", () => {
+    vi.useFakeTimers();
+    try {
+      const client = new EventEmitter();
+      watchDispatchRejections(client as never);
+      client.emit("protocol:response", rejection("run-old"));
+      vi.advanceTimersByTime(FOLLOW_UP_ABORT_DEADLINE_MS + 1);
+      client.emit("protocol:response", rejection("run-new"));
+
+      expect(dispatchWasRejected(client, "run-old")).toBe(false);
+      expect(dispatchWasRejected(client, "run-new")).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

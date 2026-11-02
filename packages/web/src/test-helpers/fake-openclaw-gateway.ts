@@ -19,6 +19,9 @@
  *    over and `status: "timeout"` otherwise — it does not long-poll.
  *  - A tool runs only when the test says the model got there (`runTool`), and
  *    only if the run is still running.
+ *  - A dispatch OpenClaw turns away (`reject`) is answered `ok: false` before
+ *    any run exists, so `agent.wait` never reports it over. A run that fails
+ *    once accepted (`fail`) ends in error, like a model OpenClaw cannot resolve.
  */
 import { mkdtempSync } from "fs";
 import { tmpdir } from "os";
@@ -29,7 +32,7 @@ import { OpenClawClient } from "openclaw-node";
 export interface FakeRun {
   runId: string;
   sessionKey: string;
-  state: "received" | "running" | "aborted" | "ended";
+  state: "received" | "running" | "aborted" | "ended" | "failed" | "rejected";
   text: string;
   toolsRun: string[];
   endedAt?: number;
@@ -56,6 +59,13 @@ export interface FakeGateway {
   accept(runId: string, opts?: { silent?: boolean }): void;
   /** The model streams text. Ignored unless the run is running. */
   emitText(runId: string, text: string): void;
+  /**
+   * OpenClaw turns the held `agent` request away before registering a run
+   * (`respond(false)` during validation, e.g. an unknown agent id).
+   */
+  reject(runId: string, message: string): void;
+  /** The accepted run fails (e.g. `FailoverError: Unknown model`). */
+  fail(runId: string, error: string): void;
   /** The model calls a tool. Returns false — nothing ran — unless the run is running. */
   runTool(runId: string, tool: string): boolean;
   /**
@@ -173,7 +183,7 @@ export async function startFakeGateway(): Promise<FakeGateway> {
           if (run?.endedAt !== undefined) {
             respond(ws, msg.id, {
               runId: run.runId,
-              status: run.state === "aborted" ? "timeout" : "ok",
+              status: run.state === "aborted" ? "timeout" : run.state === "failed" ? "error" : "ok",
               endedAt: run.endedAt,
               ...(run.state === "aborted" ? { stopReason: "rpc" } : {}),
             });
@@ -222,6 +232,25 @@ export async function startFakeGateway(): Promise<FakeGateway> {
         payload: { runId, status: "accepted", acceptedAt: Date.now() },
       });
       agentEvent(runId, "lifecycle", { phase: "start" });
+    },
+    reject(runId, message) {
+      const run = mustGet(runId);
+      if (run.state !== "received") throw new Error(`fake gateway: ${runId} is ${run.state}`);
+      run.state = "rejected";
+      broadcast({
+        type: "res",
+        id: runId,
+        ok: false,
+        error: { code: "INVALID_REQUEST", message },
+      });
+    },
+    fail(runId, error) {
+      const run = mustGet(runId);
+      if (run.state !== "running") throw new Error(`fake gateway: ${runId} is ${run.state}`);
+      run.state = "failed";
+      run.endedAt = Date.now();
+      agentEvent(runId, "lifecycle", { phase: "error", error });
+      broadcast({ type: "res", id: runId, ok: true, payload: { runId, status: "error" } });
     },
     emitText(runId, text) {
       const run = mustGet(runId);

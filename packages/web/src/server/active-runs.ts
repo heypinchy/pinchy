@@ -121,10 +121,14 @@ export interface ActiveRun {
    */
   abortRequest?: AbortRequest;
   /**
-   * The follow-up of an abort that stopped nothing (`abort-runs.ts`
-   * `pursueAbort`): at most one per run, detached from the stream.
+   * The follow-ups of an abort that stopped nothing (`abort-runs.ts`
+   * `pursueAbort`), detached from the stream: settles once every follow-up
+   * started so far has ended. At most one per runId — one turn has more than
+   * one when the dispatch-race retry sent it again (`switchRunId`).
    */
   abortFollowUp?: Promise<void>;
+  /** The runIds a follow-up was started for (`abortFollowUp`). */
+  abortFollowUpRunIds?: Set<string>;
   listeners: Set<WebSocket>;
 }
 
@@ -242,6 +246,21 @@ export class ActiveRuns {
     run.lastChunkAt = when;
     run.runId = runId;
     return true;
+  }
+
+  /**
+   * The turn's reply is now running under `toRunId`: the dispatch-race retry
+   * (`chat-dispatch-retry.ts`) sent it again after OpenClaw failed the attempt
+   * the run was reconciled to, and OpenClaw runs each attempt under its own
+   * runId. Swapped only while the entry is still this turn's (`fromRunId`) —
+   * a newer turn that replaced it keeps its own. Returns the run when it
+   * switched it.
+   */
+  switchRunId(sessionKey: string, fromRunId: string, toRunId: string): ActiveRun | undefined {
+    const run = this.runs.get(sessionKey);
+    if (!run || run.runId !== fromRunId) return undefined;
+    run.runId = toRunId;
+    return run;
   }
 
   /**

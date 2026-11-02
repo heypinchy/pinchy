@@ -1,4 +1,4 @@
-import type { AgentWaitResult, OpenClawClient } from "openclaw-node";
+import type { AgentWaitResult, OpenClawClient, ProtocolResponse } from "openclaw-node";
 import type { ActiveRun, ActiveRuns } from "@/server/active-runs";
 import { appendAuditLog } from "@/lib/audit";
 import { recordAuditFailure } from "@/lib/audit-deferred";
@@ -32,6 +32,12 @@ export interface FollowUpDeps {
    * no further abort.
    */
   agentWait: (runId: string, opts: { timeoutMs: number }) => Promise<AgentWaitResult | undefined>;
+  /**
+   * Did OpenClaw turn the dispatch of `runId` away (`dispatchWasRejected`)? A
+   * rejected dispatch never becomes a run, so `agent.wait` cannot report it
+   * over; this is the only terminal answer there is.
+   */
+  dispatchRejected?: (runId: string) => boolean;
   /** Injectable for tests. */
   sleep?: (ms: number) => Promise<void>;
   /** Injectable for tests. */
@@ -46,7 +52,50 @@ export function followUpDepsFor(
     abortRun: async (sessionKey, runId) =>
       (await client().request("chat.abort", { sessionKey, runId })).payload,
     agentWait: (runId, opts) => client().agentWait(runId, opts),
+    dispatchRejected: (runId) => dispatchWasRejected(client(), runId),
   };
+}
+
+/**
+ * The dispatches OpenClaw turned away, per client: request id → when.
+ *
+ * OpenClaw rejects an `agent` request during validation (an unknown agent id,
+ * bad params) with `ok: false` on that request, before it creates any run —
+ * so `agent.wait` for its runId (the request id: OpenClaw's
+ * `runId = idempotencyKey`, which openclaw-node sets to the request id)
+ * answers "not over yet" for good. openclaw-node turns that answer into the
+ * `chat()` stream's error, but only while the stream is open, and stopping a
+ * run ends the local stream at once — so for exactly the run a follow-up
+ * chases, it is dropped. The client still emits every response it receives
+ * (`protocol:response`), and that is read here.
+ */
+const dispatchRejections = new WeakMap<object, Map<string, number>>();
+
+/**
+ * Start recording the dispatches OpenClaw turns away on `client`. Called
+ * before each dispatch, so a rejection can never arrive unrecorded; listens
+ * once per client however often it is called. Bounded: a rejection older than
+ * the follow-up deadline is forgotten as the next one is recorded.
+ */
+export function watchDispatchRejections(client: Pick<OpenClawClient, "on">): void {
+  if (dispatchRejections.has(client)) return;
+  const rejected = new Map<string, number>();
+  dispatchRejections.set(client, rejected);
+  client.on("protocol:response", (res: ProtocolResponse) => {
+    if (res.ok) return;
+    const now = Date.now();
+    // Insertion order is time order: stop at the first one still recent.
+    for (const [id, at] of rejected) {
+      if (now - at <= FOLLOW_UP_ABORT_DEADLINE_MS) break;
+      rejected.delete(id);
+    }
+    rejected.set(res.id, now);
+  });
+}
+
+/** Did OpenClaw turn away the dispatch of `runId` on `client` (`watchDispatchRejections`)? */
+export function dispatchWasRejected(client: object, runId: string): boolean {
+  return dispatchRejections.get(client)?.has(runId) ?? false;
 }
 
 /**
@@ -205,7 +254,10 @@ export async function abortTookEffect(run: ActiveRun): Promise<boolean> {
  * the run's id. So the follow-up cannot wait for OpenClaw; it keeps trying
  * (`pursueAbort`) until an abort is confirmed or OpenClaw reports the run over.
  *
- * Returns the follow-up, also kept on `run.abortFollowUp`.
+ * Called again for the same turn when the dispatch-race retry sent it again
+ * under a new runId (`ActiveRuns.switchRunId`): each runId gets its own.
+ *
+ * Returns the run's follow-ups (`run.abortFollowUp`).
  */
 export function reAbortStartedRun(
   run: ActiveRun,
@@ -219,8 +271,9 @@ export function reAbortStartedRun(
 /**
  * Keep aborting `run` by `runId` until one abort is confirmed, OpenClaw
  * reports the run over (`agent.wait`), or `FOLLOW_UP_ABORT_DEADLINE_MS`
- * passes. One follow-up per run; it runs detached from the stream, which by
- * now has ended (see `reAbortStartedRun`).
+ * passes — or OpenClaw turned the dispatch away (`dispatchRejected`), which
+ * `agent.wait` never reports. One follow-up per runId; it runs detached from
+ * the stream, which by now has ended (see `reAbortStartedRun`).
  *
  * Each attempt waits for the aborts already sent: when one of those turns out
  * to have worked, there is nothing left to do. Auditing, as `request`'s actor:
@@ -237,7 +290,9 @@ function pursueAbort(
   deps: FollowUpDeps,
   { immediate }: { immediate: boolean }
 ): Promise<void> {
-  if (run.abortFollowUp) return run.abortFollowUp;
+  const pursued = (run.abortFollowUpRunIds ??= new Set());
+  if (pursued.has(runId)) return run.abortFollowUp ?? Promise.resolve();
+  pursued.add(runId);
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const now = deps.now ?? Date.now;
   const deadline = now() + FOLLOW_UP_ABORT_DEADLINE_MS;
@@ -258,6 +313,9 @@ function pursueAbort(
         );
       }
       if (await abortTookEffect(run)) return;
+      // Turned away before it became a run: nothing will run, and nothing
+      // else will ever say so.
+      if (deps.dispatchRejected?.(runId)) return;
 
       const answer = requestAbort((key) => deps.abortRun(key, runId), sessionKey, runId, {
         inFlight: true,
@@ -277,9 +335,11 @@ function pursueAbort(
     }
   };
 
-  run.abortFollowUp = pursue().catch((err) => {
+  const followUp = pursue().catch((err) => {
     console.error(`[abort-runs] follow-up abort of ${runId} failed:`, err);
   });
+  const earlier = run.abortFollowUp;
+  run.abortFollowUp = earlier ? Promise.all([earlier, followUp]).then(() => undefined) : followUp;
   return run.abortFollowUp;
 }
 
@@ -319,12 +379,13 @@ async function auditFollowUpAbort(run: ActiveRun, sessionKey: string, runId: str
 async function auditCompletedAnyway(run: ActiveRun, sessionKey: string, runId: string) {
   await writeAudit({
     actorType: "user",
+    // The run's user, pseudonymized on write. Not repeated in `detail`, which
+    // is stored verbatim and out of crypto-erasure's reach (#824).
     actorId: run.userId,
     eventType: "chat.run_completed_after_disconnect",
     resource: `agent:${run.agentId}`,
     detail: {
       agent: { id: run.agentId, name: run.agentName },
-      user: { id: run.userId },
       sessionKey,
       runId,
     },
