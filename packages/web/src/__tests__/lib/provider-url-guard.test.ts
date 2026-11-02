@@ -1,9 +1,17 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import {
   classifyIp,
   assertAllowedProviderUrl,
+  memoizeResolver,
   ProviderUrlBlockedError,
+  PROVIDER_DNS_LOOKUP_TIMEOUT_MS,
+  resolveHostAddresses,
 } from "@/lib/provider-url-guard";
+
+// Only the default-resolver tests at the bottom reach this; every other test
+// injects its resolver. No test here touches real DNS.
+const { mockLookup } = vi.hoisted(() => ({ mockLookup: vi.fn() }));
+vi.mock("dns/promises", () => ({ default: { lookup: mockLookup }, lookup: mockLookup }));
 
 describe("classifyIp", () => {
   it.each([
@@ -243,5 +251,79 @@ describe("assertAllowedProviderUrl — address literals bypass DNS", () => {
     await expect(
       assertAllowedProviderUrl("https://maybe-down.example/v1", unresolvable)
     ).resolves.toBeUndefined();
+  });
+});
+
+describe("the default resolver's lookup budget", () => {
+  // The guard sits in front of request paths (the settings page's provider
+  // list, every config regenerate, every model probe). A resolver that never
+  // answers must not hold any of them: after the budget the lookup counts as
+  // failed, which the guard treats like any other unresolvable name.
+  afterEach(() => {
+    vi.useRealTimers();
+    mockLookup.mockReset();
+  });
+
+  it("gives up after PROVIDER_DNS_LOOKUP_TIMEOUT_MS", async () => {
+    vi.useFakeTimers();
+    mockLookup.mockImplementation(() => new Promise(() => {}));
+
+    const lookup = resolveHostAddresses("llm.acme.example");
+    const outcome = lookup.then(
+      () => "answered",
+      () => "gave up"
+    );
+
+    await vi.advanceTimersByTimeAsync(PROVIDER_DNS_LOOKUP_TIMEOUT_MS - 1);
+    expect(await Promise.race([outcome, Promise.resolve("waiting")])).toBe("waiting");
+    await vi.advanceTimersByTimeAsync(1);
+    expect(await outcome).toBe("gave up");
+  });
+
+  it("is a few seconds, not the resolver's own (much longer) retry schedule", () => {
+    expect(PROVIDER_DNS_LOOKUP_TIMEOUT_MS).toBeGreaterThanOrEqual(1_000);
+    expect(PROVIDER_DNS_LOOKUP_TIMEOUT_MS).toBeLessThanOrEqual(5_000);
+  });
+
+  it("lets the URL through when the lookup times out (fail open, like an unresolvable name)", async () => {
+    vi.useFakeTimers();
+    mockLookup.mockImplementation(() => new Promise(() => {}));
+
+    const verdict = assertAllowedProviderUrl("https://llm.acme.example/v1").then(
+      () => "allowed",
+      () => "refused"
+    );
+    await vi.advanceTimersByTimeAsync(PROVIDER_DNS_LOOKUP_TIMEOUT_MS);
+
+    expect(await verdict).toBe("allowed");
+  });
+
+  it("returns every address a name resolves to", async () => {
+    mockLookup.mockResolvedValue([
+      { address: "93.184.216.34", family: 4 },
+      { address: "2606:2800:220:1::1", family: 6 },
+    ]);
+
+    expect(await resolveHostAddresses("llm.acme.example")).toEqual([
+      "93.184.216.34",
+      "2606:2800:220:1::1",
+    ]);
+  });
+});
+
+describe("memoizeResolver", () => {
+  it("asks the underlying resolver once per host, failures included", async () => {
+    const base = vi.fn(async (host: string) => {
+      if (host === "down.example") throw new Error("ENOTFOUND");
+      return ["93.184.216.34"];
+    });
+    const resolver = memoizeResolver(base);
+
+    expect(await resolver("a.example")).toEqual(["93.184.216.34"]);
+    expect(await resolver("a.example")).toEqual(["93.184.216.34"]);
+    await expect(resolver("down.example")).rejects.toThrow("ENOTFOUND");
+    await expect(resolver("down.example")).rejects.toThrow("ENOTFOUND");
+
+    expect(base).toHaveBeenCalledTimes(2);
   });
 });

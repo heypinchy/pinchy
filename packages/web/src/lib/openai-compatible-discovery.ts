@@ -34,6 +34,46 @@ const MAX_REDIRECT_HOPS = 3;
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 
 /**
+ * A signal that aborts after `ms`, like `AbortSignal.timeout` — built on
+ * `setTimeout` so the budget is the same clock the rest of the hop (and a
+ * test's fake timers) runs on. The timer is left to fire: the caller reads
+ * the body after `fetch` resolves, and that read stays inside the budget.
+ */
+function timeoutSignal(ms: number): AbortSignal {
+  const controller = new AbortController();
+  const timer = setTimeout(
+    () =>
+      controller.abort(new DOMException("The provider did not answer in time.", "TimeoutError")),
+    ms
+  );
+  // Don't hold a Node process open for a probe nobody is waiting on any more.
+  if (typeof timer === "object") timer.unref();
+  return controller.signal;
+}
+
+/** `work`'s result, or a rejection with the signal's reason if it aborts first. */
+function untilAborted<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    if (signal.aborted) {
+      reject(signal.reason);
+      return;
+    }
+    const onAbort = () => reject(signal.reason);
+    signal.addEventListener("abort", onAbort, { once: true });
+    work.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (err: unknown) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(err);
+      }
+    );
+  });
+}
+
+/**
  * `GET <baseUrl>/models`, re-running the SSRF guard on every redirect target.
  *
  * The routes validate `baseUrl` before calling in here (see
@@ -66,17 +106,17 @@ async function fetchModels(baseUrl: string, apiKey: string): Promise<Response> {
   let sendKey = true;
 
   for (let hop = 0; ; hop++) {
-    await assertAllowedProviderUrl(current);
+    // One budget per hop, started before the guard: the guard resolves the
+    // host first, and a resolver that does not answer has to spend this hop's
+    // time, not add to it.
+    const signal = timeoutSignal(PROVIDER_PROBE_TIMEOUT_MS);
+    await untilAborted(assertAllowedProviderUrl(current), signal);
     // Annotated, not inferred: `sendKey` is decided from the hop's URL, which
     // is read off the previous response, which is this call — so letting the
     // header object's type flow into the fetch overload closes a loop tsc
     // cannot resolve (TS7022).
     const headers: Record<string, string> = sendKey ? { Authorization: `Bearer ${apiKey}` } : {};
-    const response = await fetch(current, {
-      headers,
-      redirect: "manual",
-      signal: AbortSignal.timeout(PROVIDER_PROBE_TIMEOUT_MS),
-    });
+    const response = await fetch(current, { headers, redirect: "manual", signal });
 
     if (!REDIRECT_STATUSES.has(response.status)) return response;
 

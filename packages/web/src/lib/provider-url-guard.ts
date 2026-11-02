@@ -107,10 +107,55 @@ function hostnameAsIpLiteral(hostname: string): string | null {
 /** Resolve a hostname to all of its A/AAAA addresses. Injected in tests. */
 export type HostResolver = (host: string) => Promise<string[]>;
 
-const defaultResolver: HostResolver = async (host) => {
-  const res = await dnsLookup(host, { all: true });
-  return res.map((r) => r.address);
-};
+/**
+ * How long the guard waits for a lookup before treating the name as
+ * unresolvable. `dns.lookup` has no timeout of its own — it waits out the
+ * system resolver's retries — and the guard sits in front of request paths:
+ * the settings page's provider list, every config regenerate, every model
+ * probe. A resolver that does not answer must not hold any of them.
+ */
+export const PROVIDER_DNS_LOOKUP_TIMEOUT_MS = 2_500;
+
+/**
+ * The guard's default resolver: every address `hostname` resolves to, or a
+ * rejection once {@link PROVIDER_DNS_LOOKUP_TIMEOUT_MS} has passed. The guard
+ * treats a timeout like any other resolution failure (fail open).
+ */
+export const resolveHostAddresses: HostResolver = (host) =>
+  new Promise<string[]>((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error(`DNS lookup timed out after ${PROVIDER_DNS_LOOKUP_TIMEOUT_MS} ms`)),
+      PROVIDER_DNS_LOOKUP_TIMEOUT_MS
+    );
+    dnsLookup(host, { all: true }).then(
+      (res) => {
+        clearTimeout(timer);
+        resolve(res.map((r) => r.address));
+      },
+      (err: unknown) => {
+        clearTimeout(timer);
+        reject(err);
+      }
+    );
+  });
+
+/**
+ * A resolver that asks `resolver` once per host for as long as it lives —
+ * failures included, so an unresolvable name costs one timeout, not one per
+ * provider on it. Create one per regenerate or per request: a verdict is not
+ * meant to outlive the work that asked for it.
+ */
+export function memoizeResolver(resolver: HostResolver = resolveHostAddresses): HostResolver {
+  const answers = new Map<string, Promise<string[]>>();
+  return (host) => {
+    let answer = answers.get(host);
+    if (!answer) {
+      answer = resolver(host);
+      answers.set(host, answer);
+    }
+    return answer;
+  };
+}
 
 /**
  * Throw {@link ProviderUrlBlockedError} if `rawUrl` is not a safe target for a
@@ -118,11 +163,13 @@ const defaultResolver: HostResolver = async (host) => {
  *
  * Fail-open on DNS resolution failure: a host that doesn't resolve can't be
  * classified, and blocking it would reject providers that are merely
- * temporarily unreachable — the subsequent fetch fails naturally instead.
+ * temporarily unreachable — the subsequent fetch fails naturally instead. A
+ * lookup that takes longer than {@link PROVIDER_DNS_LOOKUP_TIMEOUT_MS} counts
+ * as a failure.
  */
 export async function assertAllowedProviderUrl(
   rawUrl: string,
-  resolver: HostResolver = defaultResolver
+  resolver: HostResolver = resolveHostAddresses
 ): Promise<void> {
   let url: URL;
   try {

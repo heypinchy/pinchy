@@ -8,6 +8,8 @@ import {
   type CustomProviderModelSource,
 } from "@/lib/openai-compatible-discovery";
 import { DEFAULT_MODEL_CAPS } from "@/lib/model-catalog";
+import { PROVIDER_PROBE_TIMEOUT_MS } from "@/lib/providers";
+import { PROVIDER_DNS_LOOKUP_TIMEOUT_MS } from "@/lib/provider-url-guard";
 import type { OpenClawModelDefinition } from "@/lib/openclaw-builtin-models";
 
 global.fetch = vi.fn();
@@ -574,5 +576,50 @@ describe("fetchModels — the stored base URL itself is re-validated", () => {
     expect(pub.map((m) => m.id)).toEqual(["acme-large"]);
 
     expect(fetch).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("fetchModels — the guard's DNS lookup is inside the probe's time budget", () => {
+  // The guard resolves the host before every hop. Its lookup used to run
+  // before the hop's timeout started, so a resolver that never answered held
+  // the probe — and with it a settings save or a config regenerate — forever.
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** A fetch that only ever ends by its signal aborting, like a silent host. */
+  function fetchThatWaitsForAbort() {
+    vi.mocked(fetch).mockImplementation(
+      (_url, init) =>
+        new Promise((_resolve, reject) => {
+          const signal = init?.signal;
+          signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+        })
+    );
+  }
+
+  it("goes ahead with the request once the lookup budget is spent (fail open)", async () => {
+    vi.useFakeTimers();
+    mockLookup.mockImplementation(() => new Promise(() => {}));
+    vi.mocked(fetch).mockResolvedValue(new Response("{}", { status: 200 }));
+
+    const result = validateOpenAiCompatibleProvider("https://api.example.com/v1", "sk-key");
+    await vi.advanceTimersByTimeAsync(PROVIDER_DNS_LOOKUP_TIMEOUT_MS);
+
+    expect(await result).toEqual({ valid: true });
+  });
+
+  it("ends the whole hop — lookup and request together — within PROVIDER_PROBE_TIMEOUT_MS", async () => {
+    vi.useFakeTimers();
+    mockLookup.mockImplementation(() => new Promise(() => {}));
+    fetchThatWaitsForAbort();
+
+    let settled: unknown = "still waiting";
+    void validateOpenAiCompatibleProvider("https://api.example.com/v1", "sk-key").then(
+      (r) => (settled = r)
+    );
+    await vi.advanceTimersByTimeAsync(PROVIDER_PROBE_TIMEOUT_MS);
+
+    expect(settled).toEqual({ valid: false, error: "network_error" });
   });
 });
