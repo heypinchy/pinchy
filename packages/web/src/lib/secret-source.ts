@@ -131,19 +131,37 @@ export interface AuditSecretPolicyResult {
  * WHERE a secret comes from and never its value; a signature that cannot
  * accept a key cannot leak one.
  */
+/**
+ * Where the startup notice sends an operator who did not mean to switch keys.
+ * Exported so a docs test can check the heading still exists: the docs anchor
+ * check only reads links in the built site, never a URL in a log line.
+ */
+export const AUDIT_KEY_SWITCH_BACK_DOCS_URL =
+  "https://docs.heypinchy.com/concepts/audit-trail-verification/#switching-back-to-the-earlier-key";
+
 export function evaluateAuditSecretRotation(opts: {
   hasSupersededSecret: boolean;
 }): AuditSecretPolicyResult {
   if (!opts.hasSupersededSecret) return { action: "none" };
 
+  // Switching back is not a free undo. The previous key Pinchy verifies against
+  // is always the key file, so once the file key is active again, the rows
+  // signed with the variable's value verify under no key. Pinning the variable
+  // again later is worse: the file-key rows written in between sit after
+  // new-key rows, which is exactly what a forgery looks like. So the notice
+  // names the cost instead of offering "remove it and restart" as the fix.
   return {
     action: "warn",
     message:
       "NOTICE: AUDIT_HMAC_SECRET is set and differs from the audit signing key " +
-      "in the secrets volume. Entries written before this start are signed with " +
+      "in the secrets volume. Entries written before the switch are signed with " +
       "the older key — integrity verification reports them as signed with an " +
       "earlier secret, not as tampered. Verifying them depends on that key, so " +
       "keep backing up the pinchy-secrets volume. If you did not mean to change " +
-      "the key, remove AUDIT_HMAC_SECRET from your .env and restart.",
+      "the key, keeping the new one is usually the safer choice: switching back " +
+      "leaves the entries signed with it unverifiable, and switching forward " +
+      "again later breaks verification for everything written in between. " +
+      "Switch back only if you then stay on the generated key for good. See " +
+      AUDIT_KEY_SWITCH_BACK_DOCS_URL,
   };
 }

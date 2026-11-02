@@ -59,7 +59,7 @@ So Pinchy keeps looking at the key it superseded. The generated secret stays in 
 
 The earlier key is only accepted for the **opening stretch** of the log, the rows that pre-date the key change. Pinchy keeps no record of when that change happened, so verification infers it: the first row that verifies under the current key marks the change, and every row after it has to verify under the current key too. A later row that only verifies under the earlier key goes into `invalidIds`, not `previousKeyIds`, and `valid` turns false. The background check carries the rule across its runs: its checkpoint tells it the change has already happened. Without the rule, anyone holding the earlier key could rewrite rows written after the change and still get a clean report.
 
-The rule rests on one precondition: once a row is signed with the current key, no row is ever signed with the earlier one again. A single instance meets that on its own. Several instances sharing one database meet it only if they switch together, see [Switching the key on several instances](#switching-the-key-on-several-instances).
+The rule rests on one precondition: once a row is signed with the current key, no row is ever signed with the earlier one again. A single instance meets that on its own, as long as the key only moves forward. Switching back to the earlier key and later forward again breaks it on a single instance too, see [Switching back to the earlier key](#switching-back-to-the-earlier-key). Several instances sharing one database meet it only if they switch together, see [Switching the key on several instances](#switching-the-key-on-several-instances).
 
 The hash chain is untouched by any of this. Each row stores its predecessor's signature verbatim, whichever key produced that signature, so the links still match straight across the point where the key changed.
 
@@ -67,9 +67,36 @@ What the rule doesn't do is make a leaked earlier key harmless. Someone holding 
 
 The background check can only do that for rows it has already seen under the current key. Right after the key change, its checkpoint is still the last row signed with the earlier key, so for the next run the change hasn't happened yet. Rows written after the change but before the first background run that covers them aren't protected against the earlier key: someone holding it, with write access to the database, could re-sign all of them up to the newest one, and both the background check and a full verification would report them as signed with an earlier secret. The first run starts about 60 seconds after Pinchy starts and the next ones every 6 hours (`AUDIT_VERIFY_INTERVAL_MS`). A run that finds no new rows leaves the checkpoint where it is, so on a quiet instance the window stays open until a run finds rows written after the change. Removing the earlier key file closes it too.
 
-So once nothing signed with the earlier key still needs verifying, or right away if it **leaked**, remove the earlier key file. It sits at `.audit_hmac_secret` in the `pinchy-secrets` volume (`/app/secrets/.audit_hmac_secret` inside the container). Once the file is gone, Pinchy has no earlier key to check against, so every row signed with it reports in `invalidIds` and `valid` stays false. That is the price of closing the door: those rows can't be told apart from tampered ones any more. Keep the file in an offline backup first if you want to be able to re-verify the old history later.
+So once nothing signed with the earlier key still needs verifying, or as soon as you can after a **leak**, remove the earlier key file. When you remove it matters, see [Retiring the earlier key](#retiring-the-earlier-key).
 
-Two limits worth stating plainly. This covers a secret **superseded by the environment variable** — the case pinning `AUDIT_HMAC_SECRET` creates. If you overwrite the key file itself, the old key is gone and the rows it signed can no longer be verified by anyone. And the earlier key Pinchy checks against is always the key file, never an earlier value of the variable. Change the variable a second time and the value you replaced is gone: the rows signed with it, between the first change and the second, become unverifiable the same way. The oldest rows, signed with the key file, still verify as long as the file stays.
+Two limits worth stating plainly. This covers a secret **superseded by the environment variable** — the case pinning `AUDIT_HMAC_SECRET` creates. If you overwrite the key file itself, the old key is gone and the rows it signed can no longer be verified by anyone. And the earlier key Pinchy checks against is always the key file, never an earlier value of the variable. Change the variable a second time and the value you replaced is gone: the rows signed with it, between the first change and the second, become unverifiable the same way, and the background check records a failure for the ones it hadn't reached yet (see below). The oldest rows, signed with the key file, still verify as long as the file stays.
+
+#### Retiring the earlier key
+
+The earlier key file sits at `.audit_hmac_secret` in the `pinchy-secrets` volume (`/app/secrets/.audit_hmac_secret` inside the container). Once it's gone, Pinchy has no earlier key to check against, so every row signed with it reports in `invalidIds` and `valid` stays false. That is the price of closing the door: those rows can't be told apart from tampered ones any more. Keep the file in an offline backup first if you want to be able to re-verify the old history later.
+
+When you remove it matters. Each background run verifies the rows written since the run before it. Until the first run under the new key has gone through, some of those were signed with the earlier key: everything written between the last run and the restart, up to 6 hours of entries. If the file is gone by the time the run reaches them, they verify under no key and the run records a failure. So retire the key in this order:
+
+1. Set the new `AUDIT_HMAC_SECRET` with the key file still in place, and restart.
+2. Wait for the first background run after the start, about 60 seconds later. `GET /api/audit/verify/status` (see [Checking the job's own health](#checking-the-jobs-own-health)) shows it finished: `lastRunAt` is later than the restart, and `lastStatus` is `"ok"`. If `lastRunAt` still shows a time before the restart a few minutes after the start, the run found nothing new to verify, so no row signed with the earlier key is waiting for it either.
+3. Back up the key file, then remove it from the volume. Pinchy looks for the file on every verification, so this takes effect without a restart.
+
+Lose a key while the background check still has rows signed with it ahead of it, and the failure entry it records can't be cleared. That happens in two ways:
+
+- The key file is removed before the first background run under the new key.
+- `AUDIT_HMAC_SECRET` changes a second time (key file, then one value, then another). The earlier key Pinchy checks against is always the key file, so the value you replaced is gone at once, and the rows it signed since the last background run verify under no key.
+
+As with a rolling restart (below), there's no reset, on purpose. Write down what happened, with timestamps, wherever you keep records for auditors: when the key was lost (the file removed or the restart on the new value) and when the background run before that finished (the `audit.integrity_check` entry before the failure). Every flagged row should fall between those two points. One outside them deserves a proper look.
+
+**After a leak, the order is a trade-off.** Waiting for the first run keeps the leaked key accepted for about another minute: someone holding it, with write access to your database, could re-sign the rows written in that time and get them past both the background check and a full verification. Removing the file first, before you restart, closes that minute, and costs you the failure entry above for the rows signed with the leaked key since the last background run. The key alone does nothing without write access to the database, so for most leaks the minute is the smaller risk. If you have reason to think someone holds both right now, remove the file first and document why.
+
+#### Switching back to the earlier key
+
+If the key changed by accident, for example because an `AUDIT_HMAC_SECRET` line left in `.env` took effect on an upgrade, switching back isn't a free undo. The earlier key Pinchy checks against is always the key file, so once the file key is active again, the rows signed with the variable's value in the meantime verify under no key. A full verification reports them in `invalidIds`, and if the background check hadn't reached them yet, it records a failure as described above.
+
+Switching forward again later makes it worse. Pin the same value again and the log reads: earlier key, new key, earlier key, new key. The rows in the third stretch are earlier-key rows after a new-key row, which is exactly what a forgery looks like, so a full verification reports them as invalid on every run, on a single instance too.
+
+So keeping the new key is usually the safer choice: back it up and treat it as yours from then on. If you do switch back, remove the line from `.env` and stay on the generated key for good. The clean moment is before the restart that would switch the key, when nothing has been signed with the new value yet.
 
 #### Switching the key on several instances
 

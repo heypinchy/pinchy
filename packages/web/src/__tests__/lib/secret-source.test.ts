@@ -27,6 +27,7 @@ import {
   getSecretsProvenance,
   evaluateDbPasswordPolicy,
   evaluateAuditSecretRotation,
+  AUDIT_KEY_SWITCH_BACK_DOCS_URL,
 } from "@/lib/secret-source";
 
 const mockedExistsSync = vi.mocked(existsSync);
@@ -216,6 +217,20 @@ describe("evaluateAuditSecretRotation", () => {
     // volume holding the key that proves it must stay backed up.
     expect(result.message).toMatch(/not.*tamper|tamper.*not/i);
     expect(result.message).toMatch(/pinchy-secrets/);
+  });
+
+  it("does not offer switching back as a free undo", () => {
+    // The previous key Pinchy verifies against is always the key FILE. Switch
+    // back to it and the rows signed with the variable's value verify under no
+    // key; pin the variable again later and the file-key rows written in
+    // between sit after new-key rows, which is what a forgery looks like. A
+    // notice that says "remove it and restart" steers operators straight into
+    // that, so it names the cost and points at the section that explains it.
+    const result = evaluateAuditSecretRotation({ hasSupersededSecret: true });
+
+    expect(result.message).not.toMatch(/remove AUDIT_HMAC_SECRET from your \.env and restart\.$/);
+    expect(result.message).toMatch(/for good/);
+    expect(result.message).toContain(AUDIT_KEY_SWITCH_BACK_DOCS_URL);
   });
 
   it("is silent when nothing was superseded", () => {
