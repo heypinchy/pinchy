@@ -14,6 +14,7 @@ import { and, eq } from "drizzle-orm";
 import { db } from "@/db";
 import { users, invites, auditLog } from "@/db/schema";
 import { createInvite } from "@/lib/invites";
+import { appendAuditLog } from "@/lib/audit";
 import { findUnknownOriginUsers, reportUnknownOriginUsers } from "@/lib/user-provenance";
 
 let seq = 0;
@@ -119,6 +120,56 @@ describe("findUnknownOriginUsers", () => {
     const flagged = await findUnknownOriginUsers();
 
     expect(flagged).toEqual([expect.objectContaining({ id: gone.id, banned: true })]);
+  });
+
+  it("does not flag an account that created an invite, even after it was demoted", async () => {
+    // Only admins can create invites, and invites.created_by is never
+    // rewritten. A setup admin who was demoted is no longer the earliest admin,
+    // but the invites they sent still vouch for them.
+    const setup = await insertUser({ name: "Former Setup Admin", createdAt: t(0) });
+    const invited = await insertUser({ name: "Invited Admin", role: "admin", createdAt: t(1) });
+    await claimedInvite(setup.id, invited.id);
+    // A pending (unclaimed) invite counts as well — creating it is the signal.
+    await createInvite({ role: "member", type: "invite", createdBy: invited.id });
+
+    expect(await findUnknownOriginUsers()).toEqual([]);
+  });
+
+  it("does not flag an account an admin acknowledged, and only that one", async () => {
+    const admin = await insertUser({ name: "Setup Admin", role: "admin", createdAt: t(0) });
+    const known = await insertUser({ name: "Known Stranger", createdAt: t(1) });
+    const other = await insertUser({ name: "Other Stranger", createdAt: t(2) });
+
+    // What POST /api/users/:id/acknowledge-origin writes
+    // (user-acknowledge-origin.integration.test.ts runs the route itself).
+    await appendAuditLog({
+      actorType: "user",
+      actorId: admin.id,
+      eventType: "user.origin_acknowledged",
+      resource: `user:${known.id}`,
+      detail: { user: { id: known.id, name: known.name } },
+      outcome: "success",
+    });
+
+    expect((await findUnknownOriginUsers()).map((u) => u.id)).toEqual([other.id]);
+  });
+
+  it("does not count a failed acknowledgement row", async () => {
+    // The audit trail is where the acknowledgement lives; only a success row
+    // is one.
+    const admin = await insertUser({ name: "Setup Admin", role: "admin", createdAt: t(0) });
+    const stranger = await insertUser({ name: "Stranger", createdAt: t(1) });
+    await appendAuditLog({
+      actorType: "user",
+      actorId: admin.id,
+      eventType: "user.origin_acknowledged",
+      resource: `user:${stranger.id}`,
+      detail: { user: { id: stranger.id, name: stranger.name } },
+      outcome: "failure",
+      error: { message: "boom" },
+    });
+
+    expect((await findUnknownOriginUsers()).map((u) => u.id)).toEqual([stranger.id]);
   });
 
   it("returns nothing on an instance where every account is accounted for", async () => {

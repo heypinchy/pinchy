@@ -22,22 +22,39 @@ import { recordAuditFailure } from "@/lib/audit-deferred";
  *     Not simply the earliest account: a public instance accepted sign-ups
  *     before the wizard ran, and sign-up only ever produced members. Setup is
  *     not otherwise recorded for installs older than the `user.created` row;
- *   - or the claimer of an invite of type `invite`. A claimed `reset` invite is
- *     issued for an account that already exists, so it explains nothing.
+ *   - the claimer of an invite of type `invite`. A claimed `reset` invite is
+ *     issued for an account that already exists, so it explains nothing;
+ *   - the creator of any invite (`invites.created_by`). Only admins can create
+ *     one, and the column is never rewritten, so it still vouches for a setup
+ *     admin who was later demoted;
+ *   - or an account an admin marked as known: a successful
+ *     `user.origin_acknowledged` audit row for it, written by
+ *     `POST /api/users/:id/acknowledge-origin`. That is the way out of every
+ *     over-report below, and it works on the admin's own account too.
  *
  * Known limits. Nothing is acted on automatically — an admin reviews the
  * list — so these mostly over-report:
  *
- *   - a setup admin who was later demoted is flagged, because the earliest
- *     remaining admin is then someone else. The one way to under-report sits
- *     here too: if that earliest remaining admin is a self-registered account
- *     an admin promoted, it passes as the setup admin;
+ *   - a setup admin who was later demoted and never created an invite is
+ *     flagged, because the earliest remaining admin is then someone else;
  *   - an invite deleted after it was claimed (only possible by calling
  *     `DELETE /api/users/invites/:id` directly — the UI lists pending invites
  *     only) or removed with its inviter (`invites.created_by` cascades on a
  *     hard user delete, which Pinchy itself never does);
  *   - a claim that crashed between creating the account and marking the
  *     invite claimed.
+ *
+ * And it under-reports a self-registered account that an admin later promoted,
+ * in two ways, because both rules that vouch for admins read the role as it is
+ * now:
+ *
+ *   - it passes as the setup admin when it is the earliest admin left — it
+ *     signed up before setup ran and was promoted, or the real setup admin was
+ *     demoted. The rule cannot tell, and nothing demotes it;
+ *   - it passes once it has created an invite, which any admin can.
+ *
+ * Both need an admin to have promoted the account first, so an admin has
+ * already vouched for it once — the `user.role_updated` row records who.
  */
 export interface UnknownOriginUser {
   id: string;
@@ -48,6 +65,7 @@ export interface UnknownOriginUser {
 }
 
 export const UNKNOWN_ORIGIN_EVENT = "user.unknown_origin_detected" as const;
+export const ORIGIN_ACKNOWLEDGED_EVENT = "user.origin_acknowledged" as const;
 
 async function findSetupAdminId(): Promise<string | null> {
   const [row] = await db
@@ -68,6 +86,29 @@ export async function findUnknownOriginUsers(): Promise<UnknownOriginUser[]> {
       .from(invites)
       .where(and(eq(invites.claimedByUserId, users.id), eq(invites.type, "invite")))
   );
+  const noInviteCreated = notExists(
+    db
+      .select({ one: sql`1` })
+      .from(invites)
+      .where(eq(invites.createdBy, users.id))
+  );
+  // The acknowledgement lives in the audit trail, not in a column: the row is
+  // both the record of who vouched for the account and the state itself, and
+  // it is append-only, so no later write can quietly undo it. Served by
+  // idx_audit_resource_timestamp.
+  const notAcknowledged = notExists(
+    db
+      .select({ one: sql`1` })
+      .from(auditLog)
+      .where(
+        and(
+          eq(auditLog.resource, sql`'user:' || ${users.id}`),
+          eq(auditLog.eventType, ORIGIN_ACKNOWLEDGED_EVENT),
+          eq(auditLog.outcome, "success")
+        )
+      )
+  );
+  const unexplained = and(noClaimedInvite, noInviteCreated, notAcknowledged);
 
   const rows = await db
     .select({
@@ -78,7 +119,7 @@ export async function findUnknownOriginUsers(): Promise<UnknownOriginUser[]> {
       createdAt: users.createdAt,
     })
     .from(users)
-    .where(setupAdminId ? and(noClaimedInvite, ne(users.id, setupAdminId)) : noClaimedInvite)
+    .where(setupAdminId ? and(unexplained, ne(users.id, setupAdminId)) : unexplained)
     .orderBy(asc(users.createdAt), asc(users.id));
 
   return rows.map((r) => ({ ...r, banned: r.banned ?? false }));

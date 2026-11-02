@@ -1051,6 +1051,80 @@ describe("SettingsUsers", () => {
       });
     });
 
+    it("marks an account as known through the API and drops it from the banner", async () => {
+      // The rule over-reports (a demoted setup admin, an invite deleted after
+      // its claim), so an admin needs a way out that isn't Deactivate.
+      const user = userEvent.setup();
+      let acknowledged = false;
+      vi.mocked(global.fetch).mockImplementation(async (url, init) => {
+        if (String(url) === "/api/users/user-9/acknowledge-origin" && init?.method === "POST") {
+          acknowledged = true;
+          return jsonResponse({ success: true });
+        }
+        if (String(url) === "/api/users") {
+          return jsonResponse({
+            users: usersWithStranger.map((u) =>
+              u.id === "user-9" ? { ...u, unknownOrigin: !acknowledged } : u
+            ),
+          });
+        }
+        if (String(url) === "/api/users/invites") return jsonResponse({ invites: [] });
+        if (String(url) === "/api/groups") return jsonResponse([]);
+        if (String(url) === "/api/enterprise/status") return jsonResponse({ enterprise: false });
+        return jsonResponse(undefined, { status: 400 });
+      });
+      render(<SettingsUsers currentUserId="user-1" />);
+      const banner = await screen.findByRole("region", { name: /nobody invited/i });
+
+      await user.click(
+        within(banner).getByRole("button", { name: /mark mallory stranger as known/i })
+      );
+
+      await waitFor(() => {
+        expect(screen.queryByRole("region", { name: /nobody invited/i })).toBeNull();
+      });
+      const post = vi
+        .mocked(global.fetch)
+        .mock.calls.find(([url]) => String(url) === "/api/users/user-9/acknowledge-origin");
+      expect(post?.[1]).toMatchObject({ method: "POST", body: "{}" });
+      expect(mockToast.success).toHaveBeenCalledWith(expect.stringMatching(/mallory stranger/i));
+    });
+
+    it("offers Mark as known on the admin's own account too", async () => {
+      // A demoted-then-promoted setup admin may be the only admin left.
+      await renderAndWait([...mockUsers.map((u) => ({ ...u, unknownOrigin: u.id === "user-1" }))]);
+
+      const banner = screen.getByRole("region", { name: /nobody invited/i });
+      expect(
+        within(banner).getByRole("button", { name: /mark alice admin as known/i })
+      ).toBeEnabled();
+    });
+
+    it("says why when marking as known fails, and keeps the account listed", async () => {
+      const user = userEvent.setup();
+      vi.mocked(global.fetch).mockImplementation(async (url, init) => {
+        if (String(url) === "/api/users/user-9/acknowledge-origin" && init?.method === "POST") {
+          return jsonResponse({ error: "User not found" }, { status: 404 });
+        }
+        if (String(url) === "/api/users") return jsonResponse({ users: usersWithStranger });
+        if (String(url) === "/api/users/invites") return jsonResponse({ invites: [] });
+        if (String(url) === "/api/groups") return jsonResponse([]);
+        if (String(url) === "/api/enterprise/status") return jsonResponse({ enterprise: false });
+        return jsonResponse(undefined, { status: 400 });
+      });
+      render(<SettingsUsers currentUserId="user-1" />);
+      const banner = await screen.findByRole("region", { name: /nobody invited/i });
+
+      await user.click(
+        within(banner).getByRole("button", { name: /mark mallory stranger as known/i })
+      );
+
+      await waitFor(() => {
+        expect(mockToast.error).toHaveBeenCalledWith("User not found");
+      });
+      expect(screen.getByRole("region", { name: /nobody invited/i })).toBeInTheDocument();
+    });
+
     it("can be dismissed for this visit", async () => {
       const user = userEvent.setup();
       await renderAndWait(usersWithStranger);

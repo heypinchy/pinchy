@@ -155,9 +155,11 @@ The user can log in again immediately.
 
 ### Accounts nobody invited
 
-Releases up to and including v0.9.1 left the authentication library's sign-up endpoint open, so anyone who could reach your Pinchy URL could register a member account. That is closed now, but an account created back then still signs in. Pinchy looks for them on every start: an account that is neither the setup admin (the earliest-created admin) nor the claimer of an invite gets one `user.unknown_origin_detected` row in the audit trail, and while it is active, a banner at the top of **Settings → Users** lists it.
+Releases up to and including v0.9.1 left the authentication library's sign-up endpoint open, so anyone who could reach your Pinchy URL could register a member account. That is closed now, but an account created back then still signs in. Pinchy looks for them on every start. An account counts as explained if it is the setup admin (the earliest-created admin), claimed an invite, or created one (only admins can). Any other account gets one `user.unknown_origin_detected` row in the audit trail, and while it is active, a banner at the top of **Settings → Users** lists it.
 
-Click **Review** next to an account to open it. If you don't recognise it, **Deactivate** it as described above. The banner hides when you dismiss it, but only for this visit — it comes back until no unexplained account is active. If you demoted the admin who ran setup, they show up here too. [Upgrading](/guides/upgrading/) explains what such an account could reach and how to check what it did.
+Click **Review** next to an account to open it. If you don't recognise it, **Deactivate** it as described above. If you do — say you demoted the admin who ran setup and they never sent an invite — click **Mark as known**. That works on your own account too, and it is recorded as `user.origin_acknowledged` with you as the actor; the account stays off the banner from then on. The banner hides when you dismiss it, but only for this visit — it comes back until every active account is explained or marked as known. [Upgrading](/guides/upgrading/) explains what such an account could reach and how to check what it did.
+
+The check can also miss one: a self-registered account that an admin promoted reads as legitimate once it is the earliest admin left, or once it has sent an invite. Both need an admin to have promoted it first, and the `user.role_updated` row records who did.
 
 ### Managing pending invites
 
@@ -233,6 +235,7 @@ All user management actions are logged in the audit trail:
 | ---------------------------- | ------------------------------- |
 | Account created              | `user.created`                  |
 | Account nobody invited found | `user.unknown_origin_detected`  |
+| Account marked as known      | `user.origin_acknowledged`      |
 | User invited                 | `user.invited`                  |
 | Invite blocked (seat cap)    | `user.invite_blocked`           |
 | Role changed                 | `user.role_updated`             |

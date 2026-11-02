@@ -25,7 +25,7 @@ import { buildInviteUrl } from "@/lib/invite-url";
 import { evaluateSeatPressure } from "@/lib/seat-grace";
 import { SALES_MAILTO, CALENDLY_URL } from "@/lib/conversion-links";
 import { apiPost, apiDelete, errorMessage } from "@/lib/api-client";
-import type { InviteUserInput } from "@/lib/schemas/users";
+import type { AcknowledgeUserOriginInput, InviteUserInput } from "@/lib/schemas/users";
 
 interface SettingsUsersProps {
   currentUserId: string;
@@ -43,10 +43,12 @@ interface SettingsUsersProps {
 function UnknownOriginBanner({
   accounts,
   onReview,
+  onMarkKnown,
   onDismiss,
 }: {
   accounts: (UserListItem & { kind: "user" })[];
   onReview: (account: UserListItem & { kind: "user" }) => void;
+  onMarkKnown: (account: UserListItem & { kind: "user" }) => void;
   onDismiss: () => void;
 }) {
   return (
@@ -67,7 +69,7 @@ function UnknownOriginBanner({
               Every account comes from the setup wizard or a claimed invite, and{" "}
               {accounts.length === 1 ? "this one doesn't" : "these don't"}. Earlier versions of
               Pinchy let anyone who could reach it sign up on their own. If you don&apos;t recognise
-              an account here, review it and deactivate it.
+              an account here, review it and deactivate it. If you do, mark it as known.
             </p>
             <ul className="space-y-1">
               {accounts.map((account) => (
@@ -91,6 +93,14 @@ function UnknownOriginBanner({
                     onClick={() => onReview(account)}
                   >
                     Review
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    aria-label={`Mark ${account.name} as known`}
+                    onClick={() => onMarkKnown(account)}
+                  >
+                    Mark as known
                   </Button>
                 </li>
               ))}
@@ -235,6 +245,21 @@ export function SettingsUsers({ currentUserId, refreshKey }: SettingsUsersProps)
     });
   }
 
+  async function handleMarkKnown(account: UserListItem & { kind: "user" }) {
+    // Recorded in the audit trail as user.origin_acknowledged; the provenance
+    // check reads that row, so the account leaves the banner on the refetch.
+    try {
+      await apiPost<{ success: true }, AcknowledgeUserOriginInput>(
+        `/api/users/${account.id}/acknowledge-origin`,
+        {}
+      );
+      toast.success(`Marked ${account.name} as known`);
+    } catch (e) {
+      toast.error(errorMessage(e, "Couldn't mark the account as known. Please try again."));
+    }
+    fetchUsers();
+  }
+
   async function handleResend(item: UserListItem & { kind: "invite" }) {
     // Resend = revoke the old invite, then create a fresh one. Report which of
     // the two steps failed so the admin knows whether the old invite is still
@@ -268,6 +293,7 @@ export function SettingsUsers({ currentUserId, refreshKey }: SettingsUsersProps)
         <UnknownOriginBanner
           accounts={unknownOriginAccounts}
           onReview={setSelectedUser}
+          onMarkKnown={handleMarkKnown}
           onDismiss={() => setUnknownOriginDismissed(true)}
         />
       )}

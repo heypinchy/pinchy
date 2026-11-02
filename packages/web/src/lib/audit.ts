@@ -137,6 +137,9 @@ export type AuditEventType =
   // claimed invite explains — in practice, one self-registered through the
   // sign-up endpoint earlier releases left open to clients.
   | "user.unknown_origin_detected"
+  // An admin marked a flagged account as known (Mark as known in Settings →
+  // Users). The row IS the acknowledgement: findUnknownOriginUsers reads it.
+  | "user.origin_acknowledged"
   | "user.updated"
   | "user.deleted"
   | "config.changed"
@@ -539,6 +542,13 @@ export type AuditLogEntry =
         role: string;
         accountCreatedAt: string;
       };
+    })
+  | (AuditLogBase & {
+      // An admin vouched for a flagged account (lib/user-provenance.ts). The
+      // provenance check reads these rows by `resource` = `user:<id>`, so the
+      // row is the stored state, not a side note. No email.
+      eventType: "user.origin_acknowledged";
+      detail: { user: EntityRef };
     })
   | (AuditLogBase & {
       // Cost budgets (#36): a budget crossed its warning line (80%) or its

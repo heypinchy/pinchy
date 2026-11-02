@@ -1172,7 +1172,30 @@ List all users.
 }
 ```
 
-`unknownOrigin` is `true` for an account that neither the setup wizard nor a claimed invite created — in practice one that signed itself up while releases up to v0.9.1 left the sign-up endpoint open. **Settings → Users** lists these in a banner. The rule: every account counts as known except the earliest-created admin (the setup admin) and the claimer of an invite (not a password-reset invite).
+`unknownOrigin` is `true` for an account that neither the setup wizard nor a claimed invite created — in practice one that signed itself up while releases up to v0.9.1 left the sign-up endpoint open. **Settings → Users** lists these in a banner. The rule: every account counts as unknown except the earliest-created admin (the setup admin), the claimer of an invite (not a password-reset invite), any account that created an invite (only admins can), and an account an admin marked as known with [`POST /api/users/:id/acknowledge-origin`](#post-apiusersidacknowledge-origin).
+
+### `POST /api/users/:id/acknowledge-origin`
+
+Mark an account as known, so `unknownOrigin` is `false` for it from then on. **Admin only.** Works on your own account too — a setup admin who was demoted and promoted again, for example, may be the only admin left to clear the flag.
+
+**Request body:** `{}` — the endpoint takes no fields.
+
+The acknowledgement is stored as a `user.origin_acknowledged` row in the [audit trail](/concepts/audit-trail/), with the acting admin as the actor and `user.{id,name}` in the detail. That row is what the provenance check reads, so it cannot be undone silently: there is no endpoint that withdraws it.
+
+**Response:**
+
+```json
+{
+  "success": true
+}
+```
+
+**Errors:**
+
+- `400` — the body is not `{}`
+- `401` — not authenticated
+- `403` — not an admin
+- `404` — user not found
 
 ### `DELETE /api/users/:id`
 
