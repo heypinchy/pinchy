@@ -212,7 +212,7 @@ test("falls back to docker.io only after all mirror attempts fail, with a warnin
   );
   const [fallbackWarning] = annotations;
   assert.ok(fallbackWarning.startsWith("::warning::"));
-  assert.ok(fallbackWarning.includes("docker.io"));
+  assert.match(fallbackWarning, /falling back to docker\.io\./);
   assert.ok(
     fallbackWarning.includes("caddy:2"),
     "the fallback warning must name the image",
