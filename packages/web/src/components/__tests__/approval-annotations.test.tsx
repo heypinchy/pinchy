@@ -53,9 +53,21 @@ function prompt(params: Record<string, unknown>): string {
   return buildApprovalPrompt("t", params, [], options).description;
 }
 
+/** Drops every tag, character by character. React's static markup escapes
+ * `<` inside text, so any `<` here opens a tag. */
+function stripTags(html: string): string {
+  let out = "";
+  let inTag = false;
+  for (const ch of html) {
+    if (ch === "<") inTag = true;
+    else if (ch === ">" && inTag) inTag = false;
+    else if (!inTag) out += ch;
+  }
+  return out;
+}
+
 function decode(html: string): string {
-  return html
-    .replace(/<[^>]+>/g, "")
+  return stripTags(html)
     .replace(/&quot;/g, '"')
     .replace(/&#x27;/g, "'")
     .replace(/&lt;/g, "<")
