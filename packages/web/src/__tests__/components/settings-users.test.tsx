@@ -982,4 +982,83 @@ describe("SettingsUsers", () => {
     });
     expect(screen.queryByText(/seats used/i)).not.toBeInTheDocument();
   });
+  describe("accounts of unknown origin", () => {
+    // Before the sign-up endpoint was closed, anyone who could reach Pinchy
+    // could register. Those accounts survive the upgrade; GET /api/users flags
+    // them (unknownOrigin) and this banner is how an admin finds them.
+    const usersWithStranger = [
+      ...mockUsers.map((u) => ({ ...u, unknownOrigin: false })),
+      {
+        id: "user-9",
+        name: "Mallory Stranger",
+        email: "mallory@elsewhere.example",
+        role: "member",
+        banned: false,
+        groups: [],
+        unknownOrigin: true,
+      },
+    ];
+
+    async function renderAndWait(users: unknown[]) {
+      mockFetchForUsers(users);
+      render(<SettingsUsers currentUserId="user-1" />);
+      await waitFor(() => {
+        expect(screen.queryByText("Loading...")).not.toBeInTheDocument();
+      });
+    }
+
+    it("lists every active account no invite or setup accounts for", async () => {
+      await renderAndWait(usersWithStranger);
+
+      const banner = screen.getByRole("region", { name: /nobody invited/i });
+      expect(within(banner).getByText("Mallory Stranger")).toBeInTheDocument();
+      expect(within(banner).getByText("mallory@elsewhere.example")).toBeInTheDocument();
+      expect(within(banner).queryByText("Bob User")).not.toBeInTheDocument();
+    });
+
+    it("shows no banner when every account is accounted for", async () => {
+      await renderAndWait(mockUsers.map((u) => ({ ...u, unknownOrigin: false })));
+
+      expect(screen.queryByRole("region", { name: /nobody invited/i })).toBeNull();
+    });
+
+    it("leaves out an unknown-origin account that is already deactivated", async () => {
+      await renderAndWait([
+        ...mockUsers.map((u) => ({ ...u, unknownOrigin: false })),
+        {
+          id: "user-9",
+          name: "Mallory Stranger",
+          email: "mallory@elsewhere.example",
+          role: "member",
+          banned: true,
+          groups: [],
+          unknownOrigin: true,
+        },
+      ]);
+
+      expect(screen.queryByRole("region", { name: /nobody invited/i })).toBeNull();
+    });
+
+    it("opens the account with its Deactivate action from the banner", async () => {
+      const user = userEvent.setup();
+      await renderAndWait(usersWithStranger);
+
+      const banner = screen.getByRole("region", { name: /nobody invited/i });
+      await user.click(within(banner).getByRole("button", { name: /review mallory stranger/i }));
+
+      await waitFor(() => {
+        expect(screen.getByRole("button", { name: /^deactivate$/i })).toBeInTheDocument();
+      });
+    });
+
+    it("can be dismissed for this visit", async () => {
+      const user = userEvent.setup();
+      await renderAndWait(usersWithStranger);
+
+      const banner = screen.getByRole("region", { name: /nobody invited/i });
+      await user.click(within(banner).getByRole("button", { name: /dismiss/i }));
+
+      expect(screen.queryByRole("region", { name: /nobody invited/i })).toBeNull();
+    });
+  });
 });

@@ -132,6 +132,11 @@ export type AuditEventType =
   | "user.created"
   | "user.invited"
   | "user.invite_blocked"
+  // Written once per account at boot by reportUnknownOriginUsers
+  // (lib/user-provenance.ts): an account that neither the setup wizard nor a
+  // claimed invite explains — in practice, one self-registered through the
+  // sign-up endpoint earlier releases left open to clients.
+  | "user.unknown_origin_detected"
   | "user.updated"
   | "user.deleted"
   | "config.changed"
@@ -521,6 +526,18 @@ export type AuditLogEntry =
         /** Set on sweep-emitted rows (approval.expired) so analysts can
          * correlate one sweep run (AGENTS.md §"Audit logging rules"). */
         sweepId?: string;
+      };
+    })
+  | (AuditLogBase & {
+      // Provenance check (lib/user-provenance.ts). System-written, one row per
+      // account ever; `resource` is `user:<id>`, which is also how the check
+      // knows it already reported an account. No email — `user.name` is the
+      // human-readable snapshot.
+      eventType: "user.unknown_origin_detected";
+      detail: {
+        user: EntityRef;
+        role: string;
+        accountCreatedAt: string;
       };
     })
   | (AuditLogBase & {

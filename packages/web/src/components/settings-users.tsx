@@ -18,6 +18,7 @@ import { SeatLimitDialog } from "@/components/seat-limit-dialog";
 import { UserDetailSheet } from "@/components/user-detail-sheet";
 import { StatusBadge } from "@/components/status-badge";
 import { toast } from "sonner";
+import { ShieldAlert, X } from "lucide-react";
 import { mergeUserList, type UserListItem, type UserGroup } from "@/lib/user-list";
 import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
 import { buildInviteUrl } from "@/lib/invite-url";
@@ -29,6 +30,85 @@ import type { InviteUserInput } from "@/lib/schemas/users";
 interface SettingsUsersProps {
   currentUserId: string;
   refreshKey?: number;
+}
+
+/**
+ * Accounts neither the setup wizard nor a claimed invite created — in
+ * practice, self-registered through the sign-up endpoint earlier releases left
+ * open (GET /api/users flags them, lib/user-provenance.ts decides). Persistent
+ * and actionable, so an inline banner rather than a toast (AGENTS.md "Error And
+ * Notification UI"); dismissing it hides it for this visit only, because the
+ * accounts are still there until someone deactivates them.
+ */
+function UnknownOriginBanner({
+  accounts,
+  onReview,
+  onDismiss,
+}: {
+  accounts: (UserListItem & { kind: "user" })[];
+  onReview: (account: UserListItem & { kind: "user" }) => void;
+  onDismiss: () => void;
+}) {
+  return (
+    <section
+      aria-labelledby="unknown-origin-title"
+      className="rounded-lg border border-amber-500/40 bg-amber-500/5 p-4"
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex items-start gap-3 min-w-0">
+          <ShieldAlert className="h-5 w-5 shrink-0 text-amber-600" aria-hidden="true" />
+          <div className="space-y-2 min-w-0">
+            <h2 id="unknown-origin-title" className="text-sm font-medium">
+              {accounts.length === 1
+                ? "1 account nobody invited"
+                : `${accounts.length} accounts nobody invited`}
+            </h2>
+            <p className="text-sm text-muted-foreground">
+              Every account comes from the setup wizard or a claimed invite, and{" "}
+              {accounts.length === 1 ? "this one doesn't" : "these don't"}. Earlier versions of
+              Pinchy let anyone who could reach it sign up on their own. If you don&apos;t recognise
+              an account here, review it and deactivate it.
+            </p>
+            <ul className="space-y-1">
+              {accounts.map((account) => (
+                <li
+                  key={account.id}
+                  className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm"
+                >
+                  <span className="font-medium truncate max-w-[200px]" title={account.name}>
+                    {account.name}
+                  </span>
+                  <span
+                    className="text-muted-foreground truncate max-w-[260px]"
+                    title={account.email}
+                  >
+                    {account.email}
+                  </span>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    aria-label={`Review ${account.name}`}
+                    onClick={() => onReview(account)}
+                  >
+                    Review
+                  </Button>
+                </li>
+              ))}
+            </ul>
+          </div>
+        </div>
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          aria-label="Dismiss"
+          className="shrink-0"
+          onClick={onDismiss}
+        >
+          <X className="h-4 w-4" />
+        </Button>
+      </div>
+    </section>
+  );
 }
 
 function GroupBadges({ groups }: { groups: UserGroup[] }) {
@@ -87,6 +167,13 @@ export function SettingsUsers({ currentUserId, refreshKey }: SettingsUsersProps)
   const [allGroups, setAllGroups] = useState<{ id: string; name: string }[]>([]);
   const [isEnterprise, setIsEnterprise] = useState(false);
   const [seatInfo, setSeatInfo] = useState<{ maxUsers: number; seatsUsed: number } | null>(null);
+  const [unknownOriginDismissed, setUnknownOriginDismissed] = useState(false);
+
+  // Already-deactivated accounts need no action, so they stay out of the banner.
+  const unknownOriginAccounts = items.filter(
+    (i): i is UserListItem & { kind: "user" } =>
+      i.kind === "user" && i.unknownOrigin && i.status === "active"
+  );
 
   const pressure = seatInfo ? evaluateSeatPressure(seatInfo.seatsUsed, seatInfo.maxUsers) : null;
   const showCounter = seatInfo !== null && seatInfo.maxUsers > 0;
@@ -177,6 +264,13 @@ export function SettingsUsers({ currentUserId, refreshKey }: SettingsUsersProps)
 
   return (
     <div className="space-y-6">
+      {unknownOriginAccounts.length > 0 && !unknownOriginDismissed && (
+        <UnknownOriginBanner
+          accounts={unknownOriginAccounts}
+          onReview={setSelectedUser}
+          onDismiss={() => setUnknownOriginDismissed(true)}
+        />
+      )}
       <Card>
         <CardHeader className="flex flex-row items-center justify-between">
           <CardTitle>Users</CardTitle>

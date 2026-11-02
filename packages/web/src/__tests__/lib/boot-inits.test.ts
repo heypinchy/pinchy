@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
   checkSecretsVolumeWritable: vi.fn().mockReturnValue({ ok: true }),
   recordConfigRegenSuccess: vi.fn(),
   recordConfigRegenFailure: vi.fn(),
+  reportUnknownOriginUsers: vi.fn().mockResolvedValue(0),
 }));
 
 vi.mock("@/lib/session-migration", () => ({ migrateSessionKeys: mocks.migrateSessionKeys }));
@@ -44,6 +45,10 @@ vi.mock("@/lib/openclaw-config-health", () => ({
   recordConfigRegenFailure: mocks.recordConfigRegenFailure,
 }));
 
+vi.mock("@/lib/user-provenance", () => ({
+  reportUnknownOriginUsers: mocks.reportUnknownOriginUsers,
+}));
+
 describe("bootInits", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -55,6 +60,39 @@ describe("bootInits", () => {
     mocks.migrateSmithersSoul.mockResolvedValue(undefined);
     mocks.regenerateOpenClawConfig.mockResolvedValue(undefined);
     mocks.checkSecretsVolumeWritable.mockReturnValue({ ok: true });
+    mocks.reportUnknownOriginUsers.mockResolvedValue(0);
+  });
+
+  it("reports accounts of unknown origin on every boot once setup is complete", async () => {
+    // Accounts self-registered through the formerly open sign-up endpoint
+    // survive the upgrade that closed it. The boot is where an upgrade first
+    // runs, so that is where they get reported (once each — the function is
+    // idempotent, see user-provenance.integration.test.ts).
+    const { bootInits } = await import("@/lib/boot-inits");
+    await bootInits();
+
+    expect(mocks.reportUnknownOriginUsers).toHaveBeenCalledOnce();
+  });
+
+  it("does not look for unknown-origin accounts before setup", async () => {
+    // Without a setup admin every account would read as unknown.
+    mocks.isSetupComplete.mockResolvedValue(false);
+
+    const { bootInits } = await import("@/lib/boot-inits");
+    await bootInits();
+
+    expect(mocks.reportUnknownOriginUsers).not.toHaveBeenCalled();
+  });
+
+  it("still regenerates the config when the unknown-origin report throws", async () => {
+    mocks.reportUnknownOriginUsers.mockRejectedValue(new Error("db hiccup"));
+
+    const { bootInits } = await import("@/lib/boot-inits");
+    const result = await bootInits();
+
+    expect(result).toBe(true);
+    expect(mocks.regenerateOpenClawConfig).toHaveBeenCalledOnce();
+    expect(mocks.markOpenClawConfigReady).toHaveBeenCalledOnce();
   });
 
   it("runs all boot inits when setup is complete", async () => {

@@ -7,7 +7,7 @@ import { Aside, Badge } from "@astrojs/starlight/components";
 
 Pinchy uses an invite-only system for user onboarding. Admins create invite links, new users claim them by setting up their account, and then they are guided through an onboarding conversation with Smithers. This guide covers the full lifecycle: inviting, onboarding, managing, and deactivating users.
 
-An account exists only because an admin invited someone. Self-sign-up is closed: there is no public registration endpoint. Of the underlying authentication library's endpoints, clients reach only sign-in, sign-out and the session lookup; its sign-up and user-administration endpoints (`/api/auth/sign-up/*`, `/api/auth/admin/*`) answer `404` to every client — including admins. Users are created, promoted, deactivated and removed only through the flows described here, which are audited. See [Endpoints closed to clients](/guides/hardening/#endpoints-closed-to-clients).
+Every account comes from one of two places: the setup wizard, which creates the first admin, or an invite someone claims. Self-sign-up is closed: there is no public registration endpoint. Of the underlying authentication library's endpoints, clients reach only sign-in, sign-out and the session lookup; its sign-up and user-administration endpoints (`/api/auth/sign-up/*`, `/api/auth/admin/*`) answer `404` to every client — including admins. Users are created, promoted and deactivated only through the flows described here, and each of those steps is written to the [audit trail](/concepts/audit-trail/) — account creation as `user.created`. Releases up to v0.9.1 left sign-up open; if an account from that time is still around, **Settings → Users** shows it in a banner (see [Accounts nobody invited](#accounts-nobody-invited)). See [Endpoints closed to clients](/guides/hardening/#endpoints-closed-to-clients).
 
 ## Prerequisites
 
@@ -153,6 +153,12 @@ To restore a deactivated user:
 
 The user can log in again immediately.
 
+### Accounts nobody invited
+
+Releases up to and including v0.9.1 left the authentication library's sign-up endpoint open, so anyone who could reach your Pinchy URL could register a member account. That is closed now, but an account created back then still signs in. Pinchy looks for them on every start: an account that is neither the setup admin (the earliest-created admin) nor the claimer of an invite gets one `user.unknown_origin_detected` row in the audit trail, and while it is active, a banner at the top of **Settings → Users** lists it.
+
+Click **Review** next to an account to open it. If you don't recognise it, **Deactivate** it as described above. The banner hides when you dismiss it, but only for this visit — it comes back until no unexplained account is active. If you demoted the admin who ran setup, they show up here too. [Upgrading](/guides/upgrading/) explains what such an account could reach and how to check what it did.
+
 ### Managing pending invites
 
 Pending and expired invites appear in the user list alongside active users:
@@ -221,16 +227,18 @@ docker compose exec pinchy pnpm reset-admin --email admin@example.com
 
 ## Audit trail
 
-All user management actions performed by admins are logged in the audit trail:
+All user management actions are logged in the audit trail:
 
-| Action                    | Audit event                     |
-| ------------------------- | ------------------------------- |
-| User invited              | `user.invited`                  |
-| Invite blocked (seat cap) | `user.invite_blocked`           |
-| Role changed              | `user.role_updated`             |
-| Group memberships changed | `user.groups_updated`           |
-| User reactivated          | `user.updated`                  |
-| User deactivated          | `user.deleted`                  |
-| Password reset completed  | `auth.password_reset_completed` |
+| Action                       | Audit event                     |
+| ---------------------------- | ------------------------------- |
+| Account created              | `user.created`                  |
+| Account nobody invited found | `user.unknown_origin_detected`  |
+| User invited                 | `user.invited`                  |
+| Invite blocked (seat cap)    | `user.invite_blocked`           |
+| Role changed                 | `user.role_updated`             |
+| Group memberships changed    | `user.groups_updated`           |
+| User reactivated             | `user.updated`                  |
+| User deactivated             | `user.deleted`                  |
+| Password reset completed     | `auth.password_reset_completed` |
 
-Each entry records which admin took the action, the affected user's name, and the before/after role or group diffs. We never store the affected user's email address in plaintext: deactivation events omit it entirely (GDPR Art. 17), and invite events store a keyed HMAC hash plus a short masked preview instead. Password resets also revoke the target user's active sessions in the same database transaction, so a partial failure rolls back the whole reset — the old password keeps working and the reset link stays usable. The audit row is written after that transaction commits, and a failed reset records its own `outcome: failure` entry. See [Audit Trail](/concepts/audit-trail/) for more information on viewing and exporting audit logs.
+Each admin action records which admin took it, and `user.created` records the new account itself as the actor — via the setup wizard or an invite. Entries record the affected user's name, and the before/after role or group diffs. We never store the affected user's email address in plaintext: deactivation events omit it entirely (GDPR Art. 17), and invite events store a keyed HMAC hash plus a short masked preview instead. Password resets also revoke the target user's active sessions in the same database transaction, so a partial failure rolls back the whole reset — the old password keeps working and the reset link stays usable. The audit row is written after that transaction commits, and a failed reset records its own `outcome: failure` entry. See [Audit Trail](/concepts/audit-trail/) for more information on viewing and exporting audit logs.

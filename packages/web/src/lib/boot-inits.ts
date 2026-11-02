@@ -16,6 +16,7 @@ import { seedBuiltinModels } from "@/lib/model-capabilities/seed";
 import { loadModelCapabilityCache } from "@/lib/model-capabilities/cache";
 import { checkSecretsVolumeWritable } from "@/lib/openclaw-secrets";
 import { recordConfigRegenSuccess, recordConfigRegenFailure } from "@/lib/openclaw-config-health";
+import { reportUnknownOriginUsers } from "@/lib/user-provenance";
 
 /**
  * Runs all one-time boot initializations in the correct order and performs
@@ -173,6 +174,25 @@ export async function bootInits(): Promise<boolean> {
       } catch (err) {
         console.error(
           "[pinchy] Failed to migrate Smithers souls:",
+          err instanceof Error ? err.message : err
+        );
+      }
+
+      // Accounts self-registered through the sign-up endpoint earlier releases
+      // left open survive the upgrade that closed it. Report each once in the
+      // audit trail; Settings → Users lists them for admins. Own try/catch:
+      // a failed report must never cost the instance its config.
+      try {
+        const reported = await reportUnknownOriginUsers();
+        if (reported > 0) {
+          console.warn(
+            `[pinchy] ${reported} account(s) neither the setup wizard nor an invite created — ` +
+              "review them in Settings → Users"
+          );
+        }
+      } catch (err) {
+        console.error(
+          "[pinchy] Failed to check account provenance:",
           err instanceof Error ? err.message : err
         );
       }

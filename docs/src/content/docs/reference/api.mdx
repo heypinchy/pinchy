@@ -1165,11 +1165,14 @@ List all users.
       "email": "alice@example.com",
       "role": "admin",
       "banned": false,
-      "groups": [{ "id": "group-uuid", "name": "Engineering" }]
+      "groups": [{ "id": "group-uuid", "name": "Engineering" }],
+      "unknownOrigin": false
     }
   ]
 }
 ```
+
+`unknownOrigin` is `true` for an account that neither the setup wizard nor a claimed invite created — in practice one that signed itself up while releases up to v0.9.1 left the sign-up endpoint open. **Settings → Users** lists these in a banner. The rule: every account counts as known except the earliest-created admin (the setup admin) and the claimer of an invite (not a password-reset invite).
 
 ### `DELETE /api/users/:id`
 
