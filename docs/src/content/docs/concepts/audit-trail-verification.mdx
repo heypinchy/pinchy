@@ -149,10 +149,12 @@ The command never replaces a key file: if there already is one, it stops with `F
 Before the first start, check what you restored. This runs Pinchy's own key check in a throwaway container, as Pinchy's user, so it reads the variables and the key files exactly the way Pinchy will on start. It doesn't start Pinchy, changes nothing, and never prints a key:
 
 ```bash
-docker compose run --rm --no-deps -T -u 999:999 --entrypoint pnpm pinchy -s check-keys
+docker compose run --rm --no-deps -T -u 999:999 --entrypoint pnpm pinchy check-keys
 ```
 
-For each key it prints three lines: what Pinchy makes of the variable, what's in the key file, and what Pinchy will do with the two. A line starting `Fix this before you start Pinchy` says what's wrong, and the command then ends with an error. Fix it and run the check again. The usual ones:
+After two lines from pnpm, its output starts with `Pinchy key check`. If you get `Command "check-keys" not found` instead, or no output at all, the image is older than %%PINCHY_VERSION%% and has no key check: set `PINCHY_VERSION` in `.env` to %%PINCHY_VERSION%% and run it again. Don't start Pinchy until the check has run.
+
+Then, for each key, it prints three lines: what Pinchy makes of the variable, what's in the key file, and what Pinchy will do with the two. A line starting `Fix this before you start Pinchy` says what's wrong, and the command then ends with an error. Fix it and run the check again. The usual ones:
 
 - `can't be read (EACCES)`: the file isn't Pinchy's, typically because it was restored as root. Don't remove it, it may be the key you restored. Give it to Pinchy's user, and do the same with `.encryption_key` if that one is named:
 
@@ -171,7 +173,7 @@ With `AUDIT_HMAC_SECRET` set, what the key file has to hold depends on whether y
 `holds a different key` only says the file holds some other key; which one, only the backup you took it from says. If you wrote the file from a `.env` backup above, run the check with that backup's value too. It has to say `holds the same key as AUDIT_HMAC_SECRET`:
 
 ```bash
-compose_with_backup_key "$backup" run --rm --no-deps -T -u 999:999 --entrypoint pnpm pinchy -s check-keys
+compose_with_backup_key "$backup" run --rm --no-deps -T -u 999:999 --entrypoint pnpm pinchy check-keys
 ```
 
 Then confirm it in the log of that first start (`docker compose logs pinchy`). With `AUDIT_HMAC_SECRET` set:
@@ -288,7 +290,7 @@ As with a rolling restart (below), there's no reset, on purpose. Write down what
 6. Check that the file holds the new value, not the leaked one, with the key check from [Which backup to restore](#which-backup-to-restore). It runs in a throwaway container next to the running one:
 
    ```bash
-   docker compose run --rm --no-deps -T -u 999:999 --entrypoint pnpm pinchy -s check-keys
+   docker compose run --rm --no-deps -T -u 999:999 --entrypoint pnpm pinchy check-keys
    ```
 
    It has to say `.audit_hmac_secret: holds the same key as AUDIT_HMAC_SECRET`. If it says the file holds a different key, the key file isn't the new value: stop and look before anything signs more entries. Two causes are likely. After a step 5 retry, a key file Pinchy generated while the value was invalid and that you didn't remove before correcting `.env`: the file is then that random key, and Pinchy kept it. Or step 4 used `docker compose start` or `restart`, and Pinchy wrote the leaked value into the file. Either way, do step 5's commands, then `docker compose up -d`, and check again.

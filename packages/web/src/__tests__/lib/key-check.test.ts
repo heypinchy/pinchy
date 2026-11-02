@@ -318,6 +318,17 @@ describe("describeKeyCheck for the encryption key", () => {
 });
 
 describe("runKeyCheck", () => {
+  it("opens with a line of its own, so no output never reads as a result", () => {
+    // An image older than the command prints nothing under `pnpm -s` and
+    // only pnpm's own error without it. The docs tell the operator which line
+    // the check starts with, so its absence is a finding, not a pass.
+    for (const audit of [undefined, K2]) {
+      if (audit === undefined) delete process.env.AUDIT_HMAC_SECRET;
+      else process.env.AUDIT_HMAC_SECRET = audit;
+      expect(runKeyCheck().text.split("\n")[0]).toBe("Pinchy key check");
+    }
+  });
+
   it("checks both keys and needs no action when both are in place", () => {
     process.env.AUDIT_HMAC_SECRET = K2;
     writeFileSync(auditFile(), K1);

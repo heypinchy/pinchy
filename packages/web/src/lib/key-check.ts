@@ -164,8 +164,11 @@ export function runKeyCheck(): { text: string; needsAction: boolean } {
   const results = (["audit_hmac_secret", "encryption_key"] as const).map((secret) =>
     describeKeyCheck(secret, inspectSecret(secret))
   );
+  // A first line of its own: an image that predates the command prints
+  // nothing at all under `pnpm -s`, and the docs name this line so its
+  // absence reads as a finding, never as a clean result.
   return {
-    text: results.map((r) => r.lines.join("\n")).join("\n\n"),
+    text: ["Pinchy key check", ...results.map((r) => r.lines.join("\n"))].join("\n\n"),
     needsAction: results.some((r) => r.needsAction),
   };
 }
