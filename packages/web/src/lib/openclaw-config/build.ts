@@ -45,7 +45,7 @@ import {
   pushConfigInBackground,
   writeConfigAtomic,
 } from "./write";
-import { sizeGuardBaseline, expectsSizeDropRefusal } from "./size-drop";
+import { sizeGuardBaseline, expectsSizeDropRefusal, keepsAProvider } from "./size-drop";
 import {
   nextRegenerateSequence,
   noteRegenerateCall,
@@ -1823,6 +1823,8 @@ async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise
       configsAreEquivalentUpToOpenClawMetadata(onDiskContent, newContent));
   // Set below when the guard lets a deletion through that OpenClaw will refuse.
   let expectsProviderShrink = false;
+  // Set below when the #311 guard refuses the payload: nothing is pushed.
+  let refused = false;
   // The key-less bridge, and the re-keyed one that follows secrets.json.
   let bridge: Record<string, unknown> | null = null;
   let rekeyed: Record<string, unknown> | null = null;
@@ -1836,20 +1838,6 @@ async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise
     // content. The bad payload is saved alongside the config for postmortem —
     // silent skip would hide the underlying race forever (#314).
     //
-    // secrets.json is still written when it resolves every SecretRef the
-    // on-disk file names — the file OpenClaw keeps running, and restarts on.
-    // The keys come from settings and provider rows, not from the discovery
-    // that most often trips this guard (Ollama unreachable at boot answers
-    // `[]`), and the secrets volume is a tmpfs: after a host reboot it is
-    // empty, and skipping the write would leave OpenClaw nothing to resolve
-    // `/providers/anthropic/apiKey` against — "required secrets are
-    // unavailable", and no first-connect regenerate to repair it. A key
-    // rotation saved meanwhile reaches OpenClaw the same way. It is NOT
-    // written when it would drop a key the file still names (an empty
-    // provider read): that would leave OpenClaw a file it can neither restart
-    // on nor accept a copy of — and the key-less bridge below must never be
-    // built from a payload this guard refused.
-    //
     // Measured against the existing file MINUS the bytes of every provider the
     // payload deleted, as long as a provider survives (see size-drop.ts).
     // Deleting a 40-model OpenAI-compatible provider removes most of the file
@@ -1862,7 +1850,8 @@ async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise
     // shrink outside `models.providers`. Delivering a deletion past OpenClaw's
     // own check is pushConfigInBackground's job (stepwise config.apply).
     const sizeBaseline = sizeGuardBaseline(onDiskContent, config);
-    if (onDiskContent.length > 0 && newContent.length < sizeBaseline * 0.5) {
+    refused = onDiskContent.length > 0 && newContent.length < sizeBaseline * 0.5;
+    if (refused) {
       const ts = new Date().toISOString().replace(/[:.]/g, "-");
       const rejectedPath = `${CONFIG_PATH}.regenerate-rejected.${ts}`;
       try {
@@ -1879,28 +1868,57 @@ async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise
           `Likely a DB-state-loading race; see #311. ` +
           `Rejected payload saved to ${rejectedPath}.`
       );
+      // The refused payload is never written or pushed, but secrets.json still
+      // is, below — the file OpenClaw keeps running, and restarts on, needs
+      // it. The keys come from settings and provider rows, not from the
+      // discovery that most often trips this guard (Ollama unreachable at boot
+      // answers `[]`), and the secrets volume is a tmpfs: after a host reboot
+      // it is empty, and skipping the write would leave OpenClaw nothing to
+      // resolve `/providers/anthropic/apiKey` against — "required secrets are
+      // unavailable". OpenClaw only starts once Pinchy is healthy, and while
+      // it is down nothing regenerates on its own (no first connect, no
+      // self-heal): only an admin's next change or Pinchy's next restart, and
+      // with Ollama still down that is refused the same way. A key rotation
+      // saved meanwhile reaches OpenClaw the same way.
+      //
+      // When the file still names a key the bundle lacks — a deletion or a
+      // re-key not yet handed over — the key-less bridge below goes first,
+      // exactly as for a payload that passes. It is built from the on-disk
+      // file and the bundle, never from the refused payload: it keeps every
+      // model of every provider (an empty Ollama catalogue stays out of it)
+      // and only drops key references and URL credentials, so it stays far
+      // above half the file this guard protects. A re-keyed provider then
+      // takes its entry from the payload, as below: one provider's saved
+      // state, whose models fall back to the snapshot stored with it, never
+      // to `[]` (resolveCustomProviderModels).
+      //
+      // Except for a payload with no provider at all: Pinchy refuses to delete
+      // the last provider, so that is an empty provider read, and a bridge
+      // built from it would strip every key from a working OpenClaw. Then
+      // neither file is written — secrets.json would drop keys the file
+      // still names.
       const dropped = onDiskConfig ? unresolvedSecretRefs(onDiskConfig, secretsBundle) : [];
-      if (dropped.length === 0) {
-        writeSecretsAndReload(secretsBundle);
-      } else {
+      if (dropped.length > 0 && !keepsAProvider(config)) {
         console.error(
-          `[openclaw-config] secrets.json not written either: it would drop ${dropped.join(", ")}, ` +
-            `which openclaw.json still names.`
+          `[openclaw-config] secrets.json not written either: the payload has no provider, ` +
+            `and it would drop ${dropped.join(", ")}, which openclaw.json still names.`
         );
+        return;
       }
-      return;
+    } else {
+      // Past this guard only because deleted providers were discounted, and
+      // still under half the file: OpenClaw will refuse it as a size drop. The
+      // push must know before OpenClaw says so — its rate limit can keep the
+      // refusal from ever arriving, and the file-write fallback must not run
+      // for this payload (see MAX_SHRINK_STEPS in write.ts).
+      // Compared the way OpenClaw compares — UTF-8 bytes, not `length` (UTF-16
+      // units; a CJK model name is one unit and three bytes) — and with
+      // headroom, because missing a refusal costs a file write past OpenClaw's
+      // guard while expecting one that never comes costs nothing
+      // (expectsSizeDropRefusal).
+      expectsProviderShrink =
+        sizeBaseline < onDiskContent.length && expectsSizeDropRefusal(onDiskContent, newContent);
     }
-    // Past this guard only because deleted providers were discounted, and
-    // still under half the file: OpenClaw will refuse it as a size drop. The
-    // push must know before OpenClaw says so — its rate limit can keep the
-    // refusal from ever arriving, and the file-write fallback must not run
-    // for this payload (see MAX_SHRINK_STEPS in write.ts).
-    // Compared the way OpenClaw compares — UTF-8 bytes, not `length` (UTF-16
-    // units; a CJK model name is one unit and three bytes) — and with headroom,
-    // because missing a refusal costs a file write past OpenClaw's guard while
-    // expecting one that never comes costs nothing (expectsSizeDropRefusal).
-    expectsProviderShrink =
-      sizeBaseline < onDiskContent.length && expectsSizeDropRefusal(onDiskContent, newContent);
 
     // openclaw.json stops naming a key BEFORE secrets.json loses it. A deleted
     // provider's key is not in this bundle, and neither is a re-keyed
@@ -1932,10 +1950,11 @@ async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise
     }
   }
 
-  // Always written, even when the config is unchanged — tmpfs is wiped on
-  // container restart, and secrets.json must be present for OpenClaw to
-  // resolve SecretRef pointers. A removal is safe to write here: the bridge
-  // above already took every reference to it out of openclaw.json.
+  // Written even when the config is unchanged or refused (all but an empty
+  // provider read, above) — tmpfs is wiped on container restart, and
+  // secrets.json must be present for OpenClaw to resolve SecretRef pointers. A
+  // removal is safe to write here: the bridge above already took every
+  // reference to it out of openclaw.json.
   //
   // No `secrets.reload` when a bridge was written: OpenClaw re-resolves every
   // SecretRef when it hot-reloads the bridge, against this file. A reload
@@ -1948,7 +1967,7 @@ async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise
       "[openclaw-config] openclaw.json points re-keyed provider(s) at their new key slot (written after secrets.json)"
     );
   }
-  if (unchanged) return;
+  if (unchanged || refused) return;
 
   // Write per-agent auth-profiles.json for agents that use API-key-based
   // providers. Required by OpenClaw ≥ 4.15: each agent directory must

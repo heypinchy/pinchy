@@ -446,6 +446,83 @@ describe("a >50% provider deletion against OpenClaw's real config.get / config.a
     expect(started.models.providers["acme-llm"]).not.toHaveProperty("apiKey");
   }, 60_000);
 
+  // The #311 guard refuses a regenerate whose kept Ollama catalogue collapsed
+  // to `[]` (Ollama not up yet), and it judges that collapse in full even next
+  // to a deletion. After a host reboot the secrets volume (tmpfs) is empty,
+  // and while OpenClaw is down nothing but the next admin change or Pinchy
+  // restart regenerates — refused the same way while Ollama stays down. So a
+  // refusal still writes the key-less bridge, built from the on-disk file
+  // (catalogue and all), and then secrets.json (openclaw-config.test.ts: the
+  // build.ts wiring). Here, that OpenClaw starts on what that leaves it.
+  it("starts after a reboot with a deletion pending and Ollama down, from what a refused regenerate writes", async () => {
+    process.env.OPENCLAW_CONFIG_PATH = pinchyConfigPath;
+    process.env.OPENCLAW_SECRETS_PATH = secretsPath;
+    const { keylessBridge, unresolvedSecretRefs } =
+      await import("@/lib/openclaw-config/keyless-bridge");
+    const { sizeGuardBaseline } = await import("@/lib/openclaw-config/size-drop");
+    const { writeSecretsFile } = await import("@/lib/openclaw-secrets");
+    process.env.OPENCLAW_CONFIG_PATH = ocConfigPath;
+    const { writeConfigFile } = await import("openclaw/plugin-sdk/config-runtime");
+    type OcConfig = Parameters<typeof writeConfigFile>[0];
+    const ollama = (models: Json[]) => ({
+      baseUrl: "http://host.docker.internal:11434/v1",
+      request: { allowPrivateNetwork: true },
+      api: "openai-completions",
+      models,
+    });
+    const ollamaModels = Array.from({ length: 80 }, (_, i) => ({
+      id: `qwen2.5-coder-instruct-variant-${i}:32b-q4_K_M`,
+      name: `qwen2.5-coder-instruct-variant-${i}:32b-q4_K_M`,
+      input: ["text"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 32768,
+      maxTokens: 8192,
+    }));
+    try {
+      writeSecrets({ anthropic: { apiKey: "sk-ant-test" }, "acme-llm": { apiKey: "sk-acme" } });
+      await writeConfigFile(
+        config({ "acme-llm": acme(), ollama: ollama(ollamaModels) }) as OcConfig
+      );
+      await promoteToLastKnownGood();
+      const onDiskContent = readFileSync(ocConfigPath, "utf-8");
+      const onDisk = JSON.parse(onDiskContent) as Json;
+
+      // The reboot: the tmpfs secrets volume comes back empty.
+      rmSync(secretsPath);
+      await expect(startOpenClaw(), "nothing to resolve the file's keys against").rejects.toThrow(
+        /required secrets are unavailable/
+      );
+
+      // Pinchy's boot regenerate: acme was deleted, Ollama answers `[]`.
+      const bundle = { providers: { anthropic: { apiKey: "sk-ant-test" } } };
+      const payload = JSON.stringify(config({ ollama: ollama([]) }), null, 2).trimEnd() + "\n";
+      expect(payload.length, "precondition: the #311 guard refuses this payload").toBeLessThan(
+        sizeGuardBaseline(onDiskContent, JSON.parse(payload) as Json) * 0.5
+      );
+      expect(unresolvedSecretRefs(onDisk, bundle), "precondition: a deletion is pending").toEqual([
+        "/providers/acme-llm/apiKey",
+      ]);
+
+      // What the refusal writes, in its order: the bridge, then secrets.json.
+      const bridge = keylessBridge(onDisk, bundle);
+      expect(bridge).not.toBeNull();
+      const bridgeContent = JSON.stringify(bridge, null, 2).trimEnd() + "\n";
+      writeFileSync(ocConfigPath, bridgeContent, { mode: 0o666 });
+      writeSecretsFile(bundle);
+
+      // OpenClaw starts on it, keeps it (over half of last-known-good, so not
+      // a suspicious read), and resolves every SecretRef in it.
+      const started = (await startOpenClaw()) as { models: { providers: Record<string, Json> } };
+      expect(readFileSync(ocConfigPath, "utf-8")).toBe(bridgeContent);
+      expect(started.models.providers["acme-llm"]).not.toHaveProperty("apiKey");
+      expect(started.models.providers["acme-llm"].models).toHaveLength(40);
+      expect(started.models.providers.ollama.models).toHaveLength(80);
+      expect(JSON.parse(readFileSync(secretsPath, "utf-8"))).toEqual(bundle);
+    } finally {
+      delete process.env.OPENCLAW_SECRETS_PATH;
+    }
+  }, 60_000);
+
   // #1238 versions an OpenAI-compatible provider's key slot
   // (`/providers/<slug>@<version>/apiKey`), so re-keying it puts a NEW slot in
   // secrets.json and takes the old one out — while openclaw.json still names

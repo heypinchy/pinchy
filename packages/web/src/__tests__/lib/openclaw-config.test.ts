@@ -8952,6 +8952,86 @@ describe("regenerateOpenClawConfig size-drop guard vs deliberate provider remova
     }
   });
 
+  // The same refusal while a deletion is still pending: the file names the
+  // deleted provider's key, the bundle no longer has it. secrets.json without
+  // the key next to that file would leave OpenClaw a file it cannot start on —
+  // and skipping secrets.json leaves it none at all after a host reboot (the
+  // secrets volume is a tmpfs). OpenClaw only starts once Pinchy is healthy,
+  // and while it is down nothing but an admin's next change or Pinchy's next
+  // restart regenerates: no first-connect regenerate, no self-heal. And with
+  // Ollama still down, that regenerate is refused the same way. So the refusal
+  // still writes the key-less bridge — built from the on-disk file, never from
+  // the refused payload, so the Ollama catalogue stays — and then secrets.json.
+  it("still writes the key-less bridge and secrets.json when it refuses an Ollama collapse while a deletion is pending", async () => {
+    const ollamaModels = Array.from({ length: 80 }, (_, i) => ({
+      id: `ollama/qwen2.5-coder-instruct-variant-${i}:32b-q4_K_M`,
+      name: `qwen2.5-coder-instruct-variant-${i}:32b-q4_K_M (32B)`,
+      parameterSize: "32B",
+      compatible: true,
+      capabilities: { tools: true, vision: false, completion: true, thinking: false },
+    }));
+    vi.mocked(fetchOllamaLocalModelsFromUrl).mockResolvedValue(ollamaModels);
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "anthropic_api_key") return "sk-ant-test";
+      if (key === "ollama_local_url") return "http://host.docker.internal:11434";
+      return null;
+    });
+    mockListOpenAiCompatibleProviders.mockResolvedValue([makeLargeCustomProvider()]);
+    mockListProvidersWithApiKeys.mockResolvedValue([keyedRow(makeLargeCustomProvider())]);
+    const existing = await regenerateAndCapture();
+    expect(JSON.parse(existing).models.providers.ollama.models).toHaveLength(80);
+    mockedReadFileSync.mockReturnValue(existing);
+    mockReadSecretsFile.mockImplementation(() => {
+      throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
+    });
+    mockGetClient.mockReturnValue(undefined);
+
+    // Boot after a host reboot: the admin had deleted the custom provider and
+    // the hand-over had not finished; Ollama is not up yet.
+    mockListOpenAiCompatibleProviders.mockResolvedValue([]);
+    mockListProvidersWithApiKeys.mockResolvedValue([]);
+    vi.mocked(fetchOllamaLocalModelsFromUrl).mockResolvedValue([]);
+    const order: string[] = [];
+    let secrets: Record<string, unknown> = {};
+    mockWriteSecretsFile.mockImplementation((bundle: Record<string, unknown>) => {
+      secrets = bundle;
+      order.push("secrets.json");
+      return false;
+    });
+    mockedWriteFileSync.mockImplementation((path: unknown) => {
+      if (typeof path === "string" && path.endsWith("openclaw.json.tmp")) {
+        order.push("openclaw.json");
+      }
+    });
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      mockedWriteFileSync.mockClear();
+      await regenerateOpenClawConfig();
+
+      // Precondition: the guard refused the collapse.
+      expect(rejectedDumps()).toHaveLength(1);
+      expect(errorSpy.mock.calls.flat().join(" ")).toMatch(/suspiciously small/);
+      // The bridge first, then secrets.json — and nothing else.
+      expect(order).toEqual(["openclaw.json", "secrets.json"]);
+      // Precondition: the file names a key the new bundle lacks.
+      expect(unresolvable(existing, secrets)).toEqual([`/providers/${ACME_SLOT}/apiKey`]);
+      const [bridge] = keylessBridgesWritten(existing);
+      expect(unresolvable(bridge, secrets)).toEqual([]);
+      expect(secrets).toMatchObject({ providers: { anthropic: { apiKey: "sk-ant-test" } } });
+      // Built from the file, not from the refused payload.
+      expect(JSON.parse(bridge).models.providers.ollama.models).toHaveLength(80);
+    } finally {
+      vi.restoreAllMocks();
+      vi.mocked(fetchOllamaLocalModelsFromUrl).mockResolvedValue([]);
+      mockedWriteFileSync.mockReset();
+      mockWriteSecretsFile.mockReset();
+      mockReadSecretsFile.mockReset();
+      mockReadSecretsFile.mockReturnValue({});
+    }
+  });
+
   // OpenClaw rewrites openclaw.json as root 0600 on every internal restart, and
   // fix-config-permissions.sh reopens it on its next tick. If the read just
   // before the write lands in that window, the file is unreadable — not
@@ -9347,8 +9427,13 @@ describe("regenerateOpenClawConfig size-drop guard vs deliberate provider remova
       mockedWriteFileSync.mockClear();
       await regenerateOpenClawConfig();
 
-      expect(findOpenClawConfigWrite(mockedWriteFileSync)).toBeUndefined();
       expect(rejectedDumps()).toHaveLength(1);
+      // The refused payload is never written. The file still names the
+      // deleted provider's key, so its key-less bridge is — the on-disk file,
+      // collapsed state and all, with the provider stubbed.
+      const [bridge, ...more] = keylessBridgesWritten(existing);
+      expect(more).toEqual([]);
+      expect(JSON.parse(bridge).secrets.padding).toBe(healthy.secrets.padding);
     } finally {
       errorSpy.mockRestore();
     }

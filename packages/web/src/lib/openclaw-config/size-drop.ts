@@ -68,6 +68,14 @@ export function keptProviderCollapsed(before: Json, after: Json): boolean {
 }
 
 /**
+ * True when `next` still carries a provider. Pinchy refuses to delete the last
+ * one, so a payload with none is an empty read, never a deletion.
+ */
+export function keepsAProvider(next: Json): boolean {
+  return Object.keys(providersOf(next) ?? {}).length > 0;
+}
+
+/**
  * The size the #311 guard should compare a new payload against: the existing
  * file, minus the bytes of every provider the new payload DELETED — provided at
  * least one provider survives and no surviving provider's catalogue collapsed
@@ -85,7 +93,7 @@ export function sizeGuardBaseline(existing: string, next: Json): number {
   const existingProviders = providersOf(parsed);
   const nextProviders = providersOf(next);
   if (!isRecord(parsed) || !existingProviders || !nextProviders) return existing.length;
-  if (Object.keys(nextProviders).length === 0) return existing.length;
+  if (!keepsAProvider(next)) return existing.length;
   if (keptProviderCollapsed(existingProviders, nextProviders)) return existing.length;
 
   const models = parsed.models as Json;
