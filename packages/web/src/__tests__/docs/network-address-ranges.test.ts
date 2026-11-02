@@ -17,7 +17,8 @@ import {
 //   page → classifier  every documented range is treated the way the page says,
 //                      at both ends of the range;
 //   classifier → page  every address the classifier does NOT call public lies
-//                      in a documented row that says so.
+//                      in a documented row that says so, and every address it
+//                      DOES call public lies in no row that says otherwise.
 //
 // The second direction asks the classifier, not its source. It used to read
 // `x/len` literals and `// a.b.c.d —` comments out of ip-address.ts, which
@@ -180,6 +181,21 @@ describe("reference/network-address-checks.mdx matches the shared address table"
     );
   }
 
+  /**
+   * Whether the page says `value` is refused or private: it lies in such a row,
+   * or in a wrapper row whose IPv4 address is not public. A `public` verdict
+   * there is a hole the page does not mention — the drift that matters most.
+   */
+  function documentedAsWithheld(value: bigint, v6: boolean): boolean {
+    return rows.some(({ entries, treatment }) =>
+      entries.some((entry) => {
+        if (!contains(entry, value, v6)) return false;
+        if (treatment !== "wrapped") return true;
+        return !NOT_WRAPPED.has(value) && classifyIpAddress(embeddedIn(entry, value)) !== "public";
+      })
+    );
+  }
+
   /** The probe set: addresses to ask the classifier about, as [value, v6]. */
   function probes(): Array<[bigint, boolean]> {
     const out: Array<[bigint, boolean]> = [];
@@ -258,11 +274,16 @@ describe("reference/network-address-checks.mdx matches the shared address table"
     // A coarse sweep, so a rule nothing above names is still met: the first
     // and last address of every IPv4 /16, every value of the first IPv6 group,
     // and every value of the second behind the prefixes that wrap or refuse.
-    // Coarse is the limit: a rule narrower than this (an IPv4 /17 or longer,
-    // an IPv6 /17 or longer behind any other first group) that no literal in
-    // the source names and no probe above reaches still escapes. Checked with
-    // a canary — `if (groups[0] === 0x3fff && groups[1] === 0x12)` stays
-    // green — so review owns that case.
+    // Coarse is the limit, in both directions: a rule that no literal in the
+    // source names, that no probe above reaches, and that is narrower than the
+    // sweep — it holds neither the first nor the last address of any IPv4 /16,
+    // nor the `…::1` probe of any IPv6 /16 (or /32 behind ::, 64: and 2001:) —
+    // still escapes. That covers an undocumented refusal
+    // (`if (groups[0] === 0x3fff && groups[1] === 0x12)` stays green) and a
+    // public hole inside a documented range (`100.100.7.0/24` made public
+    // inside `100.64.0.0/10` stays green). Both checked with a canary, so
+    // review owns that case. A hole as wide as a /16 — `10.5.0.0/16` or
+    // `fd12::/16` made public — goes red.
     for (let a = 0; a < 256; a++) {
       for (let b = 0; b < 256; b++) {
         const base = BigInt((a << 24) >>> 0) | BigInt(b << 16);
@@ -278,13 +299,18 @@ describe("reference/network-address-checks.mdx matches the shared address table"
     return out;
   }
 
-  it("documents every address the classifier does not call public", () => {
+  it("documents every address the classifier does not call public, and none it does", () => {
     const undocumented = new Set<string>();
     for (const [value, v6] of probes()) {
       const address = format(value, v6);
       const verdict = classifyIpAddress(address);
       if (verdict === null) throw new Error(`probe ${address} is not an address`);
-      if (verdict === "public") continue;
+      if (verdict === "public") {
+        if (documentedAsWithheld(value, v6)) {
+          undocumented.add(`${address}: public, but the page says private or refused`);
+        }
+        continue;
+      }
       if (!isCovered(value, v6, verdict)) undocumented.add(`${address}: ${verdict}`);
     }
     expect([...undocumented]).toEqual([]);
