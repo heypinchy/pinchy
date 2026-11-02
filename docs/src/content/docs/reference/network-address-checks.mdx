@@ -5,7 +5,7 @@ description: Every IP range Pinchy treats as private or refuses outright, and wh
 
 Pinchy makes requests from its own server: the **Fetch web pages** tool fetches a URL a model chose, and the Odoo, mail-server and OpenAI-compatible provider connections reach an address an admin typed. Each of those checks where a request would land before it's sent. They all read one address table, so an address is treated the same way everywhere. This page is that table.
 
-A hostname is resolved first, and **every** address it answers with is checked, so a name that points at an internal address is treated exactly like the address itself. A name that doesn't resolve is let through: no address means no connection, and the far more common cause is a typo.
+A hostname is resolved first, and **every** address it answers with is checked, so a name that points at an internal address is treated exactly like the address itself. A name that doesn't resolve is treated two ways. The Odoo, mail-server and provider checks let it through: no address means no connection, and the far more common cause is a typo, which the connection's own error names better than a security refusal would. **Fetch web pages** refuses it, for the URL it was given and for every redirect it follows, because it only ever connects to an address it has checked.
 
 ## What each check does
 

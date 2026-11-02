@@ -16,8 +16,13 @@ import {
 //
 //   page → classifier  every documented range is treated the way the page says,
 //                      at both ends of the range;
-//   classifier → page  every range and exact address the classifier names in
-//                      its source appears on the page.
+//   classifier → page  every address the classifier does NOT call public lies
+//                      in a documented row that says so.
+//
+// The second direction asks the classifier, not its source. It used to read
+// `x/len` literals and `// a.b.c.d —` comments out of ip-address.ts, which
+// missed every rule written without one — NAT64's `64:ff9b::a.b.c.d`, the `::`
+// and `::1` checks — so deleting those rows from the page stayed green.
 
 const repoRoot = resolve(__dirname, "../../../../..");
 const page = readFileSync(
@@ -152,37 +157,140 @@ describe("reference/network-address-checks.mdx matches the shared address table"
     expect(wrong).toEqual([]);
   });
 
-  // Ranges the classifier's source names only to say they are NOT special.
-  const SOURCE_MENTIONS_NOT_LISTED: Record<string, string> = {
-    "2001::/16": "named only to say the rest of 2001::/16 outside Teredo is ordinary public space",
-  };
+  // `::` and `::1` sit inside `::/96`, but IPv6 defines them in their own right
+  // (RFC 4291 §2.5.2–2.5.3): they are not IPv4-compatible spellings of 0.0.0.0
+  // and 0.0.0.1, and the classifier names them before it unwraps anything. So
+  // the `::/96` row does not cover them; they need rows of their own.
+  const NOT_WRAPPED = new Set(["::", "::1"].map((a) => parseEntry(a).network));
 
-  it("lists every range and exact address the classifier names", () => {
-    const ranges = [
-      ...classifierSource.matchAll(
-        /(?<![\w:.])((?:[0-9a-f]{0,4}:){2,7}[0-9a-f]{0,4}|\d{1,3}(?:\.\d{1,3}){3})\/(\d{1,3})(?!\w)/gi
-      ),
-    ].map((m) => m[0]);
-    const exactV4 = [...classifierSource.matchAll(/^\s*\/\/ (\d{1,3}(?:\.\d{1,3}){3}) —/gm)].map(
-      (m) => m[1]
+  function contains(entry: Entry, value: bigint, v6: boolean): boolean {
+    return entry.v6 === v6 && value >= entry.network && value <= lastAddress(entry);
+  }
+
+  /** The IPv4 address a wrapped-form entry carries in `value`. */
+  function embeddedIn(entry: Entry, value: bigint): string {
+    const shift = BigInt(128 - entry.prefix - 32);
+    return format((value >> shift) & BigInt(0xffffffff), false);
+  }
+
+  function isCovered(value: bigint, v6: boolean, verdict: IpAddressClass): boolean {
+    const treatment: Treatment = verdict === "private" ? "private" : "refused";
+    return rows.some(({ entries, treatment: documented }) =>
+      entries.some((entry) => {
+        if (!contains(entry, value, v6)) return false;
+        if (documented !== "wrapped") return documented === treatment;
+        return !NOT_WRAPPED.has(value) && classifyIpAddress(embeddedIn(entry, value)) === verdict;
+      })
     );
-    const metadataBlock = classifierSource.split("IPV6_METADATA_ADDRESSES")[1]?.split("].map")[0];
-    if (!metadataBlock) throw new Error("ip-address.ts: IPV6_METADATA_ADDRESSES not found");
-    const exactV6 = [...metadataBlock.matchAll(/"([0-9a-f:.]+)"/g)].map((m) => m[1]);
+  }
 
+  /** The probe set: addresses to ask the classifier about, as [value, v6]. */
+  function probes(): Array<[bigint, boolean]> {
+    const out: Array<[bigint, boolean]> = [];
+    const add = (address: string) => {
+      const { network, v6 } = parseEntry(address);
+      out.push([network, v6]);
+    };
+    const edges = (entry: Entry) => {
+      const max = (BigInt(1) << BigInt(entry.v6 ? 128 : 32)) - BigInt(1);
+      const last = lastAddress(entry);
+      for (const value of [
+        entry.network - BigInt(1),
+        entry.network,
+        entry.network + BigInt(1),
+        last - BigInt(1),
+        last,
+        last + BigInt(1),
+      ]) {
+        if (value >= BigInt(0) && value <= max) out.push([value, entry.v6]);
+      }
+    };
+
+    // Both ends of every documented row, and one step past them.
+    for (const { entries } of rows) entries.forEach(edges);
+
+    // Both ends of every range and address the classifier's source spells out,
+    // so a rule the page documents too narrowly shows up at its far end. Only
+    // a probe source: what the verdict is comes from the classifier.
+    const sourceTokens = [
+      ...[
+        ...classifierSource.matchAll(
+          /(?<![\w:.])((?:[0-9a-f]{0,4}:){2,7}[0-9a-f]{0,4}|\d{1,3}(?:\.\d{1,3}){3})\/(\d{1,3})(?!\w)/gi
+        ),
+      ].map((m) => m[0]),
+      ...[...classifierSource.matchAll(/"([0-9a-f]*:[0-9a-f:.]+)"/g)].map((m) => m[1]),
+    ];
     // A walker that finds next to nothing would pass in silence.
-    expect(ranges.length).toBeGreaterThan(20);
-    expect(exactV4.length).toBeGreaterThanOrEqual(2);
-    expect(exactV6.length).toBeGreaterThanOrEqual(4);
+    expect(sourceTokens.length).toBeGreaterThan(20);
+    sourceTokens.map(parseEntry).forEach(edges);
 
-    for (const exempt of Object.keys(SOURCE_MENTIONS_NOT_LISTED)) {
-      expect(ranges, `stale exemption ${exempt}`).toContain(exempt);
+    // Addresses that matter whether or not anything above reaches them.
+    [
+      "0.0.0.0",
+      "127.0.0.1",
+      "169.254.169.254",
+      "100.100.100.200",
+      "168.63.129.16",
+      "255.255.255.255",
+      "::",
+      "::1",
+      "fe80::1",
+      "ff02::1",
+      "fd00:ec2::254",
+      "fd00:ec2::23",
+      "fd20:ce::254",
+      "fd00:c1::a9fe:a9fe",
+    ].forEach(add);
+
+    // Every IPv6 form that can carry an IPv4 address, wrapping one address of
+    // each kind: private, loopback, metadata, public.
+    for (const v4 of ["10.0.0.1", "127.0.0.1", "169.254.169.254", "93.184.216.34"]) {
+      const value = parseEntry(v4).network;
+      const hex = `${(value >> BigInt(16)).toString(16)}:${(value & BigInt(0xffff)).toString(16)}`;
+      [
+        `::ffff:${v4}`,
+        `::${v4}`,
+        `::ffff:0:${v4}`,
+        `64:ff9b::${v4}`,
+        `64:ff9b:1::${v4}`,
+        `2002:${hex}::1`,
+        `2001:0:${hex}::1`,
+        `fd00::${v4}`,
+      ].forEach(add);
     }
 
-    const documented = new Set(rows.flatMap(({ entries }) => entries.map(key)));
-    const missing = [...new Set([...ranges, ...exactV4, ...exactV6])]
-      .filter((token) => !(token in SOURCE_MENTIONS_NOT_LISTED))
-      .filter((token) => !documented.has(key(parseEntry(token))));
-    expect(missing).toEqual([]);
+    // A coarse sweep, so a rule nothing above names is still met: the first
+    // and last address of every IPv4 /16, every value of the first IPv6 group,
+    // and every value of the second behind the prefixes that wrap or refuse.
+    // Coarse is the limit: a rule narrower than this (an IPv4 /17 or longer,
+    // an IPv6 /17 or longer behind any other first group) that no literal in
+    // the source names and no probe above reaches still escapes. Checked with
+    // a canary — `if (groups[0] === 0x3fff && groups[1] === 0x12)` stays
+    // green — so review owns that case.
+    for (let a = 0; a < 256; a++) {
+      for (let b = 0; b < 256; b++) {
+        const base = BigInt((a << 24) >>> 0) | BigInt(b << 16);
+        out.push([base, false], [base | BigInt(0xffff), false]);
+      }
+    }
+    for (let g = 0; g < 0x10000; g++) {
+      out.push([(BigInt(g) << BigInt(112)) | BigInt(1), true]);
+      for (const g0 of [0x0, 0x64, 0x2001]) {
+        out.push([(BigInt(g0) << BigInt(112)) | (BigInt(g) << BigInt(96)) | BigInt(1), true]);
+      }
+    }
+    return out;
+  }
+
+  it("documents every address the classifier does not call public", () => {
+    const undocumented = new Set<string>();
+    for (const [value, v6] of probes()) {
+      const address = format(value, v6);
+      const verdict = classifyIpAddress(address);
+      if (verdict === null) throw new Error(`probe ${address} is not an address`);
+      if (verdict === "public") continue;
+      if (!isCovered(value, v6, verdict)) undocumented.add(`${address}: ${verdict}`);
+    }
+    expect([...undocumented]).toEqual([]);
   });
 });
