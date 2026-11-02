@@ -1,25 +1,24 @@
 import { posix } from "node:path";
-import { hiddenCharIn, isSpaceSeparator } from "./hidden-chars";
-import { invisibleFormatOffsets } from "./emoji-sequence";
+import { hiddenCharIn, isJoiner, isSpaceSeparator } from "./hidden-chars";
+import { markedFormatOffsets } from "./emoji-sequence";
 
 /** Longest path accepted. Far past any real one; short enough to show whole. */
 const MAX_PATH_LENGTH = 1024;
 
 /**
- * The path with the zero-width format characters taken out where they are
- * part of what you see (`emoji-sequence.ts`). Inside an emoji the card shows
- * them unchanged — so `⚠️ offen.md` must be writable (fifth review of #1242) —
- * and so it does a joiner that shapes Arabic-script or Indic text, as in
- * `گزارش‌ها.md` or `ශ්‍රී.md` (seventh review). Anywhere else they render as
- * nothing: `a\u200Db.md` looks exactly like `ab.md` and may be a different
- * file, and so does `✅\uFE0F.md` next to `✅.md`, since ✅ is an emoji
- * without the selector (sixth review). Those are left in place for
- * `hiddenCharIn` to refuse.
+ * The path with the zero-width format characters taken out where the card
+ * shows them as they are: inside a full RGI emoji (`emoji-sequence.ts`) — so
+ * `⚠️ offen.md` must be writable (fifth review of #1242). A presentation
+ * selector anywhere else is left in place for `hiddenCharIn` to refuse: it
+ * draws nothing a file name needs, and `✅\uFE0F.md` next to `✅.md` would be
+ * two files (sixth review). A joiner anywhere else is left in place too, and
+ * accepted there (`isJoiner`): Arabic-script and Indic names carry one, and
+ * the card marks it (tenth review).
  */
-function withoutVisibleFormatChars(value: string): string {
-  const invisible = invisibleFormatOffsets(value, { redundant: true });
+function withoutEmojiFormatChars(value: string): string {
+  const marked = markedFormatOffsets(value);
   return value.replace(/[\u200C\u200D\uFE0E\uFE0F]/g, (char: string, offset: number) =>
-    invisible.has(offset) ? char : ""
+    marked.has(offset) ? char : ""
   );
 }
 
@@ -48,7 +47,11 @@ const PADDED_SEGMENT = /^\s|\s$/u;
  *   fillers, the braille blank). Space separators (`\p{Zs}`: no-break, narrow
  *   no-break, ideographic) are allowed: they take visible width, the card
  *   prints each as `⟨U+XXXX⟩`, and real file names carry them — macOS writes
- *   "Screenshot … at 10.00.00 AM.png";
+ *   "Screenshot … at 10.00.00 AM.png".
+ *   The joiners U+200C / U+200D are allowed anywhere too, as Arabic-script
+ *   and Indic names need: the card marks each one outside an emoji, so
+ *   `a\u200Db.md` reads as `a⟨U+200D⟩b.md`, never as `ab.md` (tenth review
+ *   of #1242);
  * - no file or folder name that starts or ends with a space of any kind —
  *   `report.md ` would be a different file from `report.md`, and the card can
  *   only mark the space, not make the two read apart at a glance (sixth
@@ -71,7 +74,10 @@ export function assertPlainPath(
         "Use a shorter path."
     );
   }
-  const hidden = hiddenCharIn(withoutVisibleFormatChars(value), isSpaceSeparator);
+  const hidden = hiddenCharIn(
+    withoutEmojiFormatChars(value),
+    (char) => isSpaceSeparator(char) || isJoiner(char)
+  );
   if (hidden) {
     throw new Error(
       `${field} contains an invisible or blank-rendering character (${hidden}). ` +

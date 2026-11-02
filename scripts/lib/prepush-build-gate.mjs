@@ -92,9 +92,10 @@ const IRRELEVANT_FILES = new Set([
  * pull into the build: see the header of pdf-scan-rule.ts.
  *
  * The third is the emoji rule the approval card shares with `pinchy-files`'
- * path check (#1242): where U+200D / U+FE0E / U+FE0F are part of a visible
- * emoji. The card marks one exactly where a path may not carry it, so the two
- * must not drift; import-free for the same reason.
+ * path check (#1242): where U+200C / U+200D / U+FE0E / U+FE0F are part of a
+ * full RGI emoji. The card marks one everywhere else, and a path may not carry
+ * a presentation selector there, so the two must not drift; import-free for
+ * the same reason.
  *
  * This is a carve-out from IRRELEVANT_PREFIXES, checked before it. Do not extend
  * it by hand: `escapingImportTargets` + the drift guard in

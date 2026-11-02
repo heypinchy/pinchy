@@ -198,25 +198,34 @@ describe("parseSingleRecipient: names with commas, parentheses and emoji", () =>
 
 // Seventh review of #1242: a ZWNJ was refused in every display name, but in
 // Persian it is part of how a name is written — it keeps two letters that
-// would join apart. It is accepted where it does that (IDNA's CONTEXTJ rule,
-// RFC 5892 A.1, shared with the card through `emoji-sequence.ts`), and
-// refused where it renders as nothing, as before.
-describe("parseSingleRecipient: joiners that shape Arabic-script and Indic names", () => {
+// would join apart. Tenth review: whether a joiner draws anything depends on
+// the script and the font, which no rule here can know, so a display name
+// may carry U+200C and U+200D anywhere — as it already could U+200D — and the
+// card marks every one outside an emoji (`emoji-sequence.ts`). An address
+// never carries one.
+describe("parseSingleRecipient: joiners in Arabic-script and Indic names", () => {
   it.each([
-    ["a Persian name with a ZWNJ", "علی\u200Cرضا <a@x.ir>"],
-    ["a Sinhala name with a ZWJ after al-lakuna", "ශ්\u200Dරී <s@x.lk>"],
+    ["a Persian name with a ZWNJ", "علی‌رضا <a@x.ir>"],
+    ["a Sinhala name with a ZWJ after al-lakuna", "ශ්‍රී <s@x.lk>"],
   ])("accepts %s", (_label, input) => {
     expect(parseSingleRecipient(input)).toEqual({ ok: true, address: input });
   });
 
+  // Refused while the rule tried to tell them apart from the names above;
+  // the card now marks the joiner in each, so they read apart from the same
+  // name without it.
   it.each([
-    ["a ZWNJ between Latin letters", "Ad\u200Ca <a@x.at>"],
-    // د joins only to the right, so the ZWNJ after it changes nothing on
-    // screen: this reads exactly like محمدرضا (the reviewer's probe name).
-    ["a ZWNJ after a right-joining letter", "محمد\u200Cرضا <m@x.ir>"],
-    ["a ZWNJ after a virama with no letter after it", "जगत्\u200C <j@x.in>"],
-    ["a ZWNJ in the address itself", "علی\u200Cرضا@x.ir"],
-    ["a ZWNJ in the address of a named recipient", "Ali <علی\u200Cرضا@x.ir>"],
+    ["a ZWNJ between Latin letters", "Ad‌a <a@x.at>"],
+    ["a ZWNJ after a right-joining letter", "محمد‌رضا <m@x.ir>"],
+    ["a ZWNJ after a virama with no letter after it", "जगत्‌ <j@x.in>"],
+    ["a ZWNJ inside a Tamil name", "க்‌ம <t@x.in>"],
+  ])("accepts %s; the card marks the joiner", (_label, input) => {
+    expect(parseSingleRecipient(input)).toEqual({ ok: true, address: input });
+  });
+
+  it.each([
+    ["a ZWNJ in the address itself", "علی‌رضا@x.ir"],
+    ["a ZWNJ in the address of a named recipient", "Ali <علی‌رضا@x.ir>"],
   ])("refuses %s", (_label, input) => {
     expect(parseSingleRecipient(input).ok).toBe(false);
   });

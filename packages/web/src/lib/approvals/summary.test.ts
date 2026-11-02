@@ -460,23 +460,29 @@ describe("summarizeArgs", () => {
       expect(out.subject).toMatch(/^x⟨U\+[0-9A-F]{4,5}⟩y$/);
     });
 
-    it("leaves ordinary emoji readable: ZWJ sequences and VS16 stay as they are", () => {
-      const family = "👨\u200D👩\u200D👧";
-      const heart = "❤\uFE0F";
-      const text = "\u263A\uFE0E";
-      const out = summarizeArgs({ subject: `${family} ${heart} ${text}` }) as { subject: string };
-      expect(out.subject).toBe(`${family} ${heart} ${text}`);
+    it("leaves ordinary emoji readable: RGI ZWJ sequences and VS16 stay as they are", () => {
+      const family = "👨‍👩‍👧";
+      const heart = "❤️";
+      const fire = "❤️‍\u{1F525}";
+      const out = summarizeArgs({ subject: `${family} ${heart} ${fire}` }) as { subject: string };
+      expect(out.subject).toBe(`${family} ${heart} ${fire}`);
+    });
+
+    // Tenth review of #1242: a text-presentation selector after ☺ was kept
+    // raw, but ☺︎ is not an RGI emoji, and Helvetica draws it exactly like ☺.
+    it("marks a selector outside a full RGI emoji", () => {
+      expect(summarizeArgs({ subject: "☺︎" })).toEqual({ subject: "☺⟨U+FE0E⟩" });
     });
 
     // Sixth review of #1242: the joiner and the presentation selectors were
-    // kept raw everywhere, so "Noack\u200D GmbH" read as "Noack GmbH" — a
-    // different name to look up — and "RE-1001\uFE0F" as "RE-1001", which the
+    // kept raw everywhere, so "Noack‍ GmbH" read as "Noack GmbH" — a
+    // different name to look up — and "RE-1001️" as "RE-1001", which the
     // vendor-bill duplicate check compares exactly. Outside an emoji they
     // render as nothing, so they are marked like any other invisible character.
     it("marks a joiner or presentation selector that is not part of an emoji", () => {
       const out = summarizeArgs({
         model: "account.move",
-        values: { partner_id: "Noack\u200D GmbH", ref: "RE-1001\uFE0F", note: "a\uFE0Eb" },
+        values: { partner_id: "Noack‍ GmbH", ref: "RE-1001️", note: "a︎b" },
       }) as { values: Record<string, string> };
       expect(out.values).toEqual({
         partner_id: "Noack⟨U+200D⟩ GmbH",
@@ -485,35 +491,51 @@ describe("summarizeArgs", () => {
       });
     });
 
-    // Seventh review of #1242: a ZWNJ was marked everywhere and a ZWJ outside
-    // an emoji, although in Arabic-script and Indic text they shape what you
-    // see. Kept as they are where RFC 5892's CONTEXTJ rule says they do
-    // something — after a virama, and a ZWNJ between letters that would
-    // otherwise join — and marked where they render as nothing.
-    it("leaves a joiner that shapes Arabic-script or Indic text as it is", () => {
-      const text = "گزارش\u200Cها ශ්\u200Dරී അവന്\u200D क्\u200Cष";
+    // Seventh review of #1242 kept a joiner raw where RFC 5892's CONTEXTJ rule
+    // says it shapes Arabic-script or Indic text, and the eighth and ninth
+    // narrowed that per script. Tenth review: each rule still let through
+    // joiners that draw nothing in some font — `க்‌ம.md` read as `க்ம.md`. A
+    // joiner outside an emoji is marked, in every script.
+    it("marks a joiner in Arabic-script and Indic text", () => {
+      const text = "گزارش‌ها ශ්‍රී അവന്‍ क्‌ष";
+      const shown = "گزارش⟨U+200C⟩ها ශ්⟨U+200D⟩රී അവന്⟨U+200D⟩ क्⟨U+200C⟩ष";
       expect(summarizeArgs({ subject: text, path: `/data/output/${text}.md` })).toEqual({
-        path: `/data/output/${text}.md`,
-        subject: text,
+        path: `/data/output/${shown}.md`,
+        subject: shown,
       });
     });
 
     it.each([
-      ["a ZWNJ between Latin letters", "a\u200Cb", "a⟨U+200C⟩b"],
-      ["a ZWNJ after a right-joining letter", "محمد\u200Cرضا", "محمد⟨U+200C⟩رضا"],
-      ["a ZWJ between Arabic letters", "ش\u200Dه", "ش⟨U+200D⟩ه"],
-      // Eighth review of #1242: nothing after the virama for the ZWNJ to keep
-      // apart, or a virama on a letter of another script.
-      ["a ZWNJ after a virama at the end", "जगत्\u200C.md", "जगत्⟨U+200C⟩.md"],
-      ["a ZWNJ after a virama on a Latin letter", "a्\u200Cb.md", "a्⟨U+200C⟩b.md"],
+      ["a ZWNJ between Latin letters", "a‌b", "a⟨U+200C⟩b"],
+      ["a ZWNJ after a right-joining letter", "محمد‌رضا", "محمد⟨U+200C⟩رضا"],
+      ["a ZWJ between Arabic letters", "ش‍ه", "ش⟨U+200D⟩ه"],
+      ["a ZWNJ after a virama at the end", "जगत्‌.md", "जगत्⟨U+200C⟩.md"],
+      ["a ZWNJ after a virama on a Latin letter", "a्‌b.md", "a्⟨U+200C⟩b.md"],
+      // Tenth review of #1242 (the reviewer's probe names): mid-word, after a
+      // virama, before a letter of the same script.
+      ["a ZWNJ inside a Tamil word", "க்‌ம", "க்⟨U+200C⟩ம"],
+      ["a ZWJ inside a Tamil word", "க்‍ம", "க்⟨U+200D⟩ம"],
+      ["a ZWJ inside a Thai word", "กฺ‍ม", "กฺ⟨U+200D⟩ม"],
+      ["a ZWJ inside a Myanmar word", "က်‍မ", "က်⟨U+200D⟩မ"],
+      ["a ZWJ inside a Sinhala word", "ක්‍ම", "ක්⟨U+200D⟩ම"],
+      ["a ZWJ inside a Gurmukhi word", "ਕ੍‍ਮ", "ਕ੍⟨U+200D⟩ਮ"],
     ])("marks %s", (_label, text, shown) => {
       expect(summarizeArgs({ subject: text })).toEqual({ subject: shown });
     });
 
     it.each([
-      ["a joiner trailing an emoji", "\u{1F468}\u200D.", "\u{1F468}⟨U+200D⟩."],
-      ["a joiner before an emoji", "a\u200D\u{1F468}", "a⟨U+200D⟩\u{1F468}"],
-      ["a second selector", "\u26A0\uFE0F\uFE0F", "\u26A0\uFE0F⟨U+FE0F⟩"],
+      ["a joiner trailing an emoji", "\u{1F468}‍.", "\u{1F468}⟨U+200D⟩."],
+      ["a joiner before an emoji", "a‍\u{1F468}", "a⟨U+200D⟩\u{1F468}"],
+      ["a second selector", "⚠️️", "⚠️⟨U+FE0F⟩"],
+      // Tenth review of #1242: any two pictographs joined by a ZWJ were taken
+      // as one emoji. Only a full RGI emoji is.
+      ["two pages joined", "\u{1F4C4}‍\u{1F4C4}", "\u{1F4C4}⟨U+200D⟩\u{1F4C4}"],
+      ["a heart on fire without its selector", "❤‍\u{1F525}", "❤⟨U+200D⟩\u{1F525}"],
+      [
+        "a family joined to a page",
+        "\u{1F468}‍\u{1F469}‍\u{1F467}‍\u{1F4C4}",
+        "\u{1F468}‍\u{1F469}‍\u{1F467}⟨U+200D⟩\u{1F4C4}",
+      ],
     ])("marks %s", (_label, text, shown) => {
       expect(summarizeArgs({ subject: text })).toEqual({ subject: shown });
     });
@@ -667,22 +689,26 @@ describe("summarizeArgs", () => {
     });
 
     it.each([
+      ["a check mark", "/data/out/Vertrag ✅️.pdf", "/data/out/Vertrag ✅⟨U+FE0F⟩.pdf"],
+      ["a page", "/data/out/\u{1F4C4}️.md", "/data/out/\u{1F4C4}⟨U+FE0F⟩.md"],
+      // Not an RGI emoji, and Helvetica draws it exactly like ✅ (tenth review
+      // of #1242).
       [
-        "a check mark",
-        "/data/out/Vertrag \u2705\uFE0F.pdf",
-        "/data/out/Vertrag \u2705⟨U+FE0F⟩.pdf",
+        "a check mark asked to be text",
+        "/data/out/Vertrag ✅︎.pdf",
+        "/data/out/Vertrag ✅⟨U+FE0E⟩.pdf",
       ],
-      ["a page", "/data/out/\u{1F4C4}\uFE0F.md", "/data/out/\u{1F4C4}⟨U+FE0F⟩.md"],
     ])("marks a presentation selector that changes nothing after %s", (_label, path, shown) => {
       expect(summarizeArgs({ path })).toEqual({ path: shown });
     });
 
     it.each([
-      ["a warning sign shown as emoji", "/data/notes/\u26A0\uFE0F offen.md"],
-      ["a check mark shown as text", "/data/out/Vertrag \u2705\uFE0E.pdf"],
-      ["a joined family", "/data/notes/\u{1F468}\u200D\u{1F469}\u200D\u{1F467} Familie.md"],
-      ["a rainbow flag", "/data/notes/\u{1F3F3}\uFE0F\u200D\u{1F308} Pride.md"],
-      ["a keycap", "/data/notes/1\uFE0F\u20E3 first.md"],
+      ["a warning sign shown as emoji", "/data/notes/⚠️ offen.md"],
+      ["a joined family", "/data/notes/\u{1F468}‍\u{1F469}‍\u{1F467} Familie.md"],
+      ["a rainbow flag", "/data/notes/\u{1F3F3}️‍\u{1F308} Pride.md"],
+      ["a keycap", "/data/notes/1️⃣ first.md"],
+      ["a skin-toned technologist", "/data/notes/\u{1F469}\u{1F3FD}‍\u{1F4BB} Dev.md"],
+      ["a heart on fire", "/data/notes/❤️‍\u{1F525} Team.md"],
     ])("leaves %s as it is", (_label, path) => {
       expect(summarizeArgs({ path })).toEqual({ path });
     });

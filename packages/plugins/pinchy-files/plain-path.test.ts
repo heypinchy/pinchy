@@ -50,7 +50,6 @@ describe("assertPlainPath", () => {
 
   it.each([
     ["a zero-width space", "​", /U\+200B/],
-    ["a zero-width joiner", "‍", /U\+200D/],
     ["a braille blank", "⠀", /U\+2800/],
     ["a hangul filler", "ㅤ", /U\+3164/],
     ["a line separator", " ", /U\+2028/],
@@ -61,94 +60,102 @@ describe("assertPlainPath", () => {
 
   // Fifth review of #1242: U+FE0F and U+200D were refused outright, so
   // ordinary emoji file names could not be written or deleted although the
-  // card shows them unchanged. Inside an emoji they are part of a visible
-  // glyph; anywhere else they render as nothing and stay refused.
+  // card shows them unchanged. Inside a full RGI emoji they are part of a
+  // visible glyph.
   it.each([
     ["an emoji with a presentation selector", "/data/notes/⚠️ offen.md"],
     ["a heart with a presentation selector", "/data/notes/❤️ Team.md"],
-    ["a joined family", "/data/notes/👨‍👩‍👧 Familie.md"],
+    ["a joined family", "/data/notes/\u{1F468}‍\u{1F469}‍\u{1F467} Familie.md"],
     ["an emoji without format characters", "/data/notes/✅ done.md"],
-    ["a skin-toned joined emoji", "/data/notes/👩🏽‍💻 Dev.md"],
-    ["a flag joined with a selector", "/data/notes/🏳️‍🌈 Pride.md"],
-    ["a text-presentation selector", "/data/notes/⚠︎ text.md"],
+    ["a skin-toned joined emoji", "/data/notes/\u{1F469}\u{1F3FD}‍\u{1F4BB} Dev.md"],
+    ["a flag joined with a selector", "/data/notes/\u{1F3F3}️‍\u{1F308} Pride.md"],
     ["a keycap", "/data/notes/1️⃣ first.md"],
   ])("accepts %s", (_label, value) => {
     ok(value);
   });
 
+  // A presentation selector outside a full RGI emoji draws nothing that a
+  // file name needs — `⚠︎ text.md` is drawn exactly like `⚠ text.md` in
+  // Helvetica (tenth review of #1242) — so it stays refused.
   it.each([
-    ["a joiner between letters", "/data/a\u200Db.md", /U\+200D/],
-    ["a presentation selector after a letter", "/data/report\uFE0F.md", /U\+FE0F/],
-    ["a presentation selector after a digit", "/data/report1\uFE0F.md", /U\+FE0F/],
-    ["a joiner after an emoji, before a letter", "/data/👨\u200Db.md", /U\+200D/],
-    ["a joiner trailing an emoji", "/data/👨\u200D.md", /U\+200D/],
-    ["a joiner before an emoji", "/data/a\u200D👨.md", /U\+200D/],
-    ["two selectors after an emoji", "/data/⚠\uFE0F\uFE0F.md", /U\+FE0F/],
+    ["a presentation selector after a letter", "/data/report️.md", /U\+FE0F/],
+    ["a presentation selector after a digit", "/data/report1️.md", /U\+FE0F/],
+    ["two selectors after an emoji", "/data/⚠️️.md", /U\+FE0F/],
+    ["a text-presentation selector", "/data/notes/⚠︎ text.md", /U\+FE0E/],
   ])("still refuses %s, which renders as nothing", (_label, value, why) => {
     refused(value, why);
   });
 
-  // Seventh review of #1242: U+200C was refused everywhere and U+200D outside
-  // an emoji, but in Arabic-script and Indic text they shape what you see —
-  // the Persian plural گزارش‌ها keeps its ش unjoined, Sinhala ශ්‍රී is drawn
-  // with a rakaaraansaya, Malayalam അവന്‍ ends in a chillu. They are accepted
-  // where IDNA's CONTEXTJ rule (RFC 5892 A.1/A.2) says they do something:
-  // after a virama, and a ZWNJ between two letters that would otherwise join.
+  // Tenth review of #1242: a joiner is accepted anywhere, and the card marks
+  // it as ⟨U+200C⟩ / ⟨U+200D⟩ everywhere outside a full RGI emoji — the way a
+  // no-break space in a path is accepted and marked. Deciding per script
+  // where it draws something failed for ten reviews; the marker keeps two
+  // names that differ only by a joiner apart on the card.
   it.each([
-    ["a Persian plural with a ZWNJ", "/data/output/گزارش\u200Cها.md"],
-    ["Sinhala Sri with a ZWJ after al-lakuna", "/data/output/ශ්\u200Dරී ලංකා.md"],
-    ["a Malayalam chillu with a ZWJ after the virama", "/data/output/അവന്\u200D.md"],
-    ["a Devanagari half form with a ZWNJ after the virama", "/data/output/क्\u200Cष.md"],
-    ["a ZWNJ after a dual-joining letter with a vowel mark", "/data/output/مِ\u200Cها.md"],
-    // Ninth review of #1242 (the reviewer's probe names): the Bengali ya-phalaa
-    // after ra is written with a ZWJ before the virama (Unicode core spec
-    // §12.2) — without it the ra turns into a repha.
-    ["a Bengali ra-yaphala with a ZWJ before the virama", "/data/out/র\u200D্যাংকিং.md"],
-    ["a Devanagari half form at the end of a name", "/data/out/ग्\u200D.md"],
-  ])("accepts %s, which shapes the text", (_label, value) => {
+    ["a zero-width joiner between letters", "/data/a‍b.md"],
+    ["a zero-width non-joiner between letters", "/data/a‌b.md"],
+    ["a joiner after an emoji, before a letter", "/data/\u{1F468}‍b.md"],
+    ["a joiner trailing an emoji", "/data/\u{1F468}‍.md"],
+    ["a joiner before an emoji", "/data/a‍\u{1F468}.md"],
+    ["two pages joined, which no vendor draws as one", "/data/\u{1F4C4}‍\u{1F4C4}.md"],
+    ["a family joined to a page", "/data/\u{1F468}‍\u{1F469}‍\u{1F467}‍\u{1F4C4}.md"],
+  ])("accepts %s; the card marks the joiner", (_label, value) => {
     ok(value);
   });
 
+  // Seventh review of #1242: U+200C was refused everywhere and U+200D outside
+  // an emoji, but Arabic-script and Indic names carry them — the Persian
+  // plural گزارش‌ها, Sinhala ශ්‍රී, Malayalam അവന്‍. They are accepted, and
+  // marked on the card like every joiner outside an emoji.
   it.each([
-    ["a ZWNJ between Latin letters", "/data/a\u200Cb.md", /U\+200C/],
-    // د only joins to the right, so a ZWNJ after it changes nothing on screen:
-    // محمد‌رضا reads exactly like محمدرضا (the reviewer's probe name).
-    ["a ZWNJ after a right-joining letter", "/data/محمد\u200Cرضا.md", /U\+200C/],
-    ["a ZWNJ with no letter after it", "/data/گزارش\u200C.md", /U\+200C/],
-    ["a ZWNJ before a non-joining hamza", "/data/ش\u200Cء.md", /U\+200C/],
-    ["a ZWJ between Arabic letters", "/data/ش\u200Dه.md", /U\+200D/],
-    ["a ZWNJ between Latin letters next to Persian", "/data/گزارش a\u200Cb.md", /U\+200C/],
-    // Eighth review of #1242 (the reviewer's probe names): a ZWNJ after a
-    // virama with no letter after it changes nothing, so this read exactly
-    // like /data/out/जगत्.md; and a virama on a Latin letter shapes nothing.
-    ["a ZWNJ after a virama at the end of a name", "/data/out/जगत्\u200C.md", /U\+200C/],
-    ["a ZWNJ after a virama on a Latin letter", "/data/out/a्\u200Cb.md", /U\+200C/],
-    // Ninth review of #1242 (the reviewer's probe names): a ZWJ ending a word
-    // after a virama draws nothing in a script without half forms or chillus,
-    // so each of these reads exactly like the same path without it.
-    ["a ZWJ after a Tamil pulli at the end of a name", "/data/out/தமிழ்\u200D.md", /U\+200D/],
-    ["a ZWJ after a Thai phinthu at the end of a name", "/data/out/ก\u0E3A\u200D.md", /U\+200D/],
-    ["a ZWJ after a Telugu virama at the end of a name", "/data/out/జగత్\u200D.md", /U\+200D/],
-  ])("still refuses %s, which renders as nothing", (_label, value, why) => {
-    refused(value, why);
+    ["a Persian plural with a ZWNJ", "/data/output/گزارش‌ها.md"],
+    ["Sinhala Sri with a ZWJ after al-lakuna", "/data/output/ශ්‍රී ලංකා.md"],
+    ["a Malayalam chillu with a ZWJ after the virama", "/data/output/അവന്‍.md"],
+    ["a Devanagari half form with a ZWNJ after the virama", "/data/output/क्‌ष.md"],
+    ["a ZWNJ after a dual-joining letter with a vowel mark", "/data/output/مِ‌ها.md"],
+    ["a Bengali ra-yaphala with a ZWJ before the virama", "/data/out/র‍্যাংকিং.md"],
+    ["a Devanagari half form at the end of a name", "/data/out/ग्‍.md"],
+  ])("accepts %s; the card marks the joiner", (_label, value) => {
+    ok(value);
+  });
+
+  // The seventh to tenth reviews' probe names: each draws nothing in at least
+  // one font. They were refused while the rule tried to tell them apart from
+  // the names above; now they are accepted and marked like those.
+  it.each([
+    ["a ZWNJ after a right-joining letter", "/data/محمد‌رضا.md"],
+    ["a ZWNJ with no letter after it", "/data/گزارش‌.md"],
+    ["a ZWNJ before a non-joining hamza", "/data/ش‌ء.md"],
+    ["a ZWJ between Arabic letters", "/data/ش‍ه.md"],
+    ["a ZWNJ between Latin letters next to Persian", "/data/گزارش a‌b.md"],
+    ["a ZWNJ after a virama at the end of a name", "/data/out/जगत्‌.md"],
+    ["a ZWNJ after a virama on a Latin letter", "/data/out/a्‌b.md"],
+    ["a ZWJ after a Tamil pulli at the end of a name", "/data/out/தமிழ்‍.md"],
+    ["a ZWJ after a Thai phinthu at the end of a name", "/data/out/กฺ‍.md"],
+    ["a ZWJ after a Telugu virama at the end of a name", "/data/out/జగత్‍.md"],
+    ["a ZWNJ inside a Tamil word", "/data/out/க்‌ம.md"],
+    ["a ZWJ inside a Myanmar word", "/data/out/က်‍မ.md"],
+  ])("accepts %s; the card marks the joiner", (_label, value) => {
+    ok(value);
   });
 
   // Sixth review of #1242: ✅ is shown as an emoji by default, so a U+FE0F
   // after it changes nothing on screen — `Vertrag ✅️.pdf` read exactly like
-  // `Vertrag ✅.pdf` and is a different file. A selector that asks for the
-  // presentation a character already has is refused like any other invisible
-  // character; one that changes it (⚠️, ✅︎) is part of what you see.
+  // `Vertrag ✅.pdf` and is a different file. None of these is a full RGI
+  // emoji, so the selector is refused like any other invisible character.
   it.each([
-    ["after an emoji-by-default check mark", "/data/out/Vertrag \u2705\uFE0F.pdf"],
-    ["after an emoji-by-default page", "/data/out/\u{1F4C4}\uFE0F.md"],
-    ["after a skin tone", "/data/out/\u{1F44D}\u{1F3FD}\uFE0F.md"],
+    ["after an emoji-by-default check mark", "/data/out/Vertrag ✅️.pdf"],
+    ["after an emoji-by-default page", "/data/out/\u{1F4C4}️.md"],
+    ["after a skin tone", "/data/out/\u{1F44D}\u{1F3FD}️.md"],
   ])("refuses a presentation selector that changes nothing: %s", (_label, value) => {
     refused(value, /U\+FE0F/);
   });
 
-  it("still accepts a selector that changes the presentation", () => {
-    ok("/data/out/Vertrag \u2705\uFE0E.pdf");
-    ok("/data/notes/\u26A0\uFE0F offen.md");
+  // `✅︎` is not an RGI emoji either: Helvetica draws it exactly like `✅`
+  // (tenth review of #1242).
+  it("accepts a selector only inside a full RGI emoji", () => {
+    ok("/data/notes/⚠️ offen.md");
+    refused("/data/out/Vertrag ✅︎.pdf", /U\+FE0E/);
   });
 
   // Sixth review of #1242: `/data/out/report.md ` read on the card exactly

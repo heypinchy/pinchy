@@ -10,12 +10,13 @@
  * so a character one side treats as hidden cannot pass the other unseen.
  */
 import { describe, it, expect } from "vitest";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { isEscapedChar, summarizeCall } from "@/lib/approvals/summary";
 import {
   hiddenCharIn,
   isEmojiFormatChar,
+  isJoiner,
   isSpaceSeparator,
 } from "../../../../plugins/pinchy-email/hidden-chars";
 import { assertPlainPath } from "../../../../plugins/pinchy-files/plain-path";
@@ -27,10 +28,10 @@ const copiesOf = (file: string) =>
   );
 const COPIES = copiesOf("hidden-chars.ts");
 
-/** Kept readable by the summary on purpose: layout (tab, line break), the
- * three emoji code points and the zero-width non-joiner, which cannot carry a
- * payload. The card marks those four wherever they render as nothing
- * (`emoji-sequence.ts`); the tools refuse them there. */
+/** Kept readable by the summary on purpose: layout (tab, line break) and the
+ * four format characters of ordinary emoji, which cannot carry a payload. The
+ * card marks those four wherever they are not part of a full RGI emoji
+ * (`emoji-sequence.ts`). */
 const SUMMARY_KEEPS = new Set([0x09, 0x0a, 0x200c, 0x200d, 0xfe0e, 0xfe0f]);
 
 describe("hidden-chars drift guard", () => {
@@ -40,15 +41,24 @@ describe("hidden-chars drift guard", () => {
     for (const copy of rest) expect(copy).toBe(first);
   });
 
-  // Seventh review of #1242: the recipient check now reads joiners through the
-  // same rule as the path check and the card, so pinchy-email carries a copy.
-  it("the joiner and emoji rule is identical in every plugin that carries it", () => {
-    const [first, ...rest] = copiesOf("emoji-sequence.ts").map((file) =>
-      readFileSync(file, "utf8")
+  // Seventh review of #1242 gave pinchy-email a copy of the joiner rule.
+  // Tenth review: a display name accepts every joiner and the card marks it,
+  // so the recipient check no longer asks where one draws something. One copy
+  // is left, and the path check and the card both read it — a second copy
+  // would be a second rule.
+  it("the path check and the card read the one copy of the emoji rule", () => {
+    const [emailCopy, filesCopy] = copiesOf("emoji-sequence.ts");
+    expect(existsSync(emailCopy)).toBe(false);
+    expect(readFileSync(filesCopy, "utf8")).toContain("export function markedFormatOffsets(");
+    const pathCheck = readFileSync(copiesOf("plain-path.ts")[1], "utf8");
+    expect(pathCheck).toContain('import { markedFormatOffsets } from "./emoji-sequence";');
+    const card = readFileSync(
+      resolve(import.meta.dirname, "../../lib/approvals/summary.ts"),
+      "utf8"
     );
-    expect(first).toContain("export function invisibleFormatOffsets(");
-    expect(rest).toHaveLength(1);
-    for (const copy of rest) expect(copy).toBe(first);
+    expect(card).toContain(
+      'import { markedFormatOffsets } from "../../../../plugins/pinchy-files/emoji-sequence";'
+    );
   });
 
   // Lone surrogates included (third review of #1242): the summary escapes them
@@ -97,15 +107,26 @@ describe("hidden-chars drift guard", () => {
     });
 
     // Fifth review of #1242: ordinary emoji file names (⚠️, 👨‍👩‍👧) could not be
-    // written. The card shows these characters as they are, so a path may
-    // carry them only where they are part of a visible emoji — never on their
-    // own, where `a⟨U+200D⟩b.md` would read as `ab.md`.
-    it("a path may carry the emoji characters inside an emoji, and nowhere else", () => {
+    // written. The card shows these characters as they are inside a full RGI
+    // emoji, so a path may carry them there. Elsewhere a presentation selector
+    // stays refused — `report⟨U+FE0F⟩.md` — while a joiner is accepted and
+    // marked (tenth review), as `isJoiner` pins below.
+    it("a path may carry a selector inside an emoji and nowhere else, and a joiner anywhere", () => {
+      // No RGI emoji carries U+FE0E: Unicode's list is of emoji presentation.
+      const inEmoji: Record<string, string | undefined> = {
+        "\u200D": "\u{1F468}\u200D\u{1F469}\u200D\u{1F467}",
+        "\uFE0F": "\u26A0\uFE0F",
+      };
       for (const cp of every(isEmojiFormatChar)) {
         const char = String.fromCodePoint(cp);
-        const inEmoji = char === "\u200D" ? `\u{1F468}${char}\u{1F469}` : `\u26A0${char}`;
-        expect(() => assertPlainPath(`/data/${inEmoji} x.md`, "path")).not.toThrow();
-        expect(() => assertPlainPath(`/data/a${char}b.md`, "path")).toThrow(/U\+/);
+        const emoji = inEmoji[char];
+        if (emoji) expect(() => assertPlainPath(`/data/${emoji} x.md`, "path")).not.toThrow();
+        else expect(() => assertPlainPath(`/data/\u26A0${char} x.md`, "path")).toThrow(/U\+/);
+        if (isJoiner(char)) {
+          expect(() => assertPlainPath(`/data/a${char}b.md`, "path")).not.toThrow();
+        } else {
+          expect(() => assertPlainPath(`/data/a${char}b.md`, "path")).toThrow(/U\+/);
+        }
       }
     });
 
@@ -113,27 +134,25 @@ describe("hidden-chars drift guard", () => {
     // selectors raw everywhere, so a stray one read as nothing on the card
     // while the path rule refused it. Both now read emoji through one module
     // (pinchy-files `emoji-sequence.ts`); pinned here so they cannot drift:
-    // the card marks one of these characters exactly where a path may not
+    // the card marks a presentation selector exactly where a path may not
     // carry it.
-    it("the card marks a joiner or selector in a path exactly where the path rule refuses it", () => {
+    it("the card marks a selector in a path exactly where the path rule refuses it", () => {
       const names = [
-        "\u26A0\uFE0F offen",
-        "\u26A0\uFE0E text",
-        "\u2705 done",
-        "\u2705\uFE0F done",
-        "\u2705\uFE0E done",
-        "\u{1F4C4}\uFE0F",
-        "\u{1F468}\u200D\u{1F469}\u200D\u{1F467}",
-        "\u{1F469}\u{1F3FD}\u200D\u{1F4BB}",
-        "\u{1F3F3}\uFE0F\u200D\u{1F308}",
-        "1\uFE0F\u20E3 first",
-        "a\u200Db",
-        "report\uFE0F",
-        "\u{1F468}\u200Db",
-        "\u{1F468}\u200D",
-        "a\u200D\u{1F468}",
-        "\u26A0\uFE0F\uFE0F",
-        "\u{1F600}\uFE0F\uFE0F",
+        "⚠️ offen",
+        "⚠︎ text",
+        "✅ done",
+        "✅️ done",
+        "✅︎ done",
+        "\u{1F4C4}️",
+        "\u{1F468}‍\u{1F469}‍\u{1F467}",
+        "\u{1F469}\u{1F3FD}‍\u{1F4BB}",
+        "\u{1F3F3}️‍\u{1F308}",
+        "\u{1F3F3}‍\u{1F308}",
+        "❤️‍\u{1F525}",
+        "1️⃣ first",
+        "report️",
+        "⚠️️",
+        "\u{1F600}️️",
       ];
       const rows = names.map((name) => {
         const path = `/data/${name}.md`;
@@ -144,7 +163,7 @@ describe("hidden-chars drift guard", () => {
           refused = true;
         }
         const shown = summarizeCall({ path }).summary.path as string;
-        return { name, refused, marked: /⟨U\+(200D|FE0E|FE0F)⟩/.test(shown) };
+        return { name, refused, marked: /⟨U\+(FE0E|FE0F)⟩/.test(shown) };
       });
       expect(rows.filter((row) => row.refused !== row.marked)).toEqual([]);
       // Both directions are exercised, or the comparison proves nothing.
@@ -152,41 +171,61 @@ describe("hidden-chars drift guard", () => {
       expect(rows.some((row) => !row.refused)).toBe(true);
     });
 
-    // Seventh review of #1242: U+200C was refused and marked everywhere, and
-    // U+200D outside an emoji, although in Arabic-script and Indic text they
-    // shape what you see. All three read them through one rule (RFC 5892
-    // CONTEXTJ, in `emoji-sequence.ts`): the path check and the recipient
-    // check refuse a joiner exactly where the card marks it.
-    it("the card marks a joiner exactly where the path and recipient checks refuse it", () => {
-      const names = [
-        "گزارش\u200Cها",
-        "علی\u200Cرضا",
-        "مِ\u200Cها",
-        "محمد\u200Cرضا",
-        "گزارش\u200C",
-        "ش\u200Cء",
-        "ش\u200Dه",
-        "ශ්\u200Dරී",
-        "അവന്\u200D",
-        "क्\u200Cष",
-        "क\u093C\u200Cष",
-        "जगत्\u200C",
-        "a्\u200Cb",
-        "क्\u200Cb",
-        "a\u200Cb",
-        "Ad\u200Da",
-        // Ninth review of #1242: a word-final ZWJ after a virama draws nothing
-        // in Tamil or Thai, and the Bengali ya-phalaa after ra carries one
-        // before the virama.
-        "தமிழ்\u200D",
-        "ก\u0E3A\u200D",
-        "ग्\u200D",
-        "ट्\u200D",
-        "র\u200D্যাংকিং",
-        "ৰ\u200D্য",
-        "ক\u200D্য",
+    // Seventh to ninth review of #1242 kept a joiner raw where a per-script
+    // rule said it shapes the text; the tenth found the rule let through
+    // joiners that draw nothing (Tamil க்‌ம, Thai กฺ‍ม, Myanmar က်‍မ, Sinhala
+    // ක්‍ම, Gurmukhi ਕ੍‍ਮ, and 📄‍📄). One rule now: the path check and the
+    // recipient check accept a joiner anywhere, and the card — for a path and
+    // a recipient alike — shows it raw only inside a full RGI emoji.
+    it("the card marks a joiner in a path and a recipient exactly outside an RGI emoji", () => {
+      const raw = [
+        "\u{1F468}‍\u{1F469}‍\u{1F467}",
+        "\u{1F3F3}️‍\u{1F308}",
+        "\u{1F469}\u{1F3FD}‍\u{1F4BB}",
+        "❤️‍\u{1F525}",
       ];
-      const rows = names.map((name) => {
+      const marked = [
+        "گزارش‌ها",
+        "علی‌رضا",
+        "مِ‌ها",
+        "محمد‌رضا",
+        "گزارش‌",
+        "ش‌ء",
+        "ش‍ه",
+        "ශ්‍රී",
+        "അവന്‍",
+        "क्‌ष",
+        "क़‌ष",
+        "जगत्‌",
+        "a्‌b",
+        "क्‌b",
+        "a‌b",
+        "Ad‍a",
+        "தமிழ்‍",
+        "กฺ‍",
+        "ग्‍",
+        "ट्‍",
+        "র‍্যাংকিং",
+        "ৰ‍্য",
+        "ক‍্য",
+        // Tenth review of #1242: mid-word, after a virama and before a letter
+        // of its own script — each pixel-identical to the name without the
+        // joiner in a shipping font.
+        "க்‌ம",
+        "க்‍ம",
+        "กฺ‍ม",
+        "က်‍မ",
+        "ක්‍ම",
+        "ਕ੍‍ਮ",
+        "ക്‌മ",
+        "ક્‍મ",
+        "क्‍म",
+        // …and pictographs joined into no RGI emoji.
+        "\u{1F4C4}‍\u{1F4C4}",
+        "❤‍\u{1F525}",
+        "\u{1F468}‍\u{1F469}‍\u{1F467}‍\u{1F4C4}",
+      ];
+      const rows = [...raw, ...marked].map((name) => {
         const path = `/data/${name}.md`;
         let pathRefused = false;
         try {
@@ -200,35 +239,31 @@ describe("hidden-chars drift guard", () => {
         return {
           name,
           pathRefused,
-          pathMarked: /⟨U\+200[CD]⟩/.test(shownPath),
           recipientRefused: !parseSingleRecipient(recipient).ok,
+          pathMarked: /⟨U\+200[CD]⟩/.test(shownPath),
           recipientMarked: /⟨U\+200[CD]⟩/.test(shownTo),
         };
       });
-      expect(rows.filter((row) => row.pathRefused !== row.pathMarked)).toEqual([]);
-      // A display name may carry U+200D anywhere (`isEmojiFormatChar`): the
-      // card marks it where it renders as nothing. U+200C has no such
-      // allowance, so for it the two must agree exactly.
-      expect(
-        rows.filter(
-          (row) => row.name.includes("\u200C") && row.recipientRefused !== row.recipientMarked
-        )
-      ).toEqual([]);
-      expect(rows.filter((row) => row.recipientRefused && !row.recipientMarked)).toEqual([]);
-      // Both directions are exercised, or the comparison proves nothing.
-      expect(rows.some((row) => row.pathRefused)).toBe(true);
-      expect(rows.some((row) => !row.pathRefused)).toBe(true);
-      expect(rows.some((row) => row.recipientRefused)).toBe(true);
-      expect(rows.some((row) => !row.recipientRefused && row.name.includes("\u200C"))).toBe(true);
-      // The ninth review's names, by name: the agreement above would hold
-      // just as well if all three accepted them.
-      const refusedNames = rows.filter((row) => row.pathRefused).map((row) => row.name);
-      expect(refusedNames).toEqual(
-        expect.arrayContaining(["தமிழ்\u200D", "ก\u0E3A\u200D", "ट्\u200D", "ক\u200D্য"])
-      );
-      expect(rows.filter((row) => !row.pathRefused).map((row) => row.name)).toEqual(
-        expect.arrayContaining(["ग्\u200D", "র\u200D্যাংকিং", "ৰ\u200D্য"])
-      );
+      expect(rows.filter((row) => row.pathRefused || row.recipientRefused)).toEqual([]);
+      // One predicate behind both: a path and a recipient never disagree.
+      expect(rows.filter((row) => row.pathMarked !== row.recipientMarked)).toEqual([]);
+      expect(rows.filter((row) => row.pathMarked).map((row) => row.name)).toEqual(marked);
+    });
+
+    it("a path and a display name may carry exactly the two joiners, and the card marks a lone one", () => {
+      const allowed = every(isJoiner);
+      expect(allowed).toEqual([0x200c, 0x200d]);
+      for (const cp of allowed) {
+        const char = String.fromCodePoint(cp);
+        const marker = `⟨U+${cp.toString(16).toUpperCase()}⟩`;
+        expect(hiddenCharIn(char)).not.toBeNull();
+        expect(hiddenCharIn(char, isJoiner)).toBeNull();
+        expect(() => assertPlainPath(`/data/a${char}b.md`, "path")).not.toThrow();
+        expect(parseSingleRecipient(`Ada${char}Lovelace <ada@example.com>`).ok).toBe(true);
+        expect(summarizeCall({ path: `/data/a${char}b.md` }).summary.path).toBe(
+          `/data/a${marker}b.md`
+        );
+      }
     });
 
     it("a path may carry exactly the space separators, and the card marks every one", () => {

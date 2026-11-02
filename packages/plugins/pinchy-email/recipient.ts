@@ -14,8 +14,7 @@
  * recipient, which is also what the schema ("Recipient email address") says.
  */
 
-import { invisibleFormatOffsets } from "./emoji-sequence.js";
-import { hiddenCharIn, isEmojiFormatChar } from "./hidden-chars.js";
+import { hiddenCharIn, isEmojiFormatChar, isJoiner } from "./hidden-chars.js";
 
 export type ParsedRecipient = { ok: true; address: string } | { ok: false; error: string };
 
@@ -96,14 +95,6 @@ function withLoneSpaceSeparatorsAsSpaces(text: string): string {
   return text.replace(/(?<![ \p{Zs}])\p{Zs}(?![ \p{Zs}])/gu, " ");
 }
 
-/** `text` without the U+200C that shape it (`invisibleFormatOffsets`). */
-function withoutShapingNonJoiners(text: string): string {
-  const invisible = invisibleFormatOffsets(text, { redundant: false });
-  return text.replace(/\u200C/g, (char: string, offset: number) =>
-    invisible.has(offset) ? char : ""
-  );
-}
-
 export function parseSingleRecipient(value: unknown): ParsedRecipient {
   if (typeof value !== "string") {
     return { ok: false, error: `Invalid recipient: ${ONLY_ONE}` };
@@ -119,14 +110,15 @@ export function parseSingleRecipient(value: unknown): ParsedRecipient {
   // (second review of #1242); bidi overrides make one address read as another.
   // The emoji format characters (ZWJ, VS15, VS16) are allowed here and kept
   // out of the address by PART: a name like "❤️ Team" is ordinary. So is a
-  // zero-width non-joiner where it shapes the name — "علی‌رضا" keeps its ی
-  // unjoined (seventh review of #1242) — but not where it renders as nothing,
-  // which is where the card marks it (`emoji-sequence.ts`).
+  // zero-width non-joiner — "علی‌رضا" keeps its ی unjoined (seventh review of
+  // #1242). The card marks each of them outside an emoji (pinchy-files
+  // `emoji-sequence.ts`), so a name never reads as the same name without one
+  // (tenth review).
   // A single no-break or ideographic space is allowed too, as in a path; a run
   // of them is not (`withLoneSpaceSeparatorsAsSpaces`).
   const hidden = hiddenCharIn(
-    withLoneSpaceSeparatorsAsSpaces(withoutShapingNonJoiners(text)),
-    isEmojiFormatChar
+    withLoneSpaceSeparatorsAsSpaces(text),
+    (char) => isEmojiFormatChar(char) || isJoiner(char)
   );
   if (hidden) {
     return {

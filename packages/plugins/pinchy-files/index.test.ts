@@ -2158,16 +2158,36 @@ describe("write tools refuse a path that does not read as what it resolves to", 
     expect(existsSync(target)).toBe(false);
   });
 
-  it("still refuses a joiner outside an emoji, and writes nothing", async () => {
+  it("still refuses a presentation selector outside an emoji, and writes nothing", async () => {
     const result = await (
       await toolNamed("pinchy_write")
     ).execute("call-1", {
-      path: join(tmpDir, "a\u200Db.md"),
+      path: join(tmpDir, "report️.md"),
       content: "x",
     });
     expect(result.isError).toBe(true);
-    expect(result.content[0].text).toMatch(/U\+200D/);
-    expect(existsSync(join(tmpDir, "a\u200Db.md"))).toBe(false);
+    expect(result.content[0].text).toMatch(/U\+FE0F/);
+    expect(existsSync(join(tmpDir, "report️.md"))).toBe(false);
+  });
+
+  // Tenth review of #1242: a joiner outside an emoji is accepted in every
+  // script, and the card marks it — `க்⟨U+200C⟩ம.md` — so it never reads as
+  // the file without it, which stays a different file.
+  it.each([
+    ["between Latin letters", "a‍b.md", "ab.md"],
+    ["inside a Tamil word", "க்‌ம.md", "க்ம.md"],
+  ])("writes and deletes a name with a joiner %s", async (_l, name, lookalike) => {
+    const target = join(tmpDir, name);
+    const written = await (
+      await toolNamed("pinchy_write")
+    ).execute("call-1", { path: target, content: "x" });
+    expect(written.isError).toBeFalsy();
+    expect(existsSync(target)).toBe(true);
+    expect(existsSync(join(tmpDir, lookalike))).toBe(false);
+
+    const deleted = await (await toolNamed("pinchy_delete")).execute("call-2", { path: target });
+    expect(deleted.isError).toBeFalsy();
+    expect(existsSync(target)).toBe(false);
   });
 
   it("still writes an ordinary path, spaces and umlauts included", async () => {

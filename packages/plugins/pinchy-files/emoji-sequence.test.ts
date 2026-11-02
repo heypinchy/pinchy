@@ -1,18 +1,24 @@
 // @vitest-environment node
 import { describe, it, expect } from "vitest";
-import {
-  contextualJoinerOffsets,
-  invisibleFormatOffsets,
-  isVirama,
-  viramaScript,
-} from "./emoji-sequence";
+import { markedFormatOffsets } from "./emoji-sequence";
+
+/** The offsets `markedFormatOffsets` reports, as the code points found there. */
+const marked = (text: string) =>
+  [...markedFormatOffsets(text)].map((offset) => text.codePointAt(offset)!.toString(16));
+
+/** Every U+200C / U+200D / U+FE0E / U+FE0F in `text`, as code points. */
+const formatChars = (text: string) =>
+  [...text.matchAll(/[\u200C\u200D\uFE0E\uFE0F]/g)].map((m) => m[0].codePointAt(0)!.toString(16));
 
 /**
  * Canonical_Combining_Class = 9 (Virama) in Unicode 16.0, as Python's
- * `unicodedata.combining()` lists it. JavaScript has no `\p{ccc=…}`, so the
- * module derives the set from canonical ordering at run time; this pins the
- * derivation to the published table. A later Unicode in Node may add to it —
- * so "at least these" — but must never lose one.
+ * `unicodedata.combining()` lists it. Ten reviews of #1242 asked, script by
+ * script, where a joiner next to one of these draws something — and kept
+ * finding scripts and fonts where it draws nothing (tenth review: Tamil
+ * க்‌ம, Thai กฺ‍ม, Myanmar က်‍မ, Sinhala ක්‍ම, Gurmukhi ਕ੍‍ਮ, Malayalam
+ * ക്‌മ, even Devanagari क्‍म in Devanagari MT, each pixel-identical to the
+ * same name without it). The card no longer asks: next to every one of them
+ * the joiner is marked.
  */
 const UNICODE_16_VIRAMAS = [
   0x94d, 0x9cd, 0xa4d, 0xacd, 0xb4d, 0xbcd, 0xc4d, 0xccd, 0xd3b, 0xd3c, 0xd4d, 0xdca, 0xe3a, 0xeba,
@@ -23,91 +29,81 @@ const UNICODE_16_VIRAMAS = [
   0x11a47, 0x11a99, 0x11c3f, 0x11d44, 0x11d45, 0x11d97, 0x11f41, 0x11f42, 0x1612f,
 ];
 
-describe("isVirama", () => {
-  it("knows every virama of Unicode 16.0", () => {
-    const missing = UNICODE_16_VIRAMAS.filter((cp) => !isVirama(String.fromCodePoint(cp)));
-    expect(missing.map((cp) => cp.toString(16))).toEqual([]);
+describe("markedFormatOffsets: a joiner next to a virama", () => {
+  it("marks a ZWNJ or ZWJ after every virama of Unicode 16.0", () => {
+    const shownRaw = UNICODE_16_VIRAMAS.flatMap((cp) =>
+      ["\u200C", "\u200D"].map((joiner) => `${String.fromCodePoint(cp)}${joiner}`)
+    ).filter((text) => marked(text).length !== 1);
+    expect(shownRaw).toEqual([]);
   });
 
-  it("names nothing but viramas", () => {
-    const found: number[] = [];
-    for (let cp = 0; cp <= 0x10ffff; cp++) {
-      if (cp >= 0xd800 && cp <= 0xdfff) continue;
-      if (isVirama(String.fromCodePoint(cp))) found.push(cp);
-    }
-    // Every one it finds is a combining mark of a Brahmic (or similar)
-    // script — and the two reference marks the derivation measures against
-    // (U+3099, class 8; U+05B0, class 10) are not among them.
-    expect(found.every((cp) => /^\p{M}$/u.test(String.fromCodePoint(cp)))).toBe(true);
-    expect(found).not.toContain(0x3099);
-    expect(found).not.toContain(0x05b0);
-    // Nukta (class 7) and an ordinary vowel sign (class 0) are not viramas.
-    expect(found).not.toContain(0x093c);
-    expect(found).not.toContain(0x0941);
-    expect(found.length).toBeGreaterThanOrEqual(UNICODE_16_VIRAMAS.length);
-  });
-});
-
-// A joiner after a virama shapes text only within the virama's own script, so
-// the module has to know that script. JavaScript cannot ask a character for
-// its script, only test it against a named one, so the names are listed — and
-// a virama whose script is missing from the list would refuse every joiner
-// after it, which is why the list is pinned to every virama.
-describe("viramaScript", () => {
-  it("knows the script of every virama of Unicode 16.0", () => {
-    const unknown = UNICODE_16_VIRAMAS.filter(
-      (cp) => viramaScript(String.fromCodePoint(cp)) === undefined
+  it("marks a ZWJ before every virama of Unicode 16.0", () => {
+    const shownRaw = UNICODE_16_VIRAMAS.map((cp) => `a\u200D${String.fromCodePoint(cp)}`).filter(
+      (text) => marked(text).length !== 1
     );
-    expect(unknown.map((cp) => cp.toString(16))).toEqual([]);
-  });
-
-  it("names the script a virama belongs to", () => {
-    expect(viramaScript("\u094D")).toBe("Devanagari");
-    expect(viramaScript("\u0DCA")).toBe("Sinhala");
-    expect(viramaScript("\u0D4D")).toBe("Malayalam");
-    expect(viramaScript("a")).toBeUndefined();
+    expect(shownRaw).toEqual([]);
   });
 });
 
-describe("contextualJoinerOffsets (RFC 5892 CONTEXTJ)", () => {
-  const offsetsOf = (text: string) => [...contextualJoinerOffsets(text)];
-
+describe("markedFormatOffsets: the tenth review's mid-word probes", () => {
+  // Each pixel-identical to the same name without the joiner in at least one
+  // shipping font, which is what made `pinchy_delete path:"/data/out/க்‌ம.md"`
+  // read on the card as `/data/out/க்ம.md`.
   it.each([
-    ["ZWNJ after a virama", "क्\u200Cष", 2],
-    ["ZWJ after a virama", "ශ්\u200Dරී", 2],
-    ["ZWNJ between two dual-joining letters", "گزارش\u200Cها", 5],
-    ["ZWNJ between a dual- and a right-joining letter", "علی\u200Cرضا", 3],
-    ["ZWNJ with vowel marks on either side", "مِ\u200Cِه", 2],
-    // A ZWJ ending a word after a virama asks for the half form or, in
-    // Malayalam, the chillu — visible with nothing after it.
-    ["ZWJ after a virama at the end (a chillu)", "അവന്\u200D", 4],
-    ["ZWJ after a virama before punctuation", "അവന്\u200D.md", 4],
-    ["ZWNJ after a virama on a letter with a nukta", "क\u093C्\u200Cष", 3],
-    // Ninth review of #1242: a ZWJ ending a word after a virama is visible
-    // only where the Unicode core spec (ch. 12) gives it a form to draw — a
-    // Devanagari independent half form (§12.1, Figure 12-6, Table 12-4; RA
-    // as eyelash, rule R5a), the legacy Bengali khanda ta (§12.2), a legacy
-    // Malayalam chillu (§12.9, Table 12-40) — and only on letters that have
-    // one.
-    ["ZWJ after a Devanagari virama at the end (an independent half form)", "ग्\u200D", 2],
-    ["ZWJ after a Devanagari RA at the end (eyelash RA)", "र्\u200D", 2],
-    ["ZWJ after a Devanagari letter with a nukta at the end", "ज\u093C्\u200D", 3],
-    ["ZWJ after a Bengali ta at the end (legacy khanda ta)", "হঠাত্\u200D", 5],
-    // A ZWJ BEFORE a virama, where the spec gives it a form: the Bengali
-    // ya-phalaa after ra (§12.2 "Interaction of Repha and Ya-phalaa"), also
-    // after the Assamese ra; a cluster-initial RA that keeps its full form in
-    // Devanagari (§12.1), Telugu (§12.7 "Reph") and Kannada (§12.8); Oriya
-    // final half forms (§12.1, Figure 12-7); Malayalam traditional ligatures
-    // (§12.9 "Requesting Traditional Ligatures").
-    ["ZWJ between a Bengali ra and a virama (ya-phalaa)", "র\u200D্যাব", 1],
-    ["ZWJ between an Assamese ra and a virama (ya-phalaa)", "ৰ\u200D্য", 1],
-    ["ZWJ between a Devanagari RA and a virama", "र\u200D्य", 1],
-    ["ZWJ between a Telugu ra and a virama", "ర\u200D్మ", 1],
-    ["ZWJ between a Kannada ra and a virama", "ರ\u200D್ಕ", 1],
-    ["ZWJ between an Oriya consonant and a virama (final half form)", "କ\u200D୍ତ", 1],
-    ["ZWJ between a Malayalam consonant and a virama (traditional ligature)", "ക\u200D്ര", 1],
-  ])("allows %s", (_label, text, offset) => {
-    expect(offsetsOf(text)).toEqual([offset]);
+    ["a ZWNJ between a Tamil pulli and a letter", "க்\u200Cம"],
+    ["a ZWJ between a Tamil pulli and a letter", "க்\u200Dம"],
+    ["a ZWJ between a Thai phinthu and a letter", "ก\u0E3A\u200Dม"],
+    ["a ZWJ between a Myanmar asat and a letter", "က်\u200Dမ"],
+    ["a ZWJ between a Sinhala al-lakuna and ma", "ක\u0DCA\u200Dම"],
+    ["a ZWJ between a Gurmukhi virama and a letter", "ਕ੍\u200Dਮ"],
+    ["a ZWNJ between a Malayalam virama and a letter", "ക്\u200Cമ"],
+    ["a ZWJ between a Gujarati virama and a letter", "ક્\u200Dમ"],
+    ["a ZWJ between a Devanagari virama and a letter", "क्\u200Dम"],
+  ])("marks %s", (_label, text) => {
+    expect(marked(text)).toEqual(formatChars(text));
+  });
+
+  // The ones the Unicode core spec (ch. 12) does give a form are marked too:
+  // a marker on an approval card costs a glance, and deciding per script and
+  // per font where the form is drawn is what failed ten times.
+  it("marks a joiner the core spec gives a form as well", () => {
+    for (const text of [
+      "ශ\u0DCA\u200Dරී",
+      "അവന്\u200D",
+      "क्\u200Cष",
+      "র\u200D্যাংকিং",
+      "ग्\u200D",
+    ]) {
+      expect(marked(text), text).toEqual(formatChars(text));
+    }
+  });
+});
+
+// The seventh to ninth reviews' cases, which the old per-script rule showed
+// raw. None of them is shown raw any more.
+describe("markedFormatOffsets: joiners the old per-script rule showed raw", () => {
+  it.each([
+    ["ZWNJ after a virama", "क्\u200Cष"],
+    ["ZWJ after a virama", "ශ\u0DCA\u200Dරී"],
+    ["ZWNJ between two dual-joining letters", "گزارش\u200Cها"],
+    ["ZWNJ between a dual- and a right-joining letter", "علی\u200Cرضا"],
+    ["ZWNJ with vowel marks on either side", "مِ\u200Cِه"],
+    ["ZWJ after a virama at the end (a chillu)", "അവന്\u200D"],
+    ["ZWJ after a virama before punctuation", "അവന്\u200D.md"],
+    ["ZWNJ after a virama on a letter with a nukta", "क\u093C्\u200Cष"],
+    ["ZWJ after a Devanagari virama at the end (an independent half form)", "ग्\u200D"],
+    ["ZWJ after a Devanagari RA at the end (eyelash RA)", "र्\u200D"],
+    ["ZWJ after a Devanagari letter with a nukta at the end", "ज\u093C्\u200D"],
+    ["ZWJ after a Bengali ta at the end (legacy khanda ta)", "হঠাত্\u200D"],
+    ["ZWJ between a Bengali ra and a virama (ya-phalaa)", "র\u200D্যাব"],
+    ["ZWJ between an Assamese ra and a virama (ya-phalaa)", "ৰ\u200D্য"],
+    ["ZWJ between a Devanagari RA and a virama", "र\u200D्य"],
+    ["ZWJ between a Telugu ra and a virama", "ర\u200D్మ"],
+    ["ZWJ between a Kannada ra and a virama", "ರ\u200D್ಕ"],
+    ["ZWJ between an Oriya consonant and a virama (final half form)", "କ\u200D୍ତ"],
+    ["ZWJ between a Malayalam consonant and a virama (traditional ligature)", "ക\u200D്ര"],
+  ])("marks %s", (_label, text) => {
+    expect(marked(text)).toEqual(formatChars(text));
   });
 
   it.each([
@@ -120,44 +116,25 @@ describe("contextualJoinerOffsets (RFC 5892 CONTEXTJ)", () => {
     ["ZWJ between Arabic letters", "ش\u200Dه"],
     ["ZWNJ between an Arabic and a Latin letter", "ش\u200Ca"],
     ["ZWNJ after a nukta", "क\u093C\u200Cष"],
-    // Eighth review of #1242: a ZWNJ after a virama was accepted whatever
-    // came next, so `जगत्‌.md` and `जगत्.md` were two names that look the
-    // same. A ZWNJ keeps a virama from forming a conjunct with the letter
-    // after it; with no letter of that script after it, there is nothing to
-    // keep apart.
     ["ZWNJ after a virama at the end", "जगत्\u200C"],
     ["ZWNJ after a virama before punctuation", "जगत्\u200C.md"],
     ["ZWNJ after a virama before a letter of another script", "क्\u200Cb"],
     ["ZWJ after a virama before a letter of another script", "क्\u200Db"],
-    // …and the virama has to sit on a letter of its own script.
     ["ZWNJ after a virama on a Latin letter", "a्\u200Cb"],
     ["ZWJ after a virama on a Latin letter", "a्\u200D"],
     ["ZWNJ after a Sinhala virama on a Devanagari letter", "क\u0DCA\u200Cष"],
     ["ZWNJ after a virama with no letter before it", "\u094D\u200Cष"],
-    // Ninth review of #1242 (the reviewer's probe names): a ZWJ ending a word
-    // after a virama was accepted in every virama script, but a script with
-    // no half form or chillu draws nothing for it — `தமிழ்‍.md` read exactly
-    // like `தமிழ்.md`. With no letter after it, the joiner is accepted only
-    // where the spec gives it a form; elsewhere a letter of the same script
-    // has to follow it, as for a ZWNJ.
     ["ZWJ after a Tamil pulli at the end", "தமிழ்\u200D"],
     ["ZWJ after a Tamil pulli before punctuation", "தமிழ்\u200D.md"],
     ["ZWJ after a Thai phinthu at the end", "ก\u0E3A\u200D"],
     ["ZWJ after a Myanmar asat at the end", "ကျွန်\u200D"],
     ["ZWJ after a Telugu virama at the end", "జగత్\u200D"],
-    // Gujarati has half forms inside a conjunct, but the spec documents no
-    // independent one, so a word-final joiner is not taken on trust there.
     ["ZWJ after a Gujarati virama at the end", "જગત્\u200D"],
-    // A Devanagari consonant without a half form falls back to the visible
-    // virama (§12.1) — exactly what it shows without the joiner.
     ["ZWJ after a Devanagari TTA at the end (no half form)", "ट्\u200D"],
     ["ZWJ after a Devanagari DA at the end (no half form)", "द्\u200D"],
     ["ZWJ after a Devanagari RRA at the end (already eyelash, rule R5)", "ऱ्\u200D"],
     ["ZWJ after a Bengali ka at the end (not khanda ta)", "ক্\u200D"],
     ["ZWJ after a Malayalam ka at the end (no chillu)", "ക്\u200D"],
-    // Before a virama: after a letter other than ra the Bengali ya-phalaa is
-    // the default, and "a ZWJ is not necessary" (§12.2); the virama has to be
-    // of the letter's script, and a letter of that script has to follow it.
     ["ZWJ between a Bengali ka and a virama", "ক\u200D্য"],
     ["ZWJ between a Tamil letter and a pulli", "க\u200D்ம"],
     ["ZWJ between a Bengali ra and a virama at the end", "র\u200D্"],
@@ -165,19 +142,62 @@ describe("contextualJoinerOffsets (RFC 5892 CONTEXTJ)", () => {
     ["ZWJ between a Devanagari RA and a Bengali virama", "र\u200D্য"],
     ["ZWJ between a Latin letter and a virama", "a\u200D्य"],
     ["ZWNJ between a Bengali ra and a virama", "র\u200C্য"],
-  ])("refuses %s", (_label, text) => {
-    expect(offsetsOf(text)).toEqual([]);
+  ])("still marks %s", (_label, text) => {
+    expect(marked(text)).toEqual(formatChars(text));
   });
 });
 
-describe("invisibleFormatOffsets", () => {
-  it("counts a joiner as invisible unless it is in an emoji or shapes the text", () => {
-    const text = "a\u200Cb \u{1F468}\u200D\u{1F469} ශ්\u200Dරී x\u200Dy";
-    const invisible = [...invisibleFormatOffsets(text, { redundant: false })];
-    expect(invisible.map((offset) => text.codePointAt(offset)!.toString(16))).toEqual([
+describe("markedFormatOffsets: emoji", () => {
+  // Inside a full RGI emoji (`\p{RGI_Emoji}`, Unicode's list of the emoji
+  // every vendor draws) the joiner and the selectors are part of one glyph.
+  it.each([
+    ["a family", "\u{1F468}\u200D\u{1F469}\u200D\u{1F467}"],
+    ["a rainbow flag", "\u{1F3F3}\uFE0F\u200D\u{1F308}"],
+    ["a skin-toned technologist", "\u{1F469}\u{1F3FD}\u200D\u{1F4BB}"],
+    ["a heart on fire", "❤\uFE0F\u200D\u{1F525}"],
+    ["a keycap", "1\uFE0F\u20E3"],
+    ["a warning sign shown as emoji", "⚠\uFE0F"],
+    ["an eye in a speech bubble", "\u{1F441}\uFE0F\u200D\u{1F5E8}\uFE0F"],
+  ])("shows the format characters of %s as they are", (_label, text) => {
+    expect(marked(`x ${text} y`)).toEqual([]);
+  });
+
+  // Tenth review of #1242: any two pictographs joined by a ZWJ were taken as
+  // one emoji, but 📄‍📄 is drawn exactly like 📄📄.
+  it.each([
+    ["two pages joined", "\u{1F4C4}\u200D\u{1F4C4}", ["200d"]],
+    ["a heart on fire without its selector", "❤\u200D\u{1F525}", ["200d"]],
+    [
+      "a family joined to a page",
+      "\u{1F468}\u200D\u{1F469}\u200D\u{1F467}\u200D\u{1F4C4}",
+      ["200d"],
+    ],
+    ["a rainbow flag without its selector", "\u{1F3F3}\u200D\u{1F308}", ["200d"]],
+    ["a selector after an emoji-by-default check mark", "✅\uFE0F", ["fe0f"]],
+    ["a text selector after a warning sign", "⚠\uFE0E", ["fe0e"]],
+    ["a text selector after a check mark", "✅\uFE0E", ["fe0e"]],
+    ["a second selector", "⚠\uFE0F\uFE0F", ["fe0f"]],
+    ["a joiner trailing an emoji", "\u{1F468}\u200D", ["200d"]],
+    ["a joiner before an emoji", "a\u200D\u{1F468}", ["200d"]],
+  ])("marks %s", (_label, text, expected) => {
+    expect(marked(text)).toEqual(expected);
+  });
+});
+
+describe("markedFormatOffsets", () => {
+  it("marks a format character unless it is inside an RGI emoji", () => {
+    const text =
+      "a\u200Cb \u{1F468}\u200D\u{1F469}\u200D\u{1F467} ශ\u0DCA\u200Dරී x\u200Dy \u{1F4C4}\u200D\u{1F4C4}";
+    const offsets = [...markedFormatOffsets(text)];
+    expect(offsets.map((offset) => text.codePointAt(offset)!.toString(16))).toEqual([
       "200c",
       "200d",
+      "200d",
+      "200d",
     ]);
-    expect(invisible).toEqual([1, text.lastIndexOf("\u200D")]);
+    // The family's two joiners are the ones left out.
+    const family = text.indexOf("\u200D");
+    expect(offsets).not.toContain(family);
+    expect(offsets).not.toContain(text.indexOf("\u200D", family + 1));
   });
 });
