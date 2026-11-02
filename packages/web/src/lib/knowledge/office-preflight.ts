@@ -171,12 +171,12 @@ const MAMMOTH_LIMITS: ZipLimits = {
   maxMarkupBytes: MAX_DOCX_MARKUP_BYTES,
 };
 
-/** No real relationship part is anywhere near this; a bigger one is not one. */
-const MAX_RELS_BYTES = 4 * MiB;
-
 /**
  * The largest single Office XML part the preflight reads — and therefore the
- * largest it lets through to LibreOffice. Each one is inflated whole into the
+ * largest it lets through to LibreOffice. Relationship parts and the
+ * content-types part are held to it too: a 4 MiB cap of their own refused a
+ * real catalogue whose 25 000 hyperlinks make a 5.1 MB relationship part, and
+ * the filter that reads them is one forward pass (fourth review, PR #1243). Each one is inflated whole into the
  * web process to be checked; the archive's total limit (500 MiB) does not
  * bound that, and a 400 MiB `document.xml` built to stay under the ratio rule
  * took the preflight to 1.3 GB RSS (third review, PR #1243). A thousand-page
@@ -1051,7 +1051,7 @@ export function sanitizeOoxmlPackage(buffer: Buffer): {
   const contentTypes = byName.get("[content_types].xml");
   if (
     contentTypes &&
-    DTD.test(inflatePart(buffer, contentTypes, MAX_RELS_BYTES).toString("latin1"))
+    DTD.test(inflatePart(buffer, contentTypes, MAX_XML_PART_BYTES).toString("latin1"))
   ) {
     throw unexpected("the content-types part declares a DOCTYPE");
   }
@@ -1118,7 +1118,7 @@ export function sanitizeOoxmlPackage(buffer: Buffer): {
 
   for (const entry of entries) {
     if (!/\.rels$/i.test(entry.name)) continue;
-    const bytes = inflatePart(buffer, entry, MAX_RELS_BYTES);
+    const bytes = inflatePart(buffer, entry, MAX_XML_PART_BYTES);
     // UTF-16 (or anything with NULs) would defeat every text match here while a
     // parser still reads it. A relationship part is ASCII-compatible text.
     if (bytes.includes(0)) throw unexpected("a relationship part is not UTF-8 text");

@@ -244,9 +244,12 @@ describe("sanitizeOoxmlPackage", () => {
   });
 
   it("refuses a relationship part that inflates past its ceiling, whatever it declares", () => {
+    // The ceiling is the per-part XML limit, 64 MiB (it was a separate 4 MiB
+    // one until the fourth review of PR #1243 found it refusing real
+    // link-heavy documents).
     const bomb = zipOf({
       "[Content_Types].xml": "<Types/>",
-      "word/_rels/document.xml.rels": Buffer.alloc(8 * 1024 * 1024, 0x20),
+      "word/_rels/document.xml.rels": Buffer.alloc(65 * 1024 * 1024, 0x20),
     });
     expect(() => sanitizeOoxmlPackage(bomb)).toThrow(OfficeFileRejectedError);
   });
@@ -449,6 +452,70 @@ describe("readWorkbookBuffer", () => {
     expect((await rejection(readWorkbookBuffer(file("prefixed.xlsx", prefixed)))).code).toBe(
       "unexpected_content"
     );
+  });
+});
+
+describe("relationship and content-types parts are held to the per-part XML limit (fourth review, PR #1243)", () => {
+  // A 4 MiB cap refused real link-heavy documents: a catalogue with 25 000
+  // hyperlinks has a 5.1 MB relationship part. The filter is one forward pass,
+  // so the part is held to the same 64 MiB as any other Office XML part.
+  const link = (i: number) =>
+    `<Relationship Id="rId${i + 10}" Type="${REL_HYPERLINK}" Target="https://intranet.example.com/catalogue/products/item-${String(i).padStart(6, "0")}" TargetMode="External"/>`;
+
+  function linkHeavyDocx(count: number): Buffer {
+    return docxWith({
+      documentRels: relationships(Array.from({ length: count }, (_, i) => link(i)).join("")),
+    });
+  }
+
+  it("prepares a document with 25 000 hyperlinks (a 5 MB relationship part), cutting every one", async () => {
+    const docx = linkHeavyDocx(25_000);
+    const rels = readZipEntries(docx).find((e) => e.name === "word/_rels/document.xml.rels")!;
+    expect(rels.uncompressedSize).toBeGreaterThan(5_000_000);
+
+    const prepared = await prepareOfficeSource(file("catalogue.docx", docx));
+    expect(prepared.relationshipsRemoved).toBe(25_000);
+  });
+
+  it("filters a relationship part near the 64 MiB limit in bounded time", async () => {
+    const docx = linkHeavyDocx(320_000);
+    const rels = readZipEntries(docx).find((e) => e.name === "word/_rels/document.xml.rels")!;
+    expect(rels.uncompressedSize).toBeGreaterThan(60 * MiB);
+    const started = Date.now();
+    const prepared = await prepareOfficeSource(file("links.docx", docx));
+    expect(prepared.relationshipsRemoved).toBe(320_000);
+    expect(Date.now() - started).toBeLessThan(15_000);
+  }, 60_000);
+
+  it("still refuses a relationship part past it", async () => {
+    const docx = linkHeavyDocx(330_000);
+    const rels = readZipEntries(docx).find((e) => e.name === "word/_rels/document.xml.rels")!;
+    expect(rels.uncompressedSize).toBeGreaterThan(64 * MiB);
+    expect((await rejection(prepareOfficeSource(file("too-many.docx", docx)))).code).toBe(
+      "too_large"
+    );
+  }, 60_000);
+
+  it("reads a content-types part past the old 4 MiB cap", async () => {
+    const overrides = Array.from(
+      { length: 40_000 },
+      (_, i) =>
+        `<Override PartName="/word/unused${i}.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.footer+xml"/>`
+    ).join("");
+    const docx = replaceEntry(
+      docxWith({ documentRels: relationships() }),
+      "[Content_Types].xml",
+      deflatedPart(
+        "[Content_Types].xml",
+        Buffer.from(
+          `<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>${overrides}</Types>`
+        )
+      )
+    );
+    expect(
+      readZipEntries(docx).find((e) => e.name === "[Content_Types].xml")!.uncompressedSize
+    ).toBeGreaterThan(4 * MiB);
+    await expect(prepareOfficeSource(file("types.docx", docx))).resolves.toBeDefined();
   });
 });
 
