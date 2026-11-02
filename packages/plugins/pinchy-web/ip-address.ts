@@ -33,8 +33,9 @@
  *     Azure's WireServer at 168.63.129.16, which sits in public space),
  *     `reserved`: never a real server. Every guard refuses these whatever the
  *     operator sets.
- *   - `private`: RFC-1918, ULA, CGNAT (Tailscale) and 198.18/15. An on-premise Odoo, mail
- *     server or model endpoint legitimately lives here, so the admin-facing
+ *   - `private`: RFC-1918, ULA, CGNAT (Tailscale), 198.18/15 and local-use NAT64
+ *     (64:ff9b:1::/48). An on-premise Odoo, mail server or model endpoint
+ *     legitimately lives here, so the admin-facing
  *     guards let an operator opt in (Odoo: `ALLOW_PRIVATE_URLS`, mail:
  *     `ALLOW_PRIVATE_MAIL_HOSTS`) or allow it by default and let a hosted
  *     deployment opt out (OpenAI-compatible providers:
@@ -276,9 +277,15 @@ export function classifyIpAddress(address: string): IpAddressClass | null {
   }
   if (groups[0] === 0x2001 && groups[1] === 0) return "reserved";
 
-  // 64:ff9b:1::/48 — local-use NAT64 (RFC 8215). Operator-defined translation,
-  // so the embedded address cannot be read off; never a public destination.
-  if (groups[0] === 0x64 && groups[1] === 0xff9b && groups[2] === 1) return "reserved";
+  // 64:ff9b:1::/48 — local-use NAT64 (RFC 8215): the prefix an operator's own
+  // translator uses inside an IPv6-only network. The IPv4 mapping is
+  // operator-defined, so the embedded address cannot be read off — but the
+  // destination is that operator's network, which can legitimately host their
+  // Odoo or mail server. So `private`: the admin opt-ins open it (knowing the
+  // translator decides where it lands), web_fetch and the provider block-switch
+  // refuse it like any other private address. Never globally routed, so never
+  // `public`.
+  if (groups[0] === 0x64 && groups[1] === 0xff9b && groups[2] === 1) return "private";
   // fc00::/7 — unique local addresses
   if ((groups[0] & 0xfe00) === 0xfc00) return "private";
   // fe80::/10 — link-local (spans fe80 through febf)

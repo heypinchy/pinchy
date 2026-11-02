@@ -153,6 +153,19 @@ describe("classifyIpAddress (the table web_fetch and the web app share)", () => 
     ["64:ff9b::a83f:8110", "link-local"],
     ["64:ff9b::168.63.129.16", "link-local"],
     ["64:ff9b::a83f:8111", "public"],
+    // Local-use NAT64 64:ff9b:1::/48 (RFC 8215). Corrected expectation: this
+    // was filed as `reserved` ("never a public destination"), but it is the
+    // prefix an operator's own translator uses on an IPv6-only network, so a
+    // host there can legitimately be your Odoo or mail server. The mapping is
+    // operator-defined, so the embedded IPv4 cannot be read off — which makes it
+    // `private`: the admin opt-ins open it, web_fetch still refuses it.
+    ["64:ff9b:1::a00:1", "private"],
+    ["64:ff9b:1::808:808", "private"],
+    ["64:ff9b:1:ffff:ffff:ffff:ffff:ffff", "private"],
+    // Just outside the /48 on either side: 64:ff9b:2:: and 64:ff9b:0:1:: are
+    // neither NAT64 prefix, so ordinary (public) IPv6 space.
+    ["64:ff9b:2::1", "public"],
+    ["64:ff9b:0:1::1", "public"],
     // 6to4 (2002::/16) embeds the IPv4 in groups 1-2.
     ["2002:7f00:1::1", "loopback"],
     ["2002:a9fe:a9fe::1", "link-local"],

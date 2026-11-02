@@ -184,6 +184,9 @@ describe("classifyIpAddress", () => {
     ["64:ff9b::7f00:1", "loopback"],
     ["64:ff9b::a9fe:a9fe", "link-local"],
     ["64:ff9b::808:808", "public"],
+    // Local-use NAT64 (RFC 8215). Corrected expectation: it is an IPv6-only
+    // network's own translator prefix, so ALLOW_PRIVATE_URLS opens it.
+    ["64:ff9b:1::a00:5", "private"],
     ["::ffff:100.64.0.1", "private"],
     ["::100.100.100.200", "link-local"],
     // IPv4-mapped addresses carry an IPv4 destination; classify what they
@@ -346,6 +349,59 @@ describe("validateExternalUrl", () => {
   ])("rejects %s with no opt-out suggested, since no Odoo server lives there", async (url) => {
     const result = await validateWithoutDns(url);
     expect(result).toEqual({ valid: false, error: expect.not.stringContaining("ALLOW_") });
+  });
+
+  it("treats a local-use NAT64 address (64:ff9b:1::/48) as private: refused, then opened by the flag", async () => {
+    // An IPv6-only network whose own translator uses the RFC 8215 prefix: the
+    // Odoo server behind it is an ordinary internal host, so the admin opt-in
+    // has to be able to reach it.
+    const refused = await validateWithoutDns("http://[64:ff9b:1::a00:5]:8069");
+    expect(refused).toEqual({
+      valid: false,
+      error: expect.stringContaining("ALLOW_PRIVATE_URLS=1"),
+    });
+
+    vi.stubEnv("ALLOW_PRIVATE_URLS", "1");
+    const allowed = await validateWithoutDns("http://[64:ff9b:1::a00:5]:8069");
+    expect(allowed).toEqual({ valid: true, url: "http://[64:ff9b:1::a00:5]:8069" });
+  });
+
+  /**
+   * `ollama.local` is what compose maps to the Docker host (`host-gateway`).
+   * It used to be mapped in the OpenClaw container only, so Pinchy — which
+   * runs this check — could not resolve it, failed open, and the Odoo plugin
+   * in OpenClaw then connected to the Docker host. Both containers now carry
+   * the mapping (pinned by scripts/lib/compose-extra-hosts.test.mjs), so the
+   * name resolves here to whatever the engine answers for `host-gateway`, and
+   * that answer is classified like any other.
+   */
+  describe("ollama.local, resolved through the host-gateway mapping", () => {
+    it("Docker on Linux (172.17.0.1): private — refused, opened by ALLOW_PRIVATE_URLS", async () => {
+      const refused = await validateExternalUrl(
+        "http://ollama.local:8069",
+        resolveTo(["172.17.0.1"])
+      );
+      expect(refused).toEqual({
+        valid: false,
+        error: expect.stringContaining("ALLOW_PRIVATE_URLS=1"),
+      });
+
+      vi.stubEnv("ALLOW_PRIVATE_URLS", "1");
+      const allowed = await validateExternalUrl(
+        "http://ollama.local:8069",
+        resolveTo(["172.17.0.1"])
+      );
+      expect(allowed).toEqual({ valid: true, url: "http://ollama.local:8069" });
+    });
+
+    it("OrbStack (0.250.250.254): unspecified — refused even with ALLOW_PRIVATE_URLS", async () => {
+      vi.stubEnv("ALLOW_PRIVATE_URLS", "1");
+      const result = await validateExternalUrl(
+        "http://ollama.local:8069",
+        resolveTo(["0.250.250.254"])
+      );
+      expect(result).toEqual({ valid: false, error: expect.not.stringContaining("ALLOW_") });
+    });
   });
 
   it("rejects a name that resolves to Alibaba Cloud metadata (100.100.100.200)", async () => {

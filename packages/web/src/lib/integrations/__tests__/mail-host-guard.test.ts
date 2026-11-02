@@ -42,6 +42,10 @@ describe("assertMailHostAllowed", () => {
       ["IPv4 multicast", "224.0.0.1"],
       ["limited broadcast", "255.255.255.255"],
       ["IPv6 multicast", "ff02::1"],
+      // `ollama.local` on OrbStack: its `host-gateway` answer sits inside
+      // 0.0.0.0/8, so a mail host pointed at the Docker host that way is refused
+      // whatever is set. (Docker on Linux answers 172.17.0.1 — private, below.)
+      ["OrbStack host-gateway (ollama.local)", "0.250.250.254"],
     ];
 
     it.each(alwaysBlocked)("blocks a host resolving to %s (%s)", async (_label, address) => {
@@ -91,6 +95,12 @@ describe("assertMailHostAllowed", () => {
       // can genuinely resolve there.
       ["benchmarking 198.18.0.0/15", "198.18.0.1"],
       ["benchmarking 198.18.0.0/15, top", "198.19.255.254"],
+      // Local-use NAT64 (RFC 8215): an IPv6-only network's own translator, so
+      // the mail server behind it is an ordinary internal host.
+      ["local-use NAT64 64:ff9b:1::/48", "64:ff9b:1::a00:5"],
+      // `ollama.local` as Docker on Linux answers it through the compose
+      // `host-gateway` mapping, which Pinchy now carries like OpenClaw does.
+      ["Linux host-gateway (ollama.local)", "172.17.0.1"],
     ];
 
     it.each(privateAddresses)("blocks %s (%s) by default", async (_label, address) => {

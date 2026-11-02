@@ -591,6 +591,9 @@ describe("webFetch", () => {
       ["[64:ff9b::7f00:1]", "NAT64 wrapping 127.0.0.1"],
       ["[64:ff9b::a9fe:a9fe]", "NAT64 wrapping 169.254.169.254"],
       ["[64:ff9b::6464:64c8]", "NAT64 wrapping 100.100.100.200"],
+      // `private`, not `reserved`, since the local-use prefix can be an
+      // operator's own network — either way never fetchable from here.
+      ["[64:ff9b:1::a9fe:a9fe]", "local-use NAT64 64:ff9b:1::/48"],
       ["[::ffff:100.64.0.1]", "IPv4-mapped CGNAT"],
       ["[::ffff:6464:64c8]", "IPv4-mapped CGNAT, hex spelling"],
       ["[::ffff:169.254.169.254]", "IPv4-mapped metadata"],

@@ -68,6 +68,9 @@ describe("classifyIp", () => {
     // ...while a self-hosted endpoint on the LAN or a tailnet keeps working.
     ["100.100.100.100", "private"], // Tailscale node
     ["64:ff9b::a00:5", "private"], // NAT64 -> 10.0.0.5
+    // Local-use NAT64 (RFC 8215): an IPv6-only network's own translator, so a
+    // LAN endpoint behind it — allowed by default like any private address.
+    ["64:ff9b:1::a00:5", "private"],
     ["fec0::1", "private"], // deprecated site-local
   ])("classifies %s as %s", (ip, expected) => {
     expect(classifyIp(ip)).toBe(expected);
