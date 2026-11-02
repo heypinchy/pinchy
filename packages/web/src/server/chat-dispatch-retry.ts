@@ -186,6 +186,12 @@ export interface DispatchRetryDeps {
    * ended on purpose, not by the agent failing.
    */
   shouldStop?: () => boolean;
+  /**
+   * Called once when the wrapper returns because `shouldStop` reported the run
+   * stopped — awaited before it returns, so the caller can record that the
+   * stop took effect.
+   */
+  onStopped?: () => Promise<void> | void;
 }
 
 /**
@@ -225,6 +231,12 @@ export async function* chatWithDispatchRaceRetry(
   const { baseDelayMs, maxDelayMs, maxTotalMs } = { ...DEFAULT_POLICY, ...policy };
   const delay = deps.delay ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const now = deps.now ?? Date.now;
+
+  const stopped = async (): Promise<boolean> => {
+    if (!deps.shouldStop?.()) return false;
+    await deps.onStopped?.();
+    return true;
+  };
 
   const start = now();
   for (let attempt = 0; ; attempt++) {
@@ -272,7 +284,7 @@ export async function* chatWithDispatchRaceRetry(
     }
 
     // Stopped while this attempt was being turned away: nothing to wait for.
-    if (deps.shouldStop?.()) return;
+    if (await stopped()) return;
 
     const elapsed = now() - start;
     const remaining = maxTotalMs - elapsed;
@@ -294,7 +306,7 @@ export async function* chatWithDispatchRaceRetry(
     // model race relies on the capped backoff below.
     if (raceKind === "agent" && deps.awaitAgentReady) {
       const ready = await deps.awaitAgentReady(remaining);
-      if (deps.shouldStop?.()) return;
+      if (await stopped()) return;
       if (ready) continue;
       // Not confirmed within the window (timeout, or unobservable on an older
       // Gateway). Fall through to the capped backoff so we keep making bounded
@@ -311,6 +323,6 @@ export async function* chatWithDispatchRaceRetry(
     }
     const backoff = Math.min(baseDelayMs * 2 ** attempt, maxDelayMs);
     await delay(Math.min(backoff, remainingAfterGate));
-    if (deps.shouldStop?.()) return;
+    if (await stopped()) return;
   }
 }

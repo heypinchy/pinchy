@@ -332,6 +332,33 @@ async function auditCompletedAnyway(run: ActiveRun, sessionKey: string, runId: s
   });
 }
 
+/**
+ * A stopped run the dispatch-race retry did not send again
+ * (`chatWithDispatchRaceRetry`'s `shouldStop`). Nothing reached OpenClaw after
+ * the stop, so the stop took effect even though its abort — sent while
+ * nothing was running — answered "stopped nothing". Recorded as a second
+ * `chat.run_aborted`, `outcome: success`, `followUp: "stopped_before_dispatch"`,
+ * unless an abort was confirmed anyway (then the first row already says so).
+ */
+export async function auditStoppedBeforeDispatch(run: ActiveRun): Promise<void> {
+  if (!run.abortRequest || (await abortTookEffect(run))) return;
+  await writeAudit({
+    actorType: "user",
+    actorId: run.abortRequest.actorId,
+    eventType: "chat.run_aborted",
+    resource: `agent:${run.agentId}`,
+    detail: {
+      agent: { id: run.agentId, name: run.agentName },
+      sessionKey: run.sessionKey,
+      // No run reached OpenClaw, so there is no gateway runId to name.
+      runId: null,
+      reason: run.abortRequest.reason,
+      followUp: "stopped_before_dispatch",
+    },
+    outcome: "success",
+  });
+}
+
 /** Detached from any request: a failed write is recorded, never thrown. */
 async function writeAudit(entry: Parameters<typeof appendAuditLog>[0]): Promise<void> {
   try {

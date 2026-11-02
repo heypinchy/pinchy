@@ -23,6 +23,7 @@ import {
   abortRunsOfUser,
   abortSessionRun,
   abortTookEffect,
+  auditStoppedBeforeDispatch,
   reAbortStartedRun,
   type FollowUpDeps,
 } from "@/server/abort-runs";
@@ -444,6 +445,53 @@ describe("abortSessionRun's follow-up", () => {
     });
 
     expect(run.abortFollowUp).toBeUndefined();
+  });
+});
+
+describe("auditStoppedBeforeDispatch", () => {
+  // The dispatch-race retry did not send a stopped run again. Its abort —
+  // sent while nothing was running — answered "stopped nothing", yet the stop
+  // took effect: nothing reached OpenClaw after it.
+  it("records that the stop took effect when no abort was confirmed", async () => {
+    const runs = new ActiveRuns();
+    const run = pendingRun(runs, "s1", "u1");
+    await abortSessionRun(
+      runs,
+      vi.fn().mockResolvedValue({ ok: true, aborted: false, runIds: [] }),
+      "s1",
+      { request: { actorId: "u1", reason: "user_request" } }
+    );
+
+    await auditStoppedBeforeDispatch(run);
+
+    expect(auditRows("chat.run_aborted")).toEqual([
+      {
+        actorType: "user",
+        actorId: "u1",
+        eventType: "chat.run_aborted",
+        resource: "agent:agent-1",
+        detail: {
+          agent: { id: "agent-1", name: "Agent agent-1" },
+          sessionKey: "s1",
+          runId: null,
+          reason: "user_request",
+          followUp: "stopped_before_dispatch",
+        },
+        outcome: "success",
+      },
+    ]);
+  });
+
+  it("adds nothing when an abort was confirmed — the first row already says so", async () => {
+    const runs = new ActiveRuns();
+    const run = pendingRun(runs, "s1", "u1");
+    await abortSessionRun(runs, vi.fn().mockResolvedValue({ ok: true, aborted: true }), "s1", {
+      request: { actorId: "u1", reason: "user_request" },
+    });
+
+    await auditStoppedBeforeDispatch(run);
+
+    expect(mockAppendAuditLog).not.toHaveBeenCalled();
   });
 });
 

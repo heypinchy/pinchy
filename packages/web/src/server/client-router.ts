@@ -60,7 +60,7 @@ import { attachmentIdsSchema } from "@/lib/schemas/uploads";
 import { chatIdSchema } from "@/lib/schemas/sessions";
 import { StreamPipe, GENERIC_RUN_FAILURE_MESSAGE } from "@/server/stream-pipe";
 import { getUserSocketRegistry, refuseDeactivatedSocket } from "@/server/user-sockets";
-import { abortSessionRun, followUpDepsFor } from "@/server/abort-runs";
+import { abortSessionRun, auditStoppedBeforeDispatch, followUpDepsFor } from "@/server/abort-runs";
 
 const WS_OPEN = 1;
 const CONNECTION_TIMEOUT_MS = 10_000;
@@ -720,6 +720,11 @@ export class ClientRouter {
         // it pending: the session-only abort found nothing running, so the
         // retry must not dispatch it again.
         shouldStop: () => thisTurn.run?.abortedByUser === true,
+        // …and the trail says the stop took effect: its abort, sent while
+        // nothing was running, answered "stopped nothing".
+        onStopped: async () => {
+          if (thisTurn.run) await auditStoppedBeforeDispatch(thisTurn.run);
+        },
         // Deterministic readiness gate: on a dispatch-race, poll OC's RUNTIME
         // `agents.list` (the same `getRuntimeConfig()` view the dispatch handler
         // checks) until this agent is present, instead of blind-sleeping a

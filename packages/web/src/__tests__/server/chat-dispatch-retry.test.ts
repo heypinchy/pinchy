@@ -583,6 +583,63 @@ describe("chatWithDispatchRaceRetry", () => {
       expect(got).toEqual([]);
     });
 
+    it("tells onStopped, and waits for it, before it returns on a stop — and only then", async () => {
+      const chat = vi
+        .fn()
+        .mockImplementationOnce(makeStream(raceError()))
+        .mockImplementationOnce(makeStream(successful));
+      let stopped = false;
+      const clock = fakeClock();
+      clock.delay.mockImplementation(async () => {
+        stopped = true;
+      });
+      const events: string[] = [];
+      const onStopped = vi.fn(async () => {
+        await Promise.resolve();
+        events.push("onStopped settled");
+      });
+
+      await collect(
+        chatWithDispatchRaceRetry(
+          "hello",
+          { agentId: "a" } as ChatOptions,
+          {
+            chat: chat as never,
+            delay: clock.delay,
+            now: clock.now,
+            shouldStop: () => stopped,
+            onStopped,
+          },
+          { baseDelayMs: 500, maxDelayMs: 5000, maxTotalMs: 90000 }
+        )
+      );
+      events.push("returned");
+
+      expect(onStopped).toHaveBeenCalledTimes(1);
+      expect(events).toEqual(["onStopped settled", "returned"]);
+
+      // A run nobody stopped never reports a stop.
+      const unstopped = vi.fn();
+      await collect(
+        chatWithDispatchRaceRetry(
+          "hello",
+          { agentId: "a" } as ChatOptions,
+          {
+            chat: vi
+              .fn()
+              .mockImplementationOnce(makeStream(raceError()))
+              .mockImplementationOnce(makeStream(successful)) as never,
+            delay: fakeClock().delay,
+            now: fakeClock().now,
+            shouldStop: () => false,
+            onStopped: unstopped,
+          },
+          { baseDelayMs: 500, maxDelayMs: 5000, maxTotalMs: 90000 }
+        )
+      );
+      expect(unstopped).not.toHaveBeenCalled();
+    });
+
     it("does not consult shouldStop for a run that never raced", async () => {
       const chat = vi.fn().mockImplementationOnce(makeStream(successful));
       const shouldStop = vi.fn(() => true);

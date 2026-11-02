@@ -755,6 +755,68 @@ describe("ClientRouter ↔ ActiveRuns wiring (#310 Tier 2a)", () => {
         expect(activeRuns.get(sessionKey)).toBeUndefined();
       }
     );
+
+    it.each([
+      ["the stop button", "user-1", "user_request"],
+      ["deactivation", "admin-1", "account_deactivated"],
+    ] as const)(
+      "records that the stop took effect when the retry did not dispatch it again after %s",
+      async (label, actorId, reason) => {
+        let releaseRace!: () => void;
+        const raceGate = new Promise<void>((r) => (releaseRace = r));
+        mockChat.mockReturnValueOnce(
+          (async function* (): AsyncGenerator<ChatChunk> {
+            await raceGate;
+            yield {
+              type: "error",
+              text: 'invalid agent params: unknown agent id "agent-1"',
+              runId: "r0",
+            };
+          })()
+        );
+        mockChatAbort.mockResolvedValueOnce({ ok: true, aborted: false, runIds: [] });
+        const router = new ClientRouter(
+          clientWithoutAgentsList() as never,
+          "user-1",
+          "member",
+          sessionCache,
+          activeRuns
+        );
+        const ws = createMockWs();
+        const handling = router.handleMessage(ws, {
+          type: "message",
+          content: "Book this month's invoices",
+          agentId: "agent-1",
+        });
+        await vi.waitFor(() => expect(mockChat).toHaveBeenCalledTimes(1));
+
+        await stoppers.find(([l]) => l === label)![1](router, ws);
+        releaseRace();
+        await handling;
+
+        const rows = mockAppendAuditLog.mock.calls
+          .map(
+            (c) => c[0] as { eventType: string; actorId: string; detail: unknown; outcome: string }
+          )
+          .filter((row) => row.eventType === "chat.run_aborted");
+        // The deactivation's own first row is the route's to write; the stop
+        // button writes it through the router.
+        expect(rows.at(-1)).toEqual({
+          actorType: "user",
+          actorId,
+          eventType: "chat.run_aborted",
+          resource: "agent:agent-1",
+          detail: {
+            agent: { id: "agent-1", name: "Smithers" },
+            sessionKey,
+            runId: null,
+            reason,
+            followUp: "stopped_before_dispatch",
+          },
+          outcome: "success",
+        });
+      }
+    );
   });
 
   describe("on a real openclaw-node client", () => {
