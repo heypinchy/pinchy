@@ -49,7 +49,7 @@ const PROBE_ROLE = `${PROBE_ROLE_PREFIX}${process.pid}`;
 const PROBE_PASSWORD = randomBytes(16).toString("hex");
 // Far beyond any run of this file, short enough that a stranded role is dead
 // the same afternoon.
-const PROBE_ROLE_LIFETIME_MS = 60 * 60 * 1000;
+const PROBE_ROLE_LIFETIME_SECONDS = 60 * 60;
 
 /**
  * Remove probe roles that earlier runs failed to drop, together with the
@@ -74,9 +74,9 @@ async function sweepStaleProbeRoles(admin: postgres.Sql): Promise<void> {
       SELECT datname FROM pg_database WHERE datdba = ${oid}
     `;
     for (const { datname } of owned) {
-      await admin.unsafe(`DROP DATABASE IF EXISTS "${datname}" WITH (FORCE)`);
+      await admin`DROP DATABASE IF EXISTS ${admin(datname)} WITH (FORCE)`;
     }
-    await admin.unsafe(`DROP ROLE IF EXISTS "${rolname}"`);
+    await admin`DROP ROLE IF EXISTS ${admin(rolname)}`;
   }
 }
 
@@ -148,10 +148,34 @@ describe("db:migrate runner", () => {
       // outlive the run, though, and afterAll is not guaranteed to run (a hook
       // timeout, a killed process): VALID UNTIL makes a leftover unable to log
       // in after the hour, and the sweep above removes it on the next run.
-      const validUntil = new Date(Date.now() + PROBE_ROLE_LIFETIME_MS).toISOString();
-      await admin.unsafe(
-        `CREATE ROLE ${PROBE_ROLE} LOGIN SUPERUSER PASSWORD '${PROBE_PASSWORD}' VALID UNTIL '${validUntil}'`
-      );
+      //
+      // The expiry is computed by the server, whose clock is the one that
+      // checks it: a host clock running an hour behind would otherwise create
+      // a role that is already dead, and the sweep could pull it out from
+      // under this very run. CREATE ROLE takes no bind parameters, so the
+      // values reach the DO block as transaction-local settings, the password
+      // as a bind parameter: it never appears in a statement's text, which is
+      // what Postgres writes to its log when a statement fails and what
+      // postgres.js attaches to the error it throws. The EXCEPTION clause
+      // closes the one remaining hole: a failing EXECUTE reports the statement
+      // it ran — password included — as CONTEXT, in the server log and in the
+      // error's `where`. Re-raising keeps the SQLSTATE and message and drops
+      // that context.
+      await admin.begin(async (tx) => {
+        await tx`SELECT set_config('pinchy_probe.role', ${PROBE_ROLE}, true),
+                        set_config('pinchy_probe.password', ${PROBE_PASSWORD}, true)`;
+        await tx.unsafe(`
+          DO $$ BEGIN
+            EXECUTE format(
+              'CREATE ROLE %I LOGIN SUPERUSER PASSWORD %L VALID UNTIL %L',
+              current_setting('pinchy_probe.role'),
+              current_setting('pinchy_probe.password'),
+              now() + make_interval(secs => ${PROBE_ROLE_LIFETIME_SECONDS})
+            );
+          EXCEPTION WHEN OTHERS THEN
+            RAISE EXCEPTION USING ERRCODE = SQLSTATE, MESSAGE = SQLERRM;
+          END $$`);
+      });
       await admin.unsafe(`CREATE DATABASE ${OK_DB}`);
       await admin.unsafe(`CREATE DATABASE ${FAIL_DB} OWNER ${PROBE_ROLE}`);
     } finally {

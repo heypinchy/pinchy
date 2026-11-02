@@ -16,6 +16,7 @@
  */
 import { describe, it, expect } from "vitest";
 import { sql } from "drizzle-orm";
+import postgres from "postgres";
 import { db } from "@/db";
 import { agents, emailWorkflows, kbChunks, kbDocuments, usageRecords, users } from "@/db/schema";
 import { APPLICATION_TABLES, resetIntegrationDatabase } from "@/test-helpers/integration/reset-db";
@@ -149,6 +150,50 @@ describe("integration database reset", () => {
     await resetIntegrationDatabase();
 
     expect(await relationFiles()).toEqual(before);
+  });
+
+  it("waits for a writer still in flight, so its row cannot outlive the reset", async () => {
+    // TRUNCATE took ACCESS EXCLUSIVE and so queued behind any open writer.
+    // DELETE alone does not: a row from a transaction that has not committed
+    // yet is invisible to its snapshot, the reset finishes, and the row commits
+    // into the NEXT test. That is exactly what an un-awaited background write
+    // from the previous test looks like.
+    const writer = postgres(process.env.DATABASE_URL!, { max: 1 });
+    try {
+      let resetSettled = false;
+      let reset: Promise<void> | undefined;
+      let settledBeforeCommit: boolean | undefined;
+
+      await writer.begin(async (tx) => {
+        await tx`INSERT INTO settings (key, value) VALUES ('reset-race', 'leaked')`;
+        const [{ pid }] = await tx<{ pid: number }[]>`SELECT pg_backend_pid() AS pid`;
+
+        reset = resetIntegrationDatabase().finally(() => {
+          resetSettled = true;
+        });
+
+        // Commit only once the reset is provably queued behind this writer —
+        // or has already finished, which is the failure being tested for.
+        const deadline = Date.now() + 10_000;
+        for (;;) {
+          const [{ blocked }] = await tx<{ blocked: boolean }[]>`
+            SELECT EXISTS (
+              SELECT 1 FROM pg_stat_activity a
+              WHERE ${pid}::int = ANY (pg_blocking_pids(a.pid))
+            ) AS blocked`;
+          if (blocked || resetSettled) break;
+          if (Date.now() > deadline) throw new Error("reset neither blocked nor finished in 10s");
+          await new Promise((r) => setTimeout(r, 20));
+        }
+        settledBeforeCommit = resetSettled;
+      });
+      await reset;
+
+      expect(settledBeforeCommit, "the reset must wait for the open writer").toBe(false);
+      expect(await rowCounts()).toEqual(Object.fromEntries(APPLICATION_TABLES.map((t) => [t, 0])));
+    } finally {
+      await writer.end();
+    }
   });
 
   it("replaces the storage of a vector-indexed table that held rows, so no dead tuples shadow an HNSW search", async () => {
