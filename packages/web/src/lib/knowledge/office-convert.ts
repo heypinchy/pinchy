@@ -36,8 +36,8 @@
  *    container was too small — infrastructure, retryable. Exit 0 with no
  *    artifact means THIS document is unreadable — final — unless the PDF
  *    could not be WRITTEN: the output lands on the artifact volume, and a
- *    full one gives the same exit 0 and no file (`failedStoreLine`,
- *    `probeWritable`). Without the split,
+ *    full one gives the same exit 0 and no file. The volume is asked, not
+ *    LibreOffice's stderr (`outputVolumeFault`). Without the split,
  *    one memory squeeze brands perfectly good documents as permanently
  *    unreadable and nothing ever retries them.
  *
@@ -55,7 +55,8 @@
  * text), NOT a guarantee.
  */
 import { spawn } from "node:child_process";
-import { mkdir, open, rm, stat, symlink, unlink, writeFile } from "node:fs/promises";
+import type { StatsFs } from "node:fs";
+import { mkdir, open, rm, stat, statfs, symlink, unlink, writeFile } from "node:fs/promises";
 import { basename, extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -113,6 +114,36 @@ export const DEFAULT_BATCH_SIZE = OFFICE_CONVERT_BATCH_SIZE;
 export function batchTimeoutMs(fileCount: number): number {
   return 60_000 + 10_000 * fileCount;
 }
+
+/**
+ * Free space below which a missing PDF is blamed on the volume, not the
+ * document: `max(MIN_FREE_OUTPUT_BYTES, 2 × the staged source)`.
+ *
+ * A PDF that did not fit needed more than was left, but its size is unknown —
+ * it was never written. The staged source stands in for it. Twice the source,
+ * because the export re-encodes: pictures are recompressed and fonts
+ * embedded, and a PDF larger than its source is ordinary. The floor, because
+ * for a small document the embedded fonts dominate and can be many times the
+ * source — 16 MiB is far above any font set and far below what a volume that
+ * is merely busy has left. It also catches the case the previous round
+ * measured: 4 KB left, the probe's write fits, the PDF does not.
+ *
+ * The error that costs least is the one this leans towards: a document
+ * blamed on a volume with under 16 MiB left is read again next run — and the
+ * operator is told about a volume that really is about to stop taking writes.
+ */
+export const MIN_FREE_OUTPUT_BYTES = 16 * 1024 * 1024;
+
+/**
+ * Free inodes below which the volume is out of files rather than bytes. A
+ * batch creates a handful per document (staged copy, PDF, LibreOffice's temp
+ * file) — under a hundred for a whole batch; a healthy filesystem reports
+ * millions.
+ */
+export const MIN_FREE_OUTPUT_INODES = 1024;
+
+/** The part of `statfs` the volume check reads. */
+export type VolumeSpace = Pick<StatsFs, "bsize" | "bavail" | "files" | "ffree">;
 
 export interface OfficeSource {
   absPath: string;
@@ -216,6 +247,8 @@ export interface ConvertOptions {
   batchSize?: number;
   epsilon?: number;
   onProgress?: (progress: ConvertProgress) => void | Promise<void>;
+  /** How full the artifact volume is. Prod: `fs.statfs`. */
+  statfs?: (dir: string) => Promise<VolumeSpace>;
 }
 
 /** One document's slot in the run, so results can be returned in input order. */
@@ -247,6 +280,7 @@ export async function convertOfficeFiles(
   const countSourceWords = options.countSourceWords ?? countSourceWordsWithOracle;
   const batchSize = Math.max(1, options.batchSize ?? DEFAULT_BATCH_SIZE);
   const epsilon = options.epsilon ?? OFFICE_VERIFY_EPSILON;
+  const readSpace = options.statfs ?? ((dir: string) => statfs(dir));
 
   const outcomes = new Array<ConversionOutcome>(sources.length);
   const byHash = new Map<string, WorkItem>();
@@ -292,6 +326,7 @@ export async function convertOfficeFiles(
       countPdfWords,
       countSourceWords,
       epsilon,
+      statfs: readSpace,
     });
 
     for (const [i, item] of batch.entries()) {
@@ -314,6 +349,7 @@ interface BatchDeps {
   countPdfWords: (absPath: string) => Promise<number>;
   countSourceWords: (absPath: string) => Promise<number | null>;
   epsilon: number;
+  statfs: (dir: string) => Promise<VolumeSpace>;
 }
 
 /** The production preparer: the preflight, in the reader child. */
@@ -434,12 +470,14 @@ async function convertBatch(batch: WorkItem[], deps: BatchDeps): Promise<Convers
       }
 
       let probe: Promise<string | null> | undefined;
+      let space: Promise<VolumeSpace | string> | undefined;
       for (const [i, item] of batch.entries()) {
         if (outcomes[i]) continue;
+        const stagedSource = join(inDir, `${i}${extname(item.absPath).toLowerCase()}`);
         const producedPdf = join(outDir, `${i}.pdf`);
         const outcome = await collectOne(
           { ...item, contentHash: keys[i] },
-          join(inDir, `${i}${extname(item.absPath).toLowerCase()}`),
+          stagedSource,
           producedPdf,
           deps,
           result.stderr
@@ -447,15 +485,27 @@ async function convertBatch(batch: WorkItem[], deps: BatchDeps): Promise<Convers
         // Every document verdict collectOne gives is drawn from the PDF — and
         // the PDF lands on the artifact volume the staged copies just filled.
         // Before a missing or broken PDF is held against the document, rule
-        // out the volume: either LibreOffice said it could not store this
-        // output, or the directory no longer takes a write at all.
+        // out the volume: does the directory still take a write, and is
+        // there room left for a PDF of this size? Asked of the volume itself,
+        // once per batch: LibreOffice's stderr cannot answer it (see
+        // `failedStoreLine`).
         const volumeFault =
           outcome.status === "failed"
-            ? (failedStoreLine(result.stderr, producedPdf) ??
-              (await (probe ??= probeWritable(outDir))))
+            ? ((await (probe ??= probeWritable(outDir))) ??
+              outputVolumeFault(
+                await (space ??= readVolumeSpace(outDir, deps.statfs)),
+                await stat(stagedSource).then(
+                  (info) => info.size,
+                  () => 0
+                )
+              ))
             : null;
+        const storeLine = volumeFault ? failedStoreLine(result.stderr, producedPdf) : null;
         outcomes[i] = volumeFault
-          ? infrastructureFailure(item.absPath, `could not write the converted PDF: ${volumeFault}`)
+          ? infrastructureFailure(
+              item.absPath,
+              `could not write the converted PDF: ${volumeFault}${storeLine ? ` (converter: ${storeLine})` : ""}`
+            )
           : outcome;
       }
     }
@@ -528,22 +578,21 @@ async function collectOne(
 }
 
 /**
- * LibreOffice's own word that it could not write `producedPdf`, or null.
+ * LibreOffice's line saying it could not store `producedPdf`, or null —
+ * corroboration for the operator log, never a verdict.
  *
  * A failed write of the output is reported, per file, as
  * `SfxBaseModel::impl_store <file:///…/out/<i>.pdf> failed: 0x…(Error Area:Io …)`
- * — exit 0, no PDF, exactly like an input it could not load, which says
- * `Error: source file could not be loaded` instead. Measured against the
- * runtime image's LibreOffice 7.4: a full tmpfs gives `Class:Access`, one with
- * 4 KB left `Class:Space`, a target answering ENOSPC `Class:Abort`. The class
- * is LibreOffice's mapping of the errno, not a line to draw, so any `Area:Io`
- * failure to store THIS output counts. That direction is the safe one: a
- * document mis-booked as infrastructure is read again next run and keeps its
- * old version; a full disk mis-booked as the document deletes that version.
- *
- * This is the witness for a NEARLY full volume, where a PDF does not fit but
- * the probe's 4 KB still fit. It is matched to the output it names —
- * stderr is batch-wide.
+ * — exit 0, no PDF. Measured against the runtime image's LibreOffice 7.4: a
+ * full tmpfs gives `Class:Access`, one with 4 KB left `Class:Space`, a target
+ * answering ENOSPC `Class:Abort`. But the same line comes out when the export
+ * fails for the DOCUMENT's sake: a .pptx whose every slide is hidden gives
+ * `Class:Write Code:16` on a disk with gigabytes free. Taken as "the volume is
+ * full", that deck was converted again every run, never listed unsearchable,
+ * and the operator was sent after a disk that was fine (tenth review). So the
+ * volume decides (`probeWritable`, `outputVolumeFault`), and this line is only
+ * quoted once it has. It is matched to the output it names — stderr is
+ * batch-wide.
  */
 function failedStoreLine(stderr: string, producedPdf: string): string | null {
   for (const line of stderr.split("\n")) {
@@ -587,6 +636,36 @@ async function probeWritable(dir: string): Promise<string | null> {
     await rm(probe, { force: true }).catch(() => {});
     return `output directory does not take a write: ${reasonOf(err)}`;
   }
+}
+
+/** What `statfs` says about `dir`'s volume, or why it said nothing. */
+function readVolumeSpace(
+  dir: string,
+  statfs: (dir: string) => Promise<VolumeSpace>
+): Promise<VolumeSpace | string> {
+  return statfs(dir).catch(
+    (err: unknown) => `output volume did not report its free space: ${reasonOf(err)}`
+  );
+}
+
+/**
+ * Null when the output volume had room for a PDF of a `sourceBytes` document,
+ * else why not. `space` is what `statfs` said, or why it said nothing — a
+ * volume that cannot report its own state is not one to blame a document on.
+ */
+function outputVolumeFault(space: VolumeSpace | string, sourceBytes: number): string | null {
+  if (typeof space === "string") return space;
+  const free = space.bavail * space.bsize;
+  const needed = Math.max(MIN_FREE_OUTPUT_BYTES, 2 * sourceBytes);
+  if (free < needed) {
+    return `only ${free} bytes free on the output volume, below the ${needed}-byte floor for this document`;
+  }
+  // 0 total inodes is a filesystem that does not count them (btrfs, some
+  // network mounts), not one that ran out.
+  if (space.files > 0 && space.ffree < MIN_FREE_OUTPUT_INODES) {
+    return `only ${space.ffree} free inodes on the output volume`;
+  }
+  return null;
 }
 
 /**
@@ -644,10 +723,11 @@ function summarise(stderr: string): string {
 
 /**
  * stderr we keep. LibreOffice repeats itself per file; a huge batch must not
- * build a huge string. But the per-file `impl_store … failed` line is how a
- * PDF that did not fit is told apart from a document (`failedStoreLine`), so
- * the cap must hold a whole batch of them: at staging-path lengths a failed
- * file costs ~450 bytes (its `convert` line and its error), 20 of them ~9 KB.
+ * build a huge string. But the per-file `impl_store … failed` line is what an
+ * operator is shown for a PDF the full volume did not take (`failedStoreLine`
+ * — the volume decides, the line only says what LibreOffice saw), so the cap
+ * must hold a whole batch of them: at staging-path lengths a failed file
+ * costs ~450 bytes (its `convert` line and its error), 20 of them ~9 KB.
  */
 const MAX_STDERR_BYTES = 32 * 1024;
 

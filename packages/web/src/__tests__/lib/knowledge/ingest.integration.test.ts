@@ -56,6 +56,7 @@ import type { XlsxExtraction } from "@/lib/knowledge/xlsx-extract";
 import {
   convertOfficeFiles,
   type ConversionOutcome,
+  type ConvertOptions,
   type OfficeSource,
   type PrepareSource,
   type RunConverter,
@@ -1779,7 +1780,8 @@ describe("an artifact volume that cannot be written (eighth and ninth review, PR
     prepareSource: PrepareSource,
     runConverter: RunConverter = async () => {
       throw new Error("the converter must not run when nothing could be staged");
-    }
+    },
+    statfs?: ConvertOptions["statfs"]
   ) {
     const embed = vi.fn(async (texts: string[]) => texts.map(() => Array(768).fill(0.05)));
     return {
@@ -1791,12 +1793,17 @@ describe("an artifact volume that cannot be written (eighth and ninth review, PR
           store: new OfficeArtifactStore(storeRoot),
           prepareSource,
           runConverter,
+          statfs,
         }),
       ocrModel: null,
     } as IngestDeps;
   }
 
-  async function expectOldVersionKept(prepareSource: PrepareSource, runConverter?: RunConverter) {
+  async function expectOldVersionKept(
+    prepareSource: PrepareSource,
+    runConverter?: RunConverter,
+    statfs?: ConvertOptions["statfs"]
+  ) {
     const docPath = join(tmpRoot, "Angebot.doc");
     writeFileSync(docPath, "{\\rtf1 version one}");
     const good = officeDeps(convertedTo("/artifacts/v1.pdf"), () => WORD_PAGES);
@@ -1809,7 +1816,11 @@ describe("an artifact volume that cannot be written (eighth and ninth review, PR
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
       expect(
-        await ingestDirectory(ORG_ID, tmpRoot, realConverterDeps(prepareSource, runConverter))
+        await ingestDirectory(
+          ORG_ID,
+          tmpRoot,
+          realConverterDeps(prepareSource, runConverter, statfs)
+        )
       ).toEqual(counts({ failed: 1 }));
     } finally {
       consoleError.mockRestore();
@@ -1843,15 +1854,43 @@ describe("an artifact volume that cannot be written (eighth and ninth review, PR
 
   it("keeps the last indexed version when the converted PDF cannot be written (ninth review)", async () => {
     // The copy fit; the PDF, written to the same volume right after, did not.
-    // What the real `soffice` does then: exit 0, no PDF, one stderr line.
+    // What the real `soffice` does then: exit 0, no PDF, one stderr line —
+    // and the volume reports what a nearly full one reports: 4 KB left.
     await expectOldVersionKept(
       async () => null,
       async ({ outDir }) => ({
         code: 0,
         signal: null,
         stderr: `Error: Please verify input parameters... (SfxBaseModel::impl_store <file://${join(outDir, "0.pdf")}> failed: 0x909(Error Area:Io Class:Space Code:9) at ./sfx2/source/doc/sfxbasemodel.cxx:3207)\n`,
-      })
+      }),
+      async () => ({ bsize: 4096, bavail: 1, files: 1_000_000, ffree: 1_000_000 })
     );
+  });
+
+  it("lists an all-hidden deck as unsearchable: LibreOffice's failed store on a roomy volume is the document's (tenth review)", async () => {
+    // The real binary prints the same `impl_store … failed … Error Area:Io`
+    // for a .pptx whose every slide is hidden — on a volume with room. That
+    // is a verdict on the deck, not a full disk to retry forever.
+    writeFileSync(join(tmpRoot, "Praesentation.pptx"), "deck bytes");
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      expect(
+        await ingestDirectory(
+          ORG_ID,
+          tmpRoot,
+          realConverterDeps(
+            async () => null,
+            async ({ outDir }) => ({
+              code: 0,
+              signal: null,
+              stderr: `Error: Please verify input parameters... (SfxBaseModel::impl_store <file://${join(outDir, "0.pdf")}> failed: 0xc10(Error Area:Io Class:Write Code:16) at ./sfx2/source/doc/sfxbasemodel.cxx:3207)\n`,
+            })
+          )
+        )
+      ).toEqual(counts({ unsearchable: 1 }));
+    } finally {
+      consoleError.mockRestore();
+    }
   });
 });
 

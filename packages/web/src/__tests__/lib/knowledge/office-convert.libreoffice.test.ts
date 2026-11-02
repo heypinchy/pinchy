@@ -22,9 +22,11 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { chmod, readFile, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { inflateRawSync } from "node:zlib";
 
 import { convertOfficeFiles, runSoffice } from "@/lib/knowledge/office-convert";
 import { OfficeArtifactStore } from "@/lib/knowledge/office-artifacts";
+import { rawPart, readZipEntries } from "@/lib/knowledge/office-zip";
 import { extractPdfPages } from "@/lib/knowledge/pdf-extract";
 
 const SOFFICE = process.env.KB_SOFFICE_BIN || "soffice";
@@ -47,8 +49,16 @@ describe.skipIf(!hasSoffice)("convertOfficeFiles against a real LibreOffice", ()
   let tmpRoot: string;
   let corpusDir: string;
 
-  /** Builds a real Office file out of plain text — a DIFFERENT soffice invocation than the one under test. */
-  function buildFixture(filter: string, name: string): string {
+  /**
+   * Builds a real Office file out of `source` (plain text unless given) — a
+   * DIFFERENT soffice invocation than the one under test. The output is named
+   * after the source, so `name` must share its basename.
+   */
+  function buildFixture(
+    filter: string,
+    name: string,
+    source = join(tmpRoot, "source.txt")
+  ): string {
     const out = spawnSync(
       SOFFICE,
       [
@@ -59,7 +69,7 @@ describe.skipIf(!hasSoffice)("convertOfficeFiles against a real LibreOffice", ()
         filter,
         "--outdir",
         corpusDir,
-        join(tmpRoot, "source.txt"),
+        source,
       ],
       { encoding: "utf8" }
     );
@@ -149,15 +159,18 @@ describe.skipIf(!hasSoffice)("convertOfficeFiles against a real LibreOffice", ()
   );
 
   it.skipIf(!existsSync("/dev/full"))(
-    "books a PDF whose write ran out of space as infrastructure, from what LibreOffice says",
+    "books a PDF whose write ran out of space on a nearly full volume as infrastructure",
     async () => {
       // The output directory itself still takes a small file — exactly a
       // nearly full volume, where the probe passes and the PDF does not fit.
-      // /dev/full answers every write with ENOSPC, for root too (Linux only).
+      // /dev/full answers every write with ENOSPC, for root too (Linux only),
+      // so LibreOffice really fails the store; `statfs` reports what such a
+      // volume reports — 4 KB left — since a test cannot fill the real one.
       const source = buildFixture("docx", "source.docx");
 
       const outcomes = await convertOfficeFiles([{ absPath: source }], {
         store: new OfficeArtifactStore(join(tmpRoot, "artifacts-full")),
+        statfs: async () => ({ bsize: 4096, bavail: 1, files: 1_000_000, ffree: 1_000_000 }),
         runConverter: async (run) => {
           await symlink("/dev/full", join(run.outDir, "0.pdf"));
           return runSoffice(run);
@@ -169,6 +182,67 @@ describe.skipIf(!hasSoffice)("convertOfficeFiles against a real LibreOffice", ()
     },
     180_000
   );
+
+  it("books a deck whose every slide is hidden as a document failure, though LibreOffice's store fails (tenth review)", async () => {
+    // The real binary exits 0, writes no PDF and prints the SAME
+    // `impl_store … failed … Error Area:Io` line a full volume gives
+    // (`Class:Write Code:16`) — on a disk with room. Nothing about this deck
+    // changes on a retry: it belongs on the unsearchable list, and the
+    // operator must not be told the disk is full.
+    const fodp = join(tmpRoot, "hidden.fodp");
+    await writeFile(
+      fodp,
+      `<?xml version="1.0" encoding="UTF-8"?>
+<office:document xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"
+ xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0"
+ xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"
+ xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0"
+ xmlns:presentation="urn:oasis:names:tc:opendocument:xmlns:presentation:1.0"
+ xmlns:svg="urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0"
+ office:version="1.2" office:mimetype="application/vnd.oasis.opendocument.presentation">
+ <office:automatic-styles>
+  <style:style style:name="hidden" style:family="drawing-page"><style:drawing-page-properties presentation:visibility="hidden"/></style:style>
+ </office:automatic-styles>
+ <office:body><office:presentation>
+  ${["First hidden slide", "Second hidden slide"]
+    .map(
+      (title, i) => `<draw:page draw:name="S${i}" draw:style-name="hidden">
+   <draw:frame svg:width="20cm" svg:height="3cm" svg:x="2cm" svg:y="2cm"><draw:text-box><text:p>${title}</text:p></draw:text-box></draw:frame>
+  </draw:page>`
+    )
+    .join("")}
+ </office:presentation></office:body>
+</office:document>`
+    );
+    const deck = buildFixture("pptx", "hidden.pptx", fodp);
+    // The fixture is what the review found: every slide `show="0"`.
+    const archive = await readFile(deck);
+    const slides = readZipEntries(archive)
+      .filter((entry) => /^ppt\/slides\/slide\d+\.xml$/.test(entry.name))
+      .map((entry) => {
+        const part = rawPart(archive, entry);
+        return (part.method === 8 ? inflateRawSync(part.data) : part.data).toString("utf8");
+      });
+    expect(slides).toHaveLength(2);
+    for (const slide of slides) expect(slide).toMatch(/<p:sld [^>]*show="0"/);
+
+    let stderr = "";
+    const outcomes = await convertOfficeFiles([{ absPath: deck }], {
+      store: new OfficeArtifactStore(join(tmpRoot, "artifacts-hidden")),
+      runConverter: async (run) => {
+        const result = await runSoffice(run);
+        stderr = result.stderr;
+        return result;
+      },
+    });
+
+    // The premise: LibreOffice really does report a failed store here. If an
+    // upgrade renders the deck instead, this fails rather than passing on a
+    // case that no longer exists.
+    expect(stderr).toMatch(/impl_store <file:[^>]*\/0\.pdf> failed:.*Error Area:Io/);
+    expect(outcomes[0].status).toBe("failed");
+    expect(outcomes[0].artifactPath).toBeUndefined();
+  }, 180_000);
 
   it("serves the stored artifact on the second run without touching LibreOffice again", async () => {
     const source = buildFixture("doc:MS Word 97", "source.doc");

@@ -28,6 +28,8 @@ import {
   convertOfficeFiles,
   countSourceWordsWithOracle,
   isOfficeFile,
+  MIN_FREE_OUTPUT_BYTES,
+  MIN_FREE_OUTPUT_INODES,
   OFFICE_EXTENSIONS,
   OFFICE_VERIFY_EPSILON,
   type ConverterRun,
@@ -1025,12 +1027,19 @@ describe("a staged copy that cannot be written is infrastructure, not a verdict 
   });
 });
 
-describe("an output the converter could not write is infrastructure, not a verdict (ninth review, PR #1243)", () => {
+describe("an output the converter could not write is infrastructure, not a verdict (ninth and tenth review, PR #1243)", () => {
   // LibreOffice writes its PDFs into staging/<batch>/out — the same volume the
   // staged copies just filled. When that write fails it exits 0, writes no
   // PDF and only says so on stderr, which looks exactly like a document it
   // could not load. Booked as a document failure, a CHANGED file would lose
   // the version the index already held to a chunkless row.
+  //
+  // But the stderr line is not the volume's word (tenth review): LibreOffice
+  // prints the same `impl_store … failed … Error Area:Io` when the export
+  // fails for reasons of the DOCUMENT — a deck whose every slide is hidden
+  // gives `Class:Write Code:16` on a roomy disk. So the verdict comes from the
+  // volume itself — a write probe and `statfs` — and stderr only says which
+  // output it was.
   const runningAsRoot = process.getuid?.() === 0;
 
   /**
@@ -1040,6 +1049,19 @@ describe("an output the converter could not write is infrastructure, not a verdi
   const implStoreFailed = (pdf: string, errorClass = "Space Code:9") =>
     `convert ${pdf.replace(/\.pdf$/, ".doc")} -> ${pdf} using filter : writer_pdf_Export\n` +
     `Error: Please verify input parameters... (SfxBaseModel::impl_store <file://${pdf}> failed: 0x909(Error Area:Io Class:${errorClass}) at ./sfx2/source/doc/sfxbasemodel.cxx:3207 at ./sfx2/source/doc/sfxbasemodel.cxx:1783)\n`;
+
+  /** A volume as `statfs` reports it: `freeBytes` available, and plenty of inodes unless told otherwise. */
+  const volumeWith =
+    ({ freeBytes, freeInodes = 1_000_000 }: { freeBytes: number; freeInodes?: number }) =>
+    async () => ({
+      bsize: 4096,
+      bavail: Math.floor(freeBytes / 4096),
+      files: 2_000_000,
+      ffree: freeInodes,
+    });
+
+  /** The volume the previous round measured: 4 KB left, so the probe still fits and the PDF does not. */
+  const nearlyFull = volumeWith({ freeBytes: 4096 });
 
   /** Converts the inputs whose source maps to text, and lets `after` spoil the run. */
   function converterThat(
@@ -1058,14 +1080,15 @@ describe("an output the converter could not write is infrastructure, not a verdi
     };
   }
 
-  it("books a missing PDF as infrastructure when the converter says it could not store it", async () => {
-    // The volume still takes a small probe here (4 KB free), so stderr is the
-    // only witness: LibreOffice names the output it failed to write.
+  it("books a missing PDF as infrastructure when the volume is nearly full, citing what LibreOffice said", async () => {
+    // The volume still takes a small probe here (4 KB free), so statfs is the
+    // witness, and LibreOffice's line names the output it failed to write.
     const [full, good] = [await corpusFile("full.doc", "x"), await corpusFile("good.doc", "y")];
 
     const outcomes = await convertOfficeFiles(
       [full, good],
       deps(fakeConverter({ outputs: {} }), {
+        statfs: nearlyFull,
         runConverter: converterThat({ "good.doc": "converted words" }, async (call) =>
           implStoreFailed(join(call.outDir, "0.pdf"))
         ),
@@ -1073,19 +1096,41 @@ describe("an output the converter could not write is infrastructure, not a verdi
     );
 
     expect(outcomes.map((o) => o.status)).toEqual(["infrastructure", "converted"]);
-    expect(outcomes[0].reason).toMatch(/could not write the converted PDF/);
+    expect(outcomes[0].reason).toMatch(/could not write the converted PDF: .*bytes free/);
     expect(outcomes[0].reason).toMatch(/impl_store/);
+  });
+
+  it("books a failed store as the document's when the volume has room: an all-hidden deck (tenth review)", async () => {
+    // What the real binary prints for a .pptx whose every slide is hidden, on
+    // a volume with gigabytes free: the same Area:Io line a full disk gives.
+    // Booked as infrastructure, that deck would be converted every run and
+    // never listed unsearchable, while the operator is told the disk is full.
+    const deck = await corpusFile("hidden.pptx", "x");
+
+    const outcomes = await convertOfficeFiles(
+      [deck],
+      deps(fakeConverter({ outputs: {} }), {
+        runConverter: converterThat({}, async (call) =>
+          implStoreFailed(join(call.outDir, "0.pdf"), "Write Code:16")
+        ),
+      })
+    );
+
+    expect(outcomes[0].status).toBe("failed");
+    expect(outcomes[0].reason).toMatch(/no artifact produced/);
   });
 
   it("books it as infrastructure whatever error class LibreOffice gives the failed store", async () => {
     // Measured against the real binary: a full tmpfs says Class:Access, a
     // nearly full one Class:Space, a target that answers ENOSPC Class:Abort.
-    // The class is LibreOffice's mapping, not a signal we can draw a line on.
+    // The class is LibreOffice's mapping, not a signal we can draw a line on —
+    // which is why the volume, not the class, decides.
     const source = await corpusFile("a.doc", "x");
 
     const outcomes = await convertOfficeFiles(
       [source],
       deps(fakeConverter({ outputs: {} }), {
+        statfs: nearlyFull,
         runConverter: converterThat({}, async (call) =>
           implStoreFailed(join(call.outDir, "0.pdf"), "Abort Code:27")
         ),
@@ -1095,7 +1140,7 @@ describe("an output the converter could not write is infrastructure, not a verdi
     expect(outcomes[0].status).toBe("infrastructure");
   });
 
-  it("only for the output LibreOffice named: an unloadable neighbour is still a document failure", async () => {
+  it("cites the converter's store line only for the output it names", async () => {
     // stderr is batch-wide, so the line is matched to the output it names.
     // `/10.pdf` must not be read as `/0.pdf` either.
     const sources = [];
@@ -1105,6 +1150,7 @@ describe("an output the converter could not write is infrastructure, not a verdi
       sources,
       deps(fakeConverter({ outputs: {} }), {
         batchSize: 11,
+        statfs: nearlyFull,
         runConverter: converterThat(
           {},
           async (call) =>
@@ -1114,8 +1160,80 @@ describe("an output the converter could not write is infrastructure, not a verdi
       })
     );
 
-    expect(outcomes[10].status).toBe("infrastructure");
-    expect(outcomes.slice(0, 10).map((o) => o.status)).toEqual(Array(10).fill("failed"));
+    expect(outcomes[10].reason).toMatch(/impl_store/);
+    for (const outcome of outcomes.slice(0, 10)) {
+      expect(outcome.status).toBe("infrastructure");
+      expect(outcome.reason).not.toMatch(/impl_store/);
+    }
+  });
+
+  it("measures the room against the document: twice its staged size, never under the floor", async () => {
+    // A PDF that did not fit needed more than was left. Its size is not known
+    // (it was never written), so the staged source stands in for it: twice
+    // that, and never less than MIN_FREE_OUTPUT_BYTES.
+    const big = join(corpusDir, "big.pptx");
+    await mkdir(corpusDir, { recursive: true });
+    await writeFile(big, Buffer.alloc(12 * 1024 * 1024));
+    const small = await corpusFile("small.pptx", "x");
+
+    const outcomes = await convertOfficeFiles(
+      [{ absPath: big }, small],
+      deps(fakeConverter({ outputs: {} }), {
+        // Above the floor, below twice the big source.
+        statfs: volumeWith({ freeBytes: MIN_FREE_OUTPUT_BYTES + 4 * 1024 * 1024 }),
+        runConverter: converterThat({}, async () => ""),
+      })
+    );
+
+    expect(outcomes.map((o) => o.status)).toEqual(["infrastructure", "failed"]);
+  });
+
+  it("books a missing PDF as infrastructure when the volume has bytes but no inodes left", async () => {
+    const source = await corpusFile("a.doc", "x");
+
+    const outcomes = await convertOfficeFiles(
+      [source],
+      deps(fakeConverter({ outputs: {} }), {
+        statfs: volumeWith({ freeBytes: 1024 ** 3, freeInodes: MIN_FREE_OUTPUT_INODES - 1 }),
+        runConverter: converterThat({}, async () => ""),
+      })
+    );
+
+    expect(outcomes[0].status).toBe("infrastructure");
+    expect(outcomes[0].reason).toMatch(/inodes/);
+  });
+
+  it("does not count inodes on a filesystem that has none to count", async () => {
+    // btrfs and some network filesystems report 0 total inodes: no limit, not
+    // an exhausted one.
+    const source = await corpusFile("a.doc", "x");
+
+    const outcomes = await convertOfficeFiles(
+      [source],
+      deps(fakeConverter({ outputs: {} }), {
+        statfs: async () => ({ bsize: 4096, bavail: 1024 ** 2, files: 0, ffree: 0 }),
+        runConverter: converterThat({}, async () => ""),
+      })
+    );
+
+    expect(outcomes[0].status).toBe("failed");
+  });
+
+  it("books a missing PDF as infrastructure when the volume cannot even say how full it is", async () => {
+    const source = await corpusFile("a.doc", "x");
+
+    const outcomes = await convertOfficeFiles(
+      [source],
+      deps(fakeConverter({ outputs: {} }), {
+        statfs: async () => {
+          throw new Error("EIO: i/o error, statfs");
+        },
+        runConverter: converterThat({}, async () => ""),
+      })
+    );
+
+    expect(outcomes[0].status).toBe("infrastructure");
+    expect(outcomes[0].reason).toMatch(/EIO/);
   });
 
   it.skipIf(runningAsRoot)(

@@ -179,10 +179,10 @@ describe("runSoffice", () => {
   });
 
   it("keeps enough stderr for every file of a full batch whose PDFs did not fit (ninth review, PR #1243)", async () => {
-    // The per-file `impl_store … failed` line is what tells a full volume
-    // from an unloadable document. At production staging-path lengths a
-    // batch of 20 prints ~9 KB of them; the last file must not lose its line
-    // to the cap and be booked against the document.
+    // The per-file `impl_store … failed` line is what the operator is shown
+    // for a PDF a full volume did not take (the volume itself decides that,
+    // tenth review). At production staging-path lengths a batch of 20 prints
+    // ~9 KB of them; the last file must not lose its line to the cap.
     const dir = `/app/kb-artifacts/staging/${"0".repeat(8)}-0000-4000-8000-${"0".repeat(12)}`;
     process.env.KB_SOFFICE_BIN = stub(
       "soffice-full",
