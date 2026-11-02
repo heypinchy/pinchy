@@ -185,17 +185,21 @@ record's code — so an analytic account called "IT Infrastructure" is never
 mistaken for whatever carries the code "IT".
 
 **The name after a code has to match.** In the `"<code> <name>"` form, the
-name is checked against the record the code finds, ignoring case and extra
-spaces. `"6000 Bank fees"` is refused when account 6000 is called "Office
-supplies", and the refusal names what 6000 actually is, so the agent can send
-the exact name or a reference. Otherwise the confirmation card would read "Bank
-fees" while the booking went to Office supplies. A bare code makes no claim
+name is checked against the record the code finds, ignoring case, extra spaces
+and one separator between the two — `"6000 - Office supplies"`, `"6000: Office
+supplies"` and `"6000 | Office supplies"` all read as `"6000 Office supplies"`.
+`"6000 Bank fees"` is refused when account 6000 is called "Office supplies",
+and the refusal names what 6000 actually is, so the agent can send the exact
+name or a reference. Otherwise the confirmation card would read "Bank fees"
+while the booking went to Office supplies. The same holds when the agent names
+the code and the name separately, as `{"lookup": {"code": "6000", "name":
+"Bank fees"}}`: the name has to be account 6000's. A bare code makes no claim
 about the name and resolves as before.
 
 **A code that two companies share reports the collision** rather than picking
 one, and names both companies. Adding `company_id` to the same create scopes the
-lookup and resolves it; so does the fully qualified `"<code> <name>"` form, when
-the names differ.
+lookup and resolves it; so does the fully qualified `"<code> <name>"` form, or
+`{"lookup": {"code": …, "name": …}}`, when the names differ.
 
 ## Duplicate vendor bills
 

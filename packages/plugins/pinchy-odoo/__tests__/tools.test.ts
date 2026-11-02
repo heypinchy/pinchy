@@ -7928,6 +7928,12 @@ describe("many2one natural-key lookup, edge cases (#1206 review)", () => {
 
   // The candidate arrived through the NAME leg, so the case difference is real
   // rather than a fixture: only the client-side comparison can close it.
+  //
+  // The name used to be "Miscellaneous" against a record called
+  // "Miscellaneous Operations" — it passed only because an explicit code
+  // ignored the name next to it, which is the bug the eighth review of #1242
+  // found. The name now matches, so this tests what it says: the case of the
+  // code.
   it("matches an explicit code against a record whose code differs only in case", async () => {
     mockSchema({});
     mockCandidates({
@@ -7936,7 +7942,7 @@ describe("many2one natural-key lookup, edge cases (#1206 review)", () => {
 
     const result = await create({
       name: "x",
-      journal_id: { lookup: { code: "bnk1", name: "Miscellaneous" } },
+      journal_id: { lookup: { code: "bnk1", name: "Miscellaneous Operations" } },
     });
 
     expect(result.isError).toBeFalsy();
@@ -8006,6 +8012,114 @@ describe("many2one natural-key lookup, edge cases (#1206 review)", () => {
       expect(mockCreate).toHaveBeenCalledWith(
         "account.move.line",
         expect.objectContaining({ account_id: 60 })
+      );
+    });
+
+    // Models write the code and the name the way a chart of accounts lists
+    // them: "600000 - Expenses". The separator is not part of the name.
+    it.each([
+      ["a hyphen", "6000 - Office supplies"],
+      ["an en dash", "6000 – Office supplies"],
+      ["an em dash", "6000 — Office supplies"],
+      ["a colon", "6000 : Office supplies"],
+      ["a pipe", "6000 | Office supplies"],
+      ["a slash", "6000 / Office supplies"],
+      ["a hyphen without a space after it", "6000 -Office supplies"],
+    ])("resolves a name after %s", async (_label, account) => {
+      mockSchema({});
+      mockCandidates({ "account.account": [OFFICE] });
+
+      const result = await create({ name: WRITTEN_LABEL, account_id: account });
+
+      expect(result.isError).toBeFalsy();
+      expect(mockCreate).toHaveBeenCalledWith(
+        "account.move.line",
+        expect.objectContaining({ account_id: 60 })
+      );
+    });
+
+    it("still refuses a contradicting name after a separator", async () => {
+      mockSchema({});
+      mockCandidates({ "account.account": [OFFICE] });
+
+      const result = await create({ name: WRITTEN_LABEL, account_id: "6000 - Bank fees" });
+
+      expect(result.isError).toBe(true);
+      const text = result.content[0].text;
+      expect(text).toContain('"Office supplies"');
+      expect(text).toContain('"Bank fees"');
+      expect(mockCreate).not.toHaveBeenCalled();
+    });
+
+    // Only one separator is the form's punctuation; a second is the name's.
+    it("strips one separator, not every one", async () => {
+      mockSchema({});
+      mockCandidates({ "account.account": [{ id: 61, name: "- Misc", code: "6100" }] });
+
+      const result = await create({ name: WRITTEN_LABEL, account_id: "6100 - - Misc" });
+
+      expect(result.isError).toBeFalsy();
+      expect(mockCreate).toHaveBeenCalledWith(
+        "account.move.line",
+        expect.objectContaining({ account_id: 61 })
+      );
+    });
+
+    // Eighth review of #1242: the object form `{lookup: {code, name}}`
+    // resolved on the code and ignored the name beside it, so the same
+    // contradiction the string form now refuses still booked to 6000.
+    it("refuses an explicit code whose record carries a different name", async () => {
+      mockSchema({});
+      mockCandidates({ "account.account": [OFFICE] });
+
+      const result = await create({
+        name: WRITTEN_LABEL,
+        account_id: { lookup: { code: "6000", name: "Bank fees" } },
+      });
+
+      expect(result.isError).toBe(true);
+      const text = result.content[0].text;
+      expect(text).toContain("Could not resolve account_id");
+      expect(text).toContain('"Office supplies"');
+      expect(text).toContain('"Bank fees"');
+      expect(text).toMatch(/exact Account name or ref/);
+      expect(mockCreate).not.toHaveBeenCalled();
+    });
+
+    it("resolves an explicit code whose name matches, ignoring case and spacing", async () => {
+      mockSchema({});
+      mockCandidates({ "account.account": [OFFICE] });
+
+      const result = await create({
+        name: WRITTEN_LABEL,
+        account_id: { lookup: { code: "6000", name: " office   Supplies" } },
+      });
+
+      expect(result.isError).toBeFalsy();
+      expect(mockCreate).toHaveBeenCalledWith(
+        "account.move.line",
+        expect.objectContaining({ account_id: 60 })
+      );
+    });
+
+    it("tells two records that share an explicit code apart by the name", async () => {
+      mockSchema({});
+      mockCandidates({
+        "account.account": [
+          { id: 40, name: "Bank Helmcraft", code: "1800" },
+          { id: 41, name: "Bank Clemens", code: "1800" },
+        ],
+      });
+
+      const result = await create({
+        name: WRITTEN_LABEL,
+        account_id: { lookup: { code: "1800", name: "Bank Clemens" } },
+      });
+
+      expect(result.isError).toBeFalsy();
+      expect(mockCreate).toHaveBeenCalledWith(
+        "account.move.line",
+        expect.objectContaining({ account_id: 41 })
       );
     });
 

@@ -1118,14 +1118,27 @@ function normalizeNameText(value: string): string {
 }
 
 /**
- * The record a `"<code> <name>"` lookup names, once the code is known to
- * match (seventh review of #1242). The name after the code is a claim about
- * the record: `"6000 Bank fees"` used to book to account 6000 whatever it is
- * called, so the card read "Bank fees" while the effect was "Office supplies".
- * The claim has to hold — case and spacing aside — or the lookup is refused
- * with the name the code actually carries, so the model can send the exact
- * name or the record's ref. Two records that share the code (the multi-company
- * case) are told apart by the same name.
+ * One separator a model writes between a code and its name — `"600000 -
+ * Expenses"`, `"6000: Office supplies"` — and the space around it. Only the
+ * first: a second one belongs to the name.
+ */
+const CODE_NAME_SEPARATOR = /^\s*[-–—:|/]\s*/;
+
+/** The name a lookup claims beside a code, without the separator before it. */
+function claimedNameText(value: string): string {
+  return value.trim().replace(CODE_NAME_SEPARATOR, "").trim();
+}
+
+/**
+ * The record a lookup names by code and name together, once the code is known
+ * to match: the `"<code> <name>"` string (seventh review of #1242) and the
+ * explicit `{lookup: {code, name}}` (eighth review). The name beside the code
+ * is a claim about the record: `"6000 Bank fees"` used to book to account 6000
+ * whatever it is called, so the card read "Bank fees" while the effect was
+ * "Office supplies". The claim has to hold — case, spacing and one separator
+ * aside — or the lookup is refused with the name the code actually carries, so
+ * the model can send the exact name or the record's ref. Two records that
+ * share the code (the multi-company case) are told apart by the same name.
  */
 function matchByCodeAndName(
   field: OdooField,
@@ -1148,8 +1161,9 @@ function matchByCodeAndName(
   ];
   const carries =
     actual.length > 0 ? actual.map((name) => JSON.stringify(name)).join(" or ") : "unnamed";
+  const source = lookup.code ? `code "${code}"` : `"${lookup.name}"`;
   throw new Error(
-    `Could not resolve ${field.name} from "${lookup.name}": ${label} ${code} is ${carries}, ` +
+    `Could not resolve ${field.name} from ${source}: ${label} ${code} is ${carries}, ` +
       `not ${JSON.stringify(claimedName)}. Provide an exact ${label} name or ref.`
   );
 }
@@ -1182,7 +1196,9 @@ function matchByCode(
  * Pick the one record a lookup names, in order of how much the caller actually
  * told us (heypinchy/pinchy#1197, precedence corrected in the #1206 review):
  *
- * 1. An explicit `{lookup: {code}}` names the column it means. Nothing beats it.
+ * 1. An explicit `{lookup: {code}}` names the column it means. Nothing beats it
+ *    — but a `name` beside it must be the record's name too
+ *    (`matchByCodeAndName`), or the lookup is refused.
  * 2. An exact `name`/`display_name` match. This sits ABOVE the derived code
  *    token on purpose: the token is a guess about the input's shape, an exact
  *    name is not. With the order reversed, `"IT Infrastructure"` resolves to
@@ -1203,6 +1219,13 @@ function resolveReferenceFromRecords(
   const input = lookup.code ?? lookup.name ?? "";
 
   if (lookup.code) {
+    // A name beside the code is a claim about the record, exactly as in the
+    // string form below — never ignored (eighth review of #1242).
+    const claimedName = lookup.name ? claimedNameText(lookup.name) : "";
+    const coded = claimedName ? recordsWithCode(lookup.code, records) : [];
+    if (coded.length > 0) {
+      return matchByCodeAndName(field, lookup, lookup.code, claimedName, coded);
+    }
     const byExplicitCode = matchByCode(field, lookup, lookup.code, records);
     if (byExplicitCode !== null) return byExplicitCode;
   }
@@ -1230,7 +1253,7 @@ function resolveReferenceFromRecords(
 
   const codeToken = codeTokenOf(lookup);
   if (codeToken) {
-    const claimedName = lookup.code ? "" : lookup.name.slice(codeToken.length).trim();
+    const claimedName = lookup.code ? "" : claimedNameText(lookup.name.slice(codeToken.length));
     const coded = claimedName ? recordsWithCode(codeToken, records) : [];
     if (coded.length > 0) {
       return matchByCodeAndName(field, lookup, codeToken, claimedName, coded);
