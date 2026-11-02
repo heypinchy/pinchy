@@ -20,6 +20,7 @@ import { reportUsage } from "./usage-reporter";
 import { resolveAgentInfo } from "./resolve-agent-info";
 import { generateFile, type GenerateFileFormat } from "./generate-file";
 import { normalizeDeliverableBasename } from "./deliverable-filename";
+import { assertPlainPath } from "./plain-path";
 import { unknownParams, unknownParamsMessage } from "./unknown-params";
 
 // The Pinchy web process runs as uid/gid 999 in the container and must own a
@@ -597,6 +598,9 @@ const plugin = {
                 throw new Error("path must be a string");
               }
               const requestedPath = params.path;
+              // What the confirmation card showed must be the file that
+              // changes — refused before validateAccess resolves anything.
+              assertPlainPath(requestedPath, "path");
 
               if (typeof params.content !== "string") {
                 throw new Error("content must be a string");
@@ -793,6 +797,9 @@ const plugin = {
                 throw new Error("path must be a string");
               }
               const requestedPath = params.path;
+              // What the confirmation card showed must be the file that
+              // changes — refused before validateAccess resolves anything.
+              assertPlainPath(requestedPath, "path");
 
               const resolved = validateAccess(
                 { allowed_paths: config.allowed_paths, write_paths: writePaths },
@@ -952,6 +959,9 @@ const plugin = {
               if (typeof params.filename !== "string" || params.filename.length === 0) {
                 throw new Error("filename must be a non-empty string");
               }
+              // Refused rather than normalized: the name approved on the
+              // confirmation card is the name written (second review of #1242).
+              assertPlainPath(params.filename, "filename");
               // Path confinement AND delivery-route alignment: the returned
               // basename is exactly what the file will be stored and granted
               // under (NFC, trimmed, no separators/traversal, no characters

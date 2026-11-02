@@ -1653,16 +1653,35 @@ describe("pinchy_generate_file tool", () => {
     expect(readdirSync(workbench)).toEqual([]);
   });
 
-  // macOS-style NFD input ("u" + combining diaeresis) must be stored NFC:
-  // the grant filename round-trips through JSON/the model in NFC, and the
-  // serve route sanitizes to NFC before the lookup — a name stored NFD would
-  // never match again (same incident class as sanitizeFilename's NFC rule).
-  it("normalizes the filename to NFC so the stored name matches the grant lookup", async () => {
+  // A name stored NFD would never match the NFC grant lookup again (same
+  // incident class as sanitizeFilename's NFC rule).
+  //
+  // Corrected expectation (second review of #1242): this used to accept the
+  // NFD form and normalize it. The confirmation card shows the name as sent,
+  // so every write tool now refuses a non-NFC name at its edge instead of
+  // rewriting it — the name approved is the name written. An NFC name still
+  // round-trips (next test).
+  it("refuses an NFD filename instead of rewriting it", async () => {
     const tool = await makeGenerateFileTool();
 
     const result = await tool.execute("call-1", {
       format: "csv",
       filename: "u\u0308bersicht", // NFD form of "übersicht"
+      columns: ["a"],
+      rows: [["1"]],
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/NFC/);
+    expect(readdirSync(workbench)).toEqual([]);
+  });
+
+  it("stores an NFC filename as given, so the stored name matches the grant lookup", async () => {
+    const tool = await makeGenerateFileTool();
+
+    const result = await tool.execute("call-1", {
+      format: "csv",
+      filename: "\u00FCbersicht",
       columns: ["a"],
       rows: [["1"]],
     });
@@ -1994,5 +2013,107 @@ describe("write tools refuse parameters they do not declare", () => {
 
     expect(result.isError).toBe(true);
     expect(readdirSync(workbench)).toEqual([]);
+  });
+});
+
+/**
+ * Second review of #1242: the confirmation card shows a path, and a path can
+ * read as one file while it resolves to another. 180 braille blanks (U+2800)
+ * pushed "/../../contracts/signed.pdf" out of the card's preview, and `..`
+ * then walked the write out of reports/. The write tools refuse such a path at
+ * their own edge — before `validateAccess` ever resolves it — so what the card
+ * shows is the file that changes.
+ */
+describe("write tools refuse a path that does not read as what it resolves to", () => {
+  let tmpDir: string;
+  let workbench: string;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockChown.mockResolvedValue(undefined);
+    tmpDir = mkdtempSync(join(tmpdir(), "pinchy-plain-path-test-"));
+    workbench = join(tmpDir, "workbench");
+    mkdirSync(workbench);
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  async function toolNamed(name: string) {
+    const api = createMockApi({
+      "agent-1": { allowed_paths: [tmpDir], write_paths: [tmpDir, workbench] },
+    });
+    const { default: plugin } = await import("./index");
+    plugin.register!(api as any);
+    return mockRegisterTool.mock.calls.find((call: any[]) => call[1]?.name === name)?.[0]({
+      agentId: "agent-1",
+    });
+  }
+
+  const probe = (root: string) =>
+    `${root}/reports/old-draft.md${"\u2800".repeat(180)}/../../contracts/signed.pdf`;
+
+  it.each(["pinchy_write", "pinchy_delete"])(
+    "%s refuses the review's probe path before validateAccess sees it",
+    async (name) => {
+      const tool = await toolNamed(name);
+      const params =
+        name === "pinchy_write" ? { path: probe(tmpDir), content: "x" } : { path: probe(tmpDir) };
+      const result = await tool.execute("call-1", params);
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toMatch(/U\+2800/);
+      expect(vi.mocked(validateAccess)).not.toHaveBeenCalled();
+    }
+  );
+
+  it.each([
+    ["a '..' segment", (root: string) => `${root}/reports/../contracts/signed.pdf`, /\.\./],
+    ["a braille blank", (root: string) => `${root}/report\u2800.md`, /U\+2800/],
+    ["a hangul filler", (root: string) => `${root}/report\u3164.md`, /U\+3164/],
+    ["a no-break space", (root: string) => `${root}/report\u00A0.md`, /U\+00A0/],
+    ["a zero-width space", (root: string) => `${root}/report\u200B.md`, /U\+200B/],
+    ["a bidi override", (root: string) => `${root}/report\u202Edm.txt`, /U\+202E/],
+    ["a line break", (root: string) => `${root}/report\n.md`, /U\+000A/],
+    ["an NFD form", (root: string) => `${root}/u\u0308bersicht.md`, /NFC/],
+  ])("pinchy_write refuses a path with %s, says why, and writes nothing", async (_l, make, why) => {
+    const tool = await toolNamed("pinchy_write");
+    const result = await tool.execute("call-1", { path: make(tmpDir), content: "x" });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(why);
+    expect(readdirSync(tmpDir)).toEqual(["workbench"]);
+  });
+
+  it("pinchy_delete refuses a '..' path and deletes nothing", async () => {
+    const tool = await toolNamed("pinchy_delete");
+    mkdirSync(join(tmpDir, "contracts"));
+    const victim = join(tmpDir, "contracts", "signed.pdf");
+    writeFileSync(victim, "keep");
+    const result = await tool.execute("call-1", {
+      path: `${tmpDir}/reports/../contracts/signed.pdf`,
+    });
+    expect(result.isError).toBe(true);
+    expect(existsSync(victim)).toBe(true);
+  });
+
+  it("pinchy_generate_file refuses a filename with a blank-rendering character", async () => {
+    const tool = await toolNamed("pinchy_generate_file");
+    const result = await tool.execute("call-1", {
+      format: "csv",
+      filename: `export${"\u2800".repeat(40)}x`,
+      columns: ["a"],
+      rows: [["1"]],
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/U\+2800/);
+    expect(readdirSync(workbench)).toEqual([]);
+  });
+
+  it("still writes an ordinary path, spaces and umlauts included", async () => {
+    const tool = await toolNamed("pinchy_write");
+    const target = join(tmpDir, "Q3 Bericht \u00FCber.md");
+    const result = await tool.execute("call-1", { path: target, content: "x" });
+    expect(result.isError).toBeFalsy();
+    expect(existsSync(target)).toBe(true);
   });
 });
