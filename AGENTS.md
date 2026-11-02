@@ -584,6 +584,7 @@ Common host commands from the repository root:
 ```bash
 pnpm test
 pnpm test:related
+pnpm test:libreoffice
 pnpm build
 pnpm test:scripts
 pnpm typecheck:plugins

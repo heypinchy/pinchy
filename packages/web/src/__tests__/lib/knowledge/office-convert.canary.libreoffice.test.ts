@@ -26,11 +26,14 @@
  * the PDF under the locked profile — an SVG picture, an altChunk importing
  * HTML, a font or an "Office part" whose bytes are SVG (LibreOffice resolves
  * `r:embed` by Id and detects the format from the bytes), a `data:` URL
- * claiming PNG, an RTF `\pict`. For those the preflight is the only layer
- * (it cuts or refuses them), so they are absent from layer 2 by design. A
- * legacy OLE2 `.doc` with a linked picture has only the profile: the
- * preflight passes binary formats through untouched, so it is absent from
- * layer 3.
+ * claiming PNG, an RTF `\pict` (also one hidden behind a `\bin` the two
+ * readers count differently), and an SVG carried INSIDE a metafile — an EMF+
+ * image object, or an EMF inside a WMF — which is drawn as a raster, so the
+ * local file's pixels reach the PDF rather than its text. For those the
+ * preflight is the only layer (it cuts or refuses them), so they are absent
+ * from layer 2 by design. A legacy OLE2 `.doc` with a linked picture has only
+ * the profile: the preflight passes binary formats through untouched, so it
+ * is absent from layer 3.
  *
  * And one vector has NO layer here: a legacy `.doc` whose embedded picture is
  * an SVG. The preflight cannot rewrite OLE2, and the profile does not stop
@@ -39,24 +42,25 @@
  * converter itself (no network, no view of the workspaces) is being built on
  * branch feat/kb-office-convert-sidecar.
  *
- * Gated like its sibling on `soffice`; the file header there says how to run
- * it in the runtime image (Debian's LibreOffice, the version that ships). An
- * already-built image works too, with no network at all — the listener is on
- * loopback:
+ * Run it with `pnpm test:libreoffice` (vitest.libreoffice.config.ts: one file
+ * at a time — two LibreOffice first starts in parallel workers raced on the
+ * shared extension repository and one aborted, signal 6 in
+ * `syncRepositories`, LibreOffice 7.4.7). It is excluded from `pnpm test`.
+ * Gated on `soffice`: without it the suite skips, unless KB_REQUIRE_SOFFICE=1
+ * says it must not. CI's `libreoffice` job runs it inside the Pinchy image
+ * the pipeline built (the LibreOffice that ships), with no network at all —
+ * the listener is on loopback. Locally, against an image that has vitest:
  *
  *   docker run --rm --network none --user root --entrypoint sh \
  *     -v "$PWD/packages/web/src:/app/packages/web/src:ro" \
+ *     -v "$PWD/packages/web/vitest.libreoffice.config.ts:/app/packages/web/vitest.libreoffice.config.ts:ro" \
  *     -v "$PWD/packages/plugins/pinchy-files:/app/packages/plugins/pinchy-files:ro" \
- *     ghcr.io/heypinchy/pinchy:dev -c 'cd /app/packages/web && node_modules/.bin/vitest run \
- *       src/__tests__/lib/knowledge/office-convert.canary.libreoffice.test.ts'
- *
- * Run it on its own, not alongside its sibling: two LibreOffice first-starts
- * in parallel vitest workers raced on the shared extension repository and one
- * aborted (signal 6 in `syncRepositories`, LibreOffice 7.4.7).
+ *     ghcr.io/heypinchy/pinchy:dev -c 'cd /app/packages/web && KB_REQUIRE_SOFFICE=1 \
+ *       node_modules/.bin/vitest run --config vitest.libreoffice.config.ts'
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { execFile, spawnSync } from "node:child_process";
-import { deflateSync, gzipSync } from "node:zlib";
+import { constants as zlibConstants, deflateSync, gzipSync, inflateSync } from "node:zlib";
 import { promisify } from "node:util";
 import { createServer, type Server } from "node:http";
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -83,11 +87,27 @@ import {
   relationships,
   relType,
 } from "@/test-helpers/office-zip";
+import {
+  EMF_PLUS_DRAW_IMAGE,
+  EMF_RECTANGLE,
+  emf,
+  emfPlusComment,
+  emfPlusImageObject,
+  paddingComment,
+  wmf,
+  wmfEmbeddedEmf,
+  WMF_RECTANGLE,
+} from "@/test-helpers/metafile";
 
 const execFileAsync = promisify(execFile);
 
 const SOFFICE = process.env.KB_SOFFICE_BIN || "soffice";
 const hasSoffice = spawnSync(SOFFICE, ["--version"], { stdio: "ignore" }).status === 0;
+// CI runs this suite inside the image that ships LibreOffice, with
+// KB_REQUIRE_SOFFICE=1: there a missing binary is a failure, never a skip.
+if (!hasSoffice && process.env.KB_REQUIRE_SOFFICE === "1") {
+  throw new Error(`KB_REQUIRE_SOFFICE=1, but "${SOFFICE} --version" did not run`);
+}
 
 // A 1x1 PNG. Any image will do: the question is whether it arrives in the PDF.
 const PNG = Buffer.from(
@@ -139,6 +159,30 @@ describe.skipIf(!hasSoffice)("an Office file cannot make the converter fetch or 
   /** Text in a converted PDF, through the same pdfjs layer the indexer reads. */
   async function textOf(pdfPath: string): Promise<string> {
     return (await extractPdfPages(pdfPath)).map((page) => page.text).join(" ");
+  }
+
+  /**
+   * Did a local file's PIXELS reach a picture in this PDF? The planted secret
+   * SVG is a magenta band: a picture that holds exactly that colour was drawn
+   * from it. For the vectors that draw it as a raster (a metafile's embedded
+   * picture), its text never reaches the text layer, so this is the evidence.
+   */
+  function localPixelsIn(pdfPath: string): boolean {
+    const pdf = readFileSync(pdfPath);
+    const text = pdf.toString("latin1");
+    const images = /\/Subtype\/Image[^>]*\/ColorSpace\/DeviceRGB[\s\S]*?>>\s*stream\r?\n/g;
+    for (const match of text.matchAll(images)) {
+      const start = match.index! + match[0].length;
+      const end = text.indexOf("endstream", start);
+      if (!match[0].includes("/FlateDecode") || end < 0) continue;
+      const pixels = inflateSync(pdf.subarray(start, end), {
+        finishFlush: zlibConstants.Z_SYNC_FLUSH,
+      });
+      for (let i = 0; i + 2 < pixels.length; i += 3) {
+        if (pixels[i] === 0xff && pixels[i + 1] === 0x00 && pixels[i + 2] === 0xff) return true;
+      }
+    }
+    return false;
   }
 
   /** Images LibreOffice drew into a PDF. A document with no picture has none. */
@@ -294,7 +338,7 @@ describe.skipIf(!hasSoffice)("an Office file cannot make the converter fetch or 
     const secretSvg = join(root, "secret.svg");
     writeFileSync(
       secretSvg,
-      `<svg xmlns="http://www.w3.org/2000/svg" width="400" height="60"><text x="10" y="40" font-size="30">${SECRET}</text></svg>`
+      `<svg xmlns="http://www.w3.org/2000/svg" width="400" height="60"><rect width="400" height="60" fill="#ff00ff"/><text x="10" y="40" font-size="30">${SECRET}</text></svg>`
     );
     const svgUrl = pathToFileURL(secretSvg).href;
     const pngUrl = pathToFileURL(localPng).href;
@@ -399,6 +443,43 @@ describe.skipIf(!hasSoffice)("an Office file cannot make the converter fetch or 
       "rtf-picture.doc",
       `{\\rtf1\\ansi\\deff0 {\\fonttbl {\\f0 Times;}}\\pard Body words for the RTF canary\\par {\\pict\\pngblip\\picw400\\pich200\\picwgoal6000\\pichgoal3000 ${Buffer.from(reachingSvg).toString("hex")}}\\par }`,
       { profile: false, preflight: "sanitizes" }
+    );
+
+    // --- The third review (PR #1243): a picture INSIDE a metafile, and RTF \bin ---
+    // An EMF passes the picture check on its magic bytes, but an EMF+ image
+    // object carries another picture LibreOffice detects by ITS bytes. Behind
+    // 4 KiB of comment padding the first bytes say nothing but "metafile";
+    // LibreOffice drew the SVG — and the local file it reads — as a raster.
+    const emfPlusSvg = emf(
+      paddingComment(4400),
+      emfPlusComment(emfPlusImageObject(Buffer.from(reachingSvg)), EMF_PLUS_DRAW_IMAGE),
+      EMF_RECTANGLE
+    );
+    const metafilePicture = (target: string, bytes: Buffer) =>
+      docxWith({
+        text: "Body words for the metafile canary",
+        documentRels: relationships(
+          `<Relationship Id="rId5" Type="${REL_IMAGE}" Target="${target}"/>`
+        ),
+        body: embeddedPicture("rId5"),
+        parts: { [`word/${target}`]: bytes },
+      });
+    planted("emfplus-svg.docx", metafilePicture("media/image1.emf", emfPlusSvg), {
+      profile: false,
+      preflight: "sanitizes",
+    });
+    // The same EMF carried whole inside a WMF (the "WMFC" comment Office uses).
+    planted(
+      "wmf-embedded-emf.docx",
+      metafilePicture("media/image1.wmf", wmf(wmfEmbeddedEmf(emfPlusSvg), WMF_RECTANGLE)),
+      { profile: false, preflight: "sanitizes" }
+    );
+    // `\bin` with 2^31: the sanitizer skipped to the end of the file, while
+    // LibreOffice's 32-bit parameter overflowed to 0 and it drew the `\pict`.
+    planted(
+      "rtf-bin-overflow.doc",
+      `{\\rtf1\\ansi\\deff0 {\\fonttbl {\\f0 Times;}}\\pard Body words for the RTF bin canary\\par {\\*\\pinchyx\\bin2147483648 X}{\\pict\\pngblip\\picw400\\pich200\\picwgoal6000\\pichgoal3000 ${Buffer.from(reachingSvg).toString("hex")}}\\par After words\\par }`,
+      { profile: false, preflight: "refuses" }
     );
 
     // --- What ONLY the locked profile stops ---
@@ -527,9 +608,14 @@ describe.skipIf(!hasSoffice)("an Office file cannot make the converter fetch or 
       "office-namespaced-svg",
       "data-url-svg",
       "rtf-picture",
+      "rtf-bin-overflow",
       "legacy-svg-picture",
     ]) {
       expect(await textOf(join(outDir, `${name}.pdf`)), name).toContain(SECRET);
+    }
+    // ...and through a metafile's own picture, the local file's PIXELS.
+    for (const name of ["emfplus-svg", "wmf-embedded-emf"]) {
+      expect(localPixelsIn(join(outDir, `${name}.pdf`)), name).toBe(true);
     }
 
     // Whether altChunk HTML is imported at all depends on the LibreOffice
@@ -558,6 +644,9 @@ describe.skipIf(!hasSoffice)("an Office file cannot make the converter fetch or 
     // An "Office part" that is really an SVG is built to be imported: refused.
     expect(byName.get("office-namespaced-svg.docx")!.status).toBe("failed");
     expect(byName.get("office-namespaced-svg.docx")!.reason).toMatch(/should be Office XML/);
+    // A binary run two readers could disagree about: refused.
+    expect(byName.get("rtf-bin-overflow.doc")!.status).toBe("failed");
+    expect(byName.get("rtf-bin-overflow.doc")!.reason).toMatch(/binary run/);
     // The documents themselves still convert: a cut link costs a picture, not
     // the text — and no local file's text or picture reaches the PDF.
     // CORRECTED (second review): the two altChunk files used to be refused
@@ -574,12 +663,15 @@ describe.skipIf(!hasSoffice)("an Office file cannot make the converter fetch or 
       "font-svgz.docx",
       "data-url-svg.docx",
       "rtf-picture.doc",
+      "emfplus-svg.docx",
+      "wmf-embedded-emf.docx",
       "legacy-linked-http.doc",
       "legacy-linked-file.doc",
     ]) {
       const outcome = byName.get(name)!;
       expect(outcome.status, `${name}: ${outcome.reason}`).toBe("converted");
       expect(imagesIn(outcome.artifactPath!), name).toBe(0);
+      expect(localPixelsIn(outcome.artifactPath!), name).toBe(false);
       const text = await textOf(outcome.artifactPath!);
       expect(text, name).not.toContain(SECRET);
       expect(text, name).not.toContain(ALT_CHUNK_BODY);
@@ -681,6 +773,33 @@ describe.skipIf(!hasSoffice)("an Office file cannot make the converter fetch or 
       );
       expect(imagesIn(pdf), path).toBe(0);
       expect(await textOf(pdf), path).not.toContain(SECRET);
+    }
+  }, 240_000);
+
+  it("converts a document with an SVG picture the way Office 365 and LibreOffice write it — not refused", async () => {
+    // The third review's false refusal: `<asvg:svgBlip>`, written next to
+    // every SVG picture and PowerPoint Icon, was read as an `<svg` element and
+    // the whole document refused. Both files were written by LibreOffice 26.2.
+    // (That the picture itself is KEPT is office-preflight.review3.test.ts's
+    // claim: LibreOffice draws the icon as vectors, not as an image object.)
+    const fixtures = join(__dirname, "../../fixtures/kb/office");
+    const store = new OfficeArtifactStore(join(root, "artifacts-svg-icons"));
+    const sourcesForIcons = ["svg-icon-letter.docx", "svg-icon-deck.pptx"].map((name) => {
+      const path = join(corpus, name);
+      copyFileSync(join(fixtures, name), path);
+      return { absPath: path };
+    });
+    const outcomes = await convertOfficeFiles(sourcesForIcons, { store });
+
+    expect(drain()).toEqual([]);
+    const byName = new Map(outcomes.map((o) => [nameOf(o.sourcePath), o]));
+    for (const [name, words] of [
+      ["svg-icon-letter.docx", "Contract letter body text here"],
+      ["svg-icon-deck.pptx", "Quarterly roadmap slide text"],
+    ]) {
+      const outcome = byName.get(name)!;
+      expect(outcome.status, `${name}: ${outcome.reason}`).toBe("converted");
+      expect(await textOf(outcome.artifactPath!), name).toContain(words);
     }
   }, 240_000);
 });

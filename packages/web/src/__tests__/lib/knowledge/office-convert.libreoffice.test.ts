@@ -10,13 +10,11 @@
  * Gated with describe.skipIf on the presence of `soffice` (an allowed env/OS
  * conditional gate per AGENTS.md, not an untracked skip): LibreOffice is a
  * 422 MB image layer that exists in the Pinchy runtime image and on almost no
- * developer laptop. To run it:
- *
- *   docker run --rm -v "$PWD/packages/web/src:/app/packages/web/src:ro" \
- *     ghcr.io/heypinchy/pinchy:dev sh -c \
- *     'apt-get update && apt-get install -y --no-install-recommends \
- *        libreoffice-writer fonts-liberation catdoc && cd /app/packages/web && \
- *      node_modules/.bin/vitest run src/__tests__/lib/knowledge/office-convert.libreoffice.test.ts'
+ * developer laptop. It is excluded from `pnpm test` and run by
+ * `pnpm test:libreoffice` (vitest.libreoffice.config.ts, one file at a time),
+ * which CI's `libreoffice` job runs inside the Pinchy image the pipeline
+ * built, with KB_REQUIRE_SOFFICE=1 so a missing binary fails instead of
+ * skipping. The canary's header says how to run it in an image locally.
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { spawnSync } from "node:child_process";
@@ -31,6 +29,11 @@ import { extractPdfPages } from "@/lib/knowledge/pdf-extract";
 
 const SOFFICE = process.env.KB_SOFFICE_BIN || "soffice";
 const hasSoffice = spawnSync(SOFFICE, ["--version"], { stdio: "ignore" }).status === 0;
+// CI runs this suite inside the image that ships LibreOffice, with
+// KB_REQUIRE_SOFFICE=1: there a missing binary is a failure, never a skip.
+if (!hasSoffice && process.env.KB_REQUIRE_SOFFICE === "1") {
+  throw new Error(`KB_REQUIRE_SOFFICE=1, but "${SOFFICE} --version" did not run`);
+}
 
 // Central/Eastern European diacritics on purpose: they are what the customer
 // corpus is full of, and they are exactly what a font-starved image or a
