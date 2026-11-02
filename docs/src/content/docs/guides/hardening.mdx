@@ -420,10 +420,14 @@ PostgreSQL's `pgdata` volume holds the bulk of Pinchy's state — users, agents,
   If you always pin `DB_PASSWORD`, `BETTER_AUTH_SECRET`, `ENCRYPTION_KEY`, and
   `AUDIT_HMAC_SECRET` explicitly in `.env` (recommended for production — see
   [VPS Deployment](/guides/vps-deployment/#deploy-pinchy)), your `.env` backup
-  already covers them and the `pinchy-secrets` volume backup becomes a
-  belt-and-suspenders step rather than the only copy. The exception is a changed
-  `AUDIT_HMAC_SECRET`: the key it replaced lives only in that volume (see
-  [Switching the key](/concepts/audit-trail-verification/#switching-the-key)).
+  already covers them. Back up the `pinchy-secrets` volume anyway: it can hold
+  keys `.env` doesn't. After a change of `AUDIT_HMAC_SECRET`, the key it
+  replaced lives only there (see [Switching the
+  key](/concepts/audit-trail-verification/#switching-the-key)), and a value you
+  pinned on v0.9.1 or earlier counts as a change: the compose file we shipped
+  didn't pass it to Pinchy then, so Pinchy signed with the key it generated. And
+  while a pinned value isn't a valid key, Pinchy ignores it and uses the key
+  file instead.
 </Aside>
 
 ### Cold-restore walkthrough (fresh host)
@@ -454,7 +458,7 @@ This is the sequence for restoring Pinchy onto a brand-new host — a full disas
 
 3. **Restore the `openclaw-config` and `pinchy-secrets` volumes**
 
-   If you backed up these named volumes (rather than relying on `.env` alone), restore them before starting the rest of the stack. Docker volumes live under `/var/lib/docker/volumes/<project>_<volume-name>/_data` — restore your archive into that path, or use a throwaway container to copy the data in:
+   Restore them before starting the rest of the stack. Docker volumes live under `/var/lib/docker/volumes/<project>_<volume-name>/_data` — restore your archive into that path, or use a throwaway container to copy the data in:
 
    ```bash
    docker run --rm -v pinchy_pinchy-secrets:/target -v "$(pwd)/backup/pinchy-secrets:/source:ro" \
@@ -469,9 +473,9 @@ This is the sequence for restoring Pinchy onto a brand-new host — a full disas
    docker compose run --rm --no-deps -T --entrypoint tar pinchy -C /app/secrets -xpf - < pinchy-secrets-<stamp>.tar
    ```
 
-   Whichever way you restore them, the `.env` from step 1 and `pinchy-secrets` have to be from after your last change to `AUDIT_HMAC_SECRET` or `ENCRYPTION_KEY`. If yours are older, correct them now, before the first `docker compose up -d`. [Which backup to restore](/concepts/audit-trail-verification/#which-backup-to-restore) says how, and what the log should show afterwards.
+   Whichever way you restore them, the `.env` from step 1 and `pinchy-secrets` have to be in the state [Which backup to restore](/concepts/audit-trail-verification/#which-backup-to-restore) describes before the first `docker compose up -d`. A pair backed up after your last key change already is. That section says how to correct an older one, and what the log shows afterwards.
 
-   If you always pin all four secrets in `.env` (see above) and have never changed `AUDIT_HMAC_SECRET`, you can skip restoring `pinchy-secrets` — Pinchy reads the values from the environment instead. If you did change it, restore the volume anyway: the key it replaced exists only there, and without it every entry signed before the change fails verification for good, with nothing in the logs to say so (see [Switching the key](/concepts/audit-trail-verification/#switching-the-key)). `openclaw-config` is safe to skip; Pinchy regenerates it from the restored database on boot, at the cost of a fresh gateway bootstrap token.
+   Restore `pinchy-secrets` even if you pin all four secrets in `.env`. It can hold keys `.env` doesn't (see the tip above), and without it, whatever was signed or encrypted with one of them stays unverifiable or unreadable for good, and Pinchy can't warn you about a key it never saw. `openclaw-config` is safe to skip; Pinchy regenerates it from the restored database on boot, at the cost of a fresh gateway bootstrap token.
 
 4. **Start the rest of the stack**
 
