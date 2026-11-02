@@ -55,20 +55,26 @@ export const GET = withAuth(async (req, _ctx, session) => {
     .orderBy(desc(toolApproval.createdAt));
 
   const known = knownIds(req.nextUrl.searchParams);
-  const wanted = rows.filter((row) => !known.has(row.id)).map((row) => row.id);
+  const wanted = new Set(rows.filter((row) => !known.has(row.id)).map((row) => row.id));
+  // Read separately so a held card's summary is never loaded at all. Still
+  // `pending` only: a card settled since the list query has had its summary
+  // dropped (settling clears it), and returning it as `argsSummary: null` gave
+  // the inbox an approvable card that showed no arguments (sixth review of
+  // #1242). Such a card is left out — it is no longer open anyway.
   const summaries = new Map(
-    wanted.length === 0
+    wanted.size === 0
       ? []
       : (
           await db
             .select({ id: toolApproval.id, argsSummary: toolApproval.argsSummary })
             .from(toolApproval)
-            .where(inArray(toolApproval.id, wanted))
+            .where(and(inArray(toolApproval.id, [...wanted]), eq(toolApproval.status, "pending")))
         ).map((row) => [row.id, row.argsSummary])
   );
 
-  const approvals = rows.map((row) =>
-    summaries.has(row.id) ? { ...row, argsSummary: summaries.get(row.id) ?? null } : row
-  );
+  const approvals = rows.flatMap((row) => {
+    if (!wanted.has(row.id)) return [row];
+    return summaries.has(row.id) ? [{ ...row, argsSummary: summaries.get(row.id) ?? null }] : [];
+  });
   return NextResponse.json({ approvals });
 });

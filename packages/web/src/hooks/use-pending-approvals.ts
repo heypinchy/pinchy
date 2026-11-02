@@ -45,13 +45,14 @@ async function poll(): Promise<void> {
     const held = new Map(snapshot.map((approval) => [approval.id, approval.argsSummary]));
     const { approvals } = await fetchPendingApprovals([...held.keys()]);
     snapshot = approvals.flatMap((approval): PendingApproval[] => {
-      if (approval.argsSummary !== undefined)
+      if (approval.argsSummary !== undefined && approval.argsSummary !== null)
         return [{ ...approval, argsSummary: approval.argsSummary }];
       // Never render a card without the arguments it would approve: one whose
-      // summary did not come back waits for the next poll, which asks for it.
-      return held.has(approval.id)
-        ? [{ ...approval, argsSummary: held.get(approval.id) ?? null }]
-        : [];
+      // summary did not come back — or came back `null`, which is what a card
+      // settled mid-request carries (sixth review of #1242) — keeps the one it
+      // holds, or waits for the next poll, which asks for it.
+      const summary = held.get(approval.id);
+      return summary ? [{ ...approval, argsSummary: summary }] : [];
     });
     emit();
   } catch {

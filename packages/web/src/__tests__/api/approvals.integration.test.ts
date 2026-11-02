@@ -6,7 +6,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach, beforeAll, vi } from "vitest";
 import { NextRequest } from "next/server";
-import { eq } from "drizzle-orm";
+import { desc, eq, type SQL } from "drizzle-orm";
 
 vi.mock("next/headers", () => ({
   headers: vi.fn().mockResolvedValue(new Headers()),
@@ -360,6 +360,53 @@ describe("approval routes (integration, real DB)", () => {
     expect(polled.approvals[0].argsSummary).toEqual(newest.argsSummary);
     expect(polled.approvals[1]).not.toHaveProperty("argsSummary");
     expect(polled.approvals[1].toolName).toBe("odoo_write");
+  });
+
+  // Sixth review of #1242: the summaries are read in a second query, and a
+  // card settled between the two came back with `argsSummary: null` — settling
+  // drops the summary — which the inbox rendered as a card with no arguments.
+  // A card that is no longer pending by the second read is left out instead.
+  it("leaves out a card that settles between the list and the summary read", async () => {
+    await gateCheck(gateReq(gateBody({ params: { recordId: 5 } })));
+    await gateCheck(gateReq(gateBody({ params: { recordId: 6 } })));
+    setSession(user);
+    const [settling, staying] = await db
+      .select({ id: toolApproval.id })
+      .from(toolApproval)
+      .where(eq(toolApproval.requesterId, user.id))
+      .orderBy(desc(toolApproval.createdAt));
+
+    // Let the list query run, then settle one card before the summary read
+    // the route issues next — the race, made deterministic.
+    const realSelect = db.select.bind(db);
+    let selects = 0;
+    const spy = vi.spyOn(db, "select").mockImplementation(((
+      fields: Parameters<typeof db.select>[0]
+    ) => {
+      selects++;
+      if (selects !== 2) return realSelect(fields);
+      return {
+        from: (table: typeof toolApproval) => ({
+          where: async (condition: SQL | undefined) => {
+            await db
+              .update(toolApproval)
+              .set({ status: "denied", argsSummary: null })
+              .where(eq(toolApproval.id, settling.id));
+            return realSelect(fields).from(table).where(condition);
+          },
+        }),
+      };
+    }) as unknown as typeof db.select);
+    try {
+      const list = await (
+        await listApprovals(new NextRequest("http://localhost/api/approvals"), {})
+      ).json();
+      expect(selects).toBe(2);
+      expect(list.approvals.map((a: { id: string }) => a.id)).toEqual([staying.id]);
+      expect(list.approvals[0].argsSummary).toEqual({ recordId: 5 });
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   // Fifth review of #1242: `known` was capped at 50 on the grounds that a

@@ -83,6 +83,26 @@ describe("ApprovalsInbox", () => {
     await screen.findByText("recordId");
   });
 
+  // Sixth review of #1242: a card settled between the route's two reads came
+  // back with `argsSummary: null`, and the poller rendered it — an approvable
+  // card showing none of the arguments. The route now leaves such a card out;
+  // the poller also treats a `null` it does not already hold as "no summary
+  // yet", so no other path can bring the empty card back.
+  it("does not render a card that arrives with a null summary it does not hold", async () => {
+    fetchPendingApprovals.mockResolvedValueOnce({ approvals: [{ ...pending, argsSummary: null }] });
+    fetchPendingApprovals.mockResolvedValue({ approvals: [pending] });
+    render(<ApprovalsInbox />);
+    await waitFor(() => expect(fetchPendingApprovals).toHaveBeenCalledTimes(1));
+    await Promise.resolve();
+    expect(screen.queryByText(/needs your confirmation/i)).toBeNull();
+    expect(screen.queryByRole("button", { name: /approve/i })).toBeNull();
+
+    document.dispatchEvent(new Event("visibilitychange"));
+    await waitFor(() => expect(fetchPendingApprovals).toHaveBeenCalledTimes(2));
+    expect(fetchPendingApprovals).toHaveBeenLastCalledWith([]);
+    await screen.findByText("recordId");
+  });
+
   it("approves a request and removes it from the list", async () => {
     fetchPendingApprovals.mockResolvedValue({ approvals: [pending] });
     submitApprovalDecision.mockResolvedValue({ ok: true, status: "approved", resumed: true });
