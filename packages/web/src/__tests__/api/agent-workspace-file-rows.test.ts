@@ -18,7 +18,7 @@
  * reader would assert nothing about the cells actually served.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, realpathSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { NextRequest } from "next/server";
@@ -249,5 +249,90 @@ describe("what it answers rather than failing", () => {
     const entry = mockDeferAuditLog.mock.calls[0][0];
     expect(entry.outcome).toBe("failure");
     expect(entry.detail.reason).toBe("document_too_large");
+  });
+});
+
+describe("when the reader is the problem, not the workbook (fifth review, PR #1243)", () => {
+  // The rows are read in a child process (xlsx-isolated.ts). A child that
+  // could not be started (tsx missing, EAGAIN/ENOMEM on fork), was killed by
+  // the system, or timed out says nothing about THIS workbook — answering
+  // 422 and auditing `unreadable_document` would put a false statement about
+  // the document into an immutable row. Those answer 503, audited as the
+  // reader being unavailable.
+  const READER = "@/lib/knowledge/xlsx-isolated";
+
+  type Reader = typeof import("@/lib/knowledge/xlsx-isolated");
+
+  /** Replaces the reader with one that throws what `failure` makes — ONE doMock per test, so no factory can win a race against another. */
+  async function readerFails(failure: (actual: Reader) => Error) {
+    const actual = await vi.importActual<Reader>(READER);
+    const read = vi.fn(async () => {
+      throw failure(actual);
+    });
+    vi.doMock(READER, () => ({ ...actual, readSheetRangeIsolated: read }));
+    return { actual, read };
+  }
+
+  afterEach(() => {
+    vi.doUnmock(READER);
+  });
+
+  it("answers 503 for a reader that could not be started, and does not blame the document", async () => {
+    const path = await writeWorkbook();
+    await readerFails(() => new Error("the spreadsheet reader could not be started"));
+
+    const res = await callGET(path, ROWS);
+
+    expect(res.status).toBe(503);
+    const entry = mockDeferAuditLog.mock.calls[0][0];
+    expect(entry.outcome).toBe("failure");
+    expect(entry.detail.reason).toBe("reader_unavailable");
+  });
+
+  it("answers 503 with a Retry-After when previews are already queued, and says so in the audit", async () => {
+    const path = await writeWorkbook();
+    await readerFails((actual) => new actual.SheetReaderBusyError(2));
+
+    const res = await callGET(path, ROWS);
+
+    expect(res.status).toBe(503);
+    expect(res.headers.get("retry-after")).toBe("10");
+    expect(mockDeferAuditLog.mock.calls[0][0].detail.reason).toBe("reader_busy");
+  });
+
+  it("records a read its requester abandoned as cancelled, not as a fault of the document", async () => {
+    const path = await writeWorkbook();
+    await readerFails((actual) => new actual.SheetReaderCancelledError());
+
+    const res = await callGET(path, ROWS);
+
+    expect(res.status).toBe(499);
+    expect(mockDeferAuditLog.mock.calls[0][0].detail.reason).toBe("cancelled");
+  });
+
+  it("hands the reader the request's signal and the preview queue limit", async () => {
+    const path = await writeWorkbook();
+    const { actual, read } = await readerFails(() => new Error("unused: resolved below"));
+    read.mockResolvedValue({ sheet: "Suppliers", columns: [], rows: [] } as never);
+
+    // The request's OWN signal: aborting the request must reach the reader.
+    const client = new AbortController();
+    const { GET } = await import("@/app/api/agents/[agentId]/workspace-file/route");
+    const url = new URL("http://localhost/api/agents/agent-1/workspace-file");
+    url.searchParams.set("path", path);
+    for (const [key, value] of Object.entries(ROWS)) url.searchParams.set(key, value);
+    const res = await GET(new NextRequest(url, { signal: client.signal }), {
+      params: Promise.resolve({ agentId: "agent-1" }),
+    } as unknown as Parameters<typeof GET>[1]);
+
+    expect(res.status).toBe(200);
+    expect(read).toHaveBeenCalledWith(realpathSync(path), "Suppliers", 3, 4, {
+      signal: expect.any(AbortSignal),
+      maxQueued: actual.SHEET_PREVIEW_MAX_QUEUED,
+    });
+    const passed = (read.mock.calls[0] as unknown[])[4] as { signal: AbortSignal };
+    expect(passed.signal.aborted).toBe(false);
+    client.abort();
+    expect(passed.signal.aborted).toBe(true);
   });
 });

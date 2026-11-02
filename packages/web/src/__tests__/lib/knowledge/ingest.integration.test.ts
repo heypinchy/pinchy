@@ -1435,6 +1435,52 @@ it("books a workbook refused as too large as unsearchable — listed, final, and
   expect(listed.documents.map((d) => d.sourcePath)).toEqual([xlsxPath]);
 });
 
+it("keeps a changed workbook's indexed version when its reader is killed without a verdict, and reads it again (fifth review, PR #1243)", async () => {
+  // The container's OOM killer, aimed at the reader child by its
+  // oom_score_adj, says nothing about THIS workbook — the memory may have been
+  // the server's. Booked as "too large", it deleted the version already
+  // indexed and recorded the new one as unreadable for good. The real
+  // isolated reader is used, with a stub child that is SIGKILLed mid-read.
+  const { runSheetReader } = await import("@/lib/knowledge/xlsx-isolated");
+  const stubDir = mkdtempSync(join(tmpdir(), "pinchy-kb-ingest-stub-"));
+  const killed = join(stubDir, "killed.mjs");
+  writeFileSync(
+    killed,
+    `process.send({ type: "ready" }); process.on("message", () => process.kill(process.pid, "SIGKILL"));`
+  );
+
+  try {
+    const xlsxPath = join(tmpRoot, "prices.xlsx");
+    writeFileSync(xlsxPath, "fake-xlsx-bytes-v1");
+    const { deps } = fakeDeps();
+    expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ indexed: 1 }));
+    const [before] = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
+    const chunksBefore = await chunksFor(before.id);
+    expect(chunksBefore).toHaveLength(1);
+
+    writeFileSync(xlsxPath, "fake-xlsx-bytes-v2");
+    const extractXlsx = vi.fn(
+      async (path: string) =>
+        (await runSheetReader({ op: "extract", path }, { entry: killed })) as XlsxExtraction
+    );
+    const run = () => ingestDirectory(ORG_ID, tmpRoot, { ...deps, extractXlsx });
+
+    expect(await run()).toEqual(counts({ failed: 1 }));
+    const after = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
+    expect(after).toHaveLength(1);
+    expect(after[0].id).toBe(before.id);
+    expect(after[0].contentHash).toBe(before.contentHash);
+    expect(after[0].emptyExtractionBy).toBeNull();
+    expect(await chunksFor(before.id)).toHaveLength(chunksBefore.length);
+
+    // Not settled: the next run reads it again.
+    expect(await run()).toEqual(counts({ failed: 1 }));
+    expect(extractXlsx).toHaveBeenCalledTimes(2);
+  } finally {
+    rmSync(stubDir, { recursive: true, force: true });
+  }
+});
+
 it("keeps PDFs indexed before spreadsheets existed working, untouched", async () => {
   // AGENTS.md § Test Migrations Against Pre-Existing Data. Every other test
   // here starts from a clean slate where the dispatch is live from the first

@@ -21,18 +21,28 @@
  *    bound Buffers), the kernel picks the child, never the server.
  *  - A timeout, after which the child is killed.
  *
- * Any of those ends — and a crash — is a verdict on THIS file: it is refused
- * (`OfficeFileRejectedError("too_large")`), which ingest books as a document
- * with no chunks and the rows route answers with 413. A child that dies before
- * it is ready to read is NOT a verdict on any file (tsx missing, a broken
- * image) and is thrown as a plain error, so ingest counts the file `failed`
- * and keeps whatever the index already held for it, instead of branding every
- * spreadsheet in the corpus unreadable.
+ * Only ONE of those ends is a verdict on this file: V8's own "heap out of
+ * memory" banner, which says the heap cap was reached reading it. That — and
+ * a refusal the child diagnosed itself — is thrown as
+ * `OfficeFileRejectedError("too_large")`, which ingest books as a document
+ * with no chunks and the rows route answers with 413. Everything else is
+ * thrown as a plain error: a SIGKILL without the banner is the container's
+ * OOM killer, which `oom_score_adj` aims at the child whatever filled the
+ * memory; a timeout can be a host under load; a crash or a child that never
+ * got ready is a broken image. Ingest counts a plain error `failed` and keeps
+ * whatever the index already held for the file — for a CHANGED file, the
+ * version it had indexed — and reads it again next run, instead of branding
+ * it unreadable for good (fifth review, PR #1243). The rows route answers
+ * it with 503.
  *
  * One child at a time, process-wide: the index worker and every rows preview
  * share a gate, so the memory one child may use is the memory all of them use.
  * The gate lives on `globalThis` because the worker is loaded by tsx and the
- * route by the Next.js bundle — two module instances, one process.
+ * route by the Next.js bundle — two module instances, one process. A preview
+ * passes its request's `signal`: a queued read whose requester went away
+ * leaves the queue, a running one has its child killed. And it passes
+ * `maxQueued`, so reloads cannot stack reads in front of the indexer — which
+ * passes neither, and is never cut short or turned away.
  */
 import { fork, type ChildProcess } from "node:child_process";
 import { join } from "node:path";
@@ -47,7 +57,7 @@ import {
 
 /**
  * The child's heap, in MB. Measured in the shipped image under the default
- * 1 GB container limit — see `MAX_WORKBOOK_PART_BYTES` in office-preflight.ts
+ * 1 GB container limit — see `XLSX_MAX_PART_BYTES` in office-preflight.ts
  * for the part size this was sized against.
  */
 export const SHEET_READER_HEAP_MB = 384;
@@ -88,6 +98,40 @@ export interface SheetReaderOptions {
   timeoutMs?: number;
   /** Test seam: a stub child. Production uses the real reader. */
   entry?: string;
+  /**
+   * The requester's signal. Once it aborts, a queued read leaves the queue
+   * and a running one has its child killed; either way the read rejects with
+   * `SheetReaderCancelledError`. The indexer passes none.
+   */
+  signal?: AbortSignal;
+  /**
+   * Refuse with `SheetReaderBusyError` instead of queueing behind this many
+   * reads already waiting. The indexer passes none, and always queues.
+   */
+  maxQueued?: number;
+}
+
+/**
+ * How many reads a rows preview may queue behind before it is answered 503.
+ * The indexer reads one file at a time, so it is never more than one of
+ * them; the rest are previews, each up to `SHEET_READER_TIMEOUT_MS`.
+ */
+export const SHEET_PREVIEW_MAX_QUEUED = 2;
+
+/** The read's requester went away first; nothing was read, and nothing is wrong with the file. */
+export class SheetReaderCancelledError extends Error {
+  constructor() {
+    super("the spreadsheet read was cancelled: its requester went away");
+    this.name = "SheetReaderCancelledError";
+  }
+}
+
+/** Too many reads are already waiting for the reader; nothing was read, and nothing is wrong with the file. */
+export class SheetReaderBusyError extends Error {
+  constructor(waiting: number) {
+    super(`the spreadsheet reader is busy: ${waiting} reads are already waiting`);
+    this.name = "SheetReaderBusyError";
+  }
 }
 
 /** stderr kept from the child for the log line: enough for V8's OOM banner, never a flood. */
@@ -109,9 +153,34 @@ function gate(): Gate {
   return (holder[GATE_KEY] ??= { busy: false, waiting: [] });
 }
 
-async function withGate<T>(run: () => Promise<T>): Promise<T> {
+async function withGate<T>(
+  run: () => Promise<T>,
+  { signal, maxQueued }: Pick<SheetReaderOptions, "signal" | "maxQueued">
+): Promise<T> {
   const g = gate();
-  if (g.busy) await new Promise<void>((resolve) => g.waiting.push(resolve));
+  if (signal?.aborted) throw new SheetReaderCancelledError();
+  if (g.busy) {
+    if (maxQueued !== undefined && g.waiting.length >= maxQueued) {
+      throw new SheetReaderBusyError(g.waiting.length);
+    }
+    await new Promise<void>((resolve, reject) => {
+      const wake = () => {
+        signal?.removeEventListener("abort", leave);
+        resolve();
+      };
+      // Gone before its turn: out of the queue, so the reads behind it move
+      // up and nothing is started for nobody. Once woken, it is `runChild`'s
+      // to cancel.
+      const leave = () => {
+        const at = g.waiting.indexOf(wake);
+        if (at < 0) return;
+        g.waiting.splice(at, 1);
+        reject(new SheetReaderCancelledError());
+      };
+      g.waiting.push(wake);
+      signal?.addEventListener("abort", leave, { once: true });
+    });
+  }
   // Whoever was woken owns the gate now; `busy` never dropped in between.
   g.busy = true;
   try {
@@ -148,22 +217,35 @@ function failureToError(failure: SheetReaderFailure): Error {
   }
 }
 
-/** Why a child that was reading ended without an answer — the file's verdict, in words. */
-function describeDeath(
+/**
+ * Why a child that was reading ended without an answer. Only V8's heap-limit
+ * banner is a verdict on the file (see the module comment); every other end
+ * is a plain error that leaves the file to be read again.
+ */
+function deathError(
   code: number | null,
   signal: NodeJS.Signals | null,
   timedOut: boolean,
   stderr: string,
   opts: Required<Pick<SheetReaderOptions, "maxHeapMb" | "timeoutMs">>
-): string {
-  if (timedOut) return `reading it took longer than ${opts.timeoutMs / 1000} s`;
-  if (/heap out of memory|Reached heap limit/i.test(stderr)) {
-    return `reading it needed more than the ${opts.maxHeapMb} MB the spreadsheet reader may use`;
+): Error {
+  if (!timedOut && /heap out of memory|Reached heap limit/i.test(stderr)) {
+    return new OfficeFileRejectedError(
+      "too_large",
+      `reading it needed more than the ${opts.maxHeapMb} MB the spreadsheet reader may use`
+    );
+  }
+  if (timedOut) {
+    return new Error(`the spreadsheet reader took longer than ${opts.timeoutMs / 1000} s`);
   }
   if (signal === "SIGKILL") {
-    return "the spreadsheet reader was killed while reading it (out of memory)";
+    return new Error(
+      "the spreadsheet reader was killed while reading (by the system, most likely out of memory)"
+    );
   }
-  return `the spreadsheet reader stopped while reading it (${signal ?? `exit code ${code}`})`;
+  return new Error(
+    `the spreadsheet reader stopped while reading (${signal ?? `exit code ${code}`}): ${stderr.trim().slice(0, 500)}`
+  );
 }
 
 function runChild(request: SheetReaderRequest, options: SheetReaderOptions): Promise<unknown> {
@@ -171,6 +253,11 @@ function runChild(request: SheetReaderRequest, options: SheetReaderOptions): Pro
   const timeoutMs = options.timeoutMs ?? SHEET_READER_TIMEOUT_MS;
 
   return new Promise((resolve, reject) => {
+    const { signal } = options;
+    if (signal?.aborted) {
+      reject(new SheetReaderCancelledError());
+      return;
+    }
     let child: ChildProcess;
     try {
       child = fork(options.entry ?? CHILD_ENTRY, [], {
@@ -191,7 +278,20 @@ function runChild(request: SheetReaderRequest, options: SheetReaderOptions): Pro
     let ready = false;
     let answered = false;
     let timedOut = false;
+    let cancelled = false;
     let stderr = "";
+
+    // Killed, then answered on `exit` like a timeout: the gate opens for the
+    // next read only once this child's memory is really gone.
+    const cancel = () => {
+      cancelled = true;
+      child.kill("SIGKILL");
+    };
+    signal?.addEventListener("abort", cancel, { once: true });
+    const settle = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", cancel);
+    };
 
     child.stderr?.on("data", (chunk: Buffer) => {
       if (stderr.length < MAX_STDERR_CHARS) stderr += chunk.toString("utf8");
@@ -209,7 +309,7 @@ function runChild(request: SheetReaderRequest, options: SheetReaderOptions): Pro
       }
       if (answered || (message.type !== "result" && message.type !== "failure")) return;
       answered = true;
-      clearTimeout(timer);
+      settle();
       if (message.type === "result") resolve(message.value);
       else reject(failureToError(message.failure));
     });
@@ -217,29 +317,28 @@ function runChild(request: SheetReaderRequest, options: SheetReaderOptions): Pro
     child.on("error", (err) => {
       if (answered) return;
       answered = true;
-      clearTimeout(timer);
+      settle();
       reject(new Error("the spreadsheet reader could not be started", { cause: err }));
     });
 
-    child.on("exit", (code, signal) => {
-      clearTimeout(timer);
+    child.on("exit", (code, exitSignal) => {
+      settle();
       if (answered) return;
       answered = true;
+      if (cancelled) {
+        reject(new SheetReaderCancelledError());
+        return;
+      }
       if (!ready && !timedOut) {
         // It never got as far as reading, so nothing here is about the file.
         reject(
           new Error(
-            `the spreadsheet reader exited before it was ready (${signal ?? `exit code ${code}`}): ${stderr.trim().slice(0, 500)}`
+            `the spreadsheet reader exited before it was ready (${exitSignal ?? `exit code ${code}`}): ${stderr.trim().slice(0, 500)}`
           )
         );
         return;
       }
-      reject(
-        new OfficeFileRejectedError(
-          "too_large",
-          describeDeath(code, signal, timedOut, stderr, { maxHeapMb, timeoutMs })
-        )
-      );
+      reject(deathError(code, exitSignal, timedOut, stderr, { maxHeapMb, timeoutMs }));
     });
 
     child.send(request);
@@ -251,13 +350,13 @@ export function runSheetReader(
   request: SheetReaderRequest,
   options: SheetReaderOptions = {}
 ): Promise<unknown> {
-  return withGate(() => runChild(request, options));
+  return withGate(() => runChild(request, options), options);
 }
 
 /**
  * `extractXlsx`, in a child process. Same result, same errors — plus a
  * refusal (`OfficeFileRejectedError("too_large")`) for a workbook whose read
- * ran out of memory or time.
+ * ran out of heap, and a plain error for a reader that died any other way.
  */
 export async function extractXlsxIsolated(
   absPath: string,

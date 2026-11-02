@@ -38,7 +38,11 @@ export const SheetDialog: FC<{
 }> = ({ url, title, sheet, startRow, endRow, children, defaultOpen }) => {
   const [open, setOpen] = useState(defaultOpen ?? false);
   const [range, setRange] = useState<SheetRange | null>(null);
-  const [error, setError] = useState(false);
+  /**
+   * Why there are no rows to show: the workbook will not open, or the reader
+   * is busy or unavailable (a 503, never a fact about the workbook).
+   */
+  const [error, setError] = useState<"unreadable" | "unavailable" | null>(null);
   const filename = title.split("/").filter(Boolean).pop() ?? title;
   const hasRange = sheet !== undefined && startRow !== undefined && endRow !== undefined;
 
@@ -49,18 +53,26 @@ export const SheetDialog: FC<{
       ? `&variant=rows&sheet=${encodeURIComponent(sheet)}&from=${startRow}&to=${endRow}`
       : "&variant=rows";
     let cancelled = false;
+    // Closing the pane abandons the request, and the server drops the read
+    // with it — queued or running — rather than reading a workbook for nobody.
+    const request = new AbortController();
 
-    void fetch(`${base}${query}`)
-      .then((res) => (res.ok ? res.json() : Promise.reject(new Error(String(res.status)))))
-      .then((data: SheetRange) => {
-        if (!cancelled) setRange(data);
+    void fetch(`${base}${query}`, { signal: request.signal })
+      .then((res) => {
+        if (res.ok) return res.json();
+        if (!cancelled) setError(res.status === 503 ? "unavailable" : "unreadable");
+        return null;
+      })
+      .then((data: SheetRange | null) => {
+        if (!cancelled && data) setRange(data);
       })
       .catch(() => {
-        if (!cancelled) setError(true);
+        if (!cancelled) setError("unreadable");
       });
 
     return () => {
       cancelled = true;
+      request.abort();
     };
   }, [open, range, error, url, hasRange, sheet, startRow, endRow]);
 
@@ -71,7 +83,14 @@ export const SheetDialog: FC<{
   const anchorLabel = hasRange ? `${sheet}, ${rangeLabel}` : (range?.sheet ?? null);
 
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
+    <Dialog
+      open={open}
+      onOpenChange={(next) => {
+        setOpen(next);
+        // A busy reader is a moment, not a verdict: reopening asks again.
+        if (!next && error === "unavailable") setError(null);
+      }}
+    >
       <DialogTrigger asChild>{children}</DialogTrigger>
       <DialogContent
         className="flex max-h-[85dvh] flex-col gap-0 overflow-hidden p-0 sm:max-w-4xl"
@@ -95,7 +114,12 @@ export const SheetDialog: FC<{
         </div>
 
         <div className="min-h-0 flex-1 overflow-auto p-3">
-          {error ? (
+          {error === "unavailable" ? (
+            <p className="text-muted-foreground text-sm">
+              Our spreadsheet reader is busy right now. Close this and try again in a moment, or
+              download the file.
+            </p>
+          ) : error ? (
             <p className="text-muted-foreground text-sm">
               This workbook could not be read. The file is still available to download.
             </p>

@@ -5,10 +5,12 @@
  * limits could OOM-kill the 1 GB web container — on every nightly reindex,
  * and from the rows preview any member can request. These pin the fence:
  * the read happens in a heap-capped child, the parent gets the SAME answer
- * the in-process reader gives, and every way the child can die while reading
- * becomes a refusal of that file instead of the server's death. A child that
- * dies before it was ready to read is infrastructure, not a verdict, and must
- * not be booked as one.
+ * the in-process reader gives, and a child that runs out of heap reading a
+ * file refuses that file instead of killing the server. Every other way a
+ * child dies — killed without the heap banner, timed out, crashed, never
+ * ready — is infrastructure, not a verdict, and must not be booked as one
+ * (fifth review). A preview whose requester went away stops costing the
+ * queue anything, and the queue in front of the indexer is bounded.
  *
  * The death cases run stub children written into a temp dir, because a real
  * OOM, hang or crash on demand is exactly what a stub is for. The success and
@@ -30,6 +32,8 @@ import {
   readSheetRangeIsolated,
   runSheetReader,
   SHEET_READER_HEAP_MB,
+  SheetReaderBusyError,
+  SheetReaderCancelledError,
 } from "@/lib/knowledge/xlsx-isolated";
 
 const MiB = 1024 * 1024;
@@ -121,23 +125,59 @@ describe("the isolated reader answers exactly what the in-process reader answers
   });
 });
 
-describe("a child that dies while reading refuses the file, and only the file", () => {
+describe("running out of heap is a verdict on the file", () => {
   it("runs out of heap: refused as too large, naming the heap limit", async () => {
-    // ~40 000 cells: a few MB of model, past a 16 MB heap with the reader loaded.
-    const path = await buildWorkbook("heavy.xlsx", (wb) => {
-      const sheet = wb.addWorksheet("S");
-      for (let r = 0; r < 4000; r++) {
-        sheet.addRow(Array.from({ length: 10 }, (_, c) => `r${r}c${c} some text`));
-      }
-    });
+    // The heap has to hold the reader itself (~18 MB loaded) with room to
+    // spare, or the child dies LOADING — before it is ready, which is
+    // rightly not a verdict on the file. A 16 MB cap sat on that edge and
+    // flaked under load (fifth review). So: 48 MB, and a 4 MiB sheet of
+    // numbers whose model alone is several times that.
+    const workbook = new ExcelJS.Workbook();
+    workbook.addWorksheet("S").addRow([1]);
+    const base = Buffer.from(await workbook.xlsx.writeBuffer());
+    const head =
+      '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>';
+    const rows: string[] = [];
+    let size = head.length;
+    for (let r = 1; size < 4 * MiB; r++) {
+      const row = `<row r="${r}">${"ABCDEFGHIJ"
+        .split("")
+        .map((c) => `<c r="${c}${r}"><v>${r}</v></c>`)
+        .join("")}</row>`;
+      rows.push(row);
+      size += row.length;
+    }
+    const { replaceEntry } = await import("@/test-helpers/office-zip");
+    const { deflatedPart } = await import("@/lib/knowledge/office-zip");
+    const path = join(tmpRoot, "heavy.xlsx");
+    await writeFile(
+      path,
+      replaceEntry(
+        base,
+        "xl/worksheets/sheet1.xml",
+        deflatedPart(
+          "xl/worksheets/sheet1.xml",
+          Buffer.from(head + rows.join("") + "</sheetData></worksheet>")
+        )
+      )
+    );
 
-    const err = await rejection(extractXlsxIsolated(path, {}, { maxHeapMb: 16 }));
+    const err = await rejection(extractXlsxIsolated(path, {}, { maxHeapMb: 48 }));
     expect(err).toBeInstanceOf(OfficeFileRejectedError);
     expect((err as OfficeFileRejectedError).code).toBe("too_large");
-    expect(err.message).toContain("16 MB");
-  });
+    expect(err.message).toContain("48 MB");
+  }, 60_000);
+});
 
-  it("takes too long: killed, and refused as too large", async () => {
+describe("every other death is not a verdict on the file (fifth review, PR #1243)", () => {
+  // V8's heap-limit banner is the one death that is about THIS file: the
+  // heap cap was reached reading it. A SIGKILL without it is the container's
+  // OOM killer, which `oom_score_adj` aims at the child whatever was using the
+  // memory; a timeout can be a loaded host; a crash, a broken image. Booked
+  // as a refusal, any of them became a permanent "unreadable" record — and on
+  // a CHANGED file, ingest deleted the version it had indexed. A plain error
+  // is counted `failed`, keeps the indexed version, and is read again.
+  it("takes too long: killed, and a plain error that says so — never a refusal", async () => {
     const entry = stubChild(
       "hang",
       `process.send({ type: "ready" });
@@ -146,27 +186,27 @@ describe("a child that dies while reading refuses the file, and only the file", 
     const err = await rejection(
       runSheetReader({ op: "extract", path: "/x.xlsx" }, { entry, timeoutMs: 1500 })
     );
-    expect(err).toBeInstanceOf(OfficeFileRejectedError);
+    expect(err).not.toBeInstanceOf(OfficeFileRejectedError);
     expect(err.message).toContain("longer than 1.5 s");
   });
 
-  it("crashes mid-read: refused as too large", async () => {
+  it("crashes mid-read: a plain error, never a refusal", async () => {
     const entry = stubChild(
       "crash",
       `process.send({ type: "ready" }); process.on("message", () => process.exit(3));`
     );
     const err = await rejection(runSheetReader({ op: "extract", path: "/x.xlsx" }, { entry }));
-    expect(err).toBeInstanceOf(OfficeFileRejectedError);
+    expect(err).not.toBeInstanceOf(OfficeFileRejectedError);
     expect(err.message).toContain("exit code 3");
   });
 
-  it("is killed from outside (the container's OOM killer): refused as too large", async () => {
+  it("is killed from outside without the heap banner (the container's OOM killer): a plain error, never a refusal", async () => {
     const entry = stubChild(
       "killed",
       `process.send({ type: "ready" }); process.on("message", () => process.kill(process.pid, "SIGKILL"));`
     );
     const err = await rejection(runSheetReader({ op: "extract", path: "/x.xlsx" }, { entry }));
-    expect(err).toBeInstanceOf(OfficeFileRejectedError);
+    expect(err).not.toBeInstanceOf(OfficeFileRejectedError);
     expect(err.message).toContain("killed");
   });
 });
@@ -252,6 +292,124 @@ describe("the fence itself", () => {
     const pid = Number(readFileSync(pidFile, "utf8"));
     await expect.poll(() => alive(pid), { timeout: 5000 }).toBe(false);
   });
+});
+
+describe("a preview nobody waits for any more (fifth review, PR #1243)", () => {
+  // Every rows preview queues behind the one reader child, and so does the
+  // indexer. Twenty reloads of a preview used to queue twenty reads of up to
+  // two minutes each — none of them wanted any more — in front of the
+  // nightly reindex. A preview carries its request's signal; the indexer
+  // carries none and is never cut short by somebody else's abort.
+
+  /** A child that logs `start <path>` and answers after `ms`; the parent's request names the log in `path`. */
+  function slowChild(ms: number) {
+    return stubChild(
+      `slow-${ms}`,
+      `import { appendFileSync } from "node:fs";
+       process.send({ type: "ready" });
+       process.on("message", (req) => {
+         appendFileSync(req.path, "start\\n");
+         setTimeout(() => process.send({ type: "result", value: "done" }), ${ms});
+       });`
+    );
+  }
+
+  const starts = (log: string) => readFileSync(log, "utf8").split("\n").filter(Boolean).length;
+
+  it("never starts a child for a request that was already gone", async () => {
+    const log = join(tmpRoot, "order.log");
+    writeFileSync(log, "");
+    const err = await rejection(
+      runSheetReader(
+        { op: "extract", path: log },
+        { entry: slowChild(10), signal: AbortSignal.abort() }
+      )
+    );
+    expect(err).toBeInstanceOf(SheetReaderCancelledError);
+    expect(starts(log)).toBe(0);
+  });
+
+  it("drops a queued read whose requester went away, without ever starting its child", async () => {
+    const log = join(tmpRoot, "order.log");
+    writeFileSync(log, "");
+    const entry = slowChild(800);
+    const holder = runSheetReader({ op: "extract", path: log }, { entry });
+    const gone = new AbortController();
+    const queued = rejection(
+      runSheetReader({ op: "extract", path: log }, { entry, signal: gone.signal })
+    );
+    await expect.poll(() => starts(log)).toBe(1);
+
+    const before = Date.now();
+    gone.abort();
+    expect(await queued).toBeInstanceOf(SheetReaderCancelledError);
+    // Answered at once, not after the read in front of it.
+    expect(Date.now() - before).toBeLessThan(500);
+    expect(await holder).toBe("done");
+    expect(starts(log)).toBe(1);
+  });
+
+  it("kills a running child whose requester went away, and hands the gate on", async () => {
+    const pidFile = join(tmpRoot, "pid");
+    const entry = stubChild(
+      "hang-pid-abort",
+      `import { writeFileSync } from "node:fs";
+       process.send({ type: "ready" });
+       process.on("message", (req) => { writeFileSync(req.path, String(process.pid)); setInterval(() => {}, 1000); });`
+    );
+    const gone = new AbortController();
+    const running = rejection(
+      runSheetReader({ op: "extract", path: pidFile }, { entry, signal: gone.signal })
+    );
+    await expect.poll(() => readFileSync(pidFile, { encoding: "utf8", flag: "a+" })).not.toBe("");
+    const pid = Number(readFileSync(pidFile, "utf8"));
+
+    gone.abort();
+    expect(await running).toBeInstanceOf(SheetReaderCancelledError);
+    await expect.poll(() => alive(pid), { timeout: 5000 }).toBe(false);
+
+    // The next read is not stuck behind the one that was cancelled.
+    const log = join(tmpRoot, "after.log");
+    writeFileSync(log, "");
+    expect(await runSheetReader({ op: "extract", path: log }, { entry: slowChild(10) })).toBe(
+      "done"
+    );
+  });
+
+  it("leaves the indexer's read alone when a preview behind it goes away", async () => {
+    const log = join(tmpRoot, "order.log");
+    writeFileSync(log, "");
+    const entry = slowChild(400);
+    const indexer = runSheetReader({ op: "extract", path: log }, { entry });
+    const gone = new AbortController();
+    const preview = rejection(
+      runSheetReader({ op: "extract", path: log }, { entry, signal: gone.signal })
+    );
+    await expect.poll(() => starts(log)).toBe(1);
+    gone.abort();
+    await preview;
+    expect(await indexer).toBe("done");
+  });
+
+  it("refuses a preview past the queue limit at once, instead of queueing it", async () => {
+    const log = join(tmpRoot, "order.log");
+    writeFileSync(log, "");
+    const entry = slowChild(600);
+    const reads = [
+      runSheetReader({ op: "extract", path: log }, { entry }),
+      runSheetReader({ op: "extract", path: log }, { entry, maxQueued: 2 }),
+      runSheetReader({ op: "extract", path: log }, { entry, maxQueued: 2 }),
+    ];
+    await expect.poll(() => starts(log)).toBe(1);
+
+    const err = await rejection(
+      runSheetReader({ op: "extract", path: log }, { entry, maxQueued: 2 })
+    );
+    expect(err).toBeInstanceOf(SheetReaderBusyError);
+    // The indexer is never turned away: it names no limit.
+    reads.push(runSheetReader({ op: "extract", path: log }, { entry }));
+    expect(await Promise.all(reads)).toEqual(["done", "done", "done", "done"]);
+  }, 20_000);
 });
 
 describe("the parent's memory does not pay for the workbook (the rows route's bound)", () => {

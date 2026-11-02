@@ -2,13 +2,14 @@
 /**
  * The pane a cited spreadsheet opens into.
  *
- * What is worth asserting here is not the markup but the three states a reader
- * can actually land in — the rows, an empty range, and a workbook that will not
- * open — plus the one performance property that is a product decision rather
- * than an implementation detail: nothing is fetched until the dialog opens.
+ * What is worth asserting here is not the markup but the four states a reader
+ * can actually land in — the rows, an empty range, a workbook that will not
+ * open, and a reader that is busy — plus the performance properties that are
+ * product decisions rather than implementation details: nothing is fetched
+ * until the dialog opens, and nothing stays fetched once it is closed.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 import { SheetDialog } from "@/components/assistant-ui/sheet-dialog";
 
@@ -33,10 +34,8 @@ afterEach(() => {
   globalThis.fetch = originalFetch;
 });
 
-function mockFetch(body: unknown, ok = true) {
-  const fetchMock = vi
-    .fn()
-    .mockResolvedValue({ ok, json: async () => body, status: ok ? 200 : 422 });
+function mockFetch(body: unknown, ok = true, status = ok ? 200 : 422) {
+  const fetchMock = vi.fn().mockResolvedValue({ ok, json: async () => body, status });
   globalThis.fetch = fetchMock as unknown as typeof fetch;
   return fetchMock;
 }
@@ -125,5 +124,49 @@ describe("SheetDialog", () => {
       "href",
       expect.stringContaining("variant=original")
     );
+  });
+
+  // Fifth review (PR #1243): a 503 is the READER being busy or unavailable,
+  // never a fact about the workbook — and a preview nobody is looking at any
+  // more must not keep a read queued on the server.
+  it("says the reader is busy, not that the workbook is broken, on a 503", async () => {
+    mockFetch({ error: "busy" }, false, 503);
+    open();
+
+    expect(await screen.findByText(/try again in a moment/i)).toBeInTheDocument();
+    expect(screen.queryByText(/could not be read/i)).not.toBeInTheDocument();
+  });
+
+  it("asks again when it is reopened after the reader was busy", async () => {
+    const fetchMock = mockFetch({ error: "busy" }, false, 503);
+    render(
+      <SheetDialog url={HREF} title="preise.xlsx" sheet="Suppliers" startRow={3} endRow={4}>
+        <button type="button">open</button>
+      </SheetDialog>
+    );
+    fireEvent.click(screen.getByRole("button", { name: "open" }));
+    expect(await screen.findByText(/try again in a moment/i)).toBeInTheDocument();
+
+    fetchMock.mockResolvedValue({ ok: true, json: async () => RANGE, status: 200 });
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByText(/try again/i)).not.toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "open" }));
+
+    expect(await screen.findByText("Acme")).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("cancels its request when it is closed before the rows arrive", async () => {
+    let signal: AbortSignal | undefined;
+    globalThis.fetch = vi.fn((_url: string, init?: RequestInit) => {
+      signal = init?.signal ?? undefined;
+      return new Promise(() => {});
+    }) as unknown as typeof fetch;
+    const { unmount } = open();
+
+    await waitFor(() => expect(signal).toBeDefined());
+    expect(signal!.aborted).toBe(false);
+    unmount();
+    expect(signal!.aborted).toBe(true);
   });
 });

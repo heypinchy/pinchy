@@ -21,8 +21,13 @@ import {
   isSpreadsheetFile,
   OfficeFileRejectedError,
 } from "@/lib/knowledge/office-formats";
-import { SHEET_RANGE_MAX_ROWS } from "@/lib/knowledge/xlsx-extract";
-import { readSheetRangeIsolated } from "@/lib/knowledge/xlsx-isolated";
+import { SHEET_RANGE_MAX_ROWS, XlsxExtractionError } from "@/lib/knowledge/xlsx-extract";
+import {
+  readSheetRangeIsolated,
+  SHEET_PREVIEW_MAX_QUEUED,
+  SheetReaderBusyError,
+  SheetReaderCancelledError,
+} from "@/lib/knowledge/xlsx-isolated";
 import type { AgentPluginConfig } from "@/db/schema";
 
 type Params = { params: Promise<{ agentId: string }> };
@@ -319,24 +324,55 @@ export const GET = withAuth<Params>(async (req, { params }, session) => {
       // ~20× the sheet XML, and this route is reachable by any member with
       // agent access, uncached and repeatably. The web process never holds a
       // workbook's cell model.
+      //
+      // The request's signal goes along: a reader that reloads or closes the
+      // dialog takes its read out of the queue, or has its child killed, and
+      // `maxQueued` keeps reloads from stacking reads in front of the indexer.
       sheetRange = await readSheetRangeIsolated(
         realPath,
         range.sheet,
         range.startRow,
-        range.endRow
+        range.endRow,
+        { signal: req.signal, maxQueued: SHEET_PREVIEW_MAX_QUEUED }
       );
     } catch (err) {
       if (err instanceof OfficeFileRejectedError && err.code === "too_large") {
         // Refused before exceljs inflated anything (a compressed bomb costs a
         // central-directory read, not a heap), or the child reading it ran out
-        // of memory or time. Either way the server is still standing.
+        // of heap. Either way the server is still standing.
         auditFailure("document_too_large");
         return NextResponse.json({ error: "The workbook is too large to read" }, { status: 413 });
       }
-      // The workbook is on disk and inside the grant but will not open. That is
-      // a fact about the document, so it is audited like one.
-      auditFailure("unreadable_document");
-      return NextResponse.json({ error: "The workbook could not be read" }, { status: 422 });
+      if (err instanceof OfficeFileRejectedError || err instanceof XlsxExtractionError) {
+        // The workbook is on disk and inside the grant but will not open. That
+        // is a fact about the document, so it is audited like one.
+        auditFailure("unreadable_document");
+        return NextResponse.json({ error: "The workbook could not be read" }, { status: 422 });
+      }
+      if (err instanceof SheetReaderCancelledError) {
+        // The reader went away first; nobody is waiting for this answer. Still
+        // a row — the document was asked for — but not one that blames it.
+        auditFailure("cancelled");
+        return NextResponse.json({ error: "The request was cancelled" }, { status: 499 });
+      }
+      if (err instanceof SheetReaderBusyError) {
+        auditFailure("reader_busy");
+        return NextResponse.json(
+          { error: "Too many spreadsheet previews are being read right now. Try again shortly." },
+          { status: 503, headers: { "retry-after": "10" } }
+        );
+      }
+      // Anything else is the READER failing, not the document: a child that
+      // could not be started, was killed by the system or ran out of time
+      // (fifth review, PR #1243). Answering 422 and auditing
+      // `unreadable_document` would write a false statement about the
+      // document into an immutable row.
+      console.error(`[workspace-file] spreadsheet reader failed for ${documentName}:`, err);
+      auditFailure("reader_unavailable");
+      return NextResponse.json(
+        { error: "The spreadsheet reader is unavailable right now. Try again shortly." },
+        { status: 503 }
+      );
     }
 
     deferAuditLog(
