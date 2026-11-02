@@ -1513,10 +1513,10 @@ Update a connection's name, description, or credentials. Credential fields you l
 
 A stored secret never follows the connection to a new destination. If the update changes where the secret would be sent, the secret has to come in the same request:
 
-| Type | Destination fields                                         | Secret to re-send |
-| ---- | ---------------------------------------------------------- | ----------------- |
-| Odoo | `url` (trailing slash ignored), `db`                       | `apiKey`          |
-| IMAP | `imapHost`, `imapPort`, `smtpHost`, `smtpPort`, `security` | `password`        |
+| Type | Destination fields                                              | Secret to re-send |
+| ---- | --------------------------------------------------------------- | ----------------- |
+| Odoo | `url` (trailing slash ignored), `db` (exact, whitespace counts) | `apiKey`          |
+| IMAP | `imapHost`, `imapPort`, `smtpHost`, `smtpPort`, `security`      | `password`        |
 
 Without it the request is rejected with `422` and a field error on the secret, before anything is sent to the new destination, and the refusal is written to the audit trail as a failed `integration.credentials_updated` row. Changing only the login, username, or sender name keeps the stored secret. A credential update that the service rejects (`400`) or that loses a race against another save (`409`) changes nothing, and is written to the audit trail as a failed `integration.credentials_updated` row too.
 
