@@ -83,6 +83,29 @@ describe("contextualJoinerOffsets (RFC 5892 CONTEXTJ)", () => {
     ["ZWJ after a virama at the end (a chillu)", "അവന്\u200D", 4],
     ["ZWJ after a virama before punctuation", "അവന്\u200D.md", 4],
     ["ZWNJ after a virama on a letter with a nukta", "क\u093C्\u200Cष", 3],
+    // Ninth review of #1242: a ZWJ ending a word after a virama is visible
+    // only where the Unicode core spec (ch. 12) gives it a form to draw — a
+    // Devanagari independent half form (§12.1, Figure 12-6, Table 12-4; RA
+    // as eyelash, rule R5a), the legacy Bengali khanda ta (§12.2), a legacy
+    // Malayalam chillu (§12.9, Table 12-40) — and only on letters that have
+    // one.
+    ["ZWJ after a Devanagari virama at the end (an independent half form)", "ग्\u200D", 2],
+    ["ZWJ after a Devanagari RA at the end (eyelash RA)", "र्\u200D", 2],
+    ["ZWJ after a Devanagari letter with a nukta at the end", "ज\u093C्\u200D", 3],
+    ["ZWJ after a Bengali ta at the end (legacy khanda ta)", "হঠাত্\u200D", 5],
+    // A ZWJ BEFORE a virama, where the spec gives it a form: the Bengali
+    // ya-phalaa after ra (§12.2 "Interaction of Repha and Ya-phalaa"), also
+    // after the Assamese ra; a cluster-initial RA that keeps its full form in
+    // Devanagari (§12.1), Telugu (§12.7 "Reph") and Kannada (§12.8); Oriya
+    // final half forms (§12.1, Figure 12-7); Malayalam traditional ligatures
+    // (§12.9 "Requesting Traditional Ligatures").
+    ["ZWJ between a Bengali ra and a virama (ya-phalaa)", "র\u200D্যাব", 1],
+    ["ZWJ between an Assamese ra and a virama (ya-phalaa)", "ৰ\u200D্য", 1],
+    ["ZWJ between a Devanagari RA and a virama", "र\u200D्य", 1],
+    ["ZWJ between a Telugu ra and a virama", "ర\u200D్మ", 1],
+    ["ZWJ between a Kannada ra and a virama", "ರ\u200D್ಕ", 1],
+    ["ZWJ between an Oriya consonant and a virama (final half form)", "କ\u200D୍ତ", 1],
+    ["ZWJ between a Malayalam consonant and a virama (traditional ligature)", "ക\u200D്ര", 1],
   ])("allows %s", (_label, text, offset) => {
     expect(offsetsOf(text)).toEqual([offset]);
   });
@@ -111,6 +134,37 @@ describe("contextualJoinerOffsets (RFC 5892 CONTEXTJ)", () => {
     ["ZWJ after a virama on a Latin letter", "a्\u200D"],
     ["ZWNJ after a Sinhala virama on a Devanagari letter", "क\u0DCA\u200Cष"],
     ["ZWNJ after a virama with no letter before it", "\u094D\u200Cष"],
+    // Ninth review of #1242 (the reviewer's probe names): a ZWJ ending a word
+    // after a virama was accepted in every virama script, but a script with
+    // no half form or chillu draws nothing for it — `தமிழ்‍.md` read exactly
+    // like `தமிழ்.md`. With no letter after it, the joiner is accepted only
+    // where the spec gives it a form; elsewhere a letter of the same script
+    // has to follow it, as for a ZWNJ.
+    ["ZWJ after a Tamil pulli at the end", "தமிழ்\u200D"],
+    ["ZWJ after a Tamil pulli before punctuation", "தமிழ்\u200D.md"],
+    ["ZWJ after a Thai phinthu at the end", "ก\u0E3A\u200D"],
+    ["ZWJ after a Myanmar asat at the end", "ကျွန်\u200D"],
+    ["ZWJ after a Telugu virama at the end", "జగత్\u200D"],
+    // Gujarati has half forms inside a conjunct, but the spec documents no
+    // independent one, so a word-final joiner is not taken on trust there.
+    ["ZWJ after a Gujarati virama at the end", "જગત્\u200D"],
+    // A Devanagari consonant without a half form falls back to the visible
+    // virama (§12.1) — exactly what it shows without the joiner.
+    ["ZWJ after a Devanagari TTA at the end (no half form)", "ट्\u200D"],
+    ["ZWJ after a Devanagari DA at the end (no half form)", "द्\u200D"],
+    ["ZWJ after a Devanagari RRA at the end (already eyelash, rule R5)", "ऱ्\u200D"],
+    ["ZWJ after a Bengali ka at the end (not khanda ta)", "ক্\u200D"],
+    ["ZWJ after a Malayalam ka at the end (no chillu)", "ക്\u200D"],
+    // Before a virama: after a letter other than ra the Bengali ya-phalaa is
+    // the default, and "a ZWJ is not necessary" (§12.2); the virama has to be
+    // of the letter's script, and a letter of that script has to follow it.
+    ["ZWJ between a Bengali ka and a virama", "ক\u200D্য"],
+    ["ZWJ between a Tamil letter and a pulli", "க\u200D்ம"],
+    ["ZWJ between a Bengali ra and a virama at the end", "র\u200D্"],
+    ["ZWJ between a Bengali ra and a virama before a Latin letter", "র\u200D্a"],
+    ["ZWJ between a Devanagari RA and a Bengali virama", "र\u200D্য"],
+    ["ZWJ between a Latin letter and a virama", "a\u200D्य"],
+    ["ZWNJ between a Bengali ra and a virama", "র\u200C্য"],
   ])("refuses %s", (_label, text) => {
     expect(offsetsOf(text)).toEqual([]);
   });

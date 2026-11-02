@@ -175,6 +175,16 @@ describe("hidden-chars drift guard", () => {
         "क्\u200Cb",
         "a\u200Cb",
         "Ad\u200Da",
+        // Ninth review of #1242: a word-final ZWJ after a virama draws nothing
+        // in Tamil or Thai, and the Bengali ya-phalaa after ra carries one
+        // before the virama.
+        "தமிழ்\u200D",
+        "ก\u0E3A\u200D",
+        "ग्\u200D",
+        "ट्\u200D",
+        "র\u200D্যাংকিং",
+        "ৰ\u200D্য",
+        "ক\u200D্য",
       ];
       const rows = names.map((name) => {
         const path = `/data/${name}.md`;
@@ -210,6 +220,15 @@ describe("hidden-chars drift guard", () => {
       expect(rows.some((row) => !row.pathRefused)).toBe(true);
       expect(rows.some((row) => row.recipientRefused)).toBe(true);
       expect(rows.some((row) => !row.recipientRefused && row.name.includes("\u200C"))).toBe(true);
+      // The ninth review's names, by name: the agreement above would hold
+      // just as well if all three accepted them.
+      const refusedNames = rows.filter((row) => row.pathRefused).map((row) => row.name);
+      expect(refusedNames).toEqual(
+        expect.arrayContaining(["தமிழ்\u200D", "ก\u0E3A\u200D", "ट्\u200D", "ক\u200D্য"])
+      );
+      expect(rows.filter((row) => !row.pathRefused).map((row) => row.name)).toEqual(
+        expect.arrayContaining(["ग्\u200D", "র\u200D্যাংকিং", "ৰ\u200D্য"])
+      );
     });
 
     it("a path may carry exactly the space separators, and the card marks every one", () => {

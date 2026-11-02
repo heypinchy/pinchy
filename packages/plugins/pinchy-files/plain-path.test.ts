@@ -100,6 +100,11 @@ describe("assertPlainPath", () => {
     ["a Malayalam chillu with a ZWJ after the virama", "/data/output/അവന്\u200D.md"],
     ["a Devanagari half form with a ZWNJ after the virama", "/data/output/क्\u200Cष.md"],
     ["a ZWNJ after a dual-joining letter with a vowel mark", "/data/output/مِ\u200Cها.md"],
+    // Ninth review of #1242 (the reviewer's probe names): the Bengali ya-phalaa
+    // after ra is written with a ZWJ before the virama (Unicode core spec
+    // §12.2) — without it the ra turns into a repha.
+    ["a Bengali ra-yaphala with a ZWJ before the virama", "/data/out/র\u200D্যাংকিং.md"],
+    ["a Devanagari half form at the end of a name", "/data/out/ग्\u200D.md"],
   ])("accepts %s, which shapes the text", (_label, value) => {
     ok(value);
   });
@@ -118,6 +123,12 @@ describe("assertPlainPath", () => {
     // like /data/out/जगत्.md; and a virama on a Latin letter shapes nothing.
     ["a ZWNJ after a virama at the end of a name", "/data/out/जगत्\u200C.md", /U\+200C/],
     ["a ZWNJ after a virama on a Latin letter", "/data/out/a्\u200Cb.md", /U\+200C/],
+    // Ninth review of #1242 (the reviewer's probe names): a ZWJ ending a word
+    // after a virama draws nothing in a script without half forms or chillus,
+    // so each of these reads exactly like the same path without it.
+    ["a ZWJ after a Tamil pulli at the end of a name", "/data/out/தமிழ்\u200D.md", /U\+200D/],
+    ["a ZWJ after a Thai phinthu at the end of a name", "/data/out/ก\u0E3A\u200D.md", /U\+200D/],
+    ["a ZWJ after a Telugu virama at the end of a name", "/data/out/జగత్\u200D.md", /U\+200D/],
   ])("still refuses %s, which renders as nothing", (_label, value, why) => {
     refused(value, why);
   });

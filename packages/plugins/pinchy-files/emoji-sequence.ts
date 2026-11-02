@@ -201,6 +201,62 @@ export function viramaScript(char: string): string | undefined {
 }
 
 /**
+ * The letters on which a U+200D after a virama is visible at the end of a
+ * word (ninth review of #1242), by the virama's script. With no letter after
+ * it there is no conjunct to shape, so the joiner draws something only where
+ * the Unicode core spec (chapter 12) gives the dead consonant a form of its
+ * own — and only on the letters that have one:
+ *
+ * - Devanagari: the independent half form (§12.1, Figure 12-6), for the
+ *   consonants Table 12-4 gives a half form — क ख ग घ च ज झ ञ ण त थ ध न ऩ प
+ *   फ ब भ म य ल व श ष स, and the nukta forms of those — and RA, drawn as the
+ *   eyelash (rule R5a). A consonant without a half form falls back to the
+ *   visible virama (§12.1), which is what it shows without the joiner; so
+ *   does RRA, which is the eyelash already (rule R5).
+ * - Bengali: ta, the legacy encoding of khanda ta (§12.2, "Khanda Ta").
+ * - Malayalam: the five chillus that had a legacy <virama, ZWJ> encoding —
+ *   ണ ന ര ല ള (§12.9, Table 12-40).
+ *
+ * Every other script — Tamil, Thai, Myanmar, Telugu, Gujarati, … — is
+ * absent on purpose: the spec documents no form there, so the joiner is
+ * taken to render as nothing and the card marks it. `தமிழ்‍.md` read exactly
+ * like `தமிழ்.md`.
+ */
+const WORD_FINAL_JOINER_LETTERS: Record<string, RegExp> = {
+  Devanagari:
+    /^[\u0915-\u0918\u091A\u091C-\u091E\u0923-\u0925\u0927-\u0930\u0932\u0935-\u0938\u0958-\u095B\u095E\u095F]$/u,
+  Bengali: /^\u09A4$/u,
+  Malayalam: /^[\u0D23\u0D28\u0D30\u0D32\u0D33]$/u,
+};
+
+/**
+ * The letters after which a U+200D BEFORE a virama shapes the cluster, by the
+ * virama's script (ninth review of #1242) — each a form the Unicode core spec
+ * (chapter 12) documents:
+ *
+ * - Devanagari RA keeps its full form instead of a repha, and the following
+ *   consonant takes a reduced form (§12.1, "Alternative Forms of
+ *   Cluster-Initial RA");
+ * - Bengali ra, and the Assamese ra ৰ (§12.2, "Characters for Assamese"),
+ *   take the ya-phalaa instead of a repha: র‍্য as in র‍্যাংকিং (§12.2,
+ *   "Interaction of Repha and Ya-phalaa"). After any other letter the
+ *   ya-phalaa is the default, and the spec says "a ZWJ is not necessary";
+ * - Telugu ra (§12.7, "Reph") and Kannada ra (§12.8, "Consonant Clusters
+ *   Involving RA") switch between the reph and the full form;
+ * - Oriya consonants take a half form as the final consonant (§12.1, Figure
+ *   12-7), and Malayalam consonants a traditional ligature (§12.9,
+ *   "Requesting Traditional Ligatures").
+ */
+const JOINER_BEFORE_VIRAMA_LETTERS: Record<string, RegExp> = {
+  Devanagari: /^\u0930$/u,
+  Bengali: /^[\u09B0\u09F0]$/u,
+  Telugu: /^\u0C30$/u,
+  Kannada: /^\u0CB0$/u,
+  Oriya: /^[\u0B15-\u0B39\u0B5C\u0B5D\u0B5F\u0B71]$/u,
+  Malayalam: /^[\u0D15-\u0D3A]$/u,
+};
+
+/**
  * Does the joiner at `chars[index]`, right after a virama, shape the text?
  * RFC 5892's CONTEXTJ asks only for the virama; this asks what the joiner
  * acts on as well (eighth review of #1242), because a joiner that acts on
@@ -209,10 +265,11 @@ export function viramaScript(char: string): string | undefined {
  * - the virama sits on a letter of its own script (marks such as a nukta
  *   between them are skipped), so `a्‌b` shapes nothing;
  * - a U+200C keeps the virama from forming a conjunct with the letter after
- *   it, so that letter has to be there, in the same script;
- * - a U+200D asks for the half form, or in Malayalam the chillu (അവന്‍), which
- *   is visible at the end of a word too. A letter after it still has to be of
- *   the same script.
+ *   it, and a U+200D asks for the half form of the consonant before it, so
+ *   either needs a letter of the same script after it;
+ * - with none, a U+200D is visible only on the letters
+ *   `WORD_FINAL_JOINER_LETTERS` lists: a half form, a khanda ta, a chillu
+ *   (അവന്‍).
  */
 function joinerShapesVirama(chars: string[], index: number): boolean {
   const script = viramaScriptPatterns().find(({ test }) => test.test(chars[index - 1]));
@@ -222,7 +279,25 @@ function joinerShapesVirama(chars: string[], index: number): boolean {
   if (base < 0 || !LETTER.test(chars[base]) || !script.test.test(chars[base])) return false;
   const next = chars[index + 1];
   if (next !== undefined && LETTER.test(next)) return script.test.test(next);
-  return chars[index] === "\u200D";
+  if (chars[index] !== "\u200D") return false;
+  return WORD_FINAL_JOINER_LETTERS[script.name]?.test(chars[base]) ?? false;
+}
+
+/**
+ * Does the U+200D at `chars[index]`, right before a virama, shape the text?
+ * Only after a letter `JOINER_BEFORE_VIRAMA_LETTERS` lists for the virama's
+ * script, and only with a letter of that script after the virama — the
+ * consonant whose form the joiner changes.
+ */
+function joinerShapesBeforeVirama(chars: string[], index: number): boolean {
+  if (chars[index] !== "\u200D" || index === 0) return false;
+  const virama = chars[index + 1];
+  if (virama === undefined || !isVirama(virama)) return false;
+  const script = viramaScriptPatterns().find(({ test }) => test.test(virama));
+  const letters = script && JOINER_BEFORE_VIRAMA_LETTERS[script.name];
+  if (!script || !letters || !letters.test(chars[index - 1])) return false;
+  const next = chars[index + 2];
+  return next !== undefined && LETTER.test(next) && script.test.test(next);
 }
 
 /**
@@ -274,6 +349,8 @@ function joinsBackward(char: string | undefined): boolean {
  *
  * - right after a virama, where it acts on letters of the virama's script
  *   (`joinerShapesVirama`): क्‌ष (an explicit half form), ශ්‍රී, അവന്‍ (a chillu);
+ * - a U+200D right before a virama, where the spec gives it a form
+ *   (`joinerShapesBeforeVirama`): the Bengali ya-phalaa র‍্য;
  * - a U+200C between a letter that joins forward and one that joins backward,
  *   with only marks between them: گزارش‌ها.
  *
@@ -288,6 +365,10 @@ export function contextualJoinerOffsets(text: string): Set<number> {
     if (char !== "\u200C" && char !== "\u200D") continue;
     if (i > 0 && isVirama(chars[i - 1])) {
       if (joinerShapesVirama(chars, i)) offsets.add(offset);
+      continue;
+    }
+    if (joinerShapesBeforeVirama(chars, i)) {
+      offsets.add(offset);
       continue;
     }
     if (char !== "\u200C") continue;
