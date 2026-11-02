@@ -3,6 +3,7 @@ import { basename } from "node:path";
 import type { EmailAdapter, EmailSummary, Folder } from "./email-adapter.js";
 import { MAX_ATTACHMENT_BYTES, truncateEmailBody } from "./email-adapter.js";
 import { checkPermission, type Permissions } from "./permissions.js";
+import { parseSingleRecipient } from "./recipient.js";
 import {
   putHandle,
   putAttachmentHandle,
@@ -1158,7 +1159,11 @@ const plugin = {
           parameters: {
             type: "object",
             properties: {
-              to: { type: "string", description: "Recipient email address" },
+              to: {
+                type: "string",
+                description:
+                  "Exactly one recipient email address. For several recipients, call the tool once per recipient.",
+              },
               subject: { type: "string", description: "Email subject line" },
               body: {
                 type: "string",
@@ -1177,6 +1182,14 @@ const plugin = {
                 return withEmailAuditDetails(permissionDenied("draft"), params);
               }
 
+              // One address per call: a string is parsed as an address LIST by
+              // the mail libraries, so a comma-smuggled second recipient would
+              // be delivered to without the approver ever seeing it.
+              const recipient = parseSingleRecipient(params.to);
+              if (!recipient.ok) {
+                return withEmailAuditDetails(toolError(recipient.error), params);
+              }
+
               let replyTo: string | undefined = params.replyTo as string | undefined;
               if (replyTo != null) {
                 const resolved = resolveEmailReference(agentId, replyTo);
@@ -1186,7 +1199,7 @@ const plugin = {
 
               const result = await withAuthRetry(agentId, config, (adapter) =>
                 adapter.draft({
-                  to: params.to as string,
+                  to: recipient.address,
                   subject: params.subject as string,
                   body: params.body as string,
                   replyTo,
@@ -1238,7 +1251,11 @@ const plugin = {
           parameters: {
             type: "object",
             properties: {
-              to: { type: "string", description: "Recipient email address" },
+              to: {
+                type: "string",
+                description:
+                  "Exactly one recipient email address. For several recipients, call the tool once per recipient.",
+              },
               subject: { type: "string", description: "Email subject line" },
               body: {
                 type: "string",
@@ -1257,6 +1274,14 @@ const plugin = {
                 return withEmailAuditDetails(permissionDenied("send"), params);
               }
 
+              // One address per call: a string is parsed as an address LIST by
+              // the mail libraries, so a comma-smuggled second recipient would
+              // be delivered to without the approver ever seeing it.
+              const recipient = parseSingleRecipient(params.to);
+              if (!recipient.ok) {
+                return withEmailAuditDetails(toolError(recipient.error), params);
+              }
+
               let replyTo: string | undefined = params.replyTo as string | undefined;
               if (replyTo != null) {
                 const resolved = resolveEmailReference(agentId, replyTo);
@@ -1266,7 +1291,7 @@ const plugin = {
 
               const result = await withAuthRetry(agentId, config, (adapter) =>
                 adapter.send({
-                  to: params.to as string,
+                  to: recipient.address,
                   subject: params.subject as string,
                   body: params.body as string,
                   replyTo,

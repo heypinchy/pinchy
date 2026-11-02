@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll } from "vitest";
-import { collectCallModels } from "./call-models";
+import { collectCallModels, makeRefModelResolver } from "./call-models";
 // The pinchy-odoo encoder, imported across the package boundary on purpose:
 // this file is the drift guard for the ref format. `call-models.ts` reimplements
 // the decode half (the plugin's copy reads a container path for its key, which
@@ -72,5 +72,16 @@ describe("collectCallModels", () => {
   it("combines an explicit model with a ref in the same call", () => {
     const params = { model: "ir.attachment", targetRef: ref("account.move") };
     expect(collectCallModels(params, KEY).sort()).toEqual(["account.move", "ir.attachment"]);
+  });
+});
+
+describe("makeRefModelResolver", () => {
+  it("names the model a ref points at, so the card can say what it acts on", () => {
+    expect(makeRefModelResolver(KEY)(ref("account.move"))).toBe("account.move");
+  });
+
+  it("answers null for a garbled ref or a missing key, rather than guessing", () => {
+    expect(makeRefModelResolver(KEY)("pinchy_ref:v1:garbled")).toBeNull();
+    expect(makeRefModelResolver(null)(ref("account.move"))).toBeNull();
   });
 });

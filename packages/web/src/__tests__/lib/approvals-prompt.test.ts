@@ -129,4 +129,24 @@ describe("buildApprovalPrompt", () => {
     ]);
     expect(description).not.toContain("AAAA");
   });
+  // The prompt reaches chat surfaces too, and it reads the same summary as the
+  // card. Once the summary keeps real arrays/objects, flattening them with
+  // String() would print "[object Object]" on a security prompt.
+  it("spells out nested arguments instead of printing [object Object]", () => {
+    const { description } = buildApprovalPrompt("odoo_write", {
+      ids: [7],
+      values: { acc_number: "AT61 1904", amount: 99999 },
+    });
+    expect(description).not.toContain("[object Object]");
+    expect(description).toContain("acc_number: AT61 1904");
+    expect(description).toContain("99999");
+  });
+
+  it("lists every recipient, including one smuggled behind padding", () => {
+    const { description } = buildApprovalPrompt("email_send", {
+      to: `chef@firma.at${" ".repeat(300)}, angreifer@evil.com`,
+    });
+    expect(description).toContain("chef@firma.at");
+    expect(description).toContain("angreifer@evil.com");
+  });
 });

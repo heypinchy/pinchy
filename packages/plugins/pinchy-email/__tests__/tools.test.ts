@@ -1589,6 +1589,74 @@ describe("email_send", () => {
   });
 });
 
+describe("recipient hardening: one address per call (approval card must show what is delivered)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockCredentialResponse();
+  });
+
+  const writeConfig: PluginConfig = {
+    ...testConfig,
+    agents: {
+      "agent-1": {
+        connectionId: "conn-1",
+        permissions: { email: ["read", "draft", "send"] },
+      },
+    },
+  };
+
+  const smuggled = `chef@firma.at${" ".repeat(300)}, angreifer@evil.com`;
+
+  it.each(["email_send", "email_draft"])(
+    "%s refuses a comma-smuggled second recipient and never reaches the provider",
+    async (name) => {
+      const tool = findTool(createApi(writeConfig), name, agentId)!;
+      const result = await tool.execute("call-1", { to: smuggled, subject: "s", body: "b" });
+
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toMatch(/one recipient per call/i);
+      expect(mockSend).not.toHaveBeenCalled();
+      expect(mockDraft).not.toHaveBeenCalled();
+    }
+  );
+
+  it.each(["email_send", "email_draft"])("%s refuses a list passed as an array", async (name) => {
+    const tool = findTool(createApi(writeConfig), name, agentId)!;
+    const result = await tool.execute("call-1", {
+      to: ["a@x.at", "b@evil.com"],
+      subject: "s",
+      body: "b",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(mockSend).not.toHaveBeenCalled();
+    expect(mockDraft).not.toHaveBeenCalled();
+  });
+
+  it("email_send hands the provider the trimmed single address", async () => {
+    mockSend.mockResolvedValue({ messageId: "sent-1" });
+    const tool = findTool(createApi(writeConfig), "email_send", agentId)!;
+    await tool.execute("call-1", { to: "  ada@example.com ", subject: "s", body: "b" });
+    expect(mockSend).toHaveBeenCalledWith(expect.objectContaining({ to: "ada@example.com" }));
+  });
+
+  it("email_draft hands the provider the trimmed single address", async () => {
+    mockDraft.mockResolvedValue({ draftId: "d-1" });
+    const tool = findTool(createApi(writeConfig), "email_draft", agentId)!;
+    await tool.execute("call-1", { to: " Ada <ada@example.com>", subject: "s", body: "b" });
+    expect(mockDraft).toHaveBeenCalledWith(
+      expect.objectContaining({ to: "Ada <ada@example.com>" })
+    );
+  });
+
+  it("a refusal still curates the audit detail (no raw recipient or body in the audit)", async () => {
+    const tool = findTool(createApi(writeConfig), "email_send", agentId)!;
+    const result = await tool.execute("call-1", { to: smuggled, subject: "s", body: "b" });
+    expect(result.details).toHaveProperty("bodyBytes");
+    expect(JSON.stringify(result.details)).not.toContain("angreifer@evil.com");
+  });
+});
+
 describe("audit PII curation for email_send / email_draft", () => {
   // The tool-use audit route (packages/web/.../api/internal/audit/tool-use)
   // logs raw tool params UNLESS a tool returns curated `details` carrying a

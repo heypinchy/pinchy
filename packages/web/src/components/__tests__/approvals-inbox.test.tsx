@@ -39,7 +39,8 @@ describe("ApprovalsInbox", () => {
     render(<ApprovalsInbox />);
     await screen.findByText(/Smithers needs your confirmation/i);
     expect(screen.getByText(/odoo_write/)).toBeInTheDocument();
-    expect(screen.getByText(/recordId: 5/)).toBeInTheDocument();
+    expect(screen.getByText("recordId")).toBeInTheDocument();
+    expect(screen.getByText("5")).toBeInTheDocument();
   });
 
   it("approves a request and removes it from the list", async () => {

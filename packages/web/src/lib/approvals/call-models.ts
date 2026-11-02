@@ -66,6 +66,12 @@ function decodeRefModel(ref: string, key: string): string | null {
   }
 }
 
+/** Resolves a single ref to the model it points at; `null` when it cannot. */
+export function makeRefModelResolver(key: string | null): (ref: string) => string | null {
+  const usableKey = key && HEX_64.test(key) ? key : null;
+  return (ref) => (usableKey ? decodeRefModel(ref, usableKey) : null);
+}
+
 /**
  * Walks the call's arguments for resources. Refs are found by their prefix
  * wherever they sit — no parameter-name list, because the tools spell it

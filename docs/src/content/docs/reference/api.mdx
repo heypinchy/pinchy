@@ -2019,7 +2019,7 @@ Your own pending confirmations, newest first — the source for the in-app confi
 }
 ```
 
-`argsSummary` is a compact, redacted rendering of the tool's arguments so you can decide in context: secret-looking keys are replaced with `[redacted]` and long values truncated, while the recipient or record stays visible — hiding it would defeat the point of an informed confirmation.
+`argsSummary` is a faithful, redacted rendering of the tool's arguments so you can decide in context. Arrays and objects keep their real contents (nested, to a bounded depth and size), whitespace runs are collapsed, invisible and text-direction control characters are shown as `⟨U+XXXX⟩` markers, and `to`, `cc` and `bcc` are split into one entry per address (a single address stays a plain string). Secret-looking keys are replaced with `[redacted]` at any depth. Strings are kept whole up to 4,000 characters; anything cut off — a longer string, extra keys or items, nesting that is too deep — is replaced by an explicit marker such as `… [truncated: 812 more characters not shown]` or `… [3 more items not shown]`, never dropped silently.
 
 ### `POST /api/approvals/:id/decision`
 

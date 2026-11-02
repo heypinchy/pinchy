@@ -8,7 +8,7 @@ import { computeArgsDigest } from "@/lib/approvals/digest";
 import { summarizeArgs } from "@/lib/approvals/summary";
 import { buildApprovalPrompt } from "@/lib/approvals/prompt";
 import { resolveConfirmation, toolIsConfigured } from "@/lib/approvals/policy";
-import { collectCallModels } from "@/lib/approvals/call-models";
+import { collectCallModels, makeRefModelResolver } from "@/lib/approvals/call-models";
 import { readPluginSecret } from "@/lib/plugin-secrets-source";
 import { appendAuditLog, type AuditLogEntry } from "@/lib/audit";
 import { recordAuditFailure } from "@/lib/audit-deferred";
@@ -64,7 +64,8 @@ export async function POST(request: NextRequest) {
   // not only per tool (#1133). Only reached for a tool the policy mentions —
   // reading the ref key is a second settings query, and the answer for almost
   // every tool call is already decided above.
-  const resources = collectCallModels(params, await readPluginSecret(REF_TOKEN_KEY));
+  const refKey = await readPluginSecret(REF_TOKEN_KEY);
+  const resources = collectCallModels(params, refKey);
   if (resolveConfirmation(agent.pluginConfig, toolName, resources) === "allow") {
     return NextResponse.json({ decision: "allow" });
   }
@@ -97,7 +98,7 @@ export async function POST(request: NextRequest) {
     toolName,
     toolCallId,
     argsDigest,
-    argsSummary: summarizeArgs(params),
+    argsSummary: summarizeArgs(params, { refModel: makeRefModelResolver(refKey) }),
   });
 
   // Audit a fresh request once (not on retries) and every consume.

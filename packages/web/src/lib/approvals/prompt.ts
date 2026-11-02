@@ -38,11 +38,21 @@ function truncate(text: string, max: number): string {
  * places than the in-app card does. Redacting less here than the card does
  * would mean the safer surface hides what the riskier one prints.
  */
+function inline(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(inline).join(", ")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.entries(value)
+      .map(([key, v]) => `${key}: ${inline(v)}`)
+      .join(", ")}}`;
+  }
+  return String(value);
+}
+
 function describeArgs(params: unknown): string {
   const summary = summarizeArgs(params);
   const parts = Object.entries(summary)
     .filter(([, value]) => value !== undefined && value !== null && value !== "")
-    .map(([key, value]) => `${key}: ${String(value)}`);
+    .map(([key, value]) => `${key}: ${inline(value)}`);
   return parts.join(", ");
 }
 
