@@ -50,6 +50,8 @@
  *
  * Every element this looks for is found by its name as a parser reads it, with
  * any prefix — `ä:` and `文書:` are as much XML as `w:` (`qualifiedNameAt`) —
+ * in the text a parser reads: a part it would decode as anything but UTF-8 is
+ * refused (`utf8XmlText`), since in UTF-7 not even `<` is a `<` byte —
  * and what a cut leaves is held to the same rules as what came in, because
  * the text either side of a cut can join into a new element.
  *
@@ -89,6 +91,7 @@
  * Every scan here is a single forward pass over the bytes: a regex that
  * backtracks on a hostile file blocks the web process the KB worker runs in.
  */
+import { isUtf8 } from "node:buffer";
 import { createHash } from "node:crypto";
 import { open, writeFile, type FileHandle } from "node:fs/promises";
 import { extname } from "node:path";
@@ -602,6 +605,48 @@ function attributesOf(tag: string): Map<string, string> | null {
 }
 
 /**
+ * The text of an XML part as every scan in this module reads it — one
+ * character per byte — or null when that is not the text a parser reads.
+ *
+ * Reading bytes as latin1 is exact for UTF-8: `<`, `>`, `"`, `'`, `=` and
+ * every ASCII letter are those bytes and nothing else, and no byte of a
+ * multi-byte character is one of them. It is not exact for any encoding a
+ * part may DECLARE instead, and LibreOffice decodes a part as declared. In
+ * UTF-7, `<` is `+ADw-`: a document part declaring it carried
+ * `+ADw-w:altChunk r:id=+ACI-rIdH+ACI-/+AD4-`, an altChunk no scan saw, and
+ * LibreOffice 26.2 imported the header whose id it borrowed as HTML and drew
+ * the local files that HTML named. So the scans' assumption is enforced, not
+ * extended to one more encoding:
+ *
+ * - the bytes are valid UTF-8 (a UTF-8 byte-order mark is fine), with no NUL —
+ *   which is no XML character, and what a UTF-16 or UTF-32 spelling of ASCII
+ *   is full of;
+ * - a declaration, if there is one, names UTF-8 (`utf8` too, as parsers take
+ *   it) or no encoding at all, which XML reads as UTF-8. Nothing else, not
+ *   even an ASCII subset: no Office writer we have seen declares one — Word,
+ *   LibreOffice (.docx, .xlsx, .pptx) and exceljs all write `UTF-8`.
+ *
+ * A declaration is one only at the very start; `<?xml ` anywhere else is not
+ * well-formed, and a parser stops there rather than switching encodings.
+ */
+function utf8XmlText(bytes: Buffer): string | null {
+  if (!isUtf8(bytes) || bytes.includes(0)) return null;
+  const text = bytes.toString("latin1");
+  const at = text.startsWith(UTF8_BOM_AS_LATIN1) ? UTF8_BOM_AS_LATIN1.length : 0;
+  if (!text.startsWith("<?xml", at) || !isXmlSpace(text[at + 5])) return text;
+  const end = text.indexOf("?>", at);
+  if (end < 0 || end - at > MAX_TAG_CHARS) return null;
+  // Read like a start tag (`<?xml version="1.0" encoding="…">`): a pseudo-
+  // attribute named twice, or not quoted, is no declaration we can read.
+  const declaration = attributesOf(`${text.slice(at, end)}>`);
+  const encoding = declaration?.get("encoding");
+  return declaration && (encoding === undefined || /^utf-?8$/i.test(encoding)) ? text : null;
+}
+
+/** A UTF-8 byte-order mark, as the latin1 decoding here spells it. */
+const UTF8_BOM_AS_LATIN1 = "\u00EF\u00BB\u00BF";
+
+/**
  * Is this relationship plainly internal? A target mode that is absent or
  * exactly `Internal`, and a target that is a relative part path. Everything
  * else — External, an unfamiliar mode, an entity (`&`) that an XML parser
@@ -621,8 +666,8 @@ const unexpected = (detail: string) => new OfficeFileRejectedError("unexpected_c
 
 /**
  * Removes every relationship `keep` says no to from the text of a `.rels`
- * part (decoded as latin1, so the round trip is byte-exact for whatever
- * encoding it declared). `keep` may also throw, to refuse the package.
+ * part (UTF-8 read as latin1 — `utf8XmlText` — so the round trip is
+ * byte-exact). `keep` may also throw, to refuse the package.
  *
  * What the cuts leave is read again under the same rules, and refused if it
  * holds anything they would not have let through: `<Relation` + [a cut
@@ -965,9 +1010,9 @@ const MAX_SVG_BYTES = 16 * MiB;
 
 /** The local name and namespace of an XML document's root element, or null if it has none we can read. */
 function rootElement(xml: string): { name: string; namespace: string | undefined } | null {
-  // A UTF-8 byte-order mark, as the latin1 decoding here spells it. Real Word
-  // files carry one (two contracts' settings.xml in the corpus check did).
-  let at = xml.startsWith("\u00EF\u00BB\u00BF") ? 3 : 0;
+  // Real Word files carry a UTF-8 byte-order mark (two contracts'
+  // settings.xml in the corpus check did).
+  let at = xml.startsWith(UTF8_BOM_AS_LATIN1) ? UTF8_BOM_AS_LATIN1.length : 0;
   for (;;) {
     while (at < xml.length && /[\s﻿]/.test(xml[at])) at++;
     if (xml.startsWith("<?", at)) {
@@ -1191,11 +1236,10 @@ function sanitizedParts(buffer: Buffer): {
   let altChunksRemoved = 0;
 
   const contentTypes = byName.get("[content_types].xml");
-  if (
-    contentTypes &&
-    DTD.test(inflatePart(buffer, contentTypes, MAX_XML_PART_BYTES).toString("latin1"))
-  ) {
-    throw unexpected("the content-types part declares a DOCTYPE");
+  if (contentTypes) {
+    const text = utf8XmlText(inflatePart(buffer, contentTypes, MAX_XML_PART_BYTES));
+    if (text === null) throw unexpected("the content-types part is not UTF-8 text");
+    if (DTD.test(text)) throw unexpected("the content-types part declares a DOCTYPE");
   }
 
   /** An Office XML part, or a refusal; any altChunk in it is cut. */
@@ -1206,10 +1250,10 @@ function sanitizedParts(buffer: Buffer): {
         `part "${entry.name}" is ${entry.uncompressedSize} bytes, past the ${MAX_XML_PART_BYTES}-byte limit for one part`
       );
     }
-    const bytes = inflatePart(buffer, entry, MAX_XML_PART_BYTES);
     const notOoxml = (what: string) =>
       unexpected(`part "${entry.name}" should be Office XML but ${what}`);
-    if (bytes.includes(0)) throw notOoxml("is not UTF-8 text");
+    const source = utf8XmlText(inflatePart(buffer, entry, MAX_XML_PART_BYTES));
+    if (source === null) throw notOoxml("is not UTF-8 text");
     /** Every check on the part's text, then its altChunks cut. */
     const vetted = (text: string) => {
       if (DTD.test(text)) throw notOoxml("declares a DOCTYPE");
@@ -1227,7 +1271,7 @@ function sanitizedParts(buffer: Buffer): {
       }
       return removeAltChunks(text, entry.name);
     };
-    const result = vetted(bytes.toString("latin1"));
+    const result = vetted(source);
     if (result.removed > 0) {
       // What the cuts leave is what LibreOffice reads, so it is held to the
       // same rules: `<w:alt` + [a cut altChunk] + `Chunk r:id=…/>` joins into
@@ -1272,12 +1316,10 @@ function sanitizedParts(buffer: Buffer): {
 
   for (const entry of entries) {
     if (!/\.rels$/i.test(entry.name)) continue;
-    const bytes = inflatePart(buffer, entry, MAX_XML_PART_BYTES);
-    // UTF-16 (or anything with NULs) would defeat every text match here while a
-    // parser still reads it. A relationship part is ASCII-compatible text.
-    if (bytes.includes(0)) throw unexpected("a relationship part is not UTF-8 text");
+    const text = utf8XmlText(inflatePart(buffer, entry, MAX_XML_PART_BYTES));
+    if (text === null) throw unexpected(`relationship part "${entry.name}" is not UTF-8 text`);
 
-    const result = filterRelationships(bytes.toString("latin1"), (attributes) => {
+    const result = filterRelationships(text, (attributes) => {
       if (!isInternal(attributes)) return false;
       const kind = RENDERED_FROM.get(attributes.get("Type") ?? "");
       if (!kind) return false;
@@ -1327,8 +1369,8 @@ function vetImagePart(archive: Buffer, entry: ZipEntryInfo): true | Buffer | nul
   }
   if (head[0] === 0x1f && head[1] === 0x8b) return null;
   if (entry.uncompressedSize > MAX_SVG_BYTES) return null;
-  const svg = inflatePart(archive, entry, entry.uncompressedSize);
-  return keepIf(!svg.includes(0) && isSelfContainedSvg(svg.toString("latin1")));
+  const svg = utf8XmlText(inflatePart(archive, entry, entry.uncompressedSize));
+  return keepIf(svg !== null && isSelfContainedSvg(svg));
 }
 
 // --- Metafiles ------------------------------------------------------------

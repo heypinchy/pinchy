@@ -39,6 +39,7 @@ import {
 } from "@/lib/knowledge/office-zip";
 import {
   declaredBomb,
+  documentXml,
   docxWith,
   lyingEntry,
   ooxmlPart,
@@ -1614,5 +1615,169 @@ describe("RTF named .doc", () => {
     const out = await sanitized(rtf);
     expect(Date.now() - started).toBeLessThan(2000);
     expect(out).not.toContain(svgHex);
+  });
+});
+
+describe("an Office XML part is read as UTF-8, and one a parser would decode otherwise is refused", () => {
+  // Every scan in the preflight reads a part's bytes one character per byte,
+  // which is what a parser reads only when the part is UTF-8 (or ASCII):
+  // then `<`, `"` and `>` are those bytes and nothing else. A part that
+  // DECLARES another encoding is decoded by LibreOffice the way it says. In
+  // UTF-7, `<` is `+ADw-`: a document part carrying
+  // `+ADw-w:altChunk r:id=+ACI-rIdH+ACI-/+AD4-` holds an altChunk no scan
+  // sees — LibreOffice 26.2 imported the header it borrowed as HTML and drew
+  // the local files that HTML named.
+  const W_NS = `xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"`;
+  const declared = (encoding: string, xml: string) =>
+    xml.replace(/encoding="UTF-8"/, `encoding="${encoding}"`);
+
+  function refusedWith(pkg: Buffer): OfficeFileRejectedError {
+    try {
+      sanitizeOoxmlPackage(pkg);
+    } catch (err) {
+      expect(err).toBeInstanceOf(OfficeFileRejectedError);
+      return err as OfficeFileRejectedError;
+    }
+    throw new Error("expected the package to be refused");
+  }
+
+  /** A document with a header relationship, its parts overridable. */
+  const withHeader = (parts: Record<string, string | Buffer> = {}) =>
+    docxWith({
+      documentRels: relationships(rel("rIdH", relType("header"), "header1.xml")),
+      parts: { "word/header1.xml": ooxmlPart("w:hdr"), ...parts },
+    });
+
+  it("refuses a UTF-7 document part whose altChunk borrows a kept header's id", async () => {
+    const header = `<!-- c --><w:hdr ${W_NS}><html><body><p>chunk</p><img src="file:///etc/hostname"></body></html></w:hdr>`;
+    const document = declared(
+      "UTF-7",
+      documentXml("Body words", undefined, "+ADw-w:altChunk r:id=+ACI-rIdH+ACI-/+AD4-")
+    );
+    const pkg = withHeader({ "word/header1.xml": header, "word/document.xml": document });
+
+    expect(refusedWith(pkg).code).toBe("unexpected_content");
+    const err = await rejection(prepareOfficeSource(file("utf7.docx", pkg)));
+    expect(err.message).toMatch(/word\/document\.xml.*UTF-8/);
+  });
+
+  it.each(["ISO-8859-1", "UTF-7", "Shift_JIS", "UTF-16", "US-ASCII", "windows-1252"])(
+    "refuses a document part that declares %s",
+    (encoding) => {
+      const pkg = withHeader({
+        "word/document.xml": declared(encoding, documentXml("Body words")),
+      });
+      expect(refusedWith(pkg).code).toBe("unexpected_content");
+    }
+  );
+
+  it.each(["ISO-8859-1", "UTF-7", "Shift_JIS"])(
+    "refuses a relationship part that declares %s",
+    (encoding) => {
+      const pkg = docxWith({
+        documentRels: declared(
+          encoding,
+          relationships(rel("rIdH", relType("header"), "header1.xml"))
+        ),
+        parts: { "word/header1.xml": ooxmlPart("w:hdr") },
+      });
+      expect(refusedWith(pkg).code).toBe("unexpected_content");
+    }
+  );
+
+  it.each(["ISO-8859-1", "UTF-7", "Shift_JIS"])(
+    "refuses a kept header that declares %s",
+    (encoding) => {
+      const pkg = withHeader({ "word/header1.xml": declared(encoding, ooxmlPart("w:hdr")) });
+      expect(refusedWith(pkg).code).toBe("unexpected_content");
+    }
+  );
+
+  it("refuses a content-types part that declares UTF-7", () => {
+    const pkg = withHeader({
+      "[Content_Types].xml": `<?xml version="1.0" encoding="UTF-7"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>`,
+    });
+    expect(refusedWith(pkg).code).toBe("unexpected_content");
+  });
+
+  it.each([
+    ["an overlong `<`", [0xc0, 0xbc]],
+    ["a lone continuation byte", [0x80]],
+    ["a truncated three-byte sequence", [0xe2, 0x82]],
+    ["an encoded surrogate", [0xed, 0xa0, 0x80]],
+    ["a code point past U+10FFFF", [0xf4, 0x90, 0x80, 0x80]],
+  ])("refuses a document part holding %s, which is not UTF-8", (_, bytes) => {
+    const [head, tail] = documentXml("Body XYZ words").split("XYZ");
+    const pkg = withHeader({
+      "word/document.xml": Buffer.concat([
+        Buffer.from(head),
+        Buffer.from(bytes),
+        Buffer.from(tail),
+      ]),
+    });
+    expect(refusedWith(pkg).code).toBe("unexpected_content");
+  });
+
+  it("refuses a relationship part holding bytes that are not UTF-8", () => {
+    const pkg = withHeader({
+      "word/_rels/document.xml.rels": Buffer.concat([
+        Buffer.from(relationships(rel("rIdH", relType("header"), "header1.xml"))),
+        Buffer.from([0xff]),
+      ]),
+    });
+    expect(refusedWith(pkg).code).toBe("unexpected_content");
+  });
+
+  it("refuses a declaration that names its encoding twice", () => {
+    const pkg = withHeader({
+      "word/header1.xml": ooxmlPart("w:hdr").replace(
+        'encoding="UTF-8"',
+        'encoding="UTF-8" encoding="UTF-7"'
+      ),
+    });
+    expect(refusedWith(pkg).code).toBe("unexpected_content");
+  });
+
+  const hdr = `<w:hdr ${W_NS}><w:p><w:r><w:t>Kopfzeile – Größe</w:t></w:r></w:p></w:hdr>`;
+  it.each([
+    ["a declaration and a byte-order mark", `﻿<?xml version="1.0" encoding="UTF-8"?>${hdr}`],
+    [
+      "a declaration, no byte-order mark",
+      `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>${hdr}`,
+    ],
+    [
+      "a lower-case, single-quoted encoding",
+      `<?xml version='1.0' encoding='utf-8' standalone='yes'?>${hdr}`,
+    ],
+    ["the `utf8` spelling", `<?xml version="1.0" encoding="utf8"?>${hdr}`],
+    ["a declaration that names no encoding", `<?xml version="1.0" standalone="yes"?>${hdr}`],
+    ["a byte-order mark and no declaration", `﻿${hdr}`],
+    ["neither", hdr],
+  ])("keeps a UTF-8 part with %s", (_, text) => {
+    const pkg = withHeader({ "word/header1.xml": Buffer.from(text, "utf8") });
+    const out = sanitizeOoxmlPackage(pkg);
+    expect(out.removed).toBe(0);
+    expect(out.data).toBe(pkg);
+  });
+
+  it("cuts an SVG picture declared UTF-7, whose quotes no scan for a reference sees", () => {
+    // `href=+ACI-file:///…+ACI-` is `href="file:///…"` to a UTF-7 decoder.
+    const svg = `<?xml version="1.0" encoding="UTF-7"?><svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"><image width="400" height="60" xlink:href=+ACI-file:///etc/hostname+ACI-/></svg>`;
+    const pkg = docxWith({
+      documentRels: relationships(rel("rId5", REL_IMAGE, "media/image1.svg")),
+      parts: { "word/media/image1.svg": svg },
+    });
+    expect(sanitizeOoxmlPackage(pkg).removed).toBe(1);
+  });
+
+  it("keeps a self-contained UTF-8 SVG picture, declared or not", () => {
+    for (const head of ["", `<?xml version="1.0" encoding="UTF-8"?>`, "﻿"]) {
+      const svg = `${head}<svg xmlns="http://www.w3.org/2000/svg"><text>Größe</text></svg>`;
+      const pkg = docxWith({
+        documentRels: relationships(rel("rId5", REL_IMAGE, "media/image1.svg")),
+        parts: { "word/media/image1.svg": Buffer.from(svg, "utf8") },
+      });
+      expect(sanitizeOoxmlPackage(pkg).removed, JSON.stringify(head)).toBe(0);
+    }
   });
 });

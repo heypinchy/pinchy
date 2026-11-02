@@ -82,6 +82,7 @@ import {
   readZipEntries,
 } from "@/lib/knowledge/office-zip";
 import {
+  documentXml,
   docxWith,
   REL_HYPERLINK,
   REL_IMAGE,
@@ -393,6 +394,34 @@ describe.skipIf(!hasSoffice)("an Office file cannot make the converter fetch or 
       }),
       { profile: false, preflight: "sanitizes" }
     );
+    // The same import, with the altChunk itself out of sight: the document
+    // part declares UTF-7, where `<` is `+ADw-`, so no scan reading its bytes
+    // sees an element at all — LibreOffice decodes it as declared. Its id is
+    // borrowed from a HEADER relationship (kept: a header is rendered from),
+    // whose part is an Office header root wrapped round HTML. LibreOffice
+    // 26.2 imported that header as HTML and read the local files into the
+    // PDF from the staged copy, until the preflight refused a part it would
+    // not read as UTF-8.
+    const utf7 = (text: string) =>
+      text.replace(/[<>"]/g, (c) => ({ "<": "+ADw-", ">": "+AD4-", '"': "+ACI-" })[c]!);
+    planted(
+      "altchunk-utf7-header.docx",
+      docxWith({
+        text: "Body words for the UTF-7 canary",
+        documentRels: relationships(
+          `<Relationship Id="rIdH" Type="${relType("header")}" Target="header1.xml"/>`
+        ),
+        parts: {
+          "word/document.xml": documentXml(
+            "Body words for the UTF-7 canary",
+            undefined,
+            utf7(`<w:altChunk r:id="rIdH"/>`)
+          ).replace('encoding="UTF-8"', 'encoding="UTF-7"'),
+          "word/header1.xml": `<!-- c --><w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><html><body><p>${ALT_CHUNK_BODY}</p><img src="${pngUrl}"><img src="${svgUrl}" width="400" height="60"></body></html></w:hdr>`,
+        },
+      }),
+      { profile: false, preflight: "refuses" }
+    );
     // An altChunk importing a NESTED .docx — whose own relationships the
     // preflight never saw — with an externally linked picture.
     planted(
@@ -676,7 +705,7 @@ describe.skipIf(!hasSoffice)("an Office file cannot make the converter fetch or 
     // version: 26.2 imports it and reads the local files (local PNG embedded,
     // local SVG's text indexed); 7.4.7 — the runtime image's — skips the chunk
     // entirely (measured). Where it is imported, it leaks; that is the claim.
-    for (const name of ["altchunk-html", "altchunk-borrowed-font"]) {
+    for (const name of ["altchunk-html", "altchunk-borrowed-font", "altchunk-utf7-header"]) {
       const altPdf = join(outDir, `${name}.pdf`);
       const altText = await textOf(altPdf);
       expect(
@@ -700,6 +729,10 @@ describe.skipIf(!hasSoffice)("an Office file cannot make the converter fetch or 
     // An "Office part" that is really an SVG is built to be imported: refused.
     expect(byName.get("office-namespaced-svg.docx")!.status).toBe("failed");
     expect(byName.get("office-namespaced-svg.docx")!.reason).toMatch(/should be Office XML/);
+    // An Office part a parser would not read as UTF-8 — here UTF-7, hiding
+    // an altChunk from every scan — is refused.
+    expect(byName.get("altchunk-utf7-header.docx")!.status).toBe("failed");
+    expect(byName.get("altchunk-utf7-header.docx")!.reason).toMatch(/UTF-8/);
     // A binary run two readers could disagree about: refused.
     expect(byName.get("rtf-bin-overflow.doc")!.status).toBe("failed");
     expect(byName.get("rtf-bin-overflow.doc")!.reason).toMatch(/binary run/);
