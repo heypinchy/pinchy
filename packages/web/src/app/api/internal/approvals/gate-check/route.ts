@@ -8,7 +8,7 @@ import { computeArgsDigest } from "@/lib/approvals/digest";
 import { summarizeArgs } from "@/lib/approvals/summary";
 import { buildApprovalPrompt } from "@/lib/approvals/prompt";
 import { resolveConfirmation, toolIsConfigured } from "@/lib/approvals/policy";
-import { collectCallModels, makeRefModelResolver } from "@/lib/approvals/call-models";
+import { collectCallModels, makeRefResolver } from "@/lib/approvals/call-models";
 import { readPluginSecret } from "@/lib/plugin-secrets-source";
 import { appendAuditLog, type AuditLogEntry } from "@/lib/audit";
 import { recordAuditFailure } from "@/lib/audit-deferred";
@@ -98,7 +98,7 @@ export async function POST(request: NextRequest) {
     toolName,
     toolCallId,
     argsDigest,
-    argsSummary: summarizeArgs(params, { refModel: makeRefModelResolver(refKey) }),
+    argsSummary: summarizeArgs(params, { refRecord: makeRefResolver(refKey) }),
   });
 
   // Audit a fresh request once (not on retries) and every consume.

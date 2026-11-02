@@ -20,6 +20,7 @@ import { reportUsage } from "./usage-reporter";
 import { resolveAgentInfo } from "./resolve-agent-info";
 import { generateFile, type GenerateFileFormat } from "./generate-file";
 import { normalizeDeliverableBasename } from "./deliverable-filename";
+import { unknownParams, unknownParamsMessage } from "./unknown-params";
 
 // The Pinchy web process runs as uid/gid 999 in the container and must own a
 // generated file to serve it back to the user as a download (#703). Chowning
@@ -88,6 +89,24 @@ type ContentBlock =
   // picks this up via artifacts.list and the #703 serve route resolves the
   // bytes from disk, so this block never carries the file content itself.
   | { type: "file"; filename: string; mimeType: string };
+
+/**
+ * Refusal for a call that carries an undeclared parameter. The model is told
+ * which keys; the audit detail gets only how many — a key is free text the
+ * model chose. Setting `details` also keeps the audit route from logging the
+ * raw params, which for pinchy_write include the whole file content.
+ */
+function refuseUnknownParams(
+  tool: string,
+  unknown: string[],
+  schema: { properties: Record<string, unknown> }
+): { content: ContentBlock[]; isError: true; details: Record<string, unknown> } {
+  return {
+    isError: true,
+    content: [{ type: "text", text: unknownParamsMessage(tool, unknown, schema) }],
+    details: { error: "Refused: unknown parameters", unknownParams: unknown.length },
+  };
+}
 
 /**
  * Build an MCP-style error result. Every error result MUST carry
@@ -543,30 +562,37 @@ const plugin = {
 
         const pathList = writePaths.join(", ");
 
+        const parameters = {
+          type: "object",
+          properties: {
+            path: {
+              type: "string",
+              description: `Full file path. Must be under: ${pathList}`,
+            },
+            content: {
+              type: "string",
+              description: "Full file content as a string.",
+            },
+            overwrite: {
+              type: "boolean",
+              description: "Set to true to replace an existing file. Default: false.",
+            },
+          },
+          required: ["path", "content"],
+          additionalProperties: false,
+        };
+
         return {
           name: "pinchy_write",
           label: "Write File",
           description: `Write content to a file. Fails if the file already exists — set overwrite=true to replace. Writable paths: ${pathList}`,
-          parameters: {
-            type: "object",
-            properties: {
-              path: {
-                type: "string",
-                description: `Full file path. Must be under: ${pathList}`,
-              },
-              content: {
-                type: "string",
-                description: "Full file content as a string.",
-              },
-              overwrite: {
-                type: "boolean",
-                description: "Set to true to replace an existing file. Default: false.",
-              },
-            },
-            required: ["path", "content"],
-          },
+          parameters,
           async execute(_toolCallId: string, params: Record<string, unknown>) {
             try {
+              const unknown = unknownParams(params, parameters);
+              if (unknown.length > 0)
+                return refuseUnknownParams("pinchy_write", unknown, parameters);
+
               if (typeof params.path !== "string") {
                 throw new Error("path must be a string");
               }
@@ -738,24 +764,31 @@ const plugin = {
 
         const pathList = writePaths.join(", ");
 
+        const parameters = {
+          type: "object",
+          properties: {
+            path: {
+              type: "string",
+              description: `Full path of the file to delete. Must be under: ${pathList}`,
+            },
+          },
+          required: ["path"],
+          additionalProperties: false,
+        };
+
         return {
           name: "pinchy_delete",
           label: "Delete File",
           description:
             `Delete a file you no longer need. Only files you can write can be deleted: ${pathList}. ` +
             "Deletion is permanent — there is no undo.",
-          parameters: {
-            type: "object",
-            properties: {
-              path: {
-                type: "string",
-                description: `Full path of the file to delete. Must be under: ${pathList}`,
-              },
-            },
-            required: ["path"],
-          },
+          parameters,
           async execute(_toolCallId: string, params: Record<string, unknown>) {
             try {
+              const unknown = unknownParams(params, parameters);
+              if (unknown.length > 0)
+                return refuseUnknownParams("pinchy_delete", unknown, parameters);
+
               if (typeof params.path !== "string") {
                 throw new Error("path must be a string");
               }
@@ -856,6 +889,41 @@ const plugin = {
         });
         if (!workbench) return null;
 
+        const parameters = {
+          type: "object",
+          properties: {
+            format: {
+              type: "string",
+              enum: GENERATE_FILE_FORMATS,
+              description: "Output file format.",
+            },
+            filename: {
+              type: "string",
+              description:
+                "Base name for the generated file, WITHOUT extension (the extension is " +
+                "added automatically based on format). Must not contain path separators.",
+            },
+            title: {
+              type: "string",
+              description: "Optional title, used as the sheet name (xlsx) or heading (pdf).",
+            },
+            columns: {
+              type: "array",
+              items: { type: "string" },
+              description: "Column headers, in order.",
+            },
+            rows: {
+              type: "array",
+              items: { type: "array" },
+              description:
+                "Table rows. Each row is an array of cell values (string, number, boolean, " +
+                "or null) with one entry per column, in the same order as `columns`.",
+            },
+          },
+          required: ["format", "filename", "columns", "rows"],
+          additionalProperties: false,
+        };
+
         return {
           name: "pinchy_generate_file",
           label: "Generate File",
@@ -866,41 +934,13 @@ const plugin = {
             "single-sheet Excel workbook), pdf (a simple table report). Existing files are " +
             "never overwritten — on a name collision a numeric suffix is appended (e.g. " +
             "export-2.csv); the tool result reports the actual filename used.",
-          parameters: {
-            type: "object",
-            properties: {
-              format: {
-                type: "string",
-                enum: GENERATE_FILE_FORMATS,
-                description: "Output file format.",
-              },
-              filename: {
-                type: "string",
-                description:
-                  "Base name for the generated file, WITHOUT extension (the extension is " +
-                  "added automatically based on format). Must not contain path separators.",
-              },
-              title: {
-                type: "string",
-                description: "Optional title, used as the sheet name (xlsx) or heading (pdf).",
-              },
-              columns: {
-                type: "array",
-                items: { type: "string" },
-                description: "Column headers, in order.",
-              },
-              rows: {
-                type: "array",
-                items: { type: "array" },
-                description:
-                  "Table rows. Each row is an array of cell values (string, number, boolean, " +
-                  "or null) with one entry per column, in the same order as `columns`.",
-              },
-            },
-            required: ["format", "filename", "columns", "rows"],
-          },
+          parameters,
           async execute(_toolCallId: string, params: Record<string, unknown>) {
             try {
+              const unknown = unknownParams(params, parameters);
+              if (unknown.length > 0)
+                return refuseUnknownParams("pinchy_generate_file", unknown, parameters);
+
               if (
                 typeof params.format !== "string" ||
                 !GENERATE_FILE_FORMATS.includes(params.format as GenerateFileFormat)

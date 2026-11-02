@@ -5,6 +5,7 @@ import userEvent from "@testing-library/user-event";
 
 import { ApprovalCard } from "../approval-card";
 import type { PendingApproval } from "@/lib/approvals/client";
+import { summarizeArgs } from "@/lib/approvals/summary";
 
 function approval(argsSummary: Record<string, unknown> | null, toolName = "email_send") {
   return {
@@ -44,6 +45,20 @@ describe("ApprovalCard shows what will actually run", () => {
     const list = screen.getByRole("list");
     const items = within(list).getAllByRole("listitem");
     expect(items.map((item) => item.textContent)).toEqual(["chef@firma.at", "angreifer@evil.com"]);
+  });
+
+  // End to end from the raw call: a trailing-space "to " key used to be merged
+  // over the real `to`, so the card named the boss while the tool, reading
+  // `to`, mailed the attacker.
+  it("shows both a key and its look-alike, labelled apart", () => {
+    const params = JSON.parse(
+      '{"to":"attacker@evil.com","subject":"Q3","body":"hi","to ":"boss@firma.at"}'
+    );
+    renderCard(summarizeArgs(params));
+    expect(screen.getByText("attacker@evil.com")).toBeInTheDocument();
+    expect(screen.getByText("boss@firma.at")).toBeInTheDocument();
+    expect(screen.getByText("to")).toBeInTheDocument();
+    expect(screen.getByText('"to "')).toBeInTheDocument();
   });
 
   it("shows the ids and values of an object argument, not a count", () => {

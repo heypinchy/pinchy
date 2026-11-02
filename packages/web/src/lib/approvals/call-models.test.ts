@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll } from "vitest";
-import { collectCallModels, makeRefModelResolver } from "./call-models";
+import { createCipheriv, randomBytes } from "crypto";
+import { collectCallModels, makeRefResolver } from "./call-models";
 // The pinchy-odoo encoder, imported across the package boundary on purpose:
 // this file is the drift guard for the ref format. `call-models.ts` reimplements
 // the decode half (the plugin's copy reads a container path for its key, which
@@ -75,13 +76,37 @@ describe("collectCallModels", () => {
   });
 });
 
-describe("makeRefModelResolver", () => {
-  it("names the model a ref points at, so the card can say what it acts on", () => {
-    expect(makeRefModelResolver(KEY)(ref("account.move"))).toBe("account.move");
+describe("makeRefResolver", () => {
+  it("names the model, id and label a ref points at, so the card can say what it acts on", () => {
+    expect(makeRefResolver(KEY)(ref("account.move"))).toEqual({
+      model: "account.move",
+      id: 42,
+      label: "account.move/42",
+    });
+  });
+
+  it("tells two records of the same model apart", () => {
+    const resolve = makeRefResolver(KEY);
+    expect(resolve(ref("account.move", 42))).not.toEqual(resolve(ref("account.move", 43)));
   });
 
   it("answers null for a garbled ref or a missing key, rather than guessing", () => {
-    expect(makeRefModelResolver(KEY)("pinchy_ref:v1:garbled")).toBeNull();
-    expect(makeRefModelResolver(null)(ref("account.move"))).toBeNull();
+    expect(makeRefResolver(KEY)("pinchy_ref:v1:garbled")).toBeNull();
+    expect(makeRefResolver(null)(ref("account.move"))).toBeNull();
+  });
+
+  // pinchy-odoo refuses a payload whose id is not a positive integer, so the
+  // tool would not run on it — naming a record for it would describe nothing.
+  it("answers null for a payload the plugin itself would refuse", () => {
+    // encodeRef validates, so a payload it would refuse is sealed by hand —
+    // in the same layout (iv | tag | ciphertext) the round trip above pins.
+    const iv = randomBytes(12);
+    const cipher = createCipheriv("aes-256-gcm", Buffer.from(KEY, "hex"), iv);
+    const body = JSON.stringify({ integrationType: "odoo", model: "account.move", id: 1.5 });
+    const ciphertext = Buffer.concat([cipher.update(body, "utf8"), cipher.final()]);
+    const bad = `pinchy_ref:v1:${Buffer.concat([iv, cipher.getAuthTag(), ciphertext]).toString("base64url")}`;
+    // The gate still reads the model out of it — a resource is involved.
+    expect(collectCallModels({ target: bad }, KEY)).toEqual(["account.move"]);
+    expect(makeRefResolver(KEY)(bad)).toBeNull();
   });
 });

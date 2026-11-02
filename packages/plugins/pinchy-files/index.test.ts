@@ -1912,3 +1912,87 @@ describe("pinchy_delete tool", () => {
     expect(result.details?.error).toBeTruthy();
   });
 });
+
+// ── unknown parameters (review of #1242) ─────────────────────────────────────
+// A write tool reads its arguments by exact name. A look-alike key the tool
+// never reads — `"path "` next to `path` — still appears on the approval card,
+// where a reader may take it for the real one. The write tools refuse any key
+// they do not declare: in the schema (`additionalProperties: false`, which
+// OpenClaw enforces for most providers) and again at the tool's own edge,
+// because OpenClaw strips that keyword for Gemini-profile models.
+describe("write tools refuse parameters they do not declare", () => {
+  let tmpDir: string;
+  let workbench: string;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockChown.mockResolvedValue(undefined);
+    tmpDir = mkdtempSync(join(tmpdir(), "pinchy-unknown-params-test-"));
+    workbench = join(tmpDir, "workbench");
+    mkdirSync(workbench);
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  async function toolNamed(name: string) {
+    const api = createMockApi({
+      "agent-1": { allowed_paths: [tmpDir], write_paths: [tmpDir, workbench] },
+    });
+    const { default: plugin } = await import("./index");
+    plugin.register!(api as any);
+    return mockRegisterTool.mock.calls.find((call: any[]) => call[1]?.name === name)?.[0]({
+      agentId: "agent-1",
+    });
+  }
+
+  it.each(["pinchy_write", "pinchy_delete", "pinchy_generate_file"])(
+    "%s declares additionalProperties: false",
+    async (name) => {
+      const tool = await toolNamed(name);
+      expect(tool.parameters.additionalProperties).toBe(false);
+    }
+  );
+
+  it("pinchy_write refuses a look-alike `path ` key and writes nothing", async () => {
+    const tool = await toolNamed("pinchy_write");
+    const real = join(tmpDir, "real.md");
+    const shown = join(tmpDir, "shown.md");
+    const result = await tool.execute("call-1", { path: real, content: "x", "path ": shown });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('"path "');
+    expect(result.details.error).toMatch(/unknown parameter/i);
+    expect(result.details.unknownParams).toBe(1);
+    expect(existsSync(real)).toBe(false);
+    expect(existsSync(shown)).toBe(false);
+  });
+
+  it("pinchy_delete refuses a look-alike `path ` key and deletes nothing", async () => {
+    const tool = await toolNamed("pinchy_delete");
+    const target = join(tmpDir, "keep.md");
+    writeFileSync(target, "keep");
+    const result = await tool.execute("call-1", {
+      path: target,
+      "path ": join(tmpDir, "other.md"),
+    });
+
+    expect(result.isError).toBe(true);
+    expect(existsSync(target)).toBe(true);
+  });
+
+  it("pinchy_generate_file refuses an undeclared key and writes nothing", async () => {
+    const tool = await toolNamed("pinchy_generate_file");
+    const result = await tool.execute("call-1", {
+      format: "csv",
+      filename: "export",
+      columns: ["a"],
+      rows: [["1"]],
+      "filename ": "innocent",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(readdirSync(workbench)).toEqual([]);
+  });
+});

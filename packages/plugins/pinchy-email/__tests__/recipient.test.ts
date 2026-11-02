@@ -39,6 +39,15 @@ describe("parseSingleRecipient", () => {
     ["nothing after the @", "ada@"],
     ["two @", "a@b@evil.com"],
     ["a comment", "a@x.at (b@evil.com)"],
+    // NFKC folds these into the ASCII characters they imitate (review of #1242).
+    ["a fullwidth @ in the display name", "boss\uFF20firma.at <attacker@evil.com>"],
+    ["a small-form @ in the display name", "boss\uFE6Bfirma.at <attacker@evil.com>"],
+    ["a fullwidth @ in the local part", "chef\uFF20firma.at@evil.com"],
+    ["a fullwidth comma between two addresses", "a\uFF20x.at\uFF0Cb@evil.com"],
+    [
+      "fullwidth angle brackets in the display name",
+      "Boss \uFF1Cboss@firma.at\uFF1E <attacker@evil.com>",
+    ],
   ])("rejects %s", (_label, input) => {
     const result = parseSingleRecipient(input);
     expect(result.ok).toBe(false);
@@ -50,6 +59,13 @@ describe("parseSingleRecipient", () => {
       expect(result.ok).toBe(false);
       if (!result.ok) expect(result.error).toMatch(/exactly one/i);
     }
+  });
+
+  it("still accepts a name and address whose letters NFKC leaves alone", () => {
+    expect(parseSingleRecipient("Jos\u00E9 M\u00FCller <jose@b\u00FCcher.de>")).toEqual({
+      ok: true,
+      address: "Jos\u00E9 M\u00FCller <jose@b\u00FCcher.de>",
+    });
   });
 
   it("tells the model to call once per recipient when it sent a list", () => {

@@ -4,6 +4,7 @@ import type { EmailAdapter, EmailSummary, Folder } from "./email-adapter.js";
 import { MAX_ATTACHMENT_BYTES, truncateEmailBody } from "./email-adapter.js";
 import { checkPermission, type Permissions } from "./permissions.js";
 import { parseSingleRecipient } from "./recipient.js";
+import { unknownParams, unknownParamsMessage } from "./unknown-params.js";
 import {
   putHandle,
   putAttachmentHandle,
@@ -389,6 +390,54 @@ function emailWriteAuditDetails(params: Record<string, unknown>): {
     to: maskRecipientForAudit(params.to),
     subject: curateAuditText(params.subject, AUDIT_SUBJECT_MAX_BYTES),
     bodyBytes: Buffer.byteLength(typeof params.body === "string" ? params.body : "", "utf8"),
+  };
+}
+
+/**
+ * The parameters of email_send and email_draft — one object, so the schema the
+ * runtime validates against and the one the tool checks at its own edge
+ * (`unknownParams`) cannot drift apart.
+ */
+const EMAIL_WRITE_PARAMETERS = {
+  type: "object",
+  properties: {
+    to: {
+      type: "string",
+      description:
+        "Exactly one recipient email address. For several recipients, call the tool once per recipient.",
+    },
+    subject: { type: "string", description: "Email subject line" },
+    body: {
+      type: "string",
+      description: "Email body text (plain text)",
+    },
+    replyTo: {
+      type: "string",
+      description: "Message ID to reply to (optional). Sets In-Reply-To header.",
+    },
+  },
+  required: ["to", "subject", "body"],
+  additionalProperties: false,
+};
+
+/**
+ * Refusal for a call that carries an undeclared parameter. The model is told
+ * which keys; the audit detail gets only how many — a key is free text a
+ * model chose, and may well be an address.
+ */
+function refuseUnknownParams(
+  tool: string,
+  unknown: string[],
+  params: Record<string, unknown>
+): { content: ContentBlock[]; isError: true; details: Record<string, unknown> } {
+  return {
+    isError: true,
+    content: [{ type: "text", text: unknownParamsMessage(tool, unknown, EMAIL_WRITE_PARAMETERS) }],
+    details: {
+      ...emailWriteAuditDetails(params),
+      error: "Refused: unknown parameters",
+      unknownParams: unknown.length,
+    },
   };
 }
 
@@ -1156,31 +1205,15 @@ const plugin = {
           label: "Email Draft",
           description:
             "Create a draft email. The draft is saved but NOT sent. Use replyTo to create a reply to an existing message.",
-          parameters: {
-            type: "object",
-            properties: {
-              to: {
-                type: "string",
-                description:
-                  "Exactly one recipient email address. For several recipients, call the tool once per recipient.",
-              },
-              subject: { type: "string", description: "Email subject line" },
-              body: {
-                type: "string",
-                description: "Email body text (plain text)",
-              },
-              replyTo: {
-                type: "string",
-                description: "Message ID to reply to (optional). Sets In-Reply-To header.",
-              },
-            },
-            required: ["to", "subject", "body"],
-          },
+          parameters: EMAIL_WRITE_PARAMETERS,
           async execute(_toolCallId: string, params: Record<string, unknown>) {
             try {
               if (!checkPermission(config.permissions, "email", "draft")) {
                 return withEmailAuditDetails(permissionDenied("draft"), params);
               }
+
+              const unknown = unknownParams(params, EMAIL_WRITE_PARAMETERS);
+              if (unknown.length > 0) return refuseUnknownParams("email_draft", unknown, params);
 
               // One address per call: a string is parsed as an address LIST by
               // the mail libraries, so a comma-smuggled second recipient would
@@ -1248,31 +1281,15 @@ const plugin = {
           label: "Email Send",
           description:
             "Send an email immediately. WARNING: This sends the email right away — it cannot be undone. Use email_draft if you want to review before sending. Use replyTo to reply to an existing message.",
-          parameters: {
-            type: "object",
-            properties: {
-              to: {
-                type: "string",
-                description:
-                  "Exactly one recipient email address. For several recipients, call the tool once per recipient.",
-              },
-              subject: { type: "string", description: "Email subject line" },
-              body: {
-                type: "string",
-                description: "Email body text (plain text)",
-              },
-              replyTo: {
-                type: "string",
-                description: "Message ID to reply to (optional). Sets In-Reply-To header.",
-              },
-            },
-            required: ["to", "subject", "body"],
-          },
+          parameters: EMAIL_WRITE_PARAMETERS,
           async execute(_toolCallId: string, params: Record<string, unknown>) {
             try {
               if (!checkPermission(config.permissions, "email", "send")) {
                 return withEmailAuditDetails(permissionDenied("send"), params);
               }
+
+              const unknown = unknownParams(params, EMAIL_WRITE_PARAMETERS);
+              if (unknown.length > 0) return refuseUnknownParams("email_send", unknown, params);
 
               // One address per call: a string is parsed as an address LIST by
               // the mail libraries, so a comma-smuggled second recipient would

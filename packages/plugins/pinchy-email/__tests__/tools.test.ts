@@ -1657,6 +1657,75 @@ describe("recipient hardening: one address per call (approval card must show wha
   });
 });
 
+describe("unknown parameters are refused (review of #1242)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockCredentialResponse();
+  });
+
+  const writeConfig: PluginConfig = {
+    ...testConfig,
+    agents: {
+      "agent-1": {
+        connectionId: "conn-1",
+        permissions: { email: ["read", "draft", "send"] },
+      },
+    },
+  };
+
+  // The review's payload: a second, look-alike `to ` key. The tool reads `to`;
+  // a reader skimming the arguments sees two recipients and may trust the
+  // wrong one. Nothing the tool does not read may ride along on a call.
+  const smuggled = {
+    to: "attacker@evil.com",
+    subject: "Q3",
+    body: "hi",
+    "to ": "boss@firma.at",
+  };
+
+  it.each(["email_send", "email_draft"])(
+    "%s declares additionalProperties: false, so the runtime can refuse extras first",
+    (name) => {
+      const tool = findTool(createApi(writeConfig), name, agentId)!;
+      expect(tool.parameters.additionalProperties).toBe(false);
+    }
+  );
+
+  // Defence in depth: OpenClaw drops `additionalProperties` from the schema
+  // for Gemini-profile models, so the flag alone does not hold everywhere.
+  it.each(["email_send", "email_draft"])(
+    "%s refuses a call carrying a key it does not declare, and never reaches the provider",
+    async (name) => {
+      const tool = findTool(createApi(writeConfig), name, agentId)!;
+      const result = await tool.execute("call-1", smuggled);
+
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toContain('"to "');
+      expect(result.content[0].text).toMatch(/does not take/);
+      expect(mockSend).not.toHaveBeenCalled();
+      expect(mockDraft).not.toHaveBeenCalled();
+    }
+  );
+
+  it("records the refusal in the audit detail without the raw addresses", async () => {
+    const tool = findTool(createApi(writeConfig), "email_send", agentId)!;
+    const result = await tool.execute("call-1", smuggled);
+    const details = result.details as Record<string, unknown>;
+    expect(details.error).toMatch(/unknown parameter/i);
+    expect(details.unknownParams).toBe(1);
+    expect(JSON.stringify(details)).not.toContain("boss@firma.at");
+    expect(JSON.stringify(details)).not.toContain("attacker@evil.com");
+  });
+
+  it("still runs a call that uses only declared parameters", async () => {
+    mockSend.mockResolvedValue({ messageId: "sent-1" });
+    const tool = findTool(createApi(writeConfig), "email_send", agentId)!;
+    const result = await tool.execute("call-1", { to: "ada@example.com", subject: "s", body: "b" });
+    expect(result.isError).toBeFalsy();
+    expect(mockSend).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("audit PII curation for email_send / email_draft", () => {
   // The tool-use audit route (packages/web/.../api/internal/audit/tool-use)
   // logs raw tool params UNLESS a tool returns curated `details` carrying a

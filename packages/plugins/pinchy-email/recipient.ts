@@ -29,6 +29,18 @@ const BARE_ADDRESS = new RegExp(`^${PART}+@${PART}+$`, "u");
 // (that is how "boss@firma.at <attacker@evil.com>" would impersonate).
 const NAMED_ADDRESS = new RegExp(`^([^<>@,;:()\\[\\]"\\\\]*)<(${PART}+@${PART}+)>$`, "u");
 
+// The characters that give an address its structure. Compatibility forms of
+// them (fullwidth ＠ U+FF20, small-form ﹫ U+FE6B, fullwidth ，＜＞ …) are not
+// separators to a mail library, but they READ as one — "boss＠firma.at
+// <attacker@evil.com>" looks like the boss's address on the card. NFKC folds
+// each compatibility form into the ASCII character it imitates, so any such
+// character shows up as a structural character that was not there before.
+const STRUCTURAL = /[@,;:<>()[\]"\\]/g;
+
+function structure(text: string): string {
+  return (text.match(STRUCTURAL) ?? []).join("");
+}
+
 const ONLY_ONE =
   "email_send and email_draft take exactly one recipient address in `to` (for example " +
   '"ada@example.com"). To reach several people, make one call per recipient — one recipient per call.';
@@ -45,6 +57,14 @@ export function parseSingleRecipient(value: unknown): ParsedRecipient {
     return {
       ok: false,
       error: `Invalid recipient: it contains a control or invisible character. ${ONLY_ONE}`,
+    };
+  }
+  if (structure(text.normalize("NFKC")) !== structure(text)) {
+    return {
+      ok: false,
+      error:
+        "Invalid recipient: it contains a character that imitates an address separator " +
+        `(such as a fullwidth "\uFF20" instead of "@"). ${ONLY_ONE}`,
     };
   }
   if (BARE_ADDRESS.test(text)) return { ok: true, address: text };
