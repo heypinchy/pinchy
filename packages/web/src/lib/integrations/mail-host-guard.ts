@@ -75,11 +75,13 @@ function normalizeAddress(address: string): string {
 }
 
 // A DNS hostname (RFC 1123): dot-separated labels of letters, digits and
-// inner hyphens, at most 63 characters each and 253 in all, with an optional
+// inner hyphens (and underscores, common on internal mail servers — the guard
+// resolves the exact string, so guard and client read the `_` the same way),
+// at most 63 characters each and 253 in all, with an optional
 // trailing dot for a fully-qualified name. An internationalised name is
 // accepted in its punycode form (`xn--…`), which is what DNS actually carries.
 const HOSTNAME =
-  /^(?=.{1,253}\.?$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*\.?$/i;
+  /^(?=.{1,253}\.?$)[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?(?:\.[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?)*\.?$/i;
 
 /**
  * Is `host` something every resolver reads the same way?

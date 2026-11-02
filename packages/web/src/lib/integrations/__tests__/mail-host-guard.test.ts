@@ -207,7 +207,6 @@ describe("assertMailHostAllowed", () => {
       ["an IPv6 link-local literal with a zone ID", "fe80::1%eth0"],
       ["a bracketed literal with a zone ID", "[fe80::1%25eth0]"],
       ["a space inside the name", "a b.attacker.test"],
-      ["an underscore", "mail_server.example.com"],
       // Raw Unicode: the clients pass it to the resolver unconverted (no IDNA),
       // so what it reaches depends on the libc. The punycode form is accepted.
       ["a raw Unicode (IDN) name", "mail.bücher.example"],
@@ -229,6 +228,9 @@ describe("assertMailHostAllowed", () => {
       ["an upper-case name", "IMAP.Example.COM"],
       ["a single-label on-premise name", "mailserver"],
       ["a punycode (IDN) name", "mail.xn--bcher-kva.example"],
+      // Common on internal mail servers. The guard resolves this exact string,
+      // so whatever a resolver makes of the `_`, guard and client make the same.
+      ["an underscore inside a label", "mail_srv.corp.example"],
       ["an IPv4 literal", "192.0.2.10"],
       ["an IPv6 literal", "2001:db8::1"],
     ])("resolves %s (%s) exactly as given", async (_label, host) => {
