@@ -119,7 +119,7 @@ This is a real risk in any system where an AI agent can both read private data a
 
 Pinchy's web fetch module blocks agents from directly requesting — or being redirected into — internal network addresses:
 
-- Private ranges: `10.x.x.x`, `172.16-31.x.x`, `192.168.x.x`, IPv6 unique-local (`fc00::/7`), carrier-grade NAT (`100.64.0.0/10`), which is where every Tailscale node lives, and `198.18.0.0/15`
+- Private ranges: `10.x.x.x`, `172.16-31.x.x`, `192.168.x.x`, IPv6 unique-local (`fc00::/7`), carrier-grade NAT (`100.64.0.0/10`), which is where every Tailscale node lives, `198.18.0.0/15`, and local-use NAT64 (`64:ff9b:1::/48`), whose IPv4 target your own translator decides
 - Loopback and the unspecified range (`127.0.0.1`, `::1`, `0.0.0.0/8`)
 - Link-local addresses (`169.254.x.x`, `fe80::/10`) and the cloud metadata endpoints that sit inside private ranges: `100.100.100.200` (Alibaba Cloud), `fd00:ec2::254` (AWS), `fd00:ec2::23` (EKS Pod Identity Agent), `fd20:ce::254` (Google Cloud) and `fd00:c1::a9fe:a9fe` (Oracle Cloud). Also `168.63.129.16`, Azure's WireServer: a public-looking address that only answers from inside an Azure VM and hands out its extension configuration, certificates included
 - Multicast, broadcast and the reserved test ranges (`192.0.0.0/24`, `192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24`, `240.0.0.0/4`)
