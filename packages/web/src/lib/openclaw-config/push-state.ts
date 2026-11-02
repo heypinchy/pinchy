@@ -54,6 +54,18 @@ interface ConfigPushState {
   unservedCalls: { followUpOnly: boolean } | undefined;
   /** See recordWrittenSecrets. */
   writtenSecretsShape: SecretsBundle | undefined;
+  /** See last-good-bound.ts. Undefined until this process loaded it. */
+  lastGoodBound: LastGoodBound | undefined;
+}
+
+/**
+ * The largest openclaw.json OpenClaw may still hold as last-known-good, in
+ * UTF-8 bytes, and what the Pinchy-owned file that survives a restart says
+ * (0: no such file). See last-good-bound.ts.
+ */
+export interface LastGoodBound {
+  bytes: number;
+  persistedBytes: number;
 }
 
 declare global {
@@ -84,6 +96,7 @@ function state(): ConfigPushState {
       regenerateSeq: 0,
       unservedCalls: undefined,
       writtenSecretsShape: undefined,
+      lastGoodBound: undefined,
     };
     return globalThis.__pinchyConfigPushState;
   }
@@ -270,15 +283,27 @@ export function writtenSecretsShape(): SecretsBundle | undefined {
   return state().writtenSecretsShape;
 }
 
+/** The bound last-good-bound.ts keeps, or undefined before this process loaded it. */
+export function lastGoodBound(): LastGoodBound | undefined {
+  return state().lastGoodBound;
+}
+
+/** Set by last-good-bound.ts only. */
+export function setLastGoodBound(bound: LastGoodBound): void {
+  state().lastGoodBound = bound;
+}
+
 /**
- * Test-only: reset the pending counter, the recorded secrets shape, and drop a
- * queued follow-up regenerate between tests. Do not call in app code.
+ * Test-only: reset the pending counter, the recorded secrets shape, the
+ * last-known-good bound (reloaded from disk on next use), and drop a queued
+ * follow-up regenerate between tests. Do not call in app code.
  */
 export function _resetConfigPushState(): void {
   const s = state();
   s.pending = 0;
   s.unservedCalls = undefined;
   s.writtenSecretsShape = undefined;
+  s.lastGoodBound = undefined;
   clearShrinkResume(s);
 }
 

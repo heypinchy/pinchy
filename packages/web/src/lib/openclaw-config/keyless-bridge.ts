@@ -36,6 +36,10 @@
 // the new slot in the new one only, and the key-less stub in between resolves
 // against both.
 //
+// Both writes, like every Pinchy write of openclaw.json, are judged against the
+// largest file OpenClaw may still hold as last-known-good, not just the file
+// on disk (last-good-bound.ts): OpenClaw promotes only while it runs.
+//
 // The decision needs only openclaw.json (0666) and the bundle Pinchy just
 // built — never secrets.json, which Pinchy cannot read in production
 // (fix-config-permissions.sh chowns it to root:root 0600 every 50 ms). Earlier
@@ -51,12 +55,14 @@
 //     restart), it re-resolves the config's SecretRefs — all resolvable — and
 //     promotes it to last-known-good;
 //   - only key references and credentials leave, so it stays far above half
-//     of the file it replaces: neither OpenClaw's write-side size check nor
-//     its read-side recovery (restore last-known-good / `.bak` under 50%)
-//     objects, and its startup read keeps it;
+//     of the file it replaces: OpenClaw's write-side size check does not
+//     object, nor — while every earlier Pinchy write stayed above half of
+//     OpenClaw's last-known-good, which writeConfigAtomic enforces — its
+//     read-side recovery (restore last-known-good / `.bak` under 50%), and its
+//     startup read keeps it;
 //   - the stubbed provider keeps its models, so nothing that still names one
 //     becomes an "Unknown model" before the deletion lands.
-import { expectsSizeDropRefusal, providerStub } from "./size-drop";
+import { expectsSizeDropRefusalAgainst, providerStub, utf8Bytes } from "./size-drop";
 import { referencedSecretIds, type SecretsBundle } from "@/lib/openclaw-secrets";
 
 type Json = Record<string, unknown>;
@@ -136,28 +142,35 @@ export function keylessBridge(onDisk: Json, bundle: SecretsBundle): Json | null 
  * is a file write, judged by OpenClaw's READ path: a file under half of its
  * last-known-good is "suspicious", and OpenClaw restores last-known-good or
  * `.bak` over it — files written before the bridge, naming the slot
- * secrets.json no longer holds, so OpenClaw cannot start. So when the entries
- * as the target has them would put the file under that line
- * (expectsSizeDropRefusal: UTF-8 bytes, with headroom, against the on-disk
- * file — the largest last-known-good OpenClaw can hold here, since the bridge
- * only removed credentials from it), each re-keyed entry keeps models the file
- * already lists, after the target's own: the fewest that clear the line, so the
- * file sits just above it. Never all of them: that left the file larger than
+ * secrets.json no longer holds, so OpenClaw cannot start. Its last-known-good
+ * is not necessarily the file on disk: OpenClaw promotes only while it runs,
+ * so with it down, an earlier Pinchy write — a previous re-key's — may already
+ * have shrunk the file below what OpenClaw holds. So the line is measured
+ * against `lastGoodBytes` when that is larger (readSideBaselineBytes in
+ * last-good-bound.ts: the largest file a Pinchy write replaced since a
+ * config.apply last landed). When the entries as the target has them would put
+ * the file under that line (expectsSizeDropRefusal: UTF-8 bytes, with
+ * headroom), each re-keyed entry keeps models the file already lists, after
+ * the target's own: the fewest that clear the line, so the file sits just
+ * above it. Never all of them: that left the file larger than
  * before the re-key, and a target just over half of the old file — which the
  * #311 guard passes — was then refused by OpenClaw's write-side check against
  * it (nothing to step: no provider was deleted), and by the #311 guard on every
  * later regenerate. Just above the line, the target clears both whenever it is
  * at least about half of THIS file (roughly 28% of the old one), so a target the
- * guard refused this time goes through on the next regenerate. The new key
- * still goes only with the new address. Delivering the smaller catalogue is
+ * guard refused this time goes through on the next regenerate — over
+ * config.apply: while OpenClaw has not promoted this file, writeConfigAtomic
+ * refuses to write that target itself (under half of last-known-good). The new
+ * key still goes only with the new address. Delivering the smaller catalogue is
  * the push's job, judged by OpenClaw's write-side guard; Pinchy never
- * file-writes it.
+ * file-writes it under OpenClaw's read-side line.
  */
 export function rekeyedBridge(
   keyless: Json,
   onDisk: Json,
   target: Json,
-  bundle: SecretsBundle
+  bundle: SecretsBundle,
+  lastGoodBytes = 0
 ): Json | null {
   const providersOf = (config: Json): Json => {
     const models = isRecord(config.models) ? config.models : {};
@@ -198,9 +211,9 @@ export function rekeyedBridge(
     }
     return { ...keyless, models: { ...models, providers } };
   };
-  const onDiskContent = serializeFile(onDisk);
+  const baselineBytes = Math.max(lastGoodBytes, utf8Bytes(serializeFile(onDisk)));
   const underLine = (count: number) =>
-    expectsSizeDropRefusal(onDiskContent, serializeFile(withCarried(count)));
+    expectsSizeDropRefusalAgainst(baselineBytes, serializeFile(withCarried(count)));
   if (!underLine(0)) return withCarried(0);
   // The smallest prefix that clears the line (the size grows with it), so the
   // file sits just above it — never larger than the push's target can shrink

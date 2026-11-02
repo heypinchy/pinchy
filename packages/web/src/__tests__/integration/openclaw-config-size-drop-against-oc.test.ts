@@ -47,7 +47,15 @@
  * OpenClaw bump that renames or splits it fails here loudly, never silently.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { mkdtempSync, rmSync, readFileSync, existsSync, writeFileSync, readdirSync } from "fs";
+import {
+  cpSync,
+  mkdtempSync,
+  rmSync,
+  readFileSync,
+  existsSync,
+  writeFileSync,
+  readdirSync,
+} from "fs";
 import { createRequire } from "module";
 import { tmpdir } from "os";
 import { dirname, join } from "path";
@@ -884,4 +892,255 @@ describe("a >50% provider deletion against OpenClaw's real config.get / config.a
       delete process.env.OPENCLAW_SECRETS_PATH;
     }
   }, 120_000);
+
+  // OpenClaw promotes last-known-good only while it runs (its reloader, and
+  // once at startup). With OpenClaw down, every Pinchy write lands on top of a
+  // last-known-good that is still the file from before the FIRST of them. The
+  // re-keyed file (rekeyedBridge) sits just above half of that file — so a
+  // second write, judged only against the re-keyed file on disk, could fall far
+  // under half of last-known-good, and OpenClaw's next start restored `.bak`,
+  // which names the old slot secrets.json no longer holds: "required secrets
+  // are unavailable", a crash loop until the next regenerate. Found by review
+  // probing exactly these two sequences against these handlers.
+  describe("with OpenClaw down across several Pinchy writes", () => {
+    const OLD_SLOT = "acme-llm@0000000000000001";
+    const NEW_SLOT = "acme-llm@0000000000000002";
+    const NEWER_SLOT = "acme-llm@0000000000000003";
+    const serialize = (file: Json) => JSON.stringify(file, null, 2).trimEnd() + "\n";
+    const bytes = (content: string) => Buffer.byteLength(content, "utf-8");
+    const acmeAt = (slot: string, url: string, models: Json[]) => ({
+      baseUrl: url,
+      api: "openai-completions",
+      apiKey: ref(`/providers/${slot}/apiKey`),
+      models,
+    });
+    // Disjoint from the old catalogue: the new address serves other models.
+    const catalogue = (prefix: string, n: number) =>
+      Array.from({ length: n }, (_, i) => ({
+        ...model(i),
+        id: `${prefix}-${i}-with-a-realistically-long-identifier`,
+        name: `${prefix} ${i} (display)`,
+      }));
+    const bundleFor = (slot: string) => ({
+      providers: { anthropic: { apiKey: "sk-ant-test" }, [slot]: { apiKey: `sk-${slot}` } },
+    });
+
+    /**
+     * Pinchy as a (re)started process loads it: fresh module instances and no
+     * process-wide state — only what is on disk survives.
+     */
+    async function startPinchy() {
+      vi.resetModules();
+      (globalThis as { __pinchyConfigPushState?: unknown }).__pinchyConfigPushState = undefined;
+      process.env.OPENCLAW_CONFIG_PATH = ocConfigPath;
+      process.env.OPENCLAW_SECRETS_PATH = secretsPath;
+      return {
+        ...(await import("@/lib/openclaw-config/write")),
+        ...(await import("@/lib/openclaw-config/keyless-bridge")),
+        ...(await import("@/lib/openclaw-config/size-drop")),
+        ...(await import("@/lib/openclaw-config/push-state")),
+        ...(await import("@/lib/openclaw-config/last-good-bound")),
+        ...(await import("@/lib/openclaw-secrets")),
+      };
+    }
+    type Pinchy = Awaited<ReturnType<typeof startPinchy>>;
+
+    /** OpenClaw's file and last-known-good before the re-key, with a `.bak`; then it stops. */
+    async function installOld(): Promise<string> {
+      const { writeConfigFile } = await import("openclaw/plugin-sdk/config-runtime");
+      type OcConfig = Parameters<typeof writeConfigFile>[0];
+      const acmeOld = acmeAt(
+        OLD_SLOT,
+        "https://old.acme.example/v1",
+        Array.from({ length: 40 }, (_, i) => model(i))
+      );
+      writeSecrets({ anthropic: { apiKey: "sk-ant-test" }, [OLD_SLOT]: { apiKey: "sk-acme-old" } });
+      await writeConfigFile(config({ "acme-llm": acmeOld }) as OcConfig);
+      await writeConfigFile({
+        ...config({ "acme-llm": acmeOld }),
+        agents: { list: [{ id: "smithers", name: "Smithers 2" }] },
+      } as OcConfig);
+      await promoteToLastKnownGood();
+      return readFileSync(ocConfigPath, "utf-8");
+    }
+
+    /**
+     * OpenClaw starting on the file now on disk — in a copy of its state, so
+     * nothing it observes or promotes carries over: it stays down.
+     */
+    async function startsOnCopy(): Promise<{ file: string; acme: Json }> {
+      const copy = mkdtempSync(join(tmpdir(), "pinchy-oc-start-"));
+      cpSync(dir, copy, { recursive: true });
+      process.env.OPENCLAW_STATE_DIR = copy;
+      process.env.OPENCLAW_CONFIG_PATH = join(copy, "openclaw.json");
+      try {
+        const started = (await startOpenClaw()) as { models: { providers: Record<string, Json> } };
+        return {
+          file: readFileSync(join(copy, "openclaw.json"), "utf-8"),
+          acme: started.models.providers["acme-llm"],
+        };
+      } finally {
+        process.env.OPENCLAW_STATE_DIR = dir;
+        process.env.OPENCLAW_CONFIG_PATH = ocConfigPath;
+        rmSync(copy, { recursive: true, force: true });
+      }
+    }
+
+    /** Waits until no push is in flight. */
+    async function settle(pinchy: Pinchy) {
+      for (let i = 0; i < 2000 && pinchy.getPendingConfigPushCount() > 0; i++) {
+        await new Promise((r) => setTimeout(r, 5));
+      }
+      expect(pinchy.getPendingConfigPushCount()).toBe(0);
+    }
+
+    /**
+     * A refused or passing regenerate's file writes for a re-key, in build.ts's
+     * order, through Pinchy's own writer. After each, OpenClaw starts on
+     * exactly that file and resolves every SecretRef in it.
+     */
+    async function rekeyWrites(pinchy: Pinchy, target: Json, slot: string) {
+      const onDiskContent = readFileSync(ocConfigPath, "utf-8");
+      const onDisk = JSON.parse(onDiskContent) as Json;
+      const bundle = bundleFor(slot);
+      const keyless = pinchy.keylessBridge(onDisk, bundle)!;
+      expect(keyless, "the file names a slot the bundle lacks").not.toBeNull();
+      pinchy.writeConfigAtomic(serialize(keyless));
+      expect((await startsOnCopy()).file).toBe(serialize(keyless));
+      pinchy.writeSecretsFile(bundle);
+      pinchy.recordWrittenSecrets(bundle);
+      expect((await startsOnCopy()).file).toBe(serialize(keyless));
+      const rekeyed = pinchy.rekeyedBridge(
+        keyless,
+        onDisk,
+        target,
+        bundle,
+        pinchy.readSideBaselineBytes(onDiskContent)
+      )!;
+      pinchy.writeConfigAtomic(serialize(rekeyed));
+      const started = await startsOnCopy();
+      expect(started.file, "OpenClaw keeps the re-keyed file").toBe(serialize(rekeyed));
+      expect(started.acme.apiKey).toEqual(ref(`/providers/${slot}/apiKey`));
+    }
+
+    /** OpenClaw comes up on the file; the first connect's regenerate delivers `target`. */
+    async function openClawComesUp(pinchy: Pinchy, target: Json) {
+      await startOpenClaw();
+      await promoteToLastKnownGood();
+      const handlers = await loadConfigHandlers();
+      const get = () => request(handlers["config.get"], {});
+      const apply = (raw: string, baseHash?: string) =>
+        request(handlers["config.apply"], { raw, ...(baseHash ? { baseHash } : {}) });
+      mockGetClient.mockReturnValue({ config: { get, apply } });
+      const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      pinchy.pushConfigInBackground(serialize(target), { fullRegenerate: true });
+      await settle(pinchy);
+      expect(errorSpy.mock.calls.flat().join(" "), "the push lands").toBe("");
+      const landed = (await startOpenClaw()) as { models: { providers: Record<string, Json> } };
+      return landed.models.providers["acme-llm"];
+    }
+
+    beforeEach(() => {
+      vi.spyOn(console, "log").mockImplementation(() => {});
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+    });
+
+    afterEach(() => {
+      delete process.env.OPENCLAW_SECRETS_PATH;
+      (globalThis as { __pinchyConfigPushState?: unknown }).__pinchyConfigPushState = undefined;
+    });
+
+    it("keeps a file OpenClaw starts on through a refused re-key, a Pinchy restart and the next regenerate", async () => {
+      let pinchy = await startPinchy();
+      const installed = await installOld();
+      const target = (n: number) =>
+        config({
+          "acme-llm": acmeAt(NEW_SLOT, "https://new-gateway.example/v1", catalogue("new", n)),
+        });
+      // A catalogue the #311 guard refuses against the installed file, but
+      // passes against the re-keyed file that refusal leaves behind — and
+      // that is under half of OpenClaw's last-known-good.
+      const keyless = pinchy.keylessBridge(JSON.parse(installed) as Json, bundleFor(NEW_SLOT))!;
+      const n = Array.from({ length: 39 }, (_, i) => i + 1).find((k) => {
+        const payload = serialize(target(k));
+        const reKeyed = serialize(
+          pinchy.rekeyedBridge(
+            keyless,
+            JSON.parse(installed) as Json,
+            target(k),
+            bundleFor(NEW_SLOT)
+          )!
+        );
+        return (
+          payload.length < pinchy.sizeGuardBaseline(installed, target(k)) * 0.5 &&
+          payload.length >= pinchy.sizeGuardBaseline(reKeyed, target(k)) * 0.5 &&
+          bytes(payload) < Math.floor(bytes(installed) * 0.5)
+        );
+      });
+      expect(n, "precondition: such a catalogue exists").toBeDefined();
+
+      // Regenerate 1, refused by the #311 guard; OpenClaw is down.
+      await rekeyWrites(pinchy, target(n!), NEW_SLOT);
+
+      // Pinchy restarts. Its boot regenerate (no client yet) passes the #311
+      // guard against the re-keyed file and deletes no provider, so nothing
+      // but the push stands between its target and the file.
+      pinchy = await startPinchy();
+      pinchy.recordWrittenSecrets(bundleFor(NEW_SLOT));
+      mockGetClient.mockReturnValue(undefined);
+      const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      const reKeyedFile = readFileSync(ocConfigPath, "utf-8");
+      pinchy.pushConfigInBackground(serialize(target(n!)), { fullRegenerate: true });
+      await settle(pinchy);
+      const started = await startsOnCopy();
+      expect(started.file, "OpenClaw starts on the file Pinchy left").toBe(
+        readFileSync(ocConfigPath, "utf-8")
+      );
+      expect(started.acme.apiKey).toEqual(ref(`/providers/${NEW_SLOT}/apiKey`));
+      expect(readFileSync(ocConfigPath, "utf-8"), "the target waits for config.apply").toBe(
+        reKeyedFile
+      );
+      expect(errorSpy.mock.calls.flat().join(" ")).toMatch(/last-known-good/);
+      errorSpy.mockRestore();
+
+      // OpenClaw comes up on it, and the target lands over config.apply.
+      const acme = await openClawComesUp(pinchy, target(n!));
+      expect((acme.models as Json[]).map((m) => m.id)).toEqual(
+        catalogue("new", n!).map((m) => m.id)
+      );
+      expect(acme.apiKey).toEqual(ref(`/providers/${NEW_SLOT}/apiKey`));
+    }, 120_000);
+
+    it("keeps a file OpenClaw starts on through two re-keys in a row, with a Pinchy restart between them", async () => {
+      let pinchy = await startPinchy();
+      const installed = await installOld();
+      const small = (slot: string, prefix: string) =>
+        config({ "acme-llm": acmeAt(slot, `https://${prefix}.example/v1`, catalogue(prefix, 10)) });
+      expect(
+        bytes(serialize(small(NEWER_SLOT, "newer"))),
+        "precondition: the second target is under half of last-known-good"
+      ).toBeLessThan(Math.floor(bytes(installed) * 0.5));
+
+      await rekeyWrites(pinchy, small(NEW_SLOT, "new"), NEW_SLOT);
+      pinchy = await startPinchy();
+      await rekeyWrites(pinchy, small(NEWER_SLOT, "newer"), NEWER_SLOT);
+
+      // The second regenerate's push, with OpenClaw still down.
+      mockGetClient.mockReturnValue(undefined);
+      vi.spyOn(console, "error").mockImplementation(() => {});
+      pinchy.pushConfigInBackground(serialize(small(NEWER_SLOT, "newer")), {
+        fullRegenerate: true,
+      });
+      await settle(pinchy);
+      const started = await startsOnCopy();
+      expect(started.file).toBe(readFileSync(ocConfigPath, "utf-8"));
+      expect(started.acme.apiKey).toEqual(ref(`/providers/${NEWER_SLOT}/apiKey`));
+      vi.mocked(console.error).mockRestore();
+
+      const acme = await openClawComesUp(pinchy, small(NEWER_SLOT, "newer"));
+      expect((acme.models as Json[]).map((m) => m.id)).toEqual(
+        catalogue("newer", 10).map((m) => m.id)
+      );
+    }, 120_000);
+  });
 });

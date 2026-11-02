@@ -54,6 +54,7 @@ import {
   takeRegenerateRunIsFollowUpOnly,
 } from "./push-state";
 import { keylessBridge, rekeyedBridge, unresolvedSecretRefs } from "./keyless-bridge";
+import { readSideBaselineBytes } from "./last-good-bound";
 import { reloadSecretsInBackground } from "./secrets-reload";
 import { serializeRegenerates } from "./regenerate-queue";
 import {
@@ -1953,7 +1954,13 @@ async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise
       console.log(
         `[openclaw-config] openclaw.json no longer names the removed key(s) ${unresolvedSecretRefs(onDiskConfig, secretsBundle).join(", ")} (key-less bridge written before secrets.json)`
       );
-      rekeyed = rekeyedBridge(bridge, onDiskConfig, config, secretsBundle);
+      rekeyed = rekeyedBridge(
+        bridge,
+        onDiskConfig,
+        config,
+        secretsBundle,
+        readSideBaselineBytes(onDiskContent)
+      );
     }
   }
 

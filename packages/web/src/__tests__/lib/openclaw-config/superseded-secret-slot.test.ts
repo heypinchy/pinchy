@@ -498,6 +498,71 @@ describe("a superseded key slot outlives the config apply that moves OpenClaw of
       expect(acme.baseUrl).toBe("https://small.example/v1");
     });
 
+    // OpenClaw promotes last-known-good only while it runs. With it down, every
+    // Pinchy write lands on the file from before the FIRST of them, and the
+    // re-keyed file sits just above half of that one: judged only against the
+    // re-keyed file on disk, the next regenerate wrote its target (a quarter of
+    // last-known-good), and a second re-key a re-keyed file as small. OpenClaw's
+    // next start restored `.bak` over either — the old slot, gone from
+    // secrets.json. A Pinchy restart in between loses nothing Pinchy needs to
+    // know. The real handlers judge the same sequences in
+    // integration/openclaw-config-size-drop-against-oc.test.ts.
+    it("never file-writes under half of OpenClaw's last-known-good while it is down, across a restart and a second re-key", async () => {
+      const installed = await installWithBigCatalogue();
+      const line = Math.floor(Buffer.byteLength(installed) * 0.5);
+      writes = [];
+      const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      const smaller = (prefix: string) =>
+        Array.from({ length: 8 }, (_, i) => ({
+          ...bigCatalogue[i],
+          id: `${prefix}-model-${i}-with-a-realistically-long-identifier`,
+        }));
+      const rekey = (version: string, prefix: string) => {
+        customProviders[0] = {
+          ...customProviders[0],
+          baseUrl: `https://${prefix}.example/v1`,
+          models: smaller(prefix),
+          apiKey: `sk-acme-${version}`,
+          keyVersion: version,
+        };
+      };
+      /** Pinchy restarts: fresh modules and process state; the disk survives. */
+      const restartPinchy = async () => {
+        vi.resetModules();
+        (globalThis as { __pinchyConfigPushState?: unknown }).__pinchyConfigPushState = undefined;
+        return (await import("@/lib/openclaw-config")).regenerateOpenClawConfig;
+      };
+
+      rekey(NEW_VERSION, "small");
+      await regenerateOpenClawConfig();
+      await drain();
+      expect(errorSpy.mock.calls.flat().join(" "), "precondition: refused").toMatch(
+        /suspiciously small/
+      );
+      let regenerate = await restartPinchy();
+      await regenerate();
+      await drain();
+      rekey("0000000000000003", "smaller");
+      regenerate = await restartPinchy();
+      await regenerate();
+      await drain();
+      await regenerate();
+      await drain();
+
+      const configWrites = writes.filter((w) => w.path === CONFIG_PATH);
+      expect(configWrites.length, "precondition: the re-keys wrote the file").toBeGreaterThan(2);
+      for (const w of configWrites) {
+        expect(
+          Buffer.byteLength(w.config),
+          "at or above OpenClaw's read-side line"
+        ).toBeGreaterThanOrEqual(line);
+      }
+      expect(writes.flatMap((w) => w.dangling)).toEqual([]);
+      const acme = JSON.parse(files.get(CONFIG_PATH)!).models.providers["acme-llm"];
+      expect(acme.apiKey.id).toBe("/providers/acme-llm@0000000000000003/apiKey");
+      expect(acme.baseUrl).toBe("https://smaller.example/v1");
+    });
+
     // A push started before the refusal still carries the old slot. When it
     // wakes, OpenClaw refuses its payload (the slot no longer resolves), and
     // once its retries ran out its file fallback wrote that payload: a file
@@ -666,11 +731,16 @@ describe("a superseded key slot outlives the config apply that moves OpenClaw of
 
     it("still writes a payload whose every key resolves", async () => {
       const stale = await deleteAcme();
-      const resolvable = JSON.stringify({
-        ...JSON.parse(stale),
-        models: { providers: {} },
-        agents: { list: [{ id: "smithers", name: "S" }] },
-      });
+      // The stale file without the deleted provider, serialized as Pinchy
+      // writes the file: a payload far under half of it is a write OpenClaw's
+      // read side reverts, refused for that (last-good-bound.ts).
+      const file = JSON.parse(stale);
+      delete file.models.providers["acme-llm"];
+      const resolvable = JSON.stringify(
+        { ...file, agents: { ...file.agents, list: [{ id: "smithers", name: "S" }] } },
+        null,
+        2
+      );
 
       pushConfigInBackground(resolvable);
       await drain();

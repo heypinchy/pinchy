@@ -10,6 +10,7 @@ import {
 import { CONFIG_PATH } from "./paths";
 import { parseSizeDropRejection, planShrinkPush, utf8Bytes } from "./size-drop";
 import { unresolvedSecretRefs } from "./keyless-bridge";
+import { clearLastGoodBound, guardFileWrite, UnderReadSideLineError } from "./last-good-bound";
 import {
   trackConfigPushStarted,
   trackConfigPushSettled,
@@ -39,6 +40,10 @@ export function writeConfigAtomic(content: string) {
   // Defense-in-depth: never let a plaintext secret land in openclaw.json.
   // Judged against what is already on disk — see readSecretBaseline.
   assertNoPlaintextSecrets(JSON.parse(content), readSecretBaseline);
+  // Never under half of what OpenClaw may still hold as last-known-good: its
+  // next start would restore `.bak` over the file (last-good-bound.ts).
+  // Throws UnderReadSideLineError, leaving the file as it is.
+  guardFileWrite(readCurrentContent(), content);
   const tmpPath = CONFIG_PATH + ".tmp";
   // Mode 0o666: Pinchy and OpenClaw both need read/write access. OpenClaw
   // rewrites the file as root:0600 on every internal SIGUSR1 restart and
@@ -49,6 +54,15 @@ export function writeConfigAtomic(content: string) {
   // because the volume itself is namespaced inside Docker; not exposed.)
   writeFileSync(tmpPath, content, { encoding: "utf-8", mode: 0o666 });
   renameSync(tmpPath, CONFIG_PATH);
+}
+
+/** openclaw.json as it is now, or undefined when it is missing or stays unreadable. */
+function readCurrentContent(): string | undefined {
+  try {
+    return readConfigContent();
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -451,6 +465,22 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
       );
       return true;
     };
+    // writeConfigAtomic refuses a file under half of what OpenClaw may still
+    // hold as last-known-good (last-good-bound.ts): its next start would
+    // restore `.bak` over it. The file stays as it is, and config.apply
+    // delivers the change once OpenClaw is up — the first connect's
+    // regenerate, or the follow-up queued here.
+    const writeFile = (content: string): boolean => {
+      try {
+        writeConfigAtomic(content);
+        return true;
+      } catch (err) {
+        if (!(err instanceof UnderReadSideLineError)) throw err;
+        console.error(`[openclaw-config] push gen=${String(generation)}: ${err.message}`);
+        if (resumeStrandedShrink) scheduleShrinkResume(resumeStrandedShrink, regenerateSeq);
+        return false;
+      }
+    };
     // A file-write fallback for a shrink would land the target past OpenClaw's
     // guard (see MAX_SHRINK_STEPS) — refuse it instead.
     const writeFallback = (content: string): boolean => {
@@ -459,8 +489,7 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
         return false;
       }
       if (namesRemovedKey(content)) return false;
-      writeConfigAtomic(content);
-      return true;
+      return writeFile(content);
     };
     let client;
     try {
@@ -479,7 +508,9 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
       // last-known-good / `.bak` over a file under half of it. The file stays
       // what regenerate left there — the key-less bridge (keyless-bridge.ts),
       // which OpenClaw starts on — and the regenerate on first connect
-      // delivers the deletion in steps.
+      // delivers the deletion in steps. Nor for any other payload under half
+      // of what OpenClaw may still hold as last-known-good, which is not
+      // necessarily the file on disk (writeFile, above).
       if (shrinkKnown()) {
         dropShrink("Pinchy has no OpenClaw client yet", { transient: true });
         return;
@@ -488,7 +519,7 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
       console.log(
         `[openclaw-config] push gen=${String(generation)}: no WS client → file write (inotify; reload may lag)`
       );
-      writeConfigAtomic(newContent);
+      if (!writeFile(newContent)) return;
       targetReached();
       onChangeApplied?.();
       return;
@@ -628,6 +659,8 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
         await client.config.apply(payload, current.hash, {
           note: "pinchy: regenerateOpenClawConfig",
         });
+        // OpenClaw is running and promotes its own write to last-known-good.
+        clearLastGoodBound();
         if (isShrinkStep && shrink) {
           shrinkSteps++;
           shrink.ocBaselineBytes = utf8Bytes(payload) + shrink.offset;

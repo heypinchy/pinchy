@@ -126,7 +126,11 @@ const SIZE_DROP_EXPECTATION_MIN_MARGIN_BYTES = 256;
  * makes. Errs towards true near the threshold (see the margin above).
  */
 export function expectsSizeDropRefusal(existing: string, next: string): boolean {
-  const oldBytes = utf8Bytes(existing);
+  return expectsSizeDropRefusalAgainst(utf8Bytes(existing), next);
+}
+
+/** {@link expectsSizeDropRefusal} against a baseline already counted in UTF-8 bytes. */
+export function expectsSizeDropRefusalAgainst(oldBytes: number, next: string): boolean {
   const margin = Math.max(
     SIZE_DROP_EXPECTATION_MIN_MARGIN_BYTES,
     Math.ceil(oldBytes * SIZE_DROP_EXPECTATION_MARGIN)
