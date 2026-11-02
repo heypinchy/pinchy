@@ -148,6 +148,11 @@ export async function runNextIndexJob(opts: RunIndexJobOptions = {}): Promise<Kb
   // run read anything at all.
   let unavailableFolders = 0;
   let skippedRoots = 0;
+  // Files refused because they were no longer the regular file the walk
+  // listed (swapped for a link, or reached through a folder swapped for one).
+  // Already in `failed`; counted apart because a refusal is a security
+  // finding, not a broken file. Named in the server log only.
+  let refusedFiles = 0;
 
   try {
     // Resolved per run, not per process: the route's precheck only covers the
@@ -165,6 +170,12 @@ export async function runNextIndexJob(opts: RunIndexJobOptions = {}): Promise<Kb
         skippedRoots++;
         console.warn(
           `[kb-index-worker] job ${job.id}: skipped ${rootDir} (${reason}); nothing under it was indexed or removed`
+        );
+      },
+      onRefusedFile: (absPath, refusal) => {
+        refusedFiles++;
+        console.warn(
+          `[kb-index-worker] job ${job.id}: refused to read ${absPath} (${refusal}); it was not indexed, and any version indexed before was kept`
         );
       },
       onKeptFolder: (folder) => {
@@ -211,6 +222,7 @@ export async function runNextIndexJob(opts: RunIndexJobOptions = {}): Promise<Kb
       reason,
       ocr: ocrTally.current,
       unavailableFolders,
+      refusedFiles,
     });
     return { ...job, status: "failed", counts, error: reason, unavailableFolders };
   }
@@ -227,6 +239,7 @@ export async function runNextIndexJob(opts: RunIndexJobOptions = {}): Promise<Kb
     counts,
     ocr: ocrTally.current,
     unavailableFolders,
+    refusedFiles,
   });
   return { ...job, status: "succeeded", counts, unavailableFolders };
 }
@@ -283,6 +296,7 @@ async function auditOutcome(args: {
   reason?: string;
   ocr: OcrTally | null;
   unavailableFolders: number;
+  refusedFiles: number;
 }): Promise<void> {
   const entry = reindexAuditEntry({
     actorType: "system",
@@ -302,6 +316,7 @@ async function auditOutcome(args: {
     // "nothing was sent" rather than "we did not look".
     ocr: args.ocr && args.ocr.documents > 0 ? args.ocr : undefined,
     unavailableFolders: args.unavailableFolders > 0 ? args.unavailableFolders : undefined,
+    refusedFiles: args.refusedFiles > 0 ? args.refusedFiles : undefined,
   });
   try {
     await appendAuditLog(entry);

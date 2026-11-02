@@ -98,3 +98,24 @@ describe("the trigger", () => {
     expect(entry.detail).toMatchObject({ trigger: "scheduled", sweepId: "sweep-1" });
   });
 });
+
+describe("refusedFiles", () => {
+  const base = {
+    actorType: "system" as const,
+    actorId: KB_INDEX_WORKER_ACTOR,
+    agent,
+    outcome: "success" as const,
+    pathCount: 1,
+    jobId: "job-1",
+    trigger: "manual" as const,
+  };
+
+  it("records how many files were refused as swapped links, as a bare count", () => {
+    const entry = reindexAuditEntry({ ...base, refusedFiles: 2 });
+    expect((entry.detail as Record<string, unknown>).refusedFiles).toBe(2);
+  });
+
+  it("is absent when nothing was refused", () => {
+    expect(reindexAuditEntry(base).detail).not.toHaveProperty("refusedFiles");
+  });
+});

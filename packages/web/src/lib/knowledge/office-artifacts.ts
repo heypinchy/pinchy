@@ -33,6 +33,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { createReadStream, mkdirSync } from "node:fs";
 import { mkdir, readdir, rename, rm, stat, utimes } from "node:fs/promises";
+import type { FileHandle } from "node:fs/promises";
 import { join } from "node:path";
 
 /**
@@ -48,6 +49,24 @@ export async function hashFileContents(absPath: string): Promise<string> {
   const hash = createHash("sha256");
   // eslint-disable-next-line security/detect-non-literal-fs-filename -- absPath is a containment-checked path from the caller (ingest's discovery, or the workspace-file route after resolveAllowedFile).
   for await (const chunk of createReadStream(absPath)) hash.update(chunk);
+  return hash.digest("hex");
+}
+
+/**
+ * The same key, read through a descriptor the caller has already opened and
+ * verified (verified-source.ts) — so the bytes hashed are the bytes of the
+ * file that passed the check, not of whatever the path names by now.
+ * Positional reads: the handle's own offset is left where it was.
+ */
+export async function hashOpenFile(handle: FileHandle): Promise<string> {
+  const hash = createHash("sha256");
+  const buffer = Buffer.alloc(64 * 1024);
+  for (let position = 0; ;) {
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, position);
+    if (bytesRead === 0) break;
+    hash.update(buffer.subarray(0, bytesRead));
+    position += bytesRead;
+  }
   return hash.digest("hex");
 }
 

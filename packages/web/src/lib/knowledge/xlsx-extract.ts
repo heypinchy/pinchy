@@ -430,19 +430,26 @@ export const SHEET_RANGE_MAX_ROWS = 200;
  * open. It never falls back to a hidden sheet: the index skipped those, and
  * the preview must not show what the index never read.
  *
+ * `source` is a path, or the workbook's bytes — what the preview route passes,
+ * having read them through `openVerifiedSource` so that a path swapped for a
+ * link after its containment check is never opened (verified-source.ts).
+ *
  * @throws XlsxExtractionError if the file cannot be read as a workbook.
  */
 export async function readSheetRange(
-  absPath: string,
+  source: string | Buffer,
   sheetName: string | null,
   startRow: number,
   endRow: number
 ): Promise<SheetRange | null> {
   const workbook = new ExcelJS.Workbook();
   try {
-    await workbook.xlsx.readFile(absPath);
+    if (typeof source === "string") await workbook.xlsx.readFile(source);
+    // exceljs types `load` against the pre-generic `Buffer`; the bytes are the same.
+    else await workbook.xlsx.load(source as unknown as Parameters<typeof workbook.xlsx.load>[0]);
   } catch (err) {
-    throw new XlsxExtractionError(absPath, "the file could not be opened as a workbook", {
+    const name = typeof source === "string" ? source : "(workbook bytes)";
+    throw new XlsxExtractionError(name, "the file could not be opened as a workbook", {
       cause: err,
     });
   }

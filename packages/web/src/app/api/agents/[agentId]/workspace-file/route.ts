@@ -3,7 +3,7 @@
 // the ESLint require-audit-log rule only gates POST/PUT/PATCH/DELETE, so this
 // comment documents intent for a human reader rather than satisfying the rule.
 import { NextResponse } from "next/server";
-import { open } from "node:fs/promises";
+import { open, type FileHandle } from "node:fs/promises";
 import { Readable } from "node:stream";
 import { basename } from "node:path";
 
@@ -14,9 +14,14 @@ import type { AuditLogEntry } from "@/lib/audit";
 import { resolveAllowedFile } from "@/lib/agent-file-access";
 import { contentTypeForFile } from "@/lib/agent-file-content-type";
 import { parseRangeHeader } from "@/lib/http-range";
-import { getOfficeArtifactStore, hashFileContents } from "@/lib/knowledge/office-artifacts";
+import { getOfficeArtifactStore, hashOpenFile } from "@/lib/knowledge/office-artifacts";
 import { convertedPdfName, isOfficeFile, isSpreadsheetFile } from "@/lib/knowledge/office-formats";
 import { readSheetRange, SHEET_RANGE_MAX_ROWS } from "@/lib/knowledge/xlsx-extract";
+import {
+  openVerifiedSource,
+  SourceRefusedError,
+  type VerifiedSource,
+} from "@/lib/knowledge/verified-source";
 import type { AgentPluginConfig } from "@/db/schema";
 
 type Params = { params: Promise<{ agentId: string }> };
@@ -111,11 +116,19 @@ function parseSheetRange(
  * to run and no window in which a reader is shown a document that no longer
  * exists. The cost is a hash per request, paid on a file small enough that
  * LibreOffice converted it in about a second.
+ *
+ * The hash is read through the VERIFIED descriptor, never the path: the store
+ * is keyed on content, so hashing whatever a link swapped in after the
+ * containment check would find — and serve, under this document's name — the
+ * conversion of a file this reader may not see.
  */
-async function resolveConvertedArtifact(realPath: string): Promise<string | null> {
+async function resolveConvertedArtifact(
+  source: VerifiedSource,
+  realPath: string
+): Promise<string | null> {
   if (!isOfficeFile(realPath)) return null;
   try {
-    return await getOfficeArtifactStore().get(await hashFileContents(realPath));
+    return await getOfficeArtifactStore().get(await hashOpenFile(source.handle));
   } catch {
     // An unreadable source, or an artifact volume that is missing, full or not
     // mounted. Neither is a verdict on this document and neither is worth a
@@ -284,6 +297,25 @@ export const GET = withAuth<Params>(async (req, { params }, session) => {
     );
   };
 
+  // Every read of the document goes through ONE verified open of `realPath`
+  // (lib/knowledge/verified-source.ts): no link followed, a regular file, and
+  // the descriptor really at that path. `resolveAllowedFile` checked the path;
+  // this is what keeps a link swapped in after that check from being followed
+  // by the read. Answered 404 like a missing file, so the reader learns
+  // nothing about what the link pointed at — the audit row says why.
+  const openSource = async (): Promise<VerifiedSource | null> => {
+    try {
+      return await openVerifiedSource({ realPath });
+    } catch (err) {
+      if (err instanceof SourceRefusedError) {
+        auditFailure(err.refusal === "not_a_file" ? "not_a_file" : `refused_${err.refusal}`);
+      } else {
+        auditFailure("not_found");
+      }
+      return null;
+    }
+  };
+
   // A spreadsheet preview answers with the cited ROWS rather than with bytes.
   //
   // It rides this route rather than getting its own for the reason the variant
@@ -307,14 +339,19 @@ export const GET = withAuth<Params>(async (req, { params }, session) => {
       return NextResponse.json({ error: "not a spreadsheet" }, { status: 400 });
     }
 
+    const source = await openSource();
+    if (!source) return new NextResponse("Not found", { status: 404 });
     let sheetRange;
     try {
-      sheetRange = await readSheetRange(realPath, range.sheet, range.startRow, range.endRow);
+      const bytes = await source.handle.readFile();
+      sheetRange = await readSheetRange(bytes, range.sheet, range.startRow, range.endRow);
     } catch {
       // The workbook is on disk and inside the grant but will not open. That is
       // a fact about the document, so it is audited like one.
       auditFailure("unreadable_document");
       return NextResponse.json({ error: "The workbook could not be read" }, { status: 422 });
+    } finally {
+      await source.handle.close();
     }
 
     deferAuditLog(
@@ -340,12 +377,16 @@ export const GET = withAuth<Params>(async (req, { params }, session) => {
   // explicitly by the second download control, and implicitly by any viewer
   // opening an Office source — a `.doc` renders in no browser, so the document
   // a reader was promised IS the converted PDF.
+  const source = await openSource();
+  if (!source) return new NextResponse("Not found", { status: 404 });
+
   const wantsConverted = variant === "converted" || (variant === null && isOfficeFile(realPath));
-  const artifactPath = wantsConverted ? await resolveConvertedArtifact(realPath) : null;
+  const artifactPath = wantsConverted ? await resolveConvertedArtifact(source, realPath) : null;
   if (wantsConverted && artifactPath === null) {
     // Falling back to the original here would be worse than answering nothing:
     // it is served `attachment`, so a viewer's <embed> would turn an
     // unconverted document into a surprise download rather than a preview.
+    await source.handle.close();
     auditFailure("no_converted_artifact");
     return new NextResponse("Not found", { status: 404 });
   }
@@ -354,17 +395,26 @@ export const GET = withAuth<Params>(async (req, { params }, session) => {
   const servedName = artifactPath ? convertedPdfName(documentName) : documentName;
   const representation: Variant = artifactPath ? "converted" : "original";
 
-  // Open FIRST, then stat the open handle rather than re-stat the path: a
-  // stat-then-open pair is a TOCTOU race (js/file-system-race), and the
-  // handle's own stat is authoritative for the bytes we are about to serve.
-  // Same posture as `serve-workspace-file.ts`.
-  let fh;
-  try {
-    // eslint-disable-next-line security/detect-non-literal-fs-filename -- servedPath is either realPath (containment-checked by resolveAllowedFile above) or an artifact path derived from the store's content key, which no request input can steer — see resolveConvertedArtifact.
-    fh = await open(servedPath, "r");
-  } catch {
-    auditFailure("not_found");
-    return new NextResponse("Not found", { status: 404 });
+  // The original is served from the verified descriptor itself. The artifact
+  // is opened from the store — a path derived from the content key, which no
+  // request input can steer (see resolveConvertedArtifact) — and the source's
+  // descriptor is no longer needed once that path is known.
+  //
+  // Stat the open handle rather than re-stat the path: a stat-then-open pair
+  // is a TOCTOU race (js/file-system-race), and the handle's own stat is
+  // authoritative for the bytes we are about to serve.
+  let fh: FileHandle;
+  if (artifactPath) {
+    await source.handle.close();
+    try {
+      // eslint-disable-next-line security/detect-non-literal-fs-filename -- an artifact path derived from the store's content key, which no request input can steer — see resolveConvertedArtifact.
+      fh = await open(servedPath, "r");
+    } catch {
+      auditFailure("not_found");
+      return new NextResponse("Not found", { status: 404 });
+    }
+  } else {
+    fh = source.handle;
   }
 
   // From here every path that does NOT hand the handle to a stream must close
@@ -380,8 +430,8 @@ export const GET = withAuth<Params>(async (req, { params }, session) => {
 
   // Only regular files. A directory (or anything else — socket, FIFO, ...)
   // is not servable content; treat it the same as "missing" rather than
-  // disclosing what it actually is. Note a directory opens successfully on
-  // Linux and macOS, so this check is what rejects it.
+  // disclosing what it actually is. The original was already checked by
+  // `openSource`; this is the artifact's check.
   if (!info.isFile()) {
     await fh.close();
     auditFailure("not_a_file");

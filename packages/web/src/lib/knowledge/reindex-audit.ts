@@ -59,6 +59,16 @@ export interface ReindexAuditArgs {
    * read.
    */
   unavailableFolders?: number;
+  /**
+   * How many files the run refused to read because they were no longer the
+   * regular file it had listed — swapped for a symbolic link, or reached
+   * through a folder swapped for one (verified-source.ts). They are ALSO in
+   * `failed`; counted apart because someone with write access to a mounted
+   * folder pointing the index at a file they may not see is a security event,
+   * not a corrupt PDF. A count, never the files — see `pathCount`. Absent
+   * when nothing was refused.
+   */
+  refusedFiles?: number;
 }
 
 export function reindexAuditEntry(args: ReindexAuditArgs): AuditLogEntry {
@@ -106,6 +116,7 @@ export function reindexAuditEntry(args: ReindexAuditArgs): AuditLogEntry {
       ...(args.unavailableFolders !== undefined
         ? { unavailableFolders: args.unavailableFolders }
         : {}),
+      ...(args.refusedFiles !== undefined ? { refusedFiles: args.refusedFiles } : {}),
       ...(args.reason !== undefined ? { reason: args.reason } : {}),
     },
   };

@@ -11,8 +11,17 @@
  */
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { basename, dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { and, eq } from "drizzle-orm";
 
@@ -93,18 +102,43 @@ function fakeDeps(
   embed: ReturnType<typeof vi.fn>;
   extractPdf: ReturnType<typeof vi.fn>;
   extractXlsx: ReturnType<typeof vi.fn>;
+  handed: Map<string, string>;
 } {
   const embed = vi.fn(async (texts: string[]) =>
     texts.map((_, i) => Array(768).fill(0.001 * (i + 1)))
   );
-  const extractPdf = vi.fn(async () => pages);
-  const extractXlsx = vi.fn(async () => xlsx);
+  // What each reader found at the path it was handed, read while it still
+  // exists: the ingest hands out a private copy and removes it afterwards.
+  const handed = new Map<string, string>();
+  const record = (path: string) => handed.set(path, readFileSync(path, "utf8"));
+  const extractPdf = vi.fn(async (path: string) => (record(path), pages));
+  const extractXlsx = vi.fn(async (path: string) => (record(path), xlsx));
   return {
     deps: { embed, extractPdf, extractXlsx, convertOffice: neverCalledConvert, ocrModel: null },
     embed,
     extractPdf,
     extractXlsx,
+    handed,
   };
+}
+
+/**
+ * Asserts a reader was handed a private copy of `sourcePath` holding `bytes` —
+ * never the path on the share, which a swap could have pointed elsewhere by
+ * the time the reader opened it (verified-source.ts).
+ */
+function expectPrivateCopy(
+  reader: ReturnType<typeof vi.fn>,
+  handed: Map<string, string>,
+  sourcePath: string,
+  bytes: string
+) {
+  expect(reader).toHaveBeenCalledTimes(1);
+  const [path] = reader.mock.calls[0] as [string];
+  expect(dirname(path)).not.toBe(dirname(sourcePath));
+  // Under the source's own name, so extension dispatch and log lines read right.
+  expect(basename(path)).toBe(basename(sourcePath));
+  expect(handed.get(path)).toBe(bytes);
 }
 
 async function chunksFor(documentId: string) {
@@ -137,13 +171,12 @@ it("indexes a PDF into kb_documents + kb_chunks with real embeddings, then skips
   // happens to work.
   writeFileSync(join(tmpRoot, "notes.txt"), "not indexed");
 
-  const { deps, embed, extractPdf } = fakeDeps();
+  const { deps, embed, extractPdf, handed } = fakeDeps();
 
   const result = await ingestDirectory(ORG_ID, tmpRoot, deps);
 
   expect(result).toEqual(counts({ indexed: 1 }));
-  expect(extractPdf).toHaveBeenCalledTimes(1);
-  expect(extractPdf).toHaveBeenCalledWith(pdfPath);
+  expectPrivateCopy(extractPdf, handed, pdfPath, "fake-pdf-bytes-v1");
 
   const docs = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
   expect(docs).toHaveLength(1);
@@ -348,12 +381,12 @@ it("accepts a single-file root path (not just a directory) and indexes that one 
   const pdfPath = join(tmpRoot, "solo.pdf");
   writeFileSync(pdfPath, "fake-pdf-bytes-solo");
 
-  const { deps, extractPdf } = fakeDeps();
+  const { deps, extractPdf, handed } = fakeDeps();
   // Root IS the file, not its parent directory.
   const result = await ingestDirectory(ORG_ID, pdfPath, deps);
 
   expect(result).toEqual(counts({ indexed: 1 }));
-  expect(extractPdf).toHaveBeenCalledWith(pdfPath);
+  expectPrivateCopy(extractPdf, handed, pdfPath, "fake-pdf-bytes-solo");
 
   const docs = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
   expect(docs).toHaveLength(1);
@@ -1361,12 +1394,12 @@ it("indexes a spreadsheet with sheet + row-range locators, and never converts it
   const xlsxPath = join(tmpRoot, "suppliers.xlsx");
   writeFileSync(xlsxPath, "fake-xlsx-bytes-v1");
 
-  const { deps, extractPdf, extractXlsx } = fakeDeps();
+  const { deps, extractPdf, extractXlsx, handed } = fakeDeps();
 
   const result = await ingestDirectory(ORG_ID, tmpRoot, deps);
 
   expect(result).toEqual(counts({ indexed: 1 }));
-  expect(extractXlsx).toHaveBeenCalledWith(xlsxPath);
+  expectPrivateCopy(extractXlsx, handed, xlsxPath, "fake-xlsx-bytes-v1");
   // The dispatch, asserted from both sides. A spreadsheet reaching the PDF
   // extractor is the failure this whole format split exists to prevent, and it
   // would otherwise show up only as an unreadable citation much later.
@@ -1678,37 +1711,50 @@ it("converts in batches, and not at all for a document it can skip", async () =>
   expect(convertOffice).toHaveBeenCalledTimes(1);
 });
 
-it("batches from the document that asked, carrying the hash the ingest already computed", async () => {
+it("batches from the document that asked, carrying the hash of the bytes it hands over", async () => {
   // Two properties of the same call, because they are the same decision.
   //
   // A batch sliced from the HEAD of the queue drags every Office document
   // before the changed one through the converter — and those are exactly the
   // documents the run is about to skip, so the work is thrown away. Worse, it
-  // is not free: `convertOfficeFiles` hashes every source it is handed, a full
-  // read each, even for a cache hit.
+  // is not free: every document in a batch is read in full and copied before
+  // the converter sees it, even for a cache hit.
   //
-  // And the hash is the artifact key. The ingest computed it one step earlier
-  // for its own idempotency check; `OfficeSource.contentHash` exists so that
-  // read is not paid for twice.
+  // And the hash is the artifact key. The converter is handed private copies
+  // (never a path on the share, which a swap could redirect), so the ingest
+  // has read every document in the batch already and passes each one's hash:
+  // `OfficeSource.contentHash` exists so that read is not paid for twice.
   for (let i = 0; i < 3; i++) writeFileSync(join(tmpRoot, `doc-${i}.docx`), `bytes-${i}`);
 
-  const { deps, convertOffice } = officeDeps(convertedTo("/artifacts/batch.pdf"), () => WORD_PAGES);
+  const handedBytes = new Map<string, string>();
+  const { deps, convertOffice } = officeDeps(
+    (absPath) => {
+      handedBytes.set(absPath, readFileSync(absPath, "utf8"));
+      return convertedTo("/artifacts/batch.pdf")(absPath);
+    },
+    () => WORD_PAGES
+  );
   expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ indexed: 3 }));
   expect(convertOffice).toHaveBeenCalledTimes(1);
 
+  const hashOf = (bytes: string) => createHash("sha256").update(bytes).digest("hex");
+  const sourcesOf = (call: number) =>
+    convertOffice.mock.calls[call][0].map((source: { absPath: string; contentHash?: string }) => ({
+      name: basename(source.absPath),
+      onShare: source.absPath.startsWith(tmpRoot),
+      bytes: handedBytes.get(source.absPath),
+      contentHash: source.contentHash,
+    }));
+
   // A first run needs every document, so the batch is still the whole queue.
-  // Only the document that ASKED carries a hash: the ingest has read exactly
-  // that one so far, and `convertOfficeFiles` hashes the rest itself when it
-  // gets to them. Claiming otherwise would mean reading them here as well,
-  // which is the read this is removing.
-  expect(convertOffice.mock.calls[0][0]).toEqual([
-    {
-      absPath: join(tmpRoot, "doc-0.docx"),
-      contentHash: createHash("sha256").update("bytes-0").digest("hex"),
-    },
-    { absPath: join(tmpRoot, "doc-1.docx") },
-    { absPath: join(tmpRoot, "doc-2.docx") },
-  ]);
+  expect(sourcesOf(0)).toEqual(
+    [0, 1, 2].map((i) => ({
+      name: `doc-${i}.docx`,
+      onShare: false,
+      bytes: `bytes-${i}`,
+      contentHash: hashOf(`bytes-${i}`),
+    }))
+  );
 
   // Only the LAST document changes, so the two before it are skipped and must
   // never reach the converter again.
@@ -1717,8 +1763,8 @@ it("batches from the document that asked, carrying the hash the ingest already c
   expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ skipped: 2, indexed: 1 }));
 
   expect(convertOffice).toHaveBeenCalledTimes(2);
-  expect(convertOffice.mock.calls[1][0]).toEqual([
-    { absPath: changed, contentHash: createHash("sha256").update("bytes-2-v2").digest("hex") },
+  expect(sourcesOf(1)).toEqual([
+    { name: "doc-2.docx", onShare: false, bytes: "bytes-2-v2", contentHash: hashOf("bytes-2-v2") },
   ]);
 });
 
@@ -1801,4 +1847,259 @@ it("leaves PDFs indexed before Office support was added exactly as they were", a
   for (const chunk of chunksAfter) {
     expect(chunk.locator).toEqual({ kind: "page", page: expect.any(Number) });
   }
+});
+
+// ── a source swapped after discovery is never read ────────────────────────
+//
+// Discovery skips symlinks, but every read after it used to follow one. So the
+// author of one mounted folder could replace `report.pdf`, between the walk and
+// the read, with a link to a file only ANOTHER team's agent may see — and that
+// file was indexed under `report.pdf`, quotable by the first team's agent. The
+// first report (processed 0) arrives after discovery and before any read, which
+// is exactly where an attacker's swap lands.
+
+const SECRET = "TOP SECRET merger terms for another team";
+
+/** A folder outside the indexed root, holding what must never be indexed. */
+function secretFile(name: string): string {
+  const dir = join(tmpRoot, "..", `${basename(tmpRoot)}-other-team`);
+  mkdirSync(dir, { recursive: true });
+  const path = join(dir, name);
+  writeFileSync(path, SECRET);
+  return path;
+}
+
+afterEach(() => {
+  rmSync(join(tmpRoot, "..", `${basename(tmpRoot)}-other-team`), { recursive: true, force: true });
+});
+
+/** Runs `swap` once, after discovery and before the first file is read. */
+function afterDiscovery(swap: () => void) {
+  let done = false;
+  return (progress: IngestProgress) => {
+    if (done || progress.processed !== 0) return;
+    done = true;
+    swap();
+  };
+}
+
+/** Every reader the ingest can hand a source to, each recording the bytes it was given. */
+function recordingDeps() {
+  const seen: string[] = [];
+  const read = (path: string) => seen.push(readFileSync(path, "utf8"));
+  const deps: IngestDeps = {
+    embed: async (texts) => texts.map(() => Array(768).fill(0.02)),
+    extractPdf: vi.fn(async (path: string) => {
+      if (!path.startsWith("/artifacts/")) read(path);
+      return [{ page: 1, text: PAGE_1_TEXT }];
+    }),
+    extractXlsx: vi.fn(async (path: string) => {
+      read(path);
+      return {
+        chunks: [{ text: SHEET_ROWS_TEXT, sheet: "Suppliers", startRow: 2, endRow: 3 }],
+        sheets: ["Suppliers"],
+        hiddenSheets: [],
+        hiddenRows: 0,
+      };
+    }),
+    convertOffice: vi.fn(async (sources: readonly { absPath: string }[]) =>
+      sources.map((source) => {
+        read(source.absPath);
+        return {
+          sourcePath: source.absPath,
+          status: "converted" as const,
+          artifactPath: "/artifacts/converted.pdf",
+        };
+      })
+    ),
+    ocrModel: null,
+  };
+  return { deps, seen };
+}
+
+it.each(["report.pdf", "suppliers.xlsx", "report.docx"])(
+  "never reads %s once it is swapped for a link after discovery",
+  async (name) => {
+    const source = join(tmpRoot, name);
+    writeFileSync(source, "harmless report");
+    const secret = secretFile(name);
+    const { deps, seen } = recordingDeps();
+    const refused: Array<[string, string]> = [];
+
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    let result: IngestResult;
+    try {
+      result = await ingestPaths(ORG_ID, [tmpRoot], deps, {
+        onProgress: afterDiscovery(() => {
+          rmSync(source);
+          symlinkSync(secret, source);
+        }),
+        onRefusedFile: (path, refusal) => refused.push([path, refusal]),
+      });
+    } finally {
+      consoleError.mockRestore();
+    }
+
+    // Booked like any file the run could not read, and reported as a refusal.
+    expect(result).toEqual(counts({ failed: 1 }));
+    expect(refused).toEqual([[source, "link"]]);
+    // The point: no reader was ever handed the other team's bytes.
+    expect(seen.join("\n")).not.toContain(SECRET);
+    expect(await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID))).toHaveLength(
+      0
+    );
+  }
+);
+
+it("keeps the version it already indexed when the file is swapped for a link", async () => {
+  // A refusal is a failed read, not a deletion: the removal pass only drops
+  // what discovery no longer finds, and the old chunks stay searchable.
+  const source = join(tmpRoot, "report.pdf");
+  writeFileSync(source, "harmless report");
+  const { deps, seen } = recordingDeps();
+  expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ indexed: 1 }));
+  const before = await onlyDocument();
+  const chunksBefore = await chunksFor(before.id);
+
+  const secret = secretFile("report.pdf");
+  const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+  try {
+    const second = await ingestPaths(ORG_ID, [tmpRoot], deps, {
+      onProgress: afterDiscovery(() => {
+        rmSync(source);
+        symlinkSync(secret, source);
+      }),
+    });
+    expect(second).toEqual(counts({ failed: 1 }));
+  } finally {
+    consoleError.mockRestore();
+  }
+
+  const after = await onlyDocument();
+  expect(after.id).toBe(before.id);
+  expect(after.contentHash).toBe(before.contentHash);
+  expect((await chunksFor(after.id)).map((c) => c.id).sort()).toEqual(
+    chunksBefore.map((c) => c.id).sort()
+  );
+  expect(seen.join("\n")).not.toContain(SECRET);
+});
+
+it("never reads through a parent folder swapped for a link after discovery", async () => {
+  // O_NOFOLLOW guards the last path component only. Swapping the FOLDER for a
+  // link to another team's folder holding a file of the same name is the
+  // variant it cannot see.
+  const sub = join(tmpRoot, "projects");
+  mkdirSync(sub);
+  writeFileSync(join(sub, "report.pdf"), "harmless report");
+  const secretDir = dirname(secretFile("report.pdf"));
+  const { deps, seen } = recordingDeps();
+  const refused: string[] = [];
+
+  const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+  let result: IngestResult;
+  try {
+    result = await ingestPaths(ORG_ID, [tmpRoot], deps, {
+      onProgress: afterDiscovery(() => {
+        renameSync(sub, join(tmpRoot, ".projects-aside"));
+        symlinkSync(secretDir, sub);
+      }),
+      onRefusedFile: (path) => refused.push(path),
+    });
+  } finally {
+    consoleError.mockRestore();
+  }
+
+  expect(result).toEqual(counts({ failed: 1 }));
+  expect(refused).toEqual([join(sub, "report.pdf")]);
+  expect(seen.join("\n")).not.toContain(SECRET);
+});
+
+it("never hands a swapped Office document to the converter, not even in another document's batch", async () => {
+  // The converter is handed a SLICE of the queue — documents the ingest has not
+  // read itself yet. Those are read through the same checks before they reach
+  // LibreOffice, so a swap behind a later queue entry is refused there too.
+  for (let i = 0; i < 3; i++) writeFileSync(join(tmpRoot, `doc-${i}.docx`), `bytes-${i}`);
+  const secret = secretFile("doc-2.docx");
+  const { deps, seen } = recordingDeps();
+
+  const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+  let result: IngestResult;
+  try {
+    result = await ingestPaths(ORG_ID, [tmpRoot], deps, {
+      onProgress: afterDiscovery(() => {
+        rmSync(join(tmpRoot, "doc-2.docx"));
+        symlinkSync(secret, join(tmpRoot, "doc-2.docx"));
+      }),
+    });
+  } finally {
+    consoleError.mockRestore();
+  }
+
+  expect(result).toEqual(counts({ indexed: 2, failed: 1 }));
+  expect(seen.join("\n")).not.toContain(SECRET);
+  expect(seen.sort()).toEqual(["bytes-0", "bytes-1"]);
+});
+
+it("hands every reader a private copy of the source, never a path on the share", async () => {
+  // Readers that only take a path (pdfjs, exceljs, LibreOffice) open it
+  // themselves and would follow whatever sits there by then. A copy made from
+  // the verified descriptor is a path no author of the share controls.
+  const nested = join(tmpRoot, "Abteilung", "2026");
+  mkdirSync(nested, { recursive: true });
+  writeFileSync(join(nested, "handbook.pdf"), "pdf bytes");
+  writeFileSync(join(nested, "suppliers.xlsx"), "xlsx bytes");
+  writeFileSync(join(nested, "Angebot.docx"), "docx bytes");
+  const { deps, seen } = recordingDeps();
+
+  expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ indexed: 3 }));
+
+  const handed = [
+    ...(deps.extractXlsx as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0] as string),
+    ...(deps.convertOffice as ReturnType<typeof vi.fn>).mock.calls.flatMap((c) =>
+      (c[0] as { absPath: string }[]).map((s) => s.absPath)
+    ),
+    ...(deps.extractPdf as ReturnType<typeof vi.fn>).mock.calls
+      .map((c) => c[0] as string)
+      .filter((p) => !p.startsWith("/artifacts/")),
+  ];
+  expect(handed).toHaveLength(3);
+  for (const path of handed) expect(path.startsWith(tmpRoot)).toBe(false);
+  // Under the source's own name, so extension dispatch and log lines still read right.
+  expect(handed.map((p) => basename(p)).sort()).toEqual([
+    "Angebot.docx",
+    "handbook.pdf",
+    "suppliers.xlsx",
+  ]);
+  expect(seen.sort()).toEqual(["docx bytes", "pdf bytes", "xlsx bytes"]);
+  // The rows still carry the ORIGINAL path: identity is the document on the share.
+  const docs = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
+  expect(docs.map((d) => d.sourcePath).sort()).toEqual(
+    ["Angebot.docx", "handbook.pdf", "suppliers.xlsx"].map((n) => join(nested, n))
+  );
+  // And the copies are gone once the run is over.
+  for (const path of handed) expect(existsSync(path)).toBe(false);
+});
+
+it("indexes through a root that is itself a link, as before", async () => {
+  // An admin may grant a path that is a link to the real mount. Only links
+  // BELOW the root are refused; the root is the admin's own configuration.
+  writeFileSync(join(tmpRoot, "handbook.pdf"), "pdf bytes");
+  const linkedRoot = `${tmpRoot}-link`;
+  symlinkSync(tmpRoot, linkedRoot);
+  try {
+    const { deps } = recordingDeps();
+    expect(await ingestDirectory(ORG_ID, linkedRoot, deps)).toEqual(counts({ indexed: 1 }));
+    expect((await onlyDocument()).sourcePath).toBe(join(linkedRoot, "handbook.pdf"));
+  } finally {
+    rmSync(linkedRoot, { force: true });
+  }
+});
+
+it("does not index a link that was already in the folder when it was listed", async () => {
+  writeFileSync(join(tmpRoot, "handbook.pdf"), "pdf bytes");
+  symlinkSync(secretFile("board.pdf"), join(tmpRoot, "board.pdf"));
+  const { deps, seen } = recordingDeps();
+
+  expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ indexed: 1 }));
+  expect(seen).toEqual(["pdf bytes"]);
 });
