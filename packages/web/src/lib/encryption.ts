@@ -413,6 +413,66 @@ export function persistEnvSecretToKeyFile(name: string): EnvSecretPersistOutcome
   }
 }
 
+/** Why a set variable is not a valid key. Never carries the value. */
+export type IgnoredSecretReason = "0x-prefix" | "not-hex" | "length";
+
+/**
+ * What startup will find for one secret, for the `check-keys` command an
+ * operator runs before starting a restored install. Never carries a key.
+ *
+ * `same` and `different` compare the file with the variable, so they only
+ * appear while the variable is in effect; `different` is exactly what makes
+ * {@link getPreviousSecret} return the file as the earlier key. With the
+ * variable unset or ignored, a readable key file is just `key`: Pinchy uses it
+ * and has no earlier key.
+ */
+export interface SecretInspection {
+  variable:
+    { status: "unset" } | { status: "valid" } | { status: "ignored"; reason: IgnoredSecretReason };
+  file:
+    | { status: "missing" }
+    | { status: "unreadable"; code: string }
+    | { status: "invalid" }
+    | { status: "key" }
+    | { status: "same" }
+    | { status: "different" };
+}
+
+function ignoredReason(value: string): IgnoredSecretReason {
+  if (/^0x/i.test(value)) return "0x-prefix";
+  if (/[^0-9a-fA-F]/.test(value)) return "not-hex";
+  return "length";
+}
+
+/**
+ * Inspect a secret through the same functions startup uses, without creating
+ * or changing anything: {@link getSecretSource} and {@link isSecretEnvIgnored}
+ * for the variable, the startup read for the file, {@link getPreviousSecret}
+ * for "differs".
+ */
+export function inspectSecret(name: string): SecretInspection {
+  const envKey = process.env[name.toUpperCase()];
+  const variable: SecretInspection["variable"] = isSecretEnvIgnored(name)
+    ? { status: "ignored", reason: ignoredReason(envKey!) }
+    : getSecretSource(name) === "envvar"
+      ? { status: "valid" }
+      : { status: "unset" };
+
+  const { keyFilePath } = secretPaths(name);
+  if (!existsSync(keyFilePath)) return { variable, file: { status: "missing" } };
+
+  const outcome = existingKeyFileOutcome(keyFilePath);
+  if (outcome.status === "file-unreadable") {
+    return { variable, file: { status: "unreadable", code: outcome.code } };
+  }
+  if (outcome.status === "file-invalid") return { variable, file: { status: "invalid" } };
+  if (variable.status !== "valid") return { variable, file: { status: "key" } };
+  return {
+    variable,
+    file: { status: getPreviousSecret(name) === null ? "same" : "different" },
+  };
+}
+
 export function getOrCreateSecret(name: string): Buffer {
   const envVarName = name.toUpperCase();
   const { keyFileDir, keyFilePath } = secretPaths(name);

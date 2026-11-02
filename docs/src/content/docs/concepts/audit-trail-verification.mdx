@@ -106,7 +106,7 @@ However old your backups are, what you restore has to end up like this before Pi
 A pair you backed up after your last key change already is in that state. To get there from an older one, put the values Pinchy ran on into `.env` yourself; for `AUDIT_HMAC_SECRET`, that's the copy you kept when you switched. Take the key file from a `pinchy-secrets` backup made right before your last switch or after it, with no retire in between: a switch keeps the key it replaces in the file. If you've retired that key since, remove the file instead:
 
 ```bash
-docker compose run --rm --no-deps -T --entrypoint rm pinchy /app/secrets/.audit_hmac_secret
+backup_pinchy_keys && docker compose run --rm --no-deps -T --entrypoint rm pinchy /app/secrets/.audit_hmac_secret
 ```
 
 If no volume backup like that exists, the key your last switch replaced may only be in a `.env` backup: when it was the value of `AUDIT_HMAC_SECRET` before that switch, the `env-….backup` from the switch's first step holds it. This writes it from there into the key file without printing it, in the form Pinchy writes it in: lowercase, no line break, readable only by Pinchy's user (uid 999). If you kept the value somewhere else, put it into a file of its own as one line, `AUDIT_HMAC_SECRET=` followed by the value, readable by you alone, and use that file instead.
@@ -146,42 +146,32 @@ compose_with_backup_key "$backup" run --rm --no-deps -T --entrypoint sh pinchy -
 
 The command never replaces a key file: if there already is one, it stops with `File exists`. Check what that file is before you remove it.
 
-Before the first start, check what you restored. For each variable with no line in `.env`, its key file has to be in the volume. This lists the files, never their contents:
+Before the first start, check what you restored. This runs Pinchy's own key check in a throwaway container, as Pinchy's user, so it reads the variables and the key files exactly the way Pinchy will on start. It doesn't start Pinchy, changes nothing, and never prints a key:
 
 ```bash
-docker compose run --rm --no-deps -T --entrypoint ls pinchy -la /app/secrets
+docker compose run --rm --no-deps -T -u 999:999 --entrypoint pnpm pinchy -s check-keys
 ```
 
-Each key file has to belong to Pinchy's user, the way Pinchy writes it: `-rw-------` and `pinchy pinchy` (or `999 999`). A file restored as root often shows `root root` instead, and Pinchy, which runs as uid 999, can't read it. Without a readable `.audit_hmac_secret`, Pinchy has no earlier key, and its first background run records a failure for every entry signed with it. Give the file to Pinchy's user, and do the same with `.encryption_key` if it shows another owner:
+For each key it prints three lines: what Pinchy makes of the variable, what's in the key file, and what Pinchy will do with the two. A line starting `Fix this before you start Pinchy` says what's wrong, and the command then ends with an error. Fix it and run the check again. The usual ones:
+
+- `can't be read (EACCES)`: the file isn't Pinchy's, typically because it was restored as root. Don't remove it, it may be the key you restored. Give it to Pinchy's user, and do the same with `.encryption_key` if that one is named:
+
+  ```bash
+  docker compose run --rm --no-deps -T --entrypoint sh pinchy -c 'chown 999:999 /app/secrets/.audit_hmac_secret && chmod 600 /app/secrets/.audit_hmac_secret'
+  ```
+
+- `set, but Pinchy ignores it`: the line in `.env` isn't the value Pinchy ran on, and the check says why. Put that value in, or remove the line if Pinchy ran on the key file. A new value would be a key change, not a restore.
+- `.encryption_key: no such file`, with no `ENCRYPTION_KEY` in `.env`: restore the file, as described above.
+
+With `AUDIT_HMAC_SECRET` set, what the key file has to hold depends on whether you still keep the key your last switch replaced. About 60 seconds after the start, the first background run verifies against whatever the file holds, and a failure it records can't be cleared:
+
+- **You keep it:** the check has to say `.audit_hmac_secret: holds a different key than AUDIT_HMAC_SECRET`. Anything else means the replaced key isn't in place: put it back, from a `pinchy-secrets` backup or with the key-write command above, before you start Pinchy. A file that holds the current value has to go first: `backup_pinchy_keys && docker compose run --rm --no-deps -T --entrypoint rm pinchy /app/secrets/.audit_hmac_secret`.
+- **You don't** (you never switched, or you've retired that key since): `.audit_hmac_secret: holds the same key as AUDIT_HMAC_SECRET`, or `.audit_hmac_secret: no such file`, and Pinchy writes the current value there on start.
+
+`holds a different key` only says the file holds some other key; which one, only the backup you took it from says. If you wrote the file from a `.env` backup above, run the check with that backup's value too. It has to say `holds the same key as AUDIT_HMAC_SECRET`:
 
 ```bash
-docker compose run --rm --no-deps -T --entrypoint sh pinchy -c 'chown 999:999 /app/secrets/.audit_hmac_secret && chmod 600 /app/secrets/.audit_hmac_secret'
-```
-
-With `AUDIT_HMAC_SECRET` set, compare the key file with the value instead. About 60 seconds after that start, the first background run verifies against whatever the file holds, and a failure it records can't be cleared. These two commands print a hash each, never the key:
-
-```bash
-docker compose run --rm --no-deps -T -u 999:999 --entrypoint sh pinchy -c '
-  key=$(cat /app/secrets/.audit_hmac_secret) || exit 1
-  key=$(printf %s "$key" | tr -d "[:space:]" | tr A-F a-f)
-  case $key in *[!0-9a-f]*) key= ;; esac
-  if [ ${#key} -ne 64 ]; then echo "The key file holds no valid key" >&2; exit 1; fi
-  printf %s "$key" | sha256sum
-'
-docker compose run --rm --no-deps -T --entrypoint sh pinchy -c 'printf %s "$AUDIT_HMAC_SECRET" | tr A-F a-f | sha256sum'
-```
-
-The first one reads the file as Pinchy's user, so it reads exactly what Pinchy can, and it prints a hash only if the file holds a key. Otherwise it says why, and prints no hash: `No such file or directory` means there's no key file. `Permission denied` means the file isn't Pinchy's: fix the owner as above and check again. `The key file holds no valid key` means it's empty or not 64 hex characters, the case of the warning `not a valid key` below. The second one hashes the value as Compose hands it to Pinchy, from `.env` or from a variable set in your shell, which wins over `.env`. Compose reads the file its own way: it drops quotes and a trailing comment, for one. So read the value through Compose, not out of `.env` with a text tool. Both commands lowercase the key, because Pinchy reads a key the same in either case, and the first also drops a line break a key file written by hand may end with.
-
-What you need depends on whether you still keep the key your last switch replaced:
-
-- **You keep it:** the first command has to print a hash, and it has to differ from the second's. Any of the messages above means the key isn't in place yet: fix what it names before you start Pinchy. With no file, Pinchy would write the current value there on start, and the first background run would record a failure for every entry signed with the replaced key, so restore the file first, from a `pinchy-secrets` backup or with the key-write command above.
-- **You don't** (you never switched, or you've retired that key since): the hashes have to match, or the first one says `No such file or directory`, and Pinchy writes the current value there on start. Its other two messages need fixing here too.
-
-Like the log notice below, different hashes only say the file holds some other key; which one, only the backup you took it from says. If you wrote the file from a `.env` backup above, you can check that too. This hashes the value from that backup, and it has to match the key file's hash:
-
-```bash
-compose_with_backup_key "$backup" run --rm --no-deps -T --entrypoint sh pinchy -c 'printf %s "$AUDIT_HMAC_SECRET" | tr A-F a-f | sha256sum'
+compose_with_backup_key "$backup" run --rm --no-deps -T -u 999:999 --entrypoint pnpm pinchy -s check-keys
 ```
 
 Then confirm it in the log of that first start (`docker compose logs pinchy`). With `AUDIT_HMAC_SECRET` set:
@@ -193,17 +183,21 @@ Then confirm it in the log of that first start (`docker compose logs pinchy`). W
   backup_pinchy_keys && docker compose run --rm --no-deps -T --entrypoint rm pinchy /app/secrets/.audit_hmac_secret
   ```
 
-  Then put the replaced key back, from a `pinchy-secrets` backup or with the key-write command above, check again, and run `docker compose up -d`. If you retired that key and removed the file, but get the notice instead, the removal didn't take: stop Pinchy, remove the file again, and run `docker compose up -d`.
+  Then put the replaced key back, from a `pinchy-secrets` backup or with the key-write command above, run the key check again, and run `docker compose up -d`. If you retired that key and removed the file, but get the notice instead, the removal didn't take: stop Pinchy (`docker compose stop pinchy`), remove the file again, and run `docker compose up -d`:
 
-- **The warning `Could not write the AUDIT_HMAC_SECRET value to .audit_hmac_secret`:** there's no key file, and Pinchy couldn't create one, so the current value isn't saved anywhere but `.env`. Fix what the code in brackets names — `EACCES` means `/app/secrets` isn't writable by Pinchy's user (give the directory to uid 999 with `docker compose run --rm --no-deps -T --entrypoint chown pinchy 999:999 /app/secrets`), `ENOSPC` a full disk, `EROFS` a read-only mount — then, with no replaced key to keep, run `docker compose restart pinchy` and confirm `Wrote the AUDIT_HMAC_SECRET value to .audit_hmac_secret`. If you keep one, the missing file is what's wrong, and that line would be too: stop Pinchy (`docker compose stop pinchy`), put the replaced key back as above, check again, and run `docker compose up -d`.
-- **The warning `Could not read .audit_hmac_secret in the secrets volume`:** Pinchy can't open the file, so it has no earlier key, and the first background run records a failure for every entry signed with the key in it. Stop Pinchy at once (`docker compose stop pinchy`), give the file to Pinchy's user with the `chown` command above, check again, and run `docker compose up -d`. Don't remove the file: it may well be the key you restored.
+  ```bash
+  backup_pinchy_keys && docker compose run --rm --no-deps -T --entrypoint rm pinchy /app/secrets/.audit_hmac_secret
+  ```
+
+- **The warning `Could not write the AUDIT_HMAC_SECRET value to .audit_hmac_secret`:** there's no key file, and Pinchy couldn't create one, so the current value isn't saved anywhere but `.env`. Fix what the code in brackets names — `EACCES` means `/app/secrets` isn't writable by Pinchy's user (give the directory to uid 999 with `docker compose run --rm --no-deps -T --entrypoint chown pinchy 999:999 /app/secrets`), `ENOSPC` a full disk, `EROFS` a read-only mount — then, with no replaced key to keep, run `docker compose restart pinchy` and confirm `Wrote the AUDIT_HMAC_SECRET value to .audit_hmac_secret`. If you keep one, the missing file is what's wrong, and that line would be too: stop Pinchy (`docker compose stop pinchy`), put the replaced key back as above, run the key check again, and run `docker compose up -d`.
+- **The warning `Could not read .audit_hmac_secret in the secrets volume`:** Pinchy can't open the file, so it has no earlier key, and the first background run records a failure for every entry signed with the key in it. Stop Pinchy at once (`docker compose stop pinchy`), give the file to Pinchy's user with the `chown` command above, run the key check again, and run `docker compose up -d`. Don't remove the file: it may well be the key you restored.
 - **The warning `.audit_hmac_secret in the secrets volume is not a valid key`:** the file you restored doesn't hold a key (it's empty, or not 64 hex characters), so again Pinchy has no earlier key, with the same result. Stop Pinchy at once, then move the file out of the volume, keeping a copy, and restore the key again from a backup that has it:
 
   ```bash
   backup_pinchy_keys && docker compose run --rm --no-deps -T --entrypoint rm pinchy /app/secrets/.audit_hmac_secret
   ```
 
-And for either variable, the warning `… is set but is not a valid key` means the line in `.env` isn't the value Pinchy ran on: put that value in, or remove the line if Pinchy ran on the key file. A new value would be a key change, not a restore.
+- **The warning `AUDIT_HMAC_SECRET is set but is not a valid key`:** Pinchy ignores the variable and signs with whatever the key file holds, with no earlier key. Stop Pinchy at once (`docker compose stop pinchy`), put the value Pinchy ran on into `.env`, run the key check again, and run `docker compose up -d`. A new value would be a key change, not a restore. For `ENCRYPTION_KEY`, the same warning means the line isn't the value Pinchy ran on either: put that value in, or remove the line if Pinchy ran on the key file.
 
 Keep the older backups offline anyway, marked with the date of the change they predate. They hold the only copy of a retired or leaked key, which you need to re-verify the entries it signed. Never restore a key file from before a retire: that puts the retired key back as the earlier key Pinchy accepts.
 
@@ -291,22 +285,15 @@ As with a rolling restart (below), there's no reset, on purpose. Write down what
 
    If `rm` reports that there's no such file, Pinchy hadn't generated one yet, and that's fine. Then correct the value in `.env`, run `docker compose up -d`, and check the log again. Entries signed with the generated key in the meantime become unverifiable along with the ones signed with the leaked key; the backup keeps it.
 
-6. Check that the file holds the new value, not the leaked one. These two commands print a hash each, never the key, and the hashes have to match:
+6. Check that the file holds the new value, not the leaked one, with the key check from [Which backup to restore](#which-backup-to-restore). It runs in a throwaway container next to the running one:
 
    ```bash
-   docker compose run --rm --no-deps -T -u 999:999 --entrypoint sh pinchy -c '
-     key=$(cat /app/secrets/.audit_hmac_secret) || exit 1
-     key=$(printf %s "$key" | tr -d "[:space:]" | tr A-F a-f)
-     case $key in *[!0-9a-f]*) key= ;; esac
-     if [ ${#key} -ne 64 ]; then echo "The key file holds no valid key" >&2; exit 1; fi
-     printf %s "$key" | sha256sum
-   '
-   docker compose run --rm --no-deps -T --entrypoint sh pinchy -c 'printf %s "$AUDIT_HMAC_SECRET" | tr A-F a-f | sha256sum'
+   docker compose run --rm --no-deps -T -u 999:999 --entrypoint pnpm pinchy -s check-keys
    ```
 
-   Both run in a throwaway container next to the running one, and the second one hashes the new value as Compose hands it to Pinchy, read from `.env` the way Compose reads it. It's the same check as in [Which backup to restore](#which-backup-to-restore), which also says what the first one's messages mean when it prints no hash. If the hashes differ, the key file isn't the new value: stop and look before anything signs more entries. Two causes are likely. After a step 5 retry, a key file Pinchy generated while the value was invalid and that you didn't remove before correcting `.env`: the file is then that random key, and Pinchy kept it. Or step 4 used `docker compose start` or `restart`, and Pinchy wrote the leaked value into the file. Either way, do step 5's commands, then `docker compose up -d`, and compare again.
+   It has to say `.audit_hmac_secret: holds the same key as AUDIT_HMAC_SECRET`. If it says the file holds a different key, the key file isn't the new value: stop and look before anything signs more entries. Two causes are likely. After a step 5 retry, a key file Pinchy generated while the value was invalid and that you didn't remove before correcting `.env`: the file is then that random key, and Pinchy kept it. Or step 4 used `docker compose start` or `restart`, and Pinchy wrote the leaked value into the file. Either way, do step 5's commands, then `docker compose up -d`, and check again.
 
-7. Once the hashes match, [back up the keys again](#which-backup-to-restore).
+7. Once it says so, [back up the keys again](#which-backup-to-restore).
 
 Retiring in the same stop costs you the failure entry above for the rows signed with the leaked key since the last background run. The key alone does nothing without write access to the database, so for most leaks the short window is the smaller risk. If you have reason to think someone holds both right now, retire it in the same stop and document why.
 

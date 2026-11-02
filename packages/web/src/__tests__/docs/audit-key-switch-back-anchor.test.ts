@@ -9,6 +9,8 @@ import {
   KEY_VARIABLE_IGNORED_DOCS_URL,
   evaluateAuditSecretRotation,
 } from "@/lib/secret-source";
+import { describeKeyCheck } from "@/lib/key-check";
+import type { SecretInspection } from "@/lib/encryption";
 
 const repoRoot = resolve(__dirname, "../../../../..");
 const docsRoot = resolve(repoRoot, "docs/src/content/docs");
@@ -105,6 +107,56 @@ describe("the retire-the-earlier-key steps quote log lines Pinchy prints", () =>
     quoted(line);
     expect(
       describeAuditKeyFilePersist({ status: "written", dir: "/app/secrets" }).message
+    ).toContain(line);
+  });
+});
+
+describe("the key-check steps quote lines check-keys prints", () => {
+  // The restore and leak steps tell the operator which line to expect from
+  // `pnpm -s check-keys` before Pinchy starts. A reworded line would leave
+  // them looking for one that never appears, so pin each quoted line to the
+  // code that prints it, and the command to the script that runs it.
+  const page = readFileSync(pagePath, "utf-8");
+  const quoted = (line: string) => expect(page).toContain(`\`${line}\``);
+  const auditLines = (inspection: SecretInspection) =>
+    describeKeyCheck("audit_hmac_secret", inspection).lines.join("\n");
+
+  it("the command", () => {
+    expect(page).toContain("--entrypoint pnpm pinchy -s check-keys");
+    const pkg = JSON.parse(readFileSync(resolve(repoRoot, "packages/web/package.json"), "utf-8"));
+    expect(pkg.scripts["check-keys"]).toBe("node --import tsx scripts/check-keys.ts");
+  });
+
+  it.each([
+    [".audit_hmac_secret: holds a different key than AUDIT_HMAC_SECRET", "different"],
+    [".audit_hmac_secret: holds the same key as AUDIT_HMAC_SECRET", "same"],
+    [".audit_hmac_secret: no such file", "missing"],
+  ] as const)("%s", (line, status) => {
+    quoted(line);
+    expect(auditLines({ variable: { status: "valid" }, file: { status } })).toContain(line);
+  });
+
+  it("the unreadable file", () => {
+    const line = "can't be read (EACCES)";
+    quoted(line);
+    expect(
+      auditLines({ variable: { status: "valid" }, file: { status: "unreadable", code: "EACCES" } })
+    ).toContain(line);
+  });
+
+  it("the ignored variable", () => {
+    const line = "set, but Pinchy ignores it";
+    quoted(line);
+    expect(
+      auditLines({ variable: { status: "ignored", reason: "length" }, file: { status: "key" } })
+    ).toContain(line);
+  });
+
+  it("the line that needs fixing", () => {
+    const line = "Fix this before you start Pinchy";
+    quoted(line);
+    expect(
+      auditLines({ variable: { status: "ignored", reason: "length" }, file: { status: "key" } })
     ).toContain(line);
   });
 });
