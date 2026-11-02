@@ -91,6 +91,16 @@ export const DEFAULT_ARTIFACT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 /** Scratch space for in-flight batches, alongside the version directories. */
 const STAGING_DIR_NAME = "staging";
 
+/**
+ * The store's scratch directory, for work that must stay off the container's
+ * writable layer — the conversion's batches, and the ingest's private copies
+ * of the sources it reads (verified-source.ts `writePrivateCopy`). Whatever a
+ * killed run leaves here, `clearStagedBatches` removes at the next start.
+ */
+export function stagingDirOf(rootDir: string = DEFAULT_ARTIFACT_DIR): string {
+  return join(rootDir, STAGING_DIR_NAME);
+}
+
 export interface OfficeArtifactStoreOptions {
   formatVersion?: number;
 }
@@ -216,6 +226,41 @@ export class OfficeArtifactStore {
       return [];
     }
   }
+}
+
+/**
+ * Removes every batch directory under `<rootDir>/staging/` and returns how
+ * many there were.
+ *
+ * A batch removes its own directory when it finishes, but one that never
+ * finishes — a restart, an upgrade, an OOM kill during the nightly reindex —
+ * leaves its checked copies behind (up to `OFFICE_CONVERT_BATCH_SIZE` of them,
+ * each up to 200 MB), and nothing else ever reads `staging/`: `sweep` walks
+ * the version directory and `pruneOtherFormatVersions` skips it on purpose.
+ *
+ * Only safe while no batch can be running: the index worker calls it once at
+ * boot, before its first claim — the same single-container premise
+ * `requeueOrphanedIndexJobs` rests on. The conversion and the ingest's private
+ * source copies (`stagingDirOf`) are the only writers of `staging/`; previews
+ * only ever read finished artifacts.
+ *
+ * A function of the directory rather than a store method so clearing needs no
+ * store: constructing one creates the version directory, and a volume that is
+ * missing should cost nothing here.
+ */
+export async function clearStagedBatches(rootDir: string = DEFAULT_ARTIFACT_DIR): Promise<number> {
+  const stagingDir = join(rootDir, STAGING_DIR_NAME);
+  let batches: string[];
+  try {
+    batches = await readdir(stagingDir);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return 0;
+    throw err;
+  }
+  for (const batch of batches) {
+    await rm(join(stagingDir, batch), { recursive: true, force: true });
+  }
+  return batches.length;
 }
 
 let sharedStore: OfficeArtifactStore | null = null;

@@ -8,8 +8,17 @@
  * embedder + extractor), so no Ollama and no real PDFs.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { basename, join } from "node:path";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { basename, dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { eq } from "drizzle-orm";
 
@@ -53,6 +62,8 @@ function fakeDeps(): IngestDeps {
       throw new Error("convertOffice must not be called for a PDF");
     }),
     ocrModel: null,
+    // Hidden, so a run over tmpRoot never lists its own copies.
+    stagingDir: join(tmpRoot, ".kb-artifacts", "staging"),
   };
 }
 
@@ -700,6 +711,48 @@ describe("kb index worker tick", () => {
 
     await runKbIndexWorkerTick({ deps: fakeDeps() });
 
+    expect(await getLatestIndexJobForAgent(agent.id)).toMatchObject({ status: "succeeded" });
+  });
+
+  it("clears the staged copies an interrupted run left behind, before it claims anything (eighth review, PR #1243)", async () => {
+    // A batch removes its staging directory when it finishes, and a read
+    // removes its private copy of the document; one that never finishes — a
+    // restart, an upgrade, an OOM kill mid-reindex — leaves them on the
+    // artifact volume, plaintext, and nothing else ever removes them. Same
+    // boot act as the requeue, for the same reason it is sound: this process
+    // is the only worker and has not started a batch or a read yet, so
+    // whatever wrote them is gone.
+    const artifactDir = join(tmpRoot, ".kb-artifacts");
+    const leftover = join(artifactDir, "staging", "batch-of-a-dead-process", "in", "0.pptx");
+    const leftoverCopy = join(artifactDir, "staging", "source-of-a-dead-read", "board.pdf");
+    const artifact = join(artifactDir, "v2", "ab", "kept.pdf");
+    for (const path of [leftover, leftoverCopy, artifact]) {
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, "bytes");
+    }
+    const corpus = join(tmpRoot, "corpus");
+    writePdf(corpus, "handbook.pdf");
+    const agent = await makeAgent();
+    await enqueueIndexJob({
+      orgId: ORG_ID,
+      agentId: agent.id,
+      agentName: agent.name,
+      requestedBy: "admin-1",
+      paths: [corpus],
+    });
+    const deps = fakeDeps();
+    const leftoverWhenClaimed: boolean[] = [];
+    const extractPdf = deps.extractPdf;
+    deps.extractPdf = async (...args) => {
+      leftoverWhenClaimed.push(existsSync(leftover) || existsSync(leftoverCopy));
+      return extractPdf(...args);
+    };
+
+    await runKbIndexWorkerTick({ deps, artifactDir });
+
+    expect(leftoverWhenClaimed).toEqual([false]);
+    expect(readdirSync(join(artifactDir, "staging"))).toEqual([]);
+    expect(existsSync(artifact)).toBe(true);
     expect(await getLatestIndexJobForAgent(agent.id)).toMatchObject({ status: "succeeded" });
   });
 

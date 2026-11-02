@@ -8,12 +8,12 @@
  * docs state that as a product promise).
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { readdir, stat, utimes } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-import { OfficeArtifactStore } from "@/lib/knowledge/office-artifacts";
+import { clearStagedBatches, OfficeArtifactStore } from "@/lib/knowledge/office-artifacts";
 
 let tmpRoot: string;
 
@@ -142,6 +142,34 @@ describe("OfficeArtifactStore", () => {
       expect(removed).toBe(1);
       expect(await v1.get(HASH_A)).toBeNull();
       expect(await readdir(root)).toEqual(["v2"]);
+    });
+  });
+
+  describe("clearStagedBatches (eighth review, PR #1243)", () => {
+    // A batch cleans its staging directory up when it finishes. A batch that
+    // never finishes — a restart, an upgrade, an OOM kill during the nightly
+    // reindex — leaves up to 20 checked copies of up to 200 MB each behind,
+    // and nothing else ever removes them: `sweep` reads only the version
+    // directory and `pruneOtherFormatVersions` deliberately skips `staging/`.
+    it("removes every batch an interrupted run left in staging, and nothing else", async () => {
+      const root = join(tmpRoot, "store");
+      const store = new OfficeArtifactStore(root);
+      const artifact = await store.put(HASH_A, stagedPdf("a.pdf"));
+      for (const batch of [await store.createStagingDir(), await store.createStagingDir()]) {
+        mkdirSync(join(batch, "in"), { recursive: true });
+        writeFileSync(join(batch, "in", "0.pptx"), "a checked copy");
+      }
+
+      expect(await clearStagedBatches(root)).toBe(2);
+
+      expect(await readdir(join(root, "staging"))).toEqual([]);
+      expect(readFileSync(artifact, "utf8")).toBe("%PDF-1.4 stand-in");
+    });
+
+    it("is a no-op on a store that has no staging directory, or no store at all", async () => {
+      expect(await clearStagedBatches(join(tmpRoot, "never-used"))).toBe(0);
+      new OfficeArtifactStore(join(tmpRoot, "fresh"));
+      expect(await clearStagedBatches(join(tmpRoot, "fresh"))).toBe(0);
     });
   });
 });

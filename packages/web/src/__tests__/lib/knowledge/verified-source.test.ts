@@ -7,7 +7,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { execFileSync } from "node:child_process";
 import {
-  lstatSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -23,11 +23,10 @@ import { dirname, join } from "node:path";
 
 import {
   SourceRefusedError,
-  identityOf,
+  SourceUnverifiableError,
   isAtPath,
   openVerifiedSource,
   writePrivateCopy,
-  type ExpectedSource,
 } from "@/lib/knowledge/verified-source";
 
 let base: string;
@@ -48,12 +47,7 @@ afterEach(() => {
   rmSync(base, { recursive: true, force: true });
 });
 
-/** What discovery records for a file it listed. */
-function discovered(path: string): ExpectedSource {
-  return { realPath: path, identity: identityOf(lstatSync(path, { bigint: true })) };
-}
-
-async function readVerified(expected: ExpectedSource): Promise<string> {
+async function readVerified(expected: string): Promise<string> {
   const { handle } = await openVerifiedSource(expected);
   try {
     return (await handle.readFile()).toString("utf8");
@@ -62,7 +56,7 @@ async function readVerified(expected: ExpectedSource): Promise<string> {
   }
 }
 
-async function refusal(expected: ExpectedSource): Promise<string> {
+async function refusal(expected: string): Promise<string> {
   const err = await openVerifiedSource(expected).then(
     async ({ handle }) => {
       await handle.close();
@@ -79,7 +73,7 @@ describe("openVerifiedSource", () => {
     const report = join(share, "report.pdf");
     writeFileSync(report, "harmless report");
 
-    const { handle, stat } = await openVerifiedSource(discovered(report));
+    const { handle, stat } = await openVerifiedSource(report);
     try {
       expect((await handle.readFile()).toString()).toBe("harmless report");
       expect(stat.size).toBe(BigInt("harmless report".length));
@@ -93,21 +87,20 @@ describe("openVerifiedSource", () => {
     writeFileSync(secret, "TOP SECRET merger terms");
     const report = join(share, "report.pdf");
     writeFileSync(report, "harmless report");
-    const seen = discovered(report);
 
     rmSync(report);
     symlinkSync(secret, report);
 
-    expect(await refusal(seen)).toBe("link");
+    expect(await refusal(report)).toBe("link");
   });
 
-  it("refuses a link even when the caller has no discovery identity to compare (request-time reads)", async () => {
+  it("refuses a link that was already in place (request-time reads)", async () => {
     const secret = join(elsewhere, "board.pdf");
     writeFileSync(secret, "TOP SECRET merger terms");
     const report = join(share, "report.pdf");
     symlinkSync(secret, report);
 
-    expect(await refusal({ realPath: report })).toBe("link");
+    expect(await refusal(report)).toBe("link");
   });
 
   it("refuses a parent directory swapped for a link — the component O_NOFOLLOW cannot see", async () => {
@@ -118,92 +111,161 @@ describe("openVerifiedSource", () => {
     mkdirSync(sub);
     writeFileSync(join(sub, "report.pdf"), "harmless report");
     writeFileSync(join(elsewhere, "report.pdf"), "TOP SECRET merger terms");
-    const seen = discovered(join(sub, "report.pdf"));
 
     renameSync(sub, join(share, "sub-aside"));
     symlinkSync(elsewhere, sub);
 
-    // Refused on two independent grounds — the inode is not the one discovery
-    // saw, and the descriptor is not at the expected path. Either is enough.
-    expect(["replaced", "moved"]).toContain(await refusal(seen));
-    // And with no identity to lean on, the path check alone still refuses it.
-    expect(await refusal({ realPath: seen.realPath })).toBe("moved");
+    expect(await refusal(join(sub, "report.pdf"))).toBe("moved");
   });
 
-  it("refuses a parent swapped DURING discovery, when the inode recorded is already the wrong one", async () => {
-    // The walk read `sub` as a directory, then the swap landed before it
-    // listed `sub`'s entries: discovery recorded the other team's inode under
-    // team-a's name. Only the where-is-the-descriptor check can see that.
-    const sub = join(share, "sub");
-    writeFileSync(join(elsewhere, "report.pdf"), "TOP SECRET merger terms");
-    symlinkSync(elsewhere, sub);
-    const expected: ExpectedSource = {
-      realPath: join(sub, "report.pdf"),
-      identity: identityOf(lstatSync(join(elsewhere, "report.pdf"), { bigint: true })),
-    };
-
-    expect(await refusal(expected)).toBe("moved");
-  });
-
-  it("refuses a different regular file put in place of the one discovery found", async () => {
+  it("reads a file an editor saved by writing a new file and renaming it over the old one", async () => {
+    // A new inode at the same place. Nothing about it points outside the
+    // folder, so it is the document now — refusing it would leave an
+    // ordinary save unindexed until the next run, and forever on a
+    // filesystem that hands out a fresh inode number on every lookup.
     const report = join(share, "report.pdf");
     writeFileSync(report, "v1");
-    const seen = discovered(report);
-    rmSync(report);
-    writeFileSync(join(share, "staged.pdf"), "v2");
-    renameSync(join(share, "staged.pdf"), report);
+    writeFileSync(join(share, ".report.pdf.swp"), "v2");
+    renameSync(join(share, ".report.pdf.swp"), report);
 
-    expect(await refusal(seen)).toBe("replaced");
+    expect(await readVerified(report)).toBe("v2");
+  });
+
+  it("reads a file rewritten in place", async () => {
+    const report = join(share, "report.pdf");
+    writeFileSync(report, "v1");
+    writeFileSync(report, "v2, longer than before");
+
+    expect(await readVerified(report)).toBe("v2, longer than before");
   });
 
   it("refuses a FIFO without blocking on it", async () => {
     const report = join(share, "report.pdf");
-    writeFileSync(report, "v1");
-    const seen = discovered(report);
-    rmSync(report);
     execFileSync("mkfifo", [report]);
 
     // Without O_NONBLOCK this open would wait for a writer that never comes,
     // and the test (like the indexer) would hang rather than fail.
-    expect(await refusal(seen)).toBe("not_a_file");
+    expect(await refusal(report)).toBe("not_a_file");
   });
 
   it("passes ordinary errors through unchanged — a vanished file is not a refusal", async () => {
     const gone = join(share, "gone.pdf");
-    await expect(openVerifiedSource({ realPath: gone })).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(openVerifiedSource(gone)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("never returns the other folder's file while a parent folder keeps flipping to a link and back", async () => {
+    // The race a one-shot swap cannot show: the parent is a link while the
+    // file is opened and a folder again while it is checked. A check that
+    // walks the path a second time (realpath, then stat) is answered by the
+    // folder, and the descriptor holds the other team's file — measured at
+    // 16,942 of 20,000 reads on macOS before the portable fallback was removed.
+    const sub = join(share, "sub");
+    const aside = join(share, "sub-aside");
+    mkdirSync(sub);
+    writeFileSync(join(sub, "report.pdf"), "harmless report");
+    writeFileSync(join(elsewhere, "report.pdf"), "TOP SECRET merger terms");
+
+    let flipping = true;
+    const flipper = (async () => {
+      while (flipping) {
+        try {
+          renameSync(sub, aside);
+          symlinkSync(elsewhere, sub);
+        } catch {
+          // A half-done flip is still a flip.
+        }
+        await new Promise((resolve) => setImmediate(resolve));
+        try {
+          rmSync(sub);
+          renameSync(aside, sub);
+        } catch {
+          // Same.
+        }
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+    })();
+
+    const read: string[] = [];
+    try {
+      for (let i = 0; i < 2000; i++) {
+        try {
+          read.push(await readVerified(join(sub, "report.pdf")));
+        } catch {
+          // Refused, or caught mid-flip with nothing at the path: not a read.
+        }
+      }
+    } finally {
+      flipping = false;
+      await flipper;
+    }
+
+    expect(read).not.toContain("TOP SECRET merger terms");
   });
 });
 
-describe("isAtPath — the portable fallback, where there is no /proc", () => {
-  it("answers yes for the descriptor of the file at the path", async () => {
+describe("isAtPath — where the descriptor really is", () => {
+  /** isAtPath's verdict, or "refused" where it cannot tell — never a guess. */
+  async function verdict(...args: Parameters<typeof isAtPath>): Promise<boolean | "refused"> {
+    return isAtPath(...args).catch((err: unknown) => {
+      expect(err).toBeInstanceOf(SourceUnverifiableError);
+      return "refused" as const;
+    });
+  }
+
+  // Linux only: the answer comes from procfs, which macOS does not have (it
+  // proves the same thing in the open itself — see verified-source.ts).
+  it.skipIf(!existsSync("/proc/self/fd"))(
+    "answers yes for the descriptor of the file at the path",
+    async () => {
+      const report = join(share, "report.pdf");
+      writeFileSync(report, "harmless");
+      const { open } = await import("node:fs/promises");
+      const handle = await open(report, "r");
+      try {
+        expect(await isAtPath(handle, report)).toBe(true);
+      } finally {
+        await handle.close();
+      }
+    }
+  );
+
+  it("refuses rather than guesses when the descriptor's location cannot be read", async () => {
+    // No procfs — another OS, or a container without /proc mounted. The
+    // portable answer used to be a second walk of the path (realpath, then
+    // stat), which a parent flipping between a folder and a link answers
+    // wrongly. There is no sound portable answer, so there is none.
     const report = join(share, "report.pdf");
     writeFileSync(report, "harmless");
-    const { handle, stat } = await openVerifiedSource({ realPath: report });
+    const { open } = await import("node:fs/promises");
+    const handle = await open(report, "r");
     try {
-      expect(await isAtPath(handle, stat, report, null)).toBe(true);
+      await expect(isAtPath(handle, report, join(base, "no-procfs-here"))).rejects.toBeInstanceOf(
+        SourceUnverifiableError
+      );
     } finally {
       await handle.close();
     }
   });
 
-  it("answers no when a parent was swapped after the descriptor was opened", async () => {
+  it("never answers yes when a parent was swapped after the descriptor was opened", async () => {
     const sub = join(share, "sub");
     mkdirSync(sub);
     const report = join(sub, "report.pdf");
     writeFileSync(report, "harmless");
     writeFileSync(join(elsewhere, "report.pdf"), "TOP SECRET");
 
-    const { handle, stat } = await openVerifiedSource({ realPath: report });
+    const { open } = await import("node:fs/promises");
+    const handle = await open(report, "r");
     try {
       renameSync(sub, join(share, "sub-aside"));
       symlinkSync(elsewhere, sub);
-      expect(await isAtPath(handle, stat, report, null)).toBe(false);
+      expect(await verdict(handle, report)).not.toBe(true);
     } finally {
       await handle.close();
     }
   });
 
-  it("answers no when the descriptor is a different inode from the file now at the path", async () => {
+  it("never answers yes for the other folder's file once the path resolves cleanly again", async () => {
     // A parent swapped BEFORE the open and swapped back afterwards: the path
     // resolves cleanly again, but the descriptor holds the other team's file.
     const sub = join(share, "sub");
@@ -217,10 +279,9 @@ describe("isAtPath — the portable fallback, where there is no /proc", () => {
     const { open } = await import("node:fs/promises");
     const handle = await open(report, "r");
     try {
-      const stat = await handle.stat({ bigint: true });
       rmSync(sub);
       renameSync(join(share, "sub-aside"), sub);
-      expect(await isAtPath(handle, stat, report, null)).toBe(false);
+      expect(await verdict(handle, report)).not.toBe(true);
     } finally {
       await handle.close();
     }
@@ -229,10 +290,15 @@ describe("isAtPath — the portable fallback, where there is no /proc", () => {
 
 describe("writePrivateCopy", () => {
   it("copies the bytes under the source's basename into a directory only this process can enter", async () => {
-    const copy = await writePrivateCopy(Buffer.from("bytes"), join(share, "Rechnung.doc"));
+    const staging = join(base, "kb-artifacts", "staging");
+    const copy = await writePrivateCopy(Buffer.from("bytes"), join(share, "Rechnung.doc"), staging);
     try {
       expect(copy.path.endsWith("/Rechnung.doc")).toBe(true);
       expect(copy.path.startsWith(share)).toBe(false);
+      // On the artifact volume's staging area, which the index worker clears
+      // at start — never the container's /tmp, where a copy a killed run left
+      // behind would outlive every restart on the writable layer.
+      expect(dirname(dirname(copy.path))).toBe(staging);
       expect(readFileSync(copy.path, "utf8")).toBe("bytes");
       expect(statSync(dirname(copy.path)).mode & 0o777).toBe(0o700);
     } finally {
@@ -250,7 +316,7 @@ it("reads through a root that is itself a link, because the expected path is the
   const linkedRoot = join(base, "linked-data");
   symlinkSync(join(base, "data"), linkedRoot);
 
-  expect(
-    await readVerified(discovered(realpathSync(join(linkedRoot, "team-a", "report.pdf"))))
-  ).toBe("harmless report");
+  expect(await readVerified(realpathSync(join(linkedRoot, "team-a", "report.pdf")))).toBe(
+    "harmless report"
+  );
 });

@@ -328,7 +328,7 @@ A knowledge-base document now counts as archived if any **folder** on its path i
 
 Indexing always skipped symbolic links when it listed a folder, but the reads after that followed them. So a file swapped for a link while a run was in progress — or reached through a folder swapped for one — was indexed with whatever the link pointed at, under the original file's name. Anyone who could write to one mounted folder could use that to make an agent quote a document from another team's folder.
 
-Every read now refuses a link and checks that the file is still the one the run listed, at the place it listed it; opening a cited document and an agent reading a file directly get the same check. Nothing to configure. A refused file counts as `failed` for that run, keeps any version indexed before, and is counted as `refusedFiles` on the reindex entry in the audit trail. One visible side effect: a document saved during a run is refused for that run and picked up by the next. [Links inside a mounted folder](/guides/mount-data-directories/#links-inside-a-mounted-folder) has the details.
+Every read now refuses a link and checks that the file is still a regular file at the place the run listed it; opening a cited document and an agent reading a file directly get the same check. Nothing to configure. A refused file counts as `failed` for that run, keeps any version indexed before, and is counted as `refusedFiles` on the reindex entry in the audit trail. A document saved during a run is read normally. [Links inside a mounted folder](/guides/mount-data-directories/#links-inside-a-mounted-folder) has the details.
 
 #### Knowledge bases now keep themselves current
 

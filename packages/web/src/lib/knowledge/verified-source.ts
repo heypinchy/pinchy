@@ -1,6 +1,6 @@
 /**
  * Opens a knowledge-base source file without following a link, and proves the
- * descriptor is the file the caller found, at the place it found it.
+ * descriptor is a regular file at the place the caller found it.
  *
  * ## Why every read goes through here
  *
@@ -15,18 +15,33 @@
  * the same effect, and `O_NOFOLLOW` alone cannot see it: it guards the last
  * path component only.
  *
- * ## What is checked, on the open descriptor
+ * ## What is checked
  *
- *   1. `O_NOFOLLOW` — a link at the last component fails the open (`ELOOP`)
- *      instead of being followed. `O_NONBLOCK` with it, so a FIFO swapped in
- *      cannot park the indexer forever in `open()`; for a regular file the
- *      flag means nothing.
+ *   1. No link anywhere it may matter. On Linux, `O_NOFOLLOW`: a link at the
+ *      last component fails the open (`ELOOP`) instead of being followed. On
+ *      macOS, `O_NOFOLLOW_ANY`, which refuses a link at ANY component — the
+ *      parent check below, done by the kernel in the open itself. `O_NONBLOCK`
+ *      with either, so a FIFO swapped in cannot park the indexer forever in
+ *      `open()`; for a regular file the flag means nothing.
  *   2. `fstat` — a regular file, and nothing else.
- *   3. The identity discovery recorded (`lstat` dev + inode), when there is
- *      one: still the same file, not something put in its place.
- *   4. Where the descriptor really is (`/proc/self/fd/N` on Linux), which must
+ *   3. Linux: where the descriptor really is (`/proc/self/fd/N`), which must
  *      equal the real path the caller expected. This is the check that sees a
  *      swapped parent directory, wherever in the path it sits.
+ *
+ * Where neither 1 nor 3 can prove the location — no procfs and no
+ * `O_NOFOLLOW_ANY` — the read is refused (`SourceUnverifiableError`), never
+ * guessed. Resolving the path a second time is not an answer: each walk is
+ * its own race, and a parent flipping between a folder and a link answered
+ * "same file" for the other folder's file in 16,942 of 20,000 reads. Pinchy
+ * runs on Linux (Docker, also in development); macOS is covered for the test
+ * suite and `pnpm dev`; any other platform refuses these reads.
+ *
+ * What is NOT checked: whether the file is the one discovery listed. A new
+ * inode at the same place is what an ordinary save looks like (write a new
+ * file, rename it over the old one), and on filesystems without stable inode
+ * numbers (cifs `noserverino`, sshfs without `use_ino`) it is every lookup.
+ * The one swap only an identity check would see — a hard link renamed into
+ * place — needs the target on the same filesystem and is out of scope.
  *
  * Everything after this reads the returned handle — never the path again —
  * or a private copy made from it (`writePrivateCopy`), so a reader that only
@@ -35,39 +50,20 @@
  */
 import { randomUUID } from "node:crypto";
 import { constants as fsConstants, type BigIntStats } from "node:fs";
-import { mkdtemp, open, readlink, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, open, readlink, rm, writeFile } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 
-/** What discovery saw: the file's device and inode, from an `lstat`. */
-export interface SourceIdentity {
-  dev: bigint;
-  ino: bigint;
-}
-
-export interface ExpectedSource {
-  /**
-   * The canonical path the file must be found at: the real path of its root
-   * plus the path discovery walked below it. Opened directly, so a root that
-   * is itself a link (an admin's `/data` mounted elsewhere, macOS's `/tmp`)
-   * costs nothing, while a link anywhere BELOW the root is refused.
-   */
-  realPath: string;
-  /** Required for ingest; absent for a request-time read, which has no discovery behind it. */
-  identity?: SourceIdentity | null;
-}
-
 /**
- * Why a source was not read.
+ * Why a source was not read. Each one means the path no longer leads to a
+ * regular file inside the folder it was found in:
  *
  * - `link`       — the file is now a symbolic link.
  * - `not_a_file` — a directory, FIFO, socket or device now sits at the path.
- * - `replaced`   — a regular file, but not the one discovery found there.
  * - `moved`      — the descriptor is not at the expected path: a directory on
  *                  the way to it was swapped for a link.
  */
-export type SourceRefusal = "link" | "not_a_file" | "replaced" | "moved";
+export type SourceRefusal = "link" | "not_a_file" | "moved";
 
 export class SourceRefusedError extends Error {
   constructor(
@@ -85,20 +81,39 @@ function describeRefusal(refusal: SourceRefusal): string {
       return "it is a symbolic link";
     case "not_a_file":
       return "it is not a regular file";
-    case "replaced":
-      return "it is no longer the file found when the folder was listed";
     case "moved":
       return "a folder on its path was replaced by a link";
   }
 }
 
 /**
+ * This platform cannot prove where an open descriptor is (see the module
+ * comment), so nothing is read. Not a `SourceRefusedError`: it says nothing
+ * about the share, and is booked like any other read that failed.
+ */
+export class SourceUnverifiableError extends Error {
+  constructor(realPath: string, options?: ErrorOptions) {
+    super(`refused to read ${realPath}: cannot verify where the file was opened`, options);
+    this.name = "SourceUnverifiableError";
+  }
+}
+
+/**
+ * macOS's `O_NOFOLLOW_ANY` (sys/fcntl.h, macOS 11+), which Node does not
+ * export. Darwin only: on Linux the same bit is another flag. It replaces
+ * `O_NOFOLLOW` there — the kernel rejects the two together (`EINVAL`).
+ */
+const O_NOFOLLOW_ANY = process.platform === "darwin" ? 0x20000000 : 0;
+
+/**
  * `?? 0` because Windows has neither flag: the mask degrades to a plain read
- * there rather than turning `NaN`. Pinchy runs on Linux, and these checks are
- * what that platform gets.
+ * there rather than turning `NaN` — and every read is then refused, because
+ * Windows has no procfs either.
  */
 const OPEN_NO_FOLLOW =
-  fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0) | (fsConstants.O_NONBLOCK ?? 0);
+  fsConstants.O_RDONLY |
+  (O_NOFOLLOW_ANY || (fsConstants.O_NOFOLLOW ?? 0)) |
+  (fsConstants.O_NONBLOCK ?? 0);
 
 export interface VerifiedSource {
   handle: FileHandle;
@@ -107,40 +122,35 @@ export interface VerifiedSource {
 }
 
 /**
- * Opens `expected.realPath` and runs the four checks above. The caller owns the
- * returned handle and must close it.
+ * Opens `realPath` — the real path of its root plus the path walked below it,
+ * so a root that is itself a link (an admin's `/data` mounted elsewhere,
+ * macOS's `/tmp`) costs nothing while a link anywhere BELOW the root is
+ * refused — and runs the checks above. The caller owns the returned handle and
+ * must close it.
  *
  * Errors that say nothing about a swap — the file is gone (`ENOENT`), access is
  * denied — are thrown as they are, so a caller books them the way it always
  * has. Only a refusal is a `SourceRefusedError`.
  */
-export async function openVerifiedSource(expected: ExpectedSource): Promise<VerifiedSource> {
+export async function openVerifiedSource(realPath: string): Promise<VerifiedSource> {
   let handle: FileHandle;
   try {
     // eslint-disable-next-line security/detect-non-literal-fs-filename -- the path comes from the caller's own discovery or containment check; this function is the check that makes reading it safe.
-    handle = await open(expected.realPath, OPEN_NO_FOLLOW);
+    handle = await open(realPath, OPEN_NO_FOLLOW);
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ELOOP") {
-      throw new SourceRefusedError("link", expected.realPath);
+      throw new SourceRefusedError(await whichLink(realPath), realPath);
     }
     throw err;
   }
 
   try {
     const info = await handle.stat({ bigint: true });
-    if (!info.isFile()) throw new SourceRefusedError("not_a_file", expected.realPath);
-
-    if (expected.identity !== undefined) {
-      const seen = expected.identity;
-      if (!seen || seen.dev !== info.dev || seen.ino !== info.ino) {
-        throw new SourceRefusedError("replaced", expected.realPath);
-      }
+    if (!info.isFile()) throw new SourceRefusedError("not_a_file", realPath);
+    // macOS: O_NOFOLLOW_ANY already refused a link at every component.
+    if (!O_NOFOLLOW_ANY && !(await isAtPath(handle, realPath))) {
+      throw new SourceRefusedError("moved", realPath);
     }
-
-    if (!(await isAtPath(handle, info, expected.realPath))) {
-      throw new SourceRefusedError("moved", expected.realPath);
-    }
-
     return { handle, stat: info };
   } catch (err) {
     await handle.close();
@@ -148,53 +158,42 @@ export async function openVerifiedSource(expected: ExpectedSource): Promise<Veri
   }
 }
 
-/** The identity `openVerifiedSource` compares against: an `lstat`, so a link is described as itself. */
-export function identityOf(info: BigIntStats): SourceIdentity {
-  return { dev: info.dev, ino: info.ino };
+/**
+ * Names the link an `ELOOP` hit: the file itself, or (macOS's
+ * `O_NOFOLLOW_ANY`, or a loop of links above it on Linux) a folder on the way.
+ * Only a label for the log and the audit row — the read is refused either way.
+ */
+async function whichLink(realPath: string): Promise<SourceRefusal> {
+  // eslint-disable-next-line security/detect-non-literal-fs-filename -- describes the path the open just refused; nothing is read.
+  const info = await lstat(realPath).catch(() => null);
+  return info === null || info.isSymbolicLink() ? "link" : "moved";
 }
 
 /** Linux's per-process descriptor table, where each entry links to the file it is open on. */
 const PROC_SELF_FD = "/proc/self/fd";
 
 /**
- * Is the open descriptor the file at `realPath`?
+ * Is the open descriptor the file at `realPath`? The kernel answers:
+ * `/proc/self/fd/N` names where the descriptor really is, whatever directory
+ * was swapped on the way to it.
  *
- * On Linux the kernel answers directly: `/proc/self/fd/N` names where the
- * descriptor really is, whatever directory was swapped on the way to it.
- *
- * Elsewhere (a developer's Mac has no procfs) the path is resolved again and
- * must still be `realPath`, and what sits there must be the very inode the
- * descriptor holds. A parent swapped before the open makes the descriptor a
- * different inode from the one at the real path; one swapped after it makes the
- * path resolve elsewhere. Either way the answer is no.
- *
- * `procSelfFd` is a seam for the tests, so the fallback is exercised on Linux
- * CI too rather than only on the machines that need it.
+ * Where that cannot be read, this throws `SourceUnverifiableError` rather than
+ * answering — see the module comment for why there is no fallback.
+ * `procSelfFd` is a seam for the tests.
  */
 export async function isAtPath(
   handle: FileHandle,
-  info: BigIntStats,
   realPath: string,
-  procSelfFd: string | null = PROC_SELF_FD
+  procSelfFd: string = PROC_SELF_FD
 ): Promise<boolean> {
-  if (procSelfFd !== null) {
-    try {
-      // eslint-disable-next-line security/detect-non-literal-fs-filename -- a fixed procfs directory plus our own descriptor number.
-      return (await readlink(join(procSelfFd, String(handle.fd)))) === realPath;
-    } catch {
-      // No procfs here: fall through to the portable answer.
-    }
-  }
-
+  let location: string;
   try {
-    // eslint-disable-next-line security/detect-non-literal-fs-filename -- realPath is the caller's expected path; resolving it is the check.
-    if ((await realpath(realPath)) !== realPath) return false;
-    // eslint-disable-next-line security/detect-non-literal-fs-filename -- same path, already shown to contain no link.
-    const atPath = await stat(realPath, { bigint: true });
-    return atPath.dev === info.dev && atPath.ino === info.ino;
-  } catch {
-    return false;
+    // eslint-disable-next-line security/detect-non-literal-fs-filename -- a fixed procfs directory plus our own descriptor number.
+    location = await readlink(join(procSelfFd, String(handle.fd)));
+  } catch (err) {
+    throw new SourceUnverifiableError(realPath, { cause: err });
   }
+  return location === realPath;
 }
 
 /** A private copy of a source's bytes, for readers that only take a path. */
@@ -205,7 +204,14 @@ export interface PrivateCopy {
 
 /**
  * Writes `bytes` to a fresh directory only this process can enter (`mkdtemp`
- * creates it 0700), under the source's own basename.
+ * creates it 0700) under `stagingDir`, under the source's own basename.
+ *
+ * `stagingDir` is the artifact volume's `staging/` (`stagingDirOf` in
+ * office-artifacts.ts), not `os.tmpdir()`: a run killed mid-copy — a restart,
+ * an upgrade, an OOM kill — never reaches `dispose()`, and on the container's
+ * writable layer a full plaintext copy of a document would survive every
+ * restart. On the volume, the index worker clears it at start
+ * (`clearStagedBatches`).
  *
  * The basename is kept because readers dispatch on the extension and log the
  * name; the directory is fresh per copy so two `Rechnung.doc` from different
@@ -214,9 +220,12 @@ export interface PrivateCopy {
  */
 export async function writePrivateCopy(
   bytes: Uint8Array,
-  sourcePath: string
+  sourcePath: string,
+  stagingDir: string
 ): Promise<PrivateCopy> {
-  const dir = await mkdtemp(join(tmpdir(), "pinchy-kb-source-"));
+  // eslint-disable-next-line security/detect-non-literal-fs-filename -- the artifact volume's staging directory, from configuration.
+  await mkdir(stagingDir, { recursive: true });
+  const dir = await mkdtemp(join(stagingDir, "source-"));
   const name = basename(sourcePath) || randomUUID();
   const path = join(dir, name);
   try {

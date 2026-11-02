@@ -200,7 +200,7 @@ The reindex entry in the [audit trail](/concepts/audit-trail/) records how many 
 
 Indexing never follows a symbolic link. A link inside a mounted folder is not indexed — not even one pointing at a file in the same folder — and a link to a folder is not walked into. If a document should be searchable from two places, copy it, or mount the folder it lives in. The folder you grant an agent may itself be a link; only links **below** it are left out.
 
-What is listed is also what is read. Every file is opened without following a link, and only if it is still the regular file the run found, at the place it found it. So a file that is swapped for a link while a run is in progress — or reached through a folder that was swapped for one — is refused rather than read:
+What is listed is also what is read. Every file is opened without following a link, and only if it is still a regular file at the place the run found it. So a file that is swapped for a link while a run is in progress — or reached through a folder that was swapped for one — is refused rather than read:
 
 - It counts as `failed` for that run, and a version indexed earlier stays searchable.
 - The run's entry in the [audit trail](/concepts/audit-trail/) counts it as `refusedFiles`. The server log names the file.
@@ -208,7 +208,7 @@ What is listed is also what is read. Every file is opened without following a li
 
 This matters because a mounted folder is often writable by more people than may read every folder next to it. Without the check, anyone who can write to one folder could point a file there at a document from another team's folder, and an agent granted the first folder would quote it. The same holds for opening a cited document and for an agent reading a file directly: the path is resolved to where it really points and checked against the agent's folders, and the file is then read without following any link that appeared after that check.
 
-A side effect worth knowing: a document saved while the run is in progress (most editors save by replacing the file) is refused for that run too, because it is no longer the file the run listed. The next run picks it up.
+A document saved while the run is in progress is read as it is when the run gets to it. Most editors save by writing a new file and renaming it over the old one; that is still a regular file in the same place, so it is not refused.
 
 ## Knowledge Base vs. workspace files
 

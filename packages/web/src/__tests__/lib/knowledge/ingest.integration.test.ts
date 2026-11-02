@@ -52,13 +52,17 @@ const PAGE_2_TEXT =
   "Questions about health insurance or retirement plans should go to the HR team.";
 
 let tmpRoot: string;
+/** Where the run stages its private copies: the artifact volume's `staging/` in production. */
+let stagingDir: string;
 
 beforeEach(() => {
   tmpRoot = mkdtempSync(join(tmpdir(), "pinchy-kb-ingest-test-"));
+  stagingDir = mkdtempSync(join(tmpdir(), "pinchy-kb-ingest-staging-"));
 });
 
 afterEach(() => {
   rmSync(tmpRoot, { recursive: true, force: true });
+  rmSync(stagingDir, { recursive: true, force: true });
 });
 
 const SHEET_ROWS_TEXT =
@@ -114,7 +118,14 @@ function fakeDeps(
   const extractPdf = vi.fn(async (path: string) => (record(path), pages));
   const extractXlsx = vi.fn(async (path: string) => (record(path), xlsx));
   return {
-    deps: { embed, extractPdf, extractXlsx, convertOffice: neverCalledConvert, ocrModel: null },
+    deps: {
+      embed,
+      extractPdf,
+      extractXlsx,
+      convertOffice: neverCalledConvert,
+      ocrModel: null,
+      stagingDir,
+    },
     embed,
     extractPdf,
     extractXlsx,
@@ -136,6 +147,10 @@ function expectPrivateCopy(
   expect(reader).toHaveBeenCalledTimes(1);
   const [path] = reader.mock.calls[0] as [string];
   expect(dirname(path)).not.toBe(dirname(sourcePath));
+  // Staged where the run was told to — the artifact volume in production,
+  // which the worker clears at start — never in os.tmpdir(), where a copy a
+  // killed run left behind would outlive every restart.
+  expect(dirname(dirname(path))).toBe(stagingDir);
   // Under the source's own name, so extension dispatch and log lines read right.
   expect(basename(path)).toBe(basename(sourcePath));
   expect(handed.get(path)).toBe(bytes);
@@ -829,6 +844,7 @@ it("keeps ingesting the rest of the corpus when one file's extraction throws", a
       extractXlsx: neverCalledXlsx,
       convertOffice: neverCalledConvert,
       ocrModel: null,
+      stagingDir,
     });
 
     expect(result).toEqual(counts({ indexed: 1, failed: 1 }));
@@ -871,6 +887,7 @@ it("surfaces an embedding outage as a run failure instead of blaming every file"
       extractXlsx: neverCalledXlsx,
       convertOffice: neverCalledConvert,
       ocrModel: null,
+      stagingDir,
     })
   ).rejects.toThrow(/ECONNREFUSED/);
   // Bailed on the first file rather than walking the rest of the corpus.
@@ -907,6 +924,7 @@ it("keeps the last indexed version searchable when a file changes into one that 
     extractXlsx: neverCalledXlsx,
     convertOffice: neverCalledConvert,
     ocrModel: null,
+    stagingDir,
   });
   expect(result).toEqual(counts({ failed: 1 }));
 
@@ -1526,6 +1544,7 @@ function officeDeps(
       extractXlsx: neverCalledXlsx,
       convertOffice,
       ocrModel: null,
+      stagingDir,
     } as IngestDeps,
     extractPdf,
     convertOffice,
@@ -1793,6 +1812,7 @@ it("spends one converter attempt per batch when the converter never answers at a
     extractXlsx: neverCalledXlsx,
     convertOffice,
     ocrModel: null,
+    stagingDir,
   } as IngestDeps;
 
   const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -1913,6 +1933,7 @@ function recordingDeps() {
       })
     ),
     ocrModel: null,
+    stagingDir,
   };
   return { deps, seen };
 }
@@ -1950,6 +1971,29 @@ it.each(["report.pdf", "suppliers.xlsx", "report.docx"])(
     );
   }
 );
+
+it("reads a file an editor saved during the run — a new file renamed over the old one", async () => {
+  // A new inode at the same place, inside the same folder. That is an ordinary
+  // save, not a swap: refusing it would leave the document unindexed until a
+  // later run, and on a filesystem without stable inode numbers (cifs
+  // `noserverino`, sshfs without `use_ino`) on every run.
+  const source = join(tmpRoot, "report.pdf");
+  writeFileSync(source, "first draft");
+  const { deps, seen } = recordingDeps();
+  const refused: string[] = [];
+
+  const result = await ingestPaths(ORG_ID, [tmpRoot], deps, {
+    onProgress: afterDiscovery(() => {
+      writeFileSync(join(tmpRoot, ".report.pdf.tmp"), "saved again");
+      renameSync(join(tmpRoot, ".report.pdf.tmp"), source);
+    }),
+    onRefusedFile: (path) => refused.push(path),
+  });
+
+  expect(result).toEqual(counts({ indexed: 1 }));
+  expect(refused).toEqual([]);
+  expect(seen).toEqual(["saved again"]);
+});
 
 it("keeps the version it already indexed when the file is swapped for a link", async () => {
   // A refusal is a failed read, not a deletion: the removal pass only drops

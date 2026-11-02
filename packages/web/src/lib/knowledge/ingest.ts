@@ -79,11 +79,9 @@ import type { ConversionOutcome, OfficeSource } from "./office-convert";
 import type { XlsxExtraction } from "./xlsx-extract";
 import type { IngestPage, IngestResult } from "./types";
 import {
-  identityOf,
   openVerifiedSource,
   SourceRefusedError,
   writePrivateCopy,
-  type ExpectedSource,
   type PrivateCopy,
   type SourceRefusal,
 } from "./verified-source";
@@ -144,6 +142,14 @@ export interface IngestDeps {
    * one without, and the blank scans it reads would be read again every run.
    */
   ocrModel: string | null;
+  /**
+   * Where the run puts the private copies its readers open (verified-source.ts
+   * `writePrivateCopy`). Prod: the artifact volume's `staging/`
+   * (`stagingDirOf()`), which the index worker clears at start — so a copy a
+   * killed run left behind does not outlive it, as it would in the
+   * container's `/tmp` on the writable layer.
+   */
+  stagingDir: string;
 }
 
 export interface IngestOptions {
@@ -197,9 +203,10 @@ export interface IngestOptions {
   /** Called once per folder below a root whose documents `keepEmptiedFolders` kept. */
   onKeptFolder?: (folder: string) => void;
   /**
-   * Called for every file the run refused to read because it was no longer
-   * the regular file discovery listed at that place — swapped for a link,
-   * reached through a folder swapped for one, or replaced (verified-source.ts).
+   * Called for every file the run refused to read because its path no longer
+   * led to a regular file inside its folder — swapped for a link, reached
+   * through a folder swapped for one, or no longer a regular file
+   * (verified-source.ts). A file merely saved again since discovery is read.
    * The file is ALSO counted `failed`, and its indexed version is kept; this
    * only says why, so the caller can count refusals apart from broken files.
    */
@@ -250,30 +257,29 @@ function isEligibleFile(name: string, allowedExtensions: readonly string[]): boo
 }
 
 /**
- * One file as discovery found it: its weight for progress, and what every
- * later read must find again before it may read a byte (verified-source.ts).
+ * One file as discovery found it: its weight for progress, and the REAL path
+ * every later read opens (verified-source.ts) — the root's real path plus the
+ * names walked below it.
  */
 interface DiscoveredFile {
   bytes: number;
-  source: ExpectedSource;
+  realPath: string;
 }
 
 /**
- * Describes a listed file by an `lstat` of its REAL path — the root's real
- * path plus the names walked below it — so a link is described as itself and
+ * Describes a listed file by an `lstat`, so a link is described as itself and
  * never as whatever it points at.
  *
  * Discovery must not fail over a single file: one that vanished between the
- * readdir and this lstat stays in the queue with no weight and no identity,
- * and is counted `failed` at read time, exactly as before. Dropping it instead
- * would make the removal pass believe it is gone.
+ * readdir and this lstat stays in the queue with no weight, and is counted
+ * `failed` at read time, exactly as before. Dropping it instead would make the
+ * removal pass believe it is gone.
  */
 async function describeFile(realPath: string): Promise<DiscoveredFile> {
   try {
-    const info = await lstat(realPath, { bigint: true });
-    return { bytes: Number(info.size), source: { realPath, identity: identityOf(info) } };
+    return { bytes: (await lstat(realPath)).size, realPath };
   } catch {
-    return { bytes: 0, source: { realPath, identity: null } };
+    return { bytes: 0, realPath };
   }
 }
 
@@ -503,7 +509,7 @@ function fromPages(pages: readonly IngestPage[]): Pick<ExtractedDocument, "text"
  * or the failure then, once.
  */
 function officeArtifacts(
-  queue: readonly { absPath: string; source: ExpectedSource }[],
+  queue: readonly { absPath: string; realPath: string }[],
   deps: IngestDeps,
   batchSize = OFFICE_CONVERT_BATCH_SIZE
 ): ResolveArtifact {
@@ -538,12 +544,12 @@ function officeArtifacts(
         if (done.has(mate.absPath)) continue;
         let read;
         try {
-          read = await readVerified(mate.source);
+          read = await readVerified(mate.realPath);
         } catch {
           // Refused or unreadable. Not answered: see the doc comment above.
           continue;
         }
-        const copy = await writePrivateCopy(read.bytes, mate.absPath);
+        const copy = await writePrivateCopy(read.bytes, mate.absPath, deps.stagingDir);
         copies.push(copy);
         batch.push(mate.absPath);
         sources.push({ absPath: copy.path, contentHash: sha256(read.bytes) });
@@ -607,11 +613,11 @@ function sha256(bytes: Uint8Array): string {
 
 /**
  * Reads a source in full through the one door every read after discovery
- * takes (verified-source.ts): no link followed, still the file discovery
- * listed, still where it listed it.
+ * takes (verified-source.ts): no link followed, a regular file, still where
+ * discovery listed it.
  */
-async function readVerified(source: ExpectedSource): Promise<{ bytes: Buffer; mtime: Date }> {
-  const { handle, stat: info } = await openVerifiedSource(source);
+async function readVerified(realPath: string): Promise<{ bytes: Buffer; mtime: Date }> {
+  const { handle, stat: info } = await openVerifiedSource(realPath);
   try {
     return { bytes: await handle.readFile(), mtime: info.mtime };
   } finally {
@@ -903,7 +909,7 @@ function couldReadDifferently(recorded: string, deps: IngestDeps): boolean {
 async function ingestFile(
   orgId: string,
   absPath: string,
-  source: ExpectedSource,
+  realPath: string,
   deps: IngestDeps,
   resolveArtifact: ResolveArtifact,
   onChunkProgress?: ChunkProgressCallback
@@ -911,11 +917,11 @@ async function ingestFile(
   // ONE verified read, and everything below works from its bytes: the hash,
   // the mtime, and the private copy the extractors open. Nothing re-opens the
   // path on the share, so nothing can be swapped in behind this check.
-  const { bytes, mtime } = await fileStep(absPath, () => readVerified(source));
+  const { bytes, mtime } = await fileStep(absPath, () => readVerified(realPath));
   const contentHash = sha256(bytes);
   const extract = () =>
     fileStep(absPath, async () => {
-      const copy = await writePrivateCopy(bytes, absPath);
+      const copy = await writePrivateCopy(bytes, absPath, deps.stagingDir);
       try {
         return await extractDocument(absPath, copy.path, deps, resolveArtifact, contentHash);
       } finally {
@@ -1234,12 +1240,12 @@ export async function ingestPaths(
   // cannot tell a slow run from a dead one.
   await report();
 
-  for (const { absPath, bytes, source } of queue) {
+  for (const { absPath, bytes, realPath } of queue) {
     try {
       const outcome = await ingestFile(
         orgId,
         absPath,
-        source,
+        realPath,
         deps,
         resolveArtifact,
         (embedded, chunkTotal) =>

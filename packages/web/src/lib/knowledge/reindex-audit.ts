@@ -60,9 +60,11 @@ export interface ReindexAuditArgs {
    */
   unavailableFolders?: number;
   /**
-   * How many files the run refused to read because they were no longer the
-   * regular file it had listed — swapped for a symbolic link, or reached
-   * through a folder swapped for one (verified-source.ts). They are ALSO in
+   * How many files the run refused to read because their path no longer led
+   * to a regular file inside the folder — the file swapped for a symbolic link
+   * or for something that is not a file, or reached through a folder swapped
+   * for a link (verified-source.ts `SourceRefusal`). A file merely saved again
+   * since it was listed is read, not counted here. They are ALSO in
    * `failed`; counted apart because someone with write access to a mounted
    * folder pointing the index at a file they may not see is a security event,
    * not a corrupt PDF. A count, never the files — see `pathCount`. Absent

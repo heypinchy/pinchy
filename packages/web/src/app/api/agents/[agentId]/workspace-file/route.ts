@@ -305,7 +305,7 @@ export const GET = withAuth<Params>(async (req, { params }, session) => {
   // nothing about what the link pointed at — the audit row says why.
   const openSource = async (): Promise<VerifiedSource | null> => {
     try {
-      return await openVerifiedSource({ realPath });
+      return await openVerifiedSource(realPath);
     } catch (err) {
       if (err instanceof SourceRefusedError) {
         auditFailure(err.refusal === "not_a_file" ? "not_a_file" : `refused_${err.refusal}`);
