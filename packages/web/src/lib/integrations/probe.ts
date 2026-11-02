@@ -2,6 +2,7 @@ import { OdooClient } from "odoo-node";
 import { fetchOdooSchema } from "@/lib/integrations/odoo-sync";
 import { probeBraveApiKey } from "@/lib/integrations/brave-probe";
 import { odooCredentialsSchema } from "@/lib/integrations/odoo-schema";
+import { describeOdooError } from "@/lib/integrations/odoo-error";
 import {
   testImapLogin,
   testSmtpVerify,
@@ -60,7 +61,7 @@ export async function probeIntegrationCredentials(
         apiKey: parsed.data.apiKey,
       });
     } catch (err) {
-      const detail = err instanceof Error ? err.message : String(err);
+      const detail = describeOdooError(err);
       return {
         success: false,
         reason: `Authentication failed. Please verify your login and API key. (${detail})`,

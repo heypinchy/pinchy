@@ -16,12 +16,49 @@ export const POST = withAdmin(async (request) => {
   }
 
   try {
+    // `redirect: "manual"`: the URL above was checked, a redirect target was
+    // not. Following one would send this POST — 307/308 keep the body — to
+    // wherever the answer points, cloud metadata and loopback included. Odoo's
+    // JSON-RPC never needs a redirect, so a 3xx is refused and named.
     const response = await fetch(`${url}/web/database/list`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "call", params: {} }),
+      redirect: "manual",
     });
-    const data = await response.json();
+
+    if (response.status >= 300 && response.status < 400) {
+      await response.body?.cancel();
+      return NextResponse.json({
+        success: false,
+        error:
+          `Odoo answered with a redirect (HTTP ${response.status}), and Pinchy does not ` +
+          "follow redirects. Enter the address Odoo is actually served from.",
+      });
+    }
+
+    // Status and content type only, never the body: an unexpected answer may
+    // come from a host that is not Odoo, and its body is not ours to show.
+    const describe = () =>
+      `HTTP ${response.status}, ${response.headers.get("content-type") ?? "no content type"}`;
+
+    if (!response.ok) {
+      await response.body?.cancel();
+      return NextResponse.json({
+        success: false,
+        error: `Could not list databases: Odoo answered ${describe()}.`,
+      });
+    }
+
+    let data: { error?: unknown; result?: unknown };
+    try {
+      data = await response.json();
+    } catch {
+      return NextResponse.json({
+        success: false,
+        error: `Could not list databases: Odoo answered ${describe()}, not JSON-RPC.`,
+      });
+    }
 
     if (data.error || !Array.isArray(data.result)) {
       return NextResponse.json({ success: false, error: "Could not list databases" });

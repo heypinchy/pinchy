@@ -11,6 +11,7 @@ import { db } from "@/db";
 import { integrationConnections } from "@/db/schema";
 import { decrypt, encrypt } from "@/lib/encryption";
 import { odooCredentialsSchema } from "@/lib/integrations/odoo-schema";
+import { describeOdooError } from "@/lib/integrations/odoo-error";
 import { probeIntegrationCredentials } from "@/lib/integrations/probe";
 import { checkStoredDestination } from "@/lib/integrations/stored-destination";
 import { clearIntegrationAuthError, setIntegrationAuthFailed } from "@/lib/integrations/auth-state";
@@ -56,12 +57,19 @@ export const POST = withAdmin<RouteContext>(async (_req, { params }, session) =>
       const parsed = odooCredentialsSchema.safeParse(decrypted);
       if (parsed.success) {
         const creds = parsed.data;
-        const uid = await OdooClient.authenticate({
-          url: creds.url,
-          db: creds.db,
-          login: creds.login,
-          apiKey: creds.apiKey,
-        });
+        let uid: number;
+        try {
+          uid = await OdooClient.authenticate({
+            url: creds.url,
+            db: creds.db,
+            login: creds.login,
+            apiKey: creds.apiKey,
+          });
+        } catch (err) {
+          // Re-thrown with a message fit for the admin: the catch below shows
+          // it and records it as the auth-failure reason. See odoo-error.ts.
+          throw new Error(describeOdooError(err));
+        }
         if (uid !== creds.uid) {
           decrypted.uid = uid;
           await db
